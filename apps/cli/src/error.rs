@@ -80,8 +80,16 @@ pub enum CliError {
     SameSourceCoinAndFeeCoin,
     /// `--max-fee` was zero.
     ZeroMaxFee,
-    /// `--fee-treasury-object` named the same object as `--source-coin` or
-    /// `--fee-coin`.
+    /// `split --amount` was zero.
+    ZeroSplitAmount,
+    /// A split amount would empty the source coin; split requires a
+    /// non-zero remainder.
+    SplitAmountNotBelowSource { amount: u64, source_amount: u64 },
+    /// Merge coin inputs must be three different object ids.
+    MergeCoinsMustBeDistinct,
+    /// The two source amounts cannot be represented by `u64` when summed.
+    MergeAmountOverflow,
+    /// `--fee-treasury-object` named one of the operation's coin inputs.
     FeeTreasuryConflictsWithTransfer,
     /// The transferred and fee coins decoded with different `AssetId`s.
     CoinAssetMismatch,
@@ -140,6 +148,8 @@ pub enum CliError {
     },
     /// Canonically encoding the `StandardAssetTransferArgsV1` frame failed.
     TransferArgsEncodingFailed(StandardAssetError),
+    /// Canonically encoding the `StandardAssetSplitArgsV1` frame failed.
+    SplitArgsEncodingFailed(StandardAssetError),
     /// A referenced object exists and is `CurrentInline`, but its owner does
     /// not equal the locally required address for that access.
     ObjectOwnerMismatch {
@@ -229,6 +239,9 @@ pub enum CliError {
     /// but its clear-signing policy/device profile has not been implemented.
     /// Reported before device or network dispatch.
     LedgerStandardAssetTransferUnsupported,
+    /// A Ledger signer was selected for a Standard Asset operation whose
+    /// clear-signing policy/device profile is not implemented.
+    LedgerStandardAssetOperationUnsupported { operation: &'static str },
 }
 
 impl fmt::Display for CliError {
@@ -272,8 +285,17 @@ impl fmt::Display for CliError {
                 f.write_str("--source-coin and --fee-coin must name distinct objects")
             }
             Self::ZeroMaxFee => f.write_str("--max-fee must be non-zero"),
+            Self::ZeroSplitAmount => f.write_str("--amount must be non-zero"),
+            Self::SplitAmountNotBelowSource { amount, source_amount } => write!(
+                f,
+                "--amount must be below the source coin amount (amount={amount}, source_amount={source_amount})",
+            ),
+            Self::MergeCoinsMustBeDistinct => {
+                f.write_str("--primary-coin, --secondary-coin, and --fee-coin must name distinct objects")
+            }
+            Self::MergeAmountOverflow => f.write_str("the two source coin amounts overflow u64 when merged"),
             Self::FeeTreasuryConflictsWithTransfer => f.write_str(
-                "--fee-treasury-object must be distinct from --source-coin and --fee-coin",
+                "--fee-treasury-object must be distinct from every operation coin input",
             ),
             Self::CoinAssetMismatch => {
                 f.write_str("the transferred and fee coins do not share one AssetId")
@@ -326,6 +348,9 @@ impl fmt::Display for CliError {
             ),
             Self::TransferArgsEncodingFailed(error) => {
                 write!(f, "failed to encode transfer arguments: {error}")
+            }
+            Self::SplitArgsEncodingFailed(error) => {
+                write!(f, "failed to encode split arguments: {error}")
             }
             Self::ObjectOwnerMismatch {
                 flag,
@@ -380,6 +405,10 @@ impl fmt::Display for CliError {
             Self::LedgerStandardAssetTransferUnsupported => f.write_str(
                 "Ledger signing for the Standard Asset v1 transfer is not implemented; use --seed-file for this development-only command",
             ),
+            Self::LedgerStandardAssetOperationUnsupported { operation } => write!(
+                f,
+                "Ledger signing for the Standard Asset v1 {operation} is not implemented; use --seed-file for this development-only command",
+            ),
         }
     }
 }
@@ -396,6 +425,7 @@ impl std::error::Error for CliError {
             Self::ObjectBodyDecodeFailed { source, .. } => Some(source),
             Self::CoinBodyDecodeFailed { source, .. } => Some(source),
             Self::TransferArgsEncodingFailed(error) => Some(error),
+            Self::SplitArgsEncodingFailed(error) => Some(error),
             Self::CanonicalEncoding(error) => Some(error),
             Self::NodeCore(error) => Some(error),
             Self::Transport(error) => Some(error),

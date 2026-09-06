@@ -2439,15 +2439,17 @@ Standard Asset v1、Unique Asset v1、builder/public-testnet asset surfaceはま
    選ぶprotocol-configuration hash algorithmのみを使う（caller-selected algorithmは
    不可）。definitionは作成時protocol versionを明示的に保持し、別versionのresolverでの
    再検証をfail closedにする。deterministic stable vectorとnegative/adversarial testをpinした。
-   new coin `ObjectId`がcoin固有formulaを増やさず既存のgeneric versioned
+   new coin `ObjectId`はcoin固有formulaを増やさず、既存のgeneric versioned
    created-object derivation（exact signed transaction hash context +
-   creation ordinal）を共有することはCreateが存在しないため未実装のまま。
+   creation ordinal）を共有する。DR-0108のsplitはcreation ordinal zeroを
+   1個だけ許可するcommitted policyによりこの導出を実際に使う。
 4. **部分実装。** `StandardAssetDefinitionV1`、`StandardAssetCoinV1`、
    `StandardAssetMintCapabilityV1`を別々のbounded canonical schemaとして
    `crates/standard-assets`に実装し、unknown version/field/tag、non-canonical
    bytes、unknown hash algorithm、zero coin amountをfail closedにした。
-   duplicate identityのfail closed拒否はobject storeと`Create` pathに依存するため、
-   それらが存在しない本sliceでは未実装のまま。DR-0105（2026-09-06、
+   duplicate identityはDR-0108のsplit Create pathで、exact `Absent` pre-read、
+   current/tombstone collision、duplicate effect、extra Createをfail closedにする。
+   DR-0105（2026-09-06、
    `docs/architecture/decisions/0105-typed-asset-abi-foundation.md`）により、
    `AssetId`をこの3つのschema全てのnominal ABI型引数とするbounded typed-ABI
    foundationを`crates/abi`（[section 18](#18-abi-as-execution-and-concurrency-protocol)参照）と
@@ -2472,30 +2474,36 @@ Standard Asset v1、Unique Asset v1、builder/public-testnet asset surfaceはま
    `StandardAssetCoinFeeComposer`、CLI `transfer`サブコマンドの
    `--source-coin`/`--recipient`/`--fee-coin`ベースへの更新を含む。これにより
    `Create`パスなしで到達可能な、初のend-to-end owner change経路が生まれた。
-   `Create`、partial transfer/split/merge/mint、discovery、Unique Asset v1、
-   multisig、Ledgerのnew entrypoint対応、production fee aggregation、
+   DR-0108でprotocol-v5/module-v2のbounded partial split/mergeを追加した。
+   generic Create/mint/burn、arbitrary discovery/coin selection/dust、Unique
+   Asset v1、multisig、Ledgerのnew entrypoint対応、production fee aggregation、
    public-testnet readinessは引き続き未実装のまま。
-5. **部分実装。** whole-coin transferはcanonical signed recipientへのexact owner changeとして
-   protocol-v4 devnet/CLI/restart E2Eまで実装済み。partial transferはsender remainderのMutate + recipient coinのCreate、mergeはsame-assetの
-   sender-owned coin 1個をchecked sumへMutateし、残りのsender-owned inputsをConsumeする。
-   mergeでnew coinはCreateしない。recipientは
-   signせず、recipient stateはread/writeしない。owned-only operationはglobal total orderを
-   避けるが、validator quorum/certificationは必須とする。CLI/clientはcoin selection、
-   split、merge、dust consolidationを隠蔽しつつexact signed intentを保つ。
-6. **部分実装。** exact committed preinstalled-module policy + protocol version 4の二重gateで、
-   existing coinのbounded owner-only changeをdevnetに限定して有効化済み。future additive
-   protocol version + exact governance-committed policyでCreateを有効化する際は、module/version/
+5. **実装済み（DR-0108、bounded devnet slice）。** whole-coin transferはcanonical signed
+   recipientへのexact owner changeとしてprotocol-v4 devnet/CLI/restart E2Eまで実装済み。
+   protocol-v5/module-v2のpartial splitはsender remainderのMutate + recipient coinの
+   exactly-one Create、mergeはsame-assetのsender-owned primaryをchecked sumへMutateし、
+   secondaryをConsumeする。mergeでnew coinはCreateしない。recipientはsignせず、recipient
+   stateもread/writeしない。exact one-create policyはsigned transaction-derived id、
+   source-derived type/schema、recipient projection、Absent-only pre-readをnode-coreで
+   独立検証する。owned-only operationはglobal total orderを避けるが、validator
+   quorum/certificationは必須とする。任意coin discovery/selection、dust、mint/burnと
+   ergonomic client hidingは後続とする。
+6. **部分実装（split Createまで）。** exact committed preinstalled-module policy + protocol
+   version 4/5の二重gateで、
+   existing coinのbounded owner-only changeをdevnetに限定して有効化済み。DR-0108のprotocol-v5
+   splitではadditive module version + exact governance-committed policyでCreateを有効化し、module/version/
    entrypoint、signed recipient、input/output count/aggregate bytes、exact outputs、type/schema/owner/
-   id derivation/atomic conservationをnode-coreが独立検証し、
+   id derivationとcreated-bodyのnominal typeをnode-coreが独立検証する。balance arithmeticと
+   conservationはcommitted WASMがchecked演算で実施し、node-coreはasset固有balanceをdecodeせず、
    exact absent headを読んでnonce/receipt/fee/outboxとatomic commitする。current/tombstone
-   collisionは拒否し、generic contract Create、unsigned owner change、caller-selected IDは
+   collisionは拒否する。generic contract Create、mint、unsigned owner change、caller-selected IDは
    fail closedのままにする。
 7. **部分実装。** protocol-v4 devnetはStandard Asset v1 fee coinをordinary objectとして扱い、
    same ownership/exact-version/checked-arithmetic/atomic-effect ruleを使う。native coinやprivileged
    balanceは追加していない。一方、現在のsingle treasury coinはlocal-devnet限定のhot spotであり、
    production fast pathへは持ち込まない。fee output/aggregation/certificate-signer distributionは
    別のbounded deterministic decisionとして未実装。
-8. **今回のwhole-coin transfer activation sliceは実装・検証済み。**
+8. **whole-coin transfer activation sliceは実装・検証済み。**
    canonical/stable/adversarial/replay/fee-compositionとreal file-backed SQLite
    restart testを実装し、commit `891152fc098e080b5d61a2242bc997e861553cc6`でcomplete
    repository gateを通過した。Initial Audit後に追加したprotocol-critical surfaceとして、
@@ -2505,8 +2513,13 @@ Standard Asset v1、Unique Asset v1、builder/public-testnet asset surfaceはま
    変更した場合の旧coin併存）は、`--dev-owner`がseed provisioningであってruntime
    authorization/revocation listではなく、network callerから変更不能で新しい権限獲得も
    ないためnon-reportableと判定した。これはproduction security auditやpublic-testnet
-   readinessの宣言ではない。Create自体が未実装なのでconcurrent-create testも未実装であり、
-   future Create/split/merge/mint/Unique Asset/public surfaceは各sliceで新しいdelta reviewを要する。
+   readinessの宣言ではない。DR-0108のsplit/mergeは別PRのprotocol-v5/module-v2 sliceとして
+   実装し、exact-one Create、Absent-only collision check、checked split/merge arithmetic、
+   real file-backed SQLiteでのsame-boot/post-restart exact replay non-reapplication、writer-generation
+   fencing、request-id reuse時のsource/created/fee/treasury object・両receipt・nonce不変を
+   focused E2Eとcomplete repository gateで検証した。merge前にこの新しいprotocol-critical
+   deltaへのfresh independent reviewを要求する。generic Create/mint/Unique Asset/public surfaceは
+   引き続き各sliceで新しいdelta reviewを要する。
 
 metadata authenticity、mint/burn/supply accounting、authority capabilityのlifecycle、freeze/close/
 allowance、governed fee-asset admission、Unique Asset v1の実装は後続sliceである。
@@ -2696,6 +2709,9 @@ hard constraintも変更しない。
   whole-coin owner change、same-boot/post-restart exact replay non-reapplication、request-id reuse時の
   coin/receipt/nonce不変、writer-generation fencingを証明する。旧DR-0086 fixtureの詳細は
   historical decisionとしてのみ残す。
+  DR-0108のprotocol-v5/module-v2 sliceは、この同じsender-owned object boundaryを
+  `split`のsource Write + exact-one recipient Create、および`merge`のprimary Write +
+  secondary Consumeへ拡張する。generic Createや任意のcaller-selected object idは許可しない。
 - **S3**: **implemented and validated baseline（DR-0087、DR-0107で現行化）。** committed
   scheduleはbase=1、execution=`gas_used`単価=1、他category=0、fee registryはderived devnet
   `AssetId`を1:1で1つだけenableする。transfer対象とはdistinctなsender-owned

@@ -157,6 +157,13 @@ pub const MAX_PREINSTALLED_TYPED_ENTRYPOINT_POLICIES: usize = 8;
 /// Deterministic upper bound on the number of owner-transition policies one
 /// committed semantics envelope may declare (DR-0106).
 pub const MAX_PREINSTALLED_OWNER_TRANSITION_POLICIES: usize = 8;
+/// Deterministic upper bound on the number of object-creation policies one
+/// committed semantics envelope may declare (DR-0108).
+pub const MAX_PREINSTALLED_OBJECT_CREATION_POLICIES: usize = 8;
+/// Maximum canonical argument field identifiers one exact object-creation
+/// policy may admit. This is deliberately small: creation policies are
+/// narrow, committed entrypoint contracts, never an extensible args parser.
+pub const MAX_PREINSTALLED_OBJECT_CREATION_ARGS_FIELDS: usize = 8;
 /// Deterministic upper bound on the number of [`abi::ConstructorDeclaration`]s
 /// one [`PreinstalledTypedEntrypointPolicy`] may commit (DR-0106). This is an
 /// exact alias of [`abi::MAX_CONSTRUCTORS`], not an independently chosen
@@ -169,6 +176,7 @@ const PREINSTALLED_OBJECT_ACCESS_POLICY_TYPE_ID: u16 = 0xE007;
 const PREINSTALLED_SEMANTICS_ENVELOPE_TYPE_ID: u16 = 0xE008;
 const PREINSTALLED_TYPED_ENTRYPOINT_POLICY_TYPE_ID: u16 = 0xE00A;
 const PREINSTALLED_OWNER_TRANSITION_POLICY_TYPE_ID: u16 = 0xE00B;
+const PREINSTALLED_OBJECT_CREATION_POLICY_TYPE_ID: u16 = 0xE00C;
 const PREINSTALLED_ENCODING_VERSION: u16 = 1;
 /// Field id in the committed semantics envelope frame holding the typed-
 /// entrypoint-policy count, present only when the collection is non-empty so
@@ -184,6 +192,13 @@ const OWNER_TRANSITION_POLICIES_COUNT_FIELD: u16 = 200;
 /// First field id holding an owner-transition-policy item; item `i` uses
 /// `OWNER_TRANSITION_POLICIES_FIRST_ITEM_FIELD + i`.
 const OWNER_TRANSITION_POLICIES_FIRST_ITEM_FIELD: u16 = 201;
+/// Field id in the committed semantics envelope frame holding the object-
+/// creation-policy count, present only when the collection is non-empty, for
+/// the same byte-preservation reason (DR-0108).
+const OBJECT_CREATION_POLICIES_COUNT_FIELD: u16 = 300;
+/// First field id holding an object-creation-policy item; item `i` uses
+/// `OBJECT_CREATION_POLICIES_FIRST_ITEM_FIELD + i`.
+const OBJECT_CREATION_POLICIES_FIRST_ITEM_FIELD: u16 = 301;
 
 /// One narrow, fail-closed exception to node-core's default same-sender
 /// object-owner rule, committed as part of a preinstalled module's semantics
@@ -571,20 +586,220 @@ impl PreinstalledOwnerTransitionPolicy {
         frame
             .require_only_fields(&[self.recipient_args_field_id])
             .map_err(NodeCoreError::CanonicalDecoding)?;
-        let bytes = frame
-            .required_field(self.recipient_args_field_id)
-            .map_err(NodeCoreError::CanonicalDecoding)?;
-        let fixed: [u8; 32] = bytes.try_into().map_err(|_| {
-            NodeCoreError::CanonicalDecoding(
-                canonical_encoding::CanonicalDecodingError::InvalidFieldLength {
-                    field_id: self.recipient_args_field_id,
-                    expected: 32,
-                    actual: bytes.len(),
-                },
-            )
-        })?;
-        Ok(Address::new(fixed))
+        decode_address_field(&frame, self.recipient_args_field_id)
     }
+}
+
+/// Decodes a 32-byte [`Address`] from `frame`'s required `field_id`, shared
+/// by every policy that projects an address out of canonical transaction
+/// args.
+fn decode_address_field(
+    frame: &canonical_encoding::CanonicalFrame<'_>,
+    field_id: u16,
+) -> Result<Address, NodeCoreError> {
+    let bytes = frame
+        .required_field(field_id)
+        .map_err(NodeCoreError::CanonicalDecoding)?;
+    let fixed: [u8; 32] = bytes.try_into().map_err(|_| {
+        NodeCoreError::CanonicalDecoding(
+            canonical_encoding::CanonicalDecodingError::InvalidFieldLength {
+                field_id,
+                expected: 32,
+                actual: bytes.len(),
+            },
+        )
+    })?;
+    Ok(Address::new(fixed))
+}
+
+/// A trusted preinstalled module's committed authorization for node-core to
+/// admit exactly one `Create` object effect for one declared entrypoint,
+/// independently reverifying its id, owner, and nominal type rather than
+/// trusting the preinstalled module's own returned effect for any of them.
+///
+/// This is the smallest generic mechanism able to admit a `Create` effect at
+/// all: `type_source_access_index` names an already-declared, already
+/// typed-ABI-verified engine-visible input whose exact `type_hash`/
+/// `schema_version` the created object must match, rather than a governance-
+/// committed literal digest. A literal digest cannot express "the same
+/// nominal type as whatever `AssetId` this call's shared type variable
+/// unifies to" (see `abi::verify_entrypoint_inputs`), since a Standard Asset
+/// v1 coin's nominal type is itself a function of its `AssetId`
+/// (`standard_assets::derive_coin_type_id`); binding to an existing input's
+/// own already-verified type instead keeps this policy asset-generic and
+/// reusable by any future preinstalled module that creates a same-typed
+/// object, without node-core ever decoding the created body itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreinstalledObjectCreationPolicy {
+    entrypoint: String,
+    type_source_access_index: u32,
+    recipient_args_type_id: u16,
+    recipient_args_version: u16,
+    recipient_args_field_id: u16,
+    allowed_args_field_ids: Vec<u16>,
+}
+
+impl PreinstalledObjectCreationPolicy {
+    /// Validates and constructs one object-creation policy.
+    ///
+    /// Rejects an empty or oversized entrypoint name and a zero recipient-
+    /// args type id or field id. `type_source_access_index`'s bound against
+    /// the matching typed-entrypoint signature's parameter count is checked
+    /// by [`PreinstalledModuleSemanticsEnvelope::with_typed_policies`], which
+    /// alone can see that signature.
+    pub fn new(
+        entrypoint: String,
+        type_source_access_index: u32,
+        recipient_args_type_id: u16,
+        recipient_args_version: u16,
+        recipient_args_field_id: u16,
+        mut allowed_args_field_ids: Vec<u16>,
+    ) -> Result<Self, NodeCoreError> {
+        if entrypoint.is_empty() || entrypoint.len() > MAX_TRANSACTION_ENTRYPOINT_BYTES {
+            return Err(
+                NodeCoreError::PreinstalledObjectCreationPolicyEntrypointInvalid {
+                    actual: entrypoint.len(),
+                    maximum: MAX_TRANSACTION_ENTRYPOINT_BYTES,
+                },
+            );
+        }
+        if recipient_args_type_id == 0 {
+            return Err(NodeCoreError::PreinstalledObjectCreationPolicyRecipientArgsTypeIdZero);
+        }
+        if recipient_args_field_id == 0 {
+            return Err(NodeCoreError::PreinstalledObjectCreationPolicyRecipientArgsFieldIdZero);
+        }
+        if allowed_args_field_ids.is_empty()
+            || allowed_args_field_ids.len() > MAX_PREINSTALLED_OBJECT_CREATION_ARGS_FIELDS
+        {
+            return Err(
+                NodeCoreError::PreinstalledObjectCreationPolicyArgsFieldCountInvalid {
+                    count: allowed_args_field_ids.len(),
+                    maximum: MAX_PREINSTALLED_OBJECT_CREATION_ARGS_FIELDS,
+                },
+            );
+        }
+        allowed_args_field_ids.sort_unstable();
+        if allowed_args_field_ids.contains(&0) {
+            return Err(NodeCoreError::PreinstalledObjectCreationPolicyArgsFieldIdZero);
+        }
+        if allowed_args_field_ids
+            .windows(2)
+            .any(|pair: &[u16]| pair[0] == pair[1])
+        {
+            return Err(NodeCoreError::PreinstalledObjectCreationPolicyArgsFieldIdDuplicate);
+        }
+        if !allowed_args_field_ids.contains(&recipient_args_field_id) {
+            return Err(NodeCoreError::PreinstalledObjectCreationPolicyRecipientFieldNotAllowed);
+        }
+        Ok(Self {
+            entrypoint,
+            type_source_access_index,
+            recipient_args_type_id,
+            recipient_args_version,
+            recipient_args_field_id,
+            allowed_args_field_ids,
+        })
+    }
+
+    /// Returns the exact entrypoint name this policy governs.
+    #[must_use]
+    pub fn entrypoint(&self) -> &str {
+        &self.entrypoint
+    }
+
+    /// Returns the exact engine-visible input index whose `type_hash`/
+    /// `schema_version` the created object must match.
+    #[must_use]
+    pub const fn type_source_access_index(&self) -> u32 {
+        self.type_source_access_index
+    }
+
+    /// Returns the exact sorted, unique canonical argument field ids this
+    /// creation policy admits.
+    #[must_use]
+    pub fn allowed_args_field_ids(&self) -> &[u16] {
+        &self.allowed_args_field_ids
+    }
+
+    /// Projects the new object's recipient [`Address`] from canonical
+    /// transaction args using this policy's committed type id, encoding
+    /// version, and field id. Unlike
+    /// [`PreinstalledOwnerTransitionPolicy::project_recipient`], other fields
+    /// (for example a split's `amount`) may coexist in the same args frame;
+    /// the committed module itself independently pins the args' exact total
+    /// length.
+    pub(crate) fn project_recipient(&self, args: &[u8]) -> Result<Address, NodeCoreError> {
+        let frame = decode_canonical_frame(args).map_err(NodeCoreError::CanonicalDecoding)?;
+        frame
+            .require_type(self.recipient_args_type_id)
+            .map_err(NodeCoreError::CanonicalDecoding)?;
+        frame
+            .require_version(self.recipient_args_version)
+            .map_err(NodeCoreError::CanonicalDecoding)?;
+        frame
+            .require_only_fields(&self.allowed_args_field_ids)
+            .map_err(NodeCoreError::CanonicalDecoding)?;
+        for field_id in &self.allowed_args_field_ids {
+            frame
+                .required_field(*field_id)
+                .map_err(NodeCoreError::CanonicalDecoding)?;
+        }
+        decode_address_field(&frame, self.recipient_args_field_id)
+    }
+}
+
+/// Canonically encodes one [`PreinstalledObjectCreationPolicy`].
+pub fn encode_preinstalled_object_creation_policy(
+    policy: &PreinstalledObjectCreationPolicy,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut canonical = CanonicalStruct::new(
+        PREINSTALLED_OBJECT_CREATION_POLICY_TYPE_ID,
+        PREINSTALLED_ENCODING_VERSION,
+    );
+    canonical
+        .field_str(1, &policy.entrypoint)
+        .map_err(NodeCoreError::CanonicalEncoding)?;
+    canonical
+        .field_u32(2, policy.type_source_access_index)
+        .map_err(NodeCoreError::CanonicalEncoding)?;
+    canonical
+        .field_u16(3, policy.recipient_args_type_id)
+        .map_err(NodeCoreError::CanonicalEncoding)?;
+    canonical
+        .field_u16(4, policy.recipient_args_version)
+        .map_err(NodeCoreError::CanonicalEncoding)?;
+    canonical
+        .field_u16(5, policy.recipient_args_field_id)
+        .map_err(NodeCoreError::CanonicalEncoding)?;
+    let allowed_count = u16::try_from(policy.allowed_args_field_ids.len()).map_err(|_| {
+        NodeCoreError::PreinstalledObjectCreationPolicyArgsFieldCountInvalid {
+            count: policy.allowed_args_field_ids.len(),
+            maximum: MAX_PREINSTALLED_OBJECT_CREATION_ARGS_FIELDS,
+        }
+    })?;
+    canonical
+        .field_u16(6, allowed_count)
+        .map_err(NodeCoreError::CanonicalEncoding)?;
+    for (index, field_id) in policy.allowed_args_field_ids.iter().enumerate() {
+        let encoded_field_id = 7u16
+            .checked_add(u16::try_from(index).map_err(|_| {
+                NodeCoreError::PreinstalledObjectCreationPolicyArgsFieldCountInvalid {
+                    count: policy.allowed_args_field_ids.len(),
+                    maximum: MAX_PREINSTALLED_OBJECT_CREATION_ARGS_FIELDS,
+                }
+            })?)
+            .ok_or(
+                NodeCoreError::PreinstalledObjectCreationPolicyArgsFieldCountInvalid {
+                    count: policy.allowed_args_field_ids.len(),
+                    maximum: MAX_PREINSTALLED_OBJECT_CREATION_ARGS_FIELDS,
+                },
+            )?;
+        canonical
+            .field_u16(encoded_field_id, *field_id)
+            .map_err(NodeCoreError::CanonicalEncoding)?;
+    }
+    canonical.finish().map_err(NodeCoreError::CanonicalEncoding)
 }
 
 /// Canonically encodes one [`PreinstalledOwnerTransitionPolicy`].
@@ -616,21 +831,23 @@ pub fn encode_preinstalled_owner_transition_policy(
 /// A trusted preinstalled module's exact generic committed semantics
 /// envelope: opaque application-semantics bytes plus bounded sets of
 /// [`PreinstalledObjectAccessPolicy`] object-owner exceptions,
-/// [`PreinstalledTypedEntrypointPolicy`] typed-input requirements, and
-/// [`PreinstalledOwnerTransitionPolicy`] owner-only mutation authorizations
-/// (DR-0106).
+/// [`PreinstalledTypedEntrypointPolicy`] typed-input requirements,
+/// [`PreinstalledOwnerTransitionPolicy`] owner-only mutation authorizations,
+/// and [`PreinstalledObjectCreationPolicy`] exact-one creation grants
+/// (DR-0106 and DR-0108).
 ///
 /// This is the exact byte shape `SystemModule.semantics_hash` commits to.
 /// node-core treats `opaque_semantics` as caller-defined, uninterpreted
-/// bytes; the other three collections are read by node-core's authorization
-/// and (for the latter two) pre-execution typed-verification and owner-
-/// transition-synthesis logic.
+/// bytes; the four policy collections are read by node-core's authorization,
+/// pre-execution typed verification, owner-transition synthesis, and creation
+/// validation logic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreinstalledModuleSemanticsEnvelope {
     opaque_semantics: Vec<u8>,
     object_access_policies: Vec<PreinstalledObjectAccessPolicy>,
     typed_entrypoint_policies: Vec<PreinstalledTypedEntrypointPolicy>,
     owner_transition_policies: Vec<PreinstalledOwnerTransitionPolicy>,
+    object_creation_policies: Vec<PreinstalledObjectCreationPolicy>,
 }
 
 impl PreinstalledModuleSemanticsEnvelope {
@@ -648,9 +865,10 @@ impl PreinstalledModuleSemanticsEnvelope {
         opaque_semantics: Vec<u8>,
         object_access_policies: Vec<PreinstalledObjectAccessPolicy>,
     ) -> Result<Self, NodeCoreError> {
-        Self::with_typed_policies(
+        Self::with_all_policies(
             opaque_semantics,
             object_access_policies,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -681,9 +899,41 @@ impl PreinstalledModuleSemanticsEnvelope {
     /// exclusive).
     pub fn with_typed_policies(
         opaque_semantics: Vec<u8>,
+        object_access_policies: Vec<PreinstalledObjectAccessPolicy>,
+        typed_entrypoint_policies: Vec<PreinstalledTypedEntrypointPolicy>,
+        owner_transition_policies: Vec<PreinstalledOwnerTransitionPolicy>,
+    ) -> Result<Self, NodeCoreError> {
+        Self::with_all_policies(
+            opaque_semantics,
+            object_access_policies,
+            typed_entrypoint_policies,
+            owner_transition_policies,
+            Vec::new(),
+        )
+    }
+
+    /// Validates and constructs one committed semantics envelope that
+    /// additionally declares bounded object-creation policies (DR-0108), on
+    /// top of every check [`Self::with_typed_policies`] performs.
+    ///
+    /// Rejects more object-creation policies than
+    /// [`MAX_PREINSTALLED_OBJECT_CREATION_POLICIES`], a duplicate declared
+    /// entrypoint within that collection, an object-creation policy whose
+    /// entrypoint has no matching typed-entrypoint policy, and a
+    /// `type_source_access_index` at or beyond that typed signature's
+    /// parameter count. Unlike an owner-transition policy, an object-creation
+    /// policy's type-source index is never restricted to `Write` (a `Read` or
+    /// `Consume` input's already typed-ABI-verified nominal type is an
+    /// equally valid source of truth) and never checked for a conflict
+    /// against an object-access policy (the two mechanisms govern disjoint
+    /// concerns: one relaxes ownership on an existing declared access, the
+    /// other admits a brand-new object that was never declared at all).
+    pub fn with_all_policies(
+        opaque_semantics: Vec<u8>,
         mut object_access_policies: Vec<PreinstalledObjectAccessPolicy>,
         mut typed_entrypoint_policies: Vec<PreinstalledTypedEntrypointPolicy>,
         mut owner_transition_policies: Vec<PreinstalledOwnerTransitionPolicy>,
+        mut object_creation_policies: Vec<PreinstalledObjectCreationPolicy>,
     ) -> Result<Self, NodeCoreError> {
         if opaque_semantics.len() > MAX_PREINSTALLED_SEMANTICS_BYTES {
             return Err(NodeCoreError::PreinstalledSemanticsBytesTooLarge {
@@ -789,11 +1039,55 @@ impl PreinstalledModuleSemanticsEnvelope {
         }
         owner_transition_policies.sort_by(|left, right| left.entrypoint.cmp(&right.entrypoint));
 
+        if object_creation_policies.len() > MAX_PREINSTALLED_OBJECT_CREATION_POLICIES {
+            return Err(
+                NodeCoreError::PreinstalledObjectCreationPolicyCollectionTooLarge {
+                    count: object_creation_policies.len(),
+                    maximum: MAX_PREINSTALLED_OBJECT_CREATION_POLICIES,
+                },
+            );
+        }
+        let mut seen_creation: BTreeSet<String> = BTreeSet::new();
+        for policy in &object_creation_policies {
+            if !seen_creation.insert(policy.entrypoint.clone()) {
+                return Err(NodeCoreError::DuplicatePreinstalledObjectCreationPolicy {
+                    entrypoint: policy.entrypoint.clone(),
+                });
+            }
+            let typed = typed_entrypoint_policies
+                .iter()
+                .find(|typed| typed.entrypoint() == policy.entrypoint)
+                .ok_or_else(|| {
+                    NodeCoreError::PreinstalledObjectCreationPolicyMissingTypedEntrypoint {
+                        entrypoint: policy.entrypoint.clone(),
+                    }
+                })?;
+            let params = typed.signature.params();
+            let index = usize::try_from(policy.type_source_access_index).map_err(|_| {
+                NodeCoreError::PreinstalledObjectCreationPolicyIndexOutOfSignature {
+                    entrypoint: policy.entrypoint.clone(),
+                    access_index: policy.type_source_access_index,
+                    param_count: params.len(),
+                }
+            })?;
+            if params.get(index).is_none() {
+                return Err(
+                    NodeCoreError::PreinstalledObjectCreationPolicyIndexOutOfSignature {
+                        entrypoint: policy.entrypoint.clone(),
+                        access_index: policy.type_source_access_index,
+                        param_count: params.len(),
+                    },
+                );
+            }
+        }
+        object_creation_policies.sort_by(|left, right| left.entrypoint.cmp(&right.entrypoint));
+
         Ok(Self {
             opaque_semantics,
             object_access_policies,
             typed_entrypoint_policies,
             owner_transition_policies,
+            object_creation_policies,
         })
     }
 
@@ -857,6 +1151,24 @@ impl PreinstalledModuleSemanticsEnvelope {
             .iter()
             .find(|policy| policy.entrypoint == entrypoint)
     }
+
+    /// Returns every declared object-creation policy.
+    #[must_use]
+    pub fn object_creation_policies(&self) -> &[PreinstalledObjectCreationPolicy] {
+        &self.object_creation_policies
+    }
+
+    /// Returns the exact object-creation policy, if any, committed for
+    /// `entrypoint`.
+    #[must_use]
+    pub(crate) fn matching_object_creation_policy(
+        &self,
+        entrypoint: &str,
+    ) -> Option<&PreinstalledObjectCreationPolicy> {
+        self.object_creation_policies
+            .iter()
+            .find(|policy| policy.entrypoint == entrypoint)
+    }
 }
 
 /// Canonically encodes one [`PreinstalledModuleSemanticsEnvelope`].
@@ -865,13 +1177,13 @@ impl PreinstalledModuleSemanticsEnvelope {
 /// `SystemModule.semantics_hash` by the internal module resolver; no
 /// caller-supplied semantics digest is ever trusted directly.
 ///
-/// Fields [`TYPED_ENTRYPOINT_POLICIES_COUNT_FIELD`] and
-/// [`OWNER_TRANSITION_POLICIES_COUNT_FIELD`] (and their item fields) are
-/// emitted only when the corresponding collection is non-empty, so an
-/// envelope built before DR-0106 (both collections empty) encodes exactly
-/// the same bytes it always did — this is why those two fields use high,
-/// deliberately non-adjacent field ids rather than continuing the
-/// `object_access_policies` numbering.
+/// Fields [`TYPED_ENTRYPOINT_POLICIES_COUNT_FIELD`],
+/// [`OWNER_TRANSITION_POLICIES_COUNT_FIELD`], and
+/// [`OBJECT_CREATION_POLICIES_COUNT_FIELD`] (and their item fields) are emitted
+/// only when the corresponding collection is non-empty. An envelope built
+/// before these policies encodes byte-identically to its historical shape;
+/// the optional collections therefore use high, deliberately non-adjacent
+/// field ids rather than continuing the `object_access_policies` numbering.
 pub fn encode_preinstalled_semantics_envelope(
     envelope: &PreinstalledModuleSemanticsEnvelope,
 ) -> Result<Vec<u8>, NodeCoreError> {
@@ -950,6 +1262,32 @@ pub fn encode_preinstalled_semantics_envelope(
                 .field_bytes(
                     field_id,
                     encode_preinstalled_owner_transition_policy(policy)?,
+                )
+                .map_err(NodeCoreError::CanonicalEncoding)?;
+        }
+    }
+    if !envelope.object_creation_policies.is_empty() {
+        let count = u16::try_from(envelope.object_creation_policies.len()).map_err(|_| {
+            NodeCoreError::PreinstalledObjectCreationPolicyCollectionTooLarge {
+                count: envelope.object_creation_policies.len(),
+                maximum: MAX_PREINSTALLED_OBJECT_CREATION_POLICIES,
+            }
+        })?;
+        canonical
+            .field_u16(OBJECT_CREATION_POLICIES_COUNT_FIELD, count)
+            .map_err(NodeCoreError::CanonicalEncoding)?;
+        for (index, policy) in envelope.object_creation_policies.iter().enumerate() {
+            let field_id = OBJECT_CREATION_POLICIES_FIRST_ITEM_FIELD
+                + u16::try_from(index).map_err(|_| {
+                    NodeCoreError::PreinstalledObjectCreationPolicyCollectionTooLarge {
+                        count: envelope.object_creation_policies.len(),
+                        maximum: MAX_PREINSTALLED_OBJECT_CREATION_POLICIES,
+                    }
+                })?;
+            canonical
+                .field_bytes(
+                    field_id,
+                    encode_preinstalled_object_creation_policy(policy)?,
                 )
                 .map_err(NodeCoreError::CanonicalEncoding)?;
         }
@@ -1241,8 +1579,8 @@ pub(crate) fn resolve_preinstalled_module<'a>(
 /// Checks both directions and fails closed on the first violation found, in
 /// this order:
 ///
-/// 1. **Every cataloged entry resolves.** For each `(module_id, version)` in
-///    `catalog`, this calls the exact same internal module resolver
+/// 1. **Every non-disabled cataloged entry resolves.** For each `(module_id, version)` in
+///    `catalog` whose registry entry is not disabled, this calls the exact same internal module resolver
 ///    used at request time — reusing its existing commitment/resolution
 ///    rules and error variants rather than duplicating them — with the
 ///    registered module's own `canonical_code_hash` supplied as the
@@ -1259,8 +1597,12 @@ pub(crate) fn resolve_preinstalled_module<'a>(
 ///    [`NodeCoreError::PreinstalledModuleCodeHashMismatch`],
 ///    [`NodeCoreError::PreinstalledModuleManifestHashMismatch`], or
 ///    [`NodeCoreError::PreinstalledModuleSemanticsHashMismatch`]. This also
-///    catches an "extra" catalog entry that does not correspond to any
-///    active registry module.
+///    catches an "extra" active or pending catalog entry that does not
+///    correspond to an active registry module. A catalog may additionally
+///    retain a registered `Disabled` version's exact historical executable
+///    material. It is never request-resolvable in this configuration, and is
+///    deliberately skipped here because its commitments may have been framed
+///    by an older protocol version's resolver.
 /// 2. **Every active registry module is cataloged.** For each module in
 ///    `registry` that is active at `epoch`, this requires
 ///    `catalog.get(module_id, version)` to be `Some`, failing closed with
@@ -1285,6 +1627,9 @@ pub fn reconcile_preinstalled_registry_and_catalog(
         let registered = registry
             .get(module_id, version)
             .ok_or(NodeCoreError::PreinstalledModuleUnknown { module_id, version })?;
+        if registered.status == ModuleStatus::Disabled {
+            continue;
+        }
         let module_ref = ObjectRef {
             id: ObjectId::new(*module_id.as_bytes()),
             version,
@@ -2714,5 +3059,79 @@ mod tests {
         ] {
             assert!(policy.project_recipient(&malformed).is_err());
         }
+    }
+
+    #[test]
+    fn object_creation_recipient_projection_requires_the_exact_committed_fields() {
+        let policy: PreinstalledObjectCreationPolicy =
+            PreinstalledObjectCreationPolicy::new("split".to_string(), 0, 0x7203, 1, 2, vec![2, 1])
+                .unwrap();
+        assert_eq!(policy.allowed_args_field_ids(), &[1, 2]);
+        assert_eq!(
+            bytes_hex(&encode_preinstalled_object_creation_policy(&policy).unwrap()),
+            "534e52450ce00100080001000500000073706c697402000400000000000000030002000000037204000200000001000500020000000200060002000000020007000200000001000800020000000200"
+        );
+
+        let recipient: Address = Address::new([0xA6; 32]);
+        let mut valid: CanonicalStruct = CanonicalStruct::new(0x7203, 1);
+        valid.field_u64(1, 7).unwrap();
+        valid.field_bytes(2, recipient.as_bytes().to_vec()).unwrap();
+        let valid: Vec<u8> = valid.finish().unwrap();
+        assert_eq!(policy.project_recipient(&valid).unwrap(), recipient);
+
+        let mut missing_amount: CanonicalStruct = CanonicalStruct::new(0x7203, 1);
+        missing_amount
+            .field_bytes(2, recipient.as_bytes().to_vec())
+            .unwrap();
+        assert!(
+            policy
+                .project_recipient(&missing_amount.finish().unwrap())
+                .is_err()
+        );
+
+        // This is exactly as long as the valid split frame: a same-size,
+        // unknown u64 field cannot substitute for the committed amount.
+        let mut unexpected_same_size: CanonicalStruct = CanonicalStruct::new(0x7203, 1);
+        unexpected_same_size.field_u64(3, 7).unwrap();
+        unexpected_same_size
+            .field_bytes(2, recipient.as_bytes().to_vec())
+            .unwrap();
+        let unexpected_same_size: Vec<u8> = unexpected_same_size.finish().unwrap();
+        assert_eq!(unexpected_same_size.len(), valid.len());
+        assert!(policy.project_recipient(&unexpected_same_size).is_err());
+
+        // Canonical fields are sorted. Reordering the two valid field chunks
+        // must not become a different accepted argument interpretation.
+        let mut reordered: Vec<u8> = Vec::with_capacity(valid.len());
+        reordered.extend_from_slice(&valid[..10]);
+        reordered.extend_from_slice(&valid[24..]);
+        reordered.extend_from_slice(&valid[10..24]);
+        assert!(policy.project_recipient(&reordered).is_err());
+
+        // A duplicate amount id is likewise not a second interpretation of
+        // the signed split amount, even when the recipient remains present.
+        let mut duplicate: Vec<u8> = Vec::with_capacity(valid.len() + 14);
+        duplicate.extend_from_slice(&valid[..8]);
+        duplicate.extend_from_slice(&3u16.to_le_bytes());
+        duplicate.extend_from_slice(&valid[10..24]);
+        duplicate.extend_from_slice(&valid[10..24]);
+        duplicate.extend_from_slice(&valid[24..]);
+        assert!(policy.project_recipient(&duplicate).is_err());
+    }
+
+    #[test]
+    fn object_creation_policy_field_set_construction_fails_closed() {
+        assert!(matches!(
+            PreinstalledObjectCreationPolicy::new("split".to_string(), 0, 0x7203, 1, 2, vec![]),
+            Err(NodeCoreError::PreinstalledObjectCreationPolicyArgsFieldCountInvalid { .. })
+        ));
+        assert!(matches!(
+            PreinstalledObjectCreationPolicy::new("split".to_string(), 0, 0x7203, 1, 2, vec![1, 1]),
+            Err(NodeCoreError::PreinstalledObjectCreationPolicyArgsFieldIdDuplicate)
+        ));
+        assert!(matches!(
+            PreinstalledObjectCreationPolicy::new("split".to_string(), 0, 0x7203, 1, 2, vec![1]),
+            Err(NodeCoreError::PreinstalledObjectCreationPolicyRecipientFieldNotAllowed)
+        ));
     }
 }

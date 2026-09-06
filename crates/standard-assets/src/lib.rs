@@ -18,6 +18,7 @@
 //! - `0x7102` — [`StandardAssetCoinV1`].
 //! - `0x7103` — [`StandardAssetMintCapabilityV1`].
 //! - `0x7104` — [`StandardAssetTransferArgsV1`].
+//! - `0x7105` — [`StandardAssetSplitArgsV1`].
 //!
 //! See `docs/architecture/decisions/0104-asset-standards-gate.md` for the
 //! full identifier audit and the activation boundary for this slice.
@@ -64,6 +65,8 @@ pub const STANDARD_ASSET_COIN_V1_TYPE_ID: u16 = 0x7102;
 pub const STANDARD_ASSET_MINT_CAPABILITY_V1_TYPE_ID: u16 = 0x7103;
 /// Stable canonical type identifier for [`StandardAssetTransferArgsV1`].
 pub const STANDARD_ASSET_TRANSFER_ARGS_V1_TYPE_ID: u16 = 0x7104;
+/// Stable canonical type identifier for [`StandardAssetSplitArgsV1`].
+pub const STANDARD_ASSET_SPLIT_ARGS_V1_TYPE_ID: u16 = 0x7105;
 
 /// Errors returned by Standard Asset v1 helpers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -441,8 +444,10 @@ pub fn decode_standard_asset_definition_v1(
 
 /// A Standard Asset v1 owned coin value.
 ///
-/// Contains exactly one [`AssetId`] and one non-zero integer amount. Object
-/// ownership, versioning, transfer, merge, and split remain future slices.
+/// Contains exactly one [`AssetId`] and one non-zero integer amount. Ownership
+/// and versioning remain properties of the enclosing [`objects::Object`]; the
+/// local devnet's committed module now interprets this body for whole transfer,
+/// partial split, and two-coin merge without adding a second balance model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StandardAssetCoinV1 {
     asset_id: AssetId,
@@ -580,6 +585,71 @@ pub fn decode_standard_asset_transfer_args_v1(
     frame.require_only_fields(&[1])?;
     let recipient = decode_address_field(frame.required_field(1)?)?;
     Ok(StandardAssetTransferArgsV1::new(recipient))
+}
+
+/// Canonical, strict arguments for one Standard Asset v1 partial-split
+/// transfer: the nonzero `amount` moved to a new coin (field id `1`) and the
+/// new coin's recipient [`Address`] (field id `2`).
+///
+/// There is no source or asset field: a split entrypoint identifies its
+/// source coin entirely through the signed transaction's access manifest and
+/// typed-entrypoint verification, exactly like
+/// [`StandardAssetTransferArgsV1`]. `amount` alone does not encode the
+/// intended split direction or bound it below the source coin's own amount;
+/// that checked comparison happens inside the committed split module, never
+/// here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StandardAssetSplitArgsV1 {
+    amount: u64,
+    recipient: Address,
+}
+
+impl StandardAssetSplitArgsV1 {
+    /// Creates split arguments, rejecting a zero `amount`.
+    pub fn new(amount: u64, recipient: Address) -> Result<Self, StandardAssetError> {
+        if amount == 0 {
+            return Err(StandardAssetError::ZeroCoinAmount);
+        }
+        Ok(Self { amount, recipient })
+    }
+
+    /// Returns the amount moved to the new coin.
+    #[must_use]
+    pub const fn amount(&self) -> u64 {
+        self.amount
+    }
+
+    /// Returns the new coin's recipient.
+    #[must_use]
+    pub const fn recipient(&self) -> Address {
+        self.recipient
+    }
+}
+
+/// Encodes Standard Asset v1 split arguments.
+pub fn encode_standard_asset_split_args_v1(
+    args: &StandardAssetSplitArgsV1,
+) -> Result<Vec<u8>, StandardAssetError> {
+    let mut canonical =
+        CanonicalStruct::new(STANDARD_ASSET_SPLIT_ARGS_V1_TYPE_ID, ENCODING_VERSION);
+    canonical.field_u64(1, args.amount)?;
+    canonical.field_bytes(2, args.recipient.as_bytes().to_vec())?;
+    Ok(canonical.finish()?)
+}
+
+/// Strictly decodes one canonical Standard Asset v1 split-arguments frame.
+/// Rejects wrong type/version, missing/unknown fields, a zero amount, a
+/// malformed recipient length, and trailing bytes.
+pub fn decode_standard_asset_split_args_v1(
+    input: &[u8],
+) -> Result<StandardAssetSplitArgsV1, StandardAssetError> {
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(input)?;
+    frame.require_type(STANDARD_ASSET_SPLIT_ARGS_V1_TYPE_ID)?;
+    frame.require_version(ENCODING_VERSION)?;
+    frame.require_only_fields(&[1, 2])?;
+    let amount = frame.required_u64(1)?;
+    let recipient = decode_address_field(frame.required_field(2)?)?;
+    StandardAssetSplitArgsV1::new(amount, recipient)
 }
 
 // ── Typed ABI foundation ──────────────────────────────────────────────────
@@ -1444,6 +1514,127 @@ mod tests {
         short.field_bytes(1, [0x11; 31]).unwrap();
         assert_eq!(
             decode_standard_asset_transfer_args_v1(&short.finish().unwrap()),
+            Err(StandardAssetError::InvalidAddressLength(31))
+        );
+    }
+
+    fn sample_split_args() -> StandardAssetSplitArgsV1 {
+        StandardAssetSplitArgsV1::new(42, sample_address(0x65)).unwrap()
+    }
+
+    #[test]
+    fn split_args_rejects_zero_amount() {
+        assert_eq!(
+            StandardAssetSplitArgsV1::new(0, sample_address(0x65)),
+            Err(StandardAssetError::ZeroCoinAmount)
+        );
+    }
+
+    #[test]
+    fn split_args_getters_round_trip() {
+        let recipient = sample_address(0x65);
+        let args = StandardAssetSplitArgsV1::new(42, recipient).unwrap();
+        assert_eq!(args.amount(), 42);
+        assert_eq!(args.recipient(), recipient);
+    }
+
+    #[test]
+    fn split_args_encoding_vector_is_stable() {
+        let bytes = encode_standard_asset_split_args_v1(&sample_split_args()).unwrap();
+        assert_eq!(
+            hex(&bytes),
+            format!(
+                "534e5245057101000200010008000000{}020020000000{}",
+                "2a00000000000000",
+                "65".repeat(32)
+            )
+        );
+    }
+
+    #[test]
+    fn split_args_decoder_round_trips_encoded_bytes() {
+        let args = sample_split_args();
+        let canonical = encode_standard_asset_split_args_v1(&args).unwrap();
+        assert_eq!(decode_standard_asset_split_args_v1(&canonical), Ok(args));
+    }
+
+    #[test]
+    fn split_args_decoder_rejects_wrong_type_and_version() {
+        let mut wrong_type = encode_standard_asset_split_args_v1(&sample_split_args()).unwrap();
+        wrong_type[4..6].copy_from_slice(&0x7999_u16.to_le_bytes());
+        assert!(matches!(
+            decode_standard_asset_split_args_v1(&wrong_type),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedTypeId { .. }
+            ))
+        ));
+
+        let mut wrong_version = CanonicalStruct::new(STANDARD_ASSET_SPLIT_ARGS_V1_TYPE_ID, 2);
+        wrong_version.field_u64(1, 42).unwrap();
+        wrong_version
+            .field_bytes(2, sample_address(0x65).as_bytes().to_vec())
+            .unwrap();
+        assert!(matches!(
+            decode_standard_asset_split_args_v1(&wrong_version.finish().unwrap()),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedVersion { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn split_args_decoder_rejects_missing_unknown_zero_amount_and_trailing_fields() {
+        let empty = CanonicalStruct::new(STANDARD_ASSET_SPLIT_ARGS_V1_TYPE_ID, ENCODING_VERSION);
+        assert!(matches!(
+            decode_standard_asset_split_args_v1(&empty.finish().unwrap()),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::MissingField(1)
+            ))
+        ));
+
+        let mut zero_amount =
+            CanonicalStruct::new(STANDARD_ASSET_SPLIT_ARGS_V1_TYPE_ID, ENCODING_VERSION);
+        zero_amount.field_u64(1, 0).unwrap();
+        zero_amount
+            .field_bytes(2, sample_address(0x65).as_bytes().to_vec())
+            .unwrap();
+        assert_eq!(
+            decode_standard_asset_split_args_v1(&zero_amount.finish().unwrap()),
+            Err(StandardAssetError::ZeroCoinAmount)
+        );
+
+        let mut extra =
+            CanonicalStruct::new(STANDARD_ASSET_SPLIT_ARGS_V1_TYPE_ID, ENCODING_VERSION);
+        extra.field_u64(1, 42).unwrap();
+        extra
+            .field_bytes(2, sample_address(0x65).as_bytes().to_vec())
+            .unwrap();
+        extra.field_bytes(3, [0x01]).unwrap();
+        assert!(matches!(
+            decode_standard_asset_split_args_v1(&extra.finish().unwrap()),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedField(3)
+            ))
+        ));
+
+        let mut trailing = encode_standard_asset_split_args_v1(&sample_split_args()).unwrap();
+        trailing.push(0);
+        assert!(matches!(
+            decode_standard_asset_split_args_v1(&trailing),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::TrailingBytes(1)
+            ))
+        ));
+    }
+
+    #[test]
+    fn split_args_decoder_rejects_a_malformed_recipient_length() {
+        let mut short =
+            CanonicalStruct::new(STANDARD_ASSET_SPLIT_ARGS_V1_TYPE_ID, ENCODING_VERSION);
+        short.field_u64(1, 42).unwrap();
+        short.field_bytes(2, [0x11; 31]).unwrap();
+        assert_eq!(
+            decode_standard_asset_split_args_v1(&short.finish().unwrap()),
             Err(StandardAssetError::InvalidAddressLength(31))
         );
     }

@@ -87,6 +87,30 @@ protocol behavior:
   re-verifies it through the unchanged translation boundary; devnet protocol
   version 3 → 4 makes the committed owner-transition policy reachable at all
   (`node_core::MIN_OWNER_TRANSITION_PROTOCOL_VERSION`).
+- **Standard Asset v1 split and merge (DR-0108).** Protocol v5/module v2 adds
+  two bounded operations without changing the protocol-v4 transfer bytes or
+  history. `split` accepts source `Write` index 0 plus a distinct fee `Write`
+  index 1, checks a nonzero amount strictly below the source balance, mutates
+  the source to its remainder, and creates exactly one same-typed recipient
+  coin. `merge` accepts primary `Write` index 0, secondary `Consume` index 1,
+  and distinct fee `Write` index 2, checked-adds the two same-asset balances
+  into the primary, and consumes the secondary; it creates no coin. Both
+  operations use the committed shared `Coin<A>` type variable and keep the
+  trusted treasury access hidden from WASM.
+
+  The creation policy is generic but closed: only the committed `split`
+  entrypoint may create exactly one object at ordinal zero. Node-core derives
+  the id from the signed transaction, projects the recipient from the exact
+  canonical args field, copies type/schema from the verified source input,
+  reprojects the created body's nominal type through the committed constructor,
+  and pre-reads the head, requiring `Absent` (not current or tombstoned).
+  Wrong index/mode/type/schema/owner, extra or duplicate effects, malformed or
+  out-of-range arguments, generic Create, and caller-selected ids fail closed.
+  Replay reconciliation precedes module/policy resolution and object I/O;
+  successful effects, fees, nonce, receipt, and outbox are committed once.
+  Mint/burn, arbitrary coin discovery/selection or dust consolidation, Unique
+  Asset v1, multisig, Ledger, TypeScript/explorer/wallet/UI, production fee
+  aggregation, and public-testnet/mainnet readiness remain deferred.
 - **Uniform post-execution fee composition.** Devnet protocol version 4
   commits a base fee of 1, an execution price of 1 per actual `gas_used`,
   zero prices for unmetered categories, and exactly one enabled, derived

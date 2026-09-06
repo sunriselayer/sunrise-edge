@@ -15,6 +15,7 @@
 //! | `write_object_data` | `(index: i32, data_ptr: i32, data_len: i32) -> i32` | Mutate `object[index]` data (must have `Write` access) |
 //! | `consume_object` | `(index: i32) -> i32` | Mark `object[index]` as consumed (must have `Consume` access) |
 //! | `create_object` | `(data_ptr: i32, data_len: i32, type_hash_ptr: i32, schema_version: i32, owner_tag: i32, owner_addr_ptr: i32) -> i32` | Create a new object; `type_hash_ptr` → 34 bytes (2 BE algo-id + 32 hash bytes); owner tags: 0=Shared, 1=Immutable, 2=System, 3=Address (owner_addr_ptr → 32-byte address) |
+//! | `get_object_type_hash` | `(index: i32, buf_ptr: i32) -> i32` | Copies `object[index].type_hash` in the same 34-byte wire format `create_object` expects into `buf_ptr`; returns 34 or -1. Lets a module reuse an existing input's exact type identity when creating a same-typed object, without the engine exposing any decoding/hashing primitive for a caller-chosen schema. |
 //! | `emit_event` | `(type_tag_ptr: i32, type_tag_len: i32, data_ptr: i32, data_len: i32) -> i32` | Emit an event |
 //! | `get_args_len` | `() -> i32` | Length of the transaction args payload |
 //! | `read_args` | `(offset: i32, buf_ptr: i32, buf_len: i32) -> i32` | Copy `args[offset..]` into WASM memory; returns bytes written or -1 |
@@ -81,6 +82,43 @@ const MAX_CREATED_OBJECTS: usize = 1_024;
 const MAX_EVENTS: usize = 4_096;
 const OBJECT_ID_DERIVATION_VERSION: u16 = 2;
 
+/// Derives the deterministic `ObjectId` this engine assigns to the
+/// `creation_counter`-th object created while executing the call whose
+/// signed transaction hash is `tx_hash`, under the object-ID derivation
+/// frame active for `protocol_version` (see the module-level docs).
+///
+/// This is the exact pure function `HostState::next_object_id` uses
+/// internally while running; it is exposed here so a caller that must
+/// independently reverify a returned [`ObjectEffect::Created`] — never
+/// trusting the engine's own accounting of which id it assigned — can
+/// recompute the identical value from these public, pre-execution inputs.
+#[must_use]
+pub fn derive_created_object_id(
+    protocol_version: ProtocolVersion,
+    tx_hash: Digest32,
+    creation_counter: u32,
+) -> ObjectId {
+    let mut hasher = Sha256::new();
+    if protocol_version >= ProtocolVersion::new(2) {
+        hasher.update(OBJECT_ID_DERIVATION_VERSION.to_le_bytes());
+        hasher.update(tx_hash.algorithm().as_u16().to_le_bytes());
+    }
+    hasher.update(tx_hash.bytes());
+    hasher.update(creation_counter.to_le_bytes());
+    let hash: [u8; 32] = hasher.finalize().into();
+    ObjectId::new(hash)
+}
+
+/// Encodes `type_hash` in the exact 34-byte wire format `create_object`'s
+/// `type_hash_ptr` and `get_object_type_hash`'s output share (2-byte
+/// big-endian [`HashAlgorithmId`] followed by 32 hash bytes).
+fn encode_type_hash_wire(type_hash: Digest32) -> [u8; TYPE_HASH_WIRE_LEN] {
+    let mut wire = [0u8; TYPE_HASH_WIRE_LEN];
+    wire[0..2].copy_from_slice(&type_hash.algorithm().as_u16().to_be_bytes());
+    wire[2..].copy_from_slice(&type_hash.bytes());
+    wire
+}
+
 // ── host state ────────────────────────────────────────────────────────────
 
 /// State threaded through all host-function calls for a single execution.
@@ -136,16 +174,11 @@ impl HostState {
     fn next_object_id(&mut self) -> Option<ObjectId> {
         let counter = self.creation_counter;
         self.creation_counter = self.creation_counter.checked_add(1)?;
-
-        let mut hasher = Sha256::new();
-        if self.protocol_version >= ProtocolVersion::new(2) {
-            hasher.update(OBJECT_ID_DERIVATION_VERSION.to_le_bytes());
-            hasher.update(self.tx_hash.algorithm().as_u16().to_le_bytes());
-        }
-        hasher.update(self.tx_hash.bytes());
-        hasher.update(counter.to_le_bytes());
-        let hash: [u8; 32] = hasher.finalize().into();
-        Some(ObjectId::new(hash))
+        Some(derive_created_object_id(
+            self.protocol_version,
+            self.tx_hash,
+            counter,
+        ))
     }
 
     fn reserve_output(&mut self, bytes: usize) -> bool {
@@ -417,6 +450,27 @@ fn register_host_functions(linker: &mut Linker<HostState>) -> Result<(), WasmiEr
             };
             caller.data_mut().created_objects.push(obj);
             0
+        },
+    )?;
+
+    // ── get_object_type_hash ─────────────────────────────────────────────
+    linker.func_wrap(
+        "env",
+        "get_object_type_hash",
+        |mut caller: Caller<HostState>, index: i32, buf_ptr: i32| -> i32 {
+            if index < 0 {
+                return -1;
+            }
+            let idx = index as usize;
+            let type_hash = {
+                let state = caller.data();
+                if idx >= state.inputs.len() || state.consumed[idx] {
+                    return -1;
+                }
+                state.inputs[idx].object.type_hash
+            };
+            let wire = encode_type_hash_wire(type_hash);
+            write_to_wasm(&mut caller, buf_ptr, &wire)
         },
     )?;
 
@@ -875,6 +929,73 @@ mod tests {
         } else {
             panic!("expected Mutated effect");
         }
+    }
+
+    #[test]
+    fn get_object_type_hash_matches_input_and_is_reused_by_create() {
+        // Contract that reads object[0]'s type hash into memory and passes
+        // those same 34 bytes straight into `create_object`, proving a
+        // module can create a same-typed object without any engine-provided
+        // hashing/decoding primitive.
+        let wat = r#"
+        (module
+          (import "env" "get_object_count"     (func $get_object_count     (result i32)))
+          (import "env" "get_object_data_len"  (func $get_object_data_len  (param i32)(result i32)))
+          (import "env" "read_object_data"     (func $read_object_data     (param i32 i32 i32 i32)(result i32)))
+          (import "env" "write_object_data"    (func $write_object_data    (param i32 i32 i32)(result i32)))
+          (import "env" "consume_object"       (func $consume_object       (param i32)(result i32)))
+          (import "env" "create_object"        (func $create_object        (param i32 i32 i32 i32 i32 i32)(result i32)))
+          (import "env" "get_object_type_hash" (func $get_object_type_hash (param i32 i32)(result i32)))
+          (import "env" "emit_event"           (func $emit_event           (param i32 i32 i32 i32)(result i32)))
+          (import "env" "get_args_len"         (func $get_args_len         (result i32)))
+          (import "env" "read_args"            (func $read_args            (param i32 i32 i32)(result i32)))
+          (import "env" "abort"                (func $abort                (param i32 i32)))
+          (memory 1)
+          (export "memory" (memory 0))
+          ;; bytes 0-33: type hash buffer; bytes 34-35: created object data;
+          ;; byte 36: owner tag Shared; byte 37: unused owner-address buffer.
+          (data (i32.const 34) "\CA\FE")
+          (func (export "run")
+            (drop (call $get_object_type_hash (i32.const 0) (i32.const 0)))
+            (drop (call $create_object
+              (i32.const 34) (i32.const 2)
+              (i32.const 0) (i32.const 9)
+              (i32.const 0) (i32.const 0)))
+          )
+        )
+        "#;
+        let source = sample_object(0x33, 1);
+        let expected_type_hash = source.type_hash;
+        let resolved = ResolvedObject {
+            object: source,
+            mode: AccessMode::Read,
+        };
+        let engine = WasmExecutionEngine;
+        let wasm = wat_to_wasm(wat);
+        let tx_hash = sample_digest(0x06);
+        let effects = engine
+            .execute(
+                sample_protocol_version(),
+                tx_hash,
+                &wasm,
+                "run",
+                &[resolved],
+                &[],
+                1_000_000,
+            )
+            .unwrap();
+        assert_eq!(effects.status, ExecutionStatus::Success);
+        assert_eq!(effects.object_effects.len(), 1);
+        let ObjectEffect::Created(created) = &effects.object_effects[0] else {
+            panic!("expected Created effect");
+        };
+        assert_eq!(created.type_hash, expected_type_hash);
+        assert_eq!(created.schema_version, 9);
+        assert_eq!(created.data, vec![0xCA, 0xFE]);
+        assert_eq!(
+            created.id,
+            derive_created_object_id(sample_protocol_version(), tx_hash, 0)
+        );
     }
 
     #[test]

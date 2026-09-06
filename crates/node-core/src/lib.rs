@@ -15,7 +15,7 @@ use core::fmt;
 use crypto::{Ed25519OwnerAddressError, Ed25519OwnerAddressPolicy, validate_ed25519_owner_address};
 use execution::{
     ExecutionEffects, ExecutionEngine, ExecutionError, ExecutionStatus, Transaction,
-    WasmExecutionEngine, encode_execution_effects, hash_transaction,
+    WasmExecutionEngine, derive_created_object_id, encode_execution_effects, hash_transaction,
 };
 use hashing::{HashSuiteResolver, HashingError};
 use objects::{AccessMode, Address, Object, ObjectId, ObjectRef, Owner, decode_object};
@@ -27,14 +27,15 @@ use runtime::{
     AtomicStateMutationSet, AtomicStateReadSet, AtomicStateTransaction, AtomicStateWriteResult,
     AtomicStateWriteSet, AtomicityDomainId, BlobStore, DomainTransactionalStateStore,
     DurableCommitOutcome, DurableCommitRejection, DurableInlineObject, DurableInvocationError,
-    DurableInvocationTransaction, DurableObjectChanges, DurableObjectHead, DurableObjectMutation,
-    DurableObjectMutationEntry, DurableObjectOwnerProjection, DurableObjectPayload,
-    DurableObjectVersion, DurableObjectVersionRecord, DurableOperationContext, DurableOutboxBatch,
-    DurableOutboxMessage, DurableReadError, DurableRequestId, DurableRequestReceipt,
-    DurableStateTransaction, IndeterminateCommitReason, MAX_ATOMIC_STATE_READS,
-    MAX_ATOMIC_STATE_WRITES, MAX_STATE_KEY_BYTES, PersistenceLayout, Runtime, RuntimeError,
-    StateMutation, StateMutationEntry, StateReadAssertion, StateRevision, StateStore, StateWrite,
-    StructuredDurableDomainStateStore, TransactionalStateStore, VersionedStateValue,
+    DurableInvocationTransaction, DurableObjectChanges, DurableObjectHead, DurableObjectHeadRead,
+    DurableObjectMutation, DurableObjectMutationEntry, DurableObjectOwnerProjection,
+    DurableObjectPayload, DurableObjectVersion, DurableObjectVersionRecord,
+    DurableOperationContext, DurableOutboxBatch, DurableOutboxMessage, DurableReadError,
+    DurableRequestId, DurableRequestReceipt, DurableStateTransaction, IndeterminateCommitReason,
+    MAX_ATOMIC_STATE_READS, MAX_ATOMIC_STATE_WRITES, MAX_STATE_KEY_BYTES, PersistenceLayout,
+    Runtime, RuntimeError, StateMutation, StateMutationEntry, StateReadAssertion, StateRevision,
+    StateStore, StateWrite, StructuredDurableDomainStateStore, TransactionalStateStore,
+    VersionedStateValue,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -47,7 +48,8 @@ mod query;
 pub mod transaction_auth;
 
 use authenticated_object_effects::{
-    LoadedAuthenticatedObjects, translate_authenticated_object_effects,
+    LoadedAuthenticatedObjects, PendingObjectCreation, translate_authenticated_object_effects,
+    translate_authenticated_object_effects_with_creation,
     translate_authenticated_object_effects_with_owner_transition,
     translate_fee_only_object_effects, validate_output_owner_addresses,
 };
@@ -64,11 +66,13 @@ pub use fee_effects::{
 pub use preinstalled_wasm::{
     MAX_PREINSTALLED_MODULE_GAS_LIMIT, MAX_PREINSTALLED_MODULE_WASM_BYTES,
     MAX_PREINSTALLED_MODULES, MAX_PREINSTALLED_OBJECT_ACCESS_POLICIES,
+    MAX_PREINSTALLED_OBJECT_CREATION_ARGS_FIELDS, MAX_PREINSTALLED_OBJECT_CREATION_POLICIES,
     MAX_PREINSTALLED_OWNER_TRANSITION_POLICIES, MAX_PREINSTALLED_SEMANTICS_BYTES,
     MAX_PREINSTALLED_TYPED_ENTRYPOINT_CONSTRUCTORS, MAX_PREINSTALLED_TYPED_ENTRYPOINT_POLICIES,
     PreinstalledModuleCatalog, PreinstalledModuleCatalogEntry, PreinstalledModuleSemanticsEnvelope,
-    PreinstalledObjectAccessPolicy, PreinstalledOwnerTransitionPolicy,
-    PreinstalledTypedEntrypointPolicy, encode_preinstalled_object_access_policy,
+    PreinstalledObjectAccessPolicy, PreinstalledObjectCreationPolicy,
+    PreinstalledOwnerTransitionPolicy, PreinstalledTypedEntrypointPolicy,
+    encode_preinstalled_object_access_policy, encode_preinstalled_object_creation_policy,
     encode_preinstalled_owner_transition_policy, encode_preinstalled_semantics_envelope,
     encode_preinstalled_typed_entrypoint_policy, reconcile_preinstalled_registry_and_catalog,
 };
@@ -861,6 +865,135 @@ pub enum NodeCoreError {
         /// The aliased object.
         object_id: ObjectId,
     },
+    /// A committed semantics envelope declared more object-creation policies
+    /// than [`preinstalled_wasm::MAX_PREINSTALLED_OBJECT_CREATION_POLICIES`].
+    PreinstalledObjectCreationPolicyCollectionTooLarge {
+        /// Declared policy count.
+        count: usize,
+        /// Maximum accepted policy count.
+        maximum: usize,
+    },
+    /// A committed semantics envelope declared the same entrypoint twice
+    /// across its object-creation policies.
+    DuplicatePreinstalledObjectCreationPolicy {
+        /// Duplicated entrypoint.
+        entrypoint: String,
+    },
+    /// An object-creation policy declared an empty or oversized entrypoint
+    /// name.
+    PreinstalledObjectCreationPolicyEntrypointInvalid {
+        /// Actual entrypoint byte length.
+        actual: usize,
+        /// Maximum accepted entrypoint byte length.
+        maximum: usize,
+    },
+    /// An object-creation policy declared a zero recipient-args canonical
+    /// type id.
+    PreinstalledObjectCreationPolicyRecipientArgsTypeIdZero,
+    /// An object-creation policy declared a zero recipient-args canonical
+    /// field id.
+    PreinstalledObjectCreationPolicyRecipientArgsFieldIdZero,
+    /// An object-creation policy's exact admitted argument-field set was
+    /// empty or exceeded its deterministic bound.
+    PreinstalledObjectCreationPolicyArgsFieldCountInvalid {
+        /// Number of declared fields.
+        count: usize,
+        /// Maximum supported fields.
+        maximum: usize,
+    },
+    /// An object-creation policy declared zero as an admitted argument field
+    /// identifier.
+    PreinstalledObjectCreationPolicyArgsFieldIdZero,
+    /// An object-creation policy declared the same admitted argument field
+    /// identifier more than once.
+    PreinstalledObjectCreationPolicyArgsFieldIdDuplicate,
+    /// The policy's recipient field was absent from its exact admitted
+    /// argument-field set.
+    PreinstalledObjectCreationPolicyRecipientFieldNotAllowed,
+    /// An object-creation policy's entrypoint has no matching typed-entrypoint
+    /// policy in the same envelope.
+    PreinstalledObjectCreationPolicyMissingTypedEntrypoint {
+        /// The object-creation policy's entrypoint.
+        entrypoint: String,
+    },
+    /// An object-creation policy's `type_source_access_index` is at or beyond
+    /// its typed-entrypoint policy's declared parameter count.
+    PreinstalledObjectCreationPolicyIndexOutOfSignature {
+        /// The object-creation policy's entrypoint.
+        entrypoint: String,
+        /// The declared type-source access index.
+        access_index: u32,
+        /// The typed-entrypoint policy's declared parameter count.
+        param_count: usize,
+    },
+    /// A committed object-creation policy applies to this entrypoint, but the
+    /// transaction's own `protocol_version` is below
+    /// `MIN_OBJECT_CREATION_PROTOCOL_VERSION`. The policy is never silently
+    /// treated as absent.
+    ObjectCreationProtocolVersionTooLow {
+        /// The transaction's declared protocol version.
+        actual: ProtocolVersion,
+        /// The minimum protocol version required to activate object
+        /// creation.
+        minimum: ProtocolVersion,
+    },
+    /// A committed object-creation policy's `type_source_access_index` did
+    /// not resolve to an engine-visible input.
+    ObjectCreationTypeSourceIndexUnresolved {
+        /// The object-creation policy's entrypoint.
+        entrypoint: String,
+    },
+    /// A call authorized by a committed object-creation policy returned no
+    /// `Created` effect at all.
+    CreationEffectMissing {
+        /// The expected, independently derived created object id.
+        object_id: ObjectId,
+    },
+    /// A call authorized by a committed object-creation policy returned more
+    /// than one `Created` effect.
+    CreationEffectCountExceeded {
+        /// The count of `Created` effects actually returned.
+        count: usize,
+    },
+    /// The module's returned `Created` effect names an id other than the
+    /// independently derived, engine-owned deterministic id.
+    CreatedObjectIdMismatch {
+        /// The independently derived expected id.
+        expected: ObjectId,
+        /// The id the module's effect actually named.
+        actual: ObjectId,
+    },
+    /// The module's returned `Created` effect's owner disagrees with the
+    /// recipient projected from the committed object-creation policy.
+    CreatedObjectOwnerMismatch {
+        /// The created object id.
+        object_id: ObjectId,
+    },
+    /// The module's returned `Created` effect's `type_hash` disagrees with
+    /// the committed policy's type-source access index.
+    CreatedObjectTypeMismatch {
+        /// The created object id.
+        object_id: ObjectId,
+    },
+    /// The module's returned `Created` effect's `schema_version` disagrees
+    /// with the committed policy's type-source access index.
+    CreatedObjectSchemaVersionMismatch {
+        /// The created object id.
+        object_id: ObjectId,
+    },
+    /// The module's returned `Created` effect did not declare the required
+    /// initial object version.
+    CreatedObjectVersionInvalid {
+        /// The created object id.
+        object_id: ObjectId,
+    },
+    /// The exact, independently derived deterministic created-object id
+    /// already has a current or tombstoned durable head: current/tombstone
+    /// collisions are always rejected, never silently recreated.
+    CreatedObjectIdCollision {
+        /// The colliding object id.
+        object_id: ObjectId,
+    },
 }
 
 impl fmt::Display for NodeCoreError {
@@ -1412,6 +1545,89 @@ impl fmt::Display for NodeCoreError {
             Self::OwnerTransitionFeeObjectAlias { object_id } => write!(
                 f,
                 "fee object or treasury aliases owner-transition object {object_id}"
+            ),
+            Self::PreinstalledObjectCreationPolicyCollectionTooLarge { count, maximum } => write!(
+                f,
+                "committed semantics envelope has {count} object-creation policies, maximum is {maximum}"
+            ),
+            Self::DuplicatePreinstalledObjectCreationPolicy { entrypoint } => write!(
+                f,
+                "duplicate object-creation policy for entrypoint {entrypoint:?}"
+            ),
+            Self::PreinstalledObjectCreationPolicyEntrypointInvalid { actual, maximum } => write!(
+                f,
+                "object-creation policy entrypoint is {actual} bytes, maximum is {maximum} and it must be non-empty"
+            ),
+            Self::PreinstalledObjectCreationPolicyRecipientArgsTypeIdZero => {
+                f.write_str("object-creation policy declared a zero recipient-args type id")
+            }
+            Self::PreinstalledObjectCreationPolicyRecipientArgsFieldIdZero => {
+                f.write_str("object-creation policy declared a zero recipient-args field id")
+            }
+            Self::PreinstalledObjectCreationPolicyArgsFieldCountInvalid { count, maximum } => write!(
+                f,
+                "object-creation policy declares {count} exact argument fields, maximum is {maximum} and at least one is required"
+            ),
+            Self::PreinstalledObjectCreationPolicyArgsFieldIdZero => {
+                f.write_str("object-creation policy admitted zero as an argument field id")
+            }
+            Self::PreinstalledObjectCreationPolicyArgsFieldIdDuplicate => {
+                f.write_str("object-creation policy admitted a duplicate argument field id")
+            }
+            Self::PreinstalledObjectCreationPolicyRecipientFieldNotAllowed => {
+                f.write_str("object-creation policy recipient field is not in its exact argument-field set")
+            }
+            Self::PreinstalledObjectCreationPolicyMissingTypedEntrypoint { entrypoint } => write!(
+                f,
+                "object-creation policy for {entrypoint:?} has no matching typed-entrypoint policy"
+            ),
+            Self::PreinstalledObjectCreationPolicyIndexOutOfSignature {
+                entrypoint,
+                access_index,
+                param_count,
+            } => write!(
+                f,
+                "object-creation policy for {entrypoint:?} names type-source index {access_index}, but its typed signature declares only {param_count} parameters"
+            ),
+            Self::ObjectCreationProtocolVersionTooLow { actual, minimum } => write!(
+                f,
+                "object creation requires protocol_version >= {minimum:?}, transaction declared {actual:?}"
+            ),
+            Self::ObjectCreationTypeSourceIndexUnresolved { entrypoint } => write!(
+                f,
+                "object-creation policy for {entrypoint:?} type-source index did not resolve to an engine-visible input"
+            ),
+            Self::CreationEffectMissing { object_id } => write!(
+                f,
+                "object-creation policy authorized creating {object_id}, but no Created effect was returned"
+            ),
+            Self::CreationEffectCountExceeded { count } => write!(
+                f,
+                "expected at most one Created effect, got {count}"
+            ),
+            Self::CreatedObjectIdMismatch { expected, actual } => write!(
+                f,
+                "created object id {actual} disagrees with the independently derived expected id {expected}"
+            ),
+            Self::CreatedObjectOwnerMismatch { object_id } => write!(
+                f,
+                "created object {object_id}'s owner disagrees with the projected recipient"
+            ),
+            Self::CreatedObjectTypeMismatch { object_id } => write!(
+                f,
+                "created object {object_id}'s type_hash disagrees with the committed type-source input"
+            ),
+            Self::CreatedObjectSchemaVersionMismatch { object_id } => write!(
+                f,
+                "created object {object_id}'s schema_version disagrees with the committed type-source input"
+            ),
+            Self::CreatedObjectVersionInvalid { object_id } => write!(
+                f,
+                "created object {object_id} did not declare the required initial version"
+            ),
+            Self::CreatedObjectIdCollision { object_id } => write!(
+                f,
+                "derived created-object id {object_id} already has a current or tombstoned durable head"
             ),
         }
     }
@@ -2802,6 +3018,29 @@ enum ObjectEffectMatching {
         /// The exact new owner address `object_id`'s effect must declare.
         recipient: Address,
     },
+    /// Identical to [`Self::Exact`], except exactly one `Created` effect
+    /// matching this independently derived expectation is also admitted
+    /// (DR-0108). Constructed only by `PreinstalledWasmMachine` after
+    /// independently verifying a committed
+    /// [`crate::PreinstalledObjectCreationPolicy`]; the module's own returned
+    /// `Created` effect's id/owner/type/schema are never trusted, only its
+    /// body.
+    ExactWithCreation {
+        /// The exact, independently derived expected created object id.
+        object_id: ObjectId,
+        /// The exact expected owner (the projected recipient).
+        owner: Address,
+        /// The exact expected `type_hash`, sourced from an already-verified
+        /// engine-visible input, never a literal governance commitment.
+        type_hash: Digest32,
+        /// The exact expected `schema_version`, sourced the same way.
+        schema_version: u32,
+        /// Signed engine-visible input index that selected `constructor`.
+        type_source_access_index: usize,
+        /// Exact constructor from the matching typed policy's type-source
+        /// parameter, used to re-project and verify the created body.
+        constructor: abi::ConstructorDeclaration,
+    },
 }
 
 /// Candidate multi-key transition and outputs held until atomic commit.
@@ -2995,6 +3234,63 @@ impl TransactionalNodeTransition {
             object_effect_matching: ObjectEffectMatching::ExactWithOwnerTransition {
                 object_id: owner_transition_object_id,
                 recipient,
+            },
+        })
+    }
+
+    /// Creates a transition identical to [`Self::with_object_effects`],
+    /// except exactly one `Created` effect matching the given independently
+    /// derived expectation is also admitted (DR-0108).
+    ///
+    /// Constructed only by `PreinstalledWasmMachine` after independently
+    /// verifying a committed [`crate::PreinstalledObjectCreationPolicy`];
+    /// never by a caller simply wanting to bypass the default rejection of
+    /// every `Created` effect.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn with_object_effects_and_creation(
+        mut updates: Vec<NodeStateUpdate>,
+        object_effects: Vec<ObjectEffect>,
+        output: NodeOutput,
+        created_object_id: ObjectId,
+        created_owner: Address,
+        created_type_hash: Digest32,
+        created_schema_version: u32,
+        created_type_source_access_index: usize,
+        created_constructor: abi::ConstructorDeclaration,
+    ) -> Result<Self, NodeCoreError> {
+        if updates.is_empty() && object_effects.is_empty() {
+            return Err(NodeCoreError::EmptyStateUpdates);
+        }
+        if updates.len() > MAX_ATOMIC_STATE_WRITES {
+            return Err(NodeCoreError::TooManyStateUpdates {
+                count: updates.len(),
+                maximum: MAX_ATOMIC_STATE_WRITES,
+            });
+        }
+        if object_effects.len() > MAX_AUTHENTICATED_OBJECT_READS.saturating_add(1) {
+            return Err(NodeCoreError::TooManyObjectEffects {
+                actual: object_effects.len(),
+                maximum: MAX_AUTHENTICATED_OBJECT_READS.saturating_add(1),
+            });
+        }
+        updates.sort_by(|left: &NodeStateUpdate, right: &NodeStateUpdate| left.key.cmp(&right.key));
+        if updates
+            .windows(2)
+            .any(|pair: &[NodeStateUpdate]| pair[0].key == pair[1].key)
+        {
+            return Err(NodeCoreError::DuplicateStateUpdateKey);
+        }
+        Ok(Self {
+            updates,
+            object_effects,
+            output,
+            object_effect_matching: ObjectEffectMatching::ExactWithCreation {
+                object_id: created_object_id,
+                owner: created_owner,
+                type_hash: created_type_hash,
+                schema_version: created_schema_version,
+                type_source_access_index: created_type_source_access_index,
+                constructor: created_constructor,
             },
         })
     }
@@ -3632,12 +3928,32 @@ where
 /// `docs/architecture/decisions/0106-typed-entrypoint-owner-transition.md`.
 pub const MIN_OWNER_TRANSITION_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(4);
 
+/// The minimum `Transaction.protocol_version` at which node-core will ever
+/// activate a committed [`PreinstalledObjectCreationPolicy`] (DR-0108).
+///
+/// A matching policy below this version is rejected outright with
+/// [`NodeCoreError::ObjectCreationProtocolVersionTooLow`], checked once in
+/// [`PreinstalledWasmMachine::transition`] strictly before the WASM engine
+/// ever runs, mirroring [`MIN_OWNER_TRANSITION_PROTOCOL_VERSION`]'s gate.
+pub const MIN_OBJECT_CREATION_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(5);
+
 /// One owner-only mutation node-core independently synthesized for a
 /// committed [`PreinstalledOwnerTransitionPolicy`] (DR-0106).
 struct OwnerTransitionSynthesis {
     object_id: ObjectId,
     recipient: Address,
     effect: ObjectEffect,
+}
+
+/// Independently derived expectation for the one `Created` effect authorized
+/// by a committed [`PreinstalledObjectCreationPolicy`] (DR-0108).
+struct ObjectCreationExpectation {
+    object_id: ObjectId,
+    owner: Address,
+    type_hash: Digest32,
+    schema_version: u32,
+    type_source_access_index: usize,
+    constructor: abi::ConstructorDeclaration,
 }
 
 /// The internal `TransactionalNodeStateMachine` behind
@@ -4099,6 +4415,89 @@ impl<'a> PreinstalledWasmMachine<'a> {
             },
         }))
     }
+
+    /// Independently derives the exact expectation a committed
+    /// [`PreinstalledObjectCreationPolicy`] authorizes for this call's one
+    /// admissible `Created` effect, or returns `None` if no such policy is
+    /// committed for this entrypoint (DR-0108).
+    ///
+    /// Every returned field is computed by node-core itself from trusted,
+    /// pre-execution inputs, never from the module's own returned effects:
+    /// `object_id` is [`derive_created_object_id`]'s pure recomputation for
+    /// creation ordinal zero; `owner` is projected from the transaction's
+    /// signed `args` via the committed policy; `type_hash`/`schema_version`
+    /// come from the already access-checked, already typed-ABI-verified
+    /// engine-visible input the policy names as the type source
+    /// ([`NodeCoreError::ObjectCreationTypeSourceIndexUnresolved`] if that
+    /// index does not resolve, which the policy's own construction-time
+    /// bound check against the matching typed signature makes unreachable in
+    /// practice). The actual `Created` effect the module returned is neither
+    /// inspected nor trusted here; independent reverification of its
+    /// id/owner/type/schema/version/body against this expectation is
+    /// `translate_authenticated_object_effects_with_creation`'s job.
+    fn verify_creation(
+        &self,
+        module: &PreinstalledModuleCatalogEntry,
+        state: &NodeStateSnapshot,
+        tx_hash: Digest32,
+    ) -> Result<Option<ObjectCreationExpectation>, NodeCoreError> {
+        let Some(policy) = module
+            .semantics_envelope()
+            .matching_object_creation_policy(&self.transaction.entrypoint)
+        else {
+            return Ok(None);
+        };
+        if self.transaction.protocol_version < MIN_OBJECT_CREATION_PROTOCOL_VERSION {
+            return Err(NodeCoreError::ObjectCreationProtocolVersionTooLow {
+                actual: self.transaction.protocol_version,
+                minimum: MIN_OBJECT_CREATION_PROTOCOL_VERSION,
+            });
+        }
+
+        let index = usize::try_from(policy.type_source_access_index()).map_err(|_| {
+            NodeCoreError::PersistenceInvariant(
+                "object-creation policy index validated at construction time did not fit usize",
+            )
+        })?;
+        let source = state.resolved_objects().get(index).ok_or_else(|| {
+            NodeCoreError::ObjectCreationTypeSourceIndexUnresolved {
+                entrypoint: self.transaction.entrypoint.clone(),
+            }
+        })?;
+        let typed_policy = module
+            .semantics_envelope()
+            .matching_typed_entrypoint_policy(&self.transaction.entrypoint)
+            .ok_or(NodeCoreError::PersistenceInvariant(
+                "validated creation policy lost its matching typed entrypoint policy",
+            ))?;
+        let constructor_id = typed_policy
+            .signature()
+            .params()
+            .get(index)
+            .ok_or(NodeCoreError::PersistenceInvariant(
+                "validated creation policy type-source index exceeded typed signature",
+            ))?
+            .constructor;
+        let registry = typed_policy.registry()?;
+        let constructor =
+            registry
+                .get(constructor_id)
+                .cloned()
+                .ok_or(NodeCoreError::PersistenceInvariant(
+                    "validated typed entrypoint policy did not reconstruct its source constructor",
+                ))?;
+
+        let object_id = derive_created_object_id(self.transaction.protocol_version, tx_hash, 0);
+        let owner = policy.project_recipient(&self.transaction.args)?;
+        Ok(Some(ObjectCreationExpectation {
+            object_id,
+            owner,
+            type_hash: source.object.type_hash,
+            schema_version: source.object.schema_version,
+            type_source_access_index: index,
+            constructor,
+        }))
+    }
 }
 
 fn fee_effect_object_id(effect: &ObjectEffect) -> ObjectId {
@@ -4200,6 +4599,22 @@ impl TransactionalNodeStateMachine for PreinstalledWasmMachine<'_> {
             });
         }
 
+        // DR-0108: the same protocol-version gate, for a committed
+        // object-creation policy.
+        if module
+            .semantics_envelope()
+            .matching_object_creation_policy(&self.transaction.entrypoint)
+            .is_some()
+            && self.transaction.protocol_version < MIN_OBJECT_CREATION_PROTOCOL_VERSION
+        {
+            return Err(NodeCoreError::ObjectCreationProtocolVersionTooLow {
+                actual: self.transaction.protocol_version,
+                minimum: MIN_OBJECT_CREATION_PROTOCOL_VERSION,
+            });
+        }
+
+        let creation = self.verify_creation(module, state, tx_hash)?;
+
         let effects = self.engine.execute(
             self.transaction.protocol_version,
             tx_hash,
@@ -4279,6 +4694,11 @@ impl TransactionalNodeStateMachine for PreinstalledWasmMachine<'_> {
             }
             ExecutionStatus::Success => {
                 let owner_transition = self.synthesize_owner_transition(module, state, &effects)?;
+                if owner_transition.is_some() && creation.is_some() {
+                    return Err(NodeCoreError::PersistenceInvariant(
+                        "one preinstalled entrypoint cannot compose owner transition and object creation",
+                    ));
+                }
                 // The synthesized owner-transition effect (if any) is folded
                 // into the exact same `ExecutionEffects` this canonically
                 // encodes for the receipt, so the receipt a caller observes
@@ -4312,12 +4732,35 @@ impl TransactionalNodeStateMachine for PreinstalledWasmMachine<'_> {
                                 synthesis.recipient,
                             )
                         }
-                        None => TransactionalNodeTransition::with_object_effects(
-                            Vec::new(),
-                            object_effects,
-                            output,
-                        ),
+                        None => match creation {
+                            Some(expectation) => {
+                                TransactionalNodeTransition::with_object_effects_and_creation(
+                                    Vec::new(),
+                                    object_effects,
+                                    output,
+                                    expectation.object_id,
+                                    expectation.owner,
+                                    expectation.type_hash,
+                                    expectation.schema_version,
+                                    expectation.type_source_access_index,
+                                    expectation.constructor,
+                                )
+                            }
+                            None => TransactionalNodeTransition::with_object_effects(
+                                Vec::new(),
+                                object_effects,
+                                output,
+                            ),
+                        },
                     },
+                    None if creation.is_some() => Err(NodeCoreError::CreationEffectMissing {
+                        object_id: creation
+                            .as_ref()
+                            .map(|expectation: &ObjectCreationExpectation| expectation.object_id)
+                            .ok_or(NodeCoreError::PersistenceInvariant(
+                                "creation expectation disappeared before success handling",
+                            ))?,
+                    }),
                     None => Ok(TransactionalNodeTransition::read_only(output)),
                     Some((fee_payment, fee_object_id, treasury_id)) => {
                         let amount = self.settle_actual_fee(fee_payment, gas_used)?;
@@ -4342,11 +4785,26 @@ impl TransactionalNodeStateMachine for PreinstalledWasmMachine<'_> {
                                     synthesis.recipient,
                                 )
                             }
-                            None => TransactionalNodeTransition::with_object_effects(
-                                Vec::new(),
-                                merged,
-                                output,
-                            ),
+                            None => match creation {
+                                Some(expectation) => {
+                                    TransactionalNodeTransition::with_object_effects_and_creation(
+                                        Vec::new(),
+                                        merged,
+                                        output,
+                                        expectation.object_id,
+                                        expectation.owner,
+                                        expectation.type_hash,
+                                        expectation.schema_version,
+                                        expectation.type_source_access_index,
+                                        expectation.constructor,
+                                    )
+                                }
+                                None => TransactionalNodeTransition::with_object_effects(
+                                    Vec::new(),
+                                    merged,
+                                    output,
+                                ),
+                            },
                         }
                     }
                 }
@@ -4698,12 +5156,49 @@ where
         .and_then(|machine| machine.fee_composition.as_ref())
         .map(|composition| composition.treasury_object_id);
 
+    // A creation-capable entrypoint has one deterministic output identifier
+    // before execution starts. Assert its true absence now and carry that
+    // assertion into the same durable invocation as the later `Create`.
+    // This runs after replay/nonce/module reconciliation but before loading
+    // any signed object input, so a collision never executes the module.
+    let pending_creation_head_read: Option<DurableObjectHeadRead> = match preinstalled_machine {
+        Some(machine)
+            if preinstalled_authorization
+                .as_ref()
+                .and_then(|authorization: &ResolvedPreinstalledAuthorization<'_>| {
+                    authorization
+                        .envelope
+                        .matching_object_creation_policy(authorization.entrypoint)
+                })
+                .is_some() =>
+        {
+            if machine.transaction.protocol_version < MIN_OBJECT_CREATION_PROTOCOL_VERSION {
+                return Err(NodeCoreError::ObjectCreationProtocolVersionTooLow {
+                    actual: machine.transaction.protocol_version,
+                    minimum: MIN_OBJECT_CREATION_PROTOCOL_VERSION,
+                });
+            }
+            let transaction_hash: Digest32 = hash_transaction(machine.transaction, resolver)?;
+            let created_object_id: ObjectId =
+                derive_created_object_id(machine.transaction.protocol_version, transaction_hash, 0);
+            let created_head: DurableObjectHead =
+                store.get_object_head(context, domain, created_object_id)?;
+            if created_head != DurableObjectHead::Absent {
+                return Err(NodeCoreError::ObjectConflict {
+                    object_id: created_object_id,
+                });
+            }
+            Some(DurableObjectHeadRead::new(created_object_id, created_head))
+        }
+        _ => None,
+    };
+
     // Object reads happen only after the receipt and nonce checks above, so a
     // stale or replayed request never spends the fan-out cost of the
     // per-entry head/version storage round-trips. Only this authenticated
     // path supplies verified typed object inputs to the pure transition;
     // generic handlers always supply an empty object slice.
-    let loaded_objects: LoadedAuthenticatedObjects = match &dispatch {
+    let mut loaded_objects: LoadedAuthenticatedObjects = match &dispatch {
         Some(dispatch) => {
             // Every caller that ever constructs `Some(dispatch)` also
             // supplies a blob store (see `handle_authenticated_submit_transaction_with_policy`
@@ -4727,6 +5222,9 @@ where
         }
         None => LoadedAuthenticatedObjects::default(),
     };
+    if let Some(head_read) = pending_creation_head_read {
+        loaded_objects.push_additional_head_read(head_read);
+    }
     // Give the preinstalled machine its verified, loaded treasury object (if
     // one was declared and authorized above) through a request-local cell it
     // alone can populate, so `transition` can compose and merge a fee charge
@@ -4786,6 +5284,27 @@ where
             loaded_objects.total_body_bytes(),
             *object_id,
             *recipient,
+        )?,
+        ObjectEffectMatching::ExactWithCreation {
+            object_id,
+            owner,
+            type_hash,
+            schema_version,
+            type_source_access_index,
+            constructor,
+        } => translate_authenticated_object_effects_with_creation(
+            loaded_objects.verified(),
+            transition.object_effects(),
+            mutation_context.as_ref(),
+            loaded_objects.total_body_bytes(),
+            &PendingObjectCreation {
+                expected_id: *object_id,
+                expected_owner: *owner,
+                expected_type_hash: *type_hash,
+                expected_schema_version: *schema_version,
+                type_source_access_index: *type_source_access_index,
+                constructor: constructor.clone(),
+            },
         )?,
         ObjectEffectMatching::RejectedNoMutation => {
             debug_assert!(transition.object_effects().is_empty());

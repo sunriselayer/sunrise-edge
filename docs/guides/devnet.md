@@ -4,12 +4,14 @@ This guide starts the local, non-production Sunrise Edge devnet and drives it
 with the Rust CLI. The devnet binds loopback only, is single-validator, and
 must never be used to custody real assets or exposed beyond your own machine.
 
-The devnet activates Standard Asset v1 whole-coin transfer (DR-0107): each
+The devnet activates Standard Asset v1 whole-coin transfer and bounded
+split/merge (DR-0107/DR-0108): each
 configured `--dev-owner` is seeded with one transferable
 `StandardAssetCoinV1` and one distinct fee-payer coin, and the separate
 `--fee-treasury-owner` is seeded with one ordinary treasury coin. `transfer`
-moves a whole coin's ownership to a signed recipient address; there is no
-partial-amount transfer, `Create`, split, or merge yet.
+moves a whole coin's ownership to a signed recipient address. `split` creates
+one same-typed recipient coin from a checked partial amount, and `merge`
+combines two sender-owned coins without creating a new coin.
 
 The commands assume the workspace has already been built once:
 
@@ -119,7 +121,7 @@ See [DR-0085](../architecture/decisions/0081-0087-cli-first-roadmap.md) and
 
 ```bash
 EXPECTED_CHAIN_ID="sunrise-local-devnet"
-EXPECTED_PROTOCOL_VERSION=4
+EXPECTED_PROTOCOL_VERSION=5
 EXPECTED_EPOCH=0
 EXPECTED_HASH_SUITE_ID=1
 EXPECTED_DOMAIN="4444444444444444444444444444444444444444444444444444444444444444"
@@ -133,14 +135,86 @@ cargo run -p sunrise-edge-cli -- object --endpoint 127.0.0.1:7400 \
 
 These queries do not change state.
 
-## 5. Submit a whole-coin transfer
+## 5. Submit a partial split, then merge it back
 
-The sender signs a whole-object transfer of its transferable coin to the
-recipient address, paying the fee from its distinct fee coin. The fee asset
-must equal the transferred coin's asset (the protocol forces this: a single
-shared type variable per entrypoint signature unifies both). After the
-transfer, `SOURCE_COIN_ID`'s owner is `RECIPIENT_OWNER`; its body (asset id
-and amount) is unchanged.
+The split example sends the new coin back to `$SENDER_OWNER`, so both the
+remainder and the newly created coin stay sender-owned. The seeded
+`FEE_COIN_ID` remains a separate fee payer. Choose an amount known to be
+strictly below the source amount (the seeded transfer coin is intentionally
+large; query it in step 4 if needed). The CLI prints the created object id in
+the accepted response whose `kind=created`; set `SPLIT_COIN_ID` to the
+`object_id` printed on that same created-effect record before the merge.
+
+```bash
+SPLIT_REQUEST_ID="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+cargo run -p sunrise-edge-cli -- split \
+  --endpoint 127.0.0.1:7400 \
+  --seed-file "$SENDER_SEED_FILE" \
+  --module-id "$MODULE_ID" \
+  --module-version "$MODULE_VERSION" \
+  --module-digest-algorithm 1 \
+  --module-digest "$MODULE_DIGEST_HEX" \
+  --source-coin "$SOURCE_COIN_ID" \
+  --recipient "$SENDER_OWNER" \
+  --amount 1 \
+  --fee-coin "$FEE_COIN_ID" \
+  --gas-limit 1000000 \
+  --fee-asset-id "$FEE_ASSET_ID" \
+  --max-fee 1000001 \
+  --fee-treasury-object "$TREASURY_OBJECT_ID" \
+  --request-id "$SPLIT_REQUEST_ID" \
+  --expected-chain-id "$EXPECTED_CHAIN_ID" \
+  --expected-protocol-version "$EXPECTED_PROTOCOL_VERSION" \
+  --expected-epoch "$EXPECTED_EPOCH" \
+  --expected-hash-suite-id "$EXPECTED_HASH_SUITE_ID" \
+  --expected-domain "$EXPECTED_DOMAIN" \
+  --wait --wait-max-attempts 20 --wait-initial-backoff-ms 10 \
+  --wait-max-backoff-ms 50 --wait-max-elapsed-ms 5000
+```
+
+After recording the printed `response[0].object_effect[*].object_id` on the
+effect whose `kind=created` as `SPLIT_COIN_ID`, merge it with the remainder.
+The primary coin is mutated, the split coin is consumed, and the seeded fee
+coin remains distinct:
+
+```bash
+SPLIT_COIN_ID="PASTE_CREATED_OBJECT_ID_FROM_THE_SPLIT_RESPONSE"
+MERGE_REQUEST_ID="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+cargo run -p sunrise-edge-cli -- merge \
+  --endpoint 127.0.0.1:7400 \
+  --seed-file "$SENDER_SEED_FILE" \
+  --module-id "$MODULE_ID" \
+  --module-version "$MODULE_VERSION" \
+  --module-digest-algorithm 1 \
+  --module-digest "$MODULE_DIGEST_HEX" \
+  --primary-coin "$SOURCE_COIN_ID" \
+  --secondary-coin "$SPLIT_COIN_ID" \
+  --fee-coin "$FEE_COIN_ID" \
+  --gas-limit 1000000 \
+  --fee-asset-id "$FEE_ASSET_ID" \
+  --max-fee 1000001 \
+  --fee-treasury-object "$TREASURY_OBJECT_ID" \
+  --request-id "$MERGE_REQUEST_ID" \
+  --expected-chain-id "$EXPECTED_CHAIN_ID" \
+  --expected-protocol-version "$EXPECTED_PROTOCOL_VERSION" \
+  --expected-epoch "$EXPECTED_EPOCH" \
+  --expected-hash-suite-id "$EXPECTED_HASH_SUITE_ID" \
+  --expected-domain "$EXPECTED_DOMAIN" \
+  --wait --wait-max-attempts 20 --wait-initial-backoff-ms 10 \
+  --wait-max-backoff-ms 50 --wait-max-elapsed-ms 5000
+```
+
+Both commands independently verify the sender owns every visible coin, that
+the coins share the same asset id, and that the expected protocol context
+matches before signing. Ledger signing for these new entrypoints remains
+unsupported and fails closed.
+
+## 6. Submit a whole-coin transfer
+
+After the split coin has been merged back, the sender can transfer the
+original source coin to the recipient address. The fee asset must equal the
+transferred coin's asset. After this command, `SOURCE_COIN_ID` is owned by
+`RECIPIENT_OWNER`; its body (asset id and amount) is unchanged.
 
 ```bash
 cargo run -p sunrise-edge-cli -- transfer \
@@ -163,28 +237,18 @@ cargo run -p sunrise-edge-cli -- transfer \
   --expected-epoch "$EXPECTED_EPOCH" \
   --expected-hash-suite-id "$EXPECTED_HASH_SUITE_ID" \
   --expected-domain "$EXPECTED_DOMAIN" \
-  --wait \
-  --wait-max-attempts 20 \
-  --wait-initial-backoff-ms 10 \
-  --wait-max-backoff-ms 50 \
-  --wait-max-elapsed-ms 5000
+  --wait --wait-max-attempts 20 --wait-initial-backoff-ms 10 \
+  --wait-max-backoff-ms 50 --wait-max-elapsed-ms 5000
 ```
 
-`transfer` requires `--recipient`, all five `--expected-*` flags, and the
-complete fee configuration shown above (this devnet's committed base fee is
-always non-zero, so a fee is always due). It rejects a malformed recipient,
-zero max fee, a treasury equal to the source or fee coin, or an invalid
-expected context before network dispatch. It then verifies `/v1/context`,
-that both coins are owned by the signer, that they share one `AssetId`, and
-that `--fee-asset-id` matches, before signing. A rejected or execution-failed
-submission is a typed non-zero-exit error, including with `--wait`.
+`transfer` rejects malformed recipients, zero max fee, conflicting treasury
+objects, or an invalid expected context before dispatch. It verifies both
+coins are signer-owned, share one `AssetId`, and match `--fee-asset-id` before
+signing. A rejected or execution-failed submission exits non-zero. If the fee
+coin reaches exactly the settled fee, it becomes unusable because a
+`StandardAssetCoinV1` amount cannot be zero.
 
-Once a fee coin's amount falls to exactly the currently settled fee, it
-becomes permanently unusable as a fee payer (`StandardAssetCoinV1` forbids a
-zero amount) — the seeded fee-coin amount is generous, but a long-running
-devnet session should watch for this.
-
-## 6. Capture post-transfer state
+## 7. Capture post-transfer state
 
 Capture the receipt, all three current coins, and next nonce. These are the
 pre-restart observations used in the next step.
@@ -203,7 +267,7 @@ cargo run -p sunrise-edge-cli -- next-nonce --endpoint 127.0.0.1:7400 \
   --sender "$SENDER_OWNER" > "$OBSERVATION_PREFIX.nonce"
 ```
 
-## 7. Restart and compare
+## 8. Restart and compare
 
 Stop the devnet in terminal A with `Ctrl-C`. Rerun the exact command from step
 3 with the same data directory, chain id, and owners. Wait until both owners
@@ -238,11 +302,10 @@ Every `diff` must exit successfully with no output. This proves orderly
 stop/reopen persistence for the observed state. It does not prove `kill -9`,
 power-loss, torn-write, load, concurrency, or production SQLite suitability.
 
-The automated E2E additionally replays one byte-identical signed request before
-and after restart, including a restart that happens strictly after a real
-ownership transfer. The CLI intentionally exposes no raw replay command
-because `transfer` re-queries the current nonce and object references before
-signing.
+The automated E2Es additionally replay byte-identical signed whole-transfer,
+split, and merge requests before and after restart. The CLI intentionally
+exposes no raw replay command because these commands re-query the current nonce
+and object references before signing.
 
 A data directory created under a different committed protocol version fails
 closed rather than silently seeding a disjoint object set. Protocol 3 predates
@@ -253,8 +316,8 @@ rather than reusing one across an incompatible devnet upgrade or epoch change.
 
 ## Optional remote TLS transport
 
-Every network command (`context`, `object`, `receipt`, `next-nonce`, and
-`transfer`) accepts a paired optional flag set:
+Every network command (`context`, `object`, `receipt`, `next-nonce`, `transfer`,
+`split`, and `merge`) accepts a paired optional flag set:
 
 ```text
 --tls-server-name <dns-name> --tls-ca-cert-der-file <path>

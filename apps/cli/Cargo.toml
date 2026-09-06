@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 sunrise-edge-client.workspace = true
 sunrise-edge-ledger.workspace = true
+standard-assets.workspace = true
 
 [features]
 default = []

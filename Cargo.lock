@@ -1633,6 +1633,7 @@ dependencies = [
  "rcgen",
  "runtime",
  "rustls",
+ "standard-assets",
  "sunrise-edge-client",
  "sunrise-edge-devnet",
  "sunrise-edge-ledger",

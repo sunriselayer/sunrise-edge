@@ -18,8 +18,9 @@
 //! `sunrise-edge-ledger`.
 //!
 //! Commands: `address`, `context`, `object`, `receipt`, `next-nonce`, and
-//! `transfer` (the devnet Standard Asset v1 whole-coin transfer). `address`
-//! and `transfer` each require an explicit, all-or-none signer selection (see
+//! `transfer`, `split`, and `merge` (the devnet Standard Asset v1 coin
+//! operations). `address`, `transfer`, `split`, and `merge` each require an
+//! explicit, all-or-none signer selection (see
 //! `signer::parse_signer_selection`):
 //! `--seed-file` (the development-only, non-keystore local signer) or all
 //! three of `--ledger-hid-path`, `--ledger-account`, and
@@ -97,6 +98,8 @@ where
         "receipt" => commands::receipt::run(iterator),
         "next-nonce" => commands::next_nonce::run(iterator),
         "transfer" => commands::transfer::run(iterator),
+        "split" => commands::split::run(iterator),
+        "merge" => commands::merge::run(iterator),
         other => Err(CliError::UnknownCommand(other.to_string())),
     }
 }

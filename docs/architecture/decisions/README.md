@@ -14,6 +14,7 @@
 - [DR-0105: typed asset ABI foundation](0105-typed-asset-abi-foundation.md)
 - [DR-0106: typed entrypoint verification and owner transition](0106-typed-entrypoint-owner-transition.md)
 - [DR-0107: Standard Asset v1 devnet activation](0107-standard-asset-v1-devnet-activation.md)
+- [DR-0108: Standard Asset v1 split and merge](0108-standard-asset-v1-split-and-merge.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).
