@@ -1,40 +1,48 @@
-//! Real loopback TCP restart/duplicate E2E for the CLI Developer MVP Gate's
-//! S3 uniform-fee slice (see `TODO.md#cli-developer-mvp-gate`).
+//! Real loopback TCP restart/duplicate E2E for the Standard Asset v1
+//! whole-coin transfer slice (DR-0107; see `TODO.md`'s Asset Standards
+//! Gate).
 //!
 //! This uses a real file-backed `SqliteDurableStore`, the real composed
 //! devnet router, real loopback TCP, `sunrise_edge_cli::run` for the
 //! user-facing transfer leg, and `sunrise-edge-client` directly for
-//! independent verification and for building/replaying one raw
-//! `SubmitTransactionRequest`. It proves exactly:
+//! independent verification and for building/replaying raw
+//! `SubmitTransactionRequest`s. It proves exactly:
 //!
-//! 1. A fee-enabled CLI transfer of amount 250 from a sender-owned source into an
-//!    independently seeded recipient-owned destination, verified
-//!    independently through the client with the recipient owner unchanged and
-//!    the distinct ordinary treasury credited by the actual committed gas.
-//! 2. An orderly stop (graceful HTTP shutdown, awaited server task, every
+//! 1. A trapped invocation (malformed args) before any real transfer
+//!    discards its application effects but charges the normalized actual
+//!    gas through fee-only source/treasury writes.
+//! 2. A fee-enabled CLI transfer of dev owner A's whole transferable coin to
+//!    an unseeded recipient address: the coin's owner changes, its body
+//!    (asset id + amount) and type/schema stay byte-identical, and the
+//!    distinct fee coin and treasury are debited/credited by the actual
+//!    committed gas.
+//! 3. A second, directly-built (not through the CLI) whole-coin transfer by
+//!    an independent dev owner B, signed with B's own key, to the same
+//!    recipient. It deliberately swaps the two startup labels: B's seeded
+//!    fee coin is transferred while B's seeded transfer coin pays the fee,
+//!    proving those labels are not protocol roles.
+//! 4. An orderly stop (graceful HTTP shutdown, awaited server task, every
 //!    `Arc<SqliteDurableStore>` reference dropped so the SQLite file is
 //!    genuinely closed) followed by a real reopen through `boot_local_store`
-//!    that advances the writer generation, a reseed that verifies the exact
-//!    same account identities, and a fresh router composed on a new
-//!    ephemeral port.
-//! 3. State (balances, sequences, receipts, next nonce) observed immediately
-//!    before the restart is observed byte-identically after it.
-//! 4. One signed `SubmitTransactionRequest`, built once, replayed
-//!    byte-identically both before and after restart: the canonical response
-//!    bytes are identical and neither duplicate re-applies its effects.
-//! 5. A trapped invocation discards its application transfer but charges the
-//!    normalized actual gas through fee-only source/treasury writes, and
-//!    that exact trapped request replays byte-identically both in the same
-//!    boot and after restart, mutating neither source, destination,
-//!    treasury, the second-transfer or trapped receipts, nor next nonce.
-//! 6. Reusing an already-committed request id for a different transaction is
-//!    a typed, nonzero, fail-closed HTTP conflict with no state change.
-//! 7. The pre-restart writer generation is fenced on the reopened store.
+//!    that advances the writer generation, and a reseed of both dev owners'
+//!    coin pairs and the treasury coin that verifies the exact same seed
+//!    identities — including owner A's seeded transfer coin and owner B's
+//!    seeded fee coin now owned by the recipient (F9's role-independent
+//!    restart verification).
+//! 5. State (coin bodies/owners, sequences via version, receipts, next
+//!    nonce) observed immediately before the restart is observed
+//!    byte-identically after it.
+//! 6. The second transfer's signed transaction, replayed byte-identically
+//!    both in the same boot and after restart: the canonical response bytes
+//!    are identical and neither duplicate re-applies its effects.
+//! 7. Reusing an already-committed request id (the trapped invocation's) for
+//!    a different transaction is a typed, nonzero, fail-closed HTTP conflict
+//!    with no state change.
+//! 8. The pre-restart writer generation is fenced on the reopened store.
 //!
 //! This intentionally proves only orderly stop/reopen: it says nothing about
 //! `kill -9`, power loss, torn writes, load, concurrency, or SQLite's
-//! suitability for production use (see `docs/architecture/product-surfaces.md` "Local devnet
-//! architecture" and `TODO.md`'s persistence notes).
+//! suitability for production use.
 
 use std::ffi::OsString;
 use std::fs;
@@ -53,26 +61,23 @@ use sunrise_edge_client::{
     AccessEntry, AccessManifest, AccessMode, Amount, AtomicityDomainId, Client, ClientError,
     ExecutionStatus, FeePayment, HttpNodeResult, HttpObjectQueryResult, HttpReceiptQueryResult,
     LocalSigner, LoopbackHttpTransport, NodeResponseStatus, ObjectId, ObjectRef, Owner,
-    PreparedTransaction, RequestId, SignatureSchemeId, SubmitTransactionRequest,
-    TransactionRequest, decode_execution_effects, decode_object,
+    PreparedTransaction, RequestId, SignatureSchemeId, StandardAssetCoinV1,
+    StandardAssetTransferArgsV1, SubmitTransactionRequest, TransactionRequest,
+    decode_execution_effects, decode_object, decode_standard_asset_coin_v1,
+    encode_standard_asset_transfer_args_v1,
 };
 use sunrise_edge_devnet::{
-    ASSET_ACCOUNT_WASM, AssetAccount, DEVNET_ASSET_ID, DevOwner, DevnetConfig,
-    SeedAssetAccountsOutcome, SeededAssetAccounts, TransferArgs, boot_local_store,
-    build_asset_module, build_devnet_protocol_context, compose_devnet_router, decode_asset_account,
-    decode_transfer_event, encode_transfer_args,
+    DevOwner, DevnetConfig, STANDARD_ASSET_TRANSFER_WASM, SeedDevOwnerCoinsOutcome,
+    TRANSFER_ENTRYPOINT, boot_local_store, build_devnet_protocol_context,
+    build_standard_asset_module, compose_devnet_router,
     genesis::{DEVNET_DOMAIN_BYTES, DEVNET_PROTOCOL_VERSION},
-    seed_asset_accounts, verify_seeded_asset_supply,
+    seed_dev_owner_coins, seed_treasury_coin, verify_seeded_asset_supply,
 };
 
-const INITIAL_SOURCE_BALANCE: u64 = 1_000_000;
-const CLI_TRANSFER_AMOUNT: u64 = 250;
-const SECOND_TRANSFER_AMOUNT: u64 = 25;
-const TRANSFER_ENTRYPOINT: &str = "transfer";
 const GAS_LIMIT: u64 = 1_000_000;
+const REQUEST_ID_R0_BYTE: u8 = 0x50;
 const REQUEST_ID_R1_BYTE: u8 = 0x51;
 const REQUEST_ID_R2_BYTE: u8 = 0x52;
-const REQUEST_ID_R3_BYTE: u8 = 0x53;
 const TRAP_GAS_LIMIT: u64 = 10_000;
 const EXPECTED_CHAIN_ID: &str = "cli-restart-duplicate-e2e-devnet";
 const EXPECTED_EPOCH: &str = "13";
@@ -142,15 +147,15 @@ fn make_client(address: SocketAddr) -> Client<LoopbackHttpTransport> {
 }
 
 /// Independently queries and decodes `object_id`'s current inline body,
-/// returning a fresh [`ObjectRef`] (for building a follow-up transaction's
-/// access manifest), the decoded asset-account state, and the result's exact
-/// canonical bytes for restart comparisons. Devnet asset accounts remain
-/// below DR-0096's fixed blob-publication threshold, so seeing a blob
-/// reference here would be a product-surface regression for the current CLI.
-fn query_current_account(
+/// returning a fresh [`ObjectRef`], the decoded coin, the current owner, and
+/// the query result's exact canonical bytes for restart comparisons.
+/// Standard Asset v1 coin bodies remain below DR-0096's fixed
+/// blob-publication threshold, so seeing a blob reference here would be a
+/// product-surface regression for the current CLI.
+fn query_current_coin(
     client: &Client<LoopbackHttpTransport>,
     object_id: ObjectId,
-) -> (ObjectRef, AssetAccount, Owner, Vec<u8>) {
+) -> (ObjectRef, StandardAssetCoinV1, Owner, Vec<u8>) {
     let result = client
         .query_object(object_id)
         .expect("object query should succeed");
@@ -166,15 +171,15 @@ fn query_current_account(
         } => {
             let object =
                 decode_object(canonical_object_bytes).expect("canonical object should decode");
-            let account = decode_asset_account(&object.data)
-                .expect("object body should decode as an asset account");
+            let coin = decode_standard_asset_coin_v1(&object.data)
+                .expect("object body should decode as a Standard Asset v1 coin");
             let owner: Owner = object.owner;
             let object_ref = ObjectRef {
                 id: object_id,
                 version: object_version.get(),
                 digest,
             };
-            (object_ref, account, owner, canonical_result_bytes)
+            (object_ref, coin, owner, canonical_result_bytes)
         }
         other => panic!("expected object {object_id} to be CurrentInline, got {other:?}"),
     }
@@ -183,44 +188,46 @@ fn query_current_account(
 /// Everything captured immediately before the server stops, so the
 /// post-restart phase can assert byte-identical continuity.
 struct PreRestartState {
-    source_account: AssetAccount,
-    destination_account: AssetAccount,
-    source_ref: ObjectRef,
-    destination_ref: ObjectRef,
-    treasury_account: AssetAccount,
+    source_a: StandardAssetCoinV1,
+    source_a_ref: ObjectRef,
+    fee_a: StandardAssetCoinV1,
+    fee_a_ref: ObjectRef,
+    source_b: StandardAssetCoinV1,
+    source_b_ref: ObjectRef,
+    fee_b: StandardAssetCoinV1,
+    fee_b_ref: ObjectRef,
+    treasury: StandardAssetCoinV1,
     treasury_ref: ObjectRef,
-    source_query_bytes: Vec<u8>,
-    destination_query_bytes: Vec<u8>,
+    source_a_query_bytes: Vec<u8>,
+    fee_a_query_bytes: Vec<u8>,
+    source_b_query_bytes: Vec<u8>,
+    fee_b_query_bytes: Vec<u8>,
     treasury_query_bytes: Vec<u8>,
+    trapped_receipt: HttpReceiptQueryResult,
+    trapped_receipt_bytes: Vec<u8>,
     cli_receipt: HttpReceiptQueryResult,
     cli_receipt_bytes: Vec<u8>,
     second_transfer_receipt: HttpReceiptQueryResult,
     second_transfer_receipt_bytes: Vec<u8>,
-    trapped_receipt: HttpReceiptQueryResult,
-    trapped_receipt_bytes: Vec<u8>,
-    next_nonce: u64,
-    next_nonce_query_bytes: Vec<u8>,
+    next_nonce_a: u64,
+    next_nonce_a_query_bytes: Vec<u8>,
     request_id_r2: RequestId,
     signed_transaction_bytes_r2: Vec<u8>,
     submit_result_r2: HttpNodeResult,
     submit_result_r2_bytes: Vec<u8>,
-    request_id_r3: RequestId,
-    signed_transaction_bytes_r3: Vec<u8>,
-    submit_result_r3: HttpNodeResult,
-    submit_result_r3_bytes: Vec<u8>,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_requests() {
-    let owner_signer = LocalSigner::from_seed([0x5B; 32]);
-    let owner_address = owner_signer.address();
-    let recipient_signer = LocalSigner::from_seed([0x6B; 32]);
-    let recipient_address = recipient_signer.address();
+    let owner_a_signer = LocalSigner::from_seed([0x5B; 32]);
+    let owner_a_address = owner_a_signer.address();
+    let owner_b_signer = LocalSigner::from_seed([0x6B; 32]);
+    let owner_b_address = owner_b_signer.address();
+    let recipient_address = LocalSigner::from_seed([0x8B; 32]).address();
     let treasury_address = LocalSigner::from_seed([0x7B; 32]).address();
     let seed_file = TempSeedFile::new([0x5B; 32]);
-    let dev_owner = DevOwner::new(*owner_address.as_bytes());
-    let recipient_dev_owner = DevOwner::new(*recipient_address.as_bytes());
-    let treasury_dev_owner = DevOwner::new(*treasury_address.as_bytes());
+    let dev_owner_a = DevOwner::new(*owner_a_address.as_bytes());
+    let dev_owner_b = DevOwner::new(*owner_b_address.as_bytes());
 
     let directory = TestDirectory::new("restart-duplicate-e2e");
     let config = DevnetConfig::parse_from(vec![
@@ -233,9 +240,9 @@ async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_reques
         OsString::from("--epoch"),
         OsString::from("13"),
         OsString::from("--dev-owner"),
-        OsString::from(owner_address.to_string()),
+        OsString::from(owner_a_address.to_string()),
         OsString::from("--dev-owner"),
-        OsString::from(recipient_address.to_string()),
+        OsString::from(owner_b_address.to_string()),
         OsString::from("--fee-treasury-owner"),
         OsString::from(treasury_address.to_string()),
         OsString::from("--max-concurrent"),
@@ -243,82 +250,86 @@ async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_reques
     ])
     .unwrap();
 
-    // --- Boot generation N, seed accounts. ---
+    // --- Boot generation N, seed coins. ---
     let first_boot = boot_local_store(&config).unwrap();
     let first_generation = first_boot.boot_generation();
     let first_protocol_context =
         build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
-    let first_module =
-        build_asset_module(first_protocol_context, ASSET_ACCOUNT_WASM.to_vec()).unwrap();
+    let asset_id = first_protocol_context.asset_id();
+    let first_module = build_standard_asset_module(
+        first_protocol_context,
+        STANDARD_ASSET_TRANSFER_WASM.to_vec(),
+    )
+    .unwrap();
 
     let now_unix_millis = SystemClock.now_unix_millis().unwrap();
     let seed_deadline = StorageDeadline::new(now_unix_millis + 30_000).unwrap();
-    let seed_context = DurableOperationContext::new(
+    let seed_context_a = DurableOperationContext::new(
         first_generation,
         seed_deadline,
         StorageCorrelationId::new([0x61; 16]).unwrap(),
     );
-    let seed_outcome = seed_asset_accounts(
+    let seed_outcome_a = seed_dev_owner_coins(
         first_boot.store(),
         first_boot.blob_store(),
         first_module.resolver(),
         config.epoch(),
-        dev_owner,
+        asset_id,
+        dev_owner_a,
         first_generation,
-        &seed_context,
+        &seed_context_a,
     )
     .unwrap();
-    assert!(matches!(seed_outcome, SeedAssetAccountsOutcome::Created(_)));
-    let first_accounts: SeededAssetAccounts = seed_outcome.accounts().clone();
-    let recipient_seed_context = DurableOperationContext::new(
+    assert!(matches!(
+        seed_outcome_a,
+        SeedDevOwnerCoinsOutcome::Created(_)
+    ));
+    let seed_context_b = DurableOperationContext::new(
         first_generation,
         seed_deadline,
         StorageCorrelationId::new([0x64; 16]).unwrap(),
     );
-    let recipient_seed_outcome = seed_asset_accounts(
+    let seed_outcome_b = seed_dev_owner_coins(
         first_boot.store(),
         first_boot.blob_store(),
         first_module.resolver(),
         config.epoch(),
-        recipient_dev_owner,
+        asset_id,
+        dev_owner_b,
         first_generation,
-        &recipient_seed_context,
+        &seed_context_b,
     )
     .unwrap();
     assert!(matches!(
-        recipient_seed_outcome,
-        SeedAssetAccountsOutcome::Created(_)
+        seed_outcome_b,
+        SeedDevOwnerCoinsOutcome::Created(_)
     ));
-    let treasury_seed_context = DurableOperationContext::new(
+    let treasury_context = DurableOperationContext::new(
         first_generation,
         seed_deadline,
         StorageCorrelationId::new([0x66; 16]).unwrap(),
     );
-    let treasury_seed_outcome = seed_asset_accounts(
+    let treasury_outcome = seed_treasury_coin(
         first_boot.store(),
         first_boot.blob_store(),
         first_module.resolver(),
         config.epoch(),
-        treasury_dev_owner,
+        asset_id,
+        config.fee_treasury_owner(),
         first_generation,
-        &treasury_seed_context,
+        &treasury_context,
     )
     .unwrap();
-    assert!(matches!(
-        treasury_seed_outcome,
-        SeedAssetAccountsOutcome::Created(_)
-    ));
-    verify_seeded_asset_supply(&[
-        seed_outcome.clone(),
-        recipient_seed_outcome.clone(),
-        treasury_seed_outcome.clone(),
-    ])
+    verify_seeded_asset_supply(
+        &[seed_outcome_a.clone(), seed_outcome_b.clone()],
+        &treasury_outcome,
+    )
     .unwrap();
-    let recipient_accounts: SeededAssetAccounts = recipient_seed_outcome.accounts().clone();
-    let source_id = first_accounts.source().id;
-    let destination_id = recipient_accounts.destination().id;
-    let treasury_accounts: SeededAssetAccounts = treasury_seed_outcome.accounts().clone();
-    let treasury_id = treasury_accounts.destination().id;
+    let source_a_id = seed_outcome_a.coins().transfer_coin().id;
+    let fee_a_id = seed_outcome_a.coins().fee_coin().id;
+    let source_b_id = seed_outcome_b.coins().transfer_coin().id;
+    let fee_b_id = seed_outcome_b.coins().fee_coin().id;
+    let treasury_id = treasury_outcome.coin().coin().id;
     let module_ref = first_module.module_ref().clone();
 
     // --- Serve on an ephemeral loopback port. ---
@@ -345,35 +356,139 @@ async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_reques
         let _ = first_shutdown_rx.await;
     }));
 
+    let request_id_r0 = RequestId::new([REQUEST_ID_R0_BYTE; 32]).unwrap();
     let request_id_r1 = RequestId::new([REQUEST_ID_R1_BYTE; 32]).unwrap();
     let request_id_r2 = RequestId::new([REQUEST_ID_R2_BYTE; 32]).unwrap();
     let endpoint = first_address.to_string();
     let seed_path = seed_file.0.clone();
     let module_ref_for_blocking = module_ref.clone();
-    let owner_signer_after_restart = owner_signer.clone();
+    let owner_a_signer_after_restart = owner_a_signer.clone();
     let pre_restart: PreRestartState = tokio::task::spawn_blocking(move || {
         let module_ref = module_ref_for_blocking;
         let verify_client = make_client(first_address);
 
         // Baseline, independent of the seeding code above.
-        let (_, source_baseline, source_owner_baseline, _) =
-            query_current_account(&verify_client, source_id);
-        let (_, destination_baseline, destination_owner_baseline, _) =
-            query_current_account(&verify_client, destination_id);
-        let (_, treasury_baseline, treasury_owner_baseline, _) =
-            query_current_account(&verify_client, treasury_id);
-        assert_eq!(source_baseline.balance, INITIAL_SOURCE_BALANCE);
-        assert_eq!(destination_baseline.balance, 0);
-        assert_eq!(source_owner_baseline, Owner::Address(owner_address));
-        assert_eq!(
-            destination_owner_baseline,
-            Owner::Address(recipient_address)
-        );
-        assert_eq!(treasury_baseline.balance, 0);
+        let (source_a_ref_baseline, source_a_baseline, source_a_owner_baseline, _) =
+            query_current_coin(&verify_client, source_a_id);
+        let (fee_a_ref_baseline, fee_a_baseline, fee_a_owner_baseline, _) =
+            query_current_coin(&verify_client, fee_a_id);
+        let (treasury_ref_baseline, treasury_baseline, treasury_owner_baseline, _) =
+            query_current_coin(&verify_client, treasury_id);
+        assert_eq!(source_a_owner_baseline, Owner::Address(owner_a_address));
+        assert_eq!(fee_a_owner_baseline, Owner::Address(owner_a_address));
         assert_eq!(treasury_owner_baseline, Owner::Address(treasury_address));
 
-        // Property 1: user-facing transfer leg through the real CLI binary
-        // entrypoint, amount 250, with a bounded wait for the receipt.
+        // Property 1: a trapped invocation (malformed args) before any real
+        // transfer. Both declared Write coins are still owned by owner A at
+        // this point, so this is admissible; the module traps on the wrong
+        // args length, discarding application effects, while the normalized
+        // `gas_used == gas_limit` charge still commits fee-only writes.
+        let context = verify_client
+            .query_context()
+            .expect("context query should succeed");
+        let nonce_before_trap = verify_client
+            .query_next_nonce(owner_a_address)
+            .expect("next-nonce before trapped invocation should succeed");
+        let mut trap_manifest = AccessManifest::new();
+        trap_manifest.push(AccessEntry {
+            object_ref: source_a_ref_baseline.clone(),
+            mode: AccessMode::Write,
+        });
+        trap_manifest.push(AccessEntry {
+            object_ref: fee_a_ref_baseline.clone(),
+            mode: AccessMode::Write,
+        });
+        trap_manifest.push(AccessEntry {
+            object_ref: treasury_ref_baseline,
+            mode: AccessMode::Write,
+        });
+        let trapped_signed_bytes = PreparedTransaction::prepare_submission(
+            request_id_r0,
+            owner_a_signer.address(),
+            SignatureSchemeId::Ed25519,
+            TransactionRequest {
+                chain_id: context.chain_id().clone(),
+                protocol_version: context.protocol_version(),
+                epoch: context.epoch(),
+                nonce: nonce_before_trap.next_nonce(),
+                access_manifest: trap_manifest,
+                module_ref: module_ref.clone(),
+                entrypoint: TRANSFER_ENTRYPOINT.to_string(),
+                args: vec![0],
+                gas_limit: TRAP_GAS_LIMIT,
+                fee_payment: Some(FeePayment {
+                    asset_id,
+                    max_fee: Amount::new(TRAP_GAS_LIMIT + 1),
+                    fee_object: fee_a_ref_baseline,
+                }),
+            },
+        )
+        .unwrap()
+        .sign_and_finalize_with(&owner_a_signer)
+        .unwrap();
+        let trapped_result = verify_client
+            .submit_transaction(SubmitTransactionRequest {
+                chain_id: context.chain_id().clone(),
+                protocol_version: context.protocol_version(),
+                epoch: context.epoch(),
+                request_id: request_id_r0,
+                signed_transaction_bytes: trapped_signed_bytes.clone(),
+            })
+            .expect("trapped execution should commit its rejected receipt and fee effects");
+        assert_eq!(trapped_result.responses().len(), 1);
+        assert_eq!(
+            trapped_result.responses()[0].status(),
+            NodeResponseStatus::Rejected
+        );
+        let trapped_effects = decode_execution_effects(
+            trapped_result.responses()[0]
+                .payload()
+                .expect("trapped execution should carry normalized effects"),
+        )
+        .unwrap();
+        assert!(matches!(
+            trapped_effects.status,
+            ExecutionStatus::Failure { .. }
+        ));
+        assert_eq!(trapped_effects.gas_used, TRAP_GAS_LIMIT);
+        assert!(trapped_effects.object_effects.is_empty());
+        let _trapped_result_bytes = trapped_result
+            .encode()
+            .expect("trapped submit result should encode canonically");
+
+        let (source_a_ref_after_trap, source_a_after_trap, source_a_owner_after_trap, _) =
+            query_current_coin(&verify_client, source_a_id);
+        let (_fee_a_ref_after_trap, fee_a_after_trap, fee_a_owner_after_trap, _) =
+            query_current_coin(&verify_client, fee_a_id);
+        let (_, treasury_after_trap, treasury_owner_after_trap, _) =
+            query_current_coin(&verify_client, treasury_id);
+        assert_eq!(source_a_after_trap, source_a_baseline);
+        assert_eq!(source_a_owner_after_trap, Owner::Address(owner_a_address));
+        assert_eq!(
+            fee_a_after_trap.amount(),
+            fee_a_baseline.amount() - TRAP_GAS_LIMIT - 1
+        );
+        assert_eq!(fee_a_owner_after_trap, Owner::Address(owner_a_address));
+        assert_eq!(
+            treasury_after_trap.amount(),
+            treasury_baseline.amount() + TRAP_GAS_LIMIT + 1
+        );
+        assert_eq!(treasury_owner_after_trap, Owner::Address(treasury_address));
+
+        let trapped_receipt = verify_client
+            .query_receipt(request_id_r0)
+            .expect("trapped invocation receipt query should succeed");
+        assert!(matches!(
+            trapped_receipt,
+            HttpReceiptQueryResult::Present { .. }
+        ));
+        let trapped_receipt_bytes = trapped_receipt
+            .encode()
+            .expect("trapped receipt result should encode canonically");
+
+        // Property 2: user-facing whole-coin transfer through the real CLI
+        // binary entrypoint: owner A's transferable coin moves to the
+        // unseeded recipient address, fee coin debited, treasury credited.
         sunrise_edge_cli::run(vec![
             OsString::from("transfer"),
             OsString::from("--endpoint"),
@@ -388,18 +503,16 @@ async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_reques
             OsString::from(module_ref.digest.algorithm().as_u16().to_string()),
             OsString::from("--module-digest"),
             OsString::from(hex32(&module_ref.digest.bytes())),
-            OsString::from("--source-object"),
-            OsString::from(source_id.to_string()),
-            OsString::from("--destination-object"),
-            OsString::from(destination_id.to_string()),
-            OsString::from("--destination-owner"),
+            OsString::from("--source-coin"),
+            OsString::from(source_a_id.to_string()),
+            OsString::from("--recipient"),
             OsString::from(recipient_address.to_string()),
-            OsString::from("--amount"),
-            OsString::from(CLI_TRANSFER_AMOUNT.to_string()),
+            OsString::from("--fee-coin"),
+            OsString::from(fee_a_id.to_string()),
             OsString::from("--gas-limit"),
             OsString::from(GAS_LIMIT.to_string()),
             OsString::from("--fee-asset-id"),
-            OsString::from(hex32(DEVNET_ASSET_ID.as_bytes())),
+            OsString::from(hex32(asset_id.as_bytes())),
             OsString::from("--max-fee"),
             OsString::from((GAS_LIMIT + 1).to_string()),
             OsString::from("--fee-treasury-object"),
@@ -429,40 +542,41 @@ async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_reques
         .expect("CLI transfer should succeed against the real seeded devnet router");
 
         // DR-0096: node-core only publishes a new version to the `BlobStore`
-        // when its canonical bytes exceed the fixed inline threshold. An
-        // asset-account body is a few dozen bytes, so the version the CLI
-        // transfer just committed stays inline, exactly like the genesis
-        // seed row queried above.
+        // when its canonical bytes exceed the fixed inline threshold. A
+        // Standard Asset v1 coin body is a few dozen bytes, so the version
+        // the CLI transfer just committed stays inline.
         assert!(matches!(
             verify_client
-                .query_object(source_id)
+                .query_object(source_a_id)
                 .expect("post-transfer object query should succeed"),
             HttpObjectQueryResult::CurrentInline { .. }
         ));
 
-        // Independently capture both decoded account states, the present
-        // receipt, and the next nonce after the CLI transfer.
-        let (source_ref_after_cli, source_after_cli, source_owner_after_cli, _) =
-            query_current_account(&verify_client, source_id);
-        let (destination_ref_after_cli, destination_after_cli, destination_owner_after_cli, _) =
-            query_current_account(&verify_client, destination_id);
-        let (treasury_ref_after_cli, treasury_after_cli, treasury_owner_after_cli, _) =
-            query_current_account(&verify_client, treasury_id);
-        let cli_fee: u64 = treasury_after_cli.balance - treasury_baseline.balance;
+        let (source_a_ref_after_cli, source_a_after_cli, source_a_owner_after_cli, _) =
+            query_current_coin(&verify_client, source_a_id);
+        let (_fee_a_ref_after_cli, fee_a_after_cli, fee_a_owner_after_cli, _) =
+            query_current_coin(&verify_client, fee_a_id);
+        let (treasury_ref_after_cli, treasury_after_cli, _treasury_owner_after_cli, _) =
+            query_current_coin(&verify_client, treasury_id);
+        let cli_fee: u64 = treasury_after_cli.amount() - treasury_after_trap.amount();
+        // Owner-only mutation: body/type/schema stay byte-identical, only
+        // the owner and version change.
+        assert_eq!(source_a_after_cli, source_a_baseline);
+        assert_eq!(source_a_owner_after_cli, Owner::Address(recipient_address));
         assert_eq!(
-            source_after_cli.balance,
-            source_baseline.balance - CLI_TRANSFER_AMOUNT - cli_fee
+            source_a_ref_after_cli.version,
+            source_a_ref_after_trap.version + 1
         );
         assert_eq!(
-            destination_after_cli.balance,
-            destination_baseline.balance + CLI_TRANSFER_AMOUNT
+            fee_a_after_cli.amount(),
+            fee_a_after_trap.amount() - cli_fee
         );
-        assert_eq!(source_owner_after_cli, Owner::Address(owner_address));
-        assert_eq!(
-            destination_owner_after_cli,
-            Owner::Address(recipient_address)
+        assert_eq!(fee_a_owner_after_cli, Owner::Address(owner_a_address));
+        assert!(cli_fee > 1, "execution must add a non-zero metered fee");
+        assert!(
+            cli_fee < GAS_LIMIT + 1,
+            "successful execution must charge actual gas, not the gas limit"
         );
-        assert_eq!(treasury_owner_after_cli, Owner::Address(treasury_address));
 
         let cli_receipt = verify_client
             .query_receipt(request_id_r1)
@@ -471,58 +585,66 @@ async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_reques
             cli_receipt,
             HttpReceiptQueryResult::Present { .. }
         ));
+        let cli_receipt_bytes = cli_receipt
+            .encode()
+            .expect("CLI receipt result should encode canonically");
 
-        let context = verify_client
-            .query_context()
-            .expect("context query should succeed");
-        let nonce_after_cli = verify_client
-            .query_next_nonce(owner_address)
-            .expect("next-nonce query should succeed");
-        assert_eq!(nonce_after_cli.epoch(), context.epoch());
-
-        // Property 4 setup: build one signed `SubmitTransactionRequest`
-        // directly through `sunrise-edge-client` (not the CLI), independent
-        // of the CLI transfer above, and submit it once now. It is replayed
-        // byte-identically once in this boot and once after restart.
-        let mut access_manifest = AccessManifest::new();
-        access_manifest.push(AccessEntry {
-            object_ref: source_ref_after_cli.clone(),
+        // Property 3: a second, directly-built whole-coin transfer by an
+        // independent dev owner B, signed with B's own key and deliberately
+        // using the two seeded coins in the opposite roles from their startup
+        // labels. The seeded fee coin is the transfer source and the seeded
+        // transfer coin pays the fee. This proves those labels are only an
+        // operator convenience, not a protocol distinction, and pins the
+        // restart regression found during review. Built once, submitted once,
+        // then replayed same-boot and after restart (Property 6).
+        let nonce_b = verify_client
+            .query_next_nonce(owner_b_address)
+            .expect("next-nonce query for owner B should succeed");
+        let (source_b_ref_before_r2, source_b_before_r2, _, _) =
+            query_current_coin(&verify_client, source_b_id);
+        let (fee_b_ref_before_r2, fee_b_before_r2, _, _) =
+            query_current_coin(&verify_client, fee_b_id);
+        let mut manifest_b = AccessManifest::new();
+        manifest_b.push(AccessEntry {
+            object_ref: fee_b_ref_before_r2,
             mode: AccessMode::Write,
         });
-        access_manifest.push(AccessEntry {
-            object_ref: destination_ref_after_cli.clone(),
+        manifest_b.push(AccessEntry {
+            object_ref: source_b_ref_before_r2.clone(),
             mode: AccessMode::Write,
         });
-        access_manifest.push(AccessEntry {
-            object_ref: treasury_ref_after_cli.clone(),
+        manifest_b.push(AccessEntry {
+            object_ref: treasury_ref_after_cli,
             mode: AccessMode::Write,
         });
-        let args =
-            encode_transfer_args(TransferArgs::new(SECOND_TRANSFER_AMOUNT).unwrap()).unwrap();
+        let args = encode_standard_asset_transfer_args_v1(&StandardAssetTransferArgsV1::new(
+            recipient_address,
+        ))
+        .unwrap();
         let transaction_request = TransactionRequest {
             chain_id: context.chain_id().clone(),
             protocol_version: context.protocol_version(),
             epoch: context.epoch(),
-            nonce: nonce_after_cli.next_nonce(),
-            access_manifest,
+            nonce: nonce_b.next_nonce(),
+            access_manifest: manifest_b,
             module_ref: module_ref.clone(),
             entrypoint: TRANSFER_ENTRYPOINT.to_string(),
             args,
             gas_limit: GAS_LIMIT,
             fee_payment: Some(FeePayment {
-                asset_id: DEVNET_ASSET_ID,
+                asset_id,
                 max_fee: Amount::new(GAS_LIMIT + 1),
-                fee_object: source_ref_after_cli.clone(),
+                fee_object: source_b_ref_before_r2,
             }),
         };
         let signed_transaction_bytes_r2 = PreparedTransaction::prepare_submission(
             request_id_r2,
-            owner_signer.address(),
+            owner_b_signer.address(),
             SignatureSchemeId::Ed25519,
             transaction_request,
         )
         .unwrap()
-        .sign_and_finalize_with(&owner_signer)
+        .sign_and_finalize_with(&owner_b_signer)
         .unwrap();
 
         let submit_result_r2 = verify_client
@@ -547,164 +669,23 @@ async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_reques
             .expect("accepted transfer should carry execution effects");
         let effects = decode_execution_effects(payload).unwrap();
         assert!(matches!(effects.status, ExecutionStatus::Success));
-        assert_eq!(effects.events.len(), 1);
-        let transfer_event = decode_transfer_event(&effects.events[0].data).unwrap();
-        assert_eq!(transfer_event.amount, SECOND_TRANSFER_AMOUNT);
-        assert_eq!(
-            transfer_event.source_balance,
-            source_after_cli.balance - SECOND_TRANSFER_AMOUNT
-        );
+        assert_eq!(effects.object_effects.len(), 1);
 
-        let (source_ref_after_r2, source_after_r2, source_owner_after_r2, _) =
-            query_current_account(&verify_client, source_id);
-        let (destination_ref_after_r2, destination_after_r2, destination_owner_after_r2, _) =
-            query_current_account(&verify_client, destination_id);
+        let (source_b_ref_after_r2, source_b_after_r2, source_b_owner_after_r2, _) =
+            query_current_coin(&verify_client, source_b_id);
+        let (fee_b_ref_after_r2, fee_b_after_r2, fee_b_owner_after_r2, _) =
+            query_current_coin(&verify_client, fee_b_id);
         let (treasury_ref_after_r2, treasury_after_r2, treasury_owner_after_r2, _) =
-            query_current_account(&verify_client, treasury_id);
-        let r2_fee: u64 = treasury_after_r2.balance - treasury_after_cli.balance;
+            query_current_coin(&verify_client, treasury_id);
+        let r2_fee: u64 = treasury_after_r2.amount() - treasury_after_cli.amount();
         assert_eq!(r2_fee, 1 + effects.gas_used);
+        assert_eq!(source_b_owner_after_r2, Owner::Address(owner_b_address));
         assert_eq!(
-            source_after_r2.balance,
-            source_after_cli.balance - SECOND_TRANSFER_AMOUNT - r2_fee
+            source_b_after_r2.amount(),
+            source_b_before_r2.amount() - r2_fee
         );
-        assert_eq!(
-            source_after_r2.balance,
-            transfer_event.source_balance - r2_fee
-        );
-        assert_eq!(
-            destination_after_r2.balance,
-            destination_after_cli.balance + SECOND_TRANSFER_AMOUNT
-        );
-        assert_eq!(source_owner_after_r2, Owner::Address(owner_address));
-        assert_eq!(
-            destination_owner_after_r2,
-            Owner::Address(recipient_address)
-        );
-        assert_eq!(treasury_owner_after_r2, Owner::Address(treasury_address));
-        assert_eq!(source_after_r2.sequence, source_after_cli.sequence + 2);
-        assert_eq!(
-            source_ref_after_r2.version,
-            source_ref_after_cli.version + 1
-        );
-        assert_eq!(
-            destination_ref_after_r2.version,
-            destination_ref_after_cli.version + 1
-        );
-        assert_eq!(
-            treasury_ref_after_r2.version,
-            treasury_ref_after_cli.version + 1
-        );
-
-        // Property 5: malformed module arguments deterministically trap.
-        // Application effects are discarded, while the normalized
-        // `gas_used == gas_limit` charge commits only source/treasury writes.
-        let nonce_before_trap = verify_client
-            .query_next_nonce(owner_address)
-            .expect("next-nonce before trapped invocation should succeed");
-        let mut trap_manifest = AccessManifest::new();
-        trap_manifest.push(AccessEntry {
-            object_ref: source_ref_after_r2.clone(),
-            mode: AccessMode::Write,
-        });
-        trap_manifest.push(AccessEntry {
-            object_ref: destination_ref_after_r2.clone(),
-            mode: AccessMode::Write,
-        });
-        trap_manifest.push(AccessEntry {
-            object_ref: treasury_ref_after_r2,
-            mode: AccessMode::Write,
-        });
-        let request_id_r3 = RequestId::new([REQUEST_ID_R3_BYTE; 32]).unwrap();
-        let trapped_signed_bytes = PreparedTransaction::prepare_submission(
-            request_id_r3,
-            owner_signer.address(),
-            SignatureSchemeId::Ed25519,
-            TransactionRequest {
-                chain_id: context.chain_id().clone(),
-                protocol_version: context.protocol_version(),
-                epoch: context.epoch(),
-                nonce: nonce_before_trap.next_nonce(),
-                access_manifest: trap_manifest,
-                module_ref: module_ref.clone(),
-                entrypoint: TRANSFER_ENTRYPOINT.to_string(),
-                args: vec![0],
-                gas_limit: TRAP_GAS_LIMIT,
-                fee_payment: Some(FeePayment {
-                    asset_id: DEVNET_ASSET_ID,
-                    max_fee: Amount::new(TRAP_GAS_LIMIT + 1),
-                    fee_object: source_ref_after_r2.clone(),
-                }),
-            },
-        )
-        .unwrap()
-        .sign_and_finalize_with(&owner_signer)
-        .unwrap();
-        let trapped_result = verify_client
-            .submit_transaction(SubmitTransactionRequest {
-                chain_id: context.chain_id().clone(),
-                protocol_version: context.protocol_version(),
-                epoch: context.epoch(),
-                request_id: request_id_r3,
-                signed_transaction_bytes: trapped_signed_bytes.clone(),
-            })
-            .expect("trapped execution should commit its rejected receipt and fee effects");
-        assert_eq!(trapped_result.responses().len(), 1);
-        assert_eq!(
-            trapped_result.responses()[0].status(),
-            NodeResponseStatus::Rejected
-        );
-        let trapped_effects = decode_execution_effects(
-            trapped_result.responses()[0]
-                .payload()
-                .expect("trapped execution should carry normalized effects"),
-        )
-        .unwrap();
-        assert!(matches!(
-            trapped_effects.status,
-            ExecutionStatus::Failure { .. }
-        ));
-        assert_eq!(trapped_effects.gas_used, TRAP_GAS_LIMIT);
-        assert!(trapped_effects.object_effects.is_empty());
-        let trapped_result_bytes = trapped_result
-            .encode()
-            .expect("trapped submit result should encode canonically");
-
-        let source_before_trap: AssetAccount = source_after_r2;
-        let destination_before_trap: AssetAccount = destination_after_r2;
-        let treasury_before_trap: AssetAccount = treasury_after_r2;
-        let (source_ref_after_r2, source_after_r2, source_owner_after_r2, source_query_bytes) =
-            query_current_account(&verify_client, source_id);
-        let (
-            destination_ref_after_r2,
-            destination_after_r2,
-            destination_owner_after_r2,
-            destination_query_bytes,
-        ) = query_current_account(&verify_client, destination_id);
-        let (
-            treasury_ref_after_r2,
-            treasury_after_r2,
-            treasury_owner_after_r2,
-            treasury_query_bytes,
-        ) = query_current_account(&verify_client, treasury_id);
-        assert_eq!(
-            source_after_r2.balance,
-            source_before_trap.balance - TRAP_GAS_LIMIT - 1
-        );
-        assert_eq!(destination_after_r2, destination_before_trap);
-        assert_eq!(
-            treasury_after_r2.balance,
-            treasury_before_trap.balance + TRAP_GAS_LIMIT + 1
-        );
-        assert_eq!(source_after_r2.sequence, source_before_trap.sequence + 1);
-        assert_eq!(
-            treasury_after_r2.sequence,
-            treasury_before_trap.sequence + 1
-        );
-        assert_eq!(source_owner_after_r2, Owner::Address(owner_address));
-        assert_eq!(
-            destination_owner_after_r2,
-            Owner::Address(recipient_address)
-        );
+        assert_eq!(fee_b_owner_after_r2, Owner::Address(recipient_address));
+        assert_eq!(fee_b_after_r2, fee_b_before_r2);
         assert_eq!(treasury_owner_after_r2, Owner::Address(treasury_address));
 
         let second_transfer_receipt = verify_client
@@ -714,33 +695,21 @@ async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_reques
             second_transfer_receipt,
             HttpReceiptQueryResult::Present { .. }
         ));
-        let trapped_receipt = verify_client
-            .query_receipt(request_id_r3)
-            .expect("trapped invocation receipt query should succeed");
-        assert!(matches!(
-            trapped_receipt,
-            HttpReceiptQueryResult::Present { .. }
-        ));
-        let cli_receipt_bytes = cli_receipt
-            .encode()
-            .expect("CLI receipt result should encode canonically");
         let second_transfer_receipt_bytes = second_transfer_receipt
             .encode()
             .expect("second receipt result should encode canonically");
-        let trapped_receipt_bytes = trapped_receipt
-            .encode()
-            .expect("trapped receipt result should encode canonically");
+
         let next_nonce_result = verify_client
-            .query_next_nonce(owner_address)
+            .query_next_nonce(owner_a_address)
             .expect("next-nonce query should succeed");
-        let next_nonce_final = next_nonce_result.next_nonce();
-        let next_nonce_query_bytes = next_nonce_result
+        let next_nonce_a_final = next_nonce_result.next_nonce();
+        let next_nonce_a_query_bytes = next_nonce_result
             .encode()
             .expect("next-nonce result should encode canonically");
 
-        // Same-boot duplicate evidence: replay the exact request before the
-        // restart and prove both the canonical response and every persisted
-        // observation remain byte-identical.
+        // Same-boot duplicate evidence: replay the exact R2 request before
+        // the restart and prove both the canonical response and every
+        // persisted observation remain byte-identical.
         let duplicate_before_restart = verify_client
             .submit_transaction(SubmitTransactionRequest {
                 chain_id: context.chain_id().clone(),
@@ -756,216 +725,52 @@ async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_reques
                 .expect("duplicate submit result should encode canonically"),
             submit_result_r2_bytes
         );
+        let (_, source_b_after_dup, source_b_owner_after_dup, source_b_bytes_after_dup) =
+            query_current_coin(&verify_client, source_b_id);
+        let (_, fee_b_after_dup, fee_b_owner_after_dup, fee_b_bytes_after_dup) =
+            query_current_coin(&verify_client, fee_b_id);
+        let (_, treasury_after_dup, treasury_owner_after_dup, treasury_bytes_after_dup) =
+            query_current_coin(&verify_client, treasury_id);
+        assert_eq!(source_b_after_dup, source_b_after_r2);
+        assert_eq!(source_b_owner_after_dup, Owner::Address(owner_b_address));
+        assert_eq!(fee_b_after_dup, fee_b_after_r2);
+        assert_eq!(fee_b_owner_after_dup, Owner::Address(recipient_address));
+        assert_eq!(treasury_after_dup, treasury_after_r2);
+        assert_eq!(treasury_owner_after_dup, Owner::Address(treasury_address));
 
-        let (
-            source_ref_after_same_boot_duplicate,
-            source_after_same_boot_duplicate,
-            source_owner_after_same_boot_duplicate,
-            source_bytes_after_same_boot_duplicate,
-        ) = query_current_account(&verify_client, source_id);
-        let (
-            destination_ref_after_same_boot_duplicate,
-            destination_after_same_boot_duplicate,
-            destination_owner_after_same_boot_duplicate,
-            destination_bytes_after_same_boot_duplicate,
-        ) = query_current_account(&verify_client, destination_id);
-        let (
-            treasury_ref_after_same_boot_duplicate,
-            treasury_after_same_boot_duplicate,
-            treasury_owner_after_same_boot_duplicate,
-            treasury_bytes_after_same_boot_duplicate,
-        ) = query_current_account(&verify_client, treasury_id);
-        assert_eq!(source_ref_after_same_boot_duplicate, source_ref_after_r2);
-        assert_eq!(
-            destination_ref_after_same_boot_duplicate,
-            destination_ref_after_r2
-        );
-        assert_eq!(source_after_same_boot_duplicate, source_after_r2);
-        assert_eq!(destination_after_same_boot_duplicate, destination_after_r2);
-        assert_eq!(
-            treasury_ref_after_same_boot_duplicate,
-            treasury_ref_after_r2
-        );
-        assert_eq!(treasury_after_same_boot_duplicate, treasury_after_r2);
-        assert_eq!(
-            source_owner_after_same_boot_duplicate,
-            Owner::Address(owner_address)
-        );
-        assert_eq!(
-            destination_owner_after_same_boot_duplicate,
-            Owner::Address(recipient_address)
-        );
-        assert_eq!(
-            treasury_owner_after_same_boot_duplicate,
-            Owner::Address(treasury_address)
-        );
-        assert_eq!(source_bytes_after_same_boot_duplicate, source_query_bytes);
-        assert_eq!(
-            destination_bytes_after_same_boot_duplicate,
-            destination_query_bytes
-        );
-        assert_eq!(
-            treasury_bytes_after_same_boot_duplicate,
-            treasury_query_bytes
-        );
-        assert_eq!(
-            verify_client
-                .query_receipt(request_id_r2)
-                .expect("duplicate receipt query should succeed")
-                .encode()
-                .expect("duplicate receipt result should encode canonically"),
-            second_transfer_receipt_bytes
-        );
-        assert_eq!(
-            verify_client
-                .query_receipt(request_id_r3)
-                .expect("trapped receipt query after duplicate should succeed")
-                .encode()
-                .expect("trapped receipt result should encode canonically"),
-            trapped_receipt_bytes
-        );
-        assert_eq!(
-            verify_client
-                .query_next_nonce(owner_address)
-                .expect("next-nonce query after duplicate should succeed")
-                .encode()
-                .expect("next-nonce result should encode canonically"),
-            next_nonce_query_bytes
-        );
-
-        // Same-boot duplicate evidence for the trapped fee-only request:
-        // replay it before the restart and prove both the canonical
-        // response and every persisted observation -- source, destination,
-        // treasury, the second-transfer and trapped receipts, and next
-        // nonce -- remain byte-identical, exactly like the successful R2
-        // replay above.
-        let trapped_duplicate_before_restart = verify_client
-            .submit_transaction(SubmitTransactionRequest {
-                chain_id: context.chain_id().clone(),
-                protocol_version: context.protocol_version(),
-                epoch: context.epoch(),
-                request_id: request_id_r3,
-                signed_transaction_bytes: trapped_signed_bytes.clone(),
-            })
-            .expect("the exact same-boot trapped duplicate should reconcile");
-        assert_eq!(
-            trapped_duplicate_before_restart
-                .encode()
-                .expect("trapped duplicate submit result should encode canonically"),
-            trapped_result_bytes
-        );
-
-        let (
-            source_ref_after_same_boot_trap_duplicate,
-            source_after_same_boot_trap_duplicate,
-            source_owner_after_same_boot_trap_duplicate,
-            source_bytes_after_same_boot_trap_duplicate,
-        ) = query_current_account(&verify_client, source_id);
-        let (
-            destination_ref_after_same_boot_trap_duplicate,
-            destination_after_same_boot_trap_duplicate,
-            destination_owner_after_same_boot_trap_duplicate,
-            destination_bytes_after_same_boot_trap_duplicate,
-        ) = query_current_account(&verify_client, destination_id);
-        let (
-            treasury_ref_after_same_boot_trap_duplicate,
-            treasury_after_same_boot_trap_duplicate,
-            treasury_owner_after_same_boot_trap_duplicate,
-            treasury_bytes_after_same_boot_trap_duplicate,
-        ) = query_current_account(&verify_client, treasury_id);
-        assert_eq!(
-            source_ref_after_same_boot_trap_duplicate,
-            source_ref_after_r2
-        );
-        assert_eq!(
-            destination_ref_after_same_boot_trap_duplicate,
-            destination_ref_after_r2
-        );
-        assert_eq!(source_after_same_boot_trap_duplicate, source_after_r2);
-        assert_eq!(
-            destination_after_same_boot_trap_duplicate,
-            destination_after_r2
-        );
-        assert_eq!(
-            treasury_ref_after_same_boot_trap_duplicate,
-            treasury_ref_after_r2
-        );
-        assert_eq!(treasury_after_same_boot_trap_duplicate, treasury_after_r2);
-        assert_eq!(
-            source_owner_after_same_boot_trap_duplicate,
-            Owner::Address(owner_address)
-        );
-        assert_eq!(
-            destination_owner_after_same_boot_trap_duplicate,
-            Owner::Address(recipient_address)
-        );
-        assert_eq!(
-            treasury_owner_after_same_boot_trap_duplicate,
-            Owner::Address(treasury_address)
-        );
-        assert_eq!(
-            source_bytes_after_same_boot_trap_duplicate,
-            source_query_bytes
-        );
-        assert_eq!(
-            destination_bytes_after_same_boot_trap_duplicate,
-            destination_query_bytes
-        );
-        assert_eq!(
-            treasury_bytes_after_same_boot_trap_duplicate,
-            treasury_query_bytes
-        );
-        assert_eq!(
-            verify_client
-                .query_receipt(request_id_r2)
-                .expect("second-transfer receipt query after trapped duplicate should succeed")
-                .encode()
-                .expect("second-transfer receipt result should encode canonically"),
-            second_transfer_receipt_bytes
-        );
-        assert_eq!(
-            verify_client
-                .query_receipt(request_id_r3)
-                .expect("trapped receipt query after trapped duplicate should succeed")
-                .encode()
-                .expect("trapped receipt result should encode canonically"),
-            trapped_receipt_bytes
-        );
-        assert_eq!(
-            verify_client
-                .query_next_nonce(owner_address)
-                .expect("next-nonce query after trapped duplicate should succeed")
-                .encode()
-                .expect("next-nonce result should encode canonically"),
-            next_nonce_query_bytes
-        );
+        let (source_a_ref_final, source_a_final, _source_a_owner_final, source_a_bytes_final) =
+            query_current_coin(&verify_client, source_a_id);
+        let (fee_a_ref_final, fee_a_final, _fee_a_owner_final, fee_a_bytes_final) =
+            query_current_coin(&verify_client, fee_a_id);
 
         PreRestartState {
-            source_account: source_after_r2,
-            destination_account: destination_after_r2,
-            source_ref: source_ref_after_r2,
-            destination_ref: destination_ref_after_r2,
-            treasury_account: treasury_after_r2,
+            source_a: source_a_final,
+            source_a_ref: source_a_ref_final,
+            fee_a: fee_a_final,
+            fee_a_ref: fee_a_ref_final,
+            source_b: source_b_after_dup,
+            source_b_ref: source_b_ref_after_r2,
+            fee_b: fee_b_after_dup,
+            fee_b_ref: fee_b_ref_after_r2,
+            treasury: treasury_after_dup,
             treasury_ref: treasury_ref_after_r2,
-            source_query_bytes,
-            destination_query_bytes,
-            treasury_query_bytes,
+            source_a_query_bytes: source_a_bytes_final,
+            fee_a_query_bytes: fee_a_bytes_final,
+            source_b_query_bytes: source_b_bytes_after_dup,
+            fee_b_query_bytes: fee_b_bytes_after_dup,
+            treasury_query_bytes: treasury_bytes_after_dup,
+            trapped_receipt,
+            trapped_receipt_bytes,
             cli_receipt,
             cli_receipt_bytes,
             second_transfer_receipt,
             second_transfer_receipt_bytes,
-            trapped_receipt,
-            trapped_receipt_bytes,
-            next_nonce: next_nonce_final,
-            next_nonce_query_bytes,
+            next_nonce_a: next_nonce_a_final,
+            next_nonce_a_query_bytes,
             request_id_r2,
             signed_transaction_bytes_r2,
             submit_result_r2,
             submit_result_r2_bytes,
-            request_id_r3,
-            signed_transaction_bytes_r3: trapped_signed_bytes,
-            submit_result_r3: trapped_result,
-            submit_result_r3_bytes: trapped_result_bytes,
         }
     })
     .await
@@ -991,22 +796,19 @@ async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_reques
     let second_generation = second_boot.boot_generation();
     assert_eq!(second_generation.get(), first_generation.get() + 1);
 
-    // Property 6: the pre-restart writer generation is fenced on the
-    // reopened store. This is a read attempt scoped to this store's own
-    // trusted (chain, validator, domain) namespace and bound to the stale
-    // generation's `DurableOperationContext`; it must fail closed rather
-    // than silently succeed against or alongside the new generation.
-    let domain = AtomicityDomainId::new(sunrise_edge_devnet::genesis::DEVNET_DOMAIN_BYTES).unwrap();
+    // Property 8: the pre-restart writer generation is fenced on the
+    // reopened store.
+    let domain = AtomicityDomainId::new(DEVNET_DOMAIN_BYTES).unwrap();
     let stale_generation_context = DurableOperationContext::new(
         first_generation,
         StorageDeadline::new(u64::MAX).unwrap(),
         StorageCorrelationId::new([0x62; 16]).unwrap(),
     );
-    let durable_request_id_r1 = DurableRequestId::new(*request_id_r1.as_bytes()).unwrap();
+    let durable_request_id_r0 = DurableRequestId::new(*request_id_r0.as_bytes()).unwrap();
     let fencing_result = second_boot.store().get_request_receipt(
         &stale_generation_context,
         domain,
-        durable_request_id_r1,
+        durable_request_id_r0,
     );
     assert_eq!(
         fencing_result,
@@ -1015,121 +817,92 @@ async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_reques
         })
     );
 
-    // Reseed both transfer owners and the distinct treasury owner, requiring
-    // Existing with identical identities and current references.
+    // Property 4: reseed both dev owners' coin pairs and the treasury coin,
+    // requiring Existing with identical seed identities. Owner A's seeded
+    // transfer coin and owner B's seeded fee coin are now owned by
+    // `recipient_address`; F9's role-independent verification must accept
+    // both arrangements.
     let second_protocol_context =
         build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
-    let second_module =
-        build_asset_module(second_protocol_context, ASSET_ACCOUNT_WASM.to_vec()).unwrap();
-    let reseed_context = DurableOperationContext::new(
+    assert_eq!(second_protocol_context.asset_id(), asset_id);
+    let second_module = build_standard_asset_module(
+        second_protocol_context,
+        STANDARD_ASSET_TRANSFER_WASM.to_vec(),
+    )
+    .unwrap();
+    let reseed_context_a = DurableOperationContext::new(
         second_generation,
         StorageDeadline::new(u64::MAX).unwrap(),
         StorageCorrelationId::new([0x63; 16]).unwrap(),
     );
-    let reseed_outcome = seed_asset_accounts(
+    let reseed_outcome_a = seed_dev_owner_coins(
         second_boot.store(),
         second_boot.blob_store(),
         second_module.resolver(),
         config.epoch(),
-        dev_owner,
+        asset_id,
+        dev_owner_a,
         second_generation,
-        &reseed_context,
+        &reseed_context_a,
     )
     .unwrap();
     assert!(matches!(
-        reseed_outcome,
-        SeedAssetAccountsOutcome::Existing(_)
+        reseed_outcome_a,
+        SeedDevOwnerCoinsOutcome::Existing(_)
     ));
-    let recipient_reseed_context = DurableOperationContext::new(
+    let reseed_context_b = DurableOperationContext::new(
         second_generation,
         StorageDeadline::new(u64::MAX).unwrap(),
         StorageCorrelationId::new([0x65; 16]).unwrap(),
     );
-    let recipient_reseed_outcome = seed_asset_accounts(
+    let reseed_outcome_b = seed_dev_owner_coins(
         second_boot.store(),
         second_boot.blob_store(),
         second_module.resolver(),
         config.epoch(),
-        recipient_dev_owner,
+        asset_id,
+        dev_owner_b,
         second_generation,
-        &recipient_reseed_context,
+        &reseed_context_b,
     )
     .unwrap();
     assert!(matches!(
-        recipient_reseed_outcome,
-        SeedAssetAccountsOutcome::Existing(_)
+        reseed_outcome_b,
+        SeedDevOwnerCoinsOutcome::Existing(_)
     ));
     let treasury_reseed_context = DurableOperationContext::new(
         second_generation,
         StorageDeadline::new(u64::MAX).unwrap(),
         StorageCorrelationId::new([0x67; 16]).unwrap(),
     );
-    let treasury_reseed_outcome = seed_asset_accounts(
+    let treasury_reseed_outcome = seed_treasury_coin(
         second_boot.store(),
         second_boot.blob_store(),
         second_module.resolver(),
         config.epoch(),
-        treasury_dev_owner,
+        asset_id,
+        config.fee_treasury_owner(),
         second_generation,
         &treasury_reseed_context,
     )
     .unwrap();
-    assert!(matches!(
-        treasury_reseed_outcome,
-        SeedAssetAccountsOutcome::Existing(_)
-    ));
-    verify_seeded_asset_supply(&[
-        reseed_outcome.clone(),
-        recipient_reseed_outcome.clone(),
-        treasury_reseed_outcome.clone(),
-    ])
+    verify_seeded_asset_supply(
+        &[reseed_outcome_a.clone(), reseed_outcome_b.clone()],
+        &treasury_reseed_outcome,
+    )
     .unwrap();
-    // `seed_asset_accounts` reports the *current* head reference on the
-    // `Existing` path (not the version-one creation snapshot the `Created`
-    // path in `first_accounts` captured), so the account identities (owner,
-    // object ids) are compared against `first_accounts`, while the exact
-    // current `ObjectRef` (version/digest, advanced on the sender source and
-    // recipient destination by the two real cross-owner transfers above) is
-    // compared against state independently observed immediately before
-    // restart. The two unused companion accounts remain at their seeded refs.
-    assert_eq!(reseed_outcome.accounts().owner(), first_accounts.owner());
+    assert_eq!(reseed_outcome_a.coins().owner(), dev_owner_a);
     assert_eq!(
-        reseed_outcome.accounts().source().id,
-        first_accounts.source().id
+        reseed_outcome_a.coins().transfer_coin(),
+        &pre_restart.source_a_ref
     );
+    assert_eq!(reseed_outcome_a.coins().fee_coin(), &pre_restart.fee_a_ref);
+    assert_eq!(reseed_outcome_b.coins().owner(), dev_owner_b);
     assert_eq!(
-        reseed_outcome.accounts().destination().id,
-        first_accounts.destination().id
+        reseed_outcome_b.coins().transfer_coin(),
+        &pre_restart.source_b_ref
     );
-    assert_eq!(reseed_outcome.accounts().source(), &pre_restart.source_ref);
-    assert_eq!(
-        reseed_outcome.accounts().destination(),
-        first_accounts.destination()
-    );
-    assert_eq!(
-        recipient_reseed_outcome.accounts().owner(),
-        recipient_accounts.owner()
-    );
-    assert_eq!(
-        recipient_reseed_outcome.accounts().source(),
-        recipient_accounts.source()
-    );
-    assert_eq!(
-        recipient_reseed_outcome.accounts().destination(),
-        &pre_restart.destination_ref
-    );
-    assert_eq!(
-        treasury_reseed_outcome.accounts().owner(),
-        treasury_accounts.owner()
-    );
-    assert_eq!(
-        treasury_reseed_outcome.accounts().source(),
-        treasury_accounts.source()
-    );
-    assert_eq!(
-        treasury_reseed_outcome.accounts().destination(),
-        &pre_restart.treasury_ref
-    );
+    assert_eq!(reseed_outcome_b.coins().fee_coin(), &pre_restart.fee_b_ref);
     assert_eq!(second_module.module_ref(), &module_ref);
 
     // --- Recompose on a fresh ephemeral port. ---
@@ -1158,58 +931,55 @@ async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_reques
 
     tokio::task::spawn_blocking(move || {
         let verify_client = make_client(second_address);
-        let request_id_r3 = RequestId::new([REQUEST_ID_R3_BYTE; 32]).unwrap();
 
-        // DR-0096: an asset-account body stays under the fixed inline
-        // threshold, so the version committed before restart is still
-        // `CurrentInline` after it, exactly as before restart.
+        // DR-0096: a Standard Asset v1 coin body stays under the fixed
+        // inline threshold, so the version committed before restart is
+        // still `CurrentInline` after it.
         assert!(matches!(
             verify_client
-                .query_object(source_id)
+                .query_object(source_a_id)
                 .expect("post-restart object query should succeed"),
             HttpObjectQueryResult::CurrentInline { .. }
         ));
 
-        // Property 3: balances, sequences, receipts, and next nonce are
+        // Property 5: coin bodies/owners, receipts, and next nonce are
         // byte-identical to the values captured immediately before restart.
-        let (_, source_after_restart, source_owner_after_restart, source_query_bytes_after_restart) =
-            query_current_account(&verify_client, source_id);
-        let (
-            _,
-            destination_after_restart,
-            destination_owner_after_restart,
-            destination_query_bytes_after_restart,
-        ) = query_current_account(&verify_client, destination_id);
-        let (
-            treasury_ref_after_restart,
-            treasury_after_restart,
-            treasury_owner_after_restart,
-            treasury_query_bytes_after_restart,
-        ) = query_current_account(&verify_client, treasury_id);
-        assert_eq!(source_after_restart, pre_restart.source_account);
-        assert_eq!(destination_after_restart, pre_restart.destination_account);
-        assert_eq!(treasury_after_restart, pre_restart.treasury_account);
+        let (_, source_a_after_restart, source_a_owner_after_restart, source_a_bytes_after_restart) =
+            query_current_coin(&verify_client, source_a_id);
+        let (_, fee_a_after_restart, fee_a_owner_after_restart, fee_a_bytes_after_restart) =
+            query_current_coin(&verify_client, fee_a_id);
+        let (_, source_b_after_restart, source_b_owner_after_restart, source_b_bytes_after_restart) =
+            query_current_coin(&verify_client, source_b_id);
+        let (_, fee_b_after_restart, fee_b_owner_after_restart, fee_b_bytes_after_restart) =
+            query_current_coin(&verify_client, fee_b_id);
+        let (treasury_ref_after_restart, treasury_after_restart, treasury_owner_after_restart, treasury_bytes_after_restart) =
+            query_current_coin(&verify_client, treasury_id);
+        assert_eq!(source_a_after_restart, pre_restart.source_a);
+        assert_eq!(source_a_owner_after_restart, Owner::Address(recipient_address));
+        assert_eq!(fee_a_after_restart, pre_restart.fee_a);
+        assert_eq!(fee_a_owner_after_restart, Owner::Address(owner_a_address));
+        assert_eq!(source_b_after_restart, pre_restart.source_b);
+        assert_eq!(source_b_owner_after_restart, Owner::Address(owner_b_address));
+        assert_eq!(fee_b_after_restart, pre_restart.fee_b);
+        assert_eq!(fee_b_owner_after_restart, Owner::Address(recipient_address));
+        assert_eq!(treasury_after_restart, pre_restart.treasury);
         assert_eq!(treasury_ref_after_restart, pre_restart.treasury_ref);
-        assert_eq!(source_owner_after_restart, Owner::Address(owner_address));
+        assert_eq!(treasury_owner_after_restart, Owner::Address(treasury_address));
+        assert_eq!(source_a_bytes_after_restart, pre_restart.source_a_query_bytes);
+        assert_eq!(fee_a_bytes_after_restart, pre_restart.fee_a_query_bytes);
+        assert_eq!(source_b_bytes_after_restart, pre_restart.source_b_query_bytes);
+        assert_eq!(fee_b_bytes_after_restart, pre_restart.fee_b_query_bytes);
+        assert_eq!(treasury_bytes_after_restart, pre_restart.treasury_query_bytes);
+
+        let trapped_receipt_after_restart = verify_client
+            .query_receipt(request_id_r0)
+            .expect("trapped receipt query should succeed after restart");
+        assert_eq!(trapped_receipt_after_restart, pre_restart.trapped_receipt);
         assert_eq!(
-            destination_owner_after_restart,
-            Owner::Address(recipient_address)
-        );
-        assert_eq!(
-            treasury_owner_after_restart,
-            Owner::Address(treasury_address)
-        );
-        assert_eq!(
-            source_query_bytes_after_restart,
-            pre_restart.source_query_bytes
-        );
-        assert_eq!(
-            destination_query_bytes_after_restart,
-            pre_restart.destination_query_bytes
-        );
-        assert_eq!(
-            treasury_query_bytes_after_restart,
-            pre_restart.treasury_query_bytes
+            trapped_receipt_after_restart
+                .encode()
+                .expect("trapped receipt should encode canonically after restart"),
+            pre_restart.trapped_receipt_bytes
         );
 
         let cli_receipt_after_restart = verify_client
@@ -1237,32 +1007,23 @@ async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_reques
             pre_restart.second_transfer_receipt_bytes
         );
 
-        let trapped_receipt_after_restart = verify_client
-            .query_receipt(request_id_r3)
-            .expect("trapped receipt query should succeed after restart");
-        assert_eq!(trapped_receipt_after_restart, pre_restart.trapped_receipt);
-        assert_eq!(
-            trapped_receipt_after_restart
-                .encode()
-                .expect("trapped receipt should encode canonically after restart"),
-            pre_restart.trapped_receipt_bytes
-        );
-
         let next_nonce_result_after_restart = verify_client
-            .query_next_nonce(owner_address)
+            .query_next_nonce(owner_a_address)
             .expect("next-nonce query should succeed after restart");
-        let next_nonce_after_restart = next_nonce_result_after_restart.next_nonce();
-        assert_eq!(next_nonce_after_restart, pre_restart.next_nonce);
+        assert_eq!(
+            next_nonce_result_after_restart.next_nonce(),
+            pre_restart.next_nonce_a
+        );
         assert_eq!(
             next_nonce_result_after_restart
                 .encode()
                 .expect("next-nonce result should encode canonically after restart"),
-            pre_restart.next_nonce_query_bytes
+            pre_restart.next_nonce_a_query_bytes
         );
 
-        // Property 4: submit the exact same signed transaction byte-for-byte
-        // with the same request id, across restart. It must return the same
-        // response and must not change state further.
+        // Property 6: submit the exact same signed R2 transaction
+        // byte-for-byte with the same request id, across restart. It must
+        // return the same response and must not change state further.
         let context = verify_client
             .query_context()
             .expect("context query should succeed after restart");
@@ -1283,138 +1044,76 @@ async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_reques
             pre_restart.submit_result_r2_bytes
         );
 
-        let trapped_duplicate_result = verify_client
-            .submit_transaction(SubmitTransactionRequest {
-                chain_id: context.chain_id().clone(),
-                protocol_version: context.protocol_version(),
-                epoch: context.epoch(),
-                request_id: pre_restart.request_id_r3,
-                signed_transaction_bytes: pre_restart.signed_transaction_bytes_r3.clone(),
-            })
-            .expect("the trapped invocation must reconcile without a second fee debit");
-        assert_eq!(trapped_duplicate_result, pre_restart.submit_result_r3);
-        assert_eq!(
-            trapped_duplicate_result
-                .encode()
-                .expect("trapped duplicate should encode canonically after restart"),
-            pre_restart.submit_result_r3_bytes
-        );
+        let (_, source_b_after_duplicate, source_b_owner_after_duplicate, source_b_bytes_after_duplicate) =
+            query_current_coin(&verify_client, source_b_id);
+        let (_, fee_b_after_duplicate, fee_b_owner_after_duplicate, fee_b_bytes_after_duplicate) =
+            query_current_coin(&verify_client, fee_b_id);
+        let (_, treasury_after_duplicate, treasury_owner_after_duplicate, treasury_bytes_after_duplicate) =
+            query_current_coin(&verify_client, treasury_id);
+        assert_eq!(source_b_after_duplicate, pre_restart.source_b);
+        assert_eq!(source_b_owner_after_duplicate, Owner::Address(owner_b_address));
+        assert_eq!(fee_b_after_duplicate, pre_restart.fee_b);
+        assert_eq!(fee_b_owner_after_duplicate, Owner::Address(recipient_address));
+        assert_eq!(treasury_after_duplicate, pre_restart.treasury);
+        assert_eq!(treasury_owner_after_duplicate, Owner::Address(treasury_address));
+        assert_eq!(source_b_bytes_after_duplicate, pre_restart.source_b_query_bytes);
+        assert_eq!(fee_b_bytes_after_duplicate, pre_restart.fee_b_query_bytes);
+        assert_eq!(treasury_bytes_after_duplicate, pre_restart.treasury_query_bytes);
 
-        let (source_ref_after_duplicate, source_after_duplicate, source_owner_after_duplicate, source_query_bytes_after_duplicate) =
-            query_current_account(&verify_client, source_id);
-        let (
-            destination_ref_after_duplicate,
-            destination_after_duplicate,
-            destination_owner_after_duplicate,
-            destination_query_bytes_after_duplicate,
-        ) = query_current_account(&verify_client, destination_id);
-        let (
-            treasury_ref_after_duplicate,
-            treasury_after_duplicate,
-            treasury_owner_after_duplicate,
-            treasury_query_bytes_after_duplicate,
-        ) = query_current_account(&verify_client, treasury_id);
-        assert_eq!(source_after_duplicate, pre_restart.source_account);
-        assert_eq!(destination_after_duplicate, pre_restart.destination_account);
-        assert_eq!(treasury_after_duplicate, pre_restart.treasury_account);
-        assert_eq!(source_owner_after_duplicate, Owner::Address(owner_address));
-        assert_eq!(
-            destination_owner_after_duplicate,
-            Owner::Address(recipient_address)
-        );
-        assert_eq!(
-            treasury_owner_after_duplicate,
-            Owner::Address(treasury_address)
-        );
-        assert_eq!(
-            source_query_bytes_after_duplicate,
-            pre_restart.source_query_bytes
-        );
-        assert_eq!(
-            destination_query_bytes_after_duplicate,
-            pre_restart.destination_query_bytes
-        );
-        assert_eq!(
-            treasury_query_bytes_after_duplicate,
-            pre_restart.treasury_query_bytes
-        );
-        assert_eq!(
-            verify_client
-                .query_receipt(pre_restart.request_id_r2)
-                .expect("receipt query after duplicate should succeed")
-                .encode()
-                .expect("receipt result after duplicate should encode canonically"),
-            pre_restart.second_transfer_receipt_bytes
-        );
-        assert_eq!(
-            verify_client
-                .query_receipt(request_id_r3)
-                .expect("trapped receipt query after duplicate should succeed")
-                .encode()
-                .expect("trapped receipt after duplicate should encode canonically"),
-            pre_restart.trapped_receipt_bytes
-        );
-        let next_nonce_result_after_duplicate = verify_client
-            .query_next_nonce(owner_address)
-            .expect("next-nonce query should succeed after the duplicate submission");
-        let next_nonce_after_duplicate = next_nonce_result_after_duplicate.next_nonce();
-        assert_eq!(next_nonce_after_duplicate, pre_restart.next_nonce);
-        assert_eq!(
-            next_nonce_result_after_duplicate
-                .encode()
-                .expect("next-nonce result after duplicate should encode canonically"),
-            pre_restart.next_nonce_query_bytes
-        );
-
-        // Property 5: reusing an already-committed request id for a
-        // different transaction/event is a typed, nonzero, fail-closed
-        // result, with no state change. `request_id_r1` was already
-        // committed by the CLI transfer above; resubmitting it with the
-        // a freshly signed, otherwise valid transaction with different bytes
-        // must be rejected by the durable request-id conflict check.
+        // Property 7: reusing an already-committed request id
+        // (`request_id_r0`, the trapped invocation) for a different
+        // transaction is a typed, nonzero, fail-closed HTTP conflict, with
+        // no state change.
         let mut reused_id_manifest = AccessManifest::new();
         reused_id_manifest.push(AccessEntry {
-            object_ref: source_ref_after_duplicate.clone(),
+            object_ref: pre_restart.source_a_ref.clone(),
             mode: AccessMode::Write,
         });
         reused_id_manifest.push(AccessEntry {
-            object_ref: destination_ref_after_duplicate,
+            object_ref: pre_restart.fee_a_ref.clone(),
             mode: AccessMode::Write,
         });
         reused_id_manifest.push(AccessEntry {
-            object_ref: treasury_ref_after_duplicate,
+            object_ref: pre_restart.treasury_ref.clone(),
             mode: AccessMode::Write,
         });
+        let next_nonce_a_now = verify_client
+            .query_next_nonce(owner_a_address)
+            .expect("next-nonce query before reuse attempt should succeed")
+            .next_nonce();
+        let args =
+            encode_standard_asset_transfer_args_v1(&StandardAssetTransferArgsV1::new(recipient_address))
+                .unwrap();
         let reused_id_signed_bytes = PreparedTransaction::prepare_submission(
-            request_id_r1,
-            owner_signer_after_restart.address(),
+            request_id_r0,
+            owner_a_signer_after_restart.address(),
             SignatureSchemeId::Ed25519,
             TransactionRequest {
                 chain_id: context.chain_id().clone(),
                 protocol_version: context.protocol_version(),
                 epoch: context.epoch(),
-                nonce: next_nonce_after_duplicate,
+                nonce: next_nonce_a_now,
                 access_manifest: reused_id_manifest,
                 module_ref: module_ref.clone(),
                 entrypoint: TRANSFER_ENTRYPOINT.to_string(),
-                args: encode_transfer_args(TransferArgs::new(1).unwrap()).unwrap(),
+                args,
                 gas_limit: GAS_LIMIT,
                 fee_payment: Some(FeePayment {
-                    asset_id: DEVNET_ASSET_ID,
+                    asset_id,
                     max_fee: Amount::new(GAS_LIMIT + 1),
-                    fee_object: source_ref_after_duplicate,
+                    fee_object: pre_restart.fee_a_ref.clone(),
                 }),
             },
         )
         .unwrap()
-        .sign_and_finalize_with(&owner_signer_after_restart)
+        .sign_and_finalize_with(&owner_a_signer_after_restart)
         .unwrap();
         let reused_id_error = verify_client
             .submit_transaction(SubmitTransactionRequest {
                 chain_id: context.chain_id().clone(),
                 protocol_version: context.protocol_version(),
                 epoch: context.epoch(),
-                request_id: request_id_r1,
+                request_id: request_id_r0,
                 signed_transaction_bytes: reused_id_signed_bytes,
             })
             .expect_err("reusing a committed request id for a different transaction must fail");
@@ -1426,85 +1125,29 @@ async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_reques
             other => panic!("expected a typed fail-closed HTTP conflict, got {other:?}"),
         }
 
-        let (_, source_after_reuse_attempt, source_owner_after_reuse_attempt, source_query_bytes_after_reuse_attempt) =
-            query_current_account(&verify_client, source_id);
-        let (
-            _,
-            destination_after_reuse_attempt,
-            destination_owner_after_reuse_attempt,
-            destination_query_bytes_after_reuse_attempt,
-        ) = query_current_account(&verify_client, destination_id);
-        let (
-            _,
-            treasury_after_reuse_attempt,
-            treasury_owner_after_reuse_attempt,
-            treasury_query_bytes_after_reuse_attempt,
-        ) = query_current_account(&verify_client, treasury_id);
-        assert_eq!(source_after_reuse_attempt, pre_restart.source_account);
-        assert_eq!(
-            destination_after_reuse_attempt,
-            pre_restart.destination_account
-        );
-        assert_eq!(treasury_after_reuse_attempt, pre_restart.treasury_account);
-        assert_eq!(
-            source_owner_after_reuse_attempt,
-            Owner::Address(owner_address)
-        );
-        assert_eq!(
-            destination_owner_after_reuse_attempt,
-            Owner::Address(recipient_address)
-        );
-        assert_eq!(
-            treasury_owner_after_reuse_attempt,
-            Owner::Address(treasury_address)
-        );
-        assert_eq!(
-            source_query_bytes_after_reuse_attempt,
-            pre_restart.source_query_bytes
-        );
-        assert_eq!(
-            destination_query_bytes_after_reuse_attempt,
-            pre_restart.destination_query_bytes
-        );
-        assert_eq!(
-            treasury_query_bytes_after_reuse_attempt,
-            pre_restart.treasury_query_bytes
-        );
+        let (_, source_a_after_reuse, source_a_owner_after_reuse, source_a_bytes_after_reuse) =
+            query_current_coin(&verify_client, source_a_id);
+        let (_, fee_a_after_reuse, fee_a_owner_after_reuse, fee_a_bytes_after_reuse) =
+            query_current_coin(&verify_client, fee_a_id);
+        assert_eq!(source_a_after_reuse, pre_restart.source_a);
+        assert_eq!(source_a_owner_after_reuse, Owner::Address(recipient_address));
+        assert_eq!(fee_a_after_reuse, pre_restart.fee_a);
+        assert_eq!(fee_a_owner_after_reuse, Owner::Address(owner_a_address));
+        assert_eq!(source_a_bytes_after_reuse, pre_restart.source_a_query_bytes);
+        assert_eq!(fee_a_bytes_after_reuse, pre_restart.fee_a_query_bytes);
         assert_eq!(
             verify_client
-                .query_receipt(request_id_r1)
-                .expect("CLI receipt query should succeed after the rejected reuse attempt")
+                .query_receipt(request_id_r0)
+                .expect("trapped receipt query should succeed after the rejected reuse attempt")
                 .encode()
-                .expect("CLI receipt should encode canonically after rejected reuse"),
-            pre_restart.cli_receipt_bytes
-        );
-        assert_eq!(
-            verify_client
-                .query_receipt(pre_restart.request_id_r2)
-                .expect("second receipt query should succeed after the rejected reuse attempt")
-                .encode()
-                .expect("second receipt should encode canonically after rejected reuse"),
-            pre_restart.second_transfer_receipt_bytes
-        );
-        assert_eq!(
-            verify_client
-                .query_receipt(request_id_r3)
-                .expect("trapped receipt query should succeed after rejected reuse")
-                .encode()
-                .expect("trapped receipt should encode after rejected reuse"),
+                .expect("trapped receipt should encode canonically after rejected reuse"),
             pre_restart.trapped_receipt_bytes
         );
-        let next_nonce_result_after_reuse_attempt = verify_client
-            .query_next_nonce(owner_address)
-            .expect("next-nonce query should succeed after the rejected reuse attempt");
-        let next_nonce_after_reuse_attempt = next_nonce_result_after_reuse_attempt.next_nonce();
-        assert_eq!(next_nonce_after_reuse_attempt, pre_restart.next_nonce);
-        assert_eq!(
-            next_nonce_result_after_reuse_attempt
-                .encode()
-                .expect("next-nonce result after reuse should encode canonically"),
-            pre_restart.next_nonce_query_bytes
-        );
+        let next_nonce_after_reuse_attempt = verify_client
+            .query_next_nonce(owner_a_address)
+            .expect("next-nonce query should succeed after the rejected reuse attempt")
+            .next_nonce();
+        assert_eq!(next_nonce_after_reuse_attempt, pre_restart.next_nonce_a);
     })
     .await
     .unwrap();

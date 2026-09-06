@@ -1,12 +1,21 @@
-//! Idempotent, fail-closed asset-account seeding for the local devnet.
+//! Idempotent, fail-closed Standard Asset v1 coin seeding for the local
+//! devnet.
+//!
+//! Replaces the removed protocol-3 `AssetAccount` seeding with the
+//! protocol-4 Standard Asset v1 model (DR-0107): each configured dev owner
+//! receives one transferable [`standard_assets::StandardAssetCoinV1`] and
+//! one distinct fee-payer coin; the separate treasury owner receives one
+//! ordinary treasury coin. Every coin uses the same fixed devnet
+//! [`standard_assets::AssetId`] (see `crate::standard_asset::derive_devnet_asset_id`).
 
 use crate::{
-    asset_account::{
-        AssetAccount, AssetAccountCodecError, DEVNET_ASSET_ID, asset_account_type_hash,
-        decode_asset_account, encode_asset_account,
-    },
     config::{DevOwner, MAX_DEVNET_OWNERS},
     genesis::DEVNET_DOMAIN_BYTES,
+};
+use abi::{AbiError, verify_type_id};
+use canonical_encoding::{
+    CanonicalDecodingError, CanonicalEncodingError, CanonicalFrame, CanonicalStruct,
+    decode_canonical_frame,
 };
 use crypto::{Ed25519OwnerAddressError, Ed25519OwnerAddressPolicy, validate_ed25519_owner_address};
 use hashing::{HashSuiteResolver, HashingError, verify_digest};
@@ -24,102 +33,185 @@ use runtime::{
     DurableRequestId, DurableRequestReceipt, IndeterminateCommitReason, IndexedOutboxContractError,
     RuntimeError, StructuredDurableDomainStateStore, WriterFenceGeneration,
 };
+use standard_assets::{
+    AssetId, STANDARD_ASSET_SCHEMA_VERSION_V1, StandardAssetCoinV1, StandardAssetError,
+    coin_type_tag, decode_standard_asset_coin_v1, derive_coin_type_id,
+    encode_standard_asset_coin_v1,
+};
 use std::{collections::BTreeSet, error::Error, fmt};
 
-const SOURCE_SLOT: u64 = 1;
-const DESTINATION_SLOT: u64 = 2;
-const ASSET_ACCOUNT_SCHEMA_VERSION: u32 = 1;
-const INITIAL_SOURCE_BALANCE: u64 = 1_000_000;
-const INITIAL_DESTINATION_BALANCE: u64 = 0;
-const INITIAL_SEQUENCE: u64 = 0;
+const TRANSFER_COIN_SLOT: u64 = 1;
+const FEE_COIN_SLOT: u64 = 2;
+const TREASURY_COIN_SLOT: u64 = 1;
 
-/// The two deterministic asset-account references owned by one development address.
+/// Initial amount seeded into every dev owner's transferable coin.
+const INITIAL_TRANSFER_COIN_AMOUNT: u64 = 1_000_000;
+/// Initial amount seeded into every dev owner's fee coin.
+///
+/// Deliberately generous (see `docs/guides/devnet.md`): once a fee coin's
+/// amount falls to exactly the currently settled fee, `StandardAssetCoinFeeComposer`
+/// permanently refuses to debit it further (F3, DR-0107).
+const INITIAL_FEE_COIN_AMOUNT: u64 = 1_000_000;
+/// Initial amount seeded into the treasury coin.
+///
+/// Must be non-zero: unlike the removed `AssetAccount`, `StandardAssetCoinV1`
+/// categorically rejects a zero amount, so the treasury cannot start empty.
+const INITIAL_TREASURY_COIN_AMOUNT: u64 = 1;
+
+const PROTOCOL_CONTEXT_MARKER_TYPE_ID: u16 = 0x7A10;
+const PROTOCOL_CONTEXT_MARKER_ENCODING_VERSION: u16 = 1;
+/// Fixed, protocol-version-independent object identifier for the persisted
+/// protocol-context marker. Deliberately **not** derived through
+/// [`HashSuiteResolver::hash_for_purpose`] (which mixes in
+/// `protocol_version`): a marker whose own identity depended on the value it
+/// exists to check could never detect a mismatch.
+const PROTOCOL_CONTEXT_MARKER_OBJECT_ID: ObjectId = ObjectId::new([0xFE; 32]);
+
+/// One dev owner's seeded transferable + fee coin pair.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SeededAssetAccounts {
+pub struct SeededDevOwnerCoins {
     owner: DevOwner,
-    source: ObjectRef,
-    destination: ObjectRef,
-    source_balance: u64,
-    destination_balance: u64,
+    transfer_coin: ObjectRef,
+    fee_coin: ObjectRef,
+    transfer_amount: u64,
+    fee_amount: u64,
 }
 
-impl SeededAssetAccounts {
-    /// Returns the configured development owner.
+impl SeededDevOwnerCoins {
+    /// Returns the configured development owner these coins were seeded for.
     #[must_use]
     pub const fn owner(&self) -> DevOwner {
         self.owner
     }
 
-    /// Returns the currently authoritative funded/source account reference.
+    /// Returns the transferable coin's current reference.
     #[must_use]
-    pub const fn source(&self) -> &ObjectRef {
-        &self.source
+    pub const fn transfer_coin(&self) -> &ObjectRef {
+        &self.transfer_coin
     }
 
-    /// Returns the currently authoritative empty/destination account reference.
+    /// Returns the fee-payer coin's current reference.
     #[must_use]
-    pub const fn destination(&self) -> &ObjectRef {
-        &self.destination
+    pub const fn fee_coin(&self) -> &ObjectRef {
+        &self.fee_coin
     }
 
-    fn checked_total_balance(&self) -> Option<u64> {
-        self.source_balance.checked_add(self.destination_balance)
+    fn checked_total_amount(&self) -> Option<u64> {
+        self.transfer_amount.checked_add(self.fee_amount)
     }
 }
 
-/// Whether this boot created or verified an owner's seeded account pair.
+/// Whether this boot created or verified one dev owner's seeded coin pair.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SeedAssetAccountsOutcome {
-    /// Both accounts and the seed receipt were committed atomically by this call.
-    Created(SeededAssetAccounts),
-    /// Both accounts and their immutable seed history already existed and were verified.
-    Existing(SeededAssetAccounts),
+pub enum SeedDevOwnerCoinsOutcome {
+    /// Both coins and the seed receipt were committed atomically by this call.
+    Created(SeededDevOwnerCoins),
+    /// Both coins and their immutable seed history already existed and were verified.
+    Existing(SeededDevOwnerCoins),
 }
 
-impl SeedAssetAccountsOutcome {
-    /// Returns the verified account pair regardless of whether this call created it.
+impl SeedDevOwnerCoinsOutcome {
+    /// Returns the verified coin pair regardless of whether this call created it.
     #[must_use]
-    pub const fn accounts(&self) -> &SeededAssetAccounts {
+    pub const fn coins(&self) -> &SeededDevOwnerCoins {
         match self {
-            Self::Created(accounts) | Self::Existing(accounts) => accounts,
+            Self::Created(coins) | Self::Existing(coins) => coins,
         }
     }
 }
 
-/// Verifies the fixed devnet asset's total seeded supply across all owners.
+/// The treasury owner's one seeded ordinary treasury coin.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeededTreasuryCoin {
+    owner: DevOwner,
+    coin: ObjectRef,
+    amount: u64,
+}
+
+impl SeededTreasuryCoin {
+    /// Returns the configured treasury owner.
+    #[must_use]
+    pub const fn owner(&self) -> DevOwner {
+        self.owner
+    }
+
+    /// Returns the treasury coin's current reference.
+    #[must_use]
+    pub const fn coin(&self) -> &ObjectRef {
+        &self.coin
+    }
+}
+
+/// Whether this boot created or verified the treasury's seeded coin.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SeedTreasuryCoinOutcome {
+    /// The coin and the seed receipt were committed atomically by this call.
+    Created(SeededTreasuryCoin),
+    /// The coin and its immutable seed history already existed and were verified.
+    Existing(SeededTreasuryCoin),
+}
+
+impl SeedTreasuryCoinOutcome {
+    /// Returns the verified treasury coin regardless of whether this call
+    /// created it.
+    #[must_use]
+    pub const fn coin(&self) -> &SeededTreasuryCoin {
+        match self {
+            Self::Created(coin) | Self::Existing(coin) => coin,
+        }
+    }
+}
+
+/// Verifies the fixed devnet asset's total seeded supply across every dev
+/// owner's coin pair and the treasury coin.
 ///
-/// A cross-owner transfer legitimately changes each owner's local account-pair
-/// total and advances the two touched accounts independently. Startup therefore
-/// verifies every current object and its immutable seed history per owner, then
-/// applies this one bounded global conservation check before serving requests.
+/// Redefines the pre-Standard-Asset-v1 uniform two-account check (F10,
+/// DR-0107): the expected total is a fixed function of the configured dev-
+/// owner count and the fixed treasury seed amount, never of current
+/// balances, and the uniqueness set is over **seed** owners and object ids —
+/// never current owners, since a transferable coin may legitimately end up
+/// owned by an address outside the configured set after a real transfer.
 pub fn verify_seeded_asset_supply(
-    outcomes: &[SeedAssetAccountsOutcome],
+    dev_outcomes: &[SeedDevOwnerCoinsOutcome],
+    treasury_outcome: &SeedTreasuryCoinOutcome,
 ) -> Result<(), DevnetSeedError> {
-    if outcomes.is_empty() || outcomes.len() > MAX_DEVNET_OWNERS {
+    if dev_outcomes.is_empty() || dev_outcomes.len() >= MAX_DEVNET_OWNERS {
         return Err(DevnetSeedError::AssetInvariantViolation);
     }
     let mut owners: BTreeSet<DevOwner> = BTreeSet::new();
     let mut object_ids: BTreeSet<ObjectId> = BTreeSet::new();
     let mut actual_supply: u64 = 0;
-    for outcome in outcomes {
-        let accounts: &SeededAssetAccounts = outcome.accounts();
-        if !owners.insert(accounts.owner)
-            || !object_ids.insert(accounts.source.id)
-            || !object_ids.insert(accounts.destination.id)
+    for outcome in dev_outcomes {
+        let coins: &SeededDevOwnerCoins = outcome.coins();
+        if !owners.insert(coins.owner)
+            || !object_ids.insert(coins.transfer_coin.id)
+            || !object_ids.insert(coins.fee_coin.id)
         {
             return Err(DevnetSeedError::AssetInvariantViolation);
         }
-        let owner_supply: u64 = accounts
-            .checked_total_balance()
+        let owner_total: u64 = coins
+            .checked_total_amount()
             .ok_or(DevnetSeedError::AssetInvariantViolation)?;
         actual_supply = actual_supply
-            .checked_add(owner_supply)
+            .checked_add(owner_total)
             .ok_or(DevnetSeedError::AssetInvariantViolation)?;
     }
+    let treasury: &SeededTreasuryCoin = treasury_outcome.coin();
+    if owners.contains(&treasury.owner) || !object_ids.insert(treasury.coin.id) {
+        return Err(DevnetSeedError::AssetInvariantViolation);
+    }
+    actual_supply = actual_supply
+        .checked_add(treasury.amount)
+        .ok_or(DevnetSeedError::AssetInvariantViolation)?;
+
     let owner_count: u64 =
-        u64::try_from(outcomes.len()).map_err(|_| DevnetSeedError::AssetInvariantViolation)?;
-    let expected_supply: u64 = INITIAL_SOURCE_BALANCE
+        u64::try_from(dev_outcomes.len()).map_err(|_| DevnetSeedError::AssetInvariantViolation)?;
+    let per_owner_total: u64 = INITIAL_TRANSFER_COIN_AMOUNT
+        .checked_add(INITIAL_FEE_COIN_AMOUNT)
+        .ok_or(DevnetSeedError::AssetInvariantViolation)?;
+    let expected_supply: u64 = per_owner_total
         .checked_mul(owner_count)
+        .and_then(|total| total.checked_add(INITIAL_TREASURY_COIN_AMOUNT))
         .ok_or(DevnetSeedError::AssetInvariantViolation)?;
     if actual_supply != expected_supply {
         return Err(DevnetSeedError::AssetInvariantViolation);
@@ -128,12 +220,12 @@ pub fn verify_seeded_asset_supply(
 }
 
 #[derive(Clone, Debug)]
-struct ExpectedSeedAccount {
+struct ExpectedSeedCoin {
     initial_object: Object,
     initial_digest: Digest32,
 }
 
-impl ExpectedSeedAccount {
+impl ExpectedSeedCoin {
     fn object_ref(&self) -> ObjectRef {
         ObjectRef {
             id: self.initial_object.id,
@@ -144,31 +236,48 @@ impl ExpectedSeedAccount {
 }
 
 #[derive(Clone, Debug)]
-struct ExpectedSeed {
+struct ExpectedDevOwnerSeed {
     domain: AtomicityDomainId,
-    source: ExpectedSeedAccount,
-    destination: ExpectedSeedAccount,
+    transfer: ExpectedSeedCoin,
+    fee: ExpectedSeedCoin,
     receipt: DurableRequestReceipt,
 }
 
-/// Seeds exactly two ordinary asset accounts for one development owner.
+#[derive(Clone, Debug)]
+struct ExpectedTreasurySeed {
+    domain: AtomicityDomainId,
+    treasury: ExpectedSeedCoin,
+    receipt: DurableRequestReceipt,
+}
+
+/// Seeds one dev owner's transferable coin and distinct fee coin.
 ///
-/// The account identifiers and receipt identity are deterministic for the
-/// resolver, epoch, owner, and fixed source/destination slots. Creation is one
-/// all-or-none structured durable transaction. A restart never overwrites
-/// existing balances: it verifies both current immutable versions, their
-/// canonical asset bodies and independent sequence counters, their version-one
-/// seed history, and the original receipt before returning. Callers that seed
-/// every configured owner must finish with [`verify_seeded_asset_supply`].
-pub fn seed_asset_accounts<S>(
+/// Creation is one all-or-none structured durable transaction. A restart
+/// never overwrites existing coins: it verifies both current immutable
+/// versions and their version-one seed history before returning. Per F9, a
+/// dev owner's two seeded coins are protocol-indistinguishable — same type,
+/// schema, asset, and (at seed time) owner — and either may legitimately
+/// have been used as the whole-coin transfer source (its owner changes to
+/// any admissible `Owner::Address`, DR-0107) or as the fee payer (its
+/// amount changes, never its owner) since seeding, independently of which
+/// coin was seeded into which slot. Restart verification therefore relaxes
+/// both coins' current owner and amount identically: each must still
+/// resolve to an admissible `Owner::Address` and a nonzero canonical amount
+/// under the exact seeded object identity, type, schema, and asset id, but
+/// neither slot is frozen to ownership-only or amount-only movement.
+/// Callers seeding every configured owner must finish with
+/// [`verify_seeded_asset_supply`].
+#[allow(clippy::too_many_arguments)]
+pub fn seed_dev_owner_coins<S>(
     store: &S,
     blob_store: &dyn BlobStore,
     resolver: &HashSuiteResolver,
     epoch: Epoch,
+    asset_id: AssetId,
     owner: DevOwner,
     boot_generation: WriterFenceGeneration,
     context: &DurableOperationContext,
-) -> Result<SeedAssetAccountsOutcome, DevnetSeedError>
+) -> Result<SeedDevOwnerCoinsOutcome, DevnetSeedError>
 where
     S: StructuredDurableDomainStateStore + ?Sized,
 {
@@ -184,120 +293,120 @@ where
         });
     }
 
-    let expected: ExpectedSeed = build_expected_seed(resolver, epoch, owner)?;
-    let source_head: DurableObjectHead = store
-        .get_object_head(context, expected.domain, expected.source.initial_object.id)
-        .map_err(DevnetSeedError::Read)?;
-    let destination_head: DurableObjectHead = store
+    let expected: ExpectedDevOwnerSeed =
+        build_expected_dev_owner_seed(resolver, epoch, asset_id, owner)?;
+    let transfer_head: DurableObjectHead = store
         .get_object_head(
             context,
             expected.domain,
-            expected.destination.initial_object.id,
+            expected.transfer.initial_object.id,
         )
         .map_err(DevnetSeedError::Read)?;
+    let fee_head: DurableObjectHead = store
+        .get_object_head(context, expected.domain, expected.fee.initial_object.id)
+        .map_err(DevnetSeedError::Read)?;
 
-    match (&source_head, &destination_head) {
-        (DurableObjectHead::Absent, DurableObjectHead::Absent) => create_seed_accounts(
+    match (&transfer_head, &fee_head) {
+        (DurableObjectHead::Absent, DurableObjectHead::Absent) => create_dev_owner_seed(
             store,
             blob_store,
             resolver,
+            epoch,
+            asset_id,
             owner,
             boot_generation,
             context,
             expected,
         ),
         (DurableObjectHead::Current { .. }, DurableObjectHead::Current { .. }) => {
-            let accounts: SeededAssetAccounts = verify_existing_seed(
+            let coins: SeededDevOwnerCoins = verify_existing_dev_owner_seed(
                 store,
                 blob_store,
                 resolver,
+                epoch,
+                asset_id,
                 owner,
                 boot_generation,
                 context,
                 &expected,
-                &source_head,
-                &destination_head,
+                &transfer_head,
+                &fee_head,
             )?;
-            Ok(SeedAssetAccountsOutcome::Existing(accounts))
+            Ok(SeedDevOwnerCoinsOutcome::Existing(coins))
         }
         _ => Err(DevnetSeedError::UnexpectedHeadPair {
-            source: head_kind(&source_head),
-            destination: head_kind(&destination_head),
+            first: head_kind(&transfer_head),
+            second: head_kind(&fee_head),
         }),
     }
 }
 
-fn build_expected_seed(
+fn build_expected_dev_owner_seed(
     resolver: &HashSuiteResolver,
     epoch: Epoch,
+    asset_id: AssetId,
     owner: DevOwner,
-) -> Result<ExpectedSeed, DevnetSeedError> {
+) -> Result<ExpectedDevOwnerSeed, DevnetSeedError> {
     let domain: AtomicityDomainId = AtomicityDomainId::new(DEVNET_DOMAIN_BYTES)
         .map_err(|_| DevnetSeedError::InvalidStaticDomain)?;
-    let source_account: AssetAccount = AssetAccount {
-        asset_id: DEVNET_ASSET_ID,
-        balance: INITIAL_SOURCE_BALANCE,
-        sequence: INITIAL_SEQUENCE,
-    };
-    let destination_account: AssetAccount = AssetAccount {
-        asset_id: DEVNET_ASSET_ID,
-        balance: INITIAL_DESTINATION_BALANCE,
-        sequence: INITIAL_SEQUENCE,
-    };
-    let source: ExpectedSeedAccount =
-        build_expected_account(resolver, epoch, owner, SOURCE_SLOT, source_account)?;
-    let destination: ExpectedSeedAccount = build_expected_account(
+    let coin_type_hash: Digest32 = derive_coin_type_id(resolver, epoch, asset_id)?;
+    let transfer_coin: StandardAssetCoinV1 =
+        StandardAssetCoinV1::new(asset_id, INITIAL_TRANSFER_COIN_AMOUNT)?;
+    let fee_coin: StandardAssetCoinV1 =
+        StandardAssetCoinV1::new(asset_id, INITIAL_FEE_COIN_AMOUNT)?;
+    let transfer: ExpectedSeedCoin = build_expected_coin(
         resolver,
         epoch,
-        owner,
-        DESTINATION_SLOT,
-        destination_account,
+        Address::new(*owner.as_bytes()),
+        TRANSFER_COIN_SLOT,
+        coin_type_hash,
+        transfer_coin,
     )?;
-    if source.initial_object.id == destination.initial_object.id {
+    let fee: ExpectedSeedCoin = build_expected_coin(
+        resolver,
+        epoch,
+        Address::new(*owner.as_bytes()),
+        FEE_COIN_SLOT,
+        coin_type_hash,
+        fee_coin,
+    )?;
+    if transfer.initial_object.id == fee.initial_object.id {
         return Err(DevnetSeedError::ObjectIdCollision);
     }
 
-    // An ObjectRef is already a stable canonical record. Using the source's
-    // immutable version-one reference as the seed receipt avoids inventing a
-    // fourth devnet-local wire type beyond DR-0081's reserved 0xF001-0xF003.
-    let receipt_bytes: Vec<u8> = encode_object_ref(&source.object_ref())?;
-    let request_digest: Digest32 =
-        resolver.hash_for_purpose(epoch, HashPurpose::Transaction, &receipt_bytes)?;
-    let event_digest: Digest32 =
-        resolver.hash_for_purpose(epoch, HashPurpose::NodeEvent, &receipt_bytes)?;
-    let request_id: DurableRequestId = DurableRequestId::new(request_digest.bytes())?;
     let receipt: DurableRequestReceipt =
-        DurableRequestReceipt::new(request_id, event_digest, receipt_bytes)?;
+        build_seed_receipt(resolver, epoch, &transfer.object_ref())?;
 
-    Ok(ExpectedSeed {
+    Ok(ExpectedDevOwnerSeed {
         domain,
-        source,
-        destination,
+        transfer,
+        fee,
         receipt,
     })
 }
 
-fn build_expected_account(
+fn build_expected_coin(
     resolver: &HashSuiteResolver,
     epoch: Epoch,
-    owner: DevOwner,
+    owner: Address,
     slot: u64,
-    account: AssetAccount,
-) -> Result<ExpectedSeedAccount, DevnetSeedError> {
-    let address_owner: Owner = Owner::Address(Address::new(*owner.as_bytes()));
-    let body: Vec<u8> = encode_asset_account(&account)?;
+    coin_type_hash: Digest32,
+    coin: StandardAssetCoinV1,
+) -> Result<ExpectedSeedCoin, DevnetSeedError> {
+    let address_owner: Owner = Owner::Address(owner);
+    let body: Vec<u8> = encode_standard_asset_coin_v1(&coin)?;
 
     // The identifier descriptor reuses the existing canonical Object frame:
     // zero ObjectId is a descriptor namespace marker and `version` is the
-    // explicit source/destination slot. The actual stored object never uses
-    // either descriptor value. This avoids ad-hoc byte concatenation and a new
-    // unratified canonical type identifier.
+    // explicit slot. The actual stored object never uses either descriptor
+    // value. This avoids ad-hoc byte concatenation and a new unratified
+    // canonical type identifier.
     let descriptor: Object = Object {
         id: ObjectId::new([0; 32]),
         version: slot,
         owner: address_owner.clone(),
-        type_hash: asset_account_type_hash(),
-        schema_version: ASSET_ACCOUNT_SCHEMA_VERSION,
+        type_hash: coin_type_hash,
+        schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
         data: body.clone(),
     };
     let descriptor_bytes: Vec<u8> = encode_object(&descriptor)?;
@@ -307,70 +416,94 @@ fn build_expected_account(
         id: ObjectId::new(object_id_digest.bytes()),
         version: DurableObjectVersion::FIRST.get(),
         owner: address_owner,
-        type_hash: asset_account_type_hash(),
-        schema_version: ASSET_ACCOUNT_SCHEMA_VERSION,
+        type_hash: coin_type_hash,
+        schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
         data: body,
     };
     let canonical_object: Vec<u8> = encode_object(&object)?;
     let initial_digest: Digest32 =
         resolver.hash_for_purpose(epoch, HashPurpose::Object, &canonical_object)?;
-    Ok(ExpectedSeedAccount {
+    Ok(ExpectedSeedCoin {
         initial_object: object,
         initial_digest,
     })
 }
 
-fn create_seed_accounts<S>(
+/// An `ObjectRef` is already a stable canonical record. Using a coin's
+/// immutable version-one reference as the seed receipt avoids inventing a
+/// new devnet-local wire type purely to name "the first seeded coin".
+fn build_seed_receipt(
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    marker: &ObjectRef,
+) -> Result<DurableRequestReceipt, DevnetSeedError> {
+    let receipt_bytes: Vec<u8> = encode_object_ref(marker)?;
+    let request_digest: Digest32 =
+        resolver.hash_for_purpose(epoch, HashPurpose::Transaction, &receipt_bytes)?;
+    let event_digest: Digest32 =
+        resolver.hash_for_purpose(epoch, HashPurpose::NodeEvent, &receipt_bytes)?;
+    let request_id: DurableRequestId = DurableRequestId::new(request_digest.bytes())?;
+    Ok(DurableRequestReceipt::new(
+        request_id,
+        event_digest,
+        receipt_bytes,
+    )?)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_dev_owner_seed<S>(
     store: &S,
     blob_store: &dyn BlobStore,
     resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    asset_id: AssetId,
     owner: DevOwner,
     boot_generation: WriterFenceGeneration,
     context: &DurableOperationContext,
-    expected: ExpectedSeed,
-) -> Result<SeedAssetAccountsOutcome, DevnetSeedError>
+    expected: ExpectedDevOwnerSeed,
+) -> Result<SeedDevOwnerCoinsOutcome, DevnetSeedError>
 where
     S: StructuredDurableDomainStateStore + ?Sized,
 {
     let provenance: DurableObjectProvenance =
         DurableObjectProvenance::new(resolver.chain_id().clone(), resolver.protocol_version());
-    let source_record: DurableObjectVersionRecord = DurableObjectVersionRecord::from_inline_object(
-        expected.source.initial_object.clone(),
-        expected.source.initial_digest,
-        provenance.clone(),
-        boot_generation.get(),
-    )?;
-    let destination_record: DurableObjectVersionRecord =
+    let transfer_record: DurableObjectVersionRecord =
         DurableObjectVersionRecord::from_inline_object(
-            expected.destination.initial_object.clone(),
-            expected.destination.initial_digest,
-            provenance,
+            expected.transfer.initial_object.clone(),
+            expected.transfer.initial_digest,
+            provenance.clone(),
             boot_generation.get(),
         )?;
+    let fee_record: DurableObjectVersionRecord = DurableObjectVersionRecord::from_inline_object(
+        expected.fee.initial_object.clone(),
+        expected.fee.initial_digest,
+        provenance,
+        boot_generation.get(),
+    )?;
     let owner_projection: DurableObjectOwnerProjection =
         DurableObjectOwnerProjection::from_owner(Owner::Address(Address::new(*owner.as_bytes())))?;
     let routing_projection: DurableObjectRoutingProjection =
         DurableObjectRoutingProjection::new(None)?;
     let reads: Vec<DurableObjectHeadRead> = vec![
-        DurableObjectHeadRead::new(expected.source.initial_object.id, DurableObjectHead::Absent),
         DurableObjectHeadRead::new(
-            expected.destination.initial_object.id,
+            expected.transfer.initial_object.id,
             DurableObjectHead::Absent,
         ),
+        DurableObjectHeadRead::new(expected.fee.initial_object.id, DurableObjectHead::Absent),
     ];
     let mutations: Vec<DurableObjectMutationEntry> = vec![
         DurableObjectMutationEntry::new(
-            expected.source.initial_object.id,
+            expected.transfer.initial_object.id,
             DurableObjectMutation::Create {
-                version: source_record,
+                version: transfer_record,
                 owner_projection: owner_projection.clone(),
                 routing_projection: routing_projection.clone(),
             },
         ),
         DurableObjectMutationEntry::new(
-            expected.destination.initial_object.id,
+            expected.fee.initial_object.id,
             DurableObjectMutation::Create {
-                version: destination_record,
+                version: fee_record,
                 owner_projection,
                 routing_projection,
             },
@@ -386,16 +519,18 @@ where
     )?;
 
     match store.commit_invocation(context, invocation) {
-        DurableCommitOutcome::Committed => Ok(SeedAssetAccountsOutcome::Created(initial_accounts(
-            owner, &expected,
-        ))),
+        DurableCommitOutcome::Committed => Ok(SeedDevOwnerCoinsOutcome::Created(
+            initial_dev_owner_coins(owner, &expected),
+        )),
         DurableCommitOutcome::Rejected(
             DurableCommitRejection::ObjectConflict { .. }
             | DurableCommitRejection::RequestAlreadyCommitted,
-        ) => reconcile_existing_seed(
+        ) => reconcile_existing_dev_owner_seed(
             store,
             blob_store,
             resolver,
+            epoch,
+            asset_id,
             owner,
             boot_generation,
             context,
@@ -409,10 +544,12 @@ where
                 .get_request_receipt(context, expected.domain, expected.receipt.request_id())
                 .map_err(DevnetSeedError::Read)?;
             match receipt {
-                Some(receipt) if receipt == expected.receipt => reconcile_existing_seed(
+                Some(receipt) if receipt == expected.receipt => reconcile_existing_dev_owner_seed(
                     store,
                     blob_store,
                     resolver,
+                    epoch,
+                    asset_id,
                     owner,
                     boot_generation,
                     context,
@@ -425,136 +562,80 @@ where
     }
 }
 
-fn reconcile_existing_seed<S>(
+#[allow(clippy::too_many_arguments)]
+fn reconcile_existing_dev_owner_seed<S>(
     store: &S,
     blob_store: &dyn BlobStore,
     resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    asset_id: AssetId,
     owner: DevOwner,
     boot_generation: WriterFenceGeneration,
     context: &DurableOperationContext,
-    expected: &ExpectedSeed,
-) -> Result<SeedAssetAccountsOutcome, DevnetSeedError>
+    expected: &ExpectedDevOwnerSeed,
+) -> Result<SeedDevOwnerCoinsOutcome, DevnetSeedError>
 where
     S: StructuredDurableDomainStateStore + ?Sized,
 {
-    let source_head: DurableObjectHead = store
-        .get_object_head(context, expected.domain, expected.source.initial_object.id)
-        .map_err(DevnetSeedError::Read)?;
-    let destination_head: DurableObjectHead = store
+    let transfer_head: DurableObjectHead = store
         .get_object_head(
             context,
             expected.domain,
-            expected.destination.initial_object.id,
+            expected.transfer.initial_object.id,
         )
         .map_err(DevnetSeedError::Read)?;
-    let accounts: SeededAssetAccounts = verify_existing_seed(
+    let fee_head: DurableObjectHead = store
+        .get_object_head(context, expected.domain, expected.fee.initial_object.id)
+        .map_err(DevnetSeedError::Read)?;
+    let coins: SeededDevOwnerCoins = verify_existing_dev_owner_seed(
         store,
         blob_store,
         resolver,
+        epoch,
+        asset_id,
         owner,
         boot_generation,
         context,
         expected,
-        &source_head,
-        &destination_head,
+        &transfer_head,
+        &fee_head,
     )?;
-    Ok(SeedAssetAccountsOutcome::Existing(accounts))
+    Ok(SeedDevOwnerCoinsOutcome::Existing(coins))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn verify_existing_seed<S>(
-    store: &S,
-    blob_store: &dyn BlobStore,
-    resolver: &HashSuiteResolver,
-    owner: DevOwner,
-    boot_generation: WriterFenceGeneration,
-    context: &DurableOperationContext,
-    expected: &ExpectedSeed,
-    source_head: &DurableObjectHead,
-    destination_head: &DurableObjectHead,
-) -> Result<SeededAssetAccounts, DevnetSeedError>
-where
-    S: StructuredDurableDomainStateStore + ?Sized,
-{
-    if !matches!(source_head, DurableObjectHead::Current { .. })
-        || !matches!(destination_head, DurableObjectHead::Current { .. })
-    {
-        return Err(DevnetSeedError::UnexpectedHeadPair {
-            source: head_kind(source_head),
-            destination: head_kind(destination_head),
-        });
-    }
-
-    let source: VerifiedCurrentAccount = verify_current_account(
-        store,
-        blob_store,
-        resolver,
-        boot_generation,
-        context,
-        expected.domain,
-        source_head,
-        &expected.source,
-        owner,
-    )?;
-    let destination: VerifiedCurrentAccount = verify_current_account(
-        store,
-        blob_store,
-        resolver,
-        boot_generation,
-        context,
-        expected.domain,
-        destination_head,
-        &expected.destination,
-        owner,
-    )?;
-
-    verify_initial_record(
-        store,
-        resolver,
-        boot_generation,
-        context,
-        expected.domain,
-        &expected.source,
-        owner,
-    )?;
-    verify_initial_record(
-        store,
-        resolver,
-        boot_generation,
-        context,
-        expected.domain,
-        &expected.destination,
-        owner,
-    )?;
-    verify_seed_receipt(store, context, expected)?;
-
-    Ok(SeededAssetAccounts {
-        owner,
-        source: source.object_ref,
-        destination: destination.object_ref,
-        source_balance: source.account.balance,
-        destination_balance: destination.account.balance,
-    })
+#[derive(Clone, Copy)]
+enum CoinOwnerExpectation {
+    /// The current owner must equal exactly this address (the treasury
+    /// coin: it is never a valid whole-coin transfer source or destination
+    /// for this entrypoint).
+    Exact(Address),
+    /// The current owner may be any address admissible under the canonical
+    /// prime-order Ed25519 policy (F9: both of a dev owner's seeded coins
+    /// relax this far after real seeding, since either may have been used
+    /// as a whole-coin transfer source; never at creation time).
+    AnyAdmissible,
 }
 
 #[derive(Debug)]
-struct VerifiedCurrentAccount {
+struct VerifiedCurrentCoin {
     object_ref: ObjectRef,
-    account: AssetAccount,
+    coin: StandardAssetCoinV1,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn verify_current_account<S>(
+fn verify_current_coin<S>(
     store: &S,
     blob_store: &dyn BlobStore,
     resolver: &HashSuiteResolver,
+    epoch: Epoch,
     boot_generation: WriterFenceGeneration,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     head: &DurableObjectHead,
-    expected: &ExpectedSeedAccount,
-    owner: DevOwner,
-) -> Result<VerifiedCurrentAccount, DevnetSeedError>
+    expected: &ExpectedSeedCoin,
+    asset_id: AssetId,
+    owner_expectation: CoinOwnerExpectation,
+) -> Result<VerifiedCurrentCoin, DevnetSeedError>
 where
     S: StructuredDurableDomainStateStore + ?Sized,
 {
@@ -583,19 +664,44 @@ where
             });
         }
     };
-    let expected_owner: Owner = Owner::Address(Address::new(*owner.as_bytes()));
-    let expected_owner_projection: DurableObjectOwnerProjection =
-        DurableObjectOwnerProjection::from_owner(expected_owner.clone())?;
+
     let expected_routing_projection: DurableObjectRoutingProjection =
         DurableObjectRoutingProjection::new(None)?;
-    if owner_projection != &expected_owner_projection
-        || routing_projection != &expected_routing_projection
-    {
+    if routing_projection != &expected_routing_projection {
         return Err(DevnetSeedError::StoredObjectMismatch {
             object_id: expected.initial_object.id,
-            detail: "head owner or routing projection differs",
+            detail: "head routing projection differs",
         });
     }
+
+    let current_owner_address: Address = match owner_expectation {
+        CoinOwnerExpectation::Exact(address) => match owner_projection.owner() {
+            Some(Owner::Address(actual)) if *actual == address => address,
+            _ => {
+                return Err(DevnetSeedError::StoredObjectMismatch {
+                    object_id: expected.initial_object.id,
+                    detail: "head owner projection differs from the expected exact owner",
+                });
+            }
+        },
+        CoinOwnerExpectation::AnyAdmissible => match owner_projection.owner() {
+            Some(Owner::Address(actual)) => {
+                validate_ed25519_owner_address(
+                    actual.as_bytes(),
+                    Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
+                )
+                .map_err(DevnetSeedError::InadmissibleOwner)?;
+                *actual
+            }
+            _ => {
+                return Err(DevnetSeedError::StoredObjectMismatch {
+                    object_id: expected.initial_object.id,
+                    detail: "head owner projection is not an admissible address",
+                });
+            }
+        },
+    };
+    let expected_owner: Owner = Owner::Address(current_owner_address);
 
     let record: DurableObjectVersionRecord = store
         .get_object_version(context, domain, expected.initial_object.id, object_version)
@@ -607,7 +713,7 @@ where
     if record.object_id() != expected.initial_object.id
         || record.object_version() != object_version
         || record.digest() != head_digest
-        || record.schema_version() != ASSET_ACCOUNT_SCHEMA_VERSION
+        || record.schema_version() != STANDARD_ASSET_SCHEMA_VERSION_V1
     {
         return Err(DevnetSeedError::StoredObjectMismatch {
             object_id: expected.initial_object.id,
@@ -615,12 +721,7 @@ where
         });
     }
     verify_record_context(&record, resolver, boot_generation)?;
-    // A current version an authenticated transaction has since advanced may
-    // be blob-backed when its canonical bytes crossed DR-0096's fixed
-    // publication threshold. Both representations verify identically from
-    // here: fetch (or read inline) the exact canonical bytes, then apply the same
-    // identity/canonical-encoding/digest checks regardless of which one this
-    // current version turned out to be.
+
     let canonical_bytes: Vec<u8> = match record.payload() {
         DurableObjectPayload::Inline(inline) => inline.canonical_bytes().to_vec(),
         DurableObjectPayload::BlobReference(blob_digest) => {
@@ -651,12 +752,25 @@ where
     if object.id != expected.initial_object.id
         || object.version != object_version.get()
         || object.owner != expected_owner
-        || object.type_hash != asset_account_type_hash()
-        || object.schema_version != ASSET_ACCOUNT_SCHEMA_VERSION
+        || object.schema_version != STANDARD_ASSET_SCHEMA_VERSION_V1
     {
         return Err(DevnetSeedError::StoredObjectMismatch {
             object_id: expected.initial_object.id,
-            detail: "typed object identity, owner, type, or schema differs",
+            detail: "typed object identity, owner, or schema differs",
+        });
+    }
+    // F4: the object's nominal Coin<A> type is verified through
+    // `abi::verify_type_id`, never by raw `Digest32` equality against a
+    // recomputed-under-the-current-suite value: an object committed under an
+    // algorithm trusted at an earlier epoch must remain valid across a later
+    // hash-suite rotation.
+    let type_ok: bool =
+        verify_type_id(resolver, &object.type_hash, epoch, &coin_type_tag(asset_id))
+            .map_err(DevnetSeedError::TypedAbi)?;
+    if !type_ok {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: expected.initial_object.id,
+            detail: "coin nominal type failed verify_type_id",
         });
     }
     let canonical_object: Vec<u8> = encode_object(&object)?;
@@ -679,32 +793,30 @@ where
             detail: "stored object digest does not verify",
         });
     }
-    let account: AssetAccount = decode_asset_account(&object.data)?;
-    if account.asset_id != DEVNET_ASSET_ID || encode_asset_account(&account)? != object.data {
+    let coin: StandardAssetCoinV1 = decode_standard_asset_coin_v1(&object.data)?;
+    if coin.asset_id() != asset_id || encode_standard_asset_coin_v1(&coin)? != object.data {
         return Err(DevnetSeedError::StoredObjectMismatch {
             object_id: expected.initial_object.id,
-            detail: "asset-account body or asset identifier differs",
+            detail: "coin body or asset identifier differs",
         });
     }
-    Ok(VerifiedCurrentAccount {
+    Ok(VerifiedCurrentCoin {
         object_ref: ObjectRef {
             id: object.id,
             version: object.version,
             digest: record.digest(),
         },
-        account,
+        coin,
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn verify_initial_record<S>(
     store: &S,
     resolver: &HashSuiteResolver,
     boot_generation: WriterFenceGeneration,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
-    expected: &ExpectedSeedAccount,
-    owner: DevOwner,
+    expected: &ExpectedSeedCoin,
 ) -> Result<(), DevnetSeedError>
 where
     S: StructuredDurableDomainStateStore + ?Sized,
@@ -730,14 +842,12 @@ where
             ));
         }
     };
-    let expected_owner: Owner = Owner::Address(Address::new(*owner.as_bytes()));
     let canonical_expected: Vec<u8> = encode_object(&expected.initial_object)?;
     if record.object_id() != expected.initial_object.id
         || record.object_version() != DurableObjectVersion::FIRST
         || record.digest() != expected.initial_digest
-        || record.schema_version() != ASSET_ACCOUNT_SCHEMA_VERSION
+        || record.schema_version() != STANDARD_ASSET_SCHEMA_VERSION_V1
         || inline.object() != &expected.initial_object
-        || inline.object().owner != expected_owner
         || inline.canonical_bytes() != canonical_expected
     {
         return Err(DevnetSeedError::StoredObjectMismatch {
@@ -787,28 +897,32 @@ fn verify_record_context(
 fn verify_seed_receipt<S>(
     store: &S,
     context: &DurableOperationContext,
-    expected: &ExpectedSeed,
+    domain: AtomicityDomainId,
+    expected: &DurableRequestReceipt,
 ) -> Result<(), DevnetSeedError>
 where
     S: StructuredDurableDomainStateStore + ?Sized,
 {
     let receipt: DurableRequestReceipt = store
-        .get_request_receipt(context, expected.domain, expected.receipt.request_id())
+        .get_request_receipt(context, domain, expected.request_id())
         .map_err(DevnetSeedError::Read)?
         .ok_or(DevnetSeedError::MissingSeedReceipt)?;
-    if receipt != expected.receipt {
+    if &receipt != expected {
         return Err(DevnetSeedError::ReceiptMismatch);
     }
     Ok(())
 }
 
-fn initial_accounts(owner: DevOwner, expected: &ExpectedSeed) -> SeededAssetAccounts {
-    SeededAssetAccounts {
+fn initial_dev_owner_coins(
+    owner: DevOwner,
+    expected: &ExpectedDevOwnerSeed,
+) -> SeededDevOwnerCoins {
+    SeededDevOwnerCoins {
         owner,
-        source: expected.source.object_ref(),
-        destination: expected.destination.object_ref(),
-        source_balance: INITIAL_SOURCE_BALANCE,
-        destination_balance: INITIAL_DESTINATION_BALANCE,
+        transfer_coin: expected.transfer.object_ref(),
+        fee_coin: expected.fee.object_ref(),
+        transfer_amount: INITIAL_TRANSFER_COIN_AMOUNT,
+        fee_amount: INITIAL_FEE_COIN_AMOUNT,
     }
 }
 
@@ -820,11 +934,711 @@ fn head_kind(head: &DurableObjectHead) -> &'static str {
     }
 }
 
-/// Fail-closed errors while deriving, creating, or verifying devnet seed objects.
+#[allow(clippy::too_many_arguments)]
+fn verify_existing_dev_owner_seed<S>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    asset_id: AssetId,
+    owner: DevOwner,
+    boot_generation: WriterFenceGeneration,
+    context: &DurableOperationContext,
+    expected: &ExpectedDevOwnerSeed,
+    transfer_head: &DurableObjectHead,
+    fee_head: &DurableObjectHead,
+) -> Result<SeededDevOwnerCoins, DevnetSeedError>
+where
+    S: StructuredDurableDomainStateStore + ?Sized,
+{
+    if !matches!(transfer_head, DurableObjectHead::Current { .. })
+        || !matches!(fee_head, DurableObjectHead::Current { .. })
+    {
+        return Err(DevnetSeedError::UnexpectedHeadPair {
+            first: head_kind(transfer_head),
+            second: head_kind(fee_head),
+        });
+    }
+
+    // Both seeded coins are protocol-indistinguishable: either may have been
+    // used as the whole-coin transfer source (owner moves) or as the fee
+    // payer (amount moves) since seeding, so both are verified under the
+    // identical relaxed expectation (see `seed_dev_owner_coins`'s docs, F9).
+    let transfer: VerifiedCurrentCoin = verify_current_coin(
+        store,
+        blob_store,
+        resolver,
+        epoch,
+        boot_generation,
+        context,
+        expected.domain,
+        transfer_head,
+        &expected.transfer,
+        asset_id,
+        CoinOwnerExpectation::AnyAdmissible,
+    )?;
+    let fee: VerifiedCurrentCoin = verify_current_coin(
+        store,
+        blob_store,
+        resolver,
+        epoch,
+        boot_generation,
+        context,
+        expected.domain,
+        fee_head,
+        &expected.fee,
+        asset_id,
+        CoinOwnerExpectation::AnyAdmissible,
+    )?;
+
+    verify_initial_record(
+        store,
+        resolver,
+        boot_generation,
+        context,
+        expected.domain,
+        &expected.transfer,
+    )?;
+    verify_initial_record(
+        store,
+        resolver,
+        boot_generation,
+        context,
+        expected.domain,
+        &expected.fee,
+    )?;
+    verify_seed_receipt(store, context, expected.domain, &expected.receipt)?;
+
+    Ok(SeededDevOwnerCoins {
+        owner,
+        transfer_coin: transfer.object_ref,
+        fee_coin: fee.object_ref,
+        transfer_amount: transfer.coin.amount(),
+        fee_amount: fee.coin.amount(),
+    })
+}
+
+// ── Treasury coin seeding ─────────────────────────────────────────────────
+
+/// Seeds the distinct treasury owner's one ordinary treasury coin.
+#[allow(clippy::too_many_arguments)]
+pub fn seed_treasury_coin<S>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    asset_id: AssetId,
+    treasury_owner: DevOwner,
+    boot_generation: WriterFenceGeneration,
+    context: &DurableOperationContext,
+) -> Result<SeedTreasuryCoinOutcome, DevnetSeedError>
+where
+    S: StructuredDurableDomainStateStore + ?Sized,
+{
+    validate_ed25519_owner_address(
+        treasury_owner.as_bytes(),
+        Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
+    )
+    .map_err(DevnetSeedError::InadmissibleOwner)?;
+    if context.writer_fence() != boot_generation {
+        return Err(DevnetSeedError::ContextFenceMismatch {
+            context: context.writer_fence(),
+            boot: boot_generation,
+        });
+    }
+
+    let expected: ExpectedTreasurySeed =
+        build_expected_treasury_seed(resolver, epoch, asset_id, treasury_owner)?;
+    let head: DurableObjectHead = store
+        .get_object_head(
+            context,
+            expected.domain,
+            expected.treasury.initial_object.id,
+        )
+        .map_err(DevnetSeedError::Read)?;
+
+    match &head {
+        DurableObjectHead::Absent => create_treasury_seed(
+            store,
+            blob_store,
+            resolver,
+            epoch,
+            asset_id,
+            treasury_owner,
+            boot_generation,
+            context,
+            expected,
+        ),
+        DurableObjectHead::Current { .. } => {
+            let coin: SeededTreasuryCoin = verify_existing_treasury_seed(
+                store,
+                blob_store,
+                resolver,
+                epoch,
+                asset_id,
+                treasury_owner,
+                boot_generation,
+                context,
+                &expected,
+                &head,
+            )?;
+            Ok(SeedTreasuryCoinOutcome::Existing(coin))
+        }
+        DurableObjectHead::Tombstoned { .. } => Err(DevnetSeedError::UnexpectedHead {
+            object_id: expected.treasury.initial_object.id,
+            kind: head_kind(&head),
+        }),
+    }
+}
+
+fn build_expected_treasury_seed(
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    asset_id: AssetId,
+    treasury_owner: DevOwner,
+) -> Result<ExpectedTreasurySeed, DevnetSeedError> {
+    let domain: AtomicityDomainId = AtomicityDomainId::new(DEVNET_DOMAIN_BYTES)
+        .map_err(|_| DevnetSeedError::InvalidStaticDomain)?;
+    let coin_type_hash: Digest32 = derive_coin_type_id(resolver, epoch, asset_id)?;
+    let treasury_coin: StandardAssetCoinV1 =
+        StandardAssetCoinV1::new(asset_id, INITIAL_TREASURY_COIN_AMOUNT)?;
+    let treasury: ExpectedSeedCoin = build_expected_coin(
+        resolver,
+        epoch,
+        Address::new(*treasury_owner.as_bytes()),
+        TREASURY_COIN_SLOT,
+        coin_type_hash,
+        treasury_coin,
+    )?;
+    let receipt: DurableRequestReceipt =
+        build_seed_receipt(resolver, epoch, &treasury.object_ref())?;
+    Ok(ExpectedTreasurySeed {
+        domain,
+        treasury,
+        receipt,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_treasury_seed<S>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    asset_id: AssetId,
+    treasury_owner: DevOwner,
+    boot_generation: WriterFenceGeneration,
+    context: &DurableOperationContext,
+    expected: ExpectedTreasurySeed,
+) -> Result<SeedTreasuryCoinOutcome, DevnetSeedError>
+where
+    S: StructuredDurableDomainStateStore + ?Sized,
+{
+    let provenance: DurableObjectProvenance =
+        DurableObjectProvenance::new(resolver.chain_id().clone(), resolver.protocol_version());
+    let treasury_record: DurableObjectVersionRecord =
+        DurableObjectVersionRecord::from_inline_object(
+            expected.treasury.initial_object.clone(),
+            expected.treasury.initial_digest,
+            provenance,
+            boot_generation.get(),
+        )?;
+    let owner_projection: DurableObjectOwnerProjection = DurableObjectOwnerProjection::from_owner(
+        Owner::Address(Address::new(*treasury_owner.as_bytes())),
+    )?;
+    let routing_projection: DurableObjectRoutingProjection =
+        DurableObjectRoutingProjection::new(None)?;
+    let reads: Vec<DurableObjectHeadRead> = vec![DurableObjectHeadRead::new(
+        expected.treasury.initial_object.id,
+        DurableObjectHead::Absent,
+    )];
+    let mutations: Vec<DurableObjectMutationEntry> = vec![DurableObjectMutationEntry::new(
+        expected.treasury.initial_object.id,
+        DurableObjectMutation::Create {
+            version: treasury_record,
+            owner_projection,
+            routing_projection,
+        },
+    )];
+    let objects: DurableObjectChanges = DurableObjectChanges::new(reads, mutations)?;
+    let invocation: DurableInvocationTransaction = DurableInvocationTransaction::new(
+        expected.domain,
+        None,
+        objects,
+        expected.receipt.clone(),
+        None,
+    )?;
+
+    match store.commit_invocation(context, invocation) {
+        DurableCommitOutcome::Committed => {
+            Ok(SeedTreasuryCoinOutcome::Created(SeededTreasuryCoin {
+                owner: treasury_owner,
+                coin: expected.treasury.object_ref(),
+                amount: INITIAL_TREASURY_COIN_AMOUNT,
+            }))
+        }
+        DurableCommitOutcome::Rejected(
+            DurableCommitRejection::ObjectConflict { .. }
+            | DurableCommitRejection::RequestAlreadyCommitted,
+        ) => {
+            let head: DurableObjectHead = store
+                .get_object_head(
+                    context,
+                    expected.domain,
+                    expected.treasury.initial_object.id,
+                )
+                .map_err(DevnetSeedError::Read)?;
+            let coin: SeededTreasuryCoin = verify_existing_treasury_seed(
+                store,
+                blob_store,
+                resolver,
+                epoch,
+                asset_id,
+                treasury_owner,
+                boot_generation,
+                context,
+                &expected,
+                &head,
+            )?;
+            Ok(SeedTreasuryCoinOutcome::Existing(coin))
+        }
+        DurableCommitOutcome::Rejected(rejection) => {
+            Err(DevnetSeedError::CommitRejected(rejection))
+        }
+        DurableCommitOutcome::Indeterminate(reason) => {
+            let receipt: Option<DurableRequestReceipt> = store
+                .get_request_receipt(context, expected.domain, expected.receipt.request_id())
+                .map_err(DevnetSeedError::Read)?;
+            match receipt {
+                Some(receipt) if receipt == expected.receipt => {
+                    let head: DurableObjectHead = store
+                        .get_object_head(
+                            context,
+                            expected.domain,
+                            expected.treasury.initial_object.id,
+                        )
+                        .map_err(DevnetSeedError::Read)?;
+                    let coin: SeededTreasuryCoin = verify_existing_treasury_seed(
+                        store,
+                        blob_store,
+                        resolver,
+                        epoch,
+                        asset_id,
+                        treasury_owner,
+                        boot_generation,
+                        context,
+                        &expected,
+                        &head,
+                    )?;
+                    Ok(SeedTreasuryCoinOutcome::Existing(coin))
+                }
+                Some(_) => Err(DevnetSeedError::ReceiptMismatch),
+                None => Err(DevnetSeedError::CommitIndeterminate(reason)),
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_existing_treasury_seed<S>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    asset_id: AssetId,
+    treasury_owner: DevOwner,
+    boot_generation: WriterFenceGeneration,
+    context: &DurableOperationContext,
+    expected: &ExpectedTreasurySeed,
+    head: &DurableObjectHead,
+) -> Result<SeededTreasuryCoin, DevnetSeedError>
+where
+    S: StructuredDurableDomainStateStore + ?Sized,
+{
+    if !matches!(head, DurableObjectHead::Current { .. }) {
+        return Err(DevnetSeedError::UnexpectedHead {
+            object_id: expected.treasury.initial_object.id,
+            kind: head_kind(head),
+        });
+    }
+    let verified: VerifiedCurrentCoin = verify_current_coin(
+        store,
+        blob_store,
+        resolver,
+        epoch,
+        boot_generation,
+        context,
+        expected.domain,
+        head,
+        &expected.treasury,
+        asset_id,
+        CoinOwnerExpectation::Exact(Address::new(*treasury_owner.as_bytes())),
+    )?;
+    verify_initial_record(
+        store,
+        resolver,
+        boot_generation,
+        context,
+        expected.domain,
+        &expected.treasury,
+    )?;
+    verify_seed_receipt(store, context, expected.domain, &expected.receipt)?;
+
+    Ok(SeededTreasuryCoin {
+        owner: treasury_owner,
+        coin: verified.object_ref,
+        amount: verified.coin.amount(),
+    })
+}
+
+// ── Protocol-version marker ──────────────────────────────────────────────
+
+fn protocol_context_marker_type_hash() -> Digest32 {
+    Digest32::new(protocol_types::HashAlgorithmId::Sha2_256, [0xFE; 32])
+}
+
+fn encode_protocol_context_marker(
+    protocol_version: u32,
+    epoch: Epoch,
+) -> Result<Vec<u8>, CanonicalEncodingError> {
+    let mut frame: CanonicalStruct = CanonicalStruct::new(
+        PROTOCOL_CONTEXT_MARKER_TYPE_ID,
+        PROTOCOL_CONTEXT_MARKER_ENCODING_VERSION,
+    );
+    frame.field_u32(1, protocol_version)?;
+    frame.field_u64(2, epoch.get())?;
+    frame.finish()
+}
+
+fn decode_protocol_context_marker(input: &[u8]) -> Result<(u32, u64), DevnetSeedError> {
+    let frame: CanonicalFrame<'_> =
+        decode_canonical_frame(input).map_err(DevnetSeedError::CanonicalDecoding)?;
+    frame
+        .require_type(PROTOCOL_CONTEXT_MARKER_TYPE_ID)
+        .map_err(DevnetSeedError::CanonicalDecoding)?;
+    frame
+        .require_version(PROTOCOL_CONTEXT_MARKER_ENCODING_VERSION)
+        .map_err(DevnetSeedError::CanonicalDecoding)?;
+    frame
+        .require_only_fields(&[1, 2])
+        .map_err(DevnetSeedError::CanonicalDecoding)?;
+    let protocol_version: u32 = frame
+        .required_u32(1)
+        .map_err(DevnetSeedError::CanonicalDecoding)?;
+    let epoch: u64 = frame
+        .required_u64(2)
+        .map_err(DevnetSeedError::CanonicalDecoding)?;
+    Ok((protocol_version, epoch))
+}
+
+/// Verifies (or, on first boot, seeds) a persisted marker recording the
+/// exact protocol version and epoch this data directory was created under.
+///
+/// A protocol-3 data directory reused under this protocol-4 binary would
+/// otherwise never fail: every derived `AssetId` and seed object id changes
+/// with `protocol_version` (see `derive_devnet_asset_id`/`build_expected_coin`),
+/// so a stale v3 data directory would simply seed a *disjoint* fresh v4
+/// object set into the same SQLite file rather than refusing to boot. This
+/// marker is deliberately keyed by a fixed, protocol-version-independent
+/// `ObjectId` so it can actually detect that mismatch instead of silently
+/// deriving a different identity for itself too.
+///
+/// Like its sibling seed functions, this rejects a `context` whose writer
+/// fence disagrees with `boot_generation` before any storage work.
+pub fn verify_or_seed_protocol_context<S>(
+    store: &S,
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    boot_generation: WriterFenceGeneration,
+    context: &DurableOperationContext,
+    object_store_was_empty: bool,
+) -> Result<(), DevnetSeedError>
+where
+    S: StructuredDurableDomainStateStore + ?Sized,
+{
+    if context.writer_fence() != boot_generation {
+        return Err(DevnetSeedError::ContextFenceMismatch {
+            context: context.writer_fence(),
+            boot: boot_generation,
+        });
+    }
+    let domain: AtomicityDomainId = AtomicityDomainId::new(DEVNET_DOMAIN_BYTES)
+        .map_err(|_| DevnetSeedError::InvalidStaticDomain)?;
+    let head: DurableObjectHead = store
+        .get_object_head(context, domain, PROTOCOL_CONTEXT_MARKER_OBJECT_ID)
+        .map_err(DevnetSeedError::Read)?;
+    match head {
+        DurableObjectHead::Absent => {
+            if !object_store_was_empty {
+                return Err(DevnetSeedError::UnmarkedExistingObjectState);
+            }
+            match create_protocol_context_marker(
+                store,
+                resolver,
+                epoch,
+                boot_generation,
+                context,
+                domain,
+            ) {
+                Ok(()) => Ok(()),
+                Err(DevnetSeedError::CommitRejected(
+                    DurableCommitRejection::ObjectConflict { .. }
+                    | DurableCommitRejection::RequestAlreadyCommitted,
+                )) => verify_protocol_context_marker_current(
+                    store,
+                    resolver,
+                    epoch,
+                    boot_generation,
+                    context,
+                    domain,
+                ),
+                Err(error) => Err(error),
+            }
+        }
+        DurableObjectHead::Current { .. } => verify_protocol_context_marker_current(
+            store,
+            resolver,
+            epoch,
+            boot_generation,
+            context,
+            domain,
+        ),
+        DurableObjectHead::Tombstoned { .. } => Err(DevnetSeedError::UnexpectedHead {
+            object_id: PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+            kind: "tombstoned",
+        }),
+    }
+}
+
+fn verify_protocol_context_marker_current<S>(
+    store: &S,
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    boot_generation: WriterFenceGeneration,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+) -> Result<(), DevnetSeedError>
+where
+    S: StructuredDurableDomainStateStore + ?Sized,
+{
+    let head: DurableObjectHead = store
+        .get_object_head(context, domain, PROTOCOL_CONTEXT_MARKER_OBJECT_ID)
+        .map_err(DevnetSeedError::Read)?;
+    let DurableObjectHead::Current {
+        object_version,
+        digest: head_digest,
+        owner_projection,
+        routing_projection,
+        ..
+    } = head
+    else {
+        return Err(DevnetSeedError::UnexpectedHead {
+            object_id: PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+            kind: head_kind(&head),
+        });
+    };
+    let expected_owner_projection: DurableObjectOwnerProjection =
+        DurableObjectOwnerProjection::from_owner(Owner::Immutable)?;
+    let expected_routing_projection: DurableObjectRoutingProjection =
+        DurableObjectRoutingProjection::new(None)?;
+    if object_version != DurableObjectVersion::FIRST
+        || owner_projection != expected_owner_projection
+        || routing_projection != expected_routing_projection
+    {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+            detail: "protocol-context marker head metadata differs",
+        });
+    }
+    let record: DurableObjectVersionRecord = store
+        .get_object_version(
+            context,
+            domain,
+            PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+            object_version,
+        )
+        .map_err(DevnetSeedError::Read)?
+        .ok_or(DevnetSeedError::MissingObjectVersion {
+            object_id: PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+            version: object_version,
+        })?;
+    if record.object_id() != PROTOCOL_CONTEXT_MARKER_OBJECT_ID
+        || record.object_version() != DurableObjectVersion::FIRST
+        || record.digest() != head_digest
+        || record.schema_version() != 1
+    {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+            detail: "protocol-context marker head and immutable metadata differ",
+        });
+    }
+    if record.provenance().chain_id() != resolver.chain_id() {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+            detail: "protocol-context marker creating chain differs",
+        });
+    }
+    let created_checkpoint: u64 = record.created_checkpoint();
+    if created_checkpoint == 0 || created_checkpoint > boot_generation.get() {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+            detail: "protocol-context marker checkpoint is zero or from a future boot generation",
+        });
+    }
+    let inline = match record.payload() {
+        DurableObjectPayload::Inline(inline) => inline,
+        DurableObjectPayload::BlobReference(_) => {
+            return Err(DevnetSeedError::BlobBackedSeedObject(
+                PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+            ));
+        }
+    };
+    let object: Object = decode_object(inline.canonical_bytes())?;
+    if object.id != PROTOCOL_CONTEXT_MARKER_OBJECT_ID
+        || object.version != DurableObjectVersion::FIRST.get()
+        || object.owner != Owner::Immutable
+        || object.type_hash != protocol_context_marker_type_hash()
+        || object.schema_version != 1
+    {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+            detail: "protocol-context marker typed object differs",
+        });
+    }
+    let canonical_object: Vec<u8> = encode_object(&object)?;
+    if canonical_object != inline.canonical_bytes() {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+            detail: "protocol-context marker bytes are not canonical",
+        });
+    }
+    let digest_valid: bool = verify_digest(
+        &record.digest(),
+        HashPurpose::Object,
+        record.provenance().protocol_version(),
+        record.provenance().chain_id(),
+        &canonical_object,
+    )?;
+    if !digest_valid {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+            detail: "protocol-context marker digest does not verify",
+        });
+    }
+    let (stored_version, stored_epoch): (u32, u64) = decode_protocol_context_marker(&object.data)?;
+    let canonical_body: Vec<u8> =
+        encode_protocol_context_marker(stored_version, Epoch::new(stored_epoch))
+            .map_err(DevnetSeedError::CanonicalEncoding)?;
+    if canonical_body != object.data {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+            detail: "protocol-context marker body is not canonical",
+        });
+    }
+    if record.provenance().protocol_version().get() != stored_version {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+            detail: "protocol-context marker body and provenance differ",
+        });
+    }
+    let expected: u32 = resolver.protocol_version().get();
+    if stored_version != expected {
+        return Err(DevnetSeedError::ProtocolVersionMismatch {
+            expected,
+            actual: stored_version,
+        });
+    }
+    if stored_epoch != epoch.get() {
+        return Err(DevnetSeedError::EpochMismatch {
+            expected: epoch.get(),
+            actual: stored_epoch,
+        });
+    }
+    let object_ref: ObjectRef = ObjectRef {
+        id: PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+        version: object.version,
+        digest: record.digest(),
+    };
+    let expected_receipt: DurableRequestReceipt = build_seed_receipt(resolver, epoch, &object_ref)?;
+    verify_seed_receipt(store, context, domain, &expected_receipt)?;
+    Ok(())
+}
+
+fn create_protocol_context_marker<S>(
+    store: &S,
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    boot_generation: WriterFenceGeneration,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+) -> Result<(), DevnetSeedError>
+where
+    S: StructuredDurableDomainStateStore + ?Sized,
+{
+    let body: Vec<u8> = encode_protocol_context_marker(resolver.protocol_version().get(), epoch)
+        .map_err(DevnetSeedError::CanonicalEncoding)?;
+    let object: Object = Object {
+        id: PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+        version: DurableObjectVersion::FIRST.get(),
+        owner: Owner::Immutable,
+        type_hash: protocol_context_marker_type_hash(),
+        schema_version: 1,
+        data: body,
+    };
+    let canonical_object: Vec<u8> = encode_object(&object)?;
+    let digest: Digest32 =
+        resolver.hash_for_purpose(epoch, HashPurpose::Object, &canonical_object)?;
+    let provenance: DurableObjectProvenance =
+        DurableObjectProvenance::new(resolver.chain_id().clone(), resolver.protocol_version());
+    let record: DurableObjectVersionRecord = DurableObjectVersionRecord::from_inline_object(
+        object,
+        digest,
+        provenance,
+        boot_generation.get(),
+    )?;
+    let owner_projection: DurableObjectOwnerProjection =
+        DurableObjectOwnerProjection::from_owner(Owner::Immutable)?;
+    let routing_projection: DurableObjectRoutingProjection =
+        DurableObjectRoutingProjection::new(None)?;
+    let reads: Vec<DurableObjectHeadRead> = vec![DurableObjectHeadRead::new(
+        PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+        DurableObjectHead::Absent,
+    )];
+    let mutations: Vec<DurableObjectMutationEntry> = vec![DurableObjectMutationEntry::new(
+        PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+        DurableObjectMutation::Create {
+            version: record,
+            owner_projection,
+            routing_projection,
+        },
+    )];
+    let objects: DurableObjectChanges = DurableObjectChanges::new(reads, mutations)?;
+    let object_ref: ObjectRef = ObjectRef {
+        id: PROTOCOL_CONTEXT_MARKER_OBJECT_ID,
+        version: DurableObjectVersion::FIRST.get(),
+        digest,
+    };
+    let receipt: DurableRequestReceipt = build_seed_receipt(resolver, epoch, &object_ref)?;
+    let invocation: DurableInvocationTransaction =
+        DurableInvocationTransaction::new(domain, None, objects, receipt, None)?;
+
+    match store.commit_invocation(context, invocation) {
+        DurableCommitOutcome::Committed => Ok(()),
+        DurableCommitOutcome::Rejected(rejection) => {
+            Err(DevnetSeedError::CommitRejected(rejection))
+        }
+        DurableCommitOutcome::Indeterminate(reason) => {
+            Err(DevnetSeedError::CommitIndeterminate(reason))
+        }
+    }
+}
+
+/// Fail-closed errors while deriving, creating, or verifying devnet seed
+/// objects.
 #[derive(Debug)]
 pub enum DevnetSeedError {
     /// The owner was not a canonical, non-identity, prime-order Ed25519
-    /// public key and therefore cannot safely receive seeded value.
+    /// public key and therefore cannot safely receive or hold seeded value.
     InadmissibleOwner(Ed25519OwnerAddressError),
     /// The hard-coded devnet atomicity domain unexpectedly violated its invariant.
     InvalidStaticDomain,
@@ -837,24 +1651,39 @@ pub enum DevnetSeedError {
     },
     /// Hash derivation produced the same identifier for both explicit slots.
     ObjectIdCollision,
-    /// The strict asset-account body codec rejected a value.
-    AssetCodec(AssetAccountCodecError),
+    /// A Standard Asset v1 codec or derivation call failed.
+    StandardAsset(StandardAssetError),
     /// Existing object framing failed.
     Object(ObjectError),
     /// Domain-separated hash derivation or verification failed.
     Hashing(HashingError),
+    /// A typed-ABI type-identity verification call failed.
+    TypedAbi(AbiError),
+    /// A dev-local canonical marker failed to encode.
+    CanonicalEncoding(CanonicalEncodingError),
+    /// A dev-local canonical marker failed to decode.
+    CanonicalDecoding(CanonicalDecodingError),
     /// The bounded durable envelope was invalid.
     Invocation(DurableInvocationError),
     /// A deterministic non-zero durable request identity could not be built.
     RequestIdentity(IndexedOutboxContractError),
     /// A structured read failed.
     Read(DurableReadError),
-    /// The pair was not exactly both absent or both current.
+    /// A dev owner's transfer/fee coin pair was not exactly both absent or
+    /// both current.
     UnexpectedHeadPair {
-        /// Source head kind.
-        source: &'static str,
-        /// Destination head kind.
-        destination: &'static str,
+        /// First coin's head kind.
+        first: &'static str,
+        /// Second coin's head kind.
+        second: &'static str,
+    },
+    /// A single-object seed (treasury coin or protocol-context marker) had
+    /// an unexpected head kind.
+    UnexpectedHead {
+        /// The object identifier.
+        object_id: ObjectId,
+        /// The unexpected head kind.
+        kind: &'static str,
     },
     /// An exact immutable version referenced by a current or seed head was missing.
     MissingObjectVersion {
@@ -896,6 +1725,28 @@ pub enum DevnetSeedError {
     CommitRejected(DurableCommitRejection),
     /// The store could not determine whether seed creation committed.
     CommitIndeterminate(IndeterminateCommitReason),
+    /// The persisted protocol-context marker disagrees with the configured
+    /// protocol version: this data directory was created under a different,
+    /// incompatible protocol version and must not be reused.
+    ProtocolVersionMismatch {
+        /// The currently configured protocol version.
+        expected: u32,
+        /// The protocol version this data directory was created under.
+        actual: u32,
+    },
+    /// The persisted marker's creation epoch disagrees with the configured
+    /// epoch. Because the devnet AssetId is epoch-bound, the data directory
+    /// must not be reused under another epoch.
+    EpochMismatch {
+        /// The currently configured epoch.
+        expected: u64,
+        /// The epoch this data directory was created under.
+        actual: u64,
+    },
+    /// Object state already existed before the first protocol-context marker
+    /// could be installed. This is an unsupported pre-v4 data directory and
+    /// must not be mixed with newly derived v4 objects.
+    UnmarkedExistingObjectState,
 }
 
 impl fmt::Display for DevnetSeedError {
@@ -912,22 +1763,30 @@ impl fmt::Display for DevnetSeedError {
                 boot.get()
             ),
             Self::ObjectIdCollision => {
-                f.write_str("devnet source and destination object identifiers collided")
+                f.write_str("devnet transfer and fee coin object identifiers collided")
             }
-            Self::AssetCodec(error) => write!(f, "seed asset-account codec failed: {error}"),
+            Self::StandardAsset(error) => write!(f, "seed standard-asset codec failed: {error}"),
             Self::Object(error) => write!(f, "seed object framing failed: {error}"),
             Self::Hashing(error) => write!(f, "seed hash derivation failed: {error}"),
+            Self::TypedAbi(error) => write!(f, "seed typed-ABI verification failed: {error}"),
+            Self::CanonicalEncoding(error) => {
+                write!(f, "seed marker encoding failed: {error}")
+            }
+            Self::CanonicalDecoding(error) => {
+                write!(f, "seed marker decoding failed: {error}")
+            }
             Self::Invocation(error) => write!(f, "seed durable envelope is invalid: {error}"),
             Self::RequestIdentity(error) => {
                 write!(f, "seed request identity is invalid: {error}")
             }
             Self::Read(error) => write!(f, "seed structured read failed: {error:?}"),
-            Self::UnexpectedHeadPair {
-                source,
-                destination,
-            } => write!(
+            Self::UnexpectedHeadPair { first, second } => write!(
                 f,
-                "seed account heads must be both absent or both current, got source={source}, destination={destination}"
+                "seed coin heads must be both absent or both current, got first={first}, second={second}"
+            ),
+            Self::UnexpectedHead { object_id, kind } => write!(
+                f,
+                "seed object {object_id} has an unexpected head kind: {kind}"
             ),
             Self::MissingObjectVersion { object_id, version } => write!(
                 f,
@@ -949,9 +1808,9 @@ impl fmt::Display for DevnetSeedError {
             Self::StoredObjectMismatch { object_id, detail } => {
                 write!(f, "seed object {object_id} failed verification: {detail}")
             }
-            Self::AssetInvariantViolation => f.write_str(
-                "seed asset accounts violate unique identity or global supply invariants",
-            ),
+            Self::AssetInvariantViolation => {
+                f.write_str("seed coins violate unique identity or global supply invariants")
+            }
             Self::MissingSeedReceipt => f.write_str("deterministic seed receipt is missing"),
             Self::ReceiptMismatch => f.write_str("deterministic seed receipt differs"),
             Self::CommitRejected(rejection) => {
@@ -960,6 +1819,17 @@ impl fmt::Display for DevnetSeedError {
             Self::CommitIndeterminate(reason) => {
                 write!(f, "seed commit is indeterminate: {reason:?}")
             }
+            Self::ProtocolVersionMismatch { expected, actual } => write!(
+                f,
+                "data directory was seeded under protocol version {actual}, current configuration is protocol version {expected}; use a fresh --data-dir"
+            ),
+            Self::EpochMismatch { expected, actual } => write!(
+                f,
+                "data directory was seeded under epoch {actual}, current configuration is epoch {expected}; use a fresh --data-dir"
+            ),
+            Self::UnmarkedExistingObjectState => f.write_str(
+                "data directory contains object state but no protocol-context marker; it predates protocol version 4 and must be replaced with a fresh --data-dir",
+            ),
         }
     }
 }
@@ -968,9 +1838,12 @@ impl Error for DevnetSeedError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::InadmissibleOwner(error) => Some(error),
-            Self::AssetCodec(error) => Some(error),
+            Self::StandardAsset(error) => Some(error),
             Self::Object(error) => Some(error),
             Self::Hashing(error) => Some(error),
+            Self::TypedAbi(error) => Some(error),
+            Self::CanonicalEncoding(error) => Some(error),
+            Self::CanonicalDecoding(error) => Some(error),
             Self::Invocation(error) => Some(error),
             Self::RequestIdentity(error) => Some(error),
             Self::BlobStore(error) => Some(error),
@@ -979,9 +1852,9 @@ impl Error for DevnetSeedError {
     }
 }
 
-impl From<AssetAccountCodecError> for DevnetSeedError {
-    fn from(value: AssetAccountCodecError) -> Self {
-        Self::AssetCodec(value)
+impl From<StandardAssetError> for DevnetSeedError {
+    fn from(value: StandardAssetError) -> Self {
+        Self::StandardAsset(value)
     }
 }
 
@@ -1017,12 +1890,14 @@ mod tests {
     use runtime::{
         MemoryBlobStore, MemoryDurableStateStore, StorageCorrelationId, StorageDeadline,
     };
-    use standard_assets::AssetId;
+    use standard_assets::{STANDARD_ASSET_COIN_V1_TYPE_ID, encode_asset_id};
 
-    fn resolver() -> HashSuiteResolver {
+    const ASSET: AssetId = AssetId::new([0x64; 32]);
+
+    fn resolver(protocol_version: u32) -> HashSuiteResolver {
         HashSuiteResolver::new(
             ChainId::new("seed-test-chain").unwrap(),
-            ProtocolVersion::new(3),
+            ProtocolVersion::new(protocol_version),
             vec![HashSuiteSchedule {
                 activation_epoch: Epoch::new(0),
                 suite: HashSuite::genesis(),
@@ -1055,144 +1930,63 @@ mod tests {
         AtomicityDomainId::new(DEVNET_DOMAIN_BYTES).unwrap()
     }
 
-    #[derive(Clone, Copy)]
-    enum CurrentAccountTamper {
-        Owner,
-        Type,
-        Schema,
-        Asset,
-        MalformedBody,
-    }
-
-    fn commit_tampered_source(
-        store: &MemoryDurableStateStore,
-        resolver: &HashSuiteResolver,
-        owner: DevOwner,
-        tamper: CurrentAccountTamper,
-        request_tag: u8,
-    ) {
-        let expected: ExpectedSeed = build_expected_seed(resolver, Epoch::new(0), owner).unwrap();
-        let source_id: ObjectId = expected.source.initial_object.id;
-        let head: DurableObjectHead = store
-            .get_object_head(&context(), domain(), source_id)
-            .unwrap();
-        let mut object: Object = expected.source.initial_object;
-        object.version = 2;
-        match tamper {
-            CurrentAccountTamper::Owner => {
-                object.owner = Owner::Address(Address::new([0xA1; 32]));
-            }
-            CurrentAccountTamper::Type => {
-                object.type_hash = Digest32::new(HashAlgorithmId::Sha2_256, [0xA2; 32]);
-            }
-            CurrentAccountTamper::Schema => {
-                object.schema_version = 2;
-            }
-            CurrentAccountTamper::Asset => {
-                object.data = encode_asset_account(&AssetAccount::new(
-                    AssetId::new([0xA3; 32]),
-                    INITIAL_SOURCE_BALANCE,
-                    1,
-                ))
-                .unwrap();
-            }
-            CurrentAccountTamper::MalformedBody => {
-                object.data = vec![0xA4];
-            }
-        }
-        let canonical_object: Vec<u8> = encode_object(&object).unwrap();
-        let digest: Digest32 = resolver
-            .hash_for_purpose(Epoch::new(0), HashPurpose::Object, &canonical_object)
-            .unwrap();
-        let record: DurableObjectVersionRecord = DurableObjectVersionRecord::from_inline_object(
-            object.clone(),
-            digest,
-            DurableObjectProvenance::new(resolver.chain_id().clone(), resolver.protocol_version()),
-            generation().get(),
-        )
-        .unwrap();
-        let owner_projection: DurableObjectOwnerProjection =
-            DurableObjectOwnerProjection::from_owner(object.owner).unwrap();
-        let routing_projection: DurableObjectRoutingProjection =
-            DurableObjectRoutingProjection::new(None).unwrap();
-        let changes: DurableObjectChanges = DurableObjectChanges::new(
-            vec![DurableObjectHeadRead::new(source_id, head)],
-            vec![DurableObjectMutationEntry::new(
-                source_id,
-                DurableObjectMutation::Update {
-                    version: record,
-                    owner_projection,
-                    routing_projection,
-                },
-            )],
-        )
-        .unwrap();
-        let receipt: DurableRequestReceipt = DurableRequestReceipt::new(
-            DurableRequestId::new([request_tag; 32]).unwrap(),
-            Digest32::new(HashAlgorithmId::Sha2_256, [request_tag.wrapping_add(1); 32]),
-            vec![request_tag],
-        )
-        .unwrap();
-        let invocation: DurableInvocationTransaction =
-            DurableInvocationTransaction::new(domain(), None, changes, receipt, None).unwrap();
-        assert_eq!(
-            store.commit_invocation(&context(), invocation),
-            DurableCommitOutcome::Committed
-        );
+    fn store() -> MemoryDurableStateStore {
+        let store = MemoryDurableStateStore::new_bound(domain(), generation());
+        store.set_time(0);
+        store
     }
 
     #[test]
-    fn seed_is_atomic_distinct_and_idempotent() {
-        let store: MemoryDurableStateStore =
-            MemoryDurableStateStore::new_bound(domain(), generation());
-        store.set_time(0);
-        let owner: DevOwner = dev_owner(0x61);
-        let resolver: HashSuiteResolver = resolver();
-        let blob_store: MemoryBlobStore = MemoryBlobStore::default();
+    fn dev_owner_seed_is_atomic_distinct_and_idempotent() {
+        let store = store();
+        let blob_store = MemoryBlobStore::default();
+        let resolver = resolver(4);
+        let owner = dev_owner(0x61);
 
-        let created: SeedAssetAccountsOutcome = seed_asset_accounts(
+        let created = seed_dev_owner_coins(
             &store,
             &blob_store,
             &resolver,
             Epoch::new(0),
+            ASSET,
             owner,
             generation(),
             &context(),
         )
         .unwrap();
-        assert!(matches!(created, SeedAssetAccountsOutcome::Created(_)));
+        assert!(matches!(created, SeedDevOwnerCoinsOutcome::Created(_)));
         assert_ne!(
-            created.accounts().source().id,
-            created.accounts().destination().id
+            created.coins().transfer_coin().id,
+            created.coins().fee_coin().id
         );
 
-        let existing: SeedAssetAccountsOutcome = seed_asset_accounts(
+        let existing = seed_dev_owner_coins(
             &store,
             &blob_store,
             &resolver,
             Epoch::new(0),
+            ASSET,
             owner,
             generation(),
             &context(),
         )
         .unwrap();
-        assert!(matches!(existing, SeedAssetAccountsOutcome::Existing(_)));
-        assert_eq!(created.accounts(), existing.accounts());
+        assert!(matches!(existing, SeedDevOwnerCoinsOutcome::Existing(_)));
+        assert_eq!(created.coins(), existing.coins());
     }
 
     #[test]
-    fn seed_rejects_universal_zip215_owner_before_storage_work() {
-        let store: MemoryDurableStateStore =
-            MemoryDurableStateStore::new_bound(domain(), generation());
-        store.set_time(0);
+    fn dev_owner_seed_rejects_universal_zip215_owner_before_storage_work() {
+        let store = store();
         let mut bytes: [u8; 32] = [0; 32];
         bytes[0] = 1;
         bytes[31] = 0x80;
-        let result = seed_asset_accounts(
+        let result = seed_dev_owner_coins(
             &store,
             &MemoryBlobStore::default(),
-            &resolver(),
+            &resolver(4),
             Epoch::new(0),
+            ASSET,
             DevOwner::new(bytes),
             generation(),
             &context(),
@@ -1207,83 +2001,640 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_ids_are_owner_scoped() {
-        let resolver: HashSuiteResolver = resolver();
-        let first: ExpectedSeed =
-            build_expected_seed(&resolver, Epoch::new(0), DevOwner::new([0x71; 32])).unwrap();
-        let second: ExpectedSeed =
-            build_expected_seed(&resolver, Epoch::new(0), DevOwner::new([0x72; 32])).unwrap();
+    fn deterministic_ids_are_owner_and_asset_scoped() {
+        let resolver = resolver(4);
+        let first = build_expected_dev_owner_seed(
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            DevOwner::new([0x71; 32]),
+        )
+        .unwrap();
+        let second = build_expected_dev_owner_seed(
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            DevOwner::new([0x72; 32]),
+        )
+        .unwrap();
+        let other_asset = build_expected_dev_owner_seed(
+            &resolver,
+            Epoch::new(0),
+            AssetId::new([0x65; 32]),
+            DevOwner::new([0x71; 32]),
+        )
+        .unwrap();
 
         assert_ne!(
-            first.source.initial_object.id,
-            first.destination.initial_object.id
+            first.transfer.initial_object.id,
+            first.fee.initial_object.id
         );
         assert_ne!(
-            first.source.initial_object.id,
-            second.source.initial_object.id
+            first.transfer.initial_object.id,
+            second.transfer.initial_object.id
+        );
+        assert_ne!(
+            first.transfer.initial_object.id,
+            other_asset.transfer.initial_object.id
         );
     }
 
     #[test]
-    fn global_seeded_supply_accepts_cross_owner_movement() {
-        let resolver: HashSuiteResolver = resolver();
-        let first: ExpectedSeed =
-            build_expected_seed(&resolver, Epoch::new(0), DevOwner::new([0x81; 32])).unwrap();
-        let second: ExpectedSeed =
-            build_expected_seed(&resolver, Epoch::new(0), DevOwner::new([0x82; 32])).unwrap();
-        let mut first_outcome: SeedAssetAccountsOutcome =
-            SeedAssetAccountsOutcome::Existing(initial_accounts(DevOwner::new([0x81; 32]), &first));
-        let mut second_outcome: SeedAssetAccountsOutcome = SeedAssetAccountsOutcome::Existing(
-            initial_accounts(DevOwner::new([0x82; 32]), &second),
-        );
-        let SeedAssetAccountsOutcome::Existing(first_accounts) = &mut first_outcome else {
-            unreachable!();
-        };
-        let SeedAssetAccountsOutcome::Existing(second_accounts) = &mut second_outcome else {
-            unreachable!();
-        };
-        first_accounts.source_balance -= 250;
-        second_accounts.destination_balance += 250;
+    fn seeded_asset_supply_accepts_cross_owner_movement_of_the_transferable_coin() {
+        let resolver = resolver(4);
+        let first = build_expected_dev_owner_seed(
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            DevOwner::new([0x81; 32]),
+        )
+        .unwrap();
+        let second = build_expected_dev_owner_seed(
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            DevOwner::new([0x82; 32]),
+        )
+        .unwrap();
+        let treasury_expected = build_expected_treasury_seed(
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            DevOwner::new([0x90; 32]),
+        )
+        .unwrap();
 
-        verify_seeded_asset_supply(&[first_outcome, second_outcome]).unwrap();
+        // Simulate the first owner's transferable coin having moved to some
+        // address outside the configured set (a legitimate real transfer):
+        // the total amount is unaffected, only which coin holds it.
+        let outcomes = vec![
+            SeedDevOwnerCoinsOutcome::Existing(initial_dev_owner_coins(
+                DevOwner::new([0x81; 32]),
+                &first,
+            )),
+            SeedDevOwnerCoinsOutcome::Existing(initial_dev_owner_coins(
+                DevOwner::new([0x82; 32]),
+                &second,
+            )),
+        ];
+        let treasury = SeedTreasuryCoinOutcome::Existing(SeededTreasuryCoin {
+            owner: DevOwner::new([0x90; 32]),
+            coin: treasury_expected.treasury.object_ref(),
+            amount: INITIAL_TREASURY_COIN_AMOUNT,
+        });
+
+        verify_seeded_asset_supply(&outcomes, &treasury).unwrap();
     }
 
     #[test]
-    fn restart_verification_rejects_semantically_tampered_current_accounts() {
-        for (index, tamper) in [
-            CurrentAccountTamper::Owner,
-            CurrentAccountTamper::Type,
-            CurrentAccountTamper::Schema,
-            CurrentAccountTamper::Asset,
-            CurrentAccountTamper::MalformedBody,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let store: MemoryDurableStateStore =
-                MemoryDurableStateStore::new_bound(domain(), generation());
-            store.set_time(0);
-            let owner: DevOwner = dev_owner(0x91);
-            let resolver: HashSuiteResolver = resolver();
-            let blob_store: MemoryBlobStore = MemoryBlobStore::default();
-            seed_asset_accounts(
+    fn seeded_asset_supply_rejects_a_duplicate_object_id() {
+        let resolver = resolver(4);
+        let first = build_expected_dev_owner_seed(
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            DevOwner::new([0x81; 32]),
+        )
+        .unwrap();
+        let treasury_expected = build_expected_treasury_seed(
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            DevOwner::new([0x90; 32]),
+        )
+        .unwrap();
+        let outcomes = vec![
+            SeedDevOwnerCoinsOutcome::Existing(initial_dev_owner_coins(
+                DevOwner::new([0x81; 32]),
+                &first,
+            )),
+            SeedDevOwnerCoinsOutcome::Existing(initial_dev_owner_coins(
+                DevOwner::new([0x81; 32]),
+                &first,
+            )),
+        ];
+        let treasury = SeedTreasuryCoinOutcome::Existing(SeededTreasuryCoin {
+            owner: DevOwner::new([0x90; 32]),
+            coin: treasury_expected.treasury.object_ref(),
+            amount: INITIAL_TREASURY_COIN_AMOUNT,
+        });
+
+        assert!(matches!(
+            verify_seeded_asset_supply(&outcomes, &treasury),
+            Err(DevnetSeedError::AssetInvariantViolation)
+        ));
+    }
+
+    #[test]
+    fn seeded_asset_supply_rejects_wrong_total() {
+        let resolver = resolver(4);
+        let first = build_expected_dev_owner_seed(
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            DevOwner::new([0x81; 32]),
+        )
+        .unwrap();
+        let treasury_expected = build_expected_treasury_seed(
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            DevOwner::new([0x90; 32]),
+        )
+        .unwrap();
+        let mut coins = initial_dev_owner_coins(DevOwner::new([0x81; 32]), &first);
+        coins.transfer_amount += 1;
+        let outcomes = vec![SeedDevOwnerCoinsOutcome::Existing(coins)];
+        let treasury = SeedTreasuryCoinOutcome::Existing(SeededTreasuryCoin {
+            owner: DevOwner::new([0x90; 32]),
+            coin: treasury_expected.treasury.object_ref(),
+            amount: INITIAL_TREASURY_COIN_AMOUNT,
+        });
+
+        assert!(matches!(
+            verify_seeded_asset_supply(&outcomes, &treasury),
+            Err(DevnetSeedError::AssetInvariantViolation)
+        ));
+    }
+
+    fn commit_owner_only_transfer(
+        store: &MemoryDurableStateStore,
+        resolver: &HashSuiteResolver,
+        seeded: &ExpectedSeedCoin,
+        new_owner: Address,
+        request_tag: u8,
+    ) {
+        let head = store
+            .get_object_head(&context(), domain(), seeded.initial_object.id)
+            .unwrap();
+        let DurableObjectHead::Current { object_version, .. } = head else {
+            panic!("expected a current head before simulating a transfer");
+        };
+        let mut object = seeded.initial_object.clone();
+        object.version = object_version.get() + 1;
+        object.owner = Owner::Address(new_owner);
+        let canonical_object = encode_object(&object).unwrap();
+        let digest = resolver
+            .hash_for_purpose(Epoch::new(0), HashPurpose::Object, &canonical_object)
+            .unwrap();
+        let record = DurableObjectVersionRecord::from_inline_object(
+            object.clone(),
+            digest,
+            DurableObjectProvenance::new(resolver.chain_id().clone(), resolver.protocol_version()),
+            generation().get(),
+        )
+        .unwrap();
+        let owner_projection = DurableObjectOwnerProjection::from_owner(object.owner).unwrap();
+        let routing_projection = DurableObjectRoutingProjection::new(None).unwrap();
+        let changes = DurableObjectChanges::new(
+            vec![DurableObjectHeadRead::new(seeded.initial_object.id, head)],
+            vec![DurableObjectMutationEntry::new(
+                seeded.initial_object.id,
+                DurableObjectMutation::Update {
+                    version: record,
+                    owner_projection,
+                    routing_projection,
+                },
+            )],
+        )
+        .unwrap();
+        let receipt = DurableRequestReceipt::new(
+            DurableRequestId::new([request_tag; 32]).unwrap(),
+            Digest32::new(HashAlgorithmId::Sha2_256, [request_tag.wrapping_add(1); 32]),
+            vec![request_tag],
+        )
+        .unwrap();
+        let invocation =
+            DurableInvocationTransaction::new(domain(), None, changes, receipt, None).unwrap();
+        assert_eq!(
+            store.commit_invocation(&context(), invocation),
+            DurableCommitOutcome::Committed
+        );
+    }
+
+    fn commit_amount_change(
+        store: &MemoryDurableStateStore,
+        resolver: &HashSuiteResolver,
+        seeded: &ExpectedSeedCoin,
+        asset_id: AssetId,
+        new_amount: u64,
+        request_tag: u8,
+    ) {
+        let head = store
+            .get_object_head(&context(), domain(), seeded.initial_object.id)
+            .unwrap();
+        let DurableObjectHead::Current { object_version, .. } = head else {
+            panic!("expected a current head before simulating a fee debit");
+        };
+        let mut object = seeded.initial_object.clone();
+        object.version = object_version.get() + 1;
+        object.data =
+            encode_standard_asset_coin_v1(&StandardAssetCoinV1::new(asset_id, new_amount).unwrap())
+                .unwrap();
+        let canonical_object = encode_object(&object).unwrap();
+        let digest = resolver
+            .hash_for_purpose(Epoch::new(0), HashPurpose::Object, &canonical_object)
+            .unwrap();
+        let record = DurableObjectVersionRecord::from_inline_object(
+            object.clone(),
+            digest,
+            DurableObjectProvenance::new(resolver.chain_id().clone(), resolver.protocol_version()),
+            generation().get(),
+        )
+        .unwrap();
+        let owner_projection = DurableObjectOwnerProjection::from_owner(object.owner).unwrap();
+        let routing_projection = DurableObjectRoutingProjection::new(None).unwrap();
+        let changes = DurableObjectChanges::new(
+            vec![DurableObjectHeadRead::new(seeded.initial_object.id, head)],
+            vec![DurableObjectMutationEntry::new(
+                seeded.initial_object.id,
+                DurableObjectMutation::Update {
+                    version: record,
+                    owner_projection,
+                    routing_projection,
+                },
+            )],
+        )
+        .unwrap();
+        let receipt = DurableRequestReceipt::new(
+            DurableRequestId::new([request_tag; 32]).unwrap(),
+            Digest32::new(HashAlgorithmId::Sha2_256, [request_tag.wrapping_add(1); 32]),
+            vec![request_tag],
+        )
+        .unwrap();
+        let invocation =
+            DurableInvocationTransaction::new(domain(), None, changes, receipt, None).unwrap();
+        assert_eq!(
+            store.commit_invocation(&context(), invocation),
+            DurableCommitOutcome::Committed
+        );
+    }
+
+    #[test]
+    fn restart_accepts_either_seeded_coin_moved_to_a_new_admissible_owner() {
+        for (index, moved_slot) in ["transfer", "fee"].into_iter().enumerate() {
+            let store = store();
+            let blob_store = MemoryBlobStore::default();
+            let resolver = resolver(4);
+            let owner = dev_owner(u8::try_from(0x91 + index).unwrap());
+            seed_dev_owner_coins(
                 &store,
                 &blob_store,
                 &resolver,
                 Epoch::new(0),
+                ASSET,
                 owner,
                 generation(),
                 &context(),
             )
             .unwrap();
-            let request_tag: u8 = u8::try_from(index).unwrap() + 0xB0;
-            commit_tampered_source(&store, &resolver, owner, tamper, request_tag);
 
-            let result = seed_asset_accounts(
+            let expected =
+                build_expected_dev_owner_seed(&resolver, Epoch::new(0), ASSET, owner).unwrap();
+            let new_owner = dev_owner(u8::try_from(0x95 + index).unwrap());
+            let moved = if moved_slot == "transfer" {
+                &expected.transfer
+            } else {
+                &expected.fee
+            };
+            commit_owner_only_transfer(
+                &store,
+                &resolver,
+                moved,
+                Address::new(*new_owner.as_bytes()),
+                u8::try_from(0xB0 + index).unwrap(),
+            );
+
+            let existing = seed_dev_owner_coins(
                 &store,
                 &blob_store,
                 &resolver,
                 Epoch::new(0),
+                ASSET,
+                owner,
+                generation(),
+                &context(),
+            );
+            assert!(
+                matches!(existing, Ok(SeedDevOwnerCoinsOutcome::Existing(_))),
+                "moving the {moved_slot} coin's owner unexpectedly failed restart: {existing:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn restart_accepts_either_seeded_coin_debited_to_a_new_nonzero_amount() {
+        for (index, debited_slot) in ["transfer", "fee"].into_iter().enumerate() {
+            let store = store();
+            let blob_store = MemoryBlobStore::default();
+            let resolver = resolver(4);
+            let owner = dev_owner(u8::try_from(0x97 + index).unwrap());
+            seed_dev_owner_coins(
+                &store,
+                &blob_store,
+                &resolver,
+                Epoch::new(0),
+                ASSET,
+                owner,
+                generation(),
+                &context(),
+            )
+            .unwrap();
+
+            let expected =
+                build_expected_dev_owner_seed(&resolver, Epoch::new(0), ASSET, owner).unwrap();
+            let debited = if debited_slot == "transfer" {
+                &expected.transfer
+            } else {
+                &expected.fee
+            };
+            commit_amount_change(
+                &store,
+                &resolver,
+                debited,
+                ASSET,
+                1,
+                u8::try_from(0xB8 + index).unwrap(),
+            );
+
+            let existing = seed_dev_owner_coins(
+                &store,
+                &blob_store,
+                &resolver,
+                Epoch::new(0),
+                ASSET,
+                owner,
+                generation(),
+                &context(),
+            );
+            assert!(
+                matches!(existing, Ok(SeedDevOwnerCoinsOutcome::Existing(_))),
+                "debiting the {debited_slot} coin's amount unexpectedly failed restart: {existing:?}"
+            );
+        }
+    }
+
+    /// F9: the two seeded coins are protocol-indistinguishable, so a real
+    /// devnet run may use either as the whole-coin transfer source and the
+    /// other as the fee payer. This pins the arrangement opposite the seed
+    /// slots — the fee coin (slot 2) moves owner, the transfer coin (slot 1)
+    /// is debited — which the pre-fix verification rejected outright.
+    #[test]
+    fn restart_accepts_swapped_source_and_fee_roles() {
+        let store = store();
+        let blob_store = MemoryBlobStore::default();
+        let resolver = resolver(4);
+        let owner = dev_owner(0x9A);
+        seed_dev_owner_coins(
+            &store,
+            &blob_store,
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            owner,
+            generation(),
+            &context(),
+        )
+        .unwrap();
+        let expected =
+            build_expected_dev_owner_seed(&resolver, Epoch::new(0), ASSET, owner).unwrap();
+        let new_owner = dev_owner(0x9B);
+
+        commit_owner_only_transfer(
+            &store,
+            &resolver,
+            &expected.fee,
+            Address::new(*new_owner.as_bytes()),
+            0xB4,
+        );
+        commit_amount_change(
+            &store,
+            &resolver,
+            &expected.transfer,
+            ASSET,
+            INITIAL_TRANSFER_COIN_AMOUNT - 500,
+            0xB5,
+        );
+
+        let existing = seed_dev_owner_coins(
+            &store,
+            &blob_store,
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            owner,
+            generation(),
+            &context(),
+        )
+        .unwrap();
+        assert!(matches!(existing, SeedDevOwnerCoinsOutcome::Existing(_)));
+        assert_eq!(
+            existing.coins().transfer_coin().id,
+            expected.transfer.initial_object.id
+        );
+        assert_eq!(
+            existing.coins().fee_coin().id,
+            expected.fee.initial_object.id
+        );
+    }
+
+    #[test]
+    fn restart_rejects_either_seeded_coin_moved_to_an_inadmissible_owner() {
+        for (index, moved_slot) in ["transfer", "fee"].into_iter().enumerate() {
+            let store = store();
+            let blob_store = MemoryBlobStore::default();
+            let resolver = resolver(4);
+            let owner = dev_owner(u8::try_from(0x93 + index).unwrap());
+            seed_dev_owner_coins(
+                &store,
+                &blob_store,
+                &resolver,
+                Epoch::new(0),
+                ASSET,
+                owner,
+                generation(),
+                &context(),
+            )
+            .unwrap();
+            let expected =
+                build_expected_dev_owner_seed(&resolver, Epoch::new(0), ASSET, owner).unwrap();
+            let mut universal_owner_bytes: [u8; 32] = [0; 32];
+            universal_owner_bytes[0] = 1;
+            universal_owner_bytes[31] = 0x80;
+            let moved = if moved_slot == "transfer" {
+                &expected.transfer
+            } else {
+                &expected.fee
+            };
+            commit_owner_only_transfer(
+                &store,
+                &resolver,
+                moved,
+                Address::new(universal_owner_bytes),
+                u8::try_from(0xB2 + index).unwrap(),
+            );
+
+            let result = seed_dev_owner_coins(
+                &store,
+                &blob_store,
+                &resolver,
+                Epoch::new(0),
+                ASSET,
+                owner,
+                generation(),
+                &context(),
+            );
+            assert!(
+                matches!(
+                    result,
+                    Err(DevnetSeedError::InadmissibleOwner(
+                        Ed25519OwnerAddressError::NonCanonicalPoint
+                    ))
+                ),
+                "moving the {moved_slot} coin to an inadmissible owner unexpectedly verified: {result:?}"
+            );
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum CoinTamper {
+        Type,
+        Schema,
+        Asset,
+        MalformedBody,
+        ZeroAmount,
+    }
+
+    fn commit_tampered_coin(
+        store: &MemoryDurableStateStore,
+        resolver: &HashSuiteResolver,
+        seeded: &ExpectedSeedCoin,
+        asset_id: AssetId,
+        tamper: CoinTamper,
+        request_tag: u8,
+    ) {
+        let head = store
+            .get_object_head(&context(), domain(), seeded.initial_object.id)
+            .unwrap();
+        let DurableObjectHead::Current { object_version, .. } = head else {
+            panic!("expected a current head before tampering");
+        };
+        let mut object = seeded.initial_object.clone();
+        object.version = object_version.get() + 1;
+        match tamper {
+            CoinTamper::Type => {
+                object.type_hash = Digest32::new(HashAlgorithmId::Sha2_256, [0xA2; 32]);
+            }
+            CoinTamper::Schema => {
+                object.schema_version = 2;
+            }
+            CoinTamper::Asset => {
+                object.data = encode_standard_asset_coin_v1(
+                    &StandardAssetCoinV1::new(AssetId::new([0xA3; 32]), 1).unwrap(),
+                )
+                .unwrap();
+            }
+            CoinTamper::MalformedBody => {
+                object.data = vec![0xA4];
+            }
+            CoinTamper::ZeroAmount => {
+                // Bypasses `StandardAssetCoinV1::new`'s own zero-amount
+                // rejection to prove restart verification independently
+                // rejects a decoded-but-invalid zero amount, not just a
+                // malformed frame.
+                let mut canonical = CanonicalStruct::new(STANDARD_ASSET_COIN_V1_TYPE_ID, 1);
+                canonical
+                    .field_bytes(1, encode_asset_id(&asset_id).unwrap())
+                    .unwrap();
+                canonical.field_u64(2, 0).unwrap();
+                object.data = canonical.finish().unwrap();
+            }
+        }
+        let canonical_object = encode_object(&object).unwrap();
+        let digest = resolver
+            .hash_for_purpose(Epoch::new(0), HashPurpose::Object, &canonical_object)
+            .unwrap();
+        let record = DurableObjectVersionRecord::from_inline_object(
+            object.clone(),
+            digest,
+            DurableObjectProvenance::new(resolver.chain_id().clone(), resolver.protocol_version()),
+            generation().get(),
+        )
+        .unwrap();
+        let owner_projection = DurableObjectOwnerProjection::from_owner(object.owner).unwrap();
+        let routing_projection = DurableObjectRoutingProjection::new(None).unwrap();
+        let changes = DurableObjectChanges::new(
+            vec![DurableObjectHeadRead::new(seeded.initial_object.id, head)],
+            vec![DurableObjectMutationEntry::new(
+                seeded.initial_object.id,
+                DurableObjectMutation::Update {
+                    version: record,
+                    owner_projection,
+                    routing_projection,
+                },
+            )],
+        )
+        .unwrap();
+        let receipt = DurableRequestReceipt::new(
+            DurableRequestId::new([request_tag; 32]).unwrap(),
+            Digest32::new(HashAlgorithmId::Sha2_256, [request_tag.wrapping_add(1); 32]),
+            vec![request_tag],
+        )
+        .unwrap();
+        let invocation =
+            DurableInvocationTransaction::new(domain(), None, changes, receipt, None).unwrap();
+        assert_eq!(
+            store.commit_invocation(&context(), invocation),
+            DurableCommitOutcome::Committed
+        );
+    }
+
+    #[test]
+    fn restart_verification_rejects_semantically_tampered_current_coins() {
+        let tampers = [
+            CoinTamper::Type,
+            CoinTamper::Schema,
+            CoinTamper::Asset,
+            CoinTamper::MalformedBody,
+            CoinTamper::ZeroAmount,
+        ];
+        let cases = tampers.into_iter().flat_map(|tamper| {
+            ["transfer", "fee"]
+                .into_iter()
+                .map(move |slot| (slot, tamper))
+        });
+        for (index, (tampered_slot, tamper)) in cases.enumerate() {
+            let store = store();
+            let blob_store = MemoryBlobStore::default();
+            let resolver = resolver(4);
+            let owner = dev_owner(u8::try_from(0xA0 + index).unwrap());
+            seed_dev_owner_coins(
+                &store,
+                &blob_store,
+                &resolver,
+                Epoch::new(0),
+                ASSET,
+                owner,
+                generation(),
+                &context(),
+            )
+            .unwrap();
+            let expected =
+                build_expected_dev_owner_seed(&resolver, Epoch::new(0), ASSET, owner).unwrap();
+            let tampered = if tampered_slot == "transfer" {
+                &expected.transfer
+            } else {
+                &expected.fee
+            };
+            let request_tag: u8 = u8::try_from(index).unwrap() + 0xC0;
+            commit_tampered_coin(&store, &resolver, tampered, ASSET, tamper, request_tag);
+
+            let result = seed_dev_owner_coins(
+                &store,
+                &blob_store,
+                &resolver,
+                Epoch::new(0),
+                ASSET,
                 owner,
                 generation(),
                 &context(),
@@ -1292,10 +2643,310 @@ mod tests {
                 matches!(
                     result,
                     Err(DevnetSeedError::StoredObjectMismatch { .. })
-                        | Err(DevnetSeedError::AssetCodec(_))
+                        | Err(DevnetSeedError::StandardAsset(_))
                 ),
-                "tamper case {index} unexpectedly verified: {result:?}"
+                "tamper case {tampered_slot}/{tamper:?} unexpectedly verified: {result:?}"
             );
         }
+    }
+
+    #[test]
+    fn restart_rejects_a_current_coin_committed_under_mismatched_provenance() {
+        let store = store();
+        let blob_store = MemoryBlobStore::default();
+        let resolver = resolver(4);
+        let owner = dev_owner(0xE0);
+        seed_dev_owner_coins(
+            &store,
+            &blob_store,
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            owner,
+            generation(),
+            &context(),
+        )
+        .unwrap();
+        let expected =
+            build_expected_dev_owner_seed(&resolver, Epoch::new(0), ASSET, owner).unwrap();
+
+        let head = store
+            .get_object_head(&context(), domain(), expected.transfer.initial_object.id)
+            .unwrap();
+        let DurableObjectHead::Current { object_version, .. } = head else {
+            panic!("expected a current head before simulating a provenance mismatch");
+        };
+        let mut object = expected.transfer.initial_object.clone();
+        object.version = object_version.get() + 1;
+        let canonical_object = encode_object(&object).unwrap();
+        let digest = resolver
+            .hash_for_purpose(Epoch::new(0), HashPurpose::Object, &canonical_object)
+            .unwrap();
+        let wrong_provenance = DurableObjectProvenance::new(
+            ChainId::new("a-different-chain").unwrap(),
+            resolver.protocol_version(),
+        );
+        let record = DurableObjectVersionRecord::from_inline_object(
+            object.clone(),
+            digest,
+            wrong_provenance,
+            generation().get(),
+        )
+        .unwrap();
+        let owner_projection = DurableObjectOwnerProjection::from_owner(object.owner).unwrap();
+        let routing_projection = DurableObjectRoutingProjection::new(None).unwrap();
+        let changes = DurableObjectChanges::new(
+            vec![DurableObjectHeadRead::new(
+                expected.transfer.initial_object.id,
+                head,
+            )],
+            vec![DurableObjectMutationEntry::new(
+                expected.transfer.initial_object.id,
+                DurableObjectMutation::Update {
+                    version: record,
+                    owner_projection,
+                    routing_projection,
+                },
+            )],
+        )
+        .unwrap();
+        let receipt = DurableRequestReceipt::new(
+            DurableRequestId::new([0xE1; 32]).unwrap(),
+            Digest32::new(HashAlgorithmId::Sha2_256, [0xE2; 32]),
+            vec![0xE1],
+        )
+        .unwrap();
+        let invocation =
+            DurableInvocationTransaction::new(domain(), None, changes, receipt, None).unwrap();
+        assert_eq!(
+            store.commit_invocation(&context(), invocation),
+            DurableCommitOutcome::Committed
+        );
+
+        let result = seed_dev_owner_coins(
+            &store,
+            &blob_store,
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            owner,
+            generation(),
+            &context(),
+        );
+        assert!(matches!(
+            result,
+            Err(DevnetSeedError::StoredObjectMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn treasury_seed_is_atomic_and_idempotent() {
+        let store = store();
+        let blob_store = MemoryBlobStore::default();
+        let resolver = resolver(4);
+        let treasury_owner = dev_owner(0xD0);
+
+        let created = seed_treasury_coin(
+            &store,
+            &blob_store,
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            treasury_owner,
+            generation(),
+            &context(),
+        )
+        .unwrap();
+        assert!(matches!(created, SeedTreasuryCoinOutcome::Created(_)));
+
+        let existing = seed_treasury_coin(
+            &store,
+            &blob_store,
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            treasury_owner,
+            generation(),
+            &context(),
+        )
+        .unwrap();
+        assert!(matches!(existing, SeedTreasuryCoinOutcome::Existing(_)));
+        assert_eq!(created.coin(), existing.coin());
+    }
+
+    #[test]
+    fn treasury_seed_rejects_a_current_owner_change() {
+        let store = store();
+        let blob_store = MemoryBlobStore::default();
+        let resolver = resolver(4);
+        let treasury_owner = dev_owner(0xD1);
+        seed_treasury_coin(
+            &store,
+            &blob_store,
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            treasury_owner,
+            generation(),
+            &context(),
+        )
+        .unwrap();
+        let expected =
+            build_expected_treasury_seed(&resolver, Epoch::new(0), ASSET, treasury_owner).unwrap();
+        let other_owner = dev_owner(0xD2);
+        commit_owner_only_transfer(
+            &store,
+            &resolver,
+            &expected.treasury,
+            Address::new(*other_owner.as_bytes()),
+            0xD3,
+        );
+
+        let result = seed_treasury_coin(
+            &store,
+            &blob_store,
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            treasury_owner,
+            generation(),
+            &context(),
+        );
+        assert!(matches!(
+            result,
+            Err(DevnetSeedError::StoredObjectMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn protocol_context_marker_is_seeded_once_and_reverified_on_restart() {
+        let store = store();
+        let resolver = resolver(4);
+
+        verify_or_seed_protocol_context(
+            &store,
+            &resolver,
+            Epoch::new(0),
+            generation(),
+            &context(),
+            true,
+        )
+        .unwrap();
+        // Idempotent: a second call under the same protocol version succeeds.
+        verify_or_seed_protocol_context(
+            &store,
+            &resolver,
+            Epoch::new(0),
+            generation(),
+            &context(),
+            false,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn verify_or_seed_protocol_context_rejects_a_context_fence_mismatch() {
+        let store = store();
+        let resolver = resolver(4);
+        let mismatched_context = DurableOperationContext::new(
+            WriterFenceGeneration::new(3).unwrap(),
+            StorageDeadline::new(1_000).unwrap(),
+            StorageCorrelationId::new([0x52; 16]).unwrap(),
+        );
+
+        let result = verify_or_seed_protocol_context(
+            &store,
+            &resolver,
+            Epoch::new(0),
+            generation(),
+            &mismatched_context,
+            true,
+        );
+        assert!(matches!(
+            result,
+            Err(DevnetSeedError::ContextFenceMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn protocol_context_marker_rejects_a_mismatched_reused_data_directory() {
+        let store = store();
+        let v4_resolver = resolver(4);
+        verify_or_seed_protocol_context(
+            &store,
+            &v4_resolver,
+            Epoch::new(0),
+            generation(),
+            &context(),
+            true,
+        )
+        .unwrap();
+
+        let v5_resolver = resolver(5);
+        let result = verify_or_seed_protocol_context(
+            &store,
+            &v5_resolver,
+            Epoch::new(0),
+            generation(),
+            &context(),
+            false,
+        );
+        assert!(matches!(
+            result,
+            Err(DevnetSeedError::ProtocolVersionMismatch {
+                expected: 5,
+                actual: 4,
+            })
+        ));
+    }
+
+    #[test]
+    fn protocol_context_marker_rejects_a_mismatched_epoch() {
+        let store = store();
+        let resolver = resolver(4);
+        verify_or_seed_protocol_context(
+            &store,
+            &resolver,
+            Epoch::new(0),
+            generation(),
+            &context(),
+            true,
+        )
+        .unwrap();
+
+        let result = verify_or_seed_protocol_context(
+            &store,
+            &resolver,
+            Epoch::new(1),
+            generation(),
+            &context(),
+            false,
+        );
+        assert!(matches!(
+            result,
+            Err(DevnetSeedError::EpochMismatch {
+                expected: 1,
+                actual: 0,
+            })
+        ));
+    }
+
+    #[test]
+    fn protocol_context_marker_rejects_unmarked_existing_object_state() {
+        let store = store();
+        let resolver = resolver(4);
+
+        let result = verify_or_seed_protocol_context(
+            &store,
+            &resolver,
+            Epoch::new(0),
+            generation(),
+            &context(),
+            false,
+        );
+        assert!(matches!(
+            result,
+            Err(DevnetSeedError::UnmarkedExistingObjectState)
+        ));
     }
 }

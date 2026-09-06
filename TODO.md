@@ -1856,8 +1856,9 @@ criteria 7-9（TypeScript client、explorer、wallet）はverbatimのまま以�
    blob-backed bodyは明示的にfail closedのままでよい。
 3. governed/preinstalled moduleをexact commitmentからloadし、bounded deterministic WASMで
    少なくとも1つのstateful contractを実行できる（devnetの具体的なmoduleは
-   `sunrise.devnet.asset_account.v1`の`transfer` entrypoint。DR-0081参照）。任意upload、JIT、
-   production meteringはMVP範囲外とする。
+   DR-0081当時は`sunrise.devnet.asset_account.v1`の`transfer` entrypointだったが、
+   DR-0107によりStandard Asset v1 whole-object `Coin<A>` transferへreplaceされた。
+   DR-0081/DR-0107参照）。任意upload、JIT、production meteringはMVP範囲外とする。
 4. chain/context情報、object、receipt、authenticated senderのnext nonceを取得するbounded
    query APIを提供する。
 5. `clients/rust`でkey/address、canonical transaction encode/sign、submit、receipt wait、
@@ -1988,6 +1989,21 @@ criteria 7-9（TypeScript client、explorer、wallet）はverbatimのまま以�
    S3は同じordinary `AssetAccount`/`DEVNET_ASSET_ID`をfee object/assetとして使い、distinct
    treasury ownerのordinary destinationへactual `gas_used`由来feeをatomic settlementする。
    active module/semanticsはv3、historical v1/v2 bytesとWAT/WASM/code hashは不変である。
+   **DR-0107 amendment（current status）：** 直前の`sunrise.devnet.asset_account.v1`/
+   `AssetAccount`/`DEVNET_ASSET_ID`/S1-S3記述はDR-0081/DR-0086/DR-0087当時のhistorical
+   fixtureであり現在の実装状況ではない。この fixture（`0xF001`-`0xF003`、
+   `0xF010`/`0xF011`、旧module ID/WAT/WASM）はprotocol version 4化に伴い削除され、
+   `standard_assets::StandardAssetCoinV1`ベースのStandard Asset v1 whole-object
+   `Coin<A>` transfer moduleへreplaceされた（migrationやdual-supportではない）。
+   新モジュールはDR-0106の`PreinstalledTypedEntrypointPolicy`/
+   `PreinstalledOwnerTransitionPolicy`を実際にcommitする最初のcatalog entryであり、
+   同一senderが所有するsource/fee coinのexact typed `Write`、hidden final treasury
+   `Write`、canonical signed recipientへのexact owner change（`transferred_access_index = 0`）を
+   node-core自身がsynthesize/再検証する。同一sender制約とliteral owner
+   reassignment不可という直前の記述はここで終わり、whole-coin owner transferが
+   最初のend-to-end reachableな経路になった。fee assetはtransferred assetと
+   forcibly一致し（`abi`のshared type variableが1つのため）、fee coinはtreasuryとは
+   別のsender-owned coinである。詳細はDR-0107参照。
    S4a hardware-signing profile/host preflightはDR-0088で後続実装済み。DR-0089はS4b device
    contractを`docs/signing/hardware-signing.md`上でclarifyし、DR-0088のAPDU 230-byte capをFIRST最大255-byte・
    first chunk最大230-byteへ訂正した（continuationは230-byteで不変）。DR-0090はmerge
@@ -2169,8 +2185,11 @@ criteria 7-9（TypeScript client、explorer、wallet）はverbatimのまま以�
    場合のみ行い、その際は`--wait-max-attempts`/`--wait-initial-backoff-ms`/
    `--wait-max-backoff-ms`/`--wait-max-elapsed-ms`をすべて明示的に指定する必要があり、
    隠れたdefault poll boundは無い（`--wait`無しでwait-bound flagだけを渡すのも拒否する）。
-   `sunrise.devnet.asset_account.v1`のentrypoint名と`CanonicalStruct(0xF002,v1)`引数
-   frameは`apps/cli`の`transfer`コマンドだけが知っており、`clients/rust`へdevnet固有の
+   devnetのpreinstalled moduleのentrypoint名と引数frame（DR-0107以降は
+   Standard Asset v1 whole-coin transfer moduleの`transfer`entrypointと
+   `standard_assets::StandardAssetTransferArgsV1`、DR-0081当時は
+   `sunrise.devnet.asset_account.v1`の`CanonicalStruct(0xF002,v1)`）は
+   `apps/cli`の`transfer`コマンドだけが知っており、`clients/rust`へdevnet固有の
    意味論は置いていない。そのために`clients/rust`へ追加した最小限のgeneric re-export
    （`abi::{AccessEntry,AccessManifest}`、`objects::{AccessMode,Object,ObjectError,
    Owner,decode_object}`、`execution::ObjectEffect`、
@@ -2443,32 +2462,51 @@ Standard Asset v1、Unique Asset v1、builder/public-testnet asset surfaceはま
    canonical policy codecと、`PreinstalledWasmMachine::transition`がWASM実行前に
    `abi::verify_entrypoint_inputs`を呼ぶ検証配線、成功後にnode-core自身が
    owner-only mutationをsynthesizeしtranslation boundaryで独立再検証する配線を追加した。
-   ただし現行のいかなるpreinstalled module catalogもこの2つのpolicyをcommitしないため、
-   `Create`、devnet fixtureのreplacement、`StandardAssetTransferArgs`、
-   protocol-config/devnet側のprotocol version 4 activation、CLI/signing-view、
-   split/merge/mint、fee aggregation、public-testnet readinessはすべて未実装のまま。
-5. **未実装。** whole-coin transferはcanonical signed recipientへのexact owner change、
-   partial transferはsender remainderのMutate + recipient coinのCreate、mergeはsame-assetの
+   DR-0107（2026-09-06、
+   `docs/architecture/decisions/0107-standard-asset-v1-devnet-activation.md`）により、
+   この2つのpolicyを実際にcommitする最初のpreinstalled module catalog entryを
+   devnetへ配線した：`STANDARD_ASSET_TRANSFER_ARGS_V1`（`0x7104`）、devnet
+   protocol version 3→4のbump、旧`sunrise.devnet.asset_account.v1`
+   fixtureの削除とprotocol-v4 Standard Asset v1 `Coin<A>` whole-object transfer
+   moduleへのreplacement、derivation-basedな devnet `AssetId`、
+   `StandardAssetCoinFeeComposer`、CLI `transfer`サブコマンドの
+   `--source-coin`/`--recipient`/`--fee-coin`ベースへの更新を含む。これにより
+   `Create`パスなしで到達可能な、初のend-to-end owner change経路が生まれた。
+   `Create`、partial transfer/split/merge/mint、discovery、Unique Asset v1、
+   multisig、Ledgerのnew entrypoint対応、production fee aggregation、
+   public-testnet readinessは引き続き未実装のまま。
+5. **部分実装。** whole-coin transferはcanonical signed recipientへのexact owner changeとして
+   protocol-v4 devnet/CLI/restart E2Eまで実装済み。partial transferはsender remainderのMutate + recipient coinのCreate、mergeはsame-assetの
    sender-owned coin 1個をchecked sumへMutateし、残りのsender-owned inputsをConsumeする。
    mergeでnew coinはCreateしない。recipientは
    signせず、recipient stateはread/writeしない。owned-only operationはglobal total orderを
    避けるが、validator quorum/certificationは必須とする。CLI/clientはcoin selection、
    split、merge、dust consolidationを隠蔽しつつexact signed intentを保つ。
-6. **未実装。** future additive protocol version + exact governance-committed preinstalled-module
-   policyの二重gateのみでbounded Create/owner changeを有効化する。module/version/
+6. **部分実装。** exact committed preinstalled-module policy + protocol version 4の二重gateで、
+   existing coinのbounded owner-only changeをdevnetに限定して有効化済み。future additive
+   protocol version + exact governance-committed policyでCreateを有効化する際は、module/version/
    entrypoint、signed recipient、input/output count/aggregate bytes、exact outputs、type/schema/owner/
    id derivation/atomic conservationをnode-coreが独立検証し、
    exact absent headを読んでnonce/receipt/fee/outboxとatomic commitする。current/tombstone
    collisionは拒否し、generic contract Create、unsigned owner change、caller-selected IDは
    fail closedのままにする。
-7. **未実装。** Standard Asset v1をfee policyが認める場合も、ordinary coin objectと
-   same ownership/exact-version/checked-arithmetic/atomic-effect ruleを使い、native coinやprivileged
-   balanceを追加しない。すべてのfast-path transferが1つのglobally hot treasury balance
-   objectを書く設計は禁止し、fee output/aggregation/certificate-signer distributionは
-   別のbounded deterministic decisionで固定する。
-8. **未実装。** canonical/stable/adversarial/replay/concurrent-create/fee-composition testと
-   complete repository gateを通し、Initial Audit後のprotocol-critical surfaceとしてfocused
-   delta security reviewを完了する。
+7. **部分実装。** protocol-v4 devnetはStandard Asset v1 fee coinをordinary objectとして扱い、
+   same ownership/exact-version/checked-arithmetic/atomic-effect ruleを使う。native coinやprivileged
+   balanceは追加していない。一方、現在のsingle treasury coinはlocal-devnet限定のhot spotであり、
+   production fast pathへは持ち込まない。fee output/aggregation/certificate-signer distributionは
+   別のbounded deterministic decisionとして未実装。
+8. **今回のwhole-coin transfer activation sliceは実装・検証済み。**
+   canonical/stable/adversarial/replay/fee-compositionとreal file-backed SQLite
+   restart testを実装し、commit `891152fc098e080b5d61a2242bc997e861553cc6`でcomplete
+   repository gateを通過した。Initial Audit後に追加したprotocol-critical surfaceとして、
+   base `8c5a7548ca525f462ec805922ab596fb78b59407`との差分から抽出した26個のsource-like
+   fileを対象にfocused delta security reviewも完了し、reportable findingは0件だった。
+   1件のcandidate（同一local-devnet data directoryでtrusted operatorがseed owner一覧を
+   変更した場合の旧coin併存）は、`--dev-owner`がseed provisioningであってruntime
+   authorization/revocation listではなく、network callerから変更不能で新しい権限獲得も
+   ないためnon-reportableと判定した。これはproduction security auditやpublic-testnet
+   readinessの宣言ではない。Create自体が未実装なのでconcurrent-create testも未実装であり、
+   future Create/split/merge/mint/Unique Asset/public surfaceは各sliceで新しいdelta reviewを要する。
 
 metadata authenticity、mint/burn/supply accounting、authority capabilityのlifecycle、freeze/close/
 allowance、governed fee-asset admission、Unique Asset v1の実装は後続sliceである。
@@ -2645,50 +2683,29 @@ hard constraintも変更しない。
   はなく、検証済みcontextがTLS層の信頼範囲を広げることもない。これは
   mainnet readinessやproduction certificationの主張ではない：Phase 16/17の
   production exit criteriaと独立したsecurity auditは引き続き必須である。
-- **S2**: **implemented and validated As-Is（2026-09-01、DR-0086）。**
-  cross-owner transferをtrusted preinstalled-module pathのexact committed policyとして
-  実装した。senderが所有するsigned access index 0は例外不可。non-senderの既存
-  `Owner::Address` destinationは、exact module/version・`transfer` entrypoint・signed
-  access index 1・`Write`・exact asset-account type hash/schema versionの場合だけ許可する。
-  policyはreceipt/nonce reconciliation後かつobject I/O前にexactly once resolveし、同じ
-  resolved moduleをauthorization/executionで再利用する。general owned-effects pathは
-  sender-onlyのまま、source policy・`Consume`・wrong position/mode/type/schema/entrypoint/
-  module・Shared/System/Immutableはfail closed。roadmapの「object owner変更」は異なる
-  source/destination owner projectionを正しく扱い保存する意味であり、literal owner
-  reassignment/giftingは実装せずfail closedのままdeferする。
-
-  `SystemModule.semantics_hash`はopaque app semanticsとbounded policy集合を含むexact generic
-  semantics envelope bytes（stable canonical type IDs `0xE007`/`0xE008`, v1）へcommitし、
-  startup reconciliationとrequest resolutionがそれぞれactual bytesを独立検証する。
-  S2 dev profileがinstallするasset moduleはversion 2で、`0xF011` semantics declarationも
-  version 2とする。historical same-sender module/semantics version 1 bytesはstable vectorとして
-  保持するが、このdev profileのregistry/catalogにはinstallしない。`0xF001` body・`0xF002`
-  args・`0xF003` event schemaはversion 1のまま、WASM bytesも不変である。これはboundedな
-  profile selectionであり、general module-upgrade activation architectureの完成を主張しない。
-  established Transaction/ObjectEffect/Object/receipt/nonce/submit bytesは不変。devnet startupは
-  per-owner balance/paired-sequence invariantを仮定せず、各current objectとversion-one history/
-  receiptを厳密検証後、bounded configured-owner集合のfixed global seeded supplyをchecked検証する。
-  CLIは必須`--destination-owner`をAddressとしてparseし、source=signer・destination=explicit
-  expected ownerを署名前に検証する。real file-backed SQLite E2Eはcross-owner balance変化、
-  recipient owner不変、same-boot/post-close-reopen exact replayのbyte-identical response/receiptと
-  non-reapplication、changed signed requestによるrequest-id reuse 409時の両object canonical bytes・
-  両receipt・sender nonce不変、writer-generation fencingを証明する。
-  これはS2 As-Isのみでproduction/mainnet readinessではない。S3はDR-0087で後続実装済み。
-  TypeScript client/explorer/walletはSoftware Production Gate（S0-S3 + S5）までdeferredであり、
-  S4はincomplete、残存Ledger作業はdeferredである。non-Ledger S5 prerequisiteはDR-0094・DR-0096で先行するが、
-  S5、completeなCLI-First Node Production Gate、production、mainnet readinessの完了を意味しない。
-- **S3**: **implemented and validated As-Is（2026-09-02、DR-0087）。** committed
-  scheduleはbase=1、execution=`gas_used`単価=1、他category=0、fee registryは
-  `DEVNET_ASSET_ID`を1:1で1つだけenableする。sourceのsender-owned `Write`をfee objectとし、
-  distinct treasury ownerのordinary destinationをtrusted compositionがfinal `Write`として
-  指定する。treasuryはWASM inputから除外され、successはapplication effectsとactual feeを
-  atomic merge、trapはapplication effects/eventをdiscardしてnormalized full-gas fee-only
-  source/treasury mutationをRejected receiptとcommitする。CLI fee flagsはall-or-noneで、
-  real file-backed SQLite E2Eはexact fee=`1 + gas_used`、event pre-fee balance、trap charge、
-  same-boot/orderly close-reopen replay non-reapplication、writer generation advance/fencing、
-  request-id reuse conflict時のsource/destination/treasury canonical bytes・r1/r2/r3 receipts・
-  nonce不変を証明する。single treasury serialization、insufficient-balance時のbounded
-  execution-then-reject、fee distribution/production gas calibrationはdeferred。
+- **S2**: **implemented and validated baseline（DR-0086、DR-0106/DR-0107で現行化）。**
+  DR-0086の旧asset-account destination policyはprotocol-v4移行時にmodule/WAT/WASMとともに
+  削除された。現行devnetはexact committed typed-entrypoint policyで、sender-owned
+  `Write Coin<A>`をindex 0 (transfer対象) とindex 1 (distinct fee coin) に要求し、
+  canonical signed recipientへのowner-only mutationをindex 0だけにsynthesizeして独立再検証する。
+  cross-owner destination objectは存在せず、recipient stateもread/writeしない。general
+  owned-effects pathはsender-onlyのまま、wrong index/mode/type/schema/module/entrypoint、
+  duplicate ID、Shared/System/Immutable owner、inadmissible recipientはfail closed。
+  exact replay reconciliationはpolicy resolution/object I/Oより先に行い、Transaction/Object/
+  receipt/nonce/submitのcanonical bytesは変更していない。real file-backed SQLite E2Eは
+  whole-coin owner change、same-boot/post-restart exact replay non-reapplication、request-id reuse時の
+  coin/receipt/nonce不変、writer-generation fencingを証明する。旧DR-0086 fixtureの詳細は
+  historical decisionとしてのみ残す。
+- **S3**: **implemented and validated baseline（DR-0087、DR-0107で現行化）。** committed
+  scheduleはbase=1、execution=`gas_used`単価=1、他category=0、fee registryはderived devnet
+  `AssetId`を1:1で1つだけenableする。transfer対象とはdistinctなsender-owned
+  `StandardAssetCoinV1`をfee objectとし、ordinary treasury coinをtrusted compositionがfinal
+  `Write`として指定する。treasuryはWASM inputから除外され、strict coin codecとchecked arithmeticで
+  debit/creditし、payerをzeroにするexact-balance chargeもfail closed。successはowner effectとactual
+  feeをatomic commitし、trapはowner effect/eventをdiscardしてnormalized full-gas fee-only mutationを
+  Rejected receiptとcommitする。real file-backed SQLite E2Eはexact fee、same-boot/post-restart replay
+  non-reapplication、request-id reuse時の全coin/receipt/nonce不変を証明する。single hot treasury、
+  fee distribution/production gas calibrationはdeferred。
 - **S4**: secure signer（`LocalSigner`の development-only in-memory鍵に代わる
   production-oriented signing boundary）と、dedicated Sunrise Edge Ledger device
   applicationを使った実際のLedger統合
@@ -2778,8 +2795,8 @@ hard constraintも変更しない。
     pinned/workspace-committed multi-model app/firmware compatibility matrix
     ではない。off-by-default `usb-hid` feature配下以外の全moduleは`FakeTransport`
     によりnative dependencyなしでdeterministicにtestされ、`usb-hid`有効時の
-    descriptor/framing/identity testsもall-feature gateで検証する。CLIは
-    `address`/`transfer`へ`--seed-file`または
+    descriptor/framing/identity testsもall-feature gateで検証する。DR-0093時点のCLIは
+    `address`/当時の`transfer`へ`--seed-file`または
     `--ledger-hid-path`+`--ledger-account`+`--ledger-expected-firmware-version`の
     explicit all-or-none signer selection（第3 flagはdevice dispatch前に事前
     validated）を追加し、Ledger選択時はネットワークdispatch前にdevice接続・
@@ -2788,11 +2805,12 @@ hard constraintも変更しない。
     完了する。real `usb-hid`のreconnectは同一explicit pathへの`HidTransport::open`を
     bounded monotonic deadline（30秒）・fixed retry sleep（500ミリ秒）で再試行し、
     timeout時はtyped `CliError::LedgerReconnectTimedOut`でfail closedする。
-    現在のoperator flowは`address`で1回のaddress確認、
-    `transfer`でconnect-time address・pre-sign address・transaction reviewの3回確認を
-    要求し、重複address確認はproduction UX完成の主張ではなくfail-closedな暫定動作である。
+    DR-0107でlive devnetのtransfer shapeをprotocol-v4 Standard Asset v1へreplaceしたため、
+    現在のoperator flowは`address`だけがLedgerのon-device確認を行う。`transfer`のLedger選択は
+    new clear-signing policyが未実装なので、device/network dispatch前にtyped errorで拒否する。
+    DR-0093時点の3回確認はhistorical protocol-3 fixtureの挙動であり現在のlive pathではない。
     feature非依存の`FakeTransport` testはCLIのexact `DeviceSigningProfile::V1` +
-    `DEVNET_ASSET_TRANSFER_POLICY` helperをpolicy-conforming `PreparedTransaction`とvalid
+    `HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3` helperをpolicy-conforming `PreparedTransaction`とvalid
     Ed25519 signatureで実行し、local signerと同一canonical outputおよびpolicy mismatch時の
     pre-device rejectionを証明する。vendor dependencyはprotocol crate/`clients/rust`
     には入らず`clients/ledger`に閉じ、CLIのone-runtime-dependency invariantは

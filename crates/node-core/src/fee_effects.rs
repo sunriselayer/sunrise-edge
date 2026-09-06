@@ -1,8 +1,8 @@
 //! Trusted pure fee-effect composition capability.
 //!
 //! Node-core cannot decode an application's object body (see `AGENTS.md`'s
-//! crate-boundary rules): it never learns what an `AssetAccount`, or any
-//! other application type, actually looks like. Charging a transaction fee
+//! crate-boundary rules): it never learns what a `StandardAssetCoinV1`, or
+//! any other application type, actually looks like. Charging a transaction fee
 //! from a settled amount therefore requires one narrow, explicitly trusted
 //! extension point supplied by node composition, exactly like
 //! [`crate::PreinstalledModuleCatalog`] and the WASM execution engine: a pure

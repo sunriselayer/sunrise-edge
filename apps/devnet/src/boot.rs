@@ -168,11 +168,11 @@ impl Error for DevnetBootError {
 mod tests {
     use super::*;
     use crate::{
-        asset_account::ASSET_ACCOUNT_WASM,
-        catalog::build_asset_module,
+        catalog::build_standard_asset_module,
         config::DevOwner,
         genesis::build_devnet_protocol_context,
-        seed::{SeedAssetAccountsOutcome, seed_asset_accounts},
+        seed::{SeedDevOwnerCoinsOutcome, seed_dev_owner_coins},
+        standard_asset::STANDARD_ASSET_TRANSFER_WASM,
     };
     use ed25519_zebra::{SigningKey, VerificationKey};
     use runtime::{DurableOperationContext, StorageCorrelationId, StorageDeadline};
@@ -292,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_reopen_verifies_the_same_seeded_account_refs() {
+    fn sqlite_reopen_verifies_the_same_seeded_coin_refs() {
         let directory = TestDirectory::new();
         let config = config(&directory.0, "devnet-seed-reopen-test");
         let owner: DevOwner = config.dev_owners()[0];
@@ -306,18 +306,22 @@ mod tests {
         );
         let first_protocol =
             build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
-        let first_module = build_asset_module(first_protocol, ASSET_ACCOUNT_WASM.to_vec()).unwrap();
-        let created = seed_asset_accounts(
+        let first_asset_id = first_protocol.asset_id();
+        let first_module =
+            build_standard_asset_module(first_protocol, STANDARD_ASSET_TRANSFER_WASM.to_vec())
+                .unwrap();
+        let created = seed_dev_owner_coins(
             first.store(),
             first.blob_store(),
             first_module.resolver(),
             config.epoch(),
+            first_asset_id,
             owner,
             first_generation,
             &first_context,
         )
         .unwrap();
-        assert!(matches!(created, SeedAssetAccountsOutcome::Created(_)));
+        assert!(matches!(created, SeedDevOwnerCoinsOutcome::Created(_)));
         drop(first);
 
         let second = boot_local_store(&config).unwrap();
@@ -329,20 +333,24 @@ mod tests {
         );
         let second_protocol =
             build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
+        let second_asset_id = second_protocol.asset_id();
+        assert_eq!(first_asset_id, second_asset_id);
         let second_module =
-            build_asset_module(second_protocol, ASSET_ACCOUNT_WASM.to_vec()).unwrap();
-        let existing = seed_asset_accounts(
+            build_standard_asset_module(second_protocol, STANDARD_ASSET_TRANSFER_WASM.to_vec())
+                .unwrap();
+        let existing = seed_dev_owner_coins(
             second.store(),
             second.blob_store(),
             second_module.resolver(),
             config.epoch(),
+            second_asset_id,
             owner,
             second_generation,
             &second_context,
         )
         .unwrap();
 
-        assert!(matches!(existing, SeedAssetAccountsOutcome::Existing(_)));
-        assert_eq!(created.accounts(), existing.accounts());
+        assert!(matches!(existing, SeedDevOwnerCoinsOutcome::Existing(_)));
+        assert_eq!(created.coins(), existing.coins());
     }
 }

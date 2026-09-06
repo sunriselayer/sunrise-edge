@@ -4,7 +4,9 @@
 //! device-application conformance suite. Changing either is a reviewed
 //! display-profile change, never a free refactor.
 
-use signing_view::{DEVNET_ASSET_TRANSFER_POLICY, DeviceSigningProfile, build_clear_signing_view};
+use signing_view::{
+    DeviceSigningProfile, HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3, build_clear_signing_view,
+};
 
 fn decode_hex(value: &str) -> Vec<u8> {
     assert!(value.len().is_multiple_of(2), "odd-length fixture hex");
@@ -57,7 +59,7 @@ fn recognized_transfer_fixture_renders_the_pinned_display_lines() {
     let view = build_clear_signing_view(
         &framed,
         &DeviceSigningProfile::V1,
-        &DEVNET_ASSET_TRANSFER_POLICY,
+        &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3,
     )
     .unwrap();
 

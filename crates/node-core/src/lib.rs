@@ -134,7 +134,8 @@ pub const MAX_AUTHENTICATED_OBJECT_TOTAL_BODY_BYTES: usize = 8 * 1024 * 1024;
 /// protocol-config knob. Applying it to exact canonical bytes keeps the
 /// choice deterministic without changing the object's canonical bytes,
 /// digest, or logical head. It is deliberately far above ordinary small
-/// object bodies (the devnet's `AssetAccount` body is a few dozen bytes) so
+/// object bodies (the devnet's `StandardAssetCoinV1` body is a few dozen
+/// bytes) so
 /// clients that require the bounded query API's inline body keep working
 /// unchanged; only an object body actually large enough to justify separate
 /// content-addressed storage crosses it. Raising or lowering this bound
@@ -4156,8 +4157,10 @@ impl TransactionalNodeStateMachine for PreinstalledWasmMachine<'_> {
         // resolves objects itself; `state.resolved_objects()` is already the
         // access-checked, engine-visible set `load_and_authorize_objects`
         // produced. `epoch` is the authenticated event epoch, never
-        // request-supplied. No current catalog commits such a policy, so
-        // this stays unreachable end-to-end.
+        // request-supplied. The local devnet's Standard Asset v1 `transfer`
+        // entrypoint commits such a policy (DR-0107), so this is reachable
+        // end-to-end for that entrypoint; every other entrypoint without a
+        // matching policy stays exactly as unreachable as before.
         if let Some(typed_policy) = module
             .semantics_envelope()
             .matching_typed_entrypoint_policy(&self.transaction.entrypoint)

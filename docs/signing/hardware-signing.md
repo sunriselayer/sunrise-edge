@@ -83,6 +83,17 @@ and is not signed directly, so Profile v1 cannot display an asset symbol or
 claim that asset identity. The fee `AssetId` is signed and is displayed as raw
 hex.
 
+**Historical since DR-0107.** The exact policy below pins the deleted
+protocol-3 `sunrise.devnet.asset_account.v1` fixture. DR-0107 replaced the
+live devnet with a protocol-4 Standard Asset v1 whole-coin transfer module,
+and no live devnet build matches the policy pinned below anymore; it remains
+correct only as a historical fixed-shape vector
+(`HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3`). No new clear-signing policy
+for the Standard Asset v1 entrypoint exists yet — Ledger device-profile,
+APDU, and view-algorithm behavior are otherwise unchanged by DR-0107, and a
+Ledger signer selection is rejected by the CLI with a typed error before any
+device connection regardless.
+
 Profile v1 recognizes only the exact local reference transfer identified by:
 
 - the device policy pins exactly chain id `sunrise-local-devnet`, protocol
@@ -108,7 +119,7 @@ Profile v1 recognizes only the exact local reference transfer identified by:
   exact devnet fee asset
   `ccad27f687338b99953183728647bc1177388eb45a37afd9812c0d286b433ea8` — the
   normative value is `crates/signing-view/src/policy.rs`'s
-  `DEVNET_ASSET_TRANSFER_POLICY.fee_asset_id` field; `crates/signing-view/tests/fixtures.rs` exercises the same bytes only as fixture evidence.
+  `HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.fee_asset_id` field; `crates/signing-view/tests/fixtures.rs` exercises the same bytes only as fixture evidence.
 
 The view displays chain, protocol version, epoch, message type, scheme,
 sender, nonce, exact module reference, entrypoint, amount, gas limit, every
@@ -352,11 +363,13 @@ tooling rather than assuming it from this table:
   fields. Programmatic responses have a 30-second total read deadline;
   `verify public key` and signing LAST, which wait for a human, each have a
   bounded 120-second total read deadline. Neither deadline is multiplied by
-  the number of HID packets. The current operator flow therefore shows one
-  address confirmation for `address`, and three confirmations for
-  `transfer`: connect-time address, repeated pre-sign address, then the
-  transaction review. The repeated address check is intentional fail-closed
-  Phase 1 behavior, not finalized production UX. **S4c is not complete**: this phase does
+  the number of HID packets. At the time of DR-0092 the operator flow showed
+  one address confirmation for `address` and three for the then-live
+  protocol-3 `transfer`. DR-0107 removed that live transfer shape; the current
+  protocol-4 `transfer` rejects Ledger selection before any device or network
+  dispatch until a new Standard Asset v1 clear-signing policy exists.
+  `address` still exercises one on-device address confirmation. **S4c is not
+  complete**: this phase does
   not verify the active on-device application's name/version or the device
   firmware version (the **app**/**firmware** checks — see "Device APDU
   contract" above), and none of it — the APDU protocol logic, the USB HID

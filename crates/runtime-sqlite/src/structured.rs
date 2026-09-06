@@ -379,6 +379,29 @@ impl SqliteDurableStore {
         transaction.rollback()?;
         Ok(fence)
     }
+
+    /// Reports whether the normalized object-head table is empty.
+    ///
+    /// This is an operator-only startup accessor, not a request-path query.
+    /// The local devnet uses it only while introducing its first persisted
+    /// protocol-version/epoch marker: an older data directory has no marker,
+    /// so an absent marker is safe to create only when no object state
+    /// predates it.
+    /// The check resets the operator timeout and verifies the bound namespace
+    /// in the same read snapshot before inspecting the table.
+    pub fn object_store_is_empty(&self) -> Result<bool, SqliteDurableStoreError> {
+        let mut connection = self.connection()?;
+        connection.busy_timeout(STRUCTURED_BUSY_TIMEOUT)?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        verify_namespace(&transaction, &self.namespace)?;
+        let has_object: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM durable_object_heads LIMIT 1)",
+            [],
+            |row| row.get(0),
+        )?;
+        transaction.rollback()?;
+        Ok(!has_object)
+    }
 }
 
 fn structured_schema_ddl() -> String {
