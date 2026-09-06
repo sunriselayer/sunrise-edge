@@ -545,9 +545,9 @@ contractはtransactionで宣言されていないObjectへアクセスできな�
 
 違反時はexecution trap。
 
-**実装状況（2026-09-06、docs/architecture/decisions/0105-typed-asset-abi-foundation.md
-DR-0105）:** `AccessManifest`（which object / which access mode）とは別に、
-`crates/abi`へboundedかつinertなtyped-ABI foundationを追加した。`TypeArg`
+**実装状況（2026-09-06、DR-0105 / DR-0106）:** DR-0105で
+`AccessManifest`（which object / which access mode）とは別に、`crates/abi`へ
+boundedなtyped-ABI foundationを追加した。`TypeArg`
 （AssetId-onlyの32-byte値）、`TypeTag`（constructor + optional type arg、
 `0x51xx`帯の新canonical type ID `0x5101`/`0x5102`）、`ConstructorDeclaration`/
 `ConstructorRegistry`（fixed-depth canonical body projection、bounded 32
@@ -580,9 +580,23 @@ canonical struct namespaceであり各decoderが`require_type`で自分の期待
 受理するため実害はないと明記した（既存IDのrenumberは行っていない）。
 `objects::apply_lazy_migration`の既存の生`Digest32`比較（`ObjectTypeMismatch`）は、
 typed ABI activation前に`verify_type_id`様の検証へ和解させるべきdeferred workと
-してdocumentedのみ行った（このslice自体は変更していない）。このsliceはinertであり、
-preinstalled module、`Create`、owner change、transfer、mint、fee integration、
-node-core/execution/runtime配線のいずれも行っていない。
+してdocumentedのみ行った（このslice自体は変更していない）。DR-0105時点のこの
+slice単体はinertであり、preinstalled module、`Create`、owner change、transfer、
+mint、fee integration、node-core/execution/runtime配線のいずれも行っていなかった。
+DR-0106（2026-09-06、
+docs/architecture/decisions/0106-typed-entrypoint-owner-transition.md）により、
+`Transaction.protocol_version >= MIN_OWNER_TRANSITION_PROTOCOL_VERSION`（`4`）かつ
+committed catalog policyの二重gateの下で動作する、generic typed owner-transition
+core（policy検証・owner-only mutationのsynthesis・translation boundaryでの独立
+再検証を含むnode-core配線）を追加した。ただし現行のいかなるpreinstalled module
+catalogもこの2つのpolicyをcommitしないため、Standard Asset module本体、devnet
+fixtureのreplacement、CLI/signing-view、そしてこのgeneric coreを超えた
+`Create`/transfer/mint/fee integrationは引き続き未実装のまま（詳細は
+“Asset Standards Gate”のcompletion criteria参照）。現在の
+`PreinstalledOwnerTransitionPolicy::project_recipient`はexact recipient-onlyの
+canonical argsフレーム（type id/encoding version/single field）のみを射影でき、
+distinctなfee payerを扱うentrypointはそのfee payerを別途engine-visibleなWrite
+typed parameterとしてsignatureへ宣言する必要がある。
 
 
 # 19. Fine-Grained Parallelism
