@@ -14,7 +14,7 @@
 //! enable fine-grained parallel execution of non-conflicting transactions
 //! without global ordering (fast path).
 //!
-//! # Typed ABI foundation (inert)
+//! # Typed ABI foundation
 //!
 //! [`AccessManifest`] answers *which exact objects* and *which access mode*
 //! a transaction touches; it says nothing about what constructor, type
@@ -22,12 +22,27 @@
 //! below — [`TypeArg`], [`TypeTag`], [`ConstructorDeclaration`],
 //! [`ConstructorRegistry`], [`EntrypointSignature`], and
 //! [`verify_entrypoint_inputs`] — answer that second question, deliberately
-//! kept separate from access declaration. This module is an inert
-//! foundation: no execution engine, node-core, runtime, or adapter wires it
-//! up yet, and it activates no module, `Create`, transfer, or mint. `abi`
-//! stays independent of `standard-assets`, `execution`, `node-core`,
-//! runtimes, and adapters so this foundation cannot accidentally acquire an
-//! execution-engine or storage dependency.
+//! kept separate from access declaration.
+//!
+//! As of DR-0106, `node-core` has both the canonical wire codecs to commit a
+//! typed entrypoint signature/owner-transition capability inside a governance
+//! `PreinstalledModuleSemanticsEnvelope`
+//! (`PreinstalledTypedEntrypointPolicy`/`PreinstalledOwnerTransitionPolicy`)
+//! and the pre-execution verification wiring itself: when a committed
+//! envelope declares a typed-entrypoint policy for the invoked entrypoint,
+//! `PreinstalledWasmMachine::transition` calls this crate's
+//! [`verify_entrypoint_inputs`] against every engine-visible input, strictly
+//! before the WASM engine ever runs, and a committed owner-transition policy
+//! authorizes node-core to independently synthesize one owner-only mutation
+//! after a successful call. No current [`PreinstalledModuleCatalog`
+//! ](../node_core/struct.PreinstalledModuleCatalog.html) entry commits either
+//! policy, so this capability commits and verifies correctly but activates no
+//! catalog module, `Create`, transfer, or mint end-to-end yet — see
+//! `docs/architecture/decisions/0106-typed-entrypoint-owner-transition.md`.
+//! `abi` itself still stays independent of `standard-assets`, `execution`,
+//! `node-core`, runtimes, and adapters: `node-core` depends on `abi`, never
+//! the other way around, so this foundation cannot accidentally acquire an
+//! execution-engine or storage dependency of its own.
 //!
 //! **Canonical type IDs defined by this crate.** This lists only the exact
 //! IDs this crate defines; it is not a claim that `abi` exclusively owns the
@@ -37,6 +52,11 @@
 //! - `0x5101` — [`TypeArg`] (new in this slice; the `0x51xx` band was
 //!   audited unused before this allocation).
 //! - `0x5102` — [`TypeTag`] (new in this slice, same audit).
+//! - `0x5103` — [`ProjectionStep`] (added in DR-0106; the `0x51xx` band was
+//!   re-audited unused above `0x5102` before this allocation).
+//! - `0x5104` — [`ConstructorDeclaration`] (added in DR-0106).
+//! - `0x5105` — [`ParamDeclaration`] (added in DR-0106).
+//! - `0x5106` — [`EntrypointSignature`] (added in DR-0106).
 //!
 //! The numeric value `0x5001` is also used by `protocol-config`'s
 //! `PROTOCOL_CONFIG_TYPE_ID`. This is a pre-existing overlap between two
@@ -46,11 +66,45 @@
 //! that `abi` reserves `0x5001` exclusively, and this slice does not
 //! renumber it.
 //!
-//! [`ConstructorDeclaration`], [`ConstructorRegistry`],
-//! [`EntrypointSignature`], and [`ParamDeclaration`] are deterministic
-//! in-memory protocol configuration, not wire-transmitted frames, so they
-//! own no canonical type ID. [`ConstructorId`] `0` is reserved and rejected
-//! by [`ConstructorRegistry::register`]; see its type-level docs.
+//! **DR-0106: persisting the typed-ABI policy components.** DR-0105
+//! deliberately left [`ConstructorDeclaration`], [`ConstructorRegistry`],
+//! [`EntrypointSignature`], and [`ParamDeclaration`] as deterministic
+//! in-memory-only protocol configuration with no canonical type ID, because
+//! nothing needed to persist or hash them yet. `node-core`'s governance-
+//! committed [`PreinstalledModuleSemanticsEnvelope`](../node_core/struct.PreinstalledModuleSemanticsEnvelope.html)
+//! now needs to commit an exact typed entrypoint signature (and the
+//! constructors it references) into its hashed bytes, so this slice adds
+//! [`encode_projection_step`]/[`decode_projection_step`],
+//! [`encode_constructor_declaration`]/[`decode_constructor_declaration`],
+//! [`encode_param_declaration`]/[`decode_param_declaration`], and
+//! [`encode_entrypoint_signature`]/[`decode_entrypoint_signature`] as bounded
+//! canonical wire framings of the exact same Rust types. This does not turn
+//! `ConstructorRegistry` itself into a wire type (it stays an in-memory,
+//! `BTreeMap`-backed index the caller builds by decoding and registering one
+//! [`ConstructorDeclaration`] at a time — see `node-core`'s
+//! `PreinstalledTypedEntrypointPolicy`); nor does it change how
+//! [`verify_entrypoint_inputs`] is called. [`ConstructorId`] `0` is reserved
+//! and rejected by both [`ConstructorRegistry::register`] and
+//! [`decode_constructor_declaration`]/[`decode_param_declaration`]; see their
+//! docs.
+//!
+//! Every new decoder rejects a zero/unknown discriminant or identifier,
+//! a bad or unknown arity tag, an out-of-bound count, an unexpected/missing/
+//! trailing field, and — because [`decode_constructor_declaration`] builds a
+//! real [`ConstructorDeclaration`] and calls its existing private
+//! `validate()` — every structural rule [`ConstructorRegistry::register`]
+//! already enforces (arity/projection shape, first-step self-agreement,
+//! zero body/projection ids). The one exception is [`decode_projection_step`]
+//! itself: it is a structural decoder and intentionally defers zero
+//! `expected_type_id`/`field_id` rejection to the enclosing
+//! [`ConstructorDeclaration::validate`] call in
+//! [`decode_constructor_declaration`]; see [`decode_projection_step`]'s own
+//! docs. Cross-declaration duplicate rejection
+//! (duplicate [`ConstructorId`] or `body_type_id`) is still exactly
+//! [`ConstructorRegistry::register`]'s job: a bare `Vec<ConstructorDeclaration>`
+//! is not itself a wire type here, so a caller decoding several declarations
+//! registers each one in turn and gets duplicate rejection for free, without
+//! `abi` inventing a second registry wire format.
 //!
 //! **`type_hash` is a commitment, not the logical identity.** An object's
 //! `type_hash` (e.g. [`objects::Object::type_hash`]) is an algorithm-tagged
@@ -121,6 +175,10 @@ const ACCESS_ENTRY_TYPE_ID: u16 = 0x5001;
 const ACCESS_MANIFEST_TYPE_ID: u16 = 0x5002;
 const TYPE_ARG_TYPE_ID: u16 = 0x5101;
 const TYPE_TAG_TYPE_ID: u16 = 0x5102;
+const PROJECTION_STEP_TYPE_ID: u16 = 0x5103;
+const CONSTRUCTOR_DECLARATION_TYPE_ID: u16 = 0x5104;
+const PARAM_DECLARATION_TYPE_ID: u16 = 0x5105;
+const ENTRYPOINT_SIGNATURE_TYPE_ID: u16 = 0x5106;
 const ENCODING_VERSION: u16 = 1;
 
 /// Maximum number of type arguments a [`TypeTag`] may carry.
@@ -183,6 +241,9 @@ pub enum AbiError {
     UnknownTypeArgTag(u16),
     /// A [`TypeArg`] value had the wrong byte length.
     InvalidTypeArgLength(usize),
+    /// A canonical [`ConstructorDeclaration`] frame declared an arity tag
+    /// other than `0` ([`TypeArity::Fixed`]) or `1` ([`TypeArity::Variable`]).
+    UnknownTypeArityTag(u16),
     /// A [`TypeArity::Variable`] constructor declared an empty projection.
     EmptyProjectionForVariableArity(ConstructorId),
     /// A [`TypeArity::Fixed`] constructor declared a non-empty projection.
@@ -348,6 +409,7 @@ impl fmt::Display for AbiError {
             Self::InvalidTypeArgLength(length) => {
                 write!(f, "type-arg values must be 32 bytes, got {length}")
             }
+            Self::UnknownTypeArityTag(tag) => write!(f, "unknown type-arity tag: {tag}"),
             Self::EmptyProjectionForVariableArity(id) => write!(
                 f,
                 "constructor {id} has variable arity but an empty projection"
@@ -823,6 +885,35 @@ pub struct ProjectionStep {
     pub field_id: u16,
 }
 
+/// Encodes one [`ProjectionStep`] in the canonical wire format.
+///
+/// This is a purely structural encoding: it does not check `expected_type_id`
+/// or `field_id` for zero, since those are semantic rules owned by the
+/// enclosing [`ConstructorDeclaration::validate`] (see
+/// [`decode_constructor_declaration`]).
+pub fn encode_projection_step(step: &ProjectionStep) -> Result<Vec<u8>, AbiError> {
+    let mut canonical = CanonicalStruct::new(PROJECTION_STEP_TYPE_ID, ENCODING_VERSION);
+    canonical.field_u16(1, step.expected_type_id)?;
+    canonical.field_u16(2, step.expected_version)?;
+    canonical.field_u16(3, step.field_id)?;
+    Ok(canonical.finish()?)
+}
+
+/// Decodes one canonical [`ProjectionStep`] without changing its stable
+/// encoding. Rejects unknown/trailing fields; defers zero-id and arity
+/// semantics to the enclosing [`ConstructorDeclaration::validate`].
+pub fn decode_projection_step(input: &[u8]) -> Result<ProjectionStep, AbiError> {
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(input)?;
+    frame.require_type(PROJECTION_STEP_TYPE_ID)?;
+    frame.require_version(ENCODING_VERSION)?;
+    frame.require_only_fields(&[1, 2, 3])?;
+    Ok(ProjectionStep {
+        expected_type_id: frame.required_u16(1)?,
+        expected_version: frame.required_u16(2)?,
+        field_id: frame.required_u16(3)?,
+    })
+}
+
 /// A registered constructor's declared shape.
 ///
 /// Binds one [`ConstructorId`] (`abi`'s own namespace) to exactly one
@@ -900,6 +991,92 @@ impl ConstructorDeclaration {
         }
         Ok(())
     }
+}
+
+/// Encodes one [`ConstructorDeclaration`] in the canonical wire format.
+///
+/// This is a purely structural encoding: it does not call
+/// [`ConstructorDeclaration::validate`], matching this crate's existing
+/// pure-encode style ([`encode_type_arg`], [`encode_type_tag`]); validity is
+/// enforced by [`decode_constructor_declaration`] and by
+/// [`ConstructorRegistry::register`].
+pub fn encode_constructor_declaration(
+    declaration: &ConstructorDeclaration,
+) -> Result<Vec<u8>, AbiError> {
+    if declaration.projection.len() > MAX_PROJECTION_DEPTH {
+        return Err(AbiError::ProjectionTooDeep(declaration.projection.len()));
+    }
+    let mut canonical = CanonicalStruct::new(CONSTRUCTOR_DECLARATION_TYPE_ID, ENCODING_VERSION);
+    canonical.field_u16(1, declaration.id.get())?;
+    canonical.field_u16(2, declaration.body_type_id)?;
+    canonical.field_u16(3, declaration.body_version)?;
+    canonical.field_u32(4, declaration.schema_version)?;
+    let arity_tag: u16 = match declaration.arity {
+        TypeArity::Fixed => 0,
+        TypeArity::Variable => 1,
+    };
+    canonical.field_u16(5, arity_tag)?;
+    let count = u32::try_from(declaration.projection.len())
+        .map_err(|_| AbiError::ProjectionTooDeep(declaration.projection.len()))?;
+    canonical.field_u32(6, count)?;
+    for (index, step) in declaration.projection.iter().enumerate() {
+        let field_id = u16::try_from(7 + index)
+            .map_err(|_| AbiError::ProjectionTooDeep(declaration.projection.len()))?;
+        canonical.field_bytes(field_id, encode_projection_step(step)?)?;
+    }
+    Ok(canonical.finish()?)
+}
+
+/// Decodes one canonical [`ConstructorDeclaration`] without changing its
+/// stable encoding.
+///
+/// Rejects an out-of-bound projection count, an unknown arity tag, and an
+/// unexpected/missing/trailing field before ever constructing the value, and
+/// then calls the same private [`ConstructorDeclaration::validate`]
+/// [`ConstructorRegistry::register`] uses — the reserved zero
+/// [`ConstructorId`], a zero `body_type_id`, an arity/projection shape
+/// mismatch, a zero projection type/field id, and a first projection step
+/// that disagrees with this declaration's own `body_type_id`/`body_version`
+/// are therefore all rejected here too, not only at registration time.
+pub fn decode_constructor_declaration(input: &[u8]) -> Result<ConstructorDeclaration, AbiError> {
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(input)?;
+    frame.require_type(CONSTRUCTOR_DECLARATION_TYPE_ID)?;
+    frame.require_version(ENCODING_VERSION)?;
+    let id = frame.required_u16(1)?;
+    let body_type_id = frame.required_u16(2)?;
+    let body_version = frame.required_u16(3)?;
+    let schema_version = frame.required_u32(4)?;
+    let arity_tag = frame.required_u16(5)?;
+    let arity = match arity_tag {
+        0 => TypeArity::Fixed,
+        1 => TypeArity::Variable,
+        other => return Err(AbiError::UnknownTypeArityTag(other)),
+    };
+    let count = usize::try_from(frame.required_u32(6)?)
+        .map_err(|_| AbiError::ProjectionTooDeep(usize::MAX))?;
+    if count > MAX_PROJECTION_DEPTH {
+        return Err(AbiError::ProjectionTooDeep(count));
+    }
+    let mut allowed: Vec<u16> = vec![1, 2, 3, 4, 5, 6];
+    for index in 0..count {
+        allowed.push(u16::try_from(7 + index).map_err(|_| AbiError::ProjectionTooDeep(count))?);
+    }
+    frame.require_only_fields(&allowed)?;
+    let mut projection = Vec::with_capacity(count);
+    for index in 0..count {
+        let field_id = allowed[6 + index];
+        projection.push(decode_projection_step(frame.required_field(field_id)?)?);
+    }
+    let declaration = ConstructorDeclaration {
+        id: ConstructorId::new(id),
+        body_type_id,
+        body_version,
+        schema_version,
+        arity,
+        projection,
+    };
+    declaration.validate()?;
+    Ok(declaration)
 }
 
 /// A deterministic registry of bounded [`ConstructorDeclaration`]s.
@@ -1109,6 +1286,41 @@ pub struct ParamDeclaration {
     pub schema_version: u32,
 }
 
+/// Encodes one [`ParamDeclaration`] in the canonical wire format.
+pub fn encode_param_declaration(declaration: &ParamDeclaration) -> Result<Vec<u8>, AbiError> {
+    if declaration.constructor.get() == 0 {
+        return Err(AbiError::ZeroConstructorId);
+    }
+    let mut canonical = CanonicalStruct::new(PARAM_DECLARATION_TYPE_ID, ENCODING_VERSION);
+    canonical.field_bytes(1, encode_access_mode(declaration.mode)?)?;
+    canonical.field_u16(2, declaration.constructor.get())?;
+    canonical.field_u32(3, declaration.schema_version)?;
+    Ok(canonical.finish()?)
+}
+
+/// Decodes one canonical [`ParamDeclaration`] without changing its stable
+/// encoding. Rejects the reserved zero [`ConstructorId`] and an
+/// unexpected/missing/trailing field; [`AbiError::UnknownConstructor`]
+/// remains [`verify_entrypoint_inputs`]'s job, since only a
+/// [`ConstructorRegistry`] can know whether a non-zero id is registered.
+pub fn decode_param_declaration(input: &[u8]) -> Result<ParamDeclaration, AbiError> {
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(input)?;
+    frame.require_type(PARAM_DECLARATION_TYPE_ID)?;
+    frame.require_version(ENCODING_VERSION)?;
+    frame.require_only_fields(&[1, 2, 3])?;
+    let mode = decode_access_mode(frame.required_field(1)?)?;
+    let constructor = frame.required_u16(2)?;
+    if constructor == 0 {
+        return Err(AbiError::ZeroConstructorId);
+    }
+    let schema_version = frame.required_u32(3)?;
+    Ok(ParamDeclaration {
+        mode,
+        constructor: ConstructorId::new(constructor),
+        schema_version,
+    })
+}
+
 /// A bounded, protocol-level declaration of one entrypoint's expected typed
 /// inputs.
 ///
@@ -1156,6 +1368,54 @@ impl EntrypointSignature {
     pub fn params(&self) -> &[ParamDeclaration] {
         &self.params
     }
+}
+
+/// Encodes one [`EntrypointSignature`] in the canonical wire format.
+pub fn encode_entrypoint_signature(signature: &EntrypointSignature) -> Result<Vec<u8>, AbiError> {
+    if signature.params.len() > MAX_PARAMS {
+        return Err(AbiError::TooManyParams(signature.params.len()));
+    }
+    let mut canonical = CanonicalStruct::new(ENTRYPOINT_SIGNATURE_TYPE_ID, ENCODING_VERSION);
+    canonical.field_str(1, &signature.entrypoint)?;
+    let count = u32::try_from(signature.params.len())
+        .map_err(|_| AbiError::TooManyParams(signature.params.len()))?;
+    canonical.field_u32(2, count)?;
+    for (index, param) in signature.params.iter().enumerate() {
+        let field_id = u16::try_from(3 + index)
+            .map_err(|_| AbiError::TooManyParams(signature.params.len()))?;
+        canonical.field_bytes(field_id, encode_param_declaration(param)?)?;
+    }
+    Ok(canonical.finish()?)
+}
+
+/// Decodes one canonical [`EntrypointSignature`] without changing its stable
+/// encoding.
+///
+/// Rejects an out-of-bound parameter count and an unexpected/missing/
+/// trailing field before ever constructing the value, then calls the same
+/// [`EntrypointSignature::new`] every in-memory caller uses, so an empty or
+/// oversized entrypoint name is rejected identically either way.
+pub fn decode_entrypoint_signature(input: &[u8]) -> Result<EntrypointSignature, AbiError> {
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(input)?;
+    frame.require_type(ENTRYPOINT_SIGNATURE_TYPE_ID)?;
+    frame.require_version(ENCODING_VERSION)?;
+    let entrypoint = frame.required_str(1)?.to_string();
+    let count =
+        usize::try_from(frame.required_u32(2)?).map_err(|_| AbiError::TooManyParams(usize::MAX))?;
+    if count > MAX_PARAMS {
+        return Err(AbiError::TooManyParams(count));
+    }
+    let mut allowed: Vec<u16> = vec![1, 2];
+    for index in 0..count {
+        allowed.push(u16::try_from(3 + index).map_err(|_| AbiError::TooManyParams(count))?);
+    }
+    frame.require_only_fields(&allowed)?;
+    let mut params = Vec::with_capacity(count);
+    for index in 0..count {
+        let field_id = allowed[2 + index];
+        params.push(decode_param_declaration(frame.required_field(field_id)?)?);
+    }
+    EntrypointSignature::new(entrypoint, params)
 }
 
 // ── TypedInput adapter and single-pass verification ──────────────────────
@@ -2642,6 +2902,265 @@ mod tests {
         assert_eq!(
             old_bindings.inputs[0].type_tag,
             new_bindings.inputs[0].type_tag
+        );
+    }
+
+    // -- DR-0106: persisted typed-ABI policy components --
+
+    #[test]
+    fn projection_step_round_trips_and_rejects_trailing_and_unknown_fields() {
+        let step = ProjectionStep {
+            expected_type_id: 0x7102,
+            expected_version: 1,
+            field_id: 1,
+        };
+        let encoded = encode_projection_step(&step).unwrap();
+        assert_eq!(decode_projection_step(&encoded).unwrap(), step);
+
+        let mut trailing = encoded.clone();
+        trailing.push(0);
+        assert!(decode_projection_step(&trailing).is_err());
+
+        let mut unknown = CanonicalStruct::new(PROJECTION_STEP_TYPE_ID, ENCODING_VERSION);
+        unknown.field_u16(1, 1).unwrap();
+        unknown.field_u16(2, 1).unwrap();
+        unknown.field_u16(3, 1).unwrap();
+        unknown.field_u16(4, 1).unwrap();
+        assert!(matches!(
+            decode_projection_step(&unknown.finish().unwrap()),
+            Err(AbiError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedField(4)
+            ))
+        ));
+    }
+
+    #[test]
+    fn projection_step_encoding_vector_is_stable() {
+        const VECTOR: [u8; 34] = [
+            83, 78, 82, 69, 3, 81, 1, 0, 3, 0, 1, 0, 2, 0, 0, 0, 2, 113, 2, 0, 2, 0, 0, 0, 1, 0, 3,
+            0, 2, 0, 0, 0, 1, 0,
+        ];
+        let step = ProjectionStep {
+            expected_type_id: 0x7102,
+            expected_version: 1,
+            field_id: 1,
+        };
+        assert_eq!(encode_projection_step(&step).unwrap(), VECTOR);
+    }
+
+    #[test]
+    fn constructor_declaration_round_trips_fixed_and_variable_arity() {
+        let coin = coin_constructor_decl();
+        let encoded_coin = encode_constructor_declaration(&coin).unwrap();
+        assert_eq!(decode_constructor_declaration(&encoded_coin).unwrap(), coin);
+
+        let fixed = ConstructorDeclaration {
+            id: ConstructorId::new(0x7101),
+            body_type_id: 0x7101,
+            body_version: 1,
+            schema_version: 1,
+            arity: TypeArity::Fixed,
+            projection: Vec::new(),
+        };
+        let encoded_fixed = encode_constructor_declaration(&fixed).unwrap();
+        assert_eq!(
+            decode_constructor_declaration(&encoded_fixed).unwrap(),
+            fixed
+        );
+        assert_ne!(encoded_coin, encoded_fixed);
+    }
+
+    #[test]
+    fn constructor_declaration_decoder_rejects_zero_ids_bad_arity_and_deep_projection() {
+        let mut zero_id = coin_constructor_decl();
+        zero_id.id = ConstructorId::new(0);
+        assert_eq!(
+            decode_constructor_declaration(&encode_constructor_declaration(&zero_id).unwrap()),
+            Err(AbiError::ZeroConstructorId)
+        );
+
+        let mut zero_body = coin_constructor_decl();
+        zero_body.body_type_id = 0;
+        assert_eq!(
+            decode_constructor_declaration(&encode_constructor_declaration(&zero_body).unwrap()),
+            Err(AbiError::ZeroBodyTypeId(zero_body.id))
+        );
+
+        let mut zero_step_type = coin_constructor_decl();
+        zero_step_type.projection[1].expected_type_id = 0;
+        assert_eq!(
+            decode_constructor_declaration(
+                &encode_constructor_declaration(&zero_step_type).unwrap()
+            ),
+            Err(AbiError::ZeroProjectionTypeId(zero_step_type.id))
+        );
+
+        let mut zero_field_id = coin_constructor_decl();
+        zero_field_id.projection[1].field_id = 0;
+        assert_eq!(
+            decode_constructor_declaration(
+                &encode_constructor_declaration(&zero_field_id).unwrap()
+            ),
+            Err(AbiError::ZeroProjectionFieldId(zero_field_id.id))
+        );
+
+        let mut mismatched_first_step = coin_constructor_decl();
+        mismatched_first_step.projection[0].expected_type_id = 0x9999;
+        let expected = AbiError::ProjectionFirstStepMismatch {
+            constructor: mismatched_first_step.id,
+            body_type_id: mismatched_first_step.body_type_id,
+            body_version: mismatched_first_step.body_version,
+            first_type_id: 0x9999,
+            first_version: 1,
+        };
+        assert_eq!(
+            decode_constructor_declaration(
+                &encode_constructor_declaration(&mismatched_first_step).unwrap()
+            ),
+            Err(expected)
+        );
+
+        let mut fixed_with_projection = ConstructorDeclaration {
+            id: ConstructorId::new(0x7101),
+            body_type_id: 0x7101,
+            body_version: 1,
+            schema_version: 1,
+            arity: TypeArity::Fixed,
+            projection: coin_projection(),
+        };
+        assert_eq!(
+            decode_constructor_declaration(
+                &encode_constructor_declaration(&fixed_with_projection).unwrap()
+            ),
+            Err(AbiError::UnexpectedProjectionForFixedArity(
+                fixed_with_projection.id
+            ))
+        );
+        fixed_with_projection.projection.clear();
+
+        let mut too_deep = coin_constructor_decl();
+        too_deep.projection = (0..=u16::try_from(MAX_PROJECTION_DEPTH).unwrap())
+            .map(|index| ProjectionStep {
+                expected_type_id: if index == 0 { BODY_TYPE_ID } else { 1 },
+                expected_version: 1,
+                field_id: 1,
+            })
+            .collect();
+        assert_eq!(
+            encode_constructor_declaration(&too_deep),
+            Err(AbiError::ProjectionTooDeep(MAX_PROJECTION_DEPTH + 1))
+        );
+
+        let mut unknown_arity =
+            CanonicalStruct::new(CONSTRUCTOR_DECLARATION_TYPE_ID, ENCODING_VERSION);
+        unknown_arity.field_u16(1, 0x7102).unwrap();
+        unknown_arity.field_u16(2, 0x7102).unwrap();
+        unknown_arity.field_u16(3, 1).unwrap();
+        unknown_arity.field_u32(4, 1).unwrap();
+        unknown_arity.field_u16(5, 7).unwrap();
+        unknown_arity.field_u32(6, 0).unwrap();
+        assert_eq!(
+            decode_constructor_declaration(&unknown_arity.finish().unwrap()),
+            Err(AbiError::UnknownTypeArityTag(7))
+        );
+
+        let mut trailing = encode_constructor_declaration(&coin_constructor_decl()).unwrap();
+        trailing.push(0);
+        assert!(matches!(
+            decode_constructor_declaration(&trailing),
+            Err(AbiError::CanonicalDecoding(_))
+        ));
+    }
+
+    #[test]
+    fn param_declaration_round_trips_and_rejects_zero_constructor() {
+        let param = ParamDeclaration {
+            mode: AccessMode::Write,
+            constructor: COIN_CONSTRUCTOR,
+            schema_version: 1,
+        };
+        let encoded = encode_param_declaration(&param).unwrap();
+        assert_eq!(decode_param_declaration(&encoded).unwrap(), param);
+
+        let zero = ParamDeclaration {
+            mode: AccessMode::Write,
+            constructor: ConstructorId::new(0),
+            schema_version: 1,
+        };
+        assert_eq!(
+            encode_param_declaration(&zero),
+            Err(AbiError::ZeroConstructorId)
+        );
+
+        let mut wire = CanonicalStruct::new(PARAM_DECLARATION_TYPE_ID, ENCODING_VERSION);
+        wire.field_bytes(1, encode_access_mode(AccessMode::Write).unwrap())
+            .unwrap();
+        wire.field_u16(2, 0).unwrap();
+        wire.field_u32(3, 1).unwrap();
+        assert_eq!(
+            decode_param_declaration(&wire.finish().unwrap()),
+            Err(AbiError::ZeroConstructorId)
+        );
+    }
+
+    #[test]
+    fn entrypoint_signature_round_trips_and_rejects_bad_shapes() {
+        let signature = mint_signature();
+        let encoded = encode_entrypoint_signature(&signature).unwrap();
+        assert_eq!(decode_entrypoint_signature(&encoded).unwrap(), signature);
+
+        let single = transfer_signature();
+        let encoded_single = encode_entrypoint_signature(&single).unwrap();
+        assert_ne!(encoded, encoded_single);
+        assert_eq!(
+            decode_entrypoint_signature(&encoded_single).unwrap(),
+            single
+        );
+
+        let mut trailing = encoded_single.clone();
+        trailing.push(0);
+        assert!(matches!(
+            decode_entrypoint_signature(&trailing),
+            Err(AbiError::CanonicalDecoding(_))
+        ));
+
+        let mut declared_count_mismatch =
+            CanonicalStruct::new(ENTRYPOINT_SIGNATURE_TYPE_ID, ENCODING_VERSION);
+        declared_count_mismatch.field_str(1, "transfer").unwrap();
+        declared_count_mismatch.field_u32(2, 2).unwrap();
+        declared_count_mismatch
+            .field_bytes(
+                3,
+                encode_param_declaration(&ParamDeclaration {
+                    mode: AccessMode::Write,
+                    constructor: COIN_CONSTRUCTOR,
+                    schema_version: 1,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            decode_entrypoint_signature(&declared_count_mismatch.finish().unwrap()),
+            Err(AbiError::CanonicalDecoding(
+                CanonicalDecodingError::MissingField(4)
+            ))
+        ));
+
+        let too_many_params: Vec<ParamDeclaration> = (0..=MAX_PARAMS)
+            .map(|_| ParamDeclaration {
+                mode: AccessMode::Read,
+                constructor: COIN_CONSTRUCTOR,
+                schema_version: 1,
+            })
+            .collect();
+        let mut oversized = CanonicalStruct::new(ENTRYPOINT_SIGNATURE_TYPE_ID, ENCODING_VERSION);
+        oversized.field_str(1, "too-many").unwrap();
+        oversized
+            .field_u32(2, u32::try_from(too_many_params.len()).unwrap())
+            .unwrap();
+        assert_eq!(
+            decode_entrypoint_signature(&oversized.finish().unwrap()),
+            Err(AbiError::TooManyParams(too_many_params.len()))
         );
     }
 }

@@ -12,7 +12,7 @@ use super::{
 use crypto::{Ed25519OwnerAddressError, Ed25519OwnerAddressPolicy, validate_ed25519_owner_address};
 use execution::{ObjectEffect, ResolvedObject};
 use hashing::HashSuiteResolver;
-use objects::{AccessMode, Object, ObjectId, Owner, encode_object};
+use objects::{AccessMode, Address, Object, ObjectId, Owner, encode_object};
 use protocol_types::{ChainId, Epoch, HashPurpose, ProtocolVersion};
 use runtime::{
     DurableInvocationError, DurableObjectHead, DurableObjectHeadRead, DurableObjectMutation,
@@ -219,6 +219,55 @@ pub(super) fn translate_authenticated_object_effects(
     context: Option<&TrustedObjectMutationContext<'_>>,
     loaded_body_bytes: usize,
 ) -> Result<Vec<DurableObjectMutationEntry>, NodeCoreError> {
+    translate_authenticated_object_effects_impl(verified, effects, context, loaded_body_bytes, None)
+}
+
+/// Identical to [`translate_authenticated_object_effects`], except that the
+/// declared `Write` effect for `owner_transition_object_id` (if any) is
+/// allowed to change [`Object::owner`] to exactly `expected_recipient`, while
+/// every other identity/version/type/schema/checkpoint invariant
+/// [`translate_update_impl`] enforces stays exactly as strict as always.
+///
+/// This is the sole, narrowly-scoped exception to node-core's default
+/// owner-preserving mutation rule (DR-0106): [`translate_update_impl`]'s
+/// `owner_transition_recipient: None` path is unmodified and still rejects
+/// an owner change on every other id, in every other call, including every
+/// other declared `Write` access in the same call. This function is an
+/// independent translation-boundary check, not a rubber stamp for whatever a
+/// committed [`crate::PreinstalledOwnerTransitionPolicy`] and the caller's
+/// own synthesis already agreed on: for `owner_transition_object_id`'s
+/// declared `Write` effect, it requires — on top of the exact id, previous
+/// version, `+1` version, `type_hash`, and `schema_version` checks every
+/// mutation gets — that the new owner is *exactly* `Owner::Address(expected_recipient)`
+/// (never merely "some `Owner::Address`") and that the new object's `data`
+/// bytes are byte-identical to the verified input's own body (a whole-object
+/// transfer never changes body content). A module-produced effect that
+/// mutates data or names a different recipient is rejected here even if the
+/// caller's own synthesis logic had a bug.
+pub(super) fn translate_authenticated_object_effects_with_owner_transition(
+    verified: &[VerifiedAuthenticatedObject],
+    effects: &[ObjectEffect],
+    context: Option<&TrustedObjectMutationContext<'_>>,
+    loaded_body_bytes: usize,
+    owner_transition_object_id: ObjectId,
+    expected_recipient: Address,
+) -> Result<Vec<DurableObjectMutationEntry>, NodeCoreError> {
+    translate_authenticated_object_effects_impl(
+        verified,
+        effects,
+        context,
+        loaded_body_bytes,
+        Some((owner_transition_object_id, expected_recipient)),
+    )
+}
+
+fn translate_authenticated_object_effects_impl(
+    verified: &[VerifiedAuthenticatedObject],
+    effects: &[ObjectEffect],
+    context: Option<&TrustedObjectMutationContext<'_>>,
+    loaded_body_bytes: usize,
+    owner_transition: Option<(ObjectId, Address)>,
+) -> Result<Vec<DurableObjectMutationEntry>, NodeCoreError> {
     if effects.len() > MAX_AUTHENTICATED_OBJECT_READS {
         return Err(NodeCoreError::TooManyObjectEffects {
             actual: effects.len(),
@@ -266,12 +315,16 @@ pub(super) fn translate_authenticated_object_effects(
                         reason: "write access requires exactly one mutated effect",
                     });
                 };
-                let mutation: DurableObjectMutation = translate_update(
+                let owner_transition_recipient = owner_transition
+                    .filter(|(id, _)| *id == object_id)
+                    .map(|(_, recipient)| recipient);
+                let mutation: DurableObjectMutation = translate_update_impl(
                     input,
                     *previous_version,
                     new_object,
                     context,
                     &mut represented_body_bytes,
+                    owner_transition_recipient,
                 )?;
                 mutations.push(DurableObjectMutationEntry::new(object_id, mutation));
             }
@@ -325,7 +378,7 @@ pub(super) fn translate_authenticated_object_effects(
 ///   was charged here";
 /// * the verified input matching a supplied effect must be `AccessMode::Write`;
 /// * every matched mutation is independently revalidated through the same
-///   [`translate_update`] the normal path uses — never a loosened copy.
+///   [`translate_update_impl`] the normal path uses — never a loosened copy.
 pub(super) fn translate_fee_only_object_effects(
     verified: &[VerifiedAuthenticatedObject],
     effects: &[ObjectEffect],
@@ -403,12 +456,13 @@ pub(super) fn translate_fee_only_object_effects(
                 reason: "fee-only mutation requires exactly one mutated effect",
             });
         };
-        let mutation: DurableObjectMutation = translate_update(
+        let mutation: DurableObjectMutation = translate_update_impl(
             input,
             *previous_version,
             new_object,
             Some(context),
             &mut represented_body_bytes,
+            None,
         )?;
         mutations.push(DurableObjectMutationEntry::new(object_id, mutation));
     }
@@ -419,12 +473,29 @@ pub(super) fn translate_fee_only_object_effects(
     Ok(mutations)
 }
 
-fn translate_update(
+/// Shared implementation behind [`translate_authenticated_object_effects`],
+/// [`translate_authenticated_object_effects_with_owner_transition`], and
+/// [`translate_fee_only_object_effects`].
+///
+/// `owner_transition_recipient: None` is this function's original,
+/// unconditional behavior: an owner change is rejected together with a
+/// type/schema change, in the same [`NodeCoreError::ObjectEffectMismatch`].
+/// `owner_transition_recipient: Some(expected_recipient)` (reachable only via
+/// [`translate_authenticated_object_effects_with_owner_transition`], never
+/// via the fee-only path) splits that check apart for this one object: the
+/// owner is independently required to become *exactly*
+/// `Owner::Address(expected_recipient)` (never merely some `Owner::Address`,
+/// and never Shared/System/Immutable), and — since a whole-object transfer
+/// changes only ownership — the new object's `data` must stay byte-identical
+/// to the verified input's own body. Type and schema must still match
+/// exactly either way.
+fn translate_update_impl(
     input: &VerifiedAuthenticatedObject,
     previous_version: u64,
     new_object: &Object,
     context: Option<&TrustedObjectMutationContext<'_>>,
     represented_body_bytes: &mut usize,
+    owner_transition_recipient: Option<Address>,
 ) -> Result<DurableObjectMutation, NodeCoreError> {
     let object_id: ObjectId = input.object.id;
     require_mutable_address_owner(input)?;
@@ -445,7 +516,7 @@ fn translate_update(
             reason: "mutated effect did not advance by exactly one version",
         });
     }
-    if new_object.owner != input.object.owner
+    if (owner_transition_recipient.is_none() && new_object.owner != input.object.owner)
         || new_object.type_hash != input.object.type_hash
         || new_object.schema_version != input.object.schema_version
     {
@@ -453,6 +524,26 @@ fn translate_update(
             object_id,
             reason: "mutated effect changed owner, type, or schema",
         });
+    }
+    if let Some(expected_recipient) = owner_transition_recipient {
+        match &new_object.owner {
+            Owner::Address(actual) if *actual == expected_recipient => {}
+            Owner::Address(_) => {
+                return Err(NodeCoreError::ObjectEffectMismatch {
+                    object_id,
+                    reason: "owner-transition mutation did not set the exact committed recipient",
+                });
+            }
+            Owner::Immutable | Owner::Shared | Owner::System => {
+                return Err(NodeCoreError::ObjectOwnerKindUnsupported { object_id });
+            }
+        }
+        if new_object.data != input.object.data {
+            return Err(NodeCoreError::ObjectEffectMismatch {
+                object_id,
+                reason: "owner-transition mutation changed the object body",
+            });
+        }
     }
 
     let canonical_bytes: Vec<u8> = encode_object(new_object)
@@ -726,6 +817,80 @@ mod tests {
             &DurableObjectOwnerProjection::from_owner(next.owner.clone()).unwrap()
         );
         assert_eq!(routing_projection.bytes(), Some([0x44].as_slice()));
+    }
+
+    #[test]
+    fn owner_transition_grant_rechecks_exact_recipient_and_unchanged_body() {
+        let sender: Address = Address::new([0x45; 32]);
+        let recipient: Address = Address::new([0x46; 32]);
+        let current: Object = object(9, Owner::Address(sender), vec![0x01, 0x02]);
+        let resolver: HashSuiteResolver = resolver();
+        let chain_id: ChainId = ChainId::new("sunrise-mvp").unwrap();
+        let context: TrustedObjectMutationContext<'_> = TrustedObjectMutationContext {
+            resolver: &resolver,
+            chain_id: &chain_id,
+            protocol_version: ProtocolVersion::new(1),
+            epoch: Epoch::new(3),
+            created_checkpoint: 17,
+        };
+
+        let mut valid: Object = current.clone();
+        valid.version = 10;
+        valid.owner = Owner::Address(recipient);
+        assert!(
+            translate_authenticated_object_effects_with_owner_transition(
+                &[verified(AccessMode::Write, current.clone())],
+                &[ObjectEffect::Mutated {
+                    previous_version: 9,
+                    new_object: valid.clone(),
+                }],
+                Some(&context),
+                0,
+                current.id,
+                recipient,
+            )
+            .is_ok()
+        );
+
+        let mut wrong_recipient: Object = valid.clone();
+        wrong_recipient.owner = Owner::Address(Address::new([0x47; 32]));
+        assert!(matches!(
+            translate_authenticated_object_effects_with_owner_transition(
+                &[verified(AccessMode::Write, current.clone())],
+                &[ObjectEffect::Mutated {
+                    previous_version: 9,
+                    new_object: wrong_recipient,
+                }],
+                Some(&context),
+                0,
+                current.id,
+                recipient,
+            ),
+            Err(NodeCoreError::ObjectEffectMismatch {
+                reason: "owner-transition mutation did not set the exact committed recipient",
+                ..
+            })
+        ));
+
+        let mut changed_body: Object = valid;
+        changed_body.data.push(0x03);
+        assert!(matches!(
+            translate_authenticated_object_effects_with_owner_transition(
+                &[verified(AccessMode::Write, current.clone())],
+                &[ObjectEffect::Mutated {
+                    previous_version: 9,
+                    new_object: changed_body,
+                }],
+                Some(&context),
+                0,
+                current.id,
+                recipient,
+            ),
+            Err(NodeCoreError::ObjectEffectMismatch {
+                reason: "owner-transition mutation changed the object body",
+                ..
+            })
+        ));
     }
 
     #[test]

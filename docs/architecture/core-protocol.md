@@ -15,11 +15,15 @@ Sunrise Edge is designed as a deterministic state-transition system over authent
   nominal object-type identity frame used by `abi`'s typed-ABI foundation.
 - `objects`: versioned object identifiers, ownership, canonical object
   references, and access modes.
-- `abi`: canonical `AccessManifest` access declaration, plus a bounded,
-  inert typed-ABI foundation (nominal type arguments/tags, constructor
+- `abi`: canonical `AccessManifest` access declaration, plus a bounded
+  typed-ABI foundation (nominal type arguments/tags, constructor
   declarations and registry, entrypoint signatures, and single-pass
-  pre-execution input verification) kept independent of `standard-assets`,
-  `execution`, `node-core`, runtimes, and adapters.
+  pre-execution input verification), independent of `standard-assets`,
+  `execution`, `node-core`, runtimes, and adapters (`node-core` depends on
+  `abi`, never the reverse). `node-core` commits typed-entrypoint and
+  owner-transition policies against this foundation and calls
+  `verify_entrypoint_inputs` before WASM execution (DR-0106), though no
+  current catalog activates either policy.
 - `standard-assets`: canonical Standard Asset v1 identity (`AssetId`) and
   value schemas (`StandardAssetDefinitionV1`, `StandardAssetCoinV1`,
   `StandardAssetMintCapabilityV1`), plus the concrete `abi` typed-ABI
@@ -404,6 +408,27 @@ that point native HTTP activation was still deferred); a later additive
 `native-http` router
 now wires it up (see [DR-0080](decisions/0076-0080-developer-mvp-foundation.md)). Arbitrary uploads, JIT/AOT, and production
 metering remain deferred.
+
+A committed `PreinstalledModuleSemanticsEnvelope` may additionally declare a
+bounded `PreinstalledTypedEntrypointPolicy` and/or
+`PreinstalledOwnerTransitionPolicy` per exact entrypoint (DR-0106). When a
+typed-entrypoint policy matches the invoked entrypoint, node-core calls
+`abi::verify_entrypoint_inputs` against every engine-visible input, in exact
+signed order, strictly before the WASM engine ever runs. When an
+owner-transition policy matches, node-core independently authorizes and, on a
+successful call, synthesizes exactly one owner-only mutation for the
+committed access index — never trusting the module's own returned effects to
+declare that object's new owner — and requires `Transaction.protocol_version
+>= MIN_OWNER_TRANSITION_PROTOCOL_VERSION` (checked before the engine runs, not
+deferred to a later effect mismatch). The synthesized effect is folded into
+the same canonical `ExecutionEffects` returned in the receipt and committed as
+the durable mutation, so the two never disagree, and the translation boundary
+independently re-verifies the exact committed recipient address and an
+unchanged object body regardless of what the caller's synthesis already
+checked. No current preinstalled-module catalog commits either policy, so
+this capability commits, verifies, and translates correctly end-to-end but
+activates no catalog module yet (see
+[DR-0106](decisions/0106-typed-entrypoint-owner-transition.md)).
 
 Protocol version 3 MUST NOT be activated on any live chain until shared-object
 ordering, FastVote/FastCertificate, certificate publication, and every
