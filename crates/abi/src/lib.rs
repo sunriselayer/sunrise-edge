@@ -94,7 +94,12 @@
 //! real [`ConstructorDeclaration`] and calls its existing private
 //! `validate()` — every structural rule [`ConstructorRegistry::register`]
 //! already enforces (arity/projection shape, first-step self-agreement,
-//! zero body/projection ids). Cross-declaration duplicate rejection
+//! zero body/projection ids). The one exception is [`decode_projection_step`]
+//! itself: it is a structural decoder and intentionally defers zero
+//! `expected_type_id`/`field_id` rejection to the enclosing
+//! [`ConstructorDeclaration::validate`] call in
+//! [`decode_constructor_declaration`]; see [`decode_projection_step`]'s own
+//! docs. Cross-declaration duplicate rejection
 //! (duplicate [`ConstructorId`] or `body_type_id`) is still exactly
 //! [`ConstructorRegistry::register`]'s job: a bare `Vec<ConstructorDeclaration>`
 //! is not itself a wire type here, so a caller decoding several declarations

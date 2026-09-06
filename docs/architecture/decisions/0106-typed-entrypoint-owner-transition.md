@@ -40,9 +40,10 @@ later slices.
   collections inside `PreinstalledModuleSemanticsEnvelope`.**
   `PreinstalledTypedEntrypointPolicy` binds one exact entrypoint to a bounded
   constructor-id-sorted list of `ConstructorDeclaration`s (≤
-  `MAX_PREINSTALLED_TYPED_ENTRYPOINT_CONSTRUCTORS = 32`, restating
-  `abi::MAX_CONSTRUCTORS` as a dependency-safe identical bound) and one
-  `EntrypointSignature`; construction rejects any
+  `MAX_PREINSTALLED_TYPED_ENTRYPOINT_CONSTRUCTORS`, an exact alias of
+  `abi::MAX_CONSTRUCTORS` — node-core already depends on `abi`, so the bound
+  is defined in terms of it rather than restated as a separately maintained
+  literal) and one `EntrypointSignature`; construction rejects any
   `ConstructorRegistry::register` failure and a signature parameter naming a
   constructor absent from the resulting registry, so a committed policy can
   never reference an unknown constructor. Sorting makes semantically identical
@@ -66,6 +67,31 @@ later slices.
   exclusive so a single access index is never simultaneously a cross-owner
   destination exception and an owner-transition grant.
 
+  **Index-space invariant.** `PreinstalledObjectAccessPolicy.access_index`
+  indexes the *signed manifest* (`Transaction.access_manifest.entries`,
+  including any object node-core hides from the engine, such as the fee
+  treasury). `PreinstalledOwnerTransitionPolicy.transferred_access_index`
+  indexes *engine-visible resolved objects*
+  (`NodeStateSnapshot::resolved_objects`, from which node-core excludes the
+  trusted fee treasury access) — both at construction time, where it is
+  checked against the typed signature's `params()` (also engine-visible; see
+  below), and at synthesis time, where `synthesize_owner_transition` resolves
+  it against `state.resolved_objects()` directly. These two index spaces are
+  not the same type in general, but they coincide for every index an
+  owner-transition policy can legally name today, because the *only* object
+  node-core currently hides from engine visibility is the fee treasury, and
+  `PreinstalledWasmMachine::admit_fee` independently requires the treasury,
+  whenever present, to be the manifest's exact *final* declared `Write`
+  access. Hiding only ever removes the last entry, so every earlier index is
+  numerically identical in both spaces; a transferred-access index can
+  therefore never legally observe the divergence. This is a cross-module
+  dependency, not a coincidence: if a future change ever hides a
+  non-terminal manifest entry from the engine, or hides more than one entry,
+  `transferred_access_index` and `access_index` would silently stop meaning
+  the same position for any index at or after the first hidden one. Anyone
+  changing which objects node-core hides from engine visibility must re-audit
+  this invariant.
+
   `encode_preinstalled_semantics_envelope` emits both new collections' count
   and item fields only when non-empty, at high, deliberately non-adjacent
   field ids (`100`/`101+` and `200`/`201+`) well clear of
@@ -80,7 +106,9 @@ later slices.
   the WASM engine ever runs.** If a `PreinstalledTypedEntrypointPolicy`
   matches the invoked entrypoint, every engine-visible input — the same
   access-checked `state.resolved_objects()` set `load_and_authorize_objects`
-  already produced, in exact signed manifest order — is passed to
+  already produced, in that set's own order (signed manifest order with any
+  engine-hidden access, such as the fee treasury, already excluded; see the
+  index-space invariant above) — is passed to
   `abi::verify_entrypoint_inputs` against the policy's rebuilt
   `ConstructorRegistry` and signature, using the authenticated event epoch
   (never request-supplied). Independently, if a

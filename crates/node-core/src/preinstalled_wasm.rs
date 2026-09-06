@@ -153,11 +153,12 @@ pub const MAX_PREINSTALLED_TYPED_ENTRYPOINT_POLICIES: usize = 8;
 /// committed semantics envelope may declare (DR-0106).
 pub const MAX_PREINSTALLED_OWNER_TRANSITION_POLICIES: usize = 8;
 /// Deterministic upper bound on the number of [`abi::ConstructorDeclaration`]s
-/// one [`PreinstalledTypedEntrypointPolicy`] may commit (DR-0106). Matches
-/// [`abi::MAX_CONSTRUCTORS`] restated as a dependency-safe identical bound,
-/// analogous to how `abi::MAX_ENTRYPOINT_BYTES` restates
-/// `execution::MAX_TRANSACTION_ENTRYPOINT_BYTES`.
-pub const MAX_PREINSTALLED_TYPED_ENTRYPOINT_CONSTRUCTORS: usize = 32;
+/// one [`PreinstalledTypedEntrypointPolicy`] may commit (DR-0106). This is an
+/// exact alias of [`abi::MAX_CONSTRUCTORS`], not an independently chosen
+/// value: node-core already depends on `abi`, so the bound is defined in
+/// terms of it rather than restated as a separately maintained literal that
+/// could silently drift out of sync.
+pub const MAX_PREINSTALLED_TYPED_ENTRYPOINT_CONSTRUCTORS: usize = abi::MAX_CONSTRUCTORS;
 
 const PREINSTALLED_OBJECT_ACCESS_POLICY_TYPE_ID: u16 = 0xE007;
 const PREINSTALLED_SEMANTICS_ENVELOPE_TYPE_ID: u16 = 0xE008;
@@ -459,6 +460,21 @@ pub fn encode_preinstalled_typed_entrypoint_policy(
 /// Unlike [`PreinstalledObjectAccessPolicy`], `transferred_access_index` `0`
 /// is not reserved: see [`PreinstalledOwnerTransitionPolicy::new`]'s docs for
 /// why that reservation does not apply to this capability.
+///
+/// **Index space.** `transferred_access_index` indexes *engine-visible
+/// resolved objects* (`NodeStateSnapshot::resolved_objects`), not the raw
+/// signed manifest [`PreinstalledObjectAccessPolicy::access_index`] indexes.
+/// [`PreinstalledModuleSemanticsEnvelope::with_typed_policies`] validates the
+/// index against the matching typed-entrypoint signature, and
+/// `PreinstalledWasmMachine::synthesize_owner_transition` resolves that same
+/// index against `state.resolved_objects()` at runtime. This coincides with the
+/// signed-manifest position only because the sole object node-core ever
+/// hides from engine visibility today, the fee treasury, is independently
+/// required to be the manifest's exact final declared `Write` access (see
+/// DR-0106's index-space invariant); a `transferred_access_index` can
+/// therefore never legally observe the two spaces diverging. That
+/// dependency is external to this type and must be re-audited if node-core
+/// ever hides a non-terminal or additional manifest entry from the engine.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreinstalledOwnerTransitionPolicy {
     entrypoint: String,

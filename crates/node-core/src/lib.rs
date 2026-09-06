@@ -12397,6 +12397,243 @@ mod tests {
         assert_eq!(record.responses()[0].payload(), response.payload());
     }
 
+    /// Proves the index-space invariant documented on
+    /// [`PreinstalledOwnerTransitionPolicy`] and DR-0106: with a signed
+    /// manifest of *three* declared accesses (transferred object, a distinct
+    /// fee payer, and the fee treasury as the final entry) but the treasury
+    /// hidden from engine visibility, `transferred_access_index = 0` still
+    /// resolves to the intended object rather than silently drifting once a
+    /// third manifest entry is introduced.
+    #[test]
+    fn owner_transition_index_unaffected_by_hidden_final_treasury() {
+        let protocol_version: ProtocolVersion = ProtocolVersion::new(4);
+        let epoch: Epoch = Epoch::new(7);
+        let object_domain: AtomicityDomainId = domain(0x53);
+        let node_config: NodeConfig = NodeConfig::new(
+            ChainId::new("sunrise-test").unwrap(),
+            protocol_version,
+            epoch,
+            b"node/state".to_vec(),
+        )
+        .unwrap();
+        let mut protocol_config: ProtocolConfig = fee_active_protocol_config(0x53);
+        protocol_config.protocol_version = protocol_version;
+        let signing_key: SigningKey = dev_signing_key(0x53);
+        let sender: Address = dev_sender_address(&signing_key);
+        let recipient: Address = dev_sender_address(&dev_signing_key(0x54));
+        let hash_resolver: HashSuiteResolver =
+            resolver_for_protocol("sunrise-test", protocol_version);
+
+        // Two Write params, matching the two engine-visible resolved objects
+        // once the treasury is hidden: index 0 is the transferred object,
+        // index 1 is the distinct fee payer.
+        let constructor: ConstructorDeclaration = ConstructorDeclaration {
+            id: ConstructorId::new(OWNER_TRANSITION_CONSTRUCTOR_ID),
+            body_type_id: OWNER_TRANSITION_BODY_TYPE_ID,
+            body_version: 1,
+            schema_version: 1,
+            arity: TypeArity::Fixed,
+            projection: Vec::new(),
+        };
+        let signature: EntrypointSignature = EntrypointSignature::new(
+            "run".to_string(),
+            vec![
+                ParamDeclaration {
+                    mode: AccessMode::Write,
+                    constructor: ConstructorId::new(OWNER_TRANSITION_CONSTRUCTOR_ID),
+                    schema_version: 1,
+                },
+                ParamDeclaration {
+                    mode: AccessMode::Write,
+                    constructor: ConstructorId::new(OWNER_TRANSITION_CONSTRUCTOR_ID),
+                    schema_version: 1,
+                },
+            ],
+        )
+        .unwrap();
+        let typed: PreinstalledTypedEntrypointPolicy =
+            PreinstalledTypedEntrypointPolicy::new(vec![constructor], signature).unwrap();
+        let owner: PreinstalledOwnerTransitionPolicy = PreinstalledOwnerTransitionPolicy::new(
+            "run".to_string(),
+            0,
+            OWNER_TRANSITION_ARGS_TYPE_ID,
+            1,
+            1,
+        )
+        .unwrap();
+        let envelope: PreinstalledModuleSemanticsEnvelope =
+            PreinstalledModuleSemanticsEnvelope::with_typed_policies(
+                b"owner-transition-hidden-treasury-test".to_vec(),
+                Vec::new(),
+                vec![typed],
+                vec![owner],
+            )
+            .unwrap();
+
+        let module_id: ModuleId = ModuleId::new([0x55; 32]);
+        let (registry, catalog, module_ref) = preinstalled_module_fixture_with_envelope(
+            &hash_resolver,
+            module_id,
+            1,
+            preinstalled_noop_wasm_bytes(),
+            256,
+            Epoch::new(0),
+            system_modules::ModuleStatus::Active,
+            envelope,
+        );
+        protocol_config.system_modules = registry;
+
+        let store: MemoryDurableStateStore =
+            MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+        store.set_time(100);
+        let context: DurableOperationContext = durable_context();
+        let blob_store: MemoryBlobStore = MemoryBlobStore::default();
+
+        let object_id: ObjectId = ObjectId::new([0x56; 32]);
+        let original: Object =
+            owner_transition_object(&hash_resolver, epoch, object_id, sender, vec![0x57, 0x58]);
+        let object_ref: ObjectRef = commit_memory_inline_object_with_protocol_version(
+            &store,
+            &context,
+            object_domain,
+            original.clone(),
+            "sunrise-test",
+            protocol_version,
+            9,
+            0x59,
+        );
+
+        let payer_id: ObjectId = ObjectId::new([0x5A; 32]);
+        let payer_object: Object =
+            owner_transition_object(&hash_resolver, epoch, payer_id, sender, vec![0x5B]);
+        let payer_ref: ObjectRef = commit_memory_inline_object_with_protocol_version(
+            &store,
+            &context,
+            object_domain,
+            payer_object,
+            "sunrise-test",
+            protocol_version,
+            9,
+            0x5C,
+        );
+
+        let treasury_owner: Address = Address::new([0x5D; 32]);
+        let treasury_id: ObjectId = ObjectId::new([0x5E; 32]);
+        let mut treasury_object: Object =
+            test_object(treasury_id, 1, Owner::Address(treasury_owner), 0x5E);
+        treasury_object.data = vec![0x00];
+        let treasury_ref: ObjectRef = commit_memory_inline_object_with_protocol_version(
+            &store,
+            &context,
+            object_domain,
+            treasury_object,
+            "sunrise-test",
+            protocol_version,
+            9,
+            0x5F,
+        );
+
+        let manifest: AccessManifest = manifest_with(vec![
+            AccessEntry {
+                object_ref: object_ref.clone(),
+                mode: AccessMode::Write,
+            },
+            AccessEntry {
+                object_ref: payer_ref.clone(),
+                mode: AccessMode::Write,
+            },
+            AccessEntry {
+                object_ref: treasury_ref,
+                mode: AccessMode::Write,
+            },
+        ]);
+        let mut transaction: Transaction = preinstalled_transaction_with_protocol_version(
+            sender,
+            ChainId::new("sunrise-test").unwrap(),
+            protocol_version,
+            epoch,
+            0,
+            manifest,
+            module_ref,
+            owner_transition_args(recipient),
+        );
+        transaction.fee_payment = Some(fees::FeePayment {
+            asset_id: fee_asset_id(),
+            max_fee: fees::Amount::new(2_000_000),
+            fee_object: payer_ref,
+        });
+
+        let request_id: RequestId = request(0x60);
+        let submission: AuthenticatedSubmitTransaction = authenticated_submission_from_transaction(
+            "sunrise-test",
+            request_id,
+            &signing_key,
+            epoch,
+            transaction,
+            &node_config,
+            &protocol_config,
+        );
+
+        let composer = RecordingFeeComposer::new();
+        let fee_composition = PreinstalledFeeComposition::new(treasury_id, &composer);
+        let resolved: ResolvedNodeOutput = handle_authenticated_resolved_durable_submit_transaction_with_preinstalled_wasm_execution(
+            &blob_store,
+            &store,
+            &context,
+            &hash_resolver,
+            &catalog,
+            &WasmExecutionEngine,
+            submission,
+            10,
+            Some(fee_composition),
+        )
+        .unwrap();
+
+        let response: &NodeResponse = &resolved.output().responses()[0];
+        assert_eq!(response.status(), NodeResponseStatus::Accepted);
+        let receipt_effects: ExecutionEffects =
+            execution::decode_execution_effects(response.payload().unwrap()).unwrap();
+        // The owner-transition target (transferred index 0) is the only
+        // application effect: it is unaffected by the fee payer/treasury
+        // entries appended after it in the signed manifest.
+        assert_eq!(receipt_effects.object_effects.len(), 1);
+        let ObjectEffect::Mutated { new_object, .. } = &receipt_effects.object_effects[0] else {
+            panic!("owner transition receipt did not contain one mutation");
+        };
+        assert_eq!(new_object.id, object_id);
+        assert_eq!(new_object.owner, Owner::Address(recipient));
+        assert_eq!(new_object.data, original.data);
+
+        // The distinct fee payer (engine-visible typed parameter 1) and the
+        // hidden treasury were still separately debited/credited: the
+        // hidden-from-engine treasury access did not simply vanish.
+        assert!(
+            store
+                .get_object_version(
+                    &context,
+                    object_domain,
+                    payer_id,
+                    DurableObjectVersion::new(2).unwrap(),
+                )
+                .unwrap()
+                .is_some(),
+            "fee payer must have been separately debited"
+        );
+        let committed_treasury: DurableObjectVersionRecord = store
+            .get_object_version(
+                &context,
+                object_domain,
+                treasury_id,
+                DurableObjectVersion::new(2).unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            committed_object(&committed_treasury, &blob_store).data,
+            vec![0x00, 0xF1]
+        );
+    }
+
     #[test]
     fn owner_transition_inadmissible_recipient_commits_nothing() {
         let protocol_version: ProtocolVersion = ProtocolVersion::new(4);
