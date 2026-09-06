@@ -2495,10 +2495,18 @@ Standard Asset v1、Unique Asset v1、builder/public-testnet asset surfaceはま
    balanceは追加していない。一方、現在のsingle treasury coinはlocal-devnet限定のhot spotであり、
    production fast pathへは持ち込まない。fee output/aggregation/certificate-signer distributionは
    別のbounded deterministic decisionとして未実装。
-8. **部分実装。** canonical/stable/adversarial/replay/fee-compositionとreal file-backed SQLite
-   restart testは実装済み。Create自体が未実装なのでconcurrent-create testも未実装。
-   complete repository gateと、Initial Audit後のprotocol-critical surfaceとしてのfocused
-   delta security reviewをこのsliceで完了するまで本criteriaはopenのまま。
+8. **今回のwhole-coin transfer activation sliceは実装・検証済み。**
+   canonical/stable/adversarial/replay/fee-compositionとreal file-backed SQLite
+   restart testを実装し、commit `891152fc098e080b5d61a2242bc997e861553cc6`でcomplete
+   repository gateを通過した。Initial Audit後に追加したprotocol-critical surfaceとして、
+   base `8c5a7548ca525f462ec805922ab596fb78b59407`との差分から抽出した26個のsource-like
+   fileを対象にfocused delta security reviewも完了し、reportable findingは0件だった。
+   1件のcandidate（同一local-devnet data directoryでtrusted operatorがseed owner一覧を
+   変更した場合の旧coin併存）は、`--dev-owner`がseed provisioningであってruntime
+   authorization/revocation listではなく、network callerから変更不能で新しい権限獲得も
+   ないためnon-reportableと判定した。これはproduction security auditやpublic-testnet
+   readinessの宣言ではない。Create自体が未実装なのでconcurrent-create testも未実装であり、
+   future Create/split/merge/mint/Unique Asset/public surfaceは各sliceで新しいdelta reviewを要する。
 
 metadata authenticity、mint/burn/supply accounting、authority capabilityのlifecycle、freeze/close/
 allowance、governed fee-asset admission、Unique Asset v1の実装は後続sliceである。
