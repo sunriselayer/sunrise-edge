@@ -34,7 +34,8 @@
 //!
 //! There is no `--amount` or destination-account concept: this is a
 //! whole-object transfer of `--source-coin` to `--recipient`, never a
-//! partial balance movement (Create/mint/split/merge remain deferred).
+//! partial balance movement (`split`/`merge` are separate commands; mint and
+//! arbitrary Create remain deferred).
 
 use std::ffi::OsString;
 use std::num::NonZeroU32;
@@ -218,7 +219,9 @@ fn parse_inputs(parsed: &ParsedArgs) -> Result<TransferInputs, CliError> {
 /// from this client's own implemented constants, not from a flag — there is
 /// only one implemented combination — but they are still compared against
 /// the remote result by [`ExpectedProtocolContext::verify`].
-fn parse_expected_context(parsed: &ParsedArgs) -> Result<ExpectedProtocolContext, CliError> {
+pub(crate) fn parse_expected_context(
+    parsed: &ParsedArgs,
+) -> Result<ExpectedProtocolContext, CliError> {
     let chain_id = ChainId::new(parsed.require(EXPECTED_CHAIN_ID)?)?;
     let protocol_version = ProtocolVersion::new(parse_u32(
         EXPECTED_PROTOCOL_VERSION,
@@ -367,7 +370,7 @@ where
     Ok(())
 }
 
-fn parse_module_ref(parsed: &ParsedArgs) -> Result<ObjectRef, CliError> {
+pub(crate) fn parse_module_ref(parsed: &ParsedArgs) -> Result<ObjectRef, CliError> {
     let id = ObjectId::new(decode_hex_32(MODULE_ID, parsed.require(MODULE_ID)?)?);
     let version = parse_u64(MODULE_VERSION, parsed.require(MODULE_VERSION)?)?;
     let algorithm_id = parse_u16(
@@ -384,7 +387,9 @@ fn parse_module_ref(parsed: &ParsedArgs) -> Result<ObjectRef, CliError> {
     })
 }
 
-fn parse_wait_bounds(parsed: &ParsedArgs) -> Result<Option<ReceiptPollBounds>, CliError> {
+pub(crate) fn parse_wait_bounds(
+    parsed: &ParsedArgs,
+) -> Result<Option<ReceiptPollBounds>, CliError> {
     let wait_flags = [
         WAIT_MAX_ATTEMPTS,
         WAIT_INITIAL_BACKOFF_MS,
@@ -438,7 +443,7 @@ fn parse_wait_bounds(parsed: &ParsedArgs) -> Result<Option<ReceiptPollBounds>, C
 /// and authoritatively reject an invalid transaction. Checking here too only
 /// saves a round trip and gives an actionable local error; it never weakens
 /// or substitutes for that server-side check.
-fn require_owned_current_coin<T>(
+pub(crate) fn require_owned_current_coin<T>(
     client: &Client<T>,
     flag: &'static str,
     object_id: ObjectId,
@@ -508,7 +513,7 @@ where
 /// Used only for the fee treasury: unlike the source/fee coins, the
 /// treasury's owner is trusted node composition, not a caller-controlled
 /// address, so there is nothing local for this client to compare it against.
-fn require_current_inline<T>(
+pub(crate) fn require_current_inline<T>(
     client: &Client<T>,
     flag: &'static str,
     object_id: ObjectId,
@@ -560,7 +565,7 @@ fn object_query_status_label(result: &sunrise_edge_client::HttpObjectQueryResult
 
 /// Prints `payload`'s diagnostics and returns the sanitized execution
 /// failure reason, if its decoded effects declared `ExecutionStatus::Failure`.
-fn print_payload(index: usize, payload: &[u8]) -> Option<String> {
+pub(crate) fn print_payload(index: usize, payload: &[u8]) -> Option<String> {
     match sunrise_edge_client::decode_execution_effects(payload) {
         Ok(effects) => print_effects(index, &effects),
         Err(_) => {
@@ -646,7 +651,7 @@ fn print_object_effect(response_index: usize, effect_index: usize, effect: &Obje
     }
 }
 
-fn print_receipt(receipt: &sunrise_edge_client::HttpReceiptQueryResult) {
+pub(crate) fn print_receipt(receipt: &sunrise_edge_client::HttpReceiptQueryResult) {
     match receipt {
         sunrise_edge_client::HttpReceiptQueryResult::Absent { request_id } => {
             println!("receipt_status=absent");
@@ -673,6 +678,55 @@ fn print_receipt(receipt: &sunrise_edge_client::HttpReceiptQueryResult) {
             println!("receipt_dedup_record_bytes={hex}");
         }
     }
+}
+
+/// Submits one already-signed request and applies the CLI's fail-closed
+/// response handling shared by whole transfer, split, and merge.
+pub(crate) fn submit_and_report<T: Transport>(
+    client: &Client<T>,
+    context: &sunrise_edge_client::HttpContextQueryResult,
+    request_id: RequestId,
+    signed_transaction_bytes: Vec<u8>,
+    wait_bounds: Option<ReceiptPollBounds>,
+) -> Result<(), CliError> {
+    let submit_result = client.submit_transaction(SubmitTransactionRequest {
+        chain_id: context.chain_id().clone(),
+        protocol_version: context.protocol_version(),
+        epoch: context.epoch(),
+        request_id,
+        signed_transaction_bytes,
+    })?;
+
+    if submit_result.responses().is_empty() {
+        return Err(CliError::EmptySubmitResponse);
+    }
+    println!("request_id={}", submit_result.request_id());
+    println!("responses={}", submit_result.responses().len());
+    let mut outcome: Result<(), CliError> = Ok(());
+    for (index, response) in submit_result.responses().iter().enumerate() {
+        let status = match response.status() {
+            NodeResponseStatus::Accepted => "accepted",
+            NodeResponseStatus::Rejected => "rejected",
+        };
+        println!("response[{index}].status={status}");
+        if outcome.is_ok() && response.status() == NodeResponseStatus::Rejected {
+            outcome = Err(CliError::TransactionRejected { index });
+        }
+        let failure_reason = response
+            .payload()
+            .and_then(|payload| print_payload(index, payload));
+        if let Some(reason) = failure_reason
+            && outcome.is_ok()
+        {
+            outcome = Err(CliError::TransactionExecutionFailed { index, reason });
+        }
+    }
+    outcome?;
+    if let Some(bounds) = wait_bounds {
+        let receipt = client.wait_for_receipt(request_id, &bounds)?;
+        print_receipt(&receipt);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

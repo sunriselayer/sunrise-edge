@@ -39,6 +39,8 @@ use objects::{
 use protocol_types::{ChainId, Digest32, Epoch, HashPurpose, ProtocolVersion, TypeError};
 use std::error::Error;
 
+pub use wasm_engine::derive_created_object_id;
+
 // ── type-id constants ──────────────────────────────────────────────────────
 
 const TRANSACTION_TYPE_ID: u16 = 0x6001;

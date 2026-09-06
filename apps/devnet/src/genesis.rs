@@ -28,11 +28,11 @@ const DEVNET_FEE_UNITS_PER_ASSET_UNIT: u64 = 1;
 
 /// Protocol version used by the local developer network.
 ///
-/// Bumped from 3 to 4 by this slice: `node_core::MIN_OWNER_TRANSITION_PROTOCOL_VERSION`
-/// gates every committed [`node_core::PreinstalledOwnerTransitionPolicy`] on
-/// `protocol_version >= 4`, and the Standard Asset v1 whole-coin transfer
-/// module this devnet installs uses exactly that policy (see DR-0107).
-pub const DEVNET_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(4);
+/// Bumped from 4 to 5 by the Standard Asset split/merge slice. Version 4
+/// remains the historical whole-coin owner-transition activation; version 5
+/// additionally gates the committed exact-one object-creation policy used by
+/// partial split (DR-0108).
+pub const DEVNET_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(5);
 
 /// The single logical atomicity domain used by the local developer network.
 ///

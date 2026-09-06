@@ -9,6 +9,7 @@ use super::{
     MAX_AUTHENTICATED_OBJECT_BODY_BYTES, MAX_AUTHENTICATED_OBJECT_READS,
     MAX_AUTHENTICATED_OBJECT_TOTAL_BODY_BYTES, NodeCoreError,
 };
+use abi::{ConstructorDeclaration, TypeTag, project_type_arg, verify_type_id};
 use crypto::{Ed25519OwnerAddressError, Ed25519OwnerAddressPolicy, validate_ed25519_owner_address};
 use execution::{ObjectEffect, ResolvedObject};
 use hashing::HashSuiteResolver;
@@ -17,7 +18,7 @@ use protocol_types::{ChainId, Epoch, HashPurpose, ProtocolVersion};
 use runtime::{
     DurableInvocationError, DurableObjectHead, DurableObjectHeadRead, DurableObjectMutation,
     DurableObjectMutationEntry, DurableObjectOwnerProjection, DurableObjectProvenance,
-    DurableObjectVersionRecord,
+    DurableObjectRoutingProjection, DurableObjectVersionRecord,
 };
 use std::collections::BTreeMap;
 
@@ -141,6 +142,16 @@ impl LoadedAuthenticatedObjects {
         self.total_body_bytes
     }
 
+    /// Adds one independently observed object-head assertion that is not an
+    /// engine input. This is used only by the narrowly committed creation
+    /// path: the deterministic output identifier is derived from signed
+    /// transaction bytes, so its required `Absent` head must participate in
+    /// the same durable compare-and-commit envelope even though no object at
+    /// that id was available to load as an input.
+    pub(super) fn push_additional_head_read(&mut self, read: DurableObjectHeadRead) {
+        self.reads.push(read);
+    }
+
     pub(super) fn into_reads(self) -> Vec<DurableObjectHeadRead> {
         self.reads
     }
@@ -259,6 +270,262 @@ pub(super) fn translate_authenticated_object_effects_with_owner_transition(
         loaded_body_bytes,
         Some((owner_transition_object_id, expected_recipient)),
     )
+}
+
+/// One independently derived, pre-execution expectation node-core requires a
+/// module's returned `Created` effect to satisfy exactly, produced only by a
+/// committed [`crate::PreinstalledObjectCreationPolicy`] match (DR-0108).
+///
+/// Every field is computed by node-core itself, never trusted from the
+/// module: `expected_id` is `execution::derive_created_object_id`'s pure
+/// recomputation for creation ordinal zero (the only creation ordinal this
+/// mechanism admits); `expected_owner` is projected from the transaction's
+/// own signed args via the committed policy; `expected_type_hash`/
+/// `expected_schema_version` come from the already access-checked, already
+/// typed-ABI-verified engine-visible input the policy names as the type
+/// source. Node-core never decodes or reconstructs the created object's body.
+pub(super) struct PendingObjectCreation {
+    pub(super) expected_id: ObjectId,
+    pub(super) expected_owner: Address,
+    pub(super) expected_type_hash: protocol_types::Digest32,
+    pub(super) expected_schema_version: u32,
+    /// Signed engine-visible input index that selected `constructor`.
+    pub(super) type_source_access_index: usize,
+    /// Exact constructor selected from the matching committed typed policy's
+    /// type-source parameter. It lets translation verify the new body's
+    /// projected nominal type without knowing any asset-specific schema.
+    pub(super) constructor: ConstructorDeclaration,
+}
+
+/// Identical to [`translate_authenticated_object_effects`], except that
+/// exactly one `Created` effect matching `creation.expected_id` is admitted,
+/// independently reverified against every field of `creation`, and turned
+/// into a `DurableObjectMutation::Create`. Every declared `Read`/`Write`/
+/// `Consume` access is still matched exactly one-to-one against `verified`,
+/// unaffected by this extension.
+///
+/// Fails closed if `effects` contains zero or more than one `Created` effect,
+/// if the one `Created` effect present names an id, owner, type, or schema
+/// other than `creation`'s independently computed expectation, or if it does
+/// not declare the required initial object version. This function never
+/// trusts the module to declare the created object's identity, owner, or
+/// nominal type — only its body, which node-core can never decode without
+/// hardcoding a specific asset schema (see `PreinstalledObjectCreationPolicy`'s
+/// docs for why the type expectation is sourced from an existing verified
+/// input rather than a literal commitment).
+pub(super) fn translate_authenticated_object_effects_with_creation(
+    verified: &[VerifiedAuthenticatedObject],
+    effects: &[ObjectEffect],
+    context: Option<&TrustedObjectMutationContext<'_>>,
+    loaded_body_bytes: usize,
+    creation: &PendingObjectCreation,
+) -> Result<Vec<DurableObjectMutationEntry>, NodeCoreError> {
+    if effects.len() > MAX_AUTHENTICATED_OBJECT_READS.saturating_add(1) {
+        return Err(NodeCoreError::TooManyObjectEffects {
+            actual: effects.len(),
+            maximum: MAX_AUTHENTICATED_OBJECT_READS.saturating_add(1),
+        });
+    }
+    let mut effects_by_id: BTreeMap<ObjectId, &ObjectEffect> = BTreeMap::new();
+    let mut created: Vec<&Object> = Vec::new();
+    for effect in effects {
+        match effect {
+            ObjectEffect::Created(object) => created.push(object),
+            ObjectEffect::Mutated { new_object, .. } => {
+                if effects_by_id.insert(new_object.id, effect).is_some() {
+                    return Err(NodeCoreError::DuplicateObjectEffect {
+                        object_id: new_object.id,
+                    });
+                }
+            }
+            ObjectEffect::Deleted { id, .. } => {
+                if effects_by_id.insert(*id, effect).is_some() {
+                    return Err(NodeCoreError::DuplicateObjectEffect { object_id: *id });
+                }
+            }
+        }
+    }
+    if created.len() > 1 {
+        return Err(NodeCoreError::CreationEffectCountExceeded {
+            count: created.len(),
+        });
+    }
+    let created: &Object =
+        created
+            .into_iter()
+            .next()
+            .ok_or(NodeCoreError::CreationEffectMissing {
+                object_id: creation.expected_id,
+            })?;
+    if created.id != creation.expected_id {
+        return Err(NodeCoreError::CreatedObjectIdMismatch {
+            expected: creation.expected_id,
+            actual: created.id,
+        });
+    }
+    if created.owner != Owner::Address(creation.expected_owner) {
+        return Err(NodeCoreError::CreatedObjectOwnerMismatch {
+            object_id: created.id,
+        });
+    }
+    if created.type_hash != creation.expected_type_hash {
+        return Err(NodeCoreError::CreatedObjectTypeMismatch {
+            object_id: created.id,
+        });
+    }
+    if created.schema_version != creation.expected_schema_version {
+        return Err(NodeCoreError::CreatedObjectSchemaVersionMismatch {
+            object_id: created.id,
+        });
+    }
+    // `runtime::DurableObjectVersion::FIRST` is `1`: the only version a
+    // freshly created object may ever declare.
+    if created.version != 1 {
+        return Err(NodeCoreError::CreatedObjectVersionInvalid {
+            object_id: created.id,
+        });
+    }
+
+    let context: &TrustedObjectMutationContext<'_> =
+        context.ok_or(NodeCoreError::ObjectMutationContextMissing {
+            object_id: created.id,
+        })?;
+    if context.resolver.chain_id() != context.chain_id
+        || context.resolver.protocol_version() != context.protocol_version
+    {
+        return Err(NodeCoreError::ObjectEffectMismatch {
+            object_id: created.id,
+            reason: "trusted object mutation and hash resolver contexts disagree",
+        });
+    }
+    let type_arg = project_type_arg(&creation.constructor, &created.data)?;
+    let type_tag = TypeTag {
+        constructor: creation.constructor.id,
+        type_arg,
+    };
+    if !verify_type_id(
+        context.resolver,
+        &created.type_hash,
+        context.epoch,
+        &type_tag,
+    )? {
+        return Err(NodeCoreError::TypedAbi(
+            abi::AbiError::TypeIdentityMismatch {
+                index: creation.type_source_access_index,
+                type_tag,
+                actual: created.type_hash,
+            },
+        ));
+    }
+
+    let mut represented_body_bytes: usize = loaded_body_bytes;
+    let canonical_bytes: Vec<u8> = encode_object(created)
+        .map_err(DurableInvocationError::from)
+        .map_err(NodeCoreError::from)?;
+    let body_length: usize = canonical_bytes.len();
+    if body_length > MAX_AUTHENTICATED_OBJECT_BODY_BYTES {
+        return Err(NodeCoreError::ObjectBodyTooLarge {
+            object_id: created.id,
+            actual: body_length,
+            maximum: MAX_AUTHENTICATED_OBJECT_BODY_BYTES,
+        });
+    }
+    represented_body_bytes = represented_body_bytes.checked_add(body_length).ok_or(
+        NodeCoreError::ObjectBodyTooLarge {
+            object_id: created.id,
+            actual: usize::MAX,
+            maximum: MAX_AUTHENTICATED_OBJECT_TOTAL_BODY_BYTES,
+        },
+    )?;
+    if represented_body_bytes > MAX_AUTHENTICATED_OBJECT_TOTAL_BODY_BYTES {
+        return Err(NodeCoreError::ObjectBodyTooLarge {
+            object_id: created.id,
+            actual: represented_body_bytes,
+            maximum: MAX_AUTHENTICATED_OBJECT_TOTAL_BODY_BYTES,
+        });
+    }
+    let digest =
+        context
+            .resolver
+            .hash_for_purpose(context.epoch, HashPurpose::Object, &canonical_bytes)?;
+    let provenance =
+        DurableObjectProvenance::new(context.chain_id.clone(), context.protocol_version);
+    let version = DurableObjectVersionRecord::from_inline_object(
+        created.clone(),
+        digest,
+        provenance,
+        context.created_checkpoint,
+    )?;
+    let owner_projection = DurableObjectOwnerProjection::from_owner(created.owner.clone())?;
+    let create_mutation = DurableObjectMutation::Create {
+        version,
+        owner_projection,
+        routing_projection: DurableObjectRoutingProjection::default(),
+    };
+
+    let mut mutations: Vec<DurableObjectMutationEntry> = Vec::new();
+    for input in verified {
+        let object_id: ObjectId = input.object.id;
+        let effect: Option<&ObjectEffect> = effects_by_id.remove(&object_id);
+        match input.mode {
+            AccessMode::Read => {
+                if effect.is_some() {
+                    return Err(NodeCoreError::ObjectEffectMismatch {
+                        object_id,
+                        reason: "read access produced a mutation effect",
+                    });
+                }
+            }
+            AccessMode::Write => {
+                let Some(ObjectEffect::Mutated {
+                    previous_version,
+                    new_object,
+                }) = effect
+                else {
+                    return Err(NodeCoreError::ObjectEffectMismatch {
+                        object_id,
+                        reason: "write access requires exactly one mutated effect",
+                    });
+                };
+                let mutation: DurableObjectMutation = translate_update_impl(
+                    input,
+                    *previous_version,
+                    new_object,
+                    Some(context),
+                    &mut represented_body_bytes,
+                    None,
+                )?;
+                mutations.push(DurableObjectMutationEntry::new(object_id, mutation));
+            }
+            AccessMode::Consume => {
+                let Some(ObjectEffect::Deleted { id, version }) = effect else {
+                    return Err(NodeCoreError::ObjectEffectMismatch {
+                        object_id,
+                        reason: "consume access requires exactly one deleted effect",
+                    });
+                };
+                if *id != object_id || *version != input.object.version {
+                    return Err(NodeCoreError::ObjectEffectMismatch {
+                        object_id,
+                        reason: "deleted effect identity or version disagrees with verified input",
+                    });
+                }
+                require_mutable_address_owner(input)?;
+                mutations.push(DurableObjectMutationEntry::new(
+                    object_id,
+                    DurableObjectMutation::Delete,
+                ));
+            }
+        }
+    }
+    if let Some((&object_id, _)) = effects_by_id.first_key_value() {
+        return Err(NodeCoreError::UndeclaredObjectEffect { object_id });
+    }
+    mutations.push(DurableObjectMutationEntry::new(
+        creation.expected_id,
+        create_mutation,
+    ));
+    Ok(mutations)
 }
 
 fn translate_authenticated_object_effects_impl(
@@ -890,6 +1157,145 @@ mod tests {
                 reason: "owner-transition mutation changed the object body",
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn creation_grant_requires_exact_derived_metadata_and_one_created_effect() {
+        let sender: Address = Address::new([0x45; 32]);
+        let recipient: Address = Address::new([0x46; 32]);
+        let resolver: HashSuiteResolver = resolver();
+        let chain_id: ChainId = ChainId::new("sunrise-mvp").unwrap();
+        let asset_id = standard_assets::AssetId::new([0x40; 32]);
+        let source_coin = standard_assets::StandardAssetCoinV1::new(asset_id, 100).unwrap();
+        let source: Object = Object {
+            id: ObjectId::new([0x41; 32]),
+            version: 9,
+            owner: Owner::Address(sender),
+            type_hash: standard_assets::derive_coin_type_id(&resolver, Epoch::new(3), asset_id)
+                .unwrap(),
+            schema_version: standard_assets::STANDARD_ASSET_SCHEMA_VERSION_V1,
+            data: standard_assets::encode_standard_asset_coin_v1(&source_coin).unwrap(),
+        };
+        let context: TrustedObjectMutationContext<'_> = TrustedObjectMutationContext {
+            resolver: &resolver,
+            chain_id: &chain_id,
+            protocol_version: ProtocolVersion::new(1),
+            epoch: Epoch::new(3),
+            created_checkpoint: 17,
+        };
+        let expected_id: ObjectId = ObjectId::new([0x47; 32]);
+        let creation = PendingObjectCreation {
+            expected_id,
+            expected_owner: recipient,
+            expected_type_hash: source.type_hash,
+            expected_schema_version: source.schema_version,
+            type_source_access_index: 0,
+            constructor: standard_assets::coin_constructor_declaration(),
+        };
+        let mut source_next: Object = source.clone();
+        source_next.version = 10;
+        source_next.data = standard_assets::encode_standard_asset_coin_v1(
+            &standard_assets::StandardAssetCoinV1::new(asset_id, 70).unwrap(),
+        )
+        .unwrap();
+        let created = Object {
+            id: expected_id,
+            version: 1,
+            owner: Owner::Address(recipient),
+            type_hash: source.type_hash,
+            schema_version: source.schema_version,
+            data: standard_assets::encode_standard_asset_coin_v1(
+                &standard_assets::StandardAssetCoinV1::new(asset_id, 30).unwrap(),
+            )
+            .unwrap(),
+        };
+        let mutations = translate_authenticated_object_effects_with_creation(
+            &[verified(AccessMode::Write, source.clone())],
+            &[
+                ObjectEffect::Mutated {
+                    previous_version: source.version,
+                    new_object: source_next,
+                },
+                ObjectEffect::Created(created.clone()),
+            ],
+            Some(&context),
+            0,
+            &creation,
+        )
+        .unwrap();
+        assert_eq!(mutations.len(), 2);
+        assert!(matches!(
+            mutations[1].mutation(),
+            DurableObjectMutation::Create { version, .. }
+                if version.object_id() == expected_id
+                    && version.payload().inline().unwrap().object() == &created
+        ));
+
+        let mut wrong_id = created.clone();
+        wrong_id.id = ObjectId::new([0x48; 32]);
+        assert!(matches!(
+            translate_authenticated_object_effects_with_creation(
+                &[verified(AccessMode::Write, source.clone())],
+                &[
+                    ObjectEffect::Mutated {
+                        previous_version: 9,
+                        new_object: source.clone(),
+                    },
+                    ObjectEffect::Created(wrong_id),
+                ],
+                Some(&context),
+                0,
+                &creation,
+            ),
+            Err(NodeCoreError::CreatedObjectIdMismatch { .. })
+        ));
+
+        let mut malformed = created.clone();
+        malformed.data = vec![0x00];
+        assert!(matches!(
+            translate_authenticated_object_effects_with_creation(
+                &[verified(AccessMode::Write, source.clone())],
+                &[
+                    ObjectEffect::Mutated {
+                        previous_version: 9,
+                        new_object: source.clone(),
+                    },
+                    ObjectEffect::Created(malformed),
+                ],
+                Some(&context),
+                0,
+                &creation,
+            ),
+            Err(NodeCoreError::TypedAbi(_))
+        ));
+
+        let mut wrong_asset = created;
+        wrong_asset.data = standard_assets::encode_standard_asset_coin_v1(
+            &standard_assets::StandardAssetCoinV1::new(
+                standard_assets::AssetId::new([0x49; 32]),
+                30,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            translate_authenticated_object_effects_with_creation(
+                &[verified(AccessMode::Write, source.clone())],
+                &[
+                    ObjectEffect::Mutated {
+                        previous_version: 9,
+                        new_object: source,
+                    },
+                    ObjectEffect::Created(wrong_asset),
+                ],
+                Some(&context),
+                0,
+                &creation,
+            ),
+            Err(NodeCoreError::TypedAbi(
+                abi::AbiError::TypeIdentityMismatch { .. }
+            ))
         ));
     }
 
