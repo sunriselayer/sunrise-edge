@@ -16,7 +16,7 @@
 //! during selection parsing, strictly before any device dispatch.
 
 use sunrise_edge_client::{
-    DEVNET_ASSET_TRANSFER_POLICY, DeviceSigningProfile, PreparedTransaction,
+    DeviceSigningProfile, HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3, PreparedTransaction,
 };
 use sunrise_edge_ledger::{
     DerivationPath, ExpectedFirmwareVersion, IdentityError, LedgerExternalSigner, Transport,
@@ -251,11 +251,21 @@ pub fn reconnect_same_hid_path(path: &str) -> Result<sunrise_edge_ledger::HidTra
 /// Applies the CLI's one approved Ledger clear-signing profile and policy,
 /// then independently verifies the returned signature before producing
 /// canonical signed transaction bytes.
+///
+/// No current CLI command calls this in production: `transfer`'s Ledger
+/// path rejects with `CliError::LedgerStandardAssetTransferUnsupported`
+/// before any signing attempt (DR-0107 deferred a Ledger clear-signing
+/// policy for the new Standard Asset v1 transfer entrypoint), and `address`
+/// never signs at all. It is kept — and exercised only by this module's own
+/// tests below — to retain DR-0088's host preflight and independent
+/// signature-verification coverage for the historical
+/// `HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3` shape until a future
+/// entrypoint-specific policy gives it a real caller again.
 #[allow(
     dead_code,
-    reason = "used by usb-hid-gated production code and feature-independent tests"
+    reason = "retained only for this module's own hardware-signing preflight tests; no current CLI command calls it in production"
 )]
-pub fn finalize_with_ledger<T: Transport>(
+pub(crate) fn finalize_with_ledger<T: Transport>(
     prepared: PreparedTransaction,
     signer: &LedgerExternalSigner<T>,
 ) -> Result<Vec<u8>, CliError> {
@@ -263,7 +273,7 @@ pub fn finalize_with_ledger<T: Transport>(
         .sign_and_finalize_external(
             signer,
             &DeviceSigningProfile::V1,
-            &DEVNET_ASSET_TRANSFER_POLICY,
+            &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3,
         )
         .map_err(CliError::from)
 }
@@ -317,11 +327,14 @@ mod tests {
             });
         }
         let mut arguments = CanonicalStruct::new(
-            DEVNET_ASSET_TRANSFER_POLICY.args_type_id(),
-            DEVNET_ASSET_TRANSFER_POLICY.args_version(),
+            HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_type_id(),
+            HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_version(),
         );
         arguments
-            .field_u64(DEVNET_ASSET_TRANSFER_POLICY.args_field_id(), 250)
+            .field_u64(
+                HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_field_id(),
+                250,
+            )
             .unwrap();
 
         TransactionRequest {
@@ -331,18 +344,21 @@ mod tests {
             nonce: 7,
             access_manifest,
             module_ref: ObjectRef {
-                id: ObjectId::new(DEVNET_ASSET_TRANSFER_POLICY.module_id()),
-                version: DEVNET_ASSET_TRANSFER_POLICY.module_version() + module_version_delta,
+                id: ObjectId::new(HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.module_id()),
+                version: HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.module_version()
+                    + module_version_delta,
                 digest: Digest32::new(
-                    DEVNET_ASSET_TRANSFER_POLICY.code_digest_algorithm(),
-                    DEVNET_ASSET_TRANSFER_POLICY.code_digest_bytes(),
+                    HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.code_digest_algorithm(),
+                    HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.code_digest_bytes(),
                 ),
             },
-            entrypoint: DEVNET_ASSET_TRANSFER_POLICY.entrypoint().to_string(),
+            entrypoint: HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3
+                .entrypoint()
+                .to_string(),
             args: arguments.finish().unwrap(),
             gas_limit: 1_000,
             fee_payment: Some(FeePayment {
-                asset_id: AssetId::new(DEVNET_ASSET_TRANSFER_POLICY.fee_asset_id()),
+                asset_id: AssetId::new(HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.fee_asset_id()),
                 max_fee: Amount::new(1_001),
                 fee_object: source_ref,
             }),

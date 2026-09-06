@@ -397,7 +397,9 @@ mod tests {
     use fees::{Amount, FeePayment};
     use objects::{AccessMode, ObjectId};
     use protocol_types::{Digest32, HashAlgorithmId};
-    use signing_view::{ClearSigningPolicyError, DEVNET_ASSET_TRANSFER_POLICY, SigningViewError};
+    use signing_view::{
+        ClearSigningPolicyError, HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3, SigningViewError,
+    };
     use standard_assets::AssetId;
     use std::{cell::Cell, fmt};
 
@@ -448,11 +450,14 @@ mod tests {
             });
         }
         let mut arguments = CanonicalStruct::new(
-            DEVNET_ASSET_TRANSFER_POLICY.args_type_id(),
-            DEVNET_ASSET_TRANSFER_POLICY.args_version(),
+            HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_type_id(),
+            HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_version(),
         );
         arguments
-            .field_u64(DEVNET_ASSET_TRANSFER_POLICY.args_field_id(), 250)
+            .field_u64(
+                HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_field_id(),
+                250,
+            )
             .unwrap();
 
         TransactionRequest {
@@ -462,18 +467,20 @@ mod tests {
             nonce: 7,
             access_manifest,
             module_ref: ObjectRef {
-                id: ObjectId::new(DEVNET_ASSET_TRANSFER_POLICY.module_id()),
-                version: DEVNET_ASSET_TRANSFER_POLICY.module_version(),
+                id: ObjectId::new(HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.module_id()),
+                version: HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.module_version(),
                 digest: Digest32::new(
-                    DEVNET_ASSET_TRANSFER_POLICY.code_digest_algorithm(),
-                    DEVNET_ASSET_TRANSFER_POLICY.code_digest_bytes(),
+                    HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.code_digest_algorithm(),
+                    HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.code_digest_bytes(),
                 ),
             },
-            entrypoint: DEVNET_ASSET_TRANSFER_POLICY.entrypoint().to_string(),
+            entrypoint: HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3
+                .entrypoint()
+                .to_string(),
             args: arguments.finish().unwrap(),
             gas_limit: 1_000,
             fee_payment: Some(FeePayment {
-                asset_id: AssetId::new(DEVNET_ASSET_TRANSFER_POLICY.fee_asset_id()),
+                asset_id: AssetId::new(HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.fee_asset_id()),
                 max_fee: Amount::new(1_001),
                 fee_object: source_ref,
             }),
@@ -764,7 +771,10 @@ mod tests {
         .unwrap();
 
         let view = prepared
-            .clear_signing_view(&DeviceSigningProfile::V1, &DEVNET_ASSET_TRANSFER_POLICY)
+            .clear_signing_view(
+                &DeviceSigningProfile::V1,
+                &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3,
+            )
             .unwrap();
         assert!(view.lines().iter().any(|line| line == "amount=250"));
         assert!(!view.lines().iter().any(|line| line.contains("request_id")));
@@ -790,7 +800,7 @@ mod tests {
         .sign_and_finalize_external(
             &signer,
             &DeviceSigningProfile::V1,
-            &DEVNET_ASSET_TRANSFER_POLICY,
+            &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3,
         )
         .unwrap();
 
@@ -814,7 +824,7 @@ mod tests {
             prepared.sign_and_finalize_external(
                 &signer,
                 &DeviceSigningProfile::V1,
-                &DEVNET_ASSET_TRANSFER_POLICY,
+                &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3,
             ),
             Err(ClientError::ExternalSignerAddressMismatch { .. })
         ));
@@ -836,7 +846,7 @@ mod tests {
             prepared.sign_and_finalize_external(
                 &signer,
                 &DeviceSigningProfile::V1,
-                &DEVNET_ASSET_TRANSFER_POLICY,
+                &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3,
             ),
             Err(ClientError::ExternalSignerSchemeMismatch { .. })
         ));
@@ -856,7 +866,7 @@ mod tests {
             prepared.sign_and_finalize_external(
                 &signer,
                 &DeviceSigningProfile::V1,
-                &DEVNET_ASSET_TRANSFER_POLICY,
+                &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3,
             ),
             Err(ClientError::SigningView(SigningViewError::Policy(
                 ClearSigningPolicyError::ModuleVersion
@@ -880,7 +890,7 @@ mod tests {
             prepared.sign_and_finalize_external(
                 &signer,
                 &DeviceSigningProfile::V1,
-                &DEVNET_ASSET_TRANSFER_POLICY,
+                &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3,
             ),
             Err(ClientError::ExternalSigner(_))
         ));

@@ -6,7 +6,7 @@ use std::num::ParseIntError;
 
 use sunrise_edge_client::{
     CanonicalEncodingError, ClientError, ExpectedProtocolContextError, NodeCoreError, ObjectError,
-    TransportError, TypeError,
+    StandardAssetError, TransportError, TypeError,
 };
 
 use crate::args::ArgsError;
@@ -74,24 +74,21 @@ pub enum CliError {
     },
     /// A hash-algorithm identifier was not one this workspace implements.
     InvalidHashAlgorithm(u16),
-    /// `--amount` was zero.
-    ZeroAmount,
     /// `--gas-limit` was zero.
     ZeroGasLimit,
-    /// `--source-object` and `--destination-object` named the same object.
-    SameSourceAndDestination,
-    /// Exactly one of the paired `--fee-asset-id`/`--max-fee`/
-    /// `--fee-treasury-object` flags was supplied; all three or none are
-    /// required, and this is reported before any network dispatch.
-    PartialFeeConfiguration {
-        /// A flag that must also be supplied to complete the trio.
-        missing: &'static str,
-    },
+    /// `--source-coin` and `--fee-coin` named the same object.
+    SameSourceCoinAndFeeCoin,
     /// `--max-fee` was zero.
     ZeroMaxFee,
-    /// `--fee-treasury-object` named the same object as `--source-object` or
-    /// `--destination-object`.
+    /// `--fee-treasury-object` named the same object as `--source-coin` or
+    /// `--fee-coin`.
     FeeTreasuryConflictsWithTransfer,
+    /// The transferred and fee coins decoded with different `AssetId`s.
+    CoinAssetMismatch,
+    /// `--fee-asset-id` differed from the transferred/fee coins' shared
+    /// `AssetId` (the protocol forces the fee asset to equal the transferred
+    /// asset for this entrypoint).
+    FeeAssetMismatch,
     /// A `--wait-*` bound flag was supplied without `--wait`.
     WaitBoundWithoutWait(&'static str),
     /// `--wait` was supplied without one of its required bound flags.
@@ -131,6 +128,18 @@ pub enum CliError {
         /// The decode failure.
         source: ObjectError,
     },
+    /// A `CurrentInline` object's body failed to decode as a
+    /// `StandardAssetCoinV1`.
+    CoinBodyDecodeFailed {
+        /// Flag naming the object.
+        flag: &'static str,
+        /// The object identifier, as hex.
+        object_id: String,
+        /// The decode failure.
+        source: StandardAssetError,
+    },
+    /// Canonically encoding the `StandardAssetTransferArgsV1` frame failed.
+    TransferArgsEncodingFailed(StandardAssetError),
     /// A referenced object exists and is `CurrentInline`, but its owner does
     /// not equal the locally required address for that access.
     ObjectOwnerMismatch {
@@ -216,6 +225,10 @@ pub enum CliError {
     /// A Ledger signer was selected, but this binary was built without the
     /// `usb-hid` Cargo feature, so no real USB/HID transport is available.
     LedgerTransportFeatureDisabled,
+    /// A Ledger signer was selected for the live Standard Asset v1 transfer,
+    /// but its clear-signing policy/device profile has not been implemented.
+    /// Reported before device or network dispatch.
+    LedgerStandardAssetTransferUnsupported,
 }
 
 impl fmt::Display for CliError {
@@ -254,18 +267,19 @@ impl fmt::Display for CliError {
             Self::InvalidHashAlgorithm(id) => {
                 write!(f, "hash-algorithm id {id} is not implemented")
             }
-            Self::ZeroAmount => f.write_str("--amount must be non-zero"),
             Self::ZeroGasLimit => f.write_str("--gas-limit must be non-zero"),
-            Self::SameSourceAndDestination => {
-                f.write_str("--source-object and --destination-object must name distinct objects")
+            Self::SameSourceCoinAndFeeCoin => {
+                f.write_str("--source-coin and --fee-coin must name distinct objects")
             }
-            Self::PartialFeeConfiguration { missing } => write!(
-                f,
-                "--fee-asset-id, --max-fee, and --fee-treasury-object must all be supplied together; missing {missing}"
-            ),
             Self::ZeroMaxFee => f.write_str("--max-fee must be non-zero"),
             Self::FeeTreasuryConflictsWithTransfer => f.write_str(
-                "--fee-treasury-object must be distinct from --source-object and --destination-object",
+                "--fee-treasury-object must be distinct from --source-coin and --fee-coin",
+            ),
+            Self::CoinAssetMismatch => {
+                f.write_str("the transferred and fee coins do not share one AssetId")
+            }
+            Self::FeeAssetMismatch => f.write_str(
+                "--fee-asset-id must equal the transferred/fee coins' shared AssetId",
             ),
             Self::WaitBoundWithoutWait(flag) => {
                 write!(f, "{flag} requires --wait to also be supplied")
@@ -302,6 +316,17 @@ impl fmt::Display for CliError {
                 f,
                 "{flag} {object_id}'s canonical object body failed to decode: {source}"
             ),
+            Self::CoinBodyDecodeFailed {
+                flag,
+                object_id,
+                source,
+            } => write!(
+                f,
+                "{flag} {object_id}'s body failed to decode as a Standard Asset v1 coin: {source}"
+            ),
+            Self::TransferArgsEncodingFailed(error) => {
+                write!(f, "failed to encode transfer arguments: {error}")
+            }
             Self::ObjectOwnerMismatch {
                 flag,
                 object_id,
@@ -352,6 +377,9 @@ impl fmt::Display for CliError {
             Self::LedgerTransportFeatureDisabled => f.write_str(
                 "a Ledger signer was selected, but this binary was built without the usb-hid feature",
             ),
+            Self::LedgerStandardAssetTransferUnsupported => f.write_str(
+                "Ledger signing for the Standard Asset v1 transfer is not implemented; use --seed-file for this development-only command",
+            ),
         }
     }
 }
@@ -366,6 +394,8 @@ impl std::error::Error for CliError {
             Self::CaCertificateFileRead { source, .. } => Some(source),
             Self::InvalidInteger { source, .. } => Some(source),
             Self::ObjectBodyDecodeFailed { source, .. } => Some(source),
+            Self::CoinBodyDecodeFailed { source, .. } => Some(source),
+            Self::TransferArgsEncodingFailed(error) => Some(error),
             Self::CanonicalEncoding(error) => Some(error),
             Self::NodeCore(error) => Some(error),
             Self::Transport(error) => Some(error),
@@ -431,5 +461,11 @@ impl From<ExpectedProtocolContextError> for CliError {
 impl From<CanonicalEncodingError> for CliError {
     fn from(value: CanonicalEncodingError) -> Self {
         Self::CanonicalEncoding(value)
+    }
+}
+
+impl From<StandardAssetError> for CliError {
+    fn from(value: StandardAssetError) -> Self {
+        Self::TransferArgsEncodingFailed(value)
     }
 }

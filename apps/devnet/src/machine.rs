@@ -10,7 +10,7 @@ use node_core::{
 pub const DEVNET_GENERIC_STATE_KEY: &[u8] = b"devnet/generic-events/v1";
 
 /// Rejects generic events deterministically while the preinstalled transaction
-/// route handles authenticated asset-account calls separately.
+/// route handles authenticated Standard Asset v1 calls separately.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DevnetMachine;
 

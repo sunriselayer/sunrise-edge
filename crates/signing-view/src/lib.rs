@@ -32,7 +32,9 @@ pub mod profile;
 pub mod transaction;
 pub mod view;
 
-pub use policy::{ClearSigningPolicy, ClearSigningPolicyError, DEVNET_ASSET_TRANSFER_POLICY};
+pub use policy::{
+    ClearSigningPolicy, ClearSigningPolicyError, HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3,
+};
 pub use profile::DeviceSigningProfile;
 pub use transaction::{
     TransactionSignable, decode_transaction_signable, encode_transaction_signable,

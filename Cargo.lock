@@ -1669,6 +1669,7 @@ dependencies = [
 name = "sunrise-edge-devnet"
 version = "0.1.0"
 dependencies = [
+ "abi",
  "axum",
  "canonical-encoding",
  "crypto",
@@ -1681,6 +1682,7 @@ dependencies = [
  "objects",
  "protocol-config",
  "protocol-types",
+ "protocol-upgrades",
  "runtime",
  "runtime-sqlite",
  "standard-assets",

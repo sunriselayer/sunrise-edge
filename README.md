@@ -106,7 +106,7 @@ reproducible walkthrough for:
 
 - creating development-only sender, recipient, and treasury keys;
 - starting the loopback-only single-validator devnet;
-- submitting an ordinary asset-account transfer with fees;
+- submitting a Standard Asset v1 whole-coin transfer with fees;
 - querying the receipt, objects, and next nonce; and
 - orderly restart and persisted-state comparison.
 

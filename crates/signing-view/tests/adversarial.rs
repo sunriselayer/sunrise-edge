@@ -11,8 +11,8 @@ use protocol_types::{
     ChainId, Digest32, Epoch, HashAlgorithmId, ProtocolVersion, SignatureSchemeId,
 };
 use signing_view::{
-    ClearSigningPolicyError, DEVNET_ASSET_TRANSFER_POLICY, DeviceSigningProfile, SigningViewError,
-    TransactionSignable, build_clear_signing_view, decode_transaction_signable,
+    ClearSigningPolicyError, DeviceSigningProfile, HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3,
+    SigningViewError, TransactionSignable, build_clear_signing_view, decode_transaction_signable,
     encode_transaction_signable,
 };
 use standard_assets::AssetId;
@@ -31,22 +31,25 @@ fn sample_object_ref(id_byte: u8, version: u64, digest_byte: u8) -> ObjectRef {
 
 fn recognized_args(amount: u64) -> Vec<u8> {
     let mut canonical = CanonicalStruct::new(
-        DEVNET_ASSET_TRANSFER_POLICY.args_type_id(),
-        DEVNET_ASSET_TRANSFER_POLICY.args_version(),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_type_id(),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_version(),
     );
     canonical
-        .field_u64(DEVNET_ASSET_TRANSFER_POLICY.args_field_id(), amount)
+        .field_u64(
+            HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_field_id(),
+            amount,
+        )
         .unwrap();
     canonical.finish().unwrap()
 }
 
 fn recognized_module_ref() -> ObjectRef {
     ObjectRef {
-        id: ObjectId::new(DEVNET_ASSET_TRANSFER_POLICY.module_id()),
-        version: DEVNET_ASSET_TRANSFER_POLICY.module_version(),
+        id: ObjectId::new(HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.module_id()),
+        version: HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.module_version(),
         digest: Digest32::new(
-            DEVNET_ASSET_TRANSFER_POLICY.code_digest_algorithm(),
-            DEVNET_ASSET_TRANSFER_POLICY.code_digest_bytes(),
+            HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.code_digest_algorithm(),
+            HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.code_digest_bytes(),
         ),
     }
 }
@@ -76,11 +79,13 @@ fn sample_tx() -> TransactionSignable {
         nonce: 1,
         access_manifest: manifest,
         module_ref: recognized_module_ref(),
-        entrypoint: DEVNET_ASSET_TRANSFER_POLICY.entrypoint().to_string(),
+        entrypoint: HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3
+            .entrypoint()
+            .to_string(),
         args: recognized_args(1_000_000),
         gas_limit: 1_000,
         fee_payment: Some(FeePayment {
-            asset_id: AssetId::new(DEVNET_ASSET_TRANSFER_POLICY.fee_asset_id()),
+            asset_id: AssetId::new(HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.fee_asset_id()),
             max_fee: Amount::new(1_001),
             fee_object: source_ref,
         }),
@@ -317,7 +322,11 @@ fn rejects_trailing_bytes() {
 fn rejects_a_complete_frame_over_the_device_bound_before_decoding() {
     let framed = vec![0_u8; PROFILE.max_framed_message_bytes() + 1];
     assert_eq!(
-        build_clear_signing_view(&framed, &PROFILE, &DEVNET_ASSET_TRANSFER_POLICY),
+        build_clear_signing_view(
+            &framed,
+            &PROFILE,
+            &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3
+        ),
         Err(SigningViewError::FramedMessageTooLarge {
             actual: PROFILE.max_framed_message_bytes() + 1,
             maximum: PROFILE.max_framed_message_bytes(),
@@ -331,7 +340,11 @@ fn rejects_an_inner_payload_over_the_device_bound_before_transaction_decoding() 
     let framed = wrap_signed(&payload);
     assert!(framed.len() <= PROFILE.max_framed_message_bytes());
     assert_eq!(
-        build_clear_signing_view(&framed, &PROFILE, &DEVNET_ASSET_TRANSFER_POLICY),
+        build_clear_signing_view(
+            &framed,
+            &PROFILE,
+            &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3
+        ),
         Err(SigningViewError::TransactionPayloadTooLarge {
             actual: PROFILE.max_transaction_payload_bytes() + 1,
             maximum: PROFILE.max_transaction_payload_bytes(),
@@ -458,7 +471,11 @@ fn rejects_an_unsupported_message_type() {
     let framed = frame_signature_message(&domain, &payload).unwrap();
 
     assert_eq!(
-        build_clear_signing_view(&framed, &PROFILE, &DEVNET_ASSET_TRANSFER_POLICY),
+        build_clear_signing_view(
+            &framed,
+            &PROFILE,
+            &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3
+        ),
         Err(SigningViewError::UnsupportedMessageType("vote".to_string()))
     );
 }
@@ -477,7 +494,11 @@ fn rejects_an_unsupported_signature_scheme() {
     let framed = frame_signature_message(&domain, &payload).unwrap();
 
     assert_eq!(
-        build_clear_signing_view(&framed, &PROFILE, &DEVNET_ASSET_TRANSFER_POLICY),
+        build_clear_signing_view(
+            &framed,
+            &PROFILE,
+            &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3
+        ),
         Err(SigningViewError::UnsupportedSignatureScheme(
             SignatureSchemeId::Secp256k1
         ))
@@ -491,7 +512,11 @@ fn rejects_a_transaction_payload_chain_id_that_disagrees_with_the_outer_frame() 
     let framed = wrap_signed(&encode_transaction_signable(&tx).unwrap());
 
     assert_eq!(
-        build_clear_signing_view(&framed, &PROFILE, &DEVNET_ASSET_TRANSFER_POLICY),
+        build_clear_signing_view(
+            &framed,
+            &PROFILE,
+            &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3
+        ),
         Err(SigningViewError::SignedContextMismatch { field: "chain_id" })
     );
 }
@@ -503,7 +528,11 @@ fn rejects_a_transaction_payload_protocol_version_that_disagrees_with_the_outer_
     let framed = wrap_signed(&encode_transaction_signable(&tx).unwrap());
 
     assert_eq!(
-        build_clear_signing_view(&framed, &PROFILE, &DEVNET_ASSET_TRANSFER_POLICY),
+        build_clear_signing_view(
+            &framed,
+            &PROFILE,
+            &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3
+        ),
         Err(SigningViewError::SignedContextMismatch {
             field: "protocol_version"
         })
@@ -517,7 +546,11 @@ fn rejects_a_transaction_payload_epoch_that_disagrees_with_the_outer_frame() {
     let framed = wrap_signed(&encode_transaction_signable(&tx).unwrap());
 
     assert_eq!(
-        build_clear_signing_view(&framed, &PROFILE, &DEVNET_ASSET_TRANSFER_POLICY),
+        build_clear_signing_view(
+            &framed,
+            &PROFILE,
+            &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3
+        ),
         Err(SigningViewError::SignedContextMismatch { field: "epoch" })
     );
 }
@@ -532,7 +565,11 @@ fn propagates_outer_frame_decode_failures_typed() {
     framed[0] ^= 0xFF;
 
     assert_eq!(
-        build_clear_signing_view(&framed, &PROFILE, &DEVNET_ASSET_TRANSFER_POLICY),
+        build_clear_signing_view(
+            &framed,
+            &PROFILE,
+            &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3
+        ),
         Err(SigningViewError::Crypto(CryptoError::CanonicalDecoding(
             CanonicalDecodingError::InvalidMagic
         )))
@@ -544,7 +581,10 @@ fn propagates_outer_frame_decode_failures_typed() {
 #[test]
 fn recognizes_the_exact_devnet_transfer_shape() {
     let tx = sample_tx();
-    assert_eq!(DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx), Ok(1_000_000));
+    assert_eq!(
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
+        Ok(1_000_000)
+    );
 }
 
 #[test]
@@ -552,7 +592,7 @@ fn rejects_a_different_chain_even_when_both_signed_context_copies_match() {
     let mut tx = sample_tx();
     tx.chain_id = ChainId::new("another-chain").unwrap();
     assert_eq!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::ChainId)
     );
 }
@@ -562,7 +602,7 @@ fn rejects_a_different_protocol_version_under_the_reference_policy() {
     let mut tx = sample_tx();
     tx.protocol_version = ProtocolVersion::new(4);
     assert_eq!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::ProtocolVersion)
     );
 }
@@ -572,7 +612,7 @@ fn rejects_a_different_epoch_under_the_reference_policy() {
     let mut tx = sample_tx();
     tx.epoch = Epoch::new(1);
     assert_eq!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::Epoch)
     );
 }
@@ -582,7 +622,7 @@ fn does_not_recognize_a_wrong_module_id() {
     let mut tx = sample_tx();
     tx.module_ref.id = ObjectId::new([0xEE; 32]);
     assert_eq!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::ModuleId)
     );
 }
@@ -592,7 +632,7 @@ fn does_not_recognize_a_wrong_module_version() {
     let mut tx = sample_tx();
     tx.module_ref.version += 1;
     assert_eq!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::ModuleVersion)
     );
 }
@@ -602,7 +642,7 @@ fn does_not_recognize_a_wrong_digest_algorithm() {
     let mut tx = sample_tx();
     tx.module_ref.digest = Digest32::new(HashAlgorithmId::Sha3_256, tx.module_ref.digest.bytes());
     assert_eq!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::ModuleDigestAlgorithm)
     );
 }
@@ -614,7 +654,7 @@ fn does_not_recognize_wrong_digest_bytes() {
     bytes[0] ^= 0xFF;
     tx.module_ref.digest = Digest32::new(tx.module_ref.digest.algorithm(), bytes);
     assert_eq!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::ModuleDigest)
     );
 }
@@ -624,7 +664,7 @@ fn does_not_recognize_a_wrong_entrypoint() {
     let mut tx = sample_tx();
     tx.entrypoint = "not_transfer".to_string();
     assert_eq!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::Entrypoint)
     );
 }
@@ -634,7 +674,7 @@ fn rejects_a_non_transfer_access_shape() {
     let mut tx = sample_tx();
     tx.access_manifest.entries[1].mode = AccessMode::Read;
     assert_eq!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::AccessShape)
     );
 }
@@ -644,7 +684,7 @@ fn rejects_a_transfer_without_fee_authorization() {
     let mut tx = sample_tx();
     tx.fee_payment = None;
     assert_eq!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::FeeRequired)
     );
 }
@@ -654,7 +694,7 @@ fn rejects_a_fee_object_other_than_the_source() {
     let mut tx = sample_tx();
     tx.fee_payment.as_mut().unwrap().fee_object = tx.access_manifest.entries[1].object_ref.clone();
     assert_eq!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::FeeObjectMismatch)
     );
 }
@@ -664,7 +704,7 @@ fn rejects_an_unrecognized_fee_asset() {
     let mut tx = sample_tx();
     tx.fee_payment.as_mut().unwrap().asset_id = AssetId::new([0xFE; 32]);
     assert_eq!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::FeeAsset)
     );
 }
@@ -672,13 +712,19 @@ fn rejects_an_unrecognized_fee_asset() {
 #[test]
 fn does_not_recognize_a_wrong_args_type_id() {
     let mut tx = sample_tx();
-    let mut wrong = CanonicalStruct::new(0xF003, DEVNET_ASSET_TRANSFER_POLICY.args_version());
+    let mut wrong = CanonicalStruct::new(
+        0xF003,
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_version(),
+    );
     wrong
-        .field_u64(DEVNET_ASSET_TRANSFER_POLICY.args_field_id(), 5)
+        .field_u64(
+            HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_field_id(),
+            5,
+        )
         .unwrap();
     tx.args = wrong.finish().unwrap();
     assert_eq!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::ArgumentsTypeId(0xF003))
     );
 }
@@ -686,13 +732,19 @@ fn does_not_recognize_a_wrong_args_type_id() {
 #[test]
 fn does_not_recognize_a_wrong_args_version() {
     let mut tx = sample_tx();
-    let mut wrong = CanonicalStruct::new(DEVNET_ASSET_TRANSFER_POLICY.args_type_id(), 2);
+    let mut wrong = CanonicalStruct::new(
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_type_id(),
+        2,
+    );
     wrong
-        .field_u64(DEVNET_ASSET_TRANSFER_POLICY.args_field_id(), 5)
+        .field_u64(
+            HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_field_id(),
+            5,
+        )
         .unwrap();
     tx.args = wrong.finish().unwrap();
     assert_eq!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::ArgumentsVersion(2))
     );
 }
@@ -702,13 +754,13 @@ fn does_not_recognize_a_wrong_args_field_shape() {
     let mut tx = sample_tx();
     // Correct type/version, but the value lives under field 2, not field 1.
     let mut wrong = CanonicalStruct::new(
-        DEVNET_ASSET_TRANSFER_POLICY.args_type_id(),
-        DEVNET_ASSET_TRANSFER_POLICY.args_version(),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_type_id(),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_version(),
     );
     wrong.field_u64(2, 5).unwrap();
     tx.args = wrong.finish().unwrap();
     assert!(matches!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::ArgumentsShape(_))
     ));
 }
@@ -717,16 +769,19 @@ fn does_not_recognize_a_wrong_args_field_shape() {
 fn does_not_recognize_an_extra_args_field() {
     let mut tx = sample_tx();
     let mut wrong = CanonicalStruct::new(
-        DEVNET_ASSET_TRANSFER_POLICY.args_type_id(),
-        DEVNET_ASSET_TRANSFER_POLICY.args_version(),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_type_id(),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_version(),
     );
     wrong
-        .field_u64(DEVNET_ASSET_TRANSFER_POLICY.args_field_id(), 5)
+        .field_u64(
+            HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.args_field_id(),
+            5,
+        )
         .unwrap();
     wrong.field_u64(2, 1).unwrap();
     tx.args = wrong.finish().unwrap();
     assert!(matches!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::ArgumentsShape(_))
     ));
 }
@@ -736,7 +791,7 @@ fn does_not_recognize_a_malformed_zero_amount() {
     let mut tx = sample_tx();
     tx.args = recognized_args(0);
     assert_eq!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::ZeroAmount)
     );
 }
@@ -746,7 +801,7 @@ fn does_not_recognize_opaque_non_canonical_args() {
     let mut tx = sample_tx();
     tx.args = b"not-a-frame".to_vec();
     assert!(matches!(
-        DEVNET_ASSET_TRANSFER_POLICY.recognize(&tx),
+        HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.recognize(&tx),
         Err(ClearSigningPolicyError::ArgumentsEncoding(_))
     ));
 }
@@ -758,7 +813,11 @@ fn unrecognized_args_are_rejected_without_a_raw_fallback() {
     let framed = wrap_signed(&encode_transaction_signable(&tx).unwrap());
 
     assert_eq!(
-        build_clear_signing_view(&framed, &PROFILE, &DEVNET_ASSET_TRANSFER_POLICY),
+        build_clear_signing_view(
+            &framed,
+            &PROFILE,
+            &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3
+        ),
         Err(SigningViewError::Policy(
             ClearSigningPolicyError::ZeroAmount
         ))
@@ -771,15 +830,21 @@ fn unrecognized_args_are_rejected_without_a_raw_fallback() {
 fn every_single_byte_mutation_changes_or_rejects_the_view() {
     let tx = sample_tx();
     let framed = wrap_signed(&encode_transaction_signable(&tx).unwrap());
-    let original =
-        build_clear_signing_view(&framed, &PROFILE, &DEVNET_ASSET_TRANSFER_POLICY).unwrap();
+    let original = build_clear_signing_view(
+        &framed,
+        &PROFILE,
+        &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3,
+    )
+    .unwrap();
 
     for index in 0..framed.len() {
         let mut mutated = framed.clone();
         mutated[index] ^= 0xFF;
-        if let Ok(view) =
-            build_clear_signing_view(&mutated, &PROFILE, &DEVNET_ASSET_TRANSFER_POLICY)
-        {
+        if let Ok(view) = build_clear_signing_view(
+            &mutated,
+            &PROFILE,
+            &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3,
+        ) {
             assert_ne!(
                 view, original,
                 "byte {index} mutation produced an unchanged view"
@@ -792,7 +857,12 @@ fn every_single_byte_mutation_changes_or_rejects_the_view() {
 fn view_contains_no_unsigned_host_metadata_tokens() {
     let tx = sample_tx();
     let framed = wrap_signed(&encode_transaction_signable(&tx).unwrap());
-    let view = build_clear_signing_view(&framed, &PROFILE, &DEVNET_ASSET_TRANSFER_POLICY).unwrap();
+    let view = build_clear_signing_view(
+        &framed,
+        &PROFILE,
+        &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3,
+    )
+    .unwrap();
 
     let forbidden = [
         "request_id",
@@ -815,7 +885,12 @@ fn identical_signed_bytes_render_identically_regardless_of_unrelated_call_contex
     let tx = sample_tx();
     let framed = wrap_signed(&encode_transaction_signable(&tx).unwrap());
 
-    let first = build_clear_signing_view(&framed, &PROFILE, &DEVNET_ASSET_TRANSFER_POLICY).unwrap();
+    let first = build_clear_signing_view(
+        &framed,
+        &PROFILE,
+        &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3,
+    )
+    .unwrap();
 
     // `build_clear_signing_view` accepts no request id, owner, or symbol
     // parameter at all — there is no host channel through which unrelated
@@ -823,8 +898,12 @@ fn identical_signed_bytes_render_identically_regardless_of_unrelated_call_contex
     let _unrelated_request_id: u64 = 0xFFFF_FFFF;
     let _unrelated_destination_owner = Address::new([0xEE; 32]);
 
-    let second =
-        build_clear_signing_view(&framed, &PROFILE, &DEVNET_ASSET_TRANSFER_POLICY).unwrap();
+    let second = build_clear_signing_view(
+        &framed,
+        &PROFILE,
+        &HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3,
+    )
+    .unwrap();
 
     assert_eq!(first, second);
 }

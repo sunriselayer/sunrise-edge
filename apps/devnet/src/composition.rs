@@ -2,7 +2,7 @@
 
 use crate::{
     catalog::DevnetAssetModule,
-    fee::AssetAccountFeeComposer,
+    fee::StandardAssetCoinFeeComposer,
     identities::DevnetOutboxIdentitySource,
     machine::{DEVNET_GENERIC_STATE_KEY, DevnetMachine},
     transport::DevnetTransport,
@@ -28,10 +28,10 @@ const OUTBOX_LEASE_MILLIS: u64 = 30_000;
 /// `reserved_correlation_sequences` is the number of seed operations already
 /// assigned operational correlation IDs in this boot. Outbox identities begin
 /// strictly after that range. `fee_treasury_object_id` is the trusted
-/// composition's fee sink: the seeded fee-treasury owner's ordinary
-/// destination account, never request input. Every preinstalled-WASM
-/// invocation is wired through [`AssetAccountFeeComposer`], the devnet's
-/// trusted `FeeEffectComposer` implementation.
+/// composition's fee sink: the seeded treasury owner's ordinary treasury
+/// coin, never request input. Every preinstalled-WASM invocation is wired
+/// through [`StandardAssetCoinFeeComposer`], the devnet's trusted
+/// `FeeEffectComposer` implementation.
 ///
 /// `blob_store` is the file-backed `SqliteBlobStore` opened by
 /// [`crate::boot_local_store`] alongside the structured store (DR-0096): a
@@ -78,7 +78,7 @@ pub fn compose_devnet_router(
     )
     .with_fee_composition(PreinstalledFeeCompositionConfig::new(
         fee_treasury_object_id,
-        Arc::new(AssetAccountFeeComposer),
+        Arc::new(StandardAssetCoinFeeComposer),
     ));
     let authority = StructuredDurableRequestAuthority::new(
         boot_generation,
@@ -143,8 +143,8 @@ impl Error for DevnetCompositionError {
 mod tests {
     use super::*;
     use crate::{
-        asset_account::ASSET_ACCOUNT_WASM, boot::boot_local_store, catalog::build_asset_module,
-        config::DevnetConfig, genesis::build_devnet_protocol_context,
+        boot::boot_local_store, catalog::build_standard_asset_module, config::DevnetConfig,
+        genesis::build_devnet_protocol_context, standard_asset::STANDARD_ASSET_TRANSFER_WASM,
     };
     use ed25519_zebra::{SigningKey, VerificationKey};
     use std::{
@@ -208,7 +208,8 @@ mod tests {
         let generation = boot.boot_generation();
         let context =
             build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
-        let module = build_asset_module(context, ASSET_ACCOUNT_WASM.to_vec()).unwrap();
+        let module =
+            build_standard_asset_module(context, STANDARD_ASSET_TRANSFER_WASM.to_vec()).unwrap();
         let (store, blob_store) = boot.into_parts();
 
         let router = compose_devnet_router(
@@ -218,7 +219,7 @@ mod tests {
             generation,
             config.max_concurrent(),
             config.dev_owners().len(),
-            ObjectId::new([0xFE; 32]),
+            ObjectId::new([0xCE; 32]),
         )
         .unwrap();
 

@@ -3,6 +3,29 @@
 Hardware-signing profile, Ledger device contract, application, and host
 transport decisions.
 
+**DR-0107 amendment (current status).** DR-0092's "CLI signer selection
+amends the one-runtime-dependency invariant" section below describes
+`transfer`'s Ledger path as building a `PreparedTransaction` and calling
+`sign_and_finalize_external` with `DeviceSigningProfile::V1` and (at the
+time) the live protocol-3 `sunrise.devnet.asset_account.v1` clear-signing
+policy. [DR-0107](0107-standard-asset-v1-devnet-activation.md) deletes that
+fixture and rebuilds `apps/cli`'s `transfer` around protocol-4 Standard
+Asset v1 whole-coin transfer; no Ledger clear-signing policy exists for that
+entrypoint yet (a deliberate, documented deferral, not an oversight), so a
+Ledger `SignerSelection` now fails closed with a typed
+`CliError::LedgerStandardAssetTransferUnsupported` immediately after signer
+selection, strictly before any `connect()`, other device dispatch, or
+network `Client` construction — never reaching the live-transfer path this
+section originally described. `HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3`
+(renamed from the policy this section still calls by its old name) survives
+only as a fixture exercised by `clients/rust::transaction`'s historical
+vector test; no live devnet build matches it. The hardware-signing profile,
+device contract, APDU state machine, and every S4a–S4d evidence boundary
+described below are otherwise unaffected: this amendment concerns only
+which host-side entrypoint can currently reach the Ledger path, not the
+device/transport/profile machinery itself. The text below is preserved
+unamended as a historical record of what DR-0092 implemented at the time.
+
 - DR-0088: Implement only S4a's hardware-signing profile and host preflight in
   this repository, with the dedicated Ledger application isolated in a
   separate repository and S4 completion reserved for physical evidence.
@@ -103,7 +126,7 @@ transport decisions.
   fee `AssetId`
   (`ccad27f687338b99953183728647bc1177388eb45a37afd9812c0d286b433ea8`, the
   normative value `crates/signing-view/src/policy.rs`'s
-  `DEVNET_ASSET_TRANSFER_POLICY.fee_asset_id` field fixes, which
+  `HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3.fee_asset_id` field fixes, which
   `crates/signing-view/tests/fixtures.rs` exercises only as fixture
   evidence) as one policy, rejecting any other combination rather than
   matching fields independently. (7) Requires a typed rejection when any two of the three
@@ -366,7 +389,7 @@ transport decisions.
   rather than silently falling back to the local signer. `transfer`'s Ledger
   path builds a `PreparedTransaction` exactly as the local path does, then
   calls `sign_and_finalize_external` with `DeviceSigningProfile::V1` and
-  `DEVNET_ASSET_TRANSFER_POLICY` — the same host preflight DR-0088 already
+  `HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3` — the same host preflight DR-0088 already
   implements — so canonical transaction/signature bytes and the local-signer
   path are both completely unchanged. A feature-independent `FakeTransport`
   test executes this exact CLI helper with a real policy-conforming

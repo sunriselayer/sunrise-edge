@@ -286,26 +286,26 @@ impl ClearSigningPolicy {
     }
 }
 
-/// The current local-devnet asset-account transfer module (see
-/// `apps/devnet/src/catalog.rs`'s `ASSET_ACCOUNT_MODULE_ID` /
-/// `ASSET_ACCOUNT_MODULE_VERSION`, and `apps/devnet/src/asset_account.rs`'s
-/// `TRANSFER_ENTRYPOINT` / `TRANSFER_ARGS_TYPE_ID`).
+/// A **historical** (no longer live) reference-build recognition entry for
+/// the protocol-3 local-devnet `sunrise.devnet.asset_account.v1` transfer
+/// module, superseded by the protocol-4 Standard Asset v1 whole-coin
+/// transfer module (see `apps/devnet/src/standard_asset.rs`,
+/// `apps/devnet/src/catalog.rs`, and DR-0107).
 ///
-/// This is a provisional, narrow reference-build recognition entry, not a
-/// general module-registration mechanism (see `docs/signing/hardware-signing.md`,
-/// "Clear-signing policy"). It duplicates those values as data rather
-/// than adding a dependency on `apps/devnet` — an application crate this
-/// protocol/device-view crate must not depend on. The exact code digest
-/// below is valid only for one reference build documented in `docs/signing/hardware-signing.md`:
-/// `chain_id = "sunrise-local-devnet"` (the exact value used by
-/// `docs/guides/devnet.md`'s local devnet walkthrough),
-/// `protocol_version = 3`, hashing the exact committed
-/// `apps/devnet/src/modules/asset_account.wasm` bytes through the genesis
-/// SHA-256 hash suite. Any other devnet deployment (a different
-/// `--chain-id`, protocol version, or WASM build) produces a different
-/// digest and is correctly rejected rather than guessed or rendered through
-/// a generic fallback.
-pub const DEVNET_ASSET_TRANSFER_POLICY: ClearSigningPolicy = ClearSigningPolicy {
+/// No live devnet build matches this policy's `protocol_version`, `module_id`,
+/// `module_version`, or code digest: they name the deleted
+/// `apps/devnet/src/asset_account.rs`/`modules/asset_account.wasm` fixture,
+/// intentionally kept only so `clients/rust::transaction`'s historical vector
+/// test keeps exercising [`ClearSigningPolicy::recognize`] against a fixed,
+/// non-trivial byte shape. It must never be presented to a user as
+/// describing anything a current devnet actually executes.
+///
+/// This was, and remains, a provisional, narrow reference-build recognition
+/// entry, not a general module-registration mechanism (see
+/// `docs/signing/hardware-signing.md`, "Clear-signing policy"). It duplicates
+/// those values as data rather than adding a dependency on `apps/devnet` — an
+/// application crate this protocol/device-view crate must not depend on.
+pub const HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3: ClearSigningPolicy = ClearSigningPolicy {
     chain_id: "sunrise-local-devnet",
     protocol_version: 3,
     epoch: 0,

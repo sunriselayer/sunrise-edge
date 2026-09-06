@@ -1,12 +1,13 @@
 //! Committed protocol configuration for the local-only developer network.
 
-use crate::asset_account::DEVNET_ASSET_ID;
+use crate::standard_asset::derive_devnet_asset_id;
 use fees::{FeeAsset, GasSchedule};
 use hashing::{HashSuiteResolver, HashingError};
 use protocol_config::{
     DomainPlacementManifest, ProtocolConfig, ProtocolConfigError, TransactionAuthProfile,
 };
 use protocol_types::{AtomicityDomainId, ChainId, Epoch, ProtocolVersion};
+use standard_assets::{AssetId, StandardAssetError};
 use std::{error::Error, fmt};
 
 /// Flat base cost charged on every fee-metered devnet transaction.
@@ -21,11 +22,17 @@ const DEVNET_BASE_FEE: u64 = 1;
 /// writes, storage, or system-module usage yet, so pricing them would imply
 /// a charge nobody computes.
 const DEVNET_EXECUTION_PRICE: u64 = 1;
-/// One devnet fee unit equals one unit of [`DEVNET_ASSET_ID`].
+/// One devnet fee unit equals one unit of the devnet's one derived
+/// [`standard_assets::AssetId`] (see [`derive_devnet_asset_id`]).
 const DEVNET_FEE_UNITS_PER_ASSET_UNIT: u64 = 1;
 
 /// Protocol version used by the local developer network.
-pub const DEVNET_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(3);
+///
+/// Bumped from 3 to 4 by this slice: `node_core::MIN_OWNER_TRANSITION_PROTOCOL_VERSION`
+/// gates every committed [`node_core::PreinstalledOwnerTransitionPolicy`] on
+/// `protocol_version >= 4`, and the Standard Asset v1 whole-coin transfer
+/// module this devnet installs uses exactly that policy (see DR-0107).
+pub const DEVNET_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(4);
 
 /// The single logical atomicity domain used by the local developer network.
 ///
@@ -43,6 +50,7 @@ pub struct DevnetProtocolContext {
     domain: AtomicityDomainId,
     protocol_config: ProtocolConfig,
     resolver: HashSuiteResolver,
+    asset_id: AssetId,
 }
 
 impl DevnetProtocolContext {
@@ -76,6 +84,13 @@ impl DevnetProtocolContext {
         &self.resolver
     }
 
+    /// Returns the devnet's one derived Standard Asset v1 [`AssetId`] (see
+    /// [`crate::standard_asset::derive_devnet_asset_id`]).
+    #[must_use]
+    pub const fn asset_id(&self) -> AssetId {
+        self.asset_id
+    }
+
     pub(crate) fn into_parts(
         self,
     ) -> (
@@ -84,6 +99,7 @@ impl DevnetProtocolContext {
         AtomicityDomainId,
         ProtocolConfig,
         HashSuiteResolver,
+        AssetId,
     ) {
         (
             self.chain_id,
@@ -91,20 +107,25 @@ impl DevnetProtocolContext {
             self.domain,
             self.protocol_config,
             self.resolver,
+            self.asset_id,
         )
     }
 }
 
-/// Builds protocol version 3 configuration for one local developer network.
+/// Builds protocol version 4 configuration for one local developer network.
 ///
 /// The configuration uses one fixed non-zero domain, the committed Ed25519
 /// address-is-public-key authentication profile, and the genesis hash-suite
-/// schedule. Its committed `gas_schedule` charges [`DEVNET_BASE_FEE`] plus
-/// [`DEVNET_EXECUTION_PRICE`] per `gas_used` unit, and its `fee_assets`
-/// registry enables exactly [`DEVNET_ASSET_ID`] at
+/// schedule. The resolver is built first, from the config's own
+/// chain/protocol-version/hash-suite-schedule alone (before `fee_assets` is
+/// populated), so the devnet's one Standard Asset v1 [`AssetId`] can be
+/// derived through it via [`derive_devnet_asset_id`] — never a hardcoded
+/// literal (see DR-0107, F6). Its committed `gas_schedule` charges
+/// [`DEVNET_BASE_FEE`] plus [`DEVNET_EXECUTION_PRICE`] per `gas_used` unit,
+/// and its `fee_assets` registry enables exactly the derived `AssetId` at
 /// [`DEVNET_FEE_UNITS_PER_ASSET_UNIT`] fee unit per asset unit: the devnet
-/// uses one ordinary fungible asset for both transfers and fees, never a
-/// privileged native coin or a separate fee-only asset.
+/// uses one ordinary Standard Asset v1 asset for both transfers and fees,
+/// never a privileged native coin or a separate fee-only asset.
 pub fn build_devnet_protocol_context(
     chain_id: ChainId,
     epoch: Epoch,
@@ -131,21 +152,10 @@ pub fn build_devnet_protocol_context(
         storage_price: 0,
         system_module_price: 0,
     };
-    protocol_config
-        .fee_assets
-        .add_asset(FeeAsset {
-            asset_id: DEVNET_ASSET_ID,
-            fee_units_per_asset_unit: DEVNET_FEE_UNITS_PER_ASSET_UNIT,
-            enabled: true,
-        })
-        .map_err(DevnetGenesisError::Fees)?;
-    protocol_config
-        .validate()
-        .map_err(DevnetGenesisError::ProtocolConfig)?;
 
-    // The resolver is deliberately constructed only after validation, from
-    // the same config's chain/version/schedule. Callers never supply an
-    // independent schedule that could disagree with committed configuration.
+    // The resolver is built from the config's chain/version/schedule alone,
+    // strictly before `fee_assets` is populated: the derived `AssetId` must
+    // never depend on itself being already registered.
     let resolver: HashSuiteResolver = HashSuiteResolver::new(
         chain_id.clone(),
         protocol_config.protocol_version,
@@ -156,12 +166,28 @@ pub fn build_devnet_protocol_context(
         .suite_for_epoch(epoch)
         .map_err(DevnetGenesisError::Hashing)?;
 
+    let asset_id: AssetId =
+        derive_devnet_asset_id(&resolver, epoch).map_err(DevnetGenesisError::StandardAsset)?;
+
+    protocol_config
+        .fee_assets
+        .add_asset(FeeAsset {
+            asset_id,
+            fee_units_per_asset_unit: DEVNET_FEE_UNITS_PER_ASSET_UNIT,
+            enabled: true,
+        })
+        .map_err(DevnetGenesisError::Fees)?;
+    protocol_config
+        .validate()
+        .map_err(DevnetGenesisError::ProtocolConfig)?;
+
     Ok(DevnetProtocolContext {
         chain_id,
         epoch,
         domain,
         protocol_config,
         resolver,
+        asset_id,
     })
 }
 
@@ -175,6 +201,8 @@ pub enum DevnetGenesisError {
     ProtocolConfig(ProtocolConfigError),
     /// The committed hash-suite schedule could not build or resolve.
     Hashing(HashingError),
+    /// The devnet's one Standard Asset v1 `AssetId` failed to derive.
+    StandardAsset(StandardAssetError),
     /// The committed fee-asset registry failed to register the devnet asset.
     Fees(fees::FeeError),
 }
@@ -197,6 +225,9 @@ impl fmt::Display for DevnetGenesisError {
                     "devnet hash-suite configuration is invalid: {error}"
                 )
             }
+            Self::StandardAsset(error) => {
+                write!(formatter, "devnet asset id derivation failed: {error}")
+            }
             Self::Fees(error) => {
                 write!(
                     formatter,
@@ -213,6 +244,7 @@ impl Error for DevnetGenesisError {
             Self::InvalidStaticDomain => None,
             Self::ProtocolConfig(error) => Some(error),
             Self::Hashing(error) => Some(error),
+            Self::StandardAsset(error) => Some(error),
             Self::Fees(error) => Some(error),
         }
     }
@@ -282,7 +314,7 @@ mod tests {
         let profile = config.transaction_auth_profile.as_ref().unwrap();
 
         assert_eq!(config.fee_assets.len(), 1);
-        let fee_asset = config.fee_assets.get(DEVNET_ASSET_ID).unwrap();
+        let fee_asset = config.fee_assets.get(context.asset_id()).unwrap();
         assert!(fee_asset.enabled);
         assert_eq!(
             fee_asset.fee_units_per_asset_unit,
@@ -304,5 +336,51 @@ mod tests {
             AddressBinding::CanonicalPrimeOrderAddressIsPublicKey
         );
         assert_eq!(config.validate(), Ok(()));
+    }
+
+    /// Pins F2/DR-0107's load-bearing coupling: the fee-payer `Coin<A>`
+    /// `Write` access has an effect only because the devnet's settled fee is
+    /// always non-zero. A future accidental reduction of `DEVNET_BASE_FEE` to
+    /// `0` (with `execution_price` also `0`) would make a worst-case-free
+    /// call's fee `Write` access have no possible effect and fail with a
+    /// generic `ObjectEffectMismatch`, so this asserts the committed schedule
+    /// stays non-zero.
+    #[test]
+    fn devnet_gas_schedule_base_fee_is_nonzero() {
+        assert_ne!(DEVNET_BASE_FEE, 0);
+        let context: DevnetProtocolContext =
+            build_devnet_protocol_context(test_chain(), Epoch::new(0)).unwrap();
+        assert_ne!(context.protocol_config().gas_schedule.base_fee, 0);
+    }
+
+    /// F7/DR-0107: this activation slice does not reconcile
+    /// `objects::apply_lazy_migration`'s raw `Digest32` comparison; that
+    /// remains defensible only because the devnet never enables
+    /// `FeatureFlag::LazyObjectMigration`, so no committed migration
+    /// descriptor can ever be consulted for a Standard Asset v1 object.
+    #[test]
+    fn devnet_never_enables_lazy_object_migration() {
+        let context: DevnetProtocolContext =
+            build_devnet_protocol_context(test_chain(), Epoch::new(0)).unwrap();
+        assert!(
+            !context
+                .protocol_config()
+                .feature_flags
+                .contains(protocol_upgrades::FeatureFlag::LazyObjectMigration)
+        );
+    }
+
+    #[test]
+    fn devnet_asset_id_is_derived_not_hardcoded() {
+        let context: DevnetProtocolContext =
+            build_devnet_protocol_context(test_chain(), Epoch::new(11)).unwrap();
+        let expected =
+            crate::standard_asset::derive_devnet_asset_id(context.resolver(), context.epoch())
+                .unwrap();
+        assert_eq!(context.asset_id(), expected);
+
+        let other_epoch_context: DevnetProtocolContext =
+            build_devnet_protocol_context(test_chain(), Epoch::new(12)).unwrap();
+        assert_ne!(context.asset_id(), other_epoch_context.asset_id());
     }
 }

@@ -1,60 +1,54 @@
-//! `transfer`: the devnet asset-account transfer command.
+//! `transfer`: the devnet Standard Asset v1 whole-coin transfer command.
 //!
 //! This command is the only place in `apps/cli` that knows anything about
-//! the `sunrise.devnet.asset_account.v1` module: its fixed `transfer`
-//! entrypoint name and its exact `CanonicalStruct(0xF002, v1){1: u64
-//! amount}` argument frame. `clients/rust` stays application-agnostic (see
-//! `docs/architecture/product-surfaces.md` §44 /
-//! `docs/architecture/decisions/0081-0087-cli-first-roadmap.md` DR-0083); this file only uses
-//! the small, generic canonical-struct and access-manifest surface `clients/rust` re-exports
-//! (DR-0084).
+//! the devnet's preinstalled Standard Asset v1 transfer module: its fixed
+//! `transfer` entrypoint name and its use of
+//! `standard_assets::StandardAssetTransferArgsV1` as the sole argument
+//! frame. `clients/rust` stays application-agnostic (see
+//! `docs/architecture/product-surfaces.md` §44); this file only uses the
+//! small, generic canonical-struct, access-manifest, and Standard Asset v1
+//! surface `clients/rust` re-exports.
 //!
 //! It queries authoritative context first and, before any nonce/object
 //! query or signing, requires the trusted `/v1/context` result to exactly
 //! match a locally configured [`sunrise_edge_client::ExpectedProtocolContext`]
-//! (see `docs/architecture/decisions/0081-0087-cli-first-roadmap.md` DR-0085 / `TODO.md` CLI-First Node Production Gate
-//! S1a): the caller-supplied `--expected-chain-id`, `--expected-protocol-
-//! version`, `--expected-epoch`, `--expected-hash-suite-id`, and
-//! `--expected-domain` flags, plus the transaction-auth profile id,
-//! signature scheme, and address binding this client actually implements
-//! (the single committed profile id, `Ed25519`, and `AddressIsPublicKey`).
-//! A remote result matching a known scheme/binding under an unexpected
-//! profile id is still rejected, since the profile id itself is compared.
-//! This is a mandatory pre-signing check, independent of transport trust: a
-//! successful connection (whether loopback plaintext or authenticated remote
-//! TLS) never by itself proves the remote server speaks this client's intended
-//! chain/protocol.
+//! (DR-0085 / `TODO.md` CLI-First Node Production Gate S1a). This is a
+//! mandatory pre-signing check, independent of transport trust: a successful
+//! connection never by itself proves the remote server speaks this client's
+//! intended chain/protocol.
 //!
 //! Once the context is verified, this command queries the signer's next
 //! nonce (checking its epoch agrees with the verified context's before
-//! proceeding) and both current-inline object references, decoding each
-//! object's canonical body. The source owner must be the local signer's own
-//! address, while the destination owner must exactly match the caller's
-//! required `--destination-owner` address. These are defense-in-depth checks
-//! alongside the server's committed module policy (see
-//! `docs/architecture/decisions/0081-0087-cli-first-roadmap.md`
-//! DR-0086). It then builds the source/destination `Write` accesses and, when
-//! the all-or-none fee flags are present, appends the treasury as the final
-//! `Write` while naming source as `fee_object`; it builds and
-//! signs the transaction through `clients/rust`, and submits it with an
-//! explicit non-zero request id. Waiting for a receipt is optional and, when
-//! requested, bounded by caller-supplied, finite poll parameters.
+//! proceeding) and both current-inline coin references, decoding each as a
+//! `standard_assets::StandardAssetCoinV1`. Both coins must be owned by the
+//! local signer's own address, must share one `AssetId`, must be distinct
+//! objects, and the signed `--fee-asset-id` must equal that shared
+//! `AssetId` (the protocol forces the fee asset to equal the transferred
+//! asset for this entrypoint — see DR-0107, F5). These are defense-in-depth
+//! checks alongside the server's committed typed-entrypoint and owner-
+//! transition policy. It then builds the transferred/fee/treasury `Write`
+//! accesses, builds and signs the transaction through `clients/rust`, and
+//! submits it with an explicit non-zero request id. Waiting for a receipt
+//! is optional and, when requested, bounded by caller-supplied, finite poll
+//! parameters.
+//!
+//! There is no `--amount` or destination-account concept: this is a
+//! whole-object transfer of `--source-coin` to `--recipient`, never a
+//! partial balance movement (Create/mint/split/merge remain deferred).
 
 use std::ffi::OsString;
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-#[cfg(feature = "usb-hid")]
-use sunrise_edge_client::ExternalSigner;
 use sunrise_edge_client::{
-    AccessEntry, AccessManifest, AccessMode, Address, Amount, AssetId, AtomicityDomainId,
-    CanonicalStruct, ChainId, Client, Digest32,
-    ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_BINDING_ID,
+    AccessEntry, AccessManifest, AccessMode, Address, Amount, AssetId, AtomicityDomainId, ChainId,
+    Client, Digest32, ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_BINDING_ID,
     ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID, Epoch, ExecutionEffects,
     ExecutionStatus, ExpectedProtocolContext, FeePayment, HashAlgorithmId, HashSuiteId,
     LocalSigner, NodeResponseStatus, ObjectEffect, ObjectId, ObjectRef, Owner, PreparedTransaction,
-    ProtocolVersion, ReceiptPollBounds, RequestId, SignatureSchemeId, SubmitTransactionRequest,
-    TransactionRequest, Transport, decode_object,
+    ProtocolVersion, ReceiptPollBounds, RequestId, SignatureSchemeId, StandardAssetCoinV1,
+    StandardAssetTransferArgsV1, SubmitTransactionRequest, TransactionRequest, Transport,
+    decode_object, decode_standard_asset_coin_v1, encode_standard_asset_transfer_args_v1,
 };
 
 use crate::args::{ParsedArgs, parse_flags, scalar, switch};
@@ -64,8 +58,6 @@ use crate::net::{connect, tls_flag_specs};
 use crate::output::{bounded_hex_field, sanitize_line};
 use crate::parse::{parse_u16, parse_u32, parse_u64};
 use crate::seed::load_dev_seed;
-#[cfg(feature = "usb-hid")]
-use crate::signer::finalize_with_ledger;
 use crate::signer::{SignerSelection, parse_signer_selection, signer_flag_specs};
 
 const ENDPOINT: &str = "--endpoint";
@@ -73,10 +65,9 @@ const MODULE_ID: &str = "--module-id";
 const MODULE_VERSION: &str = "--module-version";
 const MODULE_DIGEST_ALGORITHM: &str = "--module-digest-algorithm";
 const MODULE_DIGEST: &str = "--module-digest";
-const SOURCE_OBJECT: &str = "--source-object";
-const DESTINATION_OBJECT: &str = "--destination-object";
-const DESTINATION_OWNER: &str = "--destination-owner";
-const AMOUNT: &str = "--amount";
+const SOURCE_COIN: &str = "--source-coin";
+const RECIPIENT: &str = "--recipient";
+const FEE_COIN: &str = "--fee-coin";
 const GAS_LIMIT: &str = "--gas-limit";
 const FEE_ASSET_ID: &str = "--fee-asset-id";
 const MAX_FEE: &str = "--max-fee";
@@ -93,49 +84,30 @@ const WAIT_INITIAL_BACKOFF_MS: &str = "--wait-initial-backoff-ms";
 const WAIT_MAX_BACKOFF_MS: &str = "--wait-max-backoff-ms";
 const WAIT_MAX_ELAPSED_MS: &str = "--wait-max-elapsed-ms";
 
-/// The devnet `sunrise.devnet.asset_account.v1` module's `transfer`
-/// entrypoint name (see `docs/architecture/product-surfaces.md` §"Local devnet architecture").
+/// The devnet Standard Asset v1 module's `transfer` entrypoint name.
 const TRANSFER_ENTRYPOINT: &str = "transfer";
-/// Canonical type identifier for the devnet module's transfer arguments
-/// (`0xF002`, reserved by DR-0081; devnet-local, not a base-protocol id).
-const TRANSFER_ARGS_TYPE_ID: u16 = 0xF002;
-const TRANSFER_ARGS_ENCODING_VERSION: u16 = 1;
 
 /// Fully parsed, strongly typed `transfer` inputs.
 struct TransferInputs {
     module_ref: ObjectRef,
-    source_id: ObjectId,
-    destination_id: ObjectId,
-    destination_owner: Address,
-    amount: u64,
+    source_coin_id: ObjectId,
+    fee_coin_id: ObjectId,
+    recipient: Address,
+    fee_asset_id: AssetId,
+    max_fee: Amount,
+    fee_treasury_object_id: ObjectId,
     gas_limit: u64,
     request_id: RequestId,
     expected_context: ExpectedProtocolContext,
     wait_bounds: Option<ReceiptPollBounds>,
-    fee: Option<FeeInputs>,
-}
-
-/// Fully parsed, strongly typed fee inputs, present only when all three
-/// `--fee-asset-id`/`--max-fee`/`--fee-treasury-object` flags were supplied.
-///
-/// There is no separate `--fee-object` flag: the fee payer is always the
-/// already-queried source object (see `execute`), matching the devnet's
-/// uniform-asset model where the sender pays fees from the same account it
-/// transfers from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FeeInputs {
-    asset_id: AssetId,
-    max_fee: Amount,
-    treasury_object_id: ObjectId,
 }
 
 /// Runs the `transfer` subcommand.
 ///
-/// Signer selection ([`crate::signer::parse_signer_selection`]) and, for a
-/// Ledger selection, the device-reported configuration/public key/address
-/// checks all happen before this function ever constructs a network
-/// [`Client`]: a Ledger connection failure or rejection is reported before
-/// any request reaches the node.
+/// Signer selection ([`crate::signer::parse_signer_selection`]) happens before
+/// this function constructs a network [`Client`]. The live Standard Asset v1
+/// transfer has no Ledger clear-signing policy yet, so a Ledger selection is
+/// rejected locally before any device or network dispatch.
 pub fn run<I>(args: I) -> Result<(), CliError>
 where
     I: IntoIterator<Item = OsString>,
@@ -161,62 +133,11 @@ where
             })
         }
         SignerSelection::Ledger {
-            hid_path,
-            account,
-            expected_firmware_version,
-        } => run_with_ledger(
-            endpoint,
-            &parsed,
-            &hid_path,
-            account,
-            &expected_firmware_version,
-            inputs,
-        ),
+            hid_path: _,
+            account: _,
+            expected_firmware_version: _,
+        } => Err(CliError::LedgerStandardAssetTransferUnsupported),
     }
-}
-
-/// Connects a real Ledger device — running `docs/signing/hardware-signing.md`'s complete staged
-/// dashboard/firmware/open-app/reconnect/active-app sequence and the
-/// existing device-reported configuration/public key/address checks, all
-/// strictly before this function ever constructs a network [`Client`] — and
-/// completes `transfer` using it as the external signer (see `docs/signing/hardware-signing.md`
-/// and `docs/architecture/decisions/0088-0093-hardware-signing.md`).
-#[cfg(feature = "usb-hid")]
-fn run_with_ledger(
-    endpoint: &str,
-    parsed: &ParsedArgs,
-    hid_path: &str,
-    account: u32,
-    expected_firmware_version: &sunrise_edge_ledger::ExpectedFirmwareVersion,
-    inputs: TransferInputs,
-) -> Result<(), CliError> {
-    let dashboard_transport = sunrise_edge_ledger::HidTransport::open(hid_path)
-        .map_err(|error| CliError::LedgerConnect(Box::new(error)))?;
-    let signer = crate::signer::connect_ledger_staged(
-        dashboard_transport,
-        expected_firmware_version,
-        account,
-        || crate::signer::reconnect_same_hid_path(hid_path),
-    )?;
-    let sender = signer.address();
-    let client = connect(endpoint, parsed)?;
-    execute(&client, sender, inputs, |prepared| {
-        finalize_with_ledger(prepared, &signer)
-    })
-}
-
-/// This binary was not built with the `usb-hid` feature: fail closed with
-/// an actionable error before any device connection is even attempted.
-#[cfg(not(feature = "usb-hid"))]
-fn run_with_ledger(
-    _endpoint: &str,
-    _parsed: &ParsedArgs,
-    _hid_path: &str,
-    _account: u32,
-    _expected_firmware_version: &sunrise_edge_ledger::ExpectedFirmwareVersion,
-    _inputs: TransferInputs,
-) -> Result<(), CliError> {
-    Err(CliError::LedgerTransportFeatureDisabled)
 }
 
 fn transfer_flag_specs() -> Vec<crate::args::FlagSpec> {
@@ -226,10 +147,9 @@ fn transfer_flag_specs() -> Vec<crate::args::FlagSpec> {
         scalar(MODULE_VERSION),
         scalar(MODULE_DIGEST_ALGORITHM),
         scalar(MODULE_DIGEST),
-        scalar(SOURCE_OBJECT),
-        scalar(DESTINATION_OBJECT),
-        scalar(DESTINATION_OWNER),
-        scalar(AMOUNT),
+        scalar(SOURCE_COIN),
+        scalar(RECIPIENT),
+        scalar(FEE_COIN),
         scalar(GAS_LIMIT),
         scalar(FEE_ASSET_ID),
         scalar(MAX_FEE),
@@ -250,107 +170,54 @@ fn transfer_flag_specs() -> Vec<crate::args::FlagSpec> {
 
 fn parse_inputs(parsed: &ParsedArgs) -> Result<TransferInputs, CliError> {
     let module_ref = parse_module_ref(parsed)?;
-    let source_id = ObjectId::new(decode_hex_32(
-        SOURCE_OBJECT,
-        parsed.require(SOURCE_OBJECT)?,
-    )?);
-    let destination_id = ObjectId::new(decode_hex_32(
-        DESTINATION_OBJECT,
-        parsed.require(DESTINATION_OBJECT)?,
-    )?);
-    if source_id == destination_id {
-        return Err(CliError::SameSourceAndDestination);
+    let source_coin_id = ObjectId::new(decode_hex_32(SOURCE_COIN, parsed.require(SOURCE_COIN)?)?);
+    let fee_coin_id = ObjectId::new(decode_hex_32(FEE_COIN, parsed.require(FEE_COIN)?)?);
+    if source_coin_id == fee_coin_id {
+        return Err(CliError::SameSourceCoinAndFeeCoin);
     }
-    let destination_owner = Address::new(decode_hex_32(
-        DESTINATION_OWNER,
-        parsed.require(DESTINATION_OWNER)?,
+    let recipient = Address::new(decode_hex_32(RECIPIENT, parsed.require(RECIPIENT)?)?);
+    let fee_asset_id = AssetId::new(decode_hex_32(FEE_ASSET_ID, parsed.require(FEE_ASSET_ID)?)?);
+    let max_fee = parse_u64(MAX_FEE, parsed.require(MAX_FEE)?)?;
+    if max_fee == 0 {
+        return Err(CliError::ZeroMaxFee);
+    }
+    let fee_treasury_object_id = ObjectId::new(decode_hex_32(
+        FEE_TREASURY_OBJECT,
+        parsed.require(FEE_TREASURY_OBJECT)?,
     )?);
-    let amount = parse_u64(AMOUNT, parsed.require(AMOUNT)?)?;
-    if amount == 0 {
-        return Err(CliError::ZeroAmount);
+    if fee_treasury_object_id == source_coin_id || fee_treasury_object_id == fee_coin_id {
+        return Err(CliError::FeeTreasuryConflictsWithTransfer);
     }
     let gas_limit = parse_u64(GAS_LIMIT, parsed.require(GAS_LIMIT)?)?;
     if gas_limit == 0 {
         return Err(CliError::ZeroGasLimit);
     }
-    let fee = parse_fee_inputs(parsed, source_id, destination_id)?;
     let request_id = RequestId::new(decode_hex_32(REQUEST_ID, parsed.require(REQUEST_ID)?)?)?;
     let expected_context = parse_expected_context(parsed)?;
     let wait_bounds = parse_wait_bounds(parsed)?;
 
     Ok(TransferInputs {
         module_ref,
-        source_id,
-        destination_id,
-        destination_owner,
-        amount,
+        source_coin_id,
+        fee_coin_id,
+        recipient,
+        fee_asset_id,
+        max_fee: Amount::new(max_fee),
+        fee_treasury_object_id,
         gas_limit,
         request_id,
         expected_context,
         wait_bounds,
-        fee,
     })
 }
 
-/// Parses the all-or-none `--fee-asset-id`/`--max-fee`/
-/// `--fee-treasury-object` trio before any network dispatch.
-///
-/// With none of the three flags supplied, this returns `Ok(None)` and stays
-/// byte-for-byte compatible with a fee-free devnet profile (unchanged
-/// `fee_payment: None`). With exactly one or two supplied, this returns a
-/// typed [`CliError::PartialFeeConfiguration`] rather than silently treating
-/// the transfer as fee-free. `--fee-treasury-object` is also required to
-/// differ from both `source_id` and `destination_id`: it is a distinct
-/// declared access, not a redirection of an existing transfer leg.
-fn parse_fee_inputs(
-    parsed: &ParsedArgs,
-    source_id: ObjectId,
-    destination_id: ObjectId,
-) -> Result<Option<FeeInputs>, CliError> {
-    const FEE_FLAGS: [&str; 3] = [FEE_ASSET_ID, MAX_FEE, FEE_TREASURY_OBJECT];
-    let present: [bool; 3] = FEE_FLAGS.map(|flag| parsed.is_present(flag));
-    if present == [false, false, false] {
-        return Ok(None);
-    }
-    if present != [true, true, true] {
-        let missing: &'static str = if !present[0] {
-            FEE_ASSET_ID
-        } else if !present[1] {
-            MAX_FEE
-        } else {
-            FEE_TREASURY_OBJECT
-        };
-        return Err(CliError::PartialFeeConfiguration { missing });
-    }
-
-    let asset_id = AssetId::new(decode_hex_32(FEE_ASSET_ID, parsed.require(FEE_ASSET_ID)?)?);
-    let max_fee = parse_u64(MAX_FEE, parsed.require(MAX_FEE)?)?;
-    if max_fee == 0 {
-        return Err(CliError::ZeroMaxFee);
-    }
-    let treasury_object_id = ObjectId::new(decode_hex_32(
-        FEE_TREASURY_OBJECT,
-        parsed.require(FEE_TREASURY_OBJECT)?,
-    )?);
-    if treasury_object_id == source_id || treasury_object_id == destination_id {
-        return Err(CliError::FeeTreasuryConflictsWithTransfer);
-    }
-
-    Ok(Some(FeeInputs {
-        asset_id,
-        max_fee: Amount::new(max_fee),
-        treasury_object_id,
-    }))
-}
-
 /// Parses the required `--expected-*` flags into a locally trusted
-/// [`ExpectedProtocolContext`] (see `docs/architecture/decisions/0081-0087-cli-first-roadmap.md` DR-0085), rejecting a
-/// missing, zero, or malformed value before any network dispatch. The
-/// transaction-auth profile id, signature scheme, and address binding
-/// expectations come from this client's own implemented constants, not from
-/// a flag — there is only one implemented combination — but they are still
-/// compared against the remote result by
-/// [`ExpectedProtocolContext::verify`].
+/// [`ExpectedProtocolContext`] (DR-0085), rejecting a missing, zero, or
+/// malformed value before any network dispatch. The transaction-auth
+/// profile id, signature scheme, and address binding expectations come
+/// from this client's own implemented constants, not from a flag — there is
+/// only one implemented combination — but they are still compared against
+/// the remote result by [`ExpectedProtocolContext::verify`].
 fn parse_expected_context(parsed: &ParsedArgs) -> Result<ExpectedProtocolContext, CliError> {
     let chain_id = ChainId::new(parsed.require(EXPECTED_CHAIN_ID)?)?;
     let protocol_version = ProtocolVersion::new(parse_u32(
@@ -397,45 +264,42 @@ where
         });
     }
 
-    let source_ref = require_owned_current_inline(client, SOURCE_OBJECT, inputs.source_id, sender)?;
-    let destination_ref = require_owned_current_inline(
-        client,
-        DESTINATION_OBJECT,
-        inputs.destination_id,
-        inputs.destination_owner,
-    )?;
+    let (source_ref, source_coin) =
+        require_owned_current_coin(client, SOURCE_COIN, inputs.source_coin_id, sender)?;
+    let (fee_ref, fee_coin) =
+        require_owned_current_coin(client, FEE_COIN, inputs.fee_coin_id, sender)?;
+    if source_coin.asset_id() != fee_coin.asset_id() {
+        return Err(CliError::CoinAssetMismatch);
+    }
+    if inputs.fee_asset_id != source_coin.asset_id() {
+        return Err(CliError::FeeAssetMismatch);
+    }
+    let treasury_ref =
+        require_current_inline(client, FEE_TREASURY_OBJECT, inputs.fee_treasury_object_id)?;
 
     let mut access_manifest = AccessManifest::new();
     access_manifest.push(AccessEntry {
-        object_ref: source_ref.clone(),
+        object_ref: source_ref,
         mode: AccessMode::Write,
     });
     access_manifest.push(AccessEntry {
-        object_ref: destination_ref,
+        object_ref: fee_ref.clone(),
+        mode: AccessMode::Write,
+    });
+    access_manifest.push(AccessEntry {
+        object_ref: treasury_ref,
         mode: AccessMode::Write,
     });
 
-    let fee_payment = match inputs.fee {
-        None => None,
-        Some(fee) => {
-            let treasury_ref =
-                require_current_inline(client, FEE_TREASURY_OBJECT, fee.treasury_object_id)?;
-            access_manifest.push(AccessEntry {
-                object_ref: treasury_ref,
-                mode: AccessMode::Write,
-            });
-            Some(FeePayment {
-                asset_id: fee.asset_id,
-                max_fee: fee.max_fee,
-                fee_object: source_ref,
-            })
-        }
+    let fee_payment = FeePayment {
+        asset_id: inputs.fee_asset_id,
+        max_fee: inputs.max_fee,
+        fee_object: fee_ref,
     };
 
-    let mut args_frame =
-        CanonicalStruct::new(TRANSFER_ARGS_TYPE_ID, TRANSFER_ARGS_ENCODING_VERSION);
-    args_frame.field_u64(1, inputs.amount)?;
-    let args = args_frame.finish()?;
+    let args = encode_standard_asset_transfer_args_v1(&StandardAssetTransferArgsV1::new(
+        inputs.recipient,
+    ))?;
 
     let request = TransactionRequest {
         chain_id: context.chain_id().clone(),
@@ -447,7 +311,7 @@ where
         entrypoint: TRANSFER_ENTRYPOINT.to_string(),
         args,
         gas_limit: inputs.gas_limit,
-        fee_payment,
+        fee_payment: Some(fee_payment),
     };
     let prepared = PreparedTransaction::prepare_submission(
         inputs.request_id,
@@ -565,22 +429,21 @@ fn parse_wait_bounds(parsed: &ParsedArgs) -> Result<Option<ReceiptPollBounds>, C
 }
 
 /// Queries `object_id`, requires it to be `CurrentInline`, decodes its exact
-/// canonical body through `clients/rust`'s generic public surface
-/// (`decode_object`), and requires the decoded `Owner::Address` to equal
-/// `expected_owner` before returning its `ObjectRef`.
+/// canonical body as a `StandardAssetCoinV1` through `clients/rust`'s
+/// generic public surface, and requires the decoded `Owner::Address` to
+/// equal `expected_owner` before returning its `ObjectRef` and decoded coin.
 ///
-/// This is a client-side, defense-in-depth check: the server's own owned-
-/// effects path independently and authoritatively rejects a transaction
-/// whose source owner or committed destination policy is invalid (see
-/// `docs/architecture/decisions/0081-0087-cli-first-roadmap.md` DR-0086). Checking here too only saves a round trip and
-/// gives an actionable local error; it never weakens or substitutes for that
-/// server-side check.
-fn require_owned_current_inline<T>(
+/// This is a client-side, defense-in-depth check: the server's own typed-
+/// entrypoint verification and default sender-ownership rule independently
+/// and authoritatively reject an invalid transaction. Checking here too only
+/// saves a round trip and gives an actionable local error; it never weakens
+/// or substitutes for that server-side check.
+fn require_owned_current_coin<T>(
     client: &Client<T>,
     flag: &'static str,
     object_id: ObjectId,
     expected_owner: Address,
-) -> Result<ObjectRef, CliError>
+) -> Result<(ObjectRef, StandardAssetCoinV1), CliError>
 where
     T: Transport,
 {
@@ -610,24 +473,39 @@ where
     })?;
 
     match &object.owner {
-        Owner::Address(owner_address) if *owner_address == expected_owner => Ok(ObjectRef {
+        Owner::Address(owner_address) if *owner_address == expected_owner => {}
+        owner => {
+            return Err(CliError::ObjectOwnerMismatch {
+                flag,
+                object_id: object_id.to_string(),
+                expected_owner: expected_owner.to_string(),
+                owner: owner_label(owner),
+            });
+        }
+    }
+
+    let coin = decode_standard_asset_coin_v1(&object.data).map_err(|source| {
+        CliError::CoinBodyDecodeFailed {
+            flag,
+            object_id: object_id.to_string(),
+            source,
+        }
+    })?;
+
+    Ok((
+        ObjectRef {
             id: object_id,
             version: object_version.get(),
             digest,
-        }),
-        owner => Err(CliError::ObjectOwnerMismatch {
-            flag,
-            object_id: object_id.to_string(),
-            expected_owner: expected_owner.to_string(),
-            owner: owner_label(owner),
-        }),
-    }
+        },
+        coin,
+    ))
 }
 
 /// Queries `object_id` and requires it to be `CurrentInline`, returning its
 /// exact `ObjectRef` without decoding or checking ownership.
 ///
-/// Used only for the fee treasury: unlike the source/destination legs, the
+/// Used only for the fee treasury: unlike the source/fee coins, the
 /// treasury's owner is trusted node composition, not a caller-controlled
 /// address, so there is nothing local for this client to compare it against.
 fn require_current_inline<T>(
@@ -806,7 +684,8 @@ mod tests {
     use sunrise_edge_client::{
         AtomicityDomainId, ChainId, ClientError, Epoch, HashSuiteId, HttpContextQueryResult,
         HttpNextNonceQueryResult, HttpNodeResult, HttpObjectQueryResult, NodeResponse,
-        ProtocolContextMismatch, ProtocolVersion,
+        ProtocolContextMismatch, ProtocolVersion, StandardAssetCoinV1,
+        encode_standard_asset_coin_v1,
     };
 
     fn sample_signer() -> LocalSigner {
@@ -828,7 +707,7 @@ mod tests {
     fn sample_expected_context() -> ExpectedProtocolContext {
         ExpectedProtocolContext::new(
             ChainId::new("transfer-test-chain").unwrap(),
-            ProtocolVersion::new(3),
+            ProtocolVersion::new(4),
             Epoch::new(5),
             HashSuiteId::new(1),
             ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,
@@ -839,6 +718,8 @@ mod tests {
         .unwrap()
     }
 
+    const ASSET: AssetId = AssetId::new([0x50; 32]);
+
     fn sample_inputs() -> TransferInputs {
         TransferInputs {
             module_ref: ObjectRef {
@@ -846,22 +727,23 @@ mod tests {
                 version: 1,
                 digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x02; 32]),
             },
-            source_id: ObjectId::new([0x10; 32]),
-            destination_id: ObjectId::new([0x20; 32]),
-            destination_owner: Address::new([0x88; 32]),
-            amount: 250,
+            source_coin_id: ObjectId::new([0x10; 32]),
+            fee_coin_id: ObjectId::new([0x20; 32]),
+            recipient: Address::new([0x88; 32]),
+            fee_asset_id: ASSET,
+            max_fee: Amount::new(10),
+            fee_treasury_object_id: ObjectId::new([0x40; 32]),
             gas_limit: 1_000,
             request_id: RequestId::new([0x30; 32]).unwrap(),
             expected_context: sample_expected_context(),
             wait_bounds: None,
-            fee: None,
         }
     }
 
     fn sample_context() -> HttpContextQueryResult {
         HttpContextQueryResult::new(
             ChainId::new("transfer-test-chain").unwrap(),
-            ProtocolVersion::new(3),
+            ProtocolVersion::new(4),
             Epoch::new(5),
             HashSuiteId::new(1),
             ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,
@@ -873,20 +755,25 @@ mod tests {
         .unwrap()
     }
 
+    fn coin_object_bytes(asset_id: AssetId, amount: u64) -> Vec<u8> {
+        encode_standard_asset_coin_v1(&StandardAssetCoinV1::new(asset_id, amount).unwrap()).unwrap()
+    }
+
     fn current_inline_with_owner(
         object_id: ObjectId,
         version: u64,
         owner: Owner,
+        data: Vec<u8>,
     ) -> HttpObjectQueryResult {
         let creating_chain_id: ChainId = ChainId::new("transfer-test-chain").unwrap();
-        let creating_protocol_version: ProtocolVersion = ProtocolVersion::new(3);
+        let creating_protocol_version: ProtocolVersion = ProtocolVersion::new(4);
         let object = objects::Object {
             id: object_id,
             version,
             owner,
             type_hash: Digest32::new(HashAlgorithmId::Sha2_256, [0x09; 32]),
             schema_version: 1,
-            data: vec![1, 2, 3],
+            data,
         };
         let canonical_object_bytes: Vec<u8> = objects::encode_object(&object).unwrap();
         let digest: Digest32 = BuiltinHashFunction::new(HashAlgorithmId::Sha2_256)
@@ -908,12 +795,19 @@ mod tests {
         }
     }
 
-    fn current_inline_owned_by(
+    fn current_coin_owned_by(
         object_id: ObjectId,
         version: u64,
         owner: Address,
+        asset_id: AssetId,
+        amount: u64,
     ) -> HttpObjectQueryResult {
-        current_inline_with_owner(object_id, version, Owner::Address(owner))
+        current_inline_with_owner(
+            object_id,
+            version,
+            Owner::Address(owner),
+            coin_object_bytes(asset_id, amount),
+        )
     }
 
     #[test]
@@ -922,9 +816,15 @@ mod tests {
         let inputs = sample_inputs();
         let context = sample_context();
         let nonce = HttpNextNonceQueryResult::new(signer.address(), Epoch::new(5), 3);
-        let source = current_inline_owned_by(inputs.source_id, 1, signer.address());
-        let destination =
-            current_inline_owned_by(inputs.destination_id, 1, inputs.destination_owner);
+        let source =
+            current_coin_owned_by(inputs.source_coin_id, 1, signer.address(), ASSET, 1_000);
+        let fee = current_coin_owned_by(inputs.fee_coin_id, 1, signer.address(), ASSET, 500);
+        let treasury = current_inline_with_owner(
+            inputs.fee_treasury_object_id,
+            1,
+            Owner::Address(Address::new([0x99; 32])),
+            coin_object_bytes(ASSET, 1),
+        );
         let accepted =
             NodeResponse::new(inputs.request_id, NodeResponseStatus::Accepted, None).unwrap();
         let submit = HttpNodeResult::new(inputs.request_id, vec![accepted]).unwrap();
@@ -933,97 +833,125 @@ mod tests {
             query_ok(context.encode().unwrap()),
             query_ok(nonce.encode().unwrap()),
             query_ok(source.encode().unwrap()),
-            query_ok(destination.encode().unwrap()),
-            node_result_ok(submit.encode().unwrap()),
-        ]);
-        let client = Client::new(transport);
-
-        execute(&client, signer.address(), inputs, sign_locally(&signer)).unwrap();
-
-        let requests = client.transport().requests();
-        assert_eq!(requests.len(), 5);
-        assert_eq!(requests[0].path, "/v1/context");
-        assert_eq!(requests[4].method, sunrise_edge_client::Method::Post);
-    }
-
-    #[test]
-    fn execute_succeeds_with_fee_enabled_queries_treasury_last_and_sets_fee_payment() {
-        let signer = sample_signer();
-        let mut inputs = sample_inputs();
-        let treasury_id = ObjectId::new([0x40; 32]);
-        inputs.fee = Some(FeeInputs {
-            asset_id: AssetId::new([0x50; 32]),
-            max_fee: Amount::new(10),
-            treasury_object_id: treasury_id,
-        });
-        let context = sample_context();
-        let nonce = HttpNextNonceQueryResult::new(signer.address(), Epoch::new(5), 3);
-        let source = current_inline_owned_by(inputs.source_id, 1, signer.address());
-        let destination =
-            current_inline_owned_by(inputs.destination_id, 1, inputs.destination_owner);
-        let treasury = current_inline_with_owner(treasury_id, 1, Owner::System);
-        let accepted =
-            NodeResponse::new(inputs.request_id, NodeResponseStatus::Accepted, None).unwrap();
-        let submit = HttpNodeResult::new(inputs.request_id, vec![accepted]).unwrap();
-
-        let transport = FakeTransport::new(vec![
-            query_ok(context.encode().unwrap()),
-            query_ok(nonce.encode().unwrap()),
-            query_ok(source.encode().unwrap()),
-            query_ok(destination.encode().unwrap()),
+            query_ok(fee.encode().unwrap()),
             query_ok(treasury.encode().unwrap()),
             node_result_ok(submit.encode().unwrap()),
         ]);
         let client = Client::new(transport);
+        let expected_treasury_id = inputs.fee_treasury_object_id;
+        let expected_fee_coin_id = inputs.fee_coin_id;
 
         execute(&client, signer.address(), inputs, sign_locally(&signer)).unwrap();
 
         let requests = client.transport().requests();
         assert_eq!(requests.len(), 6);
         assert_eq!(requests[0].path, "/v1/context");
-        // The treasury is queried last among the four object/nonce/context
-        // reads, strictly after source and destination, and strictly before
-        // the POST submission.
-        assert_eq!(requests[4].path, format!("/v1/objects/{treasury_id}"));
         assert_eq!(requests[5].method, sunrise_edge_client::Method::Post);
         let submitted_event = node_core::NodeEvent::decode(&requests[5].body).unwrap();
         let transaction = execution::decode_transaction(submitted_event.payload()).unwrap();
         assert_eq!(transaction.access_manifest.entries.len(), 3);
         let final_access = &transaction.access_manifest.entries[2];
-        assert_eq!(final_access.object_ref.id, treasury_id);
+        assert_eq!(final_access.object_ref.id, expected_treasury_id);
         assert_eq!(final_access.mode, AccessMode::Write);
         let payment = transaction
             .fee_payment
-            .expect("all fee flags must produce a signed fee payment");
-        assert_eq!(payment.asset_id, AssetId::new([0x50; 32]));
+            .expect("transfer always declares a fee payment");
+        assert_eq!(payment.asset_id, ASSET);
         assert_eq!(payment.max_fee, Amount::new(10));
-        assert_eq!(payment.fee_object.id, ObjectId::new([0x10; 32]));
+        assert_eq!(payment.fee_object.id, expected_fee_coin_id);
+    }
+
+    #[test]
+    fn execute_rejects_a_source_coin_owned_by_a_different_address() {
+        let signer = sample_signer();
+        let inputs = sample_inputs();
+        let context = sample_context();
+        let nonce = HttpNextNonceQueryResult::new(signer.address(), Epoch::new(5), 3);
+        let other_owner = Address::new([0xB2; 32]);
+        let source = current_coin_owned_by(inputs.source_coin_id, 1, other_owner, ASSET, 1_000);
+
+        let transport = FakeTransport::new(vec![
+            query_ok(context.encode().unwrap()),
+            query_ok(nonce.encode().unwrap()),
+            query_ok(source.encode().unwrap()),
+        ]);
+        let client = Client::new(transport);
+
+        let error = execute(&client, signer.address(), inputs, sign_locally(&signer)).unwrap_err();
+        assert!(matches!(
+            error,
+            CliError::ObjectOwnerMismatch {
+                flag: SOURCE_COIN,
+                owner,
+                ..
+            } if owner == format!("address:{other_owner}")
+        ));
+    }
+
+    #[test]
+    fn execute_rejects_mismatched_asset_ids_between_source_and_fee_coin() {
+        let signer = sample_signer();
+        let inputs = sample_inputs();
+        let context = sample_context();
+        let nonce = HttpNextNonceQueryResult::new(signer.address(), Epoch::new(5), 3);
+        let source =
+            current_coin_owned_by(inputs.source_coin_id, 1, signer.address(), ASSET, 1_000);
+        let other_asset = AssetId::new([0x51; 32]);
+        let fee = current_coin_owned_by(inputs.fee_coin_id, 1, signer.address(), other_asset, 500);
+
+        let transport = FakeTransport::new(vec![
+            query_ok(context.encode().unwrap()),
+            query_ok(nonce.encode().unwrap()),
+            query_ok(source.encode().unwrap()),
+            query_ok(fee.encode().unwrap()),
+        ]);
+        let client = Client::new(transport);
+
+        let error = execute(&client, signer.address(), inputs, sign_locally(&signer)).unwrap_err();
+        assert!(matches!(error, CliError::CoinAssetMismatch));
+    }
+
+    #[test]
+    fn execute_rejects_a_fee_asset_id_that_differs_from_the_coins_asset() {
+        let signer = sample_signer();
+        let mut inputs = sample_inputs();
+        inputs.fee_asset_id = AssetId::new([0x51; 32]);
+        let context = sample_context();
+        let nonce = HttpNextNonceQueryResult::new(signer.address(), Epoch::new(5), 3);
+        let source =
+            current_coin_owned_by(inputs.source_coin_id, 1, signer.address(), ASSET, 1_000);
+        let fee = current_coin_owned_by(inputs.fee_coin_id, 1, signer.address(), ASSET, 500);
+
+        let transport = FakeTransport::new(vec![
+            query_ok(context.encode().unwrap()),
+            query_ok(nonce.encode().unwrap()),
+            query_ok(source.encode().unwrap()),
+            query_ok(fee.encode().unwrap()),
+        ]);
+        let client = Client::new(transport);
+
+        let error = execute(&client, signer.address(), inputs, sign_locally(&signer)).unwrap_err();
+        assert!(matches!(error, CliError::FeeAssetMismatch));
     }
 
     #[test]
     fn execute_rejects_a_fee_treasury_that_is_not_currently_inline() {
         let signer = sample_signer();
-        let mut inputs = sample_inputs();
-        let treasury_id = ObjectId::new([0x40; 32]);
-        inputs.fee = Some(FeeInputs {
-            asset_id: AssetId::new([0x50; 32]),
-            max_fee: Amount::new(10),
-            treasury_object_id: treasury_id,
-        });
+        let inputs = sample_inputs();
         let context = sample_context();
         let nonce = HttpNextNonceQueryResult::new(signer.address(), Epoch::new(5), 3);
-        let source = current_inline_owned_by(inputs.source_id, 1, signer.address());
-        let destination =
-            current_inline_owned_by(inputs.destination_id, 1, inputs.destination_owner);
+        let source =
+            current_coin_owned_by(inputs.source_coin_id, 1, signer.address(), ASSET, 1_000);
+        let fee = current_coin_owned_by(inputs.fee_coin_id, 1, signer.address(), ASSET, 500);
         let absent_treasury = HttpObjectQueryResult::Absent {
-            object_id: treasury_id,
+            object_id: inputs.fee_treasury_object_id,
         };
 
         let transport = FakeTransport::new(vec![
             query_ok(context.encode().unwrap()),
             query_ok(nonce.encode().unwrap()),
             query_ok(source.encode().unwrap()),
-            query_ok(destination.encode().unwrap()),
+            query_ok(fee.encode().unwrap()),
             query_ok(absent_treasury.encode().unwrap()),
         ]);
         let client = Client::new(transport);
@@ -1043,8 +971,6 @@ mod tests {
     fn execute_rejects_a_rejected_submission_response_even_with_wait_requested() {
         let signer = sample_signer();
         let mut inputs = sample_inputs();
-        // `--wait` bounds are set to prove a rejected submission can never
-        // reach `wait_for_receipt` and be turned into success.
         inputs.wait_bounds = Some(ReceiptPollBounds {
             max_attempts: NonZeroU32::new(3).unwrap(),
             initial_backoff: Duration::from_millis(1),
@@ -1053,9 +979,15 @@ mod tests {
         });
         let context = sample_context();
         let nonce = HttpNextNonceQueryResult::new(signer.address(), Epoch::new(5), 3);
-        let source = current_inline_owned_by(inputs.source_id, 1, signer.address());
-        let destination =
-            current_inline_owned_by(inputs.destination_id, 1, inputs.destination_owner);
+        let source =
+            current_coin_owned_by(inputs.source_coin_id, 1, signer.address(), ASSET, 1_000);
+        let fee = current_coin_owned_by(inputs.fee_coin_id, 1, signer.address(), ASSET, 500);
+        let treasury = current_inline_with_owner(
+            inputs.fee_treasury_object_id,
+            1,
+            Owner::Address(Address::new([0x99; 32])),
+            coin_object_bytes(ASSET, 1),
+        );
         let rejected =
             NodeResponse::new(inputs.request_id, NodeResponseStatus::Rejected, None).unwrap();
         let submit = HttpNodeResult::new(inputs.request_id, vec![rejected]).unwrap();
@@ -1064,16 +996,15 @@ mod tests {
             query_ok(context.encode().unwrap()),
             query_ok(nonce.encode().unwrap()),
             query_ok(source.encode().unwrap()),
-            query_ok(destination.encode().unwrap()),
+            query_ok(fee.encode().unwrap()),
+            query_ok(treasury.encode().unwrap()),
             node_result_ok(submit.encode().unwrap()),
         ]);
         let client = Client::new(transport);
 
         let error = execute(&client, signer.address(), inputs, sign_locally(&signer)).unwrap_err();
         assert!(matches!(error, CliError::TransactionRejected { index: 0 }));
-        // Exactly the 5 request/nonce/object/submit calls were made: no 6th
-        // (receipt-wait) request was ever issued after the rejection.
-        assert_eq!(client.transport().requests().len(), 5);
+        assert_eq!(client.transport().requests().len(), 6);
     }
 
     #[test]
@@ -1088,9 +1019,15 @@ mod tests {
         });
         let context = sample_context();
         let nonce = HttpNextNonceQueryResult::new(signer.address(), Epoch::new(5), 3);
-        let source = current_inline_owned_by(inputs.source_id, 1, signer.address());
-        let destination =
-            current_inline_owned_by(inputs.destination_id, 1, inputs.destination_owner);
+        let source =
+            current_coin_owned_by(inputs.source_coin_id, 1, signer.address(), ASSET, 1_000);
+        let fee = current_coin_owned_by(inputs.fee_coin_id, 1, signer.address(), ASSET, 500);
+        let treasury = current_inline_with_owner(
+            inputs.fee_treasury_object_id,
+            1,
+            Owner::Address(Address::new([0x99; 32])),
+            coin_object_bytes(ASSET, 1),
+        );
         let effects = execution::ExecutionEffects {
             tx_hash: Digest32::new(HashAlgorithmId::Sha2_256, [0x0B; 32]),
             status: ExecutionStatus::Failure {
@@ -1113,7 +1050,8 @@ mod tests {
             query_ok(context.encode().unwrap()),
             query_ok(nonce.encode().unwrap()),
             query_ok(source.encode().unwrap()),
-            query_ok(destination.encode().unwrap()),
+            query_ok(fee.encode().unwrap()),
+            query_ok(treasury.encode().unwrap()),
             node_result_ok(submit.encode().unwrap()),
         ]);
         let client = Client::new(transport);
@@ -1124,7 +1062,7 @@ mod tests {
             CliError::TransactionExecutionFailed { index: 0, reason }
                 if reason == "trap: out of gas"
         ));
-        assert_eq!(client.transport().requests().len(), 5);
+        assert_eq!(client.transport().requests().len(), 6);
     }
 
     #[test]
@@ -1133,16 +1071,23 @@ mod tests {
         let inputs = sample_inputs();
         let context = sample_context();
         let nonce = HttpNextNonceQueryResult::new(signer.address(), Epoch::new(5), 3);
-        let source = current_inline_owned_by(inputs.source_id, 1, signer.address());
-        let destination =
-            current_inline_owned_by(inputs.destination_id, 1, inputs.destination_owner);
+        let source =
+            current_coin_owned_by(inputs.source_coin_id, 1, signer.address(), ASSET, 1_000);
+        let fee = current_coin_owned_by(inputs.fee_coin_id, 1, signer.address(), ASSET, 500);
+        let treasury = current_inline_with_owner(
+            inputs.fee_treasury_object_id,
+            1,
+            Owner::Address(Address::new([0x99; 32])),
+            coin_object_bytes(ASSET, 1),
+        );
         let submit = HttpNodeResult::new(inputs.request_id, vec![]).unwrap();
 
         let transport = FakeTransport::new(vec![
             query_ok(context.encode().unwrap()),
             query_ok(nonce.encode().unwrap()),
             query_ok(source.encode().unwrap()),
-            query_ok(destination.encode().unwrap()),
+            query_ok(fee.encode().unwrap()),
+            query_ok(treasury.encode().unwrap()),
             node_result_ok(submit.encode().unwrap()),
         ]);
         let client = Client::new(transport);
@@ -1179,11 +1124,6 @@ mod tests {
     /// after only that one context request — never issuing a second
     /// (nonce/object/submit) request — before returning the expected
     /// [`ProtocolContextMismatch`] variant.
-    ///
-    /// Only the context response is scripted: if `execute` dispatched a
-    /// second request, the fake transport would return
-    /// `RequestDeadlineExceeded` for it instead, and either the error match
-    /// or the request-count assertion below would fail.
     fn assert_context_mismatch_stops_before_further_dispatch(
         mismatched_context: HttpContextQueryResult,
         matches_expected_variant: impl Fn(&ProtocolContextMismatch) -> bool,
@@ -1214,7 +1154,7 @@ mod tests {
     fn execute_rejects_a_mismatched_chain_id_before_any_later_dispatch() {
         let context = HttpContextQueryResult::new(
             ChainId::new("some-other-chain").unwrap(),
-            ProtocolVersion::new(3),
+            ProtocolVersion::new(4),
             Epoch::new(5),
             HashSuiteId::new(1),
             ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,
@@ -1233,7 +1173,7 @@ mod tests {
     fn execute_rejects_a_mismatched_protocol_version_before_any_later_dispatch() {
         let context = HttpContextQueryResult::new(
             ChainId::new("transfer-test-chain").unwrap(),
-            ProtocolVersion::new(4),
+            ProtocolVersion::new(5),
             Epoch::new(5),
             HashSuiteId::new(1),
             ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,
@@ -1252,7 +1192,7 @@ mod tests {
     fn execute_rejects_a_mismatched_epoch_before_any_later_dispatch() {
         let context = HttpContextQueryResult::new(
             ChainId::new("transfer-test-chain").unwrap(),
-            ProtocolVersion::new(3),
+            ProtocolVersion::new(4),
             Epoch::new(6),
             HashSuiteId::new(1),
             ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,
@@ -1268,93 +1208,10 @@ mod tests {
     }
 
     #[test]
-    fn execute_rejects_a_mismatched_hash_suite_id_before_any_later_dispatch() {
-        let context = HttpContextQueryResult::new(
-            ChainId::new("transfer-test-chain").unwrap(),
-            ProtocolVersion::new(3),
-            Epoch::new(5),
-            HashSuiteId::new(2),
-            ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,
-            SignatureSchemeId::Ed25519.as_u16(),
-            ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_BINDING_ID,
-            AtomicityDomainId::new([0x44; 32]).unwrap(),
-            vec![0xAA],
-        )
-        .unwrap();
-        assert_context_mismatch_stops_before_further_dispatch(context, |mismatch| {
-            matches!(mismatch, ProtocolContextMismatch::HashSuiteId { .. })
-        });
-    }
-
-    #[test]
-    fn execute_rejects_a_mismatched_transaction_auth_profile_id_before_any_later_dispatch() {
-        // A profile id other than the one implemented
-        // `ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID`, even though the
-        // scheme/binding below are otherwise the implemented pair — the
-        // profile id itself must still be checked.
-        let context = HttpContextQueryResult::new(
-            ChainId::new("transfer-test-chain").unwrap(),
-            ProtocolVersion::new(3),
-            Epoch::new(5),
-            HashSuiteId::new(1),
-            1,
-            SignatureSchemeId::Ed25519.as_u16(),
-            ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_BINDING_ID,
-            AtomicityDomainId::new([0x44; 32]).unwrap(),
-            vec![0xAA],
-        )
-        .unwrap();
-        assert_context_mismatch_stops_before_further_dispatch(context, |mismatch| {
-            matches!(
-                mismatch,
-                ProtocolContextMismatch::TransactionAuthProfileId { .. }
-            )
-        });
-    }
-
-    #[test]
-    fn execute_rejects_a_mismatched_signature_scheme_id_before_any_later_dispatch() {
-        let context = HttpContextQueryResult::new(
-            ChainId::new("transfer-test-chain").unwrap(),
-            ProtocolVersion::new(3),
-            Epoch::new(5),
-            HashSuiteId::new(1),
-            ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,
-            SignatureSchemeId::Secp256k1.as_u16(),
-            ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_BINDING_ID,
-            AtomicityDomainId::new([0x44; 32]).unwrap(),
-            vec![0xAA],
-        )
-        .unwrap();
-        assert_context_mismatch_stops_before_further_dispatch(context, |mismatch| {
-            matches!(mismatch, ProtocolContextMismatch::SignatureSchemeId { .. })
-        });
-    }
-
-    #[test]
-    fn execute_rejects_a_mismatched_address_binding_id_before_any_later_dispatch() {
-        let context = HttpContextQueryResult::new(
-            ChainId::new("transfer-test-chain").unwrap(),
-            ProtocolVersion::new(3),
-            Epoch::new(5),
-            HashSuiteId::new(1),
-            ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,
-            SignatureSchemeId::Ed25519.as_u16(),
-            1,
-            AtomicityDomainId::new([0x44; 32]).unwrap(),
-            vec![0xAA],
-        )
-        .unwrap();
-        assert_context_mismatch_stops_before_further_dispatch(context, |mismatch| {
-            matches!(mismatch, ProtocolContextMismatch::AddressBindingId { .. })
-        });
-    }
-
-    #[test]
     fn execute_rejects_a_mismatched_domain_before_any_later_dispatch() {
         let context = HttpContextQueryResult::new(
             ChainId::new("transfer-test-chain").unwrap(),
-            ProtocolVersion::new(3),
+            ProtocolVersion::new(4),
             Epoch::new(5),
             HashSuiteId::new(1),
             ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,
@@ -1370,168 +1227,38 @@ mod tests {
     }
 
     #[test]
-    fn execute_rejects_a_source_object_owned_by_a_different_address() {
-        let signer = sample_signer();
-        let inputs = sample_inputs();
-        let context = sample_context();
-        let nonce = HttpNextNonceQueryResult::new(signer.address(), Epoch::new(5), 3);
-        let other_owner = Address::new([0xB2; 32]);
-        let source = current_inline_owned_by(inputs.source_id, 1, other_owner);
-
-        let transport = FakeTransport::new(vec![
-            query_ok(context.encode().unwrap()),
-            query_ok(nonce.encode().unwrap()),
-            query_ok(source.encode().unwrap()),
-        ]);
-        let client = Client::new(transport);
-
-        let error = execute(&client, signer.address(), inputs, sign_locally(&signer)).unwrap_err();
-        assert!(matches!(
-            error,
-            CliError::ObjectOwnerMismatch {
-                flag: SOURCE_OBJECT,
-                owner,
-                ..
-            } if owner == format!("address:{other_owner}")
-        ));
-    }
-
-    #[test]
-    fn execute_rejects_a_destination_not_owned_by_the_explicit_expected_address() {
-        let signer = sample_signer();
-        let inputs = sample_inputs();
-        let expected_owner: Address = inputs.destination_owner;
-        let context = sample_context();
-        let nonce = HttpNextNonceQueryResult::new(signer.address(), Epoch::new(5), 3);
-        let source = current_inline_owned_by(inputs.source_id, 1, signer.address());
-        let actual_owner = Address::new([0xB3; 32]);
-        let destination = current_inline_owned_by(inputs.destination_id, 1, actual_owner);
-
-        let transport = FakeTransport::new(vec![
-            query_ok(context.encode().unwrap()),
-            query_ok(nonce.encode().unwrap()),
-            query_ok(source.encode().unwrap()),
-            query_ok(destination.encode().unwrap()),
-        ]);
-        let client = Client::new(transport);
-
-        let error = execute(&client, signer.address(), inputs, sign_locally(&signer)).unwrap_err();
-        assert!(matches!(
-            error,
-            CliError::ObjectOwnerMismatch {
-                flag: DESTINATION_OBJECT,
-                expected_owner: expected,
-                owner,
-                ..
-            } if expected == expected_owner.to_string()
-                && owner == format!("address:{actual_owner}")
-        ));
-        assert_eq!(client.transport().requests().len(), 4);
-    }
-
-    #[test]
-    fn execute_rejects_shared_system_and_immutable_owned_objects() {
-        for (owner, label) in [
-            (Owner::Shared, "shared"),
-            (Owner::System, "system"),
-            (Owner::Immutable, "immutable"),
-        ] {
-            let signer = sample_signer();
-            let inputs = sample_inputs();
-            let context = sample_context();
-            let nonce = HttpNextNonceQueryResult::new(signer.address(), Epoch::new(5), 3);
-            let source = current_inline_with_owner(inputs.source_id, 1, owner);
-
-            let transport = FakeTransport::new(vec![
-                query_ok(context.encode().unwrap()),
-                query_ok(nonce.encode().unwrap()),
-                query_ok(source.encode().unwrap()),
-            ]);
-            let client = Client::new(transport);
-
-            let error =
-                execute(&client, signer.address(), inputs, sign_locally(&signer)).unwrap_err();
-            assert!(
-                matches!(
-                    &error,
-                    CliError::ObjectOwnerMismatch { flag: SOURCE_OBJECT, owner, .. }
-                        if owner == label
-                ),
-                "expected an ObjectOwnerMismatch for {label}, got {error:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn execute_rejects_a_non_current_inline_source_object() {
-        let signer = sample_signer();
-        let inputs = sample_inputs();
-        let context = sample_context();
-        let nonce = HttpNextNonceQueryResult::new(signer.address(), Epoch::new(5), 3);
-        let absent_source = HttpObjectQueryResult::Absent {
-            object_id: inputs.source_id,
-        };
-
-        let transport = FakeTransport::new(vec![
-            query_ok(context.encode().unwrap()),
-            query_ok(nonce.encode().unwrap()),
-            query_ok(absent_source.encode().unwrap()),
-        ]);
-        let client = Client::new(transport);
-
-        let error = execute(&client, signer.address(), inputs, sign_locally(&signer)).unwrap_err();
-        assert!(matches!(
-            error,
-            CliError::ObjectNotCurrentlyInline {
-                flag: SOURCE_OBJECT,
-                status: "absent",
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn parse_inputs_rejects_matching_source_and_destination() {
+    fn parse_inputs_rejects_matching_source_and_fee_coin() {
         let mut args = base_flag_values();
-        args.insert(DESTINATION_OBJECT, "10".repeat(32));
+        args.insert(FEE_COIN, "10".repeat(32));
         let parsed = parse_flags(to_os(&args), &transfer_specs()).unwrap();
 
         assert!(matches!(
             parse_inputs(&parsed),
-            Err(CliError::SameSourceAndDestination)
+            Err(CliError::SameSourceCoinAndFeeCoin)
         ));
     }
 
     #[test]
-    fn parse_inputs_requires_an_explicit_destination_owner() {
+    fn parse_inputs_requires_an_explicit_recipient() {
         let mut args = base_flag_values();
-        args.remove(DESTINATION_OWNER);
+        args.remove(RECIPIENT);
         let parsed = parse_flags(to_os(&args), &transfer_specs()).unwrap();
 
         assert!(matches!(
             parse_inputs(&parsed),
             Err(CliError::Args(crate::args::ArgsError::MissingFlag(
-                DESTINATION_OWNER
+                RECIPIENT
             )))
         ));
     }
 
     #[test]
-    fn parse_inputs_rejects_a_malformed_destination_owner() {
+    fn parse_inputs_rejects_a_malformed_recipient() {
         let mut args = base_flag_values();
-        args.insert(DESTINATION_OWNER, "not-hex".to_string());
+        args.insert(RECIPIENT, "not-hex".to_string());
         let parsed = parse_flags(to_os(&args), &transfer_specs()).unwrap();
 
         assert!(matches!(parse_inputs(&parsed), Err(CliError::Hex(_))));
-    }
-
-    #[test]
-    fn parse_inputs_rejects_zero_amount() {
-        let mut args = base_flag_values();
-        args.insert(AMOUNT, "0".to_string());
-        let parsed = parse_flags(to_os(&args), &transfer_specs()).unwrap();
-
-        assert!(matches!(parse_inputs(&parsed), Err(CliError::ZeroAmount)));
     }
 
     #[test]
@@ -1553,44 +1280,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_inputs_accepts_no_fee_flags_and_rejects_every_partial_fee_trio() {
-        let base = base_flag_values();
-        let parsed = parse_flags(to_os(&base), &transfer_specs()).unwrap();
-        assert!(parse_inputs(&parsed).unwrap().fee.is_none());
-
-        let fee_values: [(&'static str, String); 3] = [
-            (FEE_ASSET_ID, "50".repeat(32)),
-            (MAX_FEE, "1001".to_string()),
-            (FEE_TREASURY_OBJECT, "40".repeat(32)),
-        ];
-        for mask in 1_u8..=6_u8 {
-            let mut values = base.clone();
-            for (index, (flag, value)) in fee_values.iter().enumerate() {
-                if mask & (1_u8 << index) != 0 {
-                    values.insert(*flag, value.clone());
-                }
-            }
-            let parsed = parse_flags(to_os(&values), &transfer_specs()).unwrap();
-            assert!(matches!(
-                parse_inputs(&parsed),
-                Err(CliError::PartialFeeConfiguration { .. })
-            ));
-        }
-    }
-
-    #[test]
     fn parse_inputs_rejects_zero_max_fee_and_treasury_transfer_collisions() {
         let mut zero = base_flag_values();
-        zero.insert(FEE_ASSET_ID, "50".repeat(32));
         zero.insert(MAX_FEE, "0".to_string());
-        zero.insert(FEE_TREASURY_OBJECT, "40".repeat(32));
         let parsed = parse_flags(to_os(&zero), &transfer_specs()).unwrap();
         assert!(matches!(parse_inputs(&parsed), Err(CliError::ZeroMaxFee)));
 
         for conflicting_object in ["10".repeat(32), "20".repeat(32)] {
             let mut values = base_flag_values();
-            values.insert(FEE_ASSET_ID, "50".repeat(32));
-            values.insert(MAX_FEE, "1001".to_string());
             values.insert(FEE_TREASURY_OBJECT, conflicting_object);
             let parsed = parse_flags(to_os(&values), &transfer_specs()).unwrap();
             assert!(matches!(
@@ -1759,20 +1456,43 @@ mod tests {
         assert_eq!(bounds.max_elapsed, Duration::from_millis(1_000));
     }
 
+    #[test]
+    fn ledger_selection_is_rejected_before_device_or_network_dispatch() {
+        let mut args: Vec<OsString> = to_os(&base_flag_values());
+        args.extend([
+            OsString::from(ENDPOINT),
+            OsString::from("127.0.0.1:1"),
+            OsString::from("--ledger-hid-path"),
+            OsString::from("definitely-not-a-device"),
+            OsString::from("--ledger-account"),
+            OsString::from("0"),
+            OsString::from("--ledger-expected-firmware-version"),
+            OsString::from("1.2.3"),
+        ]);
+
+        let error: CliError = run(args).unwrap_err();
+        assert!(matches!(
+            error,
+            CliError::LedgerStandardAssetTransferUnsupported
+        ));
+    }
+
     fn base_flag_values() -> std::collections::BTreeMap<&'static str, String> {
         let mut values = std::collections::BTreeMap::new();
         values.insert(MODULE_ID, "01".repeat(32));
         values.insert(MODULE_VERSION, "1".to_string());
         values.insert(MODULE_DIGEST_ALGORITHM, "1".to_string());
         values.insert(MODULE_DIGEST, "02".repeat(32));
-        values.insert(SOURCE_OBJECT, "10".repeat(32));
-        values.insert(DESTINATION_OBJECT, "20".repeat(32));
-        values.insert(DESTINATION_OWNER, "88".repeat(32));
-        values.insert(AMOUNT, "250".to_string());
+        values.insert(SOURCE_COIN, "10".repeat(32));
+        values.insert(FEE_COIN, "20".repeat(32));
+        values.insert(RECIPIENT, "88".repeat(32));
         values.insert(GAS_LIMIT, "1000".to_string());
+        values.insert(FEE_ASSET_ID, "50".repeat(32));
+        values.insert(MAX_FEE, "1001".to_string());
+        values.insert(FEE_TREASURY_OBJECT, "40".repeat(32));
         values.insert(REQUEST_ID, "30".repeat(32));
         values.insert(EXPECTED_CHAIN_ID, "transfer-test-chain".to_string());
-        values.insert(EXPECTED_PROTOCOL_VERSION, "3".to_string());
+        values.insert(EXPECTED_PROTOCOL_VERSION, "4".to_string());
         values.insert(EXPECTED_EPOCH, "5".to_string());
         values.insert(EXPECTED_HASH_SUITE_ID, "1".to_string());
         values.insert(EXPECTED_DOMAIN, "44".repeat(32));

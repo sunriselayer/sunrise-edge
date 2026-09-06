@@ -5,9 +5,11 @@
 //! This crate owns the general-purpose [`AssetId`] identifier (previously
 //! defined inside `fees`) and the strict canonical Standard Asset v1 object
 //! bodies: [`StandardAssetDefinitionV1`], [`StandardAssetCoinV1`], and
-//! [`StandardAssetMintCapabilityV1`]. It does not activate a module, wire
-//! `Create`, owner changes, CLI commands, minting, or fee integration; those
-//! remain future, separately reviewed slices.
+//! [`StandardAssetMintCapabilityV1`]. Module activation, `Create`, owner
+//! transitions, CLI commands, minting, and fee integration remain outside this
+//! foundational crate. The local protocol-4 devnet activation is specified by
+//! DR-0107 and consumes these types without moving execution policy into this
+//! dependency-light crate.
 //!
 //! **Canonical type IDs owned by this crate:**
 //! - `0x7001` — [`AssetId`] (moved from its original `fees` location).
@@ -15,11 +17,12 @@
 //! - `0x7101` — [`StandardAssetDefinitionV1`].
 //! - `0x7102` — [`StandardAssetCoinV1`].
 //! - `0x7103` — [`StandardAssetMintCapabilityV1`].
+//! - `0x7104` — [`StandardAssetTransferArgsV1`].
 //!
 //! See `docs/architecture/decisions/0104-asset-standards-gate.md` for the
 //! full identifier audit and the activation boundary for this slice.
 //!
-//! # Typed ABI foundation (inert)
+//! # Typed ABI foundation
 //!
 //! [`constructor_registry`] declares [`abi::ConstructorId`]s that mirror the
 //! three body type ids above (`STANDARD_ASSET_*_CONSTRUCTOR`). This mirroring
@@ -30,8 +33,9 @@
 //! `body_type_id`. Each constructor's body projection extracts the nested
 //! [`AssetId`] from canonical field 1 — the field every one of the three
 //! bodies uses for `asset_id` — and rejects malformed, unknown, or trailing
-//! bytes (see `abi::project_type_arg`). This foundation activates no module,
-//! `Create`, transfer, or mint; see the crate-level docs above.
+//! bytes (see `abi::project_type_arg`). Activation remains the responsibility
+//! of a versioned module catalog and protocol configuration; see the crate-level
+//! docs above.
 
 use canonical_encoding::{
     CanonicalDecodingError, CanonicalEncodingError, CanonicalFrame, CanonicalStruct,
@@ -58,6 +62,8 @@ pub const STANDARD_ASSET_DEFINITION_V1_TYPE_ID: u16 = 0x7101;
 pub const STANDARD_ASSET_COIN_V1_TYPE_ID: u16 = 0x7102;
 /// Stable canonical type identifier for [`StandardAssetMintCapabilityV1`].
 pub const STANDARD_ASSET_MINT_CAPABILITY_V1_TYPE_ID: u16 = 0x7103;
+/// Stable canonical type identifier for [`StandardAssetTransferArgsV1`].
+pub const STANDARD_ASSET_TRANSFER_ARGS_V1_TYPE_ID: u16 = 0x7104;
 
 /// Errors returned by Standard Asset v1 helpers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -526,7 +532,57 @@ pub fn decode_standard_asset_mint_capability_v1(
     })
 }
 
-// ── Typed ABI foundation (inert) ─────────────────────────────────────────
+/// Canonical, strict arguments for one Standard Asset v1 whole-coin transfer:
+/// the sole field is the new owner's [`Address`].
+///
+/// Contains exactly one field id `1` carrying 32 bytes. There is no amount,
+/// asset, or source field: a whole-object transfer entrypoint identifies its
+/// coin and asset entirely through the signed transaction's access manifest
+/// and typed-entrypoint verification, never through these arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StandardAssetTransferArgsV1 {
+    recipient: Address,
+}
+
+impl StandardAssetTransferArgsV1 {
+    /// Creates transfer arguments for `recipient`.
+    #[must_use]
+    pub const fn new(recipient: Address) -> Self {
+        Self { recipient }
+    }
+
+    /// Returns the new owner this transfer names.
+    #[must_use]
+    pub const fn recipient(&self) -> Address {
+        self.recipient
+    }
+}
+
+/// Encodes Standard Asset v1 transfer arguments.
+pub fn encode_standard_asset_transfer_args_v1(
+    args: &StandardAssetTransferArgsV1,
+) -> Result<Vec<u8>, StandardAssetError> {
+    let mut canonical =
+        CanonicalStruct::new(STANDARD_ASSET_TRANSFER_ARGS_V1_TYPE_ID, ENCODING_VERSION);
+    canonical.field_bytes(1, args.recipient.as_bytes().to_vec())?;
+    Ok(canonical.finish()?)
+}
+
+/// Strictly decodes one canonical Standard Asset v1 transfer-arguments frame.
+/// Rejects wrong type/version, missing/unknown fields, a malformed recipient
+/// length, and trailing bytes.
+pub fn decode_standard_asset_transfer_args_v1(
+    input: &[u8],
+) -> Result<StandardAssetTransferArgsV1, StandardAssetError> {
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(input)?;
+    frame.require_type(STANDARD_ASSET_TRANSFER_ARGS_V1_TYPE_ID)?;
+    frame.require_version(ENCODING_VERSION)?;
+    frame.require_only_fields(&[1])?;
+    let recipient = decode_address_field(frame.required_field(1)?)?;
+    Ok(StandardAssetTransferArgsV1::new(recipient))
+}
+
+// ── Typed ABI foundation ──────────────────────────────────────────────────
 
 /// The object schema version shared by all Standard Asset v1 object bodies.
 ///
@@ -570,6 +626,23 @@ fn asset_id_projection(body_type_id: u16) -> Vec<abi::ProjectionStep> {
     ]
 }
 
+/// Builds the canonical [`abi::ConstructorDeclaration`] for
+/// [`StandardAssetCoinV1`], shared by [`constructor_registry`] and any
+/// committed typed-entrypoint policy that needs to declare a `Coin<A>`
+/// parameter — both consult this one source of truth rather than restating
+/// the declaration independently.
+#[must_use]
+pub fn coin_constructor_declaration() -> abi::ConstructorDeclaration {
+    abi::ConstructorDeclaration {
+        id: STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
+        body_type_id: STANDARD_ASSET_COIN_V1_TYPE_ID,
+        body_version: ENCODING_VERSION,
+        schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+        arity: abi::TypeArity::Variable,
+        projection: asset_id_projection(STANDARD_ASSET_COIN_V1_TYPE_ID),
+    }
+}
+
 /// Builds the deterministic Standard Asset v1 constructor registry.
 ///
 /// Registers exactly the three constructors above; registration order does
@@ -587,14 +660,7 @@ pub fn constructor_registry() -> Result<abi::ConstructorRegistry, StandardAssetE
         arity: abi::TypeArity::Variable,
         projection: asset_id_projection(STANDARD_ASSET_DEFINITION_V1_TYPE_ID),
     })?;
-    registry.register(abi::ConstructorDeclaration {
-        id: STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
-        body_type_id: STANDARD_ASSET_COIN_V1_TYPE_ID,
-        body_version: ENCODING_VERSION,
-        schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
-        arity: abi::TypeArity::Variable,
-        projection: asset_id_projection(STANDARD_ASSET_COIN_V1_TYPE_ID),
-    })?;
+    registry.register(coin_constructor_declaration())?;
     registry.register(abi::ConstructorDeclaration {
         id: STANDARD_ASSET_MINT_CAPABILITY_V1_CONSTRUCTOR,
         body_type_id: STANDARD_ASSET_MINT_CAPABILITY_V1_TYPE_ID,
@@ -1283,6 +1349,110 @@ mod tests {
             decode_standard_asset_mint_capability_v1(&short.finish().unwrap()),
             Err(StandardAssetError::CanonicalDecoding(_))
         ));
+    }
+
+    fn sample_transfer_args() -> StandardAssetTransferArgsV1 {
+        StandardAssetTransferArgsV1::new(sample_address(0x64))
+    }
+
+    #[test]
+    fn transfer_args_recipient_getter_round_trips() {
+        let recipient = sample_address(0x64);
+        assert_eq!(
+            StandardAssetTransferArgsV1::new(recipient).recipient(),
+            recipient
+        );
+    }
+
+    #[test]
+    fn transfer_args_encoding_vector_is_stable() {
+        let bytes = encode_standard_asset_transfer_args_v1(&sample_transfer_args()).unwrap();
+        assert_eq!(
+            hex(&bytes),
+            format!("534e5245047101000100010020000000{}", "64".repeat(32))
+        );
+    }
+
+    #[test]
+    fn transfer_args_decoder_round_trips_encoded_bytes() {
+        let args = sample_transfer_args();
+        let canonical = encode_standard_asset_transfer_args_v1(&args).unwrap();
+        assert_eq!(decode_standard_asset_transfer_args_v1(&canonical), Ok(args));
+    }
+
+    #[test]
+    fn transfer_args_decoder_rejects_wrong_type_and_version() {
+        let mut wrong_type =
+            encode_standard_asset_transfer_args_v1(&sample_transfer_args()).unwrap();
+        wrong_type[4..6].copy_from_slice(&0x7999_u16.to_le_bytes());
+        assert!(matches!(
+            decode_standard_asset_transfer_args_v1(&wrong_type),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedTypeId { .. }
+            ))
+        ));
+
+        let mut wrong_version = CanonicalStruct::new(STANDARD_ASSET_TRANSFER_ARGS_V1_TYPE_ID, 2);
+        wrong_version
+            .field_bytes(1, sample_address(0x64).as_bytes().to_vec())
+            .unwrap();
+        assert!(matches!(
+            decode_standard_asset_transfer_args_v1(&wrong_version.finish().unwrap()),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedVersion { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn transfer_args_decoder_rejects_missing_unknown_and_trailing_fields() {
+        let empty = CanonicalStruct::new(STANDARD_ASSET_TRANSFER_ARGS_V1_TYPE_ID, ENCODING_VERSION);
+        assert!(matches!(
+            decode_standard_asset_transfer_args_v1(&empty.finish().unwrap()),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::MissingField(1)
+            ))
+        ));
+
+        let mut extra =
+            CanonicalStruct::new(STANDARD_ASSET_TRANSFER_ARGS_V1_TYPE_ID, ENCODING_VERSION);
+        extra
+            .field_bytes(1, sample_address(0x64).as_bytes().to_vec())
+            .unwrap();
+        extra.field_bytes(2, [0x01]).unwrap();
+        assert!(matches!(
+            decode_standard_asset_transfer_args_v1(&extra.finish().unwrap()),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedField(2)
+            ))
+        ));
+
+        let mut trailing = encode_standard_asset_transfer_args_v1(&sample_transfer_args()).unwrap();
+        trailing.push(0);
+        assert!(matches!(
+            decode_standard_asset_transfer_args_v1(&trailing),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::TrailingBytes(1)
+            ))
+        ));
+    }
+
+    #[test]
+    fn transfer_args_decoder_rejects_a_malformed_recipient_length() {
+        let mut short =
+            CanonicalStruct::new(STANDARD_ASSET_TRANSFER_ARGS_V1_TYPE_ID, ENCODING_VERSION);
+        short.field_bytes(1, [0x11; 31]).unwrap();
+        assert_eq!(
+            decode_standard_asset_transfer_args_v1(&short.finish().unwrap()),
+            Err(StandardAssetError::InvalidAddressLength(31))
+        );
+    }
+
+    #[test]
+    fn coin_constructor_declaration_matches_registry_entry() {
+        let registry = constructor_registry().unwrap();
+        let from_registry = registry.get(STANDARD_ASSET_COIN_V1_CONSTRUCTOR).unwrap();
+        assert_eq!(from_registry, &coin_constructor_declaration());
     }
 
     // ── typed-ABI foundation tests ──────────────────────────────────────

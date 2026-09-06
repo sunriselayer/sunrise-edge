@@ -66,14 +66,19 @@
 //! (which entrypoint requires which `abi::verify_entrypoint_inputs` typed
 //! shape) and [`PreinstalledOwnerTransitionPolicy`] (which entrypoint, and
 //! which exact declared access index within its typed shape, node-core may
-//! synthesize one owner-only mutation for). Both collections are empty for
-//! every envelope this slice's catalogs commit, so
+//! synthesize one owner-only mutation for). Both collections remain empty
+//! for most envelopes any catalog commits, so
 //! [`PreinstalledModuleSemanticsEnvelope::matching_typed_entrypoint_policy`]
 //! and
 //! [`PreinstalledModuleSemanticsEnvelope::matching_owner_transition_policy`]
-//! return `None` for every entrypoint any current catalog resolves, and
-//! `lib.rs`'s typed-entrypoint verification and owner-transition synthesis
-//! stay unreachable end-to-end. See `docs/architecture/decisions/0106-typed-entrypoint-owner-transition.md`.
+//! return `None`, and `lib.rs`'s typed-entrypoint verification and owner-
+//! transition synthesis stay exactly as unreachable as before, for every
+//! entrypoint without a matching policy. The local devnet's Standard Asset
+//! v1 `transfer` entrypoint commits one non-empty instance of each
+//! (DR-0107), so both lookups return `Some` and both code paths are
+//! reachable end-to-end for that entrypoint. See
+//! `docs/architecture/decisions/0106-typed-entrypoint-owner-transition.md`
+//! and `docs/architecture/decisions/0107-standard-asset-v1-devnet-activation.md`.
 //!
 //! # Protocol-version bumps and commitment provenance
 //!

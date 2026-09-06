@@ -15,8 +15,9 @@ provider for safety (`README.md:3-15`, `README.md:40-62`).
 
 The concrete executable node profile in this repository is a loopback-only,
 single-validator devnet. It composes native HTTP, authenticated
-`SubmitTransaction`, a trusted preinstalled asset-account WASM module, ordinary
-asset fees, separate local SQLite structured/blob stores, and a bounded
+`SubmitTransaction`, a trusted preinstalled Standard Asset v1 whole-coin
+transfer WASM module, ordinary coin-denominated asset fees, separate local
+SQLite structured/blob stores, and a bounded
 process-local outbound queue (`apps/devnet/src/config.rs:23-34`,
 `apps/devnet/src/main.rs:16-129`, `apps/devnet/src/composition.rs:42-99`). It is
 not a production node.
@@ -58,7 +59,7 @@ flowchart LR
 | Local devnet | HTTP listener | Required `--listen` `SocketAddr`; only loopback is accepted | Config validation before `TcpListener::bind` | `apps/devnet/src/config.rs:75-120`, `apps/devnet/src/main.rs:86-124` |
 | Local devnet | Structured state | `<--data-dir>/structured.sqlite3`; devnet process reads/writes one chain/validator/domain namespace | SQLite transaction plus persisted writer fence | `apps/devnet/src/boot.rs:12-20`, `apps/devnet/src/boot.rs:80-115` |
 | Local devnet | Object blobs | `<--data-dir>/blobs.sqlite3`; separate insert-if-absent content-addressed file | Digest-key conflict rejects; no independent writer fence | `apps/devnet/src/boot.rs:14-19`, `crates/runtime-sqlite/src/blob.rs:111-206`; GC/capacity is deferred |
-| Local devnet | Executable module | `apps/devnet/modules/asset_account.wasm`, embedded and catalogued as module version 3 | Code/manifest/semantics digests are recomputed from trusted composition | `apps/devnet/src/asset_account.rs:65-66`, `apps/devnet/src/catalog.rs:36-45`, `apps/devnet/src/catalog.rs:186-289` |
+| Local devnet | Executable module | `apps/devnet/modules/standard_asset_transfer.wasm`, embedded and catalogued as module version 1 (Standard Asset v1 whole-coin transfer, DR-0107) | Code/manifest/semantics digests are recomputed from trusted composition | `apps/devnet/src/standard_asset.rs:79-80`, `apps/devnet/src/catalog.rs:39`, `apps/devnet/src/catalog.rs:202-296` |
 | Local CLI | Development signing seed | Explicit `--seed-file`; exact 32-byte hex seed | Symlink/regular-file/permission/inode checks on Unix and bounded read | `apps/cli/src/seed.rs:105-167`; non-Unix permission/inode checks are absent and this is not a keystore |
 | Remote CLI | TLS trust | Literal endpoint plus explicit DNS name and one CA DER file, capped at 16 KiB | rustls server authentication, hostname verification, fixed timeouts; no mTLS/system roots/redirect/retry/proxy | `apps/cli/src/net.rs:100-203`, `clients/rust/src/transport.rs:461-594` |
 | Deno/Vercel/Supabase/AWS relay | Node-core capability | Exact `SUNRISE_NODE_CORE_URL` `/v1/events` endpoint plus `SUNRISE_NODE_CORE_BEARER_TOKEN` | HTTPS, ASCII token validation, redirect rejection, bounded timeout | `adapters/shared/authenticated-node-core.ts:6-107`; provisioning, rotation, and downstream enforcement are deployment assumptions |

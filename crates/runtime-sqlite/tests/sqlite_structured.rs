@@ -664,6 +664,33 @@ fn sqlite_structured_writer_fence_survives_reopen() {
     assert_eq!(reopened.writer_fence().unwrap(), advanced);
 }
 
+/// The operator-only emptiness snapshot is the load-bearing preflight used
+/// before introducing the devnet protocol-context marker. Exercise it against
+/// the real normalized SQLite object tables, including a close/reopen, rather
+/// than substituting a caller-provided boolean.
+#[test]
+fn sqlite_structured_object_store_emptiness_tracks_persisted_heads() {
+    let database = TestDatabase::new();
+    let namespace = namespace("sqlite-object-store-emptiness", 0xD8, 0xD9);
+    let chain_id: ChainId = namespace.chain_id().clone();
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+    let context: DurableOperationContext = live_context(fence, 0x51);
+    let object_id: ObjectId = ObjectId::new([0xDA; 32]);
+    let request_id: OutboxRequestId = OutboxRequestId::new([0xDB; 32]).unwrap();
+
+    {
+        let store = SqliteDurableStore::open(&database.path, namespace.clone(), fence).unwrap();
+        assert!(store.object_store_is_empty().unwrap());
+        commit_one_object(
+            &store, &context, &namespace, &chain_id, object_id, request_id,
+        );
+        assert!(!store.object_store_is_empty().unwrap());
+    }
+
+    let reopened = SqliteDurableStore::open(&database.path, namespace, fence).unwrap();
+    assert!(!reopened.object_store_is_empty().unwrap());
+}
+
 /// `writer_fence` must revalidate the persisted schema identity exactly like
 /// every other structured operation and fail closed rather than returning a
 /// value read from a database claimed by an unsupported schema.

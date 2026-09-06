@@ -63,8 +63,8 @@ pub use context::{ExpectedProtocolContext, ExpectedProtocolContextError, Protoco
 pub use error::ClientError;
 pub use key::LocalSigner;
 pub use signing_view::{
-    ClearSigningPolicy, ClearSigningPolicyError, ClearSigningView, DEVNET_ASSET_TRANSFER_POLICY,
-    DeviceSigningProfile, SigningViewError,
+    ClearSigningPolicy, ClearSigningPolicyError, ClearSigningView, DeviceSigningProfile,
+    HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3, SigningViewError,
 };
 pub use support::{
     ED25519_ADDRESS_IS_PUBLIC_KEY_BINDING_ID, ED25519_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID,
@@ -114,4 +114,8 @@ pub use protocol_types::{
     AtomicityDomainId, ChainId, Digest32, Epoch, HashAlgorithmId, HashSuiteId, ProtocolVersion,
     SignatureSchemeId, TypeError,
 };
-pub use standard_assets::AssetId;
+pub use standard_assets::{
+    AssetId, StandardAssetCoinV1, StandardAssetError, StandardAssetTransferArgsV1,
+    decode_standard_asset_coin_v1, encode_standard_asset_coin_v1,
+    encode_standard_asset_transfer_args_v1,
+};

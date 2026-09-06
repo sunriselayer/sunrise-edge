@@ -4,6 +4,13 @@ This guide starts the local, non-production Sunrise Edge devnet and drives it
 with the Rust CLI. The devnet binds loopback only, is single-validator, and
 must never be used to custody real assets or exposed beyond your own machine.
 
+The devnet activates Standard Asset v1 whole-coin transfer (DR-0107): each
+configured `--dev-owner` is seeded with one transferable
+`StandardAssetCoinV1` and one distinct fee-payer coin, and the separate
+`--fee-treasury-owner` is seeded with one ordinary treasury coin. `transfer`
+moves a whole coin's ownership to a signed recipient address; there is no
+partial-amount transfer, `Create`, split, or merge yet.
+
 The commands assume the workspace has already been built once:
 
 ```bash
@@ -15,7 +22,9 @@ cargo build --workspace
 Choose explicit paths and create sender, recipient, and distinct fee-treasury
 development seed files. These are private, non-keystore development secrets,
 each containing exactly 64 hexadecimal characters. The CLI requires permission
-`0600` and rejects symlinks.
+`0600` and rejects symlinks. The recipient is never seeded with anything: it
+only needs to be a canonical prime-order Ed25519 address that can receive the
+transferred coin.
 
 ```bash
 SENDER_SEED_FILE=/tmp/sunrise-edge-sender-seed
@@ -47,7 +56,8 @@ printf 'SENDER_OWNER=%s\nRECIPIENT_OWNER=%s\nTREASURY_OWNER=%s\n' \
 
 ## 3. Start the devnet
 
-Run this in terminal A:
+Run this in terminal A. Only `$SENDER_OWNER` is a `--dev-owner`; the recipient
+is never passed to the devnet at all.
 
 ```bash
 cargo run -p sunrise-edge-devnet -- \
@@ -56,7 +66,6 @@ cargo run -p sunrise-edge-devnet -- \
   --chain-id sunrise-local-devnet \
   --epoch 0 \
   --dev-owner "$SENDER_OWNER" \
-  --dev-owner "$RECIPIENT_OWNER" \
   --fee-treasury-owner "$TREASURY_OWNER" \
   --max-concurrent 16
 ```
@@ -64,20 +73,23 @@ cargo run -p sunrise-edge-devnet -- \
 Startup prints one line per seeded owner, including the treasury:
 
 ```text
-owner=<owner> role=<dev-owner|fee-treasury> seed_status=<created|verified-existing> source=<object id> destination=<object id>
+owner=<owner> role=dev-owner seed_status=<created|verified-existing> transfer_coin=<object id> fee_coin=<object id>
+owner=<owner> role=fee-treasury seed_status=<created|verified-existing> treasury_coin=<object id>
 ```
 
-It also prints the preinstalled module identity:
+It also prints the derived asset id and preinstalled module identity:
 
 ```text
-asset_id=<...> asset_account_type=<...> module_id=<...> module_version=<...> module_digest=<algorithm-label>:<hex digest>
+asset_id=<...> module_id=<...> module_version=<...> module_digest=<algorithm-label>:<hex digest>
 ```
 
-Copy the sender owner's `source`, recipient owner's `destination`, treasury
-owner's `destination`, `asset_id`, `module_id`, `module_version`, and
+Copy the sender's `transfer_coin` and `fee_coin`, the treasury's
+`treasury_coin`, `asset_id`, `module_id`, `module_version`, and
 `module_digest`. The digest currently prints as `sha2-256:<hex>`: pass `1` for
 `--module-digest-algorithm` and only the hexadecimal portion after the colon
-for `--module-digest`.
+for `--module-digest`. The `asset_id` is *derived*, not fixed: it depends on
+`--chain-id`, `--epoch`, and the committed protocol version, so a different
+devnet configuration produces a different `asset_id` (see DR-0107).
 
 ## 4. Configure and query the CLI
 
@@ -89,9 +101,9 @@ SENDER_SEED_FILE=/tmp/sunrise-edge-sender-seed
 SENDER_OWNER="PASTE_SENDER_ADDRESS_PRINTED_IN_STEP_2"
 RECIPIENT_OWNER="PASTE_RECIPIENT_ADDRESS_PRINTED_IN_STEP_2"
 TREASURY_OWNER="PASTE_TREASURY_ADDRESS_PRINTED_IN_STEP_2"
-SOURCE_OBJECT_ID="PASTE_SENDER_SOURCE_OBJECT_ID_PRINTED_IN_STEP_3"
-DESTINATION_OBJECT_ID="PASTE_RECIPIENT_DESTINATION_OBJECT_ID_PRINTED_IN_STEP_3"
-TREASURY_OBJECT_ID="PASTE_TREASURY_DESTINATION_OBJECT_ID_PRINTED_IN_STEP_3"
+SOURCE_COIN_ID="PASTE_SENDER_TRANSFER_COIN_ID_PRINTED_IN_STEP_3"
+FEE_COIN_ID="PASTE_SENDER_FEE_COIN_ID_PRINTED_IN_STEP_3"
+TREASURY_OBJECT_ID="PASTE_TREASURY_COIN_ID_PRINTED_IN_STEP_3"
 FEE_ASSET_ID="PASTE_ASSET_ID_PRINTED_IN_STEP_3"
 MODULE_ID="PASTE_MODULE_ID_PRINTED_IN_STEP_3"
 MODULE_VERSION="PASTE_MODULE_VERSION_PRINTED_IN_STEP_3"
@@ -107,7 +119,7 @@ See [DR-0085](../architecture/decisions/0081-0087-cli-first-roadmap.md) and
 
 ```bash
 EXPECTED_CHAIN_ID="sunrise-local-devnet"
-EXPECTED_PROTOCOL_VERSION=3
+EXPECTED_PROTOCOL_VERSION=4
 EXPECTED_EPOCH=0
 EXPECTED_HASH_SUITE_ID=1
 EXPECTED_DOMAIN="4444444444444444444444444444444444444444444444444444444444444444"
@@ -116,16 +128,19 @@ cargo run -p sunrise-edge-cli -- context --endpoint 127.0.0.1:7400
 cargo run -p sunrise-edge-cli -- next-nonce --endpoint 127.0.0.1:7400 \
   --sender "$SENDER_OWNER"
 cargo run -p sunrise-edge-cli -- object --endpoint 127.0.0.1:7400 \
-  --object-id "$SOURCE_OBJECT_ID"
+  --object-id "$SOURCE_COIN_ID"
 ```
 
 These queries do not change state.
 
-## 5. Submit an asset transfer
+## 5. Submit a whole-coin transfer
 
-The sender signs a debit from its seeded source into the recipient's existing
-seeded destination. The destination remains owned by `RECIPIENT_OWNER` before
-and after the transfer. Amounts are in the asset's smallest unit.
+The sender signs a whole-object transfer of its transferable coin to the
+recipient address, paying the fee from its distinct fee coin. The fee asset
+must equal the transferred coin's asset (the protocol forces this: a single
+shared type variable per entrypoint signature unifies both). After the
+transfer, `SOURCE_COIN_ID`'s owner is `RECIPIENT_OWNER`; its body (asset id
+and amount) is unchanged.
 
 ```bash
 cargo run -p sunrise-edge-cli -- transfer \
@@ -135,10 +150,9 @@ cargo run -p sunrise-edge-cli -- transfer \
   --module-version "$MODULE_VERSION" \
   --module-digest-algorithm 1 \
   --module-digest "$MODULE_DIGEST_HEX" \
-  --source-object "$SOURCE_OBJECT_ID" \
-  --destination-object "$DESTINATION_OBJECT_ID" \
-  --destination-owner "$RECIPIENT_OWNER" \
-  --amount 250 \
+  --source-coin "$SOURCE_COIN_ID" \
+  --recipient "$RECIPIENT_OWNER" \
+  --fee-coin "$FEE_COIN_ID" \
   --gas-limit 1000000 \
   --fee-asset-id "$FEE_ASSET_ID" \
   --max-fee 1000001 \
@@ -156,17 +170,23 @@ cargo run -p sunrise-edge-cli -- transfer \
   --wait-max-elapsed-ms 5000
 ```
 
-`transfer` requires `--destination-owner`, all five `--expected-*` flags, and,
-for this non-zero-fee devnet, the complete fee configuration shown above. It
-rejects partial fee flags, zero max fee, a treasury equal to source or
-destination, an invalid destination owner, or an invalid expected context
-before network dispatch. It then verifies `/v1/context`, the source owner, and
-the destination owner before signing. A rejected or execution-failed
+`transfer` requires `--recipient`, all five `--expected-*` flags, and the
+complete fee configuration shown above (this devnet's committed base fee is
+always non-zero, so a fee is always due). It rejects a malformed recipient,
+zero max fee, a treasury equal to the source or fee coin, or an invalid
+expected context before network dispatch. It then verifies `/v1/context`,
+that both coins are owned by the signer, that they share one `AssetId`, and
+that `--fee-asset-id` matches, before signing. A rejected or execution-failed
 submission is a typed non-zero-exit error, including with `--wait`.
+
+Once a fee coin's amount falls to exactly the currently settled fee, it
+becomes permanently unusable as a fee payer (`StandardAssetCoinV1` forbids a
+zero amount) — the seeded fee-coin amount is generous, but a long-running
+devnet session should watch for this.
 
 ## 6. Capture post-transfer state
 
-Capture the receipt, all three current objects, and next nonce. These are the
+Capture the receipt, all three current coins, and next nonce. These are the
 pre-restart observations used in the next step.
 
 ```bash
@@ -174,9 +194,9 @@ OBSERVATION_PREFIX="/tmp/sunrise-edge-$REQUEST_ID"
 cargo run -p sunrise-edge-cli -- receipt --endpoint 127.0.0.1:7400 \
   --request-id "$REQUEST_ID" > "$OBSERVATION_PREFIX.receipt"
 cargo run -p sunrise-edge-cli -- object --endpoint 127.0.0.1:7400 \
-  --object-id "$SOURCE_OBJECT_ID" > "$OBSERVATION_PREFIX.source"
+  --object-id "$SOURCE_COIN_ID" > "$OBSERVATION_PREFIX.source"
 cargo run -p sunrise-edge-cli -- object --endpoint 127.0.0.1:7400 \
-  --object-id "$DESTINATION_OBJECT_ID" > "$OBSERVATION_PREFIX.destination"
+  --object-id "$FEE_COIN_ID" > "$OBSERVATION_PREFIX.fee"
 cargo run -p sunrise-edge-cli -- object --endpoint 127.0.0.1:7400 \
   --object-id "$TREASURY_OBJECT_ID" > "$OBSERVATION_PREFIX.treasury"
 cargo run -p sunrise-edge-cli -- next-nonce --endpoint 127.0.0.1:7400 \
@@ -186,8 +206,10 @@ cargo run -p sunrise-edge-cli -- next-nonce --endpoint 127.0.0.1:7400 \
 ## 7. Restart and compare
 
 Stop the devnet in terminal A with `Ctrl-C`. Rerun the exact command from step
-3 with the same data directory, chain id, and owners. Wait until all three
-owners report `seed_status=verified-existing`, then run:
+3 with the same data directory, chain id, and owners. Wait until both owners
+report `seed_status=verified-existing` — the transferred coin now reports its
+current owner as `$RECIPIENT_OWNER`, not `$SENDER_OWNER`, and restart
+verification accepts this (DR-0107 F9) — then run:
 
 ```bash
 diff -u "$OBSERVATION_PREFIX.receipt" <(
@@ -196,11 +218,11 @@ diff -u "$OBSERVATION_PREFIX.receipt" <(
 )
 diff -u "$OBSERVATION_PREFIX.source" <(
   cargo run -p sunrise-edge-cli -- object --endpoint 127.0.0.1:7400 \
-    --object-id "$SOURCE_OBJECT_ID"
+    --object-id "$SOURCE_COIN_ID"
 )
-diff -u "$OBSERVATION_PREFIX.destination" <(
+diff -u "$OBSERVATION_PREFIX.fee" <(
   cargo run -p sunrise-edge-cli -- object --endpoint 127.0.0.1:7400 \
-    --object-id "$DESTINATION_OBJECT_ID"
+    --object-id "$FEE_COIN_ID"
 )
 diff -u "$OBSERVATION_PREFIX.treasury" <(
   cargo run -p sunrise-edge-cli -- object --endpoint 127.0.0.1:7400 \
@@ -217,8 +239,17 @@ stop/reopen persistence for the observed state. It does not prove `kill -9`,
 power-loss, torn-write, load, concurrency, or production SQLite suitability.
 
 The automated E2E additionally replays one byte-identical signed request before
-and after restart. The CLI intentionally exposes no raw replay command because
-`transfer` re-queries the current nonce and object references before signing.
+and after restart, including a restart that happens strictly after a real
+ownership transfer. The CLI intentionally exposes no raw replay command
+because `transfer` re-queries the current nonce and object references before
+signing.
+
+A data directory created under a different committed protocol version fails
+closed rather than silently seeding a disjoint object set. Protocol 3 predates
+the marker and is rejected as `UnmarkedExistingObjectState` when its object
+store is non-empty; a later marked version or epoch mismatch is rejected as
+`ProtocolVersionMismatch` or `EpochMismatch`. Start a fresh `--data-dir`
+rather than reusing one across an incompatible devnet upgrade or epoch change.
 
 ## Optional remote TLS transport
 
