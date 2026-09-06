@@ -80,7 +80,14 @@ different `type_hash` bytes if committed under different algorithms across a
 hash-suite rotation. Nominal type equality must always be established by
 verifying each digest against its own claimed type tag and comparing the
 verified tag values, never by comparing two digests for raw byte equality.
-See [DR-0105](decisions/0105-typed-asset-abi-foundation.md).
+The `epoch` supplied to this verification must always be the authenticated
+execution epoch, never unauthenticated request input, since it gates which
+algorithms are trusted. `HashPurpose::ObjectType` must never reach the
+general-purpose framing path (`frame_hash_input`/`hash_for_purpose`/
+`BuiltinHashFunction::hash`); that path rejects it outright, since it would
+otherwise bind `protocol_version` and hash an opaque payload instead of a
+canonical type tag. See
+[DR-0105](decisions/0105-typed-asset-abi-foundation.md).
 
 ## 7. Commitment scheme architecture
 Commitment schemes are separate from general-purpose hashes. Phase 14 adds a

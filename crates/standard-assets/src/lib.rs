@@ -1230,6 +1230,25 @@ mod tests {
         );
     }
 
+    /// Regression test: a stable, independently pinned nominal object-type
+    /// identity digest for a `StandardAssetCoinV1` instantiated at a fixed
+    /// `AssetId`, under a fixed deterministic hash-suite/chain context. This
+    /// pins the exact digest bytes, not a computed-and-compared-to-itself
+    /// expectation, so an accidental change to `TypeTag` encoding, the
+    /// type-identity hash frame, or the coin constructor binding is caught.
+    #[test]
+    fn coin_type_commitment_vector_is_stable() {
+        let resolver = sample_resolver("sunrise-devnet");
+        let asset_id = sample_asset_id(0x64);
+        let digest = derive_coin_type_id(&resolver, Epoch::new(0), asset_id).unwrap();
+
+        assert_eq!(digest.algorithm(), HashAlgorithmId::Sha2_256);
+        assert_eq!(
+            hex(&digest.bytes()),
+            "2ce8c77fdce94ae16940c5fa29e13ad72c4abb12006a7716def117320ad95653"
+        );
+    }
+
     #[test]
     fn mint_capability_decoder_round_trips_encoded_bytes() {
         let capability = sample_capability();

@@ -46,6 +46,16 @@ pub enum HashingError {
         /// The epoch the verification was performed at.
         epoch: Epoch,
     },
+    /// [`HashPurpose::ObjectType`] was passed to the general-purpose framing
+    /// path ([`frame_hash_input`], [`HashSuiteResolver::hash_for_purpose`],
+    /// or [`BuiltinHashFunction::hash`]) instead of the dedicated
+    /// type-identity frame. The general frame binds `protocol_version` and
+    /// hashes an opaque caller payload; a digest produced that way would not
+    /// exclude `protocol_version` and would not be a canonical `TypeTag`
+    /// encoding, so it would silently fail to interoperate with
+    /// [`hash_type_identity`]/[`verify_type_identity_digest`]. Use those
+    /// functions instead.
+    ObjectTypeRequiresDedicatedFrame,
 }
 
 impl fmt::Display for HashingError {
@@ -71,6 +81,10 @@ impl fmt::Display for HashingError {
                 f,
                 "algorithm {algorithm} was never scheduled for {purpose:?} at or before epoch {}",
                 epoch.get()
+            ),
+            Self::ObjectTypeRequiresDedicatedFrame => write!(
+                f,
+                "HashPurpose::ObjectType must use hash_type_identity/verify_type_identity_digest, not the general-purpose hash frame"
             ),
         }
     }
@@ -142,6 +156,17 @@ impl HashFunction for BuiltinHashFunction {
 }
 
 /// Frames a hash input according to the canonical domain-separation rules.
+///
+/// Rejects [`HashPurpose::ObjectType`] outright
+/// ([`HashingError::ObjectTypeRequiresDedicatedFrame`]): that purpose has
+/// its own dedicated frame ([`frame_type_identity_input`]) that
+/// deliberately excludes `protocol_version`, and this general frame would
+/// silently bind `protocol_version` and hash an opaque caller payload
+/// instead of a canonical `TypeTag`, producing a digest that looks
+/// plausible but cannot interoperate with
+/// [`hash_type_identity`]/[`verify_type_identity_digest`]. This rejection
+/// has no compatibility impact: no caller in this codebase reaches this
+/// path with `HashPurpose::ObjectType` today.
 pub fn frame_hash_input(
     algorithm: HashAlgorithmId,
     purpose: HashPurpose,
@@ -149,6 +174,10 @@ pub fn frame_hash_input(
     chain_id: &ChainId,
     canonical_payload: &[u8],
 ) -> Result<Vec<u8>, HashingError> {
+    if matches!(purpose, HashPurpose::ObjectType) {
+        return Err(HashingError::ObjectTypeRequiresDedicatedFrame);
+    }
+
     let mut frame = CanonicalStruct::new(HASH_FRAME_TYPE_ID, HASH_FRAME_ENCODING_VERSION);
     frame.field_u16(1, algorithm.as_u16())?;
     frame.field_u16(2, purpose.domain().as_u16())?;
@@ -185,6 +214,10 @@ pub fn frame_type_identity_input(
 /// Derives a nominal object-type identity digest for a canonical type-tag
 /// payload, using the hash-suite resolver's currently active
 /// [`HashPurpose::ObjectType`] algorithm at `epoch`.
+///
+/// `epoch` must be the authenticated execution epoch at commit time, never
+/// a value taken from unauthenticated request input, for the same reason
+/// documented on [`verify_type_identity_digest`].
 pub fn hash_type_identity(
     resolver: &HashSuiteResolver,
     epoch: Epoch,
@@ -210,6 +243,12 @@ pub fn hash_type_identity(
 /// algorithm unconditionally; type identity additionally must not let a
 /// caller mint a digest under an algorithm the schedule has not yet (or
 /// never) activated for this purpose.
+///
+/// `epoch` must be the authenticated execution epoch supplied by
+/// consensus/execution context, never a value taken from unauthenticated
+/// request input. Accepting a caller-controlled epoch would let a caller
+/// pick whichever epoch makes their chosen algorithm appear trusted,
+/// defeating this function's entire fail-closed schedule check.
 pub fn verify_type_identity_digest(
     resolver: &HashSuiteResolver,
     digest: &Digest32,
@@ -326,6 +365,10 @@ impl HashSuiteResolver {
     }
 
     /// Hashes a canonical payload for the given purpose and epoch.
+    ///
+    /// Fails with [`HashingError::ObjectTypeRequiresDedicatedFrame`] for
+    /// [`HashPurpose::ObjectType`]: use [`hash_type_identity`] instead, which
+    /// uses the dedicated frame that excludes `protocol_version`.
     pub fn hash_for_purpose(
         &self,
         epoch: Epoch,
@@ -720,6 +763,50 @@ mod tests {
         assert_eq!(
             verify_type_identity_digest(&resolver, &digest, Epoch::new(0), b"different-tag"),
             Ok(false)
+        );
+    }
+
+    #[test]
+    fn frame_hash_input_rejects_object_type_purpose() {
+        let result = frame_hash_input(
+            HashAlgorithmId::Sha2_256,
+            HashPurpose::ObjectType,
+            ProtocolVersion::new(1),
+            &ChainId::new("sunrise-devnet").unwrap(),
+            b"payload",
+        );
+
+        assert_eq!(result, Err(HashingError::ObjectTypeRequiresDedicatedFrame));
+    }
+
+    #[test]
+    fn generic_hash_paths_reject_object_type_purpose() {
+        let hasher = BuiltinHashFunction::new(HashAlgorithmId::Sha2_256);
+        assert_eq!(
+            hasher.hash(
+                HashPurpose::ObjectType,
+                ProtocolVersion::new(1),
+                &ChainId::new("sunrise-devnet").unwrap(),
+                b"payload",
+            ),
+            Err(HashingError::ObjectTypeRequiresDedicatedFrame)
+        );
+
+        let resolver = sample_resolver();
+        assert_eq!(
+            resolver.hash_for_purpose(Epoch::new(0), HashPurpose::ObjectType, b"payload"),
+            Err(HashingError::ObjectTypeRequiresDedicatedFrame)
+        );
+
+        assert_eq!(
+            verify_digest(
+                &Digest32::new(HashAlgorithmId::Sha2_256, [0u8; 32]),
+                HashPurpose::ObjectType,
+                ProtocolVersion::new(1),
+                &ChainId::new("sunrise-devnet").unwrap(),
+                b"payload",
+            ),
+            Err(HashingError::ObjectTypeRequiresDedicatedFrame)
         );
     }
 }

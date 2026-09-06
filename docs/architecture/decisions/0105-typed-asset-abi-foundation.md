@@ -35,6 +35,31 @@ wiring, or network behavior, and Standard Asset v1 remains unavailable.
   fully implemented. Both checks are additive: they do not relax or bypass
   any existing hashing validation.
 
+  `epoch` in `hash_type_identity`/`verify_type_identity_digest` (and,
+  transitively, in `abi::derive_type_id`/`abi::verify_type_id`/
+  `abi::verify_entrypoint_inputs`) must always be the authenticated
+  execution epoch supplied by consensus/execution context, never a value
+  read from unauthenticated request input. Accepting a caller-controlled
+  epoch would let a caller pick whichever epoch makes an algorithm of their
+  choosing appear trusted, defeating the fail-closed schedule check
+  entirely. This foundation is inert and wires no caller into these
+  functions yet, but the invariant is documented now so the first caller
+  that does cannot get it wrong.
+
+  `HashPurpose::ObjectType` must never reach the general-purpose hashing
+  path (`frame_hash_input`, `HashSuiteResolver::hash_for_purpose`,
+  `BuiltinHashFunction::hash`, and therefore `verify_digest`): that frame
+  binds `protocol_version` and hashes an opaque caller payload, so a digest
+  produced that way would neither exclude `protocol_version` nor be a
+  canonical `TypeTag` encoding, and would silently fail to interoperate with
+  `hash_type_identity`/`verify_type_identity_digest` while still looking
+  like a plausible digest. Rather than rely solely on documentation for this
+  footgun, `frame_hash_input` now rejects `HashPurpose::ObjectType` outright
+  (`HashingError::ObjectTypeRequiresDedicatedFrame`). This is a safe, narrow
+  rejection with no compatibility impact: no caller in the codebase reaches
+  this path with `HashPurpose::ObjectType` today, since this foundation
+  remains inert.
+
 - **DR-0105: `abi` gains a bounded, dependency-light typed-ABI foundation,
   kept separate from `AccessManifest`.** `AccessManifest` continues to answer
   only which exact objects and access modes a transaction declares; the new
@@ -45,11 +70,19 @@ wiring, or network behavior, and Standard Asset v1 remains unavailable.
   dependency; it gained only a new dependency on the already dependency-light
   `hashing` crate.
 
-  New canonical wire type IDs are allocated in the audited-unused `0x51xx`
-  band, distinct from the existing `0x50xx` `AccessEntry`/`AccessManifest`
-  IDs: `TypeArg` is `0x5101`, `TypeTag` is `0x5102`. `TypeArg` is bounded to
-  exactly one structural kind — a 32-byte Standard Asset v1 `AssetId`-shaped
-  value — and `abi` represents it as a raw `[u8; 32]` rather than importing
+  This slice adds exactly two new canonical wire type IDs: `TypeArg` is
+  `0x5101` and `TypeTag` is `0x5102`, both in the `0x51xx` range, which was
+  audited unused before this allocation. `abi` already used `0x5001`
+  (`AccessEntry`) and `0x5002` (`AccessManifest`) before this slice; this is
+  a list of the exact IDs `abi` defines, not a claim that `abi` exclusively
+  owns the entire `0x50xx`/`0x51xx` numeric ranges. In particular, `0x5001`
+  is also used by `protocol-config`'s `PROTOCOL_CONFIG_TYPE_ID` — a
+  pre-existing overlap between two separate canonical struct namespaces.
+  Each crate's decoder calls `require_type` with its own expected constant
+  and rejects anything else, so no ambiguity exists in practice, and this
+  slice does not renumber either ID. `TypeArg` is bounded to exactly one
+  structural kind — a 32-byte Standard Asset v1 `AssetId`-shaped value — and
+  `abi` represents it as a raw `[u8; 32]` rather than importing
   `standard_assets::AssetId`, preserving the dependency direction
   (`standard-assets` depends on `abi`, not the reverse). `ConstructorDeclaration`,
   `ConstructorRegistry`, `EntrypointSignature`, and `ParamDeclaration` are
@@ -57,28 +90,37 @@ wiring, or network behavior, and Standard Asset v1 remains unavailable.
   frames, so they own no canonical type ID.
 
   A `ConstructorDeclaration` binds one `abi::ConstructorId` (`abi`'s own
-  namespace) to exactly one canonical object-body wire type id
-  (`body_type_id`, owned by the defining crate's own canonical-encoding
-  namespace, required non-zero) and declares a fixed-depth canonical body
-  projection (bounded by `MAX_PROJECTION_DEPTH = 4`, each step's type id and
-  field id required non-zero) used to extract the constructor's type
-  argument directly from an object's raw body bytes. Validation additionally
-  requires a variable-arity constructor's *first* projection step to exactly
-  match its own `body_type_id`/`body_version`, since that step always
-  decodes the object's outer body; only the projection's *last* step is
-  additionally required to contain nothing but its declared terminal field,
-  because earlier steps — including the outer body itself — may legitimately
-  carry other value fields (an amount, creation metadata, and so on) that
-  the projection does not otherwise inspect. A fixed-arity constructor still
-  decodes its body and requires it to match the declared `body_type_id`/
-  `body_version` exactly, even though it extracts no type argument, so an
-  arbitrary or wrongly-typed body cannot be silently accepted.
-  `ConstructorRegistry` is a deterministic, `BTreeMap`-backed registry
-  (bounded by `MAX_CONSTRUCTORS = 32`) that rejects a duplicate
-  `ConstructorId` and, more importantly, rejects binding two different
-  constructors to the same `body_type_id` — the exact ambiguity a mirrored
-  constructor/body numeric value could otherwise create. Iteration order is
-  always sorted `ConstructorId` order, independent of registration order.
+  namespace; `0` is reserved and rejected) to exactly one canonical
+  object-body wire type id (`body_type_id`, owned by the defining crate's
+  own canonical-encoding namespace, required non-zero) and declares a
+  fixed-depth canonical body projection (bounded by `MAX_PROJECTION_DEPTH =
+  4`, each step's type id and field id required non-zero) used to extract
+  the constructor's type argument directly from an object's raw body bytes.
+  Validation additionally requires a variable-arity constructor's *first*
+  projection step to exactly match its own `body_type_id`/`body_version`,
+  since that step always decodes the object's outer body; only the
+  projection's *last* step is additionally required to contain nothing but
+  its declared terminal field, because earlier steps — including the outer
+  body itself — may legitimately carry other value fields (an amount,
+  creation metadata, and so on) that the projection does not otherwise
+  inspect. A fixed-arity constructor still decodes its body and requires it
+  to match the declared `body_type_id`/`body_version` exactly, even though
+  it extracts no type argument, so an arbitrary or wrongly-typed body cannot
+  be silently accepted. `ConstructorRegistry` is a deterministic,
+  `BTreeMap`-backed registry (bounded by `MAX_CONSTRUCTORS = 32`) that
+  rejects the reserved zero `ConstructorId`, a duplicate `ConstructorId`,
+  and, more importantly, rejects binding two different constructors to the
+  same `body_type_id` — the exact ambiguity a mirrored constructor/body
+  numeric value could otherwise create. Iteration order is always sorted
+  `ConstructorId` order, independent of registration order.
+
+  `MAX_TYPE_ARGS = 1` documents, rather than runtime-enforces, that a
+  `TypeTag` carries at most one type argument: unlike `MAX_CONSTRUCTORS` and
+  `MAX_PARAMS`, which gate an explicit collection-length check, this bound
+  is a structural consequence of `TypeTag::type_arg`'s `Option<TypeArg>`
+  representation. If that representation is ever generalized, the constant
+  must be kept synchronized with whatever explicit check replaces the
+  structural guarantee.
 
   `EntrypointSignature` (bounded by `MAX_PARAMS = 8`) declares an ordered
   list of `ParamDeclaration`s, each an exact `AccessMode`, constructor, and
@@ -127,6 +169,20 @@ wiring, or network behavior, and Standard Asset v1 remains unavailable.
   policy in this foundation (including cross-parameter type-variable
   unification) follows this rule.
 
+  **Deferred reconciliation.** `objects::apply_lazy_migration` already
+  compares an object's `type_hash` against a migration descriptor's
+  `object_type` with plain `Digest32` equality
+  (`MigrationError::ObjectTypeMismatch`). That comparison predates this
+  typed-ABI foundation and is not changed by this slice, but it is exactly
+  the raw-digest comparison the previous paragraph warns against; it can
+  only be correct today because no migration descriptor has yet been
+  committed across a `HashPurpose::ObjectType` hash-suite rotation. Before
+  this typed-ABI foundation is activated for any object whose lazy-migration
+  descriptors might span a rotation, that comparison must be reconciled to a
+  `verify_type_id`-style check (or an explicit, reviewed argument for why
+  raw equality remains sufficient there). This is deferred work tracked by
+  this decision, not a defect this slice fixes.
+
 - **DR-0105: `standard-assets` exposes the concrete Standard Asset v1
   typed-ABI bindings.** `STANDARD_ASSET_SCHEMA_VERSION_V1 = 1` is the schema
   version validators compare against `objects::Object::schema_version` and
@@ -148,16 +204,22 @@ wiring, or network behavior, and Standard Asset v1 remains unavailable.
   `derive_mint_capability_type_id` wrap `abi::derive_type_id` for each.
 
   Stable vectors and adversarial tests pin: the new hash frame and domain
-  bytes; protocol-version invariance of the derived type-identity digest
-  (contrasted with `AssetId`, which is protocol-version-bound); chain,
-  constructor, and `AssetId` separation; hash-suite rotation continuing to
-  verify an old type-identity digest, including an end-to-end
-  `verify_entrypoint_inputs` regression where a `Coin<A>` object committed
-  under SHA2-256 before a rotation and another committed under SHA3-256
-  after both still verify at a later epoch and bind the exact same logical
-  `AssetId`; fail-closed rejection of an unimplemented algorithm and of an
-  otherwise-implemented algorithm used before its schedule activation
-  epoch; registry ordering, duplicate, and bound rejection; rejection of a
+  bytes; a `TypeTag` encoding vector both without and with an `AssetId` type
+  argument; one independently pinned `StandardAssetCoinV1` nominal
+  type-identity commitment digest under a fixed deterministic
+  suite/chain/`AssetId` context (a pinned literal, not a computed-and-
+  compared-to-itself expectation); protocol-version invariance of the
+  derived type-identity digest (contrasted with `AssetId`, which is
+  protocol-version-bound); chain, constructor, and `AssetId` separation;
+  hash-suite rotation continuing to verify an old type-identity digest,
+  including an end-to-end `verify_entrypoint_inputs` regression where a
+  `Coin<A>` object committed under SHA2-256 before a rotation and another
+  committed under SHA3-256 after both still verify at a later epoch and
+  bind the exact same logical `AssetId`; fail-closed rejection of an
+  unimplemented algorithm, of an otherwise-implemented algorithm used
+  before its schedule activation epoch, and of `HashPurpose::ObjectType`
+  reaching the general-purpose hash frame; registry ordering, duplicate,
+  and bound rejection; rejection of the reserved zero `ConstructorId`, a
   zero `body_type_id`, a zero projection type id, a zero projection field
   id, and a variable-arity constructor whose first projection step
   disagrees with its own `body_type_id`/`body_version`; a fixed-arity

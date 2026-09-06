@@ -29,16 +29,28 @@
 //! runtimes, and adapters so this foundation cannot accidentally acquire an
 //! execution-engine or storage dependency.
 //!
-//! **Canonical type IDs owned by this crate (`0x50xx`/`0x51xx` namespace):**
-//! - `0x5001` — [`AccessEntry`].
-//! - `0x5002` — [`AccessManifest`].
-//! - `0x5101` — [`TypeArg`].
-//! - `0x5102` — [`TypeTag`].
+//! **Canonical type IDs defined by this crate.** This lists only the exact
+//! IDs this crate defines; it is not a claim that `abi` exclusively owns the
+//! entire `0x50xx`/`0x51xx` numeric ranges.
+//! - `0x5001` — [`AccessEntry`] (pre-existing).
+//! - `0x5002` — [`AccessManifest`] (pre-existing).
+//! - `0x5101` — [`TypeArg`] (new in this slice; the `0x51xx` band was
+//!   audited unused before this allocation).
+//! - `0x5102` — [`TypeTag`] (new in this slice, same audit).
+//!
+//! The numeric value `0x5001` is also used by `protocol-config`'s
+//! `PROTOCOL_CONFIG_TYPE_ID`. This is a pre-existing overlap between two
+//! separate canonical struct namespaces — each crate's decoder calls
+//! [`CanonicalFrame::require_type`] with its own expected constant and
+//! rejects anything else, so no ambiguity exists in practice — not a claim
+//! that `abi` reserves `0x5001` exclusively, and this slice does not
+//! renumber it.
 //!
 //! [`ConstructorDeclaration`], [`ConstructorRegistry`],
 //! [`EntrypointSignature`], and [`ParamDeclaration`] are deterministic
 //! in-memory protocol configuration, not wire-transmitted frames, so they
-//! own no canonical type ID.
+//! own no canonical type ID. [`ConstructorId`] `0` is reserved and rejected
+//! by [`ConstructorRegistry::register`]; see its type-level docs.
 //!
 //! **`type_hash` is a commitment, not the logical identity.** An object's
 //! `type_hash` (e.g. [`objects::Object::type_hash`]) is an algorithm-tagged
@@ -52,6 +64,43 @@
 //! across parameters. Any future typed policy must do the same: comparing
 //! two `type_hash` values directly for byte equality is not a valid nominal
 //! type-equality check.
+//!
+//! **Deferred reconciliation.** [`objects::apply_lazy_migration`] already
+//! compares an object's `type_hash` against a migration descriptor's
+//! `object_type` with plain `Digest32` equality
+//! ([`objects::MigrationError::ObjectTypeMismatch`]). That comparison predates this
+//! typed-ABI foundation and is not itself changed by this slice, but it is
+//! exactly the raw-digest comparison the previous paragraph warns against:
+//! it can only be correct today because no migration descriptor has yet
+//! been committed across a `HashPurpose::ObjectType` hash-suite rotation.
+//! Before this typed-ABI foundation is activated for any object whose
+//! lazy-migration descriptors might span a rotation, that comparison must
+//! be reconciled to a [`verify_type_id`]-style check (or an explicit
+//! argument for why raw equality remains sufficient there). This is
+//! deferred work, not a defect fixed by this slice.
+//!
+//! **Epoch authenticity.** Every `epoch` accepted by [`verify_type_id`],
+//! [`verify_entrypoint_inputs`], and the underlying
+//! `hashing::verify_type_identity_digest` gates which algorithms are
+//! trusted for [`protocol_types::HashPurpose::ObjectType`]. It must always
+//! be the authenticated execution epoch supplied by consensus/execution
+//! context, never a value read from unauthenticated request input:
+//! accepting a caller-controlled epoch would let an attacker pick an epoch
+//! at which an algorithm the schedule has not really reached yet (or has
+//! since retired) is nonetheless considered trusted, defeating the
+//! fail-closed schedule check entirely.
+//!
+//! **Generic hashing footgun.** [`hashing::HashSuiteResolver::hash_for_purpose`]
+//! and [`hashing::frame_hash_input`] reject
+//! [`protocol_types::HashPurpose::ObjectType`] outright
+//! (`hashing::HashingError::ObjectTypeRequiresDedicatedFrame`): that
+//! general-purpose frame binds `protocol_version` and hashes an opaque
+//! caller payload, so a value hashed through it would neither exclude
+//! `protocol_version` nor be a canonical [`TypeTag`] encoding, and would
+//! silently fail to interoperate with [`derive_type_id`]/[`verify_type_id`].
+//! Always use [`derive_type_id`]/[`verify_type_id`] (which call
+//! `hashing::hash_type_identity`/`hashing::verify_type_identity_digest`) for
+//! nominal object-type identity.
 
 use canonical_encoding::{
     CanonicalDecodingError, CanonicalEncodingError, CanonicalFrame, CanonicalStruct,
@@ -77,7 +126,14 @@ const ENCODING_VERSION: u16 = 1;
 /// Maximum number of type arguments a [`TypeTag`] may carry.
 ///
 /// Bounded typed-ABI foundation: at most one type argument, and at most one
-/// type variable, exists anywhere in this slice.
+/// type variable, exists anywhere in this slice. Unlike [`MAX_CONSTRUCTORS`]
+/// and [`MAX_PARAMS`], this bound is not enforced by a runtime length check
+/// against a collection: it is enforced structurally by
+/// [`TypeTag::type_arg`]'s `Option<TypeArg>` representation, which can hold
+/// at most one value by construction. If `type_arg` is ever generalized
+/// beyond `Option` (or [`TypeArg`] grows a variant that itself carries more
+/// than one nominal argument), this constant must be kept synchronized with
+/// whatever explicit runtime check replaces that structural guarantee.
 pub const MAX_TYPE_ARGS: usize = 1;
 /// Maximum number of constructors one [`ConstructorRegistry`] may hold.
 pub const MAX_CONSTRUCTORS: usize = 32;
@@ -154,6 +210,8 @@ pub enum AbiError {
         /// The actual byte length.
         actual: usize,
     },
+    /// A constructor declared the reserved zero [`ConstructorId`].
+    ZeroConstructorId,
     /// A constructor declared a zero canonical body type id.
     ZeroBodyTypeId(ConstructorId),
     /// A constructor declared a projection step with a zero canonical type
@@ -314,6 +372,7 @@ impl fmt::Display for AbiError {
                 f,
                 "projection extracted {actual} bytes, expected {expected}"
             ),
+            Self::ZeroConstructorId => write!(f, "constructor id 0 is reserved"),
             Self::ZeroBodyTypeId(id) => {
                 write!(f, "constructor {id} declares a zero body type id")
             }
@@ -647,7 +706,12 @@ pub fn decode_type_arg(input: &[u8]) -> Result<TypeArg, AbiError> {
 ///
 /// This is `abi`'s own namespace: distinct from any canonical object-body
 /// wire type id, even when a defining crate deliberately mirrors the numeric
-/// value (see [`ConstructorDeclaration::body_type_id`]).
+/// value (see [`ConstructorDeclaration::body_type_id`]). `0` is reserved:
+/// [`Self::new`] itself stays a total `const fn` (it cannot fail without
+/// panicking, which library code must not do), so the reservation is
+/// enforced later, by [`ConstructorDeclaration::validate`]
+/// (`AbiError::ZeroConstructorId`) and therefore by
+/// [`ConstructorRegistry::register`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConstructorId(u16);
 
@@ -793,6 +857,9 @@ pub struct ConstructorDeclaration {
 
 impl ConstructorDeclaration {
     fn validate(&self) -> Result<(), AbiError> {
+        if self.id.get() == 0 {
+            return Err(AbiError::ZeroConstructorId);
+        }
         if self.body_type_id == 0 {
             return Err(AbiError::ZeroBodyTypeId(self.id));
         }
@@ -855,13 +922,14 @@ impl ConstructorRegistry {
 
     /// Registers one constructor declaration.
     ///
-    /// Rejects an internally inconsistent declaration (a zero
-    /// `body_type_id`, arity/projection mismatch, a projection deeper than
-    /// [`MAX_PROJECTION_DEPTH`], a zero projection type id or field id, or a
-    /// first projection step that does not exactly match the declaration's
-    /// own `body_type_id`/`body_version`), a duplicate [`ConstructorId`], a
-    /// `body_type_id` already bound to a different constructor, and
-    /// registering beyond [`MAX_CONSTRUCTORS`] entries.
+    /// Rejects an internally inconsistent declaration (the reserved zero
+    /// [`ConstructorId`], a zero `body_type_id`, arity/projection mismatch,
+    /// a projection deeper than [`MAX_PROJECTION_DEPTH`], a zero projection
+    /// type id or field id, or a first projection step that does not
+    /// exactly match the declaration's own `body_type_id`/`body_version`),
+    /// a duplicate [`ConstructorId`], a `body_type_id` already bound to a
+    /// different constructor, and registering beyond [`MAX_CONSTRUCTORS`]
+    /// entries.
     pub fn register(&mut self, declaration: ConstructorDeclaration) -> Result<(), AbiError> {
         declaration.validate()?;
         if self.by_id.contains_key(&declaration.id) {
@@ -1689,6 +1757,38 @@ mod tests {
         );
     }
 
+    /// Regression test: a stable hex vector for a `TypeTag` with no type
+    /// argument (a [`TypeArity::Fixed`] constructor's nominal type).
+    #[test]
+    fn type_tag_encoding_vector_without_type_arg_is_stable() {
+        let tag = TypeTag {
+            constructor: CAP_CONSTRUCTOR,
+            type_arg: None,
+        };
+        let bytes = encode_type_tag(&tag).unwrap();
+
+        assert_eq!(hex(&bytes), "534e52450251010001000100020000000371");
+        assert_eq!(decode_type_tag(&bytes), Ok(tag));
+    }
+
+    /// Regression test: a stable hex vector for a `TypeTag` carrying an
+    /// `AssetId` type argument (a [`TypeArity::Variable`] constructor's
+    /// nominal type).
+    #[test]
+    fn type_tag_encoding_vector_with_type_arg_is_stable() {
+        let tag = TypeTag {
+            constructor: COIN_CONSTRUCTOR,
+            type_arg: Some(asset_type_arg(0x77)),
+        };
+        let bytes = encode_type_tag(&tag).unwrap();
+
+        assert_eq!(
+            hex(&bytes),
+            "534e52450251010002000100020000000271020038000000534e524501510100020001000200000001000200200000007777777777777777777777777777777777777777777777777777777777777777"
+        );
+        assert_eq!(decode_type_tag(&bytes), Ok(tag));
+    }
+
     #[test]
     fn type_tag_decoder_rejects_wrong_type_and_trailing_bytes() {
         let tag = TypeTag {
@@ -1786,7 +1886,9 @@ mod tests {
     fn registry_rejects_registration_beyond_max_constructors() {
         let mut registry = ConstructorRegistry::new();
         for index in 0..MAX_CONSTRUCTORS {
-            let id = ConstructorId::new(u16::try_from(index).unwrap());
+            // Both `id` and `body_type_id` are offset by 1: `ConstructorId`
+            // 0 is reserved, and `body_type_id` 0 is likewise rejected.
+            let id = ConstructorId::new(u16::try_from(index + 1).unwrap());
             registry
                 .register(ConstructorDeclaration {
                     id,
@@ -1801,7 +1903,7 @@ mod tests {
         }
         assert_eq!(registry.len(), MAX_CONSTRUCTORS);
 
-        let overflow_id = ConstructorId::new(u16::try_from(MAX_CONSTRUCTORS).unwrap());
+        let overflow_id = ConstructorId::new(u16::try_from(MAX_CONSTRUCTORS + 1).unwrap());
         let result = registry.register(ConstructorDeclaration {
             id: overflow_id,
             body_type_id: u16::try_from(MAX_CONSTRUCTORS + 1).unwrap(),
@@ -1811,6 +1913,16 @@ mod tests {
             projection: vec![],
         });
         assert_eq!(result, Err(AbiError::RegistryFull(MAX_CONSTRUCTORS)));
+    }
+
+    #[test]
+    fn declaration_rejects_zero_constructor_id() {
+        let mut zero_id = coin_constructor_decl();
+        zero_id.id = ConstructorId::new(0);
+        assert_eq!(
+            ConstructorRegistry::new().register(zero_id),
+            Err(AbiError::ZeroConstructorId)
+        );
     }
 
     #[test]

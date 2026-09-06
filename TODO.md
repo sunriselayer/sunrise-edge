@@ -568,7 +568,19 @@ digest同士で比較しない）、shared type variableのunification）を実�
 `hash_type_identity`/`verify_type_identity_digest`）を追加し、epoch-scoped
 trusted historyに存在しない、または未実装のalgorithmをfail closedにした。
 `crates/standard-assets`が3つのconstructor定数、schema version、deterministic
-registry、tag constructor、type-id helperを公開する。このsliceはinertであり、
+registry、tag constructor、type-id helperを公開する。`ConstructorId 0`は
+reservedでありregistry validationでfail closedに拒否する。`verify_type_id`等へ
+渡す`epoch`は必ずauthenticated execution epochでなければならず、
+request-controlledな値であってはならない、と明記した。`HashPurpose::ObjectType`が
+汎用の`frame_hash_input`/`hash_for_purpose`経路へ渡された場合は
+（`protocol_version`を含む別frameとなり`TypeTag`commitmentと不整合になるため）
+fail closedに拒否するnarrow rejectionを追加した。`0x5001`が既存の
+`protocol-config::PROTOCOL_CONFIG_TYPE_ID`と数値衝突することは、別々の
+canonical struct namespaceであり各decoderが`require_type`で自分の期待値のみを
+受理するため実害はないと明記した（既存IDのrenumberは行っていない）。
+`objects::apply_lazy_migration`の既存の生`Digest32`比較（`ObjectTypeMismatch`）は、
+typed ABI activation前に`verify_type_id`様の検証へ和解させるべきdeferred workと
+してdocumentedのみ行った（このslice自体は変更していない）。このsliceはinertであり、
 preinstalled module、`Create`、owner change、transfer、mint、fee integration、
 node-core/execution/runtime配線のいずれも行っていない。
 
