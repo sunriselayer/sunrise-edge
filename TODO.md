@@ -2423,9 +2423,16 @@ Standard Asset v1、Unique Asset v1、builder/public-testnet asset surfaceはま
    `HashDomain::ObjectType`/`HashPurpose::ObjectType`はprotocol_version/
    schema_versionを含まない別frameを使い、object nominal type identityが
    protocol upgradeとschema migrationを跨いで安定することをstable vectorと
-   adversarial testでpinした。この部分もinertであり、preinstalled module、
-   `Create`、owner change、transfer、mint、fee integration、node-core/execution/
-   runtime配線のいずれも行っていない。
+   adversarial testでpinした。DR-0106（2026-09-06、
+   `docs/architecture/decisions/0106-typed-entrypoint-owner-transition.md`）により、
+   `node-core`側に`PreinstalledTypedEntrypointPolicy`/`PreinstalledOwnerTransitionPolicy`の
+   canonical policy codecと、`PreinstalledWasmMachine::transition`がWASM実行前に
+   `abi::verify_entrypoint_inputs`を呼ぶ検証配線、成功後にnode-core自身が
+   owner-only mutationをsynthesizeしtranslation boundaryで独立再検証する配線を追加した。
+   ただし現行のいかなるpreinstalled module catalogもこの2つのpolicyをcommitしないため、
+   `Create`、devnet fixtureのreplacement、`StandardAssetTransferArgs`、
+   protocol-config/devnet側のprotocol version 4 activation、CLI/signing-view、
+   split/merge/mint、fee aggregation、public-testnet readinessはすべて未実装のまま。
 5. **未実装。** whole-coin transferはcanonical signed recipientへのexact owner change、
    partial transferはsender remainderのMutate + recipient coinのCreate、mergeはsame-assetの
    sender-owned coin 1個をchecked sumへMutateし、残りのsender-owned inputsをConsumeする。

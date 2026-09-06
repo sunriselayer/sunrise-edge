@@ -14,8 +14,8 @@ use canonical_encoding::{
 use core::fmt;
 use crypto::{Ed25519OwnerAddressError, Ed25519OwnerAddressPolicy, validate_ed25519_owner_address};
 use execution::{
-    ExecutionEngine, ExecutionError, ExecutionStatus, Transaction, WasmExecutionEngine,
-    encode_execution_effects, hash_transaction,
+    ExecutionEffects, ExecutionEngine, ExecutionError, ExecutionStatus, Transaction,
+    WasmExecutionEngine, encode_execution_effects, hash_transaction,
 };
 use hashing::{HashSuiteResolver, HashingError};
 use objects::{AccessMode, Address, Object, ObjectId, ObjectRef, Owner, decode_object};
@@ -48,6 +48,7 @@ pub mod transaction_auth;
 
 use authenticated_object_effects::{
     LoadedAuthenticatedObjects, translate_authenticated_object_effects,
+    translate_authenticated_object_effects_with_owner_transition,
     translate_fee_only_object_effects, validate_output_owner_addresses,
 };
 use preinstalled_wasm::{
@@ -63,10 +64,13 @@ pub use fee_effects::{
 pub use preinstalled_wasm::{
     MAX_PREINSTALLED_MODULE_GAS_LIMIT, MAX_PREINSTALLED_MODULE_WASM_BYTES,
     MAX_PREINSTALLED_MODULES, MAX_PREINSTALLED_OBJECT_ACCESS_POLICIES,
-    MAX_PREINSTALLED_SEMANTICS_BYTES, PreinstalledModuleCatalog, PreinstalledModuleCatalogEntry,
-    PreinstalledModuleSemanticsEnvelope, PreinstalledObjectAccessPolicy,
-    encode_preinstalled_object_access_policy, encode_preinstalled_semantics_envelope,
-    reconcile_preinstalled_registry_and_catalog,
+    MAX_PREINSTALLED_OWNER_TRANSITION_POLICIES, MAX_PREINSTALLED_SEMANTICS_BYTES,
+    MAX_PREINSTALLED_TYPED_ENTRYPOINT_CONSTRUCTORS, MAX_PREINSTALLED_TYPED_ENTRYPOINT_POLICIES,
+    PreinstalledModuleCatalog, PreinstalledModuleCatalogEntry, PreinstalledModuleSemanticsEnvelope,
+    PreinstalledObjectAccessPolicy, PreinstalledOwnerTransitionPolicy,
+    PreinstalledTypedEntrypointPolicy, encode_preinstalled_object_access_policy,
+    encode_preinstalled_owner_transition_policy, encode_preinstalled_semantics_envelope,
+    encode_preinstalled_typed_entrypoint_policy, reconcile_preinstalled_registry_and_catalog,
 };
 pub use query::{
     ObjectQueryResult, ReceiptQueryResult, query_object, query_request_receipt,
@@ -725,6 +729,137 @@ pub enum NodeCoreError {
     /// [`fee_effects::GasScheduleShapeFault`]. A trusted committed
     /// configuration fault, never a caller-supplied one.
     UnsupportedGasScheduleShape(GasScheduleShapeFault),
+    /// A typed-ABI policy construction, registry build, or
+    /// `abi::verify_entrypoint_inputs` call failed (DR-0106).
+    TypedAbi(abi::AbiError),
+    /// A committed semantics envelope declared more typed-entrypoint
+    /// constructors than the bound.
+    PreinstalledTypedEntrypointConstructorsTooLarge {
+        /// Declared constructor count.
+        count: usize,
+        /// Maximum accepted constructor count.
+        maximum: usize,
+    },
+    /// A committed semantics envelope declared more typed-entrypoint
+    /// policies than the bound.
+    PreinstalledTypedEntrypointPolicyCollectionTooLarge {
+        /// Declared policy count.
+        count: usize,
+        /// Maximum accepted policy count.
+        maximum: usize,
+    },
+    /// A committed semantics envelope declared the same entrypoint twice
+    /// across its typed-entrypoint policies.
+    DuplicatePreinstalledTypedEntrypointPolicy {
+        /// Duplicated entrypoint.
+        entrypoint: String,
+    },
+    /// A committed semantics envelope declared more owner-transition
+    /// policies than the bound.
+    PreinstalledOwnerTransitionPolicyCollectionTooLarge {
+        /// Declared policy count.
+        count: usize,
+        /// Maximum accepted policy count.
+        maximum: usize,
+    },
+    /// A committed semantics envelope declared the same entrypoint twice
+    /// across its owner-transition policies.
+    DuplicatePreinstalledOwnerTransitionPolicy {
+        /// Duplicated entrypoint.
+        entrypoint: String,
+    },
+    /// An owner-transition policy declared an empty or oversized entrypoint
+    /// name.
+    PreinstalledOwnerTransitionPolicyEntrypointInvalid {
+        /// Actual entrypoint byte length.
+        actual: usize,
+        /// Maximum accepted entrypoint byte length.
+        maximum: usize,
+    },
+    /// An owner-transition policy's access index exceeded the
+    /// per-invocation authenticated object bound.
+    PreinstalledOwnerTransitionPolicyIndexOutOfBounds {
+        /// Declared access index.
+        access_index: u32,
+        /// Maximum accepted access index.
+        maximum: u32,
+    },
+    /// An owner-transition policy declared a zero recipient-args canonical
+    /// type id.
+    PreinstalledOwnerTransitionPolicyRecipientArgsTypeIdZero,
+    /// An owner-transition policy declared a zero recipient-args canonical
+    /// field id.
+    PreinstalledOwnerTransitionPolicyRecipientArgsFieldIdZero,
+    /// An owner-transition policy's entrypoint has no matching
+    /// typed-entrypoint policy in the same envelope.
+    PreinstalledOwnerTransitionPolicyMissingTypedEntrypoint {
+        /// The owner-transition policy's entrypoint.
+        entrypoint: String,
+    },
+    /// An owner-transition policy's `transferred_access_index` is at or
+    /// beyond its typed-entrypoint policy's declared parameter count.
+    PreinstalledOwnerTransitionPolicyIndexOutOfSignature {
+        /// The owner-transition policy's entrypoint.
+        entrypoint: String,
+        /// The declared access index.
+        access_index: u32,
+        /// The typed-entrypoint policy's declared parameter count.
+        param_count: usize,
+    },
+    /// An owner-transition policy's `transferred_access_index` names a typed
+    /// parameter whose declared access mode is not `Write`.
+    PreinstalledOwnerTransitionPolicyIndexNotWrite {
+        /// The owner-transition policy's entrypoint.
+        entrypoint: String,
+        /// The declared access index.
+        access_index: u32,
+    },
+    /// An owner-transition policy's `(entrypoint, transferred_access_index)`
+    /// collides with an object-access policy's `(entrypoint, access_index)`:
+    /// the two relaxations are deliberately kept mutually exclusive.
+    PreinstalledOwnerTransitionPolicyConflictsWithObjectAccessPolicy {
+        /// The shared entrypoint.
+        entrypoint: String,
+        /// The colliding access index.
+        access_index: u32,
+    },
+    /// A committed owner-transition policy applies to this entrypoint, but
+    /// the transaction's own `protocol_version` is below
+    /// `MIN_OWNER_TRANSITION_PROTOCOL_VERSION`. Returned by
+    /// `PreinstalledWasmMachine::transition` strictly before the WASM engine
+    /// ever runs; the policy is never silently treated as absent.
+    OwnerTransitionProtocolVersionTooLow {
+        /// The transaction's declared protocol version.
+        actual: ProtocolVersion,
+        /// The minimum protocol version required to activate owner
+        /// transition.
+        minimum: ProtocolVersion,
+    },
+    /// The engine-visible object at the committed owner-transition index is
+    /// not owned by the authenticated sender.
+    OwnerTransitionSenderMismatch {
+        /// The object at the committed index.
+        object_id: ObjectId,
+    },
+    /// The engine-visible object at the committed owner-transition index was
+    /// not resolved with `Write` access.
+    OwnerTransitionModeMismatch {
+        /// The object at the committed index.
+        object_id: ObjectId,
+    },
+    /// The preinstalled module itself produced an effect naming the object
+    /// at the committed owner-transition index; only node-core may
+    /// synthesize this object's effect.
+    OwnerTransitionObjectEffectForbidden {
+        /// The object at the committed index.
+        object_id: ObjectId,
+    },
+    /// The declared `fee_payment.fee_object`, or the trusted composition
+    /// treasury, aliases the object at the committed owner-transition index.
+    OwnerTransitionFeeObjectAlias {
+        /// The aliased object.
+        object_id: ObjectId,
+    },
 }
 
 impl fmt::Display for NodeCoreError {
@@ -1189,6 +1324,94 @@ impl fmt::Display for NodeCoreError {
             Self::UnsupportedGasScheduleShape(fault) => {
                 write!(f, "committed gas schedule shape is unsupported: {fault}")
             }
+            Self::TypedAbi(error) => write!(f, "typed-ABI verification failed: {error}"),
+            Self::PreinstalledTypedEntrypointConstructorsTooLarge { count, maximum } => write!(
+                f,
+                "typed-entrypoint policy declares {count} constructors, exceeds maximum {maximum}"
+            ),
+            Self::PreinstalledTypedEntrypointPolicyCollectionTooLarge { count, maximum } => {
+                write!(
+                    f,
+                    "semantics envelope declares {count} typed-entrypoint policies, exceeds maximum {maximum}"
+                )
+            }
+            Self::DuplicatePreinstalledTypedEntrypointPolicy { entrypoint } => write!(
+                f,
+                "semantics envelope declares typed-entrypoint policy for {entrypoint:?} more than once"
+            ),
+            Self::PreinstalledOwnerTransitionPolicyCollectionTooLarge { count, maximum } => {
+                write!(
+                    f,
+                    "semantics envelope declares {count} owner-transition policies, exceeds maximum {maximum}"
+                )
+            }
+            Self::DuplicatePreinstalledOwnerTransitionPolicy { entrypoint } => write!(
+                f,
+                "semantics envelope declares owner-transition policy for {entrypoint:?} more than once"
+            ),
+            Self::PreinstalledOwnerTransitionPolicyEntrypointInvalid { actual, maximum } => write!(
+                f,
+                "owner-transition policy entrypoint is {actual} bytes, maximum is {maximum} and it must be non-empty"
+            ),
+            Self::PreinstalledOwnerTransitionPolicyIndexOutOfBounds {
+                access_index,
+                maximum,
+            } => write!(
+                f,
+                "owner-transition policy access index {access_index} exceeds maximum {maximum}"
+            ),
+            Self::PreinstalledOwnerTransitionPolicyRecipientArgsTypeIdZero => f.write_str(
+                "owner-transition policy declared a zero recipient-args canonical type id",
+            ),
+            Self::PreinstalledOwnerTransitionPolicyRecipientArgsFieldIdZero => f.write_str(
+                "owner-transition policy declared a zero recipient-args canonical field id",
+            ),
+            Self::PreinstalledOwnerTransitionPolicyMissingTypedEntrypoint { entrypoint } => write!(
+                f,
+                "owner-transition policy for {entrypoint:?} has no matching typed-entrypoint policy"
+            ),
+            Self::PreinstalledOwnerTransitionPolicyIndexOutOfSignature {
+                entrypoint,
+                access_index,
+                param_count,
+            } => write!(
+                f,
+                "owner-transition policy for {entrypoint:?} names access index {access_index}, but its typed signature declares only {param_count} parameters"
+            ),
+            Self::PreinstalledOwnerTransitionPolicyIndexNotWrite {
+                entrypoint,
+                access_index,
+            } => write!(
+                f,
+                "owner-transition policy for {entrypoint:?} names access index {access_index}, whose typed parameter is not Write"
+            ),
+            Self::PreinstalledOwnerTransitionPolicyConflictsWithObjectAccessPolicy {
+                entrypoint,
+                access_index,
+            } => write!(
+                f,
+                "owner-transition policy for {entrypoint:?} at access index {access_index} conflicts with an object-access policy at the same index"
+            ),
+            Self::OwnerTransitionProtocolVersionTooLow { actual, minimum } => write!(
+                f,
+                "owner transition requires protocol_version >= {minimum:?}, transaction declared {actual:?}"
+            ),
+            Self::OwnerTransitionSenderMismatch { object_id } => write!(
+                f,
+                "owner-transition object {object_id} is not owned by the authenticated sender"
+            ),
+            Self::OwnerTransitionModeMismatch { object_id } => write!(
+                f,
+                "owner-transition object {object_id} was not resolved with Write access"
+            ),
+            Self::OwnerTransitionObjectEffectForbidden { object_id } => write!(
+                f,
+                "preinstalled module produced a forbidden effect for owner-transition object {object_id}"
+            ),
+            Self::OwnerTransitionFeeObjectAlias { object_id } => write!(
+                f,
+                "fee object or treasury aliases owner-transition object {object_id}"
+            ),
         }
     }
 }
@@ -1209,6 +1432,7 @@ impl Error for NodeCoreError {
             Self::FeePaymentRejected(error) => Some(error),
             Self::FeeCompositionFailed(error) => Some(error),
             Self::UnsupportedGasScheduleShape(error) => Some(error),
+            Self::TypedAbi(error) => Some(error),
             Self::ObjectBlobPublishFailed { source, .. } => Some(source),
             Self::InadmissibleObjectOwnerAddress { source, .. } => Some(source),
             Self::InadmissibleObjectOutputOwnerAddress { source, .. } => Some(source),
@@ -1274,6 +1498,12 @@ impl From<ProtocolConfigError> for NodeCoreError {
 impl From<TransactionAuthError> for NodeCoreError {
     fn from(value: TransactionAuthError) -> Self {
         Self::TransactionAuth(value)
+    }
+}
+
+impl From<abi::AbiError> for NodeCoreError {
+    fn from(value: abi::AbiError) -> Self {
+        Self::TypedAbi(value)
     }
 }
 
@@ -2555,6 +2785,22 @@ enum ObjectEffectMatching {
         /// The trusted composition treasury the fee was credited to.
         treasury: ObjectId,
     },
+    /// Identical to [`Self::Exact`], except the declared `Write` effect for
+    /// `object_id` may change [`objects::Object::owner`] to exactly
+    /// `recipient` (DR-0106). Every other declared access still requires an
+    /// exact one-to-one match with an owner-preserving effect. Constructed
+    /// only by `PreinstalledWasmMachine` after independently verifying a
+    /// committed [`PreinstalledOwnerTransitionPolicy`] and synthesizing the
+    /// owner-only effect itself — the module's own returned effects are
+    /// never trusted to declare `object_id`'s new owner, and the translation
+    /// boundary independently re-checks `recipient` and the unchanged body
+    /// (see `authenticated_object_effects::translate_authenticated_object_effects_with_owner_transition`).
+    ExactWithOwnerTransition {
+        /// The one object id whose declared `Write` effect may change owner.
+        object_id: ObjectId,
+        /// The exact new owner address `object_id`'s effect must declare.
+        recipient: Address,
+    },
 }
 
 /// Candidate multi-key transition and outputs held until atomic commit.
@@ -2702,6 +2948,54 @@ impl TransactionalNodeTransition {
             output,
             object_effect_matching: ObjectEffectMatching::RejectedFeeOnly { payer, treasury },
         }
+    }
+
+    /// Creates a transition identical to [`Self::with_object_effects`],
+    /// except the declared `Write` effect for `owner_transition_object_id`
+    /// may change owner to exactly `recipient` (DR-0106).
+    ///
+    /// Constructed only by `PreinstalledWasmMachine` after independently
+    /// verifying a committed [`PreinstalledOwnerTransitionPolicy`] and
+    /// synthesizing the owner-only effect itself — never by a caller simply
+    /// wanting to bypass the default owner-preserving rule.
+    pub(crate) fn with_object_effects_and_owner_transition(
+        mut updates: Vec<NodeStateUpdate>,
+        object_effects: Vec<ObjectEffect>,
+        output: NodeOutput,
+        owner_transition_object_id: ObjectId,
+        recipient: Address,
+    ) -> Result<Self, NodeCoreError> {
+        if updates.is_empty() && object_effects.is_empty() {
+            return Err(NodeCoreError::EmptyStateUpdates);
+        }
+        if updates.len() > MAX_ATOMIC_STATE_WRITES {
+            return Err(NodeCoreError::TooManyStateUpdates {
+                count: updates.len(),
+                maximum: MAX_ATOMIC_STATE_WRITES,
+            });
+        }
+        if object_effects.len() > MAX_AUTHENTICATED_OBJECT_READS {
+            return Err(NodeCoreError::TooManyObjectEffects {
+                actual: object_effects.len(),
+                maximum: MAX_AUTHENTICATED_OBJECT_READS,
+            });
+        }
+        updates.sort_by(|left: &NodeStateUpdate, right: &NodeStateUpdate| left.key.cmp(&right.key));
+        if updates
+            .windows(2)
+            .any(|pair: &[NodeStateUpdate]| pair[0].key == pair[1].key)
+        {
+            return Err(NodeCoreError::DuplicateStateUpdateKey);
+        }
+        Ok(Self {
+            updates,
+            object_effects,
+            output,
+            object_effect_matching: ObjectEffectMatching::ExactWithOwnerTransition {
+                object_id: owner_transition_object_id,
+                recipient,
+            },
+        })
     }
 
     /// Returns state updates in deterministic raw-key order.
@@ -3325,6 +3619,26 @@ where
     )
 }
 
+/// The minimum `Transaction.protocol_version` at which node-core will ever
+/// activate a committed [`PreinstalledOwnerTransitionPolicy`] (DR-0106).
+///
+/// A matching policy below this version is rejected outright with
+/// [`NodeCoreError::OwnerTransitionProtocolVersionTooLow`], checked once in
+/// [`PreinstalledWasmMachine::transition`] strictly before the WASM engine
+/// ever runs (alongside the typed-entrypoint-policy check) — never treated as
+/// though the policy were merely absent, and never deferred to a later
+/// engine-effect mismatch. See
+/// `docs/architecture/decisions/0106-typed-entrypoint-owner-transition.md`.
+pub const MIN_OWNER_TRANSITION_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(4);
+
+/// One owner-only mutation node-core independently synthesized for a
+/// committed [`PreinstalledOwnerTransitionPolicy`] (DR-0106).
+struct OwnerTransitionSynthesis {
+    object_id: ObjectId,
+    recipient: Address,
+    effect: ObjectEffect,
+}
+
 /// The internal `TransactionalNodeStateMachine` behind
 /// [`handle_authenticated_resolved_durable_submit_transaction_with_preinstalled_wasm_execution`].
 ///
@@ -3669,6 +3983,121 @@ impl<'a> PreinstalledWasmMachine<'a> {
         merged.push(treasury_effect);
         Ok(merged)
     }
+
+    /// Independently synthesizes the exact owner-only mutation a committed
+    /// [`PreinstalledOwnerTransitionPolicy`] authorizes for a successful
+    /// call, or returns `None` if no such policy is committed for this
+    /// entrypoint (DR-0106).
+    ///
+    /// [`PreinstalledWasmMachine::transition`] already rejects a matching
+    /// policy below [`MIN_OWNER_TRANSITION_PROTOCOL_VERSION`] with
+    /// [`NodeCoreError::OwnerTransitionProtocolVersionTooLow`] strictly
+    /// before the WASM engine ever runs, so this function is never reached
+    /// with such a transaction; it rechecks the same gate defensively below
+    /// and fails the same way rather than assuming the caller enforced it.
+    /// Every check below fails closed with a hard `Err`, since a matching
+    /// committed policy makes this a fully authorized, narrowly-scoped
+    /// capability rather than a best-effort one:
+    ///
+    /// * the committed `transferred_access_index` must resolve to an
+    ///   engine-visible input actually accessed with `Write`
+    ///   ([`NodeCoreError::OwnerTransitionModeMismatch`]) and owned by the
+    ///   authenticated sender
+    ///   ([`NodeCoreError::OwnerTransitionSenderMismatch`]);
+    /// * the module's own returned effects must not name that object at all
+    ///   ([`NodeCoreError::OwnerTransitionObjectEffectForbidden`]) — the
+    ///   module is a no-op for this object by construction, and node-core
+    ///   never trusts it to declare the new owner;
+    /// * neither a declared `fee_payment.fee_object` nor the trusted
+    ///   composition treasury may alias the transferred object
+    ///   ([`NodeCoreError::OwnerTransitionFeeObjectAlias`]);
+    /// * the recipient is projected from the exact canonical transaction
+    ///   `args` via the policy's committed type/version/field (see
+    ///   [`PreinstalledOwnerTransitionPolicy::project_recipient`]).
+    ///
+    /// The synthesized [`ObjectEffect::Mutated`] keeps `id`, `data`,
+    /// `type_hash`, and `schema_version` exactly unchanged and advances
+    /// `version` by exactly one; only `owner` changes, to
+    /// `Owner::Address(recipient)`. This function never re-derives whether
+    /// `recipient` is an admissible address under the authenticating
+    /// profile — that revalidation is `validate_output_owner_addresses`'s
+    /// existing, unmodified job, applied uniformly to every synthesized and
+    /// module-produced effect after `transition` returns.
+    fn synthesize_owner_transition(
+        &self,
+        module: &PreinstalledModuleCatalogEntry,
+        state: &NodeStateSnapshot,
+        effects: &ExecutionEffects,
+    ) -> Result<Option<OwnerTransitionSynthesis>, NodeCoreError> {
+        let Some(policy) = module
+            .semantics_envelope()
+            .matching_owner_transition_policy(&self.transaction.entrypoint)
+        else {
+            return Ok(None);
+        };
+        if self.transaction.protocol_version < MIN_OWNER_TRANSITION_PROTOCOL_VERSION {
+            return Err(NodeCoreError::OwnerTransitionProtocolVersionTooLow {
+                actual: self.transaction.protocol_version,
+                minimum: MIN_OWNER_TRANSITION_PROTOCOL_VERSION,
+            });
+        }
+
+        let index = usize::try_from(policy.transferred_access_index()).map_err(|_| {
+            NodeCoreError::PersistenceInvariant(
+                "owner-transition policy index validated at construction time did not fit usize",
+            )
+        })?;
+        let resolved =
+            state
+                .resolved_objects()
+                .get(index)
+                .ok_or(NodeCoreError::PersistenceInvariant(
+                    "owner-transition policy index exceeded the resolved engine-visible inputs",
+                ))?;
+        let object_id = resolved.object.id;
+        if resolved.mode != AccessMode::Write {
+            return Err(NodeCoreError::OwnerTransitionModeMismatch { object_id });
+        }
+        if resolved.object.owner != Owner::Address(self.transaction.sender) {
+            return Err(NodeCoreError::OwnerTransitionSenderMismatch { object_id });
+        }
+        if effects
+            .object_effects
+            .iter()
+            .any(|effect| fee_effect_object_id(effect) == object_id)
+        {
+            return Err(NodeCoreError::OwnerTransitionObjectEffectForbidden { object_id });
+        }
+        if let Some(fee_payment) = &self.transaction.fee_payment
+            && fee_payment.fee_object.id == object_id
+        {
+            return Err(NodeCoreError::OwnerTransitionFeeObjectAlias { object_id });
+        }
+        if let Some(composition) = &self.fee_composition
+            && composition.treasury_object_id == object_id
+        {
+            return Err(NodeCoreError::OwnerTransitionFeeObjectAlias { object_id });
+        }
+
+        let recipient = policy.project_recipient(&self.transaction.args)?;
+        let next_version = resolved
+            .object
+            .version
+            .checked_add(1)
+            .ok_or(NodeCoreError::ObjectVersionOverflow { object_id })?;
+        let mut new_object = resolved.object.clone();
+        new_object.version = next_version;
+        new_object.owner = Owner::Address(recipient);
+
+        Ok(Some(OwnerTransitionSynthesis {
+            object_id,
+            recipient,
+            effect: ObjectEffect::Mutated {
+                previous_version: resolved.object.version,
+                new_object,
+            },
+        }))
+    }
 }
 
 fn fee_effect_object_id(effect: &ObjectEffect) -> ObjectId {
@@ -3720,6 +4149,54 @@ impl TransactionalNodeStateMachine for PreinstalledWasmMachine<'_> {
         let fee_admission = self.admit_fee(state)?;
 
         let tx_hash = hash_transaction(self.transaction, self.resolver)?;
+
+        // DR-0106: if a typed-entrypoint policy is committed for this exact
+        // entrypoint, every engine-visible input (in exact signed order)
+        // must satisfy it before the WASM engine ever runs. `abi` never
+        // resolves objects itself; `state.resolved_objects()` is already the
+        // access-checked, engine-visible set `load_and_authorize_objects`
+        // produced. `epoch` is the authenticated event epoch, never
+        // request-supplied. No current catalog commits such a policy, so
+        // this stays unreachable end-to-end.
+        if let Some(typed_policy) = module
+            .semantics_envelope()
+            .matching_typed_entrypoint_policy(&self.transaction.entrypoint)
+        {
+            let registry = typed_policy.registry()?;
+            let typed_inputs: Vec<abi::ResolvedInput<'_>> = state
+                .resolved_objects()
+                .iter()
+                .map(|resolved| abi::ResolvedInput {
+                    mode: resolved.mode,
+                    object: &resolved.object,
+                })
+                .collect();
+            abi::verify_entrypoint_inputs(
+                typed_policy.signature(),
+                &registry,
+                self.resolver,
+                epoch,
+                &typed_inputs,
+            )?;
+        }
+
+        // DR-0106: a committed owner-transition policy that matches this
+        // exact entrypoint but requires a `protocol_version` this transaction
+        // does not meet is rejected outright, strictly before the WASM
+        // engine ever runs — never treated as though the policy were merely
+        // absent (see [`MIN_OWNER_TRANSITION_PROTOCOL_VERSION`]'s docs).
+        if module
+            .semantics_envelope()
+            .matching_owner_transition_policy(&self.transaction.entrypoint)
+            .is_some()
+            && self.transaction.protocol_version < MIN_OWNER_TRANSITION_PROTOCOL_VERSION
+        {
+            return Err(NodeCoreError::OwnerTransitionProtocolVersionTooLow {
+                actual: self.transaction.protocol_version,
+                minimum: MIN_OWNER_TRANSITION_PROTOCOL_VERSION,
+            });
+        }
+
         let effects = self.engine.execute(
             self.transaction.protocol_version,
             tx_hash,
@@ -3741,73 +4218,136 @@ impl TransactionalNodeStateMachine for PreinstalledWasmMachine<'_> {
             ),
         };
 
-        let status = match &effects.status {
-            ExecutionStatus::Success => NodeResponseStatus::Accepted,
-            ExecutionStatus::Failure { .. } => NodeResponseStatus::Rejected,
-        };
-        let response_payload: Vec<u8> = encode_execution_effects(&effects)?;
-        let response = NodeResponse::new(event.request_id(), status, Some(response_payload))?;
-        let output = NodeOutput::new(vec![response], Vec::new())?;
         let gas_used = effects.gas_used;
 
         match effects.status {
             // `WasmExecutionEngine` discards every candidate object effect on
             // a trap (see `execution::wasm_engine`), so a declared
-            // `Write`/`Consume` access can never be matched here.
-            ExecutionStatus::Failure { .. } => match fee_admission {
-                None => Ok(TransactionalNodeTransition::rejected_with_no_object_mutation(output)),
-                Some((fee_payment, fee_object_id, treasury_id)) => {
-                    let amount = self.settle_actual_fee(fee_payment, gas_used)?;
-                    if amount.get() == 0 {
+            // `Write`/`Consume` access can never be matched here. A trap
+            // never synthesizes an owner transition either: this arm never
+            // calls `synthesize_owner_transition`, so the receipt's encoded
+            // effects and the committed mutations agree (both empty, modulo
+            // the fee-only payer/treasury mutations charged below, which are
+            // deliberately never part of the canonically encoded
+            // `ExecutionEffects`).
+            ExecutionStatus::Failure { .. } => {
+                let response_payload: Vec<u8> = encode_execution_effects(&effects)?;
+                let response = NodeResponse::new(
+                    event.request_id(),
+                    NodeResponseStatus::Rejected,
+                    Some(response_payload),
+                )?;
+                let output = NodeOutput::new(vec![response], Vec::new())?;
+                match fee_admission {
+                    None => {
                         Ok(TransactionalNodeTransition::rejected_with_no_object_mutation(output))
-                    } else {
-                        // Trap discards every application effect, so both
-                        // bodies charged here are exactly the loaded
-                        // (pre-execution) bodies.
-                        let charged = self.charge_fee(
+                    }
+                    Some((fee_payment, fee_object_id, treasury_id)) => {
+                        let amount = self.settle_actual_fee(fee_payment, gas_used)?;
+                        if amount.get() == 0 {
+                            Ok(
+                                TransactionalNodeTransition::rejected_with_no_object_mutation(
+                                    output,
+                                ),
+                            )
+                        } else {
+                            // Trap discards every application effect, so both
+                            // bodies charged here are exactly the loaded
+                            // (pre-execution) bodies.
+                            let charged = self.charge_fee(
+                                state,
+                                fee_payment,
+                                fee_object_id,
+                                treasury_id,
+                                amount,
+                                Vec::new(),
+                            )?;
+                            Ok(
+                                TransactionalNodeTransition::rejected_with_fee_only_mutation(
+                                    output,
+                                    charged,
+                                    fee_object_id,
+                                    treasury_id,
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+            ExecutionStatus::Success => {
+                let owner_transition = self.synthesize_owner_transition(module, state, &effects)?;
+                // The synthesized owner-transition effect (if any) is folded
+                // into the exact same `ExecutionEffects` this canonically
+                // encodes for the receipt, so the receipt a caller observes
+                // and the mutation node-core actually commits never
+                // disagree. Fee payer/treasury mutations are charged
+                // separately below and are never added to this struct, so
+                // they stay excluded from the canonical application effects,
+                // matching existing fee semantics.
+                let mut canonical_effects = effects;
+                if let Some(synthesis) = &owner_transition {
+                    canonical_effects
+                        .object_effects
+                        .push(synthesis.effect.clone());
+                }
+                let response_payload: Vec<u8> = encode_execution_effects(&canonical_effects)?;
+                let response = NodeResponse::new(
+                    event.request_id(),
+                    NodeResponseStatus::Accepted,
+                    Some(response_payload),
+                )?;
+                let output = NodeOutput::new(vec![response], Vec::new())?;
+                let object_effects = canonical_effects.object_effects;
+                match fee_admission {
+                    None if !object_effects.is_empty() => match owner_transition {
+                        Some(synthesis) => {
+                            TransactionalNodeTransition::with_object_effects_and_owner_transition(
+                                Vec::new(),
+                                object_effects,
+                                output,
+                                synthesis.object_id,
+                                synthesis.recipient,
+                            )
+                        }
+                        None => TransactionalNodeTransition::with_object_effects(
+                            Vec::new(),
+                            object_effects,
+                            output,
+                        ),
+                    },
+                    None => Ok(TransactionalNodeTransition::read_only(output)),
+                    Some((fee_payment, fee_object_id, treasury_id)) => {
+                        let amount = self.settle_actual_fee(fee_payment, gas_used)?;
+                        if amount.get() == 0 {
+                            return Err(NodeCoreError::FeeAmountZero);
+                        }
+                        let merged = self.charge_fee(
                             state,
                             fee_payment,
                             fee_object_id,
                             treasury_id,
                             amount,
-                            Vec::new(),
+                            object_effects,
                         )?;
-                        Ok(
-                            TransactionalNodeTransition::rejected_with_fee_only_mutation(
+                        match owner_transition {
+                            Some(synthesis) => {
+                                TransactionalNodeTransition::with_object_effects_and_owner_transition(
+                                    Vec::new(),
+                                    merged,
+                                    output,
+                                    synthesis.object_id,
+                                    synthesis.recipient,
+                                )
+                            }
+                            None => TransactionalNodeTransition::with_object_effects(
+                                Vec::new(),
+                                merged,
                                 output,
-                                charged,
-                                fee_object_id,
-                                treasury_id,
                             ),
-                        )
+                        }
                     }
                 }
-            },
-            ExecutionStatus::Success => match fee_admission {
-                None if !effects.object_effects.is_empty() => {
-                    TransactionalNodeTransition::with_object_effects(
-                        Vec::new(),
-                        effects.object_effects,
-                        output,
-                    )
-                }
-                None => Ok(TransactionalNodeTransition::read_only(output)),
-                Some((fee_payment, fee_object_id, treasury_id)) => {
-                    let amount = self.settle_actual_fee(fee_payment, gas_used)?;
-                    if amount.get() == 0 {
-                        return Err(NodeCoreError::FeeAmountZero);
-                    }
-                    let merged = self.charge_fee(
-                        state,
-                        fee_payment,
-                        fee_object_id,
-                        treasury_id,
-                        amount,
-                        effects.object_effects,
-                    )?;
-                    TransactionalNodeTransition::with_object_effects(Vec::new(), merged, output)
-                }
-            },
+            }
         }
     }
 }
@@ -4232,6 +4772,17 @@ where
             transition.object_effects(),
             mutation_context.as_ref(),
             loaded_objects.total_body_bytes(),
+        )?,
+        ObjectEffectMatching::ExactWithOwnerTransition {
+            object_id,
+            recipient,
+        } => translate_authenticated_object_effects_with_owner_transition(
+            loaded_objects.verified(),
+            transition.object_effects(),
+            mutation_context.as_ref(),
+            loaded_objects.total_body_bytes(),
+            *object_id,
+            *recipient,
         )?,
         ObjectEffectMatching::RejectedNoMutation => {
             debug_assert!(transition.object_effects().is_empty());
@@ -5462,7 +6013,10 @@ fn take_nested_bytes<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use abi::{AccessEntry, AccessManifest};
+    use abi::{
+        AccessEntry, AccessManifest, ConstructorDeclaration, ConstructorId, EntrypointSignature,
+        ParamDeclaration, TypeArity, TypeTag,
+    };
     use ed25519_zebra::SigningKey;
     use execution::{Transaction, encode_transaction, encode_transaction_signable};
     use hashing::{BuiltinHashFunction, HashFunction};
@@ -5553,9 +6107,13 @@ mod tests {
     }
 
     fn resolver(chain: &str) -> HashSuiteResolver {
+        resolver_for_protocol(chain, ProtocolVersion::new(3))
+    }
+
+    fn resolver_for_protocol(chain: &str, protocol_version: ProtocolVersion) -> HashSuiteResolver {
         HashSuiteResolver::new(
             ChainId::new(chain).unwrap(),
-            ProtocolVersion::new(3),
+            protocol_version,
             vec![HashSuiteSchedule {
                 activation_epoch: Epoch::new(0),
                 suite: HashSuite::genesis(),
@@ -5840,9 +6398,10 @@ mod tests {
         protocol_config: &ProtocolConfig,
     ) -> AuthenticatedSubmitTransaction {
         let payload = signed_transaction_bytes(signing_key, &tx);
+        let protocol_version: ProtocolVersion = tx.protocol_version;
         let event = NodeEvent::new(
             ChainId::new(chain).unwrap(),
-            ProtocolVersion::new(3),
+            protocol_version,
             epoch,
             request_id,
             NodeEventKind::SubmitTransaction,
@@ -5864,12 +6423,13 @@ mod tests {
         config: &NodeConfig,
         protocol_config: &ProtocolConfig,
     ) -> AuthenticatedSubmitTransaction {
+        let protocol_version: ProtocolVersion = tx.protocol_version;
         let transaction_signable: Vec<u8> = encode_transaction_signable(&tx).unwrap();
         let submission_signable: Vec<u8> =
             encode_submit_transaction_signable(request_id, &transaction_signable).unwrap();
         let domain: crypto::SignatureDomain = crypto::SignatureDomain {
             chain_id: tx.chain_id.clone(),
-            protocol_version: ProtocolVersion::new(3),
+            protocol_version,
             epoch: tx.epoch,
             message_type: crypto::SignatureMessageType::new(SUBMIT_TRANSACTION_V1_MESSAGE_TYPE)
                 .unwrap(),
@@ -5883,7 +6443,7 @@ mod tests {
         let payload: Vec<u8> = encode_transaction(&signed).unwrap();
         let event: NodeEvent = NodeEvent::new(
             ChainId::new(chain).unwrap(),
-            ProtocolVersion::new(3),
+            protocol_version,
             epoch,
             request_id,
             NodeEventKind::SubmitTransaction,
@@ -5895,14 +6455,14 @@ mod tests {
 
     /// Signs `tx` under the exact production `SignatureDomain` that
     /// `authenticate_transaction_bytes` itself builds (`tx.chain_id`,
-    /// protocol version 3, `tx.epoch`, message family `"transaction-v1"`,
+    /// `tx.protocol_version`, `tx.epoch`, message family `"transaction-v1"`,
     /// Ed25519), matching `transaction_auth`'s own test-only signer, and
     /// returns the fully encoded transaction bytes.
     fn signed_transaction_bytes(signing_key: &SigningKey, tx: &Transaction) -> Vec<u8> {
         let signable = encode_transaction_signable(tx).unwrap();
         let domain = crypto::SignatureDomain {
             chain_id: tx.chain_id.clone(),
-            protocol_version: ProtocolVersion::new(3),
+            protocol_version: tx.protocol_version,
             epoch: tx.epoch,
             message_type: crypto::SignatureMessageType::new("transaction-v1").unwrap(),
             signature_scheme_id: SignatureSchemeId::Ed25519,
@@ -7989,11 +8549,39 @@ mod tests {
         created_checkpoint: u64,
         receipt_byte: u8,
     ) -> ObjectRef {
+        commit_memory_inline_object_with_protocol_version(
+            store,
+            context,
+            object_domain,
+            object,
+            chain,
+            ProtocolVersion::new(3),
+            created_checkpoint,
+            receipt_byte,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_memory_inline_object_with_protocol_version(
+        store: &MemoryDurableStateStore,
+        context: &DurableOperationContext,
+        object_domain: AtomicityDomainId,
+        object: Object,
+        chain: &str,
+        protocol_version: ProtocolVersion,
+        created_checkpoint: u64,
+        receipt_byte: u8,
+    ) -> ObjectRef {
         let object_id: ObjectId = object.id;
         let object_version: u64 = object.version;
         let owner: Owner = object.owner.clone();
         let (record, digest): (DurableObjectVersionRecord, Digest32) =
-            hashed_object_version(object, chain, created_checkpoint);
+            hashed_object_version_with_protocol_version(
+                object,
+                chain,
+                protocol_version,
+                created_checkpoint,
+            );
         let changes: DurableObjectChanges = DurableObjectChanges::new(
             vec![runtime::DurableObjectHeadRead::new(
                 object_id,
@@ -11121,9 +11709,32 @@ mod tests {
         module_ref: ObjectRef,
         args: Vec<u8>,
     ) -> Transaction {
+        preinstalled_transaction_with_protocol_version(
+            sender,
+            chain,
+            ProtocolVersion::new(3),
+            epoch,
+            nonce,
+            access_manifest,
+            module_ref,
+            args,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn preinstalled_transaction_with_protocol_version(
+        sender: Address,
+        chain: ChainId,
+        protocol_version: ProtocolVersion,
+        epoch: Epoch,
+        nonce: u64,
+        access_manifest: AccessManifest,
+        module_ref: ObjectRef,
+        args: Vec<u8>,
+    ) -> Transaction {
         Transaction {
             chain_id: chain,
-            protocol_version: ProtocolVersion::new(3),
+            protocol_version,
             epoch,
             sender,
             nonce,
@@ -11135,6 +11746,101 @@ mod tests {
             fee_payment: None,
             signature: Vec::new(),
         }
+    }
+
+    const OWNER_TRANSITION_CONSTRUCTOR_ID: u16 = 0x7A01;
+    const OWNER_TRANSITION_BODY_TYPE_ID: u16 = 0x7A01;
+    const OWNER_TRANSITION_ARGS_TYPE_ID: u16 = 0x7A02;
+
+    fn owner_transition_envelope() -> PreinstalledModuleSemanticsEnvelope {
+        let constructor: ConstructorDeclaration = ConstructorDeclaration {
+            id: ConstructorId::new(OWNER_TRANSITION_CONSTRUCTOR_ID),
+            body_type_id: OWNER_TRANSITION_BODY_TYPE_ID,
+            body_version: 1,
+            schema_version: 1,
+            arity: TypeArity::Fixed,
+            projection: Vec::new(),
+        };
+        let signature: EntrypointSignature = EntrypointSignature::new(
+            "run".to_string(),
+            vec![ParamDeclaration {
+                mode: AccessMode::Write,
+                constructor: ConstructorId::new(OWNER_TRANSITION_CONSTRUCTOR_ID),
+                schema_version: 1,
+            }],
+        )
+        .unwrap();
+        let typed: PreinstalledTypedEntrypointPolicy =
+            PreinstalledTypedEntrypointPolicy::new(vec![constructor], signature).unwrap();
+        let owner: PreinstalledOwnerTransitionPolicy = PreinstalledOwnerTransitionPolicy::new(
+            "run".to_string(),
+            0,
+            OWNER_TRANSITION_ARGS_TYPE_ID,
+            1,
+            1,
+        )
+        .unwrap();
+        PreinstalledModuleSemanticsEnvelope::with_typed_policies(
+            b"owner-transition-test".to_vec(),
+            Vec::new(),
+            vec![typed],
+            vec![owner],
+        )
+        .unwrap()
+    }
+
+    fn owner_transition_args(recipient: Address) -> Vec<u8> {
+        let mut args: CanonicalStruct = CanonicalStruct::new(OWNER_TRANSITION_ARGS_TYPE_ID, 1);
+        args.field_bytes(1, recipient.as_bytes().to_vec()).unwrap();
+        args.finish().unwrap()
+    }
+
+    fn owner_transition_object(
+        resolver: &HashSuiteResolver,
+        epoch: Epoch,
+        id: ObjectId,
+        owner: Address,
+        data: Vec<u8>,
+    ) -> Object {
+        let type_hash: Digest32 = abi::derive_type_id(
+            resolver,
+            epoch,
+            &TypeTag {
+                constructor: ConstructorId::new(OWNER_TRANSITION_CONSTRUCTOR_ID),
+                type_arg: None,
+            },
+        )
+        .unwrap();
+        let mut body: CanonicalStruct = CanonicalStruct::new(OWNER_TRANSITION_BODY_TYPE_ID, 1);
+        body.field_bytes(1, data).unwrap();
+        Object {
+            id,
+            version: 1,
+            owner: Owner::Address(owner),
+            type_hash,
+            schema_version: 1,
+            data: body.finish().unwrap(),
+        }
+    }
+
+    fn zero_fee_policy() -> CommittedFeePolicy {
+        let config: ProtocolConfig = ProtocolConfig::genesis();
+        CommittedFeePolicy {
+            gas_schedule: config.gas_schedule,
+            fee_assets: config.fee_assets,
+        }
+    }
+
+    fn submit_event_for_protocol(protocol_version: ProtocolVersion, request_byte: u8) -> NodeEvent {
+        NodeEvent::new(
+            ChainId::new("sunrise-test").unwrap(),
+            protocol_version,
+            Epoch::new(7),
+            request(request_byte),
+            NodeEventKind::SubmitTransaction,
+            canonical(TEST_PAYLOAD_TYPE_ID, 9),
+        )
+        .unwrap()
     }
 
     fn load_cross_owner_destination_with_policy(
@@ -11268,6 +11974,543 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn typed_entrypoint_rejects_mismatch_before_wasm_execution() {
+        let protocol_version: ProtocolVersion = ProtocolVersion::new(4);
+        let hash_resolver: HashSuiteResolver =
+            resolver_for_protocol("sunrise-test", protocol_version);
+        let sender: Address = Address::new([0x31; 32]);
+        let object_id: ObjectId = ObjectId::new([0x32; 32]);
+        let mut object: Object =
+            owner_transition_object(&hash_resolver, Epoch::new(7), object_id, sender, vec![0x33]);
+        object.type_hash = Digest32::new(HashAlgorithmId::Sha2_256, [0xFF; 32]);
+        let module_id: ModuleId = ModuleId::new([0x34; 32]);
+        // Invalid WASM bytes make the ordering observable: reaching the
+        // engine would return an execution error instead of this ABI error.
+        let (registry, catalog, module_ref) = preinstalled_module_fixture_with_envelope(
+            &hash_resolver,
+            module_id,
+            1,
+            vec![0xFF],
+            64,
+            Epoch::new(0),
+            system_modules::ModuleStatus::Active,
+            owner_transition_envelope(),
+        );
+        let transaction: Transaction = preinstalled_transaction_with_protocol_version(
+            sender,
+            ChainId::new("sunrise-test").unwrap(),
+            protocol_version,
+            Epoch::new(7),
+            0,
+            manifest_with(vec![AccessEntry {
+                object_ref: sample_object_ref(0x32),
+                mode: AccessMode::Write,
+            }]),
+            module_ref,
+            owner_transition_args(Address::new([0x35; 32])),
+        );
+        let registered: &SystemModule = registry.get(module_id, 1).unwrap();
+        let fee_policy: CommittedFeePolicy = zero_fee_policy();
+        let machine = PreinstalledWasmMachine {
+            transaction: &transaction,
+            resolver: &hash_resolver,
+            registered_module: Some(registered),
+            catalog: &catalog,
+            engine: &WasmExecutionEngine,
+            fee_policy: &fee_policy,
+            fee_composition: None,
+            resolved_module: std::cell::OnceCell::new(),
+            treasury_object: std::cell::OnceCell::new(),
+        };
+        let state = NodeStateSnapshot {
+            values: BTreeMap::new(),
+            resolved_objects: vec![ResolvedObject {
+                object,
+                mode: AccessMode::Write,
+            }],
+        };
+
+        assert!(matches!(
+            machine.transition(&state, &submit_event_for_protocol(protocol_version, 0x36)),
+            Err(NodeCoreError::TypedAbi(
+                abi::AbiError::TypeIdentityMismatch { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn owner_transition_v3_rejects_before_wasm_execution() {
+        let protocol_version: ProtocolVersion = ProtocolVersion::new(3);
+        let hash_resolver: HashSuiteResolver =
+            resolver_for_protocol("sunrise-test", protocol_version);
+        let sender: Address = Address::new([0x37; 32]);
+        let object: Object = owner_transition_object(
+            &hash_resolver,
+            Epoch::new(7),
+            ObjectId::new([0x38; 32]),
+            sender,
+            vec![0x39],
+        );
+        let module_id: ModuleId = ModuleId::new([0x3A; 32]);
+        let (registry, catalog, module_ref) = preinstalled_module_fixture_with_envelope(
+            &hash_resolver,
+            module_id,
+            1,
+            vec![0xFF],
+            64,
+            Epoch::new(0),
+            system_modules::ModuleStatus::Active,
+            owner_transition_envelope(),
+        );
+        let transaction: Transaction = preinstalled_transaction_with_protocol_version(
+            sender,
+            ChainId::new("sunrise-test").unwrap(),
+            protocol_version,
+            Epoch::new(7),
+            0,
+            manifest_with(vec![AccessEntry {
+                object_ref: sample_object_ref(0x38),
+                mode: AccessMode::Write,
+            }]),
+            module_ref,
+            owner_transition_args(Address::new([0x3B; 32])),
+        );
+        let registered: &SystemModule = registry.get(module_id, 1).unwrap();
+        let fee_policy: CommittedFeePolicy = zero_fee_policy();
+        let machine = PreinstalledWasmMachine {
+            transaction: &transaction,
+            resolver: &hash_resolver,
+            registered_module: Some(registered),
+            catalog: &catalog,
+            engine: &WasmExecutionEngine,
+            fee_policy: &fee_policy,
+            fee_composition: None,
+            resolved_module: std::cell::OnceCell::new(),
+            treasury_object: std::cell::OnceCell::new(),
+        };
+        let state = NodeStateSnapshot {
+            values: BTreeMap::new(),
+            resolved_objects: vec![ResolvedObject {
+                object,
+                mode: AccessMode::Write,
+            }],
+        };
+
+        assert_eq!(
+            machine
+                .transition(&state, &submit_event_for_protocol(protocol_version, 0x3C))
+                .unwrap_err(),
+            NodeCoreError::OwnerTransitionProtocolVersionTooLow {
+                actual: protocol_version,
+                minimum: ProtocolVersion::new(4),
+            }
+        );
+    }
+
+    #[test]
+    fn owner_transition_rejects_module_effect_for_transferred_object() {
+        let protocol_version: ProtocolVersion = ProtocolVersion::new(4);
+        let hash_resolver: HashSuiteResolver =
+            resolver_for_protocol("sunrise-test", protocol_version);
+        let sender: Address = Address::new([0x3D; 32]);
+        let object_id: ObjectId = ObjectId::new([0x3E; 32]);
+        let object: Object =
+            owner_transition_object(&hash_resolver, Epoch::new(7), object_id, sender, vec![0x3F]);
+        let module_id: ModuleId = ModuleId::new([0x40; 32]);
+        let (registry, catalog, module_ref) = preinstalled_module_fixture_with_envelope(
+            &hash_resolver,
+            module_id,
+            1,
+            preinstalled_write_wasm_bytes(),
+            64,
+            Epoch::new(0),
+            system_modules::ModuleStatus::Active,
+            owner_transition_envelope(),
+        );
+        let transaction: Transaction = preinstalled_transaction_with_protocol_version(
+            sender,
+            ChainId::new("sunrise-test").unwrap(),
+            protocol_version,
+            Epoch::new(7),
+            0,
+            manifest_with(vec![AccessEntry {
+                object_ref: sample_object_ref(0x3E),
+                mode: AccessMode::Write,
+            }]),
+            module_ref,
+            owner_transition_args(Address::new([0x41; 32])),
+        );
+        let registered: &SystemModule = registry.get(module_id, 1).unwrap();
+        let fee_policy: CommittedFeePolicy = zero_fee_policy();
+        let machine = PreinstalledWasmMachine {
+            transaction: &transaction,
+            resolver: &hash_resolver,
+            registered_module: Some(registered),
+            catalog: &catalog,
+            engine: &WasmExecutionEngine,
+            fee_policy: &fee_policy,
+            fee_composition: None,
+            resolved_module: std::cell::OnceCell::new(),
+            treasury_object: std::cell::OnceCell::new(),
+        };
+        let state = NodeStateSnapshot {
+            values: BTreeMap::new(),
+            resolved_objects: vec![ResolvedObject {
+                object,
+                mode: AccessMode::Write,
+            }],
+        };
+
+        assert_eq!(
+            machine
+                .transition(&state, &submit_event_for_protocol(protocol_version, 0x42))
+                .unwrap_err(),
+            NodeCoreError::OwnerTransitionObjectEffectForbidden { object_id }
+        );
+    }
+
+    #[test]
+    fn owner_transition_rejects_fee_payer_and_treasury_aliases() {
+        let protocol_version: ProtocolVersion = ProtocolVersion::new(4);
+        let hash_resolver: HashSuiteResolver =
+            resolver_for_protocol("sunrise-test", protocol_version);
+        let sender: Address = Address::new([0x43; 32]);
+        let object_id: ObjectId = ObjectId::new([0x44; 32]);
+        let object: Object =
+            owner_transition_object(&hash_resolver, Epoch::new(7), object_id, sender, vec![0x45]);
+        let module_id: ModuleId = ModuleId::new([0x46; 32]);
+        let (registry, catalog, module_ref) = preinstalled_module_fixture_with_envelope(
+            &hash_resolver,
+            module_id,
+            1,
+            preinstalled_noop_wasm_bytes(),
+            64,
+            Epoch::new(0),
+            system_modules::ModuleStatus::Active,
+            owner_transition_envelope(),
+        );
+        let object_ref: ObjectRef = ObjectRef {
+            id: object_id,
+            version: object.version,
+            digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x47; 32]),
+        };
+        let base_transaction: Transaction = preinstalled_transaction_with_protocol_version(
+            sender,
+            ChainId::new("sunrise-test").unwrap(),
+            protocol_version,
+            Epoch::new(7),
+            0,
+            manifest_with(vec![AccessEntry {
+                object_ref: object_ref.clone(),
+                mode: AccessMode::Write,
+            }]),
+            module_ref,
+            owner_transition_args(Address::new([0x48; 32])),
+        );
+        let state = NodeStateSnapshot {
+            values: BTreeMap::new(),
+            resolved_objects: vec![ResolvedObject {
+                object,
+                mode: AccessMode::Write,
+            }],
+        };
+        let effects = ExecutionEffects {
+            tx_hash: Digest32::new(HashAlgorithmId::Sha2_256, [0x49; 32]),
+            status: ExecutionStatus::Success,
+            object_effects: Vec::new(),
+            events: Vec::new(),
+            gas_used: 0,
+        };
+        let registered: &SystemModule = registry.get(module_id, 1).unwrap();
+        let catalog_entry: &PreinstalledModuleCatalogEntry = catalog.get(module_id, 1).unwrap();
+        let fee_policy: CommittedFeePolicy = zero_fee_policy();
+
+        let mut payer_transaction: Transaction = base_transaction.clone();
+        payer_transaction.fee_payment = Some(fees::FeePayment {
+            asset_id: fee_asset_id(),
+            max_fee: fees::Amount::new(1),
+            fee_object: object_ref,
+        });
+        let payer_machine = PreinstalledWasmMachine {
+            transaction: &payer_transaction,
+            resolver: &hash_resolver,
+            registered_module: Some(registered),
+            catalog: &catalog,
+            engine: &WasmExecutionEngine,
+            fee_policy: &fee_policy,
+            fee_composition: None,
+            resolved_module: std::cell::OnceCell::new(),
+            treasury_object: std::cell::OnceCell::new(),
+        };
+        assert_eq!(
+            payer_machine
+                .synthesize_owner_transition(catalog_entry, &state, &effects)
+                .err(),
+            Some(NodeCoreError::OwnerTransitionFeeObjectAlias { object_id })
+        );
+
+        let composer: RecordingFeeComposer = RecordingFeeComposer::new();
+        let treasury_machine = PreinstalledWasmMachine {
+            transaction: &base_transaction,
+            resolver: &hash_resolver,
+            registered_module: Some(registered),
+            catalog: &catalog,
+            engine: &WasmExecutionEngine,
+            fee_policy: &fee_policy,
+            fee_composition: Some(PreinstalledFeeComposition::new(object_id, &composer)),
+            resolved_module: std::cell::OnceCell::new(),
+            treasury_object: std::cell::OnceCell::new(),
+        };
+        assert_eq!(
+            treasury_machine
+                .synthesize_owner_transition(catalog_entry, &state, &effects)
+                .err(),
+            Some(NodeCoreError::OwnerTransitionFeeObjectAlias { object_id })
+        );
+    }
+
+    #[test]
+    fn owner_transition_v4_receipt_and_committed_mutation_match_exactly() {
+        let protocol_version: ProtocolVersion = ProtocolVersion::new(4);
+        let epoch: Epoch = Epoch::new(7);
+        let object_domain: AtomicityDomainId = domain(0x4A);
+        let node_config: NodeConfig = NodeConfig::new(
+            ChainId::new("sunrise-test").unwrap(),
+            protocol_version,
+            epoch,
+            b"node/state".to_vec(),
+        )
+        .unwrap();
+        let mut protocol_config: ProtocolConfig = active_protocol_config(0x4A);
+        protocol_config.protocol_version = protocol_version;
+        let signing_key: SigningKey = dev_signing_key(0x4A);
+        let sender: Address = dev_sender_address(&signing_key);
+        let recipient: Address = dev_sender_address(&dev_signing_key(0x4B));
+        let hash_resolver: HashSuiteResolver =
+            resolver_for_protocol("sunrise-test", protocol_version);
+        let module_id: ModuleId = ModuleId::new([0x4C; 32]);
+        let (registry, catalog, module_ref) = preinstalled_module_fixture_with_envelope(
+            &hash_resolver,
+            module_id,
+            1,
+            preinstalled_noop_wasm_bytes(),
+            256,
+            Epoch::new(0),
+            system_modules::ModuleStatus::Active,
+            owner_transition_envelope(),
+        );
+        protocol_config.system_modules = registry;
+
+        let store: MemoryDurableStateStore =
+            MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+        store.set_time(100);
+        let context: DurableOperationContext = durable_context();
+        let blob_store: MemoryBlobStore = MemoryBlobStore::default();
+        let object_id: ObjectId = ObjectId::new([0x4D; 32]);
+        let original: Object =
+            owner_transition_object(&hash_resolver, epoch, object_id, sender, vec![0x4E, 0x4F]);
+        let object_ref: ObjectRef = commit_memory_inline_object_with_protocol_version(
+            &store,
+            &context,
+            object_domain,
+            original.clone(),
+            "sunrise-test",
+            protocol_version,
+            9,
+            0x50,
+        );
+        let transaction: Transaction = preinstalled_transaction_with_protocol_version(
+            sender,
+            ChainId::new("sunrise-test").unwrap(),
+            protocol_version,
+            epoch,
+            0,
+            manifest_with(vec![AccessEntry {
+                object_ref,
+                mode: AccessMode::Write,
+            }]),
+            module_ref,
+            owner_transition_args(recipient),
+        );
+        let request_id: RequestId = request(0x51);
+        let submission: AuthenticatedSubmitTransaction = authenticated_submission_from_transaction(
+            "sunrise-test",
+            request_id,
+            &signing_key,
+            epoch,
+            transaction,
+            &node_config,
+            &protocol_config,
+        );
+
+        let resolved: ResolvedNodeOutput = handle_authenticated_resolved_durable_submit_transaction_with_preinstalled_wasm_execution(
+            &blob_store,
+            &store,
+            &context,
+            &hash_resolver,
+            &catalog,
+            &WasmExecutionEngine,
+            submission,
+            10,
+            None,
+        )
+        .unwrap();
+        let response: &NodeResponse = &resolved.output().responses()[0];
+        assert_eq!(response.status(), NodeResponseStatus::Accepted);
+        let receipt_effects: ExecutionEffects =
+            execution::decode_execution_effects(response.payload().unwrap()).unwrap();
+        assert_eq!(receipt_effects.object_effects.len(), 1);
+        let ObjectEffect::Mutated {
+            previous_version,
+            new_object,
+        } = &receipt_effects.object_effects[0]
+        else {
+            panic!("owner transition receipt did not contain one mutation");
+        };
+        assert_eq!(*previous_version, 1);
+        assert_eq!(new_object.id, object_id);
+        assert_eq!(new_object.version, 2);
+        assert_eq!(new_object.owner, Owner::Address(recipient));
+        assert_eq!(new_object.data, original.data);
+        assert_eq!(new_object.type_hash, original.type_hash);
+        assert_eq!(new_object.schema_version, original.schema_version);
+
+        let committed: DurableObjectVersionRecord = store
+            .get_object_version(
+                &context,
+                object_domain,
+                object_id,
+                DurableObjectVersion::new(2).unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(committed_object(&committed, &blob_store), *new_object);
+
+        let persisted_receipt: ReceiptQueryResult =
+            query_request_receipt(&store, &context, object_domain, request_id).unwrap();
+        let ReceiptQueryResult::Present { record, .. } = persisted_receipt else {
+            panic!("accepted owner transition receipt was not persisted");
+        };
+        assert_eq!(record.responses()[0].payload(), response.payload());
+    }
+
+    #[test]
+    fn owner_transition_inadmissible_recipient_commits_nothing() {
+        let protocol_version: ProtocolVersion = ProtocolVersion::new(4);
+        let epoch: Epoch = Epoch::new(7);
+        let object_domain: AtomicityDomainId = domain(0x52);
+        let node_config: NodeConfig = NodeConfig::new(
+            ChainId::new("sunrise-test").unwrap(),
+            protocol_version,
+            epoch,
+            b"node/state".to_vec(),
+        )
+        .unwrap();
+        let mut protocol_config: ProtocolConfig = active_protocol_config(0x52);
+        protocol_config.protocol_version = protocol_version;
+        protocol_config.transaction_auth_profile =
+            Some(TransactionAuthProfile::ed25519_canonical_prime_order_address_is_public_key());
+        let signing_key: SigningKey = dev_signing_key(0x52);
+        let sender: Address = dev_sender_address(&signing_key);
+        let mut recipient_bytes: [u8; 32] = [0; 32];
+        recipient_bytes[0] = 1;
+        recipient_bytes[31] = 0x80;
+        let inadmissible_recipient: Address = Address::new(recipient_bytes);
+        let hash_resolver: HashSuiteResolver =
+            resolver_for_protocol("sunrise-test", protocol_version);
+        let module_id: ModuleId = ModuleId::new([0x53; 32]);
+        let (registry, catalog, module_ref) = preinstalled_module_fixture_with_envelope(
+            &hash_resolver,
+            module_id,
+            1,
+            preinstalled_noop_wasm_bytes(),
+            256,
+            Epoch::new(0),
+            system_modules::ModuleStatus::Active,
+            owner_transition_envelope(),
+        );
+        protocol_config.system_modules = registry;
+
+        let store: MemoryDurableStateStore =
+            MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+        store.set_time(100);
+        let context: DurableOperationContext = durable_context();
+        let object_id: ObjectId = ObjectId::new([0x54; 32]);
+        let object: Object =
+            owner_transition_object(&hash_resolver, epoch, object_id, sender, vec![0x55]);
+        let object_ref: ObjectRef = commit_memory_inline_object_with_protocol_version(
+            &store,
+            &context,
+            object_domain,
+            object,
+            "sunrise-test",
+            protocol_version,
+            9,
+            0x56,
+        );
+        let transaction: Transaction = preinstalled_transaction_with_protocol_version(
+            sender,
+            ChainId::new("sunrise-test").unwrap(),
+            protocol_version,
+            epoch,
+            0,
+            manifest_with(vec![AccessEntry {
+                object_ref,
+                mode: AccessMode::Write,
+            }]),
+            module_ref,
+            owner_transition_args(inadmissible_recipient),
+        );
+        let submission: AuthenticatedSubmitTransaction =
+            authenticated_profile_2_submission_from_transaction(
+                "sunrise-test",
+                request(0x57),
+                &signing_key,
+                epoch,
+                transaction,
+                &node_config,
+                &protocol_config,
+            );
+
+        let error = handle_authenticated_resolved_durable_submit_transaction_with_preinstalled_wasm_execution(
+            &MemoryBlobStore::default(),
+            &store,
+            &context,
+            &hash_resolver,
+            &catalog,
+            &WasmExecutionEngine,
+            submission,
+            10,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            NodeCoreError::InadmissibleObjectOutputOwnerAddress {
+                object_id,
+                source: Ed25519OwnerAddressError::NonCanonicalPoint,
+            }
+        );
+        assert!(
+            store
+                .get_object_version(
+                    &context,
+                    object_domain,
+                    object_id,
+                    DurableObjectVersion::new(2).unwrap(),
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            query_request_receipt(&store, &context, object_domain, request(0x57)).unwrap(),
+            ReceiptQueryResult::Absent {
+                request_id: request(0x57)
+            }
+        );
     }
 
     #[test]

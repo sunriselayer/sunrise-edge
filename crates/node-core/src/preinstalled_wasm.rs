@@ -59,6 +59,22 @@
 //! (`handle_authenticated_resolved_durable_submit_transaction_with_owned_object_effects`)
 //! never supplies a policy and therefore stays strictly sender-only.
 //!
+//! # Typed-entrypoint and owner-transition policies (DR-0106)
+//!
+//! [`PreinstalledModuleSemanticsEnvelope`] additionally commits two bounded,
+//! independent policy collections: [`PreinstalledTypedEntrypointPolicy`]
+//! (which entrypoint requires which `abi::verify_entrypoint_inputs` typed
+//! shape) and [`PreinstalledOwnerTransitionPolicy`] (which entrypoint, and
+//! which exact declared access index within its typed shape, node-core may
+//! synthesize one owner-only mutation for). Both collections are empty for
+//! every envelope this slice's catalogs commit, so
+//! [`PreinstalledModuleSemanticsEnvelope::matching_typed_entrypoint_policy`]
+//! and
+//! [`PreinstalledModuleSemanticsEnvelope::matching_owner_transition_policy`]
+//! return `None` for every entrypoint any current catalog resolves, and
+//! `lib.rs`'s typed-entrypoint verification and owner-transition synthesis
+//! stay unreachable end-to-end. See `docs/architecture/decisions/0106-typed-entrypoint-owner-transition.md`.
+//!
 //! # Protocol-version bumps and commitment provenance
 //!
 //! [`hashing::frame_hash_input`] mixes `protocol_version` directly into the
@@ -76,10 +92,14 @@
 //! hash-suite rotation, by contrast, does not require recommitment: see
 //! [`resolve_preinstalled_module`]'s use of [`hashing::verify_digest`].
 
-use canonical_encoding::{CanonicalStruct, encode_digest32};
+use abi::{
+    AbiError, ConstructorDeclaration, ConstructorRegistry, EntrypointSignature,
+    encode_constructor_declaration, encode_entrypoint_signature,
+};
+use canonical_encoding::{CanonicalStruct, decode_canonical_frame, encode_digest32};
 use execution::{ExecutionEffects, ExecutionStatus, MAX_TRANSACTION_ENTRYPOINT_BYTES};
 use hashing::{HashSuiteResolver, verify_digest};
-use objects::{AccessMode, ObjectError, ObjectId, ObjectRef, encode_access_mode};
+use objects::{AccessMode, Address, ObjectError, ObjectId, ObjectRef, encode_access_mode};
 use protocol_types::{Digest32, Epoch, HashPurpose};
 use std::collections::BTreeSet;
 use system_modules::{
@@ -126,9 +146,38 @@ pub const MAX_PREINSTALLED_SEMANTICS_BYTES: usize = 64 * 1024;
 /// policies one committed semantics envelope may declare.
 pub const MAX_PREINSTALLED_OBJECT_ACCESS_POLICIES: usize = 16;
 
+/// Deterministic upper bound on the number of typed-entrypoint policies one
+/// committed semantics envelope may declare (DR-0106).
+pub const MAX_PREINSTALLED_TYPED_ENTRYPOINT_POLICIES: usize = 8;
+/// Deterministic upper bound on the number of owner-transition policies one
+/// committed semantics envelope may declare (DR-0106).
+pub const MAX_PREINSTALLED_OWNER_TRANSITION_POLICIES: usize = 8;
+/// Deterministic upper bound on the number of [`abi::ConstructorDeclaration`]s
+/// one [`PreinstalledTypedEntrypointPolicy`] may commit (DR-0106). Matches
+/// [`abi::MAX_CONSTRUCTORS`] restated as a dependency-safe identical bound,
+/// analogous to how `abi::MAX_ENTRYPOINT_BYTES` restates
+/// `execution::MAX_TRANSACTION_ENTRYPOINT_BYTES`.
+pub const MAX_PREINSTALLED_TYPED_ENTRYPOINT_CONSTRUCTORS: usize = 32;
+
 const PREINSTALLED_OBJECT_ACCESS_POLICY_TYPE_ID: u16 = 0xE007;
 const PREINSTALLED_SEMANTICS_ENVELOPE_TYPE_ID: u16 = 0xE008;
+const PREINSTALLED_TYPED_ENTRYPOINT_POLICY_TYPE_ID: u16 = 0xE00A;
+const PREINSTALLED_OWNER_TRANSITION_POLICY_TYPE_ID: u16 = 0xE00B;
 const PREINSTALLED_ENCODING_VERSION: u16 = 1;
+/// Field id in the committed semantics envelope frame holding the typed-
+/// entrypoint-policy count, present only when the collection is non-empty so
+/// an envelope with none encodes byte-identically to the pre-DR-0106 shape.
+const TYPED_ENTRYPOINT_POLICIES_COUNT_FIELD: u16 = 100;
+/// First field id holding a typed-entrypoint-policy item; item `i` uses
+/// `TYPED_ENTRYPOINT_POLICIES_FIRST_ITEM_FIELD + i`.
+const TYPED_ENTRYPOINT_POLICIES_FIRST_ITEM_FIELD: u16 = 101;
+/// Field id in the committed semantics envelope frame holding the owner-
+/// transition-policy count, present only when the collection is non-empty,
+/// for the same byte-preservation reason.
+const OWNER_TRANSITION_POLICIES_COUNT_FIELD: u16 = 200;
+/// First field id holding an owner-transition-policy item; item `i` uses
+/// `OWNER_TRANSITION_POLICIES_FIRST_ITEM_FIELD + i`.
+const OWNER_TRANSITION_POLICIES_FIRST_ITEM_FIELD: u16 = 201;
 
 /// One narrow, fail-closed exception to node-core's default same-sender
 /// object-owner rule, committed as part of a preinstalled module's semantics
@@ -265,30 +314,355 @@ pub fn encode_preinstalled_object_access_policy(
     canonical.finish().map_err(NodeCoreError::CanonicalEncoding)
 }
 
+/// A trusted preinstalled module's committed requirement that
+/// `abi::verify_entrypoint_inputs` must accept the engine-visible inputs of
+/// exactly one entrypoint before the WASM engine ever runs (DR-0106).
+///
+/// `constructors` is not itself a wire-transmitted registry (DR-0105 keeps
+/// [`ConstructorRegistry`] in-memory-only); this type instead commits an
+/// constructor-id-sorted list of individually canonical
+/// [`ConstructorDeclaration`]s and
+/// builds a fresh [`ConstructorRegistry`] from them by registering each one
+/// in turn, so [`ConstructorRegistry::register`]'s existing duplicate-id,
+/// duplicate-body-type, and bound checks apply without `abi` growing a
+/// second registry wire format.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreinstalledTypedEntrypointPolicy {
+    constructors: Vec<ConstructorDeclaration>,
+    signature: EntrypointSignature,
+}
+
+impl PreinstalledTypedEntrypointPolicy {
+    /// Validates and constructs one typed-entrypoint policy.
+    ///
+    /// Rejects more constructors than
+    /// [`MAX_PREINSTALLED_TYPED_ENTRYPOINT_CONSTRUCTORS`], any
+    /// [`ConstructorRegistry::register`] failure (reserved zero id, zero
+    /// body type id, arity/projection shape, duplicate id, duplicate body
+    /// type), and a signature parameter naming a constructor absent from the
+    /// resulting registry — a committed policy can therefore never reference
+    /// an unknown constructor.
+    pub fn new(
+        mut constructors: Vec<ConstructorDeclaration>,
+        signature: EntrypointSignature,
+    ) -> Result<Self, NodeCoreError> {
+        if constructors.len() > MAX_PREINSTALLED_TYPED_ENTRYPOINT_CONSTRUCTORS {
+            return Err(
+                NodeCoreError::PreinstalledTypedEntrypointConstructorsTooLarge {
+                    count: constructors.len(),
+                    maximum: MAX_PREINSTALLED_TYPED_ENTRYPOINT_CONSTRUCTORS,
+                },
+            );
+        }
+        let registry = Self::build_registry(&constructors)?;
+        for param in signature.params() {
+            registry
+                .get(param.constructor)
+                .ok_or(AbiError::UnknownConstructor(param.constructor))
+                .map_err(NodeCoreError::TypedAbi)?;
+        }
+        // Constructor declarations form a registry, not an ordered program.
+        // Canonicalize them before encoding so semantically identical
+        // governance input cannot produce different semantics hashes merely
+        // because declarations arrived in a different order.
+        constructors.sort_by_key(|declaration: &ConstructorDeclaration| declaration.id);
+        Ok(Self {
+            constructors,
+            signature,
+        })
+    }
+
+    fn build_registry(
+        constructors: &[ConstructorDeclaration],
+    ) -> Result<ConstructorRegistry, NodeCoreError> {
+        let mut registry = ConstructorRegistry::new();
+        for declaration in constructors {
+            registry
+                .register(declaration.clone())
+                .map_err(NodeCoreError::TypedAbi)?;
+        }
+        Ok(registry)
+    }
+
+    /// Returns the exact entrypoint name this policy governs.
+    #[must_use]
+    pub fn entrypoint(&self) -> &str {
+        self.signature.entrypoint()
+    }
+
+    /// Returns the committed entrypoint signature.
+    #[must_use]
+    pub const fn signature(&self) -> &EntrypointSignature {
+        &self.signature
+    }
+
+    /// Rebuilds the deterministic [`ConstructorRegistry`] from the committed
+    /// constructor declarations. Cheap and pure; called at most once per
+    /// verified call by `lib.rs`.
+    pub(crate) fn registry(&self) -> Result<ConstructorRegistry, NodeCoreError> {
+        Self::build_registry(&self.constructors)
+    }
+}
+
+/// Canonically encodes one [`PreinstalledTypedEntrypointPolicy`].
+pub fn encode_preinstalled_typed_entrypoint_policy(
+    policy: &PreinstalledTypedEntrypointPolicy,
+) -> Result<Vec<u8>, NodeCoreError> {
+    if policy.constructors.len() > MAX_PREINSTALLED_TYPED_ENTRYPOINT_CONSTRUCTORS {
+        return Err(
+            NodeCoreError::PreinstalledTypedEntrypointConstructorsTooLarge {
+                count: policy.constructors.len(),
+                maximum: MAX_PREINSTALLED_TYPED_ENTRYPOINT_CONSTRUCTORS,
+            },
+        );
+    }
+    let mut canonical = CanonicalStruct::new(
+        PREINSTALLED_TYPED_ENTRYPOINT_POLICY_TYPE_ID,
+        PREINSTALLED_ENCODING_VERSION,
+    );
+    canonical
+        .field_bytes(
+            1,
+            encode_entrypoint_signature(&policy.signature).map_err(NodeCoreError::TypedAbi)?,
+        )
+        .map_err(NodeCoreError::CanonicalEncoding)?;
+    let count = u16::try_from(policy.constructors.len()).map_err(|_| {
+        NodeCoreError::PreinstalledTypedEntrypointConstructorsTooLarge {
+            count: policy.constructors.len(),
+            maximum: MAX_PREINSTALLED_TYPED_ENTRYPOINT_CONSTRUCTORS,
+        }
+    })?;
+    canonical
+        .field_u16(2, count)
+        .map_err(NodeCoreError::CanonicalEncoding)?;
+    for (index, declaration) in policy.constructors.iter().enumerate() {
+        let field_id = u16::try_from(3 + index).map_err(|_| {
+            NodeCoreError::PreinstalledTypedEntrypointConstructorsTooLarge {
+                count: policy.constructors.len(),
+                maximum: MAX_PREINSTALLED_TYPED_ENTRYPOINT_CONSTRUCTORS,
+            }
+        })?;
+        canonical
+            .field_bytes(
+                field_id,
+                encode_constructor_declaration(declaration).map_err(NodeCoreError::TypedAbi)?,
+            )
+            .map_err(NodeCoreError::CanonicalEncoding)?;
+    }
+    canonical.finish().map_err(NodeCoreError::CanonicalEncoding)
+}
+
+/// A trusted preinstalled module's committed authorization for node-core to
+/// synthesize exactly one owner-only mutation for one declared access index
+/// of one entrypoint (DR-0106).
+///
+/// Unlike [`PreinstalledObjectAccessPolicy`], `transferred_access_index` `0`
+/// is not reserved: see [`PreinstalledOwnerTransitionPolicy::new`]'s docs for
+/// why that reservation does not apply to this capability.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreinstalledOwnerTransitionPolicy {
+    entrypoint: String,
+    transferred_access_index: u32,
+    recipient_args_type_id: u16,
+    recipient_args_version: u16,
+    recipient_args_field_id: u16,
+}
+
+impl PreinstalledOwnerTransitionPolicy {
+    /// Validates and constructs one owner-transition policy.
+    ///
+    /// Rejects an empty or oversized entrypoint name, an index at or beyond
+    /// node-core's authenticated object-read bound, and a zero recipient-args
+    /// type id or field id (a zero canonical type id or field id is never
+    /// valid).
+    ///
+    /// Unlike [`PreinstalledObjectAccessPolicy`], index `0` is not reserved
+    /// here: node-core's default rule already requires *every* declared
+    /// access, including index `0`, to be sender-owned before this policy is
+    /// ever consulted, and this capability never relaxes that loading rule —
+    /// it only relaxes the post-execution mutation's owner-preservation
+    /// check for the one object this policy names. A whole-object transfer
+    /// with exactly one declared access naturally uses index `0`.
+    pub fn new(
+        entrypoint: String,
+        transferred_access_index: u32,
+        recipient_args_type_id: u16,
+        recipient_args_version: u16,
+        recipient_args_field_id: u16,
+    ) -> Result<Self, NodeCoreError> {
+        if entrypoint.is_empty() || entrypoint.len() > MAX_TRANSACTION_ENTRYPOINT_BYTES {
+            return Err(
+                NodeCoreError::PreinstalledOwnerTransitionPolicyEntrypointInvalid {
+                    actual: entrypoint.len(),
+                    maximum: MAX_TRANSACTION_ENTRYPOINT_BYTES,
+                },
+            );
+        }
+        let maximum =
+            u32::try_from(MAX_AUTHENTICATED_OBJECT_READS.saturating_sub(1)).unwrap_or(u32::MAX);
+        if transferred_access_index > maximum {
+            return Err(
+                NodeCoreError::PreinstalledOwnerTransitionPolicyIndexOutOfBounds {
+                    access_index: transferred_access_index,
+                    maximum,
+                },
+            );
+        }
+        if recipient_args_type_id == 0 {
+            return Err(NodeCoreError::PreinstalledOwnerTransitionPolicyRecipientArgsTypeIdZero);
+        }
+        if recipient_args_field_id == 0 {
+            return Err(NodeCoreError::PreinstalledOwnerTransitionPolicyRecipientArgsFieldIdZero);
+        }
+        Ok(Self {
+            entrypoint,
+            transferred_access_index,
+            recipient_args_type_id,
+            recipient_args_version,
+            recipient_args_field_id,
+        })
+    }
+
+    /// Returns the exact entrypoint name this policy governs.
+    #[must_use]
+    pub fn entrypoint(&self) -> &str {
+        &self.entrypoint
+    }
+
+    /// Returns the exact declared access index whose owner node-core may
+    /// synthesize a transition for.
+    #[must_use]
+    pub const fn transferred_access_index(&self) -> u32 {
+        self.transferred_access_index
+    }
+
+    /// Projects the recipient [`Address`] from exact canonical transaction
+    /// args using this policy's committed type id, encoding version, and
+    /// field id, requiring the args frame to contain nothing else.
+    pub(crate) fn project_recipient(&self, args: &[u8]) -> Result<Address, NodeCoreError> {
+        let frame = decode_canonical_frame(args).map_err(NodeCoreError::CanonicalDecoding)?;
+        frame
+            .require_type(self.recipient_args_type_id)
+            .map_err(NodeCoreError::CanonicalDecoding)?;
+        frame
+            .require_version(self.recipient_args_version)
+            .map_err(NodeCoreError::CanonicalDecoding)?;
+        frame
+            .require_only_fields(&[self.recipient_args_field_id])
+            .map_err(NodeCoreError::CanonicalDecoding)?;
+        let bytes = frame
+            .required_field(self.recipient_args_field_id)
+            .map_err(NodeCoreError::CanonicalDecoding)?;
+        let fixed: [u8; 32] = bytes.try_into().map_err(|_| {
+            NodeCoreError::CanonicalDecoding(
+                canonical_encoding::CanonicalDecodingError::InvalidFieldLength {
+                    field_id: self.recipient_args_field_id,
+                    expected: 32,
+                    actual: bytes.len(),
+                },
+            )
+        })?;
+        Ok(Address::new(fixed))
+    }
+}
+
+/// Canonically encodes one [`PreinstalledOwnerTransitionPolicy`].
+pub fn encode_preinstalled_owner_transition_policy(
+    policy: &PreinstalledOwnerTransitionPolicy,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut canonical = CanonicalStruct::new(
+        PREINSTALLED_OWNER_TRANSITION_POLICY_TYPE_ID,
+        PREINSTALLED_ENCODING_VERSION,
+    );
+    canonical
+        .field_str(1, &policy.entrypoint)
+        .map_err(NodeCoreError::CanonicalEncoding)?;
+    canonical
+        .field_u32(2, policy.transferred_access_index)
+        .map_err(NodeCoreError::CanonicalEncoding)?;
+    canonical
+        .field_u16(3, policy.recipient_args_type_id)
+        .map_err(NodeCoreError::CanonicalEncoding)?;
+    canonical
+        .field_u16(4, policy.recipient_args_version)
+        .map_err(NodeCoreError::CanonicalEncoding)?;
+    canonical
+        .field_u16(5, policy.recipient_args_field_id)
+        .map_err(NodeCoreError::CanonicalEncoding)?;
+    canonical.finish().map_err(NodeCoreError::CanonicalEncoding)
+}
+
 /// A trusted preinstalled module's exact generic committed semantics
-/// envelope: opaque application-semantics bytes plus a bounded set of
-/// [`PreinstalledObjectAccessPolicy`] object-owner exceptions.
+/// envelope: opaque application-semantics bytes plus bounded sets of
+/// [`PreinstalledObjectAccessPolicy`] object-owner exceptions,
+/// [`PreinstalledTypedEntrypointPolicy`] typed-input requirements, and
+/// [`PreinstalledOwnerTransitionPolicy`] owner-only mutation authorizations
+/// (DR-0106).
 ///
 /// This is the exact byte shape `SystemModule.semantics_hash` commits to.
 /// node-core treats `opaque_semantics` as caller-defined, uninterpreted
-/// bytes; only `object_access_policies` is ever read by node-core's
-/// authorization logic.
+/// bytes; the other three collections are read by node-core's authorization
+/// and (for the latter two) pre-execution typed-verification and owner-
+/// transition-synthesis logic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreinstalledModuleSemanticsEnvelope {
     opaque_semantics: Vec<u8>,
     object_access_policies: Vec<PreinstalledObjectAccessPolicy>,
+    typed_entrypoint_policies: Vec<PreinstalledTypedEntrypointPolicy>,
+    owner_transition_policies: Vec<PreinstalledOwnerTransitionPolicy>,
 }
 
 impl PreinstalledModuleSemanticsEnvelope {
-    /// Validates and constructs one committed semantics envelope.
+    /// Validates and constructs one committed semantics envelope with no
+    /// typed-entrypoint or owner-transition policies.
     ///
     /// Rejects opaque semantics bytes over
     /// [`MAX_PREINSTALLED_SEMANTICS_BYTES`], more policies than
     /// [`MAX_PREINSTALLED_OBJECT_ACCESS_POLICIES`], and a duplicate declared
-    /// `access_index`.
+    /// `access_index`. Byte-identical to every historical caller: this is a
+    /// thin wrapper over [`Self::with_typed_policies`] with both new
+    /// collections empty, and [`encode_preinstalled_semantics_envelope`]
+    /// omits their fields entirely in that case (see that function's docs).
     pub fn new(
         opaque_semantics: Vec<u8>,
+        object_access_policies: Vec<PreinstalledObjectAccessPolicy>,
+    ) -> Result<Self, NodeCoreError> {
+        Self::with_typed_policies(
+            opaque_semantics,
+            object_access_policies,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    /// Constructs an envelope with no object-access, typed-entrypoint, or
+    /// owner-transition policies: every access stays sender-only and no
+    /// entrypoint is typed-verified or owner-transition-eligible.
+    pub fn opaque_only(opaque_semantics: Vec<u8>) -> Result<Self, NodeCoreError> {
+        Self::new(opaque_semantics, Vec::new())
+    }
+
+    /// Validates and constructs one committed semantics envelope that
+    /// additionally declares bounded typed-entrypoint and owner-transition
+    /// policies (DR-0106).
+    ///
+    /// In addition to [`Self::new`]'s checks, this rejects more typed-
+    /// entrypoint policies than [`MAX_PREINSTALLED_TYPED_ENTRYPOINT_POLICIES`],
+    /// more owner-transition policies than
+    /// [`MAX_PREINSTALLED_OWNER_TRANSITION_POLICIES`], a duplicate declared
+    /// entrypoint within either collection, an owner-transition policy whose
+    /// entrypoint has no matching typed-entrypoint policy, a
+    /// `transferred_access_index` at or beyond that typed signature's
+    /// parameter count, a `transferred_access_index` whose typed parameter
+    /// is not [`objects::AccessMode::Write`], and a `transferred_access_index`
+    /// that collides with an object-access policy's `access_index` for the
+    /// same entrypoint (the two relaxations are deliberately kept mutually
+    /// exclusive).
+    pub fn with_typed_policies(
+        opaque_semantics: Vec<u8>,
         mut object_access_policies: Vec<PreinstalledObjectAccessPolicy>,
+        mut typed_entrypoint_policies: Vec<PreinstalledTypedEntrypointPolicy>,
+        mut owner_transition_policies: Vec<PreinstalledOwnerTransitionPolicy>,
     ) -> Result<Self, NodeCoreError> {
         if opaque_semantics.len() > MAX_PREINSTALLED_SEMANTICS_BYTES {
             return Err(NodeCoreError::PreinstalledSemanticsBytesTooLarge {
@@ -315,16 +689,91 @@ impl PreinstalledModuleSemanticsEnvelope {
             }
         }
         object_access_policies.sort_by_key(PreinstalledObjectAccessPolicy::access_index);
+
+        if typed_entrypoint_policies.len() > MAX_PREINSTALLED_TYPED_ENTRYPOINT_POLICIES {
+            return Err(
+                NodeCoreError::PreinstalledTypedEntrypointPolicyCollectionTooLarge {
+                    count: typed_entrypoint_policies.len(),
+                    maximum: MAX_PREINSTALLED_TYPED_ENTRYPOINT_POLICIES,
+                },
+            );
+        }
+        let mut seen_typed: BTreeSet<String> = BTreeSet::new();
+        for policy in &typed_entrypoint_policies {
+            if !seen_typed.insert(policy.entrypoint().to_string()) {
+                return Err(NodeCoreError::DuplicatePreinstalledTypedEntrypointPolicy {
+                    entrypoint: policy.entrypoint().to_string(),
+                });
+            }
+        }
+        typed_entrypoint_policies.sort_by(|left, right| left.entrypoint().cmp(right.entrypoint()));
+
+        if owner_transition_policies.len() > MAX_PREINSTALLED_OWNER_TRANSITION_POLICIES {
+            return Err(
+                NodeCoreError::PreinstalledOwnerTransitionPolicyCollectionTooLarge {
+                    count: owner_transition_policies.len(),
+                    maximum: MAX_PREINSTALLED_OWNER_TRANSITION_POLICIES,
+                },
+            );
+        }
+        let mut seen_owner: BTreeSet<String> = BTreeSet::new();
+        for policy in &owner_transition_policies {
+            if !seen_owner.insert(policy.entrypoint.clone()) {
+                return Err(NodeCoreError::DuplicatePreinstalledOwnerTransitionPolicy {
+                    entrypoint: policy.entrypoint.clone(),
+                });
+            }
+            let typed = typed_entrypoint_policies
+                .iter()
+                .find(|typed| typed.entrypoint() == policy.entrypoint)
+                .ok_or_else(|| {
+                    NodeCoreError::PreinstalledOwnerTransitionPolicyMissingTypedEntrypoint {
+                        entrypoint: policy.entrypoint.clone(),
+                    }
+                })?;
+            let params = typed.signature.params();
+            let index = usize::try_from(policy.transferred_access_index).map_err(|_| {
+                NodeCoreError::PreinstalledOwnerTransitionPolicyIndexOutOfSignature {
+                    entrypoint: policy.entrypoint.clone(),
+                    access_index: policy.transferred_access_index,
+                    param_count: params.len(),
+                }
+            })?;
+            let param = params.get(index).ok_or_else(|| {
+                NodeCoreError::PreinstalledOwnerTransitionPolicyIndexOutOfSignature {
+                    entrypoint: policy.entrypoint.clone(),
+                    access_index: policy.transferred_access_index,
+                    param_count: params.len(),
+                }
+            })?;
+            if param.mode != AccessMode::Write {
+                return Err(
+                    NodeCoreError::PreinstalledOwnerTransitionPolicyIndexNotWrite {
+                        entrypoint: policy.entrypoint.clone(),
+                        access_index: policy.transferred_access_index,
+                    },
+                );
+            }
+            if object_access_policies.iter().any(|access| {
+                access.entrypoint == policy.entrypoint
+                    && access.access_index == policy.transferred_access_index
+            }) {
+                return Err(
+                    NodeCoreError::PreinstalledOwnerTransitionPolicyConflictsWithObjectAccessPolicy {
+                        entrypoint: policy.entrypoint.clone(),
+                        access_index: policy.transferred_access_index,
+                    },
+                );
+            }
+        }
+        owner_transition_policies.sort_by(|left, right| left.entrypoint.cmp(&right.entrypoint));
+
         Ok(Self {
             opaque_semantics,
             object_access_policies,
+            typed_entrypoint_policies,
+            owner_transition_policies,
         })
-    }
-
-    /// Constructs an envelope with no object-access policies: every access
-    /// stays sender-only.
-    pub fn opaque_only(opaque_semantics: Vec<u8>) -> Result<Self, NodeCoreError> {
-        Self::new(opaque_semantics, Vec::new())
     }
 
     /// Returns the opaque, node-core-uninterpreted application semantics bytes.
@@ -339,6 +788,18 @@ impl PreinstalledModuleSemanticsEnvelope {
         &self.object_access_policies
     }
 
+    /// Returns every declared typed-entrypoint policy.
+    #[must_use]
+    pub fn typed_entrypoint_policies(&self) -> &[PreinstalledTypedEntrypointPolicy] {
+        &self.typed_entrypoint_policies
+    }
+
+    /// Returns every declared owner-transition policy.
+    #[must_use]
+    pub fn owner_transition_policies(&self) -> &[PreinstalledOwnerTransitionPolicy] {
+        &self.owner_transition_policies
+    }
+
     /// Returns the exact policy, if any, authorizing `entrypoint` to relax
     /// the sender-owner rule at declared access index `access_index`.
     #[must_use]
@@ -351,6 +812,30 @@ impl PreinstalledModuleSemanticsEnvelope {
             .iter()
             .find(|policy| policy.access_index == access_index && policy.entrypoint == entrypoint)
     }
+
+    /// Returns the exact typed-entrypoint policy, if any, committed for
+    /// `entrypoint`.
+    #[must_use]
+    pub(crate) fn matching_typed_entrypoint_policy(
+        &self,
+        entrypoint: &str,
+    ) -> Option<&PreinstalledTypedEntrypointPolicy> {
+        self.typed_entrypoint_policies
+            .iter()
+            .find(|policy| policy.entrypoint() == entrypoint)
+    }
+
+    /// Returns the exact owner-transition policy, if any, committed for
+    /// `entrypoint`.
+    #[must_use]
+    pub(crate) fn matching_owner_transition_policy(
+        &self,
+        entrypoint: &str,
+    ) -> Option<&PreinstalledOwnerTransitionPolicy> {
+        self.owner_transition_policies
+            .iter()
+            .find(|policy| policy.entrypoint == entrypoint)
+    }
 }
 
 /// Canonically encodes one [`PreinstalledModuleSemanticsEnvelope`].
@@ -358,6 +843,14 @@ impl PreinstalledModuleSemanticsEnvelope {
 /// This is the exact byte shape independently rehashed and compared against
 /// `SystemModule.semantics_hash` by the internal module resolver; no
 /// caller-supplied semantics digest is ever trusted directly.
+///
+/// Fields [`TYPED_ENTRYPOINT_POLICIES_COUNT_FIELD`] and
+/// [`OWNER_TRANSITION_POLICIES_COUNT_FIELD`] (and their item fields) are
+/// emitted only when the corresponding collection is non-empty, so an
+/// envelope built before DR-0106 (both collections empty) encodes exactly
+/// the same bytes it always did — this is why those two fields use high,
+/// deliberately non-adjacent field ids rather than continuing the
+/// `object_access_policies` numbering.
 pub fn encode_preinstalled_semantics_envelope(
     envelope: &PreinstalledModuleSemanticsEnvelope,
 ) -> Result<Vec<u8>, NodeCoreError> {
@@ -387,6 +880,58 @@ pub fn encode_preinstalled_semantics_envelope(
         canonical
             .field_bytes(field_id, encode_preinstalled_object_access_policy(policy)?)
             .map_err(NodeCoreError::CanonicalEncoding)?;
+    }
+    if !envelope.typed_entrypoint_policies.is_empty() {
+        let count = u16::try_from(envelope.typed_entrypoint_policies.len()).map_err(|_| {
+            NodeCoreError::PreinstalledTypedEntrypointPolicyCollectionTooLarge {
+                count: envelope.typed_entrypoint_policies.len(),
+                maximum: MAX_PREINSTALLED_TYPED_ENTRYPOINT_POLICIES,
+            }
+        })?;
+        canonical
+            .field_u16(TYPED_ENTRYPOINT_POLICIES_COUNT_FIELD, count)
+            .map_err(NodeCoreError::CanonicalEncoding)?;
+        for (index, policy) in envelope.typed_entrypoint_policies.iter().enumerate() {
+            let field_id = TYPED_ENTRYPOINT_POLICIES_FIRST_ITEM_FIELD
+                + u16::try_from(index).map_err(|_| {
+                    NodeCoreError::PreinstalledTypedEntrypointPolicyCollectionTooLarge {
+                        count: envelope.typed_entrypoint_policies.len(),
+                        maximum: MAX_PREINSTALLED_TYPED_ENTRYPOINT_POLICIES,
+                    }
+                })?;
+            canonical
+                .field_bytes(
+                    field_id,
+                    encode_preinstalled_typed_entrypoint_policy(policy)?,
+                )
+                .map_err(NodeCoreError::CanonicalEncoding)?;
+        }
+    }
+    if !envelope.owner_transition_policies.is_empty() {
+        let count = u16::try_from(envelope.owner_transition_policies.len()).map_err(|_| {
+            NodeCoreError::PreinstalledOwnerTransitionPolicyCollectionTooLarge {
+                count: envelope.owner_transition_policies.len(),
+                maximum: MAX_PREINSTALLED_OWNER_TRANSITION_POLICIES,
+            }
+        })?;
+        canonical
+            .field_u16(OWNER_TRANSITION_POLICIES_COUNT_FIELD, count)
+            .map_err(NodeCoreError::CanonicalEncoding)?;
+        for (index, policy) in envelope.owner_transition_policies.iter().enumerate() {
+            let field_id = OWNER_TRANSITION_POLICIES_FIRST_ITEM_FIELD
+                + u16::try_from(index).map_err(|_| {
+                    NodeCoreError::PreinstalledOwnerTransitionPolicyCollectionTooLarge {
+                        count: envelope.owner_transition_policies.len(),
+                        maximum: MAX_PREINSTALLED_OWNER_TRANSITION_POLICIES,
+                    }
+                })?;
+            canonical
+                .field_bytes(
+                    field_id,
+                    encode_preinstalled_owner_transition_policy(policy)?,
+                )
+                .map_err(NodeCoreError::CanonicalEncoding)?;
+        }
     }
     canonical.finish().map_err(NodeCoreError::CanonicalEncoding)
 }
@@ -797,6 +1342,7 @@ pub(crate) fn normalize_trapped_preinstalled_execution(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use abi::{ConstructorId, ParamDeclaration, TypeArity};
     use protocol_types::{ChainId, HashAlgorithmId, HashSuite, HashSuiteSchedule, ProtocolVersion};
     use system_modules::{GasModel, SystemModuleRegistry, TypeSchema};
 
@@ -1738,6 +2284,47 @@ mod tests {
         .unwrap()
     }
 
+    fn sample_constructor(id: u16, body_type_id: u16) -> ConstructorDeclaration {
+        ConstructorDeclaration {
+            id: ConstructorId::new(id),
+            body_type_id,
+            body_version: 1,
+            schema_version: 1,
+            arity: TypeArity::Fixed,
+            projection: Vec::new(),
+        }
+    }
+
+    fn sample_typed_policy(
+        entrypoint: &str,
+        mode: AccessMode,
+    ) -> PreinstalledTypedEntrypointPolicy {
+        PreinstalledTypedEntrypointPolicy::new(
+            vec![sample_constructor(0x7101, 0x7101)],
+            EntrypointSignature::new(
+                entrypoint.to_string(),
+                vec![ParamDeclaration {
+                    mode,
+                    constructor: ConstructorId::new(0x7101),
+                    schema_version: 1,
+                }],
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn sample_owner_transition_policy(entrypoint: &str) -> PreinstalledOwnerTransitionPolicy {
+        PreinstalledOwnerTransitionPolicy::new(entrypoint.to_string(), 0, 0x7201, 1, 1).unwrap()
+    }
+
+    fn bytes_hex(bytes: &[u8]) -> String {
+        bytes
+            .iter()
+            .map(|byte: &u8| format!("{byte:02x}"))
+            .collect()
+    }
+
     #[test]
     fn object_access_policy_rejects_reserved_index_out_of_bounds_index_bad_entrypoint_and_mode() {
         assert_eq!(
@@ -1895,5 +2482,216 @@ mod tests {
                 .unwrap();
         let empty_encoded = encode_preinstalled_semantics_envelope(&empty_policies).unwrap();
         assert_ne!(encoded, empty_encoded);
+    }
+
+    #[test]
+    fn typed_and_owner_transition_policy_canonical_bytes_are_stable() {
+        let typed: PreinstalledTypedEntrypointPolicy =
+            sample_typed_policy("transfer", AccessMode::Write);
+        let owner: PreinstalledOwnerTransitionPolicy = sample_owner_transition_policy("transfer");
+        let typed_bytes: Vec<u8> = encode_preinstalled_typed_entrypoint_policy(&typed).unwrap();
+        let owner_bytes: Vec<u8> = encode_preinstalled_owner_transition_policy(&owner).unwrap();
+        assert_eq!(
+            bytes_hex(&typed_bytes),
+            "534e52450ae00100030001005b000000534e52450651010003000100080000007472616e7366657202000400000001000000030033000000534e5245055101000300010011000000534e524506400100010001000100000002020002000000017103000400000001000000020002000000010003003e000000534e524504510100060001000200000001710200020000000171030002000000010004000400000001000000050002000000000006000400000000000000"
+        );
+        assert_eq!(
+            bytes_hex(&owner_bytes),
+            "534e52450be0010005000100080000007472616e7366657202000400000000000000030002000000017204000200000001000500020000000100"
+        );
+
+        let populated: PreinstalledModuleSemanticsEnvelope =
+            PreinstalledModuleSemanticsEnvelope::with_typed_policies(
+                b"opaque-app-semantics".to_vec(),
+                Vec::new(),
+                vec![typed],
+                vec![owner],
+            )
+            .unwrap();
+        assert_eq!(
+            bytes_hex(&encode_preinstalled_semantics_envelope(&populated).unwrap()),
+            "534e524508e0010006000100140000006f70617175652d6170702d73656d616e74696373020002000000000064000200000001006500b7000000534e52450ae00100030001005b000000534e52450651010003000100080000007472616e7366657202000400000001000000030033000000534e5245055101000300010011000000534e524506400100010001000100000002020002000000017103000400000001000000020002000000010003003e000000534e524504510100060001000200000001710200020000000171030002000000010004000400000001000000050002000000000006000400000000000000c800020000000100c9003a000000534e52450be0010005000100080000007472616e7366657202000400000000000000030002000000017204000200000001000500020000000100"
+        );
+
+        // Adding optional high-numbered policy fields must not alter the
+        // historical empty-policy shape.
+        let historical: PreinstalledModuleSemanticsEnvelope =
+            PreinstalledModuleSemanticsEnvelope::opaque_only(b"opaque-app-semantics".to_vec())
+                .unwrap();
+        assert_eq!(
+            bytes_hex(&encode_preinstalled_semantics_envelope(&historical).unwrap()),
+            "534e524508e0010002000100140000006f70617175652d6170702d73656d616e746963730200020000000000"
+        );
+    }
+
+    #[test]
+    fn typed_policy_constructor_order_is_canonical() {
+        let first: ConstructorDeclaration = sample_constructor(0x7101, 0x7101);
+        let second: ConstructorDeclaration = sample_constructor(0x7102, 0x7102);
+        let signature: EntrypointSignature = EntrypointSignature::new(
+            "transfer".to_string(),
+            vec![ParamDeclaration {
+                mode: AccessMode::Write,
+                constructor: ConstructorId::new(0x7101),
+                schema_version: 1,
+            }],
+        )
+        .unwrap();
+        let ascending: PreinstalledTypedEntrypointPolicy = PreinstalledTypedEntrypointPolicy::new(
+            vec![first.clone(), second.clone()],
+            signature.clone(),
+        )
+        .unwrap();
+        let descending: PreinstalledTypedEntrypointPolicy =
+            PreinstalledTypedEntrypointPolicy::new(vec![second, first], signature).unwrap();
+        assert_eq!(ascending, descending);
+        assert_eq!(
+            encode_preinstalled_typed_entrypoint_policy(&ascending).unwrap(),
+            encode_preinstalled_typed_entrypoint_policy(&descending).unwrap()
+        );
+    }
+
+    #[test]
+    fn typed_and_owner_transition_policy_construction_fails_closed() {
+        let typed: PreinstalledTypedEntrypointPolicy =
+            sample_typed_policy("transfer", AccessMode::Write);
+        let owner: PreinstalledOwnerTransitionPolicy = sample_owner_transition_policy("transfer");
+
+        assert!(matches!(
+            PreinstalledModuleSemanticsEnvelope::with_typed_policies(
+                Vec::new(),
+                Vec::new(),
+                vec![typed.clone(), typed.clone()],
+                Vec::new(),
+            ),
+            Err(NodeCoreError::DuplicatePreinstalledTypedEntrypointPolicy { .. })
+        ));
+        assert!(matches!(
+            PreinstalledModuleSemanticsEnvelope::with_typed_policies(
+                Vec::new(),
+                Vec::new(),
+                vec![typed.clone()],
+                vec![owner.clone(), owner.clone()],
+            ),
+            Err(NodeCoreError::DuplicatePreinstalledOwnerTransitionPolicy { .. })
+        ));
+        assert!(matches!(
+            PreinstalledModuleSemanticsEnvelope::with_typed_policies(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![owner.clone()],
+            ),
+            Err(NodeCoreError::PreinstalledOwnerTransitionPolicyMissingTypedEntrypoint { .. })
+        ));
+
+        let out_of_range: PreinstalledOwnerTransitionPolicy =
+            PreinstalledOwnerTransitionPolicy::new("transfer".to_string(), 1, 0x7201, 1, 1)
+                .unwrap();
+        assert!(matches!(
+            PreinstalledModuleSemanticsEnvelope::with_typed_policies(
+                Vec::new(),
+                Vec::new(),
+                vec![typed.clone()],
+                vec![out_of_range],
+            ),
+            Err(NodeCoreError::PreinstalledOwnerTransitionPolicyIndexOutOfSignature { .. })
+        ));
+
+        let read_typed: PreinstalledTypedEntrypointPolicy =
+            sample_typed_policy("transfer", AccessMode::Read);
+        assert!(matches!(
+            PreinstalledModuleSemanticsEnvelope::with_typed_policies(
+                Vec::new(),
+                Vec::new(),
+                vec![read_typed],
+                vec![owner.clone()],
+            ),
+            Err(NodeCoreError::PreinstalledOwnerTransitionPolicyIndexNotWrite { .. })
+        ));
+
+        let access: PreinstalledObjectAccessPolicy = sample_policy(1, "transfer");
+        let two_param_typed: PreinstalledTypedEntrypointPolicy =
+            PreinstalledTypedEntrypointPolicy::new(
+                vec![sample_constructor(0x7101, 0x7101)],
+                EntrypointSignature::new(
+                    "transfer".to_string(),
+                    vec![
+                        ParamDeclaration {
+                            mode: AccessMode::Read,
+                            constructor: ConstructorId::new(0x7101),
+                            schema_version: 1,
+                        },
+                        ParamDeclaration {
+                            mode: AccessMode::Write,
+                            constructor: ConstructorId::new(0x7101),
+                            schema_version: 1,
+                        },
+                    ],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let colliding_owner: PreinstalledOwnerTransitionPolicy =
+            PreinstalledOwnerTransitionPolicy::new("transfer".to_string(), 1, 0x7201, 1, 1)
+                .unwrap();
+        assert!(matches!(
+            PreinstalledModuleSemanticsEnvelope::with_typed_policies(
+                Vec::new(),
+                vec![access],
+                vec![two_param_typed],
+                vec![colliding_owner],
+            ),
+            Err(
+                NodeCoreError::PreinstalledOwnerTransitionPolicyConflictsWithObjectAccessPolicy { .. }
+            )
+        ));
+
+        assert_eq!(
+            PreinstalledOwnerTransitionPolicy::new("transfer".to_string(), 0, 0, 1, 1),
+            Err(NodeCoreError::PreinstalledOwnerTransitionPolicyRecipientArgsTypeIdZero)
+        );
+        assert_eq!(
+            PreinstalledOwnerTransitionPolicy::new("transfer".to_string(), 0, 0x7201, 1, 0),
+            Err(NodeCoreError::PreinstalledOwnerTransitionPolicyRecipientArgsFieldIdZero)
+        );
+    }
+
+    #[test]
+    fn owner_transition_recipient_projection_is_exact() {
+        let policy: PreinstalledOwnerTransitionPolicy = sample_owner_transition_policy("transfer");
+        let recipient: Address = Address::new([0xA5; 32]);
+        let mut args: CanonicalStruct = CanonicalStruct::new(0x7201, 1);
+        args.field_bytes(1, recipient.as_bytes().to_vec()).unwrap();
+        assert_eq!(
+            policy.project_recipient(&args.finish().unwrap()).unwrap(),
+            recipient
+        );
+
+        for malformed in [
+            {
+                let mut frame: CanonicalStruct = CanonicalStruct::new(0x7202, 1);
+                frame.field_bytes(1, vec![0xA5; 32]).unwrap();
+                frame.finish().unwrap()
+            },
+            {
+                let mut frame: CanonicalStruct = CanonicalStruct::new(0x7201, 2);
+                frame.field_bytes(1, vec![0xA5; 32]).unwrap();
+                frame.finish().unwrap()
+            },
+            {
+                let mut frame: CanonicalStruct = CanonicalStruct::new(0x7201, 1);
+                frame.field_bytes(1, vec![0xA5; 31]).unwrap();
+                frame.finish().unwrap()
+            },
+            {
+                let mut frame: CanonicalStruct = CanonicalStruct::new(0x7201, 1);
+                frame.field_bytes(1, vec![0xA5; 32]).unwrap();
+                frame.field_u16(2, 7).unwrap();
+                frame.finish().unwrap()
+            },
+        ] {
+            assert!(policy.project_recipient(&malformed).is_err());
+        }
     }
 }
