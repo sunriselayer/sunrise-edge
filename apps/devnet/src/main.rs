@@ -6,13 +6,25 @@ use runtime::{Clock, DurableOperationContext, StorageCorrelationId, StorageDeadl
 use std::{error::Error, process::ExitCode, sync::Arc};
 use sunrise_edge_devnet::{
     DEVNET_BLOB_DATABASE_FILE, DEVNET_DATABASE_FILE, DEVNET_STARTUP_LIMITATIONS_BANNER,
-    DevnetConfig, STANDARD_ASSET_TRANSFER_WASM, SeedDevOwnerCoinsOutcome, boot_local_store,
-    build_devnet_protocol_context, build_standard_asset_module, compose_devnet_router,
+    DevnetConfig, STANDARD_ASSET_TRANSFER_WASM, SeedAssetAuthorityObjectsOutcome,
+    SeedDevOwnerCoinsOutcome, boot_local_store, build_devnet_protocol_context,
+    build_standard_asset_module, compose_devnet_router, seed_asset_authority_objects,
     seed_dev_owner_coins, seed_treasury_coin, verify_or_seed_protocol_context,
     verify_seeded_asset_supply,
 };
 
 const SEED_OPERATION_TIMEOUT_MILLIS: u64 = 30_000;
+
+/// The highest operational correlation sequence assigned while seeding one
+/// boot: `0` for the protocol context, `1` for the asset authority,
+/// `2..=N+1` for the `N` dev owners, and `N+2` for the treasury. Outbox
+/// identities must be reserved strictly past this value, or the treasury
+/// seed's correlation ID collides with the first outbox attempt.
+fn highest_seed_correlation_sequence(dev_owner_count: usize) -> Result<usize, &'static str> {
+    dev_owner_count
+        .checked_add(2)
+        .ok_or("seed correlation sequence overflow")
+}
 
 async fn run() -> Result<(), Box<dyn Error>> {
     let config: DevnetConfig = DevnetConfig::parse_from(std::env::args_os().skip(1))?;
@@ -56,11 +68,38 @@ async fn run() -> Result<(), Box<dyn Error>> {
         object_store_was_empty,
     )?;
 
+    let mint_authority = config
+        .dev_owners()
+        .first()
+        .copied()
+        .ok_or("devnet requires at least one configured dev owner")?;
+    let asset_authority_outcome = seed_asset_authority_objects(
+        boot.store(),
+        boot.blob_store(),
+        asset_module.resolver(),
+        config.epoch(),
+        asset_id,
+        mint_authority,
+        boot_generation,
+        &operation_context_for(1)?,
+    )?;
+    let asset_authority_status: &str = match &asset_authority_outcome {
+        SeedAssetAuthorityObjectsOutcome::Created(_) => "created",
+        SeedAssetAuthorityObjectsOutcome::Existing(_) => "verified-existing",
+    };
+    println!(
+        "owner={} role=mint-authority seed_status={} asset_definition={} mint_capability={}",
+        mint_authority,
+        asset_authority_status,
+        asset_authority_outcome.objects().definition().id,
+        asset_authority_outcome.objects().mint_capability().id
+    );
+
     let mut seed_outcomes: Vec<SeedDevOwnerCoinsOutcome> =
         Vec::with_capacity(config.dev_owners().len());
     for (index, owner) in config.dev_owners().iter().copied().enumerate() {
         let sequence: u64 = u64::try_from(index)?
-            .checked_add(1)
+            .checked_add(2)
             .ok_or("seed correlation sequence overflow")?;
         let outcome = seed_dev_owner_coins(
             boot.store(),
@@ -86,9 +125,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
         seed_outcomes.push(outcome);
     }
 
-    let treasury_sequence: u64 = u64::try_from(config.dev_owners().len())?
-        .checked_add(1)
-        .ok_or("seed correlation sequence overflow")?;
+    let highest_seed_sequence: usize =
+        highest_seed_correlation_sequence(config.dev_owners().len())?;
+    let treasury_sequence: u64 = u64::try_from(highest_seed_sequence)?;
     let treasury_outcome = seed_treasury_coin(
         boot.store(),
         boot.blob_store(),
@@ -122,7 +161,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         asset_module,
         boot_generation,
         config.max_concurrent(),
-        config.dev_owners().len() + 1,
+        highest_seed_sequence,
         fee_treasury_object_id,
     )?;
     let listener = tokio::net::TcpListener::bind(config.listen()).await?;
@@ -164,5 +203,29 @@ async fn main() -> ExitCode {
             eprintln!("sunrise-edge-devnet failed: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn highest_seed_correlation_sequence_covers_authority_owners_and_treasury() {
+        // sequence 0 is the protocol context, 1 is the asset authority,
+        // 2..=N+1 are the N dev owners, and N+2 is the treasury: the router's
+        // outbox identities must be reserved through that treasury sequence
+        // so the first outbox attempt cannot collide with it.
+        assert_eq!(highest_seed_correlation_sequence(0).unwrap(), 2);
+        assert_eq!(highest_seed_correlation_sequence(1).unwrap(), 3);
+        assert_eq!(highest_seed_correlation_sequence(5).unwrap(), 7);
+    }
+
+    #[test]
+    fn highest_seed_correlation_sequence_rejects_overflow() {
+        assert_eq!(
+            highest_seed_correlation_sequence(usize::MAX),
+            Err("seed correlation sequence overflow")
+        );
     }
 }

@@ -7,10 +7,14 @@
 //! one distinct fee-payer coin; the separate treasury owner receives one
 //! ordinary treasury coin. Every coin uses the same fixed devnet
 //! [`standard_assets::AssetId`] (see `crate::standard_asset::derive_devnet_asset_id`).
+//! The fixed asset definition and its one mint capability are seeded as a
+//! separate atomic pair; the definition is immutable and the capability is
+//! owned by the first configured development owner.
 
 use crate::{
     config::{DevOwner, MAX_DEVNET_OWNERS},
     genesis::DEVNET_DOMAIN_BYTES,
+    standard_asset::{DEV_CREATION_AUTHORITY, dev_creation_seed},
 };
 use abi::{AbiError, verify_type_id};
 use canonical_encoding::{
@@ -34,15 +38,21 @@ use runtime::{
     RuntimeError, StructuredDurableDomainStateStore, WriterFenceGeneration,
 };
 use standard_assets::{
-    AssetId, STANDARD_ASSET_SCHEMA_VERSION_V1, StandardAssetCoinV1, StandardAssetError,
-    coin_type_tag, decode_standard_asset_coin_v1, derive_coin_type_id,
-    encode_standard_asset_coin_v1,
+    AssetId, STANDARD_ASSET_SCHEMA_VERSION_V1, StandardAssetCoinV1, StandardAssetDefinitionV1,
+    StandardAssetError, StandardAssetMintCapabilityV1, coin_type_tag,
+    decode_standard_asset_coin_v1, decode_standard_asset_definition_v1,
+    decode_standard_asset_mint_capability_v1, definition_type_tag, derive_coin_type_id,
+    derive_definition_type_id, derive_mint_capability_type_id, encode_standard_asset_coin_v1,
+    encode_standard_asset_definition_v1, encode_standard_asset_mint_capability_v1,
+    mint_capability_type_tag,
 };
 use std::{collections::BTreeSet, error::Error, fmt};
 
 const TRANSFER_COIN_SLOT: u64 = 1;
 const FEE_COIN_SLOT: u64 = 2;
 const TREASURY_COIN_SLOT: u64 = 1;
+const ASSET_DEFINITION_SLOT: u64 = 1;
+const MINT_CAPABILITY_SLOT: u64 = 2;
 
 /// Initial amount seeded into every dev owner's transferable coin.
 const INITIAL_TRANSFER_COIN_AMOUNT: u64 = 1_000_000;
@@ -151,6 +161,54 @@ pub enum SeedTreasuryCoinOutcome {
     Existing(SeededTreasuryCoin),
 }
 
+/// The fixed devnet asset's immutable definition and owner-held mint
+/// capability references.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeededAssetAuthorityObjects {
+    definition: ObjectRef,
+    mint_capability: ObjectRef,
+    mint_authority: DevOwner,
+}
+
+impl SeededAssetAuthorityObjects {
+    /// Returns the immutable Standard Asset definition reference.
+    #[must_use]
+    pub const fn definition(&self) -> &ObjectRef {
+        &self.definition
+    }
+
+    /// Returns the first dev owner's mint capability reference.
+    #[must_use]
+    pub const fn mint_capability(&self) -> &ObjectRef {
+        &self.mint_capability
+    }
+
+    /// Returns the configured owner authorized to present the capability.
+    #[must_use]
+    pub const fn mint_authority(&self) -> DevOwner {
+        self.mint_authority
+    }
+}
+
+/// Whether this boot created or verified the asset definition/capability pair.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SeedAssetAuthorityObjectsOutcome {
+    /// Both objects and their receipt were committed atomically by this call.
+    Created(SeededAssetAuthorityObjects),
+    /// Both exact immutable version-one objects were already present.
+    Existing(SeededAssetAuthorityObjects),
+}
+
+impl SeedAssetAuthorityObjectsOutcome {
+    /// Returns the verified pair regardless of whether this call created it.
+    #[must_use]
+    pub const fn objects(&self) -> &SeededAssetAuthorityObjects {
+        match self {
+            Self::Created(objects) | Self::Existing(objects) => objects,
+        }
+    }
+}
+
 impl SeedTreasuryCoinOutcome {
     /// Returns the verified treasury coin regardless of whether this call
     /// created it.
@@ -248,6 +306,452 @@ struct ExpectedTreasurySeed {
     domain: AtomicityDomainId,
     treasury: ExpectedSeedCoin,
     receipt: DurableRequestReceipt,
+}
+
+#[derive(Clone, Debug)]
+struct ExpectedAssetAuthoritySeed {
+    domain: AtomicityDomainId,
+    definition: ExpectedSeedCoin,
+    mint_capability: ExpectedSeedCoin,
+    receipt: DurableRequestReceipt,
+}
+
+/// Seeds and restart-verifies exactly one immutable definition and one mint
+/// capability for the already-derived devnet `asset_id`.
+///
+/// The two objects are created atomically. The capability is address-owned by
+/// `mint_authority`; mint only reads it, so restart requires its exact
+/// version-one reference and owner to remain unchanged.
+#[allow(clippy::too_many_arguments)]
+pub fn seed_asset_authority_objects<S>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    asset_id: AssetId,
+    mint_authority: DevOwner,
+    boot_generation: WriterFenceGeneration,
+    context: &DurableOperationContext,
+) -> Result<SeedAssetAuthorityObjectsOutcome, DevnetSeedError>
+where
+    S: StructuredDurableDomainStateStore + ?Sized,
+{
+    validate_ed25519_owner_address(
+        mint_authority.as_bytes(),
+        Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
+    )
+    .map_err(DevnetSeedError::InadmissibleOwner)?;
+    if context.writer_fence() != boot_generation {
+        return Err(DevnetSeedError::ContextFenceMismatch {
+            context: context.writer_fence(),
+            boot: boot_generation,
+        });
+    }
+    let expected: ExpectedAssetAuthoritySeed =
+        build_expected_asset_authority_seed(resolver, epoch, asset_id, mint_authority)?;
+    let definition_head: DurableObjectHead = store
+        .get_object_head(
+            context,
+            expected.domain,
+            expected.definition.initial_object.id,
+        )
+        .map_err(DevnetSeedError::Read)?;
+    let capability_head: DurableObjectHead = store
+        .get_object_head(
+            context,
+            expected.domain,
+            expected.mint_capability.initial_object.id,
+        )
+        .map_err(DevnetSeedError::Read)?;
+
+    match (&definition_head, &capability_head) {
+        (DurableObjectHead::Absent, DurableObjectHead::Absent) => create_asset_authority_seed(
+            store,
+            blob_store,
+            resolver,
+            epoch,
+            boot_generation,
+            context,
+            mint_authority,
+            expected,
+        ),
+        (DurableObjectHead::Current { .. }, DurableObjectHead::Current { .. }) => {
+            verify_existing_asset_authority_seed(
+                store,
+                resolver,
+                epoch,
+                boot_generation,
+                context,
+                mint_authority,
+                &expected,
+                &definition_head,
+                &capability_head,
+            )?;
+            Ok(SeedAssetAuthorityObjectsOutcome::Existing(
+                initial_asset_authority_objects(mint_authority, &expected),
+            ))
+        }
+        _ => Err(DevnetSeedError::UnexpectedHeadPair {
+            first: head_kind(&definition_head),
+            second: head_kind(&capability_head),
+        }),
+    }
+}
+
+fn build_expected_asset_authority_seed(
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    asset_id: AssetId,
+    mint_authority: DevOwner,
+) -> Result<ExpectedAssetAuthoritySeed, DevnetSeedError> {
+    let domain: AtomicityDomainId = AtomicityDomainId::new(DEVNET_DOMAIN_BYTES)
+        .map_err(|_| DevnetSeedError::InvalidStaticDomain)?;
+    let definition_body: StandardAssetDefinitionV1 = StandardAssetDefinitionV1::derive(
+        resolver,
+        DEV_CREATION_AUTHORITY,
+        dev_creation_seed()?,
+        epoch,
+    )?;
+    if definition_body.asset_id != asset_id {
+        return Err(DevnetSeedError::AssetInvariantViolation);
+    }
+    let definition: ExpectedSeedCoin = build_expected_seed_object(
+        resolver,
+        epoch,
+        Owner::Immutable,
+        ASSET_DEFINITION_SLOT,
+        derive_definition_type_id(resolver, epoch, asset_id)?,
+        encode_standard_asset_definition_v1(&definition_body)?,
+    )?;
+    let capability_body: StandardAssetMintCapabilityV1 = StandardAssetMintCapabilityV1 { asset_id };
+    let mint_capability: ExpectedSeedCoin = build_expected_seed_object(
+        resolver,
+        epoch,
+        Owner::Address(Address::new(*mint_authority.as_bytes())),
+        MINT_CAPABILITY_SLOT,
+        derive_mint_capability_type_id(resolver, epoch, asset_id)?,
+        encode_standard_asset_mint_capability_v1(&capability_body)?,
+    )?;
+    if definition.initial_object.id == mint_capability.initial_object.id {
+        return Err(DevnetSeedError::ObjectIdCollision);
+    }
+    let receipt: DurableRequestReceipt =
+        build_seed_receipt(resolver, epoch, &definition.object_ref())?;
+    Ok(ExpectedAssetAuthoritySeed {
+        domain,
+        definition,
+        mint_capability,
+        receipt,
+    })
+}
+
+fn build_expected_seed_object(
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    owner: Owner,
+    slot: u64,
+    type_hash: Digest32,
+    body: Vec<u8>,
+) -> Result<ExpectedSeedCoin, DevnetSeedError> {
+    let descriptor: Object = Object {
+        id: ObjectId::new([0; 32]),
+        version: slot,
+        owner: owner.clone(),
+        type_hash,
+        schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+        data: body.clone(),
+    };
+    let descriptor_bytes: Vec<u8> = encode_object(&descriptor)?;
+    let object_id_digest: Digest32 =
+        resolver.hash_for_purpose(epoch, HashPurpose::Object, &descriptor_bytes)?;
+    let object: Object = Object {
+        id: ObjectId::new(object_id_digest.bytes()),
+        version: DurableObjectVersion::FIRST.get(),
+        owner,
+        type_hash,
+        schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+        data: body,
+    };
+    let canonical_object: Vec<u8> = encode_object(&object)?;
+    let initial_digest: Digest32 =
+        resolver.hash_for_purpose(epoch, HashPurpose::Object, &canonical_object)?;
+    Ok(ExpectedSeedCoin {
+        initial_object: object,
+        initial_digest,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_asset_authority_seed<S>(
+    store: &S,
+    _blob_store: &dyn BlobStore,
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    boot_generation: WriterFenceGeneration,
+    context: &DurableOperationContext,
+    mint_authority: DevOwner,
+    expected: ExpectedAssetAuthoritySeed,
+) -> Result<SeedAssetAuthorityObjectsOutcome, DevnetSeedError>
+where
+    S: StructuredDurableDomainStateStore + ?Sized,
+{
+    let provenance: DurableObjectProvenance =
+        DurableObjectProvenance::new(resolver.chain_id().clone(), resolver.protocol_version());
+    let definition_record: DurableObjectVersionRecord =
+        DurableObjectVersionRecord::from_inline_object(
+            expected.definition.initial_object.clone(),
+            expected.definition.initial_digest,
+            provenance.clone(),
+            boot_generation.get(),
+        )?;
+    let capability_record: DurableObjectVersionRecord =
+        DurableObjectVersionRecord::from_inline_object(
+            expected.mint_capability.initial_object.clone(),
+            expected.mint_capability.initial_digest,
+            provenance,
+            boot_generation.get(),
+        )?;
+    let routing_projection: DurableObjectRoutingProjection =
+        DurableObjectRoutingProjection::new(None)?;
+    let reads: Vec<DurableObjectHeadRead> = vec![
+        DurableObjectHeadRead::new(
+            expected.definition.initial_object.id,
+            DurableObjectHead::Absent,
+        ),
+        DurableObjectHeadRead::new(
+            expected.mint_capability.initial_object.id,
+            DurableObjectHead::Absent,
+        ),
+    ];
+    let mutations: Vec<DurableObjectMutationEntry> = vec![
+        DurableObjectMutationEntry::new(
+            expected.definition.initial_object.id,
+            DurableObjectMutation::Create {
+                version: definition_record,
+                owner_projection: DurableObjectOwnerProjection::from_owner(Owner::Immutable)?,
+                routing_projection: routing_projection.clone(),
+            },
+        ),
+        DurableObjectMutationEntry::new(
+            expected.mint_capability.initial_object.id,
+            DurableObjectMutation::Create {
+                version: capability_record,
+                owner_projection: DurableObjectOwnerProjection::from_owner(Owner::Address(
+                    Address::new(*mint_authority.as_bytes()),
+                ))?,
+                routing_projection,
+            },
+        ),
+    ];
+    let objects: DurableObjectChanges = DurableObjectChanges::new(reads, mutations)?;
+    let invocation: DurableInvocationTransaction = DurableInvocationTransaction::new(
+        expected.domain,
+        None,
+        objects,
+        expected.receipt.clone(),
+        None,
+    )?;
+
+    match store.commit_invocation(context, invocation) {
+        DurableCommitOutcome::Committed => Ok(SeedAssetAuthorityObjectsOutcome::Created(
+            initial_asset_authority_objects(mint_authority, &expected),
+        )),
+        DurableCommitOutcome::Rejected(
+            DurableCommitRejection::ObjectConflict { .. }
+            | DurableCommitRejection::RequestAlreadyCommitted,
+        ) => reconcile_existing_asset_authority_seed(
+            store,
+            resolver,
+            epoch,
+            boot_generation,
+            context,
+            mint_authority,
+            &expected,
+        ),
+        DurableCommitOutcome::Rejected(rejection) => {
+            Err(DevnetSeedError::CommitRejected(rejection))
+        }
+        DurableCommitOutcome::Indeterminate(reason) => {
+            let receipt: Option<DurableRequestReceipt> = store
+                .get_request_receipt(context, expected.domain, expected.receipt.request_id())
+                .map_err(DevnetSeedError::Read)?;
+            match receipt {
+                Some(receipt) if receipt == expected.receipt => {
+                    reconcile_existing_asset_authority_seed(
+                        store,
+                        resolver,
+                        epoch,
+                        boot_generation,
+                        context,
+                        mint_authority,
+                        &expected,
+                    )
+                }
+                Some(_) => Err(DevnetSeedError::ReceiptMismatch),
+                None => Err(DevnetSeedError::CommitIndeterminate(reason)),
+            }
+        }
+    }
+}
+
+fn reconcile_existing_asset_authority_seed<S>(
+    store: &S,
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    boot_generation: WriterFenceGeneration,
+    context: &DurableOperationContext,
+    mint_authority: DevOwner,
+    expected: &ExpectedAssetAuthoritySeed,
+) -> Result<SeedAssetAuthorityObjectsOutcome, DevnetSeedError>
+where
+    S: StructuredDurableDomainStateStore + ?Sized,
+{
+    let definition_head: DurableObjectHead = store
+        .get_object_head(
+            context,
+            expected.domain,
+            expected.definition.initial_object.id,
+        )
+        .map_err(DevnetSeedError::Read)?;
+    let capability_head: DurableObjectHead = store
+        .get_object_head(
+            context,
+            expected.domain,
+            expected.mint_capability.initial_object.id,
+        )
+        .map_err(DevnetSeedError::Read)?;
+    verify_existing_asset_authority_seed(
+        store,
+        resolver,
+        epoch,
+        boot_generation,
+        context,
+        mint_authority,
+        expected,
+        &definition_head,
+        &capability_head,
+    )?;
+    Ok(SeedAssetAuthorityObjectsOutcome::Existing(
+        initial_asset_authority_objects(mint_authority, expected),
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_existing_asset_authority_seed<S>(
+    store: &S,
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    boot_generation: WriterFenceGeneration,
+    context: &DurableOperationContext,
+    mint_authority: DevOwner,
+    expected: &ExpectedAssetAuthoritySeed,
+    definition_head: &DurableObjectHead,
+    capability_head: &DurableObjectHead,
+) -> Result<(), DevnetSeedError>
+where
+    S: StructuredDurableDomainStateStore + ?Sized,
+{
+    verify_exact_seed_object_head(
+        resolver,
+        epoch,
+        definition_head,
+        &expected.definition,
+        &Owner::Immutable,
+    )?;
+    verify_exact_seed_object_head(
+        resolver,
+        epoch,
+        capability_head,
+        &expected.mint_capability,
+        &Owner::Address(Address::new(*mint_authority.as_bytes())),
+    )?;
+    verify_initial_record(
+        store,
+        resolver,
+        boot_generation,
+        context,
+        expected.domain,
+        &expected.definition,
+    )?;
+    verify_initial_record(
+        store,
+        resolver,
+        boot_generation,
+        context,
+        expected.domain,
+        &expected.mint_capability,
+    )?;
+    verify_seed_receipt(store, context, expected.domain, &expected.receipt)
+}
+
+fn verify_exact_seed_object_head(
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    head: &DurableObjectHead,
+    expected: &ExpectedSeedCoin,
+    owner: &Owner,
+) -> Result<(), DevnetSeedError> {
+    let expected_owner_projection: DurableObjectOwnerProjection =
+        DurableObjectOwnerProjection::from_owner(owner.clone())?;
+    let expected_routing_projection: DurableObjectRoutingProjection =
+        DurableObjectRoutingProjection::new(None)?;
+    match head {
+        DurableObjectHead::Current {
+            object_version,
+            digest,
+            owner_projection,
+            routing_projection,
+            ..
+        } if *object_version == DurableObjectVersion::FIRST
+            && *digest == expected.initial_digest
+            && owner_projection == &expected_owner_projection
+            && routing_projection == &expected_routing_projection => {}
+        _ => {
+            return Err(DevnetSeedError::StoredObjectMismatch {
+                object_id: expected.initial_object.id,
+                detail: "asset authority head differs from exact version-one seed",
+            });
+        }
+    }
+    let type_tag: abi::TypeTag = match owner {
+        Owner::Immutable => definition_type_tag(
+            decode_standard_asset_definition_v1(&expected.initial_object.data)?.asset_id,
+        ),
+        Owner::Address(_) => mint_capability_type_tag(
+            decode_standard_asset_mint_capability_v1(&expected.initial_object.data)?.asset_id,
+        ),
+        Owner::Shared | Owner::System => {
+            return Err(DevnetSeedError::StoredObjectMismatch {
+                object_id: expected.initial_object.id,
+                detail: "asset authority object has unsupported owner kind",
+            });
+        }
+    };
+    let type_ok: bool = verify_type_id(
+        resolver,
+        &expected.initial_object.type_hash,
+        epoch,
+        &type_tag,
+    )
+    .map_err(DevnetSeedError::TypedAbi)?;
+    if !type_ok {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: expected.initial_object.id,
+            detail: "asset authority nominal type failed verify_type_id",
+        });
+    }
+    Ok(())
+}
+
+fn initial_asset_authority_objects(
+    mint_authority: DevOwner,
+    expected: &ExpectedAssetAuthoritySeed,
+) -> SeededAssetAuthorityObjects {
+    SeededAssetAuthorityObjects {
+        definition: expected.definition.object_ref(),
+        mint_capability: expected.mint_capability.object_ref(),
+        mint_authority,
+    }
 }
 
 /// Seeds one dev owner's transferable coin and distinct fee coin.
@@ -1934,6 +2438,81 @@ mod tests {
         let store = MemoryDurableStateStore::new_bound(domain(), generation());
         store.set_time(0);
         store
+    }
+
+    #[test]
+    fn asset_authority_seed_is_atomic_typed_and_idempotent() {
+        let store: MemoryDurableStateStore = store();
+        let blob_store: MemoryBlobStore = MemoryBlobStore::default();
+        let resolver: HashSuiteResolver = resolver(5);
+        let owner: DevOwner = dev_owner(0x61);
+        let asset_id: AssetId =
+            crate::standard_asset::derive_devnet_asset_id(&resolver, Epoch::new(0)).unwrap();
+        let expected: ExpectedAssetAuthoritySeed =
+            build_expected_asset_authority_seed(&resolver, Epoch::new(0), asset_id, owner).unwrap();
+
+        let created: SeedAssetAuthorityObjectsOutcome = seed_asset_authority_objects(
+            &store,
+            &blob_store,
+            &resolver,
+            Epoch::new(0),
+            asset_id,
+            owner,
+            generation(),
+            &context(),
+        )
+        .unwrap();
+        assert!(matches!(
+            created,
+            SeedAssetAuthorityObjectsOutcome::Created(_)
+        ));
+        assert_eq!(
+            created.objects().definition(),
+            &expected.definition.object_ref()
+        );
+        assert_eq!(
+            created.objects().mint_capability(),
+            &expected.mint_capability.object_ref()
+        );
+        assert_ne!(
+            created.objects().definition().id,
+            created.objects().mint_capability().id
+        );
+
+        let definition_head: DurableObjectHead = store
+            .get_object_head(&context(), domain(), created.objects().definition().id)
+            .unwrap();
+        let capability_head: DurableObjectHead = store
+            .get_object_head(&context(), domain(), created.objects().mint_capability().id)
+            .unwrap();
+        assert!(matches!(
+            definition_head,
+            DurableObjectHead::Current { ref owner_projection, .. }
+                if owner_projection.owner() == Some(&Owner::Immutable)
+        ));
+        assert!(matches!(
+            capability_head,
+            DurableObjectHead::Current { ref owner_projection, .. }
+                if owner_projection.owner()
+                    == Some(&Owner::Address(Address::new(*owner.as_bytes())))
+        ));
+
+        let existing: SeedAssetAuthorityObjectsOutcome = seed_asset_authority_objects(
+            &store,
+            &blob_store,
+            &resolver,
+            Epoch::new(0),
+            asset_id,
+            owner,
+            generation(),
+            &context(),
+        )
+        .unwrap();
+        assert!(matches!(
+            existing,
+            SeedAssetAuthorityObjectsOutcome::Existing(_)
+        ));
+        assert_eq!(existing.objects(), created.objects());
     }
 
     #[test]

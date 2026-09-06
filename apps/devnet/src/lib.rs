@@ -33,12 +33,13 @@ pub use genesis::{DevnetGenesisError, DevnetProtocolContext, build_devnet_protoc
 pub use identities::DevnetOutboxIdentitySource;
 pub use machine::DevnetMachine;
 pub use seed::{
-    DevnetSeedError, SeedDevOwnerCoinsOutcome, SeedTreasuryCoinOutcome, SeededDevOwnerCoins,
-    SeededTreasuryCoin, seed_dev_owner_coins, seed_treasury_coin, verify_or_seed_protocol_context,
-    verify_seeded_asset_supply,
+    DevnetSeedError, SeedAssetAuthorityObjectsOutcome, SeedDevOwnerCoinsOutcome,
+    SeedTreasuryCoinOutcome, SeededAssetAuthorityObjects, SeededDevOwnerCoins, SeededTreasuryCoin,
+    seed_asset_authority_objects, seed_dev_owner_coins, seed_treasury_coin,
+    verify_or_seed_protocol_context, verify_seeded_asset_supply,
 };
 pub use standard_asset::{
-    MERGE_ENTRYPOINT, SPLIT_ENTRYPOINT, STANDARD_ASSET_TRANSFER_WASM, TRANSFER_ENTRYPOINT,
-    derive_devnet_asset_id,
+    MERGE_ENTRYPOINT, MINT_ENTRYPOINT, SPLIT_ENTRYPOINT, STANDARD_ASSET_TRANSFER_WASM,
+    TRANSFER_ENTRYPOINT, derive_devnet_asset_id,
 };
 pub use transport::DevnetTransport;

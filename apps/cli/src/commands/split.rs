@@ -3,7 +3,8 @@
 //! The command deliberately exposes the exact source coin and amount while
 //! keeping all balance arithmetic in the committed module. It performs local
 //! ownership, type, and range checks before signing, then submits the exact
-//! protocol-v5/module-v2 manifest: source `Write`, fee `Write`, and the
+//! protocol-v5 Standard Asset operations manifest (introduced by module v2
+//! and retained by later versions): source `Write`, fee `Write`, and the
 //! trusted treasury `Write`.
 
 use std::ffi::OsString;

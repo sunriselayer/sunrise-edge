@@ -22,8 +22,9 @@ impl DevnetOutboxIdentitySource {
 
     /// Starts after a caller-reserved sequence range.
     ///
-    /// The devnet seed path reserves `1..=owner_count`, so its operational
-    /// correlation IDs cannot collide with later outbox-attempt IDs.
+    /// The caller reserves every seed correlation sequence through the
+    /// treasury seed. The first later outbox-attempt ID is therefore disjoint
+    /// from all boot-time operational correlation IDs.
     #[must_use]
     pub const fn new_after(
         boot_generation: WriterFenceGeneration,
