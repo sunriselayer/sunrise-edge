@@ -119,9 +119,9 @@ be exposed beyond your machine or used to custody real assets.
 | Area | Crates | Responsibility |
 | --- | --- | --- |
 | Protocol foundation | `protocol-types`, `canonical-encoding`, `hashing`, `crypto`, `commitments` | Stable identifiers, canonical bytes, domain separation, hash suites, signatures, and state commitment schemes |
-| State and access | `objects`, `abi` | Versioned objects, ownership, object references, access modes, and transaction access manifests |
+| State and access | `objects`, `abi` | Versioned objects, ownership, object references, access modes, transaction access manifests, and a bounded, inert typed-ABI foundation (nominal type arguments/tags, constructor registry, entrypoint signatures, single-pass pre-execution input verification) |
 | Execution | `execution`, `contract-sdk`, `chain-ir`, `system-modules` | Transactions/effects, deterministic WASM, proof envelopes/verifier interfaces, contract host APIs, portable IR, and governed modules |
-| Economics and governance | `fees`, `bonds`, `governance`, `protocol-upgrades`, `protocol-config` | Fees/bonds, admission, governance actions, upgrades, migrations, and committed configuration |
+| Economics and governance | `fees`, `bonds`, `governance`, `protocol-upgrades`, `protocol-config`, `standard-assets` | Fees/bonds, admission, governance actions, upgrades, migrations, committed configuration, and Standard Asset v1 identity/value schemas with their `abi` typed bindings |
 | Runtime and consensus | `runtime`, `runtime-sqlite`, `runtime-postgres`, `validator-set`, `consensus`, `node-core` | Persistence/runtime interfaces, local SQLite, normalized PostgreSQL, validator snapshots, consensus, and one-event state transitions |
 | Client wire and SDK | `node-wire`, `clients/rust` | Canonical HTTP/query frames, the Rust client, loopback plaintext, bounded remote TLS, and protocol-context verification |
 | Hardware signing | `signing-view`, `clients/ledger` | Hardware signing policy, APDU/USB/HID host transport, and Ledger external-signer integration |

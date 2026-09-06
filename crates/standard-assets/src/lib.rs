@@ -18,6 +18,20 @@
 //!
 //! See `docs/architecture/decisions/0104-asset-standards-gate.md` for the
 //! full identifier audit and the activation boundary for this slice.
+//!
+//! # Typed ABI foundation (inert)
+//!
+//! [`constructor_registry`] declares [`abi::ConstructorId`]s that mirror the
+//! three body type ids above (`STANDARD_ASSET_*_CONSTRUCTOR`). This mirroring
+//! is deliberate and safe, not a namespace merge: `abi::ConstructorId` and
+//! this crate's canonical wire type ids are distinct Rust types living in
+//! distinct namespaces, and [`abi::ConstructorRegistry::register`] fails
+//! closed if two different constructors are ever bound to the same
+//! `body_type_id`. Each constructor's body projection extracts the nested
+//! [`AssetId`] from canonical field 1 — the field every one of the three
+//! bodies uses for `asset_id` — and rejects malformed, unknown, or trailing
+//! bytes (see `abi::project_type_arg`). This foundation activates no module,
+//! `Create`, transfer, or mint; see the crate-level docs above.
 
 use canonical_encoding::{
     CanonicalDecodingError, CanonicalEncodingError, CanonicalFrame, CanonicalStruct,
@@ -26,7 +40,7 @@ use canonical_encoding::{
 use core::fmt;
 use hashing::{HashSuiteResolver, HashingError};
 use objects::Address;
-use protocol_types::{Epoch, HashAlgorithmId, HashPurpose, ProtocolVersion, TypeError};
+use protocol_types::{Digest32, Epoch, HashAlgorithmId, HashPurpose, ProtocolVersion, TypeError};
 use std::error::Error;
 
 const IDENTIFIER_LEN: usize = 32;
@@ -88,6 +102,8 @@ pub enum StandardAssetError {
     CanonicalEncoding(CanonicalEncodingError),
     /// Canonical decoding failed.
     CanonicalDecoding(CanonicalDecodingError),
+    /// A typed-ABI operation failed.
+    Abi(abi::AbiError),
 }
 
 impl fmt::Display for StandardAssetError {
@@ -125,6 +141,7 @@ impl fmt::Display for StandardAssetError {
             Self::Hashing(error) => error.fmt(f),
             Self::CanonicalEncoding(error) => error.fmt(f),
             Self::CanonicalDecoding(error) => error.fmt(f),
+            Self::Abi(error) => error.fmt(f),
         }
     }
 }
@@ -152,6 +169,12 @@ impl From<CanonicalEncodingError> for StandardAssetError {
 impl From<CanonicalDecodingError> for StandardAssetError {
     fn from(value: CanonicalDecodingError) -> Self {
         Self::CanonicalDecoding(value)
+    }
+}
+
+impl From<abi::AbiError> for StandardAssetError {
+    fn from(value: abi::AbiError) -> Self {
+        Self::Abi(value)
     }
 }
 
@@ -501,6 +524,156 @@ pub fn decode_standard_asset_mint_capability_v1(
     Ok(StandardAssetMintCapabilityV1 {
         asset_id: decode_asset_id(frame.required_field(1)?)?,
     })
+}
+
+// ── Typed ABI foundation (inert) ─────────────────────────────────────────
+
+/// The object schema version shared by all Standard Asset v1 object bodies.
+///
+/// Distinct from [`ENCODING_VERSION`] (the canonical-frame wire version used
+/// by this crate's own encoders, which every body also happens to pin at
+/// `1`): this is the value validators compare against
+/// `objects::Object::schema_version` and `abi::ParamDeclaration::schema_version`.
+pub const STANDARD_ASSET_SCHEMA_VERSION_V1: u32 = 1;
+
+/// `abi` constructor identifier for [`StandardAssetDefinitionV1`].
+///
+/// See the crate-level "Typed ABI foundation" docs for why mirroring
+/// [`STANDARD_ASSET_DEFINITION_V1_TYPE_ID`]'s numeric value is safe here.
+pub const STANDARD_ASSET_DEFINITION_V1_CONSTRUCTOR: abi::ConstructorId =
+    abi::ConstructorId::new(STANDARD_ASSET_DEFINITION_V1_TYPE_ID);
+/// `abi` constructor identifier for [`StandardAssetCoinV1`] (see
+/// [`STANDARD_ASSET_DEFINITION_V1_CONSTRUCTOR`]).
+pub const STANDARD_ASSET_COIN_V1_CONSTRUCTOR: abi::ConstructorId =
+    abi::ConstructorId::new(STANDARD_ASSET_COIN_V1_TYPE_ID);
+/// `abi` constructor identifier for [`StandardAssetMintCapabilityV1`] (see
+/// [`STANDARD_ASSET_DEFINITION_V1_CONSTRUCTOR`]).
+pub const STANDARD_ASSET_MINT_CAPABILITY_V1_CONSTRUCTOR: abi::ConstructorId =
+    abi::ConstructorId::new(STANDARD_ASSET_MINT_CAPABILITY_V1_TYPE_ID);
+
+/// The fixed-depth canonical body projection shared by all three Standard
+/// Asset v1 bodies: unwrap `body_type_id`'s field 1 (the nested encoded
+/// [`AssetId`]), then unwrap [`ASSET_ID_TYPE_ID`]'s field 1 (the raw 32
+/// bytes).
+fn asset_id_projection(body_type_id: u16) -> Vec<abi::ProjectionStep> {
+    vec![
+        abi::ProjectionStep {
+            expected_type_id: body_type_id,
+            expected_version: ENCODING_VERSION,
+            field_id: 1,
+        },
+        abi::ProjectionStep {
+            expected_type_id: ASSET_ID_TYPE_ID,
+            expected_version: ENCODING_VERSION,
+            field_id: 1,
+        },
+    ]
+}
+
+/// Builds the deterministic Standard Asset v1 constructor registry.
+///
+/// Registers exactly the three constructors above; registration order does
+/// not affect the result, since [`abi::ConstructorRegistry`] iterates in
+/// stable [`abi::ConstructorId`] order. Fails only if the compiled-in
+/// declarations were ever made internally inconsistent or colliding, which
+/// stable tests in this module pin against.
+pub fn constructor_registry() -> Result<abi::ConstructorRegistry, StandardAssetError> {
+    let mut registry = abi::ConstructorRegistry::new();
+    registry.register(abi::ConstructorDeclaration {
+        id: STANDARD_ASSET_DEFINITION_V1_CONSTRUCTOR,
+        body_type_id: STANDARD_ASSET_DEFINITION_V1_TYPE_ID,
+        body_version: ENCODING_VERSION,
+        schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+        arity: abi::TypeArity::Variable,
+        projection: asset_id_projection(STANDARD_ASSET_DEFINITION_V1_TYPE_ID),
+    })?;
+    registry.register(abi::ConstructorDeclaration {
+        id: STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
+        body_type_id: STANDARD_ASSET_COIN_V1_TYPE_ID,
+        body_version: ENCODING_VERSION,
+        schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+        arity: abi::TypeArity::Variable,
+        projection: asset_id_projection(STANDARD_ASSET_COIN_V1_TYPE_ID),
+    })?;
+    registry.register(abi::ConstructorDeclaration {
+        id: STANDARD_ASSET_MINT_CAPABILITY_V1_CONSTRUCTOR,
+        body_type_id: STANDARD_ASSET_MINT_CAPABILITY_V1_TYPE_ID,
+        body_version: ENCODING_VERSION,
+        schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+        arity: abi::TypeArity::Variable,
+        projection: asset_id_projection(STANDARD_ASSET_MINT_CAPABILITY_V1_TYPE_ID),
+    })?;
+    Ok(registry)
+}
+
+/// Builds the canonical [`StandardAssetDefinitionV1`] type tag for `asset_id`.
+#[must_use]
+pub fn definition_type_tag(asset_id: AssetId) -> abi::TypeTag {
+    abi::TypeTag {
+        constructor: STANDARD_ASSET_DEFINITION_V1_CONSTRUCTOR,
+        type_arg: Some(abi::TypeArg::AssetId(*asset_id.as_bytes())),
+    }
+}
+
+/// Builds the canonical [`StandardAssetCoinV1`] type tag for `asset_id`.
+#[must_use]
+pub fn coin_type_tag(asset_id: AssetId) -> abi::TypeTag {
+    abi::TypeTag {
+        constructor: STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
+        type_arg: Some(abi::TypeArg::AssetId(*asset_id.as_bytes())),
+    }
+}
+
+/// Builds the canonical [`StandardAssetMintCapabilityV1`] type tag for
+/// `asset_id`.
+#[must_use]
+pub fn mint_capability_type_tag(asset_id: AssetId) -> abi::TypeTag {
+    abi::TypeTag {
+        constructor: STANDARD_ASSET_MINT_CAPABILITY_V1_CONSTRUCTOR,
+        type_arg: Some(abi::TypeArg::AssetId(*asset_id.as_bytes())),
+    }
+}
+
+/// Derives the nominal object-type identity digest for
+/// [`StandardAssetDefinitionV1`] instantiated at `asset_id`.
+pub fn derive_definition_type_id(
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    asset_id: AssetId,
+) -> Result<Digest32, StandardAssetError> {
+    Ok(abi::derive_type_id(
+        resolver,
+        epoch,
+        &definition_type_tag(asset_id),
+    )?)
+}
+
+/// Derives the nominal object-type identity digest for
+/// [`StandardAssetCoinV1`] instantiated at `asset_id`.
+pub fn derive_coin_type_id(
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    asset_id: AssetId,
+) -> Result<Digest32, StandardAssetError> {
+    Ok(abi::derive_type_id(
+        resolver,
+        epoch,
+        &coin_type_tag(asset_id),
+    )?)
+}
+
+/// Derives the nominal object-type identity digest for
+/// [`StandardAssetMintCapabilityV1`] instantiated at `asset_id`.
+pub fn derive_mint_capability_type_id(
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    asset_id: AssetId,
+) -> Result<Digest32, StandardAssetError> {
+    Ok(abi::derive_type_id(
+        resolver,
+        epoch,
+        &mint_capability_type_tag(asset_id),
+    )?)
 }
 
 #[cfg(test)]
@@ -1057,6 +1230,25 @@ mod tests {
         );
     }
 
+    /// Regression test: a stable, independently pinned nominal object-type
+    /// identity digest for a `StandardAssetCoinV1` instantiated at a fixed
+    /// `AssetId`, under a fixed deterministic hash-suite/chain context. This
+    /// pins the exact digest bytes, not a computed-and-compared-to-itself
+    /// expectation, so an accidental change to `TypeTag` encoding, the
+    /// type-identity hash frame, or the coin constructor binding is caught.
+    #[test]
+    fn coin_type_commitment_vector_is_stable() {
+        let resolver = sample_resolver("sunrise-devnet");
+        let asset_id = sample_asset_id(0x64);
+        let digest = derive_coin_type_id(&resolver, Epoch::new(0), asset_id).unwrap();
+
+        assert_eq!(digest.algorithm(), HashAlgorithmId::Sha2_256);
+        assert_eq!(
+            hex(&digest.bytes()),
+            "2ce8c77fdce94ae16940c5fa29e13ad72c4abb12006a7716def117320ad95653"
+        );
+    }
+
     #[test]
     fn mint_capability_decoder_round_trips_encoded_bytes() {
         let capability = sample_capability();
@@ -1091,5 +1283,252 @@ mod tests {
             decode_standard_asset_mint_capability_v1(&short.finish().unwrap()),
             Err(StandardAssetError::CanonicalDecoding(_))
         ));
+    }
+
+    // ── typed-ABI foundation tests ──────────────────────────────────────
+
+    use abi::{
+        AbiError, EntrypointSignature, ParamDeclaration, ResolvedInput, TypeArg,
+        verify_entrypoint_inputs,
+    };
+    use objects::{AccessMode, Object, ObjectId, Owner};
+
+    #[test]
+    fn constructor_registry_has_three_constructors_in_stable_order() {
+        let registry = constructor_registry().unwrap();
+        assert_eq!(registry.len(), 3);
+        let ids: Vec<_> = registry.iter().map(|decl| decl.id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                STANDARD_ASSET_DEFINITION_V1_CONSTRUCTOR,
+                STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
+                STANDARD_ASSET_MINT_CAPABILITY_V1_CONSTRUCTOR,
+            ]
+        );
+    }
+
+    #[test]
+    fn tag_constructors_bind_the_expected_constructor_and_asset_id() {
+        let asset_id = sample_asset_id(0x9A);
+        assert_eq!(
+            coin_type_tag(asset_id).type_arg,
+            Some(TypeArg::AssetId(*asset_id.as_bytes()))
+        );
+        assert_eq!(
+            coin_type_tag(asset_id).constructor,
+            STANDARD_ASSET_COIN_V1_CONSTRUCTOR
+        );
+        assert_eq!(
+            definition_type_tag(asset_id).constructor,
+            STANDARD_ASSET_DEFINITION_V1_CONSTRUCTOR
+        );
+        assert_eq!(
+            mint_capability_type_tag(asset_id).constructor,
+            STANDARD_ASSET_MINT_CAPABILITY_V1_CONSTRUCTOR
+        );
+    }
+
+    #[test]
+    fn type_id_helper_matches_abi_derive_type_id() {
+        let resolver = sample_resolver("sunrise-devnet");
+        let asset_id = sample_asset_id(0x21);
+        let expected =
+            abi::derive_type_id(&resolver, Epoch::new(0), &coin_type_tag(asset_id)).unwrap();
+        assert_eq!(
+            derive_coin_type_id(&resolver, Epoch::new(0), asset_id).unwrap(),
+            expected
+        );
+    }
+
+    fn coin_object(
+        resolver: &HashSuiteResolver,
+        id_byte: u8,
+        asset_id: AssetId,
+        amount: u64,
+    ) -> Object {
+        let coin = StandardAssetCoinV1::new(asset_id, amount).unwrap();
+        let data = encode_standard_asset_coin_v1(&coin).unwrap();
+        let type_hash = derive_coin_type_id(resolver, Epoch::new(0), asset_id).unwrap();
+        Object {
+            id: ObjectId::new([id_byte; 32]),
+            version: 1,
+            owner: Owner::Shared,
+            type_hash,
+            schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+            data,
+        }
+    }
+
+    fn mint_cap_object(resolver: &HashSuiteResolver, id_byte: u8, asset_id: AssetId) -> Object {
+        let capability = StandardAssetMintCapabilityV1 { asset_id };
+        let data = encode_standard_asset_mint_capability_v1(&capability).unwrap();
+        let type_hash = derive_mint_capability_type_id(resolver, Epoch::new(0), asset_id).unwrap();
+        Object {
+            id: ObjectId::new([id_byte; 32]),
+            version: 1,
+            owner: Owner::Shared,
+            type_hash,
+            schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+            data,
+        }
+    }
+
+    fn transfer_signature() -> EntrypointSignature {
+        EntrypointSignature::new(
+            "transfer",
+            vec![ParamDeclaration {
+                mode: AccessMode::Write,
+                constructor: STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
+                schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+            }],
+        )
+        .unwrap()
+    }
+
+    fn mint_signature() -> EntrypointSignature {
+        EntrypointSignature::new(
+            "mint",
+            vec![
+                ParamDeclaration {
+                    mode: AccessMode::Read,
+                    constructor: STANDARD_ASSET_MINT_CAPABILITY_V1_CONSTRUCTOR,
+                    schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+                },
+                ParamDeclaration {
+                    mode: AccessMode::Write,
+                    constructor: STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
+                    schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+                },
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn end_to_end_verification_accepts_a_well_formed_coin() {
+        let resolver = sample_resolver("sunrise-devnet");
+        let asset_id = sample_asset_id(0x44);
+        let coin = coin_object(&resolver, 0x01, asset_id, 500);
+        let registry = constructor_registry().unwrap();
+        let signature = transfer_signature();
+        let inputs = [ResolvedInput {
+            mode: AccessMode::Write,
+            object: &coin,
+        }];
+
+        assert!(
+            verify_entrypoint_inputs(&signature, &registry, &resolver, Epoch::new(0), &inputs)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn end_to_end_projection_rejects_coin_a_claimed_as_coin_b() {
+        let resolver = sample_resolver("sunrise-devnet");
+        let asset_a = sample_asset_id(0xA1);
+        let asset_b = sample_asset_id(0xB2);
+        let mut coin = coin_object(&resolver, 0x01, asset_a, 500);
+        // The stored `type_hash` is honestly derived for asset A, but the
+        // body is swapped to encode asset B afterward.
+        coin.data = encode_standard_asset_coin_v1(&StandardAssetCoinV1::new(asset_b, 500).unwrap())
+            .unwrap();
+
+        let registry = constructor_registry().unwrap();
+        let signature = transfer_signature();
+        let inputs = [ResolvedInput {
+            mode: AccessMode::Write,
+            object: &coin,
+        }];
+
+        assert!(matches!(
+            verify_entrypoint_inputs(&signature, &registry, &resolver, Epoch::new(0), &inputs),
+            Err(AbiError::TypeIdentityMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn end_to_end_mint_cap_a_and_coin_a_accepted() {
+        let resolver = sample_resolver("sunrise-devnet");
+        let asset_a = sample_asset_id(0x55);
+        let cap = mint_cap_object(&resolver, 0x02, asset_a);
+        let coin = coin_object(&resolver, 0x03, asset_a, 10);
+
+        let registry = constructor_registry().unwrap();
+        let signature = mint_signature();
+        let inputs = [
+            ResolvedInput {
+                mode: AccessMode::Read,
+                object: &cap,
+            },
+            ResolvedInput {
+                mode: AccessMode::Write,
+                object: &coin,
+            },
+        ];
+
+        assert!(
+            verify_entrypoint_inputs(&signature, &registry, &resolver, Epoch::new(0), &inputs)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn end_to_end_mint_cap_b_and_coin_a_rejected() {
+        let resolver = sample_resolver("sunrise-devnet");
+        let asset_a = sample_asset_id(0x55);
+        let asset_b = sample_asset_id(0x66);
+        let cap = mint_cap_object(&resolver, 0x02, asset_b);
+        let coin = coin_object(&resolver, 0x03, asset_a, 10);
+
+        let registry = constructor_registry().unwrap();
+        let signature = mint_signature();
+        let inputs = [
+            ResolvedInput {
+                mode: AccessMode::Read,
+                object: &cap,
+            },
+            ResolvedInput {
+                mode: AccessMode::Write,
+                object: &coin,
+            },
+        ];
+
+        assert!(matches!(
+            verify_entrypoint_inputs(&signature, &registry, &resolver, Epoch::new(0), &inputs),
+            Err(AbiError::TypeVariableMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn amount_mutation_preserves_type_identity_but_asset_id_mutation_breaks_it() {
+        let asset_id = sample_asset_id(0x30);
+        let coin_low = StandardAssetCoinV1::new(asset_id, 1).unwrap();
+        let coin_high = StandardAssetCoinV1::new(asset_id, 999_999).unwrap();
+
+        let registry = constructor_registry().unwrap();
+        let decl = registry.get(STANDARD_ASSET_COIN_V1_CONSTRUCTOR).unwrap();
+        let arg_low =
+            abi::project_type_arg(decl, &encode_standard_asset_coin_v1(&coin_low).unwrap())
+                .unwrap();
+        let arg_high =
+            abi::project_type_arg(decl, &encode_standard_asset_coin_v1(&coin_high).unwrap())
+                .unwrap();
+        assert_eq!(
+            arg_low, arg_high,
+            "amount must not affect nominal type identity"
+        );
+
+        let other_asset_id = sample_asset_id(0x31);
+        let coin_other_asset = StandardAssetCoinV1::new(other_asset_id, 1).unwrap();
+        let arg_other = abi::project_type_arg(
+            decl,
+            &encode_standard_asset_coin_v1(&coin_other_asset).unwrap(),
+        )
+        .unwrap();
+        assert_ne!(
+            arg_low, arg_other,
+            "AssetId mutation must break nominal type identity"
+        );
     }
 }

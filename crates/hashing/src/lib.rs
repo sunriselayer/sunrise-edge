@@ -14,6 +14,9 @@ use std::{error::Error, fmt};
 const HASH_DOMAIN_VERSION: u16 = 1;
 const HASH_FRAME_ENCODING_VERSION: u16 = 1;
 const HASH_FRAME_TYPE_ID: u16 = 0x1001;
+/// Stable canonical type identifier for the type-identity hash frame. See
+/// [`frame_type_identity_input`].
+const TYPE_IDENTITY_FRAME_TYPE_ID: u16 = 0x1002;
 
 /// Hashing errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +33,29 @@ pub enum HashingError {
     NonMonotonicSchedule,
     /// No suite is active for the requested epoch.
     NoActiveHashSuite(Epoch),
+    /// A type-identity digest named an algorithm that was never selected for
+    /// the given purpose by any schedule entry active at or before the
+    /// requested epoch. This is distinct from [`Self::UnsupportedAlgorithm`]:
+    /// the algorithm may be fully implemented yet still untrusted for this
+    /// epoch, for example because its schedule entry only activates later.
+    UntrustedAlgorithmForEpoch {
+        /// The algorithm recorded on the digest.
+        algorithm: HashAlgorithmId,
+        /// The purpose the digest was verified against.
+        purpose: HashPurpose,
+        /// The epoch the verification was performed at.
+        epoch: Epoch,
+    },
+    /// [`HashPurpose::ObjectType`] was passed to the general-purpose framing
+    /// path ([`frame_hash_input`], [`HashSuiteResolver::hash_for_purpose`],
+    /// or [`BuiltinHashFunction::hash`]) instead of the dedicated
+    /// type-identity frame. The general frame binds `protocol_version` and
+    /// hashes an opaque caller payload; a digest produced that way would not
+    /// exclude `protocol_version` and would not be a canonical `TypeTag`
+    /// encoding, so it would silently fail to interoperate with
+    /// [`hash_type_identity`]/[`verify_type_identity_digest`]. Use those
+    /// functions instead.
+    ObjectTypeRequiresDedicatedFrame,
 }
 
 impl fmt::Display for HashingError {
@@ -47,6 +73,19 @@ impl fmt::Display for HashingError {
             Self::NoActiveHashSuite(epoch) => {
                 write!(f, "no active hash suite for epoch {}", epoch.get())
             }
+            Self::UntrustedAlgorithmForEpoch {
+                algorithm,
+                purpose,
+                epoch,
+            } => write!(
+                f,
+                "algorithm {algorithm} was never scheduled for {purpose:?} at or before epoch {}",
+                epoch.get()
+            ),
+            Self::ObjectTypeRequiresDedicatedFrame => write!(
+                f,
+                "HashPurpose::ObjectType must use hash_type_identity/verify_type_identity_digest, not the general-purpose hash frame"
+            ),
         }
     }
 }
@@ -117,6 +156,17 @@ impl HashFunction for BuiltinHashFunction {
 }
 
 /// Frames a hash input according to the canonical domain-separation rules.
+///
+/// Rejects [`HashPurpose::ObjectType`] outright
+/// ([`HashingError::ObjectTypeRequiresDedicatedFrame`]): that purpose has
+/// its own dedicated frame ([`frame_type_identity_input`]) that
+/// deliberately excludes `protocol_version`, and this general frame would
+/// silently bind `protocol_version` and hash an opaque caller payload
+/// instead of a canonical `TypeTag`, producing a digest that looks
+/// plausible but cannot interoperate with
+/// [`hash_type_identity`]/[`verify_type_identity_digest`]. This rejection
+/// has no compatibility impact: no caller in this codebase reaches this
+/// path with `HashPurpose::ObjectType` today.
 pub fn frame_hash_input(
     algorithm: HashAlgorithmId,
     purpose: HashPurpose,
@@ -124,6 +174,10 @@ pub fn frame_hash_input(
     chain_id: &ChainId,
     canonical_payload: &[u8],
 ) -> Result<Vec<u8>, HashingError> {
+    if matches!(purpose, HashPurpose::ObjectType) {
+        return Err(HashingError::ObjectTypeRequiresDedicatedFrame);
+    }
+
     let mut frame = CanonicalStruct::new(HASH_FRAME_TYPE_ID, HASH_FRAME_ENCODING_VERSION);
     frame.field_u16(1, algorithm.as_u16())?;
     frame.field_u16(2, purpose.domain().as_u16())?;
@@ -132,6 +186,87 @@ pub fn frame_hash_input(
     frame.field_u32(5, protocol_version.get())?;
     frame.field_bytes(6, canonical_payload)?;
     Ok(frame.finish()?)
+}
+
+/// Frames a canonical nominal type-tag payload for [`HashPurpose::ObjectType`].
+///
+/// This is a distinct frame from [`frame_hash_input`], not a specialization
+/// of it: it deliberately excludes `protocol_version` (and never carries an
+/// object's `schema_version`, since that lives inside `canonical_payload`'s
+/// caller, not this frame) so that an object's nominal type identity survives
+/// protocol upgrades and schema migrations. It still binds the algorithm, the
+/// `ObjectType` domain and domain version, and the chain id, so type identity
+/// remains chain- and algorithm-scoped like every other protocol digest.
+pub fn frame_type_identity_input(
+    algorithm: HashAlgorithmId,
+    chain_id: &ChainId,
+    canonical_type_tag_payload: &[u8],
+) -> Result<Vec<u8>, HashingError> {
+    let mut frame = CanonicalStruct::new(TYPE_IDENTITY_FRAME_TYPE_ID, HASH_FRAME_ENCODING_VERSION);
+    frame.field_u16(1, algorithm.as_u16())?;
+    frame.field_u16(2, HashPurpose::ObjectType.domain().as_u16())?;
+    frame.field_u16(3, HASH_DOMAIN_VERSION)?;
+    frame.field_str(4, chain_id.as_str())?;
+    frame.field_bytes(5, canonical_type_tag_payload)?;
+    Ok(frame.finish()?)
+}
+
+/// Derives a nominal object-type identity digest for a canonical type-tag
+/// payload, using the hash-suite resolver's currently active
+/// [`HashPurpose::ObjectType`] algorithm at `epoch`.
+///
+/// `epoch` must be the authenticated execution epoch at commit time, never
+/// a value taken from unauthenticated request input, for the same reason
+/// documented on [`verify_type_identity_digest`].
+pub fn hash_type_identity(
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    canonical_type_tag_payload: &[u8],
+) -> Result<Digest32, HashingError> {
+    let suite = resolver.suite_for_epoch(epoch)?;
+    let algorithm = suite.algorithm_for(HashPurpose::ObjectType);
+    let frame =
+        frame_type_identity_input(algorithm, resolver.chain_id(), canonical_type_tag_payload)?;
+    let bytes = hash_unframed_bytes(algorithm, &frame)?;
+    Ok(Digest32::new(algorithm, bytes))
+}
+
+/// Verifies a nominal object-type identity digest using the digest's own
+/// recorded algorithm.
+///
+/// Fails closed unless that algorithm is both implemented (see
+/// [`hash_unframed_bytes`]) and was selected for
+/// [`HashPurpose::ObjectType`] by some schedule entry active at or before
+/// `epoch` in `resolver`'s trusted history
+/// ([`HashSuiteResolver::is_algorithm_trusted_for_purpose`]). This is
+/// stricter than [`verify_digest`], which trusts any digest-recorded
+/// algorithm unconditionally; type identity additionally must not let a
+/// caller mint a digest under an algorithm the schedule has not yet (or
+/// never) activated for this purpose.
+///
+/// `epoch` must be the authenticated execution epoch supplied by
+/// consensus/execution context, never a value taken from unauthenticated
+/// request input. Accepting a caller-controlled epoch would let a caller
+/// pick whichever epoch makes their chosen algorithm appear trusted,
+/// defeating this function's entire fail-closed schedule check.
+pub fn verify_type_identity_digest(
+    resolver: &HashSuiteResolver,
+    digest: &Digest32,
+    epoch: Epoch,
+    canonical_type_tag_payload: &[u8],
+) -> Result<bool, HashingError> {
+    let algorithm = digest.algorithm();
+    if !resolver.is_algorithm_trusted_for_purpose(HashPurpose::ObjectType, epoch, algorithm) {
+        return Err(HashingError::UntrustedAlgorithmForEpoch {
+            algorithm,
+            purpose: HashPurpose::ObjectType,
+            epoch,
+        });
+    }
+    let frame =
+        frame_type_identity_input(algorithm, resolver.chain_id(), canonical_type_tag_payload)?;
+    let computed = hash_unframed_bytes(algorithm, &frame)?;
+    Ok(computed == digest.bytes())
 }
 
 /// Verifies a digest using the algorithm recorded in the digest itself.
@@ -208,7 +343,32 @@ impl HashSuiteResolver {
         self.protocol_version
     }
 
+    /// Returns whether `algorithm` was selected for `purpose` by some
+    /// schedule entry active at or before `epoch`.
+    ///
+    /// A future, not-yet-activated schedule entry never makes an algorithm
+    /// trusted early: only entries with `activation_epoch <= epoch`
+    /// contribute. This bounds which algorithms a verifier accepts for a
+    /// given epoch to the resolver's own historical schedule, rather than
+    /// trusting whatever algorithm a digest happens to name.
+    #[must_use]
+    pub fn is_algorithm_trusted_for_purpose(
+        &self,
+        purpose: HashPurpose,
+        epoch: Epoch,
+        algorithm: HashAlgorithmId,
+    ) -> bool {
+        self.schedules
+            .iter()
+            .filter(|entry| entry.activation_epoch <= epoch)
+            .any(|entry| entry.suite.algorithm_for(purpose) == algorithm)
+    }
+
     /// Hashes a canonical payload for the given purpose and epoch.
+    ///
+    /// Fails with [`HashingError::ObjectTypeRequiresDedicatedFrame`] for
+    /// [`HashPurpose::ObjectType`]: use [`hash_type_identity`] instead, which
+    /// uses the dedicated frame that excludes `protocol_version`.
     pub fn hash_for_purpose(
         &self,
         epoch: Epoch,
@@ -419,6 +579,234 @@ mod tests {
         assert_eq!(
             HashAlgorithmId::try_from(99),
             Err(TypeError::UnknownHashAlgorithmId(99))
+        );
+    }
+
+    #[test]
+    fn type_identity_frame_vector_is_stable() {
+        let chain_id = ChainId::new("sunrise-devnet").unwrap();
+        let bytes =
+            frame_type_identity_input(HashAlgorithmId::Sha2_256, &chain_id, b"type-tag").unwrap();
+
+        assert_eq!(
+            hex(&bytes),
+            "534e524502100100050001000200000001000200020000000f00030002000000010004000e00000073756e726973652d6465766e6574050008000000747970652d746167"
+        );
+    }
+
+    #[test]
+    fn type_identity_digest_is_stable_and_round_trips() {
+        let resolver = sample_resolver();
+        let digest = hash_type_identity(&resolver, Epoch::new(0), b"type-tag").unwrap();
+
+        assert_eq!(digest.algorithm(), HashAlgorithmId::Sha2_256);
+        assert_eq!(
+            hex(&digest.bytes()),
+            "017b752dda4ca7abf5dfca9e73c210a107593a4fd6f2780d265bdaf19e2c27da"
+        );
+        assert_eq!(
+            verify_type_identity_digest(&resolver, &digest, Epoch::new(0), b"type-tag"),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn type_identity_digest_excludes_protocol_version() {
+        let payload = b"type-tag";
+
+        let resolver_v1 = HashSuiteResolver::new(
+            ChainId::new("sunrise-devnet").unwrap(),
+            ProtocolVersion::new(1),
+            vec![HashSuiteSchedule {
+                activation_epoch: Epoch::new(0),
+                suite: HashSuite::genesis(),
+            }],
+        )
+        .unwrap();
+        let resolver_v2 = HashSuiteResolver::new(
+            ChainId::new("sunrise-devnet").unwrap(),
+            ProtocolVersion::new(2),
+            vec![HashSuiteSchedule {
+                activation_epoch: Epoch::new(0),
+                suite: HashSuite::genesis(),
+            }],
+        )
+        .unwrap();
+
+        let left = hash_type_identity(&resolver_v1, Epoch::new(0), payload).unwrap();
+        let right = hash_type_identity(&resolver_v2, Epoch::new(0), payload).unwrap();
+
+        assert_eq!(left, right);
+    }
+
+    #[test]
+    fn type_identity_digest_changes_with_chain_and_payload() {
+        let payload = b"type-tag";
+
+        let chain_a = hash_type_identity(
+            &HashSuiteResolver::new(
+                ChainId::new("chain-a").unwrap(),
+                ProtocolVersion::new(1),
+                vec![HashSuiteSchedule {
+                    activation_epoch: Epoch::new(0),
+                    suite: HashSuite::genesis(),
+                }],
+            )
+            .unwrap(),
+            Epoch::new(0),
+            payload,
+        )
+        .unwrap();
+        let chain_b = hash_type_identity(
+            &HashSuiteResolver::new(
+                ChainId::new("chain-b").unwrap(),
+                ProtocolVersion::new(1),
+                vec![HashSuiteSchedule {
+                    activation_epoch: Epoch::new(0),
+                    suite: HashSuite::genesis(),
+                }],
+            )
+            .unwrap(),
+            Epoch::new(0),
+            payload,
+        )
+        .unwrap();
+        assert_ne!(chain_a, chain_b);
+
+        let resolver = sample_resolver();
+        let left = hash_type_identity(&resolver, Epoch::new(0), b"type-tag-a").unwrap();
+        let right = hash_type_identity(&resolver, Epoch::new(0), b"type-tag-b").unwrap();
+        assert_ne!(left, right);
+    }
+
+    #[test]
+    fn type_identity_survives_hash_suite_rotation_for_old_digests() {
+        let resolver = sample_resolver();
+        let digest = hash_type_identity(&resolver, Epoch::new(42), b"type-tag").unwrap();
+        assert_eq!(digest.algorithm(), HashAlgorithmId::Sha2_256);
+
+        // The digest still verifies at a later epoch even though the active
+        // suite has since rotated to a different algorithm, because
+        // verification uses the digest's own recorded algorithm.
+        assert_eq!(
+            verify_type_identity_digest(&resolver, &digest, Epoch::new(600), b"type-tag"),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn type_identity_verification_fails_closed_for_unimplemented_algorithm() {
+        let resolver = HashSuiteResolver::new(
+            ChainId::new("sunrise-devnet").unwrap(),
+            ProtocolVersion::new(1),
+            vec![HashSuiteSchedule {
+                activation_epoch: Epoch::new(0),
+                suite: HashSuite::uniform(HashSuiteId::new(9), HashAlgorithmId::Blake3_256),
+            }],
+        )
+        .unwrap();
+        let forged_digest = Digest32::new(HashAlgorithmId::Blake3_256, [0u8; 32]);
+
+        assert_eq!(
+            verify_type_identity_digest(&resolver, &forged_digest, Epoch::new(0), b"type-tag"),
+            Err(HashingError::UnsupportedAlgorithm(
+                HashAlgorithmId::Blake3_256
+            ))
+        );
+    }
+
+    #[test]
+    fn type_identity_verification_fails_closed_for_out_of_schedule_algorithm() {
+        // SHA3-256 only becomes trusted for `ObjectType` at epoch 500; a
+        // digest computed with SHA3-256 must not verify before that epoch
+        // even though the algorithm itself is fully implemented.
+        let resolver = sample_resolver();
+        let early_digest = BuiltinHashFunction::new(HashAlgorithmId::Sha3_256)
+            .hash(
+                HashPurpose::Object,
+                resolver.protocol_version(),
+                resolver.chain_id(),
+                b"unused",
+            )
+            .unwrap();
+        let forged_digest = Digest32::new(HashAlgorithmId::Sha3_256, early_digest.bytes());
+
+        assert_eq!(
+            verify_type_identity_digest(&resolver, &forged_digest, Epoch::new(499), b"type-tag"),
+            Err(HashingError::UntrustedAlgorithmForEpoch {
+                algorithm: HashAlgorithmId::Sha3_256,
+                purpose: HashPurpose::ObjectType,
+                epoch: Epoch::new(499),
+            })
+        );
+
+        // The same algorithm becomes trusted once the schedule activates.
+        let digest_at_rotation =
+            hash_type_identity(&resolver, Epoch::new(500), b"type-tag").unwrap();
+        assert_eq!(digest_at_rotation.algorithm(), HashAlgorithmId::Sha3_256);
+        assert_eq!(
+            verify_type_identity_digest(
+                &resolver,
+                &digest_at_rotation,
+                Epoch::new(500),
+                b"type-tag"
+            ),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn type_identity_verification_rejects_tampered_payload() {
+        let resolver = sample_resolver();
+        let digest = hash_type_identity(&resolver, Epoch::new(0), b"type-tag").unwrap();
+
+        assert_eq!(
+            verify_type_identity_digest(&resolver, &digest, Epoch::new(0), b"different-tag"),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn frame_hash_input_rejects_object_type_purpose() {
+        let result = frame_hash_input(
+            HashAlgorithmId::Sha2_256,
+            HashPurpose::ObjectType,
+            ProtocolVersion::new(1),
+            &ChainId::new("sunrise-devnet").unwrap(),
+            b"payload",
+        );
+
+        assert_eq!(result, Err(HashingError::ObjectTypeRequiresDedicatedFrame));
+    }
+
+    #[test]
+    fn generic_hash_paths_reject_object_type_purpose() {
+        let hasher = BuiltinHashFunction::new(HashAlgorithmId::Sha2_256);
+        assert_eq!(
+            hasher.hash(
+                HashPurpose::ObjectType,
+                ProtocolVersion::new(1),
+                &ChainId::new("sunrise-devnet").unwrap(),
+                b"payload",
+            ),
+            Err(HashingError::ObjectTypeRequiresDedicatedFrame)
+        );
+
+        let resolver = sample_resolver();
+        assert_eq!(
+            resolver.hash_for_purpose(Epoch::new(0), HashPurpose::ObjectType, b"payload"),
+            Err(HashingError::ObjectTypeRequiresDedicatedFrame)
+        );
+
+        assert_eq!(
+            verify_digest(
+                &Digest32::new(HashAlgorithmId::Sha2_256, [0u8; 32]),
+                HashPurpose::ObjectType,
+                ProtocolVersion::new(1),
+                &ChainId::new("sunrise-devnet").unwrap(),
+                b"payload",
+            ),
+            Err(HashingError::ObjectTypeRequiresDedicatedFrame)
         );
     }
 }

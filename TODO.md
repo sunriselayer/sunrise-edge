@@ -545,6 +545,45 @@ contractはtransactionで宣言されていないObjectへアクセスできな�
 
 違反時はexecution trap。
 
+**実装状況（2026-09-06、docs/architecture/decisions/0105-typed-asset-abi-foundation.md
+DR-0105）:** `AccessManifest`（which object / which access mode）とは別に、
+`crates/abi`へboundedかつinertなtyped-ABI foundationを追加した。`TypeArg`
+（AssetId-onlyの32-byte値）、`TypeTag`（constructor + optional type arg、
+`0x51xx`帯の新canonical type ID `0x5101`/`0x5102`）、`ConstructorDeclaration`/
+`ConstructorRegistry`（fixed-depth canonical body projection、bounded 32
+constructors、zero body/type/field IDをfail closedで拒否、variable-arity
+constructorのfirst projection stepはexactに自身の`body_type_id`/`body_version`
+と一致必須、`body_type_id`衝突をfail closedで拒否する明示的constructor-to-body
+binding）、`EntrypointSignature`/`ParamDeclaration`（bounded 8 params、exact
+`AccessMode`/schema version、`MAX_ENTRYPOINT_BYTES=256`は
+`execution::MAX_TRANSACTION_ENTRYPOINT_BYTES`をdependency-safeに複製した
+protocol-level boundであり、より狭いsigning-viewのoptional hardware display
+bound（64）とは別物）、`verify_entrypoint_inputs`（single-pass pre-execution
+verification、`type_hash`をprojected `TypeTag`に対し`verify_type_id`で検証
+（algorithm-tagged commitmentとして、それ自体をlogical identityとして生の
+digest同士で比較しない）、shared type variableのunification）を実装した。
+`hashing`に`HashDomain::ObjectType`（次のaudited free value `0x000F`）/
+`HashPurpose::ObjectType`と、`protocol_version`/`schema_version`を含まない
+別canonical frameのnominal object-type identity hash（`frame_type_identity_input`/
+`hash_type_identity`/`verify_type_identity_digest`）を追加し、epoch-scoped
+trusted historyに存在しない、または未実装のalgorithmをfail closedにした。
+`crates/standard-assets`が3つのconstructor定数、schema version、deterministic
+registry、tag constructor、type-id helperを公開する。`ConstructorId 0`は
+reservedでありregistry validationでfail closedに拒否する。`verify_type_id`等へ
+渡す`epoch`は必ずauthenticated execution epochでなければならず、
+request-controlledな値であってはならない、と明記した。`HashPurpose::ObjectType`が
+汎用の`frame_hash_input`/`hash_for_purpose`経路へ渡された場合は
+（`protocol_version`を含む別frameとなり`TypeTag`commitmentと不整合になるため）
+fail closedに拒否するnarrow rejectionを追加した。`0x5001`が既存の
+`protocol-config::PROTOCOL_CONFIG_TYPE_ID`と数値衝突することは、別々の
+canonical struct namespaceであり各decoderが`require_type`で自分の期待値のみを
+受理するため実害はないと明記した（既存IDのrenumberは行っていない）。
+`objects::apply_lazy_migration`の既存の生`Digest32`比較（`ObjectTypeMismatch`）は、
+typed ABI activation前に`verify_type_id`様の検証へ和解させるべきdeferred workと
+してdocumentedのみ行った（このslice自体は変更していない）。このsliceはinertであり、
+preinstalled module、`Create`、owner change、transfer、mint、fee integration、
+node-core/execution/runtime配線のいずれも行っていない。
+
 
 # 19. Fine-Grained Parallelism
 
@@ -2375,7 +2414,18 @@ Standard Asset v1、Unique Asset v1、builder/public-testnet asset surfaceはま
    `crates/standard-assets`に実装し、unknown version/field/tag、non-canonical
    bytes、unknown hash algorithm、zero coin amountをfail closedにした。
    duplicate identityのfail closed拒否はobject storeと`Create` pathに依存するため、
-   それらが存在しない本sliceでは未実装のまま。
+   それらが存在しない本sliceでは未実装のまま。DR-0105（2026-09-06、
+   `docs/architecture/decisions/0105-typed-asset-abi-foundation.md`）により、
+   `AssetId`をこの3つのschema全てのnominal ABI型引数とするbounded typed-ABI
+   foundationを`crates/abi`（[section 18](#18-abi-as-execution-and-concurrency-protocol)参照）と
+   `crates/standard-assets`（3つのconstructor定数、schema version、deterministic
+   registry、tag constructor、type-id helper）に追加した。`hashing`の新しい
+   `HashDomain::ObjectType`/`HashPurpose::ObjectType`はprotocol_version/
+   schema_versionを含まない別frameを使い、object nominal type identityが
+   protocol upgradeとschema migrationを跨いで安定することをstable vectorと
+   adversarial testでpinした。この部分もinertであり、preinstalled module、
+   `Create`、owner change、transfer、mint、fee integration、node-core/execution/
+   runtime配線のいずれも行っていない。
 5. **未実装。** whole-coin transferはcanonical signed recipientへのexact owner change、
    partial transferはsender remainderのMutate + recipient coinのCreate、mergeはsame-assetの
    sender-owned coin 1個をchecked sumへMutateし、残りのsender-owned inputsをConsumeする。

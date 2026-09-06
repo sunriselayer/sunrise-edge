@@ -10,7 +10,22 @@ Sunrise Edge is designed as a deterministic state-transition system over authent
 ## 2. Crate boundaries
 - `protocol-types`: protocol identifiers, digest types, hash domains, and suite metadata.
 - `canonical-encoding`: deterministic framed serialization for protocol-critical payloads.
-- `hashing`: domain-separated hash framing, built-in hash implementations, and hash-suite resolution.
+- `hashing`: domain-separated hash framing, built-in hash implementations, and
+  hash-suite resolution, including the distinct protocol-version-invariant
+  nominal object-type identity frame used by `abi`'s typed-ABI foundation.
+- `objects`: versioned object identifiers, ownership, canonical object
+  references, and access modes.
+- `abi`: canonical `AccessManifest` access declaration, plus a bounded,
+  inert typed-ABI foundation (nominal type arguments/tags, constructor
+  declarations and registry, entrypoint signatures, and single-pass
+  pre-execution input verification) kept independent of `standard-assets`,
+  `execution`, `node-core`, runtimes, and adapters.
+- `standard-assets`: canonical Standard Asset v1 identity (`AssetId`) and
+  value schemas (`StandardAssetDefinitionV1`, `StandardAssetCoinV1`,
+  `StandardAssetMintCapabilityV1`), plus the concrete `abi` typed-ABI
+  bindings for those three schemas (constructor constants, schema version,
+  deterministic constructor registry, tag constructors, and type-id
+  helpers).
 - `crypto`: signature-domain framing and signer/verifier traits, plus a
   ZIP-215-compliant Ed25519 `SignatureVerifier` implementation. No production
   signer is implemented; `runtime::MemorySigner` is a public in-memory
@@ -44,6 +59,35 @@ Hashing is centralized in the `hashing` crate. Callers provide a canonical paylo
 
 ## 6. Hash domain separation
 Every protocol hash includes the protocol magic, selected `HashAlgorithmId`, `HashDomain`, domain version, `ChainId`, `ProtocolVersion`, and canonical payload in a framed structure.
+
+`HashDomain::ObjectType` (`0x000F`) and `HashPurpose::ObjectType` are the one
+exception to binding `ProtocolVersion`: nominal object-type identity uses a
+distinct frame (`hashing::frame_type_identity_input`) that binds the
+algorithm, domain, domain version, and chain id, but deliberately excludes
+`protocol_version` and never carries an object's `schema_version`, so that an
+object's nominal type identity survives both a protocol upgrade and a schema
+migration. Verification (`hashing::verify_type_identity_digest`) additionally
+fails closed unless the digest's recorded algorithm was selected for
+`HashPurpose::ObjectType` by some schedule entry active at or before the
+verifying epoch, not merely implemented, so a caller cannot mint a digest
+under an algorithm the schedule has not yet activated for this purpose.
+
+Because this frame binds the active algorithm but excludes `protocol_version`,
+the resulting digest (e.g. an object's `type_hash`) is an algorithm-tagged
+*commitment* to a canonical type tag, not itself the sole logical type
+identity: two objects sharing the exact same logical type may carry
+different `type_hash` bytes if committed under different algorithms across a
+hash-suite rotation. Nominal type equality must always be established by
+verifying each digest against its own claimed type tag and comparing the
+verified tag values, never by comparing two digests for raw byte equality.
+The `epoch` supplied to this verification must always be the authenticated
+execution epoch, never unauthenticated request input, since it gates which
+algorithms are trusted. `HashPurpose::ObjectType` must never reach the
+general-purpose framing path (`frame_hash_input`/`hash_for_purpose`/
+`BuiltinHashFunction::hash`); that path rejects it outright, since it would
+otherwise bind `protocol_version` and hash an opaque payload instead of a
+canonical type tag. See
+[DR-0105](decisions/0105-typed-asset-abi-foundation.md).
 
 ## 7. Commitment scheme architecture
 Commitment schemes are separate from general-purpose hashes. Phase 14 adds a
