@@ -108,9 +108,27 @@ protocol behavior:
   out-of-range arguments, generic Create, and caller-selected ids fail closed.
   Replay reconciliation precedes module/policy resolution and object I/O;
   successful effects, fees, nonce, receipt, and outbox are committed once.
-  Mint/burn, arbitrary coin discovery/selection or dust consolidation, Unique
-  Asset v1, multisig, Ledger, TypeScript/explorer/wallet/UI, production fee
-  aggregation, and public-testnet/mainnet readiness remain deferred.
+  Arbitrary asset creation, burn, supply accounting, coin discovery/selection
+  or dust consolidation, Unique Asset v1, multisig, Ledger,
+  TypeScript/explorer/wallet/UI, production fee aggregation, and
+  public-testnet/mainnet readiness remain deferred.
+- **Standard Asset v1 mint (DR-0109).** Protocol v5/module v3 retains the exact
+  historical module-v1 and module-v2 artifacts and adds one bounded `mint`
+  entrypoint for the already-derived local-devnet asset. Startup atomically
+  seeds its immutable `StandardAssetDefinitionV1` plus a
+  `StandardAssetMintCapabilityV1` owned by the first configured development
+  owner. The exact typed signature is `Read MintCapability<A>` index 0 and
+  sender-owned `Write Coin<A>` fee index 1; their shared ABI variable forces
+  one `AssetId`, while the final trusted treasury `Write` remains hidden from
+  WASM. Canonical `StandardAssetMintArgsV1` (`0x7106`) carries a nonzero amount
+  and recipient. The module creates one recipient `Coin<A>` and node-core
+  independently verifies its ordinal-zero signed-transaction-derived id,
+  recipient, nominal type/schema/body projection, and exact `Absent` head.
+  The capability is reusable and this devnet slice has no supply ceiling.
+  Arbitrary asset creation, burn, supply accounting, capability lifecycle,
+  metadata, discovery, Unique Asset v1, multisig, Ledger clear signing,
+  production fee aggregation, and public-testnet/mainnet readiness remain
+  deferred.
 - **Uniform post-execution fee composition.** Devnet protocol version 4
   commits a base fee of 1, an execution price of 1 per actual `gas_used`,
   zero prices for unmetered categories, and exactly one enabled, derived
@@ -128,10 +146,11 @@ protocol behavior:
 - **Dev-profile identities are not protocol claims.** The seeded `AssetId`
   is a derived (chain/epoch/protocol-version-bound), non-placeholder
   dev-profile identifier so clients can render and exercise the local
-  fixture. No mint/metadata object or on-chain asset registry currently
-  vouches for it, and no new `HashPurpose` is introduced by this local
-  composition. Wallet and explorer must therefore render the ID as opaque
-  bytes plus an explicitly local label, never as production asset metadata.
+  fixture. Its seeded immutable definition and reusable mint capability vouch
+  only for this committed local-devnet composition; no general on-chain asset
+  registry or authenticated metadata surface exists. Wallet and explorer must
+  therefore render the ID as opaque bytes plus an explicitly local label,
+  never as production asset metadata.
 - **No background sweeper.** The devnet runs no resident outbox-recovery loop,
   timer, or scheduler; unattended recovery, when needed, is invoked the same
   way the native binary already exposes it (see
@@ -484,22 +503,22 @@ response payload is decoded through `sunrise-edge-client`'s already-generic
 and any payload that does not decode as effects are printed as bounded
 lowercase hex instead of inventing a claim about their meaning.
 
-`transfer` is the only place in this repository outside `apps/devnet` that
-knows the Standard Asset v1 whole-coin transfer module's fixed `transfer`
-entrypoint name and its exact `standard_assets::StandardAssetTransferArgsV1`
-argument frame (DR-0107) — `clients/rust` stays application-agnostic. To
-build that frame and the transaction's access manifest without a second
-direct dependency, `clients/rust` additively re-exports a small, generic
-surface that adds no devnet-specific semantics of its own: `abi::{AccessEntry,
+The CLI command modules are the only places outside `apps/devnet` that know
+the fixed Standard Asset v1 `transfer`, `split`, `merge`, and `mint`
+entrypoint names and their exact argument/access shapes (DR-0107 through
+DR-0109); `clients/rust` stays application-agnostic. To build those frames
+and transaction access manifests, the CLI imports the operation-specific
+argument frames directly from `standard-assets`; `clients/rust` additively
+re-exports a smaller generic surface with no devnet-specific semantics:
+`abi::{AccessEntry,
 AccessManifest}`, `objects::{AccessMode, Object, ObjectError, Owner,
 decode_object}`, `execution::ObjectEffect`, `canonical_encoding::{
 CanonicalStruct, CanonicalEncodingError}`, `protocol_types::{AtomicityDomainId,
 ChainId, Digest32, Epoch, HashAlgorithmId, HashSuiteId, ProtocolVersion,
-SignatureSchemeId, TypeError}`, `standard_assets::{AssetId, StandardAssetCoinV1,
-StandardAssetError, StandardAssetTransferArgsV1, decode_standard_asset_coin_v1,
-encode_standard_asset_coin_v1, encode_standard_asset_transfer_args_v1}`
-(the same general-purpose, protocol-owned schema every other Standard Asset
-v1 consumer uses — not a devnet-specific type), `NODE_RESULT_MEDIA_TYPE`, and
+SignatureSchemeId, TypeError}` plus the common `AssetId`, coin, transfer-args,
+and strict codec types (the same general-purpose, protocol-owned schemas every
+other Standard Asset v1 consumer uses — not devnet-specific types),
+`NODE_RESULT_MEDIA_TYPE`, and
 three small helpers/constants: `current_inline_object_ref` (extracts the
 exact `ObjectRef` from a `CurrentInline` object-query result, `None` for
 every other status — generic over any object, not asset-specific), the
@@ -556,16 +575,17 @@ requested, every one of `--wait-max-attempts`, `--wait-initial-backoff-ms`,
 there is no hidden default poll bound, and supplying a wait-bound flag
 without `--wait` is itself rejected.
 
-The live Standard Asset v1 entrypoint has no Ledger clear-signing policy yet.
-Selecting Ledger for `transfer` therefore returns a typed local error after
-argument validation and before any device connection or network dispatch;
-only the explicitly development-only `--seed-file` path can submit this
-command in the current profile. The `address` command and reusable Ledger host
-libraries remain available, but their historical protocol-3 transfer fixture
+The live Standard Asset v1 entrypoints have no Ledger clear-signing policy yet.
+Selecting Ledger for `transfer`, `split`, `merge`, or `mint` therefore returns
+a typed local error after argument validation and before any device connection
+or network dispatch; only the explicitly development-only `--seed-file` path
+can submit these commands in the current profile. The `address` command and
+reusable Ledger host libraries remain available, but their historical
+protocol-3 transfer fixture
 is not accepted as authority for this protocol-4 transaction.
 
-The development seed file loaded by `address` and `transfer` must be an
-explicit path (there is no default or home-directory location), must not be
+The development seed file loaded by `address` and Standard Asset commands must
+be an explicit path (there is no default or home-directory location), must not be
 a symlink, must be a regular file, must on Unix grant no permission bit to
 group or other, and must contain exactly 64 hexadecimal digits plus at most
 one trailing `\n` — anything else is a typed, actionable rejection before any

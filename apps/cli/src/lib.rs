@@ -18,8 +18,8 @@
 //! `sunrise-edge-ledger`.
 //!
 //! Commands: `address`, `context`, `object`, `receipt`, `next-nonce`, and
-//! `transfer`, `split`, and `merge` (the devnet Standard Asset v1 coin
-//! operations). `address`, `transfer`, `split`, and `merge` each require an
+//! `transfer`, `split`, `merge`, and `mint` (the devnet Standard Asset v1 coin
+//! operations). `address`, `transfer`, `split`, `merge`, and `mint` each require an
 //! explicit, all-or-none signer selection (see
 //! `signer::parse_signer_selection`):
 //! `--seed-file` (the development-only, non-keystore local signer) or all
@@ -30,9 +30,10 @@
 //! `--ledger-expected-firmware-version`, the Sunrise application is opened
 //! and its own reported app/version identity verified, and only then are the
 //! device-reported configuration and on-device-confirmed public key/address
-//! checked. The live Standard Asset v1 `transfer` rejects Ledger selection
-//! before device or network dispatch because its clear-signing policy remains
-//! deferred. The real USB/HID transport (`--ledger-hid-path`) requires this
+//! checked. The live Standard Asset v1 `transfer`, `split`, `merge`, and `mint`
+//! operations reject Ledger selection before device or network dispatch because
+//! their clear-signing policies remain deferred. The real USB/HID transport
+//! (`--ledger-hid-path`) requires this
 //! binary to be built with the `usb-hid` Cargo feature; without it, a Ledger
 //! selection fails closed with a typed, actionable error rather than
 //! silently falling back to the local signer. Output is deterministic,
@@ -100,6 +101,7 @@ where
         "transfer" => commands::transfer::run(iterator),
         "split" => commands::split::run(iterator),
         "merge" => commands::merge::run(iterator),
+        "mint" => commands::mint::run(iterator),
         other => Err(CliError::UnknownCommand(other.to_string())),
     }
 }

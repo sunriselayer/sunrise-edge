@@ -3,6 +3,7 @@
 pub mod address;
 pub mod context;
 pub mod merge;
+pub mod mint;
 pub mod next_nonce;
 pub mod object;
 pub mod receipt;

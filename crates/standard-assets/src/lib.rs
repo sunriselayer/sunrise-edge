@@ -19,6 +19,7 @@
 //! - `0x7103` — [`StandardAssetMintCapabilityV1`].
 //! - `0x7104` — [`StandardAssetTransferArgsV1`].
 //! - `0x7105` — [`StandardAssetSplitArgsV1`].
+//! - `0x7106` — [`StandardAssetMintArgsV1`].
 //!
 //! See `docs/architecture/decisions/0104-asset-standards-gate.md` for the
 //! full identifier audit and the activation boundary for this slice.
@@ -67,6 +68,8 @@ pub const STANDARD_ASSET_MINT_CAPABILITY_V1_TYPE_ID: u16 = 0x7103;
 pub const STANDARD_ASSET_TRANSFER_ARGS_V1_TYPE_ID: u16 = 0x7104;
 /// Stable canonical type identifier for [`StandardAssetSplitArgsV1`].
 pub const STANDARD_ASSET_SPLIT_ARGS_V1_TYPE_ID: u16 = 0x7105;
+/// Stable canonical type identifier for [`StandardAssetMintArgsV1`].
+pub const STANDARD_ASSET_MINT_ARGS_V1_TYPE_ID: u16 = 0x7106;
 
 /// Errors returned by Standard Asset v1 helpers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -652,6 +655,67 @@ pub fn decode_standard_asset_split_args_v1(
     StandardAssetSplitArgsV1::new(amount, recipient)
 }
 
+/// Canonical, strict arguments for one Standard Asset v1 mint: the nonzero
+/// `amount` issued into a new coin (field id `1`) and that coin's recipient
+/// [`Address`] (field id `2`).
+///
+/// The authorized asset is deliberately absent from these arguments. It is
+/// identified by the signed transaction's `MintCapability<A>` input and the
+/// typed entrypoint signature, which also unifies the created `Coin<A>` with
+/// the ordinary fee coin's nominal type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StandardAssetMintArgsV1 {
+    amount: u64,
+    recipient: Address,
+}
+
+impl StandardAssetMintArgsV1 {
+    /// Creates mint arguments, rejecting a zero `amount`.
+    pub fn new(amount: u64, recipient: Address) -> Result<Self, StandardAssetError> {
+        if amount == 0 {
+            return Err(StandardAssetError::ZeroCoinAmount);
+        }
+        Ok(Self { amount, recipient })
+    }
+
+    /// Returns the amount issued into the new coin.
+    #[must_use]
+    pub const fn amount(&self) -> u64 {
+        self.amount
+    }
+
+    /// Returns the new coin's recipient.
+    #[must_use]
+    pub const fn recipient(&self) -> Address {
+        self.recipient
+    }
+}
+
+/// Encodes Standard Asset v1 mint arguments.
+pub fn encode_standard_asset_mint_args_v1(
+    args: &StandardAssetMintArgsV1,
+) -> Result<Vec<u8>, StandardAssetError> {
+    let mut canonical = CanonicalStruct::new(STANDARD_ASSET_MINT_ARGS_V1_TYPE_ID, ENCODING_VERSION);
+    canonical.field_u64(1, args.amount)?;
+    canonical.field_bytes(2, args.recipient.as_bytes().to_vec())?;
+    Ok(canonical.finish()?)
+}
+
+/// Strictly decodes one canonical Standard Asset v1 mint-arguments frame.
+/// Rejects wrong type/version, missing/unknown fields, a zero amount, a
+/// malformed recipient length, and trailing bytes.
+pub fn decode_standard_asset_mint_args_v1(
+    input: &[u8],
+) -> Result<StandardAssetMintArgsV1, StandardAssetError> {
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(input)?;
+    frame.require_type(STANDARD_ASSET_MINT_ARGS_V1_TYPE_ID)?;
+    frame.require_version(ENCODING_VERSION)?;
+    frame.require_only_fields(&[1, 2])?;
+    let amount: u64 = frame.required_u64(1)?;
+    let recipient: Address = decode_address_field(frame.required_field(2)?)?;
+    StandardAssetMintArgsV1::new(amount, recipient)
+}
+
 // ── Typed ABI foundation ──────────────────────────────────────────────────
 
 /// The object schema version shared by all Standard Asset v1 object bodies.
@@ -713,6 +777,21 @@ pub fn coin_constructor_declaration() -> abi::ConstructorDeclaration {
     }
 }
 
+/// Builds the canonical [`abi::ConstructorDeclaration`] for
+/// [`StandardAssetMintCapabilityV1`], shared by [`constructor_registry`] and
+/// committed typed mint-entrypoint policies.
+#[must_use]
+pub fn mint_capability_constructor_declaration() -> abi::ConstructorDeclaration {
+    abi::ConstructorDeclaration {
+        id: STANDARD_ASSET_MINT_CAPABILITY_V1_CONSTRUCTOR,
+        body_type_id: STANDARD_ASSET_MINT_CAPABILITY_V1_TYPE_ID,
+        body_version: ENCODING_VERSION,
+        schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+        arity: abi::TypeArity::Variable,
+        projection: asset_id_projection(STANDARD_ASSET_MINT_CAPABILITY_V1_TYPE_ID),
+    }
+}
+
 /// Builds the deterministic Standard Asset v1 constructor registry.
 ///
 /// Registers exactly the three constructors above; registration order does
@@ -731,14 +810,7 @@ pub fn constructor_registry() -> Result<abi::ConstructorRegistry, StandardAssetE
         projection: asset_id_projection(STANDARD_ASSET_DEFINITION_V1_TYPE_ID),
     })?;
     registry.register(coin_constructor_declaration())?;
-    registry.register(abi::ConstructorDeclaration {
-        id: STANDARD_ASSET_MINT_CAPABILITY_V1_CONSTRUCTOR,
-        body_type_id: STANDARD_ASSET_MINT_CAPABILITY_V1_TYPE_ID,
-        body_version: ENCODING_VERSION,
-        schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
-        arity: abi::TypeArity::Variable,
-        projection: asset_id_projection(STANDARD_ASSET_MINT_CAPABILITY_V1_TYPE_ID),
-    })?;
+    registry.register(mint_capability_constructor_declaration())?;
     Ok(registry)
 }
 
@@ -1635,6 +1707,128 @@ mod tests {
         short.field_bytes(2, [0x11; 31]).unwrap();
         assert_eq!(
             decode_standard_asset_split_args_v1(&short.finish().unwrap()),
+            Err(StandardAssetError::InvalidAddressLength(31))
+        );
+    }
+
+    fn sample_mint_args() -> StandardAssetMintArgsV1 {
+        StandardAssetMintArgsV1::new(43, sample_address(0x66)).unwrap()
+    }
+
+    #[test]
+    fn mint_args_rejects_zero_amount() {
+        assert_eq!(
+            StandardAssetMintArgsV1::new(0, sample_address(0x66)),
+            Err(StandardAssetError::ZeroCoinAmount)
+        );
+    }
+
+    #[test]
+    fn mint_args_getters_round_trip() {
+        let recipient: Address = sample_address(0x66);
+        let args: StandardAssetMintArgsV1 = StandardAssetMintArgsV1::new(43, recipient).unwrap();
+        assert_eq!(args.amount(), 43);
+        assert_eq!(args.recipient(), recipient);
+    }
+
+    #[test]
+    fn mint_args_encoding_vector_is_stable() {
+        let bytes: Vec<u8> = encode_standard_asset_mint_args_v1(&sample_mint_args()).unwrap();
+        assert_eq!(
+            hex(&bytes),
+            format!(
+                "534e5245067101000200010008000000{}020020000000{}",
+                "2b00000000000000",
+                "66".repeat(32)
+            )
+        );
+    }
+
+    #[test]
+    fn mint_args_decoder_round_trips_encoded_bytes() {
+        let args: StandardAssetMintArgsV1 = sample_mint_args();
+        let canonical: Vec<u8> = encode_standard_asset_mint_args_v1(&args).unwrap();
+        assert_eq!(decode_standard_asset_mint_args_v1(&canonical), Ok(args));
+    }
+
+    #[test]
+    fn mint_args_decoder_rejects_wrong_type_version_and_shape() {
+        let mut wrong_type: Vec<u8> =
+            encode_standard_asset_mint_args_v1(&sample_mint_args()).unwrap();
+        wrong_type[4..6].copy_from_slice(&0x7999_u16.to_le_bytes());
+        assert!(matches!(
+            decode_standard_asset_mint_args_v1(&wrong_type),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedTypeId { .. }
+            ))
+        ));
+
+        let mut wrong_version: CanonicalStruct =
+            CanonicalStruct::new(STANDARD_ASSET_MINT_ARGS_V1_TYPE_ID, 2);
+        wrong_version.field_u64(1, 43).unwrap();
+        wrong_version
+            .field_bytes(2, sample_address(0x66).as_bytes().to_vec())
+            .unwrap();
+        assert!(matches!(
+            decode_standard_asset_mint_args_v1(&wrong_version.finish().unwrap()),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedVersion { .. }
+            ))
+        ));
+
+        let empty: CanonicalStruct =
+            CanonicalStruct::new(STANDARD_ASSET_MINT_ARGS_V1_TYPE_ID, ENCODING_VERSION);
+        assert!(matches!(
+            decode_standard_asset_mint_args_v1(&empty.finish().unwrap()),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::MissingField(1)
+            ))
+        ));
+
+        let mut extra: CanonicalStruct =
+            CanonicalStruct::new(STANDARD_ASSET_MINT_ARGS_V1_TYPE_ID, ENCODING_VERSION);
+        extra.field_u64(1, 43).unwrap();
+        extra
+            .field_bytes(2, sample_address(0x66).as_bytes().to_vec())
+            .unwrap();
+        extra.field_bytes(3, [0x01]).unwrap();
+        assert!(matches!(
+            decode_standard_asset_mint_args_v1(&extra.finish().unwrap()),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedField(3)
+            ))
+        ));
+
+        let mut trailing: Vec<u8> =
+            encode_standard_asset_mint_args_v1(&sample_mint_args()).unwrap();
+        trailing.push(0);
+        assert!(matches!(
+            decode_standard_asset_mint_args_v1(&trailing),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::TrailingBytes(1)
+            ))
+        ));
+    }
+
+    #[test]
+    fn mint_args_decoder_rejects_zero_amount_and_malformed_recipient() {
+        let mut zero_amount: CanonicalStruct =
+            CanonicalStruct::new(STANDARD_ASSET_MINT_ARGS_V1_TYPE_ID, ENCODING_VERSION);
+        zero_amount.field_u64(1, 0).unwrap();
+        zero_amount
+            .field_bytes(2, sample_address(0x66).as_bytes().to_vec())
+            .unwrap();
+        assert_eq!(
+            decode_standard_asset_mint_args_v1(&zero_amount.finish().unwrap()),
+            Err(StandardAssetError::ZeroCoinAmount)
+        );
+
+        let mut short: CanonicalStruct =
+            CanonicalStruct::new(STANDARD_ASSET_MINT_ARGS_V1_TYPE_ID, ENCODING_VERSION);
+        short.field_u64(1, 43).unwrap();
+        short.field_bytes(2, [0x11; 31]).unwrap();
+        assert_eq!(
+            decode_standard_asset_mint_args_v1(&short.finish().unwrap()),
             Err(StandardAssetError::InvalidAddressLength(31))
         );
     }

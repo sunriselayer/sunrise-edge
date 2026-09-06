@@ -425,9 +425,11 @@ the same canonical `ExecutionEffects` returned in the receipt and committed as
 the durable mutation, so the two never disagree, and the translation boundary
 independently re-verifies the exact committed recipient address and an
 unchanged object body regardless of what the caller's synthesis already
-checked. No current preinstalled-module catalog commits either policy, so
-this capability commits, verifies, and translates correctly end-to-end but
-activates no catalog module yet (see
+checked. The local devnet catalog now commits both policy families: DR-0107
+activates typed whole-coin transfer and owner transition, DR-0108 adds typed
+split/merge and exact-one split creation, and DR-0109 adds typed
+capability-authorized mint with its own exact-one creation policy. Other
+catalogs and generic contracts remain fail closed (see
 [DR-0106](decisions/0106-typed-entrypoint-owner-transition.md)).
 
 Protocol version 3 MUST NOT be activated on any live chain until shared-object

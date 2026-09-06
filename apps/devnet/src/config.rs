@@ -24,15 +24,15 @@ const MAX_CONFIGURED_DEV_OWNERS: usize = MAX_DEVNET_OWNERS - 1;
 /// Known-limitations banner printed once at every devnet startup.
 ///
 /// Besides the pre-existing dev-profile constraints, this names the exact
-/// Standard Asset v1 whole-coin posture and the two facts that became true once
-/// the bounded query API was wired in:
+/// Standard Asset v1 local operation posture and the two facts that became
+/// true once the bounded query API was wired in:
 /// the four `GET` query routes are an unauthenticated public-read API (any
 /// caller can read any object, receipt, next-nonce, or context; the address
 /// in `/v1/senders/{sender}/next-nonce` is a public lookup selector, not
 /// authorization), and query and submission share one admission budget
 /// (the single `NativeBlockingExecutor` constructed by the native router), so
 /// a burst of one can starve the other.
-pub const DEVNET_STARTUP_LIMITATIONS_BANNER: &str = "single-validator,owned-objects-only,standard-asset-v1-whole-coin-transfer,owner-transition-index-0-only,separate-fee-coin-required,single-ordinary-fee-asset,ordinary-treasury-not-certificate-distributed,local-sqlite,unauthenticated-bounded-public-read-query-api,shared-query-submission-admission-budget,non-production";
+pub const DEVNET_STARTUP_LIMITATIONS_BANNER: &str = "single-validator,owned-objects-only,standard-asset-v1-whole-coin-transfer,bounded-split-merge,devnet-capability-mint,reusable-unbounded-devnet-mint-capability,owner-transition-index-0-only,separate-fee-coin-required,single-ordinary-fee-asset,ordinary-treasury-not-certificate-distributed,local-sqlite,unauthenticated-bounded-public-read-query-api,shared-query-submission-admission-budget,non-production";
 
 /// One browser/client-controlled development owner address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

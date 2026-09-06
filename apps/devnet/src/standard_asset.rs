@@ -26,6 +26,8 @@ pub const TRANSFER_ENTRYPOINT: &str = "transfer";
 pub const SPLIT_ENTRYPOINT: &str = "split";
 /// Protocol-v5 two-coin merge entrypoint.
 pub const MERGE_ENTRYPOINT: &str = "merge";
+/// Protocol-v5 capability-authorized mint entrypoint.
+pub const MINT_ENTRYPOINT: &str = "mint";
 
 /// SHA-256 of `sunrise.devnet.standard_asset.module.v1`, fixed as an opaque
 /// dev-profile module identifier.
@@ -88,13 +90,20 @@ pub const STANDARD_ASSET_TRANSFER_V1_WASM: &[u8] =
 /// Auditable WAT source for [`STANDARD_ASSET_TRANSFER_WASM`].
 pub const STANDARD_ASSET_TRANSFER_V1_WAT: &str =
     include_str!("../modules/standard_asset_transfer.wat");
-/// Committed protocol-v5 module bytes, retaining `transfer` and adding
-/// module-side `split` and `merge` arithmetic.
-pub const STANDARD_ASSET_TRANSFER_WASM: &[u8] =
+/// Historical protocol-v5 module-v2 bytes containing `transfer`, `split`, and
+/// `merge`. These bytes remain immutable and cataloged as disabled history.
+pub const STANDARD_ASSET_OPERATIONS_V2_WASM: &[u8] =
     include_bytes!("../modules/standard_asset_operations_v2.wasm");
+/// Auditable WAT source for [`STANDARD_ASSET_OPERATIONS_V2_WASM`].
+pub const STANDARD_ASSET_OPERATIONS_V2_WAT: &str =
+    include_str!("../modules/standard_asset_operations_v2.wat");
+/// Active committed protocol-v5 module bytes, retaining the v2 operations and
+/// adding capability-authorized `mint`.
+pub const STANDARD_ASSET_TRANSFER_WASM: &[u8] =
+    include_bytes!("../modules/standard_asset_operations_v3.wasm");
 /// Auditable WAT source for [`STANDARD_ASSET_TRANSFER_WASM`].
 pub const STANDARD_ASSET_TRANSFER_WAT: &str =
-    include_str!("../modules/standard_asset_operations_v2.wat");
+    include_str!("../modules/standard_asset_operations_v3.wat");
 
 /// Exact canonical encoded length of a [`standard_assets::StandardAssetTransferArgsV1`]
 /// frame.
@@ -106,6 +115,8 @@ pub const STANDARD_ASSET_TRANSFER_WAT: &str =
 pub const STANDARD_ASSET_TRANSFER_MAX_INPUT_SIZE: usize = 48;
 /// Exact encoded length of one `StandardAssetSplitArgsV1` frame.
 pub const STANDARD_ASSET_SPLIT_MAX_INPUT_SIZE: usize = 62;
+/// Exact encoded length of one `StandardAssetMintArgsV1` frame.
+pub const STANDARD_ASSET_MINT_MAX_INPUT_SIZE: usize = 62;
 
 #[cfg(test)]
 mod tests {
@@ -116,9 +127,11 @@ mod tests {
         ChainId, Digest32, Epoch, HashAlgorithmId, HashSuite, HashSuiteSchedule, ProtocolVersion,
     };
     use standard_assets::{
-        AssetId, StandardAssetCoinV1, StandardAssetSplitArgsV1, StandardAssetTransferArgsV1,
-        decode_standard_asset_coin_v1, encode_standard_asset_coin_v1,
-        encode_standard_asset_split_args_v1, encode_standard_asset_transfer_args_v1,
+        AssetId, StandardAssetCoinV1, StandardAssetMintArgsV1, StandardAssetMintCapabilityV1,
+        StandardAssetSplitArgsV1, StandardAssetTransferArgsV1, decode_standard_asset_coin_v1,
+        encode_standard_asset_coin_v1, encode_standard_asset_mint_args_v1,
+        encode_standard_asset_mint_capability_v1, encode_standard_asset_split_args_v1,
+        encode_standard_asset_transfer_args_v1,
     };
 
     #[test]
@@ -302,6 +315,114 @@ mod tests {
         assert!(
             matches!(effects.object_effects[1], execution::ObjectEffect::Deleted { id, .. } if id == ObjectId::new([0x02; 32]))
         );
+    }
+
+    #[test]
+    fn mint_wasm_creates_one_recipient_coin_from_capability_asset() {
+        let asset_id: AssetId = AssetId::new([0xA1; 32]);
+        let capability: StandardAssetMintCapabilityV1 = StandardAssetMintCapabilityV1 { asset_id };
+        let capability_input: ResolvedObject = ResolvedObject {
+            object: Object {
+                id: ObjectId::new([0x01; 32]),
+                version: 1,
+                owner: Owner::Address(Address::new([0x11; 32])),
+                type_hash: Digest32::new(HashAlgorithmId::Sha2_256, [0xA3; 32]),
+                schema_version: 1,
+                data: encode_standard_asset_mint_capability_v1(&capability).unwrap(),
+            },
+            mode: AccessMode::Read,
+        };
+        let fee_input: ResolvedObject = coin_input(0x02, 50, AccessMode::Write);
+        let recipient: Address = Address::new([0x44; 32]);
+        let args: Vec<u8> = encode_standard_asset_mint_args_v1(
+            &StandardAssetMintArgsV1::new(30, recipient).unwrap(),
+        )
+        .unwrap();
+        let effects = WasmExecutionEngine
+            .execute(
+                ProtocolVersion::new(5),
+                Digest32::new(HashAlgorithmId::Sha2_256, [0x79; 32]),
+                STANDARD_ASSET_TRANSFER_WASM,
+                MINT_ENTRYPOINT,
+                &[capability_input, fee_input.clone()],
+                &args,
+                1_000_000,
+            )
+            .unwrap();
+
+        assert_eq!(effects.status, ExecutionStatus::Success);
+        assert_eq!(effects.object_effects.len(), 1);
+        let execution::ObjectEffect::Created(created) = &effects.object_effects[0] else {
+            panic!("mint must create exactly one recipient coin");
+        };
+        assert_eq!(created.owner, Owner::Address(recipient));
+        assert_eq!(created.type_hash, fee_input.object.type_hash);
+        assert_eq!(created.schema_version, fee_input.object.schema_version);
+        assert_eq!(
+            decode_standard_asset_coin_v1(&created.data).unwrap(),
+            StandardAssetCoinV1::new(asset_id, 30).unwrap()
+        );
+    }
+
+    #[test]
+    fn mint_wasm_rejects_zero_amount_wrong_count_and_malformed_inputs() {
+        let asset_id: AssetId = AssetId::new([0xA1; 32]);
+        let capability: StandardAssetMintCapabilityV1 = StandardAssetMintCapabilityV1 { asset_id };
+        let capability_input: ResolvedObject = ResolvedObject {
+            object: Object {
+                id: ObjectId::new([0x01; 32]),
+                version: 1,
+                owner: Owner::Address(Address::new([0x11; 32])),
+                type_hash: Digest32::new(HashAlgorithmId::Sha2_256, [0xA3; 32]),
+                schema_version: 1,
+                data: encode_standard_asset_mint_capability_v1(&capability).unwrap(),
+            },
+            mode: AccessMode::Read,
+        };
+        let fee_input: ResolvedObject = coin_input(0x02, 50, AccessMode::Write);
+        let recipient: Address = Address::new([0x44; 32]);
+        let valid_args: Vec<u8> = encode_standard_asset_mint_args_v1(
+            &StandardAssetMintArgsV1::new(30, recipient).unwrap(),
+        )
+        .unwrap();
+        let run = |inputs: &[ResolvedObject], args: &[u8]| -> ExecutionStatus {
+            WasmExecutionEngine
+                .execute(
+                    ProtocolVersion::new(5),
+                    Digest32::new(HashAlgorithmId::Sha2_256, [0x7A; 32]),
+                    STANDARD_ASSET_TRANSFER_WASM,
+                    MINT_ENTRYPOINT,
+                    inputs,
+                    args,
+                    1_000_000,
+                )
+                .unwrap()
+                .status
+        };
+
+        let mut zero_args: Vec<u8> = valid_args.clone();
+        zero_args[16..24].copy_from_slice(&0_u64.to_le_bytes());
+        assert!(matches!(
+            run(&[capability_input.clone(), fee_input.clone()], &zero_args),
+            ExecutionStatus::Failure { .. }
+        ));
+        assert!(matches!(
+            run(std::slice::from_ref(&capability_input), &valid_args),
+            ExecutionStatus::Failure { .. }
+        ));
+        assert!(matches!(
+            run(
+                &[capability_input.clone(), fee_input.clone()],
+                &valid_args[..STANDARD_ASSET_MINT_MAX_INPUT_SIZE - 1]
+            ),
+            ExecutionStatus::Failure { .. }
+        ));
+        let mut malformed_capability: ResolvedObject = capability_input;
+        malformed_capability.object.data.pop();
+        assert!(matches!(
+            run(&[malformed_capability, fee_input], &valid_args),
+            ExecutionStatus::Failure { .. }
+        ));
     }
 
     #[test]

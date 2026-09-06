@@ -82,20 +82,25 @@ pub enum CliError {
     ZeroMaxFee,
     /// `split --amount` was zero.
     ZeroSplitAmount,
+    /// `mint --amount` was zero.
+    ZeroMintAmount,
     /// A split amount would empty the source coin; split requires a
     /// non-zero remainder.
     SplitAmountNotBelowSource { amount: u64, source_amount: u64 },
     /// Merge coin inputs must be three different object ids.
     MergeCoinsMustBeDistinct,
+    /// Mint capability, fee coin, and treasury must be distinct objects.
+    MintObjectsMustBeDistinct,
     /// The two source amounts cannot be represented by `u64` when summed.
     MergeAmountOverflow,
     /// `--fee-treasury-object` named one of the operation's coin inputs.
     FeeTreasuryConflictsWithTransfer,
     /// The transferred and fee coins decoded with different `AssetId`s.
     CoinAssetMismatch,
-    /// `--fee-asset-id` differed from the transferred/fee coins' shared
-    /// `AssetId` (the protocol forces the fee asset to equal the transferred
-    /// asset for this entrypoint).
+    /// The mint capability and fee coin decoded with different `AssetId`s.
+    MintCapabilityAssetMismatch,
+    /// `--fee-asset-id` differed from the operation inputs' required shared
+    /// `AssetId`.
     FeeAssetMismatch,
     /// A `--wait-*` bound flag was supplied without `--wait`.
     WaitBoundWithoutWait(&'static str),
@@ -146,10 +151,20 @@ pub enum CliError {
         /// The decode failure.
         source: StandardAssetError,
     },
+    /// A `CurrentInline` object's body failed to decode as an exact
+    /// `StandardAssetMintCapabilityV1`.
+    MintCapabilityBodyDecodeFailed {
+        /// The capability object identifier, as hex.
+        object_id: String,
+        /// The strict capability decode failure.
+        source: StandardAssetError,
+    },
     /// Canonically encoding the `StandardAssetTransferArgsV1` frame failed.
     TransferArgsEncodingFailed(StandardAssetError),
     /// Canonically encoding the `StandardAssetSplitArgsV1` frame failed.
     SplitArgsEncodingFailed(StandardAssetError),
+    /// Canonically encoding the `StandardAssetMintArgsV1` frame failed.
+    MintArgsEncodingFailed(StandardAssetError),
     /// A referenced object exists and is `CurrentInline`, but its owner does
     /// not equal the locally required address for that access.
     ObjectOwnerMismatch {
@@ -248,7 +263,7 @@ impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingCommand => f.write_str(
-                "no subcommand supplied; expected one of: address, context, object, receipt, next-nonce, transfer",
+                "no subcommand supplied; expected one of: address, context, object, receipt, next-nonce, transfer, split, merge, mint",
             ),
             Self::UnknownCommand(command) => write!(f, "unknown subcommand: {command:?}"),
             Self::Args(error) => write!(f, "{error}"),
@@ -286,6 +301,7 @@ impl fmt::Display for CliError {
             }
             Self::ZeroMaxFee => f.write_str("--max-fee must be non-zero"),
             Self::ZeroSplitAmount => f.write_str("--amount must be non-zero"),
+            Self::ZeroMintAmount => f.write_str("--amount must be non-zero"),
             Self::SplitAmountNotBelowSource { amount, source_amount } => write!(
                 f,
                 "--amount must be below the source coin amount (amount={amount}, source_amount={source_amount})",
@@ -293,6 +309,9 @@ impl fmt::Display for CliError {
             Self::MergeCoinsMustBeDistinct => {
                 f.write_str("--primary-coin, --secondary-coin, and --fee-coin must name distinct objects")
             }
+            Self::MintObjectsMustBeDistinct => f.write_str(
+                "--mint-capability, --fee-coin, and --fee-treasury-object must name distinct objects",
+            ),
             Self::MergeAmountOverflow => f.write_str("the two source coin amounts overflow u64 when merged"),
             Self::FeeTreasuryConflictsWithTransfer => f.write_str(
                 "--fee-treasury-object must be distinct from every operation coin input",
@@ -300,9 +319,12 @@ impl fmt::Display for CliError {
             Self::CoinAssetMismatch => {
                 f.write_str("the transferred and fee coins do not share one AssetId")
             }
-            Self::FeeAssetMismatch => f.write_str(
-                "--fee-asset-id must equal the transferred/fee coins' shared AssetId",
-            ),
+            Self::MintCapabilityAssetMismatch => {
+                f.write_str("the mint capability and fee coin do not share one AssetId")
+            }
+            Self::FeeAssetMismatch => {
+                f.write_str("--fee-asset-id must equal the operation inputs' shared AssetId")
+            }
             Self::WaitBoundWithoutWait(flag) => {
                 write!(f, "{flag} requires --wait to also be supplied")
             }
@@ -346,11 +368,18 @@ impl fmt::Display for CliError {
                 f,
                 "{flag} {object_id}'s body failed to decode as a Standard Asset v1 coin: {source}"
             ),
+            Self::MintCapabilityBodyDecodeFailed { object_id, source } => write!(
+                f,
+                "--mint-capability {object_id}'s body failed to decode as a Standard Asset v1 mint capability: {source}"
+            ),
             Self::TransferArgsEncodingFailed(error) => {
                 write!(f, "failed to encode transfer arguments: {error}")
             }
             Self::SplitArgsEncodingFailed(error) => {
                 write!(f, "failed to encode split arguments: {error}")
+            }
+            Self::MintArgsEncodingFailed(error) => {
+                write!(f, "failed to encode mint arguments: {error}")
             }
             Self::ObjectOwnerMismatch {
                 flag,
@@ -424,8 +453,10 @@ impl std::error::Error for CliError {
             Self::InvalidInteger { source, .. } => Some(source),
             Self::ObjectBodyDecodeFailed { source, .. } => Some(source),
             Self::CoinBodyDecodeFailed { source, .. } => Some(source),
+            Self::MintCapabilityBodyDecodeFailed { source, .. } => Some(source),
             Self::TransferArgsEncodingFailed(error) => Some(error),
             Self::SplitArgsEncodingFailed(error) => Some(error),
+            Self::MintArgsEncodingFailed(error) => Some(error),
             Self::CanonicalEncoding(error) => Some(error),
             Self::NodeCore(error) => Some(error),
             Self::Transport(error) => Some(error),

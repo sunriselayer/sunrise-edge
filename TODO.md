@@ -2418,9 +2418,11 @@ Address-owned outputをcommit前に再検証するprerequisiteに加え、`Asset
 dependency-lightな`standard-assets` crateへownershipを移した。各consumerは
 `standard-assets`から直接importし、未リリースAPIのcompatibility facadeは設けない。Sunrise Edgeはまだreleaseされておらず、
 devnet-local `0xF001`/`0xF010`/`0xF011`はpublic compatibility obligationではない
-development fixtureであり、Standard Asset v1 activationはこれをmigrateや
-dual-supportではなくreplaceする前提とする。以下の残存criteriaはopenであり、
-Standard Asset v1、Unique Asset v1、builder/public-testnet asset surfaceはまだ有効ではない。
+ development fixtureであり、Standard Asset v1 activationはこれをmigrateや
+dual-supportではなくreplaceする前提とする。local devnetではtransfer/split/mergeが有効で、
+既存derived assetに対するcapability-authorized mintはDR-0109のbounded devnet sliceとして
+実装・complete repository gate検証・fresh independent tech-lead review済みである。以下の残存criteriaはopenであり、任意asset作成、Unique Asset v1、
+builder/public-testnet asset surfaceはまだ有効ではない。
 
 ### Completion criteria
 
@@ -2474,8 +2476,9 @@ Standard Asset v1、Unique Asset v1、builder/public-testnet asset surfaceはま
    `StandardAssetCoinFeeComposer`、CLI `transfer`サブコマンドの
    `--source-coin`/`--recipient`/`--fee-coin`ベースへの更新を含む。これにより
    `Create`パスなしで到達可能な、初のend-to-end owner change経路が生まれた。
-   DR-0108でprotocol-v5/module-v2のbounded partial split/mergeを追加した。
-   generic Create/mint/burn、arbitrary discovery/coin selection/dust、Unique
+   DR-0108でprotocol-v5/module-v2のbounded partial split/mergeを追加し、DR-0109で
+   protocol-v5/module-v3の既存devnet asset向けcapability-authorized mintを追加した。
+   arbitrary asset Create/burn、supply accounting、arbitrary discovery/coin selection/dust、Unique
    Asset v1、multisig、Ledgerのnew entrypoint対応、production fee aggregation、
    public-testnet readinessは引き続き未実装のまま。
 5. **実装済み（DR-0108、bounded devnet slice）。** whole-coin transferはcanonical signed
@@ -2486,8 +2489,9 @@ Standard Asset v1、Unique Asset v1、builder/public-testnet asset surfaceはま
    stateもread/writeしない。exact one-create policyはsigned transaction-derived id、
    source-derived type/schema、recipient projection、Absent-only pre-readをnode-coreで
    独立検証する。owned-only operationはglobal total orderを避けるが、validator
-   quorum/certificationは必須とする。任意coin discovery/selection、dust、mint/burnと
-   ergonomic client hidingは後続とする。
+   quorum/certificationは必須とする。任意coin discovery/selection、dust、burnと
+   ergonomic client hidingは後続とする。DR-0109のmintは既存devnet assetに限定し、
+   `Read MintCapability<A>` + fee `Write Coin<A>`からexact one recipient coinを作る。
 6. **部分実装（split Createまで）。** exact committed preinstalled-module policy + protocol
    version 4/5の二重gateで、
    existing coinのbounded owner-only changeをdevnetに限定して有効化済み。DR-0108のprotocol-v5
@@ -2496,8 +2500,9 @@ Standard Asset v1、Unique Asset v1、builder/public-testnet asset surfaceはま
    id derivationとcreated-bodyのnominal typeをnode-coreが独立検証する。balance arithmeticと
    conservationはcommitted WASMがchecked演算で実施し、node-coreはasset固有balanceをdecodeせず、
    exact absent headを読んでnonce/receipt/fee/outboxとatomic commitする。current/tombstone
-   collisionは拒否する。generic contract Create、mint、unsigned owner change、caller-selected IDは
-   fail closedのままにする。
+   collisionは拒否する。generic contract Create、任意asset作成、unsigned owner change、
+   caller-selected IDはfail closedのままにする。DR-0109のmintだけは同じgeneric exact-one
+   verificationをexact module version/entrypointへ別policyとしてcommitしている。
 7. **部分実装。** protocol-v4 devnetはStandard Asset v1 fee coinをordinary objectとして扱い、
    same ownership/exact-version/checked-arithmetic/atomic-effect ruleを使う。native coinやprivileged
    balanceは追加していない。一方、現在のsingle treasury coinはlocal-devnet限定のhot spotであり、
@@ -2518,10 +2523,25 @@ Standard Asset v1、Unique Asset v1、builder/public-testnet asset surfaceはま
    real file-backed SQLiteでのsame-boot/post-restart exact replay non-reapplication、writer-generation
    fencing、request-id reuse時のsource/created/fee/treasury object・両receipt・nonce不変を
    focused E2Eとcomplete repository gateで検証した。merge前にこの新しいprotocol-critical
-   deltaへのfresh independent reviewを要求する。generic Create/mint/Unique Asset/public surfaceは
-   引き続き各sliceで新しいdelta reviewを要する。
+   deltaへのfresh independent reviewを要求する。generic Create/任意asset作成/Unique Asset/
+   public surfaceは引き続き各sliceで新しいdelta reviewを要する。
+9. **実装・検証済み（DR-0109、bounded devnet mint slice）。** protocol-v5/module-v3は
+   module-v1/v2 historyを保持し、既存derived devnet assetだけに`mint`を追加する。
+   startupはimmutable `StandardAssetDefinitionV1`と、first dev ownerが所有するreusableな
+   `StandardAssetMintCapabilityV1`をatomic pairとしてseed/restart-verifyする。typed ABIは
+   `Read MintCapability<A>` index 0とfee `Write Coin<A>` index 1を同じ`A`へunifyし、
+   committed WASMがnonzero amountのrecipient `Coin<A>`をexactly one Createする。
+   node-coreはordinal-zero ID、recipient、type/schema/body projection、exact `Absent` headを
+   asset-genericに独立検証する。CLIはexpected protocol context、nonce、capability/fee coinの
+   sender ownershipとcanonical body、shared `AssetId`、distinct treasuryをsign前に検証し、
+   Ledger selectionをnetwork/device access前にfail closedする。real file-backed SQLiteでの
+   same-boot/post-restart exact replay、writer generation、request-id conflict時の全関連object/
+   receipt/nonce不変とcomplete repository gateはunrestricted local runで検証済みである。
+   protocol-critical deltaへのfresh independent tech-lead reviewもAPPROVEで完了した。
+   capabilityはreusableで供給上限を持たないdevnet fixtureである。
 
-metadata authenticity、mint/burn/supply accounting、authority capabilityのlifecycle、freeze/close/
+arbitrary authenticated asset creation、metadata authenticity、burn/supply accounting、
+authority capabilityのlifecycle、freeze/close/
 allowance、governed fee-asset admission、Unique Asset v1の実装は後続sliceである。
 これらを完了扱いにせず、このgateはそれぞれの後続実装とdelta reviewを
 追跡し続ける。
@@ -2712,6 +2732,9 @@ hard constraintも変更しない。
   DR-0108のprotocol-v5/module-v2 sliceは、この同じsender-owned object boundaryを
   `split`のsource Write + exact-one recipient Create、および`merge`のprimary Write +
   secondary Consumeへ拡張する。generic Createや任意のcaller-selected object idは許可しない。
+  DR-0109のmodule-v3はfirst dev ownerの`Read MintCapability<A>`とsender-owned fee
+  `Write Coin<A>`を同じassetへunifyし、既存devnet assetのrecipient coinをexact-one
+  Createする。任意asset作成とgeneric contract Createは引き続き許可しない。
 - **S3**: **implemented and validated baseline（DR-0087、DR-0107で現行化）。** committed
   scheduleはbase=1、execution=`gas_used`単価=1、他category=0、fee registryはderived devnet
   `AssetId`を1:1で1つだけenableする。transfer対象とはdistinctなsender-owned
