@@ -7,6 +7,7 @@ name = "abi"
 version = "0.1.0"
 dependencies = [
  "canonical-encoding",
+ "hashing",
  "objects",
  "protocol-types",
 ]
@@ -1585,6 +1586,7 @@ checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 name = "standard-assets"
 version = "0.1.0"
 dependencies = [
+ "abi",
  "canonical-encoding",
  "hashing",
  "objects",

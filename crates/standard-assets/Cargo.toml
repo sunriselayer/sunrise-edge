@@ -5,6 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+abi.workspace = true
 canonical-encoding.workspace = true
 hashing.workspace = true
 objects.workspace = true

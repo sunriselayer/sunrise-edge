@@ -584,6 +584,9 @@ mod tests {
 
         let asset_id = encode_hash_domain(HashDomain::AssetId).unwrap();
         assert_eq!(hex(&asset_id), "534e52450201010001000100020000000e00");
+
+        let object_type = encode_hash_domain(HashDomain::ObjectType).unwrap();
+        assert_eq!(hex(&object_type), "534e52450201010001000100020000000f00");
     }
 
     #[test]
