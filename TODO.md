@@ -2400,6 +2400,15 @@ physical media faultや長期soakを同じ項目として重複実装しない�
 
 ## Generic Contract Publication Gate
 
+**Design baseline (DR-0111, 2026-09-07):**
+[`docs/design.md`](docs/design.md) is the accepted To-Be; the
+[dated meeting record](docs/meeting-notes/2026-09-07-generic-contract-design.md)
+preserves As-Is evidence and replacement rationale. This gate remains open:
+the design record does not implement publication, instance isolation, public
+type authority, or upgrades. Standard Asset must use the same public facilities
+as user contracts; remove superseded trusted-only paths and native Coin-body
+settlement callbacks rather than retaining unreleased compatibility branches.
+
 **Priority decision (2026-09-07):** protocol固有のpreinstalled moduleやその運用補助を
 積み上げ続ける前に、permissionlessな汎用contract surfaceを実装する。DR-0110の
 supply-accounted mint/burn sliceを完了した直後の順序は、(1)このgate、(2)arbitrary
@@ -2414,6 +2423,8 @@ Completion criteria:
    exact chain id、protocol version、epoch、module id/version、canonical WASM、manifest、
    ABI/semantics commitmentをbindし、unknown field、trailing bytes、unsupported import/export、
    duplicate/reused active module referenceをfail closedする。
+   初回publicationからexact dependency revisionとauthenticated lineageをbindし、
+   commitment検証contextをcurrent protocol versionと独立に永続化する。
 2. nodeはWASM validation、deterministic resource bounds、code/manifest/ABI/semantics hashを
    trusted protocol contextで再計算し、module code、registry/catalog record、nonce、receipt、
    outboxを一つのfenced durable invocationへatomic commitする。失敗時は部分publicationを
@@ -2422,16 +2433,42 @@ Completion criteria:
    `(module_id, version, code_hash, manifest_hash, semantics_hash)`だけを参照する。typed ABI、
    declared object access、owner policy、gas/resource bound、canonical argumentsを実行前に検証し、
    preinstalled moduleと同じdeterministic execution/effect/fee/replay boundaryを使う。
-4. Rust clientとCLIに`contract publish`と`contract call`を追加する。両commandはTLS endpoint
+4. Rust clientとCLIに`contract publish`、`contract instantiate`、`contract call`を追加する。各commandはTLS endpoint
    validationとは別にlocally expected protocol contextを確認し、queryしたcommitmentとsigned
    bytesを一致させてから署名する。software signerを最初のsurfaceとし、Ledgerはexact
    clear-signing policyが追加されるまでfail closedする。
-5. real file-backed SQLite E2Eでpublish、call、same-boot/post-restart exact replay、writer-generation
+5. real file-backed SQLite E2Eでpublish、instantiate、call、same-boot/post-restart exact replay、writer-generation
    fencing、request-id reuse conflictを検証する。conflict/rejection時はmodule registry/catalog、
    application objects、fees、receipt、nonce、outboxが不変であることをcanonical bytesで比較する。
+   ここでrejectionはpre-execution rejectionを指す。実行trapのfee-only settlementは別途
+   検証し、application rollback、確定したfee/receipt、replayでの再課金なしを確認する。
 6. stable vectors、negative/adversarial tests、complete repository gate、fresh tech-lead reviewを
    通過する。ここまで完了する前にpermissionless contract platform、public testnet readiness、
    production/mainnet readinessをclaimしない。
+7. publicationとinitializationを分離し、同じcodeを使うinstance間でstate、capability、
+   admin権限を共有しない。型のlineage/provenance、defining-codeの作成・変更・消費権限、
+   owner authorization、typed cross-contract call境界をhostで検証する。既存のtrusted
+   policyをpublisherが宣言するだけの方式は不可とする。
+8. Standard Assetと独立にpublishしたcontractが同じCreate/Transfer/Consume/typed-call/
+   fee/persistence機構を使うことを検証する。別moduleからのCoin amount書き換え、型の
+   偽造、instance/capability取り違えを拒否する。mint/burn/split/mergeの算術をnode-coreへ
+   移さず、trusted-only policy経路とnative asset settlementの置換・削除を完了条件にする。
+
+Related revision/migration slice (same accepted design, separately reviewable
+after the initial immutable-code publish/instantiate/call slice):
+
+- [ ] Implement scoped upgrade authority and irreversible relinquishment,
+  separating revision publication from authority to migrate state.
+- [ ] Implement bounded atomic migration and host-enforced rejection of old
+  code on migrated state; test unsupported mixed revisions and dependency
+  substitution. Define concrete compatibility and migration authorization rules.
+- [ ] Include shared upgrade/revision state in ordering and fencing; preserve
+  owned-object fast-path eligibility only when all dependencies permit it.
+
+These revision/migration items remain open and must pass their own stable-vector,
+adversarial, SQLite restart/replay, complete-gate, and review evidence before
+upgrade support is claimed. They do not authorize new Asset-specific work to
+bypass the generic publication gate.
 
 ## Asset Standards Gate
 
