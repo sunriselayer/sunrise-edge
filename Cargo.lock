@@ -1227,6 +1227,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "public-standard-asset"
+version = "0.1.0"
+dependencies = [
+ "abi",
+ "canonical-encoding",
+ "ed25519-zebra",
+ "execution",
+ "hashing",
+ "objects",
+ "protocol-types",
+ "sha2 0.11.0",
+ "wat",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"

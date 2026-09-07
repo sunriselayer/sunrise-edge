@@ -13,6 +13,7 @@ members = [
     "crates/runtime-sqlite",
     "crates/execution",
     "crates/standard-assets",
+    "contracts/standard-asset",
     "crates/fees",
     "crates/bonds",
     "crates/governance",
