@@ -632,6 +632,12 @@ Phase 11 introduces deterministic, governance-installed system modules.
 
 ## 24. WASM / Chain IR execution
 
+The generic-contract nominal reference layer is specified in
+[DR-0113](decisions/0113-package-scoped-type-identity.md). Its package origins
+and scoped type tags are unverified values; their codecs and digest checks do
+not authenticate publication or grant the executing code object authority.
+They have no implicit bridge to the existing trusted constructor registry.
+
 The shared non-executing WASM admission verifier and its structural-only
 boundary are specified in [DR-0112](decisions/0112-contract-wasm-admission.md).
 It checks binary code and declared export names without authorizing object

@@ -42,6 +42,14 @@ Use explicit typed references rather than overloading an object reference as an
 unrelated catalog lookup. Assign concrete wire types, IDs, and encodings only
 with the corresponding implementation and collision/vector checks.
 
+The nominal reference format in [DR-0113](architecture/decisions/0113-package-scoped-type-identity.md)
+uses a structured origin (chain, publisher scheme/key reference, creation seed),
+a package-local constructor, and ordered arguments. Hash commitments are not
+logical lineage identity: rotating the hash algorithm must not create a second
+lineage. An unverified origin is a reference, never evidence of publication or
+authority. Authenticate the full publication request and enforce origin
+absence atomically before using it to establish defining-code authority.
+
 Instances organize independent application configuration and authority. State
 remains in individually declared objects; do not put every coin behind one
 mutable contract storage root. An instance must not become a second, competing
