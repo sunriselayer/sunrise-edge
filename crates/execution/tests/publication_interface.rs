@@ -9,6 +9,9 @@ use protocol_types::{
 };
 use sha2::{Digest as _, Sha256};
 
+#[path = "publication_interface/binding.rs"]
+mod binding_tests;
+
 fn origin(seed: u8) -> PackageOrigin {
     let key: SigningKey = SigningKey::from([7; 32]);
     PackageOrigin::unverified(

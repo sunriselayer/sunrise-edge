@@ -86,9 +86,28 @@ pub struct VerifiedPublicationInterface {
     candidate: AuthenticatedPublicationCandidate,
     dependencies: Vec<AuthenticatedPublicationCandidate>,
     abi: PackageAbi,
+    dependency_abis: BTreeMap<PackageOrigin, PackageAbi>,
 }
 
 impl VerifiedPublicationInterface {
+    // Retain verified declarations for binding; never decode caller-supplied ABI here.
+    pub(super) fn defining_abi(&self, origin: &PackageOrigin) -> Option<&PackageAbi> {
+        if origin == &self.abi.origin {
+            Some(&self.abi)
+        } else {
+            self.dependency_abis.get(origin)
+        }
+    }
+    pub(super) fn permits_type_origin(&self, origin: &PackageOrigin) -> bool {
+        origin == &self.abi.origin
+            || self
+                .candidate
+                .request()
+                .artifact()
+                .unverified_dependencies()
+                .iter()
+                .any(|reference| reference.origin() == origin)
+    }
     /// Returns the exact signed root, without granting execution authority.
     pub fn candidate(&self) -> &AuthenticatedPublicationCandidate {
         &self.candidate
@@ -200,14 +219,17 @@ pub fn verify_publication_interface(
         }
     }
     // No root/ABI cloning of large code blobs; the witness retains exact inputs.
-    let abi: PackageAbi = abis
-        .into_iter()
+    let mut verified_abis: std::vec::IntoIter<PackageAbi> = abis.into_iter();
+    let abi: PackageAbi = verified_abis
         .next()
         .ok_or(InterfaceError::MissingDependency)?;
+    let dependency_abis: BTreeMap<PackageOrigin, PackageAbi> =
+        verified_abis.map(|abi| (abi.origin.clone(), abi)).collect();
     Ok(VerifiedPublicationInterface {
         candidate,
         dependencies,
         abi,
+        dependency_abis,
     })
 }
 

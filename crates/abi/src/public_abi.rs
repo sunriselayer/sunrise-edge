@@ -51,7 +51,8 @@ const FRAME_TYPE_PATTERN_ARG: u16 = 0x5307;
 const FRAME_TYPE_ORDERED_LIST: u16 = 0x5308;
 
 const FRAME_VERSION: u16 = 1;
-const MAX_ENTRYPOINT_NAME_BYTES: usize = 256;
+/// Maximum UTF-8 byte length of a declared entrypoint name.
+pub const MAX_ENTRYPOINT_NAME_BYTES: usize = 256;
 
 /// Errors occurring during public ABI encoding, decoding, or shape validation.
 #[derive(Clone, Debug, PartialEq, Eq)]

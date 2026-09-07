@@ -77,6 +77,11 @@ closure. Value layouts, runtime substitution, object authority and durable
 dependency publication remain separate obligations; a well-formed interface
 is not a published or executable contract.
 
+Concrete substitution and metadata matching in
+[DR-0116](architecture/decisions/0116-bound-object-signatures.md) preserve those
+boundaries. Matching a type fingerprint and schema must not substitute for
+canonical body, signed-reference, persisted-state, owner or instance validation.
+
 Instantiation uses published code to establish an independent instance and its
 initial objects/authority. Initialization effects and the instance record
 commit atomically. Initializers must not re-run as an accidental side effect of
