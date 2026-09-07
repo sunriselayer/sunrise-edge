@@ -14,6 +14,7 @@ use axum::{
     routing::{get, post},
 };
 use core::fmt;
+mod publication;
 use execution::{ExecutionError, WasmExecutionEngine};
 use hashing::HashSuiteResolver;
 use http_body_util::LengthLimitError;
@@ -285,6 +286,8 @@ pub enum StructuredDurableRouterError {
     /// The committed [`ProtocolConfig`] carried no domain-placement manifest,
     /// so no logical domain could be resolved for storage.
     MissingDomainPlacement,
+    /// An opted-in publication policy disagreed with the native ingress context.
+    PublicationContextAuthorityMismatch,
 }
 
 impl fmt::Display for StructuredDurableRouterError {
@@ -301,6 +304,9 @@ impl fmt::Display for StructuredDurableRouterError {
             ),
             Self::MissingDomainPlacement => {
                 f.write_str("committed protocol config carries no domain placement manifest")
+            }
+            Self::PublicationContextAuthorityMismatch => {
+                f.write_str("local publication policy context differs from native ingress context")
             }
         }
     }
@@ -419,6 +425,7 @@ pub struct PreinstalledWasmComposition {
     engine: WasmExecutionEngine,
     created_checkpoint: u64,
     fee: Option<PreinstalledFeeCompositionConfig>,
+    publication: Option<node_core::publication::LocalPublicationPolicy>,
 }
 
 impl PreinstalledWasmComposition {
@@ -448,6 +455,7 @@ impl PreinstalledWasmComposition {
             engine,
             created_checkpoint,
             fee: None,
+            publication: None,
         }
     }
 
@@ -456,6 +464,17 @@ impl PreinstalledWasmComposition {
     #[must_use]
     pub fn with_fee_composition(mut self, fee: PreinstalledFeeCompositionConfig) -> Self {
         self.fee = Some(fee);
+        self
+    }
+
+    /// Explicitly enables bounded, fee-free local-development publication.
+    /// The identical policy must already be committed in the durable store.
+    #[must_use]
+    pub fn with_local_publication(
+        mut self,
+        policy: node_core::publication::LocalPublicationPolicy,
+    ) -> Self {
+        self.publication = Some(policy);
         self
     }
 }
@@ -1008,6 +1027,15 @@ where
     I: IndexedOutboxIdentitySource + Send + Sync + 'static,
 {
     validate_structured_durable_router_authority(&protocol_config, &config)?;
+    if let Some(policy) = preinstalled_wasm.publication.as_ref()
+        && (policy.context().chain_id() != config.chain_id()
+            || policy.context().protocol_version() != config.protocol_version()
+            || policy.context().epoch() != config.epoch()
+            || resolver.chain_id() != config.chain_id()
+            || resolver.protocol_version() != config.protocol_version())
+    {
+        return Err(StructuredDurableRouterError::PublicationContextAuthorityMismatch);
+    }
     let state = Arc::new(PreinstalledWasmStructuredDurableNativeHttpState {
         components,
         preinstalled_wasm,
@@ -1041,6 +1069,9 @@ where
             get(get_preinstalled_wasm_structured_durable_next_nonce::<S, B, M, T, C, I>),
         )
         .layer(DefaultBodyLimit::max(MAX_HTTP_EVENT_BODY_BYTES))
+        .merge(publication::routes(
+            state.preinstalled_wasm.publication.is_some(),
+        ))
         .with_state(state))
 }
 
@@ -1214,12 +1245,14 @@ async fn dispatch_bounded_request(
 ) -> Result<Response, Infallible> {
     let (parts, incoming) = request.into_parts();
     let body = Body::new(incoming);
-    let bytes = match timeout(
-        body_total_timeout,
-        to_bytes(body, MAX_HTTP_EVENT_BODY_BYTES),
-    )
-    .await
+    let limit: usize = if parts.method == axum::http::Method::POST
+        && parts.uri.path() == publication::PUBLICATION_PATH
     {
+        execution::publication::MAX_PUBLICATION_SUBMISSION_BYTES
+    } else {
+        MAX_HTTP_EVENT_BODY_BYTES
+    };
+    let bytes = match timeout(body_total_timeout, to_bytes(body, limit)).await {
         Err(_) => {
             return Ok(error_response(
                 StatusCode::REQUEST_TIMEOUT,

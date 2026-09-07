@@ -24,6 +24,7 @@ default = []
 usb-hid = ["sunrise-edge-ledger/usb-hid"]
 
 [dev-dependencies]
+abi.workspace = true
 execution.workspace = true
 hashing.workspace = true
 native-http.workspace = true

@@ -71,6 +71,7 @@ pub struct DevnetConfig {
     dev_owners: Vec<DevOwner>,
     fee_treasury_owner: DevOwner,
     max_concurrent: usize,
+    local_publication: bool,
 }
 
 impl DevnetConfig {
@@ -95,11 +96,20 @@ impl DevnetConfig {
         let mut dev_owners: Vec<DevOwner> = Vec::new();
         let mut fee_treasury_owner: Option<DevOwner> = None;
         let mut max_concurrent: Option<usize> = None;
+        let mut local_publication: bool = false;
         let mut iterator = args.into_iter().map(Into::into);
 
         while let Some(flag_os) = iterator.next() {
             let flag: &str = flag_os.to_str().ok_or(DevnetConfigError::NonUtf8Flag)?;
             match flag {
+                "--enable-local-publication" => {
+                    if local_publication {
+                        return Err(DevnetConfigError::DuplicateFlag(
+                            "--enable-local-publication",
+                        ));
+                    }
+                    local_publication = true;
+                }
                 "--data-dir" => {
                     ensure_absent("--data-dir", &data_dir)?;
                     let value: OsString = required_value(&mut iterator, "--data-dir")?;
@@ -213,6 +223,7 @@ impl DevnetConfig {
             chain_id: chain_id.ok_or(DevnetConfigError::MissingFlag("--chain-id"))?,
             epoch: epoch.ok_or(DevnetConfigError::MissingFlag("--epoch"))?,
             dev_owners,
+            local_publication,
             fee_treasury_owner,
             max_concurrent: max_concurrent
                 .ok_or(DevnetConfigError::MissingFlag("--max-concurrent"))?,
@@ -223,6 +234,12 @@ impl DevnetConfig {
     #[must_use]
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// Whether fee-free, non-executing local publication was explicitly enabled.
+    #[must_use]
+    pub const fn local_publication(&self) -> bool {
+        self.local_publication
     }
 
     /// Returns the validated loopback listen address.

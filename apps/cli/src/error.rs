@@ -36,6 +36,8 @@ pub enum CliError {
     ContractEntrypointListTooLarge,
     /// Structural WASM admission failed; no contract was executed.
     ContractWasm(sunrise_edge_client::ContractWasmValidationError),
+    /// Publication construction, file input, or admission failed.
+    Publication(Box<dyn std::error::Error>),
     /// Argument parsing failed.
     Args(ArgsError),
     /// A hexadecimal argument was malformed.
@@ -301,11 +303,12 @@ impl fmt::Display for CliError {
                 "no subcommand supplied; expected one of: address, context, object, receipt, next-nonce, transfer, split, merge, mint, burn, contract",
             ),
             Self::UnknownCommand(command) => write!(f, "unknown subcommand: {command:?}"),
-            Self::MissingContractAction => f.write_str("contract requires an action: validate"),
-            Self::UnknownContractAction(action) => write!(f, "unknown contract action: {action:?}; expected validate"),
+            Self::MissingContractAction => f.write_str("contract requires an action: validate, publish, or query"),
+            Self::UnknownContractAction(action) => write!(f, "unknown contract action: {action:?}; expected validate, publish, or query"),
             Self::WasmFileRead { path, source } => write!(f, "cannot read WASM file {path:?}: {source}"),
             Self::ContractEntrypointListTooLarge => f.write_str("--entrypoints exceeds the bounded entrypoint list size"),
             Self::ContractWasm(error) => write!(f, "contract WASM validation failed: {error}"),
+            Self::Publication(error) => write!(f, "contract publication failed: {error}"),
             Self::Args(error) => write!(f, "{error}"),
             Self::Hex(error) => write!(f, "{error}"),
             Self::Seed(error) => write!(f, "{error}"),
@@ -508,6 +511,7 @@ impl std::error::Error for CliError {
             Self::Seed(error) => Some(error),
             Self::WasmFileRead { source, .. } => Some(source),
             Self::ContractWasm(error) => Some(error),
+            Self::Publication(error) => Some(error.as_ref()),
             Self::InvalidEndpoint { source, .. } => Some(source),
             Self::CaCertificateFileRead { source, .. } => Some(source),
             Self::InvalidInteger { source, .. } => Some(source),

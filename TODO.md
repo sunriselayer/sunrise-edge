@@ -1,3 +1,37 @@
+# Current delivery roadmap
+
+**2026-09-07: deliver usable features, not another sequence of standalone
+codec/validator/witness PRs.** The CLI Developer MVP and initial scoped audit
+remediation are existing baselines, not a completed generic contract platform.
+The public-contract foundations (DR-0112–DR-0120) and opt-in local durable code
+publication (DR-0121) are implemented. Independent instances and generic
+execution are not yet delivered; publication alone does not close this gate.
+
+| Order | Deliverable | Completion evidence | Status |
+| --- | --- | --- | --- |
+| 1 | Durable local code publication | CLI publish/query; immutable code/ABI/exact dependencies; authenticated admission; origin absence; shared nonce and receipt atomicity (no outgoing message); real SQLite restart/replay/conflict/fencing | Implemented and locally validated (DR-0121); fee-free opt-in local storage only |
+| 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Open |
+| 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Open |
+| 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Open |
+
+Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
+Asset creation follows that gate, then FastVote/multi-validator integration.
+Contract upgrades/migrations remain a separate explicit capability after the
+initial immutable-code flow, not a prerequisite for claiming that first flow.
+Production recovery/HA/provider certification, Ledger, TypeScript, explorer,
+wallet, Unique Asset and multisig remain separate deferred gates below; none
+is deleted or silently treated as complete by this ordering.
+
+**Working rule:** internal tasks may be small, but a PR should deliver a usable
+operation or an independently testable safety boundary. Do not split a feature
+into separate type/codec/validation/loader PRs merely to tick more boxes.
+Iterate with targeted tests; run the complete gate and fresh final review on
+the integrated coherent change. Do not count foundation helpers as completion
+of the enclosing feature. The detailed gates and historical evidence below
+remain authoritative; this table is their active delivery order.
+
+# Protocol design brief
+
 あなたはRust、分散システム、BFTコンセンサス、WebAssembly、暗号プロトコル、ゼロ知識証明に精通したシニアブロックチェーンエンジニアです。
 
 以下の設計思想に基づく、新しいproduction-grade L1 blockchainを実装してください。
@@ -2409,79 +2443,58 @@ type authority, or upgrades. Standard Asset must use the same public facilities
 as user contracts; remove superseded trusted-only paths and native Coin-body
 settlement callbacks rather than retaining unreleased compatibility branches.
 
-Implementation slices under this gate:
+The deliverables in the [current roadmap](#current-delivery-roadmap) are the
+work queue. The foundation checklist below records existing evidence, not
+the unit at which further PRs should be split.
 
-- [x] DR-0112: shared non-executing structural WASM admission and offline
-  `contract validate`; binary/feature/ABI/resource negative tests and CLI
-  subprocess checks. This does not grant type authority or publish code.
-  Validation: 9 verifier integration tests, 4 CLI subprocess tests,
-  `npm ci --prefix adapters/cloudflare-workers` and `./scripts/check-all.sh`
-  passed on 2026-09-07.
-- [ ] Standard Asset public-profile parity: add an explicit memory maximum to
-  its currently max-less WAT and regenerate/recommit WASM/code identity when
-  migrating to public admission; no grandfathered trusted admission bypass.
-- [ ] Authenticated lineage/type namespace, immutable code/ABI/dependency
-  records and bounded publication requests, preserving verification context.
-  - [x] DR-0113: bounded package-origin/scoped-type codecs and nominal digest
-    derivation with hash-rotation tests. This identity foundation does not
-    authenticate a publisher, persist a package, or grant object authority.
-    Six integration tests, `npm ci --prefix adapters/cloudflare-workers`, and
-    `./scripts/check-all.sh` passed on 2026-09-07.
-  - [x] DR-0114: bounded immutable artifact/request codecs, exact full-artifact
-    commitment and strict publisher signature authentication, returning a
-    capability-free candidate only. ABI declaration bytes and dependency
-    references remain explicitly unverified; no persistence/execution consumer.
-    Eight integration tests, `npm ci --prefix adapters/cloudflare-workers`, and
-    `./scripts/check-all.sh` passed on 2026-09-07.
-  - [x] DR-0115: public generic object-signature ABI and exact authenticated
-    candidate dependency-closure verification. This establishes declaration
-    consistency, not value layouts, runtime object authority, or durable
-    dependency publication.
-    Ten integration tests, one graph unit test, independent Node wire vectors,
-    `npm ci --prefix adapters/cloudflare-workers`, and `./scripts/check-all.sh`
-    passed on 2026-09-07.
-  - [x] DR-0116: bounded concrete type substitution and ordered object
-    type/schema/access metadata matching against a verified interface. This
-    does not verify object-reference digests, state freshness, bodies or owners.
-    Seven additional integration tests (17 in the interface suite),
-    `npm ci --prefix adapters/cloudflare-workers`, and `./scripts/check-all.sh`
-    passed on 2026-09-07.
-  - [x] DR-0117: explicit signed CallAbi envelope, bounded canonical value
-    layouts/values, and argument validation through the bound signed layout.
-    No object-only fallback; object bodies and call authentication remain open.
-    Eight additional integration tests (25 in the interface suite), independent
-    Node wire-vector assertions, `npm ci --prefix adapters/cloudflare-workers`,
-    and `./scripts/check-all.sh` passed on 2026-09-07.
-  - [x] DR-0118: signed constructor body layouts with exact defining dependency
-    resolution and bounded canonical input-body validation. Object digest,
-    trusted-state, owner and call authentication remain separate obligations.
-    Nine additional integration tests (34 in the interface suite), independent
-    version-2 envelope vectors with pinned version-1 rejection evidence,
-    `npm ci --prefix adapters/cloudflare-workers`, and `./scripts/check-all.sh`
-    passed on 2026-09-07.
-  - [x] DR-0119: reuse one durable head/record/blob integrity loader for the
-    existing submission path and ABI-bound object reads. Original stored hash
-    context is verified; exact head observations are returned for later CAS,
-    not as reservations or call/owner/instance authority. Eight new node-core
-    tests, `npm ci --prefix adapters/cloudflare-workers`, and
-    `./scripts/check-all.sh` passed on 2026-09-07, including existing replay,
-    owner/fee-policy and persistence regressions.
-  - [x] DR-0120: bounded signed generic call intent binds request ID, exact
-    code/original context, independent instance target, ordered type arguments,
-    access, canonical argument bytes and gas ceiling. Private authentication
-    witness and exact signed-interface binding have adversarial Rust tests and
-    independent Node Ed25519/frame vectors. This is not durable admission,
-    owner/instance authority, fee consent, or a public executable transaction.
-  - [ ] Complete durable call/owner/instance admission (signed intent exists,
-    but publication/instance records and authorization still must be resolved);
-    verify exact dependencies against durable published records and
-    authenticate the request against committed publication policy, then commit
-    code/ABI/dependency records and enforce origin absence atomically. Bind
-    host authority to authenticated lineage and revisions. Do not connect the
-    candidate directly to the legacy catalog or treat signed ABI bytes as rights.
-- [ ] Fenced durable publish/instantiate/call, public object authority and
-  typed calls, Standard Asset parity, and committed fee settlement replacing
-  trusted-only paths. The numbered criteria below remain the complete gate.
+### Existing foundation evidence
+
+The foundations below were implemented and validated in PRs #143–#151 on
+2026-09-07, including the complete repository gate and independent tech-lead
+review. They are prerequisites, not completed publish/instantiate/call features.
+
+| Foundation | Accepted decision | Boundary |
+| --- | --- | --- |
+| Structural WASM admission and offline CLI validation | DR-0112 | Does not publish or execute code |
+| Package origins and nominal type identity | DR-0113 | A reference alone grants no lineage authority |
+| Signed artifact candidates | DR-0114 | Signature and commitment are not durable admission |
+| Typed ABI and exact candidate dependency closure | DR-0115 | Declaration consistency is not published dependency provenance |
+| Concrete type substitution and input metadata | DR-0116 | Type matching is not ownership or body integrity |
+| Signed argument and constructor-body layouts | DR-0117–DR-0118 | Canonical values do not prove application invariants |
+| Durable head/record/blob integrity reads | DR-0119 | Returned head assertions require later atomic validation |
+| Request-ID-bound call intent and exact ABI binding | DR-0120 | No fee consent, instance/owner authority or execution consumer |
+
+Detailed invariants and encoding evidence remain in the
+[decision index](docs/architecture/decisions/README.md) and their regression
+tests. Later foundations supersede earlier implementation gaps; historical
+statements such as “body validation remains open” are not the live work queue.
+
+### Remaining feature completion
+
+- [x] **Local code publication (DR-0121):** immutable code/ABI/dependency records, committed
+  publication policy, exact durable dependency provenance, origin absence,
+  shared nonce and receipt atomicity, CLI publish/query, restart/replay/fencing.
+  Explicit devnet opt-in only; no fees, instances, execution, peer publication
+  or object privileges. Outbox is deliberately absent, not an unimplemented
+  broadcast disguised as success. Validation (2026-09-07): 14 node-core
+  publication tests including exact SQLite code/dependency/receipt/nonce
+  comparisons and persisted writer fencing; 9 Rust client verification tests;
+  real HTTP/CLI three-boot E2E with dependency export/import, replay and disabled
+  ingress; independent Node vectors for `0x6308`–`0x630B`; full
+  `npm ci --prefix adapters/cloudflare-workers` + `./scripts/check-all.sh` pass.
+- [ ] **Independent instance execution:** authenticated create/call and
+  owner/type/lineage/revision authority, public bounded host operations and typed
+  cross-contract calls, CLI and atomic rollback/replay E2E. Never connect an
+  uncommitted candidate directly to the legacy catalog or treat signed ABI
+  declarations as rights.
+- [ ] **Standard Asset/fee parity:** adapt its max-less WAT to the public
+  memory-bound profile and recommit code identity as part of migration, not a
+  separate grandfathered admission exception. Replace trusted-only policies
+  and native asset settlement with the same public facilities and explicitly
+  signed, committed, bounded fee settlement.
+
+The numbered criteria below are the complete gate; this grouping does not
+remove any of their safety, validation or migration obligations.
 
 **Priority decision (2026-09-07):** protocol固有のpreinstalled moduleやその運用補助を
 積み上げ続ける前に、permissionlessな汎用contract surfaceを実装する。DR-0110の
@@ -2494,17 +2507,18 @@ post-MVPの現在はこれを最優先のopen sliceへresequenceする。
 Completion criteria:
 
 1. authenticated signerがbounded canonical module publication requestを送れる。requestは
-   exact chain id、protocol version、epoch、module id/version、canonical WASM、manifest、
+   exact chain id、protocol version、epoch、package origin/code revision、canonical WASM、manifest、
    ABI/semantics commitmentをbindし、unknown field、trailing bytes、unsupported import/export、
-   duplicate/reused active module referenceをfail closedする。
+   duplicate/reused package origin/code revisionをfail closedする。
    初回publicationからexact dependency revisionとauthenticated lineageをbindし、
    commitment検証contextをcurrent protocol versionと独立に永続化する。
 2. nodeはWASM validation、deterministic resource bounds、code/manifest/ABI/semantics hashを
-   trusted protocol contextで再計算し、module code、registry/catalog record、nonce、receipt、
+   trusted protocol contextで再計算し、immutable code/ABI/dependency publication record、nonce、receipt、
    outboxを一つのfenced durable invocationへatomic commitする。失敗時は部分publicationを
    残さない。daemon、background loop、persistent connectionをcorrectness requirementにしない。
 3. call transactionはcallerが実行bytesや未commit manifestを注入できず、publish済みのexact
-   `(module_id, version, code_hash, manifest_hash, semantics_hash)`に加えてsigned target
+   `(package origin, code revision, original publication context, artifact commitment)`
+   (artifactはWASM、ABI/manifest、semantics、exact dependenciesをbindする) に加えてsigned target
    instance identity、authorized instance/code revision、exact dependency lineage/revisionsを
    参照する。typed ABI、declared object access、owner policy、gas/resource bound、canonical
    argumentsを実行前に検証し、preinstalled moduleと同じdeterministic execution/effect/fee/replay

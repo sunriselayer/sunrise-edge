@@ -12,9 +12,8 @@ use sunrise_edge_client::{
 use crate::args::{ArgsError, parse_flags, scalar};
 use crate::error::CliError;
 
-/// Runs `contract validate --wasm <file> --entrypoints <name[,name...]>`.
-///
-/// No signer, transport, node context, or initialization is constructed here.
+/// Dispatches local validation, authenticated publication, or verified query.
+/// Only `validate` avoids signer, transport and node context construction.
 pub fn run<I>(args: I) -> Result<(), CliError>
 where
     I: IntoIterator<Item = OsString>,
@@ -22,6 +21,9 @@ where
     let mut args = args.into_iter();
     let action: OsString = args.next().ok_or(CliError::MissingContractAction)?;
     let action: &str = action.to_str().ok_or(ArgsError::NonUtf8Token)?;
+    if action == "publish" || action == "query" {
+        return super::publication::run(action, args);
+    }
     if action != "validate" {
         return Err(CliError::UnknownContractAction(action.to_owned()));
     }

@@ -12,6 +12,29 @@ use sunrise_edge_client::MAX_CONTRACT_WASM_BYTES;
 const VALID_WASM: &[u8] = b"\0asm\x01\0\0\0\x01\x04\x01\x60\0\0\x03\x02\x01\0\x05\x04\x01\x01\x01\x02\x07\x10\x02\x06memory\x02\0\x03run\0\0\x0a\x04\x01\x02\0\x0b";
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
+#[test]
+fn publication_rejects_ledger_before_endpoint_or_device_access() {
+    let output = Command::new(env!("CARGO_BIN_EXE_sunrise-edge-cli"))
+        .args([
+            "contract",
+            "publish",
+            "--ledger-hid-path",
+            "unreachable-device",
+            "--ledger-account",
+            "0",
+            "--ledger-expected-firmware-version",
+            "1.0.0",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Ledger publication signing is not supported")
+    );
+    assert!(output.stdout.is_empty());
+}
+
 struct Fixture(PathBuf);
 
 impl Fixture {

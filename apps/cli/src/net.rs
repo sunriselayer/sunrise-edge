@@ -108,6 +108,31 @@ pub fn connect(endpoint: &str, tls: &ParsedArgs) -> Result<Client<CliTransport>,
     Ok(Client::new(transport))
 }
 
+/// Builds a publication query client with its explicit larger canonical artifact bound.
+pub fn connect_publication(
+    endpoint: &str,
+    tls: &ParsedArgs,
+) -> Result<Client<CliTransport>, CliError> {
+    let maximum: usize = sunrise_edge_client::publication::MAX_PUBLICATION_SUBMISSION_BYTES;
+    let transport = match (tls.get(TLS_SERVER_NAME), tls.get(TLS_CA_CERT_DER_FILE)) {
+        (None, None) => CliTransport::Loopback(connect_loopback_with_limit(endpoint, maximum)?),
+        (Some(name), Some(path)) => CliTransport::RemoteTls(connect_remote_tls_with_limit(
+            endpoint, name, path, maximum,
+        )?),
+        (Some(_), None) => {
+            return Err(CliError::PartialTlsConfiguration {
+                missing: TLS_CA_CERT_DER_FILE,
+            });
+        }
+        (None, Some(_)) => {
+            return Err(CliError::PartialTlsConfiguration {
+                missing: TLS_SERVER_NAME,
+            });
+        }
+    };
+    Ok(Client::new(transport))
+}
+
 fn build_transport(
     endpoint: &str,
     server_name: Option<&str>,
@@ -128,6 +153,13 @@ fn build_transport(
 }
 
 fn connect_loopback(endpoint: &str) -> Result<LoopbackHttpTransport, CliError> {
+    connect_loopback_with_limit(endpoint, MAX_RESPONSE_BODY_BYTES)
+}
+
+fn connect_loopback_with_limit(
+    endpoint: &str,
+    maximum: usize,
+) -> Result<LoopbackHttpTransport, CliError> {
     let addr = parse_loopback_endpoint(endpoint)?;
     LoopbackHttpTransport::new(
         addr,
@@ -135,7 +167,7 @@ fn connect_loopback(endpoint: &str) -> Result<LoopbackHttpTransport, CliError> {
         READ_TIMEOUT,
         WRITE_TIMEOUT,
         NonZeroUsize::new(MAX_RESPONSE_HEADER_BYTES).unwrap_or(NonZeroUsize::MIN),
-        NonZeroUsize::new(MAX_RESPONSE_BODY_BYTES).unwrap_or(NonZeroUsize::MIN),
+        NonZeroUsize::new(maximum).unwrap_or(NonZeroUsize::MIN),
     )
     .map_err(CliError::Transport)
 }
@@ -144,6 +176,20 @@ fn connect_remote_tls(
     endpoint: &str,
     server_name: &str,
     ca_cert_der_file: &str,
+) -> Result<RemoteTlsHttpTransport, CliError> {
+    connect_remote_tls_with_limit(
+        endpoint,
+        server_name,
+        ca_cert_der_file,
+        MAX_RESPONSE_BODY_BYTES,
+    )
+}
+
+fn connect_remote_tls_with_limit(
+    endpoint: &str,
+    server_name: &str,
+    ca_cert_der_file: &str,
+    maximum: usize,
 ) -> Result<RemoteTlsHttpTransport, CliError> {
     // No DNS resolution happens here or anywhere else in this binary:
     // `--endpoint` must already be a literal `SocketAddr`, and `server_name`
@@ -160,7 +206,7 @@ fn connect_remote_tls(
         READ_TIMEOUT,
         WRITE_TIMEOUT,
         NonZeroUsize::new(MAX_RESPONSE_HEADER_BYTES).unwrap_or(NonZeroUsize::MIN),
-        NonZeroUsize::new(MAX_RESPONSE_BODY_BYTES).unwrap_or(NonZeroUsize::MIN),
+        NonZeroUsize::new(maximum).unwrap_or(NonZeroUsize::MIN),
     )
     .map_err(CliError::Transport)
 }

@@ -64,6 +64,13 @@ context needed to verify published commitments across protocol upgrades.
 Dependencies bind both the exact code revision and its authenticated lineage;
 structural similarity or a copied ABI does not establish type provenance.
 
+Publication ingress must bind its replay request ID in the publisher signature
+and atomically reserve the origin together with the shared sender nonce and
+receipt. Storage admission alone never grants execution or defining-type
+authority. The explicit local development composition is specified in
+[DR-0121](architecture/decisions/0121-durable-local-code-publication.md); its
+fee-free, non-executing policy is not public-network admission or VM semantics.
+
 The signed candidate boundary in
 [DR-0114](architecture/decisions/0114-authenticated-publication-candidate.md)
 binds exact artifact data without granting publication or execution authority.

@@ -18,6 +18,9 @@ roadmap describes a later target state.
   state boundary.
 - [Developer product surfaces](product-surfaces.md): sections 42–46, covering
   the devnet, query API, Rust client, CLI, and signing host boundary.
+- [Durable local code publication](decisions/0121-durable-local-code-publication.md):
+  authenticated immutable code storage, exact dependency provenance, shared
+  nonce/receipt atomicity, and opt-in native HTTP/CLI publication.
 - [Decision records](decisions/README.md): accepted and compatibility-relevant
   decisions grouped into bounded ranges.
 

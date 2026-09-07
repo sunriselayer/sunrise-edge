@@ -42,9 +42,11 @@ use std::error::Error;
 use system_modules::{ModuleId, SystemModule, SystemModuleError};
 
 mod authenticated_object_effects;
+mod durable_reconciliation;
 pub mod fee_effects;
 mod object_snapshots;
 mod preinstalled_wasm;
+pub mod publication;
 mod query;
 pub mod transaction_auth;
 
@@ -2096,10 +2098,10 @@ pub fn authenticate_submit_transaction_event(
 /// Sender-nonce enforcement input for one durable submit-transaction
 /// invocation.
 ///
-/// The fields are private and there is no public constructor. The only way to
-/// obtain a value is [`Self::from_authenticated_transaction`], so a caller can
-/// never assert a nonce reservation for a sender or nonce it did not
-/// cryptographically authenticate.
+/// The fields are private and there is no public constructor. Transaction
+/// ingress derives this from its authenticated transaction; publication ingress
+/// derives it from its authenticated submission. Untrusted callers cannot
+/// reserve a sender or nonce without authenticating that exact signed input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SenderNonceReservation {
     sender: [u8; 32],
@@ -3467,7 +3469,11 @@ fn validate_sender_nonce_namespace(
 ) -> Result<(), NodeCoreError> {
     let nonce_prefix = layout.sender_nonce_prefix();
     for access in plan.accesses() {
-        if access.key().starts_with(nonce_prefix.as_slice()) {
+        if access.key().starts_with(nonce_prefix.as_slice())
+            || access
+                .key()
+                .starts_with(publication::PUBLICATION_STATE_PREFIX)
+        {
             return Err(NodeCoreError::ReservedStateAccess(access.key().to_vec()));
         }
     }
@@ -5075,60 +5081,27 @@ where
         NodeCoreError::PersistenceInvariant("validated request id failed durable projection")
     })?;
 
-    if let Some(receipt) = store.get_request_receipt(context, domain, request_id)? {
-        if receipt.request_id() != request_id {
-            return Err(NodeCoreError::PersistenceInvariant(
-                "durable receipt lookup returned another request",
-            ));
-        }
-        if receipt.event_digest() != event_digest {
-            return Err(NodeCoreError::RequestIdReuse);
-        }
-        let record = NodeDedupRecord::decode(receipt.canonical_bytes())
-            .map_err(|_| NodeCoreError::PersistenceInvariant("invalid durable receipt"))?;
-        if record.request_id() != event.request_id() || record.event_digest() != event_digest {
-            return Err(NodeCoreError::PersistenceInvariant(
-                "durable receipt projection and canonical record differ",
-            ));
-        }
-        return NodeOutput::new(record.responses().to_vec(), Vec::new());
+    if let Some(output) = durable_reconciliation::reconcile_receipt(
+        store,
+        context,
+        domain,
+        event.request_id(),
+        event_digest,
+    )? {
+        return Ok(output);
     }
 
     // A new request reads only the sender-nonce record, before any
     // application state, so a stale or replayed nonce fails before any app
     // state read, transition, or commit attempt.
     let pending_nonce = match reservation {
-        Some(reservation) => {
-            let nonce_key = layout.sender_nonce_key(reservation.sender, reservation.epoch);
-            let observation = query::read_sender_next_nonce(
-                store,
-                context,
-                domain,
-                &nonce_key,
-                reservation.sender,
-                reservation.epoch,
-            )?;
-            let expected_next_nonce = observation.next_nonce;
-            if reservation.nonce != expected_next_nonce {
-                return Err(NodeCoreError::SenderNonceMismatch {
-                    sender: reservation.sender,
-                    expected: expected_next_nonce,
-                    actual: reservation.nonce,
-                });
-            }
-            let next_nonce =
-                reservation
-                    .nonce
-                    .checked_add(1)
-                    .ok_or(NodeCoreError::SenderNonceOverflow {
-                        sender: reservation.sender,
-                    })?;
-            Some(PendingSenderNonceWrite {
-                key: nonce_key,
-                read_revision: observation.revision,
-                record: SenderNonceRecord::new(reservation.sender, reservation.epoch, next_nonce),
-            })
-        }
+        Some(reservation) => Some(durable_reconciliation::reserve_sender_nonce(
+            store,
+            context,
+            domain,
+            &layout,
+            reservation,
+        )?),
         None => None,
     };
 
@@ -5360,10 +5333,12 @@ where
         Some(DurableOutboxBatch::new(request_id, event_digest, messages)?)
     };
     let (mut reads, mut mutations) = domain_transition_parts(&plan, &snapshot, transition.updates)?;
-    if let Some(mutation) = mutations
-        .iter()
-        .find(|mutation| mutation.key().starts_with(nonce_prefix.as_slice()))
-    {
+    if let Some(mutation) = mutations.iter().find(|mutation| {
+        mutation.key().starts_with(nonce_prefix.as_slice())
+            || mutation
+                .key()
+                .starts_with(publication::PUBLICATION_STATE_PREFIX)
+    }) {
         return Err(NodeCoreError::ReservedStateAccess(mutation.key().to_vec()));
     }
     if let Some(pending) = pending_nonce {
@@ -5386,21 +5361,10 @@ where
     // strictly before `commit_invocation`.
     publish_pending_blobs(blob_store, pending_blob_publications)?;
 
-    match store.commit_invocation(context, invocation) {
-        DurableCommitOutcome::Committed => Ok(transition.output),
-        DurableCommitOutcome::Rejected(
-            DurableCommitRejection::Conflict { .. }
-            | DurableCommitRejection::RequestAlreadyCommitted,
-        ) => Err(NodeCoreError::StateConflict),
-        DurableCommitOutcome::Rejected(DurableCommitRejection::ObjectConflict {
-            object_id,
-            ..
-        }) => Err(NodeCoreError::ObjectConflict { object_id }),
-        DurableCommitOutcome::Rejected(reason) => Err(NodeCoreError::DurableCommitRejected(reason)),
-        DurableCommitOutcome::Indeterminate(reason) => {
-            Err(NodeCoreError::DurableCommitIndeterminate(reason))
-        }
-    }
+    durable_reconciliation::committed_output(
+        store.commit_invocation(context, invocation),
+        transition.output,
+    )
 }
 
 /// One deferred `BlobStore::put_blob` call staged by

@@ -18,6 +18,9 @@ the exact genesis supply and a fixed devnet maximum. Mint checked-adds supply
 and creates one coin; burn checked-subtracts supply and consumes one whole
 coin. This is deliberately a local fixture, not a production monetary policy.
 
+Optional immutable code publication is described in
+[section 11](#11-opt-in-local-code-publication). It does not execute contracts.
+
 The commands assume the workspace has already been built once:
 
 ```bash
@@ -428,6 +431,100 @@ the marker and is rejected as `UnmarkedExistingObjectState` when its object
 store is non-empty; a later marked version or epoch mismatch is rejected as
 `ProtocolVersionMismatch` or `EpochMismatch`. Start a fresh `--data-dir`
 rather than reusing one across an incompatible devnet upgrade or epoch change.
+
+## 11. Opt-in local code publication
+
+Restart terminal A with the same arguments from section 3 and the additional
+`--enable-local-publication` flag. This explicitly enables fee-free immutable
+code storage, not execution, instantiation or a public-network deploy service.
+Leave the server on loopback. Without the flag, publication routes are absent,
+including after restarting a database containing published code. Enabling it
+seeds or verifies an exact fenced local publication policy; different policy
+bytes or a tombstoned policy fail startup rather than silently replacing it.
+
+Prepare your contract's WASM and canonical `abi::call_values::CallAbi` bytes
+(produced by `encode_call_abi`, not JSON). The ABI must declare this publisher,
+chain and origin seed, and its entrypoints must exactly match the manifest and
+admitted WASM exports. The WASM admission rules in DR-0112 apply, including a
+bounded memory maximum. A trusted preinstalled Standard Asset binary/ABI is
+not a substitute for a public artifact. This guide does not introduce a toy
+contract template. The full automated fixture flow is available with:
+
+```bash
+cargo test -p sunrise-edge-cli --test devnet_publication_e2e
+```
+
+In terminal B, use the locally trusted `EXPECTED_*` variables from section 4.
+Set paths to your already-produced artifact files and the seed declared in
+the ABI, then publish. Keep these files and the nonce unchanged for replay.
+
+```bash
+PUBLICATION_WASM=/absolute/path/to/contract.wasm
+PUBLICATION_ABI=/absolute/path/to/contract.abi
+PUBLICATION_ENTRYPOINTS=your_entrypoint
+PUBLICATION_ORIGIN_SEED=YOUR_ABI_ORIGIN_SEED_AS_64_HEX_CHARACTERS
+PUBLICATION_REQUEST_ID="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+PUBLICATION_CAPTURE_DIR="$(mktemp -d /tmp/sunrise-publication-comparison.XXXXXX)"
+
+publication_cli() {
+  cargo run -p sunrise-edge-cli -- contract "$@" \
+    --endpoint 127.0.0.1:7400 \
+    --origin-seed "$PUBLICATION_ORIGIN_SEED" \
+    --expected-chain-id "$EXPECTED_CHAIN_ID" \
+    --expected-protocol-version "$EXPECTED_PROTOCOL_VERSION" \
+    --expected-epoch "$EXPECTED_EPOCH" \
+    --expected-hash-suite-id "$EXPECTED_HASH_SUITE_ID" \
+    --expected-domain "$EXPECTED_DOMAIN"
+}
+publication_cli publish \
+  --seed-file "$SENDER_SEED_FILE" \
+  --wasm "$PUBLICATION_WASM" --abi "$PUBLICATION_ABI" \
+  --entrypoints "$PUBLICATION_ENTRYPOINTS" \
+  --request-id "$PUBLICATION_REQUEST_ID" \
+  > "$PUBLICATION_CAPTURE_DIR/publish-before.txt"
+cat "$PUBLICATION_CAPTURE_DIR/publish-before.txt"
+PUBLICATION_NONCE="$(sed -n 's/^nonce=//p' "$PUBLICATION_CAPTURE_DIR/publish-before.txt")"
+test -n "$PUBLICATION_NONCE"
+publication_cli query --publisher "$SENDER_OWNER" \
+  --dependency-ref-out "$PUBLICATION_CAPTURE_DIR/reference-before.bin" \
+  > "$PUBLICATION_CAPTURE_DIR/query-before.txt"
+```
+
+For a dependent artifact, include `--dependencies path/to/reference.bin`
+(comma-separated for multiple references) on its publish command. The signed
+ABI must match the declared dependency origins; a copied ABI cannot claim
+another package's types. Query's `--dependency-ref-out` creates a new file and
+never overwrites an existing one.
+
+Stop and restart terminal A using the same database, chain, epoch, owners and
+`--enable-local-publication`. With no intervening transactions, repeat the
+exact publication using its original nonce and compare both response text and
+the canonical exact dependency reference:
+
+```bash
+publication_cli publish \
+  --seed-file "$SENDER_SEED_FILE" \
+  --wasm "$PUBLICATION_WASM" --abi "$PUBLICATION_ABI" \
+  --entrypoints "$PUBLICATION_ENTRYPOINTS" \
+  --request-id "$PUBLICATION_REQUEST_ID" --nonce "$PUBLICATION_NONCE" \
+  > "$PUBLICATION_CAPTURE_DIR/publish-after.txt"
+publication_cli query --publisher "$SENDER_OWNER" \
+  --dependency-ref-out "$PUBLICATION_CAPTURE_DIR/reference-after.bin" \
+  > "$PUBLICATION_CAPTURE_DIR/query-after.txt"
+cmp "$PUBLICATION_CAPTURE_DIR/publish-before.txt" "$PUBLICATION_CAPTURE_DIR/publish-after.txt"
+cmp "$PUBLICATION_CAPTURE_DIR/query-before.txt" "$PUBLICATION_CAPTURE_DIR/query-after.txt"
+cmp "$PUBLICATION_CAPTURE_DIR/reference-before.bin" "$PUBLICATION_CAPTURE_DIR/reference-after.bin"
+```
+
+Exact replay does not consume the nonce again. Publication and asset operations
+share the same sender nonce; never assume publication starts a second counter.
+After an uncertain result, preserve the signed artifact, original nonce and
+request ID and retry them, rather than selecting a new request ID. Reusing an
+ID with different signed content is a conflict, not an update. Origin/revision
+1 cannot be overwritten. Query verifies publisher signatures and commitments,
+not a cryptographic inclusion or absence proof. The CLI uses the current
+locally configured publication profile; historical protocol queries require
+the Rust client's explicit original trusted context/resolver API.
 
 ## Optional remote TLS transport
 

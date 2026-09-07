@@ -150,6 +150,16 @@ pub fn authenticate_publication(
     expected_semantics: &Digest32,
     request: PublicationRequest,
 ) -> Result<AuthenticatedPublicationCandidate, E> {
+    authenticate_with_request_id(resolver, expected, expected_semantics, request, None)
+}
+
+pub(super) fn authenticate_with_request_id(
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+    expected_semantics: &Digest32,
+    request: PublicationRequest,
+    request_id: Option<[u8; 32]>,
+) -> Result<AuthenticatedPublicationCandidate, E> {
     let artifact: &CodeArtifact = request.artifact();
 
     // 1. Verify exact trusted context matches
@@ -173,8 +183,21 @@ pub fn authenticate_publication(
     }
 
     // 5. Construct publication signing frame using the computed digest
-    let frame: Vec<u8> =
-        compute_publication_signing_frame(expected, artifact, request.nonce(), &computed_digest)?;
+    let frame: Vec<u8> = match request_id {
+        Some(request_id) => super::submission::frame_submission_digest(
+            expected,
+            artifact,
+            request.nonce(),
+            &computed_digest,
+            request_id,
+        )?,
+        None => compute_publication_signing_frame(
+            expected,
+            artifact,
+            request.nonce(),
+            &computed_digest,
+        )?,
+    };
 
     // 6. Verify publisher signature over framed message prior to costly WASM operations
     let verifier: Ed25519Verifier =

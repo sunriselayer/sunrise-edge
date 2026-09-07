@@ -48,6 +48,30 @@ pub fn compose_devnet_router(
     reserved_correlation_sequences: usize,
     fee_treasury_object_id: ObjectId,
 ) -> Result<Router, DevnetCompositionError> {
+    compose_devnet_router_with_publication(
+        store,
+        blob_store,
+        asset_module,
+        boot_generation,
+        max_concurrent,
+        reserved_correlation_sequences,
+        fee_treasury_object_id,
+        None,
+    )
+}
+
+/// Builds the local router with an explicitly opted-in, durably seeded publication policy.
+#[allow(clippy::too_many_arguments)]
+pub fn compose_devnet_router_with_publication(
+    store: Arc<SqliteDurableStore>,
+    blob_store: Arc<SqliteBlobStore>,
+    asset_module: DevnetAssetModule,
+    boot_generation: WriterFenceGeneration,
+    max_concurrent: usize,
+    reserved_correlation_sequences: usize,
+    fee_treasury_object_id: ObjectId,
+    publication: Option<node_core::publication::LocalPublicationPolicy>,
+) -> Result<Router, DevnetCompositionError> {
     let admission: NonZeroUsize =
         NonZeroUsize::new(max_concurrent).ok_or(DevnetCompositionError::InvalidConcurrency)?;
     let reserved_sequences: u64 = u64::try_from(reserved_correlation_sequences)
@@ -71,7 +95,7 @@ pub fn compose_devnet_router(
             reserved_sequences,
         )),
     );
-    let preinstalled_wasm = PreinstalledWasmComposition::new(
+    let mut preinstalled_wasm = PreinstalledWasmComposition::new(
         Arc::new(catalog),
         execution::WasmExecutionEngine,
         boot_generation.get(),
@@ -80,6 +104,9 @@ pub fn compose_devnet_router(
         fee_treasury_object_id,
         Arc::new(StandardAssetCoinFeeComposer),
     ));
+    if let Some(policy) = publication {
+        preinstalled_wasm = preinstalled_wasm.with_local_publication(policy);
+    }
     let authority = StructuredDurableRequestAuthority::new(
         boot_generation,
         REQUEST_OPERATION_TIMEOUT_MILLIS,

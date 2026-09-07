@@ -308,7 +308,7 @@ where
     }
 }
 
-fn expect_success(
+pub(crate) fn expect_success(
     response: crate::transport::WireResponse,
     expected_content_type: &'static str,
 ) -> Result<Vec<u8>, ClientError> {
