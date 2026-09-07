@@ -1,4 +1,5 @@
 //! Durable local execution regression tests.
+mod unified;
 use super::*;
 use abi::call_values::{CallAbi, CallValue, ValueLayout, encode_call_value};
 use abi::executable_abi::{ExecutableAbi, encode_executable_abi};

@@ -7,9 +7,8 @@ pub(super) fn translate<S: StructuredDurableDomainStateStore>(
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     resolver: &HashSuiteResolver,
-    instance: &InstanceRecord,
+    scopes: &[ResolvedExecutionScope],
     authenticated: &AuthenticatedLocalExecutionIntent,
-    interface: &VerifiedPublicationInterface,
     checkpoint: u64,
     inputs: &[ScopedResolvedObject],
     snapshots: &BTreeMap<ObjectId, object_snapshots::ObjectSnapshot>,
@@ -32,12 +31,18 @@ pub(super) fn translate<S: StructuredDurableDomainStateStore>(
                 "duplicate creation authority",
             ));
         }
-        validate_authority(&entry.authority, instance, &call.instance, interface)?;
+        let scope: &ResolvedExecutionScope = scopes::for_authority(scopes, &entry.authority)?;
+        validate_authority(
+            &entry.authority,
+            &scope.instance,
+            &scope.target,
+            &scope.interface,
+        )?;
         let id: ObjectId = derive_local_created_object_id(
             resolver,
             &call.context,
-            &instance.context,
-            &call.instance,
+            &scope.instance.context,
+            &scope.target,
             &entry.authority.code,
             outcome.effects.tx_hash,
             entry.creation_ordinal,
@@ -84,7 +89,10 @@ pub(super) fn translate<S: StructuredDurableDomainStateStore>(
                     ));
                 }
                 if new_object.owner != prior.object.owner {
-                    let metadata = interface
+                    let scope: &ResolvedExecutionScope =
+                        scopes::for_authority(scopes, &input.authority)?;
+                    let metadata = scope
+                        .interface
                         .executable_abi(input.authority.code.origin())
                         .ok_or(LocalExecutionAdmissionError::Invalid(
                             "missing executable metadata",
@@ -144,13 +152,14 @@ pub(super) fn translate<S: StructuredDurableDomainStateStore>(
                 "non-address output owner",
             ));
         };
+        let scope: &ResolvedExecutionScope = scopes::for_authority(scopes, authority)?;
         validate_ed25519_owner_address(
             owner.as_bytes(),
             Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
         )
         .map_err(|_| LocalExecutionAdmissionError::Invalid("invalid output owner"))?;
         execution::publication::validate_nominal_body(
-            interface,
+            &scope.interface,
             &authority.ty,
             object.schema_version,
             &object.data,
@@ -247,6 +256,13 @@ pub(super) fn translate<S: StructuredDurableDomainStateStore>(
     for event in &outcome.effects.events {
         let ty = abi::package_types::decode_scoped_type_tag(&event.type_tag)
             .map_err(|_| LocalExecutionAdmissionError::Invalid("event type"))?;
+        let interface: &VerifiedPublicationInterface = &scopes
+            .iter()
+            .find(|scope| scope.interface.executable_abi(ty.origin()).is_some())
+            .ok_or(LocalExecutionAdmissionError::Invalid(
+                "event code outside admitted scopes",
+            ))?
+            .interface;
         let constructor = interface
             .executable_abi(ty.origin())
             .and_then(|a| {

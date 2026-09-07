@@ -692,12 +692,114 @@ fn failed_admission_leaves_no_publication_receipt_or_nonce() {
     ));
 }
 
+#[test]
+fn shared_loader_budget_rejects_next_union_node_before_record_io() {
+    let store: ObservedStore = ObservedStore::new();
+    let policy: LocalPublicationPolicy = policy(0);
+    seed(&store, &policy);
+    let mut submissions: Vec<PublicationSubmission> = Vec::new();
+    // Each root is individually within the old per-closure bound. The last
+    // two-node closure would overflow only their shared invocation union.
+    for index in 0..33_u8 {
+        let submission: PublicationSubmission =
+            make_submission(&policy, index + 10, u64::from(index), vec![]);
+        publish(&store, &policy, submission.clone()).unwrap();
+        submissions.push(submission);
+    }
+    let root: PublicationSubmission =
+        make_submission(&policy, 44, 33, vec![reference(&submissions[32])]);
+    publish(&store, &policy, root.clone()).unwrap();
+    store.state_reads.borrow_mut().clear();
+    let mut budget: PublicationLoadBudget = PublicationLoadBudget::default();
+    let mut first: Option<VerifiedDurablePublication> = None;
+    for submission in &submissions[..32] {
+        let loaded: VerifiedDurablePublication = load_verified_publication_with_budget(
+            &store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            submission.request().artifact().origin(),
+            &mut budget,
+        )
+        .unwrap()
+        .unwrap();
+        if first.is_none() {
+            first = Some(loaded);
+        }
+    }
+    let reads_before_cache: usize = store.state_reads.borrow().len();
+    let cached: VerifiedDurablePublication = load_verified_publication_with_budget(
+        &store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        submissions[0].request().artifact().origin(),
+        &mut budget,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(store.state_reads.borrow().len(), reads_before_cache);
+    assert!(std::ptr::eq(
+        first.as_ref().unwrap().interface.candidate().request(),
+        cached.interface.candidate().request()
+    ));
+    assert_eq!(cached.reads.len(), 33); // 32 immutable records and their one policy.
+    assert!(matches!(
+        load_verified_publication_with_budget(
+            &store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            root.request().artifact().origin(),
+            &mut budget
+        ),
+        Err(PublicationAdmissionError::Limit)
+    ));
+    let unbudgeted: Vec<u8> =
+        publication_record_key(submissions[32].request().artifact().origin()).unwrap();
+    let root_key: Vec<u8> = publication_record_key(root.request().artifact().origin()).unwrap();
+    assert!(
+        !store
+            .state_reads
+            .borrow()
+            .iter()
+            .any(|key| key == &unbudgeted)
+    );
+    assert_eq!(
+        store
+            .state_reads
+            .borrow()
+            .iter()
+            .filter(|key| *key == &root_key)
+            .count(),
+        1
+    );
+    for submission in &submissions[..32] {
+        let key: Vec<u8> =
+            publication_record_key(submission.request().artifact().origin()).unwrap();
+        assert_eq!(
+            store
+                .state_reads
+                .borrow()
+                .iter()
+                .filter(|read| *read == &key)
+                .count(),
+            1
+        );
+    }
+    assert_eq!(nonce(&store, &policy), 34);
+}
+
 struct ObservedStore {
     inner: MemoryDurableStateStore,
     forbid_application_reads: Cell<bool>,
     reject_commit: Cell<bool>,
     indeterminate: Cell<bool>,
     race_policy: Cell<bool>,
+    state_reads: std::cell::RefCell<Vec<Vec<u8>>>,
 }
 impl ObservedStore {
     fn new() -> Self {
@@ -707,6 +809,7 @@ impl ObservedStore {
             reject_commit: Cell::new(false),
             indeterminate: Cell::new(false),
             race_policy: Cell::new(false),
+            state_reads: std::cell::RefCell::new(Vec::new()),
         }
     }
 }
@@ -717,6 +820,7 @@ impl runtime::DurableDomainStateStore for ObservedStore {
         domain: AtomicityDomainId,
         key: &[u8],
     ) -> Result<VersionedStateValue, DurableReadError> {
+        self.state_reads.borrow_mut().push(key.to_vec());
         assert!(
             !self.forbid_application_reads.get(),
             "replay must not read policy, dependencies or nonce"

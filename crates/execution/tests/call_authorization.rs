@@ -376,7 +376,7 @@ fn profile_three_closures_accept_two_and_three_but_not_nonexecuting_artifacts() 
     }
 }
 #[test]
-fn general_runtime_is_closed_until_shared_frame_admission_is_integrated() {
+fn general_runtime_rejects_missing_scopes() {
     let signed = signed(intent(true));
     let policy = LocalExecutionPolicy::general(context());
     let resolver = resolver();
@@ -396,8 +396,6 @@ fn general_runtime_is_closed_until_shared_frame_admission_is_integrated() {
     };
     assert!(matches!(
         execution::LocalWasmExecutionEngine::new().execute(request),
-        Err(LocalExecutionError::Invalid(
-            "general call runtime not activated"
-        ))
+        Err(LocalExecutionError::Invalid("missing root scope"))
     ));
 }

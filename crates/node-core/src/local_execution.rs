@@ -4,11 +4,16 @@ use execution::local_execution::*;
 use execution::publication::{
     PublicationContext, UnverifiedDependencyRef, VerifiedPublicationInterface,
 };
-use local_instance_state::{execution_policy_key, instance_record_key, object_authority_key};
+#[cfg(test)]
+use local_instance_state::execution_policy_key;
+use local_instance_state::{
+    execution_policy_key_for_profile, instance_record_key, object_authority_key,
+};
 use publication::{
     PublicationAdmissionError, VerifiedDurablePublication, load_verified_publication,
 };
 mod effects;
+mod scopes;
 #[cfg(test)]
 mod tests;
 
@@ -92,11 +97,17 @@ fn validate_closure(
         let artifact = candidate.request().artifact();
         let historical: &HashSuiteResolver =
             original_resolver(resolver, history, artifact.context())?;
-        if artifact.wasm_profile() != 2
-            || artifact.semantics()
-                != &local_execution_semantics(historical, artifact.context())
-                    .map_err(LocalExecutionError::from)?
-        {
+        let expected = match artifact.wasm_profile() {
+            2 => local_execution_semantics(historical, artifact.context()),
+            3 => general_execution_semantics(historical, artifact.context()),
+            _ => {
+                return Err(LocalExecutionAdmissionError::Invalid(
+                    "non-executable publication profile",
+                ));
+            }
+        }
+        .map_err(LocalExecutionError::from)?;
+        if artifact.semantics() != &expected {
             return Err(LocalExecutionAdmissionError::Invalid(
                 "non-executable publication semantics",
             ));
@@ -243,11 +254,6 @@ pub fn handle_local_execution<
         call.context.chain_id().clone(),
         call.context.protocol_version(),
     );
-    if policy.profile() != 2 || !authenticated.intent().authorizations.is_empty() {
-        return Err(LocalExecutionAdmissionError::Invalid(
-            "general call runtime not activated",
-        ));
-    }
     let nonce: PendingSenderNonceWrite = durable_reconciliation::reserve_sender_nonce(
         store,
         context,
@@ -264,7 +270,7 @@ pub fn handle_local_execution<
         store,
         context,
         domain,
-        execution_policy_key(policy.context())?,
+        execution_policy_key_for_profile(policy.context(), policy.profile())?,
         &mut reads,
     )?;
     if observed.value() != Some(policy.encode()?.as_slice()) {
@@ -272,13 +278,16 @@ pub fn handle_local_execution<
             "execution policy absent or different",
         ));
     }
-    let loaded: VerifiedDurablePublication = load_verified_publication(
+    let mut publication_budget: publication::PublicationLoadBudget =
+        publication::PublicationLoadBudget::default();
+    let loaded: VerifiedDurablePublication = publication::load_verified_publication_with_budget(
         store,
         context,
         domain,
         resolver,
         history,
         call.code.origin(),
+        &mut publication_budget,
     )?
     .ok_or(LocalExecutionAdmissionError::Invalid("code absent"))?;
     validate_closure(resolver, history, &loaded.interface)?;
@@ -355,6 +364,22 @@ pub fn handle_local_execution<
             "cross-version execution requires explicit migration",
         ));
     }
+    let scopes: Vec<ResolvedExecutionScope> = scopes::admit(
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        policy,
+        &authenticated,
+        ResolvedExecutionScope {
+            instance: instance.clone(),
+            target: call.instance.clone(),
+            interface: interface.clone(),
+        },
+        &mut reads,
+        &mut publication_budget,
+    )?;
     let mut snapshots: BTreeMap<ObjectId, object_snapshots::ObjectSnapshot> = BTreeMap::new();
     let mut head_reads: Vec<DurableObjectHeadRead> = Vec::new();
     let mut total_bytes: usize = 0;
@@ -383,7 +408,8 @@ pub fn handle_local_execution<
         let authority: ObjectAuthority = decode_object_authority(observed.value().ok_or(
             LocalExecutionAdmissionError::Invalid("object authority absent"),
         )?)?;
-        validate_authority(&authority, &instance, &call.instance, &interface)?;
+        let scope: &ResolvedExecutionScope = scopes::for_authority(&scopes, &authority)?;
+        validate_authority(&authority, &scope.instance, &scope.target, &scope.interface)?;
         if authority.object_id != snapshot.object.id || &authority.ty != param.ty() {
             return Err(LocalExecutionAdmissionError::Invalid(
                 "object authority type mismatch",
@@ -413,12 +439,9 @@ pub fn handle_local_execution<
         &resolved,
     )
     .map_err(|_| LocalExecutionAdmissionError::Invalid("input body mismatch"))?;
+    scopes::validate_inputs(&authenticated, &scopes, &inputs, resolver)?;
     let outcome: LocalExecutionOutcome = engine.execute(LocalExecutionRequest {
-        scopes: &[ResolvedExecutionScope {
-            instance: instance.clone(),
-            target: call.instance.clone(),
-            interface: interface.clone(),
-        }],
+        scopes: &scopes,
         intent: &authenticated,
         resolver,
         policy,
@@ -445,9 +468,8 @@ pub fn handle_local_execution<
         context,
         domain,
         resolver,
-        &instance,
+        &scopes,
         &authenticated,
-        &interface,
         created_checkpoint,
         &inputs,
         &snapshots,

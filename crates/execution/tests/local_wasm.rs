@@ -619,7 +619,7 @@ fn historical_epochs_execute_but_historical_protocol_versions_fail_closed() {
             MAX_LOCAL_EXECUTION_GAS
         ),
         Err(LocalExecutionError::Invalid(
-            "historical protocol execution unsupported"
+            "execution scope instance authority"
         ))
     ));
 }
