@@ -20,6 +20,7 @@
 //!   strict DR-0113 / DR-0115 rules without legacy global constructor registries or AssetId
 //!   privileges.
 
+use abi::call_values::{ValueError, ValueLayout, decode_call_value};
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -83,6 +84,7 @@ pub struct BoundObjectSignature<'a> {
     interface: &'a VerifiedPublicationInterface,
     entrypoint: &'a str,
     objects: Vec<BoundObjectParameter>,
+    arguments: &'a ValueLayout,
 }
 
 impl<'a> BoundObjectSignature<'a> {
@@ -97,6 +99,20 @@ impl<'a> BoundObjectSignature<'a> {
     pub fn objects(&self) -> &[BoundObjectParameter] {
         &self.objects
     }
+    /// Returns the argument layout from the exact verified interface for encoding.
+    pub fn argument_layout(&self) -> &ValueLayout {
+        self.arguments
+    }
+}
+
+/// Validates canonical argument bytes against the bound entrypoint's signed layout.
+/// This authenticates neither a call transaction nor application semantics and
+/// grants no execution, object, owner, or state authority.
+pub fn validate_call_arguments(
+    signature: &BoundObjectSignature<'_>,
+    bytes: &[u8],
+) -> Result<(), ValueError> {
+    decode_call_value(signature.arguments, bytes).map(|_| ())
 }
 
 /// Errors returned when binding object signatures or matching object input metadata.
@@ -245,6 +261,9 @@ pub fn bind_object_signature<'a>(
         interface,
         entrypoint: entrypoint_decl.name.as_str(),
         objects: bound_objects,
+        arguments: interface
+            .argument_layout(entrypoint_decl.name.as_str())
+            .ok_or(BindingError::UnknownEntrypoint)?,
     })
 }
 

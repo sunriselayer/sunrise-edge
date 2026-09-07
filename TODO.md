@@ -2446,7 +2446,13 @@ Implementation slices under this gate:
     Seven additional integration tests (17 in the interface suite),
     `npm ci --prefix adapters/cloudflare-workers`, and `./scripts/check-all.sh`
     passed on 2026-09-07.
-  - [ ] Complete the public value/call ABI and authenticated object admission;
+  - [x] DR-0117: explicit signed CallAbi envelope, bounded canonical value
+    layouts/values, and argument validation through the bound signed layout.
+    No object-only fallback; object bodies and call authentication remain open.
+    Eight additional integration tests (25 in the interface suite), independent
+    Node wire-vector assertions, `npm ci --prefix adapters/cloudflare-workers`,
+    and `./scripts/check-all.sh` passed on 2026-09-07.
+  - [ ] Complete authenticated call/object admission and object body layouts;
     verify exact dependencies against durable published records and
     authenticate the request against committed publication policy, then commit
     code/ABI/dependency records and enforce origin absence atomically. Bind

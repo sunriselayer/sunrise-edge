@@ -3,10 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use abi::call_values::{CallAbi, ValueError, ValueLayout, decode_call_abi};
 use abi::package_types::PackageOrigin;
-use abi::public_abi::{
-    ArgumentKind, PackageAbi, PatternArgument, PublicAbiError, TypePattern, decode_package_abi,
-};
+use abi::public_abi::{ArgumentKind, PackageAbi, PatternArgument, TypePattern};
 
 use super::AuthenticatedPublicationCandidate;
 
@@ -21,7 +20,7 @@ pub const MAX_INTERFACE_ABI_BYTES: usize = 256 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InterfaceError {
     /// A public ABI frame is malformed or exceeds its structural bounds.
-    Abi(PublicAbiError),
+    Abi(ValueError),
     /// Aggregate resource bounds were exceeded.
     Limit(&'static str),
     /// A second candidate for the same origin was supplied, including the root.
@@ -69,8 +68,8 @@ impl std::error::Error for InterfaceError {
         }
     }
 }
-impl From<PublicAbiError> for InterfaceError {
-    fn from(error: PublicAbiError) -> Self {
+impl From<ValueError> for InterfaceError {
+    fn from(error: ValueError) -> Self {
         Self::Abi(error)
     }
 }
@@ -85,21 +84,21 @@ impl From<PublicAbiError> for InterfaceError {
 pub struct VerifiedPublicationInterface {
     candidate: AuthenticatedPublicationCandidate,
     dependencies: Vec<AuthenticatedPublicationCandidate>,
-    abi: PackageAbi,
-    dependency_abis: BTreeMap<PackageOrigin, PackageAbi>,
+    abi: CallAbi,
+    dependency_abis: BTreeMap<PackageOrigin, CallAbi>,
 }
 
 impl VerifiedPublicationInterface {
     // Retain verified declarations for binding; never decode caller-supplied ABI here.
     pub(super) fn defining_abi(&self, origin: &PackageOrigin) -> Option<&PackageAbi> {
-        if origin == &self.abi.origin {
-            Some(&self.abi)
+        if origin == &self.abi.objects.origin {
+            Some(&self.abi.objects)
         } else {
-            self.dependency_abis.get(origin)
+            self.dependency_abis.get(origin).map(|abi| &abi.objects)
         }
     }
     pub(super) fn permits_type_origin(&self, origin: &PackageOrigin) -> bool {
-        origin == &self.abi.origin
+        origin == &self.abi.objects.origin
             || self
                 .candidate
                 .request()
@@ -114,7 +113,17 @@ impl VerifiedPublicationInterface {
     }
     /// Returns checked declaration data, not an object-authority policy.
     pub fn abi(&self) -> &PackageAbi {
-        &self.abi
+        &self.abi.objects
+    }
+    /// Returns the exact signed argument layout, never a caller-provided schema.
+    pub fn argument_layout(&self, entrypoint: &str) -> Option<&ValueLayout> {
+        let index: usize = self
+            .abi
+            .objects
+            .entrypoints
+            .iter()
+            .position(|entry| entry.name == entrypoint)?;
+        self.abi.arguments.get(index)
     }
     /// Returns the exact supplied candidate closure (excluding the root).
     pub fn dependencies(&self) -> &[AuthenticatedPublicationCandidate] {
@@ -181,15 +190,16 @@ pub fn verify_publication_interface(
         graph.push(edges);
     }
     validate_graph(&graph)?;
-    let mut abis: Vec<PackageAbi> = Vec::with_capacity(count);
+    let mut abis: Vec<CallAbi> = Vec::with_capacity(count);
     for node in &nodes {
         let artifact = node.request().artifact();
-        let abi: PackageAbi = decode_package_abi(artifact.unverified_abi())?;
-        if &abi.origin != artifact.origin() {
+        let abi: CallAbi = decode_call_abi(artifact.unverified_abi())?;
+        if &abi.objects.origin != artifact.origin() {
             return Err(InterfaceError::OriginMismatch);
         }
-        if abi.entrypoints.len() != artifact.exports().len()
+        if abi.objects.entrypoints.len() != artifact.exports().len()
             || !abi
+                .objects
                 .entrypoints
                 .iter()
                 .zip(artifact.exports())
@@ -199,9 +209,14 @@ pub fn verify_publication_interface(
         }
         abis.push(abi);
     }
-    for (index, abi) in abis.iter().enumerate() {
+    for (index, call_abi) in abis.iter().enumerate() {
+        let abi: &PackageAbi = &call_abi.objects;
         let allowed: BTreeSet<&PackageOrigin> = std::iter::once(&abi.origin)
-            .chain(graph[index].iter().map(|target| &abis[*target].origin))
+            .chain(
+                graph[index]
+                    .iter()
+                    .map(|target| &abis[*target].objects.origin),
+            )
             .collect();
         for entry in &abi.entrypoints {
             for object in &entry.objects {
@@ -219,12 +234,13 @@ pub fn verify_publication_interface(
         }
     }
     // No root/ABI cloning of large code blobs; the witness retains exact inputs.
-    let mut verified_abis: std::vec::IntoIter<PackageAbi> = abis.into_iter();
-    let abi: PackageAbi = verified_abis
+    let mut verified_abis: std::vec::IntoIter<CallAbi> = abis.into_iter();
+    let abi: CallAbi = verified_abis
         .next()
         .ok_or(InterfaceError::MissingDependency)?;
-    let dependency_abis: BTreeMap<PackageOrigin, PackageAbi> =
-        verified_abis.map(|abi| (abi.origin.clone(), abi)).collect();
+    let dependency_abis: BTreeMap<PackageOrigin, CallAbi> = verified_abis
+        .map(|abi| (abi.objects.origin.clone(), abi))
+        .collect();
     Ok(VerifiedPublicationInterface {
         candidate,
         dependencies,
@@ -238,7 +254,7 @@ fn verify_pattern(
     parameters: &[ArgumentKind],
     allowed: &BTreeSet<&PackageOrigin>,
     indices: &BTreeMap<&PackageOrigin, usize>,
-    abis: &[PackageAbi],
+    abis: &[CallAbi],
 ) -> Result<u32, InterfaceError> {
     if !allowed.contains(&pattern.origin) {
         return Err(InterfaceError::UndeclaredOrigin);
@@ -247,6 +263,7 @@ fn verify_pattern(
         .get(&pattern.origin)
         .ok_or(InterfaceError::UndeclaredOrigin)?;
     let declaration = abis[index]
+        .objects
         .constructors
         .iter()
         .find(|item| item.local_id == pattern.constructor)

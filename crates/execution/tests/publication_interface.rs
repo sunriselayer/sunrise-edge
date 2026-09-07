@@ -1,3 +1,4 @@
+use abi::call_values::{CallAbi, ValueLayout, encode_call_abi};
 use abi::package_types::PackageOrigin;
 use abi::public_abi::*;
 use canonical_encoding::{CanonicalStruct, decode_canonical_frame};
@@ -11,6 +12,8 @@ use sha2::{Digest as _, Sha256};
 
 #[path = "publication_interface/binding.rs"]
 mod binding_tests;
+#[path = "publication_interface/values.rs"]
+mod value_tests;
 
 fn origin(seed: u8) -> PackageOrigin {
     let key: SigningKey = SigningKey::from([7; 32]);
@@ -128,11 +131,14 @@ fn candidate(
 ) -> AuthenticatedPublicationCandidate {
     let mut refs: Vec<UnverifiedDependencyRef> = deps.iter().map(|node| reference(node)).collect();
     refs.sort_by(|a, b| a.origin().cmp(b.origin()));
-    raw_candidate(
-        abi.origin.seed()[0],
-        encode_package_abi(&abi).unwrap(),
-        refs,
-    )
+    raw_candidate(abi.origin.seed()[0], wire_abi(&abi), refs)
+}
+fn wire_abi(abi: &PackageAbi) -> Vec<u8> {
+    encode_call_abi(&CallAbi {
+        objects: abi.clone(),
+        arguments: vec![ValueLayout::Tuple(vec![]); abi.entrypoints.len()],
+    })
+    .unwrap()
 }
 fn verify(abi: PackageAbi) -> Result<VerifiedPublicationInterface, InterfaceError> {
     verify_publication_interface(candidate(abi, &[]), vec![])
@@ -290,7 +296,7 @@ fn copied_origins_and_undeclared_transitive_types_cannot_supply_a_declaration() 
     let root = candidate(abi.clone(), &[&middle, &leaf]);
     assert!(verify_publication_interface(root, vec![middle, leaf.clone()]).is_ok());
     assert_eq!(verify(abi), Err(InterfaceError::UndeclaredOrigin));
-    let forged = raw_candidate(1, encode_package_abi(&minimal(3)).unwrap(), vec![]);
+    let forged = raw_candidate(1, wire_abi(&minimal(3)), vec![]);
     assert_eq!(
         verify_publication_interface(forged, vec![]),
         Err(InterfaceError::OriginMismatch)
@@ -345,7 +351,7 @@ fn exact_reference_fields_and_every_dependency_abi_are_checked() {
         .unwrap(),
     ];
     for bad in bad_refs {
-        let root = raw_candidate(1, encode_package_abi(&minimal(1)).unwrap(), vec![bad]);
+        let root = raw_candidate(1, wire_abi(&minimal(1)), vec![bad]);
         assert_eq!(
             verify_publication_interface(root, vec![leaf.clone()]),
             Err(InterfaceError::DependencyMismatch)
