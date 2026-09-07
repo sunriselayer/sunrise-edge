@@ -292,9 +292,7 @@ admission rules before activation; users must not inherit a genesis exemption.
 Remove the old asset-specific catalog grants/native composer with the usable
 replacement, not maintain them to preserve discarded development fixtures.
 
-## Review gate
-
-### Contract-facing reserve and settle ABI
+## Contract-facing reserve and settle ABI
 
 `reserve` takes Coin<A> Write and requires `0 < reserved < balance`;
 `reserve_all` takes Coin<A> Consume and requires `reserved == balance > 0`.
@@ -333,6 +331,8 @@ must not be installed as fee policy.
 
 Opus approved this contract interface on 2026-09-07. That approval concerns
 the interface, not implementation review or readiness.
+
+## Review gate
 
 Before code, resolve concrete phase/return APIs, bootstrap and publication fee
 scope, and testable caps. Before merge, prove same-source success, consumed and
