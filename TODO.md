@@ -4,14 +4,15 @@
 codec/validator/witness PRs.** The CLI Developer MVP and initial scoped audit
 remediation are existing baselines, not a completed generic contract platform.
 The public-contract foundations (DR-0112–DR-0120) and opt-in local durable code
-publication (DR-0121) and opt-in independent local instance/library execution
-(DR-0122) are implemented. Cross-instance authorization and public-path
-Standard Asset/fee parity remain open; the generic-contract gate is not closed.
+publication (DR-0121), opt-in independent local instance execution (DR-0122),
+and unified signed contract calls (DR-0123) are implemented and locally validated.
+Public-path Standard Asset/fee parity remains open; the generic-contract gate
+is not closed.
 
 | Order | Deliverable | Completion evidence | Status |
 | --- | --- | --- | --- |
 | 1 | Durable local code publication | CLI publish/query; immutable code/ABI/exact dependencies; authenticated admission; origin absence; shared nonce and receipt atomicity (no outgoing message); real SQLite restart/replay/conflict/fencing | Implemented and locally validated (DR-0121); fee-free opt-in local storage only |
-| 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance/library execution implemented and validated (DR-0122); cross-instance authorization remains open |
+| 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Open |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Open |
 
