@@ -2422,6 +2422,14 @@ Implementation slices under this gate:
   migrating to public admission; no grandfathered trusted admission bypass.
 - [ ] Authenticated lineage/type namespace, immutable code/ABI/dependency
   records and bounded publication requests, preserving verification context.
+  - [x] DR-0113: bounded package-origin/scoped-type codecs and nominal digest
+    derivation with hash-rotation tests. This identity foundation does not
+    authenticate a publisher, persist a package, or grant object authority.
+    Six integration tests, `npm ci --prefix adapters/cloudflare-workers`, and
+    `./scripts/check-all.sh` passed on 2026-09-07.
+  - [ ] Authenticate the full publication request and strict publisher key;
+    commit immutable code/ABI/dependency records and enforce origin absence
+    atomically. Bind host authority to authenticated lineage and revisions.
 - [ ] Fenced durable publish/instantiate/call, public object authority and
   typed calls, Standard Asset parity, and committed fee settlement replacing
   trusted-only paths. The numbered criteria below remain the complete gate.

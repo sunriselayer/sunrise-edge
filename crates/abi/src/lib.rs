@@ -57,6 +57,9 @@
 //! - `0x5104` — [`ConstructorDeclaration`] (added in DR-0106).
 //! - `0x5105` — [`ParamDeclaration`] (added in DR-0106).
 //! - `0x5106` — [`EntrypointSignature`] (added in DR-0106).
+//! - `0x5201` — [`package_types::PackageOrigin`] (DR-0113, unverified reference).
+//! - `0x5202` — [`package_types::ScopedTypeArg`] (DR-0113).
+//! - `0x5203` — [`package_types::ScopedTypeTag`] (DR-0113).
 //!
 //! The numeric value `0x5001` is also used by `protocol-config`'s
 //! `PROTOCOL_CONFIG_TYPE_ID`. This is a pre-existing overlap between two
@@ -155,6 +158,10 @@
 //! Always use [`derive_type_id`]/[`verify_type_id`] (which call
 //! `hashing::hash_type_identity`/`hashing::verify_type_identity_digest`) for
 //! nominal object-type identity.
+
+/// Package-scoped nominal references for the public-contract boundary.
+/// These values do not authenticate publishers or grant object authority.
+pub mod package_types;
 
 use canonical_encoding::{
     CanonicalDecodingError, CanonicalEncodingError, CanonicalFrame, CanonicalStruct,
