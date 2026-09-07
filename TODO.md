@@ -2557,15 +2557,23 @@ statements such as “body validation remains open” are not the live work queu
     contract-owned checked supply arithmetic, fresh fee/refund outputs and
     no surviving reservation. DR-0124 fixes asset identity to the host-created
     Definition ObjectId; each Coin still has its own distinct ObjectId.
-    A draft package and independent signed-VM regression are checkpointed on
-    `codex/public-asset-contract-work` (not integrated into this branch).
-    The ordinary profile-4 WASM admission test passes, but the lifecycle test
-    fails at `init` with `local contract trapped`; later operations are unverified.
-    The draft's full check stops at two unused-function clippy errors, so the
-    remaining full-suite/provider checks have not passed for this draft.
-    Resolve this failure, complete adversarial coverage, and obtain fresh Opus
-    implementation review before integration. Interface approval is not code
-    approval, and no public asset or paid-execution activation is claimed.
+    The public package is integrated on this feature branch. The draft `init`
+    trap was incorrect guest type-frame IDs, now matched to the existing
+    scoped type encoders (0x5202/0x5203). Amount transitions run only in WASM.
+    Verification (2026-09-08): 15 signed-VM/decoder regressions plus ordinary
+    profile-4 admission, targeted clippy, and the full repository gate pass.
+    Evidence covers all nine exports, partial/exact-full reservation, fee/refund
+    conservation, consumed object IDs, output owners/types, malformed Digest32
+    framing/unknown algorithms, amount boundaries, wrong types/access, and
+    rollback after a cap write followed by failed output creation.
+    Fresh read-only Opus review of `c1f0c1c` returned
+    `APPROVE PACKAGE INTEGRATION`; this is not merge or activation approval.
+    Before activation, validate both fee/refund addresses before reservation
+    (the guest checks length; an invalid address can strand a manual reservation),
+    pin the WASM-generating `wat` version, and assert the Digest32 template shape
+    at package build time. Add foreign-recipient mint/split and same-code,
+    cross-instance object-authority regressions with the coordinator integration.
+    Paid coordination, durable/CLI activation and the combined review remain open.
   - [ ] Fenced atomic genesis manifest installer, closed bootstrap marker,
     native HTTP/CLI activation and removal of asset-only grants/native composer.
   - [ ] Canonical vectors, same-source/consumed/transferred-source cases,
