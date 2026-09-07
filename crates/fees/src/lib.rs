@@ -3,6 +3,8 @@
 //! Stablecoin-denominated fee assets, deterministic fee calculation, and
 //! validator fee distribution.
 
+pub mod reservation;
+
 use canonical_encoding::{
     CanonicalDecodingError, CanonicalEncodingError, CanonicalFrame, CanonicalStruct,
     decode_canonical_frame,

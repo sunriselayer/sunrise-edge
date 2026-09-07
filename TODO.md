@@ -2532,6 +2532,12 @@ statements such as “body validation remains open” are not the live work queu
     independent phase resource budgets, monotonic counters and savepoints.
   - [ ] Explicit paid Call/Instantiate/Publish consent, pinned contract policy,
     base/execution-only pricing and calibrated reserve/settle allowances.
+    Internal pricing component implemented: immutable admission captures the
+    schedule, conversion divisor and R/S; checked reservation/actual quotes use
+    one ceiling conversion each, and refund is their difference. The 32-test
+    fees suite (including independent u128 oracle and overflow boundaries),
+    targeted clippy and workspace formatting pass locally. This does not wire
+    paid execution, calibrate allowances or activate any fee policy.
   - [ ] Public Standard Asset transfer/split/merge/mint/burn and reserve/settle;
     contract-owned checked supply arithmetic, fresh fee/refund outputs and
     no surviving reservation. DR-0124 fixes asset identity to the host-created
