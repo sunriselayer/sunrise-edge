@@ -32,7 +32,7 @@ const MAX_CONFIGURED_DEV_OWNERS: usize = MAX_DEVNET_OWNERS - 1;
 /// authorization), and query and submission share one admission budget
 /// (the single `NativeBlockingExecutor` constructed by the native router), so
 /// a burst of one can starve the other.
-pub const DEVNET_STARTUP_LIMITATIONS_BANNER: &str = "single-validator,owned-objects-only,standard-asset-v1-whole-coin-transfer,bounded-split-merge,devnet-capability-mint,reusable-unbounded-devnet-mint-capability,owner-transition-index-0-only,separate-fee-coin-required,single-ordinary-fee-asset,ordinary-treasury-not-certificate-distributed,local-sqlite,unauthenticated-bounded-public-read-query-api,shared-query-submission-admission-budget,non-production";
+pub const DEVNET_STARTUP_LIMITATIONS_BANNER: &str = "single-validator,owned-objects-only,standard-asset-v1-whole-coin-transfer,bounded-split-merge,bounded-supply-mint,whole-coin-burn,owner-held-devnet-treasury-cap,owner-transition-index-0-only,separate-fee-coin-required,single-ordinary-fee-asset,ordinary-treasury-not-certificate-distributed,local-sqlite,unauthenticated-bounded-public-read-query-api,shared-query-submission-admission-budget,non-production";
 
 /// One browser/client-controlled development owner address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -1,4 +1,4 @@
-//! File-backed protocol-v5/module-v2 split/merge E2E.
+//! File-backed canonical Standard Asset module-v1 split/merge E2E.
 //!
 //! This test drives signed transactions through the real loopback HTTP router
 //! and SQLite durable store. It independently derives the split-created object
@@ -26,7 +26,7 @@ use sunrise_edge_client::{
     decode_standard_asset_coin_v1, encode_standard_asset_transfer_args_v1,
 };
 use sunrise_edge_devnet::{
-    DevOwner, DevnetConfig, MERGE_ENTRYPOINT, SPLIT_ENTRYPOINT, STANDARD_ASSET_TRANSFER_WASM,
+    DevOwner, DevnetConfig, MERGE_ENTRYPOINT, SPLIT_ENTRYPOINT, STANDARD_ASSET_MODULE_WASM,
     TRANSFER_ENTRYPOINT, boot_local_store, build_devnet_protocol_context,
     build_standard_asset_module, compose_devnet_router, seed_dev_owner_coins, seed_treasury_coin,
     verify_seeded_asset_supply,
@@ -199,8 +199,7 @@ async fn split_and_merge_are_restart_safe_and_request_id_conflicts_leave_state_u
         build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
     let asset_id = protocol_context.asset_id();
     let first_module =
-        build_standard_asset_module(protocol_context, STANDARD_ASSET_TRANSFER_WASM.to_vec())
-            .unwrap();
+        build_standard_asset_module(protocol_context, STANDARD_ASSET_MODULE_WASM.to_vec()).unwrap();
     let hash_resolver = first_module.resolver().clone();
     let module_ref: ObjectRef = first_module.module_ref().clone();
 
@@ -513,7 +512,7 @@ async fn split_and_merge_are_restart_safe_and_request_id_conflicts_leave_state_u
     let second_context =
         build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
     let second_module =
-        build_standard_asset_module(second_context, STANDARD_ASSET_TRANSFER_WASM.to_vec()).unwrap();
+        build_standard_asset_module(second_context, STANDARD_ASSET_MODULE_WASM.to_vec()).unwrap();
     let (second_structured_store, second_blob_store) = second_boot.into_parts();
     let second_store = Arc::new(second_structured_store);
     let second_blob_store = Arc::new(second_blob_store);

@@ -6,7 +6,7 @@ use runtime::{Clock, DurableOperationContext, StorageCorrelationId, StorageDeadl
 use std::{error::Error, process::ExitCode, sync::Arc};
 use sunrise_edge_devnet::{
     DEVNET_BLOB_DATABASE_FILE, DEVNET_DATABASE_FILE, DEVNET_STARTUP_LIMITATIONS_BANNER,
-    DevnetConfig, STANDARD_ASSET_TRANSFER_WASM, SeedAssetAuthorityObjectsOutcome,
+    DevnetConfig, STANDARD_ASSET_MODULE_WASM, SeedAssetAuthorityObjectsOutcome,
     SeedDevOwnerCoinsOutcome, boot_local_store, build_devnet_protocol_context,
     build_standard_asset_module, compose_devnet_router, seed_asset_authority_objects,
     seed_dev_owner_coins, seed_treasury_coin, verify_or_seed_protocol_context,
@@ -36,7 +36,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         build_devnet_protocol_context(config.chain_id().clone(), config.epoch())?;
     let asset_id = protocol_context.asset_id();
     let asset_module =
-        build_standard_asset_module(protocol_context, STANDARD_ASSET_TRANSFER_WASM.to_vec())?;
+        build_standard_asset_module(protocol_context, STANDARD_ASSET_MODULE_WASM.to_vec())?;
     let module_ref = asset_module.module_ref().clone();
 
     let operation_context_for = |sequence: u64| -> Result<DurableOperationContext, Box<dyn Error>> {
@@ -80,6 +80,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         config.epoch(),
         asset_id,
         mint_authority,
+        config.dev_owners().len(),
         boot_generation,
         &operation_context_for(1)?,
     )?;
@@ -88,11 +89,11 @@ async fn run() -> Result<(), Box<dyn Error>> {
         SeedAssetAuthorityObjectsOutcome::Existing(_) => "verified-existing",
     };
     println!(
-        "owner={} role=mint-authority seed_status={} asset_definition={} mint_capability={}",
+        "owner={} role=mint-authority seed_status={} asset_definition={} treasury_cap={}",
         mint_authority,
         asset_authority_status,
         asset_authority_outcome.objects().definition().id,
-        asset_authority_outcome.objects().mint_capability().id
+        asset_authority_outcome.objects().treasury_cap().id
     );
 
     let mut seed_outcomes: Vec<SeedDevOwnerCoinsOutcome> =

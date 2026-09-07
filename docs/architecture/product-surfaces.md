@@ -87,9 +87,11 @@ protocol behavior:
   re-verifies it through the unchanged translation boundary; devnet protocol
   version 3 → 4 makes the committed owner-transition policy reachable at all
   (`node_core::MIN_OWNER_TRANSITION_PROTOCOL_VERSION`).
-- **Standard Asset v1 split and merge (DR-0108).** Protocol v5/module v2 adds
-  two bounded operations without changing the protocol-v4 transfer bytes or
-  history. `split` accepts source `Write` index 0 plus a distinct fee `Write`
+- **Standard Asset v1 split and merge development slice (DR-0108).** The
+  protocol-v5 development fixture added two bounded operations. It is now
+  retained under a separate disabled legacy module identifier; the canonical
+  module starts at version 1 with these semantics included. `split` accepts
+  source `Write` index 0 plus a distinct fee `Write`
   index 1, checks a nonzero amount strictly below the source balance, mutates
   the source to its remainder, and creates exactly one same-typed recipient
   coin. `merge` accepts primary `Write` index 0, secondary `Consume` index 1,
@@ -112,9 +114,11 @@ protocol behavior:
   or dust consolidation, Unique Asset v1, multisig, Ledger,
   TypeScript/explorer/wallet/UI, production fee aggregation, and
   public-testnet/mainnet readiness remain deferred.
-- **Standard Asset v1 mint (DR-0109).** Protocol v5/module v3 retains the exact
-  historical module-v1 and module-v2 artifacts and adds one bounded `mint`
-  entrypoint for the already-derived local-devnet asset. Startup atomically
+- **Standard Asset v1 mint development slice (DR-0109).** The protocol-v5
+  development fixture added one bounded `mint` entrypoint for the
+  already-derived local-devnet asset. It is retained under a separate disabled
+  legacy module identifier rather than consuming a canonical module version.
+  Startup atomically
   seeds its immutable `StandardAssetDefinitionV1` plus a
   `StandardAssetMintCapabilityV1` owned by the first configured development
   owner. The exact typed signature is `Read MintCapability<A>` index 0 and
@@ -129,6 +133,22 @@ protocol behavior:
   metadata, discovery, Unique Asset v1, multisig, Ledger clear signing,
   production fee aggregation, and public-testnet/mainnet readiness remain
   deferred.
+- **Standard Asset v1 supply control (DR-0110).** Protocol v6 activates the
+  canonical `sunrise.standard_asset.v1` module at version 1. Discarded
+  development transfer/split/merge/unbounded-mint fixtures use distinct
+  disabled module identifiers and do not consume canonical versions. The
+  active bounded mint uses owner-held `Write TreasuryCap<A>` state.
+  The cap canonically records one asset's current `total_supply` and fixed
+  `max_supply`. Mint checked-adds supply and atomically creates exactly one
+  recipient coin; whole-coin burn checked-subtracts supply and consumes exactly
+  one sender-owned coin. Both paths use committed typed signatures, keep the
+  trusted fee-treasury access final and hidden, and leave node-core
+  asset-generic. Startup pins the cap's immutable genesis history but accepts
+  and verifies its current advanced version; consumed seed coins remain
+  tombstoned across restart and are never recreated. Arbitrary asset creation,
+  partial burn, authority lifecycle, Unique Asset v1, multisig, Ledger clear
+  signing, production fee aggregation, and public-testnet/mainnet readiness
+  remain deferred.
 - **Uniform post-execution fee composition.** Devnet protocol version 4
   commits a base fee of 1, an execution price of 1 per actual `gas_used`,
   zero prices for unmetered categories, and exactly one enabled, derived
@@ -146,7 +166,7 @@ protocol behavior:
 - **Dev-profile identities are not protocol claims.** The seeded `AssetId`
   is a derived (chain/epoch/protocol-version-bound), non-placeholder
   dev-profile identifier so clients can render and exercise the local
-  fixture. Its seeded immutable definition and reusable mint capability vouch
+  fixture. Its seeded immutable definition and supply-controlled treasury cap vouch
   only for this committed local-devnet composition; no general on-chain asset
   registry or authenticated metadata surface exists. Wallet and explorer must
   therefore render the ID as opaque bytes plus an explicitly local label,

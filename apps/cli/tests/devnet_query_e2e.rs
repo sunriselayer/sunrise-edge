@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use objects::ObjectId;
 use sunrise_edge_devnet::{
-    DevnetConfig, STANDARD_ASSET_TRANSFER_WASM, boot_local_store, build_devnet_protocol_context,
+    DevnetConfig, STANDARD_ASSET_MODULE_WASM, boot_local_store, build_devnet_protocol_context,
     build_standard_asset_module, compose_devnet_router,
 };
 
@@ -62,8 +62,7 @@ async fn cli_context_and_next_nonce_commands_reach_the_real_devnet_router_over_t
     let protocol_context =
         build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
     let module =
-        build_standard_asset_module(protocol_context, STANDARD_ASSET_TRANSFER_WASM.to_vec())
-            .unwrap();
+        build_standard_asset_module(protocol_context, STANDARD_ASSET_MODULE_WASM.to_vec()).unwrap();
     let (structured_store, blob_store) = boot.into_parts();
     let router = compose_devnet_router(
         Arc::new(structured_store),

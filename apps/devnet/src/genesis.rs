@@ -28,11 +28,14 @@ const DEVNET_FEE_UNITS_PER_ASSET_UNIT: u64 = 1;
 
 /// Protocol version used by the local developer network.
 ///
-/// Bumped from 4 to 5 by the Standard Asset split/merge slice. Version 4
-/// remains the historical whole-coin owner-transition activation; version 5
-/// additionally gates the committed exact-one object-creation policy used by
-/// partial split (DR-0108).
-pub const DEVNET_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(5);
+/// Bumped from 5 to 6 by the Standard Asset supply-control slice (DR-0110).
+/// Version 4 remains the historical whole-coin owner-transition activation;
+/// version 5 additionally gates the committed exact-one object-creation
+/// policy used by partial split (DR-0108) and the frozen capability-authorized
+/// mint (DR-0109); version 6 activates the canonical module at version 1 with
+/// bounded `TreasuryCap<A>` mint and whole-coin burn. Earlier development
+/// fixtures are isolated under distinct disabled module identifiers (DR-0110).
+pub const DEVNET_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(6);
 
 /// The single logical atomicity domain used by the local developer network.
 ///

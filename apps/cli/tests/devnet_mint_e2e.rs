@@ -1,6 +1,6 @@
-//! File-backed protocol-v5/module-v3 Standard Asset mint E2E.
+//! File-backed protocol-v6/canonical-module-v1 Standard Asset supply-control E2E.
 //!
-//! This test drives one capability-authorized mint through the real loopback
+//! This test drives one treasury-cap-authorized mint through the real loopback
 //! HTTP router and SQLite durable store. It verifies the seeded authority
 //! objects, independently derives the created coin id, and proves replay and
 //! request-id conflict handling remain non-reapplying across a real restart.
@@ -17,9 +17,9 @@ use execution::{decode_transaction, derive_created_object_id, hash_transaction};
 use runtime::{Clock, DurableOperationContext, StorageCorrelationId, StorageDeadline, SystemClock};
 use standard_assets::{
     STANDARD_ASSET_SCHEMA_VERSION_V1, StandardAssetDefinitionV1, StandardAssetMintArgsV1,
-    StandardAssetMintCapabilityV1, decode_standard_asset_definition_v1,
-    decode_standard_asset_mint_capability_v1, derive_coin_type_id, derive_definition_type_id,
-    derive_mint_capability_type_id, encode_standard_asset_mint_args_v1,
+    StandardAssetTreasuryCapV1, decode_standard_asset_definition_v1,
+    decode_standard_asset_treasury_cap_v1, derive_coin_type_id, derive_definition_type_id,
+    derive_treasury_cap_type_id, encode_standard_asset_mint_args_v1,
 };
 use sunrise_edge_client::{
     AccessEntry, AccessManifest, AccessMode, Amount, Client, ClientError, ExecutionStatus,
@@ -30,7 +30,7 @@ use sunrise_edge_client::{
     decode_object, decode_standard_asset_coin_v1,
 };
 use sunrise_edge_devnet::{
-    DevOwner, DevnetConfig, MINT_ENTRYPOINT, STANDARD_ASSET_TRANSFER_WASM,
+    BURN_ENTRYPOINT, DevOwner, DevnetConfig, MINT_ENTRYPOINT, STANDARD_ASSET_MODULE_WASM,
     SeedAssetAuthorityObjectsOutcome, SeedDevOwnerCoinsOutcome, SeedTreasuryCoinOutcome,
     boot_local_store, build_devnet_protocol_context, build_standard_asset_module,
     compose_devnet_router, seed_asset_authority_objects, seed_dev_owner_coins, seed_treasury_coin,
@@ -40,6 +40,7 @@ use sunrise_edge_devnet::{
 const GAS_LIMIT: u64 = 1_000_000;
 const MINT_AMOUNT: u64 = 250_000;
 const MINT_REQUEST_BYTE: u8 = 0x71;
+const BURN_REQUEST_BYTE: u8 = 0x72;
 
 static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
 
@@ -166,23 +167,27 @@ fn submit(
 
 struct PersistedState {
     definition_bytes: Vec<u8>,
-    capability_bytes: Vec<u8>,
+    treasury_cap_bytes: Vec<u8>,
     created_id: ObjectId,
     created_bytes: Vec<u8>,
     fee_bytes: Vec<u8>,
     treasury_bytes: Vec<u8>,
-    receipt: HttpReceiptQueryResult,
-    receipt_bytes: Vec<u8>,
+    mint_receipt: HttpReceiptQueryResult,
+    mint_receipt_bytes: Vec<u8>,
+    burn_receipt: HttpReceiptQueryResult,
+    burn_receipt_bytes: Vec<u8>,
     next_nonce: u64,
-    result_bytes: Vec<u8>,
-    signed_bytes: Vec<u8>,
+    mint_result_bytes: Vec<u8>,
+    mint_signed_bytes: Vec<u8>,
+    burn_result_bytes: Vec<u8>,
+    burn_signed_bytes: Vec<u8>,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
     let signer: LocalSigner = LocalSigner::from_seed([0x41; 32]);
     let sender = signer.address();
-    let recipient = LocalSigner::from_seed([0x43; 32]).address();
+    let recipient = sender;
     let treasury = LocalSigner::from_seed([0x42; 32]).address();
     let directory: TestDirectory = TestDirectory::new();
     let config: DevnetConfig = DevnetConfig::parse_from(vec![
@@ -209,8 +214,7 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
         build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
     let asset_id = protocol_context.asset_id();
     let first_module =
-        build_standard_asset_module(protocol_context, STANDARD_ASSET_TRANSFER_WASM.to_vec())
-            .unwrap();
+        build_standard_asset_module(protocol_context, STANDARD_ASSET_MODULE_WASM.to_vec()).unwrap();
     let hash_resolver = first_module.resolver().clone();
     let module_ref: ObjectRef = first_module.module_ref().clone();
 
@@ -232,6 +236,7 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
         config.epoch(),
         asset_id,
         DevOwner::new(*sender.as_bytes()),
+        config.dev_owners().len(),
         first_generation,
         &authority_seed_context,
     )
@@ -270,7 +275,7 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
     .unwrap();
     verify_seeded_asset_supply(std::slice::from_ref(&owner_seed), &treasury_seed).unwrap();
     let definition_id: ObjectId = authority_seed.objects().definition().id;
-    let capability_id: ObjectId = authority_seed.objects().mint_capability().id;
+    let treasury_cap_id: ObjectId = authority_seed.objects().treasury_cap().id;
     let fee_id: ObjectId = owner_seed.coins().fee_coin().id;
     let treasury_id: ObjectId = treasury_seed.coin().coin().id;
 
@@ -319,18 +324,20 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
             STANDARD_ASSET_SCHEMA_VERSION_V1
         );
 
-        let capability_before: CurrentObject = query_current_object(&client, capability_id);
-        let capability: StandardAssetMintCapabilityV1 =
-            decode_standard_asset_mint_capability_v1(&capability_before.object.data).unwrap();
-        assert_eq!(capability.asset_id, asset_id);
-        assert_eq!(capability_before.object.owner, Owner::Address(sender));
-        assert_eq!(capability_before.object.version, 1);
+        let treasury_cap_before: CurrentObject = query_current_object(&client, treasury_cap_id);
+        let treasury_cap: StandardAssetTreasuryCapV1 =
+            decode_standard_asset_treasury_cap_v1(&treasury_cap_before.object.data).unwrap();
+        assert_eq!(treasury_cap.asset_id(), asset_id);
+        assert_eq!(treasury_cap.total_supply(), 2_000_001);
+        assert!(treasury_cap.max_supply() > treasury_cap.total_supply());
+        assert_eq!(treasury_cap_before.object.owner, Owner::Address(sender));
+        assert_eq!(treasury_cap_before.object.version, 1);
         assert_eq!(
-            capability_before.object.type_hash,
-            derive_mint_capability_type_id(&hash_resolver, context.epoch(), asset_id).unwrap()
+            treasury_cap_before.object.type_hash,
+            derive_treasury_cap_type_id(&hash_resolver, context.epoch(), asset_id).unwrap()
         );
         assert_eq!(
-            capability_before.object.schema_version,
+            treasury_cap_before.object.schema_version,
             STANDARD_ASSET_SCHEMA_VERSION_V1
         );
 
@@ -344,8 +351,8 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
 
         let mut manifest: AccessManifest = AccessManifest::new();
         manifest.push(AccessEntry {
-            object_ref: capability_before.object_ref.clone(),
-            mode: AccessMode::Read,
+            object_ref: treasury_cap_before.object_ref.clone(),
+            mode: AccessMode::Write,
         });
         manifest.push(AccessEntry {
             object_ref: fee_before_object.object_ref.clone(),
@@ -396,16 +403,26 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
             .expect("accepted mint should carry execution effects");
         let effects = decode_execution_effects(payload).unwrap();
         assert!(matches!(effects.status, ExecutionStatus::Success));
-        assert_eq!(effects.object_effects.len(), 1);
+        assert_eq!(effects.object_effects.len(), 2);
 
         let definition_after: CurrentObject = query_current_object(&client, definition_id);
-        let capability_after: CurrentObject = query_current_object(&client, capability_id);
+        let treasury_cap_after: CurrentObject = query_current_object(&client, treasury_cap_id);
+        let treasury_cap_after_body: StandardAssetTreasuryCapV1 =
+            decode_standard_asset_treasury_cap_v1(&treasury_cap_after.object.data).unwrap();
         let (created_after_object, created_after) = query_current_coin(&client, created_id);
         let (fee_after_object, fee_after) = query_current_coin(&client, fee_id);
         let (treasury_after_object, treasury_after) = query_current_coin(&client, treasury_id);
 
         assert_eq!(definition_after.query_bytes, definition_before.query_bytes);
-        assert_eq!(capability_after.query_bytes, capability_before.query_bytes);
+        assert_eq!(treasury_cap_after.object.version, 2);
+        assert_eq!(
+            treasury_cap_after_body.total_supply(),
+            treasury_cap.total_supply() + MINT_AMOUNT
+        );
+        assert_eq!(
+            treasury_cap_after_body.max_supply(),
+            treasury_cap.max_supply()
+        );
         assert_eq!(created_after_object.object.id, created_id);
         assert_eq!(created_after_object.object.version, 1);
         assert_eq!(created_after_object.object.owner, Owner::Address(recipient));
@@ -440,9 +457,12 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
             treasury_before_object.object.version + 1
         );
 
-        let (receipt, receipt_bytes) = query_receipt_bytes(&client, mint_request_id);
-        assert!(matches!(receipt, HttpReceiptQueryResult::Present { .. }));
-        let next_nonce: u64 = client.query_next_nonce(sender).unwrap().next_nonce();
+        let (mint_receipt, mint_receipt_bytes) = query_receipt_bytes(&client, mint_request_id);
+        assert!(matches!(
+            mint_receipt,
+            HttpReceiptQueryResult::Present { .. }
+        ));
+        let nonce_after_mint: u64 = client.query_next_nonce(sender).unwrap().next_nonce();
         let replay: HttpNodeResult =
             submit(&client, &context, mint_request_id, signed_bytes.clone());
         assert_eq!(replay.encode().unwrap(), result_bytes);
@@ -451,8 +471,8 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
             definition_after.query_bytes
         );
         assert_eq!(
-            query_object_bytes(&client, capability_id),
-            capability_after.query_bytes
+            query_object_bytes(&client, treasury_cap_id),
+            treasury_cap_after.query_bytes
         );
         assert_eq!(
             query_object_bytes(&client, created_id),
@@ -468,7 +488,116 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
         );
         assert_eq!(
             query_receipt_bytes(&client, mint_request_id).1,
-            receipt_bytes
+            mint_receipt_bytes
+        );
+        assert_eq!(
+            client.query_next_nonce(sender).unwrap().next_nonce(),
+            nonce_after_mint
+        );
+
+        let burn_request_id: RequestId = RequestId::new([BURN_REQUEST_BYTE; 32]).unwrap();
+        let mut burn_manifest: AccessManifest = AccessManifest::new();
+        burn_manifest.push(AccessEntry {
+            object_ref: treasury_cap_after.object_ref.clone(),
+            mode: AccessMode::Write,
+        });
+        burn_manifest.push(AccessEntry {
+            object_ref: created_after_object.object_ref.clone(),
+            mode: AccessMode::Consume,
+        });
+        burn_manifest.push(AccessEntry {
+            object_ref: fee_after_object.object_ref.clone(),
+            mode: AccessMode::Write,
+        });
+        burn_manifest.push(AccessEntry {
+            object_ref: treasury_after_object.object_ref.clone(),
+            mode: AccessMode::Write,
+        });
+        let burn_signed_bytes: Vec<u8> = PreparedTransaction::prepare_submission(
+            burn_request_id,
+            sender,
+            SignatureSchemeId::Ed25519,
+            TransactionRequest {
+                chain_id: context.chain_id().clone(),
+                protocol_version: context.protocol_version(),
+                epoch: context.epoch(),
+                nonce: nonce_after_mint,
+                access_manifest: burn_manifest,
+                module_ref: module_ref.clone(),
+                entrypoint: BURN_ENTRYPOINT.to_string(),
+                args: Vec::new(),
+                gas_limit: GAS_LIMIT,
+                fee_payment: Some(FeePayment {
+                    asset_id,
+                    max_fee: Amount::new(GAS_LIMIT + 1),
+                    fee_object: fee_after_object.object_ref,
+                }),
+            },
+        )
+        .unwrap()
+        .sign_and_finalize_with(&signer)
+        .unwrap();
+        let burn_result: HttpNodeResult = submit(
+            &client,
+            &context,
+            burn_request_id,
+            burn_signed_bytes.clone(),
+        );
+        let burn_result_bytes: Vec<u8> = burn_result.encode().unwrap();
+        let burn_effects = decode_execution_effects(
+            burn_result.responses()[0]
+                .payload()
+                .expect("accepted burn should carry execution effects"),
+        )
+        .unwrap();
+        assert!(matches!(burn_effects.status, ExecutionStatus::Success));
+        assert_eq!(burn_effects.object_effects.len(), 2);
+
+        let treasury_cap_after_burn: CurrentObject = query_current_object(&client, treasury_cap_id);
+        let cap_after_burn: StandardAssetTreasuryCapV1 =
+            decode_standard_asset_treasury_cap_v1(&treasury_cap_after_burn.object.data).unwrap();
+        assert_eq!(treasury_cap_after_burn.object.version, 3);
+        assert_eq!(cap_after_burn.total_supply(), treasury_cap.total_supply());
+        assert_eq!(cap_after_burn.max_supply(), treasury_cap.max_supply());
+        let burned_result: HttpObjectQueryResult = client.query_object(created_id).unwrap();
+        assert!(matches!(
+            burned_result,
+            HttpObjectQueryResult::Tombstoned { .. }
+        ));
+        let burned_bytes: Vec<u8> = burned_result.encode().unwrap();
+        let (fee_after_burn_object, _) = query_current_coin(&client, fee_id);
+        let (treasury_after_burn_object, _) = query_current_coin(&client, treasury_id);
+        let (burn_receipt, burn_receipt_bytes) = query_receipt_bytes(&client, burn_request_id);
+        assert!(matches!(
+            burn_receipt,
+            HttpReceiptQueryResult::Present { .. }
+        ));
+        let next_nonce: u64 = client.query_next_nonce(sender).unwrap().next_nonce();
+        assert_eq!(next_nonce, nonce_after_mint + 1);
+
+        let burn_replay: HttpNodeResult = submit(
+            &client,
+            &context,
+            burn_request_id,
+            burn_signed_bytes.clone(),
+        );
+        assert_eq!(burn_replay.encode().unwrap(), burn_result_bytes);
+        assert_eq!(
+            query_object_bytes(&client, treasury_cap_id),
+            treasury_cap_after_burn.query_bytes
+        );
+        assert_eq!(query_object_bytes(&client, created_id), burned_bytes);
+        assert_eq!(
+            query_object_bytes(&client, fee_id),
+            fee_after_burn_object.query_bytes
+        );
+        assert_eq!(
+            query_object_bytes(&client, treasury_id),
+            treasury_after_burn_object.query_bytes
+        );
+        assert_eq!(
+            query_receipt_bytes(&client, burn_request_id).1,
+            burn_receipt_bytes
         );
         assert_eq!(
             client.query_next_nonce(sender).unwrap().next_nonce(),
@@ -477,16 +606,20 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
 
         PersistedState {
             definition_bytes: definition_after.query_bytes,
-            capability_bytes: capability_after.query_bytes,
+            treasury_cap_bytes: treasury_cap_after_burn.query_bytes,
             created_id,
-            created_bytes: created_after_object.query_bytes,
-            fee_bytes: fee_after_object.query_bytes,
-            treasury_bytes: treasury_after_object.query_bytes,
-            receipt,
-            receipt_bytes,
+            created_bytes: burned_bytes,
+            fee_bytes: fee_after_burn_object.query_bytes,
+            treasury_bytes: treasury_after_burn_object.query_bytes,
+            mint_receipt,
+            mint_receipt_bytes,
+            burn_receipt,
+            burn_receipt_bytes,
             next_nonce,
-            result_bytes,
-            signed_bytes,
+            mint_result_bytes: result_bytes,
+            mint_signed_bytes: signed_bytes,
+            burn_result_bytes,
+            burn_signed_bytes,
         }
     })
     .await
@@ -503,7 +636,7 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
     let second_context =
         build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
     let second_module =
-        build_standard_asset_module(second_context, STANDARD_ASSET_TRANSFER_WASM.to_vec()).unwrap();
+        build_standard_asset_module(second_context, STANDARD_ASSET_MODULE_WASM.to_vec()).unwrap();
     let second_deadline_millis: u64 = SystemClock
         .now_unix_millis()
         .unwrap()
@@ -517,6 +650,7 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
         config.epoch(),
         asset_id,
         DevOwner::new(*sender.as_bytes()),
+        config.dev_owners().len(),
         second_generation,
         &DurableOperationContext::new(
             second_generation,
@@ -534,8 +668,8 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
         definition_id
     );
     assert_eq!(
-        second_authority_seed.objects().mint_capability().id,
-        capability_id
+        second_authority_seed.objects().treasury_cap().id,
+        treasury_cap_id
     );
     let second_owner_seed: SeedDevOwnerCoinsOutcome = seed_dev_owner_coins(
         second_boot.store(),
@@ -611,8 +745,8 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
             persisted.definition_bytes
         );
         assert_eq!(
-            query_object_bytes(&client, capability_id),
-            persisted.capability_bytes
+            query_object_bytes(&client, treasury_cap_id),
+            persisted.treasury_cap_bytes
         );
         assert_eq!(
             query_object_bytes(&client, persisted.created_id),
@@ -625,11 +759,20 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
         );
         assert_eq!(
             query_receipt_bytes(&client, mint_request_id).0,
-            persisted.receipt
+            persisted.mint_receipt
         );
         assert_eq!(
             query_receipt_bytes(&client, mint_request_id).1,
-            persisted.receipt_bytes
+            persisted.mint_receipt_bytes
+        );
+        let burn_request_id: RequestId = RequestId::new([BURN_REQUEST_BYTE; 32]).unwrap();
+        assert_eq!(
+            query_receipt_bytes(&client, burn_request_id).0,
+            persisted.burn_receipt
+        );
+        assert_eq!(
+            query_receipt_bytes(&client, burn_request_id).1,
+            persisted.burn_receipt_bytes
         );
         assert_eq!(
             client.query_next_nonce(sender).unwrap().next_nonce(),
@@ -640,17 +783,24 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
             &client,
             &context,
             mint_request_id,
-            persisted.signed_bytes.clone(),
+            persisted.mint_signed_bytes.clone(),
         );
-        assert_eq!(replay.encode().unwrap(), persisted.result_bytes);
+        assert_eq!(replay.encode().unwrap(), persisted.mint_result_bytes);
+        let burn_replay: HttpNodeResult = submit(
+            &client,
+            &context,
+            burn_request_id,
+            persisted.burn_signed_bytes.clone(),
+        );
+        assert_eq!(burn_replay.encode().unwrap(), persisted.burn_result_bytes);
 
-        let capability_current: CurrentObject = query_current_object(&client, capability_id);
+        let treasury_cap_current: CurrentObject = query_current_object(&client, treasury_cap_id);
         let (fee_current_object, _) = query_current_coin(&client, fee_id);
         let (treasury_current_object, _) = query_current_coin(&client, treasury_id);
         let mut conflicting_manifest: AccessManifest = AccessManifest::new();
         conflicting_manifest.push(AccessEntry {
-            object_ref: capability_current.object_ref,
-            mode: AccessMode::Read,
+            object_ref: treasury_cap_current.object_ref,
+            mode: AccessMode::Write,
         });
         conflicting_manifest.push(AccessEntry {
             object_ref: fee_current_object.object_ref.clone(),
@@ -707,8 +857,8 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
             persisted.definition_bytes
         );
         assert_eq!(
-            query_object_bytes(&client, capability_id),
-            persisted.capability_bytes
+            query_object_bytes(&client, treasury_cap_id),
+            persisted.treasury_cap_bytes
         );
         assert_eq!(
             query_object_bytes(&client, persisted.created_id),
@@ -721,7 +871,11 @@ async fn mint_is_restart_safe_and_request_id_conflicts_leave_state_unchanged() {
         );
         assert_eq!(
             query_receipt_bytes(&client, mint_request_id).1,
-            persisted.receipt_bytes
+            persisted.mint_receipt_bytes
+        );
+        assert_eq!(
+            query_receipt_bytes(&client, burn_request_id).1,
+            persisted.burn_receipt_bytes
         );
         assert_eq!(
             client.query_next_nonce(sender).unwrap().next_nonce(),

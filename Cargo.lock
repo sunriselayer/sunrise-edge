@@ -1686,6 +1686,7 @@ dependencies = [
  "protocol-upgrades",
  "runtime",
  "runtime-sqlite",
+ "sha2 0.11.0",
  "standard-assets",
  "system-modules",
  "tokio",

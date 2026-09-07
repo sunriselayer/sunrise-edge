@@ -2398,6 +2398,41 @@ database-process SIGKILL、pre-commit data/WAL ENOSPC、connection exhaustion、
 TLS commit-loss、PgBouncer rehearsalも既存As-Is evidenceとして監査へ提示し、未実装の
 physical media faultや長期soakを同じ項目として重複実装しない。
 
+## Generic Contract Publication Gate
+
+**Priority decision (2026-09-07):** protocol固有のpreinstalled moduleやその運用補助を
+積み上げ続ける前に、permissionlessな汎用contract surfaceを実装する。DR-0110の
+supply-accounted mint/burn sliceを完了した直後の順序は、(1)このgate、(2)arbitrary
+Standard Asset create-asset、(3)FastVoteとする。Asset固有の新機能、Unique Asset、multisig、
+追加のproduction background processingはこのgateを追い越さない。CLI Developer MVPの
+historical completion criterion 3が任意uploadを当時のMVP外とした事実は変更しないが、
+post-MVPの現在はこれを最優先のopen sliceへresequenceする。
+
+Completion criteria:
+
+1. authenticated signerがbounded canonical module publication requestを送れる。requestは
+   exact chain id、protocol version、epoch、module id/version、canonical WASM、manifest、
+   ABI/semantics commitmentをbindし、unknown field、trailing bytes、unsupported import/export、
+   duplicate/reused active module referenceをfail closedする。
+2. nodeはWASM validation、deterministic resource bounds、code/manifest/ABI/semantics hashを
+   trusted protocol contextで再計算し、module code、registry/catalog record、nonce、receipt、
+   outboxを一つのfenced durable invocationへatomic commitする。失敗時は部分publicationを
+   残さない。daemon、background loop、persistent connectionをcorrectness requirementにしない。
+3. call transactionはcallerが実行bytesや未commit manifestを注入できず、publish済みのexact
+   `(module_id, version, code_hash, manifest_hash, semantics_hash)`だけを参照する。typed ABI、
+   declared object access、owner policy、gas/resource bound、canonical argumentsを実行前に検証し、
+   preinstalled moduleと同じdeterministic execution/effect/fee/replay boundaryを使う。
+4. Rust clientとCLIに`contract publish`と`contract call`を追加する。両commandはTLS endpoint
+   validationとは別にlocally expected protocol contextを確認し、queryしたcommitmentとsigned
+   bytesを一致させてから署名する。software signerを最初のsurfaceとし、Ledgerはexact
+   clear-signing policyが追加されるまでfail closedする。
+5. real file-backed SQLite E2Eでpublish、call、same-boot/post-restart exact replay、writer-generation
+   fencing、request-id reuse conflictを検証する。conflict/rejection時はmodule registry/catalog、
+   application objects、fees、receipt、nonce、outboxが不変であることをcanonical bytesで比較する。
+6. stable vectors、negative/adversarial tests、complete repository gate、fresh tech-lead reviewを
+   通過する。ここまで完了する前にpermissionless contract platform、public testnet readiness、
+   production/mainnet readinessをclaimしない。
+
 ## Asset Standards Gate
 
 **目的（2026-09-06、docs/architecture/decisions/0104-asset-standards-gate.md
@@ -2412,7 +2447,8 @@ anti-double-spend/version mechanismであり、coin bodyの別sequenceはv1に�
 **Current status:** DR-0104による名称、モデル、development fixtureのreplacement、fail-closed activation
 boundaryはaccepted。認証に使ったprofileのowner policyでauthenticated executionの
 Address-owned outputをcommit前に再検証するprerequisiteに加え、`AssetId`と
-`StandardAssetDefinitionV1`/`StandardAssetCoinV1`/`StandardAssetMintCapabilityV1`
+`StandardAssetDefinitionV1`/`StandardAssetCoinV1`/`StandardAssetMintCapabilityV1`/
+`StandardAssetTreasuryCapV1`
 のcanonical identity/value schema（`crates/standard-assets`）がimplemented As-Is。
 `AssetId`のcanonical type ID（`0x7001`）は同じprotocol conceptへそのまま使い、`fees`から新しい
 dependency-lightな`standard-assets` crateへownershipを移した。各consumerは
@@ -2435,7 +2471,8 @@ builder/public-testnet asset surfaceはまだ有効ではない。
 3. **部分実装。** identifier namespace全体をauditし、`HashDomain::AssetId = 0x000E`/
    `HashPurpose::AssetId`と`0x70xx`/`0x71xx`帯の`StandardAssetDefinitionV1`
    (`0x7101`)/`StandardAssetCoinV1` (`0x7102`)/`StandardAssetMintCapabilityV1`
-   (`0x7103`)をadditiveにallocateした。`derive_asset_id`はchain、protocol
+   (`0x7103`、historical frozen)/`StandardAssetTreasuryCapV1` (`0x7107`)を
+   additiveにallocateした。`derive_asset_id`はchain、protocol
    version、Standard Asset v1、authenticated creation authority、canonical
    typed `AssetCreationSeed`、epoch/hash-suite scheduleをbindし、`HashSuite::algorithm_for`が
    選ぶprotocol-configuration hash algorithmのみを使う（caller-selected algorithmは
@@ -2446,7 +2483,7 @@ builder/public-testnet asset surfaceはまだ有効ではない。
    creation ordinal）を共有する。DR-0108のsplitはcreation ordinal zeroを
    1個だけ許可するcommitted policyによりこの導出を実際に使う。
 4. **部分実装。** `StandardAssetDefinitionV1`、`StandardAssetCoinV1`、
-   `StandardAssetMintCapabilityV1`を別々のbounded canonical schemaとして
+   `StandardAssetMintCapabilityV1`、`StandardAssetTreasuryCapV1`を別々のbounded canonical schemaとして
    `crates/standard-assets`に実装し、unknown version/field/tag、non-canonical
    bytes、unknown hash algorithm、zero coin amountをfail closedにした。
    duplicate identityはDR-0108のsplit Create pathで、exact `Absent` pre-read、
@@ -2476,14 +2513,15 @@ builder/public-testnet asset surfaceはまだ有効ではない。
    `StandardAssetCoinFeeComposer`、CLI `transfer`サブコマンドの
    `--source-coin`/`--recipient`/`--fee-coin`ベースへの更新を含む。これにより
    `Create`パスなしで到達可能な、初のend-to-end owner change経路が生まれた。
-   DR-0108でprotocol-v5/module-v2のbounded partial split/mergeを追加し、DR-0109で
-   protocol-v5/module-v3の既存devnet asset向けcapability-authorized mintを追加した。
-   arbitrary asset Create/burn、supply accounting、arbitrary discovery/coin selection/dust、Unique
+   DR-0108のdevelopment sliceでbounded partial split/mergeを追加し、DR-0109のdevelopment
+   sliceで既存devnet asset向けcapability-authorized mintを追加した。DR-0110以後、これらの
+   unreleased fixtureはそれぞれ別のdisabled module IDへ隔離され、canonical moduleはversion 1から始まる。
+   arbitrary asset Create、arbitrary discovery/coin selection/dust、Unique
    Asset v1、multisig、Ledgerのnew entrypoint対応、production fee aggregation、
    public-testnet readinessは引き続き未実装のまま。
 5. **実装済み（DR-0108、bounded devnet slice）。** whole-coin transferはcanonical signed
    recipientへのexact owner changeとしてprotocol-v4 devnet/CLI/restart E2Eまで実装済み。
-   protocol-v5/module-v2のpartial splitはsender remainderのMutate + recipient coinの
+   DR-0108 development fixtureのpartial splitはsender remainderのMutate + recipient coinの
    exactly-one Create、mergeはsame-assetのsender-owned primaryをchecked sumへMutateし、
    secondaryをConsumeする。mergeでnew coinはCreateしない。recipientはsignせず、recipient
    stateもread/writeしない。exact one-create policyはsigned transaction-derived id、
@@ -2518,15 +2556,15 @@ builder/public-testnet asset surfaceはまだ有効ではない。
    変更した場合の旧coin併存）は、`--dev-owner`がseed provisioningであってruntime
    authorization/revocation listではなく、network callerから変更不能で新しい権限獲得も
    ないためnon-reportableと判定した。これはproduction security auditやpublic-testnet
-   readinessの宣言ではない。DR-0108のsplit/mergeは別PRのprotocol-v5/module-v2 sliceとして
+   readinessの宣言ではない。DR-0108のsplit/mergeは別PRのdevelopment sliceとして
    実装し、exact-one Create、Absent-only collision check、checked split/merge arithmetic、
    real file-backed SQLiteでのsame-boot/post-restart exact replay non-reapplication、writer-generation
    fencing、request-id reuse時のsource/created/fee/treasury object・両receipt・nonce不変を
    focused E2Eとcomplete repository gateで検証した。merge前にこの新しいprotocol-critical
    deltaへのfresh independent reviewを要求する。generic Create/任意asset作成/Unique Asset/
    public surfaceは引き続き各sliceで新しいdelta reviewを要する。
-9. **実装・検証済み（DR-0109、bounded devnet mint slice）。** protocol-v5/module-v3は
-   module-v1/v2 historyを保持し、既存derived devnet assetだけに`mint`を追加する。
+9. **実装・検証済み（DR-0109、bounded devnet mint development slice）。** 既存derived
+   devnet assetだけに`mint`を追加したfixtureは、DR-0110以後は別のdisabled module IDに隔離する。
    startupはimmutable `StandardAssetDefinitionV1`と、first dev ownerが所有するreusableな
    `StandardAssetMintCapabilityV1`をatomic pairとしてseed/restart-verifyする。typed ABIは
    `Read MintCapability<A>` index 0とfee `Write Coin<A>` index 1を同じ`A`へunifyし、
@@ -2540,7 +2578,27 @@ builder/public-testnet asset surfaceはまだ有効ではない。
    protocol-critical deltaへのfresh independent tech-lead reviewもAPPROVEで完了した。
    capabilityはreusableで供給上限を持たないdevnet fixtureである。
 
-arbitrary authenticated asset creation、metadata authenticity、burn/supply accounting、
+10. **実装・検証済み（DR-0110、supply-accounted mint/burn slice）。** protocol-v6は
+    canonical `sunrise.standard_asset.v1`をmodule version 1としてactiveにする。unreleasedな
+    transfer/split-merge/unbounded-mint development fixtureは別module IDのdisabled entryへ隔離し、
+    canonical moduleのversion番号を消費しない。active mintはowner-held
+    `Write TreasuryCap<A>`を使う。
+    `StandardAssetTreasuryCapV1` (`0x7107`)はexact `AssetId`、current
+    `total_supply`、fixed nonzero `max_supply`をcanonical stateとして持つ。mintはcapを
+    checked-addしてexact one recipient `Coin<A>`を作り、whole-coin burnはcapを
+    checked-subしてsender-owned coinをConsumeする。両方ともdistinct fee coinとfinal hidden
+    fee-treasuryを同じatomic commitへ含める。startupは全seed coinのinitial sumをcapへ入れ、
+    immutable version-one cap historyと現在のadvanced headを再起動時に検証する。split/merge/
+    burnでtombstoneになったseed coinはretained historyを検証し、再作成しない。CLIは
+    supply bound、owner、canonical body、shared AssetIdを署名前に検証し、Ledgerをnetwork/device
+    access前にfail closedする。real file-backed SQLite E2Eはmint/burnのsame-boot/post-restart
+    exact replay non-reapplication、writer-generation fencing、request-id conflict時のdefinition/cap/
+    tombstoned coin/fee/treasury object、全receipt、nonce不変をcanonical bytesで検証した。
+    `npm ci --prefix adapters/cloudflare-workers`と`./scripts/check-all.sh`は通過し、fresh read-only
+    Opus tech-lead reviewもblocking findingなしで`APPROVE`した。これはgeneric contract publication、
+    arbitrary asset creation、public-testnet、production/mainnet readinessの完了を意味しない。
+
+arbitrary authenticated asset creation、metadata authenticity、partial burn、
 authority capabilityのlifecycle、freeze/close/
 allowance、governed fee-asset admission、Unique Asset v1の実装は後続sliceである。
 これらを完了扱いにせず、このgateはそれぞれの後続実装とdelta reviewを
@@ -2729,10 +2787,10 @@ hard constraintも変更しない。
   whole-coin owner change、same-boot/post-restart exact replay non-reapplication、request-id reuse時の
   coin/receipt/nonce不変、writer-generation fencingを証明する。旧DR-0086 fixtureの詳細は
   historical decisionとしてのみ残す。
-  DR-0108のprotocol-v5/module-v2 sliceは、この同じsender-owned object boundaryを
+  DR-0108のdevelopment sliceは、この同じsender-owned object boundaryを
   `split`のsource Write + exact-one recipient Create、および`merge`のprimary Write +
   secondary Consumeへ拡張する。generic Createや任意のcaller-selected object idは許可しない。
-  DR-0109のmodule-v3はfirst dev ownerの`Read MintCapability<A>`とsender-owned fee
+  DR-0109のdevelopment fixtureはfirst dev ownerの`Read MintCapability<A>`とsender-owned fee
   `Write Coin<A>`を同じassetへunifyし、既存devnet assetのrecipient coinをexact-one
   Createする。任意asset作成とgeneric contract Createは引き続き許可しない。
 - **S3**: **implemented and validated baseline（DR-0087、DR-0107で現行化）。** committed

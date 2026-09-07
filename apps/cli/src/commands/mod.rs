@@ -1,6 +1,7 @@
 //! One module per subcommand.
 
 pub mod address;
+pub mod burn;
 pub mod context;
 pub mod merge;
 pub mod mint;

@@ -26,4 +26,5 @@ tokio = { workspace = true, features = ["signal"] }
 
 [dev-dependencies]
 ed25519-zebra.workspace = true
+sha2.workspace = true
 wat.workspace = true

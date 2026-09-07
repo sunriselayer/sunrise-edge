@@ -67,7 +67,7 @@ use sunrise_edge_client::{
     encode_standard_asset_transfer_args_v1,
 };
 use sunrise_edge_devnet::{
-    DevOwner, DevnetConfig, STANDARD_ASSET_TRANSFER_WASM, SeedDevOwnerCoinsOutcome,
+    DevOwner, DevnetConfig, STANDARD_ASSET_MODULE_WASM, SeedDevOwnerCoinsOutcome,
     TRANSFER_ENTRYPOINT, boot_local_store, build_devnet_protocol_context,
     build_standard_asset_module, compose_devnet_router,
     genesis::{DEVNET_DOMAIN_BYTES, DEVNET_PROTOCOL_VERSION},
@@ -256,11 +256,9 @@ async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_reques
     let first_protocol_context =
         build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
     let asset_id = first_protocol_context.asset_id();
-    let first_module = build_standard_asset_module(
-        first_protocol_context,
-        STANDARD_ASSET_TRANSFER_WASM.to_vec(),
-    )
-    .unwrap();
+    let first_module =
+        build_standard_asset_module(first_protocol_context, STANDARD_ASSET_MODULE_WASM.to_vec())
+            .unwrap();
 
     let now_unix_millis = SystemClock.now_unix_millis().unwrap();
     let seed_deadline = StorageDeadline::new(now_unix_millis + 30_000).unwrap();
@@ -825,11 +823,9 @@ async fn devnet_survives_orderly_restart_and_rejects_duplicate_and_reused_reques
     let second_protocol_context =
         build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
     assert_eq!(second_protocol_context.asset_id(), asset_id);
-    let second_module = build_standard_asset_module(
-        second_protocol_context,
-        STANDARD_ASSET_TRANSFER_WASM.to_vec(),
-    )
-    .unwrap();
+    let second_module =
+        build_standard_asset_module(second_protocol_context, STANDARD_ASSET_MODULE_WASM.to_vec())
+            .unwrap();
     let reseed_context_a = DurableOperationContext::new(
         second_generation,
         StorageDeadline::new(u64::MAX).unwrap(),

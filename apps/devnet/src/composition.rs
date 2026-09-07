@@ -144,7 +144,7 @@ mod tests {
     use super::*;
     use crate::{
         boot::boot_local_store, catalog::build_standard_asset_module, config::DevnetConfig,
-        genesis::build_devnet_protocol_context, standard_asset::STANDARD_ASSET_TRANSFER_WASM,
+        genesis::build_devnet_protocol_context, standard_asset::STANDARD_ASSET_MODULE_WASM,
     };
     use ed25519_zebra::{SigningKey, VerificationKey};
     use std::{
@@ -209,7 +209,7 @@ mod tests {
         let context =
             build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
         let module =
-            build_standard_asset_module(context, STANDARD_ASSET_TRANSFER_WASM.to_vec()).unwrap();
+            build_standard_asset_module(context, STANDARD_ASSET_MODULE_WASM.to_vec()).unwrap();
         let (store, blob_store) = boot.into_parts();
 
         let router = compose_devnet_router(
