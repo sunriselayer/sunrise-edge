@@ -643,6 +643,11 @@ capability-free signed artifact candidate: exact bytes and context are
 authenticated, but ABI declarations and dependency provenance remain
 unverified. It is not an input accepted by execution or durable publication.
 
+[DR-0115](decisions/0115-public-object-signature-abi.md) specifies the public
+object-signature ABI and exact authenticated candidate dependency-closure
+verifier. Its witness establishes declaration consistency, not value-layout
+validation, durable publication, or runtime object authority.
+
 The shared non-executing WASM admission verifier and its structural-only
 boundary are specified in [DR-0112](decisions/0112-contract-wasm-admission.md).
 It checks binary code and declared export names without authorizing object

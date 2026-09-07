@@ -110,7 +110,7 @@ pub use objects::{
 // surface" carve-out from `docs/architecture/product-surfaces.md` §44 and
 // `docs/architecture/decisions/0081-0087-cli-first-roadmap.md` DR-0083 and DR-0084 — it
 // adds no devnet or other application-specific semantics.
-pub use abi::{AccessEntry, AccessManifest};
+pub use abi::{AccessEntry, AccessManifest, public_abi};
 pub use canonical_encoding::{CanonicalEncodingError, CanonicalStruct};
 pub use fees::{Amount, FeePayment};
 pub use protocol_types::{

@@ -162,6 +162,8 @@
 /// Package-scoped nominal references for the public-contract boundary.
 /// These values do not authenticate publishers or grant object authority.
 pub mod package_types;
+/// Unverified package-scoped object-signature declarations and canonical codecs.
+pub mod public_abi;
 
 use canonical_encoding::{
     CanonicalDecodingError, CanonicalEncodingError, CanonicalFrame, CanonicalStruct,

@@ -70,6 +70,13 @@ binds exact artifact data without granting publication or execution authority.
 Opaque ABI declarations and dependency claims must be verified before durable
 admission, not trusted merely because the publisher signed their bytes.
 
+The object-signature checks in
+[DR-0115](architecture/decisions/0115-public-object-signature-abi.md) bind
+package-local generic constructor signatures to an exact signed candidate
+closure. Value layouts, runtime substitution, object authority and durable
+dependency publication remain separate obligations; a well-formed interface
+is not a published or executable contract.
+
 Instantiation uses published code to establish an independent instance and its
 initial objects/authority. Initialization effects and the instance record
 commit atomically. Initializers must not re-run as an accidental side effect of

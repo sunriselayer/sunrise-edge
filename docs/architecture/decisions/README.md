@@ -21,6 +21,7 @@
 - [DR-0112: non-executing WASM admission](0112-contract-wasm-admission.md)
 - [DR-0113: package-scoped nominal type identity](0113-package-scoped-type-identity.md)
 - [DR-0114: authenticated publication candidates](0114-authenticated-publication-candidate.md)
+- [DR-0115: public object-signature ABI and candidate dependency closure](0115-public-object-signature-abi.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).
