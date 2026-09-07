@@ -101,6 +101,34 @@ pub fn compose_devnet_router_with_local_execution(
         execution::local_execution::LocalExecutionPolicy,
     )>,
 ) -> Result<Router, DevnetCompositionError> {
+    compose_devnet_router_with_execution_policies(
+        store,
+        blob_store,
+        asset_module,
+        boot_generation,
+        max_concurrent,
+        reserved_correlation_sequences,
+        fee_treasury_object_id,
+        publication,
+        local_execution.map(|(publication, policy)| {
+            native_http::LocalExecutionComposition::new(publication, policy)
+        }),
+    )
+}
+
+/// Builds the same router with a bounded, explicitly seeded execution registry.
+#[allow(clippy::too_many_arguments)]
+pub fn compose_devnet_router_with_execution_policies(
+    store: Arc<SqliteDurableStore>,
+    blob_store: Arc<SqliteBlobStore>,
+    asset_module: DevnetAssetModule,
+    boot_generation: WriterFenceGeneration,
+    max_concurrent: usize,
+    reserved_correlation_sequences: usize,
+    fee_treasury_object_id: ObjectId,
+    publication: Option<node_core::publication::LocalPublicationPolicy>,
+    local_execution: Option<native_http::LocalExecutionComposition>,
+) -> Result<Router, DevnetCompositionError> {
     let admission: NonZeroUsize =
         NonZeroUsize::new(max_concurrent).ok_or(DevnetCompositionError::InvalidConcurrency)?;
     let reserved_sequences: u64 = u64::try_from(reserved_correlation_sequences)
@@ -136,10 +164,8 @@ pub fn compose_devnet_router_with_local_execution(
     if let Some(policy) = publication {
         preinstalled_wasm = preinstalled_wasm.with_local_publication(policy);
     }
-    if let Some((publication, policy)) = local_execution {
-        preinstalled_wasm = preinstalled_wasm.with_local_execution(
-            native_http::LocalExecutionComposition::new(publication, policy),
-        );
+    if let Some(composition) = local_execution {
+        preinstalled_wasm = preinstalled_wasm.with_local_execution(composition);
     }
     let authority = StructuredDurableRequestAuthority::new(
         boot_generation,

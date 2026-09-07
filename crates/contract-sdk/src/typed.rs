@@ -1,9 +1,11 @@
-//! Checked profile-2 `sunrise` host bindings.
+//! Checked typed `sunrise` host bindings.
 //!
 //! Canonical type, type-argument, body and instance bytes remain opaque here;
 //! the host validates them against committed interfaces and frame authority.
 //! Handles are frame-local selectors, not transferable authority or object IDs.
-//! Dependency calls are void, effectful library calls in the same root instance.
+//! Contract calls use the runtime's signed authorization table for both same-
+//! and different-instance dispatch. The dependency selector is an adapter into
+//! that common frame/authority model, not an independent privilege mechanism.
 //! A nested host failure traps the entire invocation, even if WASM ignores its
 //! return value. Native builds have no host and return [`Error::Unavailable`].
 
@@ -15,7 +17,7 @@ use core::{convert::Infallible, fmt};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Handle(u32);
 
-/// Maximum object selectors delegated to one typed dependency entrypoint.
+/// Maximum object selectors delegated to one typed contract or dependency call.
 pub const MAX_DEPENDENCY_HANDLES: usize = 32;
 
 /// Checked wrapper failure. Host authorization errors remain opaque.
@@ -27,9 +29,9 @@ pub enum Error {
     IntegerOutOfRange,
     /// An input index is not present in this frame.
     InvalidHandle,
-    /// A dependency handle list contains duplicate selectors.
+    /// A call handle list contains duplicate selectors.
     DuplicateHandle,
-    /// The bounded dependency object parameter count was exceeded.
+    /// The bounded call object parameter count was exceeded.
     TooManyHandles,
     /// The host returned a negative result.
     HostRejected,
@@ -42,8 +44,8 @@ impl fmt::Display for Error {
             Self::Unavailable => "typed contract host is unavailable",
             Self::IntegerOutOfRange => "typed host integer or length is out of range",
             Self::InvalidHandle => "input handle is outside this frame",
-            Self::DuplicateHandle => "dependency handle selectors must be unique",
-            Self::TooManyHandles => "dependency calls permit at most 32 object handles",
+            Self::DuplicateHandle => "call handle selectors must be unique",
+            Self::TooManyHandles => "typed calls permit at most 32 object handles",
             Self::HostRejected => "typed host rejected the operation",
             Self::InvalidHostResult => "typed host returned an invalid result",
         })
@@ -195,7 +197,7 @@ pub fn caller() -> Result<[u8; 32], Error> {
     Ok(address)
 }
 
-/// Writes the root's canonical `0x6404` instance record into a supplied buffer.
+/// Writes the current frame's canonical `0x6404` instance record into a supplied buffer.
 /// Insufficient space is rejected by the host; there is no implicit size probe.
 pub fn instance(output: &mut [u8]) -> Result<usize, Error> {
     let length = abi_len(output.len())?;
@@ -242,6 +244,8 @@ fn encode_handles(handles: &[Handle]) -> Result<Vec<u8>, Error> {
 /// Calls a directly declared dependency library in the same instance.
 /// Type arguments and arguments use their existing canonical encodings.
 /// The host checks the callee's rights against this unique subset of handles.
+/// This selector adapts to the common contract-call frame validator and grants
+/// no privilege absent from that validator.
 pub fn call_dependency(
     dependency: u32,
     entrypoint: &str,
@@ -269,6 +273,39 @@ pub fn call_dependency(
             handle_count,
             args.as_ptr(),
             args_len,
+        )
+    })
+}
+
+/// Calls the exact target selected by the runtime's signed authorization table.
+///
+/// The same operation applies to targets in the current or another instance.
+/// `authorization_index` selects an existing signed entry; this wrapper cannot
+/// invent targets, entrypoints, type arguments, object selectors or rights.
+/// The host validates `arguments` against the selected committed ABI layout.
+/// Handles are a unique ordered subset of this frame's opaque selectors; the
+/// host also enforces their signed selectors and current rights. Calls are void
+/// and effectful; a nested trap rejects the complete invocation.
+pub fn call_contract(
+    authorization_index: u32,
+    handles: &[Handle],
+    arguments: &[u8],
+) -> Result<(), Error> {
+    let authorization_index: i32 = abi_index(authorization_index)?;
+    let handle_count: i32 = abi_len(handles.len())?;
+    let arguments_len: i32 = abi_len(arguments.len())?;
+    let encoded_handles: Vec<u8> = encode_handles(handles)?;
+    available()?;
+    // SAFETY: both slices are live for their checked lengths throughout this
+    // synchronous call. Handles encode exactly handle_count little-endian u32
+    // selectors without relying on alignment or exposing Handle's representation.
+    success(unsafe {
+        raw::call_contract(
+            authorization_index,
+            encoded_handles.as_ptr(),
+            handle_count,
+            arguments.as_ptr(),
+            arguments_len,
         )
     })
 }
@@ -320,6 +357,13 @@ mod raw {
             args: *const u8,
             args_len: i32,
         ) -> i32;
+        pub(super) fn call_contract(
+            authorization_index: i32,
+            handles: *const u8,
+            handle_count: i32,
+            arguments: *const u8,
+            arguments_len: i32,
+        ) -> i32;
     }
 }
 
@@ -335,7 +379,8 @@ mod raw {
         transfer_object(handle:i32,owner:*const u8); get_args_len();
         read_args(offset:i32,out:*mut u8,length:i32); get_caller(out:*mut u8); get_instance(out:*mut u8,length:i32);
         emit_event(ty:*const u8,ty_len:i32,data:*const u8,data_len:i32);
-        call_dependency(dependency:i32,entry:*const u8,entry_len:i32,types:*const u8,types_len:i32,handles:*const u8,handle_count:i32,args:*const u8,args_len:i32)
+        call_dependency(dependency:i32,entry:*const u8,entry_len:i32,types:*const u8,types_len:i32,handles:*const u8,handle_count:i32,args:*const u8,args_len:i32);
+        call_contract(authorization_index:i32,handles:*const u8,handle_count:i32,arguments:*const u8,arguments_len:i32)
     }
     pub(super) unsafe fn abort(_: *const u8, _: i32) {}
 }
@@ -345,6 +390,7 @@ mod tests {
     use super::*;
     #[test]
     fn conversions_reject_truncation_and_negative_results() {
+        assert_eq!(success(0), Ok(()));
         assert_eq!(
             abi_len(i32::MAX as usize + 1),
             Err(Error::IntegerOutOfRange)
@@ -377,6 +423,7 @@ mod tests {
     }
     #[test]
     fn native_wrappers_fail_without_linking_or_dereferencing_host_pointers() {
+        assert_eq!(call_contract(0, &[], &[]), Err(Error::Unavailable));
         assert_eq!(object_count(), Err(Error::Unavailable));
         assert_eq!(input_handle(0), Err(Error::Unavailable));
         assert_eq!(input_handle(u32::MAX), Err(Error::IntegerOutOfRange));
@@ -402,5 +449,27 @@ mod tests {
             Err(Error::Unavailable)
         );
         assert_eq!(abort("no host"), Err(Error::Unavailable));
+    }
+
+    #[test]
+    fn contract_call_checks_indices_uniqueness_and_bounds_before_native_dispatch() {
+        assert_eq!(
+            call_contract(u32::MAX, &[], &[]),
+            Err(Error::IntegerOutOfRange)
+        );
+        assert_eq!(
+            call_contract(0, &[Handle(u32::MAX)], &[]),
+            Err(Error::IntegerOutOfRange)
+        );
+        assert_eq!(
+            call_contract(0, &[Handle(1), Handle(1)], &[]),
+            Err(Error::DuplicateHandle)
+        );
+        let handles: Vec<Handle> = (0..=MAX_DEPENDENCY_HANDLES as u32).map(Handle).collect();
+        assert_eq!(call_contract(0, &handles, &[]), Err(Error::TooManyHandles));
+        assert_eq!(
+            call_contract(i32::MAX as u32, &handles[..MAX_DEPENDENCY_HANDLES], &[1, 2]),
+            Err(Error::Unavailable)
+        );
     }
 }

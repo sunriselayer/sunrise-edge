@@ -4,7 +4,7 @@ use crate::{
     NodeResponseStatus, RequestId, Transport, WireRequest,
 };
 use crypto::SignatureSigner;
-use execution::call::{CallIntent, bind_call_intent};
+use execution::call::CallIntent;
 use execution::local_execution::*;
 use execution::publication::{
     self, AuthenticatedPublicationCandidate, PublicationContext, UnverifiedDependencyRef,
@@ -18,6 +18,61 @@ fn invalid(message: &'static str) -> ClientError {
     LocalExecutionError::Invalid(message).into()
 }
 
+/// Invocation-wide cache. Candidate clones share their Arc-backed publication.
+#[derive(Default)]
+struct PublicationCache {
+    nodes: std::collections::BTreeMap<
+        abi::package_types::PackageOrigin,
+        (UnverifiedDependencyRef, AuthenticatedPublicationCandidate),
+    >,
+    bytes: usize,
+}
+impl PublicationCache {
+    fn get(
+        &self,
+        reference: &UnverifiedDependencyRef,
+    ) -> Result<Option<AuthenticatedPublicationCandidate>, ClientError> {
+        match self.nodes.get(reference.origin()) {
+            Some((prior, candidate)) if prior == reference => Ok(Some(candidate.clone())),
+            Some(_) => Err(invalid("conflicting exact code reference")),
+            None => Ok(None),
+        }
+    }
+    fn check_new_node(&self) -> Result<(), ClientError> {
+        if self.nodes.len() >= execution::call_authorization::MAX_EXECUTION_CODE_NODES {
+            return Err(invalid("publication closure nodes"));
+        }
+        Ok(())
+    }
+    fn retain(&mut self, candidate: AuthenticatedPublicationCandidate) -> Result<(), ClientError> {
+        let request = candidate.request();
+        let artifact = request.artifact();
+        let reference: UnverifiedDependencyRef = UnverifiedDependencyRef::new(
+            artifact.origin().clone(),
+            artifact.revision(),
+            artifact.context().clone(),
+            *request.artifact_digest(),
+        )?;
+        if self.get(&reference)?.is_some() {
+            return Ok(());
+        }
+        self.check_new_node()?;
+        // Canonical submission wrapper adds 10 + 6 + 32 + 6 bytes to its request.
+        let bytes: usize = self
+            .bytes
+            .checked_add(publication::encode_publication_request(request)?.len())
+            .and_then(|value| value.checked_add(54))
+            .ok_or_else(|| invalid("publication closure bytes"))?;
+        if bytes > execution::call_authorization::MAX_EXECUTION_CODE_BYTES {
+            return Err(invalid("publication closure bytes"));
+        }
+        self.nodes
+            .insert(reference.origin().clone(), (reference, candidate));
+        self.bytes = bytes;
+        Ok(())
+    }
+}
+
 /// Signs exact locally pinned instance/code/input bytes after ABI validation.
 /// Caller must first verify the remote context independently of TLS.
 pub fn build_signed_local_execution(
@@ -29,47 +84,57 @@ pub fn build_signed_local_execution(
     instance: &InstanceRecord,
     interface: &VerifiedPublicationInterface,
 ) -> Result<SignedLocalExecutionIntent, ClientError> {
+    let policy: LocalExecutionPolicy = LocalExecutionPolicy::new(
+        crate::publication_client::trusted_context(resolver, expected)?,
+    );
+    let scopes: Vec<ResolvedExecutionScope> = vec![ResolvedExecutionScope {
+        instance: instance.clone(),
+        target: instance_target(resolver, instance)?,
+        interface: interface.clone(),
+    }];
+    build_signed_general_execution(
+        signer,
+        resolver,
+        expected,
+        &policy,
+        mode,
+        call,
+        Vec::new(),
+        &scopes,
+    )
+}
+
+/// Signs one common execution intent after shared scope/authority validation.
+/// The policy and complete exact scopes are locally trusted inputs. Independently
+/// verify the endpoint context before calling this offline signing operation.
+#[allow(clippy::too_many_arguments)] // Keep trust inputs distinct from unsigned invocation data.
+pub fn build_signed_general_execution(
+    signer: &LocalSigner,
+    resolver: &HashSuiteResolver,
+    expected: &ExpectedProtocolContext,
+    policy: &LocalExecutionPolicy,
+    mode: LocalExecutionMode,
+    call: CallIntent,
+    authorizations: Vec<execution::call_authorization::CallAuthorization>,
+    scopes: &[ResolvedExecutionScope],
+) -> Result<SignedLocalExecutionIntent, ClientError> {
     let context: PublicationContext =
         crate::publication_client::trusted_context(resolver, expected)?;
-    if call.context != context
-        || instance.context.epoch() > expected.epoch()
+    if policy.context() != &context
+        || call.context != context
         || call.sender != *signer.address().as_bytes()
-        || call.code != instance.code
-        || call.instance != instance_target(resolver, instance)?
     {
-        return Err(invalid("signer, context, code or instance mismatch"));
-    }
-    let metadata = interface
-        .executable_abi(call.code.origin())
-        .ok_or_else(|| invalid("nonexecutable publication"))?;
-    if metadata.initializer.as_deref() != Some(instance.initializer.as_str()) {
-        return Err(invalid("instance initializer differs from signed metadata"));
-    }
-    match mode {
-        LocalExecutionMode::Instantiate => {
-            if instance.creator != call.sender
-                || instance.context != context
-                || call.entrypoint != instance.initializer
-            {
-                return Err(invalid("instance creation authority"));
-            }
-        }
-        LocalExecutionMode::Call => {
-            if call.entrypoint == instance.initializer {
-                return Err(invalid("initializer cannot be called again"));
-            }
-        }
-    }
-    bind_call_intent(&call, interface).map_err(LocalExecutionError::from)?;
-    let policy: LocalExecutionPolicy = LocalExecutionPolicy::new(context.clone());
-    if call.gas_limit > policy.max_gas() {
-        return Err(invalid("gas exceeds committed local policy"));
+        return Err(invalid("signer or trusted policy context mismatch"));
     }
     let intent: LocalExecutionIntent = LocalExecutionIntent {
+        authorizations,
         mode,
         policy_digest: policy.digest(resolver)?,
         call,
     };
+    execution::execution_scopes::validate_local_execution_scopes(
+        resolver, policy, &intent, scopes,
+    )?;
     let frame: Vec<u8> = local_execution_signing_frame(&context, &intent)?;
     let bytes: Vec<u8> = signer.sign_framed(&frame)?;
     let signature: [u8; 64] = bytes
@@ -77,11 +142,75 @@ pub fn build_signed_local_execution(
         .try_into()
         .map_err(|_| invalid("signature length"))?;
     let signed: SignedLocalExecutionIntent = SignedLocalExecutionIntent { intent, signature };
-    authenticate_local_execution(resolver, &policy, &encode_signed_local_execution(&signed)?)?;
+    authenticate_local_execution(resolver, policy, &encode_signed_local_execution(&signed)?)?;
     Ok(signed)
 }
 
 impl<T: Transport> Client<T> {
+    /// Resolves only signed exact instance pins; server claims cannot replace them.
+    /// Root may be a locally prepared initializer record. Other records must match
+    /// their signed revision and record digest under the supplied trusted resolver.
+    #[allow(clippy::too_many_arguments)] // Explicit trust inputs and locally pinned root view.
+    pub fn query_execution_scopes(
+        &self,
+        call: &CallIntent,
+        authorizations: &[execution::call_authorization::CallAuthorization],
+        instance: InstanceRecord,
+        interface: VerifiedPublicationInterface,
+        resolver: &HashSuiteResolver,
+        expected: &ExpectedProtocolContext,
+        policy: &LocalExecutionPolicy,
+    ) -> Result<Vec<ResolvedExecutionScope>, ClientError> {
+        execution::call_authorization::validate_call_authorizations(call, authorizations)?;
+        let mut cache: PublicationCache = PublicationCache::default();
+        for candidate in std::iter::once(interface.candidate()).chain(interface.dependencies()) {
+            cache.retain(candidate.clone())?;
+        }
+        let mut scopes: Vec<ResolvedExecutionScope> = vec![ResolvedExecutionScope {
+            target: instance_target(resolver, &instance)?,
+            instance,
+            interface,
+        }];
+        if scopes[0].target != call.instance {
+            return Err(invalid("root instance pin mismatch"));
+        }
+        for target in authorizations
+            .iter()
+            .flat_map(|entry| [&entry.caller, &entry.callee])
+        {
+            if scopes.iter().any(|scope| scope.target == target.instance) {
+                continue;
+            }
+            if scopes.len() >= execution::call_authorization::MAX_EXECUTION_SCOPES {
+                return Err(invalid("execution scope limit"));
+            }
+            let record: InstanceRecord = self
+                .query_instance(
+                    target.instance.creator,
+                    target.instance.seed,
+                    resolver,
+                    expected,
+                )?
+                .ok_or_else(|| invalid("authorized instance absent"))?;
+            if instance_target(resolver, &record)? != target.instance {
+                return Err(invalid("authorized instance differs from signed pin"));
+            }
+            let interface: VerifiedPublicationInterface = self.query_executable_interface_cached(
+                &record.code,
+                resolver,
+                expected,
+                policy,
+                &mut cache,
+            )?;
+            scopes.push(ResolvedExecutionScope {
+                instance: record,
+                target: target.instance.clone(),
+                interface,
+            });
+        }
+        Ok(scopes)
+    }
+
     /// Fetches and authenticates a bounded exact executable publication closure.
     /// All original hash contexts use the caller's resolver, never remote schedules.
     pub fn query_executable_interface(
@@ -90,51 +219,107 @@ impl<T: Transport> Client<T> {
         resolver: &HashSuiteResolver,
         expected: &ExpectedProtocolContext,
     ) -> Result<VerifiedPublicationInterface, ClientError> {
+        self.query_executable_interface_for_policy(
+            reference,
+            resolver,
+            expected,
+            &LocalExecutionPolicy::new(crate::publication_client::trusted_context(
+                resolver, expected,
+            )?),
+        )
+    }
+
+    /// Verifies executable code under explicitly trusted profile capabilities.
+    /// Profile three permits exact profile-two dependencies, without retry or downgrade.
+    pub fn query_executable_interface_for_policy(
+        &self,
+        reference: &UnverifiedDependencyRef,
+        resolver: &HashSuiteResolver,
+        expected: &ExpectedProtocolContext,
+        policy: &LocalExecutionPolicy,
+    ) -> Result<VerifiedPublicationInterface, ClientError> {
+        self.query_executable_interface_cached(
+            reference,
+            resolver,
+            expected,
+            policy,
+            &mut PublicationCache::default(),
+        )
+    }
+
+    fn query_executable_interface_cached(
+        &self,
+        reference: &UnverifiedDependencyRef,
+        resolver: &HashSuiteResolver,
+        expected: &ExpectedProtocolContext,
+        policy: &LocalExecutionPolicy,
+        cache: &mut PublicationCache,
+    ) -> Result<VerifiedPublicationInterface, ClientError> {
+        if policy.context() != &crate::publication_client::trusted_context(resolver, expected)? {
+            return Err(invalid("execution policy context"));
+        }
         let mut pending: Vec<UnverifiedDependencyRef> = vec![reference.clone()];
         let mut candidates: Vec<AuthenticatedPublicationCandidate> = Vec::new();
-        let mut origins = std::collections::BTreeSet::new();
-        let mut total: usize = 0;
+        let mut origins: std::collections::BTreeSet<abi::package_types::PackageOrigin> =
+            std::collections::BTreeSet::new();
         while let Some(reference) = pending.pop() {
+            let cached: Option<AuthenticatedPublicationCandidate> = cache.get(&reference)?;
             if !origins.insert(reference.origin().clone()) {
                 continue;
             }
-            if origins.len() > publication::MAX_INTERFACE_NODES {
-                return Err(invalid("publication closure nodes"));
-            }
-            let semantics = local_execution_semantics(resolver, reference.context())?;
-            let submission = self
-                .query_publication_in_context(
-                    reference.origin(),
+            let candidate: AuthenticatedPublicationCandidate = if let Some(candidate) = cached {
+                candidate
+            } else {
+                cache.check_new_node()?;
+                let submission = self
+                    .query_publication_with_semantics(
+                        reference.origin(),
+                        resolver,
+                        expected,
+                        reference.context(),
+                        |artifact| match artifact.wasm_profile() {
+                            2 => Ok(local_execution_semantics(resolver, reference.context())?),
+                            3 if policy.profile() == 3 => {
+                                Ok(general_execution_semantics(resolver, reference.context())?)
+                            }
+                            _ => Err(invalid("publication profile is not locally permitted")),
+                        },
+                    )?
+                    .ok_or_else(|| invalid("publication absent"))?;
+                let request = submission.request();
+                let artifact = request.artifact();
+                let semantics = *artifact.semantics();
+                if artifact.revision() != reference.revision()
+                    || artifact.context() != reference.context()
+                    || request.artifact_digest() != reference.artifact_digest()
+                {
+                    return Err(invalid("exact code reference mismatch"));
+                }
+                let candidate = publication::authenticate_publication_submission(
                     resolver,
-                    expected,
                     reference.context(),
                     &semantics,
-                )?
-                .ok_or_else(|| invalid("publication absent"))?;
-            let request = submission.request();
-            let artifact = request.artifact();
-            if artifact.revision() != reference.revision()
-                || artifact.context() != reference.context()
-                || request.artifact_digest() != reference.artifact_digest()
-            {
-                return Err(invalid("exact code reference mismatch"));
-            }
-            total = total
-                .checked_add(publication::encode_publication_submission(&submission)?.len())
-                .ok_or_else(|| invalid("publication closure bytes"))?;
-            if total > node_core::publication::MAX_PUBLICATION_CLOSURE_BYTES {
-                return Err(invalid("publication closure bytes"));
+                    submission,
+                )?;
+                cache.retain(candidate.clone())?;
+                candidate
+            };
+            let artifact = candidate.request().artifact();
+            let semantics = match artifact.wasm_profile() {
+                2 => local_execution_semantics(resolver, reference.context())?,
+                3 if policy.profile() == 3 => {
+                    general_execution_semantics(resolver, reference.context())?
+                }
+                _ => return Err(invalid("publication profile is not locally permitted")),
+            };
+            if artifact.semantics() != &semantics {
+                return Err(invalid("publication semantics"));
             }
             pending.extend_from_slice(artifact.unverified_dependencies());
             if pending.len() > publication::MAX_INTERFACE_NODES * publication::MAX_INTERFACE_NODES {
                 return Err(invalid("publication closure edges"));
             }
-            candidates.push(publication::authenticate_publication_submission(
-                resolver,
-                reference.context(),
-                &semantics,
-                submission,
-            )?);
+            candidates.push(candidate);
         }
         if candidates.is_empty() {
             return Err(invalid("missing root code"));

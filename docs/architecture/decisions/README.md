@@ -29,6 +29,7 @@
 - [DR-0120: authenticated generic call intent](0120-authenticated-call-intent.md)
 - [DR-0121: durable local code publication](0121-durable-local-code-publication.md)
 - [DR-0122: local independent instances and typed execution](0122-local-instance-execution.md)
+- [DR-0123: one contract-call authorization model](0123-unified-contract-calls.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).

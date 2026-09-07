@@ -27,6 +27,7 @@ pub(super) struct Grant {
     pub mode: ObjectMode,
 }
 pub(super) struct Frame {
+    pub scope: usize,
     pub interface: VerifiedPublicationInterface,
     pub code: UnverifiedDependencyRef,
     pub grants: Vec<Grant>,
@@ -34,12 +35,13 @@ pub(super) struct Frame {
 }
 pub(super) struct HostState {
     pub resolver: HashSuiteResolver,
-    pub instance: InstanceRecord,
-    pub target: crate::call::InstanceTarget,
+    pub scopes: Vec<ResolvedExecutionScope>,
+    pub authorizations: Vec<crate::call_authorization::CallAuthorization>,
+    pub profile: u32,
     pub context: publication::PublicationContext,
     pub event: protocol_types::Digest32,
     pub sender: [u8; 32],
-    pub instance_bytes: Vec<u8>,
+    pub instance_bytes: Vec<Vec<u8>>,
     pub arena: Vec<ArenaObject>,
     pub frames: Vec<Frame>,
     pub modules: BTreeMap<PackageOrigin, Arc<Module>>,
@@ -210,8 +212,8 @@ fn writable(state: &HostState, handle: i32, consume: bool) -> Result<usize, wasm
         || (consume && grant.mode != ObjectMode::Consume)
         || item.authority.code != frame(state)?.code
         || item.object.owner != Owner::Address(Address::new(state.sender))
-        || item.authority.instance != state.target
-        || item.authority.instance_context != state.instance.context
+        || item.authority.instance != state.scopes[frame(state)?.scope].target
+        || item.authority.instance_context != state.scopes[frame(state)?.scope].instance.context
     {
         return Err(trap());
     }
@@ -366,8 +368,8 @@ pub(super) fn linker(engine: &Engine) -> Result<Linker<HostState>, wasmi::Error>
             let id = derive_local_created_object_id(
                 &state.resolver,
                 &state.context,
-                &state.instance.context,
-                &state.target,
+                &state.scopes[frame(state)?.scope].instance.context,
+                &state.scopes[frame(state)?.scope].target,
                 &current.code,
                 state.event,
                 state.creations,
@@ -380,8 +382,8 @@ pub(super) fn linker(engine: &Engine) -> Result<Linker<HostState>, wasmi::Error>
                 .map_err(|_| trap())?;
             let authority: ObjectAuthority = ObjectAuthority {
                 object_id: id,
-                instance_context: state.instance.context.clone(),
-                instance: state.target.clone(),
+                instance_context: state.scopes[frame(state)?.scope].instance.context.clone(),
+                instance: state.scopes[frame(state)?.scope].target.clone(),
                 code: current.code.clone(),
                 ty,
             };
@@ -453,7 +455,7 @@ pub(super) fn linker(engine: &Engine) -> Result<Linker<HostState>, wasmi::Error>
         "get_instance",
         |mut caller: Caller<'_, HostState>, out: i32, length: i32| -> HostResult {
             charge(&mut caller, 0)?;
-            let bytes: Vec<u8> = caller.data().instance_bytes.clone();
+            let bytes: Vec<u8> = caller.data().instance_bytes[frame(caller.data())?.scope].clone();
             write(&mut caller, out, length, &bytes)
         },
     )?;
@@ -485,9 +487,161 @@ pub(super) fn linker(engine: &Engine) -> Result<Linker<HostState>, wasmi::Error>
         },
     )?;
     linker.func_wrap("sunrise", "call_dependency", dependency)?;
+    linker.func_wrap("sunrise", "call_contract", contract)?;
     Ok(linker)
 }
 
+/// The sole frame-entry validator, used by root, dependency and authorization selectors.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_frame(
+    state: &HostState,
+    scope: usize,
+    code: UnverifiedDependencyRef,
+    entry: &str,
+    types: &[abi::package_types::ScopedTypeArg],
+    supplied: Vec<Grant>,
+    args: Vec<u8>,
+    root: Option<LocalExecutionMode>,
+) -> Result<Frame, wasmi::Error> {
+    if state.frames.len() >= MAX_LOCAL_EXECUTION_DEPTH as usize
+        || state.calls >= MAX_LOCAL_EXECUTION_CALLS
+        || state
+            .handles
+            .checked_add(supplied.len())
+            .is_none_or(|count| count > MAX_LOCAL_OBJECT_HANDLES as usize)
+        || args.len() > crate::call::MAX_CALL_ARGUMENT_BYTES
+    {
+        return Err(trap());
+    }
+    let selected = state.scopes.get(scope).ok_or_else(trap)?;
+    if state
+        .frames
+        .iter()
+        .any(|active| state.scopes[active.scope].target == selected.target && active.code == code)
+    {
+        return Err(trap());
+    }
+    let interface = selected
+        .interface
+        .for_origin(code.origin())
+        .map_err(|_| trap())?;
+    if reference(&interface).map_err(|_| trap())? != code {
+        return Err(trap());
+    }
+    let metadata = interface.executable_abi(code.origin()).ok_or_else(trap)?;
+    match root {
+        Some(LocalExecutionMode::Instantiate)
+            if state.frames.is_empty()
+                && scope == 0
+                && code == selected.instance.code
+                && metadata.initializer.as_deref() == Some(entry) => {}
+        Some(LocalExecutionMode::Instantiate) => return Err(trap()),
+        _ if metadata.initializer.as_deref() == Some(entry) => return Err(trap()),
+        _ => {}
+    }
+    let signature =
+        publication::bind_object_signature(&interface, entry, types).map_err(|_| trap())?;
+    publication::validate_call_arguments(&signature, &args).map_err(|_| trap())?;
+    if signature.objects().len() != supplied.len() {
+        return Err(trap());
+    }
+    let mut unique: BTreeSet<usize> = BTreeSet::new();
+    let mut grants: Vec<Grant> = Vec::with_capacity(supplied.len());
+    for (supplied, parameter) in supplied.iter().zip(signature.objects()) {
+        let object = state.arena.get(supplied.index).ok_or_else(trap)?;
+        let current = if object.transferred {
+            ObjectMode::Read
+        } else {
+            supplied.mode
+        };
+        if object.consumed
+            || !unique.insert(supplied.index)
+            || rank(parameter.mode()) > rank(current)
+            || parameter.ty() != &object.authority.ty
+            || parameter.schema() != object.object.schema_version
+        {
+            return Err(trap());
+        }
+        publication::validate_nominal_body(
+            &interface,
+            parameter.ty(),
+            parameter.schema(),
+            &object.object.data,
+        )
+        .map_err(|_| trap())?;
+        grants.push(Grant {
+            index: supplied.index,
+            mode: parameter.mode(),
+        });
+    }
+    Ok(Frame {
+        scope,
+        interface,
+        code,
+        grants,
+        args,
+    })
+}
+fn rank(mode: ObjectMode) -> u8 {
+    match mode {
+        ObjectMode::Read => 0,
+        ObjectMode::Write => 1,
+        ObjectMode::Consume => 2,
+    }
+}
+fn object_mode(mode: objects::AccessMode) -> ObjectMode {
+    match mode {
+        objects::AccessMode::Read => ObjectMode::Read,
+        objects::AccessMode::Write => ObjectMode::Write,
+        objects::AccessMode::Consume => ObjectMode::Consume,
+    }
+}
+fn read_handles(
+    caller: &mut Caller<'_, HostState>,
+    pointer: i32,
+    count: i32,
+) -> Result<Vec<Grant>, wasmi::Error> {
+    let count: usize = size(count)?;
+    if count > crate::call_authorization::MAX_AUTHORIZED_INPUTS {
+        return Err(trap());
+    }
+    let length: i32 = i32::try_from(count.checked_mul(4).ok_or_else(trap)?).map_err(|_| trap())?;
+    let bytes: Vec<u8> = read(caller, pointer, length)?;
+    let mut grants: Vec<Grant> = Vec::with_capacity(count);
+    for handle in bytes.chunks_exact(4) {
+        let value: u32 = u32::from_le_bytes(handle.try_into().map_err(|_| trap())?);
+        grants.push(grant(
+            caller.data(),
+            i32::try_from(value).map_err(|_| trap())?,
+        )?);
+    }
+    Ok(grants)
+}
+fn enter(mut caller: Caller<'_, HostState>, prepared: Frame, entry: &str) -> HostResult {
+    let module: Arc<Module> = Arc::clone(
+        caller
+            .data()
+            .modules
+            .get(prepared.code.origin())
+            .ok_or_else(trap)?,
+    );
+    let linker: Arc<Linker<HostState>> = Arc::clone(&caller.data().linker);
+    let state = caller.data_mut();
+    state.handles = state
+        .handles
+        .checked_add(prepared.grants.len())
+        .ok_or_else(trap)?;
+    state.calls = state.calls.checked_add(1).ok_or_else(trap)?;
+    state.frames.push(prepared);
+    let result: Result<(), wasmi::Error> = (|| {
+        let instance = linker.instantiate_and_start(&mut caller, &module)?;
+        let function = instance.get_typed_func::<(), ()>(&caller, entry)?;
+        function.call(&mut caller, ())
+    })();
+    caller.data_mut().frames.pop();
+    result?;
+    Ok(0)
+}
 #[allow(clippy::too_many_arguments)]
 fn dependency(
     mut caller: Caller<'_, HostState>,
@@ -503,31 +657,12 @@ fn dependency(
 ) -> HostResult {
     charge(&mut caller, 0)?;
     debit(&mut caller, LOCAL_LIBRARY_BINDING_GAS)?;
-    let count: usize = size(hc)?;
-    if count > 32 {
-        return Err(trap());
-    }
-    let entry: Vec<u8> = read(&mut caller, ep, el)?;
-    let entry: String = String::from_utf8(entry).map_err(|_| trap())?;
+    let entry: String = String::from_utf8(read(&mut caller, ep, el)?).map_err(|_| trap())?;
     let types: Vec<u8> = read(&mut caller, tp, tl)?;
-    let handles: Vec<u8> = read(
-        &mut caller,
-        hp,
-        i32::try_from(count.checked_mul(4).ok_or_else(trap)?).map_err(|_| trap())?,
-    )?;
+    let grants: Vec<Grant> = read_handles(&mut caller, hp, hc)?;
     let args: Vec<u8> = read(&mut caller, ap, al)?;
-    let state: &HostState = caller.data();
-    let handles_allocated: usize = state.handles.checked_add(count).ok_or_else(trap)?;
-    if handles_allocated > MAX_LOCAL_OBJECT_HANDLES as usize {
-        return Err(trap());
-    }
-    if state.frames.len() >= MAX_LOCAL_EXECUTION_DEPTH as usize
-        || state.calls >= MAX_LOCAL_EXECUTION_CALLS
-    {
-        return Err(trap());
-    }
-    let parent: &Frame = frame(state)?;
-    let code: UnverifiedDependencyRef = parent
+    let parent = frame(caller.data())?;
+    let code = parent
         .interface
         .candidate()
         .request()
@@ -536,75 +671,82 @@ fn dependency(
         .get(size(dependency)?)
         .ok_or_else(trap)?
         .clone();
-    let interface: VerifiedPublicationInterface = parent
-        .interface
-        .for_origin(code.origin())
+    let types = decode_scoped_type_arguments(caller.data().context.chain_id(), &types)
         .map_err(|_| trap())?;
-    if reference(&interface).map_err(|_| trap())? != code
-        || interface
-            .executable_abi(code.origin())
-            .ok_or_else(trap)?
-            .initializer
-            .as_deref()
-            == Some(entry.as_str())
+    let prepared = prepare_frame(
+        caller.data(),
+        parent.scope,
+        code,
+        &entry,
+        &types,
+        grants,
+        args,
+        None,
+    )?;
+    enter(caller, prepared, &entry)
+}
+fn contract(
+    mut caller: Caller<'_, HostState>,
+    authorization: i32,
+    hp: i32,
+    hc: i32,
+    ap: i32,
+    al: i32,
+) -> HostResult {
+    charge(&mut caller, 0)?;
+    debit(&mut caller, LOCAL_LIBRARY_BINDING_GAS)?;
+    let parent = frame(caller.data())?;
+    if caller.data().profile != 3
+        || parent
+            .interface
+            .candidate()
+            .request()
+            .artifact()
+            .wasm_profile()
+            != 3
     {
         return Err(trap());
     }
-    let arguments =
-        decode_scoped_type_arguments(state.context.chain_id(), &types).map_err(|_| trap())?;
-    let signature =
-        publication::bind_object_signature(&interface, &entry, &arguments).map_err(|_| trap())?;
-    publication::validate_call_arguments(&signature, &args).map_err(|_| trap())?;
-    if signature.objects().len() != count {
+    let authorization = caller
+        .data()
+        .authorizations
+        .get(size(authorization)?)
+        .ok_or_else(trap)?
+        .clone();
+    if authorization.caller.code != parent.code
+        || authorization.caller.instance != caller.data().scopes[parent.scope].target
+    {
         return Err(trap());
     }
-    let mut grants: Vec<Grant> = Vec::new();
-    let mut unique: BTreeSet<usize> = BTreeSet::new();
-    for (bytes, parameter) in handles.chunks_exact(4).zip(signature.objects()) {
-        let handle: u32 = u32::from_le_bytes(bytes.try_into().map_err(|_| trap())?);
-        let supplied: Grant = grant(state, i32::try_from(handle).map_err(|_| trap())?)?;
-        let rank = |mode: ObjectMode| match mode {
-            ObjectMode::Read => 0,
-            ObjectMode::Write => 1,
-            ObjectMode::Consume => 2,
-        };
-        let item: &ArenaObject = &state.arena[supplied.index];
-        if !unique.insert(supplied.index)
-            || rank(parameter.mode()) > rank(supplied.mode)
-            || parameter.ty() != &item.authority.ty
-            || parameter.schema() != item.object.schema_version
-        {
+    if size(al)? > crate::call::MAX_CALL_ARGUMENT_BYTES {
+        return Err(trap());
+    }
+    let mut grants: Vec<Grant> = read_handles(&mut caller, hp, hc)?;
+    let args: Vec<u8> = read(&mut caller, ap, al)?;
+    if grants.len() != authorization.objects.len() {
+        return Err(trap());
+    }
+    for (grant, ceiling) in grants.iter_mut().zip(&authorization.objects) {
+        let object = &caller.data().arena[grant.index];
+        if object.original.is_none() || object.object.id != ceiling.object_id {
             return Err(trap());
         }
-        publication::validate_nominal_body(
-            &interface,
-            parameter.ty(),
-            parameter.schema(),
-            &item.object.data,
-        )
-        .map_err(|_| trap())?;
-        grants.push(Grant {
-            index: supplied.index,
-            mode: parameter.mode(),
-        });
+        let maximum = object_mode(ceiling.mode);
+        if rank(maximum) < rank(grant.mode) {
+            grant.mode = maximum;
+        }
     }
-    let module: Arc<Module> = Arc::clone(state.modules.get(code.origin()).ok_or_else(trap)?);
-    let linker: Arc<Linker<HostState>> = Arc::clone(&state.linker);
-    let state: &mut HostState = caller.data_mut();
-    state.handles = handles_allocated;
-    state.calls = state.calls.checked_add(1).ok_or_else(trap)?;
-    state.frames.push(Frame {
-        interface,
-        code,
+    let scope = super::admission::selected_scope(&caller.data().scopes, &authorization.callee)
+        .map_err(|_| trap())?;
+    let prepared = prepare_frame(
+        caller.data(),
+        scope,
+        authorization.callee.code,
+        &authorization.entrypoint,
+        &authorization.type_arguments,
         grants,
         args,
-    });
-    let result: Result<(), wasmi::Error> = (|| {
-        let instance = linker.instantiate_and_start(&mut caller, &module)?;
-        let function = instance.get_typed_func::<(), ()>(&caller, &entry)?;
-        function.call(&mut caller, ())
-    })();
-    caller.data_mut().frames.pop();
-    result?;
-    Ok(0)
+        None,
+    )?;
+    enter(caller, prepared, &authorization.entrypoint)
 }

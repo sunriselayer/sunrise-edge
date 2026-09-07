@@ -455,7 +455,7 @@ fn construction_fails_closed_for_unsupported_or_noncanonical_metadata() {
         p.revision = revision;
         invalid.push(p);
     }
-    for profile in [0, 3, u32::MAX] {
+    for profile in [0, 4, u32::MAX] {
         let mut p = parts();
         p.wasm_profile = profile;
         invalid.push(p);
@@ -563,7 +563,7 @@ fn wire_decoding_rejects_malleability_counts_lengths_and_unknown_fields() {
     let artifact = encode_code_artifact(request.artifact()).unwrap();
     for (field, value) in [
         (3, 2_u64.to_le_bytes().to_vec()),
-        (4, 3_u32.to_le_bytes().to_vec()),
+        (4, 4_u32.to_le_bytes().to_vec()),
         (7, vec![0; MAX_ABI_DECLARATION_BYTES + 1]),
         (8, list(0x6304, u16::MAX, vec![])),
         (9, list(0x6305, u16::MAX, vec![])),

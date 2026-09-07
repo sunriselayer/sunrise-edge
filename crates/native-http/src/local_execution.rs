@@ -63,6 +63,13 @@ where
             let Some(local) = state.preinstalled_wasm.local_execution.as_ref() else {
                 return error_response(StatusCode::NOT_FOUND, "local-execution-disabled");
             };
+            // The request may select only an exact already-configured policy
+            // digest; it never constructs authority from its claimed profile.
+            let Some((_, policy)) = local.policies.iter().find(|(_, policy)| {
+                policy.digest(&state.resolver).ok() == Some(signed.intent.policy_digest)
+            }) else {
+                return error_response(StatusCode::BAD_REQUEST, "local-execution-policy-disabled");
+            };
             let (domain, context) = match prepare_storage_context(
                 &state.components,
                 &state.protocol_config,
@@ -86,7 +93,7 @@ where
                 domain,
                 &state.resolver,
                 &[],
-                &local.policy,
+                policy,
                 &local.engine,
                 &body,
                 state.preinstalled_wasm.created_checkpoint,

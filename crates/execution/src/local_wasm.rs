@@ -1,7 +1,7 @@
-//! Profile-two interpreter. One store, fuel budget and arena span every library frame.
+//! Typed interpreter. One store, fuel budget and arena span every contract frame.
 use crate::local_execution::*;
 use crate::publication::{self, UnverifiedDependencyRef, VerifiedPublicationInterface};
-use crate::{EventRecord, ExecutionEffects, ExecutionStatus, ObjectEffect, ResolvedObject};
+use crate::{EventRecord, ExecutionEffects, ExecutionStatus, ObjectEffect};
 use abi::package_types::PackageOrigin;
 use abi::public_abi::ObjectMode;
 use hashing::HashSuiteResolver;
@@ -10,8 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use wasmi::{Config, Engine, Linker, Module, Store};
 
+mod admission;
 mod host;
-use host::{ArenaObject, Frame, Grant, HostState, RetainedMemory};
+use host::{ArenaObject, Grant, HostState, RetainedMemory};
 
 /// Deterministic, zero-fee local typed-host execution. This grants no storage authority.
 #[derive(Clone, Copy, Debug, Default)]
@@ -41,84 +42,81 @@ impl LocalContractEngine for LocalWasmExecutionEngine {
         &self,
         request: LocalExecutionRequest<'_>,
     ) -> Result<LocalExecutionOutcome, LocalExecutionError> {
+        let root = request.root_scope()?;
+        let instance = &root.instance;
         let call = &request.intent.intent().call;
-        // This first executable profile does not authorize cross-protocol execution.
-        // Historical bytes remain readable; historical epochs within this resolver
-        // continue to resolve through its trusted hash schedule.
-        if request.instance.context.protocol_version() != request.resolver.protocol_version()
-            || std::iter::once(request.interface.candidate())
-                .chain(request.interface.dependencies().iter())
-                .any(|candidate| {
-                    candidate.request().artifact().context().protocol_version()
-                        != request.resolver.protocol_version()
-                })
+        if request.event_digest
+            != local_execution_event_digest(request.resolver, request.intent.signed())?
         {
-            return Err(LocalExecutionError::Invalid(
-                "historical protocol execution unsupported",
-            ));
+            return Err(LocalExecutionError::Invalid("execution event digest"));
         }
-        if call.context != *request.policy.context()
-            || request.intent.intent().policy_digest != request.policy.digest(request.resolver)?
-            || request.event_digest
-                != local_execution_event_digest(request.resolver, request.intent.signed())?
-            || call.code != reference(request.interface)?
-            || call.code != request.instance.code
-            || call.instance != instance_target(request.resolver, request.instance)?
-            || call.gas_limit == 0
-            || call.gas_limit > request.policy.max_gas()
-        {
-            return Err(LocalExecutionError::Invalid("execution request context"));
-        }
-        if request
-            .interface
-            .executable_abi(call.code.origin())
-            .and_then(|metadata| metadata.initializer.as_deref())
-            != Some(request.instance.initializer.as_str())
-        {
-            return Err(LocalExecutionError::Invalid("instance initializer"));
-        }
-        if request.intent.intent().mode == LocalExecutionMode::Instantiate
-            && (call.sender != request.instance.creator || call.context != request.instance.context)
-        {
-            return Err(LocalExecutionError::Invalid("instance creation context"));
-        }
-        let signature = bind_local_execution(request.intent, request.interface)?;
-        let inputs: Vec<ResolvedObject> = request
-            .inputs
-            .iter()
-            .map(|input| input.resolved.clone())
-            .collect();
-        publication::validate_object_input_bodies(
-            &signature,
+        crate::execution_scopes::validate_local_execution_scopes(
             request.resolver,
-            call.context.epoch(),
-            &call.access,
-            &inputs,
-        )
-        .map_err(|_| LocalExecutionError::Invalid("input body or metadata"))?;
+            request.policy,
+            request.intent.intent(),
+            request.scopes,
+        )?;
+        if request.inputs.len() != call.access.entries.len()
+            || request.inputs.len() > crate::call_authorization::MAX_AUTHORIZED_INPUTS
+        {
+            return Err(LocalExecutionError::Invalid("input count"));
+        }
         let mut arena: Vec<ArenaObject> = Vec::new();
         let mut grants: Vec<Grant> = Vec::new();
         let mut ids: BTreeSet<objects::ObjectId> = BTreeSet::new();
-        for (input, parameter) in request.inputs.iter().zip(signature.objects()) {
+        let mut body_bytes: usize = 0;
+        for (input, access) in request.inputs.iter().zip(&call.access.entries) {
             let object = &input.resolved.object;
             let authority = &input.authority;
-            let defining = request
+            let scope = request
+                .scopes
+                .iter()
+                .find(|scope| {
+                    scope.target == authority.instance
+                        && scope.instance.context == authority.instance_context
+                })
+                .ok_or(LocalExecutionError::Invalid("input scope"))?;
+            let defining = scope
                 .interface
                 .for_origin(authority.ty.origin())
                 .map_err(|_| LocalExecutionError::Invalid("input defining code"))?;
             if object.owner != Owner::Address(Address::new(call.sender))
                 || !ids.insert(object.id)
+                || object.id != access.object_ref.id
+                || object.version != access.object_ref.version
+                || input.resolved.mode != access.mode
                 || authority.object_id != object.id
-                || authority.instance != call.instance
-                || authority.instance_context != request.instance.context
                 || authority.code != reference(&defining)?
-                || authority.ty != *parameter.ty()
+                || !abi::package_types::verify_scoped_type_id(
+                    request.resolver,
+                    &object.type_hash,
+                    call.context.epoch(),
+                    &authority.ty,
+                )?
             {
                 return Err(LocalExecutionError::Invalid("input authority"));
             }
+            publication::validate_nominal_body(
+                &defining,
+                &authority.ty,
+                object.schema_version,
+                &object.data,
+            )
+            .map_err(|_| LocalExecutionError::Invalid("input body"))?;
+            body_bytes = body_bytes
+                .checked_add(object.data.len())
+                .ok_or(LocalExecutionError::Limit("input body"))?;
+            if body_bytes > publication::MAX_BOUND_BODY_BYTES {
+                return Err(LocalExecutionError::Limit("input body"));
+            }
+            let mode = match access.mode {
+                objects::AccessMode::Read => ObjectMode::Read,
+                objects::AccessMode::Write => ObjectMode::Write,
+                objects::AccessMode::Consume => ObjectMode::Consume,
+            };
             grants.push(Grant {
                 index: arena.len(),
-                mode: parameter.mode(),
+                mode,
             });
             arena.push(ArenaObject {
                 object: object.clone(),
@@ -136,60 +134,47 @@ impl LocalContractEngine for LocalWasmExecutionEngine {
         config.set_max_stack_height(LOCAL_WASM_MAX_STACK);
         config.set_max_recursion_depth(LOCAL_WASM_MAX_RECURSION);
         let engine: Engine = Engine::new(&config);
-        let mut modules: BTreeMap<PackageOrigin, Arc<Module>> = BTreeMap::new();
-        for origin in std::iter::once(request.interface.candidate().request().artifact().origin())
-            .chain(
-                request
-                    .interface
-                    .dependencies()
-                    .iter()
-                    .map(|candidate| candidate.request().artifact().origin()),
-            )
-        {
-            let view = request
-                .interface
-                .for_origin(origin)
-                .map_err(|_| LocalExecutionError::Invalid("code closure"))?;
-            let artifact = view.candidate().request().artifact();
-            if artifact.wasm_profile() != 2
-                || *artifact.semantics()
-                    != local_execution_semantics(request.resolver, artifact.context())?
-            {
-                return Err(LocalExecutionError::Invalid("executable profile"));
-            }
-            let exports: Vec<&str> = artifact.exports().iter().map(String::as_str).collect();
-            crate::validate_contract_wasm_profile(artifact.wasm(), &exports, 2)
-                .map_err(|_| LocalExecutionError::Invalid("WASM profile"))?;
-            let module: Module = Module::new(&engine, artifact.wasm())
-                .map_err(|_| LocalExecutionError::Invalid("WASM module"))?;
-            modules.insert(origin.clone(), Arc::new(module));
-        }
+        let modules = admission::scopes(&request, &engine)?;
         let linker: Arc<Linker<HostState>> = Arc::new(
             host::linker(&engine).map_err(|_| LocalExecutionError::Invalid("host linker"))?,
         );
-        let state: HostState = HostState {
+        let mut state: HostState = HostState {
             resolver: request.resolver.clone(),
-            instance: request.instance.clone(),
-            target: call.instance.clone(),
+            scopes: request.scopes.to_vec(),
+            authorizations: request.intent.intent().authorizations.clone(),
+            profile: request.policy.profile(),
             context: call.context.clone(),
             event: request.event_digest,
             sender: call.sender,
-            instance_bytes: encode_instance_record(request.instance)?,
+            instance_bytes: request
+                .scopes
+                .iter()
+                .map(|scope| encode_instance_record(&scope.instance))
+                .collect::<Result<Vec<Vec<u8>>, LocalExecutionError>>()?,
             arena,
-            frames: vec![Frame {
-                interface: request.interface.clone(),
-                code: call.code.clone(),
-                grants,
-                args: call.arguments.clone(),
-            }],
+            frames: Vec::new(),
             modules,
             linker: Arc::clone(&linker),
             limiter: RetainedMemory::default(),
             events: Vec::new(),
             creations: 0,
-            calls: 1,
-            handles: request.inputs.len(),
+            calls: 0,
+            handles: 0,
         };
+        let prepared = host::prepare_frame(
+            &state,
+            0,
+            call.code.clone(),
+            &call.entrypoint,
+            &call.type_arguments,
+            grants,
+            call.arguments.clone(),
+            Some(request.intent.intent().mode),
+        )
+        .map_err(|_| LocalExecutionError::Invalid("root frame"))?;
+        state.handles = prepared.grants.len();
+        state.calls = 1;
+        state.frames.push(prepared);
         let mut store: Store<HostState> = Store::new(&engine, state);
         store.limiter(|state| &mut state.limiter);
         store
@@ -273,7 +258,7 @@ impl LocalContractEngine for LocalWasmExecutionEngine {
         };
         let result: LocalExecutionResult = LocalExecutionResult {
             request_id: call.request_id,
-            instance: request.instance.clone(),
+            instance: instance.clone(),
             mode: request.intent.intent().mode,
             effects: outcome.effects.clone(),
         };

@@ -625,8 +625,45 @@ Exact replay preserves that rejection and consumes nothing again. For uncertain
 delivery or failed result-file writes, retain the signed bytes and original
 request ID/nonce; do not submit a fresh request to guess whether it committed.
 Query responses verify exact referenced code and record structure, not a
-cryptographic inclusion/absence proof. Hardware signing, cross-instance calls,
-asset/fee migration and public-network admission are separate capabilities.
+cryptographic inclusion/absence proof. Hardware signing, asset/fee migration and
+public-network admission are separate capabilities.
+
+### General calls with exact authority pins
+
+For contracts using `sunrise.call_contract`, start devnet with
+`--enable-general-calls` instead of `--enable-local-execution`. This explicitly
+enables both executable profiles and seeds the general-call policy pair without
+overwriting earlier policies. Defaults are still closed and the endpoint remains
+loopback-only. Use `--general-calls` (not `--executable`) on `contract publish` and
+`contract query` for the new host profile; add it to `contract instantiate`,
+`contract call`, and `contract query-instance` when using that execution policy.
+
+`contract call --general-calls --authorizations <file>` uses the same flags and
+create-new submission/result files as the call above. The file is the bounded
+canonical output of
+`execution::call_authorization::encode_call_authorizations`, not JSON or an
+executable list of transactions. Each entry pins exact caller/callee code and
+instance targets, the callee entrypoint/type arguments, and ordered original
+ObjectIds with maximum access modes. Include those objects' exact references in
+the root access manifest and root ABI; do not replace them with latest query
+results. Keep the instance record files and exact dependency references used to
+construct the table alongside the signed submission.
+
+Guest code selects an entry and a subset of its current handles, and computes
+argument bytes. The host checks current caller identity, targets, ABI, signed
+ceilings and current rights. Same-instance and independent-instance calls use
+the same checks. Only the defining code executing in an object's actual instance
+may change its representation; merely forwarding a handle grants no extra right.
+A nested trap rolls back every scope, not just the callee. The same signed bytes
+can be replayed after restart without reapplying any scope's effects.
+
+The regression command below exercises real CLI/HTTP use of an inventory caller
+and an independently initialized dispatch policy, including late rejection and
+restart comparisons:
+
+```bash
+cargo test -p sunrise-edge-cli --test devnet_general_execution_e2e
+```
 
 ## Optional remote TLS transport
 

@@ -185,6 +185,7 @@ impl Fixture {
             gas_limit: gas,
         };
         let intent = LocalExecutionIntent {
+            authorizations: Vec::new(),
             mode: if entry == "init" {
                 LocalExecutionMode::Instantiate
             } else {
@@ -205,10 +206,17 @@ impl Fixture {
         .unwrap();
         let event_digest = local_execution_event_digest(&resolver, &signed).unwrap();
         LocalWasmExecutionEngine::new().execute(LocalExecutionRequest {
-            interface: &self.interface,
+            scopes: &[ResolvedExecutionScope {
+                instance: self.instance.clone(),
+                target: instance_target(
+                    &resolver_version(self.instance.context.protocol_version()),
+                    &self.instance,
+                )
+                .unwrap(),
+                interface: self.interface.clone(),
+            }],
             intent: &authenticated,
             resolver: &resolver,
-            instance: &self.instance,
             policy: &policy,
             event_digest,
             inputs,
@@ -611,7 +619,7 @@ fn historical_epochs_execute_but_historical_protocol_versions_fail_closed() {
             MAX_LOCAL_EXECUTION_GAS
         ),
         Err(LocalExecutionError::Invalid(
-            "historical protocol execution unsupported"
+            "execution scope instance authority"
         ))
     ));
 }

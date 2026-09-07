@@ -8,7 +8,7 @@ use sunrise_edge_devnet::{
     DEVNET_BLOB_DATABASE_FILE, DEVNET_DATABASE_FILE, DEVNET_STARTUP_LIMITATIONS_BANNER,
     DevnetConfig, STANDARD_ASSET_MODULE_WASM, SeedAssetAuthorityObjectsOutcome,
     SeedDevOwnerCoinsOutcome, boot_local_store, build_devnet_protocol_context,
-    build_standard_asset_module, compose_devnet_router_with_local_execution,
+    build_standard_asset_module, compose_devnet_router_with_execution_policies,
     seed_asset_authority_objects, seed_dev_owner_coins, seed_treasury_coin,
     verify_or_seed_protocol_context, verify_seeded_asset_supply,
 };
@@ -176,7 +176,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         None
     };
 
-    let local_execution = if config.local_execution() {
+    let mut local_execution = if config.local_execution() {
         highest_seed_sequence = highest_seed_sequence
             .checked_add(1)
             .ok_or("execution seed correlation overflow")?;
@@ -191,15 +191,40 @@ async fn run() -> Result<(), Box<dyn Error>> {
             config.epoch(),
         )?;
         println!("local_execution=true execution_fees=false publication_profiles=1,2");
-        Some(policies)
+        Some(native_http::LocalExecutionComposition::new(
+            policies.0, policies.1,
+        ))
     } else {
         None
     };
 
+    if config.general_calls() {
+        highest_seed_sequence = highest_seed_sequence
+            .checked_add(1)
+            .ok_or("general execution seed correlation overflow")?;
+        let domain = protocol_types::AtomicityDomainId::new(
+            sunrise_edge_devnet::genesis::DEVNET_DOMAIN_BYTES,
+        )?;
+        let (publication, policy) =
+            sunrise_edge_devnet::local_execution::seed_general_execution_policies(
+                boot.store(),
+                &operation_context_for(u64::try_from(highest_seed_sequence)?)?,
+                domain,
+                asset_module.resolver(),
+                config.epoch(),
+            )?;
+        local_execution = Some(
+            local_execution
+                .ok_or("general calls require local execution")?
+                .with_policy(publication, policy),
+        );
+        println!("general_calls=true execution_fees=false publication_profiles=1,2,3");
+    }
+
     let (store, blob_store) = boot.into_parts();
     let store = Arc::new(store);
     let blob_store = Arc::new(blob_store);
-    let router = compose_devnet_router_with_local_execution(
+    let router = compose_devnet_router_with_execution_policies(
         store,
         blob_store,
         asset_module,
@@ -306,11 +331,16 @@ mod tests {
 
     #[test]
     fn atomic_execution_policy_pair_reserves_one_additional_boot_identity() {
+        check_execution_policy_identity(2, 10);
+        check_execution_policy_identity(3, 11);
+    }
+
+    fn check_execution_policy_identity(additional: usize, expected_next: u64) {
         use native_http::IndexedOutboxIdentitySource;
         let generation = runtime::WriterFenceGeneration::new(2).unwrap();
         let final_seed = highest_seed_correlation_sequence(5)
             .unwrap()
-            .checked_add(2)
+            .checked_add(additional)
             .unwrap();
         let source = sunrise_edge_devnet::identities::DevnetOutboxIdentitySource::new_after(
             generation,
@@ -318,7 +348,7 @@ mod tests {
         );
         let mut correlation: [u8; 16] = [0; 16];
         correlation[..8].copy_from_slice(&generation.get().to_be_bytes());
-        correlation[8..].copy_from_slice(&10_u64.to_be_bytes());
+        correlation[8..].copy_from_slice(&expected_next.to_be_bytes());
         let mut lease: [u8; 32] = [0; 32];
         lease[..16].copy_from_slice(&correlation);
         lease[16..].copy_from_slice(b"sunrise-devnetv1");

@@ -955,6 +955,7 @@ dependencies = [
  "protocol-types",
  "runtime",
  "runtime-sqlite",
+ "sha2 0.11.0",
  "standard-assets",
  "system-modules",
  "wat",

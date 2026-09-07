@@ -133,6 +133,7 @@ fn fixture() -> (
         gas_limit: 10000,
     };
     let intent: LocalExecutionIntent = LocalExecutionIntent {
+        authorizations: Vec::new(),
         mode: LocalExecutionMode::Instantiate,
         policy_digest: LocalExecutionPolicy::new(context())
             .digest(&resolver())
@@ -168,7 +169,8 @@ fn typed_profile_whitelists_only_sunrise_and_exact_signatures() {
     assert!(validate_contract_wasm_profile(&legacy, &["run"], 2).is_err());
     let wrong:Vec<u8>=wat::parse_str("(module (import \"sunrise\" \"create_object\" (func (param i32 i32 i32 i32 i32 i32) (result i32))) (memory (export \"memory\") 1 2) (func (export \"run\")))").unwrap();
     assert!(validate_contract_wasm_profile(&wrong, &["run"], 2).is_err());
-    assert!(validate_contract_wasm_profile(&typed, &["run"], 3).is_err());
+    assert!(validate_contract_wasm_profile(&typed, &["run"], 3).is_ok());
+    assert!(validate_contract_wasm_profile(&typed, &["run"], 4).is_err());
 }
 
 #[test]

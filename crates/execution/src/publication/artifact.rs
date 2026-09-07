@@ -227,7 +227,9 @@ impl CodeArtifact {
         }
         if !matches!(
             parts.wasm_profile,
-            CONTRACT_WASM_ADMISSION_PROFILE_VERSION | crate::TYPED_CONTRACT_WASM_PROFILE_VERSION
+            CONTRACT_WASM_ADMISSION_PROFILE_VERSION
+                | crate::TYPED_CONTRACT_WASM_PROFILE_VERSION
+                | crate::GENERAL_CONTRACT_WASM_PROFILE_VERSION
         ) {
             return Err(E::UnsupportedWasmProfile(parts.wasm_profile));
         }
@@ -640,7 +642,9 @@ pub fn decode_code_artifact(bytes: &[u8]) -> Result<CodeArtifact, E> {
     let wasm_profile: u32 = frame.required_u32(4)?;
     if !matches!(
         wasm_profile,
-        CONTRACT_WASM_ADMISSION_PROFILE_VERSION | crate::TYPED_CONTRACT_WASM_PROFILE_VERSION
+        CONTRACT_WASM_ADMISSION_PROFILE_VERSION
+            | crate::TYPED_CONTRACT_WASM_PROFILE_VERSION
+            | crate::GENERAL_CONTRACT_WASM_PROFILE_VERSION
     ) {
         return Err(E::UnsupportedWasmProfile(wasm_profile));
     }

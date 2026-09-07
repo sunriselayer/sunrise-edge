@@ -14,8 +14,10 @@ use execution::publication::{
     verify_publication_interface,
 };
 
+mod loader;
 #[cfg(test)]
 mod tests;
+pub(super) use loader::{PublicationLoadBudget, load_verified_publication_with_budget};
 
 /// Namespace reserved against generic application state accesses, across upgrades.
 pub const PUBLICATION_STATE_PREFIX: &[u8] = b"se/publications/";
@@ -54,6 +56,16 @@ pub fn local_executable_publication_semantics(
         return Err(PublicationAdmissionError::HistoricalContextUnavailable);
     }
     Ok(execution::local_execution::local_execution_semantics(
+        resolver, expected,
+    )?)
+}
+
+/// Explicit profile-three publication commitment for generalized contract calls.
+pub fn local_general_publication_semantics(
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+) -> Result<Digest32, PublicationAdmissionError> {
+    Ok(execution::local_execution::general_execution_semantics(
         resolver, expected,
     )?)
 }
@@ -184,6 +196,15 @@ impl LocalPublicationPolicy {
             profile: 2,
         }
     }
+    /// Separately installed profile-three publication admission.
+    #[must_use]
+    pub const fn general(context: PublicationContext, semantics: Digest32) -> Self {
+        Self {
+            context,
+            semantics,
+            profile: 3,
+        }
+    }
     /// Closed artifact admission profile.
     #[must_use]
     pub const fn profile(&self) -> u32 {
@@ -207,8 +228,8 @@ impl LocalPublicationPolicy {
         frame.field_u16(3, 1)?;
         frame.field_u32(4, MAX_INTERFACE_NODES as u32)?;
         frame.field_u64(5, MAX_PUBLICATION_CLOSURE_BYTES as u64)?;
-        if self.profile == 2 {
-            frame.field_u32(6, 2)?;
+        if matches!(self.profile, 2 | 3) {
+            frame.field_u32(6, self.profile)?;
         }
         Ok(frame.finish()?)
     }
@@ -219,14 +240,14 @@ impl LocalPublicationPolicy {
         }
         let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
         frame.require_type(0x630A)?;
-        if !matches!(frame.version(), 1 | 2) {
+        if !matches!(frame.version(), 1..=3) {
             return Err(PublicationAdmissionError::PolicyMismatch);
         }
         if frame.version() == 1 {
             frame.require_only_fields(&[1, 2, 3, 4, 5])?;
         } else {
             frame.require_only_fields(&[1, 2, 3, 4, 5, 6])?;
-            if frame.required_u32(6)? != 2 {
+            if frame.required_u32(6)? != u32::from(frame.version()) {
                 return Err(PublicationAdmissionError::PolicyMismatch);
             }
         }
@@ -259,6 +280,7 @@ pub fn publication_policy_key_for_profile(
     match profile {
         1 => key.extend_from_slice(b"v1/policies/"),
         2 => key.extend_from_slice(b"v2/policies/"),
+        3 => key.extend_from_slice(b"v3/policies/"),
         _ => return Err(PublicationAdmissionError::PolicyMismatch),
     }
     key.extend(encode_publication_context(context)?);
@@ -343,77 +365,9 @@ fn load_closure<S: StructuredDurableDomainStateStore>(
     root_bytes: usize,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<execution::publication::VerifiedPublicationInterface, PublicationAdmissionError> {
-    let mut pending: Vec<UnverifiedDependencyRef> = candidate
-        .request()
-        .artifact()
-        .unverified_dependencies()
-        .to_vec();
-    let mut loaded: BTreeMap<PackageOrigin, AuthenticatedPublicationCandidate> = BTreeMap::new();
-    let mut total_bytes: usize = root_bytes;
-    while let Some(reference) = pending.pop() {
-        if reference.origin() == candidate.request().artifact().origin() {
-            return Err(PublicationAdmissionError::CorruptRecord);
-        }
-        if let Some(existing) = loaded.get(reference.origin()) {
-            match_reference(&reference, existing.request())?;
-            continue;
-        }
-        if loaded
-            .len()
-            .checked_add(1)
-            .ok_or(PublicationAdmissionError::Limit)?
-            >= MAX_INTERFACE_NODES
-        {
-            return Err(PublicationAdmissionError::Limit);
-        }
-        let key: Vec<u8> = publication_record_key(reference.origin())?;
-        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
-        let bytes: &[u8] = observed
-            .value()
-            .ok_or(PublicationAdmissionError::MissingDependency)?;
-        total_bytes = total_bytes
-            .checked_add(bytes.len())
-            .ok_or(PublicationAdmissionError::Limit)?;
-        if total_bytes > MAX_PUBLICATION_CLOSURE_BYTES {
-            return Err(PublicationAdmissionError::Limit);
-        }
-        let submission: PublicationSubmission = decode_publication_submission(bytes)?;
-        if encode_publication_submission(&submission)? != bytes {
-            return Err(PublicationAdmissionError::CorruptRecord);
-        }
-        match_reference(&reference, submission.request())?;
-        let policy: LocalPublicationPolicy = read_policy(
-            store,
-            context,
-            domain,
-            reference.context(),
-            submission.request().artifact().wasm_profile(),
-            reads,
-        )?;
-        let dependency_resolver: &HashSuiteResolver =
-            resolver_for(resolver, history, policy.context())?;
-        verify_publication_receipt(store, context, domain, dependency_resolver, &submission)?;
-        let dependency: AuthenticatedPublicationCandidate = authenticate_publication_submission(
-            dependency_resolver,
-            policy.context(),
-            policy.semantics(),
-            submission,
-        )?;
-        insert_read(reads, key, observed.revision())?;
-        pending.extend(
-            dependency
-                .request()
-                .artifact()
-                .unverified_dependencies()
-                .iter()
-                .cloned(),
-        );
-        loaded.insert(reference.origin().clone(), dependency);
-    }
-    let dependencies: Vec<AuthenticatedPublicationCandidate> = loaded.into_values().collect();
-    let verified: execution::publication::VerifiedPublicationInterface =
-        verify_publication_interface(candidate, dependencies)?;
-    Ok(verified)
+    loader::load_unstored_root(
+        store, context, domain, resolver, history, candidate, root_bytes, reads,
+    )
 }
 fn match_reference(
     reference: &UnverifiedDependencyRef,
@@ -643,58 +597,14 @@ pub fn load_verified_publication<S: StructuredDurableDomainStateStore>(
     history: &[HashSuiteResolver],
     origin: &PackageOrigin,
 ) -> Result<Option<VerifiedDurablePublication>, PublicationAdmissionError> {
-    if origin.chain_id() != resolver.chain_id() {
-        return Err(PublicationAdmissionError::CorruptRecord);
-    }
-    let key: Vec<u8> = publication_record_key(origin)?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
-    let Some(bytes) = observed.value() else {
-        if observed.revision() != StateRevision::INITIAL {
-            return Err(PublicationAdmissionError::CorruptRecord);
-        }
-        return Ok(None);
-    };
-    let submission: PublicationSubmission = decode_publication_submission(bytes)?;
-    if submission.request().artifact().origin() != origin
-        || encode_publication_submission(&submission)? != bytes
-    {
-        return Err(PublicationAdmissionError::CorruptRecord);
-    }
-    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
-    insert_read(&mut reads, key, observed.revision())?;
-    let policy: LocalPublicationPolicy = read_policy(
-        store,
-        context,
-        domain,
-        submission.request().artifact().context(),
-        submission.request().artifact().wasm_profile(),
-        &mut reads,
-    )?;
-    let root_resolver: &HashSuiteResolver = resolver_for(resolver, history, policy.context())?;
-    let candidate: AuthenticatedPublicationCandidate = authenticate_publication_submission(
-        root_resolver,
-        policy.context(),
-        policy.semantics(),
-        submission.clone(),
-    )?;
-    verify_publication_receipt(store, context, domain, root_resolver, &submission)?;
-    let interface: execution::publication::VerifiedPublicationInterface = load_closure(
+    let mut budget: PublicationLoadBudget = PublicationLoadBudget::default();
+    load_verified_publication_with_budget(
         store,
         context,
         domain,
         resolver,
         history,
-        candidate,
-        bytes.len(),
-        &mut reads,
-    )?;
-    let assertions: Vec<StateReadAssertion> = reads
-        .into_iter()
-        .map(|(key, revision)| StateReadAssertion::new(key, revision))
-        .collect::<Result<Vec<StateReadAssertion>, RuntimeError>>()?;
-    Ok(Some(VerifiedDurablePublication {
-        submission,
-        interface,
-        reads: assertions,
-    }))
+        origin,
+        &mut budget,
+    )
 }
