@@ -230,6 +230,7 @@ impl CodeArtifact {
             CONTRACT_WASM_ADMISSION_PROFILE_VERSION
                 | crate::TYPED_CONTRACT_WASM_PROFILE_VERSION
                 | crate::GENERAL_CONTRACT_WASM_PROFILE_VERSION
+                | crate::GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION
         ) {
             return Err(E::UnsupportedWasmProfile(parts.wasm_profile));
         }
@@ -645,6 +646,7 @@ pub fn decode_code_artifact(bytes: &[u8]) -> Result<CodeArtifact, E> {
         CONTRACT_WASM_ADMISSION_PROFILE_VERSION
             | crate::TYPED_CONTRACT_WASM_PROFILE_VERSION
             | crate::GENERAL_CONTRACT_WASM_PROFILE_VERSION
+            | crate::GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION
     ) {
         return Err(E::UnsupportedWasmProfile(wasm_profile));
     }

@@ -46,10 +46,12 @@ fn publish(
     package: inventory::InventoryPackage,
     dependencies: Vec<UnverifiedDependencyRef>,
 ) -> AuthenticatedPublicationCandidate {
+    let entrypoint_count = package.abi.objects.entrypoints.len();
     let metadata: ExecutableAbi = ExecutableAbi {
         call: package.abi,
         initializer: package.initializer,
         transferable_constructors: package.transferable_constructors,
+        results: vec![vec![]; entrypoint_count],
     };
     let exports: Vec<String> = metadata
         .call

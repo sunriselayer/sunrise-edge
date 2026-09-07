@@ -291,13 +291,20 @@ pub fn verify_publication_interface(
         if (candidate.request().artifact().wasm_profile() == 2 && artifact.wasm_profile() != 2)
             || (candidate.request().artifact().wasm_profile() == 3
                 && !matches!(artifact.wasm_profile(), 2 | 3))
+            || (candidate.request().artifact().wasm_profile() == 4
+                && !matches!(artifact.wasm_profile(), 2..=4))
         {
             return Err(InterfaceError::Abi(ValueError::Invalid(
                 "typed executable depends on nonexecutable profile",
             )));
         }
-        let abi: CallAbi = if matches!(artifact.wasm_profile(), 2 | 3) {
+        let abi: CallAbi = if matches!(artifact.wasm_profile(), 2..=4) {
             let executable: ExecutableAbi = decode_executable_abi(artifact.unverified_abi())?;
+            if artifact.wasm_profile() != 4 && executable.results.iter().any(|r| !r.is_empty()) {
+                return Err(InterfaceError::Abi(ValueError::Invalid(
+                    "object result declarations require wasm profile four",
+                )));
+            }
             let call: CallAbi = executable.call.clone();
             executable_abis.insert(artifact.origin().clone(), Arc::new(executable));
             call
@@ -339,6 +346,27 @@ pub fn verify_publication_interface(
                 )?;
                 if schema != object.schema {
                     return Err(InterfaceError::SchemaMismatch);
+                }
+            }
+        }
+        if let Some(executable) = executable_abis.get(&abi.origin) {
+            if executable.results.len() != abi.entrypoints.len() {
+                return Err(InterfaceError::Abi(ValueError::Invalid(
+                    "object result entrypoint count mismatch",
+                )));
+            }
+            for (entry, results) in abi.entrypoints.iter().zip(&executable.results) {
+                for result in results {
+                    let schema: u32 = verify_pattern(
+                        &result.ty,
+                        &entry.type_parameters,
+                        &allowed,
+                        &indices,
+                        &abis,
+                    )?;
+                    if schema != result.schema {
+                        return Err(InterfaceError::SchemaMismatch);
+                    }
                 }
             }
         }

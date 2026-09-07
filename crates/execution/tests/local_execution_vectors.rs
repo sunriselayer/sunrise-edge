@@ -66,6 +66,7 @@ fn independently_reconstructed_execution_wires_and_signature() {
         },
         initializer: Some("run".into()),
         transferable_constructors: vec![1],
+        results: vec![vec![]],
     };
     let encoded: Vec<u8> = encode_executable_abi(&metadata).unwrap();
     vector(
@@ -267,4 +268,80 @@ fn independently_reconstructed_execution_wires_and_signature() {
         unknown_field.extend_from_slice(&0u32.to_le_bytes());
         assert!(!decode(&unknown_field), "field {name}");
     }
+}
+
+/// Pins the exact wire bytes introduced by DR-0124: the profile-four
+/// semantics descriptor, the profile-four execution policy, and a
+/// version-two executable ABI wrapper carrying one declared result slot.
+/// Any change to these lengths or digests is a wire change and must be
+/// deliberate; the profile-two and profile-three vectors above are
+/// unaffected by construction, since none of them encode a `results` field.
+#[test]
+fn generic_object_result_semantics_policy_and_abi_wires_are_stable() {
+    use abi::public_abi::{ObjectMode, ObjectResultDeclaration, TypePattern};
+
+    let chain: ChainId = ChainId::new("local-vector").unwrap();
+    let context: PublicationContext =
+        PublicationContext::new(chain.clone(), ProtocolVersion::new(3), Epoch::new(0)).unwrap();
+    let key: SigningKey = SigningKey::from([7; 32]);
+    let sender: [u8; 32] = VerificationKey::from(&key).into();
+    let origin: PackageOrigin = PackageOrigin::unverified(chain, sender, [10; 32]).unwrap();
+
+    let semantics: Vec<u8> = encode_generic_object_result_semantics().unwrap();
+    vector(
+        &semantics,
+        202,
+        "01ff9f7b2bff859423cf7dbf82e2c4b8c73ec145c484f188b403afb302da039d",
+    );
+
+    let policy: LocalExecutionPolicy = LocalExecutionPolicy::generic_object_results(context);
+    let encoded_policy: Vec<u8> = policy.encode().unwrap();
+    vector(
+        &encoded_policy,
+        522,
+        "e834e8b5a28257d9e8db72cd6ffaa7c09f02b058d46274cacdbbda009b589aa7",
+    );
+    assert_eq!(
+        LocalExecutionPolicy::decode(&encoded_policy).unwrap(),
+        policy
+    );
+
+    let metadata: ExecutableAbi = ExecutableAbi {
+        call: CallAbi {
+            objects: PackageAbi {
+                origin: origin.clone(),
+                constructors: vec![ConstructorDeclaration {
+                    local_id: 1,
+                    schema: 1,
+                    arguments: vec![],
+                }],
+                entrypoints: vec![EntrypointDeclaration {
+                    name: "run".into(),
+                    type_parameters: vec![],
+                    objects: vec![],
+                }],
+            },
+            arguments: vec![ValueLayout::Tuple(vec![])],
+            bodies: vec![ValueLayout::U64],
+        },
+        initializer: Some("run".into()),
+        transferable_constructors: vec![1],
+        results: vec![vec![ObjectResultDeclaration {
+            mode: ObjectMode::Consume,
+            schema: 1,
+            ty: TypePattern {
+                origin,
+                constructor: 1,
+                arguments: vec![],
+            },
+            optional: false,
+        }]],
+    };
+    let encoded_abi: Vec<u8> = encode_executable_abi(&metadata).unwrap();
+    vector(
+        &encoded_abi,
+        734,
+        "486216472e343b05a9ee8158a4f1e629ae8f31f7d76d20b4c72e205e74a004f2",
+    );
+    assert_eq!(decode_executable_abi(&encoded_abi).unwrap(), metadata);
 }

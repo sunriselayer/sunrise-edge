@@ -2,10 +2,14 @@
 use super::*;
 use abi::package_types::{
     decode_scoped_type_arguments, decode_scoped_type_tag, derive_scoped_type_id,
+    encode_scoped_type_tag,
 };
 use crypto::{Ed25519OwnerAddressPolicy, validate_ed25519_owner_address};
 use wasmi::{Caller, Memory, ResourceLimiter};
 use wasmi_core::LimiterError;
+
+/// Sentinel marking an absent optional result slot in fixed-length delivery.
+const ABSENT_RESULT_SLOT: u32 = u32::MAX;
 
 pub(super) fn trap() -> wasmi::Error {
     wasmi::Error::new(LOCAL_EXECUTION_TRAP_REASON)
@@ -32,6 +36,11 @@ pub(super) struct Frame {
     pub code: UnverifiedDependencyRef,
     pub grants: Vec<Grant>,
     pub args: Vec<u8>,
+    // Ordered, signed result-slot declarations (DR-0124), at most four.
+    pub declared_results: Vec<BoundObjectResult>,
+    // Fixed-length slots, positionally aligned with `declared_results`;
+    // `None` is the explicit absence sentinel until delivery/drop.
+    pub returned: Vec<Option<Grant>>,
 }
 pub(super) struct HostState {
     pub resolver: HashSuiteResolver,
@@ -245,6 +254,47 @@ fn own_body(
         .schema;
     publication::validate_nominal_body(&frame.interface, &ty, schema, body).map_err(|_| trap())?;
     Ok((ty, schema))
+}
+
+/// Rejects every DR-0124 object-result selector unless BOTH the committed
+/// execution policy and the executing frame's own admitted artifact are
+/// profile four. Module admission already restricts these imports to
+/// profile-four code; this is the runtime half of the same rule, so a
+/// profile-two or profile-three policy can never reach typed-result
+/// behaviour even if a module were somehow linked against it.
+fn require_object_result_profile(caller: &Caller<'_, HostState>) -> Result<(), wasmi::Error> {
+    let state: &HostState = caller.data();
+    if state.profile != crate::GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION
+        || frame(state)?
+            .interface
+            .candidate()
+            .request()
+            .artifact()
+            .wasm_profile()
+            != crate::GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION
+    {
+        return Err(trap());
+    }
+    Ok(())
+}
+
+/// Prevalidates the guest's fixed-length result output buffer against the
+/// declared slot count before any caller-visible grant mutation, so a
+/// too-small or out-of-bounds buffer can never leave the receiving frame
+/// holding a partially delivered batch.
+fn check_result_buffer(
+    caller: &Caller<'_, HostState>,
+    pointer: i32,
+    capacity: i32,
+    slots: usize,
+) -> Result<(), wasmi::Error> {
+    let needed: usize = slots.checked_mul(4).ok_or_else(trap)?;
+    let capacity: usize = size(capacity)?;
+    if needed > capacity {
+        return Err(trap());
+    }
+    range(caller, pointer, capacity)?;
+    Ok(())
 }
 
 pub(super) fn linker(engine: &Engine) -> Result<Linker<HostState>, wasmi::Error> {
@@ -486,8 +536,98 @@ pub(super) fn linker(engine: &Engine) -> Result<Linker<HostState>, wasmi::Error>
             Err(trap())
         },
     )?;
+    linker.func_wrap(
+        "sunrise",
+        "get_object_id",
+        |mut caller: Caller<'_, HostState>, handle: i32, out: i32| -> HostResult {
+            charge(&mut caller, 0)?;
+            require_object_result_profile(&caller)?;
+            let grant = grant(caller.data(), handle)?;
+            let bytes: [u8; 32] = *caller.data().arena[grant.index].object.id.as_bytes();
+            write(&mut caller, out, 32, &bytes)
+        },
+    )?;
+    linker.func_wrap(
+        "sunrise",
+        "get_object_type",
+        |mut caller: Caller<'_, HostState>, handle: i32, out: i32, capacity: i32| -> HostResult {
+            charge(&mut caller, 0)?;
+            require_object_result_profile(&caller)?;
+            let grant = grant(caller.data(), handle)?;
+            let ty = caller.data().arena[grant.index].authority.ty.clone();
+            let encoded: Vec<u8> = encode_scoped_type_tag(&ty).map_err(|_| trap())?;
+            write(&mut caller, out, capacity, &encoded)
+        },
+    )?;
+    linker.func_wrap(
+        "sunrise",
+        "return_object",
+        |mut caller: Caller<'_, HostState>, slot: i32, handle: i32| -> HostResult {
+            charge(&mut caller, 0)?;
+            require_object_result_profile(&caller)?;
+            let slot_index: usize = size(slot)?;
+            let grant: Grant = grant(caller.data(), handle)?;
+            let state: &HostState = caller.data();
+            let current: &Frame = frame(state)?;
+            let declared: BoundObjectResult = current
+                .declared_results
+                .get(slot_index)
+                .ok_or_else(trap)?
+                .clone();
+            if current.returned.get(slot_index).ok_or_else(trap)?.is_some() {
+                return Err(trap());
+            }
+            if current
+                .returned
+                .iter()
+                .flatten()
+                .any(|existing| existing.index == grant.index)
+            {
+                return Err(trap());
+            }
+            let object: &ArenaObject = &state.arena[grant.index];
+            // Returning a grant is not a write: any current unconsumed
+            // handle right up to the declared mode ceiling may be
+            // delivered, including Read of a foreign-owned object or a
+            // forwarded dependency-defined grant. Ownership/defining-code
+            // authority still gates any later mutation through `writable`.
+            let provenance_ok: bool = state.scopes.iter().any(|scope| {
+                scope.target == object.authority.instance
+                    && scope.instance.context == object.authority.instance_context
+            });
+            if rank(declared.mode()) > rank(grant.mode)
+                || declared.ty() != &object.authority.ty
+                || declared.schema() != object.object.schema_version
+                || !provenance_ok
+            {
+                return Err(trap());
+            }
+            publication::validate_nominal_body(
+                &current.interface,
+                declared.ty(),
+                declared.schema(),
+                &object.object.data,
+            )
+            .map_err(|_| trap())?;
+            let mode: ObjectMode = declared.mode();
+            let index: usize = grant.index;
+            let current: &mut Frame = caller.data_mut().frames.last_mut().ok_or_else(trap)?;
+            current.returned[slot_index] = Some(Grant { index, mode });
+            Ok(0)
+        },
+    )?;
     linker.func_wrap("sunrise", "call_dependency", dependency)?;
     linker.func_wrap("sunrise", "call_contract", contract)?;
+    linker.func_wrap(
+        "sunrise",
+        "call_dependency_with_results",
+        dependency_with_results,
+    )?;
+    linker.func_wrap(
+        "sunrise",
+        "call_contract_with_results",
+        contract_with_results,
+    )?;
     Ok(linker)
 }
 
@@ -574,12 +714,16 @@ pub(super) fn prepare_frame(
             mode: parameter.mode(),
         });
     }
+    let declared_results: Vec<BoundObjectResult> = signature.results().to_vec();
+    let returned: Vec<Option<Grant>> = vec![None; declared_results.len()];
     Ok(Frame {
         scope,
         interface,
         code,
         grants,
         args,
+        declared_results,
+        returned,
     })
 }
 fn rank(mode: ObjectMode) -> u8 {
@@ -617,7 +761,11 @@ fn read_handles(
     }
     Ok(grants)
 }
-fn enter(mut caller: Caller<'_, HostState>, prepared: Frame, entry: &str) -> HostResult {
+fn enter<'c>(
+    mut caller: Caller<'c, HostState>,
+    prepared: Frame,
+    entry: &str,
+) -> Result<(Caller<'c, HostState>, Frame), wasmi::Error> {
     let module: Arc<Module> = Arc::clone(
         caller
             .data()
@@ -638,9 +786,126 @@ fn enter(mut caller: Caller<'_, HostState>, prepared: Frame, entry: &str) -> Hos
         let function = instance.get_typed_func::<(), ()>(&caller, entry)?;
         function.call(&mut caller, ())
     })();
-    caller.data_mut().frames.pop();
+    let finished: Frame = caller.data_mut().frames.pop().ok_or_else(trap)?;
     result?;
-    Ok(0)
+    validate_returned_slots(caller.data(), &finished)?;
+    Ok((caller, finished))
+}
+
+/// Returns the frame's current effective right over `index`, or `None` if
+/// the underlying object is consumed or the frame holds no grant for it.
+/// Mirrors `grant`'s per-handle transferred-downgrade rule, but keyed by
+/// arena index since a returned slot only records the index.
+fn effective_mode(state: &HostState, owning_frame: &Frame, index: usize) -> Option<ObjectMode> {
+    let item: &ArenaObject = state.arena.get(index)?;
+    if item.consumed {
+        return None;
+    }
+    let held: ObjectMode = owning_frame
+        .grants
+        .iter()
+        .find(|grant| grant.index == index)?
+        .mode;
+    if item.transferred {
+        Some(ObjectMode::Read)
+    } else {
+        Some(held)
+    }
+}
+
+/// Revalidates every present result slot against the FINAL arena state and
+/// the frame's current effective grant rights, after every callee
+/// instruction has run. A slot set by `return_object` and later consumed,
+/// transferred (including self-transfer attenuation), or otherwise
+/// invalidated must never deliver a stale capability. Required slots must
+/// still be filled. Called for every nested frame before delivery/drop and
+/// for the root frame before its results are dropped.
+pub(super) fn validate_returned_slots(
+    state: &HostState,
+    owning_frame: &Frame,
+) -> Result<(), wasmi::Error> {
+    for (declared, slot) in owning_frame
+        .declared_results
+        .iter()
+        .zip(&owning_frame.returned)
+    {
+        match slot {
+            None => {
+                if !declared.optional() {
+                    return Err(trap());
+                }
+            }
+            Some(grant) => {
+                let object: &ArenaObject = state.arena.get(grant.index).ok_or_else(trap)?;
+                let effective: ObjectMode =
+                    effective_mode(state, owning_frame, grant.index).ok_or_else(trap)?;
+                if rank(declared.mode()) > rank(effective)
+                    || declared.ty() != &object.authority.ty
+                    || declared.schema() != object.object.schema_version
+                {
+                    return Err(trap());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Delivers a finished callee's set result slots into the receiving (parent)
+/// frame's own handle namespace as new grants, checked against duplicate
+/// aliases already held by the receiver, and bumps the permanent cumulative
+/// handle counter. Returns a fixed-length sentinel array (one `u32` per
+/// declared slot, in slot order): the new parent-local handle index, or
+/// `ABSENT_RESULT_SLOT` for a slot delivered absent. Never compacted.
+fn deliver_results(state: &mut HostState, finished: &Frame) -> Result<Vec<u32>, wasmi::Error> {
+    let filled: usize = finished
+        .returned
+        .iter()
+        .filter(|slot| slot.is_some())
+        .count();
+    let next_handles: usize = state.handles.checked_add(filled).ok_or_else(trap)?;
+    if next_handles > MAX_LOCAL_OBJECT_HANDLES as usize {
+        return Err(trap());
+    }
+    // Prevalidate the entire batch before any caller-visible mutation: an
+    // alias against a handle the receiver already holds, or a duplicate
+    // within the batch itself, rejects the whole delivery rather than
+    // leaving the receiver with a prefix of it.
+    let parent: &Frame = state.frames.last().ok_or_else(trap)?;
+    let mut seen: BTreeSet<usize> = parent.grants.iter().map(|grant| grant.index).collect();
+    let mut sentinel: Vec<u32> = Vec::with_capacity(finished.returned.len());
+    let mut next: usize = parent.grants.len();
+    for slot in &finished.returned {
+        match slot {
+            Some(grant) => {
+                if !seen.insert(grant.index) {
+                    return Err(trap());
+                }
+                let handle: u32 = u32::try_from(next).map_err(|_| trap())?;
+                // A real handle must never collide with the absence sentinel.
+                if handle == ABSENT_RESULT_SLOT {
+                    return Err(trap());
+                }
+                sentinel.push(handle);
+                next = next.checked_add(1).ok_or_else(trap)?;
+            }
+            None => sentinel.push(ABSENT_RESULT_SLOT),
+        }
+    }
+    let parent: &mut Frame = state.frames.last_mut().ok_or_else(trap)?;
+    parent
+        .grants
+        .extend(finished.returned.iter().flatten().copied());
+    state.handles = next_handles;
+    Ok(sentinel)
+}
+
+fn encode_result_sentinel(sentinel: &[u32]) -> Vec<u8> {
+    let mut bytes: Vec<u8> = Vec::with_capacity(sentinel.len() * 4);
+    for value in sentinel {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes
 }
 #[allow(clippy::too_many_arguments)]
 fn dependency(
@@ -683,7 +948,58 @@ fn dependency(
         args,
         None,
     )?;
-    enter(caller, prepared, &entry)
+    enter(caller, prepared, &entry)?;
+    Ok(0)
+}
+#[allow(clippy::too_many_arguments)]
+fn dependency_with_results(
+    mut caller: Caller<'_, HostState>,
+    dependency: i32,
+    ep: i32,
+    el: i32,
+    tp: i32,
+    tl: i32,
+    hp: i32,
+    hc: i32,
+    ap: i32,
+    al: i32,
+    rp: i32,
+    rc: i32,
+) -> HostResult {
+    charge(&mut caller, 0)?;
+    require_object_result_profile(&caller)?;
+    debit(&mut caller, LOCAL_LIBRARY_BINDING_GAS)?;
+    let entry: String = String::from_utf8(read(&mut caller, ep, el)?).map_err(|_| trap())?;
+    let types: Vec<u8> = read(&mut caller, tp, tl)?;
+    let grants: Vec<Grant> = read_handles(&mut caller, hp, hc)?;
+    let args: Vec<u8> = read(&mut caller, ap, al)?;
+    let parent = frame(caller.data())?;
+    let code = parent
+        .interface
+        .candidate()
+        .request()
+        .artifact()
+        .unverified_dependencies()
+        .get(size(dependency)?)
+        .ok_or_else(trap)?
+        .clone();
+    let types = decode_scoped_type_arguments(caller.data().context.chain_id(), &types)
+        .map_err(|_| trap())?;
+    let prepared = prepare_frame(
+        caller.data(),
+        parent.scope,
+        code,
+        &entry,
+        &types,
+        grants,
+        args,
+        None,
+    )?;
+    let (mut caller, finished) = enter(caller, prepared, &entry)?;
+    check_result_buffer(&caller, rp, rc, finished.returned.len())?;
+    let sentinel: Vec<u32> = deliver_results(caller.data_mut(), &finished)?;
+    let encoded: Vec<u8> = encode_result_sentinel(&sentinel);
+    write(&mut caller, rp, rc, &encoded)
 }
 fn contract(
     mut caller: Caller<'_, HostState>,
@@ -696,14 +1012,17 @@ fn contract(
     charge(&mut caller, 0)?;
     debit(&mut caller, LOCAL_LIBRARY_BINDING_GAS)?;
     let parent = frame(caller.data())?;
-    if caller.data().profile != 3
-        || parent
-            .interface
-            .candidate()
-            .request()
-            .artifact()
-            .wasm_profile()
-            != 3
+    // The general selector stays available under the profile-four superset.
+    if !matches!(caller.data().profile, 3 | 4)
+        || !matches!(
+            parent
+                .interface
+                .candidate()
+                .request()
+                .artifact()
+                .wasm_profile(),
+            3 | 4
+        )
     {
         return Err(trap());
     }
@@ -748,5 +1067,68 @@ fn contract(
         args,
         None,
     )?;
-    enter(caller, prepared, &authorization.entrypoint)
+    enter(caller, prepared, &authorization.entrypoint)?;
+    Ok(0)
+}
+#[allow(clippy::too_many_arguments)]
+fn contract_with_results(
+    mut caller: Caller<'_, HostState>,
+    authorization: i32,
+    hp: i32,
+    hc: i32,
+    ap: i32,
+    al: i32,
+    rp: i32,
+    rc: i32,
+) -> HostResult {
+    charge(&mut caller, 0)?;
+    require_object_result_profile(&caller)?;
+    debit(&mut caller, LOCAL_LIBRARY_BINDING_GAS)?;
+    let parent = frame(caller.data())?;
+    let authorization = caller
+        .data()
+        .authorizations
+        .get(size(authorization)?)
+        .ok_or_else(trap)?
+        .clone();
+    if authorization.caller.code != parent.code
+        || authorization.caller.instance != caller.data().scopes[parent.scope].target
+    {
+        return Err(trap());
+    }
+    if size(al)? > crate::call::MAX_CALL_ARGUMENT_BYTES {
+        return Err(trap());
+    }
+    let mut grants: Vec<Grant> = read_handles(&mut caller, hp, hc)?;
+    let args: Vec<u8> = read(&mut caller, ap, al)?;
+    if grants.len() != authorization.objects.len() {
+        return Err(trap());
+    }
+    for (grant, ceiling) in grants.iter_mut().zip(&authorization.objects) {
+        let object = &caller.data().arena[grant.index];
+        if object.original.is_none() || object.object.id != ceiling.object_id {
+            return Err(trap());
+        }
+        let maximum = object_mode(ceiling.mode);
+        if rank(maximum) < rank(grant.mode) {
+            grant.mode = maximum;
+        }
+    }
+    let scope = super::admission::selected_scope(&caller.data().scopes, &authorization.callee)
+        .map_err(|_| trap())?;
+    let prepared = prepare_frame(
+        caller.data(),
+        scope,
+        authorization.callee.code,
+        &authorization.entrypoint,
+        &authorization.type_arguments,
+        grants,
+        args,
+        None,
+    )?;
+    let (mut caller, finished) = enter(caller, prepared, &authorization.entrypoint)?;
+    check_result_buffer(&caller, rp, rc, finished.returned.len())?;
+    let sentinel: Vec<u32> = deliver_results(caller.data_mut(), &finished)?;
+    let encoded: Vec<u8> = encode_result_sentinel(&sentinel);
+    write(&mut caller, rp, rc, &encoded)
 }

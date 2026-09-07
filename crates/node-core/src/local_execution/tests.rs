@@ -134,6 +134,7 @@ fn fixture_with_transfer<S: StructuredDurableDomainStateStore>(
         },
         initializer: Some("init".into()),
         transferable_constructors: if transferable { vec![1] } else { vec![] },
+        results: vec![Vec::new(); names.len()],
     };
     let semantics: Digest32 = local_execution_semantics(&resolver(), &protocol()).unwrap();
     let publication_policy: publication::LocalPublicationPolicy =

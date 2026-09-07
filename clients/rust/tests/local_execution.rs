@@ -86,6 +86,7 @@ fn fixture_dependencies(
         },
         initializer: Some("init".to_owned()),
         transferable_constructors: vec![],
+        results: vec![Vec::new(); 2],
     };
     let semantics = if profile == 3 {
         general_execution_semantics(&resolver, &context).unwrap()

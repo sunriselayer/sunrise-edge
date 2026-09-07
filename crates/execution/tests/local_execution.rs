@@ -68,6 +68,7 @@ fn metadata(seed: u8, initializer: Option<&str>) -> ExecutableAbi {
         },
         initializer: initializer.map(str::to_owned),
         transferable_constructors: vec![1],
+        results: vec![vec![], vec![]],
     }
 }
 fn publication(
@@ -170,7 +171,13 @@ fn typed_profile_whitelists_only_sunrise_and_exact_signatures() {
     let wrong:Vec<u8>=wat::parse_str("(module (import \"sunrise\" \"create_object\" (func (param i32 i32 i32 i32 i32 i32) (result i32))) (memory (export \"memory\") 1 2) (func (export \"run\")))").unwrap();
     assert!(validate_contract_wasm_profile(&wrong, &["run"], 2).is_err());
     assert!(validate_contract_wasm_profile(&typed, &["run"], 3).is_ok());
-    assert!(validate_contract_wasm_profile(&typed, &["run"], 4).is_err());
+    assert_eq!(
+        validate_contract_wasm_profile(&typed, &["run"], 4)
+            .unwrap()
+            .profile_version(),
+        4
+    );
+    assert!(validate_contract_wasm_profile(&typed, &["run"], 5).is_err());
 }
 
 #[test]

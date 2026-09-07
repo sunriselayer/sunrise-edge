@@ -1,6 +1,8 @@
 //! Typed interpreter. One store, fuel budget and arena span every contract frame.
 use crate::local_execution::*;
-use crate::publication::{self, UnverifiedDependencyRef, VerifiedPublicationInterface};
+use crate::publication::{
+    self, BoundObjectResult, UnverifiedDependencyRef, VerifiedPublicationInterface,
+};
 use crate::{EventRecord, ExecutionEffects, ExecutionStatus, ObjectEffect};
 use abi::package_types::PackageOrigin;
 use abi::public_abi::ObjectMode;
@@ -212,6 +214,21 @@ impl LocalContractEngine for LocalWasmExecutionEngine {
             created_authorities: Vec::new(),
         };
         if run.is_err() || store.data().limiter.failed {
+            return Ok(failed());
+        }
+        // Root has no receiving frame: validate required slots per DR-0124,
+        // then drop the returned handles. Their underlying object effects
+        // (create/mutate/consume) persist independently of this bookkeeping;
+        // a coordinator composing typed calls retains slots via the nested
+        // `call_dependency_with_results`/`call_contract_with_results` path.
+        let root_results_ok: bool = {
+            let state = store.data();
+            match state.frames.last() {
+                Some(root_frame) => host::validate_returned_slots(state, root_frame).is_ok(),
+                None => false,
+            }
+        };
+        if !root_results_ok {
             return Ok(failed());
         }
         let state: HostState = store.into_data();

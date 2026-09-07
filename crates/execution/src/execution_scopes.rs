@@ -88,8 +88,14 @@ pub fn validate_local_execution_scopes(
             }
             let semantics = match artifact.wasm_profile() {
                 2 => local_execution_semantics(resolver, artifact.context())?,
-                3 if policy.profile() == 3 => {
+                // A profile-four policy is a strict superset and therefore
+                // also admits profile-three code; a profile-three policy
+                // never admits profile-four code (DR-0124).
+                3 if matches!(policy.profile(), 3 | 4) => {
                     general_execution_semantics(resolver, artifact.context())?
+                }
+                4 if policy.profile() == 4 => {
+                    generic_object_result_semantics(resolver, artifact.context())?
                 }
                 _ => return Err(invalid("execution code profile")),
             };

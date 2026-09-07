@@ -29,6 +29,13 @@ pub const CONTRACT_WASM_ADMISSION_PROFILE_VERSION: u32 = 1;
 pub const TYPED_CONTRACT_WASM_PROFILE_VERSION: u32 = 2;
 /// General signed-authorization host profile; explicitly activated separately.
 pub const GENERAL_CONTRACT_WASM_PROFILE_VERSION: u32 = 3;
+/// Generic typed object-result host profile (DR-0124 foundation); superset of
+/// [`GENERAL_CONTRACT_WASM_PROFILE_VERSION`]'s imports plus `return_object`,
+/// `get_object_id`, `get_object_type`, and the results-returning call
+/// selectors. Distinct new selector names preserve the existing
+/// `call_dependency`/`call_contract` SDK imports and their profile-2/3
+/// signatures unchanged.
+pub const GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION: u32 = 4;
 
 /// Maximum accepted byte length of a candidate contract WASM binary.
 pub const MAX_CONTRACT_WASM_BYTES: usize = 4 * 1024 * 1024;
@@ -228,10 +235,65 @@ fn find_host_import(name: &str, profile: u32) -> Option<&'static HostImportSigna
         ],
         results: &[ValType::I32],
     };
-    if profile == 3 && name == "call_contract" {
+    static RETURN_OBJECT: HostImportSignature = HostImportSignature {
+        name: "return_object",
+        params: &[ValType::I32, ValType::I32],
+        results: &[ValType::I32],
+    };
+    static GET_OBJECT_ID: HostImportSignature = HostImportSignature {
+        name: "get_object_id",
+        params: &[ValType::I32, ValType::I32],
+        results: &[ValType::I32],
+    };
+    static GET_OBJECT_TYPE: HostImportSignature = HostImportSignature {
+        name: "get_object_type",
+        params: &[ValType::I32, ValType::I32, ValType::I32],
+        results: &[ValType::I32],
+    };
+    static CALL_DEPENDENCY_WITH_RESULTS: HostImportSignature = HostImportSignature {
+        name: "call_dependency_with_results",
+        params: &[
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+        ],
+        results: &[ValType::I32],
+    };
+    static CALL_CONTRACT_WITH_RESULTS: HostImportSignature = HostImportSignature {
+        name: "call_contract_with_results",
+        params: &[
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+        ],
+        results: &[ValType::I32],
+    };
+    if matches!(profile, 3 | 4) && name == "call_contract" {
         return Some(&CALL_CONTRACT);
     }
-    let imports: &[HostImportSignature] = if matches!(profile, 2 | 3) {
+    if profile == 4 {
+        match name {
+            "return_object" => return Some(&RETURN_OBJECT),
+            "get_object_id" => return Some(&GET_OBJECT_ID),
+            "get_object_type" => return Some(&GET_OBJECT_TYPE),
+            "call_dependency_with_results" => return Some(&CALL_DEPENDENCY_WITH_RESULTS),
+            "call_contract_with_results" => return Some(&CALL_CONTRACT_WITH_RESULTS),
+            _ => {}
+        }
+    }
+    let imports: &[HostImportSignature] = if matches!(profile, 2..=4) {
         TYPED_HOST_IMPORTS
     } else {
         ALLOWED_HOST_IMPORTS
@@ -613,10 +675,11 @@ fn scan_and_bound_module(
             }
             Payload::ImportSection(reader) => {
                 let count = reader.count();
-                let maximum: u32 = if matches!(profile, 2 | 3) {
-                    TYPED_HOST_IMPORTS.len() as u32 + u32::from(profile == 3)
-                } else {
-                    MAX_IMPORTS
+                let maximum: u32 = match profile {
+                    2 => TYPED_HOST_IMPORTS.len() as u32,
+                    3 => TYPED_HOST_IMPORTS.len() as u32 + 1,
+                    4 => TYPED_HOST_IMPORTS.len() as u32 + 6,
+                    _ => MAX_IMPORTS,
                 };
                 if count > maximum {
                     return Err(E::TooManyImports {
@@ -644,7 +707,7 @@ fn scan_and_bound_module(
                                 .ok_or(E::InvalidModule)?
                                 .clone();
                             if module
-                                != if matches!(profile, 2 | 3) {
+                                != if matches!(profile, 2..=4) {
                                     "sunrise"
                                 } else {
                                     "env"
@@ -934,7 +997,7 @@ pub fn validate_contract_wasm_profile(
     declared_entrypoints: &[&str],
     profile: u32,
 ) -> Result<ValidatedContractWasm, ContractWasmValidationError> {
-    if !matches!(profile, 1..=3) {
+    if !matches!(profile, 1..=4) {
         return Err(ContractWasmValidationError::InvalidModule);
     }
     check_binary_header(bytes)?;

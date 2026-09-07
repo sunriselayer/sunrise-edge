@@ -30,8 +30,8 @@ use abi::package_types::{
     ScopedTypeArg, ScopedTypeTag, encode_scoped_type_tag, verify_scoped_type_id,
 };
 use abi::public_abi::{
-    ArgumentKind, MAX_ABI_OBJECT_PARAMS, MAX_ABI_TYPE_PARAMS, MAX_ENTRYPOINT_NAME_BYTES,
-    ObjectMode, PackageAbi, PatternArgument, TypePattern,
+    ArgumentKind, MAX_ABI_OBJECT_PARAMS, MAX_ABI_OBJECT_RESULTS, MAX_ABI_TYPE_PARAMS,
+    MAX_ENTRYPOINT_NAME_BYTES, ObjectMode, PackageAbi, PatternArgument, TypePattern,
 };
 use hashing::HashSuiteResolver;
 use objects::{AccessMode, ObjectId};
@@ -73,6 +73,44 @@ impl BoundObjectParameter {
     }
 }
 
+/// Concrete instantiated ordered typed object result slot (DR-0124).
+///
+/// Asserts structural and nominal type expectations only; asserts NO
+/// ownership, current handle rights, or body layout rights.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundObjectResult {
+    mode: ObjectMode,
+    schema: u32,
+    ty: ScopedTypeTag,
+    optional: bool,
+}
+
+impl BoundObjectResult {
+    /// Returns the maximum access mode deliverable through this slot.
+    #[must_use]
+    pub fn mode(&self) -> ObjectMode {
+        self.mode
+    }
+
+    /// Returns the schema version identifier.
+    #[must_use]
+    pub fn schema(&self) -> u32 {
+        self.schema
+    }
+
+    /// Returns a reference to the bound scoped nominal type tag.
+    #[must_use]
+    pub fn ty(&self) -> &ScopedTypeTag {
+        &self.ty
+    }
+
+    /// Returns whether this slot may be delivered absent.
+    #[must_use]
+    pub fn optional(&self) -> bool {
+        self.optional
+    }
+}
+
 /// An instantiated entrypoint object signature bound against a verified publication interface.
 ///
 /// Retains a reference to the enclosing [`VerifiedPublicationInterface`] to ensure verification
@@ -84,6 +122,7 @@ pub struct BoundObjectSignature<'a> {
     interface: &'a VerifiedPublicationInterface,
     entrypoint: &'a str,
     objects: Vec<BoundObjectParameter>,
+    results: Vec<BoundObjectResult>,
     arguments: &'a ValueLayout,
 }
 
@@ -108,6 +147,11 @@ impl<'a> BoundObjectSignature<'a> {
     #[must_use]
     pub fn objects(&self) -> &[BoundObjectParameter] {
         &self.objects
+    }
+    /// Returns the bound, ordered typed object result slots (DR-0124).
+    #[must_use]
+    pub fn results(&self) -> &[BoundObjectResult] {
+        &self.results
     }
     /// Returns the argument layout from the exact verified interface for encoding.
     pub fn argument_layout(&self) -> &ValueLayout {
@@ -213,11 +257,12 @@ pub fn bind_object_signature<'a>(
         return Err(BindingError::Limit("entrypoint"));
     }
 
-    let entrypoint_decl = interface
+    let (entrypoint_index, entrypoint_decl) = interface
         .abi()
         .entrypoints
         .iter()
-        .find(|ep| ep.name == entrypoint)
+        .enumerate()
+        .find(|(_, ep)| ep.name == entrypoint)
         .ok_or(BindingError::UnknownEntrypoint)?;
 
     let expected_params: &[ArgumentKind] = &entrypoint_decl.type_parameters;
@@ -267,10 +312,41 @@ pub fn bind_object_signature<'a>(
         });
     }
 
+    let declared_results: &[abi::public_abi::ObjectResultDeclaration] = interface
+        .executable_abi(&interface.abi().origin)
+        .and_then(|executable| executable.results.get(entrypoint_index))
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if declared_results.len() > MAX_ABI_OBJECT_RESULTS {
+        return Err(BindingError::Limit("results"));
+    }
+    let mut bound_results: Vec<BoundObjectResult> = Vec::with_capacity(declared_results.len());
+    for result in declared_results {
+        let mut node_count: usize = 0;
+        let bound_tag: ScopedTypeTag =
+            substitute_pattern_node(&result.ty, type_arguments, 1, &mut node_count)?;
+
+        let encoded: Vec<u8> = encode_scoped_type_tag(&bound_tag)?;
+        total_bound_bytes = total_bound_bytes
+            .checked_add(encoded.len())
+            .ok_or(BindingError::Limit("bound type bytes"))?;
+        if total_bound_bytes > MAX_BOUND_TYPE_BYTES {
+            return Err(BindingError::Limit("bound type bytes"));
+        }
+
+        bound_results.push(BoundObjectResult {
+            mode: result.mode,
+            schema: result.schema,
+            ty: bound_tag,
+            optional: result.optional,
+        });
+    }
+
     Ok(BoundObjectSignature {
         interface,
         entrypoint: entrypoint_decl.name.as_str(),
         objects: bound_objects,
+        results: bound_results,
         arguments: interface
             .argument_layout(entrypoint_decl.name.as_str())
             .ok_or(BindingError::UnknownEntrypoint)?,

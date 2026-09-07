@@ -2532,9 +2532,18 @@ statements such as “body validation remains open” are not the live work queu
     independent phase resource budgets, monotonic counters and savepoints.
     Internal SDK bindings for profile-4 object metadata and ordered optional
     result handles are implemented (13 native tests, targeted clippy, wasm32
-    compile check and formatting pass). The matching VM/durable activation and
-    protected reservation coordinator remain open; SDK helpers alone do not
-    activate the new host or complete this criterion.
+    compile check and formatting pass). The matching profile-4 ABI/VM foundation
+    implements ordered optional slots, final-frame liveness/right revalidation,
+    receiver alias rejection, permanent delivered-handle accounting and generic
+    ID/type reads without changing write/consume authority. Targeted ABI/execution
+    tests and an independent encoder/decoder boundary regression pass locally.
+    Evidence includes 13 actual-WASM regressions (signed general-call returns,
+    isolated old-profile ABI rejection and cumulative handle exhaustion) and
+    fixed semantics/policy/result-ABI wire vectors. Local full validation:
+    `npm ci --prefix adapters/cloudflare-workers` and `./scripts/check-all.sh`.
+    Durable profile activation, protected reservation coordination, phase budgets
+    and savepoints remain open; these foundations alone do not complete this
+    criterion or enable paid execution.
   - [ ] Explicit paid Call/Instantiate/Publish consent, pinned contract policy,
     base/execution-only pricing and calibrated reserve/settle allowances.
     Internal pricing component implemented: immutable admission captures the

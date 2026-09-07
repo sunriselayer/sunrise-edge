@@ -26,10 +26,14 @@ fn profile_two_requires_its_own_committed_policy_and_returns_cas_closure() {
     );
     let original: PublicationSubmission = make_submission(&old_policy, 15, 0, vec![]);
     let old: &CodeArtifact = original.request().artifact();
+    let call: abi::call_values::CallAbi =
+        abi::call_values::decode_call_abi(old.unverified_abi()).unwrap();
+    let entrypoints: usize = call.objects.entrypoints.len();
     let wrapper: abi::executable_abi::ExecutableAbi = abi::executable_abi::ExecutableAbi {
-        call: abi::call_values::decode_call_abi(old.unverified_abi()).unwrap(),
+        call,
         initializer: Some("run".into()),
         transferable_constructors: vec![],
+        results: vec![Vec::new(); entrypoints],
     };
     let artifact: CodeArtifact = CodeArtifact::new(ArtifactParts {
         context: old.context().clone(),

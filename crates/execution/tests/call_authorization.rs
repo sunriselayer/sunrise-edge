@@ -316,6 +316,7 @@ fn publication(
             call: abi,
             initializer: None,
             transferable_constructors: vec![],
+            results: vec![vec![]],
         })
         .unwrap()
     };

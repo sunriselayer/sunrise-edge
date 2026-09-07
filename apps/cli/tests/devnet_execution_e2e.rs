@@ -106,12 +106,14 @@ async fn cli_inventory_success_trap_and_exact_files_survive_restart() {
     ] {
         fs::write(directory.0.join(format!("{name}.wat")), &package.wat).unwrap();
         fs::write(directory.0.join(format!("{name}.wasm")), &package.wasm).unwrap();
+        let entrypoints: usize = package.abi.objects.entrypoints.len();
         fs::write(
             directory.0.join(format!("{name}.abi")),
             encode_executable_abi(&ExecutableAbi {
                 call: package.abi,
                 initializer: package.initializer,
                 transferable_constructors: package.transferable_constructors,
+                results: vec![Vec::new(); entrypoints],
             })
             .unwrap(),
         )

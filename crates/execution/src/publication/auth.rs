@@ -66,7 +66,7 @@ fn validate_publication_context(
     if artifact.revision() != 1 {
         return Err(E::InvalidRevision(artifact.revision()));
     }
-    if !matches!(artifact.wasm_profile(), 1..=3) {
+    if !matches!(artifact.wasm_profile(), 1..=4) {
         return Err(E::UnsupportedWasmProfile(artifact.wasm_profile()));
     }
     Ok(())

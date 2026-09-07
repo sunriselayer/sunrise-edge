@@ -61,10 +61,12 @@ fn publish(
         .iter()
         .map(|entry| entry.name.clone())
         .collect();
+    let entrypoint_count = package.abi.objects.entrypoints.len();
     let metadata = ExecutableAbi {
         call: package.abi,
         initializer: package.initializer,
         transferable_constructors: package.transferable_constructors,
+        results: vec![vec![]; entrypoint_count],
     };
     let semantics = general_execution_semantics(&resolver(), &context()).unwrap();
     let artifact = CodeArtifact::new(ArtifactParts {

@@ -20,8 +20,9 @@ pub use submission::{
 };
 
 pub use binding::{
-    BindingError, BoundObjectParameter, BoundObjectSignature, MAX_BOUND_TYPE_BYTES,
-    bind_object_signature, match_object_input_metadata, validate_call_arguments,
+    BindingError, BoundObjectParameter, BoundObjectResult, BoundObjectSignature,
+    MAX_BOUND_TYPE_BYTES, bind_object_signature, match_object_input_metadata,
+    validate_call_arguments,
 };
 
 pub use bodies::{

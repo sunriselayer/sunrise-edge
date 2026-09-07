@@ -186,6 +186,38 @@ slot present. It requires the refund slot present exactly when the independently
 computed refund is nonzero. Both may be optional in generic metadata, but paid
 policy postconditions enforce those stronger runtime requirements.
 
+### Typed-result wire and authority boundary
+
+Result metadata uses executable ABI `0x5406/v2`, with field 4 holding the
+ordered entrypoint result lists (`0x540A/v1`). Each result declaration is
+`0x5309/v1`: mode, schema, nominal type pattern and a closed optional flag.
+All-empty result declarations use the existing executable ABI version 1;
+version 2 with all-empty declarations is noncanonical and rejected. The
+aggregate result type-node budget spans all entrypoints, not each list alone.
+
+The imports `return_object`, `get_object_id`, `get_object_type`,
+`call_dependency_with_results` and `call_contract_with_results` require WASM
+profile 4 in both the executing artifact and the selected policy. Profile 4
+uses host ABI 3, execution rules 3, semantics `0x630B/v4` and policy
+`0x6409/v3`. Older policies never admit profile-4 code. The result buffer holds
+one little-endian u32 per declared slot; `u32::MAX` denotes absence. Validate
+the whole receiving buffer and result batch before extending caller grants.
+
+Returning a handle is not a write: a foreign-owned Read handle or a
+dependency-defined handle may be relayed. Actual writes and consumes still
+require the sender owner, exact defining code and exact instance/context.
+Revalidate returned slots against final live state at frame exit, including
+consumption and transfer attenuation. The receiving frame cannot acquire a
+duplicate alias, and delivered handles permanently count toward the global
+handle limit even after frames exit.
+
+General-call authorizations still select original signed input ObjectIds;
+typed results do not add a fresh-object selector to that authorization format.
+A returned fresh object is therefore not automatically eligible as a later
+general-call input. Dependency calls retain their existing handle-based path.
+No implicit result-to-authorization conversion or asset-specific exemption is
+permitted.
+
 ## Public asset identity
 
 The public Standard Asset initializer creates one own-defined Definition object.
