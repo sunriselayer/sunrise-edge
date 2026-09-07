@@ -45,6 +45,9 @@ fn policies() -> (
     )
 }
 fn local_app(enabled: bool) -> Router {
+    local_app_profiles(enabled, false)
+}
+fn local_app_profiles(enabled: bool, general: bool) -> Router {
     let domain = AtomicityDomainId::new([0x89; 32]).unwrap();
     let store = Arc::new(MemoryDurableStateStore::new(
         WriterFenceGeneration::new(3).unwrap(),
@@ -55,7 +58,12 @@ fn local_app(enabled: bool) -> Router {
         StorageDeadline::new(u64::MAX).unwrap(),
         StorageCorrelationId::new([7; 16]).unwrap(),
     );
-    let entries = vec![
+    let general_publication = LocalPublicationPolicy::general(
+        context(),
+        general_execution_semantics(&resolver(), &context()).unwrap(),
+    );
+    let general_policy = LocalExecutionPolicy::general(context());
+    let mut entries = vec![
         (
             publication_policy_key_for_profile(legacy.context(), 1).unwrap(),
             legacy.encode().unwrap(),
@@ -69,6 +77,20 @@ fn local_app(enabled: bool) -> Router {
             policy.encode().unwrap(),
         ),
     ];
+    if general {
+        entries.push((
+            publication_policy_key_for_profile(general_publication.context(), 3).unwrap(),
+            general_publication.encode().unwrap(),
+        ));
+        entries.push((
+            node_core::local_instance_state::execution_policy_key_for_profile(
+                general_policy.context(),
+                3,
+            )
+            .unwrap(),
+            general_policy.encode().unwrap(),
+        ));
+    }
     let reads = entries
         .iter()
         .map(|(key, _)| StateReadAssertion::new(key.clone(), StateRevision::INITIAL).unwrap())
@@ -95,9 +117,13 @@ fn local_app(enabled: bool) -> Router {
         1,
     );
     if enabled {
+        let mut local = LocalExecutionComposition::new(executable, policy);
+        if general {
+            local = local.with_policy(general_publication, general_policy);
+        }
         composition = composition
             .with_local_publication(legacy)
-            .with_local_execution(LocalExecutionComposition::new(executable, policy));
+            .with_local_execution(local);
     }
     preinstalled_wasm_structured_durable_router(
         StructuredDurableNativeComponents::new(
@@ -136,7 +162,7 @@ fn publication(profile: u32, nonce: u64) -> PublicationSubmission {
         arguments: vec![ValueLayout::U64],
         bodies: vec![],
     };
-    let abi = if profile == 2 {
+    let abi = if matches!(profile, 2 | 3) {
         encode_executable_abi(&ExecutableAbi {
             call: abi,
             initializer: Some("init".to_owned()),
@@ -146,10 +172,10 @@ fn publication(profile: u32, nonce: u64) -> PublicationSubmission {
     } else {
         encode_call_abi(&abi).unwrap()
     };
-    let semantics = if profile == 2 {
-        local_executable_publication_semantics(&resolver(), &context()).unwrap()
-    } else {
-        local_publication_profile_semantics(&resolver(), &context()).unwrap()
+    let semantics = match profile {
+        2 => local_executable_publication_semantics(&resolver(), &context()).unwrap(),
+        3 => general_execution_semantics(&resolver(), &context()).unwrap(),
+        _ => local_publication_profile_semantics(&resolver(), &context()).unwrap(),
     };
     let artifact = CodeArtifact::new(ArtifactParts {
         context: context(),
@@ -195,9 +221,73 @@ async fn post(app: &Router, path: &str, body: Vec<u8>) -> Response {
 
 #[tokio::test]
 async fn explicit_local_http_retains_profile_one_and_executes_profile_two() {
-    let app = local_app(true);
+    execute_profile(2, false).await;
+}
+
+#[tokio::test]
+async fn explicit_general_registry_executes_both_trusted_profiles_on_the_same_route() {
+    execute_profile(2, true).await;
+    execute_profile(3, true).await;
+}
+
+#[tokio::test]
+async fn general_publication_is_not_enabled_by_legacy_execution_opt_in() {
+    let response = post(
+        &local_app(true),
+        publication::PUBLICATION_PATH,
+        encode_publication_submission(&publication(3, 0)).unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[test]
+fn execution_registry_rejects_duplicate_and_mismatched_profiles_without_io() {
+    let (_, publication, policy) = policies();
+    let general = LocalPublicationPolicy::general(
+        context(),
+        general_execution_semantics(&resolver(), &context()).unwrap(),
+    );
+    for local in [
+        LocalExecutionComposition::new(publication.clone(), policy.clone())
+            .with_policy(publication.clone(), policy.clone()),
+        LocalExecutionComposition::new(general, policy),
+    ] {
+        let store = Arc::new(ScriptedIndexedStore::new(vec![], vec![]));
+        let composition = PreinstalledWasmComposition::new(
+            Arc::new(PreinstalledModuleCatalog::new(vec![]).unwrap()),
+            WasmExecutionEngine,
+            1,
+        )
+        .with_local_execution(local);
+        let result = preinstalled_wasm_structured_durable_router(
+            StructuredDurableNativeComponents::new(
+                Arc::clone(&store),
+                Arc::new(MemoryBlobStore::default()),
+                Arc::new(MemoryTransport::default()),
+                Arc::new(ManualClock::new(10000)),
+                Arc::new(SequenceIndexedIdentities::default()),
+            ),
+            composition,
+            active_protocol_config(AtomicityDomainId::new([0x89; 32]).unwrap()),
+            structured_request_authority(),
+            config(),
+            resolver(),
+            Arc::new(IncrementMachine::new(config().state_key())),
+            NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
+        );
+        assert!(matches!(
+            result,
+            Err(StructuredDurableRouterError::PublicationContextAuthorityMismatch)
+        ));
+        assert_eq!(store.storage_calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+async fn execute_profile(profile: u32, general: bool) {
+    let app = local_app_profiles(true, general);
     let legacy = publication(1, 0);
-    let executable = publication(2, 1);
+    let executable = publication(profile, 1);
     for submission in [&legacy, &executable] {
         let response = post(
             &app,
@@ -229,7 +319,7 @@ async fn explicit_local_http_retains_profile_one_and_executes_profile_two() {
     };
     let call = execution::call::CallIntent {
         context: context(),
-        request_id: [3; 32],
+        request_id: [50; 32],
         sender: instance.creator,
         nonce: 2,
         code,
@@ -243,7 +333,13 @@ async fn explicit_local_http_retains_profile_one_and_executes_profile_two() {
     let intent = LocalExecutionIntent {
         authorizations: Vec::new(),
         mode: LocalExecutionMode::Instantiate,
-        policy_digest: policies().2.digest(&resolver()).unwrap(),
+        policy_digest: if profile == 3 {
+            LocalExecutionPolicy::general(context())
+        } else {
+            policies().2
+        }
+        .digest(&resolver())
+        .unwrap(),
         call,
     };
     let signature = key

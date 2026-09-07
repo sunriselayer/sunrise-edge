@@ -91,11 +91,17 @@ where
             };
             let policy = match submission.request().artifact().wasm_profile() {
                 1 => state.preinstalled_wasm.publication.as_ref(),
-                2 => state
+                profile @ (2 | 3) => state
                     .preinstalled_wasm
                     .local_execution
                     .as_ref()
-                    .map(|local| &local.publication),
+                    .and_then(|local| {
+                        local
+                            .policies
+                            .iter()
+                            .find(|(publication, _)| publication.profile() == profile)
+                    })
+                    .map(|(publication, _)| publication),
                 _ => None,
             };
             let Some(policy) = policy else {

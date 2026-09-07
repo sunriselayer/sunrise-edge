@@ -73,6 +73,7 @@ pub struct DevnetConfig {
     max_concurrent: usize,
     local_publication: bool,
     local_execution: bool,
+    general_calls: bool,
 }
 
 impl DevnetConfig {
@@ -99,11 +100,18 @@ impl DevnetConfig {
         let mut max_concurrent: Option<usize> = None;
         let mut local_publication: bool = false;
         let mut local_execution: bool = false;
+        let mut general_calls: bool = false;
         let mut iterator = args.into_iter().map(Into::into);
 
         while let Some(flag_os) = iterator.next() {
             let flag: &str = flag_os.to_str().ok_or(DevnetConfigError::NonUtf8Flag)?;
             match flag {
+                "--enable-general-calls" => {
+                    if general_calls {
+                        return Err(DevnetConfigError::DuplicateFlag("--enable-general-calls"));
+                    }
+                    general_calls = true;
+                }
                 "--enable-local-execution" => {
                     if local_execution {
                         return Err(DevnetConfigError::DuplicateFlag("--enable-local-execution"));
@@ -233,6 +241,7 @@ impl DevnetConfig {
             dev_owners,
             local_publication,
             local_execution,
+            general_calls,
             fee_treasury_owner,
             max_concurrent: max_concurrent
                 .ok_or(DevnetConfigError::MissingFlag("--max-concurrent"))?,
@@ -248,13 +257,19 @@ impl DevnetConfig {
     /// Whether local publication is enabled directly or by execution opt-in.
     #[must_use]
     pub const fn local_publication(&self) -> bool {
-        self.local_publication || self.local_execution
+        self.local_publication || self.local_execution()
     }
 
     /// Whether typed, zero-fee local contract execution was explicitly enabled.
     #[must_use]
     pub const fn local_execution(&self) -> bool {
-        self.local_execution
+        self.local_execution || self.general_calls
+    }
+
+    /// Whether the general signed-call policy was explicitly enabled.
+    #[must_use]
+    pub const fn general_calls(&self) -> bool {
+        self.general_calls
     }
 
     /// Returns the validated loopback listen address.
@@ -551,17 +566,32 @@ mod tests {
         let default: DevnetConfig = DevnetConfig::parse_from(valid_args()).unwrap();
         assert!(!default.local_execution());
         assert!(!default.local_publication());
+        assert!(!default.general_calls());
         let mut args: Vec<OsString> = valid_args();
         args.push("--enable-local-execution".into());
         let config: DevnetConfig = DevnetConfig::parse_from(args.clone()).unwrap();
         assert!(config.local_execution());
         assert!(config.local_publication());
+        assert!(!config.general_calls());
         args.push("--enable-local-publication".into());
         assert!(DevnetConfig::parse_from(args.clone()).is_ok());
         args.push("--enable-local-execution".into());
         assert!(matches!(
             DevnetConfig::parse_from(args),
             Err(DevnetConfigError::DuplicateFlag("--enable-local-execution"))
+        ));
+    }
+
+    #[test]
+    fn general_call_activation_is_explicit_and_duplicate_checked() {
+        let mut args: Vec<OsString> = valid_args();
+        args.push("--enable-general-calls".into());
+        let config: DevnetConfig = DevnetConfig::parse_from(args.clone()).unwrap();
+        assert!(config.general_calls() && config.local_execution() && config.local_publication());
+        args.push("--enable-general-calls".into());
+        assert!(matches!(
+            DevnetConfig::parse_from(args),
+            Err(DevnetConfigError::DuplicateFlag("--enable-general-calls"))
         ));
     }
 

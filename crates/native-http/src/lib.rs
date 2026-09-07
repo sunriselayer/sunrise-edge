@@ -452,25 +452,38 @@ pub struct PreinstalledWasmComposition {
     local_execution: Option<LocalExecutionComposition>,
 }
 
-/// Explicit durably seeded profile-two publication and zero-fee execution capability.
+/// Explicit durably seeded publication and zero-fee execution policy registry.
 #[derive(Clone, Debug)]
 pub struct LocalExecutionComposition {
-    publication: node_core::publication::LocalPublicationPolicy,
-    policy: execution::local_execution::LocalExecutionPolicy,
+    policies: Vec<(
+        node_core::publication::LocalPublicationPolicy,
+        execution::local_execution::LocalExecutionPolicy,
+    )>,
     engine: execution::LocalWasmExecutionEngine,
 }
 impl LocalExecutionComposition {
     /// Supplies trusted policies, never selected or constructed from HTTP inputs.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         publication: node_core::publication::LocalPublicationPolicy,
         policy: execution::local_execution::LocalExecutionPolicy,
     ) -> Self {
         Self {
-            publication,
-            policy,
+            policies: vec![(publication, policy)],
             engine: execution::LocalWasmExecutionEngine::new(),
         }
+    }
+
+    /// Adds an explicitly trusted policy pair. Router construction rejects
+    /// duplicate, unknown, mismatched or more than two executable profiles.
+    #[must_use]
+    pub fn with_policy(
+        mut self,
+        publication: node_core::publication::LocalPublicationPolicy,
+        policy: execution::local_execution::LocalExecutionPolicy,
+    ) -> Self {
+        self.policies.push((publication, policy));
+        self
     }
 }
 
@@ -1098,23 +1111,36 @@ where
     {
         return Err(StructuredDurableRouterError::PublicationContextAuthorityMismatch);
     }
-    if let Some(local) = preinstalled_wasm.local_execution.as_ref()
-        && (local.publication.profile() != 2
-            || local.policy.context() != local.publication.context()
-            || local.policy.context().chain_id() != config.chain_id()
-            || local.policy.context().protocol_version() != config.protocol_version()
-            || local.policy.context().epoch() != config.epoch()
-            || resolver.chain_id() != config.chain_id()
-            || resolver.protocol_version() != config.protocol_version()
-            || node_core::publication::local_executable_publication_semantics(
-                &resolver,
-                local.policy.context(),
-            )
-            .ok()
-            .as_ref()
-                != Some(local.publication.semantics()))
-    {
-        return Err(StructuredDurableRouterError::PublicationContextAuthorityMismatch);
+    if let Some(local) = preinstalled_wasm.local_execution.as_ref() {
+        let mut profiles: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+        if local.policies.is_empty() || local.policies.len() > 2 {
+            return Err(StructuredDurableRouterError::PublicationContextAuthorityMismatch);
+        }
+        for (publication, policy) in &local.policies {
+            let semantics = match policy.profile() {
+                2 => execution::local_execution::local_execution_semantics(
+                    &resolver,
+                    policy.context(),
+                ),
+                3 => execution::local_execution::general_execution_semantics(
+                    &resolver,
+                    policy.context(),
+                ),
+                _ => return Err(StructuredDurableRouterError::PublicationContextAuthorityMismatch),
+            };
+            if !profiles.insert(policy.profile())
+                || publication.profile() != policy.profile()
+                || policy.context() != publication.context()
+                || policy.context().chain_id() != config.chain_id()
+                || policy.context().protocol_version() != config.protocol_version()
+                || policy.context().epoch() != config.epoch()
+                || resolver.chain_id() != config.chain_id()
+                || resolver.protocol_version() != config.protocol_version()
+                || semantics.ok().as_ref() != Some(publication.semantics())
+            {
+                return Err(StructuredDurableRouterError::PublicationContextAuthorityMismatch);
+            }
+        }
     }
     let state = Arc::new(PreinstalledWasmStructuredDurableNativeHttpState {
         components,

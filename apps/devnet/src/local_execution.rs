@@ -3,10 +3,10 @@
 use execution::local_execution::{LocalExecutionError, LocalExecutionPolicy};
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
-use node_core::local_instance_state::execution_policy_key;
+use node_core::local_instance_state::execution_policy_key_for_profile;
 use node_core::publication::{
     LocalPublicationPolicy, local_executable_publication_semantics,
-    publication_policy_key_for_profile,
+    local_general_publication_semantics, publication_policy_key_for_profile,
 };
 use protocol_types::{AtomicityDomainId, Epoch};
 use runtime::{
@@ -46,6 +46,29 @@ pub fn seed_local_execution_policies<S: DurableDomainStateStore + ?Sized>(
     resolver: &HashSuiteResolver,
     epoch: Epoch,
 ) -> Result<(LocalPublicationPolicy, LocalExecutionPolicy), LocalExecutionBootError> {
+    seed_execution_profile(store, operation, domain, resolver, epoch, 2)
+}
+
+/// Seeds the explicitly enabled general-call policy pair without replacing
+/// historical rows. Boot reserves a distinct operation identity for this write.
+pub fn seed_general_execution_policies<S: DurableDomainStateStore + ?Sized>(
+    store: &S,
+    operation: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+) -> Result<(LocalPublicationPolicy, LocalExecutionPolicy), LocalExecutionBootError> {
+    seed_execution_profile(store, operation, domain, resolver, epoch, 3)
+}
+
+fn seed_execution_profile<S: DurableDomainStateStore + ?Sized>(
+    store: &S,
+    operation: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    profile: u32,
+) -> Result<(LocalPublicationPolicy, LocalExecutionPolicy), LocalExecutionBootError> {
     use crate::publication::LocalPublicationBootError as E;
     let context: PublicationContext = PublicationContext::new(
         resolver.chain_id().clone(),
@@ -53,17 +76,31 @@ pub fn seed_local_execution_policies<S: DurableDomainStateStore + ?Sized>(
         epoch,
     )
     .map_err(E::from)?;
-    let semantics = local_executable_publication_semantics(resolver, &context).map_err(E::from)?;
-    let publication: LocalPublicationPolicy =
-        LocalPublicationPolicy::executable(context.clone(), semantics);
-    let execution: LocalExecutionPolicy = LocalExecutionPolicy::new(context);
+    let (publication, execution) = match profile {
+        2 => (
+            LocalPublicationPolicy::executable(
+                context.clone(),
+                local_executable_publication_semantics(resolver, &context).map_err(E::from)?,
+            ),
+            LocalExecutionPolicy::new(context),
+        ),
+        3 => (
+            LocalPublicationPolicy::general(
+                context.clone(),
+                local_general_publication_semantics(resolver, &context).map_err(E::from)?,
+            ),
+            LocalExecutionPolicy::general(context),
+        ),
+        _ => return Err(E::Mismatch.into()),
+    };
     let entries: Vec<(Vec<u8>, Vec<u8>)> = vec![
         (
-            publication_policy_key_for_profile(publication.context(), 2).map_err(E::from)?,
+            publication_policy_key_for_profile(publication.context(), profile).map_err(E::from)?,
             publication.encode().map_err(E::from)?,
         ),
         (
-            execution_policy_key(execution.context()).map_err(LocalExecutionBootError::State)?,
+            execution_policy_key_for_profile(execution.context(), profile)
+                .map_err(LocalExecutionBootError::State)?,
             execution
                 .encode()
                 .map_err(LocalExecutionBootError::Execution)?,
@@ -128,6 +165,10 @@ mod tests {
 
     #[test]
     fn policies_seed_atomically_and_reject_partial_tombstone_and_stale_fence() {
+        check_seed_profile(2);
+        check_seed_profile(3);
+    }
+    fn check_seed_profile(profile: u32) {
         let domain: AtomicityDomainId = AtomicityDomainId::new([4; 32]).unwrap();
         let generation: WriterFenceGeneration = WriterFenceGeneration::new(2).unwrap();
         let operation: DurableOperationContext = DurableOperationContext::new(
@@ -145,13 +186,26 @@ mod tests {
         )
         .unwrap();
         let store: MemoryDurableStateStore = MemoryDurableStateStore::new_bound(domain, generation);
-        let pair =
-            seed_local_execution_policies(&store, &operation, domain, &resolver, Epoch::new(0))
-                .unwrap();
+        let pair = seed_execution_profile(
+            &store,
+            &operation,
+            domain,
+            &resolver,
+            Epoch::new(0),
+            profile,
+        )
+        .unwrap();
         assert_eq!(
             pair,
-            seed_local_execution_policies(&store, &operation, domain, &resolver, Epoch::new(0))
-                .unwrap()
+            seed_execution_profile(
+                &store,
+                &operation,
+                domain,
+                &resolver,
+                Epoch::new(0),
+                profile
+            )
+            .unwrap()
         );
         let stale: DurableOperationContext = DurableOperationContext::new(
             WriterFenceGeneration::new(1).unwrap(),
@@ -159,12 +213,12 @@ mod tests {
             StorageCorrelationId::new([3; 16]).unwrap(),
         );
         assert!(
-            seed_local_execution_policies(&store, &stale, domain, &resolver, Epoch::new(0))
+            seed_execution_profile(&store, &stale, domain, &resolver, Epoch::new(0), profile)
                 .is_err()
         );
         let broken: MemoryDurableStateStore =
             MemoryDurableStateStore::new_bound(domain, generation);
-        let key: Vec<u8> = execution_policy_key(pair.1.context()).unwrap();
+        let key: Vec<u8> = execution_policy_key_for_profile(pair.1.context(), profile).unwrap();
         let tx: AtomicStateTransaction = AtomicStateTransaction::new(
             domain,
             AtomicStateReadSet::new(vec![
@@ -182,13 +236,20 @@ mod tests {
             DurableCommitOutcome::Committed
         );
         assert!(matches!(
-            seed_local_execution_policies(&broken, &operation, domain, &resolver, Epoch::new(0)),
+            seed_execution_profile(
+                &broken,
+                &operation,
+                domain,
+                &resolver,
+                Epoch::new(0),
+                profile
+            ),
             Err(LocalExecutionBootError::Publication(
                 crate::publication::LocalPublicationBootError::Tombstoned
             ))
         ));
         let publication_key: Vec<u8> =
-            publication_policy_key_for_profile(pair.0.context(), 2).unwrap();
+            publication_policy_key_for_profile(pair.0.context(), profile).unwrap();
         let observed: VersionedStateValue = broken
             .get_versioned_durable(&operation, domain, &publication_key)
             .unwrap();
