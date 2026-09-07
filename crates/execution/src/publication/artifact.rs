@@ -225,7 +225,10 @@ impl CodeArtifact {
         if parts.revision != 1 {
             return Err(E::InvalidRevision(parts.revision));
         }
-        if parts.wasm_profile != CONTRACT_WASM_ADMISSION_PROFILE_VERSION {
+        if !matches!(
+            parts.wasm_profile,
+            CONTRACT_WASM_ADMISSION_PROFILE_VERSION | crate::TYPED_CONTRACT_WASM_PROFILE_VERSION
+        ) {
             return Err(E::UnsupportedWasmProfile(parts.wasm_profile));
         }
         if parts.origin.chain_id() != parts.context.chain_id() {
@@ -635,7 +638,10 @@ pub fn decode_code_artifact(bytes: &[u8]) -> Result<CodeArtifact, E> {
         return Err(E::InvalidRevision(revision));
     }
     let wasm_profile: u32 = frame.required_u32(4)?;
-    if wasm_profile != CONTRACT_WASM_ADMISSION_PROFILE_VERSION {
+    if !matches!(
+        wasm_profile,
+        CONTRACT_WASM_ADMISSION_PROFILE_VERSION | crate::TYPED_CONTRACT_WASM_PROFILE_VERSION
+    ) {
         return Err(E::UnsupportedWasmProfile(wasm_profile));
     }
     let semantics_bytes = frame.required_field(5)?;

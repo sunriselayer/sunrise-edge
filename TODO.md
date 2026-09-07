@@ -10,7 +10,7 @@ execution are not yet delivered; publication alone does not close this gate.
 | Order | Deliverable | Completion evidence | Status |
 | --- | --- | --- | --- |
 | 1 | Durable local code publication | CLI publish/query; immutable code/ABI/exact dependencies; authenticated admission; origin absence; shared nonce and receipt atomicity (no outgoing message); real SQLite restart/replay/conflict/fencing | Implemented and locally validated (DR-0121); fee-free opt-in local storage only |
-| 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Open |
+| 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | In progress: immutable instances and same-instance dependency-library execution; cross-instance authorization remains open |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Open |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Open |
 
@@ -2487,6 +2487,14 @@ statements such as “body validation remains open” are not the live work queu
   cross-contract calls, CLI and atomic rollback/replay E2E. Never connect an
   uncommitted candidate directly to the legacy catalog or treat signed ABI
   declarations as rights.
+  The current integrated implementation target is an explicit local zero-fee
+  execution policy, typed `sunrise` host, immutable independent instances,
+  same-instance dependency-library calls, CLI and durable inventory E2E. Do not
+  count intermediate interface commits as delivered functionality. Library
+  calls are not cross-instance calls: separately signed target-instance/revision
+  authorization and bounded authority delegation remain open before Standard
+  Asset interoperability. This item stays unchecked until its full evidence
+  exists; local execution alone does not close the generic platform gate.
 - [ ] **Standard Asset/fee parity:** adapt its max-less WAT to the public
   memory-bound profile and recommit code identity as part of migration, not a
   separate grandfathered admission exception. Replace trusted-only policies

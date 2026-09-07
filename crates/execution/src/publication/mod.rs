@@ -24,7 +24,9 @@ pub use binding::{
     bind_object_signature, match_object_input_metadata, validate_call_arguments,
 };
 
-pub use bodies::{BodyError, MAX_BOUND_BODY_BYTES, validate_object_input_bodies};
+pub use bodies::{
+    BodyError, MAX_BOUND_BODY_BYTES, validate_nominal_body, validate_object_input_bodies,
+};
 
 pub use interface::{
     InterfaceError, MAX_INTERFACE_ABI_BYTES, MAX_INTERFACE_DEPTH, MAX_INTERFACE_NODES,

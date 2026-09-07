@@ -970,6 +970,7 @@ mod wasm_engine;
 pub use wasm_engine::WasmExecutionEngine;
 
 pub mod call;
+pub mod local_execution;
 /// Signed immutable artifact candidates; authentication alone grants no authority.
 pub mod publication;
 
@@ -977,7 +978,8 @@ mod contract_wasm;
 pub use contract_wasm::{
     CONTRACT_WASM_ADMISSION_PROFILE_VERSION, ContractWasmValidationError,
     MAX_CONTRACT_ENTRYPOINT_NAME_BYTES, MAX_CONTRACT_ENTRYPOINTS, MAX_CONTRACT_WASM_BYTES,
-    ValidatedContractWasm, validate_contract_wasm,
+    TYPED_CONTRACT_WASM_PROFILE_VERSION, ValidatedContractWasm, validate_contract_wasm,
+    validate_contract_wasm_profile,
 };
 
 mod execution_proof;

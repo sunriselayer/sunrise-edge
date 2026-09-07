@@ -38,6 +38,10 @@
 
 extern crate alloc;
 
+/// Checked profile-2 bindings for the authority-aware `sunrise` host module.
+/// Legacy root-level APIs continue to use the profile-1 `env` module.
+pub mod typed;
+
 use alloc::vec::Vec;
 use core::fmt;
 

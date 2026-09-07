@@ -130,6 +130,21 @@ authority, preserving access and gas bounds without allowing callee privilege
 escalation. A dependency cannot write another module's objects merely because
 it can read their bytes. Nested calls share the transaction's atomic outcome.
 
+Distinguish library composition from entering another independent instance.
+A direct dependency may execute in the root instance's scope while retaining
+its own defining-code authority. This does not authorize access to that
+dependency's other instances. Crossing an instance boundary requires an exact
+signed target/revision and explicitly bounded delegated authority; never infer
+it from a package dependency or a same-typed object. A library-only execution
+profile must reject cross-instance handles and cannot claim that capability.
+
+The executable host profile must be explicit and committed separately from
+non-executing publication admission. Do not activate a raw legacy host merely
+because its artifact passed structural validation. Any local zero-fee execution
+profile needs a new signed execution domain and an exact committed resource
+and fee policy; an older nonadmissible call-intent signature must stay
+nonadmissible. Zero fees are not unsigned consent to future settlement.
+
 ## Ownership and type authority
 
 An owner's signature permits the requested use of an object; it does not let

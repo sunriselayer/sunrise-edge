@@ -44,6 +44,7 @@ use system_modules::{ModuleId, SystemModule, SystemModuleError};
 mod authenticated_object_effects;
 mod durable_reconciliation;
 pub mod fee_effects;
+pub mod local_instance_state;
 mod object_snapshots;
 mod preinstalled_wasm;
 pub mod publication;
@@ -3473,6 +3474,7 @@ fn validate_sender_nonce_namespace(
             || access
                 .key()
                 .starts_with(publication::PUBLICATION_STATE_PREFIX)
+            || local_instance_state::is_reserved(access.key())
         {
             return Err(NodeCoreError::ReservedStateAccess(access.key().to_vec()));
         }
@@ -5168,6 +5170,22 @@ where
         _ => None,
     };
 
+    // Legacy execution must never erase public defining-code authority merely
+    // because the owner signed. Include absence CAS for every input/output ID.
+    let mut legacy_object_ids: BTreeSet<ObjectId> = BTreeSet::new();
+    if let Some(dispatch) = &dispatch {
+        legacy_object_ids.extend(dispatch.accesses.iter().map(|access| access.object_ref.id));
+    }
+    if let Some(head) = &pending_creation_head_read {
+        legacy_object_ids.insert(head.object_id());
+    }
+    let mut authority_reads: Vec<StateReadAssertion> = Vec::with_capacity(legacy_object_ids.len());
+    for object_id in legacy_object_ids {
+        authority_reads.push(local_instance_state::legacy_absence(
+            store, context, domain, object_id,
+        )?);
+    }
+
     // Object reads happen only after the receipt and nonce checks above, so a
     // stale or replayed request never spends the fan-out cost of the
     // per-entry head/version storage round-trips. Only this authenticated
@@ -5333,11 +5351,13 @@ where
         Some(DurableOutboxBatch::new(request_id, event_digest, messages)?)
     };
     let (mut reads, mut mutations) = domain_transition_parts(&plan, &snapshot, transition.updates)?;
+    reads.extend(authority_reads);
     if let Some(mutation) = mutations.iter().find(|mutation| {
         mutation.key().starts_with(nonce_prefix.as_slice())
             || mutation
                 .key()
                 .starts_with(publication::PUBLICATION_STATE_PREFIX)
+            || local_instance_state::is_reserved(mutation.key())
     }) {
         return Err(NodeCoreError::ReservedStateAccess(mutation.key().to_vec()));
     }

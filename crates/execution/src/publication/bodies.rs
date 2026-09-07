@@ -30,6 +30,33 @@ use hashing::HashSuiteResolver;
 use protocol_types::Epoch;
 
 use super::binding::{BindingError, BoundObjectSignature, match_object_input_metadata};
+
+/// Checks a concrete nominal constructor and its exact signed body layout.
+/// This is representation validation, not permission to create or mutate the type.
+pub fn validate_nominal_body(
+    interface: &super::VerifiedPublicationInterface,
+    ty: &abi::package_types::ScopedTypeTag,
+    schema: u32,
+    bytes: &[u8],
+) -> Result<(), BodyError> {
+    super::binding::validate_supplied_nominal_tag(ty, interface)?;
+    let constructor = interface
+        .defining_abi(ty.origin())
+        .and_then(|abi| {
+            abi.constructors
+                .iter()
+                .find(|constructor| constructor.local_id == ty.constructor())
+        })
+        .ok_or(BindingError::UnknownConstructor)?;
+    if constructor.schema != schema {
+        return Err(BindingError::SchemaMismatch.into());
+    }
+    let layout: &ValueLayout = interface
+        .body_layout(ty.origin(), ty.constructor())
+        .ok_or(BindingError::UnknownConstructor)?;
+    let _value = decode_call_value(layout, bytes)?;
+    Ok(())
+}
 use crate::ResolvedObject;
 
 /// Maximum aggregate byte size of resolved object input bodies (256 KiB).

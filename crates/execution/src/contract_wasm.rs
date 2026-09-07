@@ -25,6 +25,8 @@ use wasmparser::{
 /// instance revision, and passing this profile does not authorize
 /// execution of the module.
 pub const CONTRACT_WASM_ADMISSION_PROFILE_VERSION: u32 = 1;
+/// Authority-aware typed host import profile, separately admitted from legacy env.
+pub const TYPED_CONTRACT_WASM_PROFILE_VERSION: u32 = 2;
 
 /// Maximum accepted byte length of a candidate contract WASM binary.
 pub const MAX_CONTRACT_WASM_BYTES: usize = 4 * 1024 * 1024;
@@ -123,8 +125,102 @@ const ALLOWED_HOST_IMPORTS: &[HostImportSignature] = &[
     },
 ];
 
-fn find_host_import(name: &str) -> Option<&'static HostImportSignature> {
-    ALLOWED_HOST_IMPORTS.iter().find(|spec| spec.name == name)
+const TYPED_HOST_IMPORTS: &[HostImportSignature] = &[
+    HostImportSignature {
+        name: "get_object_count",
+        params: &[],
+        results: &[ValType::I32],
+    },
+    HostImportSignature {
+        name: "get_object_data_len",
+        params: &[ValType::I32],
+        results: &[ValType::I32],
+    },
+    HostImportSignature {
+        name: "read_object_data",
+        params: &[ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+        results: &[ValType::I32],
+    },
+    HostImportSignature {
+        name: "write_object_data",
+        params: &[ValType::I32, ValType::I32, ValType::I32],
+        results: &[ValType::I32],
+    },
+    HostImportSignature {
+        name: "consume_object",
+        params: &[ValType::I32],
+        results: &[ValType::I32],
+    },
+    HostImportSignature {
+        name: "create_object",
+        params: &[
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+        ],
+        results: &[ValType::I32],
+    },
+    HostImportSignature {
+        name: "transfer_object",
+        params: &[ValType::I32, ValType::I32],
+        results: &[ValType::I32],
+    },
+    HostImportSignature {
+        name: "get_args_len",
+        params: &[],
+        results: &[ValType::I32],
+    },
+    HostImportSignature {
+        name: "read_args",
+        params: &[ValType::I32, ValType::I32, ValType::I32],
+        results: &[ValType::I32],
+    },
+    HostImportSignature {
+        name: "get_caller",
+        params: &[ValType::I32],
+        results: &[ValType::I32],
+    },
+    HostImportSignature {
+        name: "get_instance",
+        params: &[ValType::I32, ValType::I32],
+        results: &[ValType::I32],
+    },
+    HostImportSignature {
+        name: "emit_event",
+        params: &[ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+        results: &[ValType::I32],
+    },
+    HostImportSignature {
+        name: "abort",
+        params: &[ValType::I32, ValType::I32],
+        results: &[],
+    },
+    HostImportSignature {
+        name: "call_dependency",
+        params: &[
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+        ],
+        results: &[ValType::I32],
+    },
+];
+
+fn find_host_import(name: &str, profile: u32) -> Option<&'static HostImportSignature> {
+    let imports: &[HostImportSignature] = if profile == 2 {
+        TYPED_HOST_IMPORTS
+    } else {
+        ALLOWED_HOST_IMPORTS
+    };
+    imports.iter().find(|spec| spec.name == name)
 }
 
 /// Errors produced while admitting a candidate contract WASM binary.
@@ -321,6 +417,7 @@ impl std::error::Error for ContractWasmValidationError {}
 pub struct ValidatedContractWasm {
     bytes: Vec<u8>,
     entrypoints: Vec<String>,
+    profile: u32,
 }
 
 impl ValidatedContractWasm {
@@ -339,7 +436,7 @@ impl ValidatedContractWasm {
     /// The admission profile version this value was validated against.
     #[must_use]
     pub fn profile_version(&self) -> u32 {
-        CONTRACT_WASM_ADMISSION_PROFILE_VERSION
+        self.profile
     }
 }
 
@@ -433,6 +530,7 @@ fn admission_wasmi_config() -> Config {
 fn scan_and_bound_module(
     bytes: &[u8],
     entrypoints: &[String],
+    profile: u32,
 ) -> Result<(), ContractWasmValidationError> {
     use ContractWasmValidationError as E;
 
@@ -499,10 +597,15 @@ fn scan_and_bound_module(
             }
             Payload::ImportSection(reader) => {
                 let count = reader.count();
-                if count > MAX_IMPORTS {
+                let maximum: u32 = if profile == 2 {
+                    TYPED_HOST_IMPORTS.len() as u32
+                } else {
+                    MAX_IMPORTS
+                };
+                if count > maximum {
                     return Err(E::TooManyImports {
                         actual: count,
-                        maximum: MAX_IMPORTS,
+                        maximum,
                     });
                 }
                 let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
@@ -524,12 +627,14 @@ fn scan_and_bound_module(
                                 .get(type_idx as usize)
                                 .ok_or(E::InvalidModule)?
                                 .clone();
-                            if module != "env" {
+                            if module != if profile == 2 { "sunrise" } else { "env" } {
                                 return Err(E::UnknownImport { module, name });
                             }
-                            let spec = find_host_import(&name).ok_or_else(|| E::UnknownImport {
-                                module: module.clone(),
-                                name: name.clone(),
+                            let spec = find_host_import(&name, profile).ok_or_else(|| {
+                                E::UnknownImport {
+                                    module: module.clone(),
+                                    name: name.clone(),
+                                }
                             })?;
                             if func_ty.params() != spec.params || func_ty.results() != spec.results
                             {
@@ -794,9 +899,25 @@ pub fn validate_contract_wasm(
     bytes: &[u8],
     declared_entrypoints: &[&str],
 ) -> Result<ValidatedContractWasm, ContractWasmValidationError> {
+    validate_contract_wasm_profile(
+        bytes,
+        declared_entrypoints,
+        CONTRACT_WASM_ADMISSION_PROFILE_VERSION,
+    )
+}
+
+/// Validates one explicitly selected structural import profile; unknown profiles fail closed.
+pub fn validate_contract_wasm_profile(
+    bytes: &[u8],
+    declared_entrypoints: &[&str],
+    profile: u32,
+) -> Result<ValidatedContractWasm, ContractWasmValidationError> {
+    if !matches!(profile, 1 | 2) {
+        return Err(ContractWasmValidationError::InvalidModule);
+    }
     check_binary_header(bytes)?;
     let entrypoints = validate_declared_entrypoints(declared_entrypoints)?;
-    scan_and_bound_module(bytes, &entrypoints)?;
+    scan_and_bound_module(bytes, &entrypoints, profile)?;
 
     Validator::new_with_features(admission_wasm_features())
         .validate_all(bytes)
@@ -809,5 +930,6 @@ pub fn validate_contract_wasm(
     Ok(ValidatedContractWasm {
         bytes: bytes.to_vec(),
         entrypoints,
+        profile,
     })
 }

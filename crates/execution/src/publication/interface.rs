@@ -2,8 +2,10 @@
 //! This is neither durable dependency provenance nor host object authority.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use abi::call_values::{CallAbi, ValueError, ValueLayout, decode_call_abi};
+use abi::executable_abi::{ExecutableAbi, decode_executable_abi};
 use abi::package_types::PackageOrigin;
 use abi::public_abi::{ArgumentKind, PackageAbi, PatternArgument, TypePattern};
 
@@ -85,11 +87,85 @@ impl From<ValueError> for InterfaceError {
 pub struct VerifiedPublicationInterface {
     candidate: AuthenticatedPublicationCandidate,
     dependencies: Vec<AuthenticatedPublicationCandidate>,
-    abi: CallAbi,
-    dependency_abis: BTreeMap<PackageOrigin, CallAbi>,
+    abi: Arc<CallAbi>,
+    dependency_abis: BTreeMap<PackageOrigin, Arc<CallAbi>>,
+    executable_abis: BTreeMap<PackageOrigin, Arc<ExecutableAbi>>,
 }
 
 impl VerifiedPublicationInterface {
+    /// Returns verified executable metadata for an exact defining origin.
+    pub fn executable_abi(&self, origin: &PackageOrigin) -> Option<&ExecutableAbi> {
+        self.executable_abis.get(origin).map(Arc::as_ref)
+    }
+
+    /// Re-roots this authenticated closure at one included library origin.
+    /// Immutable code and layouts are shared; no parsing, copying module bodies or
+    /// graph verification is repeated. The bounded graph walk grants no host rights.
+    pub fn for_origin(&self, origin: &PackageOrigin) -> Result<Self, InterfaceError> {
+        if origin == &self.abi().origin {
+            return Ok(self.clone());
+        }
+        let root: AuthenticatedPublicationCandidate = self
+            .dependencies
+            .iter()
+            .find(|candidate| candidate.request().artifact().origin() == origin)
+            .ok_or(InterfaceError::MissingDependency)?
+            .clone();
+        let mut required: BTreeSet<PackageOrigin> = BTreeSet::new();
+        let mut pending: Vec<PackageOrigin> = root
+            .request()
+            .artifact()
+            .unverified_dependencies()
+            .iter()
+            .map(|reference| reference.origin().clone())
+            .collect();
+        let mut dependencies: Vec<AuthenticatedPublicationCandidate> = Vec::new();
+        while let Some(origin) = pending.pop() {
+            if !required.insert(origin.clone()) {
+                continue;
+            }
+            let candidate: AuthenticatedPublicationCandidate = self
+                .dependencies
+                .iter()
+                .find(|candidate| candidate.request().artifact().origin() == &origin)
+                .ok_or(InterfaceError::MissingDependency)?
+                .clone();
+            pending.extend(
+                candidate
+                    .request()
+                    .artifact()
+                    .unverified_dependencies()
+                    .iter()
+                    .map(|reference| reference.origin().clone()),
+            );
+            dependencies.push(candidate);
+        }
+        let abi: Arc<CallAbi> = self
+            .dependency_abis
+            .get(origin)
+            .ok_or(InterfaceError::MissingDependency)?
+            .clone();
+        let dependency_abis: BTreeMap<PackageOrigin, Arc<CallAbi>> = self
+            .dependency_abis
+            .iter()
+            .filter(|(origin, _)| required.contains(*origin))
+            .map(|(origin, abi)| (origin.clone(), Arc::clone(abi)))
+            .collect();
+        required.insert(origin.clone());
+        let executable_abis: BTreeMap<PackageOrigin, Arc<ExecutableAbi>> = self
+            .executable_abis
+            .iter()
+            .filter(|(origin, _)| required.contains(*origin))
+            .map(|(origin, abi)| (origin.clone(), Arc::clone(abi)))
+            .collect();
+        Ok(Self {
+            candidate: root,
+            dependencies,
+            abi,
+            dependency_abis,
+            executable_abis,
+        })
+    }
     // Retain verified declarations for binding; never decode caller-supplied ABI here.
     pub(super) fn defining_abi(&self, origin: &PackageOrigin) -> Option<&PackageAbi> {
         if origin == &self.abi.objects.origin {
@@ -209,9 +285,22 @@ pub fn verify_publication_interface(
     }
     validate_graph(&graph)?;
     let mut abis: Vec<CallAbi> = Vec::with_capacity(count);
+    let mut executable_abis: BTreeMap<PackageOrigin, Arc<ExecutableAbi>> = BTreeMap::new();
     for node in &nodes {
         let artifact = node.request().artifact();
-        let abi: CallAbi = decode_call_abi(artifact.unverified_abi())?;
+        if candidate.request().artifact().wasm_profile() == 2 && artifact.wasm_profile() != 2 {
+            return Err(InterfaceError::Abi(ValueError::Invalid(
+                "typed executable depends on nonexecutable profile",
+            )));
+        }
+        let abi: CallAbi = if artifact.wasm_profile() == 2 {
+            let executable: ExecutableAbi = decode_executable_abi(artifact.unverified_abi())?;
+            let call: CallAbi = executable.call.clone();
+            executable_abis.insert(artifact.origin().clone(), Arc::new(executable));
+            call
+        } else {
+            decode_call_abi(artifact.unverified_abi())?
+        };
         if &abi.objects.origin != artifact.origin() {
             return Err(InterfaceError::OriginMismatch);
         }
@@ -256,14 +345,15 @@ pub fn verify_publication_interface(
     let abi: CallAbi = verified_abis
         .next()
         .ok_or(InterfaceError::MissingDependency)?;
-    let dependency_abis: BTreeMap<PackageOrigin, CallAbi> = verified_abis
-        .map(|abi| (abi.objects.origin.clone(), abi))
+    let dependency_abis: BTreeMap<PackageOrigin, Arc<CallAbi>> = verified_abis
+        .map(|abi| (abi.objects.origin.clone(), Arc::new(abi)))
         .collect();
     Ok(VerifiedPublicationInterface {
         candidate,
         dependencies,
-        abi,
+        abi: Arc::new(abi),
         dependency_abis,
+        executable_abis,
     })
 }
 
