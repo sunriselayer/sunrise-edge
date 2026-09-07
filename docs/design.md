@@ -109,6 +109,14 @@ signed bytes, together with chain, protocol, epoch, arguments, and declared
 access. Never resolve an unqualified `latest` after signing. Reject stale or
 unauthorized references rather than silently selecting another revision.
 
+[DR-0120](architecture/decisions/0120-authenticated-call-intent.md) fixes these
+targets in a capability-free signed intent and binds its arguments/access to
+the exact candidate ABI. Instance identity is `(chain, creator, creation seed)`;
+its pinned authorization revision is separate from code and object versions.
+This signed claim must be resolved against authenticated durable records, not
+used as authority in its own right. The fee-free intent profile is not an
+admissible transaction; fee consent must be explicitly signed before execution.
+
 Cross-contract calls use declared typed interfaces and bounded call frames.
 The host tracks the executing code, caller, object handles, and delegated
 authority, preserving access and gas bounds without allowing callee privilege

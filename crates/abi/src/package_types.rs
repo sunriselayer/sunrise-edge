@@ -542,6 +542,8 @@ pub fn decode_scoped_type_tag(bytes: &[u8]) -> Result<ScopedTypeTag, PackageType
 
 /// Derives a nominal type commitment under the trusted execution epoch.
 ///
+/// See [`encode_scoped_type_arguments`] for a standalone ordered call argument list.
+///
 /// The epoch must not come from unauthenticated request input. Algorithm
 /// rotation may change the digest, not the logical tag. This grants no rights.
 pub fn derive_scoped_type_id(
@@ -557,7 +559,99 @@ pub fn derive_scoped_type_id(
     Ok(digest)
 }
 
+/// Encodes ordered concrete call type arguments, without inventing a nominal root.
+/// Frame 0x5204 v1 contains a u16 count followed by existing 0x5202 arguments.
+/// The whole forest shares 64 nodes and 32 KiB; at most eight roots are allowed.
+pub fn encode_scoped_type_arguments(
+    chain: &ChainId,
+    args: &[ScopedTypeArg],
+) -> Result<Vec<u8>, PackageTypeError> {
+    if args.len() > MAX_SCOPED_TYPE_ARGS {
+        return Err(PackageTypeError::ArgCountLimitExceeded(args.len()));
+    }
+    let mut nodes: usize = 0;
+    for arg in args {
+        count_node(&mut nodes)?;
+        match arg {
+            ScopedTypeArg::Nominal(tag) => validate_tag_node(tag, chain, 1, &mut nodes)?,
+            ScopedTypeArg::Opaque { domain: 0, .. } => {
+                return Err(PackageTypeError::ZeroOpaqueDomain);
+            }
+            ScopedTypeArg::Opaque { .. } => {}
+        }
+    }
+    let mut frame: CanonicalStruct = CanonicalStruct::new(0x5204, 1);
+    frame.field_u16(1, args.len() as u16)?;
+    for (index, arg) in args.iter().enumerate() {
+        // The checked eight-root bound makes the field conversion exact.
+        frame.field_bytes((index + 2) as u16, encode_scoped_type_arg(arg)?)?;
+    }
+    let bytes: Vec<u8> = frame.finish()?;
+    if bytes.len() > MAX_SCOPED_TYPE_BYTES {
+        return Err(PackageTypeError::ByteLimitExceeded(bytes.len()));
+    }
+    Ok(bytes)
+}
+
+/// Strictly decodes a bounded concrete type-argument forest for one chain.
+/// Structural references do not establish defining-code or instance authority.
+pub fn decode_scoped_type_arguments(
+    chain: &ChainId,
+    bytes: &[u8],
+) -> Result<Vec<ScopedTypeArg>, PackageTypeError> {
+    if bytes.len() > MAX_SCOPED_TYPE_BYTES {
+        return Err(PackageTypeError::ByteLimitExceeded(bytes.len()));
+    }
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
+    frame.require_type(0x5204)?;
+    frame.require_version(1)?;
+    let count: usize = usize::from(frame.required_u16(1)?);
+    if count > MAX_SCOPED_TYPE_ARGS {
+        return Err(PackageTypeError::ArgCountLimitExceeded(count));
+    }
+    let fields: Vec<u16> = (1..=(count + 1) as u16).collect();
+    frame.require_only_fields(&fields)?;
+    let mut args: Vec<ScopedTypeArg> = Vec::with_capacity(count);
+    let mut nodes: usize = 0;
+    for index in 0..count {
+        count_node(&mut nodes)?;
+        let arg: CanonicalFrame<'_> =
+            decode_canonical_frame(frame.required_field((index + 2) as u16)?)?;
+        arg.require_type(0x5202)?;
+        arg.require_version(1)?;
+        let value: ScopedTypeArg = match arg.required_u16(1)? {
+            1 => {
+                arg.require_only_fields(&[1, 2])?;
+                ScopedTypeArg::Nominal(Box::new(decode_scoped_type_tag_inner(
+                    arg.required_field(2)?,
+                    1,
+                    &mut nodes,
+                    Some(chain),
+                )?))
+            }
+            2 => {
+                arg.require_only_fields(&[1, 2, 3])?;
+                let domain: u16 = arg.required_u16(2)?;
+                if domain == 0 {
+                    return Err(PackageTypeError::ZeroOpaqueDomain);
+                }
+                let raw: &[u8] = arg.required_field(3)?;
+                let value: [u8; 32] = raw
+                    .try_into()
+                    .map_err(|_| PackageTypeError::Invalid32ByteFieldLength(raw.len()))?;
+                ScopedTypeArg::Opaque { domain, value }
+            }
+            value => return Err(PackageTypeError::UnknownArgumentVariant(value)),
+        };
+        args.push(value);
+    }
+    Ok(args)
+}
+
 /// Verifies a commitment to a logical tag using trusted algorithm history.
+///
+/// The epoch must not come from unauthenticated request input. Algorithm
+/// rotation may change the digest, not the logical tag. This grants no rights.
 ///
 /// Supply the authenticated execution epoch, not a caller-selected epoch.
 /// An old and new algorithm's digests can both verify the same tag after a

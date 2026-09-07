@@ -669,6 +669,12 @@ with the existing durable head/record/blob integrity loader. It verifies origina
 hash provenance and returns exact head observations for a later fenced commit;
 read integrity is not call/owner/instance authorization or an atomic snapshot.
 
+[DR-0120](decisions/0120-authenticated-call-intent.md) authenticates exact generic
+call intent bytes, including request ID, code and instance targets, ordered
+access and type arguments. Binding selects the exact signed candidate ABI;
+it grants no durable publication, instance, owner or executable authority.
+The intent carries no fee consent and has no public ingress/execution consumer.
+
 The shared non-executing WASM admission verifier and its structural-only
 boundary are specified in [DR-0112](decisions/0112-contract-wasm-admission.md).
 It checks binary code and declared export names without authorizing object

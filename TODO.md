@@ -2466,7 +2466,14 @@ Implementation slices under this gate:
     tests, `npm ci --prefix adapters/cloudflare-workers`, and
     `./scripts/check-all.sh` passed on 2026-09-07, including existing replay,
     owner/fee-policy and persistence regressions.
-  - [ ] Complete authenticated call/owner/instance admission;
+  - [x] DR-0120: bounded signed generic call intent binds request ID, exact
+    code/original context, independent instance target, ordered type arguments,
+    access, canonical argument bytes and gas ceiling. Private authentication
+    witness and exact signed-interface binding have adversarial Rust tests and
+    independent Node Ed25519/frame vectors. This is not durable admission,
+    owner/instance authority, fee consent, or a public executable transaction.
+  - [ ] Complete durable call/owner/instance admission (signed intent exists,
+    but publication/instance records and authorization still must be resolved);
     verify exact dependencies against durable published records and
     authenticate the request against committed publication policy, then commit
     code/ABI/dependency records and enforce origin absence atomically. Bind

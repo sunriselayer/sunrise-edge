@@ -14,6 +14,8 @@ use sha2::{Digest as _, Sha256};
 mod binding_tests;
 #[path = "publication_interface/bodies.rs"]
 mod body_tests;
+#[path = "publication_interface/calls.rs"]
+mod call_tests;
 #[path = "publication_interface/values.rs"]
 mod value_tests;
 
