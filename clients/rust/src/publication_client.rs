@@ -43,7 +43,7 @@ pub fn local_publication_resolver(
     Ok(resolver)
 }
 
-fn trusted_context(
+pub(crate) fn trusted_context(
     resolver: &HashSuiteResolver,
     expected: &ExpectedProtocolContext,
 ) -> Result<PublicationContext, ClientError> {

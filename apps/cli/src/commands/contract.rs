@@ -24,6 +24,9 @@ where
     if action == "publish" || action == "query" {
         return super::publication::run(action, args);
     }
+    if matches!(action, "instantiate" | "call" | "query-instance") {
+        return super::local_execution::run(action, args);
+    }
     if action != "validate" {
         return Err(CliError::UnknownContractAction(action.to_owned()));
     }

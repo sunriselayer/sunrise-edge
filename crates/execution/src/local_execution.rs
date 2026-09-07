@@ -39,9 +39,9 @@ pub const MAX_LOCAL_EXECUTION_CALLS: u32 = 64;
 pub const LOCAL_EXECUTION_RULES_VERSION: u32 = 1;
 /// Pinned interpreter implementation and its default fuel-cost model.
 pub const LOCAL_WASMI_VERSION: &str = "wasmi-1.1.0";
-/// Initial value-stack allocation required by this profile.
+/// Initial value-stack allocation in bytes, as defined by Wasmi 1.1 Config.
 pub const LOCAL_WASM_INITIAL_STACK: usize = 128;
-/// Maximum value-stack slots across one WASM store.
+/// Maximum value-stack bytes for Wasmi execution (not a count of value slots).
 pub const LOCAL_WASM_MAX_STACK: usize = 8192;
 /// Maximum internal WASM call recursion.
 pub const LOCAL_WASM_MAX_RECURSION: usize = 128;

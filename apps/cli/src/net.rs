@@ -113,7 +113,30 @@ pub fn connect_publication(
     endpoint: &str,
     tls: &ParsedArgs,
 ) -> Result<Client<CliTransport>, CliError> {
-    let maximum: usize = sunrise_edge_client::publication::MAX_PUBLICATION_SUBMISSION_BYTES;
+    connect_with_limit(
+        endpoint,
+        tls,
+        sunrise_edge_client::publication::MAX_PUBLICATION_SUBMISSION_BYTES,
+    )
+}
+
+/// Execution effects may be larger than a publication, with bounded envelope overhead.
+pub fn connect_execution(
+    endpoint: &str,
+    tls: &ParsedArgs,
+) -> Result<Client<CliTransport>, CliError> {
+    connect_with_limit(
+        endpoint,
+        tls,
+        sunrise_edge_client::local_execution::MAX_LOCAL_EXECUTION_OUTPUT_BYTES + 1024,
+    )
+}
+
+fn connect_with_limit(
+    endpoint: &str,
+    tls: &ParsedArgs,
+    maximum: usize,
+) -> Result<Client<CliTransport>, CliError> {
     let transport = match (tls.get(TLS_SERVER_NAME), tls.get(TLS_CA_CERT_DER_FILE)) {
         (None, None) => CliTransport::Loopback(connect_loopback_with_limit(endpoint, maximum)?),
         (Some(name), Some(path)) => CliTransport::RemoteTls(connect_remote_tls_with_limit(

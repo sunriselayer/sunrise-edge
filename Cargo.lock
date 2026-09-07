@@ -481,6 +481,7 @@ dependencies = [
  "sha2 0.11.0",
  "standard-assets",
  "wasmi",
+ "wasmi_core",
  "wasmparser 0.239.0",
  "wat",
 ]
@@ -1669,6 +1670,7 @@ dependencies = [
  "standard-assets",
  "sunrise-edge-devnet",
  "tokio",
+ "wat",
 ]
 
 [[package]]

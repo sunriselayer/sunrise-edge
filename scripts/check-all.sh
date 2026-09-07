@@ -11,6 +11,7 @@ cargo test --workspace --all-targets --all-features
 node scripts/call-value-vectors.mjs
 node scripts/call-intent-vectors.mjs
 node scripts/publication-submission-vectors.mjs
+node scripts/local-execution-vectors.mjs
 
 npm --prefix adapters/cloudflare-workers run check
 

@@ -14,6 +14,7 @@ pub mod config;
 pub mod fee;
 pub mod genesis;
 pub mod identities;
+pub mod local_execution;
 pub mod machine;
 pub mod publication;
 pub mod seed;

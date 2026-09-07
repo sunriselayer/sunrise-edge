@@ -18,6 +18,10 @@ use crate::transport::TransportError;
 /// than collapsing everything into one opaque failure.
 #[derive(Debug)]
 pub enum ClientError {
+    /// Local instance or execution validation failed.
+    LocalExecution(execution::local_execution::LocalExecutionError),
+    /// An execution acknowledgement's count/status disagrees with its canonical result.
+    ExecutionAcknowledgementMismatch,
     /// Publication framing, authentication, or admission profile validation failed.
     Publication(execution::publication::PublicationError),
     /// The publication response belongs to a different package origin.
@@ -158,6 +162,8 @@ pub enum ClientError {
 impl fmt::Display for ClientError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::LocalExecution(error) => write!(f, "local execution validation failed: {error}"),
+            Self::ExecutionAcknowledgementMismatch => f.write_str("execution acknowledgement count or status differs from its result"),
             Self::Publication(error) => write!(f, "publication validation failed: {error}"),
             Self::PublicationSubmitAcknowledgementMismatch => f.write_str("publication result must contain one Accepted acknowledgement for the exact submitted code reference"),
             Self::PublicationQuerySelectorMismatch => {
@@ -240,6 +246,8 @@ impl fmt::Display for ClientError {
 impl Error for ClientError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::LocalExecution(error) => Some(error),
+            Self::ExecutionAcknowledgementMismatch => None,
             Self::Publication(error) => Some(error),
             Self::PublicationQuerySelectorMismatch
             | Self::PublicationTrustMismatch
@@ -275,6 +283,12 @@ impl Error for ClientError {
 impl From<TransportError> for ClientError {
     fn from(value: TransportError) -> Self {
         Self::Transport(value)
+    }
+}
+
+impl From<execution::local_execution::LocalExecutionError> for ClientError {
+    fn from(value: execution::local_execution::LocalExecutionError) -> Self {
+        Self::LocalExecution(value)
     }
 }
 

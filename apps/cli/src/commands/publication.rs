@@ -1,7 +1,7 @@
 //! Immutable, non-executing local publication and verified readback.
 
 use crate::{
-    args::{ParsedArgs, parse_flags, scalar},
+    args::{ParsedArgs, parse_flags, scalar, switch},
     error::CliError,
     hex::decode_hex_32,
     net::{connect_publication, tls_flag_specs},
@@ -16,7 +16,7 @@ use sunrise_edge_client::{
     local_publication_resolver,
 };
 
-fn failure(error: impl Error + 'static) -> CliError {
+fn failure(error: impl Error + Send + Sync + 'static) -> CliError {
     CliError::Publication(Box::new(error))
 }
 fn invalid(message: &'static str) -> CliError {
@@ -31,6 +31,7 @@ where
     I: IntoIterator<Item = OsString>,
 {
     let mut specs = vec![
+        switch("--executable"),
         scalar("--endpoint"),
         scalar("--origin-seed"),
         scalar("--expected-chain-id"),
@@ -75,8 +76,13 @@ where
         expected.epoch(),
     )
     .map_err(failure)?;
-    let semantics = sunrise_edge_client::local_publication_profile_semantics(&resolver, &context)
-        .map_err(failure)?;
+    let semantics = if parsed.is_present("--executable") {
+        sunrise_edge_client::local_execution::local_execution_semantics(&resolver, &context)
+            .map_err(failure)?
+    } else {
+        sunrise_edge_client::local_publication_profile_semantics(&resolver, &context)
+            .map_err(failure)?
+    };
     let publisher: [u8; 32] = match &signer {
         Some(signer) => *signer.address().as_bytes(),
         None => decode_hex_32("--publisher", parsed.require("--publisher")?)?,
@@ -107,6 +113,9 @@ where
             parsed.require("--abi")?,
             sunrise_edge_client::publication::MAX_ABI_DECLARATION_BYTES,
         )?;
+        if parsed.is_present("--executable") {
+            sunrise_edge_client::executable_abi::decode_executable_abi(&abi).map_err(failure)?;
+        }
         let mut dependencies: Vec<UnverifiedDependencyRef> = Vec::new();
         if let Some(paths) = parsed.get("--dependencies") {
             if paths.len() > 32 * 4096 {
@@ -126,7 +135,11 @@ where
             context,
             origin,
             revision: 1,
-            wasm_profile: 1,
+            wasm_profile: if parsed.is_present("--executable") {
+                2
+            } else {
+                1
+            },
             semantics,
             wasm,
             unverified_abi: abi,

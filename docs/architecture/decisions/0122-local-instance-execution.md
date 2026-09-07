@@ -32,6 +32,45 @@ signatures remain nonadmissible; no unsigned fee consent is inferred or added.
 The locally configured expected context is authoritative, not a request or HTTP
 response. The signature key equals the call sender and every frame's caller.
 
+### Canonical frames
+
+All integers are little-endian. Decoders reject unknown fields/versions,
+trailing bytes and unsupported closed values; no omitted-field defaults apply.
+
+| Frame | Ordered fields |
+| --- | --- |
+| `0x5406/v1` executable ABI | 1: existing CallAbi; 2: initializer UTF-8 (empty means none); 3: u16 count followed by sorted u16 transferable constructor IDs |
+| `0x630A/v2` publication policy | Original v1 fields 1–5 with executable semantics; 6: u32 profile 2; separate `v2/policies/` key |
+| `0x630B/v2` executable semantics | 1: `local-devnet-typed-host-execution`; 2: profile 2; 3: rules 1; 4: `wasmi-1.1.0`; 5: fuel model 1; 6–8: stack initial/max bytes and recursion bound; 9: typed host ABI 1; 10: aggregate memory bytes |
+| `0x6404/v1` instance | 1: original PublicationContext; 2: creator bytes32; 3: seed bytes32; 4: exact code reference; 5: authorization revision 1; 6: initializer |
+| `0x6405/v1` execution intent | 1: mode u16 (Instantiate 1, Call 2); 2: execution-policy Digest32; 3: existing CallIntent |
+| `0x6406/v1` signed execution | 1: execution intent; 2: Ed25519 signature bytes64 |
+| `0x6407/v1` object authority | 1: object ID bytes32; 2: original instance context; 3: exact InstanceTarget; 4: exact defining code; 5: canonical ScopedTypeTag |
+| `0x6408/v1` result | 1: request ID bytes32; 2: instance record; 3: executed mode; 4: existing ExecutionEffects |
+| `0x6409/v1` execution policy | 1: context; 2: profile 2; 3: zero-fee mode 0; 4–14: bounds/rules below; 15: complete executable-semantics frame; 16: library-binding fuel charge |
+| `0x640A/v1` creation derivation | 1: call context; 2: original instance context; 3: exact InstanceTarget; 4: defining code; 5: signed event Digest32; 6: global u32 creation ordinal |
+
+Execution-policy fields 4–14 respectively bind gas 1,000,000; frame depth 8;
+total calls 64; aggregate memory 64 MiB; encoded output 16 MiB; creations 128;
+handles 256; base host gas 10; per-byte host gas 1; rules version 1; events 1024.
+Library view/binding costs an additional fixed 2048 fuel per call over an
+already verified, at-most-33-node closure. Code/layout storage is immutable and
+shared: re-rooting a library view does not copy WASM or revalidate the graph.
+Wasmi stack configuration is 128 initial bytes, 8192 maximum bytes and recursion
+128; these are not value-slot counts. Host-nested frame depth is separately
+bounded. The sole encoded failure reason is `local contract trapped`.
+
+Instance records hash under their original Object context; execution policy
+under ProtocolConfig; complete signed requests under NodeEvent. Creation hashes
+its typed frame under the current Object context. Central framing retains chain,
+protocol and hash-suite separation. Existing Object/Transaction/receipt codecs
+are reused without changing their canonical bytes.
+
+`scripts/local-execution-vectors.mjs` reconstructs these bytes independently of
+Rust, including both success/rejection results, signing bytes and creation ID.
+Rust pins the same lengths, hashes and Ed25519 signature. Encoding tests are not
+evidence of durable admission or execution of the vector's unverified code ref.
+
 ## Instances do not introduce a shared mutable storage root
 
 Logical identity is `(chain, creator, creation seed)`, independent of hash-suite
@@ -41,6 +80,12 @@ initializer. Creation requires the authenticated sender to be the creator and
 requires true absence, not a live row or a tombstone. Ordinary calls pin the
 exact record digest and authorization revision. They do not update that record;
 application state remains separately declared object heads.
+
+Fresh execution requires the instance and complete code closure to use the
+active protocol version. Earlier epochs within that trusted resolver remain
+valid. Historical protocol-version records can still be verified and queried,
+and exact receipts replay before this admission check; executing them under a
+different protocol version requires a separate explicit migration capability.
 
 Every public object has a host-stamped immutable authority sidecar binding its
 object ID, exact instance/context, exact defining code and canonical scoped
@@ -74,6 +119,8 @@ kinds. This profile rejects Shared, System and Immutable inputs; initial owners
 and transfer recipients are canonical prime-order Ed25519 addresses.
 
 The host owns a bounded invocation arena and frame-local handle tables.
+Cumulative handle allocation includes root selectors, child aliases and created
+handles; consumption and frame return do not refund the 256-handle budget.
 Canonical tags and bodies are checked against the executing code's signed
 constructors/layouts, not caller-supplied layouts. Transfer requires an owned
 Write/Consume-capable handle in the exact instance, defining-code authority and

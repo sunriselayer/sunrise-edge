@@ -77,6 +77,40 @@ mod tests {
     };
 
     #[test]
+    fn executable_publication_policy_matches_independent_node_vector() {
+        let chain: ChainId = ChainId::new("local-vector").unwrap();
+        let context: PublicationContext =
+            PublicationContext::new(chain.clone(), ProtocolVersion::new(3), Epoch::new(0)).unwrap();
+        let resolver: HashSuiteResolver = HashSuiteResolver::new(
+            chain,
+            ProtocolVersion::new(3),
+            vec![protocol_types::HashSuiteSchedule {
+                activation_epoch: Epoch::new(0),
+                suite: protocol_types::HashSuite::genesis(),
+            }],
+        )
+        .unwrap();
+        let semantics: Digest32 =
+            publication::local_executable_publication_semantics(&resolver, &context).unwrap();
+        let policy: publication::LocalPublicationPolicy =
+            publication::LocalPublicationPolicy::executable(context, semantics);
+        let bytes: Vec<u8> = policy.encode().unwrap();
+        assert_eq!(bytes.len(), 172);
+        let digest: Digest32 = resolver
+            .hash_for_purpose(Epoch::new(0), HashPurpose::NodeEvent, &bytes)
+            .unwrap();
+        let hex: String = digest
+            .bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(
+            hex,
+            "4c92b0152c43b3ee7f8269472f0c47bbfc281473198f0617f6f53937303750f1"
+        );
+    }
+
+    #[test]
     fn identity_keys_are_framed_and_namespaces_are_reserved() {
         let chain: ChainId = ChainId::new("local-instances").unwrap();
         let key: Vec<u8> = instance_record_key(&chain, &[1; 32], &[2; 32]).unwrap();

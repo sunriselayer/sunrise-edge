@@ -44,6 +44,7 @@ use system_modules::{ModuleId, SystemModule, SystemModuleError};
 mod authenticated_object_effects;
 mod durable_reconciliation;
 pub mod fee_effects;
+pub mod local_execution;
 pub mod local_instance_state;
 mod object_snapshots;
 mod preinstalled_wasm;

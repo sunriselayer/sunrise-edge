@@ -54,12 +54,14 @@ pub mod client;
 pub mod context;
 pub mod error;
 pub mod key;
+pub mod local_execution_client;
 pub mod publication_client;
 pub mod support;
 pub mod transaction;
 pub mod transport;
 
 pub use abi::package_types::PackageOrigin;
+pub use abi::{decode_access_manifest, executable_abi};
 pub use client::{Client, ReceiptPollBounds, SubmitTransactionRequest};
 pub use context::{ExpectedProtocolContext, ExpectedProtocolContextError, ProtocolContextMismatch};
 pub use error::ClientError;
@@ -67,8 +69,10 @@ pub use execution::publication::{
     ArtifactParts, CodeArtifact, PublicationContext, PublicationSubmission,
     UnverifiedDependencyRef, decode_dependency_ref,
 };
+pub use execution::{call, local_execution};
 pub use hashing::HashSuiteResolver;
 pub use key::LocalSigner;
+pub use local_execution_client::build_signed_local_execution;
 pub use protocol_types::{HashSuite, HashSuiteSchedule};
 pub use publication_client::{build_signed_publication, local_publication_resolver};
 pub use signing_view::{

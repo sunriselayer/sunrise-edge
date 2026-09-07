@@ -21,6 +21,9 @@
 //! through the Rust client; it neither signs nor publishes a contract.
 //! `contract publish` and `contract query` use the explicitly enabled local
 //! immutable publication service. Publishing never instantiates or executes code.
+//! `contract publish --executable` selects the separate typed-host profile;
+//! `contract instantiate`, `contract call`, and `contract query-instance` use
+//! the explicitly enabled zero-fee local execution service and canonical files.
 //!
 //! Commands: `address`, `context`, `object`, `receipt`, `next-nonce`, and
 //! `transfer`, `split`, `merge`, `mint`, and `burn` (the devnet Standard Asset v1
