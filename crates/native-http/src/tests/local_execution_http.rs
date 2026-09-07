@@ -241,6 +241,7 @@ async fn explicit_local_http_retains_profile_one_and_executes_profile_two() {
         gas_limit: 10000,
     };
     let intent = LocalExecutionIntent {
+        authorizations: Vec::new(),
         mode: LocalExecutionMode::Instantiate,
         policy_digest: policies().2.digest(&resolver()).unwrap(),
         call,

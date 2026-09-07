@@ -41,13 +41,27 @@ impl LocalContractEngine for LocalWasmExecutionEngine {
         &self,
         request: LocalExecutionRequest<'_>,
     ) -> Result<LocalExecutionOutcome, LocalExecutionError> {
+        if request.policy.profile() != 2
+            || !request.intent.intent().authorizations.is_empty()
+            || request.scopes.len() != 1
+        {
+            return Err(LocalExecutionError::Invalid(
+                "general call runtime not activated",
+            ));
+        }
+        let root = request.root_scope()?;
+        let interface = &root.interface;
+        let instance = &root.instance;
         let call = &request.intent.intent().call;
+        if root.target != call.instance {
+            return Err(LocalExecutionError::Invalid("root scope target mismatch"));
+        }
         // This first executable profile does not authorize cross-protocol execution.
         // Historical bytes remain readable; historical epochs within this resolver
         // continue to resolve through its trusted hash schedule.
-        if request.instance.context.protocol_version() != request.resolver.protocol_version()
-            || std::iter::once(request.interface.candidate())
-                .chain(request.interface.dependencies().iter())
+        if instance.context.protocol_version() != request.resolver.protocol_version()
+            || std::iter::once(interface.candidate())
+                .chain(interface.dependencies().iter())
                 .any(|candidate| {
                     candidate.request().artifact().context().protocol_version()
                         != request.resolver.protocol_version()
@@ -61,28 +75,27 @@ impl LocalContractEngine for LocalWasmExecutionEngine {
             || request.intent.intent().policy_digest != request.policy.digest(request.resolver)?
             || request.event_digest
                 != local_execution_event_digest(request.resolver, request.intent.signed())?
-            || call.code != reference(request.interface)?
-            || call.code != request.instance.code
-            || call.instance != instance_target(request.resolver, request.instance)?
+            || call.code != reference(interface)?
+            || call.code != instance.code
+            || call.instance != instance_target(request.resolver, instance)?
             || call.gas_limit == 0
             || call.gas_limit > request.policy.max_gas()
         {
             return Err(LocalExecutionError::Invalid("execution request context"));
         }
-        if request
-            .interface
+        if interface
             .executable_abi(call.code.origin())
             .and_then(|metadata| metadata.initializer.as_deref())
-            != Some(request.instance.initializer.as_str())
+            != Some(instance.initializer.as_str())
         {
             return Err(LocalExecutionError::Invalid("instance initializer"));
         }
         if request.intent.intent().mode == LocalExecutionMode::Instantiate
-            && (call.sender != request.instance.creator || call.context != request.instance.context)
+            && (call.sender != instance.creator || call.context != instance.context)
         {
             return Err(LocalExecutionError::Invalid("instance creation context"));
         }
-        let signature = bind_local_execution(request.intent, request.interface)?;
+        let signature = bind_local_execution(request.intent, interface)?;
         let inputs: Vec<ResolvedObject> = request
             .inputs
             .iter()
@@ -102,15 +115,14 @@ impl LocalContractEngine for LocalWasmExecutionEngine {
         for (input, parameter) in request.inputs.iter().zip(signature.objects()) {
             let object = &input.resolved.object;
             let authority = &input.authority;
-            let defining = request
-                .interface
+            let defining = interface
                 .for_origin(authority.ty.origin())
                 .map_err(|_| LocalExecutionError::Invalid("input defining code"))?;
             if object.owner != Owner::Address(Address::new(call.sender))
                 || !ids.insert(object.id)
                 || authority.object_id != object.id
                 || authority.instance != call.instance
-                || authority.instance_context != request.instance.context
+                || authority.instance_context != instance.context
                 || authority.code != reference(&defining)?
                 || authority.ty != *parameter.ty()
             {
@@ -137,17 +149,13 @@ impl LocalContractEngine for LocalWasmExecutionEngine {
         config.set_max_recursion_depth(LOCAL_WASM_MAX_RECURSION);
         let engine: Engine = Engine::new(&config);
         let mut modules: BTreeMap<PackageOrigin, Arc<Module>> = BTreeMap::new();
-        for origin in std::iter::once(request.interface.candidate().request().artifact().origin())
-            .chain(
-                request
-                    .interface
-                    .dependencies()
-                    .iter()
-                    .map(|candidate| candidate.request().artifact().origin()),
-            )
-        {
-            let view = request
-                .interface
+        for origin in std::iter::once(interface.candidate().request().artifact().origin()).chain(
+            interface
+                .dependencies()
+                .iter()
+                .map(|candidate| candidate.request().artifact().origin()),
+        ) {
+            let view = interface
                 .for_origin(origin)
                 .map_err(|_| LocalExecutionError::Invalid("code closure"))?;
             let artifact = view.candidate().request().artifact();
@@ -169,15 +177,15 @@ impl LocalContractEngine for LocalWasmExecutionEngine {
         );
         let state: HostState = HostState {
             resolver: request.resolver.clone(),
-            instance: request.instance.clone(),
+            instance: instance.clone(),
             target: call.instance.clone(),
             context: call.context.clone(),
             event: request.event_digest,
             sender: call.sender,
-            instance_bytes: encode_instance_record(request.instance)?,
+            instance_bytes: encode_instance_record(instance)?,
             arena,
             frames: vec![Frame {
-                interface: request.interface.clone(),
+                interface: interface.clone(),
                 code: call.code.clone(),
                 grants,
                 args: call.arguments.clone(),
@@ -273,7 +281,7 @@ impl LocalContractEngine for LocalWasmExecutionEngine {
         };
         let result: LocalExecutionResult = LocalExecutionResult {
             request_id: call.request_id,
-            instance: request.instance.clone(),
+            instance: instance.clone(),
             mode: request.intent.intent().mode,
             effects: outcome.effects.clone(),
         };

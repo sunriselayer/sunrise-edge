@@ -243,6 +243,11 @@ pub fn handle_local_execution<
         call.context.chain_id().clone(),
         call.context.protocol_version(),
     );
+    if policy.profile() != 2 || !authenticated.intent().authorizations.is_empty() {
+        return Err(LocalExecutionAdmissionError::Invalid(
+            "general call runtime not activated",
+        ));
+    }
     let nonce: PendingSenderNonceWrite = durable_reconciliation::reserve_sender_nonce(
         store,
         context,
@@ -409,10 +414,13 @@ pub fn handle_local_execution<
     )
     .map_err(|_| LocalExecutionAdmissionError::Invalid("input body mismatch"))?;
     let outcome: LocalExecutionOutcome = engine.execute(LocalExecutionRequest {
-        interface: &interface,
+        scopes: &[ResolvedExecutionScope {
+            instance: instance.clone(),
+            target: call.instance.clone(),
+            interface: interface.clone(),
+        }],
         intent: &authenticated,
         resolver,
-        instance: &instance,
         policy,
         event_digest,
         inputs: &inputs,

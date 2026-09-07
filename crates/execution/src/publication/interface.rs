@@ -288,12 +288,15 @@ pub fn verify_publication_interface(
     let mut executable_abis: BTreeMap<PackageOrigin, Arc<ExecutableAbi>> = BTreeMap::new();
     for node in &nodes {
         let artifact = node.request().artifact();
-        if candidate.request().artifact().wasm_profile() == 2 && artifact.wasm_profile() != 2 {
+        if (candidate.request().artifact().wasm_profile() == 2 && artifact.wasm_profile() != 2)
+            || (candidate.request().artifact().wasm_profile() == 3
+                && !matches!(artifact.wasm_profile(), 2 | 3))
+        {
             return Err(InterfaceError::Abi(ValueError::Invalid(
                 "typed executable depends on nonexecutable profile",
             )));
         }
-        let abi: CallAbi = if artifact.wasm_profile() == 2 {
+        let abi: CallAbi = if matches!(artifact.wasm_profile(), 2 | 3) {
             let executable: ExecutableAbi = decode_executable_abi(artifact.unverified_abi())?;
             let call: CallAbi = executable.call.clone();
             executable_abis.insert(artifact.origin().clone(), Arc::new(executable));

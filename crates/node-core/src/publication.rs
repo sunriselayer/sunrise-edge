@@ -58,6 +58,16 @@ pub fn local_executable_publication_semantics(
     )?)
 }
 
+/// Explicit profile-three publication commitment for generalized contract calls.
+pub fn local_general_publication_semantics(
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+) -> Result<Digest32, PublicationAdmissionError> {
+    Ok(execution::local_execution::general_execution_semantics(
+        resolver, expected,
+    )?)
+}
+
 fn encode_local_publication_profile() -> Result<Vec<u8>, PublicationAdmissionError> {
     let mut frame: CanonicalStruct = CanonicalStruct::new(0x630B, 1);
     frame.field_str(1, "local-devnet-publication-only")?;
@@ -184,6 +194,15 @@ impl LocalPublicationPolicy {
             profile: 2,
         }
     }
+    /// Separately installed profile-three publication admission.
+    #[must_use]
+    pub const fn general(context: PublicationContext, semantics: Digest32) -> Self {
+        Self {
+            context,
+            semantics,
+            profile: 3,
+        }
+    }
     /// Closed artifact admission profile.
     #[must_use]
     pub const fn profile(&self) -> u32 {
@@ -207,8 +226,8 @@ impl LocalPublicationPolicy {
         frame.field_u16(3, 1)?;
         frame.field_u32(4, MAX_INTERFACE_NODES as u32)?;
         frame.field_u64(5, MAX_PUBLICATION_CLOSURE_BYTES as u64)?;
-        if self.profile == 2 {
-            frame.field_u32(6, 2)?;
+        if matches!(self.profile, 2 | 3) {
+            frame.field_u32(6, self.profile)?;
         }
         Ok(frame.finish()?)
     }
@@ -219,14 +238,14 @@ impl LocalPublicationPolicy {
         }
         let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
         frame.require_type(0x630A)?;
-        if !matches!(frame.version(), 1 | 2) {
+        if !matches!(frame.version(), 1..=3) {
             return Err(PublicationAdmissionError::PolicyMismatch);
         }
         if frame.version() == 1 {
             frame.require_only_fields(&[1, 2, 3, 4, 5])?;
         } else {
             frame.require_only_fields(&[1, 2, 3, 4, 5, 6])?;
-            if frame.required_u32(6)? != 2 {
+            if frame.required_u32(6)? != u32::from(frame.version()) {
                 return Err(PublicationAdmissionError::PolicyMismatch);
             }
         }
@@ -259,6 +278,7 @@ pub fn publication_policy_key_for_profile(
     match profile {
         1 => key.extend_from_slice(b"v1/policies/"),
         2 => key.extend_from_slice(b"v2/policies/"),
+        3 => key.extend_from_slice(b"v3/policies/"),
         _ => return Err(PublicationAdmissionError::PolicyMismatch),
     }
     key.extend(encode_publication_context(context)?);

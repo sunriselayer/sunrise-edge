@@ -39,8 +39,23 @@ pub fn object_authority_key(object_id: ObjectId) -> Vec<u8> {
 
 /// Trusted execution policy key retains the original verification context.
 pub fn execution_policy_key(context: &PublicationContext) -> Result<Vec<u8>, NodeCoreError> {
+    execution_policy_key_for_profile(context, 2)
+}
+/// Explicit profile-key activation; profile-two retains its historical key.
+pub fn execution_policy_key_for_profile(
+    context: &PublicationContext,
+    profile: u32,
+) -> Result<Vec<u8>, NodeCoreError> {
     let mut key: Vec<u8> = INSTANCE_STATE_PREFIX.to_vec();
-    key.extend_from_slice(b"v1/policies/");
+    match profile {
+        2 => key.extend_from_slice(b"v1/policies/"),
+        3 => key.extend_from_slice(b"v2/policies/"),
+        _ => {
+            return Err(NodeCoreError::PersistenceInvariant(
+                "unsupported execution profile",
+            ));
+        }
+    }
     key.extend(encode_publication_context(context).map_err(|_| {
         NodeCoreError::PersistenceInvariant("invalid local execution policy context")
     })?);

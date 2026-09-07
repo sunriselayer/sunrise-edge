@@ -113,6 +113,7 @@ fn independently_reconstructed_execution_wires_and_signature() {
         "5a9d72a4556636cfd27e21818f9f4b8fc212fbfa256f9849731c47df6ebbff8b",
     );
     let intent: LocalExecutionIntent = LocalExecutionIntent {
+        authorizations: Vec::new(),
         mode: LocalExecutionMode::Instantiate,
         policy_digest: policy.digest(&resolver).unwrap(),
         call: CallIntent {

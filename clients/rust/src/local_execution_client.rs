@@ -66,6 +66,7 @@ pub fn build_signed_local_execution(
         return Err(invalid("gas exceeds committed local policy"));
     }
     let intent: LocalExecutionIntent = LocalExecutionIntent {
+        authorizations: Vec::new(),
         mode,
         policy_digest: policy.digest(resolver)?,
         call,

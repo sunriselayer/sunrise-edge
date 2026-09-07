@@ -27,6 +27,8 @@ use wasmparser::{
 pub const CONTRACT_WASM_ADMISSION_PROFILE_VERSION: u32 = 1;
 /// Authority-aware typed host import profile, separately admitted from legacy env.
 pub const TYPED_CONTRACT_WASM_PROFILE_VERSION: u32 = 2;
+/// General signed-authorization host profile; explicitly activated separately.
+pub const GENERAL_CONTRACT_WASM_PROFILE_VERSION: u32 = 3;
 
 /// Maximum accepted byte length of a candidate contract WASM binary.
 pub const MAX_CONTRACT_WASM_BYTES: usize = 4 * 1024 * 1024;
@@ -215,7 +217,21 @@ const TYPED_HOST_IMPORTS: &[HostImportSignature] = &[
 ];
 
 fn find_host_import(name: &str, profile: u32) -> Option<&'static HostImportSignature> {
-    let imports: &[HostImportSignature] = if profile == 2 {
+    static CALL_CONTRACT: HostImportSignature = HostImportSignature {
+        name: "call_contract",
+        params: &[
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+        ],
+        results: &[ValType::I32],
+    };
+    if profile == 3 && name == "call_contract" {
+        return Some(&CALL_CONTRACT);
+    }
+    let imports: &[HostImportSignature] = if matches!(profile, 2 | 3) {
         TYPED_HOST_IMPORTS
     } else {
         ALLOWED_HOST_IMPORTS
@@ -597,8 +613,8 @@ fn scan_and_bound_module(
             }
             Payload::ImportSection(reader) => {
                 let count = reader.count();
-                let maximum: u32 = if profile == 2 {
-                    TYPED_HOST_IMPORTS.len() as u32
+                let maximum: u32 = if matches!(profile, 2 | 3) {
+                    TYPED_HOST_IMPORTS.len() as u32 + u32::from(profile == 3)
                 } else {
                     MAX_IMPORTS
                 };
@@ -627,7 +643,13 @@ fn scan_and_bound_module(
                                 .get(type_idx as usize)
                                 .ok_or(E::InvalidModule)?
                                 .clone();
-                            if module != if profile == 2 { "sunrise" } else { "env" } {
+                            if module
+                                != if matches!(profile, 2 | 3) {
+                                    "sunrise"
+                                } else {
+                                    "env"
+                                }
+                            {
                                 return Err(E::UnknownImport { module, name });
                             }
                             let spec = find_host_import(&name, profile).ok_or_else(|| {
@@ -912,7 +934,7 @@ pub fn validate_contract_wasm_profile(
     declared_entrypoints: &[&str],
     profile: u32,
 ) -> Result<ValidatedContractWasm, ContractWasmValidationError> {
-    if !matches!(profile, 1 | 2) {
+    if !matches!(profile, 1..=3) {
         return Err(ContractWasmValidationError::InvalidModule);
     }
     check_binary_header(bytes)?;

@@ -172,6 +172,7 @@ fn signed(
     entries: Vec<AccessEntry>,
 ) -> Vec<u8> {
     let intent: LocalExecutionIntent = LocalExecutionIntent {
+        authorizations: Vec::new(),
         mode: if entrypoint == "init" {
             LocalExecutionMode::Instantiate
         } else {

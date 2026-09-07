@@ -4,6 +4,11 @@ use crate::call::{
     CallError, CallIntent, InstanceTarget, bind_call_intent, decode_call_intent,
     decode_instance_target, encode_call_intent, encode_instance_target,
 };
+use crate::call_authorization::{
+    CallAuthorization, MAX_AUTHORIZED_INPUTS, MAX_CALL_AUTHORIZATION_BYTES,
+    MAX_CALL_AUTHORIZATIONS, MAX_EXECUTION_SCOPES, decode_call_authorizations,
+    encode_call_authorizations, validate_call_authorizations,
+};
 use crate::publication::{
     BoundObjectSignature, PublicationContext, PublicationError, UnverifiedDependencyRef,
     VerifiedPublicationInterface, decode_dependency_ref, decode_publication_context,
@@ -67,7 +72,49 @@ pub const LOCAL_HOST_BYTE_GAS: u64 = 1;
 /// to host byte charges. Covers traversal of the at-most-33-node verified graph.
 pub const LOCAL_LIBRARY_BINDING_GAS: u64 = 2048;
 /// Maximum complete signed execution submission.
-pub const MAX_LOCAL_EXECUTION_INTENT_BYTES: usize = crate::call::MAX_CALL_INTENT_BYTES + 1024;
+pub const MAX_LOCAL_EXECUTION_INTENT_BYTES: usize =
+    crate::call::MAX_CALL_INTENT_BYTES + 1024 + MAX_CALL_AUTHORIZATION_BYTES;
+
+/// General frame-entry and reusable signed capability semantics version.
+pub const GENERAL_EXECUTION_RULES_VERSION: u32 = 2;
+/// Host ABI including the general call_contract selector.
+pub const GENERAL_TYPED_HOST_ABI_VERSION: u32 = 2;
+
+/// Explicit general-call semantics; profile-two bytes retain their original meaning.
+pub fn encode_general_execution_semantics() -> Result<Vec<u8>, CanonicalEncodingError> {
+    let mut frame: CanonicalStruct = CanonicalStruct::new(0x630B, 3);
+    frame.field_str(1, "local-devnet-general-contract-calls")?;
+    frame.field_u32(2, 3)?;
+    frame.field_u32(3, GENERAL_EXECUTION_RULES_VERSION)?;
+    frame.field_str(4, LOCAL_WASMI_VERSION)?;
+    frame.field_u32(5, 1)?;
+    frame.field_u32(6, LOCAL_WASM_INITIAL_STACK as u32)?;
+    frame.field_u32(7, LOCAL_WASM_MAX_STACK as u32)?;
+    frame.field_u32(8, LOCAL_WASM_MAX_RECURSION as u32)?;
+    frame.field_u32(9, GENERAL_TYPED_HOST_ABI_VERSION)?;
+    frame.field_u64(10, MAX_LOCAL_EXECUTION_MEMORY_BYTES)?;
+    frame.field_u32(11, MAX_CALL_AUTHORIZATIONS as u32)?;
+    frame.field_u32(12, MAX_CALL_AUTHORIZATION_BYTES as u32)?;
+    frame.field_u32(13, MAX_EXECUTION_SCOPES as u32)?;
+    frame.field_u32(14, MAX_AUTHORIZED_INPUTS as u32)?;
+    frame.finish()
+}
+/// Commits profile-three executable semantics under the artifact's original context.
+pub fn general_execution_semantics(
+    resolver: &HashSuiteResolver,
+    context: &PublicationContext,
+) -> Result<Digest32, PublicationError> {
+    if resolver.chain_id() != context.chain_id()
+        || resolver.protocol_version() != context.protocol_version()
+    {
+        return Err(PublicationError::ContextMismatch);
+    }
+    Ok(resolver.hash_for_purpose(
+        context.epoch(),
+        HashPurpose::ContractCode,
+        &encode_general_execution_semantics()?,
+    )?)
+}
 
 /// Closed typed-host semantics descriptor, distinct from profile-one nonexecution.
 pub fn encode_local_execution_semantics() -> Result<Vec<u8>, CanonicalEncodingError> {
@@ -193,12 +240,29 @@ fn owning_key(key: &[u8; 32]) -> Result<(), LocalExecutionError> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalExecutionPolicy {
     context: PublicationContext,
+    profile: u32,
 }
 impl LocalExecutionPolicy {
     /// Creates the fixed local policy, which must separately be durably committed.
     #[must_use]
     pub const fn new(context: PublicationContext) -> Self {
-        Self { context }
+        Self {
+            context,
+            profile: 2,
+        }
+    }
+    /// Explicit profile-three policy; must be separately committed before admission.
+    #[must_use]
+    pub const fn general(context: PublicationContext) -> Self {
+        Self {
+            context,
+            profile: 3,
+        }
+    }
+    /// Closed executable host profile.
+    #[must_use]
+    pub const fn profile(&self) -> u32 {
+        self.profile
     }
     /// Original trusted policy context.
     #[must_use]
@@ -212,9 +276,10 @@ impl LocalExecutionPolicy {
     }
     /// Canonical closed policy frame 0x6409/v1.
     pub fn encode(&self) -> Result<Vec<u8>, LocalExecutionError> {
-        let mut frame: CanonicalStruct = CanonicalStruct::new(0x6409, 1);
+        let mut frame: CanonicalStruct =
+            CanonicalStruct::new(0x6409, if self.profile == 2 { 1 } else { 2 });
         frame.field_bytes(1, encode_publication_context(&self.context)?)?;
-        frame.field_u32(2, 2)?;
+        frame.field_u32(2, self.profile)?;
         frame.field_u16(3, 0)?;
         frame.field_u64(4, MAX_LOCAL_EXECUTION_GAS)?;
         frame.field_u32(5, MAX_LOCAL_EXECUTION_DEPTH)?;
@@ -225,10 +290,38 @@ impl LocalExecutionPolicy {
         frame.field_u32(10, MAX_LOCAL_OBJECT_HANDLES)?;
         frame.field_u64(11, LOCAL_HOST_BASE_GAS)?;
         frame.field_u64(12, LOCAL_HOST_BYTE_GAS)?;
-        frame.field_u32(13, LOCAL_EXECUTION_RULES_VERSION)?;
+        frame.field_u32(
+            13,
+            if self.profile == 2 {
+                LOCAL_EXECUTION_RULES_VERSION
+            } else {
+                GENERAL_EXECUTION_RULES_VERSION
+            },
+        )?;
         frame.field_u32(14, MAX_LOCAL_EXECUTION_EVENTS as u32)?;
-        frame.field_bytes(15, encode_local_execution_semantics()?)?;
+        frame.field_bytes(
+            15,
+            if self.profile == 2 {
+                encode_local_execution_semantics()?
+            } else {
+                encode_general_execution_semantics()?
+            },
+        )?;
         frame.field_u64(16, LOCAL_LIBRARY_BINDING_GAS)?;
+        if self.profile == 3 {
+            frame.field_u32(17, MAX_CALL_AUTHORIZATIONS as u32)?;
+            frame.field_u32(18, MAX_CALL_AUTHORIZATION_BYTES as u32)?;
+            frame.field_u32(19, MAX_EXECUTION_SCOPES as u32)?;
+            frame.field_u32(20, MAX_AUTHORIZED_INPUTS as u32)?;
+            frame.field_u32(
+                21,
+                crate::call_authorization::MAX_EXECUTION_CODE_NODES as u32,
+            )?;
+            frame.field_u64(
+                22,
+                crate::call_authorization::MAX_EXECUTION_CODE_BYTES as u64,
+            )?;
+        }
         Ok(frame.finish()?)
     }
     /// Rejects any unknown or changed v1 policy limit; no implicit defaults.
@@ -238,9 +331,12 @@ impl LocalExecutionPolicy {
         }
         let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
         frame.require_type(0x6409)?;
-        frame.require_version(1)?;
-        frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])?;
-        let policy: Self = Self::new(decode_publication_context(frame.required_field(1)?)?);
+        let context: PublicationContext = decode_publication_context(frame.required_field(1)?)?;
+        let policy: Self = match frame.version() {
+            1 => Self::new(context),
+            2 => Self::general(context),
+            _ => return Err(LocalExecutionError::Invalid("execution policy version")),
+        };
         if policy.encode()? != bytes {
             return Err(LocalExecutionError::Invalid("unsupported execution policy"));
         }
@@ -399,6 +495,8 @@ pub struct LocalExecutionIntent {
     pub policy_digest: Digest32,
     /// Existing canonical request/code/instance/access data.
     pub call: CallIntent,
+    /// Ordered reusable signed ceilings; empty preserves historical version-one bytes.
+    pub authorizations: Vec<CallAuthorization>,
 }
 /// Unverified Ed25519 execution submission.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -438,10 +536,21 @@ pub fn encode_local_execution_intent(
             "initializer creator or inputs",
         ));
     }
-    let mut frame: CanonicalStruct = CanonicalStruct::new(0x6405, 1);
+    validate_call_authorizations(&intent.call, &intent.authorizations)?;
+    let mut frame: CanonicalStruct = CanonicalStruct::new(
+        0x6405,
+        if intent.authorizations.is_empty() {
+            1
+        } else {
+            2
+        },
+    );
     frame.field_u16(1, intent.mode as u16)?;
     frame.field_bytes(2, encode_digest32(&intent.policy_digest)?)?;
     frame.field_bytes(3, encode_call_intent(&intent.call)?)?;
+    if !intent.authorizations.is_empty() {
+        frame.field_bytes(4, encode_call_authorizations(&intent.authorizations)?)?;
+    }
     Ok(frame.finish()?)
 }
 /// Strictly decodes a bounded execution payload.
@@ -453,12 +562,20 @@ pub fn decode_local_execution_intent(
     }
     let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
     frame.require_type(0x6405)?;
-    frame.require_version(1)?;
-    frame.require_only_fields(&[1, 2, 3])?;
+    match frame.version() {
+        1 => frame.require_only_fields(&[1, 2, 3])?,
+        2 => frame.require_only_fields(&[1, 2, 3, 4])?,
+        _ => return Err(LocalExecutionError::Invalid("execution intent version")),
+    }
     let intent: LocalExecutionIntent = LocalExecutionIntent {
         mode: LocalExecutionMode::decode(frame.required_u16(1)?)?,
         policy_digest: decode_digest32(frame.required_field(2)?)?,
         call: decode_call_intent(frame.required_field(3)?)?,
+        authorizations: if frame.version() == 1 {
+            Vec::new()
+        } else {
+            decode_call_authorizations(frame.required_field(4)?)?
+        },
     };
     if encode_local_execution_intent(&intent)? != bytes {
         return Err(LocalExecutionError::Invalid("noncanonical intent"));
@@ -469,7 +586,14 @@ pub fn decode_local_execution_intent(
 pub fn encode_signed_local_execution(
     signed: &SignedLocalExecutionIntent,
 ) -> Result<Vec<u8>, LocalExecutionError> {
-    let mut frame: CanonicalStruct = CanonicalStruct::new(0x6406, 1);
+    let mut frame: CanonicalStruct = CanonicalStruct::new(
+        0x6406,
+        if signed.intent.authorizations.is_empty() {
+            1
+        } else {
+            2
+        },
+    );
     frame.field_bytes(1, encode_local_execution_intent(&signed.intent)?)?;
     frame.field_bytes(2, signed.signature.to_vec())?;
     let bytes: Vec<u8> = frame.finish()?;
@@ -487,15 +611,23 @@ pub fn decode_signed_local_execution(
     }
     let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
     frame.require_type(0x6406)?;
-    frame.require_version(1)?;
+    if !matches!(frame.version(), 1 | 2) {
+        return Err(LocalExecutionError::Invalid("signed execution version"));
+    }
     frame.require_only_fields(&[1, 2])?;
-    Ok(SignedLocalExecutionIntent {
+    let signed: SignedLocalExecutionIntent = SignedLocalExecutionIntent {
         intent: decode_local_execution_intent(frame.required_field(1)?)?,
         signature: frame
             .required_field(2)?
             .try_into()
             .map_err(|_| LocalExecutionError::Invalid("signature length"))?,
-    })
+    };
+    if encode_signed_local_execution(&signed)? != bytes {
+        return Err(LocalExecutionError::Invalid(
+            "noncanonical signed execution",
+        ));
+    }
+    Ok(signed)
 }
 /// Signature frame explicitly binds local zero-fee policy consent.
 pub fn local_execution_signing_frame(
@@ -526,6 +658,7 @@ pub fn authenticate_local_execution(
     let signed: SignedLocalExecutionIntent = decode_signed_local_execution(bytes)?;
     if signed.intent.policy_digest != policy.digest(resolver)?
         || signed.intent.call.gas_limit > policy.max_gas()
+        || (policy.profile() != 3 && !signed.intent.authorizations.is_empty())
     {
         return Err(LocalExecutionError::Invalid("execution policy or gas"));
     }
@@ -734,21 +867,40 @@ pub struct CreatedObjectAuthority {
     pub authority: ObjectAuthority,
 }
 /// One invocation input assembled only after durable admission.
+#[derive(Clone, Debug)]
+pub struct ResolvedExecutionScope {
+    /// Authenticated immutable instance record.
+    pub instance: InstanceRecord,
+    /// Exact independently checked target of that record.
+    pub target: InstanceTarget,
+    /// Verified root code and its complete exact closure.
+    pub interface: VerifiedPublicationInterface,
+}
+/// One invocation input assembled only after durable admission.
 pub struct LocalExecutionRequest<'a> {
-    /// Verified exact root and library closure.
-    pub interface: &'a VerifiedPublicationInterface,
+    /// Bounded admitted scopes; root scope is always index zero.
+    pub scopes: &'a [ResolvedExecutionScope],
     /// Authenticated explicit execution input.
     pub intent: &'a AuthenticatedLocalExecutionIntent,
     /// Trusted current hash history.
     pub resolver: &'a HashSuiteResolver,
-    /// Immutable admitted instance.
-    pub instance: &'a InstanceRecord,
     /// Explicit committed limits and fee mode.
     pub policy: &'a LocalExecutionPolicy,
     /// Complete signed event digest.
     pub event_digest: Digest32,
     /// Declared, scoped inputs in signed order.
     pub inputs: &'a [ScopedResolvedObject],
+}
+impl LocalExecutionRequest<'_> {
+    /// Returns the admitted root without assuming a nonempty untrusted slice.
+    pub fn root_scope(&self) -> Result<&ResolvedExecutionScope, LocalExecutionError> {
+        if self.scopes.len() > MAX_EXECUTION_SCOPES {
+            return Err(LocalExecutionError::Limit("execution scopes"));
+        }
+        self.scopes
+            .first()
+            .ok_or(LocalExecutionError::Invalid("missing root scope"))
+    }
 }
 /// Provisional bounded VM outcome; the node independently verifies every effect.
 #[derive(Clone, Debug, PartialEq, Eq)]

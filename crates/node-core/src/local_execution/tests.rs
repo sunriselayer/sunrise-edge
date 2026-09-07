@@ -199,6 +199,7 @@ fn sign(
         gas_limit: 10000,
     };
     let intent: LocalExecutionIntent = LocalExecutionIntent {
+        authorizations: Vec::new(),
         mode: if name == "init" {
             LocalExecutionMode::Instantiate
         } else {
@@ -290,14 +291,15 @@ impl LocalContractEngine for Engine {
                 });
             }
             _ => {
-                let code: UnverifiedDependencyRef = request.instance.code.clone();
+                let code: UnverifiedDependencyRef = request.root_scope()?.instance.code.clone();
                 let ty: ScopedTypeTag =
                     ScopedTypeTag::new(code.origin().clone(), 1, vec![]).unwrap();
-                let target = instance_target(request.resolver, request.instance).unwrap();
+                let target =
+                    instance_target(request.resolver, &request.root_scope()?.instance).unwrap();
                 let mut id: ObjectId = derive_local_created_object_id(
                     request.resolver,
                     &request.intent.intent().call.context,
-                    &request.instance.context,
+                    &request.root_scope()?.instance.context,
                     &target,
                     &code,
                     request.event_digest,
@@ -309,7 +311,7 @@ impl LocalContractEngine for Engine {
                 }
                 let mut authority: ObjectAuthority = ObjectAuthority {
                     object_id: id,
-                    instance_context: request.instance.context.clone(),
+                    instance_context: request.root_scope()?.instance.context.clone(),
                     instance: target,
                     code,
                     ty: ty.clone(),
