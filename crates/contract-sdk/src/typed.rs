@@ -8,6 +8,10 @@
 //! that common frame/authority model, not an independent privilege mechanism.
 //! A nested host failure traps the entire invocation, even if WASM ignores its
 //! return value. Native builds have no host and return [`Error::Unavailable`].
+//!
+//! Profile 2 supplies the base imports; profile 3 adds the signed general-call
+//! selector. Object identity/type lookups and ordered result slots require
+//! explicitly activated profile 4. They are not profile-2/profile-3 functions.
 
 use alloc::vec::Vec;
 use core::{convert::Infallible, fmt};
@@ -76,6 +80,49 @@ fn written(value: i32, capacity: usize) -> Result<usize, Error> {
         return Err(Error::InvalidHostResult);
     }
     Ok(count)
+}
+
+/// Maximum canonical type-tag bytes returned by [`object_type`].
+pub const MAX_OBJECT_TYPE_BYTES: usize = 32768;
+
+/// Fixed number of ordered result slots supported by the `*_with_results` calls.
+pub const MAX_RESULT_HANDLES: usize = 4;
+
+const RESULT_BUFFER_BYTES: usize = MAX_RESULT_HANDLES * 4;
+
+/// Sentinel little-endian `u32` value marking an absent result slot.
+const ABSENT_RESULT_SLOT: u32 = u32::MAX;
+
+/// Checks a results byte count against capacity and the fixed 4-byte slot width.
+fn results_written(value: i32, capacity: usize) -> Result<usize, Error> {
+    let count: usize = written(value, capacity)?;
+    if !count.is_multiple_of(4) {
+        return Err(Error::InvalidHostResult);
+    }
+    Ok(count)
+}
+
+/// Decodes a prefix of fixed ordered result slots without compaction: each
+/// 4-byte little-endian slot is either a present handle or the absence sentinel.
+fn decode_result_handles(
+    buffer: &[u8; RESULT_BUFFER_BYTES],
+    bytes_written: usize,
+) -> Result<Vec<Option<Handle>>, Error> {
+    if bytes_written > RESULT_BUFFER_BYTES || !bytes_written.is_multiple_of(4) {
+        return Err(Error::InvalidHostResult);
+    }
+    let mut results: Vec<Option<Handle>> = Vec::with_capacity(bytes_written / 4);
+    for chunk in buffer[..bytes_written].chunks_exact(4) {
+        let value: u32 =
+            u32::from_le_bytes(chunk.try_into().map_err(|_| Error::InvalidHostResult)?);
+        if value == ABSENT_RESULT_SLOT {
+            results.push(None);
+        } else {
+            abi_index(value)?;
+            results.push(Some(Handle(value)));
+        }
+    }
+    Ok(results)
 }
 fn available() -> Result<(), Error> {
     if cfg!(target_arch = "wasm32") {
@@ -310,6 +357,120 @@ pub fn call_contract(
     })
 }
 
+/// Marks an object as the caller's result at the given fixed ordered slot.
+/// `slot` must be one of the [`MAX_RESULT_HANDLES`] declared result positions.
+pub fn return_object(slot: u32, handle: Handle) -> Result<(), Error> {
+    if slot as usize >= MAX_RESULT_HANDLES {
+        return Err(Error::IntegerOutOfRange);
+    }
+    let slot: i32 = abi_index(slot)?;
+    let index: i32 = abi_index(handle.0)?;
+    available()?;
+    // SAFETY: only checked integer selectors are passed.
+    success(unsafe { raw::return_object(slot, index) })
+}
+
+/// Returns an object's fixed 32-byte canonical identity.
+pub fn object_id(handle: Handle) -> Result<[u8; 32], Error> {
+    let index: i32 = abi_index(handle.0)?;
+    available()?;
+    let mut id: [u8; 32] = [0; 32];
+    // SAFETY: id is writable for exactly 32 bytes.
+    let count: i32 = unsafe { raw::get_object_id(index, id.as_mut_ptr()) };
+    if written(count, id.len())? != id.len() {
+        return Err(Error::InvalidHostResult);
+    }
+    Ok(id)
+}
+
+/// Reads an object's canonical type tag into `output`, at most
+/// [`MAX_OBJECT_TYPE_BYTES`], returning the checked bytes written.
+pub fn object_type(handle: Handle, output: &mut [u8]) -> Result<usize, Error> {
+    if output.len() > MAX_OBJECT_TYPE_BYTES {
+        return Err(Error::IntegerOutOfRange);
+    }
+    let index: i32 = abi_index(handle.0)?;
+    let length: i32 = abi_len(output.len())?;
+    available()?;
+    // SAFETY: output is writable for exactly length bytes.
+    written(
+        unsafe { raw::get_object_type(index, output.as_mut_ptr(), length) },
+        output.len(),
+    )
+}
+
+/// Calls a directly declared dependency library, returning its fixed ordered
+/// result slots. See [`call_dependency`] for the shared call semantics; each
+/// returned slot is `None` when the callee left that declared result absent.
+pub fn call_dependency_with_results(
+    dependency: u32,
+    entrypoint: &str,
+    types: &[u8],
+    handles: &[Handle],
+    args: &[u8],
+) -> Result<Vec<Option<Handle>>, Error> {
+    let dependency: i32 = abi_index(dependency)?;
+    let entry_len: i32 = abi_len(entrypoint.len())?;
+    let types_len: i32 = abi_len(types.len())?;
+    let handle_count: i32 = abi_len(handles.len())?;
+    let args_len: i32 = abi_len(args.len())?;
+    let encoded_handles: Vec<u8> = encode_handles(handles)?;
+    let mut results: [u8; RESULT_BUFFER_BYTES] = [0; RESULT_BUFFER_BYTES];
+    let results_capacity: i32 = abi_len(results.len())?;
+    available()?;
+    // SAFETY: all slices remain readable throughout this synchronous call; results
+    // is writable for exactly results_capacity bytes.
+    let bytes_written: i32 = unsafe {
+        raw::call_dependency_with_results(
+            dependency,
+            entrypoint.as_ptr(),
+            entry_len,
+            types.as_ptr(),
+            types_len,
+            encoded_handles.as_ptr(),
+            handle_count,
+            args.as_ptr(),
+            args_len,
+            results.as_mut_ptr(),
+            results_capacity,
+        )
+    };
+    let count: usize = results_written(bytes_written, results.len())?;
+    decode_result_handles(&results, count)
+}
+
+/// Calls the exact authorized target, returning its fixed ordered result
+/// slots. See [`call_contract`] for the shared call semantics; each returned
+/// slot is `None` when the callee left that declared result absent.
+pub fn call_contract_with_results(
+    authorization_index: u32,
+    handles: &[Handle],
+    arguments: &[u8],
+) -> Result<Vec<Option<Handle>>, Error> {
+    let authorization_index: i32 = abi_index(authorization_index)?;
+    let handle_count: i32 = abi_len(handles.len())?;
+    let arguments_len: i32 = abi_len(arguments.len())?;
+    let encoded_handles: Vec<u8> = encode_handles(handles)?;
+    let mut results: [u8; RESULT_BUFFER_BYTES] = [0; RESULT_BUFFER_BYTES];
+    let results_capacity: i32 = abi_len(results.len())?;
+    available()?;
+    // SAFETY: both slices are live for their checked lengths throughout this
+    // synchronous call; results is writable for exactly results_capacity bytes.
+    let bytes_written: i32 = unsafe {
+        raw::call_contract_with_results(
+            authorization_index,
+            encoded_handles.as_ptr(),
+            handle_count,
+            arguments.as_ptr(),
+            arguments_len,
+            results.as_mut_ptr(),
+            results_capacity,
+        )
+    };
+    let count: usize = results_written(bytes_written, results.len())?;
+    decode_result_handles(&results, count)
+}
+
 /// Traps the WASM invocation. Native calls return Unavailable without panicking.
 pub fn abort(message: &str) -> Result<Infallible, Error> {
     let length = abi_len(message.len())?;
@@ -364,6 +525,31 @@ mod raw {
             arguments: *const u8,
             arguments_len: i32,
         ) -> i32;
+        pub(super) fn return_object(slot: i32, handle: i32) -> i32;
+        pub(super) fn get_object_id(handle: i32, out: *mut u8) -> i32;
+        pub(super) fn get_object_type(handle: i32, out: *mut u8, capacity: i32) -> i32;
+        pub(super) fn call_dependency_with_results(
+            dependency: i32,
+            entry: *const u8,
+            entry_len: i32,
+            types: *const u8,
+            types_len: i32,
+            handles: *const u8,
+            handle_count: i32,
+            args: *const u8,
+            args_len: i32,
+            results_ptr: *mut u8,
+            results_capacity_bytes: i32,
+        ) -> i32;
+        pub(super) fn call_contract_with_results(
+            authorization_index: i32,
+            handles: *const u8,
+            handle_count: i32,
+            arguments: *const u8,
+            arguments_len: i32,
+            results_ptr: *mut u8,
+            results_capacity_bytes: i32,
+        ) -> i32;
     }
 }
 
@@ -380,7 +566,11 @@ mod raw {
         read_args(offset:i32,out:*mut u8,length:i32); get_caller(out:*mut u8); get_instance(out:*mut u8,length:i32);
         emit_event(ty:*const u8,ty_len:i32,data:*const u8,data_len:i32);
         call_dependency(dependency:i32,entry:*const u8,entry_len:i32,types:*const u8,types_len:i32,handles:*const u8,handle_count:i32,args:*const u8,args_len:i32);
-        call_contract(authorization_index:i32,handles:*const u8,handle_count:i32,arguments:*const u8,arguments_len:i32)
+        call_contract(authorization_index:i32,handles:*const u8,handle_count:i32,arguments:*const u8,arguments_len:i32);
+        return_object(slot:i32,handle:i32); get_object_id(handle:i32,out:*mut u8);
+        get_object_type(handle:i32,out:*mut u8,capacity:i32);
+        call_dependency_with_results(dependency:i32,entry:*const u8,entry_len:i32,types:*const u8,types_len:i32,handles:*const u8,handle_count:i32,args:*const u8,args_len:i32,results_ptr:*mut u8,results_capacity_bytes:i32);
+        call_contract_with_results(authorization_index:i32,handles:*const u8,handle_count:i32,arguments:*const u8,arguments_len:i32,results_ptr:*mut u8,results_capacity_bytes:i32)
     }
     pub(super) unsafe fn abort(_: *const u8, _: i32) {}
 }
@@ -470,6 +660,99 @@ mod tests {
         assert_eq!(
             call_contract(i32::MAX as u32, &handles[..MAX_DEPENDENCY_HANDLES], &[1, 2]),
             Err(Error::Unavailable)
+        );
+    }
+
+    #[test]
+    fn results_written_checks_capacity_and_four_byte_slot_width() {
+        assert_eq!(results_written(16, RESULT_BUFFER_BYTES), Ok(16));
+        assert_eq!(results_written(0, RESULT_BUFFER_BYTES), Ok(0));
+        assert_eq!(
+            results_written(17, RESULT_BUFFER_BYTES),
+            Err(Error::InvalidHostResult)
+        );
+        assert_eq!(
+            results_written(RESULT_BUFFER_BYTES as i32 + 4, RESULT_BUFFER_BYTES),
+            Err(Error::InvalidHostResult)
+        );
+        assert_eq!(
+            results_written(-1, RESULT_BUFFER_BYTES),
+            Err(Error::HostRejected)
+        );
+    }
+
+    #[test]
+    fn decode_result_handles_reads_fixed_slots_without_compaction() {
+        let mut buffer = [0u8; RESULT_BUFFER_BYTES];
+        buffer[0..4].copy_from_slice(&7u32.to_le_bytes());
+        buffer[4..8].copy_from_slice(&ABSENT_RESULT_SLOT.to_le_bytes());
+        buffer[8..12].copy_from_slice(&9u32.to_le_bytes());
+        assert_eq!(
+            decode_result_handles(&buffer, 12).unwrap(),
+            [Some(Handle(7)), None, Some(Handle(9))]
+        );
+        assert_eq!(decode_result_handles(&buffer, 0).unwrap(), []);
+    }
+
+    #[test]
+    fn decode_result_handles_rejects_slot_values_outside_the_signed_abi() {
+        let mut buffer = [0u8; RESULT_BUFFER_BYTES];
+        buffer[0..4].copy_from_slice(&(u32::MAX - 1).to_le_bytes());
+        assert_eq!(
+            decode_result_handles(&buffer, 4),
+            Err(Error::IntegerOutOfRange)
+        );
+    }
+
+    #[test]
+    fn decode_result_handles_rejects_out_of_bounds_or_misaligned_lengths_without_panicking() {
+        let buffer = [0u8; RESULT_BUFFER_BYTES];
+        assert_eq!(
+            decode_result_handles(&buffer, 17),
+            Err(Error::InvalidHostResult)
+        );
+        assert_eq!(
+            decode_result_handles(&buffer, 20),
+            Err(Error::InvalidHostResult)
+        );
+        assert_eq!(
+            decode_result_handles(&buffer, 1),
+            Err(Error::InvalidHostResult)
+        );
+        assert_eq!(
+            decode_result_handles(&buffer, usize::MAX),
+            Err(Error::InvalidHostResult)
+        );
+    }
+
+    #[test]
+    fn native_result_and_object_metadata_wrappers_fail_without_a_host() {
+        assert_eq!(return_object(0, Handle(0)), Err(Error::Unavailable));
+        assert_eq!(
+            return_object(MAX_RESULT_HANDLES as u32, Handle(0)),
+            Err(Error::IntegerOutOfRange)
+        );
+        assert_eq!(object_id(Handle(0)), Err(Error::Unavailable));
+        assert_eq!(object_type(Handle(0), &mut [0; 4]), Err(Error::Unavailable));
+        assert_eq!(
+            object_type(Handle(0), &mut [0u8; MAX_OBJECT_TYPE_BYTES + 1]),
+            Err(Error::IntegerOutOfRange)
+        );
+        assert_eq!(
+            call_dependency_with_results(0, "run", &[], &[], &[]),
+            Err(Error::Unavailable)
+        );
+        assert_eq!(
+            call_contract_with_results(0, &[], &[]),
+            Err(Error::Unavailable)
+        );
+        assert_eq!(
+            call_contract_with_results(u32::MAX, &[], &[]),
+            Err(Error::IntegerOutOfRange)
+        );
+        assert_eq!(
+            call_dependency_with_results(0, "run", &[], &[Handle(1), Handle(1)], &[]),
+            Err(Error::DuplicateHandle)
         );
     }
 }

@@ -2530,6 +2530,11 @@ statements such as “body validation remains open” are not the live work queu
   application work; a separate Coin is optional. Track the integrated replacement:
   - [ ] Generic bounded typed frame returns and protected reservation handles;
     independent phase resource budgets, monotonic counters and savepoints.
+    Internal SDK bindings for profile-4 object metadata and ordered optional
+    result handles are implemented (13 native tests, targeted clippy, wasm32
+    compile check and formatting pass). The matching VM/durable activation and
+    protected reservation coordinator remain open; SDK helpers alone do not
+    activate the new host or complete this criterion.
   - [ ] Explicit paid Call/Instantiate/Publish consent, pinned contract policy,
     base/execution-only pricing and calibrated reserve/settle allowances.
     Internal pricing component implemented: immutable admission captures the
