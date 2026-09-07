@@ -2501,8 +2501,10 @@ statements such as “body validation remains open” are not the live work queu
   and `./scripts/check-all.sh` passed, including all-feature Rust tests/clippy,
   independent vectors and every adapter gate. Do not
   count intermediate interface commits as delivered functionality. Library
-  calls are not cross-instance calls: separately signed target-instance/revision
-  authorization and bounded authority delegation remain open before Standard
+  calls alone do not cover general targets. DR-0123 extends the single common
+  call/authority model with exact signed code+instance targets and attenuated
+  handles; it does not introduce a special cross-instance permission system.
+  This unified-call implementation remains open before Standard
   Asset interoperability. This item stays unchecked until its full evidence
   exists; local execution alone does not close the generic platform gate.
 - [ ] **Standard Asset/fee parity:** adapt its max-less WAT to the public

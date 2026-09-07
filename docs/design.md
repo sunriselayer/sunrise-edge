@@ -139,13 +139,30 @@ authority, preserving access and gas bounds without allowing callee privilege
 escalation. A dependency cannot write another module's objects merely because
 it can read their bytes. Nested calls share the transaction's atomic outcome.
 
-Distinguish library composition from entering another independent instance.
-A direct dependency may execute in the root instance's scope while retaining
-its own defining-code authority. This does not authorize access to that
-dependency's other instances. Crossing an instance boundary requires an exact
-signed target/revision and explicitly bounded delegated authority; never infer
-it from a package dependency or a same-typed object. A library-only execution
-profile must reject cross-instance handles and cannot claim that capability.
+Use one call and authorization model, whether the caller and callee share an
+instance or not. Each frame carries an exact execution target (code revision
+plus instance/revision), typed object handles and attenuated rights. Instance
+identity is a checked value in this model, not a reason to introduce a separate
+dispatcher, permission system or child transaction. Defining-code authority
+and instance isolation remain independent predicates in the same check.
+
+A library invocation selects another code revision in the current instance;
+an invocation into another deployment selects that instance explicitly. Both
+use the same frame-entry and object-operation rules. Publication dependencies
+prove code/type provenance, never the authority to enter an arbitrary instance.
+The signed invocation authorizes exact caller/callee targets, entrypoints,
+type arguments and object-right ceilings. At runtime a callee receives only
+unique handles actually delegated by its caller, with rights no stronger than
+both that signed ceiling and the caller's current rights. Consumption or transfer
+cannot be undone by entering a fresh frame.
+
+Call arguments may be computed by the signed caller code and are checked
+against the callee's committed argument layout and byte/gas bounds. Do not
+replace contract composition with an externally supplied fixed-argument batch
+interpreter. There is one shared fuel/resource budget and atomic outcome.
+[DR-0123](architecture/decisions/0123-unified-contract-calls.md) fixes this model
+and its initial bounded implementation; DR-0122's root-only instance assumption
+is an implementation restriction to remove, not a second authority framework.
 
 The executable host profile must be explicit and committed separately from
 non-executing publication admission. Do not activate a raw legacy host merely
