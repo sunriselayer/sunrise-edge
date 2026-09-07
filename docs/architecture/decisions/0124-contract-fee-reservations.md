@@ -170,6 +170,52 @@ handle counter, even after its receiving frame exits or rolls back.
 The coordinator uses that exact validation for the fresh sender-owned
 reservation result and never exposes it to the application frame.
 
+Result positions are signed and ordered. A slot may explicitly permit absence;
+an absent value occupies its slot but grants no handle. Required slots cannot
+be omitted. Settlement returns the fee and refund in distinct declared slots,
+so a zero refund is represented as absence, not a zero-valued Coin or an output
+guessed by recipient (the two recipients may coincide). Reserve has one required
+slot. Optionality is generic ABI metadata, not a settlement-only convention.
+`return_object(slot, handle)` names the declared slot, each set at most once;
+delivery contains one entry per slot with an explicit absence sentinel. Required
+slots must be filled on normal frame exit. Ordinary root-call results are
+validated and then dropped as handles; their object effects still persist.
+Coordinator roots retain the validated slots. The paid policy requires positive
+base/execution pricing sufficient for a nonzero actual fee, and requires its fee
+slot present. It requires the refund slot present exactly when the independently
+computed refund is nonzero. Both may be optional in generic metadata, but paid
+policy postconditions enforce those stronger runtime requirements.
+
+## Public asset identity
+
+The public Standard Asset initializer creates one own-defined Definition object.
+Its host-derived ObjectId becomes the asset's opaque type argument A. Coin<A>
+and TreasuryCap<A> therefore share an asset identity, while every individual
+Coin retains its independent ObjectId. Host creation already binds context,
+instance, defining code, invocation digest and a monotonic ordinal; the contract
+must not accept caller-chosen A in initialization or fabricate an arbitrary
+TreasuryCap. A generic read-only object-ID accessor exposes the identity of a
+handle the frame already possesses. A bounded canonical type accessor exposes
+its validated nominal tag for ordinary type-preserving operations.
+
+Package-local constructors are Definition (1, no type argument), Coin (2),
+TreasuryCap (3) and Reservation (4); the latter three use one package-local opaque
+argument domain 1. Coin amounts and TreasuryCap supply fields use checked u64
+arithmetic. Asset identity lives in the nominal type, not a duplicated body field.
+Only Coin is transferable; other constructor operations remain restricted to
+their defining contract. Definition creation is not an authority exemption.
+Two independent instances cannot mint mutually substitutable assets by reusing
+a seed. No new asset-specific native hash operation or uniqueness registry is
+introduced. This is a fresh public package, not reinterpretation of old fixture
+body bytes or the old seed-based AssetId derivation.
+Nominal tags alone do not prove instance authority: all Coin/TreasuryCap writes
+and consumes must pass the existing defining-code and exact-instance checks.
+A future read-only proof API must validate provenance rather than assume equal
+tags imply equal instance authority. The guest obtains its own origin from the
+existing canonical instance record, whose framing must be decoded with bounds;
+no additional origin or asset-specific hash import is necessary. Reading an
+ObjectId does not authorize an ID-to-handle lookup; that operation remains absent.
+
 Represent the middle phase as Call, Instantiate or Publish under one paid
 envelope and one reserve/settle coordinator. Instantiate forbids application
 object inputs but permits the separately declared fee source. Publish charges

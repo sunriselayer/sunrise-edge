@@ -2534,7 +2534,8 @@ statements such as “body validation remains open” are not the live work queu
     base/execution-only pricing and calibrated reserve/settle allowances.
   - [ ] Public Standard Asset transfer/split/merge/mint/burn and reserve/settle;
     contract-owned checked supply arithmetic, fresh fee/refund outputs and
-    no surviving reservation. Finalize instance-safe asset identity before code.
+    no surviving reservation. DR-0124 fixes asset identity to the host-created
+    Definition ObjectId; each Coin still has its own distinct ObjectId.
   - [ ] Fenced atomic genesis manifest installer, closed bootstrap marker,
     native HTTP/CLI activation and removal of asset-only grants/native composer.
   - [ ] Canonical vectors, same-source/consumed/transferred-source cases,

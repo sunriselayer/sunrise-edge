@@ -235,6 +235,11 @@ Amount arithmetic, supply accounting, and asset-specific state encoding stay
 in that contract. The host protects generic type authority, ownership,
 consumption, deterministic execution, and atomicity; it does not implement
 Coin-specific conservation arithmetic or privileged mint operations.
+The public package uses the initializer's host-created Definition ObjectId as
+asset type argument A; individual Coin<A> objects retain their separate IDs.
+Identity belongs to the nominal type, not a duplicated amount-body field.
+Exact instance/defining-code authority is still required for every mutation;
+type equality alone is not provenance evidence.
 
 Fee admission, accepted fee assets, gas pricing, and settlement authorization
 remain explicit protocol policy. Actual asset-state settlement uses a pinned,
