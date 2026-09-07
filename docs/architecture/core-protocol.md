@@ -680,8 +680,15 @@ The intent carries no fee consent and has no public ingress/execution consumer.
 `LocalWasmExecutionEngine` uses typed `sunrise` imports, independently verified
 durable publication, immutable instances and defining-code authority sidecars.
 Its library frames share one bounded Store/fuel/handle arena and one atomic
-outcome. This does not reinterpret DR-0120 signatures or grant cross-instance
-authorization. The `env` lifecycle below belongs to the legacy trusted path;
+outcome. [DR-0123](decisions/0123-unified-contract-calls.md) extends that engine
+with one general `call_contract` selector and signed caller/callee targets,
+entrypoints, type arguments and original-object ceilings. The dependency selector
+enters the same frame validator. Instance and defining-code checks are independent
+predicates; frame-local handle rights can only decrease. All scopes share a
+global code/input/resource budget, one nonce and one fenced commit. Clients,
+durable admission and the VM share exact scope validation; only the runtime can
+validate current opaque handles and computed argument bytes. This does not
+reinterpret DR-0120 signatures. The `env` lifecycle below belongs to the legacy trusted path;
 that path rejects public sidecar-governed objects, including with atomic absence
 assertions against a concurrent sidecar creation.
 

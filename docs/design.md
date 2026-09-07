@@ -76,8 +76,9 @@ distinct opt-in executable policy, immutable independently created instances and
 the typed `sunrise` host. Host-stamped object authority binds the exact instance,
 defining code and nominal type; neither legacy catalog execution nor an owner's
 signature may bypass it. Same-instance dependency-library calls share one
-bounded invocation and roll back together. They are not cross-instance calls:
-that capability needs separately signed target/revision and delegated authority.
+bounded invocation and roll back together. DR-0123 extends this same frame model
+with explicitly signed target/revision and delegated authority for general calls;
+instance equality never selects a different permission system.
 Standard Asset and native fee settlement are not grandfathered into this path.
 
 The signed candidate boundary in
@@ -161,8 +162,8 @@ against the callee's committed argument layout and byte/gas bounds. Do not
 replace contract composition with an externally supplied fixed-argument batch
 interpreter. There is one shared fuel/resource budget and atomic outcome.
 [DR-0123](architecture/decisions/0123-unified-contract-calls.md) fixes this model
-and its initial bounded implementation; DR-0122's root-only instance assumption
-is an implementation restriction to remove, not a second authority framework.
+and its initial bounded implementation; DR-0122's dependency selector is an
+adapter into the same checks, not a second authority framework.
 
 The executable host profile must be explicit and committed separately from
 non-executing publication admission. Do not activate a raw legacy host merely

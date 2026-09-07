@@ -23,7 +23,9 @@ roadmap describes a later target state.
   nonce/receipt atomicity, and opt-in native HTTP/CLI publication.
 - [Local instance execution](decisions/0122-local-instance-execution.md): typed
   host authority, immutable instances, bounded dependency libraries, and atomic
-  local execution/replay; distinct from cross-instance or network admission.
+  local execution/replay; distinct from public-network admission.
+- [Unified contract calls](decisions/0123-unified-contract-calls.md): one signed
+  target/delegated-handle model, scope validation and atomic outcome for every call.
 - [Decision records](decisions/README.md): accepted and compatibility-relevant
   decisions grouped into bounded ranges.
 

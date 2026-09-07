@@ -12,6 +12,18 @@ pre-parser capabilities. Defaults stay closed; the shared sender nonce and
 fenced SQLite transaction are unchanged. The exact operator commands and
 restart comparisons live in the [devnet guide](../guides/devnet.md#12-opt-in-independent-contract-instances).
 
+[DR-0123](decisions/0123-unified-contract-calls.md) adds the explicit
+`--enable-general-calls` opt-in. Boot installs its publication/execution pair in
+one additional fenced operation with a reserved correlation sequence; historical
+policy rows are not replaced. The same HTTP execution route selects only an exact
+digest in its locally configured, at-most-two-profile registry. Untrusted request
+claims never construct a policy. CLI `--general-calls` selects this explicit
+zero-fee policy, with an optional canonical `--authorizations` file binding
+caller/callee targets and object ceilings. A shared bounded code cache enforces
+the invocation-wide limit before another code fetch and reuses overlapping
+closures. All queried instance revisions/digests must match the signed pins
+before signing; TLS and protocol-context verification remain separate checks.
+
 ## 42. Local devnet architecture
 
 [DR-0081](decisions/0081-0087-cli-first-roadmap.md) fixed the local devnet's architecture ahead of its implementation so

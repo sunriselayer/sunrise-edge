@@ -139,6 +139,25 @@ calls by an omitted-field default. The new host import is general contract
 dispatch, not `call_other_instance`. Encoding/host versioning is a capability
 activation boundary, not a permanent second execution or authority implementation.
 
+The explicit frames are `0x640B/v1` (instance target, exact code reference),
+`0x640C/v1` (original ObjectId, existing canonical access mode), `0x640D/v1`
+(ordered object selector list), `0x640E/v1` (caller, callee, entrypoint, type
+arguments, selector list), and `0x640F/v1` (ordered authorization table). The two
+lists use a u32 count in field 1 and consecutive item fields starting at 2.
+Nonempty authorizations add field 4 to `0x6405/v2`, wrapped by `0x6406/v2`;
+an empty table retains v1 framing. The signed policy digest still distinguishes
+the activated execution policy even when the table is empty. Versions and
+unknown fields fail closed; removing or replacing a table invalidates a signature.
+
+Host profile 3 admits the existing typed imports plus the exact five-i32-to-i32
+`call_contract` import. Its `0x630B/v3` semantics pins host ABI 2 and execution
+rules 2; `0x6409/v2` adds invocation-wide authorization, scope, input and unique
+code limits. `0x630A/v3` activates publication separately. Old policy encodings
+and keys remain unchanged; the new policy keys are explicitly distinct. A
+profile-3 closure may contain exact profile-2/3 code, never nonexecuting profile 1.
+Canonical request bytes plus the fixed 54-byte submission framing overhead count
+toward the global code-byte bound; shared code is counted and retained once.
+
 Reuse existing instance targets, object authority sidecars, creation derivation,
 nonce and receipt structures where their meaning already fits. Allocate new wire
 identifiers only after namespace searches and add independent encoding vectors.

@@ -2483,7 +2483,7 @@ statements such as “body validation remains open” are not the live work queu
   real HTTP/CLI three-boot E2E with dependency export/import, replay and disabled
   ingress; independent Node vectors for `0x6308`–`0x630B`; full
   `npm ci --prefix adapters/cloudflare-workers` + `./scripts/check-all.sh` pass.
-- [ ] **Independent instance execution:** authenticated create/call and
+- [x] **Independent instance execution (local opt-in):** authenticated create/call and
   owner/type/lineage/revision authority, public bounded host operations and typed
   cross-contract calls, CLI and atomic rollback/replay E2E. Never connect an
   uncommitted candidate directly to the legacy catalog or treat signed ABI
@@ -2504,9 +2504,21 @@ statements such as “body validation remains open” are not the live work queu
   calls alone do not cover general targets. DR-0123 extends the single common
   call/authority model with exact signed code+instance targets and attenuated
   handles; it does not introduce a special cross-instance permission system.
-  This unified-call implementation remains open before Standard
-  Asset interoperability. This item stays unchecked until its full evidence
-  exists; local execution alone does not close the generic platform gate.
+  The integrated implementation uses one frame validator, actual per-frame
+  instance/defining-code authority, monotonically attenuated shared handles,
+  globally bounded verified code scopes, and one fenced atomic outcome.
+  Additional evidence (2026-09-07): 14 general VM regressions, 7 durable
+  multi-scope regressions, strict signing/query cache bounds, independent
+  authorization/policy/signature vectors, and a real CLI/HTTP file-backed SQLite
+  inventory E2E with independently initialized dispatch policy. It verifies
+  computed nested arguments, correctly scoped creations, late whole-invocation
+  rollback, exact same-boot/restart submission/result/instance bytes, unchanged
+  object/authority/receipt/nonce snapshots, HTTP 409 request reuse and generation
+  fencing. `npm ci --prefix adapters/cloudflare-workers` and
+  `./scripts/check-all.sh` pass locally; service-backed PostgreSQL fault evidence
+  is additionally required from the configured CI job before merge.
+  Standard Asset/fee parity is next. Zero-fee local execution does not close
+  the generic platform gate, enable upgrades or claim public-network readiness.
 - [ ] **Standard Asset/fee parity:** adapt its max-less WAT to the public
   memory-bound profile and recommit code identity as part of migration, not a
   separate grandfathered admission exception. Replace trusted-only policies
