@@ -472,6 +472,8 @@ dependencies = [
  "abi",
  "canonical-encoding",
  "commitments",
+ "crypto",
+ "ed25519-zebra",
  "fees",
  "hashing",
  "objects",

@@ -969,6 +969,9 @@ impl ExecutionEngine for NullExecutionEngine {
 mod wasm_engine;
 pub use wasm_engine::WasmExecutionEngine;
 
+/// Signed immutable artifact candidates; authentication alone grants no authority.
+pub mod publication;
+
 mod contract_wasm;
 pub use contract_wasm::{
     CONTRACT_WASM_ADMISSION_PROFILE_VERSION, ContractWasmValidationError,

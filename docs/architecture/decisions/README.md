@@ -20,6 +20,7 @@
 - [DR-0111: generic contract authority and revision model](0111-generic-contract-design.md)
 - [DR-0112: non-executing WASM admission](0112-contract-wasm-admission.md)
 - [DR-0113: package-scoped nominal type identity](0113-package-scoped-type-identity.md)
+- [DR-0114: authenticated publication candidates](0114-authenticated-publication-candidate.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).

@@ -9,6 +9,7 @@ protocol-types = { workspace = true }
 canonical-encoding = { workspace = true }
 commitments = { workspace = true }
 hashing = { workspace = true }
+crypto = { workspace = true }
 objects = { workspace = true }
 abi = { workspace = true }
 fees = { workspace = true }
@@ -17,5 +18,6 @@ wasmi = { workspace = true }
 wasmparser = { workspace = true }
 
 [dev-dependencies]
+ed25519-zebra = { workspace = true }
 standard-assets = { workspace = true }
 wat = { workspace = true }

@@ -638,6 +638,11 @@ and scoped type tags are unverified values; their codecs and digest checks do
 not authenticate publication or grant the executing code object authority.
 They have no implicit bridge to the existing trusted constructor registry.
 
+[DR-0114](decisions/0114-authenticated-publication-candidate.md) defines the
+capability-free signed artifact candidate: exact bytes and context are
+authenticated, but ABI declarations and dependency provenance remain
+unverified. It is not an input accepted by execution or durable publication.
+
 The shared non-executing WASM admission verifier and its structural-only
 boundary are specified in [DR-0112](decisions/0112-contract-wasm-admission.md).
 It checks binary code and declared export names without authorizing object
