@@ -18,6 +18,7 @@
 - [DR-0109: Standard Asset v1 mint](0109-standard-asset-v1-mint.md)
 - [DR-0110: Standard Asset v1 supply control](0110-standard-asset-supply-control.md)
 - [DR-0111: generic contract authority and revision model](0111-generic-contract-design.md)
+- [DR-0112: non-executing WASM admission](0112-contract-wasm-admission.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).

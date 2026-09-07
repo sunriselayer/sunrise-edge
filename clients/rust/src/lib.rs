@@ -84,8 +84,10 @@ pub use transport::{
 // these node-wire types, and callers need `RequestId`/`ObjectId`/`Address`
 // to call them in the first place.
 pub use execution::{
-    EventRecord, ExecutionEffects, ExecutionStatus, ObjectEffect, decode_event_record,
-    decode_execution_effects, decode_object_effect,
+    CONTRACT_WASM_ADMISSION_PROFILE_VERSION, ContractWasmValidationError, EventRecord,
+    ExecutionEffects, ExecutionStatus, MAX_CONTRACT_ENTRYPOINT_NAME_BYTES,
+    MAX_CONTRACT_ENTRYPOINTS, MAX_CONTRACT_WASM_BYTES, ObjectEffect, ValidatedContractWasm,
+    decode_event_record, decode_execution_effects, decode_object_effect, validate_contract_wasm,
 };
 pub use node_core::{NodeCoreError, NodeResponse, NodeResponseStatus, RequestId};
 pub use node_wire::{

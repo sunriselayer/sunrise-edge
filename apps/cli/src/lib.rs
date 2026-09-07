@@ -17,6 +17,9 @@
 //! `sunrise-edge-client`, and every Ledger interaction goes through
 //! `sunrise-edge-ledger`.
 //!
+//! `contract validate` performs local, non-executing structural WASM checks
+//! through the Rust client; it neither signs nor publishes a contract.
+//!
 //! Commands: `address`, `context`, `object`, `receipt`, `next-nonce`, and
 //! `transfer`, `split`, `merge`, `mint`, and `burn` (the devnet Standard Asset v1
 //! coin operations). `address`, `transfer`, `split`, `merge`, `mint`, and `burn` each require an
@@ -93,6 +96,7 @@ where
         .to_string();
 
     match command.as_str() {
+        "contract" => commands::contract::run(iterator),
         "address" => commands::address::run(iterator),
         "context" => commands::context::run(iterator),
         "object" => commands::object::run(iterator),

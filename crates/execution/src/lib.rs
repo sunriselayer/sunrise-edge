@@ -969,6 +969,13 @@ impl ExecutionEngine for NullExecutionEngine {
 mod wasm_engine;
 pub use wasm_engine::WasmExecutionEngine;
 
+mod contract_wasm;
+pub use contract_wasm::{
+    CONTRACT_WASM_ADMISSION_PROFILE_VERSION, ContractWasmValidationError,
+    MAX_CONTRACT_ENTRYPOINT_NAME_BYTES, MAX_CONTRACT_ENTRYPOINTS, MAX_CONTRACT_WASM_BYTES,
+    ValidatedContractWasm, validate_contract_wasm,
+};
+
 mod execution_proof;
 pub use execution_proof::{
     ExecutionProof, ExecutionProofError, ExecutionProofStatement, ExecutionProofVerifier,
