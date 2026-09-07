@@ -25,6 +25,7 @@
 - [DR-0116: bound object signatures and input metadata matching](0116-bound-object-signatures.md)
 - [DR-0117: signed argument layouts and canonical call values](0117-canonical-call-values.md)
 - [DR-0118: signed constructor body layouts](0118-signed-object-body-layouts.md)
+- [DR-0119: ABI-bound durable object snapshots](0119-bound-durable-object-snapshots.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).
