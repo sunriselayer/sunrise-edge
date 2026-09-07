@@ -9,7 +9,7 @@ use abi::public_abi::{
     TypePattern,
 };
 
-/// Metadata to wrap in the executable ABI once that wire contract is available.
+/// Source and metadata for the executable ABI used by VM and product regressions.
 pub struct InventoryPackage {
     pub wat: String,
     pub wasm: Vec<u8>,

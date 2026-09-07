@@ -675,6 +675,16 @@ access and type arguments. Binding selects the exact signed candidate ABI;
 it grants no durable publication, instance, owner or executable authority.
 The intent carries no fee consent and has no public ingress/execution consumer.
 
+[DR-0122](decisions/0122-local-instance-execution.md) defines the distinct signed
+`ExecuteLocalContract` envelope and explicitly committed zero-fee local policy.
+`LocalWasmExecutionEngine` uses typed `sunrise` imports, independently verified
+durable publication, immutable instances and defining-code authority sidecars.
+Its library frames share one bounded Store/fuel/handle arena and one atomic
+outcome. This does not reinterpret DR-0120 signatures or grant cross-instance
+authorization. The `env` lifecycle below belongs to the legacy trusted path;
+that path rejects public sidecar-governed objects, including with atomic absence
+assertions against a concurrent sidecar creation.
+
 The shared non-executing WASM admission verifier and its structural-only
 boundary are specified in [DR-0112](decisions/0112-contract-wasm-admission.md).
 It checks binary code and declared export names without authorizing object

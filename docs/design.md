@@ -71,6 +71,15 @@ authority. The explicit local development composition is specified in
 [DR-0121](architecture/decisions/0121-durable-local-code-publication.md); its
 fee-free, non-executing policy is not public-network admission or VM semantics.
 
+[DR-0122](architecture/decisions/0122-local-instance-execution.md) specifies a
+distinct opt-in executable policy, immutable independently created instances and
+the typed `sunrise` host. Host-stamped object authority binds the exact instance,
+defining code and nominal type; neither legacy catalog execution nor an owner's
+signature may bypass it. Same-instance dependency-library calls share one
+bounded invocation and roll back together. They are not cross-instance calls:
+that capability needs separately signed target/revision and delegated authority.
+Standard Asset and native fee settlement are not grandfathered into this path.
+
 The signed candidate boundary in
 [DR-0114](architecture/decisions/0114-authenticated-publication-candidate.md)
 binds exact artifact data without granting publication or execution authority.

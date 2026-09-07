@@ -72,6 +72,35 @@ pub fn compose_devnet_router_with_publication(
     fee_treasury_object_id: ObjectId,
     publication: Option<node_core::publication::LocalPublicationPolicy>,
 ) -> Result<Router, DevnetCompositionError> {
+    compose_devnet_router_with_local_execution(
+        store,
+        blob_store,
+        asset_module,
+        boot_generation,
+        max_concurrent,
+        reserved_correlation_sequences,
+        fee_treasury_object_id,
+        publication,
+        None,
+    )
+}
+
+/// Adds the atomic bootstrap pair for explicitly enabled local typed execution.
+#[allow(clippy::too_many_arguments)]
+pub fn compose_devnet_router_with_local_execution(
+    store: Arc<SqliteDurableStore>,
+    blob_store: Arc<SqliteBlobStore>,
+    asset_module: DevnetAssetModule,
+    boot_generation: WriterFenceGeneration,
+    max_concurrent: usize,
+    reserved_correlation_sequences: usize,
+    fee_treasury_object_id: ObjectId,
+    publication: Option<node_core::publication::LocalPublicationPolicy>,
+    local_execution: Option<(
+        node_core::publication::LocalPublicationPolicy,
+        execution::local_execution::LocalExecutionPolicy,
+    )>,
+) -> Result<Router, DevnetCompositionError> {
     let admission: NonZeroUsize =
         NonZeroUsize::new(max_concurrent).ok_or(DevnetCompositionError::InvalidConcurrency)?;
     let reserved_sequences: u64 = u64::try_from(reserved_correlation_sequences)
@@ -106,6 +135,11 @@ pub fn compose_devnet_router_with_publication(
     ));
     if let Some(policy) = publication {
         preinstalled_wasm = preinstalled_wasm.with_local_publication(policy);
+    }
+    if let Some((publication, policy)) = local_execution {
+        preinstalled_wasm = preinstalled_wasm.with_local_execution(
+            native_http::LocalExecutionComposition::new(publication, policy),
+        );
     }
     let authority = StructuredDurableRequestAuthority::new(
         boot_generation,

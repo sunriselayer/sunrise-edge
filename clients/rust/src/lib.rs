@@ -35,8 +35,10 @@
 //!
 //! This client keeps `ProtocolConfig` bytes opaque, requires the caller to
 //! supply module/object references and the active signature scheme, never
-//! derives a request id, never recomputes a hash-suite or execution-effects
-//! digest, and adds no asset-specific helpers or CLI policy. Those
+//! derives a request id, and adds no asset-specific helpers or CLI policy.
+//! The public-code APIs additionally verify exact publication commitments and
+//! typed local-execution results with an explicitly trusted resolver; they do
+//! not infer that resolver from a remote response. Other
 //! capabilities, general-purpose DNS/root-store/mTLS transport expansion, and
 //! blob fetch remain deferred (see `docs/architecture/product-surfaces.md` §44 /
 //! `docs/architecture/decisions/0081-0087-cli-first-roadmap.md` DR-0083).

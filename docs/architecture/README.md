@@ -21,6 +21,9 @@ roadmap describes a later target state.
 - [Durable local code publication](decisions/0121-durable-local-code-publication.md):
   authenticated immutable code storage, exact dependency provenance, shared
   nonce/receipt atomicity, and opt-in native HTTP/CLI publication.
+- [Local instance execution](decisions/0122-local-instance-execution.md): typed
+  host authority, immutable instances, bounded dependency libraries, and atomic
+  local execution/replay; distinct from cross-instance or network admission.
 - [Decision records](decisions/README.md): accepted and compatibility-relevant
   decisions grouped into bounded ranges.
 

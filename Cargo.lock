@@ -1644,6 +1644,7 @@ dependencies = [
  "sunrise-edge-devnet",
  "sunrise-edge-ledger",
  "tokio",
+ "wat",
 ]
 
 [[package]]
