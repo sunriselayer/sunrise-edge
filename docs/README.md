@@ -17,6 +17,7 @@ detailed design, operator guides, and specialist references live here.
 ## Operations and guides
 
 - [Local devnet and Rust CLI](guides/devnet.md)
+- [Local contract validation](guides/contracts.md)
 - [Production persistence requirements](operations/persistence.md)
 - [PostgreSQL reference design](operations/postgres.md)
 - [Hardware signing](signing/hardware-signing.md)

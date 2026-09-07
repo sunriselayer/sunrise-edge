@@ -2409,6 +2409,23 @@ type authority, or upgrades. Standard Asset must use the same public facilities
 as user contracts; remove superseded trusted-only paths and native Coin-body
 settlement callbacks rather than retaining unreleased compatibility branches.
 
+Implementation slices under this gate:
+
+- [x] DR-0112: shared non-executing structural WASM admission and offline
+  `contract validate`; binary/feature/ABI/resource negative tests and CLI
+  subprocess checks. This does not grant type authority or publish code.
+  Validation: 9 verifier integration tests, 4 CLI subprocess tests,
+  `npm ci --prefix adapters/cloudflare-workers` and `./scripts/check-all.sh`
+  passed on 2026-09-07.
+- [ ] Standard Asset public-profile parity: add an explicit memory maximum to
+  its currently max-less WAT and regenerate/recommit WASM/code identity when
+  migrating to public admission; no grandfathered trusted admission bypass.
+- [ ] Authenticated lineage/type namespace, immutable code/ABI/dependency
+  records and bounded publication requests, preserving verification context.
+- [ ] Fenced durable publish/instantiate/call, public object authority and
+  typed calls, Standard Asset parity, and committed fee settlement replacing
+  trusted-only paths. The numbered criteria below remain the complete gate.
+
 **Priority decision (2026-09-07):** protocol固有のpreinstalled moduleやその運用補助を
 積み上げ続ける前に、permissionlessな汎用contract surfaceを実装する。DR-0110の
 supply-accounted mint/burn sliceを完了した直後の順序は、(1)このgate、(2)arbitrary

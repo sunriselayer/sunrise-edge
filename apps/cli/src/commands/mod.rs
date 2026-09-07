@@ -3,6 +3,7 @@
 pub mod address;
 pub mod burn;
 pub mod context;
+pub mod contract;
 pub mod merge;
 pub mod mint;
 pub mod next_nonce;

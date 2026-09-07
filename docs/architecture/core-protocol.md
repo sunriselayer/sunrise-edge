@@ -631,6 +631,12 @@ Phase 11 introduces deterministic, governance-installed system modules.
   the canonical path.
 
 ## 24. WASM / Chain IR execution
+
+The shared non-executing WASM admission verifier and its structural-only
+boundary are specified in [DR-0112](decisions/0112-contract-wasm-admission.md).
+It checks binary code and declared export names without authorizing object
+access or changing the execution lifecycle below.
+
 Phase 9 introduces the first concrete execution back-end: `WasmExecutionEngine`
 in the `execution` crate, backed by `wasmi` — a deterministic, pure-Rust WASM
 interpreter.

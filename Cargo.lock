@@ -479,6 +479,7 @@ dependencies = [
  "sha2 0.11.0",
  "standard-assets",
  "wasmi",
+ "wasmparser 0.239.0",
  "wat",
 ]
 

@@ -21,6 +21,21 @@ pub enum CliError {
     MissingCommand,
     /// The supplied subcommand name is not implemented.
     UnknownCommand(String),
+    /// The local contract command requires an explicit action.
+    MissingContractAction,
+    /// The contract action is not implemented.
+    UnknownContractAction(String),
+    /// The supplied WASM file could not be opened or read.
+    WasmFileRead {
+        /// User-supplied path.
+        path: String,
+        /// Underlying I/O failure.
+        source: std::io::Error,
+    },
+    /// The comma-separated entrypoint list exceeds its bounded input size.
+    ContractEntrypointListTooLarge,
+    /// Structural WASM admission failed; no contract was executed.
+    ContractWasm(sunrise_edge_client::ContractWasmValidationError),
     /// Argument parsing failed.
     Args(ArgsError),
     /// A hexadecimal argument was malformed.
@@ -283,9 +298,14 @@ impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingCommand => f.write_str(
-                "no subcommand supplied; expected one of: address, context, object, receipt, next-nonce, transfer, split, merge, mint, burn",
+                "no subcommand supplied; expected one of: address, context, object, receipt, next-nonce, transfer, split, merge, mint, burn, contract",
             ),
             Self::UnknownCommand(command) => write!(f, "unknown subcommand: {command:?}"),
+            Self::MissingContractAction => f.write_str("contract requires an action: validate"),
+            Self::UnknownContractAction(action) => write!(f, "unknown contract action: {action:?}; expected validate"),
+            Self::WasmFileRead { path, source } => write!(f, "cannot read WASM file {path:?}: {source}"),
+            Self::ContractEntrypointListTooLarge => f.write_str("--entrypoints exceeds the bounded entrypoint list size"),
+            Self::ContractWasm(error) => write!(f, "contract WASM validation failed: {error}"),
             Self::Args(error) => write!(f, "{error}"),
             Self::Hex(error) => write!(f, "{error}"),
             Self::Seed(error) => write!(f, "{error}"),
@@ -486,6 +506,8 @@ impl std::error::Error for CliError {
             Self::Args(error) => Some(error),
             Self::Hex(error) => Some(error),
             Self::Seed(error) => Some(error),
+            Self::WasmFileRead { source, .. } => Some(source),
+            Self::ContractWasm(error) => Some(error),
             Self::InvalidEndpoint { source, .. } => Some(source),
             Self::CaCertificateFileRead { source, .. } => Some(source),
             Self::InvalidInteger { source, .. } => Some(source),
