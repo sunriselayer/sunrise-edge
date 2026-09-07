@@ -161,6 +161,7 @@
 
 /// Bounded canonical argument values and signed call-ABI layout declarations.
 pub mod call_values;
+pub mod executable_abi;
 /// Package-scoped nominal references for the public-contract boundary.
 /// These values do not authenticate publishers or grant object authority.
 pub mod package_types;

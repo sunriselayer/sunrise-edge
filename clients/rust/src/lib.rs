@@ -35,8 +35,10 @@
 //!
 //! This client keeps `ProtocolConfig` bytes opaque, requires the caller to
 //! supply module/object references and the active signature scheme, never
-//! derives a request id, never recomputes a hash-suite or execution-effects
-//! digest, and adds no asset-specific helpers or CLI policy. Those
+//! derives a request id, and adds no asset-specific helpers or CLI policy.
+//! The public-code APIs additionally verify exact publication commitments and
+//! typed local-execution results with an explicitly trusted resolver; they do
+//! not infer that resolver from a remote response. Other
 //! capabilities, general-purpose DNS/root-store/mTLS transport expansion, and
 //! blob fetch remain deferred (see `docs/architecture/product-surfaces.md` §44 /
 //! `docs/architecture/decisions/0081-0087-cli-first-roadmap.md` DR-0083).
@@ -54,12 +56,14 @@ pub mod client;
 pub mod context;
 pub mod error;
 pub mod key;
+pub mod local_execution_client;
 pub mod publication_client;
 pub mod support;
 pub mod transaction;
 pub mod transport;
 
 pub use abi::package_types::PackageOrigin;
+pub use abi::{decode_access_manifest, executable_abi};
 pub use client::{Client, ReceiptPollBounds, SubmitTransactionRequest};
 pub use context::{ExpectedProtocolContext, ExpectedProtocolContextError, ProtocolContextMismatch};
 pub use error::ClientError;
@@ -67,8 +71,10 @@ pub use execution::publication::{
     ArtifactParts, CodeArtifact, PublicationContext, PublicationSubmission,
     UnverifiedDependencyRef, decode_dependency_ref,
 };
+pub use execution::{call, local_execution};
 pub use hashing::HashSuiteResolver;
 pub use key::LocalSigner;
+pub use local_execution_client::build_signed_local_execution;
 pub use protocol_types::{HashSuite, HashSuiteSchedule};
 pub use publication_client::{build_signed_publication, local_publication_resolver};
 pub use signing_view::{

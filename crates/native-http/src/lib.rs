@@ -14,6 +14,7 @@ use axum::{
     routing::{get, post},
 };
 use core::fmt;
+mod local_execution;
 mod publication;
 use execution::{ExecutionError, WasmExecutionEngine};
 use hashing::HashSuiteResolver;
@@ -121,6 +122,7 @@ pub struct NativeHttpServePolicy {
     body_total_timeout: Duration,
     response_total_timeout: Duration,
     local_publication: bool,
+    local_execution: bool,
 }
 
 impl NativeHttpServePolicy {
@@ -158,6 +160,7 @@ impl NativeHttpServePolicy {
             body_total_timeout: Duration::from_millis(body_total_timeout_millis.get()),
             response_total_timeout: Duration::from_millis(response_total_timeout_millis.get()),
             local_publication: false,
+            local_execution: false,
         })
     }
 
@@ -175,12 +178,20 @@ impl NativeHttpServePolicy {
         self.local_publication = enabled;
         self
     }
+
+    /// Explicit local execution pre-parser capability; router opt-in remains separate.
+    #[must_use]
+    pub const fn with_local_execution(mut self, enabled: bool) -> Self {
+        self.local_execution = enabled;
+        self
+    }
 }
 
 impl Default for NativeHttpServePolicy {
     fn default() -> Self {
         Self {
             local_publication: false,
+            local_execution: false,
             max_connections: NonZeroUsize::new(DEFAULT_NATIVE_HTTP_CONNECTIONS)
                 .unwrap_or(NonZeroUsize::MIN),
             header_read_timeout: Duration::from_millis(DEFAULT_NATIVE_HTTP_HEADER_READ_MILLIS),
@@ -438,6 +449,29 @@ pub struct PreinstalledWasmComposition {
     created_checkpoint: u64,
     fee: Option<PreinstalledFeeCompositionConfig>,
     publication: Option<node_core::publication::LocalPublicationPolicy>,
+    local_execution: Option<LocalExecutionComposition>,
+}
+
+/// Explicit durably seeded profile-two publication and zero-fee execution capability.
+#[derive(Clone, Debug)]
+pub struct LocalExecutionComposition {
+    publication: node_core::publication::LocalPublicationPolicy,
+    policy: execution::local_execution::LocalExecutionPolicy,
+    engine: execution::LocalWasmExecutionEngine,
+}
+impl LocalExecutionComposition {
+    /// Supplies trusted policies, never selected or constructed from HTTP inputs.
+    #[must_use]
+    pub const fn new(
+        publication: node_core::publication::LocalPublicationPolicy,
+        policy: execution::local_execution::LocalExecutionPolicy,
+    ) -> Self {
+        Self {
+            publication,
+            policy,
+            engine: execution::LocalWasmExecutionEngine::new(),
+        }
+    }
 }
 
 impl PreinstalledWasmComposition {
@@ -468,6 +502,7 @@ impl PreinstalledWasmComposition {
             created_checkpoint,
             fee: None,
             publication: None,
+            local_execution: None,
         }
     }
 
@@ -487,6 +522,13 @@ impl PreinstalledWasmComposition {
         policy: node_core::publication::LocalPublicationPolicy,
     ) -> Self {
         self.publication = Some(policy);
+        self
+    }
+
+    /// Enables the separately seeded typed publication and execution capability.
+    #[must_use]
+    pub fn with_local_execution(mut self, composition: LocalExecutionComposition) -> Self {
+        self.local_execution = Some(composition);
         self
     }
 }
@@ -1040,7 +1082,8 @@ where
 {
     validate_structured_durable_router_authority(&protocol_config, &config)?;
     if let Some(policy) = preinstalled_wasm.publication.as_ref()
-        && (policy.context().chain_id() != config.chain_id()
+        && (policy.profile() != 1
+            || policy.context().chain_id() != config.chain_id()
             || policy.context().protocol_version() != config.protocol_version()
             || policy.context().epoch() != config.epoch()
             || resolver.chain_id() != config.chain_id()
@@ -1052,6 +1095,24 @@ where
             .ok()
             .as_ref()
                 != Some(policy.semantics()))
+    {
+        return Err(StructuredDurableRouterError::PublicationContextAuthorityMismatch);
+    }
+    if let Some(local) = preinstalled_wasm.local_execution.as_ref()
+        && (local.publication.profile() != 2
+            || local.policy.context() != local.publication.context()
+            || local.policy.context().chain_id() != config.chain_id()
+            || local.policy.context().protocol_version() != config.protocol_version()
+            || local.policy.context().epoch() != config.epoch()
+            || resolver.chain_id() != config.chain_id()
+            || resolver.protocol_version() != config.protocol_version()
+            || node_core::publication::local_executable_publication_semantics(
+                &resolver,
+                local.policy.context(),
+            )
+            .ok()
+            .as_ref()
+                != Some(local.publication.semantics()))
     {
         return Err(StructuredDurableRouterError::PublicationContextAuthorityMismatch);
     }
@@ -1089,7 +1150,11 @@ where
         )
         .layer(DefaultBodyLimit::max(MAX_HTTP_EVENT_BODY_BYTES))
         .merge(publication::routes(
-            state.preinstalled_wasm.publication.is_some(),
+            state.preinstalled_wasm.publication.is_some()
+                || state.preinstalled_wasm.local_execution.is_some(),
+        ))
+        .merge(local_execution::routes(
+            state.preinstalled_wasm.local_execution.is_some(),
         ))
         .with_state(state))
 }
@@ -1241,6 +1306,7 @@ async fn serve_connection(
             request,
             policy.body_total_timeout,
             policy.local_publication,
+            policy.local_execution,
         )
     });
     let mut builder = http1::Builder::new();
@@ -1267,6 +1333,7 @@ async fn dispatch_bounded_request(
     request: Request<Incoming>,
     body_total_timeout: Duration,
     local_publication: bool,
+    local_execution: bool,
 ) -> Result<Response, Infallible> {
     let (parts, incoming) = request.into_parts();
     let body = Body::new(incoming);
@@ -1275,6 +1342,11 @@ async fn dispatch_bounded_request(
         && parts.uri.path() == publication::PUBLICATION_PATH
     {
         execution::publication::MAX_PUBLICATION_SUBMISSION_BYTES
+    } else if local_execution
+        && parts.method == axum::http::Method::POST
+        && parts.uri.path() == local_execution::EXECUTION_PATH
+    {
+        execution::local_execution::MAX_LOCAL_EXECUTION_INTENT_BYTES
     } else {
         MAX_HTTP_EVENT_BODY_BYTES
     };
@@ -3770,6 +3842,7 @@ fn overload_response() -> Response {
 
 #[cfg(test)]
 mod tests {
+    mod local_execution_http;
     use super::*;
     use abi::{AccessEntry, AccessManifest};
     use axum::{

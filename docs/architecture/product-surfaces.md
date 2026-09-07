@@ -3,6 +3,15 @@
 This document defines the local devnet, query API, Rust client, CLI, and
 hardware-signing host boundaries.
 
+The opt-in public-code product boundaries are defined separately in
+[DR-0121](decisions/0121-durable-local-code-publication.md) (non-executing
+publication) and [DR-0122](decisions/0122-local-instance-execution.md) (typed
+local instances and execution). `--enable-local-execution` installs the exact
+executable publication/execution policy pair and enables matching router and
+pre-parser capabilities. Defaults stay closed; the shared sender nonce and
+fenced SQLite transaction are unchanged. The exact operator commands and
+restart comparisons live in the [devnet guide](../guides/devnet.md#12-opt-in-independent-contract-instances).
+
 ## 42. Local devnet architecture
 
 [DR-0081](decisions/0081-0087-cli-first-roadmap.md) fixed the local devnet's architecture ahead of its implementation so

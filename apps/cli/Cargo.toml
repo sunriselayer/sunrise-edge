@@ -33,6 +33,7 @@ objects.workspace = true
 protocol-types.workspace = true
 rcgen.workspace = true
 runtime.workspace = true
+wat.workspace = true
 rustls.workspace = true
 sunrise-edge-devnet.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }

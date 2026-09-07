@@ -319,7 +319,8 @@ fn validate_code_chain(
     Ok(())
 }
 
-fn encode_instance_target(instance: &InstanceTarget) -> Result<Vec<u8>, CallError> {
+/// Encodes an exact unverified instance selector.
+pub fn encode_instance_target(instance: &InstanceTarget) -> Result<Vec<u8>, CallError> {
     if instance.revision == 0 {
         return Err(CallError::Invalid("instance revision must be > 0"));
     }
@@ -336,7 +337,8 @@ fn encode_instance_target(instance: &InstanceTarget) -> Result<Vec<u8>, CallErro
     Ok(frame)
 }
 
-fn decode_instance_target(bytes: &[u8]) -> Result<InstanceTarget, CallError> {
+/// Strictly decodes an unverified instance selector.
+pub fn decode_instance_target(bytes: &[u8]) -> Result<InstanceTarget, CallError> {
     if bytes.len() > MAX_INSTANCE_TARGET_BYTES {
         return Err(CallError::Limit("instance target bytes"));
     }
@@ -625,7 +627,14 @@ pub fn bind_authenticated_call<'a>(
     call: &'a AuthenticatedCallIntent,
     interface: &'a VerifiedPublicationInterface,
 ) -> Result<BoundObjectSignature<'a>, CallError> {
-    let intent: &CallIntent = call.intent();
+    bind_call_intent(call.intent(), interface)
+}
+
+/// Binds declaration data only. Authentication and durable authority are separate.
+pub fn bind_call_intent<'a>(
+    intent: &'a CallIntent,
+    interface: &'a VerifiedPublicationInterface,
+) -> Result<BoundObjectSignature<'a>, CallError> {
     let request: &crate::publication::PublicationRequest = interface.candidate().request();
     let artifact: &crate::publication::CodeArtifact = request.artifact();
 

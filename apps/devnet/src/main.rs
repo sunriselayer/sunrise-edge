@@ -8,7 +8,7 @@ use sunrise_edge_devnet::{
     DEVNET_BLOB_DATABASE_FILE, DEVNET_DATABASE_FILE, DEVNET_STARTUP_LIMITATIONS_BANNER,
     DevnetConfig, STANDARD_ASSET_MODULE_WASM, SeedAssetAuthorityObjectsOutcome,
     SeedDevOwnerCoinsOutcome, boot_local_store, build_devnet_protocol_context,
-    build_standard_asset_module, compose_devnet_router_with_publication,
+    build_standard_asset_module, compose_devnet_router_with_local_execution,
     seed_asset_authority_objects, seed_dev_owner_coins, seed_treasury_coin,
     verify_or_seed_protocol_context, verify_seeded_asset_supply,
 };
@@ -167,8 +167,31 @@ async fn run() -> Result<(), Box<dyn Error>> {
             asset_module.resolver(),
             config.epoch(),
         )?;
-        println!("local_publication=true fees=false execution=false");
+        println!(
+            "local_publication=true publication_fees=false local_execution={}",
+            config.local_execution()
+        );
         Some(policy)
+    } else {
+        None
+    };
+
+    let local_execution = if config.local_execution() {
+        highest_seed_sequence = highest_seed_sequence
+            .checked_add(1)
+            .ok_or("execution seed correlation overflow")?;
+        let domain = protocol_types::AtomicityDomainId::new(
+            sunrise_edge_devnet::genesis::DEVNET_DOMAIN_BYTES,
+        )?;
+        let policies = sunrise_edge_devnet::local_execution::seed_local_execution_policies(
+            boot.store(),
+            &operation_context_for(u64::try_from(highest_seed_sequence)?)?,
+            domain,
+            asset_module.resolver(),
+            config.epoch(),
+        )?;
+        println!("local_execution=true execution_fees=false publication_profiles=1,2");
+        Some(policies)
     } else {
         None
     };
@@ -176,7 +199,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let (store, blob_store) = boot.into_parts();
     let store = Arc::new(store);
     let blob_store = Arc::new(blob_store);
-    let router = compose_devnet_router_with_publication(
+    let router = compose_devnet_router_with_local_execution(
         store,
         blob_store,
         asset_module,
@@ -185,6 +208,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         highest_seed_sequence,
         fee_treasury_object_id,
         publication,
+        local_execution,
     )?;
     let listener = tokio::net::TcpListener::bind(config.listen()).await?;
 
@@ -208,8 +232,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
     println!("limitations={DEVNET_STARTUP_LIMITATIONS_BANNER}");
     println!("Press Ctrl-C to stop.");
 
-    let serve_policy =
-        NativeHttpServePolicy::default().with_local_publication(config.local_publication());
+    let serve_policy = NativeHttpServePolicy::default()
+        .with_local_publication(config.local_publication())
+        .with_local_execution(config.local_execution());
     serve_with_policy(listener, router, serve_policy, async {
         if let Err(error) = tokio::signal::ctrl_c().await {
             eprintln!("failed to install Ctrl-C handler: {error}");
@@ -272,6 +297,33 @@ mod tests {
         lease[16..].copy_from_slice(b"sunrise-devnetv1");
         assert_eq!(
             identity,
+            native_http::IndexedOutboxAttemptIdentity::new(
+                runtime::DurableOutboxLeaseId::new(lease).unwrap(),
+                StorageCorrelationId::new(correlation).unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn atomic_execution_policy_pair_reserves_one_additional_boot_identity() {
+        use native_http::IndexedOutboxIdentitySource;
+        let generation = runtime::WriterFenceGeneration::new(2).unwrap();
+        let final_seed = highest_seed_correlation_sequence(5)
+            .unwrap()
+            .checked_add(2)
+            .unwrap();
+        let source = sunrise_edge_devnet::identities::DevnetOutboxIdentitySource::new_after(
+            generation,
+            final_seed as u64,
+        );
+        let mut correlation: [u8; 16] = [0; 16];
+        correlation[..8].copy_from_slice(&generation.get().to_be_bytes());
+        correlation[8..].copy_from_slice(&10_u64.to_be_bytes());
+        let mut lease: [u8; 32] = [0; 32];
+        lease[..16].copy_from_slice(&correlation);
+        lease[16..].copy_from_slice(b"sunrise-devnetv1");
+        assert_eq!(
+            source.next_attempt_identity().unwrap(),
             native_http::IndexedOutboxAttemptIdentity::new(
                 runtime::DurableOutboxLeaseId::new(lease).unwrap(),
                 StorageCorrelationId::new(correlation).unwrap()

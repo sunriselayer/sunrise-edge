@@ -15,6 +15,7 @@ abi = { workspace = true }
 fees = { workspace = true }
 sha2 = { workspace = true }
 wasmi = { workspace = true }
+wasmi_core = { workspace = true }
 wasmparser = { workspace = true }
 
 [dev-dependencies]

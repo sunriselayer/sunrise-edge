@@ -42,6 +42,22 @@ pub fn local_publication_profile_semantics(
     )?)
 }
 
+/// Separate typed-host publication commitment. Profile-one publication remains
+/// nonexecuting; this commitment requires the profile-two policy key explicitly.
+pub fn local_executable_publication_semantics(
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+) -> Result<Digest32, PublicationAdmissionError> {
+    if resolver.chain_id() != expected.chain_id()
+        || resolver.protocol_version() != expected.protocol_version()
+    {
+        return Err(PublicationAdmissionError::HistoricalContextUnavailable);
+    }
+    Ok(execution::local_execution::local_execution_semantics(
+        resolver, expected,
+    )?)
+}
+
 fn encode_local_publication_profile() -> Result<Vec<u8>, PublicationAdmissionError> {
     let mut frame: CanonicalStruct = CanonicalStruct::new(0x630B, 1);
     frame.field_str(1, "local-devnet-publication-only")?;
@@ -147,12 +163,31 @@ impl From<HashingError> for PublicationAdmissionError {
 pub struct LocalPublicationPolicy {
     context: PublicationContext,
     semantics: Digest32,
+    profile: u32,
 }
 impl LocalPublicationPolicy {
     /// Builds explicit local trusted composition for the exact protocol context.
     #[must_use]
     pub const fn new(context: PublicationContext, semantics: Digest32) -> Self {
-        Self { context, semantics }
+        Self {
+            context,
+            semantics,
+            profile: 1,
+        }
+    }
+    /// Explicit profile-two publication policy, independently installed at bootstrap.
+    #[must_use]
+    pub const fn executable(context: PublicationContext, semantics: Digest32) -> Self {
+        Self {
+            context,
+            semantics,
+            profile: 2,
+        }
+    }
+    /// Closed artifact admission profile.
+    #[must_use]
+    pub const fn profile(&self) -> u32 {
+        self.profile
     }
     /// Returns the exact trusted context, including original epoch.
     #[must_use]
@@ -166,12 +201,15 @@ impl LocalPublicationPolicy {
     }
     /// Canonical bootstrap record with explicit fixed mode and resource bounds.
     pub fn encode(&self) -> Result<Vec<u8>, PublicationAdmissionError> {
-        let mut frame: CanonicalStruct = CanonicalStruct::new(0x630A, 1);
+        let mut frame: CanonicalStruct = CanonicalStruct::new(0x630A, self.profile as u16);
         frame.field_bytes(1, encode_publication_context(&self.context)?)?;
         frame.field_bytes(2, encode_digest32(&self.semantics)?)?;
         frame.field_u16(3, 1)?;
         frame.field_u32(4, MAX_INTERFACE_NODES as u32)?;
         frame.field_u64(5, MAX_PUBLICATION_CLOSURE_BYTES as u64)?;
+        if self.profile == 2 {
+            frame.field_u32(6, 2)?;
+        }
         Ok(frame.finish()?)
     }
     /// Strictly decodes one policy; unsupported modes and limits fail closed.
@@ -181,18 +219,28 @@ impl LocalPublicationPolicy {
         }
         let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
         frame.require_type(0x630A)?;
-        frame.require_version(1)?;
-        frame.require_only_fields(&[1, 2, 3, 4, 5])?;
+        if !matches!(frame.version(), 1 | 2) {
+            return Err(PublicationAdmissionError::PolicyMismatch);
+        }
+        if frame.version() == 1 {
+            frame.require_only_fields(&[1, 2, 3, 4, 5])?;
+        } else {
+            frame.require_only_fields(&[1, 2, 3, 4, 5, 6])?;
+            if frame.required_u32(6)? != 2 {
+                return Err(PublicationAdmissionError::PolicyMismatch);
+            }
+        }
         if frame.required_u16(3)? != 1
             || frame.required_u32(4)? != MAX_INTERFACE_NODES as u32
             || frame.required_u64(5)? != MAX_PUBLICATION_CLOSURE_BYTES as u64
         {
             return Err(PublicationAdmissionError::PolicyMismatch);
         }
-        Ok(Self::new(
-            decode_publication_context(frame.required_field(1)?)?,
-            decode_digest32(frame.required_field(2)?)?,
-        ))
+        Ok(Self {
+            context: decode_publication_context(frame.required_field(1)?)?,
+            semantics: decode_digest32(frame.required_field(2)?)?,
+            profile: u32::from(frame.version()),
+        })
     }
 }
 
@@ -200,8 +248,19 @@ impl LocalPublicationPolicy {
 pub fn publication_policy_key(
     context: &PublicationContext,
 ) -> Result<Vec<u8>, PublicationAdmissionError> {
+    publication_policy_key_for_profile(context, 1)
+}
+/// Exact versioned policy key; unknown profiles fail closed.
+pub fn publication_policy_key_for_profile(
+    context: &PublicationContext,
+    profile: u32,
+) -> Result<Vec<u8>, PublicationAdmissionError> {
     let mut key: Vec<u8> = PUBLICATION_STATE_PREFIX.to_vec();
-    key.extend_from_slice(b"v1/policies/");
+    match profile {
+        1 => key.extend_from_slice(b"v1/policies/"),
+        2 => key.extend_from_slice(b"v2/policies/"),
+        _ => return Err(PublicationAdmissionError::PolicyMismatch),
+    }
     key.extend(encode_publication_context(context)?);
     Ok(key)
 }
@@ -242,15 +301,19 @@ fn read_policy<S: StructuredDurableDomainStateStore>(
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     expected_context: &PublicationContext,
+    profile: u32,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<LocalPublicationPolicy, PublicationAdmissionError> {
-    let key: Vec<u8> = publication_policy_key(expected_context)?;
+    let key: Vec<u8> = publication_policy_key_for_profile(expected_context, profile)?;
     let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
     let bytes: &[u8] = observed
         .value()
         .ok_or(PublicationAdmissionError::PolicyMismatch)?;
     let policy: LocalPublicationPolicy = LocalPublicationPolicy::decode(bytes)?;
-    if policy.context() != expected_context || policy.encode()? != bytes {
+    if policy.context() != expected_context
+        || policy.profile() != profile
+        || policy.encode()? != bytes
+    {
         return Err(PublicationAdmissionError::PolicyMismatch);
     }
     insert_read(reads, key, observed.revision())?;
@@ -279,7 +342,7 @@ fn load_closure<S: StructuredDurableDomainStateStore>(
     candidate: AuthenticatedPublicationCandidate,
     root_bytes: usize,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
-) -> Result<(), PublicationAdmissionError> {
+) -> Result<execution::publication::VerifiedPublicationInterface, PublicationAdmissionError> {
     let mut pending: Vec<UnverifiedDependencyRef> = candidate
         .request()
         .artifact()
@@ -319,8 +382,14 @@ fn load_closure<S: StructuredDurableDomainStateStore>(
             return Err(PublicationAdmissionError::CorruptRecord);
         }
         match_reference(&reference, submission.request())?;
-        let policy: LocalPublicationPolicy =
-            read_policy(store, context, domain, reference.context(), reads)?;
+        let policy: LocalPublicationPolicy = read_policy(
+            store,
+            context,
+            domain,
+            reference.context(),
+            submission.request().artifact().wasm_profile(),
+            reads,
+        )?;
         let dependency_resolver: &HashSuiteResolver =
             resolver_for(resolver, history, policy.context())?;
         verify_publication_receipt(store, context, domain, dependency_resolver, &submission)?;
@@ -342,9 +411,9 @@ fn load_closure<S: StructuredDurableDomainStateStore>(
         loaded.insert(reference.origin().clone(), dependency);
     }
     let dependencies: Vec<AuthenticatedPublicationCandidate> = loaded.into_values().collect();
-    let _verified: execution::publication::VerifiedPublicationInterface =
+    let verified: execution::publication::VerifiedPublicationInterface =
         verify_publication_interface(candidate, dependencies)?;
-    Ok(())
+    Ok(verified)
 }
 fn match_reference(
     reference: &UnverifiedDependencyRef,
@@ -436,6 +505,9 @@ pub fn handle_local_publication_with_history<S: StructuredDurableDomainStateStor
     if history.len() > MAX_PUBLICATION_HISTORY {
         return Err(PublicationAdmissionError::Limit);
     }
+    if submission.request().artifact().wasm_profile() != policy.profile() {
+        return Err(PublicationAdmissionError::PolicyMismatch);
+    }
     let authenticated: AuthenticatedPublicationCandidate = authenticate_publication_submission(
         resolver,
         policy.context(),
@@ -467,8 +539,14 @@ pub fn handle_local_publication_with_history<S: StructuredDurableDomainStateStor
         },
     )?;
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
-    let stored_policy: LocalPublicationPolicy =
-        read_policy(store, context, domain, policy.context(), &mut reads)?;
+    let stored_policy: LocalPublicationPolicy = read_policy(
+        store,
+        context,
+        domain,
+        policy.context(),
+        policy.profile(),
+        &mut reads,
+    )?;
     if &stored_policy != policy {
         return Err(PublicationAdmissionError::PolicyMismatch);
     }
@@ -539,6 +617,32 @@ pub fn query_publication_with_history<S: StructuredDurableDomainStateStore>(
     history: &[HashSuiteResolver],
     origin: &PackageOrigin,
 ) -> Result<Option<PublicationSubmission>, PublicationAdmissionError> {
+    Ok(
+        load_verified_publication(store, context, domain, resolver, history, origin)?
+            .map(|loaded| loaded.submission),
+    )
+}
+
+/// Independently verified durable code and all state revisions used to verify it.
+/// Consumers must include these read assertions in their eventual atomic commit.
+#[derive(Debug)]
+pub struct VerifiedDurablePublication {
+    /// Exact originally signed ingress, including its receipt identity.
+    pub submission: PublicationSubmission,
+    /// Verified ABI, executable metadata and exact authenticated closure.
+    pub interface: execution::publication::VerifiedPublicationInterface,
+    /// Publication and retained policy read assertions, in canonical key order.
+    pub reads: Vec<StateReadAssertion>,
+}
+/// Loads a bounded durable closure under explicitly trusted original resolvers.
+pub fn load_verified_publication<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    origin: &PackageOrigin,
+) -> Result<Option<VerifiedDurablePublication>, PublicationAdmissionError> {
     if origin.chain_id() != resolver.chain_id() {
         return Err(PublicationAdmissionError::CorruptRecord);
     }
@@ -557,11 +661,13 @@ pub fn query_publication_with_history<S: StructuredDurableDomainStateStore>(
         return Err(PublicationAdmissionError::CorruptRecord);
     }
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    insert_read(&mut reads, key, observed.revision())?;
     let policy: LocalPublicationPolicy = read_policy(
         store,
         context,
         domain,
         submission.request().artifact().context(),
+        submission.request().artifact().wasm_profile(),
         &mut reads,
     )?;
     let root_resolver: &HashSuiteResolver = resolver_for(resolver, history, policy.context())?;
@@ -572,7 +678,7 @@ pub fn query_publication_with_history<S: StructuredDurableDomainStateStore>(
         submission.clone(),
     )?;
     verify_publication_receipt(store, context, domain, root_resolver, &submission)?;
-    load_closure(
+    let interface: execution::publication::VerifiedPublicationInterface = load_closure(
         store,
         context,
         domain,
@@ -582,5 +688,13 @@ pub fn query_publication_with_history<S: StructuredDurableDomainStateStore>(
         bytes.len(),
         &mut reads,
     )?;
-    Ok(Some(submission))
+    let assertions: Vec<StateReadAssertion> = reads
+        .into_iter()
+        .map(|(key, revision)| StateReadAssertion::new(key, revision))
+        .collect::<Result<Vec<StateReadAssertion>, RuntimeError>>()?;
+    Ok(Some(VerifiedDurablePublication {
+        submission,
+        interface,
+        reads: assertions,
+    }))
 }

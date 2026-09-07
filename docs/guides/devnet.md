@@ -526,6 +526,108 @@ not a cryptographic inclusion or absence proof. The CLI uses the current
 locally configured publication profile; historical protocol queries require
 the Rust client's explicit original trusted context/resolver API.
 
+## 12. Opt-in independent contract instances
+
+Use `--enable-local-execution` in terminal A to install the explicit executable
+publication and zero-fee execution policies. It also enables local publication;
+`--enable-local-publication` alone still grants no execution authority. Keep
+this development composition on loopback. Reopening an existing database does
+not enable these routes unless the flag is supplied again.
+
+Executable artifacts use `abi::executable_abi::ExecutableAbi` and
+`encode_executable_abi`, not the non-executing CallAbi bytes from section 11.
+The wrapper commits an initializer and transferable constructor declarations.
+WASM uses the typed `sunrise` imports described in
+[DR-0122](../architecture/decisions/0122-local-instance-execution.md); legacy
+`env` imports are not accepted in this profile. Publish and query using the
+section 11 commands with `--executable`. Export exact dependency references for
+libraries before publishing their callers.
+
+The executable inventory fixture exercises stock reservation, a dependency
+library's dispatch policy, fulfilment and shipment ownership transfer, rather
+than a counter. These commands run the real typed VM/SQLite and CLI/HTTP flows:
+
+```bash
+cargo test -p node-core --test local_inventory
+cargo test -p sunrise-edge-cli --test devnet_execution_e2e
+```
+
+For your own artifact, prepare canonical argument bytes with `encode_call_value`
+and access bytes with `encode_access_manifest`. Each access entry contains the
+exact current object reference and declared mode; order is the ABI's signed
+parameter order, not an unordered set. The program itself controls business
+rules and state bodies. The host enforces type, defining-code, instance, owner
+and access rights; it has no hardcoded inventory balances.
+
+Using the trusted `EXPECTED_*` variables from section 4:
+
+```bash
+execution_cli() {
+  cargo run -p sunrise-edge-cli -- contract "$@" \
+    --endpoint 127.0.0.1:7400 \
+    --expected-chain-id "$EXPECTED_CHAIN_ID" \
+    --expected-protocol-version "$EXPECTED_PROTOCOL_VERSION" \
+    --expected-epoch "$EXPECTED_EPOCH" \
+    --expected-hash-suite-id "$EXPECTED_HASH_SUITE_ID" \
+    --expected-domain "$EXPECTED_DOMAIN"
+}
+# Set these to your exact exported reference, initializer arguments and new IDs.
+CONTRACT_REFERENCE=/absolute/path/to/executable-reference.bin
+INITIALIZER_ARGUMENTS=/absolute/path/to/initializer-arguments.bin
+INSTANCE_SEED=YOUR_NEW_64_HEX_CHARACTER_SEED
+INSTANCE_REQUEST_ID=YOUR_NEW_64_HEX_CHARACTER_REQUEST_ID
+EXECUTION_CAPTURE_DIR="$(mktemp -d /tmp/sunrise-execution-comparison.XXXXXX)"
+execution_cli instantiate --seed-file "$SENDER_SEED_FILE" \
+  --code-ref "$CONTRACT_REFERENCE" --instance-seed "$INSTANCE_SEED" \
+  --args "$INITIALIZER_ARGUMENTS" --gas-limit 1000000 \
+  --request-id "$INSTANCE_REQUEST_ID" \
+  --submission-out "$EXECUTION_CAPTURE_DIR/signed-before.bin" \
+  --result-out "$EXECUTION_CAPTURE_DIR/result-before.bin" \
+  > "$EXECUTION_CAPTURE_DIR/instantiate-before.txt"
+INSTANCE_NONCE="$(sed -n 's/^nonce=//p' "$EXECUTION_CAPTURE_DIR/instantiate-before.txt")"
+test -n "$INSTANCE_NONCE"
+execution_cli query-instance --creator "$SENDER_OWNER" \
+  --instance-seed "$INSTANCE_SEED" \
+  --instance-ref-out "$EXECUTION_CAPTURE_DIR/instance-before.bin"
+```
+
+Stop/restart terminal A with the same database/configuration and execution flag,
+then reconstruct the exact original initialization, including its nonce:
+
+```bash
+execution_cli instantiate --seed-file "$SENDER_SEED_FILE" \
+  --code-ref "$CONTRACT_REFERENCE" --instance-seed "$INSTANCE_SEED" \
+  --args "$INITIALIZER_ARGUMENTS" --gas-limit 1000000 \
+  --request-id "$INSTANCE_REQUEST_ID" --nonce "$INSTANCE_NONCE" \
+  --submission-out "$EXECUTION_CAPTURE_DIR/signed-after.bin" \
+  --result-out "$EXECUTION_CAPTURE_DIR/result-after.bin" \
+  > "$EXECUTION_CAPTURE_DIR/instantiate-after.txt"
+execution_cli query-instance --creator "$SENDER_OWNER" \
+  --instance-seed "$INSTANCE_SEED" \
+  --instance-ref-out "$EXECUTION_CAPTURE_DIR/instance-after.bin"
+cmp "$EXECUTION_CAPTURE_DIR/signed-before.bin" "$EXECUTION_CAPTURE_DIR/signed-after.bin"
+cmp "$EXECUTION_CAPTURE_DIR/result-before.bin" "$EXECUTION_CAPTURE_DIR/result-after.bin"
+cmp "$EXECUTION_CAPTURE_DIR/instance-before.bin" "$EXECUTION_CAPTURE_DIR/instance-after.bin"
+```
+
+To invoke an ordinary entrypoint, use `contract call --instance-ref <file>
+--entrypoint <name> --access <canonical-file> --args <canonical-file>` with the
+same context, signer, gas and request/output flags. Initializers cannot be called
+again with a new request. Instances are immutable and independent; state changes
+update individual objects, not a mutable instance-wide root. Library calls stay
+within that instance and cannot borrow another instance's capability.
+
+Outputs are create-new files, reserved before POST; never reuse output paths.
+Publication, asset transactions and execution share one sender nonce. A trapped
+execution returns a nonzero CLI exit code but still writes the validated Rejected
+result: application changes/events roll back, while its receipt and nonce commit.
+Exact replay preserves that rejection and consumes nothing again. For uncertain
+delivery or failed result-file writes, retain the signed bytes and original
+request ID/nonce; do not submit a fresh request to guess whether it committed.
+Query responses verify exact referenced code and record structure, not a
+cryptographic inclusion/absence proof. Hardware signing, cross-instance calls,
+asset/fee migration and public-network admission are separate capabilities.
+
 ## Optional remote TLS transport
 
 Every network command (`context`, `object`, `receipt`, `next-nonce`, `transfer`,

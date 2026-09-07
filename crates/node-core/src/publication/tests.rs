@@ -14,6 +14,89 @@ use runtime::{
 use runtime_sqlite::{SqliteDurableStore, SqliteNamespace};
 use std::cell::Cell;
 
+#[test]
+fn profile_two_requires_its_own_committed_policy_and_returns_cas_closure() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let old_policy: LocalPublicationPolicy = policy(0);
+    seed(&store, &old_policy);
+    let typed_policy: LocalPublicationPolicy = LocalPublicationPolicy::executable(
+        old_policy.context().clone(),
+        local_executable_publication_semantics(&resolver(), old_policy.context()).unwrap(),
+    );
+    let original: PublicationSubmission = make_submission(&old_policy, 15, 0, vec![]);
+    let old: &CodeArtifact = original.request().artifact();
+    let wrapper: abi::executable_abi::ExecutableAbi = abi::executable_abi::ExecutableAbi {
+        call: abi::call_values::decode_call_abi(old.unverified_abi()).unwrap(),
+        initializer: Some("run".into()),
+        transferable_constructors: vec![],
+    };
+    let artifact: CodeArtifact = CodeArtifact::new(ArtifactParts {
+        context: old.context().clone(),
+        origin: old.origin().clone(),
+        revision: 1,
+        wasm_profile: 2,
+        semantics: *typed_policy.semantics(),
+        wasm: old.wasm().to_vec(),
+        unverified_abi: abi::executable_abi::encode_executable_abi(&wrapper).unwrap(),
+        exports: old.exports().to_vec(),
+        unverified_dependencies: vec![],
+    })
+    .unwrap();
+    let submission: PublicationSubmission = signed_artifact(artifact, 0, [15; 32], &signing_key());
+    assert!(matches!(
+        publish(&store, &old_policy, submission.clone()),
+        Err(PublicationAdmissionError::PolicyMismatch)
+    ));
+    assert!(matches!(
+        publish(&store, &typed_policy, submission.clone()),
+        Err(PublicationAdmissionError::PolicyMismatch)
+    ));
+    assert_eq!(nonce(&store, &old_policy), 0);
+    let typed_key: Vec<u8> = publication_policy_key_for_profile(typed_policy.context(), 2).unwrap();
+    assert_ne!(
+        typed_key,
+        publication_policy_key(typed_policy.context()).unwrap()
+    );
+    set_state(
+        &store,
+        typed_key.clone(),
+        StateMutation::Put(typed_policy.encode().unwrap()),
+    );
+    assert_eq!(
+        LocalPublicationPolicy::decode(&typed_policy.encode().unwrap()).unwrap(),
+        typed_policy
+    );
+    publish(&store, &typed_policy, submission.clone()).unwrap();
+    let origin: &PackageOrigin = submission.request().artifact().origin();
+    let loaded: VerifiedDurablePublication =
+        load_verified_publication(&store, &context(), domain(), &resolver(), &[], origin)
+            .unwrap()
+            .unwrap();
+    assert_eq!(loaded.submission, submission);
+    assert_eq!(
+        loaded
+            .interface
+            .executable_abi(origin)
+            .unwrap()
+            .initializer
+            .as_deref(),
+        Some("run")
+    );
+    assert_eq!(loaded.reads.len(), 2);
+    assert!(loaded.reads.iter().any(|read| read.key() == typed_key));
+    assert!(
+        loaded
+            .reads
+            .iter()
+            .any(|read| read.key() == publication_record_key(origin).unwrap())
+    );
+    assert_eq!(
+        query_publication(&store, &context(), domain(), &resolver(), origin).unwrap(),
+        Some(submission)
+    );
+}
+
 fn resolver() -> HashSuiteResolver {
     HashSuiteResolver::new(
         ChainId::new("publication-tests").unwrap(),

@@ -21,6 +21,7 @@ signing-view.workspace = true
 standard-assets.workspace = true
 
 [dev-dependencies]
+wat.workspace = true
 native-http.workspace = true
 protocol-config.workspace = true
 rcgen.workspace = true

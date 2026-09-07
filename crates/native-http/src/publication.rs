@@ -29,7 +29,11 @@ where
         .layer(DefaultBodyLimit::max(MAX_PUBLICATION_SUBMISSION_BYTES))
 }
 
-async fn admitted<F>(cancelled: bool, executor: NativeBlockingExecutor, work: F) -> Response
+pub(super) async fn admitted<F>(
+    cancelled: bool,
+    executor: NativeBlockingExecutor,
+    work: F,
+) -> Response
 where
     F: FnOnce() -> Response + Send + 'static,
 {
@@ -85,7 +89,16 @@ where
                 Ok(value) => value,
                 Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid-publication"),
             };
-            let Some(policy) = state.preinstalled_wasm.publication.as_ref() else {
+            let policy = match submission.request().artifact().wasm_profile() {
+                1 => state.preinstalled_wasm.publication.as_ref(),
+                2 => state
+                    .preinstalled_wasm
+                    .local_execution
+                    .as_ref()
+                    .map(|local| &local.publication),
+                _ => None,
+            };
+            let Some(policy) = policy else {
                 return error_response(StatusCode::NOT_FOUND, "publication-disabled");
             };
             let (domain, context) = match prepare_storage_context(
@@ -216,7 +229,9 @@ where
     .await
 }
 
-fn admission_error(error: &node_core::publication::PublicationAdmissionError) -> Response {
+pub(super) fn admission_error(
+    error: &node_core::publication::PublicationAdmissionError,
+) -> Response {
     use node_core::publication::PublicationAdmissionError as E;
     match error {
         E::Node(error) => node_error_response(error),

@@ -72,6 +72,7 @@ pub struct DevnetConfig {
     fee_treasury_owner: DevOwner,
     max_concurrent: usize,
     local_publication: bool,
+    local_execution: bool,
 }
 
 impl DevnetConfig {
@@ -97,11 +98,18 @@ impl DevnetConfig {
         let mut fee_treasury_owner: Option<DevOwner> = None;
         let mut max_concurrent: Option<usize> = None;
         let mut local_publication: bool = false;
+        let mut local_execution: bool = false;
         let mut iterator = args.into_iter().map(Into::into);
 
         while let Some(flag_os) = iterator.next() {
             let flag: &str = flag_os.to_str().ok_or(DevnetConfigError::NonUtf8Flag)?;
             match flag {
+                "--enable-local-execution" => {
+                    if local_execution {
+                        return Err(DevnetConfigError::DuplicateFlag("--enable-local-execution"));
+                    }
+                    local_execution = true;
+                }
                 "--enable-local-publication" => {
                     if local_publication {
                         return Err(DevnetConfigError::DuplicateFlag(
@@ -224,6 +232,7 @@ impl DevnetConfig {
             epoch: epoch.ok_or(DevnetConfigError::MissingFlag("--epoch"))?,
             dev_owners,
             local_publication,
+            local_execution,
             fee_treasury_owner,
             max_concurrent: max_concurrent
                 .ok_or(DevnetConfigError::MissingFlag("--max-concurrent"))?,
@@ -236,10 +245,16 @@ impl DevnetConfig {
         &self.data_dir
     }
 
-    /// Whether fee-free, non-executing local publication was explicitly enabled.
+    /// Whether local publication is enabled directly or by execution opt-in.
     #[must_use]
     pub const fn local_publication(&self) -> bool {
-        self.local_publication
+        self.local_publication || self.local_execution
+    }
+
+    /// Whether typed, zero-fee local contract execution was explicitly enabled.
+    #[must_use]
+    pub const fn local_execution(&self) -> bool {
+        self.local_execution
     }
 
     /// Returns the validated loopback listen address.
@@ -529,6 +544,25 @@ mod tests {
         assert_eq!(config.dev_owners()[0].to_string(), owner_hex(0x11));
         assert_eq!(config.max_concurrent(), 16);
         assert_eq!(config.fee_treasury_owner().to_string(), owner_hex(0x22));
+    }
+
+    #[test]
+    fn execution_opt_in_enables_publication_without_relaxing_duplicate_flags() {
+        let default: DevnetConfig = DevnetConfig::parse_from(valid_args()).unwrap();
+        assert!(!default.local_execution());
+        assert!(!default.local_publication());
+        let mut args: Vec<OsString> = valid_args();
+        args.push("--enable-local-execution".into());
+        let config: DevnetConfig = DevnetConfig::parse_from(args.clone()).unwrap();
+        assert!(config.local_execution());
+        assert!(config.local_publication());
+        args.push("--enable-local-publication".into());
+        assert!(DevnetConfig::parse_from(args.clone()).is_ok());
+        args.push("--enable-local-execution".into());
+        assert!(matches!(
+            DevnetConfig::parse_from(args),
+            Err(DevnetConfigError::DuplicateFlag("--enable-local-execution"))
+        ));
     }
 
     #[test]

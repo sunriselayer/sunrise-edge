@@ -277,7 +277,7 @@ pub fn bind_object_signature<'a>(
     })
 }
 
-fn validate_supplied_nominal_tag(
+pub(super) fn validate_supplied_nominal_tag(
     tag: &ScopedTypeTag,
     interface: &VerifiedPublicationInterface,
 ) -> Result<(), BindingError> {

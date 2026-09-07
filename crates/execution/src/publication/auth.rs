@@ -31,7 +31,7 @@ use protocol_types::{Digest32, HashPurpose, SignatureSchemeId};
 /// or type authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthenticatedPublicationCandidate {
-    request: PublicationRequest,
+    request: std::sync::Arc<PublicationRequest>,
 }
 
 impl AuthenticatedPublicationCandidate {
@@ -66,7 +66,7 @@ fn validate_publication_context(
     if artifact.revision() != 1 {
         return Err(E::InvalidRevision(artifact.revision()));
     }
-    if artifact.wasm_profile() != 1 {
+    if !matches!(artifact.wasm_profile(), 1 | 2) {
         return Err(E::UnsupportedWasmProfile(artifact.wasm_profile()));
     }
     Ok(())
@@ -213,10 +213,15 @@ pub(super) fn authenticate_with_request_id(
         .iter()
         .map(|name: &String| name.as_str())
         .collect();
-    let wasm_handle: crate::ValidatedContractWasm =
-        crate::validate_contract_wasm(artifact.wasm(), &export_refs)?;
+    let wasm_handle: crate::ValidatedContractWasm = crate::validate_contract_wasm_profile(
+        artifact.wasm(),
+        &export_refs,
+        artifact.wasm_profile(),
+    )?;
     drop(wasm_handle);
 
     // 8. Return candidate witness owning the request
-    Ok(AuthenticatedPublicationCandidate { request })
+    Ok(AuthenticatedPublicationCandidate {
+        request: std::sync::Arc::new(request),
+    })
 }

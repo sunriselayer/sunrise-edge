@@ -71,6 +71,15 @@ authority. The explicit local development composition is specified in
 [DR-0121](architecture/decisions/0121-durable-local-code-publication.md); its
 fee-free, non-executing policy is not public-network admission or VM semantics.
 
+[DR-0122](architecture/decisions/0122-local-instance-execution.md) specifies a
+distinct opt-in executable policy, immutable independently created instances and
+the typed `sunrise` host. Host-stamped object authority binds the exact instance,
+defining code and nominal type; neither legacy catalog execution nor an owner's
+signature may bypass it. Same-instance dependency-library calls share one
+bounded invocation and roll back together. They are not cross-instance calls:
+that capability needs separately signed target/revision and delegated authority.
+Standard Asset and native fee settlement are not grandfathered into this path.
+
 The signed candidate boundary in
 [DR-0114](architecture/decisions/0114-authenticated-publication-candidate.md)
 binds exact artifact data without granting publication or execution authority.
@@ -129,6 +138,21 @@ The host tracks the executing code, caller, object handles, and delegated
 authority, preserving access and gas bounds without allowing callee privilege
 escalation. A dependency cannot write another module's objects merely because
 it can read their bytes. Nested calls share the transaction's atomic outcome.
+
+Distinguish library composition from entering another independent instance.
+A direct dependency may execute in the root instance's scope while retaining
+its own defining-code authority. This does not authorize access to that
+dependency's other instances. Crossing an instance boundary requires an exact
+signed target/revision and explicitly bounded delegated authority; never infer
+it from a package dependency or a same-typed object. A library-only execution
+profile must reject cross-instance handles and cannot claim that capability.
+
+The executable host profile must be explicit and committed separately from
+non-executing publication admission. Do not activate a raw legacy host merely
+because its artifact passed structural validation. Any local zero-fee execution
+profile needs a new signed execution domain and an exact committed resource
+and fee policy; an older nonadmissible call-intent signature must stay
+nonadmissible. Zero fees are not unsigned consent to future settlement.
 
 ## Ownership and type authority
 
