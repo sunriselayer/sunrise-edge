@@ -7,9 +7,9 @@
 //! one distinct fee-payer coin; the separate treasury owner receives one
 //! ordinary treasury coin. Every coin uses the same fixed devnet
 //! [`standard_assets::AssetId`] (see `crate::standard_asset::derive_devnet_asset_id`).
-//! The fixed asset definition and its one mint capability are seeded as a
-//! separate atomic pair; the definition is immutable and the capability is
-//! owned by the first configured development owner.
+//! The fixed asset definition and its one supply-controlled treasury cap are
+//! seeded as a separate atomic pair; the definition is immutable and the cap
+//! is owned by the first configured development owner.
 
 use crate::{
     config::{DevOwner, MAX_DEVNET_OWNERS},
@@ -39,12 +39,12 @@ use runtime::{
 };
 use standard_assets::{
     AssetId, STANDARD_ASSET_SCHEMA_VERSION_V1, StandardAssetCoinV1, StandardAssetDefinitionV1,
-    StandardAssetError, StandardAssetMintCapabilityV1, coin_type_tag,
-    decode_standard_asset_coin_v1, decode_standard_asset_definition_v1,
-    decode_standard_asset_mint_capability_v1, definition_type_tag, derive_coin_type_id,
-    derive_definition_type_id, derive_mint_capability_type_id, encode_standard_asset_coin_v1,
-    encode_standard_asset_definition_v1, encode_standard_asset_mint_capability_v1,
-    mint_capability_type_tag,
+    StandardAssetError, StandardAssetTreasuryCapV1, coin_type_tag, decode_standard_asset_coin_v1,
+    decode_standard_asset_definition_v1, decode_standard_asset_treasury_cap_v1,
+    definition_type_tag, derive_coin_type_id, derive_definition_type_id,
+    derive_treasury_cap_type_id, encode_standard_asset_coin_v1,
+    encode_standard_asset_definition_v1, encode_standard_asset_treasury_cap_v1,
+    treasury_cap_type_tag,
 };
 use std::{collections::BTreeSet, error::Error, fmt};
 
@@ -52,7 +52,12 @@ const TRANSFER_COIN_SLOT: u64 = 1;
 const FEE_COIN_SLOT: u64 = 2;
 const TREASURY_COIN_SLOT: u64 = 1;
 const ASSET_DEFINITION_SLOT: u64 = 1;
-const MINT_CAPABILITY_SLOT: u64 = 2;
+const TREASURY_CAP_SLOT: u64 = 2;
+
+/// Fixed devnet bound on the treasury cap's `max_supply`: comfortably above
+/// the fixed genesis supply so devnet `mint` has real headroom to exercise,
+/// while remaining an explicit bound rather than `u64::MAX` (DR-0110).
+const DEVNET_TREASURY_CAP_MAX_SUPPLY: u64 = 1_000_000_000_000;
 
 /// Initial amount seeded into every dev owner's transferable coin.
 const INITIAL_TRANSFER_COIN_AMOUNT: u64 = 1_000_000;
@@ -104,10 +109,6 @@ impl SeededDevOwnerCoins {
     #[must_use]
     pub const fn fee_coin(&self) -> &ObjectRef {
         &self.fee_coin
-    }
-
-    fn checked_total_amount(&self) -> Option<u64> {
-        self.transfer_amount.checked_add(self.fee_amount)
     }
 }
 
@@ -161,12 +162,12 @@ pub enum SeedTreasuryCoinOutcome {
     Existing(SeededTreasuryCoin),
 }
 
-/// The fixed devnet asset's immutable definition and owner-held mint
-/// capability references.
+/// The fixed devnet asset's immutable definition and owner-held,
+/// supply-controlled treasury cap references.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SeededAssetAuthorityObjects {
     definition: ObjectRef,
-    mint_capability: ObjectRef,
+    treasury_cap: ObjectRef,
     mint_authority: DevOwner,
 }
 
@@ -177,25 +178,30 @@ impl SeededAssetAuthorityObjects {
         &self.definition
     }
 
-    /// Returns the first dev owner's mint capability reference.
+    /// Returns the first dev owner's treasury cap reference. Unlike
+    /// `definition`, this reference's `version` legitimately advances every
+    /// time `mint` or `burn` runs (DR-0110); restart verifies the cap's
+    /// exact version-one seed history plus whatever version its current head
+    /// claims, never only version one.
     #[must_use]
-    pub const fn mint_capability(&self) -> &ObjectRef {
-        &self.mint_capability
+    pub const fn treasury_cap(&self) -> &ObjectRef {
+        &self.treasury_cap
     }
 
-    /// Returns the configured owner authorized to present the capability.
+    /// Returns the configured owner authorized to present the treasury cap.
     #[must_use]
     pub const fn mint_authority(&self) -> DevOwner {
         self.mint_authority
     }
 }
 
-/// Whether this boot created or verified the asset definition/capability pair.
+/// Whether this boot created or verified the asset definition/treasury-cap pair.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SeedAssetAuthorityObjectsOutcome {
     /// Both objects and their receipt were committed atomically by this call.
     Created(SeededAssetAuthorityObjects),
-    /// Both exact immutable version-one objects were already present.
+    /// The exact definition, the cap's immutable seed history, and the cap's
+    /// current supply-controlled head were already present and verified.
     Existing(SeededAssetAuthorityObjects),
 }
 
@@ -220,15 +226,43 @@ impl SeedTreasuryCoinOutcome {
     }
 }
 
-/// Verifies the fixed devnet asset's total seeded supply across every dev
-/// owner's coin pair and the treasury coin.
+/// Computes the fixed devnet asset's genesis total supply: the sum of every
+/// configured dev owner's seeded transfer and fee coin plus the treasury
+/// coin, as a pure function of the configured dev-owner count. This is the
+/// exact `total_supply` seeded into the treasury cap at first boot
+/// (DR-0110); it is never recomputed from current balances.
+fn devnet_genesis_total_supply(dev_owner_count: usize) -> Result<u64, DevnetSeedError> {
+    if dev_owner_count == 0 || dev_owner_count >= MAX_DEVNET_OWNERS {
+        return Err(DevnetSeedError::AssetInvariantViolation);
+    }
+    let owner_count: u64 =
+        u64::try_from(dev_owner_count).map_err(|_| DevnetSeedError::AssetInvariantViolation)?;
+    let per_owner_total: u64 = INITIAL_TRANSFER_COIN_AMOUNT
+        .checked_add(INITIAL_FEE_COIN_AMOUNT)
+        .ok_or(DevnetSeedError::AssetInvariantViolation)?;
+    per_owner_total
+        .checked_mul(owner_count)
+        .and_then(|total| total.checked_add(INITIAL_TREASURY_COIN_AMOUNT))
+        .ok_or(DevnetSeedError::AssetInvariantViolation)
+}
+
+/// Verifies that every dev owner's seeded coin pair and the treasury coin
+/// have distinct **seed** owners and object identities.
 ///
 /// Redefines the pre-Standard-Asset-v1 uniform two-account check (F10,
-/// DR-0107): the expected total is a fixed function of the configured dev-
-/// owner count and the fixed treasury seed amount, never of current
-/// balances, and the uniqueness set is over **seed** owners and object ids —
+/// DR-0107): the uniqueness set is over **seed** owners and object ids —
 /// never current owners, since a transferable coin may legitimately end up
 /// owned by an address outside the configured set after a real transfer.
+///
+/// DR-0110 removes the total-supply equality check this function used to
+/// perform: once `mint` and `burn` exist, a fixed sum of the originally
+/// seeded dev-owner/treasury coin amounts is no longer a valid invariant —
+/// `mint` creates new coins outside this tracked set entirely, and `burn`
+/// destroys existing ones. Supply truth now lives in the treasury cap's
+/// `total_supply` field, restart-verified structurally by
+/// [`seed_asset_authority_objects`] (never recomputed by summing seed
+/// heads); see [`devnet_genesis_total_supply`] for the one place a fixed sum
+/// is still meaningful — seeding the cap's initial value.
 pub fn verify_seeded_asset_supply(
     dev_outcomes: &[SeedDevOwnerCoinsOutcome],
     treasury_outcome: &SeedTreasuryCoinOutcome,
@@ -238,7 +272,6 @@ pub fn verify_seeded_asset_supply(
     }
     let mut owners: BTreeSet<DevOwner> = BTreeSet::new();
     let mut object_ids: BTreeSet<ObjectId> = BTreeSet::new();
-    let mut actual_supply: u64 = 0;
     for outcome in dev_outcomes {
         let coins: &SeededDevOwnerCoins = outcome.coins();
         if !owners.insert(coins.owner)
@@ -247,31 +280,9 @@ pub fn verify_seeded_asset_supply(
         {
             return Err(DevnetSeedError::AssetInvariantViolation);
         }
-        let owner_total: u64 = coins
-            .checked_total_amount()
-            .ok_or(DevnetSeedError::AssetInvariantViolation)?;
-        actual_supply = actual_supply
-            .checked_add(owner_total)
-            .ok_or(DevnetSeedError::AssetInvariantViolation)?;
     }
     let treasury: &SeededTreasuryCoin = treasury_outcome.coin();
     if owners.contains(&treasury.owner) || !object_ids.insert(treasury.coin.id) {
-        return Err(DevnetSeedError::AssetInvariantViolation);
-    }
-    actual_supply = actual_supply
-        .checked_add(treasury.amount)
-        .ok_or(DevnetSeedError::AssetInvariantViolation)?;
-
-    let owner_count: u64 =
-        u64::try_from(dev_outcomes.len()).map_err(|_| DevnetSeedError::AssetInvariantViolation)?;
-    let per_owner_total: u64 = INITIAL_TRANSFER_COIN_AMOUNT
-        .checked_add(INITIAL_FEE_COIN_AMOUNT)
-        .ok_or(DevnetSeedError::AssetInvariantViolation)?;
-    let expected_supply: u64 = per_owner_total
-        .checked_mul(owner_count)
-        .and_then(|total| total.checked_add(INITIAL_TREASURY_COIN_AMOUNT))
-        .ok_or(DevnetSeedError::AssetInvariantViolation)?;
-    if actual_supply != expected_supply {
         return Err(DevnetSeedError::AssetInvariantViolation);
     }
     Ok(())
@@ -311,17 +322,27 @@ struct ExpectedTreasurySeed {
 #[derive(Clone, Debug)]
 struct ExpectedAssetAuthoritySeed {
     domain: AtomicityDomainId,
+    asset_id: AssetId,
     definition: ExpectedSeedCoin,
-    mint_capability: ExpectedSeedCoin,
+    treasury_cap: ExpectedSeedCoin,
+    max_supply: u64,
     receipt: DurableRequestReceipt,
 }
 
-/// Seeds and restart-verifies exactly one immutable definition and one mint
-/// capability for the already-derived devnet `asset_id`.
+/// Seeds and restart-verifies exactly one immutable definition and one
+/// owned, supply-controlled treasury cap for the already-derived devnet
+/// `asset_id`.
 ///
-/// The two objects are created atomically. The capability is address-owned by
-/// `mint_authority`; mint only reads it, so restart requires its exact
-/// version-one reference and owner to remain unchanged.
+/// The two objects are created atomically. The cap's initial `total_supply`
+/// is fixed to the exact genesis coin supply for `dev_owner_count` (see
+/// [`devnet_genesis_total_supply`]) and its `max_supply` is
+/// [`DEVNET_TREASURY_CAP_MAX_SUPPLY`], a bounded devnet constant. The cap is
+/// address-owned by `mint_authority` and mutated in place by `mint`/`burn`
+/// (DR-0110): unlike the frozen, unbounded, read-only
+/// `StandardAssetMintCapabilityV1` this replaces, restart does not require
+/// the cap's *current* head to remain at version one — only its exact
+/// version-one seed history. The definition remains immutable and restart
+/// still requires its exact version-one reference to be unchanged.
 #[allow(clippy::too_many_arguments)]
 pub fn seed_asset_authority_objects<S>(
     store: &S,
@@ -330,6 +351,7 @@ pub fn seed_asset_authority_objects<S>(
     epoch: Epoch,
     asset_id: AssetId,
     mint_authority: DevOwner,
+    dev_owner_count: usize,
     boot_generation: WriterFenceGeneration,
     context: &DurableOperationContext,
 ) -> Result<SeedAssetAuthorityObjectsOutcome, DevnetSeedError>
@@ -347,8 +369,15 @@ where
             boot: boot_generation,
         });
     }
-    let expected: ExpectedAssetAuthoritySeed =
-        build_expected_asset_authority_seed(resolver, epoch, asset_id, mint_authority)?;
+    let genesis_total_supply: u64 = devnet_genesis_total_supply(dev_owner_count)?;
+    let expected: ExpectedAssetAuthoritySeed = build_expected_asset_authority_seed(
+        resolver,
+        epoch,
+        asset_id,
+        mint_authority,
+        genesis_total_supply,
+        DEVNET_TREASURY_CAP_MAX_SUPPLY,
+    )?;
     let definition_head: DurableObjectHead = store
         .get_object_head(
             context,
@@ -356,15 +385,15 @@ where
             expected.definition.initial_object.id,
         )
         .map_err(DevnetSeedError::Read)?;
-    let capability_head: DurableObjectHead = store
+    let treasury_cap_head: DurableObjectHead = store
         .get_object_head(
             context,
             expected.domain,
-            expected.mint_capability.initial_object.id,
+            expected.treasury_cap.initial_object.id,
         )
         .map_err(DevnetSeedError::Read)?;
 
-    match (&definition_head, &capability_head) {
+    match (&definition_head, &treasury_cap_head) {
         (DurableObjectHead::Absent, DurableObjectHead::Absent) => create_asset_authority_seed(
             store,
             blob_store,
@@ -376,8 +405,9 @@ where
             expected,
         ),
         (DurableObjectHead::Current { .. }, DurableObjectHead::Current { .. }) => {
-            verify_existing_asset_authority_seed(
+            let objects: SeededAssetAuthorityObjects = verify_existing_asset_authority_seed(
                 store,
+                blob_store,
                 resolver,
                 epoch,
                 boot_generation,
@@ -385,15 +415,13 @@ where
                 mint_authority,
                 &expected,
                 &definition_head,
-                &capability_head,
+                &treasury_cap_head,
             )?;
-            Ok(SeedAssetAuthorityObjectsOutcome::Existing(
-                initial_asset_authority_objects(mint_authority, &expected),
-            ))
+            Ok(SeedAssetAuthorityObjectsOutcome::Existing(objects))
         }
         _ => Err(DevnetSeedError::UnexpectedHeadPair {
             first: head_kind(&definition_head),
-            second: head_kind(&capability_head),
+            second: head_kind(&treasury_cap_head),
         }),
     }
 }
@@ -403,6 +431,8 @@ fn build_expected_asset_authority_seed(
     epoch: Epoch,
     asset_id: AssetId,
     mint_authority: DevOwner,
+    genesis_total_supply: u64,
+    max_supply: u64,
 ) -> Result<ExpectedAssetAuthoritySeed, DevnetSeedError> {
     let domain: AtomicityDomainId = AtomicityDomainId::new(DEVNET_DOMAIN_BYTES)
         .map_err(|_| DevnetSeedError::InvalidStaticDomain)?;
@@ -423,24 +453,27 @@ fn build_expected_asset_authority_seed(
         derive_definition_type_id(resolver, epoch, asset_id)?,
         encode_standard_asset_definition_v1(&definition_body)?,
     )?;
-    let capability_body: StandardAssetMintCapabilityV1 = StandardAssetMintCapabilityV1 { asset_id };
-    let mint_capability: ExpectedSeedCoin = build_expected_seed_object(
+    let treasury_cap_body: StandardAssetTreasuryCapV1 =
+        StandardAssetTreasuryCapV1::new(asset_id, genesis_total_supply, max_supply)?;
+    let treasury_cap: ExpectedSeedCoin = build_expected_seed_object(
         resolver,
         epoch,
         Owner::Address(Address::new(*mint_authority.as_bytes())),
-        MINT_CAPABILITY_SLOT,
-        derive_mint_capability_type_id(resolver, epoch, asset_id)?,
-        encode_standard_asset_mint_capability_v1(&capability_body)?,
+        TREASURY_CAP_SLOT,
+        derive_treasury_cap_type_id(resolver, epoch, asset_id)?,
+        encode_standard_asset_treasury_cap_v1(&treasury_cap_body)?,
     )?;
-    if definition.initial_object.id == mint_capability.initial_object.id {
+    if definition.initial_object.id == treasury_cap.initial_object.id {
         return Err(DevnetSeedError::ObjectIdCollision);
     }
     let receipt: DurableRequestReceipt =
         build_seed_receipt(resolver, epoch, &definition.object_ref())?;
     Ok(ExpectedAssetAuthoritySeed {
         domain,
+        asset_id,
         definition,
-        mint_capability,
+        treasury_cap,
+        max_supply,
         receipt,
     })
 }
@@ -484,7 +517,7 @@ fn build_expected_seed_object(
 #[allow(clippy::too_many_arguments)]
 fn create_asset_authority_seed<S>(
     store: &S,
-    _blob_store: &dyn BlobStore,
+    blob_store: &dyn BlobStore,
     resolver: &HashSuiteResolver,
     epoch: Epoch,
     boot_generation: WriterFenceGeneration,
@@ -504,10 +537,10 @@ where
             provenance.clone(),
             boot_generation.get(),
         )?;
-    let capability_record: DurableObjectVersionRecord =
+    let treasury_cap_record: DurableObjectVersionRecord =
         DurableObjectVersionRecord::from_inline_object(
-            expected.mint_capability.initial_object.clone(),
-            expected.mint_capability.initial_digest,
+            expected.treasury_cap.initial_object.clone(),
+            expected.treasury_cap.initial_digest,
             provenance,
             boot_generation.get(),
         )?;
@@ -519,7 +552,7 @@ where
             DurableObjectHead::Absent,
         ),
         DurableObjectHeadRead::new(
-            expected.mint_capability.initial_object.id,
+            expected.treasury_cap.initial_object.id,
             DurableObjectHead::Absent,
         ),
     ];
@@ -533,9 +566,9 @@ where
             },
         ),
         DurableObjectMutationEntry::new(
-            expected.mint_capability.initial_object.id,
+            expected.treasury_cap.initial_object.id,
             DurableObjectMutation::Create {
-                version: capability_record,
+                version: treasury_cap_record,
                 owner_projection: DurableObjectOwnerProjection::from_owner(Owner::Address(
                     Address::new(*mint_authority.as_bytes()),
                 ))?,
@@ -554,13 +587,14 @@ where
 
     match store.commit_invocation(context, invocation) {
         DurableCommitOutcome::Committed => Ok(SeedAssetAuthorityObjectsOutcome::Created(
-            initial_asset_authority_objects(mint_authority, &expected),
+            created_asset_authority_objects(mint_authority, &expected),
         )),
         DurableCommitOutcome::Rejected(
             DurableCommitRejection::ObjectConflict { .. }
             | DurableCommitRejection::RequestAlreadyCommitted,
         ) => reconcile_existing_asset_authority_seed(
             store,
+            blob_store,
             resolver,
             epoch,
             boot_generation,
@@ -579,6 +613,7 @@ where
                 Some(receipt) if receipt == expected.receipt => {
                     reconcile_existing_asset_authority_seed(
                         store,
+                        blob_store,
                         resolver,
                         epoch,
                         boot_generation,
@@ -594,8 +629,10 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn reconcile_existing_asset_authority_seed<S>(
     store: &S,
+    blob_store: &dyn BlobStore,
     resolver: &HashSuiteResolver,
     epoch: Epoch,
     boot_generation: WriterFenceGeneration,
@@ -613,15 +650,16 @@ where
             expected.definition.initial_object.id,
         )
         .map_err(DevnetSeedError::Read)?;
-    let capability_head: DurableObjectHead = store
+    let treasury_cap_head: DurableObjectHead = store
         .get_object_head(
             context,
             expected.domain,
-            expected.mint_capability.initial_object.id,
+            expected.treasury_cap.initial_object.id,
         )
         .map_err(DevnetSeedError::Read)?;
-    verify_existing_asset_authority_seed(
+    let objects: SeededAssetAuthorityObjects = verify_existing_asset_authority_seed(
         store,
+        blob_store,
         resolver,
         epoch,
         boot_generation,
@@ -629,16 +667,23 @@ where
         mint_authority,
         expected,
         &definition_head,
-        &capability_head,
+        &treasury_cap_head,
     )?;
-    Ok(SeedAssetAuthorityObjectsOutcome::Existing(
-        initial_asset_authority_objects(mint_authority, expected),
-    ))
+    Ok(SeedAssetAuthorityObjectsOutcome::Existing(objects))
 }
 
+/// Verifies an existing (definition, treasury cap) pair on restart and
+/// returns the verified references. The definition must be exactly its
+/// pinned version-one seed (immutable objects can never be `Write`/`Consume`
+/// inputs, so it can never legitimately advance). The cap's version-one
+/// seed history must independently match its pinned genesis body, but its
+/// *current* head is accepted at whatever version `mint`/`burn` has since
+/// advanced it to — "advanced versions" are the expected steady state, not
+/// an anomaly (DR-0110).
 #[allow(clippy::too_many_arguments)]
 fn verify_existing_asset_authority_seed<S>(
     store: &S,
+    blob_store: &dyn BlobStore,
     resolver: &HashSuiteResolver,
     epoch: Epoch,
     boot_generation: WriterFenceGeneration,
@@ -646,24 +691,25 @@ fn verify_existing_asset_authority_seed<S>(
     mint_authority: DevOwner,
     expected: &ExpectedAssetAuthoritySeed,
     definition_head: &DurableObjectHead,
-    capability_head: &DurableObjectHead,
-) -> Result<(), DevnetSeedError>
+    treasury_cap_head: &DurableObjectHead,
+) -> Result<SeededAssetAuthorityObjects, DevnetSeedError>
 where
     S: StructuredDurableDomainStateStore + ?Sized,
 {
-    verify_exact_seed_object_head(
+    verify_exact_definition_head(resolver, epoch, definition_head, &expected.definition)?;
+    let treasury_cap_ref: ObjectRef = verify_current_treasury_cap(
+        store,
+        blob_store,
         resolver,
         epoch,
-        definition_head,
-        &expected.definition,
-        &Owner::Immutable,
-    )?;
-    verify_exact_seed_object_head(
-        resolver,
-        epoch,
-        capability_head,
-        &expected.mint_capability,
-        &Owner::Address(Address::new(*mint_authority.as_bytes())),
+        boot_generation,
+        context,
+        expected.domain,
+        treasury_cap_head,
+        &expected.treasury_cap,
+        expected.asset_id,
+        mint_authority,
+        expected.max_supply,
     )?;
     verify_initial_record(
         store,
@@ -679,20 +725,28 @@ where
         boot_generation,
         context,
         expected.domain,
-        &expected.mint_capability,
+        &expected.treasury_cap,
     )?;
-    verify_seed_receipt(store, context, expected.domain, &expected.receipt)
+    verify_seed_receipt(store, context, expected.domain, &expected.receipt)?;
+    Ok(SeededAssetAuthorityObjects {
+        definition: expected.definition.object_ref(),
+        treasury_cap: treasury_cap_ref,
+        mint_authority,
+    })
 }
 
-fn verify_exact_seed_object_head(
+/// Verifies the immutable definition's head is exactly its pinned
+/// version-one seed. Definitions are always `Owner::Immutable`, which can
+/// never be a `Write`/`Consume` input, so this exactness is a permanent
+/// invariant, not merely the current absence of mutation.
+fn verify_exact_definition_head(
     resolver: &HashSuiteResolver,
     epoch: Epoch,
     head: &DurableObjectHead,
     expected: &ExpectedSeedCoin,
-    owner: &Owner,
 ) -> Result<(), DevnetSeedError> {
     let expected_owner_projection: DurableObjectOwnerProjection =
-        DurableObjectOwnerProjection::from_owner(owner.clone())?;
+        DurableObjectOwnerProjection::from_owner(Owner::Immutable)?;
     let expected_routing_projection: DurableObjectRoutingProjection =
         DurableObjectRoutingProjection::new(None)?;
     match head {
@@ -709,24 +763,13 @@ fn verify_exact_seed_object_head(
         _ => {
             return Err(DevnetSeedError::StoredObjectMismatch {
                 object_id: expected.initial_object.id,
-                detail: "asset authority head differs from exact version-one seed",
+                detail: "definition head differs from exact version-one seed",
             });
         }
     }
-    let type_tag: abi::TypeTag = match owner {
-        Owner::Immutable => definition_type_tag(
-            decode_standard_asset_definition_v1(&expected.initial_object.data)?.asset_id,
-        ),
-        Owner::Address(_) => mint_capability_type_tag(
-            decode_standard_asset_mint_capability_v1(&expected.initial_object.data)?.asset_id,
-        ),
-        Owner::Shared | Owner::System => {
-            return Err(DevnetSeedError::StoredObjectMismatch {
-                object_id: expected.initial_object.id,
-                detail: "asset authority object has unsupported owner kind",
-            });
-        }
-    };
+    let type_tag: abi::TypeTag = definition_type_tag(
+        decode_standard_asset_definition_v1(&expected.initial_object.data)?.asset_id,
+    );
     let type_ok: bool = verify_type_id(
         resolver,
         &expected.initial_object.type_hash,
@@ -737,19 +780,193 @@ fn verify_exact_seed_object_head(
     if !type_ok {
         return Err(DevnetSeedError::StoredObjectMismatch {
             object_id: expected.initial_object.id,
-            detail: "asset authority nominal type failed verify_type_id",
+            detail: "definition nominal type failed verify_type_id",
         });
     }
     Ok(())
 }
 
-fn initial_asset_authority_objects(
+/// Verifies the treasury cap's *current* head at whatever version it has
+/// legitimately advanced to. Ownership is required to be exactly
+/// `mint_authority`'s address: `mint`/`burn` declare the cap `Write`-only
+/// with no committed owner-transition policy, so node-core's generic
+/// `Write` path forces the owner unchanged on every mutation — the cap can
+/// never legitimately move.
+#[allow(clippy::too_many_arguments)]
+fn verify_current_treasury_cap<S>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    boot_generation: WriterFenceGeneration,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    head: &DurableObjectHead,
+    expected: &ExpectedSeedCoin,
+    asset_id: AssetId,
+    mint_authority: DevOwner,
+    expected_max_supply: u64,
+) -> Result<ObjectRef, DevnetSeedError>
+where
+    S: StructuredDurableDomainStateStore + ?Sized,
+{
+    let (object_version, head_digest, owner_projection, routing_projection): (
+        DurableObjectVersion,
+        Digest32,
+        &DurableObjectOwnerProjection,
+        &DurableObjectRoutingProjection,
+    ) = match head {
+        DurableObjectHead::Current {
+            object_version,
+            digest,
+            owner_projection,
+            routing_projection,
+            ..
+        } => (
+            *object_version,
+            *digest,
+            owner_projection,
+            routing_projection,
+        ),
+        DurableObjectHead::Absent | DurableObjectHead::Tombstoned { .. } => {
+            return Err(DevnetSeedError::StoredObjectMismatch {
+                object_id: expected.initial_object.id,
+                detail: "treasury cap head is not current",
+            });
+        }
+    };
+
+    let expected_routing_projection: DurableObjectRoutingProjection =
+        DurableObjectRoutingProjection::new(None)?;
+    if routing_projection != &expected_routing_projection {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: expected.initial_object.id,
+            detail: "treasury cap head routing projection differs",
+        });
+    }
+    let expected_owner: Address = Address::new(*mint_authority.as_bytes());
+    let expected_owner_projection: DurableObjectOwnerProjection =
+        DurableObjectOwnerProjection::from_owner(Owner::Address(expected_owner))?;
+    if owner_projection != &expected_owner_projection {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: expected.initial_object.id,
+            detail: "treasury cap owner differs from the mint authority",
+        });
+    }
+
+    let record: DurableObjectVersionRecord = store
+        .get_object_version(context, domain, expected.initial_object.id, object_version)
+        .map_err(DevnetSeedError::Read)?
+        .ok_or(DevnetSeedError::MissingObjectVersion {
+            object_id: expected.initial_object.id,
+            version: object_version,
+        })?;
+    if record.object_id() != expected.initial_object.id
+        || record.object_version() != object_version
+        || record.digest() != head_digest
+        || record.schema_version() != STANDARD_ASSET_SCHEMA_VERSION_V1
+    {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: expected.initial_object.id,
+            detail: "treasury cap head and immutable metadata differ",
+        });
+    }
+    verify_record_context(&record, resolver, boot_generation)?;
+
+    let canonical_bytes: Vec<u8> = match record.payload() {
+        DurableObjectPayload::Inline(inline) => inline.canonical_bytes().to_vec(),
+        DurableObjectPayload::BlobReference(blob_digest) => {
+            let bytes: Vec<u8> = blob_store
+                .get_blob(blob_digest)
+                .map_err(DevnetSeedError::BlobStore)?
+                .ok_or(DevnetSeedError::MissingBlob {
+                    object_id: expected.initial_object.id,
+                    blob_digest: *blob_digest,
+                })?;
+            let blob_digest_valid: bool = verify_digest(
+                blob_digest,
+                HashPurpose::Object,
+                record.provenance().protocol_version(),
+                record.provenance().chain_id(),
+                &bytes,
+            )?;
+            if !blob_digest_valid {
+                return Err(DevnetSeedError::StoredObjectMismatch {
+                    object_id: expected.initial_object.id,
+                    detail: "fetched blob bytes do not hash to their own blob digest",
+                });
+            }
+            bytes
+        }
+    };
+    let object: Object = decode_object(&canonical_bytes)?;
+    if object.id != expected.initial_object.id
+        || object.version != object_version.get()
+        || object.owner != Owner::Address(expected_owner)
+        || object.schema_version != STANDARD_ASSET_SCHEMA_VERSION_V1
+    {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: expected.initial_object.id,
+            detail: "treasury cap typed object identity, owner, or schema differs",
+        });
+    }
+    let type_ok: bool = verify_type_id(
+        resolver,
+        &object.type_hash,
+        epoch,
+        &treasury_cap_type_tag(asset_id),
+    )
+    .map_err(DevnetSeedError::TypedAbi)?;
+    if !type_ok {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: expected.initial_object.id,
+            detail: "treasury cap nominal type failed verify_type_id",
+        });
+    }
+    let canonical_object: Vec<u8> = encode_object(&object)?;
+    if canonical_bytes != canonical_object {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: expected.initial_object.id,
+            detail: "treasury cap stored bytes are not the exact canonical encoding",
+        });
+    }
+    let digest_valid: bool = verify_digest(
+        &record.digest(),
+        HashPurpose::Object,
+        record.provenance().protocol_version(),
+        record.provenance().chain_id(),
+        &canonical_bytes,
+    )?;
+    if !digest_valid {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: expected.initial_object.id,
+            detail: "treasury cap stored digest does not verify",
+        });
+    }
+    let cap: StandardAssetTreasuryCapV1 = decode_standard_asset_treasury_cap_v1(&object.data)?;
+    if cap.asset_id() != asset_id
+        || cap.max_supply() != expected_max_supply
+        || encode_standard_asset_treasury_cap_v1(&cap)? != object.data
+    {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: expected.initial_object.id,
+            detail: "treasury cap body, asset identifier, or max supply differs",
+        });
+    }
+    Ok(ObjectRef {
+        id: object.id,
+        version: object.version,
+        digest: record.digest(),
+    })
+}
+
+fn created_asset_authority_objects(
     mint_authority: DevOwner,
     expected: &ExpectedAssetAuthoritySeed,
 ) -> SeededAssetAuthorityObjects {
     SeededAssetAuthorityObjects {
         definition: expected.definition.object_ref(),
-        mint_capability: expected.mint_capability.object_ref(),
+        treasury_cap: expected.treasury_cap.object_ref(),
         mint_authority,
     }
 }
@@ -822,7 +1039,20 @@ where
             context,
             expected,
         ),
-        (DurableObjectHead::Current { .. }, DurableObjectHead::Current { .. }) => {
+        (DurableObjectHead::Absent, _) | (_, DurableObjectHead::Absent) => {
+            Err(DevnetSeedError::UnexpectedHeadPair {
+                first: head_kind(&transfer_head),
+                second: head_kind(&fee_head),
+            })
+        }
+        // Both heads are Current or Tombstoned, in any combination: legal
+        // split/merge/burn activity may have tombstoned either seeded coin
+        // (e.g. spent as merge's or burn's Consume input) since seeding.
+        // verify_existing_dev_owner_seed accepts a normalized tombstoned
+        // head only after verifying its retained last immutable
+        // version/provenance and exact asset/type/schema, and never
+        // recreates it (DR-0110).
+        _ => {
             let coins: SeededDevOwnerCoins = verify_existing_dev_owner_seed(
                 store,
                 blob_store,
@@ -838,10 +1068,6 @@ where
             )?;
             Ok(SeedDevOwnerCoinsOutcome::Existing(coins))
         }
-        _ => Err(DevnetSeedError::UnexpectedHeadPair {
-            first: head_kind(&transfer_head),
-            second: head_kind(&fee_head),
-        }),
     }
 }
 
@@ -1126,8 +1352,32 @@ struct VerifiedCurrentCoin {
     coin: StandardAssetCoinV1,
 }
 
+/// Head-kind-specific pieces [`verify_coin_seed_head`] needs before it can
+/// fetch and decode the retained immutable version common to both a
+/// `Current` and a normalized `Tombstoned` head.
+enum CoinHeadLookup<'a> {
+    Current {
+        object_version: DurableObjectVersion,
+        head_digest: Digest32,
+        owner_projection: &'a DurableObjectOwnerProjection,
+        routing_projection: &'a DurableObjectRoutingProjection,
+    },
+    /// A delete retained the last immutable version; there is no current
+    /// owner/routing projection to consult; the retained record's own
+    /// decoded `owner` is authoritative instead.
+    Tombstoned {
+        last_object_version: DurableObjectVersion,
+    },
+}
+
+/// Verifies one seeded coin's head, accepting either a `Current` head (the
+/// coin still exists) or a normalized `Tombstoned` head (legal split/merge/
+/// burn activity legitimately consumed it since seeding, DR-0110). Both
+/// paths verify the exact retained immutable version's provenance, schema,
+/// nominal type, canonical encoding, and digest; a tombstoned coin is never
+/// recreated — restart only ever reads its retained history.
 #[allow(clippy::too_many_arguments)]
-fn verify_current_coin<S>(
+fn verify_coin_seed_head<S>(
     store: &S,
     blob_store: &dyn BlobStore,
     resolver: &HashSuiteResolver,
@@ -1143,70 +1393,66 @@ fn verify_current_coin<S>(
 where
     S: StructuredDurableDomainStateStore + ?Sized,
 {
-    let (object_version, head_digest, owner_projection, routing_projection): (
-        DurableObjectVersion,
-        Digest32,
-        &DurableObjectOwnerProjection,
-        &DurableObjectRoutingProjection,
-    ) = match head {
+    let lookup: CoinHeadLookup<'_> = match head {
         DurableObjectHead::Current {
             object_version,
             digest,
             owner_projection,
             routing_projection,
             ..
-        } => (
-            *object_version,
-            *digest,
+        } => CoinHeadLookup::Current {
+            object_version: *object_version,
+            head_digest: *digest,
             owner_projection,
             routing_projection,
-        ),
-        DurableObjectHead::Absent | DurableObjectHead::Tombstoned { .. } => {
+        },
+        DurableObjectHead::Tombstoned {
+            last_object_version,
+            ..
+        } => CoinHeadLookup::Tombstoned {
+            last_object_version: *last_object_version,
+        },
+        DurableObjectHead::Absent => {
             return Err(DevnetSeedError::StoredObjectMismatch {
                 object_id: expected.initial_object.id,
-                detail: "object head is not current",
+                detail: "object head is absent",
             });
         }
     };
 
-    let expected_routing_projection: DurableObjectRoutingProjection =
-        DurableObjectRoutingProjection::new(None)?;
-    if routing_projection != &expected_routing_projection {
-        return Err(DevnetSeedError::StoredObjectMismatch {
-            object_id: expected.initial_object.id,
-            detail: "head routing projection differs",
-        });
-    }
-
-    let current_owner_address: Address = match owner_expectation {
-        CoinOwnerExpectation::Exact(address) => match owner_projection.owner() {
-            Some(Owner::Address(actual)) if *actual == address => address,
-            _ => {
+    // A Current head's owner is cheaply checked from its lightweight
+    // projection before any further storage reads; a Tombstoned head has no
+    // such projection, so its owner is instead checked below, once the
+    // retained record has been fetched and decoded.
+    let precomputed_owner: Option<Address> = match &lookup {
+        CoinHeadLookup::Current {
+            owner_projection,
+            routing_projection,
+            ..
+        } => {
+            let expected_routing_projection: DurableObjectRoutingProjection =
+                DurableObjectRoutingProjection::new(None)?;
+            if *routing_projection != &expected_routing_projection {
                 return Err(DevnetSeedError::StoredObjectMismatch {
                     object_id: expected.initial_object.id,
-                    detail: "head owner projection differs from the expected exact owner",
+                    detail: "head routing projection differs",
                 });
             }
-        },
-        CoinOwnerExpectation::AnyAdmissible => match owner_projection.owner() {
-            Some(Owner::Address(actual)) => {
-                validate_ed25519_owner_address(
-                    actual.as_bytes(),
-                    Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
-                )
-                .map_err(DevnetSeedError::InadmissibleOwner)?;
-                *actual
-            }
-            _ => {
-                return Err(DevnetSeedError::StoredObjectMismatch {
-                    object_id: expected.initial_object.id,
-                    detail: "head owner projection is not an admissible address",
-                });
-            }
-        },
+            Some(check_coin_owner_expectation(
+                expected.initial_object.id,
+                owner_projection.owner(),
+                owner_expectation,
+            )?)
+        }
+        CoinHeadLookup::Tombstoned { .. } => None,
     };
-    let expected_owner: Owner = Owner::Address(current_owner_address);
 
+    let object_version: DurableObjectVersion = match &lookup {
+        CoinHeadLookup::Current { object_version, .. } => *object_version,
+        CoinHeadLookup::Tombstoned {
+            last_object_version,
+        } => *last_object_version,
+    };
     let record: DurableObjectVersionRecord = store
         .get_object_version(context, domain, expected.initial_object.id, object_version)
         .map_err(DevnetSeedError::Read)?
@@ -1216,8 +1462,15 @@ where
         })?;
     if record.object_id() != expected.initial_object.id
         || record.object_version() != object_version
-        || record.digest() != head_digest
         || record.schema_version() != STANDARD_ASSET_SCHEMA_VERSION_V1
+    {
+        return Err(DevnetSeedError::StoredObjectMismatch {
+            object_id: expected.initial_object.id,
+            detail: "retained immutable version metadata differs",
+        });
+    }
+    if let CoinHeadLookup::Current { head_digest, .. } = &lookup
+        && record.digest() != *head_digest
     {
         return Err(DevnetSeedError::StoredObjectMismatch {
             object_id: expected.initial_object.id,
@@ -1255,13 +1508,29 @@ where
     let object: Object = decode_object(&canonical_bytes)?;
     if object.id != expected.initial_object.id
         || object.version != object_version.get()
-        || object.owner != expected_owner
         || object.schema_version != STANDARD_ASSET_SCHEMA_VERSION_V1
     {
         return Err(DevnetSeedError::StoredObjectMismatch {
             object_id: expected.initial_object.id,
-            detail: "typed object identity, owner, or schema differs",
+            detail: "typed object identity or schema differs",
         });
+    }
+    match precomputed_owner {
+        Some(owner) => {
+            if object.owner != Owner::Address(owner) {
+                return Err(DevnetSeedError::StoredObjectMismatch {
+                    object_id: expected.initial_object.id,
+                    detail: "stored owner differs from the head owner projection",
+                });
+            }
+        }
+        None => {
+            check_coin_owner_expectation(
+                expected.initial_object.id,
+                Some(&object.owner),
+                owner_expectation,
+            )?;
+        }
     }
     // F4: the object's nominal Coin<A> type is verified through
     // `abi::verify_type_id`, never by raw `Digest32` equality against a
@@ -1312,6 +1581,36 @@ where
         },
         coin,
     })
+}
+
+fn check_coin_owner_expectation(
+    object_id: ObjectId,
+    owner: Option<&Owner>,
+    owner_expectation: CoinOwnerExpectation,
+) -> Result<Address, DevnetSeedError> {
+    match owner_expectation {
+        CoinOwnerExpectation::Exact(address) => match owner {
+            Some(Owner::Address(actual)) if *actual == address => Ok(address),
+            _ => Err(DevnetSeedError::StoredObjectMismatch {
+                object_id,
+                detail: "owner differs from the expected exact owner",
+            }),
+        },
+        CoinOwnerExpectation::AnyAdmissible => match owner {
+            Some(Owner::Address(actual)) => {
+                validate_ed25519_owner_address(
+                    actual.as_bytes(),
+                    Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
+                )
+                .map_err(DevnetSeedError::InadmissibleOwner)?;
+                Ok(*actual)
+            }
+            _ => Err(DevnetSeedError::StoredObjectMismatch {
+                object_id,
+                detail: "owner is not an admissible address",
+            }),
+        },
+    }
 }
 
 fn verify_initial_record<S>(
@@ -1455,8 +1754,8 @@ fn verify_existing_dev_owner_seed<S>(
 where
     S: StructuredDurableDomainStateStore + ?Sized,
 {
-    if !matches!(transfer_head, DurableObjectHead::Current { .. })
-        || !matches!(fee_head, DurableObjectHead::Current { .. })
+    if matches!(transfer_head, DurableObjectHead::Absent)
+        || matches!(fee_head, DurableObjectHead::Absent)
     {
         return Err(DevnetSeedError::UnexpectedHeadPair {
             first: head_kind(transfer_head),
@@ -1468,7 +1767,7 @@ where
     // used as the whole-coin transfer source (owner moves) or as the fee
     // payer (amount moves) since seeding, so both are verified under the
     // identical relaxed expectation (see `seed_dev_owner_coins`'s docs, F9).
-    let transfer: VerifiedCurrentCoin = verify_current_coin(
+    let transfer: VerifiedCurrentCoin = verify_coin_seed_head(
         store,
         blob_store,
         resolver,
@@ -1481,7 +1780,7 @@ where
         asset_id,
         CoinOwnerExpectation::AnyAdmissible,
     )?;
-    let fee: VerifiedCurrentCoin = verify_current_coin(
+    let fee: VerifiedCurrentCoin = verify_coin_seed_head(
         store,
         blob_store,
         resolver,
@@ -1573,7 +1872,11 @@ where
             context,
             expected,
         ),
-        DurableObjectHead::Current { .. } => {
+        // Current or Tombstoned: the treasury coin is an ordinary Coin<A>
+        // like a dev owner's, so it too may legally have been consumed by
+        // merge or burn since seeding (DR-0110) — accepted the same way, via
+        // its retained last immutable version, never recreated.
+        DurableObjectHead::Current { .. } | DurableObjectHead::Tombstoned { .. } => {
             let coin: SeededTreasuryCoin = verify_existing_treasury_seed(
                 store,
                 blob_store,
@@ -1588,10 +1891,6 @@ where
             )?;
             Ok(SeedTreasuryCoinOutcome::Existing(coin))
         }
-        DurableObjectHead::Tombstoned { .. } => Err(DevnetSeedError::UnexpectedHead {
-            object_id: expected.treasury.initial_object.id,
-            kind: head_kind(&head),
-        }),
     }
 }
 
@@ -1759,13 +2058,13 @@ fn verify_existing_treasury_seed<S>(
 where
     S: StructuredDurableDomainStateStore + ?Sized,
 {
-    if !matches!(head, DurableObjectHead::Current { .. }) {
+    if matches!(head, DurableObjectHead::Absent) {
         return Err(DevnetSeedError::UnexpectedHead {
             object_id: expected.treasury.initial_object.id,
             kind: head_kind(head),
         });
     }
-    let verified: VerifiedCurrentCoin = verify_current_coin(
+    let verified: VerifiedCurrentCoin = verify_coin_seed_head(
         store,
         blob_store,
         resolver,
@@ -2448,8 +2747,17 @@ mod tests {
         let owner: DevOwner = dev_owner(0x61);
         let asset_id: AssetId =
             crate::standard_asset::derive_devnet_asset_id(&resolver, Epoch::new(0)).unwrap();
-        let expected: ExpectedAssetAuthoritySeed =
-            build_expected_asset_authority_seed(&resolver, Epoch::new(0), asset_id, owner).unwrap();
+        let dev_owner_count: usize = 1;
+        let genesis_total_supply: u64 = devnet_genesis_total_supply(dev_owner_count).unwrap();
+        let expected: ExpectedAssetAuthoritySeed = build_expected_asset_authority_seed(
+            &resolver,
+            Epoch::new(0),
+            asset_id,
+            owner,
+            genesis_total_supply,
+            DEVNET_TREASURY_CAP_MAX_SUPPLY,
+        )
+        .unwrap();
 
         let created: SeedAssetAuthorityObjectsOutcome = seed_asset_authority_objects(
             &store,
@@ -2458,6 +2766,7 @@ mod tests {
             Epoch::new(0),
             asset_id,
             owner,
+            dev_owner_count,
             generation(),
             &context(),
         )
@@ -2471,19 +2780,19 @@ mod tests {
             &expected.definition.object_ref()
         );
         assert_eq!(
-            created.objects().mint_capability(),
-            &expected.mint_capability.object_ref()
+            created.objects().treasury_cap(),
+            &expected.treasury_cap.object_ref()
         );
         assert_ne!(
             created.objects().definition().id,
-            created.objects().mint_capability().id
+            created.objects().treasury_cap().id
         );
 
         let definition_head: DurableObjectHead = store
             .get_object_head(&context(), domain(), created.objects().definition().id)
             .unwrap();
-        let capability_head: DurableObjectHead = store
-            .get_object_head(&context(), domain(), created.objects().mint_capability().id)
+        let treasury_cap_head: DurableObjectHead = store
+            .get_object_head(&context(), domain(), created.objects().treasury_cap().id)
             .unwrap();
         assert!(matches!(
             definition_head,
@@ -2491,7 +2800,7 @@ mod tests {
                 if owner_projection.owner() == Some(&Owner::Immutable)
         ));
         assert!(matches!(
-            capability_head,
+            treasury_cap_head,
             DurableObjectHead::Current { ref owner_projection, .. }
                 if owner_projection.owner()
                     == Some(&Owner::Address(Address::new(*owner.as_bytes())))
@@ -2504,6 +2813,7 @@ mod tests {
             Epoch::new(0),
             asset_id,
             owner,
+            dev_owner_count,
             generation(),
             &context(),
         )
@@ -2705,7 +3015,14 @@ mod tests {
     }
 
     #[test]
-    fn seeded_asset_supply_rejects_wrong_total() {
+    fn seeded_asset_supply_accepts_amounts_that_diverged_from_the_original_seed() {
+        // DR-0110: once mint/burn exist, a dev owner's current coin amounts
+        // legitimately diverge from the fixed genesis seed amounts (mint
+        // creates new coins outside this tracked set; burn destroys some of
+        // it). verify_seeded_asset_supply must still accept this — it only
+        // checks seed-identity uniqueness now; supply truth lives in the
+        // treasury cap (see devnet_genesis_total_supply and
+        // verify_current_treasury_cap), never a summed total here.
         let resolver = resolver(4);
         let first = build_expected_dev_owner_seed(
             &resolver,
@@ -2730,10 +3047,29 @@ mod tests {
             amount: INITIAL_TREASURY_COIN_AMOUNT,
         });
 
+        assert!(verify_seeded_asset_supply(&outcomes, &treasury).is_ok());
+    }
+
+    #[test]
+    fn devnet_genesis_total_supply_is_a_fixed_function_of_owner_count() {
+        assert_eq!(
+            devnet_genesis_total_supply(1).unwrap(),
+            INITIAL_TRANSFER_COIN_AMOUNT + INITIAL_FEE_COIN_AMOUNT + INITIAL_TREASURY_COIN_AMOUNT
+        );
+        assert_eq!(
+            devnet_genesis_total_supply(2).unwrap(),
+            2 * (INITIAL_TRANSFER_COIN_AMOUNT + INITIAL_FEE_COIN_AMOUNT)
+                + INITIAL_TREASURY_COIN_AMOUNT
+        );
         assert!(matches!(
-            verify_seeded_asset_supply(&outcomes, &treasury),
+            devnet_genesis_total_supply(0),
             Err(DevnetSeedError::AssetInvariantViolation)
         ));
+        assert!(matches!(
+            devnet_genesis_total_supply(MAX_DEVNET_OWNERS),
+            Err(DevnetSeedError::AssetInvariantViolation)
+        ));
+        assert!(devnet_genesis_total_supply(1).unwrap() < DEVNET_TREASURY_CAP_MAX_SUPPLY);
     }
 
     fn commit_owner_only_transfer(
@@ -2847,6 +3183,347 @@ mod tests {
             store.commit_invocation(&context(), invocation),
             DurableCommitOutcome::Committed
         );
+    }
+
+    /// Simulates a legal `merge`/`burn` `Consume` of a seeded coin: retains
+    /// its last immutable version and tombstones the head, exactly as
+    /// `translate_authenticated_object_effects_impl`'s `Consume` path does.
+    fn commit_consume(store: &MemoryDurableStateStore, seeded: &ExpectedSeedCoin, request_tag: u8) {
+        let head = store
+            .get_object_head(&context(), domain(), seeded.initial_object.id)
+            .unwrap();
+        assert!(
+            matches!(head, DurableObjectHead::Current { .. }),
+            "expected a current head before simulating a consume"
+        );
+        let changes = DurableObjectChanges::new(
+            vec![DurableObjectHeadRead::new(seeded.initial_object.id, head)],
+            vec![DurableObjectMutationEntry::new(
+                seeded.initial_object.id,
+                DurableObjectMutation::Delete,
+            )],
+        )
+        .unwrap();
+        let receipt = DurableRequestReceipt::new(
+            DurableRequestId::new([request_tag; 32]).unwrap(),
+            Digest32::new(HashAlgorithmId::Sha2_256, [request_tag.wrapping_add(1); 32]),
+            vec![request_tag],
+        )
+        .unwrap();
+        let invocation =
+            DurableInvocationTransaction::new(domain(), None, changes, receipt, None).unwrap();
+        assert_eq!(
+            store.commit_invocation(&context(), invocation),
+            DurableCommitOutcome::Committed
+        );
+    }
+
+    /// Simulates a legal `mint`/`burn` mutating the treasury cap in place,
+    /// advancing its version exactly as node-core's ordinary `Write` path
+    /// does.
+    #[allow(clippy::too_many_arguments)]
+    fn commit_treasury_cap_mutation(
+        store: &MemoryDurableStateStore,
+        resolver: &HashSuiteResolver,
+        seeded: &ExpectedSeedCoin,
+        asset_id: AssetId,
+        new_total_supply: u64,
+        max_supply: u64,
+        request_tag: u8,
+    ) {
+        let head = store
+            .get_object_head(&context(), domain(), seeded.initial_object.id)
+            .unwrap();
+        let DurableObjectHead::Current { object_version, .. } = head else {
+            panic!("expected a current head before simulating a mint/burn");
+        };
+        let mut object = seeded.initial_object.clone();
+        object.version = object_version.get() + 1;
+        object.data = encode_standard_asset_treasury_cap_v1(
+            &StandardAssetTreasuryCapV1::new(asset_id, new_total_supply, max_supply).unwrap(),
+        )
+        .unwrap();
+        let canonical_object = encode_object(&object).unwrap();
+        let digest = resolver
+            .hash_for_purpose(Epoch::new(0), HashPurpose::Object, &canonical_object)
+            .unwrap();
+        let record = DurableObjectVersionRecord::from_inline_object(
+            object.clone(),
+            digest,
+            DurableObjectProvenance::new(resolver.chain_id().clone(), resolver.protocol_version()),
+            generation().get(),
+        )
+        .unwrap();
+        let owner_projection = DurableObjectOwnerProjection::from_owner(object.owner).unwrap();
+        let routing_projection = DurableObjectRoutingProjection::new(None).unwrap();
+        let changes = DurableObjectChanges::new(
+            vec![DurableObjectHeadRead::new(seeded.initial_object.id, head)],
+            vec![DurableObjectMutationEntry::new(
+                seeded.initial_object.id,
+                DurableObjectMutation::Update {
+                    version: record,
+                    owner_projection,
+                    routing_projection,
+                },
+            )],
+        )
+        .unwrap();
+        let receipt = DurableRequestReceipt::new(
+            DurableRequestId::new([request_tag; 32]).unwrap(),
+            Digest32::new(HashAlgorithmId::Sha2_256, [request_tag.wrapping_add(1); 32]),
+            vec![request_tag],
+        )
+        .unwrap();
+        let invocation =
+            DurableInvocationTransaction::new(domain(), None, changes, receipt, None).unwrap();
+        assert_eq!(
+            store.commit_invocation(&context(), invocation),
+            DurableCommitOutcome::Committed
+        );
+    }
+
+    #[test]
+    fn restart_accepts_a_tombstoned_seeded_coin_and_never_recreates_it() {
+        for (index, consumed_slot) in ["transfer", "fee"].into_iter().enumerate() {
+            let store = store();
+            let blob_store = MemoryBlobStore::default();
+            let resolver = resolver(4);
+            let owner = dev_owner(u8::try_from(0xA1 + index).unwrap());
+            seed_dev_owner_coins(
+                &store,
+                &blob_store,
+                &resolver,
+                Epoch::new(0),
+                ASSET,
+                owner,
+                generation(),
+                &context(),
+            )
+            .unwrap();
+
+            let expected =
+                build_expected_dev_owner_seed(&resolver, Epoch::new(0), ASSET, owner).unwrap();
+            let consumed = if consumed_slot == "transfer" {
+                &expected.transfer
+            } else {
+                &expected.fee
+            };
+            commit_consume(&store, consumed, u8::try_from(0xC0 + index).unwrap());
+            let tombstoned_head = store
+                .get_object_head(&context(), domain(), consumed.initial_object.id)
+                .unwrap();
+            assert!(matches!(
+                tombstoned_head,
+                DurableObjectHead::Tombstoned { .. }
+            ));
+
+            let existing = seed_dev_owner_coins(
+                &store,
+                &blob_store,
+                &resolver,
+                Epoch::new(0),
+                ASSET,
+                owner,
+                generation(),
+                &context(),
+            );
+            assert!(
+                matches!(existing, Ok(SeedDevOwnerCoinsOutcome::Existing(_))),
+                "consuming the {consumed_slot} coin unexpectedly failed restart: {existing:?}"
+            );
+
+            // Restart must never recreate a tombstoned seed object.
+            let head_after = store
+                .get_object_head(&context(), domain(), consumed.initial_object.id)
+                .unwrap();
+            assert!(matches!(head_after, DurableObjectHead::Tombstoned { .. }));
+        }
+    }
+
+    #[test]
+    fn restart_accepts_a_tombstoned_treasury_coin() {
+        let store = store();
+        let blob_store = MemoryBlobStore::default();
+        let resolver = resolver(4);
+        let treasury_owner = dev_owner(0xA9);
+        seed_treasury_coin(
+            &store,
+            &blob_store,
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            treasury_owner,
+            generation(),
+            &context(),
+        )
+        .unwrap();
+        let expected =
+            build_expected_treasury_seed(&resolver, Epoch::new(0), ASSET, treasury_owner).unwrap();
+        commit_consume(&store, &expected.treasury, 0xCA);
+
+        let existing = seed_treasury_coin(
+            &store,
+            &blob_store,
+            &resolver,
+            Epoch::new(0),
+            ASSET,
+            treasury_owner,
+            generation(),
+            &context(),
+        );
+        assert!(
+            matches!(existing, Ok(SeedTreasuryCoinOutcome::Existing(_))),
+            "consuming the treasury coin unexpectedly failed restart: {existing:?}"
+        );
+    }
+
+    #[test]
+    fn restart_accepts_the_treasury_cap_at_an_advanced_version() {
+        let store = store();
+        let blob_store = MemoryBlobStore::default();
+        let resolver = resolver(5);
+        let owner = dev_owner(0xD1);
+        let asset_id: AssetId =
+            crate::standard_asset::derive_devnet_asset_id(&resolver, Epoch::new(0)).unwrap();
+        let dev_owner_count: usize = 1;
+        let genesis_total_supply: u64 = devnet_genesis_total_supply(dev_owner_count).unwrap();
+
+        seed_asset_authority_objects(
+            &store,
+            &blob_store,
+            &resolver,
+            Epoch::new(0),
+            asset_id,
+            owner,
+            dev_owner_count,
+            generation(),
+            &context(),
+        )
+        .unwrap();
+        let expected: ExpectedAssetAuthoritySeed = build_expected_asset_authority_seed(
+            &resolver,
+            Epoch::new(0),
+            asset_id,
+            owner,
+            genesis_total_supply,
+            DEVNET_TREASURY_CAP_MAX_SUPPLY,
+        )
+        .unwrap();
+
+        // Simulate two mints advancing total_supply and version.
+        commit_treasury_cap_mutation(
+            &store,
+            &resolver,
+            &expected.treasury_cap,
+            asset_id,
+            genesis_total_supply + 100,
+            DEVNET_TREASURY_CAP_MAX_SUPPLY,
+            0xE1,
+        );
+        commit_treasury_cap_mutation(
+            &store,
+            &resolver,
+            &expected.treasury_cap,
+            asset_id,
+            genesis_total_supply + 160,
+            DEVNET_TREASURY_CAP_MAX_SUPPLY,
+            0xE2,
+        );
+        let head = store
+            .get_object_head(
+                &context(),
+                domain(),
+                expected.treasury_cap.initial_object.id,
+            )
+            .unwrap();
+        let DurableObjectHead::Current { object_version, .. } = head else {
+            panic!("expected a current head after two mints");
+        };
+        assert_eq!(object_version.get(), 3);
+
+        let existing = seed_asset_authority_objects(
+            &store,
+            &blob_store,
+            &resolver,
+            Epoch::new(0),
+            asset_id,
+            owner,
+            dev_owner_count,
+            generation(),
+            &context(),
+        );
+        assert!(
+            matches!(existing, Ok(SeedAssetAuthorityObjectsOutcome::Existing(_))),
+            "an advanced-version treasury cap unexpectedly failed restart: {existing:?}"
+        );
+        assert_eq!(
+            existing.unwrap().objects().treasury_cap().version,
+            3,
+            "restart must report the cap's current advanced version, not version one"
+        );
+    }
+
+    #[test]
+    fn restart_rejects_a_treasury_cap_with_a_tampered_max_supply() {
+        let store = store();
+        let blob_store = MemoryBlobStore::default();
+        let resolver = resolver(5);
+        let owner = dev_owner(0xD2);
+        let asset_id: AssetId =
+            crate::standard_asset::derive_devnet_asset_id(&resolver, Epoch::new(0)).unwrap();
+        let dev_owner_count: usize = 1;
+        let genesis_total_supply: u64 = devnet_genesis_total_supply(dev_owner_count).unwrap();
+        seed_asset_authority_objects(
+            &store,
+            &blob_store,
+            &resolver,
+            Epoch::new(0),
+            asset_id,
+            owner,
+            dev_owner_count,
+            generation(),
+            &context(),
+        )
+        .unwrap();
+        let expected: ExpectedAssetAuthoritySeed = build_expected_asset_authority_seed(
+            &resolver,
+            Epoch::new(0),
+            asset_id,
+            owner,
+            genesis_total_supply,
+            DEVNET_TREASURY_CAP_MAX_SUPPLY,
+        )
+        .unwrap();
+
+        // A tampered max_supply is a structurally valid StandardAssetTreasuryCapV1
+        // (still nonzero, still total<=max), so only the explicit
+        // expected-max-supply comparison in verify_current_treasury_cap can
+        // catch this drift.
+        commit_treasury_cap_mutation(
+            &store,
+            &resolver,
+            &expected.treasury_cap,
+            asset_id,
+            genesis_total_supply,
+            DEVNET_TREASURY_CAP_MAX_SUPPLY + 1,
+            0xE3,
+        );
+
+        let existing = seed_asset_authority_objects(
+            &store,
+            &blob_store,
+            &resolver,
+            Epoch::new(0),
+            asset_id,
+            owner,
+            dev_owner_count,
+            generation(),
+            &context(),
+        );
+        assert!(matches!(
+            existing,
+            Err(DevnetSeedError::StoredObjectMismatch { .. })
+        ));
     }
 
     #[test]

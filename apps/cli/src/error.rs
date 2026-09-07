@@ -89,16 +89,36 @@ pub enum CliError {
     SplitAmountNotBelowSource { amount: u64, source_amount: u64 },
     /// Merge coin inputs must be three different object ids.
     MergeCoinsMustBeDistinct,
-    /// Mint capability, fee coin, and treasury must be distinct objects.
-    MintObjectsMustBeDistinct,
+    /// Treasury cap, operation coin, fee coin, and fee treasury must be
+    /// pairwise-distinct as applicable to the operation.
+    StandardAssetOperationObjectsMustBeDistinct,
+    /// Adding the requested mint amount overflowed `u64`.
+    MintSupplyOverflow,
+    /// The requested mint would exceed the cap's fixed maximum supply.
+    MintExceedsMaxSupply {
+        /// Supply recorded before this mint.
+        total_supply: u64,
+        /// Requested mint amount.
+        amount: u64,
+        /// Fixed cap maximum.
+        max_supply: u64,
+    },
+    /// The burned coin amount exceeded the cap's recorded total supply.
+    BurnExceedsTotalSupply {
+        /// Supply recorded before this burn.
+        total_supply: u64,
+        /// Whole-coin amount requested for destruction.
+        amount: u64,
+    },
     /// The two source amounts cannot be represented by `u64` when summed.
     MergeAmountOverflow,
     /// `--fee-treasury-object` named one of the operation's coin inputs.
     FeeTreasuryConflictsWithTransfer,
     /// The transferred and fee coins decoded with different `AssetId`s.
     CoinAssetMismatch,
-    /// The mint capability and fee coin decoded with different `AssetId`s.
-    MintCapabilityAssetMismatch,
+    /// The treasury cap and operation/fee coin decoded with different
+    /// `AssetId`s.
+    TreasuryCapAssetMismatch,
     /// `--fee-asset-id` differed from the operation inputs' required shared
     /// `AssetId`.
     FeeAssetMismatch,
@@ -152,11 +172,11 @@ pub enum CliError {
         source: StandardAssetError,
     },
     /// A `CurrentInline` object's body failed to decode as an exact
-    /// `StandardAssetMintCapabilityV1`.
-    MintCapabilityBodyDecodeFailed {
-        /// The capability object identifier, as hex.
+    /// `StandardAssetTreasuryCapV1`.
+    TreasuryCapBodyDecodeFailed {
+        /// The treasury-cap object identifier, as hex.
         object_id: String,
-        /// The strict capability decode failure.
+        /// The strict treasury-cap decode failure.
         source: StandardAssetError,
     },
     /// Canonically encoding the `StandardAssetTransferArgsV1` frame failed.
@@ -263,7 +283,7 @@ impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingCommand => f.write_str(
-                "no subcommand supplied; expected one of: address, context, object, receipt, next-nonce, transfer, split, merge, mint",
+                "no subcommand supplied; expected one of: address, context, object, receipt, next-nonce, transfer, split, merge, mint, burn",
             ),
             Self::UnknownCommand(command) => write!(f, "unknown subcommand: {command:?}"),
             Self::Args(error) => write!(f, "{error}"),
@@ -309,8 +329,26 @@ impl fmt::Display for CliError {
             Self::MergeCoinsMustBeDistinct => {
                 f.write_str("--primary-coin, --secondary-coin, and --fee-coin must name distinct objects")
             }
-            Self::MintObjectsMustBeDistinct => f.write_str(
-                "--mint-capability, --fee-coin, and --fee-treasury-object must name distinct objects",
+            Self::StandardAssetOperationObjectsMustBeDistinct => f.write_str(
+                "--treasury-cap, operation coin, --fee-coin, and --fee-treasury-object must name distinct objects",
+            ),
+            Self::MintSupplyOverflow => {
+                f.write_str("the treasury cap total supply overflows u64 after this mint")
+            }
+            Self::MintExceedsMaxSupply {
+                total_supply,
+                amount,
+                max_supply,
+            } => write!(
+                f,
+                "mint would exceed max supply (total_supply={total_supply}, amount={amount}, max_supply={max_supply})"
+            ),
+            Self::BurnExceedsTotalSupply {
+                total_supply,
+                amount,
+            } => write!(
+                f,
+                "burn amount exceeds treasury cap total supply (total_supply={total_supply}, amount={amount})"
             ),
             Self::MergeAmountOverflow => f.write_str("the two source coin amounts overflow u64 when merged"),
             Self::FeeTreasuryConflictsWithTransfer => f.write_str(
@@ -319,8 +357,8 @@ impl fmt::Display for CliError {
             Self::CoinAssetMismatch => {
                 f.write_str("the transferred and fee coins do not share one AssetId")
             }
-            Self::MintCapabilityAssetMismatch => {
-                f.write_str("the mint capability and fee coin do not share one AssetId")
+            Self::TreasuryCapAssetMismatch => {
+                f.write_str("the treasury cap and operation coins do not share one AssetId")
             }
             Self::FeeAssetMismatch => {
                 f.write_str("--fee-asset-id must equal the operation inputs' shared AssetId")
@@ -368,9 +406,9 @@ impl fmt::Display for CliError {
                 f,
                 "{flag} {object_id}'s body failed to decode as a Standard Asset v1 coin: {source}"
             ),
-            Self::MintCapabilityBodyDecodeFailed { object_id, source } => write!(
+            Self::TreasuryCapBodyDecodeFailed { object_id, source } => write!(
                 f,
-                "--mint-capability {object_id}'s body failed to decode as a Standard Asset v1 mint capability: {source}"
+                "--treasury-cap {object_id}'s body failed to decode as a Standard Asset v1 treasury cap: {source}"
             ),
             Self::TransferArgsEncodingFailed(error) => {
                 write!(f, "failed to encode transfer arguments: {error}")
@@ -453,7 +491,7 @@ impl std::error::Error for CliError {
             Self::InvalidInteger { source, .. } => Some(source),
             Self::ObjectBodyDecodeFailed { source, .. } => Some(source),
             Self::CoinBodyDecodeFailed { source, .. } => Some(source),
-            Self::MintCapabilityBodyDecodeFailed { source, .. } => Some(source),
+            Self::TreasuryCapBodyDecodeFailed { source, .. } => Some(source),
             Self::TransferArgsEncodingFailed(error) => Some(error),
             Self::SplitArgsEncodingFailed(error) => Some(error),
             Self::MintArgsEncodingFailed(error) => Some(error),

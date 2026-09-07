@@ -4,7 +4,7 @@
 use crate::{
     genesis::DevnetProtocolContext,
     standard_asset::{
-        MERGE_ENTRYPOINT, MINT_ENTRYPOINT, MODULE_NAME, SPLIT_ENTRYPOINT,
+        BURN_ENTRYPOINT, MERGE_ENTRYPOINT, MINT_ENTRYPOINT, MODULE_NAME, SPLIT_ENTRYPOINT,
         STANDARD_ASSET_MODULE_ID_BYTES, TRANSFER_ENTRYPOINT,
     },
 };
@@ -24,7 +24,8 @@ use standard_assets::{
     AssetId, STANDARD_ASSET_COIN_V1_CONSTRUCTOR, STANDARD_ASSET_MINT_ARGS_V1_TYPE_ID,
     STANDARD_ASSET_MINT_CAPABILITY_V1_CONSTRUCTOR, STANDARD_ASSET_SCHEMA_VERSION_V1,
     STANDARD_ASSET_SPLIT_ARGS_V1_TYPE_ID, STANDARD_ASSET_TRANSFER_ARGS_V1_TYPE_ID,
-    coin_constructor_declaration, mint_capability_constructor_declaration,
+    STANDARD_ASSET_TREASURY_CAP_V1_CONSTRUCTOR, coin_constructor_declaration,
+    mint_capability_constructor_declaration, treasury_cap_constructor_declaration,
 };
 use std::{error::Error, fmt};
 use system_modules::{
@@ -36,19 +37,43 @@ use system_modules::{
 /// [`crate::standard_asset::STANDARD_ASSET_MODULE_ID_BYTES`]).
 pub const STANDARD_ASSET_MODULE_ID: ModuleId = ModuleId::new(STANDARD_ASSET_MODULE_ID_BYTES);
 
-/// Historical protocol-v4 whole-coin transfer module version.
-///
-/// This exact code/manifest/semantics triple remains cataloged so a
-/// protocol-v4 configuration can resolve already-signed transfer references.
-/// It is disabled in the active protocol-v5 configuration and therefore
-/// cannot be selected by a v5 transaction.
+/// Discarded development-only transfer fixture, isolated from the canonical
+/// Standard Asset version line. SHA-256 of
+/// `sunrise.devnet.legacy.standard_asset.transfer.v1`.
+const LEGACY_STANDARD_ASSET_TRANSFER_MODULE_ID: ModuleId = ModuleId::new([
+    0x73, 0xD3, 0x01, 0xDE, 0x2E, 0x5B, 0xC8, 0x52, 0xC4, 0x15, 0x82, 0x81, 0x6D, 0x5C, 0x6C, 0xC0,
+    0xEA, 0xB5, 0x24, 0x26, 0xE9, 0x44, 0x43, 0xCC, 0x1A, 0x52, 0x1B, 0xEF, 0x46, 0x9F, 0x72, 0xE3,
+]);
+/// Discarded development-only split/merge fixture. SHA-256 of
+/// `sunrise.devnet.legacy.standard_asset.split_merge.v1`.
+const LEGACY_STANDARD_ASSET_SPLIT_MERGE_MODULE_ID: ModuleId = ModuleId::new([
+    0xB3, 0x55, 0x57, 0xD3, 0xFB, 0xED, 0x25, 0x31, 0xDA, 0x09, 0x67, 0xD4, 0xF3, 0x87, 0xB6, 0xA2,
+    0x8B, 0xC6, 0x39, 0x26, 0xAE, 0xCB, 0xA9, 0xEB, 0xD4, 0x09, 0xC2, 0x19, 0x3B, 0x2C, 0xD0, 0xE1,
+]);
+/// Discarded development-only unbounded-mint fixture. SHA-256 of
+/// `sunrise.devnet.legacy.standard_asset.unbounded_mint.v1`.
+const LEGACY_STANDARD_ASSET_UNBOUNDED_MINT_MODULE_ID: ModuleId = ModuleId::new([
+    0xC2, 0xC7, 0x29, 0xD5, 0x9A, 0xBB, 0xD5, 0x50, 0xA9, 0xAE, 0xA5, 0xEA, 0xD6, 0xCB, 0x01, 0xC4,
+    0x3E, 0x5A, 0x46, 0x49, 0xEE, 0xBE, 0x77, 0x73, 0x8C, 0x7B, 0x11, 0x7B, 0x65, 0xF0, 0xFF, 0x8E,
+]);
+const LEGACY_STANDARD_ASSET_TRANSFER_MODULE_NAME: &str =
+    "sunrise.devnet.legacy.standard_asset.transfer.v1";
+const LEGACY_STANDARD_ASSET_SPLIT_MERGE_MODULE_NAME: &str =
+    "sunrise.devnet.legacy.standard_asset.split_merge.v1";
+const LEGACY_STANDARD_ASSET_UNBOUNDED_MINT_MODULE_NAME: &str =
+    "sunrise.devnet.legacy.standard_asset.unbounded_mint.v1";
+
+/// Version of the isolated whole-coin transfer development fixture.
 pub const STANDARD_ASSET_HISTORICAL_MODULE_VERSION: u64 = 1;
 
-/// Historical protocol-v5 transfer/split/merge module version.
-pub const STANDARD_ASSET_OPERATIONS_V2_MODULE_VERSION: u64 = 2;
+/// Version of the isolated transfer/split/merge development fixture.
+pub const STANDARD_ASSET_OPERATIONS_V2_MODULE_VERSION: u64 = 1;
 
-/// Active protocol-v5 Standard Asset operations module version.
-pub const STANDARD_ASSET_MODULE_VERSION: u64 = 3;
+/// Version of the isolated capability-authorized mint development fixture.
+pub const STANDARD_ASSET_OPERATIONS_V3_MODULE_VERSION: u64 = 1;
+
+/// Initial active canonical Standard Asset module version.
+pub const STANDARD_ASSET_MODULE_VERSION: u64 = 1;
 
 /// Exact encoded length of one `standard_assets::StandardAssetTransferArgsV1`
 /// frame: a 10-byte canonical frame header plus one 6-byte field header and a
@@ -154,34 +179,72 @@ const STANDARD_ASSET_V2_TRANSFER_OUTPUT_SCHEMA: &str = concat!(
     "event is emitted"
 );
 
-const STANDARD_ASSET_ACCESS_SEMANTICS: &str = "transfer and split use exactly two ordered Write Coin<A> inputs; merge uses primary Write Coin<A>, secondary Consume Coin<A>, and fee Write Coin<A>; mint uses Read MintCapability<A> index 0 and fee Write Coin<A> index 1. Each signature unifies exactly one asset identity A. The trusted fee-treasury Write is final and hidden from WASM. Transfer owner transition is node-core synthesized; split and mint each create exactly one recipient-owned Coin<A> under separate committed creation policies; merge creates none.";
-const STANDARD_ASSET_VALIDATION_FACTS: &str = concat!(
+const STANDARD_ASSET_V3_ACCESS_SEMANTICS: &str = "transfer and split use exactly two ordered Write Coin<A> inputs; merge uses primary Write Coin<A>, secondary Consume Coin<A>, and fee Write Coin<A>; mint uses Read MintCapability<A> index 0 and fee Write Coin<A> index 1. Each signature unifies exactly one asset identity A. The trusted fee-treasury Write is final and hidden from WASM. Transfer owner transition is node-core synthesized; split and mint each create exactly one recipient-owned Coin<A> under separate committed creation policies; merge creates none.";
+const STANDARD_ASSET_V3_VALIDATION_FACTS: &str = concat!(
     "transfer remains validation-only and its owner-only update is synthesized ",
     "by node-core. split, merge, and mint perform all checked Standard Asset ",
     "coin-body construction and u64 arithmetic in committed WASM. mint copies ",
     "the AssetId from the verified capability and the Coin<A> nominal type from ",
     "the verified fee coin; node-core never decodes balances or asset bodies"
 );
-const STANDARD_ASSET_TYPE_VARIABLE_LIMITATION: &str = concat!(
+const STANDARD_ASSET_V3_TYPE_VARIABLE_LIMITATION: &str = concat!(
     "abi carries at most one shared type variable per entrypoint signature, ",
     "so mint's MintCapability<A> and fee Coin<A> must name the same asset; a ",
     "distinct fee asset remains deliberately inexpressible in this module"
 );
-const STANDARD_ASSET_TREASURY_VISIBILITY_FACTS: &str = concat!(
+const STANDARD_ASSET_V3_TREASURY_VISIBILITY_FACTS: &str = concat!(
     "the fee-treasury object is excluded from module execution inputs and typed ",
     "entrypoint verification; boot seeding verifies its nominal Coin<A> type. ",
     "mint cannot observe or authorize treasury access"
 );
-const STANDARD_ASSET_TRANSFER_INPUT_DESCRIPTOR: &str =
+const STANDARD_ASSET_V3_TRANSFER_INPUT_DESCRIPTOR: &str =
     "sunrise.devnet.standard_asset.operations.input.v3";
-const STANDARD_ASSET_TRANSFER_OUTPUT_DESCRIPTOR: &str =
+const STANDARD_ASSET_V3_TRANSFER_OUTPUT_DESCRIPTOR: &str =
     "sunrise.devnet.standard_asset.operations.output.v3";
-const STANDARD_ASSET_TRANSFER_INPUT_SCHEMA: &str = "entrypoint-specific canonical args: TransferArgsV1(0x7104), SplitArgsV1(0x7105), MintArgsV1(0x7106), or empty merge args";
-const STANDARD_ASSET_TRANSFER_OUTPUT_SCHEMA: &str = concat!(
+const STANDARD_ASSET_V3_TRANSFER_INPUT_SCHEMA: &str = "entrypoint-specific canonical args: TransferArgsV1(0x7104), SplitArgsV1(0x7105), MintArgsV1(0x7106), or empty merge args";
+const STANDARD_ASSET_V3_TRANSFER_OUTPUT_SCHEMA: &str = concat!(
     "transfer: one synthesized owner-only Update; split: source Update plus one ",
     "recipient Coin<A> Create; merge: primary Update plus secondary Consume; ",
     "mint: exactly one recipient Coin<A> Create. Coin bodies use CanonicalStruct",
     "(0x7102,v1); no event is emitted"
+);
+
+const STANDARD_ASSET_ACCESS_SEMANTICS: &str = "transfer and split use exactly two ordered Write Coin<A> inputs; merge uses primary Write Coin<A>, secondary Consume Coin<A>, and fee Write Coin<A>; mint uses Write TreasuryCap<A> index 0 and fee Write Coin<A> index 1; burn uses Write TreasuryCap<A> index 0, Consume Coin<A> index 1, and fee Write Coin<A> index 2. Each signature unifies exactly one asset identity A. The trusted fee-treasury Write is final and hidden from WASM. Transfer owner transition is node-core synthesized; split and mint each create exactly one recipient-owned Coin<A> under separate committed creation policies; merge and burn create none.";
+const STANDARD_ASSET_VALIDATION_FACTS: &str = concat!(
+    "transfer remains validation-only and its owner-only update is synthesized ",
+    "by node-core. split, merge, mint, and burn perform all checked Standard ",
+    "Asset coin-body construction and u64 arithmetic in committed WASM. mint ",
+    "checked-adds the requested amount into the TreasuryCap<A>'s total_supply, ",
+    "rejects any amount that would exceed max_supply, and atomically mutates ",
+    "the cap alongside the one created Coin<A>, whose nominal type is copied ",
+    "from the verified fee coin; burn checked-subtracts a whole consumed ",
+    "coin's amount from the same cap and atomically mutates it alongside the ",
+    "coin's Consume; node-core never decodes balances, supply, or asset bodies"
+);
+const STANDARD_ASSET_TYPE_VARIABLE_LIMITATION: &str = concat!(
+    "abi carries at most one shared type variable per entrypoint signature, so ",
+    "mint's TreasuryCap<A> and fee Coin<A>, and burn's TreasuryCap<A>, consumed ",
+    "Coin<A>, and fee Coin<A>, must all name the same asset; a distinct fee ",
+    "asset remains deliberately inexpressible in this module"
+);
+const STANDARD_ASSET_TREASURY_VISIBILITY_FACTS: &str = concat!(
+    "the fee-treasury object is excluded from module execution inputs and typed ",
+    "entrypoint verification; boot seeding verifies its nominal Coin<A> type and ",
+    "the seeded TreasuryCap<A>'s nominal type. mint and burn cannot observe or ",
+    "authorize treasury access"
+);
+const STANDARD_ASSET_TRANSFER_INPUT_DESCRIPTOR: &str =
+    "sunrise.devnet.standard_asset.operations.input.v4";
+const STANDARD_ASSET_TRANSFER_OUTPUT_DESCRIPTOR: &str =
+    "sunrise.devnet.standard_asset.operations.output.v4";
+const STANDARD_ASSET_TRANSFER_INPUT_SCHEMA: &str = "entrypoint-specific canonical args: TransferArgsV1(0x7104), SplitArgsV1(0x7105), MintArgsV1(0x7106), or empty merge/burn args";
+const STANDARD_ASSET_TRANSFER_OUTPUT_SCHEMA: &str = concat!(
+    "transfer: one synthesized owner-only Update; split: source Update plus one ",
+    "recipient Coin<A> Create; merge: primary Update plus secondary Consume; ",
+    "mint: TreasuryCap<A> Update plus one recipient Coin<A> Create; burn: ",
+    "TreasuryCap<A> Update plus consumed Coin<A> Consume. Coin bodies use ",
+    "CanonicalStruct(0x7102,v1); cap bodies use CanonicalStruct(0x7107,v1); no ",
+    "event is emitted"
 );
 
 /// A fully reconciled preinstalled Standard Asset v1 module and the updated
@@ -408,8 +471,8 @@ pub fn build_standard_asset_module(
         MINT_ENTRYPOINT,
         vec![
             ParamDeclaration {
-                mode: AccessMode::Read,
-                constructor: STANDARD_ASSET_MINT_CAPABILITY_V1_CONSTRUCTOR,
+                mode: AccessMode::Write,
+                constructor: STANDARD_ASSET_TREASURY_CAP_V1_CONSTRUCTOR,
                 schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
             },
             ParamDeclaration {
@@ -422,8 +485,38 @@ pub fn build_standard_asset_module(
     .map_err(DevnetCatalogError::TypedAbi)?;
     let mint_typed_policy: PreinstalledTypedEntrypointPolicy =
         PreinstalledTypedEntrypointPolicy::new(
-            vec![coin_constructor, mint_capability_constructor_declaration()],
+            vec![
+                coin_constructor.clone(),
+                treasury_cap_constructor_declaration(),
+            ],
             mint_signature,
+        )
+        .map_err(DevnetCatalogError::NodeCore)?;
+    let burn_signature: EntrypointSignature = EntrypointSignature::new(
+        BURN_ENTRYPOINT,
+        vec![
+            ParamDeclaration {
+                mode: AccessMode::Write,
+                constructor: STANDARD_ASSET_TREASURY_CAP_V1_CONSTRUCTOR,
+                schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+            },
+            ParamDeclaration {
+                mode: AccessMode::Consume,
+                constructor: STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
+                schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+            },
+            ParamDeclaration {
+                mode: AccessMode::Write,
+                constructor: STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
+                schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+            },
+        ],
+    )
+    .map_err(DevnetCatalogError::TypedAbi)?;
+    let burn_typed_policy: PreinstalledTypedEntrypointPolicy =
+        PreinstalledTypedEntrypointPolicy::new(
+            vec![coin_constructor, treasury_cap_constructor_declaration()],
+            burn_signature,
         )
         .map_err(DevnetCatalogError::NodeCore)?;
     let owner_transition_policy: PreinstalledOwnerTransitionPolicy =
@@ -464,6 +557,7 @@ pub fn build_standard_asset_module(
                 split_typed_policy,
                 merge_typed_policy,
                 mint_typed_policy,
+                burn_typed_policy,
             ],
             vec![owner_transition_policy],
             vec![split_creation_policy, mint_creation_policy],
@@ -487,13 +581,33 @@ pub fn build_standard_asset_module(
         .system_modules
         .add_module(historical_module)
         .map_err(DevnetCatalogError::SystemModule)?;
+
+    // The discarded split/merge and unbounded-mint fixtures were built under
+    // protocol version 5. Keep their regression commitments under that exact
+    // resolver rather than reinterpreting them under the active protocol-v6
+    // hash frame. Their separate legacy module IDs make this test history, not
+    // a compatibility claim on the canonical Standard Asset version line.
+    let historical_resolver_v5: HashSuiteResolver = HashSuiteResolver::new(
+        chain_id.clone(),
+        ProtocolVersion::new(5),
+        protocol_config.hash_suite_schedule.entries().to_vec(),
+    )
+    .map_err(DevnetCatalogError::Hashing)?;
     let (historical_v2_module, historical_v2_entry): (
         SystemModule,
         PreinstalledModuleCatalogEntry,
-    ) = build_historical_standard_asset_v2(&commitment_resolver, epoch)?;
+    ) = build_historical_standard_asset_v2(&historical_resolver_v5, epoch)?;
     protocol_config
         .system_modules
         .add_module(historical_v2_module)
+        .map_err(DevnetCatalogError::SystemModule)?;
+    let (historical_v3_module, historical_v3_entry): (
+        SystemModule,
+        PreinstalledModuleCatalogEntry,
+    ) = build_historical_standard_asset_v3(&historical_resolver_v5, epoch)?;
+    protocol_config
+        .system_modules
+        .add_module(historical_v3_module)
         .map_err(DevnetCatalogError::SystemModule)?;
 
     let module: SystemModule = SystemModule {
@@ -527,9 +641,13 @@ pub fn build_standard_asset_module(
         semantics_envelope,
     )
     .map_err(DevnetCatalogError::NodeCore)?;
-    let catalog: PreinstalledModuleCatalog =
-        PreinstalledModuleCatalog::new(vec![historical_entry, historical_v2_entry, entry])
-            .map_err(DevnetCatalogError::NodeCore)?;
+    let catalog: PreinstalledModuleCatalog = PreinstalledModuleCatalog::new(vec![
+        historical_entry,
+        historical_v2_entry,
+        historical_v3_entry,
+        entry,
+    ])
+    .map_err(DevnetCatalogError::NodeCore)?;
     reconcile_preinstalled_registry_and_catalog(
         &protocol_config.system_modules,
         &catalog,
@@ -556,13 +674,7 @@ pub fn build_standard_asset_module(
     })
 }
 
-/// Builds the byte-for-byte protocol-v4 Standard Asset v1 catalog record.
-///
-/// The active v5 registry intentionally retains this entry as `Disabled`:
-/// it is archival executable material, not a v5 callable module. A v4
-/// protocol configuration uses this exact catalog entry with a v4 resolver
-/// and its then-active v1 registry entry, so no digest is reinterpreted under
-/// the v5 protocol frame.
+/// Builds the isolated transfer-only development fixture catalog record.
 fn build_historical_standard_asset_v1(
     resolver: &HashSuiteResolver,
     epoch: Epoch,
@@ -580,7 +692,7 @@ fn build_historical_standard_asset_v1(
         STANDARD_ASSET_V1_TRANSFER_OUTPUT_SCHEMA,
     )?;
     let manifest: SystemModuleManifest = SystemModuleManifest {
-        module_id: STANDARD_ASSET_MODULE_ID,
+        module_id: LEGACY_STANDARD_ASSET_TRANSFER_MODULE_ID,
         input_schema,
         output_schema,
         max_input_size: STANDARD_ASSET_TRANSFER_MAX_INPUT_SIZE,
@@ -647,7 +759,7 @@ fn build_historical_standard_asset_v1(
         .hash_for_purpose(epoch, HashPurpose::SystemModuleManifest, &semantics_bytes)
         .map_err(DevnetCatalogError::Hashing)?;
     let module: SystemModule = SystemModule {
-        module_id: STANDARD_ASSET_MODULE_ID,
+        module_id: LEGACY_STANDARD_ASSET_TRANSFER_MODULE_ID,
         version: STANDARD_ASSET_HISTORICAL_MODULE_VERSION,
         canonical_code_hash: code_hash,
         semantics_hash,
@@ -656,7 +768,7 @@ fn build_historical_standard_asset_v1(
         status: ModuleStatus::Disabled,
     };
     let entry: PreinstalledModuleCatalogEntry = PreinstalledModuleCatalogEntry::new(
-        STANDARD_ASSET_MODULE_ID,
+        LEGACY_STANDARD_ASSET_TRANSFER_MODULE_ID,
         STANDARD_ASSET_HISTORICAL_MODULE_VERSION,
         wasm_bytes,
         manifest,
@@ -666,7 +778,7 @@ fn build_historical_standard_asset_v1(
     Ok((module, entry))
 }
 
-/// Builds the byte-for-byte protocol-v5 module-v2 catalog record containing
+/// Builds the isolated split/merge development fixture catalog record containing
 /// transfer, split, and merge but no mint entrypoint.
 fn build_historical_standard_asset_v2(
     resolver: &HashSuiteResolver,
@@ -685,7 +797,7 @@ fn build_historical_standard_asset_v2(
         STANDARD_ASSET_V2_TRANSFER_OUTPUT_SCHEMA,
     )?;
     let manifest: SystemModuleManifest = SystemModuleManifest {
-        module_id: STANDARD_ASSET_MODULE_ID,
+        module_id: LEGACY_STANDARD_ASSET_SPLIT_MERGE_MODULE_ID,
         input_schema,
         output_schema,
         max_input_size: STANDARD_ASSET_MODULE_MAX_INPUT_SIZE,
@@ -803,7 +915,7 @@ fn build_historical_standard_asset_v2(
         .hash_for_purpose(epoch, HashPurpose::SystemModuleManifest, &semantics_bytes)
         .map_err(DevnetCatalogError::Hashing)?;
     let module: SystemModule = SystemModule {
-        module_id: STANDARD_ASSET_MODULE_ID,
+        module_id: LEGACY_STANDARD_ASSET_SPLIT_MERGE_MODULE_ID,
         version: STANDARD_ASSET_OPERATIONS_V2_MODULE_VERSION,
         canonical_code_hash: code_hash,
         semantics_hash,
@@ -812,8 +924,198 @@ fn build_historical_standard_asset_v2(
         status: ModuleStatus::Disabled,
     };
     let entry: PreinstalledModuleCatalogEntry = PreinstalledModuleCatalogEntry::new(
-        STANDARD_ASSET_MODULE_ID,
+        LEGACY_STANDARD_ASSET_SPLIT_MERGE_MODULE_ID,
         STANDARD_ASSET_OPERATIONS_V2_MODULE_VERSION,
+        wasm_bytes,
+        manifest,
+        semantics_envelope,
+    )
+    .map_err(DevnetCatalogError::NodeCore)?;
+    Ok((module, entry))
+}
+
+/// Builds the isolated unbounded-mint development fixture catalog record containing
+/// `transfer`, `split`, `merge`, and the frozen capability-authorized `mint`.
+/// The executable behavior is kept for regression coverage without extending
+/// the canonical Standard Asset module's version line.
+fn build_historical_standard_asset_v3(
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+) -> Result<(SystemModule, PreinstalledModuleCatalogEntry), DevnetCatalogError> {
+    let input_schema: TypeSchema = build_schema(
+        resolver,
+        epoch,
+        STANDARD_ASSET_V3_TRANSFER_INPUT_DESCRIPTOR,
+        STANDARD_ASSET_V3_TRANSFER_INPUT_SCHEMA,
+    )?;
+    let output_schema: TypeSchema = build_schema(
+        resolver,
+        epoch,
+        STANDARD_ASSET_V3_TRANSFER_OUTPUT_DESCRIPTOR,
+        STANDARD_ASSET_V3_TRANSFER_OUTPUT_SCHEMA,
+    )?;
+    let manifest: SystemModuleManifest = SystemModuleManifest {
+        module_id: LEGACY_STANDARD_ASSET_UNBOUNDED_MINT_MODULE_ID,
+        input_schema,
+        output_schema,
+        max_input_size: STANDARD_ASSET_MODULE_MAX_INPUT_SIZE,
+        gas_model: GasModel {
+            base_cost: 1,
+            per_input_byte_cost: 1,
+        },
+        zk_hint: None,
+    };
+    manifest
+        .validate()
+        .map_err(DevnetCatalogError::SystemModule)?;
+    let wasm_bytes: Vec<u8> = crate::standard_asset::STANDARD_ASSET_OPERATIONS_V3_WASM.to_vec();
+    let code_hash: Digest32 = resolver
+        .hash_for_purpose(epoch, HashPurpose::ContractCode, &wasm_bytes)
+        .map_err(DevnetCatalogError::Hashing)?;
+    let manifest_bytes: Vec<u8> =
+        encode_system_module_manifest(&manifest).map_err(DevnetCatalogError::SystemModule)?;
+    let manifest_hash: Digest32 = resolver
+        .hash_for_purpose(epoch, HashPurpose::SystemModuleManifest, &manifest_bytes)
+        .map_err(DevnetCatalogError::Hashing)?;
+
+    let coin_constructor: ConstructorDeclaration = coin_constructor_declaration();
+    let transfer_signature: EntrypointSignature = EntrypointSignature::new(
+        TRANSFER_ENTRYPOINT,
+        vec![
+            ParamDeclaration {
+                mode: AccessMode::Write,
+                constructor: STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
+                schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+            },
+            ParamDeclaration {
+                mode: AccessMode::Write,
+                constructor: STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
+                schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+            },
+        ],
+    )
+    .map_err(DevnetCatalogError::TypedAbi)?;
+    let split_signature: EntrypointSignature = EntrypointSignature::new(
+        SPLIT_ENTRYPOINT,
+        vec![
+            ParamDeclaration {
+                mode: AccessMode::Write,
+                constructor: STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
+                schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+            },
+            ParamDeclaration {
+                mode: AccessMode::Write,
+                constructor: STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
+                schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+            },
+        ],
+    )
+    .map_err(DevnetCatalogError::TypedAbi)?;
+    let merge_signature: EntrypointSignature = EntrypointSignature::new(
+        MERGE_ENTRYPOINT,
+        vec![
+            ParamDeclaration {
+                mode: AccessMode::Write,
+                constructor: STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
+                schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+            },
+            ParamDeclaration {
+                mode: AccessMode::Consume,
+                constructor: STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
+                schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+            },
+            ParamDeclaration {
+                mode: AccessMode::Write,
+                constructor: STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
+                schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+            },
+        ],
+    )
+    .map_err(DevnetCatalogError::TypedAbi)?;
+    let mint_signature: EntrypointSignature = EntrypointSignature::new(
+        MINT_ENTRYPOINT,
+        vec![
+            ParamDeclaration {
+                mode: AccessMode::Read,
+                constructor: STANDARD_ASSET_MINT_CAPABILITY_V1_CONSTRUCTOR,
+                schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+            },
+            ParamDeclaration {
+                mode: AccessMode::Write,
+                constructor: STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
+                schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+            },
+        ],
+    )
+    .map_err(DevnetCatalogError::TypedAbi)?;
+    let typed_policies: Vec<PreinstalledTypedEntrypointPolicy> = vec![
+        PreinstalledTypedEntrypointPolicy::new(vec![coin_constructor.clone()], transfer_signature)
+            .map_err(DevnetCatalogError::NodeCore)?,
+        PreinstalledTypedEntrypointPolicy::new(vec![coin_constructor.clone()], split_signature)
+            .map_err(DevnetCatalogError::NodeCore)?,
+        PreinstalledTypedEntrypointPolicy::new(vec![coin_constructor.clone()], merge_signature)
+            .map_err(DevnetCatalogError::NodeCore)?,
+        PreinstalledTypedEntrypointPolicy::new(
+            vec![coin_constructor, mint_capability_constructor_declaration()],
+            mint_signature,
+        )
+        .map_err(DevnetCatalogError::NodeCore)?,
+    ];
+    let owner_transition_policy: PreinstalledOwnerTransitionPolicy =
+        PreinstalledOwnerTransitionPolicy::new(
+            TRANSFER_ENTRYPOINT.to_string(),
+            0,
+            STANDARD_ASSET_TRANSFER_ARGS_V1_TYPE_ID,
+            RECIPIENT_ARGS_ENCODING_VERSION,
+            TRANSFER_RECIPIENT_ARGS_FIELD_ID,
+        )
+        .map_err(DevnetCatalogError::NodeCore)?;
+    let split_creation_policy: PreinstalledObjectCreationPolicy =
+        PreinstalledObjectCreationPolicy::new(
+            SPLIT_ENTRYPOINT.to_string(),
+            0,
+            STANDARD_ASSET_SPLIT_ARGS_V1_TYPE_ID,
+            RECIPIENT_ARGS_ENCODING_VERSION,
+            SPLIT_RECIPIENT_ARGS_FIELD_ID,
+            vec![1, 2],
+        )
+        .map_err(DevnetCatalogError::NodeCore)?;
+    let mint_creation_policy: PreinstalledObjectCreationPolicy =
+        PreinstalledObjectCreationPolicy::new(
+            MINT_ENTRYPOINT.to_string(),
+            1,
+            STANDARD_ASSET_MINT_ARGS_V1_TYPE_ID,
+            RECIPIENT_ARGS_ENCODING_VERSION,
+            MINT_RECIPIENT_ARGS_FIELD_ID,
+            vec![1, 2],
+        )
+        .map_err(DevnetCatalogError::NodeCore)?;
+    let semantics_envelope: PreinstalledModuleSemanticsEnvelope =
+        PreinstalledModuleSemanticsEnvelope::with_all_policies(
+            encode_standard_asset_v3_semantics()?,
+            Vec::new(),
+            typed_policies,
+            vec![owner_transition_policy],
+            vec![split_creation_policy, mint_creation_policy],
+        )
+        .map_err(DevnetCatalogError::NodeCore)?;
+    let semantics_bytes: Vec<u8> = encode_preinstalled_semantics_envelope(&semantics_envelope)
+        .map_err(DevnetCatalogError::NodeCore)?;
+    let semantics_hash: Digest32 = resolver
+        .hash_for_purpose(epoch, HashPurpose::SystemModuleManifest, &semantics_bytes)
+        .map_err(DevnetCatalogError::Hashing)?;
+    let module: SystemModule = SystemModule {
+        module_id: LEGACY_STANDARD_ASSET_UNBOUNDED_MINT_MODULE_ID,
+        version: STANDARD_ASSET_OPERATIONS_V3_MODULE_VERSION,
+        canonical_code_hash: code_hash,
+        semantics_hash,
+        manifest_hash,
+        activation_epoch: Epoch::new(0),
+        status: ModuleStatus::Disabled,
+    };
+    let entry: PreinstalledModuleCatalogEntry = PreinstalledModuleCatalogEntry::new(
+        LEGACY_STANDARD_ASSET_UNBOUNDED_MINT_MODULE_ID,
+        STANDARD_ASSET_OPERATIONS_V3_MODULE_VERSION,
         wasm_bytes,
         manifest,
         semantics_envelope,
@@ -897,13 +1199,13 @@ fn encode_standard_asset_v2_semantics() -> Result<Vec<u8>, DevnetCatalogError> {
         STANDARD_ASSET_SEMANTICS_ENCODING_VERSION,
     );
     canonical
-        .field_bytes(1, STANDARD_ASSET_MODULE_ID.as_bytes())
+        .field_bytes(1, LEGACY_STANDARD_ASSET_SPLIT_MERGE_MODULE_ID.as_bytes())
         .map_err(DevnetCatalogError::CanonicalEncoding)?;
     canonical
         .field_u64(2, STANDARD_ASSET_OPERATIONS_V2_MODULE_VERSION)
         .map_err(DevnetCatalogError::CanonicalEncoding)?;
     canonical
-        .field_str(3, MODULE_NAME)
+        .field_str(3, LEGACY_STANDARD_ASSET_SPLIT_MERGE_MODULE_NAME)
         .map_err(DevnetCatalogError::CanonicalEncoding)?;
     canonical
         .field_str(4, TRANSFER_ENTRYPOINT)
@@ -925,6 +1227,44 @@ fn encode_standard_asset_v2_semantics() -> Result<Vec<u8>, DevnetCatalogError> {
         .map_err(DevnetCatalogError::CanonicalEncoding)
 }
 
+/// Encodes the immutable protocol-v5 module-v3 semantics declaration (frozen
+/// capability-authorized mint). Keep this separate from
+/// [`encode_standard_asset_semantics`]: even a prose cleanup changes the
+/// governance commitment of this now-historical module reference.
+fn encode_standard_asset_v3_semantics() -> Result<Vec<u8>, DevnetCatalogError> {
+    let mut canonical: CanonicalStruct = CanonicalStruct::new(
+        STANDARD_ASSET_SEMANTICS_DECLARATION_TYPE_ID,
+        STANDARD_ASSET_SEMANTICS_ENCODING_VERSION,
+    );
+    canonical
+        .field_bytes(1, LEGACY_STANDARD_ASSET_UNBOUNDED_MINT_MODULE_ID.as_bytes())
+        .map_err(DevnetCatalogError::CanonicalEncoding)?;
+    canonical
+        .field_u64(2, STANDARD_ASSET_OPERATIONS_V3_MODULE_VERSION)
+        .map_err(DevnetCatalogError::CanonicalEncoding)?;
+    canonical
+        .field_str(3, LEGACY_STANDARD_ASSET_UNBOUNDED_MINT_MODULE_NAME)
+        .map_err(DevnetCatalogError::CanonicalEncoding)?;
+    canonical
+        .field_str(4, TRANSFER_ENTRYPOINT)
+        .map_err(DevnetCatalogError::CanonicalEncoding)?;
+    canonical
+        .field_str(5, STANDARD_ASSET_V3_ACCESS_SEMANTICS)
+        .map_err(DevnetCatalogError::CanonicalEncoding)?;
+    canonical
+        .field_str(6, STANDARD_ASSET_V3_VALIDATION_FACTS)
+        .map_err(DevnetCatalogError::CanonicalEncoding)?;
+    canonical
+        .field_str(7, STANDARD_ASSET_V3_TYPE_VARIABLE_LIMITATION)
+        .map_err(DevnetCatalogError::CanonicalEncoding)?;
+    canonical
+        .field_str(8, STANDARD_ASSET_V3_TREASURY_VISIBILITY_FACTS)
+        .map_err(DevnetCatalogError::CanonicalEncoding)?;
+    canonical
+        .finish()
+        .map_err(DevnetCatalogError::CanonicalEncoding)
+}
+
 /// Encodes the original protocol-v4 Standard Asset v1 semantics declaration.
 ///
 /// Keep this separate from [`encode_standard_asset_semantics`]: even a prose
@@ -935,13 +1275,13 @@ fn encode_standard_asset_v1_semantics() -> Result<Vec<u8>, DevnetCatalogError> {
         STANDARD_ASSET_SEMANTICS_ENCODING_VERSION,
     );
     canonical
-        .field_bytes(1, STANDARD_ASSET_MODULE_ID.as_bytes())
+        .field_bytes(1, LEGACY_STANDARD_ASSET_TRANSFER_MODULE_ID.as_bytes())
         .map_err(DevnetCatalogError::CanonicalEncoding)?;
     canonical
         .field_u64(2, STANDARD_ASSET_HISTORICAL_MODULE_VERSION)
         .map_err(DevnetCatalogError::CanonicalEncoding)?;
     canonical
-        .field_str(3, MODULE_NAME)
+        .field_str(3, LEGACY_STANDARD_ASSET_TRANSFER_MODULE_NAME)
         .map_err(DevnetCatalogError::CanonicalEncoding)?;
     canonical
         .field_str(4, TRANSFER_ENTRYPOINT)
@@ -1037,7 +1377,7 @@ impl Error for DevnetCatalogError {
 mod tests {
     use super::*;
     use crate::{
-        genesis::build_devnet_protocol_context, standard_asset::STANDARD_ASSET_TRANSFER_WASM,
+        genesis::build_devnet_protocol_context, standard_asset::STANDARD_ASSET_MODULE_WASM,
     };
 
     fn module() -> DevnetAssetModule {
@@ -1051,18 +1391,33 @@ mod tests {
         let chain_id: ChainId = ChainId::new("sunrise-devnet-catalog-test").unwrap();
         let context: DevnetProtocolContext =
             build_devnet_protocol_context(chain_id, Epoch::new(7)).unwrap();
-        build_standard_asset_module(context, STANDARD_ASSET_TRANSFER_WASM.to_vec()).unwrap()
+        build_standard_asset_module(context, STANDARD_ASSET_MODULE_WASM.to_vec()).unwrap()
     }
 
     #[test]
-    fn semantics_declares_v3_module_mint_type_variable_and_treasury_facts() {
+    fn semantics_declares_canonical_v1_mint_burn_type_variable_and_treasury_facts() {
         let bytes: Vec<u8> = encode_standard_asset_semantics().unwrap();
+        let text: String = String::from_utf8_lossy(&bytes).into_owned();
+        assert!(text.contains("transfer remains validation-only"));
+        assert!(text.contains("split, merge, mint, and burn perform all checked"));
+        assert!(text.contains("TreasuryCap<A> and fee Coin<A>"));
+        assert!(text.contains("checked-adds the requested amount"));
+        assert!(text.contains("checked-subtracts a whole consumed"));
+        assert!(text.contains("excluded from module execution inputs"));
+        assert!(text.contains("mint and burn cannot observe"));
+    }
+
+    #[test]
+    fn historical_v3_semantics_retains_frozen_mint_capability_text() {
+        let bytes: Vec<u8> = encode_standard_asset_v3_semantics().unwrap();
         let text: String = String::from_utf8_lossy(&bytes).into_owned();
         assert!(text.contains("transfer remains validation-only"));
         assert!(text.contains("split, merge, and mint perform all checked"));
         assert!(text.contains("MintCapability<A> and fee Coin<A>"));
         assert!(text.contains("excluded from module execution inputs"));
         assert!(text.contains("mint cannot observe"));
+        assert!(!text.contains("TreasuryCap"));
+        assert!(!text.contains("burn"));
     }
 
     #[test]
@@ -1110,17 +1465,17 @@ mod tests {
             .catalog()
             .get(STANDARD_ASSET_MODULE_ID, STANDARD_ASSET_MODULE_VERSION)
             .unwrap();
-        assert_eq!(entry.wasm_bytes(), STANDARD_ASSET_TRANSFER_WASM);
+        assert_eq!(entry.wasm_bytes(), STANDARD_ASSET_MODULE_WASM);
     }
 
     #[test]
-    fn v1_catalog_record_is_disabled_in_v5_but_resolves_under_its_v4_context() {
+    fn legacy_transfer_catalog_record_is_isolated_and_disabled() {
         let module: DevnetAssetModule = actual_asset_module();
         let archived: &SystemModule = module
             .protocol_config()
             .system_modules
             .get(
-                STANDARD_ASSET_MODULE_ID,
+                LEGACY_STANDARD_ASSET_TRANSFER_MODULE_ID,
                 STANDARD_ASSET_HISTORICAL_MODULE_VERSION,
             )
             .unwrap();
@@ -1128,7 +1483,7 @@ mod tests {
         let archived_entry: PreinstalledModuleCatalogEntry = module
             .catalog()
             .get(
-                STANDARD_ASSET_MODULE_ID,
+                LEGACY_STANDARD_ASSET_TRANSFER_MODULE_ID,
                 STANDARD_ASSET_HISTORICAL_MODULE_VERSION,
             )
             .unwrap()
@@ -1166,20 +1521,20 @@ mod tests {
     }
 
     #[test]
-    fn v2_catalog_record_remains_disabled_and_byte_exact() {
+    fn legacy_split_merge_catalog_record_is_disabled_and_byte_exact() {
         let module: DevnetAssetModule = actual_asset_module();
         let archived: &SystemModule = module
             .protocol_config()
             .system_modules
             .get(
-                STANDARD_ASSET_MODULE_ID,
+                LEGACY_STANDARD_ASSET_SPLIT_MERGE_MODULE_ID,
                 STANDARD_ASSET_OPERATIONS_V2_MODULE_VERSION,
             )
             .unwrap();
         let archived_entry: &PreinstalledModuleCatalogEntry = module
             .catalog()
             .get(
-                STANDARD_ASSET_MODULE_ID,
+                LEGACY_STANDARD_ASSET_SPLIT_MERGE_MODULE_ID,
                 STANDARD_ASSET_OPERATIONS_V2_MODULE_VERSION,
             )
             .unwrap();
@@ -1209,13 +1564,67 @@ mod tests {
     }
 
     #[test]
+    fn legacy_unbounded_mint_catalog_record_is_disabled_and_byte_exact() {
+        let module: DevnetAssetModule = actual_asset_module();
+        let archived: &SystemModule = module
+            .protocol_config()
+            .system_modules
+            .get(
+                LEGACY_STANDARD_ASSET_UNBOUNDED_MINT_MODULE_ID,
+                STANDARD_ASSET_OPERATIONS_V3_MODULE_VERSION,
+            )
+            .unwrap();
+        let archived_entry: &PreinstalledModuleCatalogEntry = module
+            .catalog()
+            .get(
+                LEGACY_STANDARD_ASSET_UNBOUNDED_MINT_MODULE_ID,
+                STANDARD_ASSET_OPERATIONS_V3_MODULE_VERSION,
+            )
+            .unwrap();
+        assert_eq!(archived.status, ModuleStatus::Disabled);
+        assert_eq!(
+            archived_entry.wasm_bytes(),
+            crate::standard_asset::STANDARD_ASSET_OPERATIONS_V3_WASM
+        );
+        assert_eq!(
+            crate::standard_asset::STANDARD_ASSET_OPERATIONS_V3_WASM,
+            wat::parse_str(crate::standard_asset::STANDARD_ASSET_OPERATIONS_V3_WAT).unwrap()
+        );
+        assert_eq!(
+            archived_entry
+                .semantics_envelope()
+                .typed_entrypoint_policies()
+                .len(),
+            4
+        );
+        let mint = archived_entry
+            .semantics_envelope()
+            .typed_entrypoint_policies()
+            .iter()
+            .find(|policy| policy.entrypoint() == MINT_ENTRYPOINT)
+            .unwrap();
+        assert_eq!(mint.signature().params()[0].mode, AccessMode::Read);
+        assert_eq!(
+            mint.signature().params()[0].constructor,
+            STANDARD_ASSET_MINT_CAPABILITY_V1_CONSTRUCTOR
+        );
+        assert_eq!(
+            archived_entry
+                .semantics_envelope()
+                .object_creation_policies()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
     fn v2_and_v3_commitments_are_pinned_under_protocol_v5() {
         let module: DevnetAssetModule = actual_asset_module();
         let v2: &SystemModule = module
             .protocol_config()
             .system_modules
             .get(
-                STANDARD_ASSET_MODULE_ID,
+                LEGACY_STANDARD_ASSET_SPLIT_MERGE_MODULE_ID,
                 STANDARD_ASSET_OPERATIONS_V2_MODULE_VERSION,
             )
             .unwrap();
@@ -1235,9 +1644,9 @@ mod tests {
             Digest32::new(
                 protocol_types::HashAlgorithmId::Sha2_256,
                 [
-                    0xcc, 0x0f, 0x0d, 0x94, 0x48, 0xc3, 0x21, 0x60, 0xfd, 0x4b, 0x34, 0x9f, 0xb4,
-                    0x39, 0x47, 0x1e, 0xf6, 0x54, 0x47, 0x19, 0x1b, 0xfb, 0x7d, 0x2b, 0xb7, 0x49,
-                    0xde, 0x56, 0xe8, 0xe0, 0x9f, 0x7b,
+                    0x24, 0xe1, 0x82, 0x28, 0x24, 0x5a, 0x35, 0xb3, 0x5d, 0x3d, 0x6c, 0xe8, 0xa0,
+                    0x0f, 0x8f, 0xa7, 0x17, 0x19, 0xa0, 0x40, 0x59, 0xf8, 0xe5, 0x2f, 0x35, 0x90,
+                    0x81, 0x14, 0x1e, 0x4e, 0xa5, 0x5a,
                 ],
             )
         );
@@ -1246,9 +1655,9 @@ mod tests {
             Digest32::new(
                 protocol_types::HashAlgorithmId::Sha2_256,
                 [
-                    0xcd, 0x69, 0xd3, 0xa2, 0xf6, 0x1b, 0x22, 0xe4, 0xa6, 0xc5, 0x52, 0x28, 0x42,
-                    0xce, 0x0e, 0x55, 0x91, 0x28, 0x3b, 0xed, 0x8c, 0x45, 0x9e, 0x64, 0xcb, 0x13,
-                    0xed, 0xb5, 0xa5, 0xcd, 0xdb, 0x3a,
+                    0xe2, 0x16, 0x08, 0xb0, 0x76, 0x5c, 0x30, 0x22, 0xfa, 0xd0, 0x3f, 0x03, 0xc8,
+                    0x12, 0x92, 0x6d, 0x77, 0xc6, 0xe5, 0xfc, 0xcd, 0x7a, 0x1d, 0x4c, 0x62, 0xc7,
+                    0x27, 0xc8, 0xca, 0x69, 0x58, 0xd7,
                 ],
             )
         );
@@ -1256,8 +1665,12 @@ mod tests {
         let v3: &SystemModule = module
             .protocol_config()
             .system_modules
-            .get(STANDARD_ASSET_MODULE_ID, STANDARD_ASSET_MODULE_VERSION)
+            .get(
+                LEGACY_STANDARD_ASSET_UNBOUNDED_MINT_MODULE_ID,
+                STANDARD_ASSET_OPERATIONS_V3_MODULE_VERSION,
+            )
             .unwrap();
+        assert_eq!(v3.status, ModuleStatus::Disabled);
         assert_eq!(
             v3.canonical_code_hash,
             Digest32::new(
@@ -1274,9 +1687,9 @@ mod tests {
             Digest32::new(
                 protocol_types::HashAlgorithmId::Sha2_256,
                 [
-                    0x0e, 0x0d, 0xec, 0x33, 0x87, 0x0a, 0x25, 0x3c, 0xe3, 0xdc, 0x94, 0x86, 0xad,
-                    0xba, 0x60, 0xc8, 0x1f, 0xef, 0xe6, 0xf9, 0x1c, 0xe8, 0xf4, 0x4c, 0x72, 0x53,
-                    0x3d, 0xb7, 0x1f, 0x42, 0x4c, 0xdc,
+                    0x06, 0xdc, 0xca, 0xc0, 0x32, 0x00, 0x2e, 0x96, 0xb0, 0x5c, 0x22, 0x4c, 0xce,
+                    0x62, 0x12, 0x2b, 0x07, 0x59, 0x04, 0xe5, 0x43, 0x1f, 0xeb, 0xf5, 0xe9, 0x6f,
+                    0x6f, 0x4e, 0xa4, 0x1e, 0xbb, 0x08,
                 ],
             )
         );
@@ -1285,9 +1698,9 @@ mod tests {
             Digest32::new(
                 protocol_types::HashAlgorithmId::Sha2_256,
                 [
-                    0x38, 0xf2, 0xa9, 0x5a, 0x8b, 0xc4, 0xe3, 0x45, 0xab, 0x2f, 0x4a, 0x0d, 0x6c,
-                    0x3c, 0xea, 0x15, 0x7f, 0x58, 0xd0, 0x5f, 0x40, 0xe3, 0x78, 0x92, 0x4e, 0x51,
-                    0x05, 0x63, 0x80, 0x98, 0xfa, 0x4d,
+                    0x3a, 0xec, 0x18, 0x0e, 0xa3, 0xb2, 0xef, 0xb1, 0x3d, 0x30, 0x9c, 0x36, 0x71,
+                    0x6f, 0x20, 0x9c, 0xe2, 0xc0, 0xf1, 0x0b, 0xf9, 0x98, 0xe8, 0xb3, 0x4e, 0x57,
+                    0x42, 0xf3, 0xcc, 0xc0, 0x65, 0x33,
                 ],
             )
         );
@@ -1300,7 +1713,7 @@ mod tests {
             .protocol_config()
             .system_modules
             .get(
-                STANDARD_ASSET_MODULE_ID,
+                LEGACY_STANDARD_ASSET_TRANSFER_MODULE_ID,
                 STANDARD_ASSET_HISTORICAL_MODULE_VERSION,
             )
             .unwrap();
@@ -1320,9 +1733,9 @@ mod tests {
             Digest32::new(
                 protocol_types::HashAlgorithmId::Sha2_256,
                 [
-                    0xca, 0x42, 0xb2, 0xf8, 0xc9, 0xb6, 0x14, 0x9d, 0x8f, 0x17, 0x47, 0xc0, 0x50,
-                    0xbf, 0xb8, 0xf1, 0xdb, 0x8d, 0xc8, 0x5d, 0xba, 0x0e, 0xdc, 0x07, 0x4e, 0x49,
-                    0x8a, 0xbf, 0xa7, 0x79, 0x8e, 0x92,
+                    0xcd, 0x46, 0xaa, 0xb4, 0x43, 0xe9, 0xb1, 0x06, 0x05, 0xf7, 0xbb, 0xb4, 0x4a,
+                    0xee, 0x82, 0x3d, 0xb4, 0x44, 0x52, 0xff, 0x2e, 0xc0, 0x02, 0xa1, 0xe8, 0x15,
+                    0x32, 0x63, 0x1b, 0x1e, 0xfd, 0x4b,
                 ],
             )
         );
@@ -1331,9 +1744,9 @@ mod tests {
             Digest32::new(
                 protocol_types::HashAlgorithmId::Sha2_256,
                 [
-                    0xb4, 0xe0, 0x91, 0xba, 0x98, 0xf8, 0x62, 0x51, 0x39, 0xcd, 0x98, 0x65, 0x0c,
-                    0x60, 0x13, 0xa3, 0x3a, 0x5c, 0xda, 0xea, 0x1b, 0x95, 0x32, 0x79, 0x11, 0xd3,
-                    0xd2, 0x7e, 0x3f, 0x53, 0x21, 0x0f,
+                    0x5d, 0x3e, 0xed, 0x2f, 0x5a, 0x24, 0x8e, 0xc2, 0xfb, 0xed, 0x80, 0x21, 0xe4,
+                    0x3f, 0xe4, 0xe8, 0x05, 0x86, 0x7b, 0x72, 0x52, 0x08, 0x70, 0x86, 0x2b, 0x35,
+                    0xf8, 0x8a, 0x1f, 0xc0, 0xc8, 0x44,
                 ],
             )
         );
@@ -1393,7 +1806,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_commits_exact_v3_typed_creation_and_owner_transition_policies() {
+    fn catalog_commits_exact_canonical_v1_typed_creation_and_owner_transition_policies() {
         let module: DevnetAssetModule = module();
         let entry: &PreinstalledModuleCatalogEntry = module
             .catalog()
@@ -1402,7 +1815,7 @@ mod tests {
         let envelope = entry.semantics_envelope();
 
         assert!(envelope.object_access_policies().is_empty());
-        assert_eq!(envelope.typed_entrypoint_policies().len(), 4);
+        assert_eq!(envelope.typed_entrypoint_policies().len(), 5);
         let transfer = envelope
             .typed_entrypoint_policies()
             .iter()
@@ -1433,14 +1846,35 @@ mod tests {
             .find(|policy| policy.entrypoint() == MINT_ENTRYPOINT)
             .unwrap();
         assert_eq!(mint.signature().params().len(), 2);
-        assert_eq!(mint.signature().params()[0].mode, AccessMode::Read);
+        assert_eq!(mint.signature().params()[0].mode, AccessMode::Write);
         assert_eq!(
             mint.signature().params()[0].constructor,
-            STANDARD_ASSET_MINT_CAPABILITY_V1_CONSTRUCTOR
+            STANDARD_ASSET_TREASURY_CAP_V1_CONSTRUCTOR
         );
         assert_eq!(mint.signature().params()[1].mode, AccessMode::Write);
         assert_eq!(
             mint.signature().params()[1].constructor,
+            STANDARD_ASSET_COIN_V1_CONSTRUCTOR
+        );
+        let burn = envelope
+            .typed_entrypoint_policies()
+            .iter()
+            .find(|policy| policy.entrypoint() == BURN_ENTRYPOINT)
+            .unwrap();
+        assert_eq!(burn.signature().params().len(), 3);
+        assert_eq!(burn.signature().params()[0].mode, AccessMode::Write);
+        assert_eq!(
+            burn.signature().params()[0].constructor,
+            STANDARD_ASSET_TREASURY_CAP_V1_CONSTRUCTOR
+        );
+        assert_eq!(burn.signature().params()[1].mode, AccessMode::Consume);
+        assert_eq!(
+            burn.signature().params()[1].constructor,
+            STANDARD_ASSET_COIN_V1_CONSTRUCTOR
+        );
+        assert_eq!(burn.signature().params()[2].mode, AccessMode::Write);
+        assert_eq!(
+            burn.signature().params()[2].constructor,
             STANDARD_ASSET_COIN_V1_CONSTRUCTOR
         );
 
@@ -1448,7 +1882,21 @@ mod tests {
         let owner = &envelope.owner_transition_policies()[0];
         assert_eq!(owner.entrypoint(), TRANSFER_ENTRYPOINT);
         assert_eq!(owner.transferred_access_index(), 0);
+        // burn has no owner-transition and no creation policy — identical to
+        // merge's precedent (a Consume-mode param plus zero policy commitments).
+        assert!(
+            !envelope
+                .owner_transition_policies()
+                .iter()
+                .any(|policy| policy.entrypoint() == BURN_ENTRYPOINT)
+        );
         assert_eq!(envelope.object_creation_policies().len(), 2);
+        assert!(
+            !envelope
+                .object_creation_policies()
+                .iter()
+                .any(|policy| policy.entrypoint() == BURN_ENTRYPOINT)
+        );
         let split_creation = envelope
             .object_creation_policies()
             .iter()

@@ -106,8 +106,8 @@ reproducible walkthrough for:
 
 - creating development-only sender, recipient, and treasury keys;
 - starting the loopback-only single-validator devnet;
-- submitting Standard Asset v1 transfer, split, merge, and local-devnet mint
-  operations with fees;
+- submitting Standard Asset v1 transfer, split, merge, bounded local-devnet
+  mint, and whole-coin burn operations with fees;
 - querying the receipt, objects, and next nonce; and
 - orderly restart and persisted-state comparison.
 

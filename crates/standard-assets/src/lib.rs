@@ -4,8 +4,8 @@
 //!
 //! This crate owns the general-purpose [`AssetId`] identifier (previously
 //! defined inside `fees`) and the strict canonical Standard Asset v1 object
-//! bodies: [`StandardAssetDefinitionV1`], [`StandardAssetCoinV1`], and
-//! [`StandardAssetMintCapabilityV1`]. Module activation, `Create`, owner
+//! bodies: [`StandardAssetDefinitionV1`], [`StandardAssetCoinV1`],
+//! [`StandardAssetMintCapabilityV1`], and [`StandardAssetTreasuryCapV1`]. Module activation, `Create`, owner
 //! transitions, CLI commands, minting, and fee integration remain outside this
 //! foundational crate. The local protocol-4 devnet activation is specified by
 //! DR-0107 and consumes these types without moving execution policy into this
@@ -16,10 +16,16 @@
 //! - `0x7100` — the canonical AssetId derivation input (private framing detail).
 //! - `0x7101` — [`StandardAssetDefinitionV1`].
 //! - `0x7102` — [`StandardAssetCoinV1`].
-//! - `0x7103` — [`StandardAssetMintCapabilityV1`].
+//! - `0x7103` — [`StandardAssetMintCapabilityV1`]. **Frozen**: this type and
+//!   every one of its encoding vectors are pinned exactly for the discarded
+//!   unbounded-mint development fixture and must never change again, even by a
+//!   documentation-only edit to its encoder or decoder. The canonical module
+//!   version 1 supply-controlled mint/burn uses the distinct
+//!   [`StandardAssetTreasuryCapV1`] (`0x7107`) instead.
 //! - `0x7104` — [`StandardAssetTransferArgsV1`].
 //! - `0x7105` — [`StandardAssetSplitArgsV1`].
 //! - `0x7106` — [`StandardAssetMintArgsV1`].
+//! - `0x7107` — [`StandardAssetTreasuryCapV1`].
 //!
 //! See `docs/architecture/decisions/0104-asset-standards-gate.md` for the
 //! full identifier audit and the activation boundary for this slice.
@@ -70,6 +76,8 @@ pub const STANDARD_ASSET_TRANSFER_ARGS_V1_TYPE_ID: u16 = 0x7104;
 pub const STANDARD_ASSET_SPLIT_ARGS_V1_TYPE_ID: u16 = 0x7105;
 /// Stable canonical type identifier for [`StandardAssetMintArgsV1`].
 pub const STANDARD_ASSET_MINT_ARGS_V1_TYPE_ID: u16 = 0x7106;
+/// Stable canonical type identifier for [`StandardAssetTreasuryCapV1`].
+pub const STANDARD_ASSET_TREASURY_CAP_V1_TYPE_ID: u16 = 0x7107;
 
 /// Errors returned by Standard Asset v1 helpers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +92,17 @@ pub enum StandardAssetError {
     ZeroCreationSeed,
     /// A Standard Asset v1 coin amount must be explicitly non-zero.
     ZeroCoinAmount,
+    /// A Standard Asset v1 treasury cap's max supply must be explicitly
+    /// non-zero.
+    ZeroMaxSupply,
+    /// A Standard Asset v1 treasury cap's total supply exceeded its own max
+    /// supply.
+    TotalSupplyExceedsMaxSupply {
+        /// The cap's recorded total supply.
+        total_supply: u64,
+        /// The cap's recorded max supply.
+        max_supply: u64,
+    },
     /// A decoded hash algorithm identifier is unknown.
     UnknownHashAlgorithm(TypeError),
     /// The recomputed asset identifier did not match the stored value.
@@ -135,6 +154,16 @@ impl fmt::Display for StandardAssetError {
             ),
             Self::ZeroCreationSeed => write!(f, "asset creation seed must not be all zeroes"),
             Self::ZeroCoinAmount => write!(f, "standard asset coin amount must be non-zero"),
+            Self::ZeroMaxSupply => {
+                write!(f, "standard asset treasury cap max supply must be non-zero")
+            }
+            Self::TotalSupplyExceedsMaxSupply {
+                total_supply,
+                max_supply,
+            } => write!(
+                f,
+                "standard asset treasury cap total supply {total_supply} exceeds max supply {max_supply}"
+            ),
             Self::UnknownHashAlgorithm(error) => error.fmt(f),
             Self::AssetIdMismatch { expected, actual } => write!(
                 f,
@@ -540,6 +569,94 @@ pub fn decode_standard_asset_mint_capability_v1(
     })
 }
 
+/// A Standard Asset v1 supply-controlled treasury capability.
+///
+/// Distinct from the frozen, unbounded, read-only
+/// [`StandardAssetMintCapabilityV1`] (`0x7103`): possession authorizes
+/// bounded minting and whole-coin burning for exactly one asset, and the
+/// canonical module version 1 mint/burn entrypoints mutate this body in
+/// place — `total_supply` tracks every coin unit ever minted minus every
+/// unit ever burned, and must never exceed `max_supply`. `max_supply` itself
+/// is fixed at seed time; this slice defines no capability to raise it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StandardAssetTreasuryCapV1 {
+    asset_id: AssetId,
+    total_supply: u64,
+    max_supply: u64,
+}
+
+impl StandardAssetTreasuryCapV1 {
+    /// Creates a treasury cap, rejecting a zero `max_supply` or a
+    /// `total_supply` that exceeds it.
+    pub fn new(
+        asset_id: AssetId,
+        total_supply: u64,
+        max_supply: u64,
+    ) -> Result<Self, StandardAssetError> {
+        if max_supply == 0 {
+            return Err(StandardAssetError::ZeroMaxSupply);
+        }
+        if total_supply > max_supply {
+            return Err(StandardAssetError::TotalSupplyExceedsMaxSupply {
+                total_supply,
+                max_supply,
+            });
+        }
+        Ok(Self {
+            asset_id,
+            total_supply,
+            max_supply,
+        })
+    }
+
+    /// Returns the capability's asset identifier.
+    #[must_use]
+    pub const fn asset_id(&self) -> AssetId {
+        self.asset_id
+    }
+
+    /// Returns the currently recorded total supply.
+    #[must_use]
+    pub const fn total_supply(&self) -> u64 {
+        self.total_supply
+    }
+
+    /// Returns the fixed maximum supply.
+    #[must_use]
+    pub const fn max_supply(&self) -> u64 {
+        self.max_supply
+    }
+}
+
+/// Encodes a Standard Asset v1 treasury cap.
+pub fn encode_standard_asset_treasury_cap_v1(
+    cap: &StandardAssetTreasuryCapV1,
+) -> Result<Vec<u8>, StandardAssetError> {
+    let mut canonical =
+        CanonicalStruct::new(STANDARD_ASSET_TREASURY_CAP_V1_TYPE_ID, ENCODING_VERSION);
+    canonical.field_bytes(1, encode_asset_id(&cap.asset_id)?)?;
+    canonical.field_u64(2, cap.total_supply)?;
+    canonical.field_u64(3, cap.max_supply)?;
+    Ok(canonical.finish()?)
+}
+
+/// Decodes one canonical Standard Asset v1 treasury cap without changing its
+/// stable encoding. Rejects wrong type/version, missing/unknown fields,
+/// malformed lengths, a zero max supply, a total supply exceeding max supply,
+/// and trailing bytes.
+pub fn decode_standard_asset_treasury_cap_v1(
+    input: &[u8],
+) -> Result<StandardAssetTreasuryCapV1, StandardAssetError> {
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(input)?;
+    frame.require_type(STANDARD_ASSET_TREASURY_CAP_V1_TYPE_ID)?;
+    frame.require_version(ENCODING_VERSION)?;
+    frame.require_only_fields(&[1, 2, 3])?;
+    let asset_id = decode_asset_id(frame.required_field(1)?)?;
+    let total_supply = frame.required_u64(2)?;
+    let max_supply = frame.required_u64(3)?;
+    StandardAssetTreasuryCapV1::new(asset_id, total_supply, max_supply)
+}
+
 /// Canonical, strict arguments for one Standard Asset v1 whole-coin transfer:
 /// the sole field is the new owner's [`Address`].
 ///
@@ -740,6 +857,10 @@ pub const STANDARD_ASSET_COIN_V1_CONSTRUCTOR: abi::ConstructorId =
 /// [`STANDARD_ASSET_DEFINITION_V1_CONSTRUCTOR`]).
 pub const STANDARD_ASSET_MINT_CAPABILITY_V1_CONSTRUCTOR: abi::ConstructorId =
     abi::ConstructorId::new(STANDARD_ASSET_MINT_CAPABILITY_V1_TYPE_ID);
+/// `abi` constructor identifier for [`StandardAssetTreasuryCapV1`] (see
+/// [`STANDARD_ASSET_DEFINITION_V1_CONSTRUCTOR`]).
+pub const STANDARD_ASSET_TREASURY_CAP_V1_CONSTRUCTOR: abi::ConstructorId =
+    abi::ConstructorId::new(STANDARD_ASSET_TREASURY_CAP_V1_TYPE_ID);
 
 /// The fixed-depth canonical body projection shared by all three Standard
 /// Asset v1 bodies: unwrap `body_type_id`'s field 1 (the nested encoded
@@ -792,9 +913,24 @@ pub fn mint_capability_constructor_declaration() -> abi::ConstructorDeclaration 
     }
 }
 
+/// Builds the canonical [`abi::ConstructorDeclaration`] for
+/// [`StandardAssetTreasuryCapV1`], shared by [`constructor_registry`] and
+/// committed typed mint/burn-entrypoint policies.
+#[must_use]
+pub fn treasury_cap_constructor_declaration() -> abi::ConstructorDeclaration {
+    abi::ConstructorDeclaration {
+        id: STANDARD_ASSET_TREASURY_CAP_V1_CONSTRUCTOR,
+        body_type_id: STANDARD_ASSET_TREASURY_CAP_V1_TYPE_ID,
+        body_version: ENCODING_VERSION,
+        schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+        arity: abi::TypeArity::Variable,
+        projection: asset_id_projection(STANDARD_ASSET_TREASURY_CAP_V1_TYPE_ID),
+    }
+}
+
 /// Builds the deterministic Standard Asset v1 constructor registry.
 ///
-/// Registers exactly the three constructors above; registration order does
+/// Registers exactly the four constructors above; registration order does
 /// not affect the result, since [`abi::ConstructorRegistry`] iterates in
 /// stable [`abi::ConstructorId`] order. Fails only if the compiled-in
 /// declarations were ever made internally inconsistent or colliding, which
@@ -811,6 +947,7 @@ pub fn constructor_registry() -> Result<abi::ConstructorRegistry, StandardAssetE
     })?;
     registry.register(coin_constructor_declaration())?;
     registry.register(mint_capability_constructor_declaration())?;
+    registry.register(treasury_cap_constructor_declaration())?;
     Ok(registry)
 }
 
@@ -838,6 +975,16 @@ pub fn coin_type_tag(asset_id: AssetId) -> abi::TypeTag {
 pub fn mint_capability_type_tag(asset_id: AssetId) -> abi::TypeTag {
     abi::TypeTag {
         constructor: STANDARD_ASSET_MINT_CAPABILITY_V1_CONSTRUCTOR,
+        type_arg: Some(abi::TypeArg::AssetId(*asset_id.as_bytes())),
+    }
+}
+
+/// Builds the canonical [`StandardAssetTreasuryCapV1`] type tag for
+/// `asset_id`.
+#[must_use]
+pub fn treasury_cap_type_tag(asset_id: AssetId) -> abi::TypeTag {
+    abi::TypeTag {
+        constructor: STANDARD_ASSET_TREASURY_CAP_V1_CONSTRUCTOR,
         type_arg: Some(abi::TypeArg::AssetId(*asset_id.as_bytes())),
     }
 }
@@ -881,6 +1028,20 @@ pub fn derive_mint_capability_type_id(
         resolver,
         epoch,
         &mint_capability_type_tag(asset_id),
+    )?)
+}
+
+/// Derives the nominal object-type identity digest for
+/// [`StandardAssetTreasuryCapV1`] instantiated at `asset_id`.
+pub fn derive_treasury_cap_type_id(
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    asset_id: AssetId,
+) -> Result<Digest32, StandardAssetError> {
+    Ok(abi::derive_type_id(
+        resolver,
+        epoch,
+        &treasury_cap_type_tag(asset_id),
     )?)
 }
 
@@ -1840,6 +2001,207 @@ mod tests {
         assert_eq!(from_registry, &coin_constructor_declaration());
     }
 
+    fn sample_treasury_cap() -> StandardAssetTreasuryCapV1 {
+        StandardAssetTreasuryCapV1::new(sample_asset_id(0x64), 100, 1000).unwrap()
+    }
+
+    #[test]
+    fn treasury_cap_rejects_zero_max_supply() {
+        assert_eq!(
+            StandardAssetTreasuryCapV1::new(sample_asset_id(0x01), 0, 0),
+            Err(StandardAssetError::ZeroMaxSupply)
+        );
+    }
+
+    #[test]
+    fn treasury_cap_rejects_total_supply_exceeding_max_supply() {
+        assert_eq!(
+            StandardAssetTreasuryCapV1::new(sample_asset_id(0x01), 11, 10),
+            Err(StandardAssetError::TotalSupplyExceedsMaxSupply {
+                total_supply: 11,
+                max_supply: 10,
+            })
+        );
+    }
+
+    #[test]
+    fn treasury_cap_accepts_total_supply_equal_to_max_supply() {
+        let cap = StandardAssetTreasuryCapV1::new(sample_asset_id(0x01), 10, 10).unwrap();
+        assert_eq!(cap.total_supply(), 10);
+        assert_eq!(cap.max_supply(), 10);
+    }
+
+    #[test]
+    fn treasury_cap_getters_round_trip() {
+        let asset_id = sample_asset_id(0x64);
+        let cap = StandardAssetTreasuryCapV1::new(asset_id, 100, 1000).unwrap();
+        assert_eq!(cap.asset_id(), asset_id);
+        assert_eq!(cap.total_supply(), 100);
+        assert_eq!(cap.max_supply(), 1000);
+    }
+
+    #[test]
+    fn treasury_cap_encoding_vector_is_stable() {
+        let bytes = encode_standard_asset_treasury_cap_v1(&sample_treasury_cap()).unwrap();
+        assert_eq!(
+            hex(&bytes),
+            concat!(
+                "534e5245077101000300010030000000",
+                "534e524501700100010001002000000064646464646464646464646464646464646464646464646464646464646464",
+                "64",
+                "0200080000006400000000000000",
+                "030008000000e803000000000000"
+            )
+        );
+    }
+
+    #[test]
+    fn treasury_cap_decoder_round_trips_encoded_bytes() {
+        let cap = sample_treasury_cap();
+        let canonical = encode_standard_asset_treasury_cap_v1(&cap).unwrap();
+        assert_eq!(decode_standard_asset_treasury_cap_v1(&canonical), Ok(cap));
+    }
+
+    #[test]
+    fn treasury_cap_decoder_rejects_wrong_type_and_version() {
+        let mut wrong_type = encode_standard_asset_treasury_cap_v1(&sample_treasury_cap()).unwrap();
+        wrong_type[4..6].copy_from_slice(&0x7999_u16.to_le_bytes());
+        assert!(matches!(
+            decode_standard_asset_treasury_cap_v1(&wrong_type),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedTypeId { .. }
+            ))
+        ));
+
+        let mut wrong_version = CanonicalStruct::new(STANDARD_ASSET_TREASURY_CAP_V1_TYPE_ID, 2);
+        wrong_version
+            .field_bytes(1, encode_asset_id(&sample_asset_id(0x64)).unwrap())
+            .unwrap();
+        wrong_version.field_u64(2, 100).unwrap();
+        wrong_version.field_u64(3, 1000).unwrap();
+        assert!(matches!(
+            decode_standard_asset_treasury_cap_v1(&wrong_version.finish().unwrap()),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedVersion { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn treasury_cap_decoder_rejects_missing_unknown_and_trailing_fields() {
+        let mut missing =
+            CanonicalStruct::new(STANDARD_ASSET_TREASURY_CAP_V1_TYPE_ID, ENCODING_VERSION);
+        missing
+            .field_bytes(1, encode_asset_id(&sample_asset_id(0x64)).unwrap())
+            .unwrap();
+        missing.field_u64(2, 100).unwrap();
+        assert!(matches!(
+            decode_standard_asset_treasury_cap_v1(&missing.finish().unwrap()),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::MissingField(3)
+            ))
+        ));
+
+        let mut extra =
+            CanonicalStruct::new(STANDARD_ASSET_TREASURY_CAP_V1_TYPE_ID, ENCODING_VERSION);
+        extra
+            .field_bytes(1, encode_asset_id(&sample_asset_id(0x64)).unwrap())
+            .unwrap();
+        extra.field_u64(2, 100).unwrap();
+        extra.field_u64(3, 1000).unwrap();
+        extra.field_bytes(4, [0x01]).unwrap();
+        assert!(matches!(
+            decode_standard_asset_treasury_cap_v1(&extra.finish().unwrap()),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedField(4)
+            ))
+        ));
+
+        let mut trailing = encode_standard_asset_treasury_cap_v1(&sample_treasury_cap()).unwrap();
+        trailing.push(0);
+        assert!(matches!(
+            decode_standard_asset_treasury_cap_v1(&trailing),
+            Err(StandardAssetError::CanonicalDecoding(
+                CanonicalDecodingError::TrailingBytes(1)
+            ))
+        ));
+    }
+
+    #[test]
+    fn treasury_cap_decoder_rejects_zero_max_supply_and_total_exceeding_max() {
+        let mut zero_max =
+            CanonicalStruct::new(STANDARD_ASSET_TREASURY_CAP_V1_TYPE_ID, ENCODING_VERSION);
+        zero_max
+            .field_bytes(1, encode_asset_id(&sample_asset_id(0x64)).unwrap())
+            .unwrap();
+        zero_max.field_u64(2, 0).unwrap();
+        zero_max.field_u64(3, 0).unwrap();
+        assert_eq!(
+            decode_standard_asset_treasury_cap_v1(&zero_max.finish().unwrap()),
+            Err(StandardAssetError::ZeroMaxSupply)
+        );
+
+        let mut over_max =
+            CanonicalStruct::new(STANDARD_ASSET_TREASURY_CAP_V1_TYPE_ID, ENCODING_VERSION);
+        over_max
+            .field_bytes(1, encode_asset_id(&sample_asset_id(0x64)).unwrap())
+            .unwrap();
+        over_max.field_u64(2, 11).unwrap();
+        over_max.field_u64(3, 10).unwrap();
+        assert_eq!(
+            decode_standard_asset_treasury_cap_v1(&over_max.finish().unwrap()),
+            Err(StandardAssetError::TotalSupplyExceedsMaxSupply {
+                total_supply: 11,
+                max_supply: 10,
+            })
+        );
+    }
+
+    #[test]
+    fn treasury_cap_decoder_rejects_short_asset_id() {
+        let mut malformed_asset_id = CanonicalStruct::new(ASSET_ID_TYPE_ID, ENCODING_VERSION);
+        malformed_asset_id.field_bytes(1, [0x11; 31]).unwrap();
+
+        let mut short =
+            CanonicalStruct::new(STANDARD_ASSET_TREASURY_CAP_V1_TYPE_ID, ENCODING_VERSION);
+        short
+            .field_bytes(1, malformed_asset_id.finish().unwrap())
+            .unwrap();
+        short.field_u64(2, 5).unwrap();
+        short.field_u64(3, 10).unwrap();
+        assert_eq!(
+            decode_standard_asset_treasury_cap_v1(&short.finish().unwrap()),
+            Err(StandardAssetError::InvalidAssetIdLength(31))
+        );
+    }
+
+    #[test]
+    fn treasury_cap_constructor_declaration_matches_registry_entry() {
+        let registry = constructor_registry().unwrap();
+        let from_registry = registry
+            .get(STANDARD_ASSET_TREASURY_CAP_V1_CONSTRUCTOR)
+            .unwrap();
+        assert_eq!(from_registry, &treasury_cap_constructor_declaration());
+    }
+
+    #[test]
+    fn treasury_cap_type_tag_changes_with_asset_id() {
+        let a = treasury_cap_type_tag(sample_asset_id(0x01));
+        let b = treasury_cap_type_tag(sample_asset_id(0x02));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn treasury_cap_type_id_differs_from_mint_capability_type_id() {
+        let resolver = sample_resolver("sunrise-devnet");
+        let asset_id = sample_asset_id(0x64);
+        let treasury_digest =
+            derive_treasury_cap_type_id(&resolver, Epoch::new(0), asset_id).unwrap();
+        let capability_digest =
+            derive_mint_capability_type_id(&resolver, Epoch::new(0), asset_id).unwrap();
+        assert_ne!(treasury_digest, capability_digest);
+    }
+
     // ── typed-ABI foundation tests ──────────────────────────────────────
 
     use abi::{
@@ -1849,9 +2211,9 @@ mod tests {
     use objects::{AccessMode, Object, ObjectId, Owner};
 
     #[test]
-    fn constructor_registry_has_three_constructors_in_stable_order() {
+    fn constructor_registry_has_four_constructors_in_stable_order() {
         let registry = constructor_registry().unwrap();
-        assert_eq!(registry.len(), 3);
+        assert_eq!(registry.len(), 4);
         let ids: Vec<_> = registry.iter().map(|decl| decl.id).collect();
         assert_eq!(
             ids,
@@ -1859,6 +2221,7 @@ mod tests {
                 STANDARD_ASSET_DEFINITION_V1_CONSTRUCTOR,
                 STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
                 STANDARD_ASSET_MINT_CAPABILITY_V1_CONSTRUCTOR,
+                STANDARD_ASSET_TREASURY_CAP_V1_CONSTRUCTOR,
             ]
         );
     }
@@ -1919,6 +2282,26 @@ mod tests {
         let capability = StandardAssetMintCapabilityV1 { asset_id };
         let data = encode_standard_asset_mint_capability_v1(&capability).unwrap();
         let type_hash = derive_mint_capability_type_id(resolver, Epoch::new(0), asset_id).unwrap();
+        Object {
+            id: ObjectId::new([id_byte; 32]),
+            version: 1,
+            owner: Owner::Shared,
+            type_hash,
+            schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+            data,
+        }
+    }
+
+    fn treasury_cap_object(
+        resolver: &HashSuiteResolver,
+        id_byte: u8,
+        asset_id: AssetId,
+        total_supply: u64,
+        max_supply: u64,
+    ) -> Object {
+        let cap = StandardAssetTreasuryCapV1::new(asset_id, total_supply, max_supply).unwrap();
+        let data = encode_standard_asset_treasury_cap_v1(&cap).unwrap();
+        let type_hash = derive_treasury_cap_type_id(resolver, Epoch::new(0), asset_id).unwrap();
         Object {
             id: ObjectId::new([id_byte; 32]),
             version: 1,
@@ -2041,6 +2424,109 @@ mod tests {
         let inputs = [
             ResolvedInput {
                 mode: AccessMode::Read,
+                object: &cap,
+            },
+            ResolvedInput {
+                mode: AccessMode::Write,
+                object: &coin,
+            },
+        ];
+
+        assert!(matches!(
+            verify_entrypoint_inputs(&signature, &registry, &resolver, Epoch::new(0), &inputs),
+            Err(AbiError::TypeVariableMismatch { .. })
+        ));
+    }
+
+    fn treasury_mint_signature() -> EntrypointSignature {
+        EntrypointSignature::new(
+            "mint",
+            vec![
+                ParamDeclaration {
+                    mode: AccessMode::Write,
+                    constructor: STANDARD_ASSET_TREASURY_CAP_V1_CONSTRUCTOR,
+                    schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+                },
+                ParamDeclaration {
+                    mode: AccessMode::Write,
+                    constructor: STANDARD_ASSET_COIN_V1_CONSTRUCTOR,
+                    schema_version: STANDARD_ASSET_SCHEMA_VERSION_V1,
+                },
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn end_to_end_treasury_cap_a_and_coin_a_accepted() {
+        let resolver = sample_resolver("sunrise-devnet");
+        let asset_a = sample_asset_id(0x55);
+        let cap = treasury_cap_object(&resolver, 0x02, asset_a, 100, 1000);
+        let coin = coin_object(&resolver, 0x03, asset_a, 10);
+
+        let registry = constructor_registry().unwrap();
+        let signature = treasury_mint_signature();
+        let inputs = [
+            ResolvedInput {
+                mode: AccessMode::Write,
+                object: &cap,
+            },
+            ResolvedInput {
+                mode: AccessMode::Write,
+                object: &coin,
+            },
+        ];
+
+        assert!(
+            verify_entrypoint_inputs(&signature, &registry, &resolver, Epoch::new(0), &inputs)
+                .is_ok()
+        );
+    }
+
+    /// A treasury cap presented where the signature declares `Coin<A>` fails
+    /// closed at typed-ABI verification, strictly before any WASM runs: its
+    /// canonical body never projects as a `STANDARD_ASSET_COIN_V1_CONSTRUCTOR`
+    /// instance in the first place (wrong body type id), so verification
+    /// rejects it before it could ever reach a type-identity comparison.
+    #[test]
+    fn end_to_end_treasury_cap_rejected_as_the_fee_coin_param() {
+        let resolver = sample_resolver("sunrise-devnet");
+        let asset_a = sample_asset_id(0x55);
+        let cap = treasury_cap_object(&resolver, 0x02, asset_a, 100, 1000);
+        let cap_as_fee = treasury_cap_object(&resolver, 0x03, asset_a, 100, 1000);
+
+        let registry = constructor_registry().unwrap();
+        let signature = treasury_mint_signature();
+        let inputs = [
+            ResolvedInput {
+                mode: AccessMode::Write,
+                object: &cap,
+            },
+            ResolvedInput {
+                mode: AccessMode::Write,
+                object: &cap_as_fee,
+            },
+        ];
+
+        assert!(
+            verify_entrypoint_inputs(&signature, &registry, &resolver, Epoch::new(0), &inputs)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn end_to_end_treasury_cap_b_and_coin_a_rejected() {
+        let resolver = sample_resolver("sunrise-devnet");
+        let asset_a = sample_asset_id(0x55);
+        let asset_b = sample_asset_id(0x66);
+        let cap = treasury_cap_object(&resolver, 0x02, asset_b, 100, 1000);
+        let coin = coin_object(&resolver, 0x03, asset_a, 10);
+
+        let registry = constructor_registry().unwrap();
+        let signature = treasury_mint_signature();
+        let inputs = [
+            ResolvedInput {
+                mode: AccessMode::Write,
                 object: &cap,
             },
             ResolvedInput {

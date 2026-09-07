@@ -1,17 +1,17 @@
 //! `mint`: authorized Standard Asset v1 issuance on the local devnet.
 //!
-//! The command requires an explicit sender-owned mint capability and fee
+//! The command requires an explicit sender-owned treasury cap and fee
 //! coin. Before signing, it verifies the expected protocol context and nonce,
-//! queries and strictly decodes both objects, and requires the capability,
+//! queries and strictly decodes both objects, and requires the treasury cap,
 //! fee coin, and signed fee payment to identify one `AssetId`. The submitted
-//! manifest is fixed to capability `Read` index 0, fee coin `Write` index 1,
+//! manifest is fixed to treasury cap `Write` index 0, fee coin `Write` index 1,
 //! and the trusted treasury `Write` as the final entry.
 
 use std::ffi::OsString;
 
 use standard_assets::{
-    StandardAssetMintArgsV1, StandardAssetMintCapabilityV1,
-    decode_standard_asset_mint_capability_v1, encode_standard_asset_mint_args_v1,
+    StandardAssetMintArgsV1, StandardAssetTreasuryCapV1, decode_standard_asset_treasury_cap_v1,
+    encode_standard_asset_mint_args_v1,
 };
 use sunrise_edge_client::{
     AccessEntry, AccessManifest, AccessMode, Address, Amount, AssetId, Client,
@@ -34,7 +34,7 @@ const MODULE_ID: &str = "--module-id";
 const MODULE_VERSION: &str = "--module-version";
 const MODULE_DIGEST_ALGORITHM: &str = "--module-digest-algorithm";
 const MODULE_DIGEST: &str = "--module-digest";
-const MINT_CAPABILITY: &str = "--mint-capability";
+const TREASURY_CAP: &str = "--treasury-cap";
 const RECIPIENT: &str = "--recipient";
 const AMOUNT: &str = "--amount";
 const FEE_COIN: &str = "--fee-coin";
@@ -92,7 +92,7 @@ fn mint_flag_specs() -> Vec<crate::args::FlagSpec> {
         scalar(MODULE_VERSION),
         scalar(MODULE_DIGEST_ALGORITHM),
         scalar(MODULE_DIGEST),
-        scalar(MINT_CAPABILITY),
+        scalar(TREASURY_CAP),
         scalar(RECIPIENT),
         scalar(AMOUNT),
         scalar(FEE_COIN),
@@ -116,7 +116,7 @@ fn mint_flag_specs() -> Vec<crate::args::FlagSpec> {
 
 struct MintInputs {
     module_ref: ObjectRef,
-    mint_capability_id: ObjectId,
+    treasury_cap_id: ObjectId,
     recipient: Address,
     amount: u64,
     fee_coin_id: ObjectId,
@@ -131,10 +131,8 @@ struct MintInputs {
 
 fn parse_inputs(parsed: &ParsedArgs) -> Result<MintInputs, CliError> {
     let module_ref: ObjectRef = transfer::parse_module_ref(parsed)?;
-    let mint_capability_id: ObjectId = ObjectId::new(decode_hex_32(
-        MINT_CAPABILITY,
-        parsed.require(MINT_CAPABILITY)?,
-    )?);
+    let treasury_cap_id: ObjectId =
+        ObjectId::new(decode_hex_32(TREASURY_CAP, parsed.require(TREASURY_CAP)?)?);
     let recipient: Address = Address::new(decode_hex_32(RECIPIENT, parsed.require(RECIPIENT)?)?);
     let amount: u64 = parse_u64(AMOUNT, parsed.require(AMOUNT)?)?;
     if amount == 0 {
@@ -145,11 +143,11 @@ fn parse_inputs(parsed: &ParsedArgs) -> Result<MintInputs, CliError> {
         FEE_TREASURY_OBJECT,
         parsed.require(FEE_TREASURY_OBJECT)?,
     )?);
-    if mint_capability_id == fee_coin_id
-        || mint_capability_id == fee_treasury_object_id
+    if treasury_cap_id == fee_coin_id
+        || treasury_cap_id == fee_treasury_object_id
         || fee_coin_id == fee_treasury_object_id
     {
-        return Err(CliError::MintObjectsMustBeDistinct);
+        return Err(CliError::StandardAssetOperationObjectsMustBeDistinct);
     }
     let max_fee_value: u64 = parse_u64(MAX_FEE, parsed.require(MAX_FEE)?)?;
     if max_fee_value == 0 {
@@ -162,7 +160,7 @@ fn parse_inputs(parsed: &ParsedArgs) -> Result<MintInputs, CliError> {
 
     Ok(MintInputs {
         module_ref,
-        mint_capability_id,
+        treasury_cap_id,
         recipient,
         amount,
         fee_coin_id,
@@ -195,14 +193,25 @@ where
         });
     }
 
-    let (capability_ref, capability): (ObjectRef, StandardAssetMintCapabilityV1) =
-        require_owned_current_mint_capability(client, inputs.mint_capability_id, sender)?;
+    let (treasury_cap_ref, treasury_cap): (ObjectRef, StandardAssetTreasuryCapV1) =
+        require_owned_current_treasury_cap(client, inputs.treasury_cap_id, sender)?;
+    let new_total_supply: u64 = treasury_cap
+        .total_supply()
+        .checked_add(inputs.amount)
+        .ok_or(CliError::MintSupplyOverflow)?;
+    if new_total_supply > treasury_cap.max_supply() {
+        return Err(CliError::MintExceedsMaxSupply {
+            total_supply: treasury_cap.total_supply(),
+            amount: inputs.amount,
+            max_supply: treasury_cap.max_supply(),
+        });
+    }
     let (fee_ref, fee_coin) =
         transfer::require_owned_current_coin(client, FEE_COIN, inputs.fee_coin_id, sender)?;
-    if capability.asset_id != fee_coin.asset_id() {
-        return Err(CliError::MintCapabilityAssetMismatch);
+    if treasury_cap.asset_id() != fee_coin.asset_id() {
+        return Err(CliError::TreasuryCapAssetMismatch);
     }
-    if inputs.fee_asset_id != capability.asset_id {
+    if inputs.fee_asset_id != treasury_cap.asset_id() {
         return Err(CliError::FeeAssetMismatch);
     }
     let treasury_ref: ObjectRef = transfer::require_current_inline(
@@ -213,8 +222,8 @@ where
 
     let mut access_manifest: AccessManifest = AccessManifest::new();
     access_manifest.push(AccessEntry {
-        object_ref: capability_ref,
-        mode: AccessMode::Read,
+        object_ref: treasury_cap_ref,
+        mode: AccessMode::Write,
     });
     access_manifest.push(AccessEntry {
         object_ref: fee_ref.clone(),
@@ -262,11 +271,11 @@ where
     )
 }
 
-fn require_owned_current_mint_capability<T>(
+pub(super) fn require_owned_current_treasury_cap<T>(
     client: &Client<T>,
     object_id: ObjectId,
     expected_owner: Address,
-) -> Result<(ObjectRef, StandardAssetMintCapabilityV1), CliError>
+) -> Result<(ObjectRef, StandardAssetTreasuryCapV1), CliError>
 where
     T: Transport,
 {
@@ -280,28 +289,28 @@ where
         } => (*object_version, *digest, canonical_object_bytes),
         sunrise_edge_client::HttpObjectQueryResult::Absent { .. } => {
             return Err(CliError::ObjectNotCurrentlyInline {
-                flag: MINT_CAPABILITY,
+                flag: TREASURY_CAP,
                 object_id: object_id.to_string(),
                 status: "absent",
             });
         }
         sunrise_edge_client::HttpObjectQueryResult::Tombstoned { .. } => {
             return Err(CliError::ObjectNotCurrentlyInline {
-                flag: MINT_CAPABILITY,
+                flag: TREASURY_CAP,
                 object_id: object_id.to_string(),
                 status: "tombstoned",
             });
         }
         sunrise_edge_client::HttpObjectQueryResult::HistoricalCurrentInline { .. } => {
             return Err(CliError::ObjectNotCurrentlyInline {
-                flag: MINT_CAPABILITY,
+                flag: TREASURY_CAP,
                 object_id: object_id.to_string(),
                 status: "historical_current_inline_unverified",
             });
         }
         sunrise_edge_client::HttpObjectQueryResult::CurrentBlobReference { .. } => {
             return Err(CliError::ObjectNotCurrentlyInline {
-                flag: MINT_CAPABILITY,
+                flag: TREASURY_CAP,
                 object_id: object_id.to_string(),
                 status: "current_blob_reference",
             });
@@ -309,7 +318,7 @@ where
     };
     let object = decode_object(canonical_object_bytes).map_err(|source| {
         CliError::ObjectBodyDecodeFailed {
-            flag: MINT_CAPABILITY,
+            flag: TREASURY_CAP,
             object_id: object_id.to_string(),
             source,
         }
@@ -324,16 +333,16 @@ where
                 Owner::System => "system".to_string(),
             };
             return Err(CliError::ObjectOwnerMismatch {
-                flag: MINT_CAPABILITY,
+                flag: TREASURY_CAP,
                 object_id: object_id.to_string(),
                 expected_owner: expected_owner.to_string(),
                 owner: owner_label,
             });
         }
     }
-    let capability: StandardAssetMintCapabilityV1 =
-        decode_standard_asset_mint_capability_v1(&object.data).map_err(|source| {
-            CliError::MintCapabilityBodyDecodeFailed {
+    let treasury_cap: StandardAssetTreasuryCapV1 =
+        decode_standard_asset_treasury_cap_v1(&object.data).map_err(|source| {
+            CliError::TreasuryCapBodyDecodeFailed {
                 object_id: object_id.to_string(),
                 source,
             }
@@ -344,7 +353,7 @@ where
             version: object_version.get(),
             digest,
         },
-        capability,
+        treasury_cap,
     ))
 }
 
@@ -355,8 +364,7 @@ mod tests {
     use hashing::{BuiltinHashFunction, HashFunction};
     use protocol_types::HashPurpose;
     use standard_assets::{
-        StandardAssetCoinV1, encode_standard_asset_coin_v1,
-        encode_standard_asset_mint_capability_v1,
+        StandardAssetCoinV1, encode_standard_asset_coin_v1, encode_standard_asset_treasury_cap_v1,
     };
     use sunrise_edge_client::{
         AtomicityDomainId, ChainId, Digest32,
@@ -391,10 +399,10 @@ mod tests {
         MintInputs {
             module_ref: ObjectRef {
                 id: ObjectId::new([0x01; 32]),
-                version: 3,
+                version: 1,
                 digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x02; 32]),
             },
-            mint_capability_id: ObjectId::new([0x10; 32]),
+            treasury_cap_id: ObjectId::new([0x10; 32]),
             recipient: Address::new([0x88; 32]),
             amount: 25,
             fee_coin_id: ObjectId::new([0x20; 32]),
@@ -459,17 +467,28 @@ mod tests {
         }
     }
 
-    fn capability_owned_by(
+    fn treasury_cap_owned_by(
         object_id: ObjectId,
         owner: Address,
         asset_id: AssetId,
     ) -> HttpObjectQueryResult {
-        let capability = StandardAssetMintCapabilityV1 { asset_id };
+        treasury_cap_with_supply(object_id, owner, asset_id, 100, 1_000)
+    }
+
+    fn treasury_cap_with_supply(
+        object_id: ObjectId,
+        owner: Address,
+        asset_id: AssetId,
+        total_supply: u64,
+        max_supply: u64,
+    ) -> HttpObjectQueryResult {
+        let treasury_cap: StandardAssetTreasuryCapV1 =
+            StandardAssetTreasuryCapV1::new(asset_id, total_supply, max_supply).unwrap();
         current_inline_with_owner(
             object_id,
             1,
             Owner::Address(owner),
-            encode_standard_asset_mint_capability_v1(&capability).unwrap(),
+            encode_standard_asset_treasury_cap_v1(&treasury_cap).unwrap(),
         )
     }
 
@@ -507,13 +526,13 @@ mod tests {
         let signer: LocalSigner = sample_signer();
         let inputs: MintInputs = sample_inputs();
         let expected_request_id: RequestId = inputs.request_id;
-        let expected_capability_id: ObjectId = inputs.mint_capability_id;
+        let expected_treasury_cap_id: ObjectId = inputs.treasury_cap_id;
         let expected_fee_coin_id: ObjectId = inputs.fee_coin_id;
         let expected_treasury_id: ObjectId = inputs.fee_treasury_object_id;
         let context: HttpContextQueryResult = sample_context();
         let nonce = HttpNextNonceQueryResult::new(signer.address(), Epoch::new(5), 3);
-        let capability: HttpObjectQueryResult =
-            capability_owned_by(expected_capability_id, signer.address(), ASSET);
+        let treasury_cap: HttpObjectQueryResult =
+            treasury_cap_owned_by(expected_treasury_cap_id, signer.address(), ASSET);
         let fee: HttpObjectQueryResult =
             coin_owned_by(expected_fee_coin_id, signer.address(), ASSET);
         let treasury: HttpObjectQueryResult =
@@ -525,7 +544,7 @@ mod tests {
         let transport = FakeTransport::new(vec![
             query_ok(context.encode().unwrap()),
             query_ok(nonce.encode().unwrap()),
-            query_ok(capability.encode().unwrap()),
+            query_ok(treasury_cap.encode().unwrap()),
             query_ok(fee.encode().unwrap()),
             query_ok(treasury.encode().unwrap()),
             node_result_ok(submit.encode().unwrap()),
@@ -543,7 +562,7 @@ mod tests {
         );
         assert_eq!(
             requests[2].path,
-            QUERY_OBJECT_PATH.replace("{object_id}", &expected_capability_id.to_string())
+            QUERY_OBJECT_PATH.replace("{object_id}", &expected_treasury_cap_id.to_string())
         );
         assert_eq!(
             requests[3].path,
@@ -556,11 +575,11 @@ mod tests {
         assert_eq!(transaction.access_manifest.entries.len(), 3);
         assert_eq!(
             transaction.access_manifest.entries[0].object_ref.id,
-            expected_capability_id
+            expected_treasury_cap_id
         );
         assert_eq!(
             transaction.access_manifest.entries[0].mode,
-            AccessMode::Read
+            AccessMode::Write
         );
         assert_eq!(
             transaction.access_manifest.entries[1].object_ref.id,
@@ -589,10 +608,10 @@ mod tests {
     }
 
     #[test]
-    fn execute_rejects_capability_owner_mismatch_before_fee_query_or_signing() {
+    fn execute_rejects_treasury_cap_owner_mismatch_before_fee_query_or_signing() {
         let signer: LocalSigner = sample_signer();
         let inputs: MintInputs = sample_inputs();
-        let capability_id: ObjectId = inputs.mint_capability_id;
+        let treasury_cap_id: ObjectId = inputs.treasury_cap_id;
         let other_owner: Address = Address::new([0x99; 32]);
         let transport = FakeTransport::new(vec![
             query_ok(sample_context().encode().unwrap()),
@@ -602,7 +621,7 @@ mod tests {
                     .unwrap(),
             ),
             query_ok(
-                capability_owned_by(capability_id, other_owner, ASSET)
+                treasury_cap_owned_by(treasury_cap_id, other_owner, ASSET)
                     .encode()
                     .unwrap(),
             ),
@@ -614,7 +633,7 @@ mod tests {
         assert!(matches!(
             error,
             CliError::ObjectOwnerMismatch {
-                flag: MINT_CAPABILITY,
+                flag: TREASURY_CAP,
                 owner,
                 ..
             } if owner == format!("address:{other_owner}")
@@ -623,10 +642,76 @@ mod tests {
     }
 
     #[test]
-    fn execute_rejects_capability_and_fee_asset_mismatch() {
+    fn execute_rejects_supply_overflow_before_fee_query_or_signing() {
+        let signer: LocalSigner = sample_signer();
+        let mut inputs: MintInputs = sample_inputs();
+        inputs.amount = 2;
+        let treasury_cap_id: ObjectId = inputs.treasury_cap_id;
+        let transport = FakeTransport::new(vec![
+            query_ok(sample_context().encode().unwrap()),
+            query_ok(
+                HttpNextNonceQueryResult::new(signer.address(), Epoch::new(5), 3)
+                    .encode()
+                    .unwrap(),
+            ),
+            query_ok(
+                treasury_cap_with_supply(
+                    treasury_cap_id,
+                    signer.address(),
+                    ASSET,
+                    u64::MAX - 1,
+                    u64::MAX,
+                )
+                .encode()
+                .unwrap(),
+            ),
+        ]);
+        let client: Client<FakeTransport> = Client::new(transport);
+
+        let error: CliError =
+            execute(&client, signer.address(), inputs, fail_if_sign_called).unwrap_err();
+        assert!(matches!(error, CliError::MintSupplyOverflow));
+        assert_eq!(client.transport().requests().len(), 3);
+    }
+
+    #[test]
+    fn execute_rejects_amount_above_max_supply_before_fee_query_or_signing() {
         let signer: LocalSigner = sample_signer();
         let inputs: MintInputs = sample_inputs();
-        let capability_id: ObjectId = inputs.mint_capability_id;
+        let treasury_cap_id: ObjectId = inputs.treasury_cap_id;
+        let transport = FakeTransport::new(vec![
+            query_ok(sample_context().encode().unwrap()),
+            query_ok(
+                HttpNextNonceQueryResult::new(signer.address(), Epoch::new(5), 3)
+                    .encode()
+                    .unwrap(),
+            ),
+            query_ok(
+                treasury_cap_with_supply(treasury_cap_id, signer.address(), ASSET, 990, 1_000)
+                    .encode()
+                    .unwrap(),
+            ),
+        ]);
+        let client: Client<FakeTransport> = Client::new(transport);
+
+        let error: CliError =
+            execute(&client, signer.address(), inputs, fail_if_sign_called).unwrap_err();
+        assert!(matches!(
+            error,
+            CliError::MintExceedsMaxSupply {
+                total_supply: 990,
+                amount: 25,
+                max_supply: 1_000,
+            }
+        ));
+        assert_eq!(client.transport().requests().len(), 3);
+    }
+
+    #[test]
+    fn execute_rejects_treasury_cap_and_fee_asset_mismatch() {
+        let signer: LocalSigner = sample_signer();
+        let inputs: MintInputs = sample_inputs();
+        let treasury_cap_id: ObjectId = inputs.treasury_cap_id;
         let fee_coin_id: ObjectId = inputs.fee_coin_id;
         let other_asset: AssetId = AssetId::new([0x51; 32]);
         let transport = FakeTransport::new(vec![
@@ -637,7 +722,7 @@ mod tests {
                     .unwrap(),
             ),
             query_ok(
-                capability_owned_by(capability_id, signer.address(), ASSET)
+                treasury_cap_owned_by(treasury_cap_id, signer.address(), ASSET)
                     .encode()
                     .unwrap(),
             ),
@@ -651,18 +736,18 @@ mod tests {
 
         let error: CliError =
             execute(&client, signer.address(), inputs, fail_if_sign_called).unwrap_err();
-        assert!(matches!(error, CliError::MintCapabilityAssetMismatch));
+        assert!(matches!(error, CliError::TreasuryCapAssetMismatch));
     }
 
     #[test]
-    fn execute_rejects_a_non_capability_body_before_fee_query_or_signing() {
+    fn execute_rejects_a_non_treasury_cap_body_before_fee_query_or_signing() {
         let signer: LocalSigner = sample_signer();
         let inputs: MintInputs = sample_inputs();
-        let capability_id: ObjectId = inputs.mint_capability_id;
+        let treasury_cap_id: ObjectId = inputs.treasury_cap_id;
         let wrong_body: Vec<u8> =
             encode_standard_asset_coin_v1(&StandardAssetCoinV1::new(ASSET, 1).unwrap()).unwrap();
-        let not_a_capability: HttpObjectQueryResult = current_inline_with_owner(
-            capability_id,
+        let not_a_treasury_cap: HttpObjectQueryResult = current_inline_with_owner(
+            treasury_cap_id,
             1,
             Owner::Address(signer.address()),
             wrong_body,
@@ -674,7 +759,7 @@ mod tests {
                     .encode()
                     .unwrap(),
             ),
-            query_ok(not_a_capability.encode().unwrap()),
+            query_ok(not_a_treasury_cap.encode().unwrap()),
         ]);
         let client: Client<FakeTransport> = Client::new(transport);
 
@@ -682,7 +767,7 @@ mod tests {
             execute(&client, signer.address(), inputs, fail_if_sign_called).unwrap_err();
         assert!(matches!(
             error,
-            CliError::MintCapabilityBodyDecodeFailed { .. }
+            CliError::TreasuryCapBodyDecodeFailed { .. }
         ));
         assert_eq!(client.transport().requests().len(), 3);
     }
@@ -692,7 +777,7 @@ mod tests {
         let signer: LocalSigner = sample_signer();
         let mut inputs: MintInputs = sample_inputs();
         inputs.fee_asset_id = AssetId::new([0x51; 32]);
-        let capability_id: ObjectId = inputs.mint_capability_id;
+        let treasury_cap_id: ObjectId = inputs.treasury_cap_id;
         let fee_coin_id: ObjectId = inputs.fee_coin_id;
         let transport = FakeTransport::new(vec![
             query_ok(sample_context().encode().unwrap()),
@@ -702,7 +787,7 @@ mod tests {
                     .unwrap(),
             ),
             query_ok(
-                capability_owned_by(capability_id, signer.address(), ASSET)
+                treasury_cap_owned_by(treasury_cap_id, signer.address(), ASSET)
                     .encode()
                     .unwrap(),
             ),
@@ -724,18 +809,17 @@ mod tests {
     fn execute_rejects_a_non_coin_fee_body_before_treasury_query_or_signing() {
         let signer: LocalSigner = sample_signer();
         let inputs: MintInputs = sample_inputs();
-        let capability_id: ObjectId = inputs.mint_capability_id;
+        let treasury_cap_id: ObjectId = inputs.treasury_cap_id;
         let fee_coin_id: ObjectId = inputs.fee_coin_id;
-        let capability_body: Vec<u8> =
-            encode_standard_asset_mint_capability_v1(&StandardAssetMintCapabilityV1 {
-                asset_id: ASSET,
-            })
-            .unwrap();
+        let treasury_cap_body: Vec<u8> = encode_standard_asset_treasury_cap_v1(
+            &StandardAssetTreasuryCapV1::new(ASSET, 100, 1_000).unwrap(),
+        )
+        .unwrap();
         let not_a_coin: HttpObjectQueryResult = current_inline_with_owner(
             fee_coin_id,
             1,
             Owner::Address(signer.address()),
-            capability_body,
+            treasury_cap_body,
         );
         let transport = FakeTransport::new(vec![
             query_ok(sample_context().encode().unwrap()),
@@ -745,7 +829,7 @@ mod tests {
                     .unwrap(),
             ),
             query_ok(
-                capability_owned_by(capability_id, signer.address(), ASSET)
+                treasury_cap_owned_by(treasury_cap_id, signer.address(), ASSET)
                     .encode()
                     .unwrap(),
             ),
@@ -767,12 +851,12 @@ mod tests {
             OsString::from(MODULE_ID),
             OsString::from("01".repeat(32)),
             OsString::from(MODULE_VERSION),
-            OsString::from("3"),
+            OsString::from("1"),
             OsString::from(MODULE_DIGEST_ALGORITHM),
             OsString::from("1"),
             OsString::from(MODULE_DIGEST),
             OsString::from("02".repeat(32)),
-            OsString::from(MINT_CAPABILITY),
+            OsString::from(TREASURY_CAP),
             OsString::from("10".repeat(32)),
             OsString::from(RECIPIENT),
             OsString::from("88".repeat(32)),
@@ -847,7 +931,7 @@ mod tests {
         let parsed: ParsedArgs = parse_flags(args, &mint_flag_specs()).unwrap();
         assert!(matches!(
             parse_inputs(&parsed),
-            Err(CliError::MintObjectsMustBeDistinct)
+            Err(CliError::StandardAssetOperationObjectsMustBeDistinct)
         ));
     }
 

@@ -22,12 +22,14 @@ Sunrise Edge is designed as a deterministic state-transition system over authent
   `execution`, `node-core`, runtimes, and adapters (`node-core` depends on
   `abi`, never the reverse). `node-core` commits typed-entrypoint and
   owner-transition policies against this foundation and calls
-  `verify_entrypoint_inputs` before WASM execution (DR-0106), though no
-  current catalog activates either policy.
+  `verify_entrypoint_inputs` before WASM execution (DR-0106). The local
+  devnet's canonical Standard Asset module activates these policies for its
+  exact transfer/split/merge/mint/burn entrypoints (DR-0107--DR-0110).
 - `standard-assets`: canonical Standard Asset v1 identity (`AssetId`) and
   value schemas (`StandardAssetDefinitionV1`, `StandardAssetCoinV1`,
-  `StandardAssetMintCapabilityV1`), plus the concrete `abi` typed-ABI
-  bindings for those three schemas (constructor constants, schema version,
+  frozen development `StandardAssetMintCapabilityV1`, and active
+  `StandardAssetTreasuryCapV1`), plus the concrete `abi` typed-ABI
+  bindings for those schemas (constructor constants, schema version,
   deterministic constructor registry, tag constructors, and type-id
   helpers).
 - `crypto`: signature-domain framing and signer/verifier traits, plus a
@@ -427,8 +429,9 @@ independently re-verifies the exact committed recipient address and an
 unchanged object body regardless of what the caller's synthesis already
 checked. The local devnet catalog now commits both policy families: DR-0107
 activates typed whole-coin transfer and owner transition, DR-0108 adds typed
-split/merge and exact-one split creation, and DR-0109 adds typed
-capability-authorized mint with its own exact-one creation policy. Other
+split/merge and exact-one split creation, DR-0109 adds the historical typed
+capability-authorized mint, and DR-0110 replaces the active mint signature
+with supply-controlled `TreasuryCap<A>` and adds whole-coin burn. Other
 catalogs and generic contracts remain fail closed (see
 [DR-0106](decisions/0106-typed-entrypoint-owner-transition.md)).
 

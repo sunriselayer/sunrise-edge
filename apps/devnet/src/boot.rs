@@ -172,7 +172,7 @@ mod tests {
         config::DevOwner,
         genesis::build_devnet_protocol_context,
         seed::{SeedDevOwnerCoinsOutcome, seed_dev_owner_coins},
-        standard_asset::STANDARD_ASSET_TRANSFER_WASM,
+        standard_asset::STANDARD_ASSET_MODULE_WASM,
     };
     use ed25519_zebra::{SigningKey, VerificationKey};
     use runtime::{DurableOperationContext, StorageCorrelationId, StorageDeadline};
@@ -308,7 +308,7 @@ mod tests {
             build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
         let first_asset_id = first_protocol.asset_id();
         let first_module =
-            build_standard_asset_module(first_protocol, STANDARD_ASSET_TRANSFER_WASM.to_vec())
+            build_standard_asset_module(first_protocol, STANDARD_ASSET_MODULE_WASM.to_vec())
                 .unwrap();
         let created = seed_dev_owner_coins(
             first.store(),
@@ -336,7 +336,7 @@ mod tests {
         let second_asset_id = second_protocol.asset_id();
         assert_eq!(first_asset_id, second_asset_id);
         let second_module =
-            build_standard_asset_module(second_protocol, STANDARD_ASSET_TRANSFER_WASM.to_vec())
+            build_standard_asset_module(second_protocol, STANDARD_ASSET_MODULE_WASM.to_vec())
                 .unwrap();
         let existing = seed_dev_owner_coins(
             second.store(),

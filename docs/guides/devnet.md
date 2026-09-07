@@ -5,18 +5,18 @@ with the Rust CLI. The devnet binds loopback only, is single-validator, and
 must never be used to custody real assets or exposed beyond your own machine.
 
 The devnet activates Standard Asset v1 whole-coin transfer, bounded
-split/merge, and capability-authorized mint for its existing derived asset
-(DR-0107/DR-0108/DR-0109): each
+split/merge, supply-controlled mint, and whole-coin burn for its existing
+derived asset (DR-0107/DR-0108/DR-0109/DR-0110): each
 configured `--dev-owner` is seeded with one transferable
 `StandardAssetCoinV1` and one distinct fee-payer coin, and the separate
 `--fee-treasury-owner` is seeded with one ordinary treasury coin. `transfer`
 moves a whole coin's ownership to a signed recipient address. `split` creates
 one same-typed recipient coin from a checked partial amount, and `merge`
 combines two sender-owned coins without creating a new coin.
-The first configured development owner also receives a reusable mint
-capability; mint creates one new recipient coin and does not impose a supply
-ceiling. This is deliberately a local fixture, not a production monetary
-policy.
+The first configured development owner also receives a `TreasuryCap<A>` with
+the exact genesis supply and a fixed devnet maximum. Mint checked-adds supply
+and creates one coin; burn checked-subtracts supply and consumes one whole
+coin. This is deliberately a local fixture, not a production monetary policy.
 
 The commands assume the workspace has already been built once:
 
@@ -81,7 +81,7 @@ Startup prints the asset authority pair, one line per seeded owner, and the
 treasury:
 
 ```text
-owner=<first dev owner> role=mint-authority seed_status=<created|verified-existing> asset_definition=<object id> mint_capability=<object id>
+owner=<first dev owner> role=mint-authority seed_status=<created|verified-existing> asset_definition=<object id> treasury_cap=<object id>
 owner=<owner> role=dev-owner seed_status=<created|verified-existing> transfer_coin=<object id> fee_coin=<object id>
 owner=<owner> role=fee-treasury seed_status=<created|verified-existing> treasury_coin=<object id>
 ```
@@ -92,7 +92,7 @@ It also prints the derived asset id and preinstalled module identity:
 asset_id=<...> module_id=<...> module_version=<...> module_digest=<algorithm-label>:<hex digest>
 ```
 
-Copy the sender's `mint_capability`, `transfer_coin`, and `fee_coin`, the
+Copy the sender's `treasury_cap`, `transfer_coin`, and `fee_coin`, the
 treasury's `treasury_coin`, `asset_id`, `module_id`, `module_version`, and
 `module_digest`. The digest currently prints as `sha2-256:<hex>`: pass `1` for
 `--module-digest-algorithm` and only the hexadecimal portion after the colon
@@ -111,7 +111,7 @@ SENDER_OWNER="PASTE_SENDER_ADDRESS_PRINTED_IN_STEP_2"
 RECIPIENT_OWNER="PASTE_RECIPIENT_ADDRESS_PRINTED_IN_STEP_2"
 TREASURY_OWNER="PASTE_TREASURY_ADDRESS_PRINTED_IN_STEP_2"
 SOURCE_COIN_ID="PASTE_SENDER_TRANSFER_COIN_ID_PRINTED_IN_STEP_3"
-MINT_CAPABILITY_ID="PASTE_SENDER_MINT_CAPABILITY_ID_PRINTED_IN_STEP_3"
+TREASURY_CAP_ID="PASTE_SENDER_TREASURY_CAP_ID_PRINTED_IN_STEP_3"
 FEE_COIN_ID="PASTE_SENDER_FEE_COIN_ID_PRINTED_IN_STEP_3"
 TREASURY_OBJECT_ID="PASTE_TREASURY_COIN_ID_PRINTED_IN_STEP_3"
 FEE_ASSET_ID="PASTE_ASSET_ID_PRINTED_IN_STEP_3"
@@ -129,7 +129,7 @@ See [DR-0085](../architecture/decisions/0081-0087-cli-first-roadmap.md) and
 
 ```bash
 EXPECTED_CHAIN_ID="sunrise-local-devnet"
-EXPECTED_PROTOCOL_VERSION=5
+EXPECTED_PROTOCOL_VERSION=6
 EXPECTED_EPOCH=0
 EXPECTED_HASH_SUITE_ID=1
 EXPECTED_DOMAIN="4444444444444444444444444444444444444444444444444444444444444444"
@@ -143,12 +143,13 @@ cargo run -p sunrise-edge-cli -- object --endpoint 127.0.0.1:7400 \
 
 These queries do not change state.
 
-## 5. Mint one recipient coin
+## 5. Mint one sender-owned coin
 
-The capability is owned by the sender and passed as a `Read`; it is neither
-mutated nor consumed. The fee coin remains a separate `Write`. The accepted
-response contains exactly one `kind=created` effect whose object is a
-`StandardAssetCoinV1` owned by `$RECIPIENT_OWNER` with amount `1`.
+The treasury cap is owned by the sender and passed as a `Write`; the fee coin
+is a separate `Write`. The accepted response mutates the cap and contains one
+`kind=created` effect whose object is a `StandardAssetCoinV1` owned by
+`$SENDER_OWNER` with amount `1`. Sending this small coin back to the signer
+lets step 6 burn it without requiring a seeded recipient fee coin.
 
 ```bash
 MINT_REQUEST_ID="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
@@ -159,8 +160,8 @@ cargo run -p sunrise-edge-cli -- mint \
   --module-version "$MODULE_VERSION" \
   --module-digest-algorithm 1 \
   --module-digest "$MODULE_DIGEST_HEX" \
-  --mint-capability "$MINT_CAPABILITY_ID" \
-  --recipient "$RECIPIENT_OWNER" \
+  --treasury-cap "$TREASURY_CAP_ID" \
+  --recipient "$SENDER_OWNER" \
   --amount 1 \
   --fee-coin "$FEE_COIN_ID" \
   --gas-limit 1000000 \
@@ -177,17 +178,53 @@ cargo run -p sunrise-edge-cli -- mint \
   --wait-max-backoff-ms 50 --wait-max-elapsed-ms 5000
 ```
 
-`mint` strictly decodes the capability and fee coin, requires both to share
-one asset id matching `--fee-asset-id`, and checks sender ownership before
-signing. It does not create new asset definitions; it issues only the existing
-derived devnet asset. Record the created effect's object id for the restart
-comparison:
+`mint` strictly decodes the treasury cap and fee coin, requires both to share
+one asset id matching `--fee-asset-id`, checks sender ownership, and rejects an
+amount that cannot fit beneath the cap's current maximum before signing. It
+does not create new asset definitions; it issues only the existing derived
+devnet asset. Record the created effect's object id:
 
 ```bash
 MINTED_COIN_ID="PASTE_CREATED_OBJECT_ID_FROM_THE_MINT_RESPONSE"
 ```
 
-## 6. Submit a partial split, then merge it back
+## 6. Burn that whole minted coin
+
+Burn takes empty module arguments and consumes the entire sender-owned coin;
+partial burn is deliberately not part of v1. It mutates the same treasury cap
+with a checked supply subtraction and charges the distinct fee coin in the
+same atomic commit.
+
+```bash
+BURN_REQUEST_ID="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+cargo run -p sunrise-edge-cli -- burn \
+  --endpoint 127.0.0.1:7400 \
+  --seed-file "$SENDER_SEED_FILE" \
+  --module-id "$MODULE_ID" \
+  --module-version "$MODULE_VERSION" \
+  --module-digest-algorithm 1 \
+  --module-digest "$MODULE_DIGEST_HEX" \
+  --treasury-cap "$TREASURY_CAP_ID" \
+  --coin "$MINTED_COIN_ID" \
+  --fee-coin "$FEE_COIN_ID" \
+  --gas-limit 1000000 \
+  --fee-asset-id "$FEE_ASSET_ID" \
+  --max-fee 1000001 \
+  --fee-treasury-object "$TREASURY_OBJECT_ID" \
+  --request-id "$BURN_REQUEST_ID" \
+  --expected-chain-id "$EXPECTED_CHAIN_ID" \
+  --expected-protocol-version "$EXPECTED_PROTOCOL_VERSION" \
+  --expected-epoch "$EXPECTED_EPOCH" \
+  --expected-hash-suite-id "$EXPECTED_HASH_SUITE_ID" \
+  --expected-domain "$EXPECTED_DOMAIN" \
+  --wait --wait-max-attempts 20 --wait-initial-backoff-ms 10 \
+  --wait-max-backoff-ms 50 --wait-max-elapsed-ms 5000
+```
+
+After success, querying `$MINTED_COIN_ID` reports `status=tombstoned`; restart
+must retain that tombstone and must not recreate the coin.
+
+## 7. Submit a partial split, then merge it back
 
 The split example sends the new coin back to `$SENDER_OWNER`, so both the
 remainder and the newly created coin stay sender-owned. The seeded
@@ -261,7 +298,7 @@ the coins share the same asset id, and that the expected protocol context
 matches before signing. Ledger signing for these new entrypoints remains
 unsupported and fails closed.
 
-## 7. Submit a whole-coin transfer
+## 8. Submit a whole-coin transfer
 
 After the split coin has been merged back, the sender can transfer the
 original source coin to the recipient address. The fee asset must equal the
@@ -300,9 +337,10 @@ signing. A rejected or execution-failed submission exits non-zero. If the fee
 coin reaches exactly the settled fee, it becomes unusable because a
 `StandardAssetCoinV1` amount cannot be zero.
 
-## 8. Capture post-transfer state
+## 9. Capture post-transfer state
 
-Capture the transfer and mint receipts, capability, minted coin, the three
+Capture the transfer, mint, and burn receipts, treasury cap, burned coin
+tombstone, the three
 seeded current coins, and next nonce. These are the pre-restart observations
 used in the next step.
 
@@ -312,8 +350,10 @@ cargo run -p sunrise-edge-cli -- receipt --endpoint 127.0.0.1:7400 \
   --request-id "$REQUEST_ID" > "$OBSERVATION_PREFIX.receipt"
 cargo run -p sunrise-edge-cli -- receipt --endpoint 127.0.0.1:7400 \
   --request-id "$MINT_REQUEST_ID" > "$OBSERVATION_PREFIX.mint-receipt"
+cargo run -p sunrise-edge-cli -- receipt --endpoint 127.0.0.1:7400 \
+  --request-id "$BURN_REQUEST_ID" > "$OBSERVATION_PREFIX.burn-receipt"
 cargo run -p sunrise-edge-cli -- object --endpoint 127.0.0.1:7400 \
-  --object-id "$MINT_CAPABILITY_ID" > "$OBSERVATION_PREFIX.mint-capability"
+  --object-id "$TREASURY_CAP_ID" > "$OBSERVATION_PREFIX.treasury-cap"
 cargo run -p sunrise-edge-cli -- object --endpoint 127.0.0.1:7400 \
   --object-id "$MINTED_COIN_ID" > "$OBSERVATION_PREFIX.minted-coin"
 cargo run -p sunrise-edge-cli -- object --endpoint 127.0.0.1:7400 \
@@ -326,7 +366,7 @@ cargo run -p sunrise-edge-cli -- next-nonce --endpoint 127.0.0.1:7400 \
   --sender "$SENDER_OWNER" > "$OBSERVATION_PREFIX.nonce"
 ```
 
-## 9. Restart and compare
+## 10. Restart and compare
 
 Stop the devnet in terminal A with `Ctrl-C`. Rerun the exact command from step
 3 with the same data directory, chain id, and owners. Wait until both owners
@@ -343,9 +383,13 @@ diff -u "$OBSERVATION_PREFIX.mint-receipt" <(
   cargo run -p sunrise-edge-cli -- receipt --endpoint 127.0.0.1:7400 \
     --request-id "$MINT_REQUEST_ID"
 )
-diff -u "$OBSERVATION_PREFIX.mint-capability" <(
+diff -u "$OBSERVATION_PREFIX.burn-receipt" <(
+  cargo run -p sunrise-edge-cli -- receipt --endpoint 127.0.0.1:7400 \
+    --request-id "$BURN_REQUEST_ID"
+)
+diff -u "$OBSERVATION_PREFIX.treasury-cap" <(
   cargo run -p sunrise-edge-cli -- object --endpoint 127.0.0.1:7400 \
-    --object-id "$MINT_CAPABILITY_ID"
+    --object-id "$TREASURY_CAP_ID"
 )
 diff -u "$OBSERVATION_PREFIX.minted-coin" <(
   cargo run -p sunrise-edge-cli -- object --endpoint 127.0.0.1:7400 \
@@ -374,7 +418,7 @@ stop/reopen persistence for the observed state. It does not prove `kill -9`,
 power-loss, torn-write, load, concurrency, or production SQLite suitability.
 
 The automated E2Es additionally replay byte-identical signed whole-transfer,
-split, merge, and mint requests before and after restart. The CLI intentionally
+split, merge, mint, and burn requests before and after restart. The CLI intentionally
 exposes no raw replay command because these commands re-query the current nonce
 and object references before signing.
 
@@ -388,7 +432,7 @@ rather than reusing one across an incompatible devnet upgrade or epoch change.
 ## Optional remote TLS transport
 
 Every network command (`context`, `object`, `receipt`, `next-nonce`, `transfer`,
-`split`, `merge`, and `mint`) accepts a paired optional flag set:
+`split`, `merge`, `mint`, and `burn`) accepts a paired optional flag set:
 
 ```text
 --tls-server-name <dns-name> --tls-ca-cert-der-file <path>

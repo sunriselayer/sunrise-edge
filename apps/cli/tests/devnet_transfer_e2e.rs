@@ -24,7 +24,7 @@ use sunrise_edge_client::{
     decode_standard_asset_coin_v1,
 };
 use sunrise_edge_devnet::{
-    DevOwner, DevnetConfig, STANDARD_ASSET_TRANSFER_WASM, boot_local_store,
+    DevOwner, DevnetConfig, STANDARD_ASSET_MODULE_WASM, boot_local_store,
     build_devnet_protocol_context, build_standard_asset_module, compose_devnet_router,
     genesis::{DEVNET_DOMAIN_BYTES, DEVNET_PROTOCOL_VERSION},
     seed_dev_owner_coins, seed_treasury_coin, verify_seeded_asset_supply,
@@ -161,8 +161,7 @@ async fn cli_transfer_command_moves_the_whole_coin_through_the_real_devnet_route
         build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
     let asset_id = protocol_context.asset_id();
     let module =
-        build_standard_asset_module(protocol_context, STANDARD_ASSET_TRANSFER_WASM.to_vec())
-            .unwrap();
+        build_standard_asset_module(protocol_context, STANDARD_ASSET_MODULE_WASM.to_vec()).unwrap();
 
     let dev_owner = DevOwner::new(*owner_address.as_bytes());
     let now_unix_millis = SystemClock.now_unix_millis().unwrap();

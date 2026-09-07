@@ -39,7 +39,7 @@ pub use seed::{
     verify_or_seed_protocol_context, verify_seeded_asset_supply,
 };
 pub use standard_asset::{
-    MERGE_ENTRYPOINT, MINT_ENTRYPOINT, SPLIT_ENTRYPOINT, STANDARD_ASSET_TRANSFER_WASM,
-    TRANSFER_ENTRYPOINT, derive_devnet_asset_id,
+    BURN_ENTRYPOINT, MERGE_ENTRYPOINT, MINT_ENTRYPOINT, SPLIT_ENTRYPOINT,
+    STANDARD_ASSET_MODULE_WASM, TRANSFER_ENTRYPOINT, derive_devnet_asset_id,
 };
 pub use transport::DevnetTransport;
