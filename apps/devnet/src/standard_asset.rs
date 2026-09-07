@@ -92,10 +92,10 @@ pub fn derive_devnet_asset_id(
 }
 
 /// Exact committed WASM artifact generated from
-/// [`STANDARD_ASSET_MODULE_WAT`].
+/// [`STANDARD_ASSET_TRANSFER_V1_WAT`].
 pub const STANDARD_ASSET_TRANSFER_V1_WASM: &[u8] =
     include_bytes!("../modules/standard_asset_transfer.wasm");
-/// Auditable WAT source for [`STANDARD_ASSET_MODULE_WASM`].
+/// Auditable WAT source for [`STANDARD_ASSET_TRANSFER_V1_WASM`].
 pub const STANDARD_ASSET_TRANSFER_V1_WAT: &str =
     include_str!("../modules/standard_asset_transfer.wat");
 /// Discarded development fixture containing `transfer`, `split`, and `merge`.

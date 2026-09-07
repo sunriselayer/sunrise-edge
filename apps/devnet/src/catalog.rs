@@ -1192,7 +1192,7 @@ fn encode_standard_asset_semantics() -> Result<Vec<u8>, DevnetCatalogError> {
         .map_err(DevnetCatalogError::CanonicalEncoding)
 }
 
-/// Encodes the immutable protocol-v5 module-v2 semantics declaration.
+/// Encodes the isolated protocol-v5 split/merge fixture semantics declaration.
 fn encode_standard_asset_v2_semantics() -> Result<Vec<u8>, DevnetCatalogError> {
     let mut canonical: CanonicalStruct = CanonicalStruct::new(
         STANDARD_ASSET_SEMANTICS_DECLARATION_TYPE_ID,
@@ -1227,8 +1227,8 @@ fn encode_standard_asset_v2_semantics() -> Result<Vec<u8>, DevnetCatalogError> {
         .map_err(DevnetCatalogError::CanonicalEncoding)
 }
 
-/// Encodes the immutable protocol-v5 module-v3 semantics declaration (frozen
-/// capability-authorized mint). Keep this separate from
+/// Encodes the isolated protocol-v5 unbounded-mint fixture semantics
+/// declaration. Keep this separate from
 /// [`encode_standard_asset_semantics`]: even a prose cleanup changes the
 /// governance commitment of this now-historical module reference.
 fn encode_standard_asset_v3_semantics() -> Result<Vec<u8>, DevnetCatalogError> {
@@ -1379,6 +1379,34 @@ mod tests {
     use crate::{
         genesis::build_devnet_protocol_context, standard_asset::STANDARD_ASSET_MODULE_WASM,
     };
+    use sha2::{Digest, Sha256};
+
+    fn raw_sha256(input: &str) -> [u8; 32] {
+        let digest = Sha256::digest(input.as_bytes());
+        let mut bytes: [u8; 32] = [0_u8; 32];
+        bytes.copy_from_slice(digest.as_slice());
+        bytes
+    }
+
+    #[test]
+    fn module_ids_are_pinned_to_their_documented_names() {
+        assert_eq!(
+            *STANDARD_ASSET_MODULE_ID.as_bytes(),
+            raw_sha256(MODULE_NAME)
+        );
+        assert_eq!(
+            *LEGACY_STANDARD_ASSET_TRANSFER_MODULE_ID.as_bytes(),
+            raw_sha256(LEGACY_STANDARD_ASSET_TRANSFER_MODULE_NAME)
+        );
+        assert_eq!(
+            *LEGACY_STANDARD_ASSET_SPLIT_MERGE_MODULE_ID.as_bytes(),
+            raw_sha256(LEGACY_STANDARD_ASSET_SPLIT_MERGE_MODULE_NAME)
+        );
+        assert_eq!(
+            *LEGACY_STANDARD_ASSET_UNBOUNDED_MINT_MODULE_ID.as_bytes(),
+            raw_sha256(LEGACY_STANDARD_ASSET_UNBOUNDED_MINT_MODULE_NAME)
+        );
+    }
 
     fn module() -> DevnetAssetModule {
         let chain_id: ChainId = ChainId::new("sunrise-devnet-catalog-test").unwrap();
