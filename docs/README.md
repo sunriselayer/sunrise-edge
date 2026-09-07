@@ -5,6 +5,8 @@ detailed design, operator guides, and specialist references live here.
 
 ## Architecture
 
+- [Target design: generic contracts](design.md)
+- [Design meeting records](meeting-notes/)
 - [Architecture index](architecture/README.md)
 - [Core protocol](architecture/core-protocol.md)
 - [Runtime and ingress](architecture/runtime-and-ingress.md)

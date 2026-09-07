@@ -1,5 +1,10 @@
 # Architecture
 
+The accepted generic-contract To-Be is maintained in
+[`../design.md`](../design.md), with dated rationale and As-Is gaps in the
+[meeting record](../meeting-notes/2026-09-07-generic-contract-design.md).
+Read that target before extending trusted preinstalled execution paths.
+
 The architecture is split by responsibility so contributors can read the
 smallest relevant document. Implemented canonical bytes, stable vectors, and
 accepted decision records remain compatibility constraints even when the
