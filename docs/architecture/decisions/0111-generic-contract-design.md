@@ -2,7 +2,7 @@
 
 Accepted: 2026-09-07 (Asia/Singapore).
 
-The accepted target contract is maintained in
+The accepted target design is maintained in
 [`docs/design.md`](../../design.md). The dated rationale, primary sources, and
 As-Is/To-Be gap at the decision point are preserved in the
 [2026-09-07 meeting record](../../meeting-notes/2026-09-07-generic-contract-design.md).

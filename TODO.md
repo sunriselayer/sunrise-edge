@@ -2430,18 +2430,26 @@ Completion criteria:
    outboxを一つのfenced durable invocationへatomic commitする。失敗時は部分publicationを
    残さない。daemon、background loop、persistent connectionをcorrectness requirementにしない。
 3. call transactionはcallerが実行bytesや未commit manifestを注入できず、publish済みのexact
-   `(module_id, version, code_hash, manifest_hash, semantics_hash)`だけを参照する。typed ABI、
-   declared object access、owner policy、gas/resource bound、canonical argumentsを実行前に検証し、
-   preinstalled moduleと同じdeterministic execution/effect/fee/replay boundaryを使う。
+   `(module_id, version, code_hash, manifest_hash, semantics_hash)`に加えてsigned target
+   instance identity、authorized instance/code revision、exact dependency lineage/revisionsを
+   参照する。typed ABI、declared object access、owner policy、gas/resource bound、canonical
+   argumentsを実行前に検証し、preinstalled moduleと同じdeterministic execution/effect/fee/replay
+   boundaryを使う。instantiationはauthenticated instance scope内でのみadmitし、deterministic
+   instance idを割り当て、同じidの既存instanceのabsenceを検証してcollisionをfail closedで
+   拒否する。instance record、initial state、authority、nonce、receipt、outboxを一つのfenced atomic persistenceへ
+   commitし、部分的なinstance作成を残さない。initializerはcodeがupgradeされたことのみを
+   理由に再実行できない。
 4. Rust clientとCLIに`contract publish`、`contract instantiate`、`contract call`を追加する。各commandはTLS endpoint
    validationとは別にlocally expected protocol contextを確認し、queryしたcommitmentとsigned
    bytesを一致させてから署名する。software signerを最初のsurfaceとし、Ledgerはexact
    clear-signing policyが追加されるまでfail closedする。
 5. real file-backed SQLite E2Eでpublish、instantiate、call、same-boot/post-restart exact replay、writer-generation
-   fencing、request-id reuse conflictを検証する。conflict/rejection時はmodule registry/catalog、
-   application objects、fees、receipt、nonce、outboxが不変であることをcanonical bytesで比較する。
-   ここでrejectionはpre-execution rejectionを指す。実行trapのfee-only settlementは別途
-   検証し、application rollback、確定したfee/receipt、replayでの再課金なしを確認する。
+   fencing、request-id reuse conflict、duplicate initialization/instance collision rejectionを
+   検証する。conflict/rejection時はmodule registry/catalog、application objects、fees、receipt、
+   nonce、outboxが不変であることをcanonical bytesで比較する。ここでrejectionはpre-execution
+   rejectionを指す。実行trapのfee-only settlementは別途検証し、application rollback、確定した
+   fee/receipt、replayでの再課金なしを確認する。同じcodeから作成した複数instanceがstate、
+   capability、admin権限を共有しないindependent instanceであることをtestする。
 6. stable vectors、negative/adversarial tests、complete repository gate、fresh tech-lead reviewを
    通過する。ここまで完了する前にpermissionless contract platform、public testnet readiness、
    production/mainnet readinessをclaimしない。
@@ -2453,6 +2461,11 @@ Completion criteria:
    fee/persistence機構を使うことを検証する。別moduleからのCoin amount書き換え、型の
    偽造、instance/capability取り違えを拒否する。mint/burn/split/mergeの算術をnode-coreへ
    移さず、trusted-only policy経路とnative asset settlementの置換・削除を完了条件にする。
+   fee settlementはgovernanceがpinした特定のcommitted contract revisionのみを使い、
+   settlementをbounded resource/gasへ制限する。callerや実行requestが実装moduleや
+   treasury送金先を選択・redirectすることを禁止し、fee決済処理自体がさらなるfeeを
+   再帰的に課さないことを検証する。pinned revisionの変更はgovernance手続きを経た
+   場合のみ許可する。
 
 Related revision/migration slice (same accepted design, separately reviewable
 after the initial immutable-code publish/instantiate/call slice):
