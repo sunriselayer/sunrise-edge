@@ -78,8 +78,9 @@ impl From<ValueError> for InterfaceError {
 ///
 /// Private construction prevents substituting an unchecked ABI. The graph is
 /// NOT a durable published registry: freshness, origin reservation, authorized
-/// upgrades, value layouts, runtime type substitution, ownership, and host
-/// authority remain unverified. No execution or persistence API accepts this.
+/// upgrades, ownership, and host authority remain unverified. Representation
+/// declarations and substitution exist, but are still not runtime authority.
+/// No execution or persistence API accepts this.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedPublicationInterface {
     candidate: AuthenticatedPublicationCandidate,
@@ -96,6 +97,23 @@ impl VerifiedPublicationInterface {
         } else {
             self.dependency_abis.get(origin).map(|abi| &abi.objects)
         }
+    }
+    pub(super) fn body_layout(
+        &self,
+        origin: &PackageOrigin,
+        constructor: u16,
+    ) -> Option<&ValueLayout> {
+        let call_abi: &CallAbi = if origin == &self.abi.objects.origin {
+            &self.abi
+        } else {
+            self.dependency_abis.get(origin)?
+        };
+        let index: usize = call_abi
+            .objects
+            .constructors
+            .iter()
+            .position(|item| item.local_id == constructor)?;
+        call_abi.bodies.get(index)
     }
     pub(super) fn permits_type_origin(&self, origin: &PackageOrigin) -> bool {
         origin == &self.abi.objects.origin

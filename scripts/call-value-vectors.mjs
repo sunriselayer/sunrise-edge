@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 
 const uint = (n, width) => { const b = Buffer.alloc(width); let x = BigInt(n);
   for (let i = 0; i < width; i++) { b[i] = Number(x & 255n); x >>= 8n; } return b; };
-const frame = (id, fields) => Buffer.concat([
-  Buffer.from('SNRE'), uint(id, 2), uint(1, 2), uint(fields.length, 2),
+const frame = (id, fields, version = 1) => Buffer.concat([
+  Buffer.from('SNRE'), uint(id, 2), uint(version, 2), uint(fields.length, 2),
   ...fields.flatMap(([key, value]) => [uint(key, 2), uint(value.length, 4), value]),
 ]);
 const list = (id, items) => frame(id, [[1, uint(items.length, 2)], ...items.map((x, i) => [i + 2, x])]);
@@ -29,13 +29,22 @@ const origin = frame(0x5201, [[1, Buffer.from('test')], [2, uint(1, 2)],
 const empty = list(0x5308, []);
 const entry = frame(0x5304, [[1, Buffer.from('run')], [2, empty], [3, empty]]);
 const objects = frame(0x5301, [[1, origin], [2, empty], [3, list(0x5308, [entry])]]);
-const call = frame(0x5405, [[1, objects], [2, list(0x5402, [layout])]]);
+// Retain the DR-0117 v1 bytes as historical evidence, not an accepted profile.
+const callV1 = frame(0x5405, [[1, objects], [2, list(0x5402, [layout])]]);
+const call = frame(0x5405, [[1, objects], [2, list(0x5402, [layout])], [3, list(0x5402, [])]], 2);
+const ctor = frame(0x5302, [[1, uint(1, 2)], [2, uint(1, 4)],
+  [3, list(0x5308, [frame(0x5303, [[1, uint(2, 2)], [2, uint(9, 2)]])])]]);
+const bodyObjects = frame(0x5301, [[1, origin], [2, list(0x5308, [ctor])], [3, list(0x5308, [entry])]]);
+const bodyCall = frame(0x5405, [[1, bodyObjects], [2, list(0x5402, [tuple([])])],
+  [3, list(0x5402, [tuple([scalar(2), bytes(32, 32)])])]], 2);
 const expected = {
   layout: '214d902457fa9cb3ad44048a2b63f9cfcf6b959941c02f2f960c6cac854e389d',
   value: '4198b85cdec540d1de9c2303f145cbd67cc83f54247a5acece025340dfa04dbe',
-  call: '3c80fc2beb2a8365c789680efc3f13db610c2d3ae941bb9dddb5a866a1eae28c',
+  callV1: '3c80fc2beb2a8365c789680efc3f13db610c2d3ae941bb9dddb5a866a1eae28c',
+  call: 'afb8b69ca8e9199e259e58b805068b0e932a0c106370153cf20aa59783c9ac75',
+  bodyCall: '997d53ee8787f53f8826841452216d6b6e0c4c0e88701fbd4a4f2853c9378839',
 };
-for (const [name, encoded] of Object.entries({ layout, value, call })) {
+for (const [name, encoded] of Object.entries({ layout, value, callV1, call, bodyCall })) {
   const hash = createHash('sha256').update(encoded).digest('hex');
   assert.equal(hash, expected[name]);
   console.log(JSON.stringify({ name, length: encoded.length, sha256: hash }));

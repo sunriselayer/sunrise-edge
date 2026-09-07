@@ -88,6 +88,10 @@ pub struct BoundObjectSignature<'a> {
 }
 
 impl<'a> BoundObjectSignature<'a> {
+    pub(super) fn interface(&self) -> &VerifiedPublicationInterface {
+        self.interface
+    }
+
     /// Returns the entrypoint name borrowed from the verified package ABI.
     #[must_use]
     pub fn entrypoint(&self) -> &str {

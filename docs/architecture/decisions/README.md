@@ -24,6 +24,7 @@
 - [DR-0115: public object-signature ABI and candidate dependency closure](0115-public-object-signature-abi.md)
 - [DR-0116: bound object signatures and input metadata matching](0116-bound-object-signatures.md)
 - [DR-0117: signed argument layouts and canonical call values](0117-canonical-call-values.md)
+- [DR-0118: signed constructor body layouts](0118-signed-object-body-layouts.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).
