@@ -8,6 +8,12 @@
 
 mod artifact;
 mod auth;
+mod interface;
+
+pub use interface::{
+    InterfaceError, MAX_INTERFACE_ABI_BYTES, MAX_INTERFACE_DEPTH, MAX_INTERFACE_NODES,
+    VerifiedPublicationInterface, verify_publication_interface,
+};
 
 pub use artifact::{
     ArtifactParts, CodeArtifact, MAX_ABI_DECLARATION_BYTES, MAX_DEPENDENCIES,

@@ -2433,7 +2433,15 @@ Implementation slices under this gate:
     references remain explicitly unverified; no persistence/execution consumer.
     Eight integration tests, `npm ci --prefix adapters/cloudflare-workers`, and
     `./scripts/check-all.sh` passed on 2026-09-07.
-  - [ ] Define and verify the public typed ABI and exact dependency provenance;
+  - [x] DR-0115: public generic object-signature ABI and exact authenticated
+    candidate dependency-closure verification. This establishes declaration
+    consistency, not value layouts, runtime object authority, or durable
+    dependency publication.
+    Ten integration tests, one graph unit test, independent Node wire vectors,
+    `npm ci --prefix adapters/cloudflare-workers`, and `./scripts/check-all.sh`
+    passed on 2026-09-07.
+  - [ ] Complete the public value/call ABI and runtime type substitution;
+    verify exact dependencies against durable published records and
     authenticate the request against committed publication policy, then commit
     code/ABI/dependency records and enforce origin absence atomically. Bind
     host authority to authenticated lineage and revisions. Do not connect the
