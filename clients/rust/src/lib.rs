@@ -71,10 +71,10 @@ pub use execution::publication::{
     ArtifactParts, CodeArtifact, PublicationContext, PublicationSubmission,
     UnverifiedDependencyRef, decode_dependency_ref,
 };
-pub use execution::{call, local_execution};
+pub use execution::{call, call_authorization, local_execution};
 pub use hashing::HashSuiteResolver;
 pub use key::LocalSigner;
-pub use local_execution_client::build_signed_local_execution;
+pub use local_execution_client::{build_signed_general_execution, build_signed_local_execution};
 pub use protocol_types::{HashSuite, HashSuiteSchedule};
 pub use publication_client::{build_signed_publication, local_publication_resolver};
 pub use signing_view::{

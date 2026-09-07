@@ -24,6 +24,11 @@
 //! `contract publish --executable` selects the separate typed-host profile;
 //! `contract instantiate`, `contract call`, and `contract query-instance` use
 //! the explicitly enabled zero-fee local execution service and canonical files.
+//! `--general-calls` explicitly selects profile three for publication/query and
+//! execution. `contract call` and `instantiate` accept a canonical
+//! `--authorizations` file only with that flag; all target record digests and
+//! exact code references are checked before signing. Omitting the file uses an
+//! empty table, without changing the selected policy or refreshing object refs.
 //!
 //! Commands: `address`, `context`, `object`, `receipt`, `next-nonce`, and
 //! `transfer`, `split`, `merge`, `mint`, and `burn` (the devnet Standard Asset v1

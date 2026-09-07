@@ -177,6 +177,23 @@ impl<T: Transport> Client<T> {
         original_context: &PublicationContext,
         expected_semantics: &Digest32,
     ) -> Result<Option<PublicationSubmission>, ClientError> {
+        self.query_publication_with_semantics(
+            origin,
+            original_resolver,
+            expected,
+            original_context,
+            |_| Ok(*expected_semantics),
+        )
+    }
+
+    pub(crate) fn query_publication_with_semantics(
+        &self,
+        origin: &PackageOrigin,
+        original_resolver: &HashSuiteResolver,
+        expected: &ExpectedProtocolContext,
+        original_context: &PublicationContext,
+        semantics: impl FnOnce(&CodeArtifact) -> Result<Digest32, ClientError>,
+    ) -> Result<Option<PublicationSubmission>, ClientError> {
         if origin.chain_id() != expected.chain_id() {
             return Err(ClientError::PublicationTrustMismatch);
         }
@@ -217,7 +234,7 @@ impl<T: Transport> Client<T> {
         authenticate_publication_submission(
             original_resolver,
             original_context,
-            expected_semantics,
+            &semantics(submission.request().artifact())?,
             submission.clone(),
         )?;
         Ok(Some(submission))

@@ -27,6 +27,31 @@ fn fixture() -> (
     InstanceRecord,
     CallIntent,
 ) {
+    fixture_profile(2, 4)
+}
+fn fixture_profile(
+    profile: u32,
+    seed: u8,
+) -> (
+    HashSuiteResolver,
+    LocalSigner,
+    VerifiedPublicationInterface,
+    InstanceRecord,
+    CallIntent,
+) {
+    fixture_dependencies(profile, seed, vec![])
+}
+fn fixture_dependencies(
+    profile: u32,
+    seed: u8,
+    dependencies: Vec<AuthenticatedPublicationCandidate>,
+) -> (
+    HashSuiteResolver,
+    LocalSigner,
+    VerifiedPublicationInterface,
+    InstanceRecord,
+    CallIntent,
+) {
     let expected = expected();
     let resolver = local_publication_resolver(&expected).unwrap();
     let signer = LocalSigner::from_seed([7; 32]);
@@ -39,7 +64,7 @@ fn fixture() -> (
     let origin = PackageOrigin::unverified(
         expected.chain_id().clone(),
         *signer.address().as_bytes(),
-        [4; 32],
+        [seed; 32],
     )
     .unwrap();
     let metadata = ExecutableAbi {
@@ -62,8 +87,26 @@ fn fixture() -> (
         initializer: Some("init".to_owned()),
         transferable_constructors: vec![],
     };
-    let semantics = local_execution_semantics(&resolver, &context).unwrap();
-    let artifact = CodeArtifact::new(ArtifactParts { context: context.clone(), origin, revision: 1, wasm_profile: 2, semantics, wasm: wat::parse_str("(module (memory (export \"memory\") 1 2) (func (export \"init\")) (func (export \"run\")))").unwrap(), unverified_abi: encode_executable_abi(&metadata).unwrap(), exports: vec!["init".to_owned(), "run".to_owned()], unverified_dependencies: vec![] }).unwrap();
+    let semantics = if profile == 3 {
+        general_execution_semantics(&resolver, &context).unwrap()
+    } else {
+        local_execution_semantics(&resolver, &context).unwrap()
+    };
+    let references: Vec<UnverifiedDependencyRef> = dependencies
+        .iter()
+        .map(|candidate| {
+            let request = candidate.request();
+            let artifact = request.artifact();
+            UnverifiedDependencyRef::new(
+                artifact.origin().clone(),
+                artifact.revision(),
+                artifact.context().clone(),
+                *request.artifact_digest(),
+            )
+            .unwrap()
+        })
+        .collect();
+    let artifact = CodeArtifact::new(ArtifactParts { context: context.clone(), origin, revision: 1, wasm_profile: profile, semantics, wasm: wat::parse_str("(module (memory (export \"memory\") 1 2) (func (export \"init\")) (func (export \"run\")))").unwrap(), unverified_abi: encode_executable_abi(&metadata).unwrap(), exports: vec!["init".to_owned(), "run".to_owned()], unverified_dependencies: references }).unwrap();
     let submission = build_signed_publication(
         &signer,
         &resolver,
@@ -82,11 +125,11 @@ fn fixture() -> (
     .unwrap();
     let candidate =
         authenticate_publication_submission(&resolver, &context, &semantics, submission).unwrap();
-    let interface = verify_publication_interface(candidate, vec![]).unwrap();
+    let interface = verify_publication_interface(candidate, dependencies).unwrap();
     let instance = InstanceRecord {
         context: context.clone(),
         creator: *signer.address().as_bytes(),
-        seed: [2; 32],
+        seed: [seed; 32],
         code: code.clone(),
         revision: 1,
         initializer: "init".to_owned(),
@@ -108,6 +151,292 @@ fn fixture() -> (
 }
 
 struct Fake(RefCell<VecDeque<WireResponse>>);
+
+#[test]
+fn scope_loader_shares_code_and_stops_before_the_34th_publication_fetch() {
+    use call_authorization::{CallAuthorization, ExecutionTarget};
+    for overlapping in [true, false] {
+        let mut fixtures = Vec::new();
+        for scope in 0_u8..5 {
+            let dependencies: Vec<AuthenticatedPublicationCandidate> = (0_u8..6)
+                .map(|node| {
+                    fixture_profile(3, 20 + scope * 6 + node)
+                        .2
+                        .candidate()
+                        .clone()
+                })
+                .collect();
+            fixtures.push(fixture_dependencies(3, scope + 1, dependencies));
+        }
+        let (resolver, _, root_interface, root, call) = fixtures.remove(0);
+        let expected = expected();
+        let context = HttpContextQueryResult::new(
+            expected.chain_id().clone(),
+            expected.protocol_version(),
+            expected.epoch(),
+            expected.hash_suite_id(),
+            2,
+            1,
+            2,
+            expected.domain(),
+            vec![1],
+        )
+        .unwrap();
+        let mut responses: VecDeque<WireResponse> = VecDeque::new();
+        let mut authorizations: Vec<CallAuthorization> = Vec::new();
+        let mut unique_nodes: usize = 7;
+        for (_, _, interface, mut instance, _) in fixtures {
+            if overlapping {
+                instance.code = root.code.clone();
+            }
+            authorizations.push(CallAuthorization {
+                caller: ExecutionTarget {
+                    instance: call.instance.clone(),
+                    code: call.code.clone(),
+                },
+                callee: ExecutionTarget {
+                    instance: instance_target(&resolver, &instance).unwrap(),
+                    code: instance.code.clone(),
+                },
+                entrypoint: "run".to_owned(),
+                type_arguments: vec![],
+                objects: vec![],
+            });
+            responses.push_back(response(context.encode().unwrap(), QUERY_RESULT_MEDIA_TYPE));
+            responses.push_back(response(
+                encode_instance_record(&instance).unwrap(),
+                QUERY_RESULT_MEDIA_TYPE,
+            ));
+            if !overlapping {
+                for candidate in std::iter::once(interface.candidate())
+                    .chain(interface.dependencies().iter().rev())
+                {
+                    if unique_nodes == call_authorization::MAX_EXECUTION_CODE_NODES {
+                        break;
+                    }
+                    let submission =
+                        PublicationSubmission::new([1; 32], candidate.request().clone()).unwrap();
+                    responses
+                        .push_back(response(context.encode().unwrap(), QUERY_RESULT_MEDIA_TYPE));
+                    responses.push_back(response(
+                        encode_publication_submission(&submission).unwrap(),
+                        QUERY_RESULT_MEDIA_TYPE,
+                    ));
+                    unique_nodes += 1;
+                }
+            }
+        }
+        // Exact response count: any extra publication/context query panics in Fake.
+        let client = Client::new(Fake(RefCell::new(responses)));
+        let result = client.query_execution_scopes(
+            &call,
+            &authorizations,
+            root,
+            root_interface,
+            &resolver,
+            &expected,
+            &LocalExecutionPolicy::general(call.context.clone()),
+        );
+        if overlapping {
+            assert_eq!(result.unwrap().len(), 5);
+        } else {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("publication closure nodes")
+            );
+        }
+        assert!(client.transport().0.borrow().is_empty());
+    }
+}
+
+#[test]
+fn scope_query_rejects_replacement_record_before_loading_code() {
+    use call_authorization::{CallAuthorization, ExecutionTarget};
+    let (resolver, _, interface, instance, call) = fixture_profile(3, 4);
+    let (_, _, _, child, _) = fixture_profile(3, 5);
+    let expected = expected();
+    let context = HttpContextQueryResult::new(
+        expected.chain_id().clone(),
+        expected.protocol_version(),
+        expected.epoch(),
+        expected.hash_suite_id(),
+        2,
+        1,
+        2,
+        expected.domain(),
+        vec![1],
+    )
+    .unwrap();
+    let mut pin = instance_target(&resolver, &child).unwrap();
+    pin.record_digest = Digest32::new(HashAlgorithmId::Sha2_256, [99; 32]);
+    let authorization = CallAuthorization {
+        caller: ExecutionTarget {
+            instance: call.instance.clone(),
+            code: call.code.clone(),
+        },
+        callee: ExecutionTarget {
+            instance: pin,
+            code: child.code.clone(),
+        },
+        entrypoint: "run".to_owned(),
+        type_arguments: vec![],
+        objects: vec![],
+    };
+    // No publication response is supplied: fetching code before pin comparison
+    // would exhaust the strict mock and panic.
+    let client = Client::new(Fake(RefCell::new(VecDeque::from([
+        response(context.encode().unwrap(), QUERY_RESULT_MEDIA_TYPE),
+        response(
+            encode_instance_record(&child).unwrap(),
+            QUERY_RESULT_MEDIA_TYPE,
+        ),
+    ]))));
+    assert!(
+        client
+            .query_execution_scopes(
+                &call,
+                &[authorization],
+                instance,
+                interface,
+                &resolver,
+                &expected,
+                &LocalExecutionPolicy::general(call.context.clone())
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn general_signing_uses_shared_exact_scope_checks() {
+    use call_authorization::{CallAuthorization, ExecutionTarget};
+    let (resolver, signer, interface, instance, mut call) = fixture_profile(3, 4);
+    let (_, _, child_interface, child, _) = fixture_profile(3, 5);
+    call.entrypoint = "run".to_owned();
+    let policy: LocalExecutionPolicy = LocalExecutionPolicy::general(call.context.clone());
+    let scopes: Vec<ResolvedExecutionScope> = vec![
+        ResolvedExecutionScope {
+            target: call.instance.clone(),
+            instance,
+            interface,
+        },
+        ResolvedExecutionScope {
+            target: instance_target(&resolver, &child).unwrap(),
+            instance: child.clone(),
+            interface: child_interface,
+        },
+    ];
+    let authorization: CallAuthorization = CallAuthorization {
+        caller: ExecutionTarget {
+            instance: call.instance.clone(),
+            code: call.code.clone(),
+        },
+        callee: ExecutionTarget {
+            instance: scopes[1].target.clone(),
+            code: child.code.clone(),
+        },
+        entrypoint: "run".to_owned(),
+        type_arguments: vec![],
+        objects: vec![],
+    };
+    let signed = build_signed_general_execution(
+        &signer,
+        &resolver,
+        &expected(),
+        &policy,
+        LocalExecutionMode::Call,
+        call.clone(),
+        vec![authorization.clone()],
+        &scopes,
+    )
+    .unwrap();
+    let bytes: Vec<u8> = encode_signed_local_execution(&signed).unwrap();
+    authenticate_local_execution(&resolver, &policy, &bytes).unwrap();
+    assert_eq!(decode_signed_local_execution(&bytes).unwrap(), signed);
+    for case in 0..6 {
+        let mut changed_scopes = scopes.clone();
+        let mut changed_authorization = authorization.clone();
+        let mut changed_policy = policy.clone();
+        match case {
+            0 => changed_scopes[1].target.revision += 1,
+            1 => changed_authorization.callee.code = call.code.clone(),
+            2 => changed_authorization.entrypoint = "init".to_owned(),
+            3 => {
+                changed_scopes.pop();
+            }
+            4 => changed_policy = LocalExecutionPolicy::new(call.context.clone()),
+            5 => {
+                changed_scopes[1].instance.context = PublicationContext::new(
+                    expected().chain_id().clone(),
+                    expected().protocol_version(),
+                    Epoch::new(1),
+                )
+                .unwrap()
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            build_signed_general_execution(
+                &signer,
+                &resolver,
+                &expected(),
+                &changed_policy,
+                LocalExecutionMode::Call,
+                call.clone(),
+                vec![changed_authorization],
+                &changed_scopes
+            )
+            .is_err(),
+            "case {case}"
+        );
+    }
+}
+
+#[test]
+fn profile_three_query_requires_explicit_trusted_policy() {
+    let (resolver, _, interface, instance, call) = fixture_profile(3, 4);
+    let expected = expected();
+    let context = HttpContextQueryResult::new(
+        expected.chain_id().clone(),
+        expected.protocol_version(),
+        expected.epoch(),
+        expected.hash_suite_id(),
+        2,
+        1,
+        2,
+        expected.domain(),
+        vec![1],
+    )
+    .unwrap();
+    let submission =
+        PublicationSubmission::new([1; 32], interface.candidate().request().clone()).unwrap();
+    for general in [false, true] {
+        let client = Client::new(Fake(RefCell::new(VecDeque::from([
+            response(context.encode().unwrap(), QUERY_RESULT_MEDIA_TYPE),
+            response(
+                encode_publication_submission(&submission).unwrap(),
+                QUERY_RESULT_MEDIA_TYPE,
+            ),
+        ]))));
+        let policy = if general {
+            LocalExecutionPolicy::general(call.context.clone())
+        } else {
+            LocalExecutionPolicy::new(call.context.clone())
+        };
+        assert_eq!(
+            client
+                .query_executable_interface_for_policy(
+                    &instance.code,
+                    &resolver,
+                    &expected,
+                    &policy
+                )
+                .is_ok(),
+            general
+        );
+    }
+}
 impl Transport for Fake {
     fn send(&self, _: &WireRequest) -> Result<WireResponse, TransportError> {
         Ok(self.0.borrow_mut().pop_front().unwrap())

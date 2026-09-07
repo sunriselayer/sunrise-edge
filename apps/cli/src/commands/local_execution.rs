@@ -1,6 +1,6 @@
 //! Canonical-file local instance and execution workflow.
 use crate::{
-    args::{parse_flags, scalar},
+    args::{parse_flags, scalar, switch},
     error::CliError,
     hex::decode_hex_32,
     net::{connect_execution, tls_flag_specs},
@@ -90,6 +90,7 @@ fn submit_with_outputs(
 
 pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Result<(), CliError> {
     let mut specs = vec![
+        switch("--general-calls"),
         scalar("--endpoint"),
         scalar("--expected-chain-id"),
         scalar("--expected-protocol-version"),
@@ -114,6 +115,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
             scalar("--nonce"),
             scalar("--result-out"),
             scalar("--submission-out"),
+            scalar("--authorizations"),
         ]);
         if action == "instantiate" {
             specs.extend([scalar("--code-ref"), scalar("--instance-seed")]);
@@ -126,6 +128,9 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         }
     }
     let parsed = parse_flags(args, &specs)?;
+    if parsed.get("--authorizations").is_some() && !parsed.is_present("--general-calls") {
+        return Err(invalid("--authorizations requires --general-calls"));
+    }
     let signer: Option<LocalSigner> = if action == "query-instance" {
         None
     } else {
@@ -146,13 +151,23 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         expected.epoch(),
     )
     .map_err(failure)?;
+    let policy: LocalExecutionPolicy = if parsed.is_present("--general-calls") {
+        LocalExecutionPolicy::general(context.clone())
+    } else {
+        LocalExecutionPolicy::new(context.clone())
+    };
     let client = connect_execution(parsed.require("--endpoint")?, &parsed)?;
     client.query_verified_context(&expected)?;
     if action == "query-instance" {
         let creator: [u8; 32] = decode_hex_32("--creator", parsed.require("--creator")?)?;
         let seed: [u8; 32] = decode_hex_32("--instance-seed", parsed.require("--instance-seed")?)?;
         if let Some(record) = client.query_instance(creator, seed, &resolver, &expected)? {
-            client.query_executable_interface(&record.code, &resolver, &expected)?;
+            client.query_executable_interface_for_policy(
+                &record.code,
+                &resolver,
+                &expected,
+                &policy,
+            )?;
             if let Some(path) = parsed.get("--instance-ref-out") {
                 export(path, &encode_instance_record(&record).map_err(failure)?)?;
             }
@@ -170,6 +185,16 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         return Ok(());
     }
     let signer: LocalSigner = signer.ok_or_else(|| invalid("missing signer"))?;
+    let authorizations: Vec<call_authorization::CallAuthorization> =
+        if let Some(path) = parsed.get("--authorizations") {
+            call_authorization::decode_call_authorizations(&read(
+                path,
+                call_authorization::MAX_CALL_AUTHORIZATION_BYTES,
+            )?)
+            .map_err(failure)?
+        } else {
+            Vec::new()
+        };
     let loaded: Option<InstanceRecord> = if action == "call" {
         Some(
             decode_instance_record(&read(parsed.require("--instance-ref")?, 4096)?)
@@ -184,7 +209,8 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
             decode_dependency_ref(&read(parsed.require("--code-ref")?, 4096)?).map_err(failure)?
         }
     };
-    let interface = client.query_executable_interface(&code, &resolver, &expected)?;
+    let interface =
+        client.query_executable_interface_for_policy(&code, &resolver, &expected, &policy)?;
     let initializer: String = interface
         .executable_abi(code.origin())
         .and_then(|metadata| metadata.initializer.clone())
@@ -260,8 +286,24 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         arguments,
         gas_limit: parse_u64("--gas-limit", parsed.require("--gas-limit")?)?,
     };
-    let signed = build_signed_local_execution(
-        &signer, &resolver, &expected, mode, call, &instance, &interface,
+    let scopes: Vec<ResolvedExecutionScope> = client.query_execution_scopes(
+        &call,
+        &authorizations,
+        instance,
+        interface,
+        &resolver,
+        &expected,
+        &policy,
+    )?;
+    let signed = build_signed_general_execution(
+        &signer,
+        &resolver,
+        &expected,
+        &policy,
+        mode,
+        call,
+        authorizations,
+        &scopes,
     )?;
     let result = submit_with_outputs(
         parsed.get("--result-out"),

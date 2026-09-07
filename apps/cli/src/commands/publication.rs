@@ -32,6 +32,7 @@ where
 {
     let mut specs = vec![
         switch("--executable"),
+        switch("--general-calls"),
         scalar("--endpoint"),
         scalar("--origin-seed"),
         scalar("--expected-chain-id"),
@@ -55,6 +56,9 @@ where
         specs.extend([scalar("--publisher"), scalar("--dependency-ref-out")]);
     }
     let parsed: ParsedArgs = parse_flags(args, &specs)?;
+    if parsed.is_present("--executable") && parsed.is_present("--general-calls") {
+        return Err(invalid("choose --executable or --general-calls, not both"));
+    }
     // Reject hardware signing before file access, device selection, or network I/O.
     let signer: Option<LocalSigner> = if action == "publish" {
         match parse_signer_selection(&parsed)? {
@@ -76,7 +80,10 @@ where
         expected.epoch(),
     )
     .map_err(failure)?;
-    let semantics = if parsed.is_present("--executable") {
+    let semantics = if parsed.is_present("--general-calls") {
+        sunrise_edge_client::local_execution::general_execution_semantics(&resolver, &context)
+            .map_err(failure)?
+    } else if parsed.is_present("--executable") {
         sunrise_edge_client::local_execution::local_execution_semantics(&resolver, &context)
             .map_err(failure)?
     } else {
@@ -113,7 +120,7 @@ where
             parsed.require("--abi")?,
             sunrise_edge_client::publication::MAX_ABI_DECLARATION_BYTES,
         )?;
-        if parsed.is_present("--executable") {
+        if parsed.is_present("--executable") || parsed.is_present("--general-calls") {
             sunrise_edge_client::executable_abi::decode_executable_abi(&abi).map_err(failure)?;
         }
         let mut dependencies: Vec<UnverifiedDependencyRef> = Vec::new();
@@ -135,7 +142,9 @@ where
             context,
             origin,
             revision: 1,
-            wasm_profile: if parsed.is_present("--executable") {
+            wasm_profile: if parsed.is_present("--general-calls") {
+                3
+            } else if parsed.is_present("--executable") {
                 2
             } else {
                 1

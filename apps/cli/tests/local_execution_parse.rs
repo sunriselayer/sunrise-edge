@@ -43,3 +43,43 @@ fn new_commands_reject_unknown_and_duplicate_flags_locally() {
         }
     }
 }
+
+#[test]
+fn general_flags_are_explicit_and_preserve_ledger_preflight() {
+    for action in ["instantiate", "call", "publish"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_sunrise-edge-cli"))
+            .args([
+                "contract",
+                action,
+                "--general-calls",
+                "--ledger-hid-path",
+                "unreachable-device",
+                "--ledger-account",
+                "0",
+                "--ledger-expected-firmware-version",
+                "1.0.0",
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("signing is not supported"));
+        assert!(output.stdout.is_empty());
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_sunrise-edge-cli"))
+        .args(["contract", "call", "--authorizations", "missing-file"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("--authorizations requires --general-calls")
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_sunrise-edge-cli"))
+        .args(["contract", "publish", "--executable", "--general-calls"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("choose --executable or --general-calls")
+    );
+}
