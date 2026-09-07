@@ -2427,9 +2427,17 @@ Implementation slices under this gate:
     authenticate a publisher, persist a package, or grant object authority.
     Six integration tests, `npm ci --prefix adapters/cloudflare-workers`, and
     `./scripts/check-all.sh` passed on 2026-09-07.
-  - [ ] Authenticate the full publication request and strict publisher key;
-    commit immutable code/ABI/dependency records and enforce origin absence
-    atomically. Bind host authority to authenticated lineage and revisions.
+  - [x] DR-0114: bounded immutable artifact/request codecs, exact full-artifact
+    commitment and strict publisher signature authentication, returning a
+    capability-free candidate only. ABI declaration bytes and dependency
+    references remain explicitly unverified; no persistence/execution consumer.
+    Eight integration tests, `npm ci --prefix adapters/cloudflare-workers`, and
+    `./scripts/check-all.sh` passed on 2026-09-07.
+  - [ ] Define and verify the public typed ABI and exact dependency provenance;
+    authenticate the request against committed publication policy, then commit
+    code/ABI/dependency records and enforce origin absence atomically. Bind
+    host authority to authenticated lineage and revisions. Do not connect the
+    candidate directly to the legacy catalog or treat signed ABI bytes as rights.
 - [ ] Fenced durable publish/instantiate/call, public object authority and
   typed calls, Standard Asset parity, and committed fee settlement replacing
   trusted-only paths. The numbered criteria below remain the complete gate.

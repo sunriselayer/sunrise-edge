@@ -64,6 +64,12 @@ context needed to verify published commitments across protocol upgrades.
 Dependencies bind both the exact code revision and its authenticated lineage;
 structural similarity or a copied ABI does not establish type provenance.
 
+The signed candidate boundary in
+[DR-0114](architecture/decisions/0114-authenticated-publication-candidate.md)
+binds exact artifact data without granting publication or execution authority.
+Opaque ABI declarations and dependency claims must be verified before durable
+admission, not trusted merely because the publisher signed their bytes.
+
 Instantiation uses published code to establish an independent instance and its
 initial objects/authority. Initialization effects and the instance record
 commit atomically. Initializers must not re-run as an accidental side effect of

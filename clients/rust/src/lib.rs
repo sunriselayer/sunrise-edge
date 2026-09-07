@@ -87,7 +87,8 @@ pub use execution::{
     CONTRACT_WASM_ADMISSION_PROFILE_VERSION, ContractWasmValidationError, EventRecord,
     ExecutionEffects, ExecutionStatus, MAX_CONTRACT_ENTRYPOINT_NAME_BYTES,
     MAX_CONTRACT_ENTRYPOINTS, MAX_CONTRACT_WASM_BYTES, ObjectEffect, ValidatedContractWasm,
-    decode_event_record, decode_execution_effects, decode_object_effect, validate_contract_wasm,
+    decode_event_record, decode_execution_effects, decode_object_effect, publication,
+    validate_contract_wasm,
 };
 pub use node_core::{NodeCoreError, NodeResponse, NodeResponseStatus, RequestId};
 pub use node_wire::{
