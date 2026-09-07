@@ -38,6 +38,9 @@ pub const MAX_LIST_ITEMS: usize = 256;
 /// Maximum number of argument layouts in a CallAbi envelope (matches MAX_ABI_ENTRYPOINTS).
 pub const MAX_CALL_ABI_ARGUMENTS: usize = public_abi::MAX_ABI_ENTRYPOINTS;
 
+/// Maximum number of body layouts in a CallAbi envelope (matches MAX_ABI_CONSTRUCTORS).
+pub const MAX_CALL_ABI_BODIES: usize = public_abi::MAX_ABI_CONSTRUCTORS;
+
 const FRAME_TYPE_VALUE_LAYOUT: u16 = 0x5401;
 const FRAME_TYPE_LAYOUT_LIST: u16 = 0x5402;
 const FRAME_TYPE_CALL_VALUE: u16 = 0x5403;
@@ -45,6 +48,7 @@ const FRAME_TYPE_VALUE_LIST: u16 = 0x5404;
 const FRAME_TYPE_CALL_ABI: u16 = 0x5405;
 
 const FRAME_VERSION: u16 = 1;
+const CALL_ABI_FRAME_VERSION: u16 = 2;
 
 const LAYOUT_KIND_BOOL: u16 = 1;
 const LAYOUT_KIND_U64: u16 = 2;
@@ -105,15 +109,20 @@ pub enum CallValue {
     List(Vec<CallValue>),
 }
 
-/// Canonical envelope binding public package ABI objects to argument value layouts.
+/// Canonical envelope binding public package ABI objects to argument and body layouts.
 ///
 /// Binds exactly one root layout per declared entrypoint in matching positional order.
+/// Also binds one fixed body layout per constructor; generic type arguments affect
+/// nominal identity, not body representation. Both lists share the layout-node
+/// and outer byte budgets. Only envelope version 2 is accepted, with no defaults.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallAbi {
     /// Public package-scoped object-signature ABI.
     pub objects: PackageAbi,
     /// Positional root argument value layout for each entrypoint.
     pub arguments: Vec<ValueLayout>,
+    /// Positional body value layout for each declared constructor in ascending local_id order.
+    pub bodies: Vec<ValueLayout>,
 }
 
 /// Errors occurring during value layout, call value, or CallAbi encoding, decoding, or validation.
@@ -869,7 +878,7 @@ pub fn decode_call_value(layout: &ValueLayout, bytes: &[u8]) -> Result<CallValue
     decode_call_value_inner(layout, bytes, 1, &mut node_count, &mut leaf_bytes)
 }
 
-/// Canonically encodes a [`CallAbi`] envelope binding objects ABI to argument layouts.
+/// Canonically encodes a version-2 [`CallAbi`] with exact argument and body layouts.
 pub fn encode_call_abi(abi: &CallAbi) -> Result<Vec<u8>, ValueError> {
     public_abi::validate_package_abi_shape(&abi.objects)?;
 
@@ -883,8 +892,21 @@ pub fn encode_call_abi(abi: &CallAbi) -> Result<Vec<u8>, ValueError> {
         return Err(ValueError::Limit("call abi arguments count exceeds limit"));
     }
 
+    let ctor_count: usize = abi.objects.constructors.len();
+    if abi.bodies.len() != ctor_count {
+        return Err(ValueError::Invalid(
+            "call abi bodies count does not match constructors count",
+        ));
+    }
+    if abi.bodies.len() > MAX_CALL_ABI_BODIES {
+        return Err(ValueError::Limit("call abi bodies count exceeds limit"));
+    }
+
     let mut total_layout_nodes: usize = 0;
     for layout in &abi.arguments {
+        validate_value_layout_inner(layout, 1, &mut total_layout_nodes)?;
+    }
+    for layout in &abi.bodies {
         validate_value_layout_inner(layout, 1, &mut total_layout_nodes)?;
     }
 
@@ -893,10 +915,13 @@ pub fn encode_call_abi(abi: &CallAbi) -> Result<Vec<u8>, ValueError> {
     let mut node_count: usize = 0;
     let encoded_arguments: Vec<u8> =
         encode_canonical_layout_list(&abi.arguments, MAX_CALL_ABI_ARGUMENTS, 1, &mut node_count)?;
+    let encoded_bodies: Vec<u8> =
+        encode_canonical_layout_list(&abi.bodies, MAX_CALL_ABI_BODIES, 1, &mut node_count)?;
 
-    let mut s: CanonicalStruct = CanonicalStruct::new(FRAME_TYPE_CALL_ABI, FRAME_VERSION);
+    let mut s: CanonicalStruct = CanonicalStruct::new(FRAME_TYPE_CALL_ABI, CALL_ABI_FRAME_VERSION);
     s.field_bytes(1, encoded_objects)?;
     s.field_bytes(2, encoded_arguments)?;
+    s.field_bytes(3, encoded_bodies)?;
     let encoded: Vec<u8> = s.finish()?;
 
     if encoded.len() > MAX_VALUE_BYTES {
@@ -914,8 +939,8 @@ pub fn decode_call_abi(bytes: &[u8]) -> Result<CallAbi, ValueError> {
     }
     let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
     frame.require_type(FRAME_TYPE_CALL_ABI)?;
-    frame.require_version(FRAME_VERSION)?;
-    frame.require_only_fields(&[1, 2])?;
+    frame.require_version(CALL_ABI_FRAME_VERSION)?;
+    frame.require_only_fields(&[1, 2, 3])?;
 
     let objects_bytes: &[u8] = frame.required_field(1)?;
     if objects_bytes.len() > MAX_VALUE_BYTES {
@@ -928,10 +953,22 @@ pub fn decode_call_abi(bytes: &[u8]) -> Result<CallAbi, ValueError> {
         return Err(ValueError::Limit("arguments byte limit exceeded"));
     }
 
+    let bodies_bytes: &[u8] = frame.required_field(3)?;
+    if bodies_bytes.len() > MAX_VALUE_BYTES {
+        return Err(ValueError::Limit("bodies byte limit exceeded"));
+    }
+
     let mut total_layout_nodes: usize = 0;
     let arguments: Vec<ValueLayout> = decode_canonical_layout_list(
         args_bytes,
         MAX_CALL_ABI_ARGUMENTS,
+        1,
+        &mut total_layout_nodes,
+    )?;
+
+    let bodies: Vec<ValueLayout> = decode_canonical_layout_list(
+        bodies_bytes,
+        MAX_CALL_ABI_BODIES,
         1,
         &mut total_layout_nodes,
     )?;
@@ -942,5 +979,15 @@ pub fn decode_call_abi(bytes: &[u8]) -> Result<CallAbi, ValueError> {
         ));
     }
 
-    Ok(CallAbi { objects, arguments })
+    if bodies.len() != objects.constructors.len() {
+        return Err(ValueError::Invalid(
+            "call abi bodies count does not match constructors count",
+        ));
+    }
+
+    Ok(CallAbi {
+        objects,
+        arguments,
+        bodies,
+    })
 }

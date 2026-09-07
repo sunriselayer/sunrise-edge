@@ -12,6 +12,8 @@ use sha2::{Digest as _, Sha256};
 
 #[path = "publication_interface/binding.rs"]
 mod binding_tests;
+#[path = "publication_interface/bodies.rs"]
+mod body_tests;
 #[path = "publication_interface/values.rs"]
 mod value_tests;
 
@@ -135,6 +137,7 @@ fn candidate(
 }
 fn wire_abi(abi: &PackageAbi) -> Vec<u8> {
     encode_call_abi(&CallAbi {
+        bodies: vec![ValueLayout::Tuple(vec![]); abi.constructors.len()],
         objects: abi.clone(),
         arguments: vec![ValueLayout::Tuple(vec![]); abi.entrypoints.len()],
     })

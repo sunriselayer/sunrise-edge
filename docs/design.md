@@ -87,6 +87,12 @@ canonical argument layouts into the signed code artifact. Callers cannot
 substitute the layout during validation; representational validity still does
 not establish authenticated execution, object body invariants or ownership.
 
+[DR-0118](architecture/decisions/0118-signed-object-body-layouts.md) selects
+constructor body layouts from the exact signed defining ABI. Canonical body
+representation checking must remain separate from object-reference digest,
+trusted state, owner and execution-authority validation. Fixed representation
+does not establish a contract's arithmetic or application invariants.
+
 Instantiation uses published code to establish an independent instance and its
 initial objects/authority. Initialization effects and the instance record
 commit atomically. Initializers must not re-run as an accidental side effect of

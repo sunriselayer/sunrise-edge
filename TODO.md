@@ -2452,7 +2452,14 @@ Implementation slices under this gate:
     Eight additional integration tests (25 in the interface suite), independent
     Node wire-vector assertions, `npm ci --prefix adapters/cloudflare-workers`,
     and `./scripts/check-all.sh` passed on 2026-09-07.
-  - [ ] Complete authenticated call/object admission and object body layouts;
+  - [x] DR-0118: signed constructor body layouts with exact defining dependency
+    resolution and bounded canonical input-body validation. Object digest,
+    trusted-state, owner and call authentication remain separate obligations.
+    Nine additional integration tests (34 in the interface suite), independent
+    version-2 envelope vectors with pinned version-1 rejection evidence,
+    `npm ci --prefix adapters/cloudflare-workers`, and `./scripts/check-all.sh`
+    passed on 2026-09-07.
+  - [ ] Complete authenticated call/object admission;
     verify exact dependencies against durable published records and
     authenticate the request against committed publication policy, then commit
     code/ABI/dependency records and enforce origin absence atomically. Bind

@@ -105,10 +105,24 @@ fn independent_layout_value_and_envelope_vectors_roundtrip_exactly() {
     let encoded_layout = encode_value_layout(&l).unwrap();
     let encoded_value = encode_call_value(&l, &v).unwrap();
     let call = CallAbi {
+        bodies: vec![],
         objects: minimal(1),
         arguments: vec![l.clone()],
     };
     let encoded_call = encode_call_abi(&call).unwrap();
+    let current = decode_canonical_frame(&encoded_call).unwrap();
+    let mut historical = CanonicalStruct::new(0x5405, 1);
+    for field in [1, 2] {
+        historical
+            .field_bytes(field, current.required_field(field).unwrap())
+            .unwrap();
+    }
+    let historical_bytes = historical.finish().unwrap();
+    assert_eq!(
+        digest(&historical_bytes),
+        "3c80fc2beb2a8365c789680efc3f13db610c2d3ae941bb9dddb5a866a1eae28c"
+    );
+    assert!(decode_call_abi(&historical_bytes).is_err());
     assert_eq!(
         digest(&encoded_layout),
         "214d902457fa9cb3ad44048a2b63f9cfcf6b959941c02f2f960c6cac854e389d"
@@ -119,7 +133,7 @@ fn independent_layout_value_and_envelope_vectors_roundtrip_exactly() {
     );
     assert_eq!(
         digest(&encoded_call),
-        "3c80fc2beb2a8365c789680efc3f13db610c2d3ae941bb9dddb5a866a1eae28c"
+        "afb8b69ca8e9199e259e58b805068b0e932a0c106370153cf20aa59783c9ac75"
     );
     assert_eq!(decode_value_layout(&encoded_layout).unwrap(), l);
     assert_eq!(decode_call_value(&l, &encoded_value).unwrap(), v);
@@ -307,6 +321,7 @@ fn layout_depth_and_shared_envelope_node_budget_are_exact() {
         })
         .collect();
     let mut call = CallAbi {
+        bodies: vec![],
         objects,
         arguments: vec![ValueLayout::Tuple(vec![ValueLayout::Bool; 3]); 64],
     }; // 64*4=256
@@ -332,6 +347,7 @@ fn signed_layout_pairing_is_exact_and_object_only_candidates_fail_closed() {
         objects: vec![],
     });
     let call = CallAbi {
+        bodies: vec![],
         objects,
         arguments: vec![ValueLayout::U64, ValueLayout::Bool],
     };
@@ -368,6 +384,7 @@ fn signed_layout_pairing_is_exact_and_object_only_candidates_fail_closed() {
 #[test]
 fn signature_binds_layout_changes_even_with_recomputed_artifact_digest() {
     let original = typed_candidate(&CallAbi {
+        bodies: vec![],
         objects: minimal(1),
         arguments: vec![ValueLayout::U64],
     });
@@ -383,6 +400,7 @@ fn signature_binds_layout_changes_even_with_recomputed_artifact_digest() {
         exports: a.exports().to_vec(),
         unverified_dependencies: vec![],
         unverified_abi: encode_call_abi(&CallAbi {
+            bodies: vec![],
             objects: minimal(1),
             arguments: vec![ValueLayout::Bool],
         })
@@ -402,6 +420,7 @@ fn nested_headers_fields_and_list_counts_are_strict() {
     let value_bytes: Vec<u8> =
         encode_call_value(&l, &CallValue::Tuple(vec![CallValue::Bool(false)])).unwrap();
     let call_bytes: Vec<u8> = encode_call_abi(&CallAbi {
+        bodies: vec![],
         objects: minimal(1),
         arguments: vec![l.clone()],
     })

@@ -657,6 +657,13 @@ envelope with explicit per-entrypoint value layouts. The former object-only
 candidate profile is rejected rather than defaulting missing layouts. Canonical
 argument validation uses the bound signed layout and grants no admission rights.
 
+[DR-0118](decisions/0118-signed-object-body-layouts.md) makes constructor body
+layouts mandatory in CallAbi version 2 (version 1 is rejected). Argument and
+body declarations share the envelope's node/byte budgets. The body validator
+combines metadata matching with canonical decoding against the retained defining
+ABI, including dependencies; it does not authenticate object digests, state,
+ownership or calls and confers no execution authority.
+
 The shared non-executing WASM admission verifier and its structural-only
 boundary are specified in [DR-0112](decisions/0112-contract-wasm-admission.md).
 It checks binary code and declared export names without authorizing object

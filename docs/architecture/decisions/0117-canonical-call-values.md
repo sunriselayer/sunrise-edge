@@ -2,6 +2,10 @@
 
 Accepted: 2026-09-07 (Asia/Singapore).
 
+The version-1 envelope below is historical. [DR-0118](0118-signed-object-body-layouts.md)
+supersedes its active admission profile with mandatory constructor bodies in
+version 2; the value/layout encodings specified here remain unchanged.
+
 ## Explicit call ABI, no object-only fallback
 
 Public candidate interface verification now requires a `CallAbi` envelope:
