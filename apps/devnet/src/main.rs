@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use native_http::serve;
+use native_http::{NativeHttpServePolicy, serve_with_policy};
 use objects::ObjectId;
 use runtime::{Clock, DurableOperationContext, StorageCorrelationId, StorageDeadline, SystemClock};
 use std::{error::Error, process::ExitCode, sync::Arc};
@@ -208,7 +208,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
     println!("limitations={DEVNET_STARTUP_LIMITATIONS_BANNER}");
     println!("Press Ctrl-C to stop.");
 
-    serve(listener, router, async {
+    let serve_policy =
+        NativeHttpServePolicy::default().with_local_publication(config.local_publication());
+    serve_with_policy(listener, router, serve_policy, async {
         if let Err(error) = tokio::signal::ctrl_c().await {
             eprintln!("failed to install Ctrl-C handler: {error}");
         }

@@ -43,6 +43,12 @@ capped at 33 nodes including the root and 16 MiB of stored submissions.
 Explicit trusted resolver history is capped at 16 entries. No history or
 hash schedule is synthesized from an untrusted artifact or HTTP response.
 
+The version-one policy mode and bounds are fixed wire-profile constants, not
+tunable current-node settings. Changing those constants in place would make
+historical policy rows fail decoding and is prohibited. A different admitted
+profile needs an explicit activation/decoder that retains original profile
+validation; retaining context-keyed bytes alone is not sufficient.
+
 ## Atomic admission and provenance
 
 After authentication, reconcile the typed durable request receipt before
@@ -76,7 +82,8 @@ event, and no claim of certificate or distributed publication atomicity.
 Definite rejection and indeterminate commit outcomes remain distinct; after
 uncertainty, replay the same signed bytes and request ID.
 
-Records live under reserved `se/publications/v1/` generic durable-state keys,
+Records live under `se/publications/v1/` generic durable-state keys, within the
+reserved `se/publications/` namespace,
 not a second database or SQLite schema. Generic state-machine plans cannot
 write this namespace. Context-keyed policy records retain original validation
 policy. Bootstrapping is trusted composition, rejects tombstones and changed
@@ -88,8 +95,16 @@ Only `--enable-local-publication` installs the local policy and enables
 `POST /v1/contracts/publications` and
 `GET /v1/contracts/publications/{publisher}/{origin_seed}`. Default routes and
 non-submit event-family authorization remain unchanged. The publication body
-limit is path-specific; existing event limits are not raised. Native ingress
+limit is path-specific and explicitly opt-in; existing event limits are not raised. Native ingress
 retains bounded admission, deadlines and writer fencing.
+
+Custom native embeddings must opt into both the publication router and the
+publication-specific pre-parser body limit through `NativeHttpServePolicy`; default `serve`
+keeps its original body limit even for a request spelling the publication path.
+The devnet derives both choices from the same local-publication flag.
+The original native event cap is 16 MiB + 512 bytes; the publication cap is
+5 MiB + 128 bytes. Opt-in selects the narrower publication bound, not an
+increase in the default event memory ceiling.
 
 The CLI uses software development keys; Ledger publication signing is rejected
 before device or network work. It verifies endpoint TLS independently from

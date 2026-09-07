@@ -132,9 +132,16 @@ async fn cli_publish_query_dependency_and_exact_replay_survive_sqlite_restart() 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = listener.local_addr().unwrap().to_string();
         let (stop, shutdown) = tokio::sync::oneshot::channel::<()>();
-        let server = tokio::spawn(native_http::serve(listener, router, async {
-            let _ = shutdown.await;
-        }));
+        let serve_policy =
+            native_http::NativeHttpServePolicy::default().with_local_publication(boot_index < 2);
+        let server = tokio::spawn(native_http::serve_with_policy(
+            listener,
+            router,
+            serve_policy,
+            async {
+                let _ = shutdown.await;
+            },
+        ));
         let directory_path = directory.0.clone();
         let publisher = signer.address().to_string();
         tokio::task::spawn_blocking(move || {

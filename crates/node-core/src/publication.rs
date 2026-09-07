@@ -18,7 +18,7 @@ use execution::publication::{
 mod tests;
 
 /// Namespace reserved against generic application state accesses, across upgrades.
-pub const PUBLICATION_STATE_PREFIX: &[u8] = b"se/publications/v1/";
+pub const PUBLICATION_STATE_PREFIX: &[u8] = b"se/publications/";
 /// Aggregate complete submission bytes allowed in one dependency closure.
 pub const MAX_PUBLICATION_CLOSURE_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum explicitly supplied historical protocol resolvers.
@@ -200,7 +200,8 @@ impl LocalPublicationPolicy {
 pub fn publication_policy_key(
     context: &PublicationContext,
 ) -> Result<Vec<u8>, PublicationAdmissionError> {
-    let mut key: Vec<u8> = b"se/publications/v1/policies/".to_vec();
+    let mut key: Vec<u8> = PUBLICATION_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"v1/policies/");
     key.extend(encode_publication_context(context)?);
     Ok(key)
 }
@@ -208,7 +209,8 @@ pub fn publication_policy_key(
 pub fn publication_record_key(
     origin: &PackageOrigin,
 ) -> Result<Vec<u8>, PublicationAdmissionError> {
-    let mut key: Vec<u8> = b"se/publications/v1/records/".to_vec();
+    let mut key: Vec<u8> = PUBLICATION_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"v1/records/");
     key.extend(encode_package_origin(origin).map_err(PublicationError::from)?);
     Ok(key)
 }
@@ -410,7 +412,6 @@ fn verify_publication_receipt<S: StructuredDurableDomainStateStore>(
 /// Replay returns its existing receipt before policy/dependency reads. New
 /// publication atomically consumes the shared sender nonce and asserts every
 /// dependency/policy read. No outbox message or executable authority is created.
-#[allow(clippy::too_many_arguments)]
 pub fn handle_local_publication<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
@@ -423,7 +424,6 @@ pub fn handle_local_publication<S: StructuredDurableDomainStateStore>(
 }
 
 /// Same admission with explicit trusted resolvers for original protocol versions.
-#[allow(clippy::too_many_arguments)]
 pub fn handle_local_publication_with_history<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,

@@ -120,6 +120,7 @@ pub struct NativeHttpServePolicy {
     body_idle_timeout: Duration,
     body_total_timeout: Duration,
     response_total_timeout: Duration,
+    local_publication: bool,
 }
 
 impl NativeHttpServePolicy {
@@ -156,6 +157,7 @@ impl NativeHttpServePolicy {
             body_idle_timeout: Duration::from_millis(body_idle_timeout_millis.get()),
             body_total_timeout: Duration::from_millis(body_total_timeout_millis.get()),
             response_total_timeout: Duration::from_millis(response_total_timeout_millis.get()),
+            local_publication: false,
         })
     }
 
@@ -164,11 +166,21 @@ impl NativeHttpServePolicy {
     pub const fn max_connections(self) -> NonZeroUsize {
         self.max_connections
     }
+
+    /// Explicitly applies the local publication request body bound at ingress.
+    /// The embedding host must independently enable the matching router capability.
+    /// Both capabilities default off; every other path retains its existing bound.
+    #[must_use]
+    pub const fn with_local_publication(mut self, enabled: bool) -> Self {
+        self.local_publication = enabled;
+        self
+    }
 }
 
 impl Default for NativeHttpServePolicy {
     fn default() -> Self {
         Self {
+            local_publication: false,
             max_connections: NonZeroUsize::new(DEFAULT_NATIVE_HTTP_CONNECTIONS)
                 .unwrap_or(NonZeroUsize::MIN),
             header_read_timeout: Duration::from_millis(DEFAULT_NATIVE_HTTP_HEADER_READ_MILLIS),
@@ -286,7 +298,7 @@ pub enum StructuredDurableRouterError {
     /// The committed [`ProtocolConfig`] carried no domain-placement manifest,
     /// so no logical domain could be resolved for storage.
     MissingDomainPlacement,
-    /// An opted-in publication policy disagreed with the native ingress context.
+    /// An opted-in publication policy disagreed with the native context or fixed profile.
     PublicationContextAuthorityMismatch,
 }
 
@@ -305,9 +317,9 @@ impl fmt::Display for StructuredDurableRouterError {
             Self::MissingDomainPlacement => {
                 f.write_str("committed protocol config carries no domain placement manifest")
             }
-            Self::PublicationContextAuthorityMismatch => {
-                f.write_str("local publication policy context differs from native ingress context")
-            }
+            Self::PublicationContextAuthorityMismatch => f.write_str(
+                "local publication policy differs from native ingress context or fixed profile",
+            ),
         }
     }
 }
@@ -1032,7 +1044,14 @@ where
             || policy.context().protocol_version() != config.protocol_version()
             || policy.context().epoch() != config.epoch()
             || resolver.chain_id() != config.chain_id()
-            || resolver.protocol_version() != config.protocol_version())
+            || resolver.protocol_version() != config.protocol_version()
+            || node_core::publication::local_publication_profile_semantics(
+                &resolver,
+                policy.context(),
+            )
+            .ok()
+            .as_ref()
+                != Some(policy.semantics()))
     {
         return Err(StructuredDurableRouterError::PublicationContextAuthorityMismatch);
     }
@@ -1217,7 +1236,12 @@ async fn serve_connection(
     );
     let io = TokioIo::new(stream);
     let service = service_fn(move |request: Request<Incoming>| {
-        dispatch_bounded_request(app.clone(), request, policy.body_total_timeout)
+        dispatch_bounded_request(
+            app.clone(),
+            request,
+            policy.body_total_timeout,
+            policy.local_publication,
+        )
     });
     let mut builder = http1::Builder::new();
     builder
@@ -1242,10 +1266,12 @@ async fn dispatch_bounded_request(
     app: Router,
     request: Request<Incoming>,
     body_total_timeout: Duration,
+    local_publication: bool,
 ) -> Result<Response, Infallible> {
     let (parts, incoming) = request.into_parts();
     let body = Body::new(incoming);
-    let limit: usize = if parts.method == axum::http::Method::POST
+    let limit: usize = if local_publication
+        && parts.method == axum::http::Method::POST
         && parts.uri.path() == publication::PUBLICATION_PATH
     {
         execution::publication::MAX_PUBLICATION_SUBMISSION_BYTES
@@ -2261,15 +2287,16 @@ fn invoke_query_context(
         .map_err(|_| QueryInvocationError::ResultEncoding)
 }
 
-/// Allocates the same trusted storage authority every storage-backed query
-/// route shares: a resolved logical domain, a restart-safe correlation
+/// Allocates the trusted storage authority shared by queries and publication
+/// writes: a resolved logical domain, a fresh restart-safe correlation
 /// identity, and a bounded deadline, all from trusted composition rather
 /// than the HTTP request.
 ///
 /// The domain is resolved through [`resolve_query_domain`], so an inactive
 /// placement rejects before identity allocation, clock access, or storage
-/// I/O exactly like every other storage-backed query failure.
-fn prepare_query_storage_context<S, B, T, C, I>(
+/// I/O. The deadline is freshly derived from the current trusted clock and
+/// operation timeout; callers do not reuse a prior query's authority.
+fn prepare_storage_context<S, B, T, C, I>(
     components: &StructuredDurableNativeComponents<S, B, T, C, I>,
     protocol_config: &ProtocolConfig,
     authority: &StructuredDurableRequestAuthority,
@@ -2302,10 +2329,10 @@ where
     let deadline_unix_millis = now_unix_millis
         .checked_add(authority.operation_timeout_millis.get())
         .ok_or(QueryInvocationError::Node(
-            NodeCoreError::PersistenceInvariant("query deadline arithmetic overflowed"),
+            NodeCoreError::PersistenceInvariant("storage deadline arithmetic overflowed"),
         ))?;
     let deadline = StorageDeadline::new(deadline_unix_millis).ok_or(QueryInvocationError::Node(
-        NodeCoreError::PersistenceInvariant("query deadline arithmetic overflowed"),
+        NodeCoreError::PersistenceInvariant("storage deadline arithmetic overflowed"),
     ))?;
     let context =
         DurableOperationContext::new(authority.writer_fence, deadline, identity.correlation_id);
@@ -2329,7 +2356,7 @@ where
         return Err(QueryInvocationError::CancelledBeforeStorage);
     }
     let (domain, context) =
-        prepare_query_storage_context(components, protocol_config, authority, config)?;
+        prepare_storage_context(components, protocol_config, authority, config)?;
     if components.is_cancelled() {
         return Err(QueryInvocationError::CancelledBeforeStorage);
     }
@@ -2372,7 +2399,7 @@ where
         return Err(QueryInvocationError::CancelledBeforeStorage);
     }
     let (domain, context) =
-        prepare_query_storage_context(components, protocol_config, authority, config)?;
+        prepare_storage_context(components, protocol_config, authority, config)?;
     if components.is_cancelled() {
         return Err(QueryInvocationError::CancelledBeforeStorage);
     }
@@ -2409,7 +2436,7 @@ where
         return Err(QueryInvocationError::CancelledBeforeStorage);
     }
     let (domain, context) =
-        prepare_query_storage_context(components, protocol_config, authority, config)?;
+        prepare_storage_context(components, protocol_config, authority, config)?;
     if components.is_cancelled() {
         return Err(QueryInvocationError::CancelledBeforeStorage);
     }
@@ -9771,6 +9798,91 @@ mod tests {
             let _received = shutdown_receiver.await;
         }));
         (address, shutdown_sender, server)
+    }
+
+    #[tokio::test]
+    async fn real_http_publication_body_cap_requires_explicit_ingress_opt_in() {
+        for (enabled, length, expected) in [
+            (false, MAX_HTTP_EVENT_BODY_BYTES + 1, "413"),
+            (
+                false,
+                execution::publication::MAX_PUBLICATION_SUBMISSION_BYTES + 1,
+                "404",
+            ),
+            (
+                true,
+                execution::publication::MAX_PUBLICATION_SUBMISSION_BYTES,
+                "404",
+            ),
+            (
+                true,
+                execution::publication::MAX_PUBLICATION_SUBMISSION_BYTES + 1,
+                "413",
+            ),
+        ] {
+            let policy = test_serve_policy(4, 2_000, 2_000, 3_000).with_local_publication(enabled);
+            let (address, shutdown, server) = start_serve_test(policy).await;
+            let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+            let header = format!(
+                "POST {} HTTP/1.1\r\nHost: localhost\r\nContent-Type: {}\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n",
+                publication::PUBLICATION_PATH,
+                NODE_EVENT_MEDIA_TYPE
+            );
+            stream.write_all(header.as_bytes()).await.unwrap();
+            // Writing may race the authoritative limit rejection; the response
+            // still distinguishes rejection from dispatch to the absent route.
+            let _write = stream.write_all(&vec![0_u8; length]).await;
+            let response = read_to_connection_end(&mut stream).await.unwrap();
+            let status = String::from_utf8_lossy(&response);
+            assert!(
+                status.starts_with(&format!("HTTP/1.1 {expected}")),
+                "enabled={enabled}, length={length}, response={status}"
+            );
+            shutdown.send(()).unwrap();
+            server.await.unwrap().unwrap();
+        }
+    }
+
+    #[test]
+    fn publication_router_rejects_wrong_fixed_semantics_before_storage() {
+        let store = Arc::new(ScriptedIndexedStore::new(Vec::new(), Vec::new()));
+        let node_config = config();
+        let context = execution::publication::PublicationContext::new(
+            node_config.chain_id().clone(),
+            node_config.protocol_version(),
+            node_config.epoch(),
+        )
+        .unwrap();
+        let policy = node_core::publication::LocalPublicationPolicy::new(
+            context,
+            protocol_types::Digest32::new(protocol_types::HashAlgorithmId::Sha2_256, [0x33; 32]),
+        );
+        let result = preinstalled_wasm_structured_durable_router(
+            StructuredDurableNativeComponents::new(
+                Arc::clone(&store),
+                Arc::new(MemoryBlobStore::default()),
+                Arc::new(MemoryTransport::default()),
+                Arc::new(CountingClock::new(10_000)),
+                Arc::new(SequenceIndexedIdentities::default()),
+            ),
+            PreinstalledWasmComposition::new(
+                Arc::new(PreinstalledModuleCatalog::new(Vec::new()).unwrap()),
+                WasmExecutionEngine,
+                9,
+            )
+            .with_local_publication(policy),
+            active_protocol_config(AtomicityDomainId::new([0x8a; 32]).unwrap()),
+            structured_request_authority(),
+            node_config,
+            resolver(),
+            Arc::new(IncrementMachine::new(config().state_key())),
+            NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
+        );
+        assert!(matches!(
+            result,
+            Err(StructuredDurableRouterError::PublicationContextAuthorityMismatch)
+        ));
+        assert_eq!(store.storage_calls.load(Ordering::SeqCst), 0);
     }
 
     async fn read_to_connection_end(stream: &mut tokio::net::TcpStream) -> io::Result<Vec<u8>> {

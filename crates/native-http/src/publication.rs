@@ -88,7 +88,7 @@ where
             let Some(policy) = state.preinstalled_wasm.publication.as_ref() else {
                 return error_response(StatusCode::NOT_FOUND, "publication-disabled");
             };
-            let (domain, context) = match prepare_query_storage_context(
+            let (domain, context) = match prepare_storage_context(
                 &state.components,
                 &state.protocol_config,
                 &state.authority,
@@ -166,7 +166,7 @@ where
         state.components.is_cancelled(),
         state.blocking_executor.clone(),
         move || {
-            let (domain, context) = match prepare_query_storage_context(
+            let (domain, context) = match prepare_storage_context(
                 &state.components,
                 &state.protocol_config,
                 &state.authority,

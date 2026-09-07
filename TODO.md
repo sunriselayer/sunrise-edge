@@ -2476,7 +2476,7 @@ statements such as “body validation remains open” are not the live work queu
   shared nonce and receipt atomicity, CLI publish/query, restart/replay/fencing.
   Explicit devnet opt-in only; no fees, instances, execution, peer publication
   or object privileges. Outbox is deliberately absent, not an unimplemented
-  broadcast disguised as success. Validation (2026-09-07): 14 node-core
+  broadcast disguised as success. Validation (2026-09-07): 15 node-core
   publication tests including exact SQLite code/dependency/receipt/nonce
   comparisons and persisted writer fencing; 9 Rust client verification tests;
   real HTTP/CLI three-boot E2E with dependency export/import, replay and disabled

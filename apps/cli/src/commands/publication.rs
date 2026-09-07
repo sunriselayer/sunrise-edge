@@ -89,8 +89,8 @@ where
     .map_err(failure)?;
     let client = connect_publication(parsed.require("--endpoint")?, &parsed)?;
     // No signature is produced before independent locally expected context verification.
-    client.query_verified_context(&expected)?;
     if let Some(signer) = signer {
+        client.query_verified_context(&expected)?;
         let names: &str = parsed.require("--entrypoints")?;
         if names.len()
             > sunrise_edge_client::MAX_CONTRACT_ENTRYPOINTS
@@ -103,7 +103,10 @@ where
             parsed.require("--wasm")?,
             sunrise_edge_client::MAX_CONTRACT_WASM_BYTES,
         )?;
-        let abi: Vec<u8> = read_bounded(parsed.require("--abi")?, 64 * 1024)?;
+        let abi: Vec<u8> = read_bounded(
+            parsed.require("--abi")?,
+            sunrise_edge_client::publication::MAX_ABI_DECLARATION_BYTES,
+        )?;
         let mut dependencies: Vec<UnverifiedDependencyRef> = Vec::new();
         if let Some(paths) = parsed.get("--dependencies") {
             if paths.len() > 32 * 4096 {

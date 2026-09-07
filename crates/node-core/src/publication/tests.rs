@@ -671,7 +671,7 @@ impl StructuredDurableDomainStateStore for ObservedStore {
                 .unwrap()
                 .reads()
                 .iter()
-                .find(|read| read.key().starts_with(b"se/publications/v1/policies/"))
+                .find(|read| read.key() == publication_policy_key(policy(0).context()).unwrap())
                 .unwrap()
                 .key()
                 .to_vec();
@@ -894,6 +894,129 @@ fn generic_machines_cannot_access_publication_namespace() {
     assert!(matches!(
         validate_sender_nonce_namespace(&plan, &layout),
         Err(NodeCoreError::ReservedStateAccess(_))
+    ));
+    let future_plan: NodeStateAccessPlan = NodeStateAccessPlan::new(vec![
+        NodeStateAccess::new(
+            b"se/publications/v2/records/future".to_vec(),
+            NodeStateAccessMode::ReadWrite,
+        )
+        .unwrap(),
+    ])
+    .unwrap();
+    assert!(matches!(
+        validate_sender_nonce_namespace(&future_plan, &layout),
+        Err(NodeCoreError::ReservedStateAccess(_))
+    ));
+    let policy: LocalPublicationPolicy = policy(0);
+    let submission: PublicationSubmission = make_submission(&policy, 10, 0, vec![]);
+    let policy_key: Vec<u8> = publication_policy_key(policy.context()).unwrap();
+    let record_key: Vec<u8> =
+        publication_record_key(submission.request().artifact().origin()).unwrap();
+    assert!(policy_key.starts_with(PUBLICATION_STATE_PREFIX));
+    assert!(record_key.starts_with(PUBLICATION_STATE_PREFIX));
+    assert!(policy_key.starts_with(b"se/publications/v1/policies/"));
+    assert!(record_key.starts_with(b"se/publications/v1/records/"));
+}
+
+#[test]
+fn transitive_dependencies_are_admitted_and_reverified_from_durable_records() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let policy: LocalPublicationPolicy = policy(0);
+    seed(&store, &policy);
+    let a: PublicationSubmission = make_submission(&policy, 10, 0, vec![]);
+    let b: PublicationSubmission = make_submission(&policy, 11, 1, vec![reference(&a)]);
+    let c: PublicationSubmission = make_submission(&policy, 12, 2, vec![reference(&b)]);
+    publish(&store, &policy, a.clone()).unwrap();
+    publish(&store, &policy, b.clone()).unwrap();
+    publish(&store, &policy, c.clone()).unwrap();
+    assert_eq!(
+        query_publication(
+            &store,
+            &context(),
+            domain(),
+            &resolver(),
+            c.request().artifact().origin()
+        )
+        .unwrap(),
+        Some(c.clone())
+    );
+    assert_eq!(nonce(&store, &policy), 3);
+    // C names only B, so this failure proves that readback traverses B's edge to A.
+    set_state(
+        &store,
+        publication_record_key(a.request().artifact().origin()).unwrap(),
+        StateMutation::Delete,
+    );
+    assert!(matches!(
+        query_publication(
+            &store,
+            &context(),
+            domain(),
+            &resolver(),
+            c.request().artifact().origin()
+        ),
+        Err(PublicationAdmissionError::MissingDependency)
+    ));
+    let d: PublicationSubmission = make_submission(&policy, 13, 3, vec![reference(&b)]);
+    assert!(matches!(
+        publish(&store, &policy, d),
+        Err(PublicationAdmissionError::MissingDependency)
+    ));
+    assert_eq!(nonce(&store, &policy), 3);
+}
+
+#[test]
+fn upper_revision_is_rejected_by_builder_and_ingress_decoder_before_admission() {
+    let policy: LocalPublicationPolicy = policy(0);
+    let submission: PublicationSubmission = make_submission(&policy, 10, 0, vec![]);
+    let artifact: &CodeArtifact = submission.request().artifact();
+    // This is the same checked CodeArtifact builder used by software clients.
+    let upper: Result<CodeArtifact, PublicationError> = CodeArtifact::new(ArtifactParts {
+        context: artifact.context().clone(),
+        origin: artifact.origin().clone(),
+        revision: 2,
+        wasm_profile: artifact.wasm_profile(),
+        semantics: *artifact.semantics(),
+        wasm: artifact.wasm().to_vec(),
+        unverified_abi: artifact.unverified_abi().to_vec(),
+        exports: artifact.exports().to_vec(),
+        unverified_dependencies: vec![],
+    });
+    assert!(matches!(upper, Err(PublicationError::InvalidRevision(2))));
+    // An external encoder cannot bypass the same rule with canonical wire bytes.
+    let original: Vec<u8> = execution::publication::encode_code_artifact(artifact).unwrap();
+    let original_frame: CanonicalFrame<'_> = decode_canonical_frame(&original).unwrap();
+    let mut changed: CanonicalStruct = CanonicalStruct::new(0x6303, 1);
+    for field in 1_u16..=9 {
+        if field == 3 {
+            changed.field_u64(field, 2).unwrap();
+        } else {
+            changed
+                .field_bytes(field, original_frame.required_field(field).unwrap())
+                .unwrap();
+        }
+    }
+    let mut request: CanonicalStruct = CanonicalStruct::new(0x6306, 1);
+    request.field_bytes(1, changed.finish().unwrap()).unwrap();
+    request.field_u64(2, 0).unwrap();
+    request
+        .field_bytes(
+            3,
+            encode_digest32(submission.request().artifact_digest()).unwrap(),
+        )
+        .unwrap();
+    request
+        .field_bytes(4, submission.request().signature().to_vec())
+        .unwrap();
+    let mut envelope: CanonicalStruct = CanonicalStruct::new(0x6308, 1);
+    envelope
+        .field_bytes(1, submission.request_id().to_vec())
+        .unwrap();
+    envelope.field_bytes(2, request.finish().unwrap()).unwrap();
+    assert!(matches!(
+        decode_publication_submission(&envelope.finish().unwrap()),
+        Err(PublicationError::InvalidRevision(2))
     ));
 }
 
