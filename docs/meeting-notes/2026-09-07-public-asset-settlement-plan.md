@@ -42,19 +42,25 @@ The recipient can later merge its own Coins using the same public contract.
 This avoids both foreign-owner write authority and a shared treasury write in
 every payment. It is not a claim that all other fast-path prerequisites are met.
 
-## UX and resource choice requiring confirmation
+## Revised funding proposal after Sui research
 
-The proposed first paid profile requires a separate sender-owned fee Coin,
-excluded from application inputs and delegated capabilities. This intentionally
-replaces the old ability to charge an application-mutated source Coin. It avoids
-an application consuming/transferring the resource needed to pay for execution.
-The CLI must expose this explicitly; it must not silently choose or spend a
-different Coin from the one the user signed.
+The initial mandatory separate-Coin proposal is withdrawn. Sui demonstrates
+that one Coin can fund both execution and application work by withdrawing the
+maximum budget before application execution. Its GasCoin has special consumption
+rules and its runtime performs SUI-specific charging; this is evidence for
+reservation, not evidence that its implementation meets our generic-host goal.
+Sources inspected at Sui commit `0804d277859dfe2a2ab3fdbf23b75870d8f0ce6f`:
 
-Supporting one Coin for both application effects and fees instead requires a
-specified reservation/refund or post-application funding model. It is not a
-reason to keep the native callback or restore consumed/transferred authority.
-Choose this boundary before implementing the paid envelope and CLI behavior.
+- [PTB execution and GasCoin rules](https://docs.sui.io/develop/transactions/ptbs/prog-txn-blocks).
+- [Gas smashing and failure effects](https://docs.sui.io/develop/transaction-payment/gas-smashing).
+- [Budget reservation/refund implementation](https://github.com/MystenLabs/sui/blob/0804d277859dfe2a2ab3fdbf23b75870d8f0ce6f/sui-execution/latest/sui-adapter/src/static_programmable_transactions/execution/context.rs#L413).
+- [Native gas charging](https://github.com/MystenLabs/sui/blob/0804d277859dfe2a2ab3fdbf23b75870d8f0ce6f/sui-execution/latest/sui-adapter/src/gas_charger.rs#L452).
+
+The replacement should separate reserved funds from spendable funds inside one
+invocation, not require users to prepare separate Coins. The concrete proposal
+is recorded in DR-0124. Opus approved the revised design after requiring
+independent phase resource budgets, typed returns and explicit phase-failure
+receipts. This is design approval, not implementation approval or activation.
 
 ## Atomic lifecycle to implement after that choice
 
@@ -65,7 +71,10 @@ Choose this boundary before implementing the paid envelope and CLI behavior.
    worst-case admission and actual-gas pricing without recursive fee charging.
 4. Run application and settlement inside one invocation. A normalized
    application trap discards application state/events but may retain authorized
-   settlement effects and a rejected receipt. Settlement failure commits nothing.
+   settlement effects and a rejected receipt. An admitted reserve/settlement
+   failure restores pre-reservation object state and commits a zero-charge
+   rejected receipt plus consumed nonce; it must not permit exact free replay.
+   Fresh-request resource abuse remains a separate public-admission gate.
 5. Commit all read assertions, final objects/authority, nonce and complete
    receipt once. Replay never executes or charges either phase again.
 

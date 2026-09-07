@@ -2525,6 +2525,23 @@ statements such as “body validation remains open” are not the live work queu
   separate grandfathered admission exception. Replace trusted-only policies
   and native asset settlement with the same public facilities and explicitly
   signed, committed, bounded fee settlement.
+  DR-0124's reserve/application/settle design was approved by Opus on 2026-09-07;
+  implementation and activation remain open. The same Coin can fund fees and
+  application work; a separate Coin is optional. Track the integrated replacement:
+  - [ ] Generic bounded typed frame returns and protected reservation handles;
+    independent phase resource budgets, monotonic counters and savepoints.
+  - [ ] Explicit paid Call/Instantiate/Publish consent, pinned contract policy,
+    base/execution-only pricing and calibrated reserve/settle allowances.
+  - [ ] Public Standard Asset transfer/split/merge/mint/burn and reserve/settle;
+    contract-owned checked supply arithmetic, fresh fee/refund outputs and
+    no surviving reservation. Finalize instance-safe asset identity before code.
+  - [ ] Fenced atomic genesis manifest installer, closed bootstrap marker,
+    native HTTP/CLI activation and removal of asset-only grants/native composer.
+  - [ ] Canonical vectors, same-source/consumed/transferred-source cases,
+    phase exhaustion/traps, charged and zero-charge rejected receipts, exact
+    replay/request-conflict/SQLite-restart/fencing, full gate and fresh Opus review.
+  Public admission additionally requires analysis of fresh-request unpaid
+  phase-failure abuse; this local replacement is not a readiness claim.
 
 The numbered criteria below are the complete gate; this grouping does not
 remove any of their safety, validation or migration obligations.

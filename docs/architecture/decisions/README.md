@@ -30,6 +30,7 @@
 - [DR-0121: durable local code publication](0121-durable-local-code-publication.md)
 - [DR-0122: local independent instances and typed execution](0122-local-instance-execution.md)
 - [DR-0123: one contract-call authorization model](0123-unified-contract-calls.md)
+- [DR-0124: contract-defined fee reservation and settlement](0124-contract-fee-reservations.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).
