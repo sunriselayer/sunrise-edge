@@ -59,6 +59,11 @@ typed ABI and execution semantics. Any future accepted-language change needs
 an explicit profile decision. No wire type IDs or hash domains are allocated
 in this slice.
 
+Admission parsing and engine translation are bounded but currently unmetered
+local work; a network publication path must define deterministic admission
+charging/budgets and ingress workload limits before reuse, not confuse
+execution gas with validation cost.
+
 ## Local tool
 
 `contract validate --wasm <file> --entrypoints <name[,name...]>` reads at most

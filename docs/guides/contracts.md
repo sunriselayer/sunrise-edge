@@ -15,6 +15,11 @@ export name containing a comma; the Rust validation API accepts individual
 names directly. The artifact must follow the structural admission profile,
 including an explicit memory maximum and supported imports/exports.
 
+Default compiler output is not assumed conforming: compile/link or postprocess
+for bounded memory and no additional global/table exports (including
+`__heap_base` and `__data_end`), and validate the final exact bytes; build/strip
+steps change the artifact so must precede any commitment.
+
 Success prints line-oriented fields:
 
 ```text

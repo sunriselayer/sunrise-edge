@@ -2417,6 +2417,9 @@ Implementation slices under this gate:
   Validation: 9 verifier integration tests, 4 CLI subprocess tests,
   `npm ci --prefix adapters/cloudflare-workers` and `./scripts/check-all.sh`
   passed on 2026-09-07.
+- [ ] Standard Asset public-profile parity: add an explicit memory maximum to
+  its currently max-less WAT and regenerate/recommit WASM/code identity when
+  migrating to public admission; no grandfathered trusted admission bypass.
 - [ ] Authenticated lineage/type namespace, immutable code/ABI/dependency
   records and bounded publication requests, preserving verification context.
 - [ ] Fenced durable publish/instantiate/call, public object authority and
