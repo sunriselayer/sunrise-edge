@@ -159,6 +159,8 @@
 //! `hashing::hash_type_identity`/`hashing::verify_type_identity_digest`) for
 //! nominal object-type identity.
 
+/// Bounded canonical argument values and signed call-ABI layout declarations.
+pub mod call_values;
 /// Package-scoped nominal references for the public-contract boundary.
 /// These values do not authenticate publishers or grant object authority.
 pub mod package_types;

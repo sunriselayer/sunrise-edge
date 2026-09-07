@@ -652,6 +652,11 @@ validation, durable publication, or runtime object authority.
 arguments and matches ordered object type/schema/access metadata. It does not
 authenticate object snapshots, owner authority, or canonical body layouts.
 
+[DR-0117](decisions/0117-canonical-call-values.md) requires a signed `CallAbi`
+envelope with explicit per-entrypoint value layouts. The former object-only
+candidate profile is rejected rather than defaulting missing layouts. Canonical
+argument validation uses the bound signed layout and grants no admission rights.
+
 The shared non-executing WASM admission verifier and its structural-only
 boundary are specified in [DR-0112](decisions/0112-contract-wasm-admission.md).
 It checks binary code and declared export names without authorizing object

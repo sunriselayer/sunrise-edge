@@ -8,6 +8,8 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
 
+node scripts/call-value-vectors.mjs
+
 npm --prefix adapters/cloudflare-workers run check
 
 for adapter in deno vercel supabase-edge aws-lambda; do

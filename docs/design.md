@@ -82,6 +82,11 @@ Concrete substitution and metadata matching in
 boundaries. Matching a type fingerprint and schema must not substitute for
 canonical body, signed-reference, persisted-state, owner or instance validation.
 
+[DR-0117](architecture/decisions/0117-canonical-call-values.md) binds explicit
+canonical argument layouts into the signed code artifact. Callers cannot
+substitute the layout during validation; representational validity still does
+not establish authenticated execution, object body invariants or ownership.
+
 Instantiation uses published code to establish an independent instance and its
 initial objects/authority. Initialization effects and the instance record
 commit atomically. Initializers must not re-run as an accidental side effect of

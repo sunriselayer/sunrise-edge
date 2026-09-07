@@ -436,7 +436,7 @@ fn aggregate_expanded_bytes_are_bounded_separately_from_each_tag() {
         semantics: semantics(),
         wasm: wat::parse_str("(module (memory (export \"memory\") 1 2) (func (export \"run\")))")
             .unwrap(),
-        unverified_abi: encode_package_abi(&abi).unwrap(),
+        unverified_abi: wire_abi(&abi),
         exports: vec!["run".into()],
         unverified_dependencies: vec![],
     })
