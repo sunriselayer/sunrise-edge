@@ -969,6 +969,7 @@ impl ExecutionEngine for NullExecutionEngine {
 mod wasm_engine;
 pub use wasm_engine::WasmExecutionEngine;
 
+pub mod call;
 /// Signed immutable artifact candidates; authentication alone grants no authority.
 pub mod publication;
 
