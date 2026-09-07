@@ -220,6 +220,25 @@ permitted.
 
 ## Public asset identity
 
+The public package source and its artifact/ABI builder belong in
+`contracts/standard-asset`. Its Rust package may provide canonical client-side
+argument/type helpers; amount transitions execute in the published WASM, not
+in a native engine callback. The existing `crates/standard-assets` development
+representation is not an authority dependency of this package.
+
+The initial public operations are `init` (no object/type inputs; creates an
+empty Definition and a zero-supply TreasuryCap), `mint` (TreasuryCap Write,
+positive amount and recipient), `burn` (TreasuryCap Write, Coin Consume),
+`split` (Coin Write, positive strict partial amount and recipient), `merge`
+(destination Coin Write, source Coin Consume), and `transfer` (Coin Write,
+recipient). Non-initializer operations bind the same opaque A in all their
+typed inputs. Mint/split return the newly created Coin as Read, which works
+for both sender and foreign recipients; this return does not grant mutation
+authority. Initialization discovers A from its own fresh Definition and has
+no statically prebound asset-A result slot. TreasuryCap supply may be zero;
+Coin amounts must remain positive. Supply and balances use checked u64
+arithmetic, and burn consumes the entire Coin.
+
 The public Standard Asset initializer creates one own-defined Definition object.
 Its host-derived ObjectId becomes the asset's opaque type argument A. Coin<A>
 and TreasuryCap<A> therefore share an asset identity, while every individual
@@ -274,6 +293,46 @@ Remove the old asset-specific catalog grants/native composer with the usable
 replacement, not maintain them to preserve discarded development fixtures.
 
 ## Review gate
+
+### Contract-facing reserve and settle ABI
+
+`reserve` takes Coin<A> Write and requires `0 < reserved < balance`;
+`reserve_all` takes Coin<A> Consume and requires `reserved == balance > 0`.
+Each returns exactly one required sender-owned Reservation<A> Consume slot.
+The signed reservation access selects the pinned export. Consume reservation
+is incompatible with any application access to the source and is rejected
+before reserve execution. The policy binds both exports, exact argument layouts,
+input/result declarations, schemas and type parameters, not just their names.
+
+Reserve arguments and the Reservation body are a canonical tuple of reserved
+u64 units, encoded invocation Digest32, encoded fee-policy Digest32, fee recipient
+Bytes32 and refund recipient Bytes32. Digest values retain their canonical
+self-describing encoding. `settle` takes only Reservation<A> Consume, with
+arguments (actual u64 units, invocation Digest32 bytes, fee-policy Digest32 bytes).
+It checks exact stored commitment equality and `0 < actual <= reserved`, consumes
+the resource, and computes refund by checked subtraction. It returns fee Coin<A>
+Read in required slot 0 and refund Coin<A> Read in optional slot 1, filled exactly
+when refund is nonzero. Recipients come from the stored reservation; refund is
+never a caller-supplied amount. All related inputs and outputs share one bound A.
+No other export accepts Reservation, and Reservation is not transferable.
+
+These commitment fields are caller-attested continuity data, not authority:
+the guest cannot independently verify the current invocation or policy. Manual
+calls on the sender's own resources conserve supply but prove no fee payment.
+Paid authorization comes from authenticated consent, the pinned policy and the
+coordinator's private same-invocation handle. The host must not decode amounts
+or mistake matching body fields for proof of paid admission.
+
+Application trap accounting uses actual consumed gas A, not an automatic full-L
+charge. The coordinator uses the existing immutable reservation-pricing
+admission directly; an arbitrary quote callback is unnecessary. The paid policy
+binds the base profile-4 execution-policy digest, while consent separately binds
+the paid-policy digest, avoiding circular commitments. Exact R/S calibration and
+paid wire/admission integration remain prerequisites for activation; placeholders
+must not be installed as fee policy.
+
+Opus approved this contract interface on 2026-09-07. That approval concerns
+the interface, not implementation review or readiness.
 
 Before code, resolve concrete phase/return APIs, bootstrap and publication fee
 scope, and testable caps. Before merge, prove same-source success, consumed and
