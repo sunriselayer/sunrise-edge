@@ -2440,7 +2440,13 @@ Implementation slices under this gate:
     Ten integration tests, one graph unit test, independent Node wire vectors,
     `npm ci --prefix adapters/cloudflare-workers`, and `./scripts/check-all.sh`
     passed on 2026-09-07.
-  - [ ] Complete the public value/call ABI and runtime type substitution;
+  - [x] DR-0116: bounded concrete type substitution and ordered object
+    type/schema/access metadata matching against a verified interface. This
+    does not verify object-reference digests, state freshness, bodies or owners.
+    Seven additional integration tests (17 in the interface suite),
+    `npm ci --prefix adapters/cloudflare-workers`, and `./scripts/check-all.sh`
+    passed on 2026-09-07.
+  - [ ] Complete the public value/call ABI and authenticated object admission;
     verify exact dependencies against durable published records and
     authenticate the request against committed publication policy, then commit
     code/ABI/dependency records and enforce origin absence atomically. Bind

@@ -648,6 +648,10 @@ object-signature ABI and exact authenticated candidate dependency-closure
 verifier. Its witness establishes declaration consistency, not value-layout
 validation, durable publication, or runtime object authority.
 
+[DR-0116](decisions/0116-bound-object-signatures.md) binds concrete generic
+arguments and matches ordered object type/schema/access metadata. It does not
+authenticate object snapshots, owner authority, or canonical body layouts.
+
 The shared non-executing WASM admission verifier and its structural-only
 boundary are specified in [DR-0112](decisions/0112-contract-wasm-admission.md).
 It checks binary code and declared export names without authorizing object

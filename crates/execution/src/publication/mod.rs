@@ -8,7 +8,13 @@
 
 mod artifact;
 mod auth;
+mod binding;
 mod interface;
+
+pub use binding::{
+    BindingError, BoundObjectParameter, BoundObjectSignature, MAX_BOUND_TYPE_BYTES,
+    bind_object_signature, match_object_input_metadata,
+};
 
 pub use interface::{
     InterfaceError, MAX_INTERFACE_ABI_BYTES, MAX_INTERFACE_DEPTH, MAX_INTERFACE_NODES,
