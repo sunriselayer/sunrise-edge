@@ -971,6 +971,7 @@ pub use wasm_engine::WasmExecutionEngine;
 
 pub mod call;
 pub mod call_authorization;
+pub mod execution_scopes;
 pub mod local_execution;
 mod local_wasm;
 pub use local_wasm::LocalWasmExecutionEngine;
