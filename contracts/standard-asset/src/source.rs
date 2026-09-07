@@ -22,7 +22,7 @@
 //! |   20480 |  1024 | constructed nominal tag                     |
 //! |   24576 |    32 | constructed `u64` body                      |
 
-use abi::call_values::{CallValue, ValueLayout, encode_call_value};
+use abi::call_values::{CallValue, encode_call_value};
 
 use crate::StandardAssetError;
 use crate::types::{coin_body_layout, definition_body_layout};
@@ -177,12 +177,34 @@ pub fn contract_wat() -> Result<String, StandardAssetError> {
  (local.set $n (call $read_body (local.get $handle) (i32.const 0)
    (i32.const 12288) (i32.const 1024)))
  (call $tuple (i32.const 12288) (local.get $n) (i32.const 5)))
+;; Validates one caller-attested field as the exact 56-byte canonical
+;; self-describing Digest32 frame produced by `canonical_encoding::
+;; encode_digest32` and accepted by `canonical_encoding::decode_digest32`:
+;; magic "SNRE", type 0x0103, version 1, field count 2, field 1 (id 1,
+;; length 2) holding a known hash algorithm id (1..3), then field 2 (id 2,
+;; length 32) holding the digest bytes, at fixed offsets with no slack for
+;; unknown algorithm ids, extra/reordered fields, or mismatched lengths.
+(func $digest (param $p i32) (result i32)
+ (local $v i32) (local $alg i32)
+ (local.set $v (call $bytes (local.get $p) (i32.const 56)))
+ (call $require (i32.eq (i32.load (local.get $v)) (i32.const 1163021907)))
+ (call $require (i32.eq (i32.load16_u offset=4 (local.get $v)) (i32.const 259)))
+ (call $require (i32.eq (i32.load16_u offset=6 (local.get $v)) (i32.const 1)))
+ (call $require (i32.eq (i32.load16_u offset=8 (local.get $v)) (i32.const 2)))
+ (call $require (i32.eq (i32.load16_u offset=10 (local.get $v)) (i32.const 1)))
+ (call $require (i32.eq (i32.load offset=12 (local.get $v)) (i32.const 2)))
+ (local.set $alg (i32.load16_u offset=16 (local.get $v)))
+ (call $require (i32.ge_u (local.get $alg) (i32.const 1)))
+ (call $require (i32.le_u (local.get $alg) (i32.const 3)))
+ (call $require (i32.eq (i32.load16_u offset=18 (local.get $v)) (i32.const 2)))
+ (call $require (i32.eq (i32.load offset=20 (local.get $v)) (i32.const 32)))
+ (local.get $v))
 
 ;; ------------------------------------------------------- nominal tag work
 ;; Writes one opaque scoped type argument (domain one, 32-byte asset id).
 (func $opaque (param $dst i32) (param $value i32)
  (i32.store (local.get $dst) (i32.const 1163021907))
- (i32.store16 offset=4 (local.get $dst) (i32.const 21002))
+ (i32.store16 offset=4 (local.get $dst) (i32.const 20994))
  (i32.store16 offset=6 (local.get $dst) (i32.const 1))
  (i32.store16 offset=8 (local.get $dst) (i32.const 3))
  (i32.store16 offset=10 (local.get $dst) (i32.const 1))
@@ -201,7 +223,7 @@ pub fn contract_wat() -> Result<String, StandardAssetError> {
  (call $require (i32.ge_u (local.get $ol) (i32.const 10)))
  (call $require (i32.le_u (local.get $ol) (i32.const 256)))
  (i32.store (local.get $dst) (i32.const 1163021907))
- (i32.store16 offset=4 (local.get $dst) (i32.const 21003))
+ (i32.store16 offset=4 (local.get $dst) (i32.const 20995))
  (i32.store16 offset=6 (local.get $dst) (i32.const 1))
  (i32.store16 offset=8 (local.get $dst)
    (i32.add (i32.const 3) (i32.ne (local.get $arg) (i32.const 0))))
@@ -236,16 +258,16 @@ pub fn contract_wat() -> Result<String, StandardAssetError> {
 (func $retag (param $handle i32) (param $ctor i32) (result i32)
  (local $n i32) (local $op i32) (local $arg i32) (local $an i32)
  (local.set $n (call $object_type (local.get $handle) (i32.const 16384) (i32.const 1024)))
- (local.set $op (call $find (i32.const 16384) (local.get $n) (i32.const 21003) (i32.const 1)))
+ (local.set $op (call $find (i32.const 16384) (local.get $n) (i32.const 20995) (i32.const 1)))
  (call $require (i32.eq (call $u16_field (i32.const 16384) (local.get $n)
-   (i32.const 21003) (i32.const 3)) (i32.const 1)))
- (local.set $arg (call $find (i32.const 16384) (local.get $n) (i32.const 21003) (i32.const 4)))
+   (i32.const 20995) (i32.const 3)) (i32.const 1)))
+ (local.set $arg (call $find (i32.const 16384) (local.get $n) (i32.const 20995) (i32.const 4)))
  (local.set $an (call $size (local.get $arg)))
  (call $require (i32.eq (call $u16_field (local.get $arg) (local.get $an)
-   (i32.const 21002) (i32.const 1)) (i32.const 2)))
+   (i32.const 20994) (i32.const 1)) (i32.const 2)))
  (call $require (i32.eq (call $u16_field (local.get $arg) (local.get $an)
-   (i32.const 21002) (i32.const 2)) (i32.const 1)))
- (local.set $arg (call $find (local.get $arg) (local.get $an) (i32.const 21002) (i32.const 3)))
+   (i32.const 20994) (i32.const 2)) (i32.const 1)))
+ (local.set $arg (call $find (local.get $arg) (local.get $an) (i32.const 20994) (i32.const 3)))
  (call $require (i32.eq (call $size (local.get $arg)) (i32.const 32)))
  (call $build_tag (i32.const 20480) (local.get $op) (call $size (local.get $op))
    (local.get $ctor) (local.get $arg)))
@@ -331,8 +353,8 @@ pub fn contract_wat() -> Result<String, StandardAssetError> {
  (local.set $list (call $arguments (i32.const 1) (i32.const 5)))
  (local.set $reserved (call $u64 (call $item (local.get $list) (i32.const 0))))
  (call $require (i64.gt_u (local.get $reserved) (i64.const 0)))
- (drop (call $bytes (call $item (local.get $list) (i32.const 1)) (i32.const 56)))
- (drop (call $bytes (call $item (local.get $list) (i32.const 2)) (i32.const 56)))
+ (drop (call $digest (call $item (local.get $list) (i32.const 1))))
+ (drop (call $digest (call $item (local.get $list) (i32.const 2))))
  (drop (call $bytes (call $item (local.get $list) (i32.const 3)) (i32.const 32)))
  (drop (call $bytes (call $item (local.get $list) (i32.const 4)) (i32.const 32)))
  (local.set $held (call $amount_of (i32.const 0)))
@@ -349,8 +371,8 @@ pub fn contract_wat() -> Result<String, StandardAssetError> {
  (local.set $list (call $arguments (i32.const 1) (i32.const 5)))
  (local.set $reserved (call $u64 (call $item (local.get $list) (i32.const 0))))
  (call $require (i64.gt_u (local.get $reserved) (i64.const 0)))
- (drop (call $bytes (call $item (local.get $list) (i32.const 1)) (i32.const 56)))
- (drop (call $bytes (call $item (local.get $list) (i32.const 2)) (i32.const 56)))
+ (drop (call $digest (call $item (local.get $list) (i32.const 1))))
+ (drop (call $digest (call $item (local.get $list) (i32.const 2))))
  (drop (call $bytes (call $item (local.get $list) (i32.const 3)) (i32.const 32)))
  (drop (call $bytes (call $item (local.get $list) (i32.const 4)) (i32.const 32)))
  (local.set $held (call $amount_of (i32.const 0)))
@@ -374,12 +396,12 @@ pub fn contract_wat() -> Result<String, StandardAssetError> {
  (local.set $reserved (call $u64 (call $item (local.get $body) (i32.const 0))))
  (call $require (i64.le_u (local.get $actual) (local.get $reserved)))
  (call $require (call $equal
-   (call $bytes (call $item (local.get $list) (i32.const 1)) (i32.const 56))
-   (call $bytes (call $item (local.get $body) (i32.const 1)) (i32.const 56))
+   (call $digest (call $item (local.get $list) (i32.const 1)))
+   (call $digest (call $item (local.get $body) (i32.const 1)))
    (i32.const 56)))
  (call $require (call $equal
-   (call $bytes (call $item (local.get $list) (i32.const 2)) (i32.const 56))
-   (call $bytes (call $item (local.get $body) (i32.const 2)) (i32.const 56))
+   (call $digest (call $item (local.get $list) (i32.const 2)))
+   (call $digest (call $item (local.get $body) (i32.const 2)))
    (i32.const 56)))
  (local.set $fee (call $bytes (call $item (local.get $body) (i32.const 3)) (i32.const 32)))
  (local.set $refund (call $bytes (call $item (local.get $body) (i32.const 4)) (i32.const 32)))
@@ -400,9 +422,4 @@ pub fn contract_wat() -> Result<String, StandardAssetError> {
 pub fn contract_wasm() -> Result<Vec<u8>, StandardAssetError> {
     let source: String = contract_wat()?;
     wat::parse_str(&source).map_err(|error| StandardAssetError::Wat(error.to_string()))
-}
-
-/// The layout the guest assumes for every scalar body it writes.
-pub(crate) fn scalar_body_layout() -> ValueLayout {
-    coin_body_layout()
 }

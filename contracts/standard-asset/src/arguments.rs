@@ -7,7 +7,7 @@
 //! declared constructor layout.
 
 use abi::call_values::{CallValue, ValueLayout, decode_call_value, encode_call_value};
-use canonical_encoding::encode_digest32;
+use canonical_encoding::{decode_digest32, encode_digest32};
 use protocol_types::Digest32;
 
 use crate::StandardAssetError;
@@ -159,6 +159,8 @@ fn fixed(value: &CallValue) -> Result<[u8; 32], StandardAssetError> {
 fn digest_field(value: &CallValue) -> Result<Vec<u8>, StandardAssetError> {
     match value {
         CallValue::Bytes(bytes) if bytes.len() == crate::ENCODED_DIGEST32_BYTES as usize => {
+            decode_digest32(bytes)
+                .map_err(|_| StandardAssetError::Invalid("expected a canonical encoded digest"))?;
             Ok(bytes.clone())
         }
         _ => Err(StandardAssetError::Invalid("expected an encoded digest")),

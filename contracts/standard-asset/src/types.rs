@@ -2,7 +2,7 @@
 //!
 //! These are structural declarations only: constructing a tag or layout
 //! asserts no instance authority, no ownership, and no defining-code rights.
-//! Two packages with equal nominal tags are still separate authorities.
+//! Two instances with equal nominal tags are still separate authorities.
 
 use abi::call_values::ValueLayout;
 use abi::package_types::{PackageOrigin, ScopedTypeArg, ScopedTypeTag};
@@ -159,14 +159,5 @@ pub(crate) fn bound_pattern(origin: &PackageOrigin, constructor: u16) -> TypePat
         origin: origin.clone(),
         constructor,
         arguments: vec![PatternArgument::Parameter(0)],
-    }
-}
-
-/// The `Definition` pattern, which takes no type argument.
-pub(crate) fn definition_pattern(origin: &PackageOrigin) -> TypePattern {
-    TypePattern {
-        origin: origin.clone(),
-        constructor: CONSTRUCTOR_DEFINITION,
-        arguments: Vec::new(),
     }
 }
