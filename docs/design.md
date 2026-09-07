@@ -93,6 +93,11 @@ representation checking must remain separate from object-reference digest,
 trusted state, owner and execution-authority validation. Fixed representation
 does not establish a contract's arithmetic or application invariants.
 
+[DR-0119](architecture/decisions/0119-bound-durable-object-snapshots.md) reuses
+durable head/record/blob integrity verification for ABI-bound reads. Returned
+head observations must be revalidated by the eventual atomic commit; they do
+not reserve state or authenticate a call, owner, instance or code authority.
+
 Instantiation uses published code to establish an independent instance and its
 initial objects/authority. Initialization effects and the instance record
 commit atomically. Initializers must not re-run as an accidental side effect of

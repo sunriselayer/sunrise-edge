@@ -664,6 +664,11 @@ combines metadata matching with canonical decoding against the retained defining
 ABI, including dependencies; it does not authenticate object digests, state,
 ownership or calls and confers no execution authority.
 
+[DR-0119](decisions/0119-bound-durable-object-snapshots.md) composes these checks
+with the existing durable head/record/blob integrity loader. It verifies original
+hash provenance and returns exact head observations for a later fenced commit;
+read integrity is not call/owner/instance authorization or an atomic snapshot.
+
 The shared non-executing WASM admission verifier and its structural-only
 boundary are specified in [DR-0112](decisions/0112-contract-wasm-admission.md).
 It checks binary code and declared export names without authorizing object

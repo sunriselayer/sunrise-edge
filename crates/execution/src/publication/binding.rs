@@ -88,6 +88,12 @@ pub struct BoundObjectSignature<'a> {
 }
 
 impl<'a> BoundObjectSignature<'a> {
+    /// Returns the chain bound by the verified defining interface, not caller input.
+    #[must_use]
+    pub fn chain_id(&self) -> &protocol_types::ChainId {
+        self.interface.abi().origin.chain_id()
+    }
+
     pub(super) fn interface(&self) -> &VerifiedPublicationInterface {
         self.interface
     }

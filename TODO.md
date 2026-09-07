@@ -2459,7 +2459,14 @@ Implementation slices under this gate:
     version-2 envelope vectors with pinned version-1 rejection evidence,
     `npm ci --prefix adapters/cloudflare-workers`, and `./scripts/check-all.sh`
     passed on 2026-09-07.
-  - [ ] Complete authenticated call/object admission;
+  - [x] DR-0119: reuse one durable head/record/blob integrity loader for the
+    existing submission path and ABI-bound object reads. Original stored hash
+    context is verified; exact head observations are returned for later CAS,
+    not as reservations or call/owner/instance authority. Eight new node-core
+    tests, `npm ci --prefix adapters/cloudflare-workers`, and
+    `./scripts/check-all.sh` passed on 2026-09-07, including existing replay,
+    owner/fee-policy and persistence regressions.
+  - [ ] Complete authenticated call/owner/instance admission;
     verify exact dependencies against durable published records and
     authenticate the request against committed publication policy, then commit
     code/ABI/dependency records and enforce origin absence atomically. Bind

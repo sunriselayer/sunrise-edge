@@ -43,6 +43,7 @@ use system_modules::{ModuleId, SystemModule, SystemModuleError};
 
 mod authenticated_object_effects;
 pub mod fee_effects;
+mod object_snapshots;
 mod preinstalled_wasm;
 mod query;
 pub mod transaction_auth;
@@ -63,6 +64,7 @@ pub use fee_effects::{
     CommittedFeePolicy, FeeChargeBodies, FeeChargeRequest, FeeCompositionError, FeeEffectComposer,
     GasScheduleShapeFault, PreinstalledFeeComposition, validate_gas_schedule_shape,
 };
+pub use object_snapshots::{BoundObjectSnapshots, BoundSnapshotError, load_bound_object_snapshots};
 pub use preinstalled_wasm::{
     MAX_PREINSTALLED_MODULE_GAS_LIMIT, MAX_PREINSTALLED_MODULE_WASM_BYTES,
     MAX_PREINSTALLED_MODULES, MAX_PREINSTALLED_OBJECT_ACCESS_POLICIES,
@@ -5665,154 +5667,16 @@ where
     let mut total_body_bytes: usize = 0;
     for (access_index, access) in dispatch.accesses.iter().enumerate() {
         let object_id: ObjectId = access.object_ref.id;
-        let head: DurableObjectHead = store.get_object_head(context, domain, object_id)?;
-        let (object_version, digest): (DurableObjectVersion, Digest32) = match &head {
-            DurableObjectHead::Absent | DurableObjectHead::Tombstoned { .. } => {
-                return Err(NodeCoreError::ObjectNotFound { object_id });
-            }
-            DurableObjectHead::Current {
-                object_version,
-                digest,
-                ..
-            } => (*object_version, *digest),
-        };
-
-        if object_version.get() != access.object_ref.version {
-            return Err(NodeCoreError::ObjectVersionMismatch {
-                object_id,
-                expected: access.object_ref.version,
-                actual: object_version.get(),
-            });
-        }
-        if digest != access.object_ref.digest {
-            return Err(NodeCoreError::ObjectDigestMismatch {
-                object_id,
-                expected: access.object_ref.digest,
-                actual: digest,
-            });
-        }
-
-        let record: DurableObjectVersionRecord = store
-            .get_object_version(context, domain, object_id, object_version)?
-            .ok_or(NodeCoreError::ObjectRecordMissing { object_id })?;
-        if record.object_id() != object_id
-            || record.object_version() != object_version
-            || record.digest() != digest
-        {
-            return Err(NodeCoreError::ObjectRecordMismatch { object_id });
-        }
-
-        // Objects never migrate chains: the event chain is already validated
-        // trusted input, so a mismatch here means a misbound namespace, a
-        // cross-chain body transplant, or adapter corruption, never a
-        // legitimate object. No equivalent check exists for the recorded
-        // protocol version: a legitimately older object must still verify.
-        // Checked from the record header alone, before any blob-store I/O,
-        // so a misbound namespace never spends a blob fetch.
-        if record.provenance().chain_id() != chain_id {
-            return Err(NodeCoreError::ObjectProvenanceMismatch { object_id });
-        }
-
-        // Loads the canonical object body, either already inline or fetched
-        // and independently verified from content-addressed blob storage.
-        // Bytes are bounded at both the per-object and running-aggregate
-        // limits before either digest is verified or the body is decoded —
-        // for a blob body that bound runs immediately after the fetch, since
-        // hashing and decoding are otherwise the first things that would
-        // touch attacker-influenced bytes.
-        let loaded_body: LoadedObjectBody<'_> = match record.payload() {
-            DurableObjectPayload::Inline(inline) => LoadedObjectBody::Inline(inline),
-            DurableObjectPayload::BlobReference(blob_digest) => {
-                let blob_digest: Digest32 = *blob_digest;
-                let bytes: Vec<u8> = blob_store
-                    .get_blob(&blob_digest)
-                    .map_err(NodeCoreError::Runtime)?
-                    .ok_or(NodeCoreError::ObjectBlobMissing {
-                        object_id,
-                        blob_digest,
-                    })?;
-                total_body_bytes =
-                    accumulate_authenticated_body_bytes(total_body_bytes, object_id, bytes.len())?;
-                let blob_verified: bool = hashing::verify_digest(
-                    &blob_digest,
-                    HashPurpose::Object,
-                    record.provenance().protocol_version(),
-                    record.provenance().chain_id(),
-                    &bytes,
-                )
-                .map_err(|error| match error {
-                    HashingError::UnsupportedAlgorithm(algorithm) => {
-                        NodeCoreError::ObjectDigestUnverifiable {
-                            object_id,
-                            algorithm,
-                        }
-                    }
-                    other => NodeCoreError::Hashing(other),
-                })?;
-                if !blob_verified {
-                    return Err(NodeCoreError::ObjectBlobDigestMismatch {
-                        object_id,
-                        blob_digest,
-                    });
-                }
-                let object: Object = decode_object(&bytes)
-                    .map_err(DurableInvocationError::from)
-                    .map_err(NodeCoreError::from)?;
-                LoadedObjectBody::Blob { bytes, object }
-            }
-        };
-        let object: &Object = loaded_body.object();
-        if object.id != object_id
-            || object.version != access.object_ref.version
-            || record.schema_version() != object.schema_version
-        {
-            return Err(NodeCoreError::ObjectRecordMismatch { object_id });
-        }
-
-        // A blob body was already bounded and folded into the aggregate
-        // above, before its digest/decode; re-running this here would
-        // double-count it. An inline body's bytes were already available
-        // (no I/O, digest, or decode precedes this point for it), so its
-        // bound/aggregate check keeps its original position, unaffected by
-        // the blob-only reordering above.
-        if matches!(record.payload(), DurableObjectPayload::Inline(_)) {
-            total_body_bytes = accumulate_authenticated_body_bytes(
-                total_body_bytes,
-                object_id,
-                loaded_body.canonical_bytes().len(),
-            )?;
-        }
-
-        let verified: bool = hashing::verify_digest(
-            &record.digest(),
-            HashPurpose::Object,
-            record.provenance().protocol_version(),
-            record.provenance().chain_id(),
-            loaded_body.canonical_bytes(),
-        )
-        .map_err(|error| match error {
-            HashingError::UnsupportedAlgorithm(algorithm) => {
-                NodeCoreError::ObjectDigestUnverifiable {
-                    object_id,
-                    algorithm,
-                }
-            }
-            other => NodeCoreError::Hashing(other),
-        })?;
-        if !verified {
-            return Err(NodeCoreError::ObjectBodyDigestMismatch { object_id });
-        }
-
-        // Corruption guard, not authorization: mirrors
-        // `validate_object_transition`'s owner-projection cross-check. An
-        // absent projection is corruption, not a trust-the-inline fallback.
-        if head
-            .owner_projection()
-            .and_then(DurableObjectOwnerProjection::owner)
-            != Some(&object.owner)
-        {
-            return Err(NodeCoreError::ObjectRecordMismatch { object_id });
-        }
+        let snapshot: object_snapshots::ObjectSnapshot = object_snapshots::load_object_snapshot(
+            store,
+            blob_store,
+            context,
+            domain,
+            chain_id,
+            &access.object_ref,
+            &mut total_body_bytes,
+        )?;
+        let object: &Object = &snapshot.object;
 
         // The trusted composition's fee treasury is authorized independent
         // of who owns it, but only for the exact final declared `Write`
@@ -5872,9 +5736,9 @@ where
         loaded.push_with_engine_visibility(
             object_id,
             access.mode,
-            head,
-            object.clone(),
-            record.created_checkpoint(),
+            snapshot.head,
+            snapshot.object,
+            snapshot.created_checkpoint,
             !is_treasury_access,
         );
     }
@@ -6534,6 +6398,8 @@ fn take_nested_bytes<'a>(
 
 #[cfg(test)]
 mod tests {
+    #[path = "bound_snapshots.rs"]
+    mod bound_snapshots;
     use super::*;
     use abi::{
         AccessEntry, AccessManifest, ConstructorDeclaration, ConstructorId, EntrypointSignature,
