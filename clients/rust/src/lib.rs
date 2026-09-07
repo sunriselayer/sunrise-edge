@@ -54,14 +54,23 @@ pub mod client;
 pub mod context;
 pub mod error;
 pub mod key;
+pub mod publication_client;
 pub mod support;
 pub mod transaction;
 pub mod transport;
 
+pub use abi::package_types::PackageOrigin;
 pub use client::{Client, ReceiptPollBounds, SubmitTransactionRequest};
 pub use context::{ExpectedProtocolContext, ExpectedProtocolContextError, ProtocolContextMismatch};
 pub use error::ClientError;
+pub use execution::publication::{
+    ArtifactParts, CodeArtifact, PublicationContext, PublicationSubmission,
+    UnverifiedDependencyRef, decode_dependency_ref,
+};
+pub use hashing::HashSuiteResolver;
 pub use key::LocalSigner;
+pub use protocol_types::{HashSuite, HashSuiteSchedule};
+pub use publication_client::{build_signed_publication, local_publication_resolver};
 pub use signing_view::{
     ClearSigningPolicy, ClearSigningPolicyError, ClearSigningView, DeviceSigningProfile,
     HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3, SigningViewError,
@@ -90,6 +99,7 @@ pub use execution::{
     decode_event_record, decode_execution_effects, decode_object_effect, publication,
     validate_contract_wasm,
 };
+pub use node_core::publication::local_publication_profile_semantics;
 pub use node_core::{NodeCoreError, NodeResponse, NodeResponseStatus, RequestId};
 pub use node_wire::{
     HttpContextQueryResult, HttpNextNonceQueryResult, HttpNodeResult, HttpObjectQueryResult,

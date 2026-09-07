@@ -11,6 +11,13 @@ mod auth;
 mod binding;
 mod bodies;
 mod interface;
+mod submission;
+
+pub use submission::{
+    MAX_PUBLICATION_SUBMISSION_BYTES, PublicationSubmission, authenticate_publication_submission,
+    decode_publication_submission, encode_publication_submission,
+    publication_submission_signing_frame,
+};
 
 pub use binding::{
     BindingError, BoundObjectParameter, BoundObjectSignature, MAX_BOUND_TYPE_BYTES,

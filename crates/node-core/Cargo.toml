@@ -19,5 +19,6 @@ system-modules.workspace = true
 standard-assets.workspace = true
 
 [dev-dependencies]
+runtime-sqlite.workspace = true
 ed25519-zebra.workspace = true
 wat.workspace = true

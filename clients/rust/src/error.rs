@@ -18,6 +18,14 @@ use crate::transport::TransportError;
 /// than collapsing everything into one opaque failure.
 #[derive(Debug)]
 pub enum ClientError {
+    /// Publication framing, authentication, or admission profile validation failed.
+    Publication(execution::publication::PublicationError),
+    /// The publication response belongs to a different package origin.
+    PublicationQuerySelectorMismatch,
+    /// Locally supplied publication hash suite or signing profile differs from expectations.
+    PublicationTrustMismatch,
+    /// The endpoint did not acknowledge exactly the submitted publication.
+    PublicationSubmitAcknowledgementMismatch,
     /// The bounded transport layer failed before returning a well-formed
     /// HTTP response.
     Transport(TransportError),
@@ -150,6 +158,14 @@ pub enum ClientError {
 impl fmt::Display for ClientError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Publication(error) => write!(f, "publication validation failed: {error}"),
+            Self::PublicationSubmitAcknowledgementMismatch => f.write_str("publication result must contain one Accepted acknowledgement for the exact submitted code reference"),
+            Self::PublicationQuerySelectorMismatch => {
+                f.write_str("publication response origin differs from the requested origin")
+            }
+            Self::PublicationTrustMismatch => f.write_str(
+                "publication resolver or signing profile differs from trusted expectations",
+            ),
             Self::Transport(error) => write!(f, "transport error: {error}"),
             Self::UnexpectedStatus { status, body } => {
                 write!(f, "unexpected HTTP status {status}: {body}")
@@ -224,6 +240,10 @@ impl fmt::Display for ClientError {
 impl Error for ClientError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::Publication(error) => Some(error),
+            Self::PublicationQuerySelectorMismatch
+            | Self::PublicationTrustMismatch
+            | Self::PublicationSubmitAcknowledgementMismatch => None,
             Self::Transport(error) => Some(error),
             Self::Wire(error) => Some(error),
             Self::ObjectResponseHashing(error) => Some(error),
@@ -255,6 +275,12 @@ impl Error for ClientError {
 impl From<TransportError> for ClientError {
     fn from(value: TransportError) -> Self {
         Self::Transport(value)
+    }
+}
+
+impl From<execution::publication::PublicationError> for ClientError {
+    fn from(value: execution::publication::PublicationError) -> Self {
+        Self::Publication(value)
     }
 }
 

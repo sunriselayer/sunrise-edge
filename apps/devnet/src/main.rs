@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use native_http::serve;
+use native_http::{NativeHttpServePolicy, serve_with_policy};
 use objects::ObjectId;
 use runtime::{Clock, DurableOperationContext, StorageCorrelationId, StorageDeadline, SystemClock};
 use std::{error::Error, process::ExitCode, sync::Arc};
@@ -8,9 +8,9 @@ use sunrise_edge_devnet::{
     DEVNET_BLOB_DATABASE_FILE, DEVNET_DATABASE_FILE, DEVNET_STARTUP_LIMITATIONS_BANNER,
     DevnetConfig, STANDARD_ASSET_MODULE_WASM, SeedAssetAuthorityObjectsOutcome,
     SeedDevOwnerCoinsOutcome, boot_local_store, build_devnet_protocol_context,
-    build_standard_asset_module, compose_devnet_router, seed_asset_authority_objects,
-    seed_dev_owner_coins, seed_treasury_coin, verify_or_seed_protocol_context,
-    verify_seeded_asset_supply,
+    build_standard_asset_module, compose_devnet_router_with_publication,
+    seed_asset_authority_objects, seed_dev_owner_coins, seed_treasury_coin,
+    verify_or_seed_protocol_context, verify_seeded_asset_supply,
 };
 
 const SEED_OPERATION_TIMEOUT_MILLIS: u64 = 30_000;
@@ -126,7 +126,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         seed_outcomes.push(outcome);
     }
 
-    let highest_seed_sequence: usize =
+    let mut highest_seed_sequence: usize =
         highest_seed_correlation_sequence(config.dev_owners().len())?;
     let treasury_sequence: u64 = u64::try_from(highest_seed_sequence)?;
     let treasury_outcome = seed_treasury_coin(
@@ -153,10 +153,30 @@ async fn run() -> Result<(), Box<dyn Error>> {
     verify_seeded_asset_supply(&seed_outcomes, &treasury_outcome)?;
     let fee_treasury_object_id: ObjectId = treasury_outcome.coin().coin().id;
 
+    let publication = if config.local_publication() {
+        highest_seed_sequence = highest_seed_sequence
+            .checked_add(1)
+            .ok_or("publication seed correlation overflow")?;
+        let domain = protocol_types::AtomicityDomainId::new(
+            sunrise_edge_devnet::genesis::DEVNET_DOMAIN_BYTES,
+        )?;
+        let policy = sunrise_edge_devnet::publication::seed_local_publication_policy(
+            boot.store(),
+            &operation_context_for(u64::try_from(highest_seed_sequence)?)?,
+            domain,
+            asset_module.resolver(),
+            config.epoch(),
+        )?;
+        println!("local_publication=true fees=false execution=false");
+        Some(policy)
+    } else {
+        None
+    };
+
     let (store, blob_store) = boot.into_parts();
     let store = Arc::new(store);
     let blob_store = Arc::new(blob_store);
-    let router = compose_devnet_router(
+    let router = compose_devnet_router_with_publication(
         store,
         blob_store,
         asset_module,
@@ -164,6 +184,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         config.max_concurrent(),
         highest_seed_sequence,
         fee_treasury_object_id,
+        publication,
     )?;
     let listener = tokio::net::TcpListener::bind(config.listen()).await?;
 
@@ -187,7 +208,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
     println!("limitations={DEVNET_STARTUP_LIMITATIONS_BANNER}");
     println!("Press Ctrl-C to stop.");
 
-    serve(listener, router, async {
+    let serve_policy =
+        NativeHttpServePolicy::default().with_local_publication(config.local_publication());
+    serve_with_policy(listener, router, serve_policy, async {
         if let Err(error) = tokio::signal::ctrl_c().await {
             eprintln!("failed to install Ctrl-C handler: {error}");
         }
@@ -227,6 +250,32 @@ mod tests {
         assert_eq!(
             highest_seed_correlation_sequence(usize::MAX),
             Err("seed correlation sequence overflow")
+        );
+    }
+
+    #[test]
+    fn publication_seed_reserves_its_identity_before_first_outbox_attempt() {
+        use native_http::IndexedOutboxIdentitySource;
+        let generation = runtime::WriterFenceGeneration::new(2).unwrap();
+        let treasury_sequence: usize = highest_seed_correlation_sequence(5).unwrap();
+        let publication_sequence: usize = treasury_sequence.checked_add(1).unwrap();
+        let source = sunrise_edge_devnet::identities::DevnetOutboxIdentitySource::new_after(
+            generation,
+            publication_sequence as u64,
+        );
+        let identity = source.next_attempt_identity().unwrap();
+        let mut correlation: [u8; 16] = [0; 16];
+        correlation[..8].copy_from_slice(&generation.get().to_be_bytes());
+        correlation[8..].copy_from_slice(&9_u64.to_be_bytes());
+        let mut lease: [u8; 32] = [0; 32];
+        lease[..16].copy_from_slice(&correlation);
+        lease[16..].copy_from_slice(b"sunrise-devnetv1");
+        assert_eq!(
+            identity,
+            native_http::IndexedOutboxAttemptIdentity::new(
+                runtime::DurableOutboxLeaseId::new(lease).unwrap(),
+                StorageCorrelationId::new(correlation).unwrap()
+            )
         );
     }
 }

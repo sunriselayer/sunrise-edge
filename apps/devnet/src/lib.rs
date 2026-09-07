@@ -15,6 +15,7 @@ pub mod fee;
 pub mod genesis;
 pub mod identities;
 pub mod machine;
+pub mod publication;
 pub mod seed;
 pub mod standard_asset;
 pub mod transport;
@@ -23,7 +24,9 @@ pub use boot::{
     DEVNET_BLOB_DATABASE_FILE, DEVNET_DATABASE_FILE, DevnetBoot, DevnetBootError, boot_local_store,
 };
 pub use catalog::{DevnetAssetModule, DevnetCatalogError, build_standard_asset_module};
-pub use composition::{DevnetCompositionError, compose_devnet_router};
+pub use composition::{
+    DevnetCompositionError, compose_devnet_router, compose_devnet_router_with_publication,
+};
 pub use config::{
     DEVNET_STARTUP_LIMITATIONS_BANNER, DevOwner, DevnetConfig, DevnetConfigError,
     MAX_DEVNET_CONCURRENCY, MAX_DEVNET_OWNERS,

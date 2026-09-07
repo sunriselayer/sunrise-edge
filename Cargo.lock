@@ -953,6 +953,7 @@ dependencies = [
  "protocol-config",
  "protocol-types",
  "runtime",
+ "runtime-sqlite",
  "standard-assets",
  "system-modules",
  "wat",
@@ -1627,6 +1628,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 name = "sunrise-edge-cli"
 version = "0.1.0"
 dependencies = [
+ "abi",
  "execution",
  "hashing",
  "native-http",

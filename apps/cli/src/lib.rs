@@ -19,6 +19,8 @@
 //!
 //! `contract validate` performs local, non-executing structural WASM checks
 //! through the Rust client; it neither signs nor publishes a contract.
+//! `contract publish` and `contract query` use the explicitly enabled local
+//! immutable publication service. Publishing never instantiates or executes code.
 //!
 //! Commands: `address`, `context`, `object`, `receipt`, `next-nonce`, and
 //! `transfer`, `split`, `merge`, `mint`, and `burn` (the devnet Standard Asset v1
