@@ -403,10 +403,87 @@ durable admission. Never convert an authenticated zero-fee wrapper into a
 paid wrapper. Policy codec validity and quote validity do not establish calibrated
 R/S, installation, governance authority or storage authority.
 
+### Authenticated durable integration (2026-09-08)
+
+The next internal integration uses a separate `PaidContractEngine` request and
+outcome, not a converted zero-fee authenticated wrapper. The public request
+contains the immutable authenticated paid intent, resolved scopes/inputs and
+trusted policies. The engine rechecks their correspondence and builds its own
+private phase plan; raw grants, phases and source handles remain unexported.
+Call and Instantiate enter the ordinary frame validator with their actual
+mode. Publish has no application WASM frame or arbitrary callback: its metered
+application units are checked `artifact_encoded_bytes * artifact_byte_price +
+unique_closure_nodes * closure_node_price` (the candidate counts as one node).
+Exhaustion charges application limit L and suppresses the publication mutation.
+Successful publication charges that exact deterministic count, not elapsed time.
+This does not establish calibration or make publication validation free of DoS.
+
+Generalize publication authentication to retain the actual ingress provenance:
+legacy publication signatures and authenticated paid Publish are distinct proof
+variants over the same immutable artifact/commitment. A paid candidate is derived
+only from `AuthenticatedPaidIntent` and structural/semantics validation. Never
+fabricate a PublicationRequest signature. Shared interface/closure consumers use
+artifact/commitment accessors, not an assumed legacy request. Store the complete
+signed paid Publish frame at the existing immutable origin key; the bounded
+loader distinguishes its canonical type from the legacy submission, rejects
+unknown types, reauthenticates under its original trusted context, and verifies
+its successful paid receipt before granting dependency authority. A rejected
+receipt, unrelated application kind or mismatched origin is not publication.
+Legacy stored frames remain readable with their original verification rules.
+
+Admission order is signature/context, exact receipt reconciliation, nonce,
+installed fee/base policies, exact fee/application scopes and publication
+provenance, then original object snapshots/authority/ABI. One invocation-local
+publication budget and read map cover every scope. Source and application input
+ObjectIds are deduplicated for loading and final durable effects; the stronger
+signed mode governs the durable union while application grants retain their own
+mode. All policy, instance, code, authority and object-head reads join the same
+fenced commit. A successful Instantiate adds its instance record; a successful
+Publish adds its signed publication record. Both commit with fee effects,
+authority rows, nonce and receipt, never in a second transaction.
+
+Profile-4 publication/execution receives explicit profile-specific policy keys
+and semantics validation. The paid policy has a dedicated reserved instance-state
+key binding its context. Missing/different installed values fail closed. This
+slice introduces no external installer, HTTP/CLI route or bootstrap request mode;
+test fixtures explicitly install their trusted records. Actual activation still
+requires the closed genesis manifest installer and calibrated phase allowances.
+
+Allocate `0x6415/v1` for PaidExecutionResult: field 1 request ID; 2 application
+kind (Instantiate=1, Call=2, Publish=3); 3 instance record for kinds 1/2 or package
+origin for kind 3; 4 status (Success=1, ApplicationFailed=2, ReservationFailed=3,
+SettlementFailed=4, HostRejected=5); 5 reserved units; 6 actual units; 7 refund
+units; 8 fee ObjectRef; optional 9 refund ObjectRef; 10 consumed reservation
+ObjectId; 11 complete ExecutionEffects. Fields 5..10 are absent for statuses
+3..5, which have no object effects/events. Charged statuses require fields
+5/6/7/8/10, positive actual units, checked `actual + refund == reserved`, and
+field 9 exactly when refund is positive. Output references must identify distinct
+surviving fresh effects of the pinned type, owner and authority. The consumed
+reservation must not survive as an object or orphan creation-authority row.
+Bound the complete result before encoding/decoding, reject unknown/extra fields
+and require canonical round trips. Existing zero-fee result bytes stay unchanged.
+The existing durable receipt wraps this result without a new receipt protocol.
+
+Pre-reserve structural/admission errors write nothing. After a reserve phase is
+attempted, deterministic host invariant/finalization failures produce HostRejected
+with no object/state application effects, zero charge, and consumed nonce plus
+receipt. Discard the provisional arena rather than depend on a failed restore
+to manufacture rollback; durable state has not been written yet. Reserve/settle
+traps retain their distinct zero-charge statuses. Application traps discard their
+effects and settle actual consumed application gas. Diagnostics remain typed and
+noncanonical, not arbitrary interpreter text in a receipt. Storage I/O/CAS/fencing
+failures remain storage errors and must not be converted into committed receipts.
+Policy and coordinator share phase-cap definitions; no second drifting set.
+
+Removal of the test-only coordinator gate requires the authenticated engine and
+all-three-kind node handler together, with real WASM and file-backed SQLite
+close/reopen, exact replay, conflict invariance and writer-fencing evidence.
+Neither the crypto witness nor an uninstalled policy alone justifies activation.
+
 ### Coordinator implementation boundary (2026-09-08)
 
-The VM phase runner is internal until a distinct authenticated paid envelope
-and committed fee-policy type exist. An existing authenticated zero-fee intent
+The VM phase runner stays test-only until the authenticated durable integration
+above is complete. An existing authenticated zero-fee intent
 must never authorize reservation. Do not export a raw phase/grant/source API
 from `execution`, or connect the experimental coordinator to node-core/HTTP/CLI.
 Internal tests may construct the phase plan; this is not paid admission.
