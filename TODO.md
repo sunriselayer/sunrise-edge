@@ -2542,15 +2542,32 @@ statements such as “body validation remains open” are not the live work queu
     isolated old-profile ABI rejection and cumulative handle exhaustion) and
     fixed semantics/policy/result-ABI wire vectors. Local full validation:
     `npm ci --prefix adapters/cloudflare-workers` and `./scripts/check-all.sh`.
-    Durable profile activation, protected reservation coordination, phase budgets
-    and savepoints remain open; these foundations alone do not complete this
-    criterion or enable paid execution.
-    Next implementation is the internal same-store three-phase coordinator:
-    real WASM reserve/application/settle, private typed results, phase headroom
-    and non-rewinding savepoints. Its experimental entry stays test-only until
+    The internal same-store three-phase coordinator is implemented at `a3b7e97`
+    (2026-09-08). Fresh read-only Opus review returned
+    `APPROVE INTERNAL INTEGRATION`; this is not main-merge or activation approval.
+    It runs real WASM reserve/application/settle with
+    private typed results, phase headroom and non-rewinding resource counters.
+    Objects/events roll back while allocations, handles, creations and emitted
+    event counts remain charged. Transfer, write, create, delete and event output
+    costs are checked before mutation; canonical encoder tests bound their framing.
+    All 26 local-WASM tests and targeted all-feature clippy pass. Evidence includes
+    same-source transfer/consume, exact-full reserve, app/settle traps, genuine
+    cumulative memory-limiter exhaustion with successful settlement, creation/fuel
+    exhaustion, reservation isolation, pre-reserve malformed-call rejection and
+    transfer output-window denial before mutation.
+    `npm ci --prefix adapters/cloudflare-workers` and `./scripts/check-all.sh`
+    pass locally.
+    These tests do not provide paid durable replay or service-backed PostgreSQL
+    fault evidence. The experimental entry stays test-only until
     distinct authenticated paid consent and committed policy exist; no existing
     zero-fee signature may enter it. Public Call/Instantiate/Publish integration
     remains one combined gate, not three independent execution calls.
+    Before paid activation, define the admitted paid outcome for final effect
+    version/encoding failures and headroom invariant failures (currently a
+    deterministic, no-commit internal error), and retain settlement rejection
+    diagnostics. Non-blocking test follow-ups: assert memory exhaustion leaves
+    fuel remaining and derive the event framing allowance from the encoder,
+    as already done for object effects.
   - [ ] Explicit paid Call/Instantiate/Publish consent, pinned contract policy,
     base/execution-only pricing and calibrated reserve/settle allowances.
     Internal pricing component implemented: immutable admission captures the
