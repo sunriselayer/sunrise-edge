@@ -2558,14 +2558,17 @@ statements such as “body validation remains open” are not the live work queu
     `npm ci --prefix adapters/cloudflare-workers` and `./scripts/check-all.sh`
     pass locally.
     These tests do not provide paid durable replay or service-backed PostgreSQL
-    fault evidence. The experimental entry stays test-only until
-    authenticated paid admission and the complete receipt/commit boundary exist;
-    the wire-only witness below is insufficient and no existing zero-fee
-    signature may enter it. Public Call/Instantiate/Publish integration
+    fault evidence. Raw phase/grant APIs remain private; only the authenticated
+    paid engine described below exposes the internal execution boundary.
+    Durable activation still requires paid admission and the complete
+    receipt/commit boundary; no existing zero-fee signature may enter it.
+    Public Call/Instantiate/Publish integration
     remains one combined gate, not three independent execution calls.
-    Before paid activation, define the admitted paid outcome for final effect
-    version/encoding failures and headroom invariant failures (currently a
-    deterministic, no-commit internal error), and retain settlement rejection
+    The internal engine now produces a zero-charge HostRejected outcome for
+    post-attempt final effect/encoding and host invariant failures, discarding
+    all effects. Durable nonce/receipt commitment remains unimplemented.
+    Normal failures retain measured gas; an internal accounting-bound violation
+    reports the admitted total ceiling instead. Retain settlement rejection
     diagnostics. Non-blocking test follow-ups: assert memory exhaustion leaves
     fuel remaining and derive the event framing allowance from the encoder,
     as already done for object effects.
@@ -2602,10 +2605,21 @@ statements such as “body validation remains open” are not the live work queu
     complete local repository gate after `npm ci --prefix adapters/cloudflare-workers`.
     Fresh Opus reviews of `957023d` and the vector/profile-mismatch follow-up
     `6d77f79` returned `APPROVE INTERNAL PREREQUISITE`; this is not approval of
-    the paid engine or combined integration. `codex/paid-runtime-work` now has
-    an initial authenticated engine implementation, but parent review requires
-    exact input-digest/scope checks, post-reserve HostRejected handling and
-    all-three-kind/negative result tests before it can be integrated.
+    the paid engine or combined integration. `codex/paid-runtime-work` at
+    `de0e253` combines those prerequisites with the authenticated engine and
+    provenance-neutral legacy consumer migration. All three paid operation
+    kinds execute through the shared backend; 19 engine tests cover scope/input
+    rejection, real WASM application/settlement, independent receipt rejection,
+    an actual SHA-2/SHA-3 epoch rotation, and a real final-effect version overflow
+    producing a zero-charge HostRejected outcome. The parent independently
+    passed execution tests and all-feature clippy after the final corrections.
+    The 0x6415/v1 result vector also matches an independent JavaScript byte
+    reconstruction (1101 bytes, SHA-256
+    `88ed340f5e9ee4d79a13b42375a41c1f87f541128447170f98006879c0f851ca`);
+    that second reconstruction is not yet a permanent repository check.
+    The parent also passed the combined `npm ci --prefix adapters/cloudflare-workers`
+    and `./scripts/check-all.sh` gate at `de0e253`. Fresh independent Opus review
+    is in progress; passing tests alone is not integration approval.
     No paid node handler, atomic commit/restart evidence or activation is claimed.
     Implementation and review resumed after the Claude session limit cleared;
     partial branches must not be treated as approved integration artifacts.
