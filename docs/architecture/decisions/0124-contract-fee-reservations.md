@@ -385,6 +385,9 @@ Publish artifact-byte and closure-node execution-unit prices; metering and their
 calibration are activation requirements, not permission to charge an estimate.
 Policy validation rejects unsupported resource prices, invalid recipients,
 nonpositive actual fees at A=0, arithmetic overflow and incompatible base policy.
+The schema is nonzero, asset and reservation tags are distinct, and both tags
+are defined by the selected fee code's package origin. These intrinsic checks
+do not replace resolution of the installed code, ABI or instance state.
 
 Hash the complete policy under the trusted context's ProtocolConfig purpose.
 The base execution policy does not reference the fee policy, and neither policy

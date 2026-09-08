@@ -2559,8 +2559,9 @@ statements such as “body validation remains open” are not the live work queu
     pass locally.
     These tests do not provide paid durable replay or service-backed PostgreSQL
     fault evidence. The experimental entry stays test-only until
-    distinct authenticated paid consent and committed policy exist; no existing
-    zero-fee signature may enter it. Public Call/Instantiate/Publish integration
+    authenticated paid admission and the complete receipt/commit boundary exist;
+    the wire-only witness below is insufficient and no existing zero-fee
+    signature may enter it. Public Call/Instantiate/Publish integration
     remains one combined gate, not three independent execution calls.
     Before paid activation, define the admitted paid outcome for final effect
     version/encoding failures and headroom invariant failures (currently a
@@ -2576,6 +2577,27 @@ statements such as “body validation remains open” are not the live work queu
     fees suite (including independent u128 oracle and overflow boundaries),
     targeted clippy and workspace formatting pass locally. This does not wire
     paid execution, calibrate allowances or activate any fee policy.
+    The unified consent/policy wire and cryptographic boundary is implemented
+    at `6ed4ef1` (2026-09-08): Call/Instantiate/Publish share one signed
+    `PaidIntent`, explicit source ObjectRef/access/max fee/refund recipient,
+    and a pinned policy digest. Authentication reads no current policy;
+    separate quoting checks the trusted base/fee policy and recipient validity.
+    Complete signed bytes define the NodeEvent digest. Unknown wire values,
+    explicit empty authorization tables and cross-domain signature transplants
+    fail closed. Verification: 33 paid-boundary tests, one permanent Rust
+    fixed-vector test matched by an independent JavaScript encoder, 37 fees
+    tests, all-feature clippy and the complete repository gate pass locally.
+    Fresh read-only Opus review, followed by review of the canonicality/test
+    follow-up at `6ed4ef1`, returned `APPROVE INTERNAL INTEGRATION` for the
+    complete chain. This is not main-merge or activation approval.
+    This does not authenticate current source ownership/version/balance,
+    resolve installed code/ABI/provenance, establish nonce freshness, calibrate
+    Publish metering or R/S, or authorize durable reserve/application/settle.
+    Paid outcomes/receipts, replay-before-policy reconciliation, fenced atomic
+    persistence and CLI/HTTP activation remain the next integrated work.
+    Activation must also share one definition of phase caps between policy and
+    coordinator, and validate the selected phase entrypoints' ABI/role
+    compatibility during installation; wire-valid names alone are insufficient.
   - [ ] Public Standard Asset transfer/split/merge/mint/burn and reserve/settle;
     contract-owned checked supply arithmetic, fresh fee/refund outputs and
     no surviving reservation. DR-0124 fixes asset identity to the host-created
