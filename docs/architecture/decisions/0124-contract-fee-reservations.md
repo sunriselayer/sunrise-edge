@@ -389,10 +389,14 @@ nonpositive actual fees at A=0, arithmetic overflow and incompatible base policy
 Hash the complete policy under the trusted context's ProtocolConfig purpose.
 The base execution policy does not reference the fee policy, and neither policy
 references an invocation, so commitments are acyclic. Hash the complete signed
-intent under NodeEvent for replay and reservation identity. Authentication takes
-a trusted expected policy/resolver, checks their contexts and digest equality,
-and verifies the distinct signature before deriving the immutable reservation
-quote from L and max_fee. Never convert an authenticated zero-fee wrapper into a
+intent under NodeEvent for replay and reservation identity. Cryptographic
+authentication takes only the trusted expected context/resolver and signed
+bytes, so receipt reconciliation need not consult a current fee policy.
+A separate policy-check/quote operation takes that immutable authenticated
+intent and a trusted expected policy, checks their contexts and digest equality,
+and derives the immutable reservation quote from L and max_fee. Run that check
+for new requests after exact replay reconciliation. Neither operation grants
+durable admission. Never convert an authenticated zero-fee wrapper into a
 paid wrapper. Policy codec validity and quote validity do not establish calibrated
 R/S, installation, governance authority or storage authority.
 
