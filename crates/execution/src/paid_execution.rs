@@ -591,7 +591,13 @@ pub fn decode_signed_paid_intent(bytes: &[u8]) -> Result<SignedPaidIntent, PaidE
     frame.require_only_fields(&[1, 2])?;
     let intent: PaidIntent = decode_paid_intent(frame.required_field(1)?)?;
     let signature: [u8; 64] = to_array64(frame.required_field(2)?)?;
-    Ok(SignedPaidIntent { intent, signature })
+    let signed: SignedPaidIntent = SignedPaidIntent { intent, signature };
+    if encode_signed_paid_intent(&signed)? != bytes {
+        return Err(PaidExecutionError::Invalid(
+            "noncanonical signed paid intent",
+        ));
+    }
+    Ok(signed)
 }
 
 /// Builds the exact byte frame a sender must sign under the single

@@ -324,6 +324,15 @@ fn instantiate_requires_creator_sender_and_empty_access_and_type_arguments() {
         };
     }
     assert!(encode_paid_intent(&intent).is_err());
+
+    let mut intent = instantiate_intent();
+    if let PaidApplication::Instantiate(inner) = &mut intent.application {
+        inner.type_arguments = vec![abi::package_types::ScopedTypeArg::Opaque {
+            domain: 1,
+            value: [0; 32],
+        }];
+    }
+    assert!(encode_paid_intent(&intent).is_err());
 }
 
 #[test]
@@ -343,6 +352,32 @@ fn publish_requires_matching_context_and_publisher() {
     .unwrap();
     intent.application = PaidApplication::Publish(wrong_publisher);
     assert!(encode_paid_intent(&intent).is_err());
+
+    let mut intent = publish_intent();
+    let other_context = PublicationContext::new(
+        ChainId::new("other-chain").unwrap(),
+        ProtocolVersion::new(3),
+        Epoch::new(0),
+    )
+    .unwrap();
+    let wrong_context = CodeArtifact::new(ArtifactParts {
+        context: other_context.clone(),
+        origin: PackageOrigin::unverified(other_context.chain_id().clone(), sender(), [11; 32])
+            .unwrap(),
+        revision: 1,
+        wasm_profile: 4,
+        semantics: digest(0x77),
+        wasm: vec![0u8; 8],
+        unverified_abi: vec![1u8; 4],
+        exports: vec!["run".into()],
+        unverified_dependencies: vec![],
+    })
+    .unwrap();
+    intent.application = PaidApplication::Publish(wrong_context);
+    assert!(matches!(
+        encode_paid_intent(&intent),
+        Err(PaidExecutionError::ContextMismatch)
+    ));
 }
 
 #[test]
@@ -911,4 +946,53 @@ fn authentication_succeeds_without_reading_policy_then_changed_policy_quote_fail
         quote_paid_intent(&authenticated, &resolver(), &base_policy(), &changed_policy).is_err()
     );
     assert!(quote_paid_intent(&authenticated, &resolver(), &base_policy(), &fee_policy()).is_ok());
+}
+
+#[test]
+fn zero_gas_limit_is_rejected_for_intent_and_nested_call() {
+    let mut intent = call_intent();
+    intent.gas_limit = 0;
+    if let PaidApplication::Call(inner) = &mut intent.application {
+        inner.gas_limit = 0;
+    }
+    assert!(encode_paid_intent(&intent).is_err());
+}
+
+#[test]
+fn authorization_table_over_the_limit_is_rejected() {
+    use execution::call_authorization::{
+        CallAuthorization, ExecutionTarget, MAX_CALL_AUTHORIZATIONS,
+    };
+    let authorization = CallAuthorization {
+        caller: ExecutionTarget {
+            instance: instance(2),
+            code: code(),
+        },
+        callee: ExecutionTarget {
+            instance: instance(2),
+            code: code(),
+        },
+        entrypoint: "run".into(),
+        type_arguments: vec![],
+        objects: vec![],
+    };
+
+    let mut intent = call_intent();
+    intent.authorizations = vec![authorization.clone(); MAX_CALL_AUTHORIZATIONS];
+    assert!(encode_paid_intent(&intent).is_ok());
+
+    let mut intent = call_intent();
+    intent.authorizations = vec![authorization; MAX_CALL_AUTHORIZATIONS + 1];
+    assert!(encode_paid_intent(&intent).is_err());
+}
+
+#[test]
+fn signed_paid_intent_round_trips_and_rejects_trailing_bytes() {
+    let s = signed(call_intent());
+    let bytes = encode_signed_paid_intent(&s).unwrap();
+    assert_eq!(decode_signed_paid_intent(&bytes).unwrap(), s);
+
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    assert!(decode_signed_paid_intent(&trailing).is_err());
 }
