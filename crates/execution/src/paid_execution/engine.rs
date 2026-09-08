@@ -194,6 +194,43 @@ pub(crate) struct ValidatedPaidRequest {
     pub application: ValidatedApplication,
 }
 
+/// Checks one *already existing* object against a signed self-describing
+/// [`ObjectRef`]: exact id, exact version and a content digest that verifies
+/// against the supplied canonical body.
+///
+/// The digest is verified with [`hashing::verify_digest`], using the
+/// algorithm recorded in the reference itself, exactly as
+/// `node-core::object_snapshots` verifies a durable object body. Rehashing
+/// the body under the *active* epoch's suite instead would reject a
+/// perfectly valid historical input: an object created before a hash-suite
+/// rotation legitimately carries an `ObjectRef` digest committed under the
+/// algorithm active at its own creation epoch, and old digest verification
+/// must be preserved across upgrades.
+///
+/// The framing inputs are the *trusted* resolver's chain id and protocol
+/// version, never a request-supplied pair. They are already required to
+/// equal the signed intent's own context by [`paid_invocation_digest`] and
+/// [`quote_paid_intent`], and the scope-set policy check separately rejects
+/// cross-protocol/cross-chain execution, so there is no epoch-independent
+/// downgrade here. An unimplemented digest algorithm fails closed inside
+/// [`hashing::verify_digest`] rather than silently comparing bytes.
+fn matches_existing_reference(
+    resolver: &HashSuiteResolver,
+    expected: &ObjectRef,
+    object: &Object,
+) -> Result<bool, PaidExecutionError> {
+    if expected.id != object.id || expected.version != object.version {
+        return Ok(false);
+    }
+    Ok(hashing::verify_digest(
+        &expected.digest,
+        HashPurpose::Object,
+        resolver.protocol_version(),
+        resolver.chain_id(),
+        &encode_object(object)?,
+    )?)
+}
+
 /// Checks that supplied resolved application inputs, in signed order,
 /// identify exactly the nested `CallIntent`'s declared access entries. The
 /// comparison uses the complete canonical `ObjectRef` (id, version and
@@ -202,7 +239,6 @@ pub(crate) struct ValidatedPaidRequest {
 /// access entry must never be accepted as a match.
 fn matched_inputs(
     resolver: &HashSuiteResolver,
-    epoch: Epoch,
     entries: &[AccessEntry],
     supplied: &[ScopedResolvedObject],
 ) -> Result<Vec<ScopedResolvedObject>, PaidExecutionError> {
@@ -212,9 +248,8 @@ fn matched_inputs(
     let mut ids: BTreeSet<ObjectId> = BTreeSet::new();
     for (input, access) in supplied.iter().zip(entries) {
         let object: &Object = &input.resolved.object;
-        let actual_ref: ObjectRef = object_ref(resolver, epoch, object)?;
         if !ids.insert(object.id)
-            || actual_ref != access.object_ref
+            || !matches_existing_reference(resolver, &access.object_ref, object)?
             || input.resolved.mode != access.mode
         {
             return Err(PaidExecutionError::Invalid("application input authority"));
@@ -223,6 +258,10 @@ fn matched_inputs(
     Ok(supplied.to_vec())
 }
 
+/// Recomputes the complete canonical [`ObjectRef`] of one object under the
+/// *active* epoch's suite. This is correct only for objects this invocation
+/// itself created: a fresh output must commit under the currently active
+/// algorithm. Existing inputs use [`matches_existing_reference`] instead.
 fn object_ref(
     resolver: &HashSuiteResolver,
     epoch: Epoch,
@@ -386,13 +425,16 @@ pub(crate) fn validate_paid_request(
     let intent = request.authenticated.intent();
     let invocation_digest: Digest32 =
         paid_invocation_digest(request.resolver, request.authenticated.signed())?;
-    let epoch: Epoch = intent.context.epoch();
-
     // The complete canonical `ObjectRef`, including the content digest of
     // the actually supplied body, must equal the signed consent reference.
-    let source_ref: ObjectRef =
-        object_ref(request.resolver, epoch, &request.source.resolved.object)?;
-    if source_ref != intent.consent.source {
+    // The signed reference is self-describing, so the digest is verified
+    // under its own recorded algorithm: a fee source created before a
+    // hash-suite rotation must still be spendable.
+    if !matches_existing_reference(
+        request.resolver,
+        &intent.consent.source,
+        &request.source.resolved.object,
+    )? {
         return Err(PaidExecutionError::Invalid("fee source reference mismatch"));
     }
     // The signed reservation access mode selects the pinned export; it never
@@ -446,7 +488,7 @@ pub(crate) fn validate_paid_request(
                 LocalExecutionMode::Call,
             )?;
             let inputs: Vec<ScopedResolvedObject> =
-                matched_inputs(request.resolver, epoch, &inner.access.entries, inputs)?;
+                matched_inputs(request.resolver, &inner.access.entries, inputs)?;
             (
                 PaidResultKind::Call,
                 ValidatedApplication::Wasm(ValidatedApplicationCall {

@@ -10,11 +10,19 @@
 //!
 //! [`verify_paid_execution_result`] closes that gap. It takes only the
 //! receipt, the surviving creation authority, the already
-//! signature-authenticated intent and the trusted base/fee policy pair, and
-//! independently recomputes everything it checks: the invocation digest, the
-//! instance target, the reservation quote and every output's complete
-//! canonical `ObjectRef`. It consults no VM, no storage and no
-//! caller-supplied pricing.
+//! signature-authenticated intent, the trusted base/fee policy pair and the
+//! caller's trusted resolved fee [`InstanceRecord`], and independently
+//! recomputes everything it checks: the invocation digest, the application
+//! and fee instance targets, the reservation quote, each settlement
+//! output's complete canonical `ObjectRef`, its host-derived creation
+//! identity and its nominal type commitment. It consults no VM, no storage
+//! and no caller-supplied pricing, and it never accepts a context, instance
+//! target or nominal type as an unchecked claim.
+//!
+//! Its object-level scope is exactly the two settlement outputs and the
+//! reservation postcondition. Validating the *application*'s own effects —
+//! their bodies, amounts, types and durable admissibility — is node-core's
+//! separate obligation, and no asset body is decoded anywhere here.
 //!
 //! Success still does not make the receipt durable: replay reconciliation,
 //! nonce freshness and the fenced commit remain separate obligations.
@@ -25,14 +33,17 @@ use super::{
     encode_paid_execution_result, paid_invocation_digest, quote_paid_intent,
 };
 use crate::local_execution::{
-    CreatedObjectAuthority, InstanceRecord, LocalExecutionPolicy, instance_target,
+    CreatedObjectAuthority, InstanceRecord, LocalExecutionPolicy, derive_local_created_object_id,
+    instance_target,
 };
+use crate::publication::PublicationContext;
 use crate::{ExecutionEffects, ObjectEffect};
+use abi::package_types::verify_scoped_type_id;
 use fees::Amount;
 use fees::reservation::{Admission, ReservationPricer, Settlement};
 use hashing::HashSuiteResolver;
 use objects::{Address, Object, ObjectId, ObjectRef, Owner, encode_object};
-use protocol_types::{Epoch, HashPurpose};
+use protocol_types::{Digest32, Epoch, HashPurpose};
 use std::collections::BTreeSet;
 
 fn invalid(message: &'static str) -> PaidExecutionError {
@@ -80,9 +91,13 @@ fn creation<'a>(
     Ok(Creation { object, authority })
 }
 
-/// The two exact canonical messages one settlement output check may report.
+/// The three exact canonical messages one settlement output check may
+/// report: a reference that does not recompute, a host-derived identity or
+/// nominal type commitment that does not reproduce, and an authority row
+/// that does not match the pinned fee implementation.
 struct OutputErrors {
     reference: &'static str,
+    identity: &'static str,
     authority: &'static str,
 }
 
@@ -90,8 +105,49 @@ struct OutputErrors {
 /// receipt under verification.
 struct Verifier<'a> {
     resolver: &'a HashSuiteResolver,
+    /// The authenticated execution epoch, taken from the signed intent's
+    /// context, never from the receipt.
     epoch: Epoch,
+    /// The signed invocation context. Creation identity is domain-separated
+    /// by it, so it is an input to the derivation, not a comparison.
+    call_context: &'a PublicationContext,
+    /// The invocation digest independently recomputed from the signed
+    /// intent; it seeds every host-derived creation identity.
+    event: Digest32,
     fee_policy: &'a PaidFeePolicy,
+    /// The caller's trusted, resolved fee [`InstanceRecord`], pinned to the
+    /// policy by [`check_fee_instance`] before any output is checked. Its
+    /// own original context is what a legitimate fee output's authority
+    /// records, which is not necessarily the current policy context.
+    fee_instance: &'a InstanceRecord,
+}
+
+/// Independently pins the caller's trusted fee [`InstanceRecord`] to the
+/// fee policy before it is used to validate any output authority.
+///
+/// The record's [`InstanceTarget`](crate::call::InstanceTarget) is derived
+/// here, never accepted as a claim, and must equal the policy's exact
+/// pinned instance; its code must be the policy's exact pinned code. Its
+/// original context may legitimately predate the policy context — an
+/// instance created in an earlier epoch keeps that context forever — so
+/// only the chain, protocol version and an epoch at or before the policy's
+/// are required. Supplying an unchecked context here would defeat the
+/// output-authority check entirely, which is why the *record* is the
+/// parameter and the context is a derived consequence of it.
+fn check_fee_instance(
+    resolver: &HashSuiteResolver,
+    fee_policy: &PaidFeePolicy,
+    record: &InstanceRecord,
+) -> Result<(), PaidExecutionError> {
+    if record.context.chain_id() != fee_policy.context.chain_id()
+        || record.context.protocol_version() != fee_policy.context.protocol_version()
+        || record.context.epoch() > fee_policy.context.epoch()
+        || record.code != fee_policy.code
+        || instance_target(resolver, record)? != fee_policy.instance
+    {
+        return Err(invalid("paid result fee instance authority"));
+    }
+    Ok(())
 }
 
 impl Verifier<'_> {
@@ -99,6 +155,25 @@ impl Verifier<'_> {
     /// exact recomputed reference of a *fresh* created object owned by the
     /// pinned recipient, carrying the fee policy's asset type, schema,
     /// defining code and exact instance authority.
+    ///
+    /// Three independent things are checked, not one:
+    ///
+    /// * the complete canonical `ObjectRef` recomputed from the object
+    ///   actually present in the effects;
+    /// * the object's *own* host-stamped identity — version one and the
+    ///   deterministic creation id derived from this invocation's context,
+    ///   the fee instance's original context, the pinned instance/code, the
+    ///   invocation digest and the reported global creation ordinal — plus
+    ///   its stored `type_hash`, verified against the policy's nominal
+    ///   asset type through the central scoped-type verifier rather than
+    ///   trusting the sidecar authority's `ty` field alone;
+    /// * the reported creation authority row itself.
+    ///
+    /// The host decodes no asset body here: amount correctness remains the
+    /// pinned contract's audited arithmetic (DR-0124). This also validates
+    /// *only* the two settlement outputs. Objects the application created
+    /// are not validated by this function at all; their type, authority and
+    /// effect admissibility remain node-core's separate durable obligation.
     fn check_output(
         &self,
         creation: &Creation<'_>,
@@ -110,12 +185,35 @@ impl Verifier<'_> {
         if &object_ref(self.resolver, self.epoch, creation.object)? != expected {
             return Err(invalid(errors.reference));
         }
+        // A settlement output is always freshly created by this invocation,
+        // so its version is one and its identity is reproducible from the
+        // pinned inputs and the reported ordinal alone.
+        let derived: ObjectId = derive_local_created_object_id(
+            self.resolver,
+            self.call_context,
+            &self.fee_instance.context,
+            &policy.instance,
+            &policy.code,
+            self.event,
+            creation.authority.creation_ordinal,
+        )?;
+        if creation.object.version != 1
+            || creation.object.id != derived
+            || !verify_scoped_type_id(
+                self.resolver,
+                &creation.object.type_hash,
+                self.epoch,
+                &policy.asset_type,
+            )?
+        {
+            return Err(invalid(errors.identity));
+        }
         if creation.object.owner != Owner::Address(Address::new(*recipient))
             || creation.object.schema_version != policy.schema
             || creation.authority.authority.ty != policy.asset_type
             || creation.authority.authority.code != policy.code
             || creation.authority.authority.instance != policy.instance
-            || creation.authority.authority.instance_context != policy.context
+            || creation.authority.authority.instance_context != self.fee_instance.context
         {
             return Err(invalid(errors.authority));
         }
@@ -224,6 +322,7 @@ fn check_charged(
         &fee_policy.fee_recipient,
         &OutputErrors {
             reference: "paid result fee output reference",
+            identity: "paid result fee output identity",
             authority: "paid result fee output authority",
         },
     )?;
@@ -251,6 +350,7 @@ fn check_charged(
                 &signed.refund_recipient,
                 &OutputErrors {
                     reference: "paid result refund output reference",
+                    identity: "paid result refund output identity",
                     authority: "paid result refund output authority",
                 },
             )?;
@@ -281,18 +381,23 @@ fn check_charged(
 /// Requires the reported creation authority to describe exactly the created
 /// object effects, with distinct object identities and distinct global
 /// creation ordinals.
+///
+/// The created effects themselves are also required to name distinct
+/// objects: collecting them into a set alone would silently accept a
+/// receipt that lists the same created object twice, so duplicates are
+/// rejected explicitly while the set is built.
 fn check_creation_authority(
     effects: &ExecutionEffects,
     authorities: &[CreatedObjectAuthority],
 ) -> Result<(), PaidExecutionError> {
-    let created: BTreeSet<ObjectId> = effects
-        .object_effects
-        .iter()
-        .filter_map(|effect| match effect {
-            ObjectEffect::Created(object) => Some(object.id),
-            _ => None,
-        })
-        .collect();
+    let mut created: BTreeSet<ObjectId> = BTreeSet::new();
+    for effect in &effects.object_effects {
+        if let ObjectEffect::Created(object) = effect
+            && !created.insert(object.id)
+        {
+            return Err(invalid("paid result duplicate created effect"));
+        }
+    }
     let mut ids: BTreeSet<ObjectId> = BTreeSet::new();
     let mut ordinals: BTreeSet<u32> = BTreeSet::new();
     for authority in authorities {
@@ -317,6 +422,7 @@ pub fn verify_paid_execution_result(
     resolver: &HashSuiteResolver,
     base_policy: &LocalExecutionPolicy,
     fee_policy: &PaidFeePolicy,
+    fee_instance: &InstanceRecord,
 ) -> Result<(), PaidExecutionError> {
     let result: &PaidExecutionResult = &outcome.result;
     // Canonical/self-consistency first; it is necessary but never sufficient.
@@ -328,7 +434,8 @@ pub fn verify_paid_execution_result(
         return Err(invalid("paid result request id"));
     }
     check_target(resolver, result, &intent.application)?;
-    if result.effects.tx_hash != paid_invocation_digest(resolver, authenticated.signed())? {
+    let event: Digest32 = paid_invocation_digest(resolver, authenticated.signed())?;
+    if result.effects.tx_hash != event {
         return Err(invalid("paid result event digest"));
     }
     check_creation_authority(&result.effects, &outcome.created_authorities)?;
@@ -336,6 +443,10 @@ pub fn verify_paid_execution_result(
     // The quote is recomputed from the authenticated intent and the trusted
     // policies; the receipt never supplies its own pricing basis.
     let admission: Admission = quote_paid_intent(authenticated, resolver, base_policy, fee_policy)?;
+    // `quote_paid_intent` has now proven the signed intent, the base policy
+    // and the fee policy share one context, so pinning the trusted fee
+    // instance to the fee policy also pins it to this invocation.
+    check_fee_instance(resolver, fee_policy, fee_instance)?;
     let pricer: ReservationPricer = ReservationPricer::new(
         fee_policy.gas_schedule.clone(),
         fee_policy.conversion_divisor,
@@ -351,7 +462,10 @@ pub fn verify_paid_execution_result(
             &Verifier {
                 resolver,
                 epoch,
+                call_context: &intent.context,
+                event,
                 fee_policy,
+                fee_instance,
             },
             result,
             charged,
