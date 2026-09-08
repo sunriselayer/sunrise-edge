@@ -2598,13 +2598,16 @@ statements such as “body validation remains open” are not the live work queu
     Integration work in progress (2026-09-08): profile-4 durable policy keys,
     closure semantics checks and reserved paid-policy namespace tests are preserved
     on `codex/paid-policy-work`, not integrated here. The parent independently
-    verified 294 node-core library tests and the complete local repository gate
-    after `npm ci --prefix adapters/cloudflare-workers`. Fresh Opus approval and
-    combined integration checks remain required. `codex/paid-runtime-work`
-    preserves an incomplete candidate-provenance/result/coordinator refactor:
-    its authenticated engine module is still absent and it does not compile.
+    verified 296 node-core library tests, the v3/v4 fixed-vector tests and the
+    complete local repository gate after `npm ci --prefix adapters/cloudflare-workers`.
+    Fresh Opus reviews of `957023d` and the vector/profile-mismatch follow-up
+    `6d77f79` returned `APPROVE INTERNAL PREREQUISITE`; this is not approval of
+    the paid engine or combined integration. `codex/paid-runtime-work` now has
+    an initial authenticated engine implementation, but parent review requires
+    exact input-digest/scope checks, post-reserve HostRejected handling and
+    all-three-kind/negative result tests before it can be integrated.
     No paid node handler, atomic commit/restart evidence or activation is claimed.
-    Claude implementation/review is blocked by its reported session limit;
+    Implementation and review resumed after the Claude session limit cleared;
     partial branches must not be treated as approved integration artifacts.
     Activation must also share one definition of phase caps between policy and
     coordinator, and validate the selected phase entrypoints' ABI/role

@@ -448,6 +448,10 @@ key binding its context. Missing/different installed values fail closed. This
 slice introduces no external installer, HTTP/CLI route or bootstrap request mode;
 test fixtures explicitly install their trusted records. Actual activation still
 requires the closed genesis manifest installer and calibrated phase allowances.
+That installer derives profile-4 semantics from the trusted context and
+`generic_object_result_semantics`; a caller-supplied digest is not evidence of
+compatible execution semantics. Publication policy constructors alone do not
+establish this installation invariant.
 
 Allocate `0x6415/v1` for PaidExecutionResult: field 1 request ID; 2 application
 kind (Instantiate=1, Call=2, Publish=3); 3 instance record for kinds 1/2 or package
