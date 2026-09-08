@@ -2545,6 +2545,12 @@ statements such as “body validation remains open” are not the live work queu
     Durable profile activation, protected reservation coordination, phase budgets
     and savepoints remain open; these foundations alone do not complete this
     criterion or enable paid execution.
+    Next implementation is the internal same-store three-phase coordinator:
+    real WASM reserve/application/settle, private typed results, phase headroom
+    and non-rewinding savepoints. Its experimental entry stays test-only until
+    distinct authenticated paid consent and committed policy exist; no existing
+    zero-fee signature may enter it. Public Call/Instantiate/Publish integration
+    remains one combined gate, not three independent execution calls.
   - [ ] Explicit paid Call/Instantiate/Publish consent, pinned contract policy,
     base/execution-only pricing and calibrated reserve/settle allowances.
     Internal pricing component implemented: immutable admission captures the

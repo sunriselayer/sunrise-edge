@@ -334,6 +334,36 @@ the interface, not implementation review or readiness.
 
 ## Review gate
 
+### Coordinator implementation boundary (2026-09-08)
+
+The VM phase runner is internal until a distinct authenticated paid envelope
+and committed fee-policy type exist. An existing authenticated zero-fee intent
+must never authorize reservation. Do not export a raw phase/grant/source API
+from `execution`, or connect the experimental coordinator to node-core/HTTP/CLI.
+Internal tests may construct the phase plan; this is not paid admission.
+
+Run reserve, application and settle in one interpreter store and arena. Reuse
+the same frame preparation and final result-slot validation as ordinary calls;
+keep the validated reservation in coordinator-local state, not in application
+grants. Share compiled modules and monotonic allocation/creation counters.
+Savepoints restore objects, authority, liveness/transfer/dirty flags and events,
+but not resource usage. Each phase starts with its own fuel and failure flag;
+both global and phase bounds apply before host mutations. The existing zero-fee
+path retains its current limits, failure effects and canonical bytes.
+
+The internal Call experiment is not a separate fee protocol. Public activation
+still requires one signed envelope covering Call/Instantiate/Publish, a separate
+non-circular policy commitment, explicit paid outcomes and calibrated R/S.
+No placeholder policy, forged authenticated wrapper or zero-fee-to-paid
+conversion may be used to make the experiment publicly callable.
+
+Validate fee and refund addresses with the existing owner-address policy before
+reservation. Invalid recipient bytes otherwise can strand a manually created
+reservation when settlement cannot create its outputs. Amount computation uses
+the immutable pricing admission; the host encodes arguments but never decodes
+asset amounts. Settlement output checks cover fresh identity, nominal type,
+owner, exact instance/defining code, slot presence and reservation consumption.
+
 Before code, resolve concrete phase/return APIs, bootstrap and publication fee
 scope, and testable caps. Before merge, prove same-source success, consumed and
 transferred remainder, exact-full boundary, wrong policy/asset/type/instance,
