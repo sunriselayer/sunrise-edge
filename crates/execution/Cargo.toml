@@ -20,5 +20,6 @@ wasmparser = { workspace = true }
 
 [dev-dependencies]
 ed25519-zebra = { workspace = true }
+public-standard-asset = { path = "../../contracts/standard-asset" }
 standard-assets = { workspace = true }
 wat = { workspace = true }

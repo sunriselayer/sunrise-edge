@@ -478,6 +478,7 @@ dependencies = [
  "hashing",
  "objects",
  "protocol-types",
+ "public-standard-asset",
  "sha2 0.11.0",
  "standard-assets",
  "wasmi",
