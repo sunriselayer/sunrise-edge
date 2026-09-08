@@ -15,7 +15,9 @@ use crate::{ExecutionEffects, decode_execution_effects, encode_execution_effects
 use abi::package_types::{PackageOrigin, decode_package_origin, encode_package_origin};
 use canonical_encoding::{CanonicalStruct, decode_canonical_frame};
 use fees::Amount;
-use objects::{ObjectId, ObjectRef, decode_object_id, decode_object_ref, encode_object_id, encode_object_ref};
+use objects::{
+    ObjectId, ObjectRef, decode_object_id, decode_object_ref, encode_object_id, encode_object_ref,
+};
 
 const RESULT_TYPE: u16 = 0x6415;
 const VERSION_1: u16 = 1;
@@ -48,6 +50,10 @@ pub enum PaidResultKind {
 /// Field 3: the actual durable instance record for `Instantiate`/`Call`, or the
 /// published package origin for `Publish`.
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// `InstanceRecord` is unavoidably larger than `PackageOrigin`; this type
+/// is a short-lived receipt value, never stored in a hot per-object array,
+/// so boxing would only move, not remove, the cost.
+#[allow(clippy::large_enum_variant)]
 pub enum PaidResultTarget {
     Instance(InstanceRecord),
     Package(PackageOrigin),
@@ -134,12 +140,18 @@ fn validate(result: &PaidExecutionResult) -> Result<(), PaidExecutionError> {
     match (&result.kind, &result.target) {
         (PaidResultKind::Instantiate | PaidResultKind::Call, PaidResultTarget::Instance(_)) => {}
         (PaidResultKind::Publish, PaidResultTarget::Package(_)) => {}
-        _ => return Err(PaidExecutionError::Invalid("paid result kind/target mismatch")),
+        _ => {
+            return Err(PaidExecutionError::Invalid(
+                "paid result kind/target mismatch",
+            ));
+        }
     }
     match (&result.charged, result.status.charged()) {
         (Some(charged), true) => {
             if charged.actual.get() == 0 {
-                return Err(PaidExecutionError::Invalid("paid result actual must be positive"));
+                return Err(PaidExecutionError::Invalid(
+                    "paid result actual must be positive",
+                ));
             }
             let sum: u64 = charged
                 .actual
@@ -177,9 +189,9 @@ fn validate(result: &PaidExecutionResult) -> Result<(), PaidExecutionError> {
                     reason: crate::local_execution::LOCAL_EXECUTION_TRAP_REASON.into(),
                 },
             };
-            if std::mem::discriminant(&result.effects.status)
-                != std::mem::discriminant(&expected_status)
-            {
+            // Every charged failure reports the one canonical, normalized
+            // trap reason string, never an arbitrary or empty message.
+            if result.effects.status != expected_status {
                 return Err(PaidExecutionError::Invalid(
                     "paid result effects status does not match paid status",
                 ));
@@ -191,10 +203,19 @@ fn validate(result: &PaidExecutionResult) -> Result<(), PaidExecutionError> {
                     "zero-charge paid result must have empty effects",
                 ));
             }
-            if matches!(result.effects.status, crate::ExecutionStatus::Success) {
-                return Err(PaidExecutionError::Invalid(
-                    "zero-charge paid result cannot report success",
-                ));
+            match &result.effects.status {
+                crate::ExecutionStatus::Success => {
+                    return Err(PaidExecutionError::Invalid(
+                        "zero-charge paid result cannot report success",
+                    ));
+                }
+                crate::ExecutionStatus::Failure { reason } => {
+                    if reason != crate::local_execution::LOCAL_EXECUTION_TRAP_REASON {
+                        return Err(PaidExecutionError::Invalid(
+                            "zero-charge paid result unnormalized failure reason",
+                        ));
+                    }
+                }
             }
         }
         _ => {
@@ -245,7 +266,9 @@ pub fn encode_paid_execution_result(
 }
 
 /// Strictly decodes Frame `0x6415/v1`.
-pub fn decode_paid_execution_result(bytes: &[u8]) -> Result<PaidExecutionResult, PaidExecutionError> {
+pub fn decode_paid_execution_result(
+    bytes: &[u8],
+) -> Result<PaidExecutionResult, PaidExecutionError> {
     if bytes.len() > MAX_PAID_EXECUTION_RESULT_BYTES {
         return Err(PaidExecutionError::Limit("paid execution result"));
     }

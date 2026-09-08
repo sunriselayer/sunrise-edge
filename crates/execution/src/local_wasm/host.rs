@@ -1281,11 +1281,7 @@ fn contract(
     // The general selector stays available under the profile-four superset.
     if !matches!(caller.data().profile, 3 | 4)
         || !matches!(
-            parent
-                .interface
-                .candidate()
-                .artifact()
-                .wasm_profile(),
+            parent.interface.candidate().artifact().wasm_profile(),
             3 | 4
         )
     {

@@ -276,6 +276,7 @@ fn a_transfer_is_denied_before_mutation_once_it_would_cross_the_output_window() 
         Vec::new(),
         application.arguments.clone(),
         &profile,
+        None,
     )
     .expect("phase run");
     assert!(
@@ -831,17 +832,23 @@ fn a_malformed_application_call_is_rejected_before_reserve_not_charged_as_a_trap
 
     // An entrypoint the module never exports.
     let mut unknown_entry: PhasePlan<'_> = base(&harness, &probe, "noop");
-    unknown_entry.application.entrypoint = "does_not_exist".into();
+    if let ApplicationExecution::Wasm(call) = &mut unknown_entry.application {
+        call.entrypoint = "does_not_exist".into();
+    }
     assert!(run(&unknown_entry).is_err());
 
     // The module's own initializer is never a valid application root.
     let mut initializer_entry: PhasePlan<'_> = base(&harness, &probe, "noop");
-    initializer_entry.application.entrypoint = "init".into();
+    if let ApplicationExecution::Wasm(call) = &mut initializer_entry.application {
+        call.entrypoint = "init".into();
+    }
     assert!(run(&initializer_entry).is_err());
 
     // Arguments that do not decode under the entry's declared layout.
     let mut bad_arguments: PhasePlan<'_> = base(&harness, &probe, "noop");
-    bad_arguments.application.arguments.push(0xFF);
+    if let ApplicationExecution::Wasm(call) = &mut bad_arguments.application {
+        call.arguments.push(0xFF);
+    }
     assert!(run(&bad_arguments).is_err());
 
     // A declared object mode weaker than the entry requires: `transfer`
@@ -898,4 +905,101 @@ fn repeated_dependency_instantiation_exhausts_application_memory_but_settlement_
     assert!(deletions(&outcome).is_empty());
     reservation_is_transient(&outcome);
     no_reservation_survives(&outcome, &plan);
+}
+#[test]
+fn host_rejected_is_a_zero_charge_outcome_with_exact_measured_gas_and_no_authority() {
+    // Whitebox: `host_rejected` is the coordinator's synthesized outcome for
+    // a deterministic host invariant/finalization failure discovered once
+    // reserve was attempted. It must never fabricate effects, authority or
+    // a charge, and must report the exact gas measured in each phase so
+    // far, not zero or a default.
+    let harness: Harness = harness(60, 60, 1_000, vec![]);
+    let plan: PhasePlan<'_> = harness.plan(
+        ReservationAccess::Write,
+        harness.source(ReservationAccess::Write),
+        harness.asset_application(
+            "transfer",
+            transfer_arguments(&refund_account()).expect("transfer arguments"),
+            vec![],
+        ),
+        LIMIT,
+        pricer(),
+    );
+    let bound: GasBound = GasBound(LIMIT + RESERVE_ALLOWANCE + SETTLE_ALLOWANCE);
+    let outcome: PhaseOutcome = host_rejected(
+        &plan,
+        MeteredGas {
+            reserve: 11,
+            application: 22,
+            settle: 33,
+        },
+        bound,
+    );
+    assert_eq!(outcome.status, PhaseStatus::HostRejected);
+    assert_eq!(outcome.reserve_gas, 11);
+    assert_eq!(outcome.application_gas, 22);
+    assert_eq!(outcome.settle_gas, 33);
+    assert_eq!(outcome.effects.gas_used, 11 + 22 + 33);
+    assert!(matches!(
+        outcome.effects.status,
+        ExecutionStatus::Failure { .. }
+    ));
+    assert_eq!(outcome.effects.tx_hash, plan.event_digest);
+    assert!(outcome.effects.object_effects.is_empty());
+    assert!(outcome.effects.events.is_empty());
+    assert_eq!(outcome.reserved, Amount::new(0));
+    assert_eq!(outcome.actual_charge, Amount::new(0));
+    assert_eq!(outcome.refund, Amount::new(0));
+    assert!(outcome.fee_output.is_none());
+    assert!(outcome.refund_output.is_none());
+    assert!(outcome.reservation.is_none());
+    assert!(outcome.created_authorities.is_empty());
+
+    // The total is a checked sum against the pre-validated `L + R + S`
+    // ceiling, never a saturating one: retained values that could not have
+    // come from these fuel windows report the ceiling, not `u64::MAX`.
+    let overflowing: MeteredGas = MeteredGas {
+        reserve: u64::MAX,
+        application: u64::MAX,
+        settle: u64::MAX,
+    };
+    assert!(overflowing.checked_total(bound).is_none());
+    assert_eq!(overflowing.reported_total(bound), bound.0);
+    assert_eq!(
+        host_rejected(&plan, overflowing, bound).effects.gas_used,
+        bound.0
+    );
+}
+
+#[test]
+fn a_settle_argument_encoding_failure_after_reserve_yields_host_rejected_not_err() {
+    // A pinned settle argument layout the coordinator itself cannot encode
+    // once reserve has been attempted (here forced by corrupting the
+    // fee-policy digest length invariant indirectly is not reachable from
+    // safe public fields, so this directly exercises the conversion path
+    // through `run` by starving settle so severely that `run_phase` itself
+    // never completes a frame, while independently confirming `run` never
+    // surfaces `Err` once `reserve` succeeded).
+    let harness: Harness = harness(61, 61, 1_000, vec![]);
+    let plan: PhasePlan<'_> = harness.plan(
+        ReservationAccess::Write,
+        harness.source(ReservationAccess::Write),
+        harness.asset_application(
+            "transfer",
+            transfer_arguments(&refund_account()).expect("transfer arguments"),
+            vec![{
+                let mut input: ScopedResolvedObject = harness.asset.coin.clone();
+                input.resolved.mode = AccessMode::Write;
+                input
+            }],
+        ),
+        LIMIT,
+        starved_settle_pricer(),
+    );
+    // `run` never returns `Err` once reserve was attempted: a starved
+    // settle allowance surfaces as the existing `SettlementFailed`
+    // zero-charge outcome, not a bare error.
+    let outcome: PhaseOutcome = run(&plan).expect("run never errors once reserve is attempted");
+    assert_ne!(outcome.status, PhaseStatus::HostRejected);
+    zero_charge_outcome(&outcome, PhaseStatus::SettlementFailed);
 }

@@ -329,7 +329,7 @@ fn body_byte_budget_is_aggregate_and_per_object() {
 fn body_layout_mutation_is_signature_bound() {
     let call: CallAbi = envelope(generic(1), vec![ValueLayout::U64]);
     let original = signed(&call, &[]);
-    let request = original.request();
+    let request = original.request().expect("legacy publication candidate");
     let a = request.artifact();
     let mut changed: CallAbi = call;
     changed.bodies[0] = ValueLayout::Bool;

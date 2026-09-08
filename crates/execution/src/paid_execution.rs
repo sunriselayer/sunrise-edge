@@ -14,10 +14,14 @@
 //! admission, and an authenticated zero-fee [`crate::local_execution`]
 //! intent can never be converted into a paid wrapper by any function here.
 //!
-//! This module defines wire types and structural/cryptographic validation
-//! only. It does not run WASM, does not export a phase/grant/source API,
-//! and does not connect to node-core/HTTP/CLI or the internal `cfg(test)`
-//! reserve/application/settle coordinator, which stays untouched.
+//! This module defines the paid wire types, their structural/cryptographic
+//! validation, the injectable [`PaidContractEngine`] boundary with its public
+//! request/outcome types, and [`verify_paid_execution_result`], the
+//! independent receipt check. It runs no WASM itself and exports no
+//! phase/grant/source API: the private reserve/application/settle coordinator
+//! stays inside `crate::local_wasm`, whose [`crate::LocalWasmExecutionEngine`]
+//! provides the only in-crate trait implementation. Nothing here is connected
+//! to node-core, HTTP or the CLI.
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -56,8 +60,9 @@ use hashing::{HashSuiteResolver, HashingError};
 use objects::{ObjectError, ObjectId, ObjectRef, decode_object_ref, encode_object_ref};
 use protocol_types::{Digest32, HashPurpose, SignatureSchemeId};
 
-mod engine;
+pub(crate) mod engine;
 mod result;
+mod verify;
 
 pub use engine::{
     PaidApplicationScopes, PaidContractEngine, PaidExecutionOutcome, PaidExecutionRequest,
@@ -67,6 +72,7 @@ pub use result::{
     MAX_PAID_EXECUTION_RESULT_BYTES, PaidChargedOutcome, PaidExecutionResult, PaidExecutionStatus,
     PaidResultKind, PaidResultTarget, decode_paid_execution_result, encode_paid_execution_result,
 };
+pub use verify::verify_paid_execution_result;
 
 /// Maximum bytes of one encoded [`FeeSourceConsent`].
 pub const MAX_CONSENT_BYTES: usize = 256;
@@ -89,15 +95,16 @@ pub const MAX_SIGNED_PAID_INTENT_NONPUBLISH_BYTES: usize = MAX_PAID_INTENT_NONPU
 /// Maximum bytes of one encoded [`PaidFeePolicy`].
 pub const MAX_PAID_FEE_POLICY_BYTES: usize = 16 * 1024;
 
-/// DR-0124 first-profile reserve/settle phase ceilings, restated here so
-/// this policy wire boundary can validate policy fields 17..22 without
-/// depending on the still-internal `cfg(test)` phase coordinator.
-const PAID_PHASE_CALLS: u32 = 8;
-const PAID_PHASE_HANDLES: u32 = 16;
-const PAID_PHASE_CREATIONS: u32 = 4;
-const PAID_PHASE_EVENTS: u32 = 16;
-const PAID_PHASE_MEMORY_BYTES: u64 = 8 * 1024 * 1024;
-const PAID_PHASE_OUTPUT_BYTES: u64 = 1024 * 1024;
+// DR-0124 first-profile reserve/settle phase ceilings. `crate::phase_limits`
+// is the single neutral crate-internal copy, read by both this policy wire
+// boundary (which binds them as policy fields 17..22) and the private VM
+// phase coordinator (which enforces them). The wire boundary therefore never
+// makes the private coordinator module a public prerequisite, and there is
+// no second independent ceiling.
+use crate::phase_limits::{
+    PHASE_CALLS, PHASE_CREATIONS, PHASE_EVENTS, PHASE_HANDLES, PHASE_MEMORY_BYTES,
+    PHASE_OUTPUT_BYTES,
+};
 
 const CONSENT_TYPE: u16 = 0x6410;
 const APPLICATION_TYPE: u16 = 0x6411;
@@ -128,6 +135,9 @@ pub enum PaidExecutionError {
     Object(ObjectError),
     Fee(FeeError),
     Reservation(ReservationError),
+    /// Publication dependency-closure verification failed while pricing or
+    /// authenticating a paid Publish application.
+    Interface(crate::publication::InterfaceError),
     Local(LocalExecutionError),
     /// Existing effects codec or engine error.
     Execution(crate::ExecutionError),
@@ -161,6 +171,7 @@ impl fmt::Display for PaidExecutionError {
             Self::Object(error) => error.fmt(f),
             Self::Fee(error) => error.fmt(f),
             Self::Reservation(error) => error.fmt(f),
+            Self::Interface(error) => error.fmt(f),
             Self::Local(error) => error.fmt(f),
             Self::Execution(error) => error.fmt(f),
             Self::Hashing(error) => error.fmt(f),
@@ -194,6 +205,7 @@ from_error!(AbiError, Abi);
 from_error!(ObjectError, Object);
 from_error!(FeeError, Fee);
 from_error!(ReservationError, Reservation);
+from_error!(crate::publication::InterfaceError, Interface);
 from_error!(LocalExecutionError, Local);
 from_error!(crate::ExecutionError, Execution);
 from_error!(HashingError, Hashing);
@@ -771,12 +783,12 @@ fn validate_paid_fee_policy(
         &policy.fee_recipient,
         Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
     )?;
-    if policy.calls != PAID_PHASE_CALLS
-        || policy.handles != PAID_PHASE_HANDLES
-        || policy.creations != PAID_PHASE_CREATIONS
-        || policy.events != PAID_PHASE_EVENTS
-        || policy.memory_bytes != PAID_PHASE_MEMORY_BYTES
-        || policy.output_bytes != PAID_PHASE_OUTPUT_BYTES
+    if policy.calls != PHASE_CALLS
+        || policy.handles != PHASE_HANDLES as u32
+        || policy.creations != PHASE_CREATIONS
+        || policy.events != PHASE_EVENTS as u32
+        || policy.memory_bytes != PHASE_MEMORY_BYTES as u64
+        || policy.output_bytes != PHASE_OUTPUT_BYTES as u64
     {
         return Err(PaidExecutionError::Invalid("policy phase caps"));
     }

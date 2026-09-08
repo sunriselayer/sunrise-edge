@@ -144,12 +144,12 @@ pub(super) fn scope_for(
 pub(super) fn dependency_ref(
     candidate: &publication::AuthenticatedPublicationCandidate,
 ) -> UnverifiedDependencyRef {
-    let artifact = candidate.request().artifact();
+    let artifact = candidate.artifact();
     publication::UnverifiedDependencyRef::new(
         artifact.origin().clone(),
         1,
         context(),
-        *candidate.request().artifact_digest(),
+        *candidate.digest(),
     )
     .expect("dependency reference")
 }
@@ -479,6 +479,7 @@ pub(super) fn probe_application(
         scope,
         code: code.clone(),
         entrypoint: entry.into(),
+        mode: LocalExecutionMode::Call,
         type_arguments: Vec::new(),
         arguments: abi::call_values::encode_call_value(
             &ValueLayout::Tuple(Vec::new()),
@@ -779,7 +780,7 @@ impl Harness {
             target: target(&self.asset, 0),
             access,
             source,
-            application,
+            application: ApplicationExecution::Wasm(application),
             admission,
             pricer,
             fee_recipient: treasury(),
@@ -805,6 +806,7 @@ impl Harness {
             scope: 0,
             code: self.asset.scope.instance.code.clone(),
             entrypoint: entry.into(),
+            mode: LocalExecutionMode::Call,
             type_arguments: vec![public_standard_asset::asset_type_argument(&self.asset.id)],
             arguments,
             inputs,

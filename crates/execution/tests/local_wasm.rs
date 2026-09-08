@@ -89,12 +89,12 @@ fn publish(
     .unwrap()
 }
 fn reference(candidate: &AuthenticatedPublicationCandidate) -> UnverifiedDependencyRef {
-    let artifact = candidate.request().artifact();
+    let artifact = candidate.artifact();
     UnverifiedDependencyRef::new(
         artifact.origin().clone(),
         1,
         artifact.context().clone(),
-        *candidate.request().artifact_digest(),
+        *candidate.digest(),
     )
     .unwrap()
 }

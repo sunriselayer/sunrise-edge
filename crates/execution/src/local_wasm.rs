@@ -13,17 +13,18 @@ use std::sync::Arc;
 use wasmi::{Config, Engine, Linker, Module, Store};
 
 mod admission;
-// The DR-0124 reserve/application/settle phase coordinator is internal
-// (`pub(crate)`, never re-exported): raw phase/grant/source APIs stay
-// private to this crate. It is driven only by `crate::paid_execution`'s
-// `PaidContractEngine`, which recomputes quote/digest/policy/input
-// correspondence and builds the private `PhasePlan` from an
-// `AuthenticatedPaidIntent` plus validated resolved scopes; it is never
-// reachable directly from node-core/HTTP/CLI. It drives the same
-// production store, host, frame validator and effect collector as the
-// zero-fee root path below.
+// The DR-0124 reserve/application/settle phase coordinator is private to
+// this module: its raw phase/grant/source API is `pub(super)` at most and is
+// never re-exported from `execution`. Its only non-test caller is the `paid`
+// sibling below, which implements the injectable
+// `crate::paid_execution::PaidContractEngine` for `LocalWasmExecutionEngine`
+// from an already authenticated paid intent, trusted policies and an
+// independently validated scope set; it is never reachable directly from
+// node-core/HTTP/CLI. It drives the same production store, host, frame
+// validator and effect collector as the zero-fee root path below.
 mod coordinator;
 mod host;
+mod paid;
 mod runner;
 use host::{ArenaObject, Grant, HostState};
 
