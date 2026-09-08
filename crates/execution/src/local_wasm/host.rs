@@ -107,7 +107,6 @@ pub(super) struct PhaseBudget {
 
 impl PhaseBudget {
     /// Opens a phase window over the current cumulative counters.
-    #[cfg(test)]
     pub fn start(
         state: &HostState,
         call_limit: u32,
@@ -177,18 +176,15 @@ impl OutputAccount {
         Ok(())
     }
     /// Installs the invocation-wide remaining output ceiling.
-    #[cfg(test)]
     pub fn set_limit(&mut self, limit: usize) {
         self.limit = Some(limit);
     }
     /// Opens a phase output window over the bytes charged so far.
-    #[cfg(test)]
     pub fn open_phase(&mut self, limit: usize) {
         self.phase_start = self.used;
         self.phase_limit = Some(limit);
     }
     /// Cumulative charged output bytes; never reduced by a rollback.
-    #[cfg(test)]
     pub fn used(&self) -> usize {
         self.used
     }
@@ -342,13 +338,11 @@ impl RetainedMemory {
     /// Retained memory is never returned to the store, so a phase that
     /// exhausts its own window cannot reach capacity reserved for a later
     /// phase.
-    #[cfg(test)]
     pub fn open_phase(&mut self, limit: usize) {
         self.phase_start_allocated = self.allocated;
         self.phase_limit = Some(limit);
     }
     /// Cumulative allocated linear-memory bytes.
-    #[cfg(test)]
     pub fn allocated(&self) -> usize {
         self.allocated
     }
@@ -504,7 +498,6 @@ fn require_object_result_profile(caller: &Caller<'_, HostState>) -> Result<(), w
         || frame(state)?
             .interface
             .candidate()
-            .request()
             .artifact()
             .wasm_profile()
             != crate::GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION
@@ -1205,7 +1198,6 @@ fn dependency(
     let code = parent
         .interface
         .candidate()
-        .request()
         .artifact()
         .unverified_dependencies()
         .get(size(dependency)?)
@@ -1252,7 +1244,6 @@ fn dependency_with_results(
     let code = parent
         .interface
         .candidate()
-        .request()
         .artifact()
         .unverified_dependencies()
         .get(size(dependency)?)
@@ -1293,7 +1284,6 @@ fn contract(
             parent
                 .interface
                 .candidate()
-                .request()
                 .artifact()
                 .wasm_profile(),
             3 | 4

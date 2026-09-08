@@ -28,7 +28,9 @@ use host::{ArenaObject, Frame, PhaseBudget};
 use objects::ObjectId;
 use protocol_types::Digest32;
 
+#[cfg(test)]
 mod fixture;
+#[cfg(test)]
 mod tests;
 
 /// DR-0124 first-profile reserve/settle phase ceilings. Each phase receives
@@ -101,7 +103,7 @@ fn encode_arguments(
 /// The signed reservation access mode. It selects the pinned export and,
 /// for `Consume`, forbids any application access to the same source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ReservationAccess {
+pub(crate) enum ReservationAccess {
     /// Debit the source in place; `0 < reserved < balance`.
     Write,
     /// Consume the whole source; `reserved == balance > 0`.
@@ -125,7 +127,7 @@ impl ReservationAccess {
 /// The exact committed fee implementation. Every field is pinned before
 /// execution: a request can never nominate another instance, defining code,
 /// export, argument layout, nominal type, result declaration or recipient.
-pub(super) struct FeeTarget {
+pub(crate) struct FeeTarget {
     /// Index of the pinned fee scope.
     pub scope: usize,
     /// Exact defining code revision of that scope's instance.
@@ -147,13 +149,15 @@ pub(super) struct FeeTarget {
 }
 
 /// The application phase's own root call.
-pub(super) struct ApplicationCall {
+pub(crate) struct ApplicationCall {
     /// Index of the application scope, which need not be the fee scope.
     pub scope: usize,
     /// Root defining code of the application call.
     pub code: UnverifiedDependencyRef,
     /// Root entrypoint.
     pub entrypoint: String,
+    /// Whether this is an `Instantiate` or ordinary `Call` root frame.
+    pub mode: LocalExecutionMode,
     /// Bound type arguments.
     pub type_arguments: Vec<ScopedTypeArg>,
     /// Canonical arguments.
@@ -165,8 +169,41 @@ pub(super) struct ApplicationCall {
     pub authorizations: Vec<crate::call_authorization::CallAuthorization>,
 }
 
+/// The application phase's actual execution: an ordinary Call/Instantiate
+/// WASM root frame, or Publish's deterministic, WASM-free metered pricing
+/// (DR-0124 authenticated durable integration, 2026-09-08). Publish has no
+/// application frame or arbitrary callback: its metered units are computed
+/// entirely outside this module, from the verified publication candidate's
+/// exact artifact bytes and closure node count.
+pub(crate) enum ApplicationExecution {
+    Wasm(ApplicationCall),
+    /// Publish's deterministic application units, already computed as
+    /// `artifact_encoded_bytes * artifact_byte_price + unique_closure_nodes
+    /// * closure_node_price`. Exhaustion (units exceeding the admitted
+    /// application limit `L`) charges `L` and never touches the arena.
+    Publish { units: u64 },
+}
+impl ApplicationExecution {
+    /// Declared application inputs in signed order; empty for `Publish`,
+    /// which touches no application-frame inputs.
+    fn inputs(&self) -> &[ScopedResolvedObject] {
+        match self {
+            Self::Wasm(call) => &call.inputs,
+            Self::Publish { .. } => &[],
+        }
+    }
+    /// Reusable signed call ceilings available to the application; empty
+    /// for `Publish`.
+    fn authorizations(&self) -> &[crate::call_authorization::CallAuthorization] {
+        match self {
+            Self::Wasm(call) => &call.authorizations,
+            Self::Publish { .. } => &[],
+        }
+    }
+}
+
 /// One internal phase plan. Constructing it is not paid admission.
-pub(super) struct PhasePlan<'a> {
+pub(crate) struct PhasePlan<'a> {
     /// Bounded admitted scopes.
     pub scopes: &'a [ResolvedExecutionScope],
     /// Trusted hash history.
@@ -190,7 +227,7 @@ pub(super) struct PhasePlan<'a> {
     /// The single sender-owned fee source.
     pub source: ScopedResolvedObject,
     /// The application root call.
-    pub application: ApplicationCall,
+    pub application: ApplicationExecution,
     /// Immutable reservation-pricing admission. The host never decodes an
     /// asset body and never calls a quote callback.
     pub admission: Admission,
@@ -205,7 +242,7 @@ pub(super) struct PhasePlan<'a> {
 
 /// Which phase determined the outcome.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum PhaseStatus {
+pub(crate) enum PhaseStatus {
     /// All three phases succeeded.
     Success,
     /// The application failed; its effects were discarded and the fee was
@@ -215,12 +252,16 @@ pub(super) enum PhaseStatus {
     ReservationFailed,
     /// Settlement failed: zero charge, no effects.
     SettlementFailed,
+    /// A deterministic host invariant/finalization failure after reserve was
+    /// attempted: zero charge, no effects, but the caller still commits the
+    /// consumed nonce and receipt.
+    HostRejected,
 }
 
 /// Provisional internal outcome. This is not a wire type: no paid result
 /// frame is allocated by this slice, and no zero-fee frame is reused to
 /// describe a charged execution.
-pub(super) struct PhaseOutcome {
+pub(crate) struct PhaseOutcome {
     /// Which phase determined the outcome.
     pub status: PhaseStatus,
     /// Committed effects, empty for a zero-charge phase failure.
@@ -485,15 +526,24 @@ fn validate(plan: &PhasePlan<'_>) -> Result<Validated, LocalExecutionError> {
     if plan.scopes.len() > crate::call_authorization::MAX_EXECUTION_SCOPES {
         return Err(LocalExecutionError::Limit("execution scopes"));
     }
-    if plan.application.inputs.len() > crate::call_authorization::MAX_AUTHORIZED_INPUTS {
+    let application_inputs: &[ScopedResolvedObject] = match &plan.application {
+        ApplicationExecution::Wasm(call) => &call.inputs,
+        ApplicationExecution::Publish { .. } => &[],
+    };
+    if application_inputs.len() > crate::call_authorization::MAX_AUTHORIZED_INPUTS {
         return Err(LocalExecutionError::Limit("application inputs"));
     }
     let fee_scope: &ResolvedExecutionScope = plan
         .scopes
         .get(plan.target.scope)
         .ok_or_else(|| invalid("fee scope"))?;
-    if plan.scopes.get(plan.application.scope).is_none() {
-        return Err(invalid("application scope"));
+    if let ApplicationExecution::Wasm(call) = &plan.application {
+        if plan.scopes.get(call.scope).is_none() {
+            return Err(invalid("application scope"));
+        }
+        if call.mode == LocalExecutionMode::Instantiate && call.scope != 0 {
+            return Err(invalid("instantiate application must be the root scope"));
+        }
     }
     // The pinned fee implementation is the exact instance code revision.
     if fee_scope.instance.code != plan.target.code {
@@ -504,7 +554,7 @@ fn validate(plan: &PhasePlan<'_>) -> Result<Validated, LocalExecutionError> {
         .for_origin(plan.target.code.origin())
         .map_err(|_| invalid("fee defining code"))?;
     if reference(&interface)? != plan.target.code
-        || interface.candidate().request().artifact().wasm_profile()
+        || interface.candidate().artifact().wasm_profile()
             != crate::GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION
     {
         return Err(invalid("pinned fee code"));
@@ -558,7 +608,7 @@ fn validate(plan: &PhasePlan<'_>) -> Result<Validated, LocalExecutionError> {
     {
         return Err(invalid("fee source authority"));
     }
-    for input in &plan.application.inputs {
+    for input in application_inputs {
         if input.resolved.object.id != source.resolved.object.id {
             continue;
         }
@@ -877,7 +927,7 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
     const SOURCE_INDEX: usize = 0;
     let mut application_grants: Vec<Grant> = Vec::new();
     let mut ids: BTreeSet<ObjectId> = BTreeSet::new();
-    for input in &plan.application.inputs {
+    for input in plan.application.inputs() {
         if !ids.insert(input.resolved.object.id) {
             return Err(invalid("duplicate application input"));
         }
@@ -899,7 +949,7 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
     let state: HostState = runner::host_state(runner::StateParts {
         resolver: plan.resolver,
         scopes: plan.scopes,
-        authorizations: plan.application.authorizations.clone(),
+        authorizations: plan.application.authorizations().to_vec(),
         profile: plan.policy.profile(),
         context: plan.context.clone(),
         event: plan.event_digest,
@@ -919,17 +969,21 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
     // Reject structurally invalid application calls before reservation, without
     // entering a frame or spending any resource. Revalidate after reservation
     // because the application must observe the updated source remainder.
-    host::prepare_frame(
-        store.data(),
-        plan.application.scope,
-        plan.application.code.clone(),
-        &plan.application.entrypoint,
-        &plan.application.type_arguments,
-        application_grants.clone(),
-        plan.application.arguments.clone(),
-        Some(LocalExecutionMode::Call),
-    )
-    .map_err(|_| invalid("application frame"))?;
+    // Publish has no WASM application frame: its deterministic units are
+    // computed entirely outside this module.
+    if let ApplicationExecution::Wasm(call) = &plan.application {
+        host::prepare_frame(
+            store.data(),
+            call.scope,
+            call.code.clone(),
+            &call.entrypoint,
+            &call.type_arguments,
+            application_grants.clone(),
+            call.arguments.clone(),
+            Some(call.mode),
+        )
+        .map_err(|_| invalid("application frame"))?;
+    }
 
     // ---- reserve: the source is the only grant, and its result is kept in
     // coordinator-local state, never in an application grant.
@@ -977,23 +1031,45 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
     let post_reserve: Savepoint = savepoint(store.data());
 
     // ---- application: only the declared application inputs are exposed.
-    let profile: PhaseProfile = application_profile(store.data(), validated.application_fuel)?;
-    let application: PhaseRun = run_phase(
-        &mut store,
-        &linker,
-        plan.application.scope,
-        &plan.application.code,
-        &plan.application.entrypoint,
-        &plan.application.type_arguments,
-        application_grants,
-        plan.application.arguments.clone(),
-        &profile,
-    )?;
-    if application.failed {
-        // Discard every application object effect and event, but not gas or
-        // any cumulative resource counter.
-        restore(store.data_mut(), &post_reserve)?;
-    }
+    // Publish never enters the arena: its failure/gas are computed directly
+    // from its deterministic metered units against the admitted limit `L`.
+    let application: PhaseRun = match &plan.application {
+        ApplicationExecution::Wasm(call) => {
+            let profile: PhaseProfile =
+                application_profile(store.data(), validated.application_fuel)?;
+            let run: PhaseRun = run_phase(
+                &mut store,
+                &linker,
+                call.scope,
+                &call.code,
+                &call.entrypoint,
+                &call.type_arguments,
+                application_grants,
+                call.arguments.clone(),
+                &profile,
+            )?;
+            if run.failed {
+                // Discard every application object effect and event, but not
+                // gas or any cumulative resource counter.
+                restore(store.data_mut(), &post_reserve)?;
+            }
+            run
+        }
+        ApplicationExecution::Publish { units } => {
+            let failed: bool = *units > validated.application_fuel;
+            let gas: u64 = if failed {
+                validated.application_fuel
+            } else {
+                *units
+            };
+            PhaseRun {
+                failed,
+                memory_exhausted: false,
+                gas,
+                returned: Vec::new(),
+            }
+        }
+    };
 
     // ---- settle: only the freshly returned private reservation is granted.
     let settlement = plan

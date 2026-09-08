@@ -56,6 +56,18 @@ use hashing::{HashSuiteResolver, HashingError};
 use objects::{ObjectError, ObjectId, ObjectRef, decode_object_ref, encode_object_ref};
 use protocol_types::{Digest32, HashPurpose, SignatureSchemeId};
 
+mod engine;
+mod result;
+
+pub use engine::{
+    PaidApplicationScopes, PaidContractEngine, PaidExecutionOutcome, PaidExecutionRequest,
+    authenticate_paid_publication_candidate,
+};
+pub use result::{
+    MAX_PAID_EXECUTION_RESULT_BYTES, PaidChargedOutcome, PaidExecutionResult, PaidExecutionStatus,
+    PaidResultKind, PaidResultTarget, decode_paid_execution_result, encode_paid_execution_result,
+};
+
 /// Maximum bytes of one encoded [`FeeSourceConsent`].
 pub const MAX_CONSENT_BYTES: usize = 256;
 /// Maximum bytes of one encoded Call/Instantiate [`PaidApplication`].
@@ -117,6 +129,8 @@ pub enum PaidExecutionError {
     Fee(FeeError),
     Reservation(ReservationError),
     Local(LocalExecutionError),
+    /// Existing effects codec or engine error.
+    Execution(crate::ExecutionError),
     Hashing(HashingError),
     Crypto(CryptoError),
     Owner(Ed25519OwnerAddressError),
@@ -148,6 +162,7 @@ impl fmt::Display for PaidExecutionError {
             Self::Fee(error) => error.fmt(f),
             Self::Reservation(error) => error.fmt(f),
             Self::Local(error) => error.fmt(f),
+            Self::Execution(error) => error.fmt(f),
             Self::Hashing(error) => error.fmt(f),
             Self::Crypto(error) => error.fmt(f),
             Self::Owner(error) => error.fmt(f),
@@ -180,6 +195,7 @@ from_error!(ObjectError, Object);
 from_error!(FeeError, Fee);
 from_error!(ReservationError, Reservation);
 from_error!(LocalExecutionError, Local);
+from_error!(crate::ExecutionError, Execution);
 from_error!(HashingError, Hashing);
 from_error!(CryptoError, Crypto);
 from_error!(Ed25519OwnerAddressError, Owner);

@@ -12,7 +12,7 @@
 
 use super::{
     CodeArtifact, PublicationContext, PublicationError as E, PublicationRequest,
-    encode_code_artifact, encode_publication_context,
+    encode_code_artifact, encode_publication_context, encode_publication_request,
 };
 use abi::package_types::encode_package_origin;
 use canonical_encoding::{CanonicalStruct, encode_digest32};
@@ -23,22 +23,92 @@ use crypto::{
 use hashing::HashSuiteResolver;
 use protocol_types::{Digest32, HashPurpose, SignatureSchemeId};
 
-/// An authenticated publication candidate witnessing publisher signature and WASM profile.
-///
-/// This candidate witnesses exact publisher signature and structural WASM profile only.
-/// It is not admitted, published, executable, dependency-authenticated, typed-ABI verified,
-/// or persisted. It introduces no side effects and grants no execution, storage, dependency,
-/// or type authority.
+/// The actual authentication provenance of a candidate: either a legacy
+/// signed [`PublicationRequest`], or an authenticated paid Publish
+/// application whose authenticity comes entirely from its enclosing signed
+/// `PaidIntent` (DR-0124 authenticated durable integration). A paid
+/// candidate never wraps or fabricates a [`PublicationRequest`] or a dummy
+/// signature.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AuthenticatedPublicationCandidate {
-    request: std::sync::Arc<PublicationRequest>,
+enum CandidateProvenance {
+    Legacy(std::sync::Arc<PublicationRequest>),
+    Paid {
+        artifact: std::sync::Arc<CodeArtifact>,
+        digest: Digest32,
+    },
 }
 
+/// An authenticated publication candidate witnessing exact artifact bytes and
+/// commitment digest under one of two actual provenance variants: a legacy
+/// publisher signature, or an authenticated paid Publish application.
+///
+/// This candidate witnesses exact artifact bytes, commitment digest and
+/// structural WASM profile only. It is not admitted, published, executable,
+/// dependency-authenticated, typed-ABI verified, or persisted. It introduces
+/// no side effects and grants no execution, storage, dependency, or type
+/// authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthenticatedPublicationCandidate {
+    provenance: CandidateProvenance,
+}
+
+/// Conservative fixed allowance standing in for the nonce/commitment/
+/// signature envelope a legacy [`PublicationRequest`] would add, so a paid
+/// candidate's approximate resource-accounting length stays comparably
+/// bounded without fabricating that envelope.
+const PAID_CANDIDATE_ENVELOPE_ALLOWANCE: usize = 256;
+
 impl AuthenticatedPublicationCandidate {
-    /// Returns a reference to the authenticated publication request.
+    /// Returns the exact authenticated artifact, regardless of provenance.
     #[must_use]
-    pub fn request(&self) -> &PublicationRequest {
-        &self.request
+    pub fn artifact(&self) -> &CodeArtifact {
+        match &self.provenance {
+            CandidateProvenance::Legacy(request) => request.artifact(),
+            CandidateProvenance::Paid { artifact, .. } => artifact,
+        }
+    }
+    /// Approximate encoded submission byte cost used only for deterministic
+    /// resource-bound accounting, never for a canonical digest. A legacy
+    /// candidate returns its exact encoded [`PublicationRequest`] length; a
+    /// paid candidate has no such request and instead uses its artifact
+    /// length plus a fixed conservative allowance for the omitted envelope.
+    pub(crate) fn encoded_len(&self) -> Result<usize, E> {
+        match &self.provenance {
+            CandidateProvenance::Legacy(request) => Ok(encode_publication_request(request)?.len()),
+            CandidateProvenance::Paid { artifact, .. } => Ok(encode_code_artifact(artifact)?
+                .len()
+                .checked_add(PAID_CANDIDATE_ENVELOPE_ALLOWANCE)
+                .ok_or(E::Limit {
+                    field: "paid candidate encoded length",
+                    actual: usize::MAX,
+                    maximum: usize::MAX,
+                })?),
+        }
+    }
+    /// Returns the exact recomputed commitment digest, regardless of provenance.
+    #[must_use]
+    pub fn digest(&self) -> &Digest32 {
+        match &self.provenance {
+            CandidateProvenance::Legacy(request) => request.artifact_digest(),
+            CandidateProvenance::Paid { digest, .. } => digest,
+        }
+    }
+    /// Returns the legacy signed publication request, when this candidate's
+    /// provenance is a legacy publisher signature. A paid Publish candidate
+    /// carries no [`PublicationRequest`]: its authenticity comes from the
+    /// enclosing signed `PaidIntent`, not a nested or fabricated signature.
+    #[must_use]
+    pub fn request(&self) -> Option<&PublicationRequest> {
+        match &self.provenance {
+            CandidateProvenance::Legacy(request) => Some(request),
+            CandidateProvenance::Paid { .. } => None,
+        }
+    }
+    /// True exactly when this candidate's provenance is an authenticated
+    /// paid Publish application rather than a legacy publisher signature.
+    #[must_use]
+    pub fn is_paid(&self) -> bool {
+        matches!(self.provenance, CandidateProvenance::Paid { .. })
     }
 }
 
@@ -222,6 +292,48 @@ pub(super) fn authenticate_with_request_id(
 
     // 8. Return candidate witness owning the request
     Ok(AuthenticatedPublicationCandidate {
-        request: std::sync::Arc::new(request),
+        provenance: CandidateProvenance::Legacy(std::sync::Arc::new(request)),
+    })
+}
+
+/// Derives an authenticated publication candidate from a paid Publish
+/// application's embedded artifact (DR-0124 authenticated durable
+/// integration, 2026-09-08). Authenticity comes entirely from the caller's
+/// own already-verified `PaidIntent` signature over this exact artifact:
+/// this function performs no separate signature check and never constructs
+/// or nests a [`PublicationRequest`] or a dummy signature. It performs the
+/// same context/semantics/publisher-address/commitment/structural-WASM
+/// checks `authenticate_publication` performs, minus signature verification.
+pub(crate) fn candidate_from_paid_artifact(
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+    expected_semantics: &Digest32,
+    artifact: CodeArtifact,
+) -> Result<AuthenticatedPublicationCandidate, E> {
+    validate_publication_context(resolver, expected, &artifact)?;
+    if artifact.semantics() != expected_semantics {
+        return Err(E::SemanticsMismatch);
+    }
+    validate_ed25519_owner_address(
+        artifact.origin().publisher(),
+        Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
+    )?;
+    let digest: Digest32 = artifact_commitment(resolver, expected, &artifact)?;
+    let export_refs: Vec<&str> = artifact
+        .exports()
+        .iter()
+        .map(|name: &String| name.as_str())
+        .collect();
+    let wasm_handle: crate::ValidatedContractWasm = crate::validate_contract_wasm_profile(
+        artifact.wasm(),
+        &export_refs,
+        artifact.wasm_profile(),
+    )?;
+    drop(wasm_handle);
+    Ok(AuthenticatedPublicationCandidate {
+        provenance: CandidateProvenance::Paid {
+            artifact: std::sync::Arc::new(artifact),
+            digest,
+        },
     })
 }

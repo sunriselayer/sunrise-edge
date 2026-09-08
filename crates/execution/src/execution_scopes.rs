@@ -13,13 +13,13 @@ use std::collections::{BTreeMap, BTreeSet};
 pub fn verified_code_reference(
     interface: &VerifiedPublicationInterface,
 ) -> Result<UnverifiedDependencyRef, LocalExecutionError> {
-    let request = interface.candidate().request();
-    let artifact = request.artifact();
+    let candidate = interface.candidate();
+    let artifact = candidate.artifact();
     Ok(UnverifiedDependencyRef::new(
         artifact.origin().clone(),
         artifact.revision(),
         artifact.context().clone(),
-        *request.artifact_digest(),
+        *candidate.digest(),
     )?)
 }
 
@@ -78,8 +78,7 @@ pub fn validate_local_execution_scopes(
         for candidate in
             std::iter::once(scope.interface.candidate()).chain(scope.interface.dependencies())
         {
-            let request = candidate.request();
-            let artifact = request.artifact();
+            let artifact = candidate.artifact();
             if artifact.context().chain_id() != call.context.chain_id()
                 || artifact.context().protocol_version() != call.context.protocol_version()
                 || artifact.context().epoch() > call.context.epoch()
@@ -106,7 +105,7 @@ pub fn validate_local_execution_scopes(
                 artifact.origin().clone(),
                 artifact.revision(),
                 artifact.context().clone(),
-                *request.artifact_digest(),
+                *candidate.digest(),
             )?;
             if let Some(old) = codes.get(artifact.origin()) {
                 if old != &reference {
@@ -116,7 +115,7 @@ pub fn validate_local_execution_scopes(
             }
             // A publication submission adds a 10-byte header, two 6-byte field
             // headers and a fixed 32-byte request ID to this exact request.
-            let size: usize = publication::encode_publication_request(request)?.len();
+            let size: usize = candidate.encoded_len().map_err(LocalExecutionError::Publication)?;
             bytes = bytes
                 .checked_add(size)
                 .and_then(|total| total.checked_add(54))

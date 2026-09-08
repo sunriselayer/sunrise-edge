@@ -45,6 +45,7 @@ pub use auth::{
     AuthenticatedPublicationCandidate, artifact_commitment, authenticate_publication,
     publication_signing_frame,
 };
+pub(crate) use auth::candidate_from_paid_artifact;
 
 /// Fail-closed errors for the candidate encoding and authentication boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
