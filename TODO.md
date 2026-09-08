@@ -2599,8 +2599,8 @@ statements such as “body validation remains open” are not the live work queu
     Paid outcomes/receipts, replay-before-policy reconciliation, fenced atomic
     persistence and CLI/HTTP activation remain the next integrated work.
     Integration work in progress (2026-09-08): profile-4 durable policy keys,
-    closure semantics checks and reserved paid-policy namespace tests are preserved
-    on `codex/paid-policy-work`, not integrated here. The parent independently
+    closure semantics checks and reserved paid-policy namespace tests are integrated
+    on this feature branch. The parent independently
     verified 296 node-core library tests, the v3/v4 fixed-vector tests and the
     complete local repository gate after `npm ci --prefix adapters/cloudflare-workers`.
     Fresh Opus reviews of `957023d` and the vector/profile-mismatch follow-up
@@ -2619,7 +2619,26 @@ statements such as “body validation remains open” are not the live work queu
     that second reconstruction is not yet a permanent repository check.
     The parent also passed the combined `npm ci --prefix adapters/cloudflare-workers`
     and `./scripts/check-all.sh` gate at `de0e253`. Fresh independent Opus review
-    is in progress; passing tests alone is not integration approval.
+    of `6ce0089..de0e253` returned `APPROVE INTERNAL EXECUTION INTEGRATION`, with
+    no blockers for this internal scope. Follow-up `1f88be5` only clarifies
+    accounting-fault gas comments. This is not main-merge or activation approval.
+    After integration at `4ace466`, the parent repeated both required commands
+    in this feature checkout; the complete local repository gate passes.
+    Before durable activation:
+
+    - Prevent application-owned reservation objects from forcing a zero-charge
+      SettlementFailed outcome. Detect application-created survivors before
+      settlement, roll back application effects and charge normally; define
+      fail-closed admission for pre-existing reservation inputs. Add actual-WASM
+      regressions for both routes, preserving the protected host reservation.
+    - Recompute deterministic Publish application units from the verified shared
+      closure in the independent result verifier, rather than accepting any A <= L.
+    - Authenticate historical object framing from durable provenance; the current
+      engine supports hash-suite rotation within one protocol version, not
+      cross-protocol historical object admission.
+    - Harden coordinator reservation indexing, mirror settlement transferred-state
+      checks, and reject Instantiate/fee-scope collisions explicitly.
+
     No paid node handler, atomic commit/restart evidence or activation is claimed.
     Implementation and review resumed after the Claude session limit cleared;
     partial branches must not be treated as approved integration artifacts.
