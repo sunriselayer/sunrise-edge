@@ -50,8 +50,16 @@ fn general_policies_have_independent_explicit_keys_and_strict_versions() {
         execution_policy_key(&context).unwrap(),
         execution_policy_key_for_profile(&context, 3).unwrap()
     );
-    assert!(execution_policy_key_for_profile(&context, 4).is_err());
-    assert!(publication_policy_key_for_profile(&context, 4).is_err());
+    assert_ne!(
+        execution_policy_key_for_profile(&context, 3).unwrap(),
+        execution_policy_key_for_profile(&context, 4).unwrap()
+    );
+    assert_ne!(
+        publication_policy_key_for_profile(&context, 3).unwrap(),
+        publication_policy_key_for_profile(&context, 4).unwrap()
+    );
+    assert!(execution_policy_key_for_profile(&context, 5).is_err());
+    assert!(publication_policy_key_for_profile(&context, 5).is_err());
     let mut bytes = policy.encode().unwrap();
     bytes[6] = 2;
     assert!(LocalPublicationPolicy::decode(&bytes).is_err());

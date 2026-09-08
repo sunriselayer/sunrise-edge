@@ -100,6 +100,7 @@ fn validate_closure(
         let expected = match artifact.wasm_profile() {
             2 => local_execution_semantics(historical, artifact.context()),
             3 => general_execution_semantics(historical, artifact.context()),
+            4 => generic_object_result_semantics(historical, artifact.context()),
             _ => {
                 return Err(LocalExecutionAdmissionError::Invalid(
                     "non-executable publication profile",

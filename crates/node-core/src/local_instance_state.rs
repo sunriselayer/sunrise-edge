@@ -50,6 +50,7 @@ pub fn execution_policy_key_for_profile(
     match profile {
         2 => key.extend_from_slice(b"v1/policies/"),
         3 => key.extend_from_slice(b"v2/policies/"),
+        4 => key.extend_from_slice(b"v3/policies/"),
         _ => {
             return Err(NodeCoreError::PersistenceInvariant(
                 "unsupported execution profile",
@@ -59,6 +60,22 @@ pub fn execution_policy_key_for_profile(
     key.extend(encode_publication_context(context).map_err(|_| {
         NodeCoreError::PersistenceInvariant("invalid local execution policy context")
     })?);
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+/// Dedicated durable-policy prerequisite for DR-0124 paid execution. Reserved
+/// under the instance-state namespace and context-bound like the execution
+/// policy keys. Key construction alone confers no installation authority; a
+/// distinct paid coordinator admission path governs whether any value at
+/// this key is ever installed or read.
+pub fn paid_fee_policy_key(context: &PublicationContext) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = INSTANCE_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"v1/fee-policy/");
+    key.extend(
+        encode_publication_context(context)
+            .map_err(|_| NodeCoreError::PersistenceInvariant("invalid paid fee policy context"))?,
+    );
     validate_transactional_state_key(&key)?;
     Ok(key)
 }
@@ -213,6 +230,60 @@ mod tests {
                 .unwrap()
                 .value()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn execution_policy_key_for_profile_distinguishes_profiles_and_rejects_unknown() {
+        let chain: ChainId = ChainId::new("local-policy-profiles").unwrap();
+        let context: PublicationContext =
+            PublicationContext::new(chain.clone(), ProtocolVersion::new(3), Epoch::new(0)).unwrap();
+        let other_context: PublicationContext =
+            PublicationContext::new(chain, ProtocolVersion::new(3), Epoch::new(1)).unwrap();
+        let key2: Vec<u8> = execution_policy_key_for_profile(&context, 2).unwrap();
+        let key3: Vec<u8> = execution_policy_key_for_profile(&context, 3).unwrap();
+        let key4: Vec<u8> = execution_policy_key_for_profile(&context, 4).unwrap();
+        assert_ne!(key2, key3);
+        assert_ne!(key3, key4);
+        assert_ne!(key2, key4);
+        assert_eq!(execution_policy_key(&context).unwrap(), key2);
+        assert_ne!(
+            key4,
+            execution_policy_key_for_profile(&other_context, 4).unwrap()
+        );
+        for key in [&key2, &key3, &key4] {
+            assert!(is_reserved(key));
+        }
+        assert!(matches!(
+            execution_policy_key_for_profile(&context, 5),
+            Err(NodeCoreError::PersistenceInvariant(_))
+        ));
+    }
+
+    #[test]
+    fn paid_fee_policy_key_is_context_bound_reserved_and_distinct_from_execution_keys() {
+        let chain: ChainId = ChainId::new("local-paid-policy").unwrap();
+        let context: PublicationContext =
+            PublicationContext::new(chain.clone(), ProtocolVersion::new(3), Epoch::new(0)).unwrap();
+        let other_context: PublicationContext =
+            PublicationContext::new(chain, ProtocolVersion::new(3), Epoch::new(1)).unwrap();
+        let key: Vec<u8> = paid_fee_policy_key(&context).unwrap();
+        assert_ne!(key, paid_fee_policy_key(&other_context).unwrap());
+        assert!(is_reserved(&key));
+        for profile in [2, 3, 4] {
+            assert_ne!(
+                key,
+                execution_policy_key_for_profile(&context, profile).unwrap()
+            );
+        }
+        let layout: PersistenceLayout =
+            PersistenceLayout::new(context.chain_id().clone(), ProtocolVersion::new(3));
+        let plan: NodeStateAccessPlan = NodeStateAccessPlan::new(vec![
+            NodeStateAccess::new(key.clone(), NodeStateAccessMode::ReadWrite).unwrap(),
+        ])
+        .unwrap();
+        assert!(
+            matches!(validate_sender_nonce_namespace(&plan, &layout), Err(NodeCoreError::ReservedStateAccess(actual)) if actual == key)
         );
     }
 }

@@ -1313,3 +1313,74 @@ fn request_id_reuse_is_rejected_before_state_reads() {
         ))
     ));
 }
+
+#[test]
+fn profile_four_policy_codec_roundtrips_and_diverges_from_earlier_profiles() {
+    let context: PublicationContext = policy(0).context().clone();
+    let semantics: Digest32 =
+        local_object_result_publication_semantics(&resolver(), &context).unwrap();
+    let object_results: LocalPublicationPolicy =
+        LocalPublicationPolicy::object_results(context.clone(), semantics);
+    assert_eq!(object_results.profile(), 4);
+    let bytes: Vec<u8> = object_results.encode().unwrap();
+    assert_eq!(
+        LocalPublicationPolicy::decode(&bytes).unwrap(),
+        object_results
+    );
+
+    let general_semantics: Digest32 =
+        local_general_publication_semantics(&resolver(), &context).unwrap();
+    let general: LocalPublicationPolicy =
+        LocalPublicationPolicy::general(context.clone(), general_semantics);
+    assert_ne!(general.encode().unwrap(), bytes);
+    assert_ne!(*general.semantics(), *object_results.semantics());
+}
+
+#[test]
+fn profile_four_policy_rejects_unknown_wire_version() {
+    let context: PublicationContext = policy(0).context().clone();
+    let semantics: Digest32 =
+        local_object_result_publication_semantics(&resolver(), &context).unwrap();
+    let mut frame: CanonicalStruct = CanonicalStruct::new(0x630A, 5);
+    frame
+        .field_bytes(1, encode_publication_context(&context).unwrap())
+        .unwrap();
+    frame
+        .field_bytes(2, encode_digest32(&semantics).unwrap())
+        .unwrap();
+    frame.field_u16(3, 1).unwrap();
+    frame.field_u32(4, MAX_INTERFACE_NODES as u32).unwrap();
+    frame
+        .field_u64(5, MAX_PUBLICATION_CLOSURE_BYTES as u64)
+        .unwrap();
+    frame.field_u32(6, 5).unwrap();
+    let bytes: Vec<u8> = frame.finish().unwrap();
+    assert!(matches!(
+        LocalPublicationPolicy::decode(&bytes),
+        Err(PublicationAdmissionError::PolicyMismatch)
+    ));
+}
+
+#[test]
+fn profile_four_policy_key_is_distinct_from_every_historical_profile_and_context_bound() {
+    let context: PublicationContext = policy(0).context().clone();
+    let other_context: PublicationContext = policy(1).context().clone();
+    let keys: Vec<Vec<u8>> = (1..=4)
+        .map(|profile| publication_policy_key_for_profile(&context, profile).unwrap())
+        .collect();
+    for (index, key) in keys.iter().enumerate() {
+        for (other_index, other_key) in keys.iter().enumerate() {
+            if index != other_index {
+                assert_ne!(key, other_key);
+            }
+        }
+    }
+    assert_ne!(
+        publication_policy_key_for_profile(&context, 4).unwrap(),
+        publication_policy_key_for_profile(&other_context, 4).unwrap()
+    );
+    assert!(matches!(
+        publication_policy_key_for_profile(&context, 5),
+        Err(PublicationAdmissionError::PolicyMismatch)
+    ));
+}
