@@ -454,15 +454,21 @@ kind (Instantiate=1, Call=2, Publish=3); 3 instance record for kinds 1/2 or pack
 origin for kind 3; 4 status (Success=1, ApplicationFailed=2, ReservationFailed=3,
 SettlementFailed=4, HostRejected=5); 5 reserved units; 6 actual units; 7 refund
 units; 8 fee ObjectRef; optional 9 refund ObjectRef; 10 consumed reservation
-ObjectId; 11 complete ExecutionEffects. Fields 5..10 are absent for statuses
-3..5, which have no object effects/events. Charged statuses require fields
-5/6/7/8/10, positive actual units, checked `actual + refund == reserved`, and
+ObjectId; 11 complete ExecutionEffects; 12 application gas units A used by
+settlement pricing. Field 11 is always present: its gas_used is measured total
+reserve/application/settle work, never the fee basis. Fields 5..10 and 12 are
+absent for statuses 3..5, which have no object effects/events but may report
+nonzero measured total gas. Charged statuses require fields 5/6/7/8/10/12,
+positive actual units, checked `actual + refund == reserved`, and
 field 9 exactly when refund is positive. Output references must identify distinct
 surviving fresh effects of the pinned type, owner and authority. The consumed
 reservation must not survive as an object or orphan creation-authority row.
 Bound the complete result before encoding/decoding, reject unknown/extra fields
 and require canonical round trips. Existing zero-fee result bytes stay unchanged.
 The existing durable receipt wraps this result without a new receipt protocol.
+For charged statuses, A may be zero but must be at most signed L; recomputing
+the exact policy quote with A and fixed R/S must reproduce actual and refund.
+The signed policy already binds R/S, so the result does not duplicate them.
 
 Pre-reserve structural/admission errors write nothing. After a reserve phase is
 attempted, deterministic host invariant/finalization failures produce HostRejected
