@@ -54,14 +54,9 @@ fn origin(seed: u8) -> PackageOrigin {
     PackageOrigin::unverified(context().chain_id().clone(), sender(), [seed; 32]).unwrap()
 }
 fn reference(candidate: &AuthenticatedPublicationCandidate) -> UnverifiedDependencyRef {
-    let artifact = candidate.request().artifact();
-    UnverifiedDependencyRef::new(
-        artifact.origin().clone(),
-        1,
-        context(),
-        *candidate.request().artifact_digest(),
-    )
-    .unwrap()
+    let artifact = candidate.artifact();
+    UnverifiedDependencyRef::new(artifact.origin().clone(), 1, context(), *candidate.digest())
+        .unwrap()
 }
 
 /// Publishes one fixture package at an explicit wasm profile, committing the
@@ -277,12 +272,12 @@ fn resource_code(root: &ResolvedExecutionScope) -> UnverifiedDependencyRef {
         .dependencies()
         .iter()
         .map(|candidate| {
-            let artifact = candidate.request().artifact();
+            let artifact = candidate.artifact();
             UnverifiedDependencyRef::new(
                 artifact.origin().clone(),
                 artifact.revision(),
                 artifact.context().clone(),
-                *candidate.request().artifact_digest(),
+                *candidate.digest(),
             )
             .unwrap()
         })

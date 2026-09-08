@@ -70,6 +70,18 @@ pub fn local_general_publication_semantics(
     )?)
 }
 
+/// Explicit profile-four publication commitment for generic typed object
+/// results (DR-0124 durable-policy prerequisite). Publication admission only;
+/// it grants no fee, reservation or settlement authority.
+pub fn local_object_result_publication_semantics(
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+) -> Result<Digest32, PublicationAdmissionError> {
+    Ok(execution::local_execution::generic_object_result_semantics(
+        resolver, expected,
+    )?)
+}
+
 fn encode_local_publication_profile() -> Result<Vec<u8>, PublicationAdmissionError> {
     let mut frame: CanonicalStruct = CanonicalStruct::new(0x630B, 1);
     frame.field_str(1, "local-devnet-publication-only")?;
@@ -205,6 +217,30 @@ impl LocalPublicationPolicy {
             profile: 3,
         }
     }
+    /// Explicit profile-four publication admission for generic typed object
+    /// results (DR-0124 durable-policy prerequisite). Not a strict superset of
+    /// [`Self::general`] acceptance: profile four accepts exactly its own
+    /// profile-four context-bound key, distinct from the profile-three key.
+    /// It does not admit, install or expose paid execution, reservation or
+    /// settlement.
+    ///
+    /// Publication admission is exact-match per profile: a profile-four
+    /// artifact is admitted only against a committed profile-four policy at
+    /// its own `v4/policies/` key (see [`publication_policy_key_for_profile`]),
+    /// never against the profile-three policy or key, even though the
+    /// corresponding *execution* host-import profile
+    /// (`GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION`) is a superset of the
+    /// profile-three host imports. The `v4`/`v3`/... key suffixes map the
+    /// profile number directly onto historical wire-version numbering; they
+    /// carry no other significance.
+    #[must_use]
+    pub const fn object_results(context: PublicationContext, semantics: Digest32) -> Self {
+        Self {
+            context,
+            semantics,
+            profile: 4,
+        }
+    }
     /// Closed artifact admission profile.
     #[must_use]
     pub const fn profile(&self) -> u32 {
@@ -228,7 +264,7 @@ impl LocalPublicationPolicy {
         frame.field_u16(3, 1)?;
         frame.field_u32(4, MAX_INTERFACE_NODES as u32)?;
         frame.field_u64(5, MAX_PUBLICATION_CLOSURE_BYTES as u64)?;
-        if matches!(self.profile, 2 | 3) {
+        if matches!(self.profile, 2..=4) {
             frame.field_u32(6, self.profile)?;
         }
         Ok(frame.finish()?)
@@ -240,7 +276,7 @@ impl LocalPublicationPolicy {
         }
         let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
         frame.require_type(0x630A)?;
-        if !matches!(frame.version(), 1..=3) {
+        if !matches!(frame.version(), 1..=4) {
             return Err(PublicationAdmissionError::PolicyMismatch);
         }
         if frame.version() == 1 {
@@ -281,6 +317,7 @@ pub fn publication_policy_key_for_profile(
         1 => key.extend_from_slice(b"v1/policies/"),
         2 => key.extend_from_slice(b"v2/policies/"),
         3 => key.extend_from_slice(b"v3/policies/"),
+        4 => key.extend_from_slice(b"v4/policies/"),
         _ => return Err(PublicationAdmissionError::PolicyMismatch),
     }
     key.extend(encode_publication_context(context)?);
@@ -371,13 +408,13 @@ fn load_closure<S: StructuredDurableDomainStateStore>(
 }
 fn match_reference(
     reference: &UnverifiedDependencyRef,
-    request: &execution::publication::PublicationRequest,
+    artifact: &execution::publication::CodeArtifact,
+    digest: &Digest32,
 ) -> Result<(), PublicationAdmissionError> {
-    let artifact: &execution::publication::CodeArtifact = request.artifact();
     if reference.origin() != artifact.origin()
         || reference.revision() != artifact.revision()
         || reference.context() != artifact.context()
-        || reference.artifact_digest() != request.artifact_digest()
+        || reference.artifact_digest() != digest
     {
         return Err(PublicationAdmissionError::CorruptRecord);
     }

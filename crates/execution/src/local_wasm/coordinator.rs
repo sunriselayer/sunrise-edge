@@ -1,22 +1,24 @@
 //! Internal DR-0124 reserve/application/settle phase coordinator.
 //!
-//! # TEST-ONLY ENTRY, NOT PAID EXECUTION
+//! # PRIVATE VM SURFACE, NOT AN ADMISSION BOUNDARY
 //!
-//! This whole module is compiled under `cfg(test)`. There is no paid
-//! signing envelope, no committed fee-policy type and no authenticated
-//! paid admission yet, so nothing here is reachable from `execute`, from
-//! `execution`'s public API, or from node-core/HTTP/CLI. An existing
-//! authenticated zero-fee intent never authorizes a reservation: the phase
-//! plan below is constructed directly by internal tests, which is evidence
-//! about VM behaviour, not admission. Public activation still requires one
-//! signed envelope covering Call/Instantiate/Publish, a separate
-//! non-circular fee-policy commitment, explicit paid outcomes and
-//! calibrated `R`/`S`.
+//! Every item here is `pub(super)` at most: the raw phase/grant/source API
+//! is private to `crate::local_wasm` and is never re-exported from
+//! `execution`. Its only non-test caller is the sibling
+//! `crate::local_wasm::paid` module, which implements
+//! `crate::paid_execution::PaidContractEngine` for
+//! [`crate::LocalWasmExecutionEngine`] and builds the plan below solely from
+//! an already signature-authenticated `AuthenticatedPaidIntent`, a trusted
+//! base/fee policy pair and an independently validated scope set. An
+//! existing authenticated zero-fee intent never authorizes a reservation,
+//! and constructing a [`PhasePlan`] is not durable admission: exact replay
+//! reconciliation, nonce freshness, object provenance, installed policy and
+//! calibrated `R`/`S` remain the caller's separate obligations.
 //!
-//! What is *not* test-only is the machinery it drives: one store, one
+//! What this module drives is ordinary production machinery: one store, one
 //! arena, one linker, shared module compilation, `prepare_frame`,
-//! `validate_returned_slots`, the phase budgets and the effect collector
-//! are the same production code the zero-fee root path uses.
+//! `validate_returned_slots`, the phase budgets and the effect collector are
+//! the same code the zero-fee root path uses.
 use super::*;
 use abi::call_values::{CallValue, ValueLayout, encode_call_value};
 use abi::package_types::{ScopedTypeArg, ScopedTypeTag};
@@ -28,18 +30,20 @@ use host::{ArenaObject, Frame, PhaseBudget};
 use objects::ObjectId;
 use protocol_types::Digest32;
 
+#[cfg(test)]
 mod fixture;
+#[cfg(test)]
 mod tests;
 
-/// DR-0124 first-profile reserve/settle phase ceilings. Each phase receives
-/// at most these resources; the application receives the remaining global
-/// capacity after settlement's share is withheld.
-const PHASE_CALLS: u32 = 8;
-const PHASE_HANDLES: usize = 16;
-const PHASE_CREATIONS: u32 = 4;
-const PHASE_EVENTS: usize = 16;
-const PHASE_MEMORY_BYTES: usize = 8 * 1024 * 1024;
-const PHASE_OUTPUT_BYTES: usize = 1024 * 1024;
+// DR-0124 first-profile reserve/settle phase ceilings. Each phase receives
+// at most these resources; the application receives the remaining global
+// capacity after settlement's share is withheld. They live in the neutral
+// `crate::phase_limits` module so the paid policy wire boundary can commit
+// to them without depending on this private module.
+use crate::phase_limits::{
+    PHASE_CALLS, PHASE_CREATIONS, PHASE_EVENTS, PHASE_HANDLES, PHASE_MEMORY_BYTES,
+    PHASE_OUTPUT_BYTES,
+};
 /// Conservative encoded-effect allowance withheld from every phase for the
 /// result envelope and per-object account metadata that is not charged as
 /// body bytes at the host boundary.
@@ -154,6 +158,8 @@ pub(super) struct ApplicationCall {
     pub code: UnverifiedDependencyRef,
     /// Root entrypoint.
     pub entrypoint: String,
+    /// Whether this is an `Instantiate` or ordinary `Call` root frame.
+    pub mode: LocalExecutionMode,
     /// Bound type arguments.
     pub type_arguments: Vec<ScopedTypeArg>,
     /// Canonical arguments.
@@ -163,6 +169,47 @@ pub(super) struct ApplicationCall {
     pub inputs: Vec<ScopedResolvedObject>,
     /// Reusable signed call ceilings available to the application.
     pub authorizations: Vec<crate::call_authorization::CallAuthorization>,
+}
+
+/// The application phase's actual execution: an ordinary Call/Instantiate
+/// WASM root frame, or Publish's deterministic, WASM-free metered pricing
+/// (DR-0124 authenticated durable integration, 2026-09-08). Publish has no
+/// application frame or arbitrary callback: its metered units are computed
+/// entirely outside this module, from the verified publication candidate's
+/// exact artifact bytes and closure node count.
+/// `ApplicationCall`'s per-invocation shape (root code/entrypoint, type
+/// arguments, arguments, inputs, authorizations) is unavoidably larger than
+/// `Publish`'s single `u64`; boxing would only move, not remove, the cost
+/// since every `ApplicationExecution` is itself already behind `&`/owned
+/// short-lived plan values, never stored in a hot per-object array.
+#[allow(clippy::large_enum_variant)]
+pub(super) enum ApplicationExecution {
+    Wasm(ApplicationCall),
+    /// Publish's deterministic application units, already computed as
+    /// `artifact_encoded_bytes * artifact_byte_price + unique_closure_nodes
+    /// * closure_node_price`. Exhaustion (units exceeding the admitted
+    /// application limit `L`) charges `L` and never touches the arena.
+    Publish {
+        units: u64,
+    },
+}
+impl ApplicationExecution {
+    /// Declared application inputs in signed order; empty for `Publish`,
+    /// which touches no application-frame inputs.
+    fn inputs(&self) -> &[ScopedResolvedObject] {
+        match self {
+            Self::Wasm(call) => &call.inputs,
+            Self::Publish { .. } => &[],
+        }
+    }
+    /// Reusable signed call ceilings available to the application; empty
+    /// for `Publish`.
+    fn authorizations(&self) -> &[crate::call_authorization::CallAuthorization] {
+        match self {
+            Self::Wasm(call) => &call.authorizations,
+            Self::Publish { .. } => &[],
+        }
+    }
 }
 
 /// One internal phase plan. Constructing it is not paid admission.
@@ -190,7 +237,7 @@ pub(super) struct PhasePlan<'a> {
     /// The single sender-owned fee source.
     pub source: ScopedResolvedObject,
     /// The application root call.
-    pub application: ApplicationCall,
+    pub application: ApplicationExecution,
     /// Immutable reservation-pricing admission. The host never decodes an
     /// asset body and never calls a quote callback.
     pub admission: Admission,
@@ -215,6 +262,10 @@ pub(super) enum PhaseStatus {
     ReservationFailed,
     /// Settlement failed: zero charge, no effects.
     SettlementFailed,
+    /// A deterministic host invariant/finalization failure after reserve was
+    /// attempted: zero charge, no effects, but the caller still commits the
+    /// consumed nonce and receipt.
+    HostRejected,
 }
 
 /// Provisional internal outcome. This is not a wire type: no paid result
@@ -234,10 +285,22 @@ pub(super) struct PhaseOutcome {
     /// Refunded asset units.
     pub refund: Amount,
     /// Metered reserve, application and settle fuel.
+    #[allow(
+        dead_code,
+        reason = "test-only diagnostic; read only by phase-level assertions"
+    )]
     pub reserve_gas: u64,
     pub application_gas: u64,
     /// Test diagnostic proving an application failure came from the limiter.
+    #[allow(
+        dead_code,
+        reason = "test-only diagnostic; read only by phase-level assertions"
+    )]
     pub application_memory_exhausted: bool,
+    #[allow(
+        dead_code,
+        reason = "test-only diagnostic; read only by phase-level assertions"
+    )]
     pub settle_gas: u64,
     /// Identity of the created fee coin, when settlement committed.
     pub fee_output: Option<ObjectId>,
@@ -265,6 +328,61 @@ struct PhaseRun {
     memory_exhausted: bool,
     gas: u64,
     returned: Vec<Option<Grant>>,
+}
+
+/// A deterministic host failure inside one phase, carrying the *exact*
+/// fuel that phase measured before the failure.
+///
+/// This type exists so a `run_phase` failure can never be reported as zero
+/// gas by a call site: the coordinator must charge nothing, but it must
+/// still report what the invocation actually metered.
+#[derive(Debug)]
+struct PhaseFailure {
+    /// Exact fuel this phase consumed before the failure. It is the metered
+    /// difference when a fuel window was opened, and zero only when the
+    /// failure happened before any fuel could be spent.
+    gas: u64,
+}
+
+/// The pre-validated total gas bound `L + R + S` for one invocation.
+///
+/// Constructing it in [`validate`] proves the sum is representable before
+/// any WASM runs, so no later total needs a saturating addition.
+#[derive(Clone, Copy)]
+struct GasBound(u64);
+
+/// Retained exact per-phase measured fuel.
+///
+/// Each value is produced inside a fuel window of at most `R`, `L` or `S`,
+/// and never reset by a rollback: restoring state discards effects, never
+/// resource consumption.
+#[derive(Clone, Copy, Default)]
+struct MeteredGas {
+    reserve: u64,
+    application: u64,
+    settle: u64,
+}
+
+impl MeteredGas {
+    /// Exact retained total, checked against the pre-validated admission
+    /// bound. `None` means the retained values violate the bound proven in
+    /// [`validate`], which is a host accounting fault rather than a value
+    /// to truncate, wrap or saturate.
+    fn checked_total(self, bound: GasBound) -> Option<u64> {
+        let total: u64 = self
+            .reserve
+            .checked_add(self.application)
+            .and_then(|gas| gas.checked_add(self.settle))?;
+        (total <= bound.0).then_some(total)
+    }
+
+    /// The reported total for a zero-charge `HostRejected` outcome. On the
+    /// unreachable accounting-fault path it reports the pre-validated
+    /// ceiling `L + R + S`, which is an explicit over-report of work that
+    /// was admitted anyway, never a saturated or wrapped sum.
+    fn reported_total(self, bound: GasBound) -> u64 {
+        self.checked_total(bound).unwrap_or(bound.0)
+    }
 }
 
 /// One captured arena entry. `original` and `authority` are immutable once
@@ -322,6 +440,13 @@ fn restore(state: &mut HostState, point: &Savepoint) -> Result<(), LocalExecutio
 
 /// Runs one phase root in the shared store under its own fuel, failure flag
 /// and resource window. Cumulative counters are never reset here.
+///
+/// A [`PhaseFailure`] is a deterministic host fault, not a contract trap: it
+/// carries the exact fuel this phase had already metered, so the caller can
+/// report measured gas truthfully instead of defaulting to zero. The
+/// returned `gas` is always at most `profile.fuel`, which is what lets the
+/// retained per-phase totals stay inside the pre-validated `L + R + S`
+/// bound without any saturating arithmetic.
 #[allow(clippy::too_many_arguments)]
 fn run_phase(
     store: &mut Store<HostState>,
@@ -333,9 +458,11 @@ fn run_phase(
     grants: Vec<Grant>,
     args: Vec<u8>,
     profile: &PhaseProfile,
-) -> Result<PhaseRun, LocalExecutionError> {
+    root: Option<LocalExecutionMode>,
+) -> Result<PhaseRun, PhaseFailure> {
+    // No fuel window has been opened yet, so this phase has metered nothing.
     if !store.data().frames.is_empty() {
-        return Err(invalid("phase frame leak"));
+        return Err(PhaseFailure { gas: 0 });
     }
     let budget: PhaseBudget = PhaseBudget::start(
         store.data(),
@@ -353,9 +480,10 @@ fn run_phase(
         // denied allocation must not poison this one.
         state.limiter.failed = false;
     }
-    store
-        .set_fuel(profile.fuel)
-        .map_err(|_| invalid("phase fuel"))?;
+    if store.set_fuel(profile.fuel).is_err() {
+        store.data_mut().budget = None;
+        return Err(PhaseFailure { gas: 0 });
+    }
     let prepared: Frame = match host::prepare_frame(
         store.data(),
         scope,
@@ -364,7 +492,12 @@ fn run_phase(
         types,
         grants,
         args,
-        None,
+        // Reserve and settle are ordinary calls: passing `None` keeps the
+        // initializer-replay guard active for them. Only the application
+        // phase may carry its own signed root mode, so an `Instantiate`
+        // application still enters the exact initializer path the ordinary
+        // zero-fee root uses.
+        root,
     ) {
         Ok(prepared) => prepared,
         Err(_) => {
@@ -380,24 +513,37 @@ fn run_phase(
     let handles: usize = prepared.grants.len();
     {
         let state: &mut HostState = store.data_mut();
-        state.handles = state
-            .handles
-            .checked_add(handles)
-            .ok_or_else(|| invalid("phase handles"))?;
-        state.calls = state
-            .calls
-            .checked_add(1)
-            .ok_or_else(|| invalid("phase calls"))?;
+        // The frame was prepared but never entered, so nothing is metered.
+        let (Some(total_handles), Some(total_calls)) = (
+            state.handles.checked_add(handles),
+            state.calls.checked_add(1),
+        ) else {
+            state.budget = None;
+            return Err(PhaseFailure { gas: 0 });
+        };
+        state.handles = total_handles;
+        state.calls = total_calls;
         state.frames.push(prepared);
     }
-    let module: Arc<Module> = runner::root_module(store, code)?;
+    let module: Arc<Module> = match runner::root_module(store, code) {
+        Ok(module) => module,
+        Err(_) => {
+            let state: &mut HostState = store.data_mut();
+            state.budget = None;
+            state.frames.clear();
+            // Module resolution happens before entry: still nothing metered.
+            return Err(PhaseFailure { gas: 0 });
+        }
+    };
     let run: Result<(), wasmi::Error> = runner::call_root(store, linker, &module, entry);
-    let remaining: u64 = store.get_fuel().map_err(|_| invalid("phase fuel"))?;
     // Actual usage is the metered difference even when the phase trapped.
-    let gas: u64 = profile
-        .fuel
-        .checked_sub(remaining)
-        .ok_or_else(|| invalid("phase fuel accounting"))?;
+    // If the meter itself cannot be read, the phase ran with the whole
+    // window available, so the window is the exact upper bound of what it
+    // could have spent: report it rather than under-reporting zero.
+    let gas: u64 = match store.get_fuel() {
+        Ok(remaining) => profile.fuel.checked_sub(remaining).unwrap_or(profile.fuel),
+        Err(_) => profile.fuel,
+    };
     // Nested frames unwind through their own host entries; anything other
     // than exactly this phase's root frame is a fail-closed inconsistency.
     let frames: Vec<Frame> = std::mem::take(&mut store.data_mut().frames);
@@ -425,6 +571,9 @@ struct Validated {
     reserve_fuel: u64,
     settle_fuel: u64,
     application_fuel: u64,
+    /// The checked `L + R + S` ceiling for this invocation, proven
+    /// representable before any phase executes.
+    gas_bound: GasBound,
 }
 
 /// One pinned entrypoint declaration: exact export name, object
@@ -485,15 +634,24 @@ fn validate(plan: &PhasePlan<'_>) -> Result<Validated, LocalExecutionError> {
     if plan.scopes.len() > crate::call_authorization::MAX_EXECUTION_SCOPES {
         return Err(LocalExecutionError::Limit("execution scopes"));
     }
-    if plan.application.inputs.len() > crate::call_authorization::MAX_AUTHORIZED_INPUTS {
+    let application_inputs: &[ScopedResolvedObject] = match &plan.application {
+        ApplicationExecution::Wasm(call) => &call.inputs,
+        ApplicationExecution::Publish { .. } => &[],
+    };
+    if application_inputs.len() > crate::call_authorization::MAX_AUTHORIZED_INPUTS {
         return Err(LocalExecutionError::Limit("application inputs"));
     }
     let fee_scope: &ResolvedExecutionScope = plan
         .scopes
         .get(plan.target.scope)
         .ok_or_else(|| invalid("fee scope"))?;
-    if plan.scopes.get(plan.application.scope).is_none() {
-        return Err(invalid("application scope"));
+    if let ApplicationExecution::Wasm(call) = &plan.application {
+        if plan.scopes.get(call.scope).is_none() {
+            return Err(invalid("application scope"));
+        }
+        if call.mode == LocalExecutionMode::Instantiate && call.scope != 0 {
+            return Err(invalid("instantiate application must be the root scope"));
+        }
     }
     // The pinned fee implementation is the exact instance code revision.
     if fee_scope.instance.code != plan.target.code {
@@ -504,7 +662,7 @@ fn validate(plan: &PhasePlan<'_>) -> Result<Validated, LocalExecutionError> {
         .for_origin(plan.target.code.origin())
         .map_err(|_| invalid("fee defining code"))?;
     if reference(&interface)? != plan.target.code
-        || interface.candidate().request().artifact().wasm_profile()
+        || interface.candidate().artifact().wasm_profile()
             != crate::GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION
     {
         return Err(invalid("pinned fee code"));
@@ -558,7 +716,7 @@ fn validate(plan: &PhasePlan<'_>) -> Result<Validated, LocalExecutionError> {
     {
         return Err(invalid("fee source authority"));
     }
-    for input in &plan.application.inputs {
+    for input in application_inputs {
         if input.resolved.object.id != source.resolved.object.id {
             continue;
         }
@@ -622,6 +780,17 @@ fn validate(plan: &PhasePlan<'_>) -> Result<Validated, LocalExecutionError> {
         reserve_fuel: plan.pricer.reserve_allowance(),
         settle_fuel: plan.pricer.settle_allowance(),
         application_fuel: plan.admission.application_limit(),
+        // Each phase runs inside a fuel window of at most `R`, `L` or `S`,
+        // so proving this sum here makes every later retained total exact
+        // and removes any need for saturating gas arithmetic once reserve
+        // has been attempted and `Err` is no longer an available answer.
+        gas_bound: GasBound(
+            plan.admission
+                .application_limit()
+                .checked_add(plan.pricer.reserve_allowance())
+                .and_then(|gas| gas.checked_add(plan.pricer.settle_allowance()))
+                .ok_or_else(|| invalid("phase gas bound"))?,
+        ),
     })
 }
 
@@ -799,13 +968,6 @@ fn no_surviving_reservation(
     Ok(())
 }
 
-fn total_gas(reserve: u64, application: u64, settle: u64) -> Result<u64, LocalExecutionError> {
-    reserve
-        .checked_add(application)
-        .and_then(|gas| gas.checked_add(settle))
-        .ok_or_else(|| invalid("phase gas accounting"))
-}
-
 /// Restores the pre-reservation state and returns an explicit zero-charge
 /// outcome. No application change, partial fee or escrow survives, and no
 /// native fallback debit exists.
@@ -814,9 +976,8 @@ fn zero_charge(
     initial: &Savepoint,
     plan: &PhasePlan<'_>,
     status: PhaseStatus,
-    reserve_gas: u64,
-    application_gas: u64,
-    settle_gas: u64,
+    gas: MeteredGas,
+    bound: GasBound,
 ) -> Result<PhaseOutcome, LocalExecutionError> {
     restore(store.data_mut(), initial)?;
     let arena: Vec<ArenaObject> = std::mem::take(&mut store.data_mut().arena);
@@ -825,6 +986,9 @@ fn zero_charge(
     if !effects.is_empty() || !authorities.is_empty() || !store.data().events.is_empty() {
         return Err(invalid("zero-charge effects"));
     }
+    let gas_used: u64 = gas
+        .checked_total(bound)
+        .ok_or_else(|| invalid("phase gas accounting"))?;
     Ok(PhaseOutcome {
         status,
         effects: ExecutionEffects {
@@ -834,29 +998,76 @@ fn zero_charge(
             },
             object_effects: Vec::new(),
             events: Vec::new(),
-            gas_used: total_gas(reserve_gas, application_gas, settle_gas)?,
+            gas_used,
         },
         created_authorities: Vec::new(),
         reserved: Amount::new(0),
         actual_charge: Amount::new(0),
         refund: Amount::new(0),
-        reserve_gas,
-        application_gas,
+        reserve_gas: gas.reserve,
+        application_gas: gas.application,
         application_memory_exhausted: false,
-        settle_gas,
+        settle_gas: gas.settle,
         fee_output: None,
         refund_output: None,
         reservation: None,
     })
 }
 
+/// Discards the arena entirely and reports a zero-charge `HostRejected`
+/// outcome with exact measured gas, or the admitted total ceiling if the
+/// retained counters themselves violate the accounting bound. Used only for
+/// a deterministic host
+/// invariant/finalization failure discovered once reserve was attempted:
+/// it never calls `restore`/`zero_charge` again (no failed restore
+/// recursion) and never inspects arena state that may itself be
+/// inconsistent after the failure.
+fn host_rejected(plan: &PhasePlan<'_>, gas: MeteredGas, bound: GasBound) -> PhaseOutcome {
+    // Checked against the ceiling proven in `validate`; never a saturating
+    // or wrapping sum of unrelated counters.
+    let gas_used: u64 = gas.reported_total(bound);
+    PhaseOutcome {
+        status: PhaseStatus::HostRejected,
+        effects: ExecutionEffects {
+            tx_hash: plan.event_digest,
+            status: ExecutionStatus::Failure {
+                reason: LOCAL_EXECUTION_TRAP_REASON.into(),
+            },
+            object_effects: Vec::new(),
+            events: Vec::new(),
+            gas_used,
+        },
+        created_authorities: Vec::new(),
+        reserved: Amount::new(0),
+        actual_charge: Amount::new(0),
+        refund: Amount::new(0),
+        reserve_gas: gas.reserve,
+        application_gas: gas.application,
+        application_memory_exhausted: false,
+        settle_gas: gas.settle,
+        fee_output: None,
+        refund_output: None,
+        reservation: None,
+    }
+}
+
 /// Runs reserve, application and settle as one invocation in one store and
 /// one arena.
 ///
-/// TEST-ONLY: this is not authenticated paid admission. See the module
+/// `Err` is returned only for a *pre-reserve* structural rejection, which
+/// writes nothing and consumes no nonce. Once the reserve phase has been
+/// attempted, every deterministic host invariant or finalization failure is
+/// reported as a zero-charge outcome carrying the exact retained per-phase
+/// gas, never as a bare `Err`.
+///
+/// This is not authenticated paid admission by itself. See the module
 /// documentation.
 pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionError> {
     let validated: Validated = validate(plan)?;
+    let bound: GasBound = validated.gas_bound;
+    // Retained across every phase and never rewound by a savepoint: a
+    // rollback discards state, never resource consumption.
+    let mut gas: MeteredGas = MeteredGas::default();
     let engine: Engine = runner::interpreter();
     // One compilation of each admitted module for all three phases.
     let modules = admission::scopes(plan.scopes, &engine)?;
@@ -877,7 +1088,7 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
     const SOURCE_INDEX: usize = 0;
     let mut application_grants: Vec<Grant> = Vec::new();
     let mut ids: BTreeSet<ObjectId> = BTreeSet::new();
-    for input in &plan.application.inputs {
+    for input in plan.application.inputs() {
         if !ids.insert(input.resolved.object.id) {
             return Err(invalid("duplicate application input"));
         }
@@ -899,7 +1110,7 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
     let state: HostState = runner::host_state(runner::StateParts {
         resolver: plan.resolver,
         scopes: plan.scopes,
-        authorizations: plan.application.authorizations.clone(),
+        authorizations: plan.application.authorizations().to_vec(),
         profile: plan.policy.profile(),
         context: plan.context.clone(),
         event: plan.event_digest,
@@ -919,21 +1130,32 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
     // Reject structurally invalid application calls before reservation, without
     // entering a frame or spending any resource. Revalidate after reservation
     // because the application must observe the updated source remainder.
-    host::prepare_frame(
-        store.data(),
-        plan.application.scope,
-        plan.application.code.clone(),
-        &plan.application.entrypoint,
-        &plan.application.type_arguments,
-        application_grants.clone(),
-        plan.application.arguments.clone(),
-        Some(LocalExecutionMode::Call),
-    )
-    .map_err(|_| invalid("application frame"))?;
+    // Publish has no WASM application frame: its deterministic units are
+    // computed entirely outside this module.
+    if let ApplicationExecution::Wasm(call) = &plan.application {
+        host::prepare_frame(
+            store.data(),
+            call.scope,
+            call.code.clone(),
+            &call.entrypoint,
+            &call.type_arguments,
+            application_grants.clone(),
+            call.arguments.clone(),
+            Some(call.mode),
+        )
+        .map_err(|_| invalid("application frame"))?;
+    }
 
     // ---- reserve: the source is the only grant, and its result is kept in
-    // coordinator-local state, never in an application grant.
-    let reserve: PhaseRun = run_phase(
+    // coordinator-local state, never in an application grant. Once this call
+    // is made, reserve has been "attempted": any further Rust-level error is
+    // a deterministic host invariant/finalization failure, reported as a
+    // zero-charge `HostRejected` outcome rather than propagated as `Err`, so
+    // the caller still commits the consumed nonce and receipt. `zero_charge`
+    // itself failing (e.g. a savepoint invariant) is not retried through
+    // another restore attempt (no failed-restore recursion): it also
+    // collapses straight to `HostRejected`.
+    let reserve: PhaseRun = match run_phase(
         &mut store,
         &linker,
         plan.target.scope,
@@ -946,30 +1168,46 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
         }],
         validated.reserve_arguments.clone(),
         &fixed_profile(validated.reserve_fuel),
-    )?;
+        None,
+    ) {
+        Ok(run) => run,
+        Err(failure) => {
+            gas.reserve = failure.gas;
+            return Ok(host_rejected(plan, gas, bound));
+        }
+    };
+    gas.reserve = reserve.gas;
     if reserve.failed {
-        return zero_charge(
-            &mut store,
-            &initial,
-            plan,
-            PhaseStatus::ReservationFailed,
-            reserve.gas,
-            0,
-            0,
+        return Ok(
+            match zero_charge(
+                &mut store,
+                &initial,
+                plan,
+                PhaseStatus::ReservationFailed,
+                gas,
+                bound,
+            ) {
+                Ok(outcome) => outcome,
+                Err(_) => host_rejected(plan, gas, bound),
+            },
         );
     }
     let reservation_index: usize =
         match validated_reservation(store.data(), &reserve.returned, plan) {
             Ok(index) => index,
             Err(_) => {
-                return zero_charge(
-                    &mut store,
-                    &initial,
-                    plan,
-                    PhaseStatus::ReservationFailed,
-                    reserve.gas,
-                    0,
-                    0,
+                return Ok(
+                    match zero_charge(
+                        &mut store,
+                        &initial,
+                        plan,
+                        PhaseStatus::ReservationFailed,
+                        gas,
+                        bound,
+                    ) {
+                        Ok(outcome) => outcome,
+                        Err(_) => host_rejected(plan, gas, bound),
+                    },
                 );
             }
         };
@@ -977,30 +1215,71 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
     let post_reserve: Savepoint = savepoint(store.data());
 
     // ---- application: only the declared application inputs are exposed.
-    let profile: PhaseProfile = application_profile(store.data(), validated.application_fuel)?;
-    let application: PhaseRun = run_phase(
-        &mut store,
-        &linker,
-        plan.application.scope,
-        &plan.application.code,
-        &plan.application.entrypoint,
-        &plan.application.type_arguments,
-        application_grants,
-        plan.application.arguments.clone(),
-        &profile,
-    )?;
-    if application.failed {
-        // Discard every application object effect and event, but not gas or
-        // any cumulative resource counter.
-        restore(store.data_mut(), &post_reserve)?;
-    }
+    // Publish never enters the arena: its failure/gas are computed directly
+    // from its deterministic metered units against the admitted limit `L`.
+    let application: PhaseRun = match &plan.application {
+        ApplicationExecution::Wasm(call) => {
+            let profile: PhaseProfile =
+                match application_profile(store.data(), validated.application_fuel) {
+                    Ok(profile) => profile,
+                    // The application phase never opened a fuel window.
+                    Err(_) => return Ok(host_rejected(plan, gas, bound)),
+                };
+            let run: PhaseRun = match run_phase(
+                &mut store,
+                &linker,
+                call.scope,
+                &call.code,
+                &call.entrypoint,
+                &call.type_arguments,
+                application_grants,
+                call.arguments.clone(),
+                &profile,
+                Some(call.mode),
+            ) {
+                Ok(run) => run,
+                Err(failure) => {
+                    gas.application = failure.gas;
+                    return Ok(host_rejected(plan, gas, bound));
+                }
+            };
+            gas.application = run.gas;
+            if run.failed {
+                // Discard every application object effect and event, but not
+                // gas or any cumulative resource counter.
+                if restore(store.data_mut(), &post_reserve).is_err() {
+                    return Ok(host_rejected(plan, gas, bound));
+                }
+            }
+            run
+        }
+        ApplicationExecution::Publish { units } => {
+            let failed: bool = *units > validated.application_fuel;
+            let measured: u64 = if failed {
+                validated.application_fuel
+            } else {
+                *units
+            };
+            gas.application = measured;
+            PhaseRun {
+                failed,
+                memory_exhausted: false,
+                gas: measured,
+                returned: Vec::new(),
+            }
+        }
+    };
 
     // ---- settle: only the freshly returned private reservation is granted.
-    let settlement = plan
-        .admission
-        .settle(application.gas)
-        .map_err(|_| invalid("settlement pricing"))?;
-    let settle: PhaseRun = run_phase(
+    let settlement = match plan.admission.settle(application.gas) {
+        Ok(settlement) => settlement,
+        Err(_) => return Ok(host_rejected(plan, gas, bound)),
+    };
+    let settle_argument_bytes: Vec<u8> = match settle_arguments(plan, settlement.actual) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(host_rejected(plan, gas, bound)),
+    };
+    let settle: PhaseRun = match run_phase(
         &mut store,
         &linker,
         plan.target.scope,
@@ -1011,9 +1290,17 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
             index: reservation_index,
             mode: ObjectMode::Consume,
         }],
-        settle_arguments(plan, settlement.actual)?,
+        settle_argument_bytes,
         &fixed_profile(validated.settle_fuel),
-    )?;
+        None,
+    ) {
+        Ok(run) => run,
+        Err(failure) => {
+            gas.settle = failure.gas;
+            return Ok(host_rejected(plan, gas, bound));
+        }
+    };
+    gas.settle = settle.gas;
     let outputs: Option<(ObjectId, Option<ObjectId>)> = if settle.failed {
         None
     } else {
@@ -1023,14 +1310,18 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
             .filter(|_| no_surviving_reservation(store.data(), plan).is_ok())
     };
     let Some((fee_output, refund_output)) = outputs else {
-        return zero_charge(
-            &mut store,
-            &initial,
-            plan,
-            PhaseStatus::SettlementFailed,
-            reserve.gas,
-            application.gas,
-            settle.gas,
+        return Ok(
+            match zero_charge(
+                &mut store,
+                &initial,
+                plan,
+                PhaseStatus::SettlementFailed,
+                gas,
+                bound,
+            ) {
+                Ok(outcome) => outcome,
+                Err(_) => host_rejected(plan, gas, bound),
+            },
         );
     };
     let status: PhaseStatus = if application.failed {
@@ -1039,8 +1330,12 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
         PhaseStatus::Success
     };
     let state: HostState = store.into_data();
-    let (object_effects, created_authorities) =
-        runner::collect_effects(state.arena).ok_or_else(|| invalid("phase effects"))?;
+    let Some((object_effects, created_authorities)) = runner::collect_effects(state.arena) else {
+        return Ok(host_rejected(plan, gas, bound));
+    };
+    let Some(gas_used) = gas.checked_total(bound) else {
+        return Ok(host_rejected(plan, gas, bound));
+    };
     let effects: ExecutionEffects = ExecutionEffects {
         tx_hash: plan.event_digest,
         status: match status {
@@ -1051,12 +1346,18 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
         },
         object_effects,
         events: state.events,
-        gas_used: total_gas(reserve.gas, application.gas, settle.gas)?,
+        gas_used,
     };
     // Final canonical bound in addition to the running per-phase and global
-    // output accounting enforced before every host mutation.
-    if crate::encode_execution_effects(&effects)?.len() > MAX_LOCAL_EXECUTION_OUTPUT_BYTES {
-        return Err(LocalExecutionError::Limit("phase result bytes"));
+    // output accounting enforced before every host mutation. A version or
+    // encoding failure at this final finalization step is a deterministic
+    // host failure once reserve was attempted: it reports the same small
+    // `HostRejected` outcome rather than a bare `Err`.
+    match crate::encode_execution_effects(&effects) {
+        Ok(bytes) if bytes.len() <= MAX_LOCAL_EXECUTION_OUTPUT_BYTES => {}
+        _ => {
+            return Ok(host_rejected(plan, gas, bound));
+        }
     }
     Ok(PhaseOutcome {
         status,
@@ -1065,10 +1366,10 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
         reserved: plan.admission.reserved(),
         actual_charge: settlement.actual,
         refund: settlement.refund,
-        reserve_gas: reserve.gas,
-        application_gas: application.gas,
+        reserve_gas: gas.reserve,
+        application_gas: gas.application,
         application_memory_exhausted: application.memory_exhausted,
-        settle_gas: settle.gas,
+        settle_gas: gas.settle,
         fee_output: Some(fee_output),
         refund_output,
         reservation: Some(reservation_id),

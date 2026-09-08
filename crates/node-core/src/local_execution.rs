@@ -82,11 +82,12 @@ fn reference_matches(
     reference: &UnverifiedDependencyRef,
     interface: &VerifiedPublicationInterface,
 ) -> bool {
-    let request = interface.candidate().request();
-    reference.origin() == request.artifact().origin()
-        && reference.context() == request.artifact().context()
-        && reference.revision() == request.artifact().revision()
-        && reference.artifact_digest() == request.artifact_digest()
+    let candidate = interface.candidate();
+    let artifact = candidate.artifact();
+    reference.origin() == artifact.origin()
+        && reference.context() == artifact.context()
+        && reference.revision() == artifact.revision()
+        && reference.artifact_digest() == candidate.digest()
 }
 fn validate_closure(
     resolver: &HashSuiteResolver,
@@ -94,12 +95,13 @@ fn validate_closure(
     interface: &VerifiedPublicationInterface,
 ) -> AdmissionResult<()> {
     for candidate in std::iter::once(interface.candidate()).chain(interface.dependencies()) {
-        let artifact = candidate.request().artifact();
+        let artifact = candidate.artifact();
         let historical: &HashSuiteResolver =
             original_resolver(resolver, history, artifact.context())?;
         let expected = match artifact.wasm_profile() {
             2 => local_execution_semantics(historical, artifact.context()),
             3 => general_execution_semantics(historical, artifact.context()),
+            4 => generic_object_result_semantics(historical, artifact.context()),
             _ => {
                 return Err(LocalExecutionAdmissionError::Invalid(
                     "non-executable publication profile",
@@ -356,8 +358,7 @@ pub fn handle_local_execution<
     if std::iter::once(interface.candidate())
         .chain(interface.dependencies())
         .any(|candidate| {
-            candidate.request().artifact().context().protocol_version()
-                != call.context.protocol_version()
+            candidate.artifact().context().protocol_version() != call.context.protocol_version()
         })
     {
         return Err(LocalExecutionAdmissionError::Invalid(

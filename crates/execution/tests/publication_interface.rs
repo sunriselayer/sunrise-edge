@@ -92,12 +92,12 @@ fn generic(seed: u8) -> PackageAbi {
     abi
 }
 fn reference(node: &AuthenticatedPublicationCandidate) -> UnverifiedDependencyRef {
-    let artifact: &CodeArtifact = node.request().artifact();
+    let artifact: &CodeArtifact = node.artifact();
     UnverifiedDependencyRef::new(
         artifact.origin().clone(),
         artifact.revision(),
         artifact.context().clone(),
-        *node.request().artifact_digest(),
+        *node.digest(),
     )
     .unwrap()
 }
@@ -210,10 +210,7 @@ fn generic_signatures_are_checked_without_asset_specific_types() {
     assert_eq!(witness.abi(), &abi);
     assert!(witness.dependencies().is_empty());
     // Declaration checks grant no runtime handle or object authority.
-    assert_eq!(
-        witness.candidate().request().artifact().origin(),
-        &abi.origin
-    );
+    assert_eq!(witness.candidate().artifact().origin(), &abi.origin);
     let mut wrong: PackageAbi = abi.clone();
     wrong.entrypoints[0].type_parameters[0] = ArgumentKind::Nominal;
     assert_eq!(verify(wrong), Err(InterfaceError::KindMismatch));

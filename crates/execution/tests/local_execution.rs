@@ -96,12 +96,12 @@ fn publication(
     .unwrap()
 }
 fn reference(candidate: &AuthenticatedPublicationCandidate) -> UnverifiedDependencyRef {
-    let artifact: &CodeArtifact = candidate.request().artifact();
+    let artifact: &CodeArtifact = candidate.artifact();
     UnverifiedDependencyRef::new(
         artifact.origin().clone(),
         1,
         artifact.context().clone(),
-        *candidate.request().artifact_digest(),
+        *candidate.digest(),
     )
     .unwrap()
 }
@@ -264,13 +264,15 @@ fn execution_domain_policy_and_creator_are_signed_before_admission() {
 #[test]
 fn library_views_share_immutable_wasm_and_retain_defining_metadata() {
     let library = publication(1, None, vec![]);
-    let origin = library.request().artifact().origin().clone();
+    let origin = library.artifact().origin().clone();
     let root = publication(2, Some("init"), vec![reference(&library)]);
     let interface = verify_publication_interface(root, vec![library]).unwrap();
     let view = interface.for_origin(&origin).unwrap();
     assert!(std::ptr::eq(
-        view.candidate().request(),
-        interface.dependencies()[0].request()
+        view.candidate().request().expect("legacy candidate"),
+        interface.dependencies()[0]
+            .request()
+            .expect("legacy candidate")
     ));
     assert_eq!(view.executable_abi(&origin).unwrap().initializer, None);
     let ty: ScopedTypeTag = ScopedTypeTag::new(origin, 1, vec![]).unwrap();

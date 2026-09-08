@@ -9,7 +9,7 @@ pub(super) fn scopes(
         for candidate in
             std::iter::once(scope.interface.candidate()).chain(scope.interface.dependencies())
         {
-            let artifact = candidate.request().artifact();
+            let artifact = candidate.artifact();
             if modules.contains_key(artifact.origin()) {
                 continue;
             }

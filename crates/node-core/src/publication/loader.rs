@@ -32,7 +32,11 @@ fn load_node<S: StructuredDurableDomainStateStore>(
     }
     if let Some(cached) = budget.nodes.get(origin) {
         if let Some(reference) = expected {
-            match_reference(reference, cached.candidate.request())?;
+            match_reference(
+                reference,
+                cached.candidate.artifact(),
+                cached.candidate.digest(),
+            )?;
         }
         return Ok(Some(cached.clone()));
     }
@@ -65,7 +69,11 @@ fn load_node<S: StructuredDurableDomainStateStore>(
         return Err(PublicationAdmissionError::CorruptRecord);
     }
     if let Some(reference) = expected {
-        match_reference(reference, submission.request())?;
+        match_reference(
+            reference,
+            submission.request().artifact(),
+            submission.request().artifact_digest(),
+        )?;
     }
     let policy: LocalPublicationPolicy = read_policy(
         store,
@@ -105,14 +113,14 @@ fn interface<S: StructuredDurableDomainStateStore>(
     budget: &mut PublicationLoadBudget,
 ) -> Result<execution::publication::VerifiedPublicationInterface, PublicationAdmissionError> {
     let mut pending: Vec<UnverifiedDependencyRef> =
-        root.request().artifact().unverified_dependencies().to_vec();
+        root.artifact().unverified_dependencies().to_vec();
     let mut loaded: BTreeMap<PackageOrigin, AuthenticatedPublicationCandidate> = BTreeMap::new();
     while let Some(reference) = pending.pop() {
-        if reference.origin() == root.request().artifact().origin() {
+        if reference.origin() == root.artifact().origin() {
             return Err(PublicationAdmissionError::CorruptRecord);
         }
         if let Some(existing) = loaded.get(reference.origin()) {
-            match_reference(&reference, existing.request())?;
+            match_reference(&reference, existing.artifact(), existing.digest())?;
             continue;
         }
         let node: CachedPublication = load_node(
@@ -128,7 +136,6 @@ fn interface<S: StructuredDurableDomainStateStore>(
         .ok_or(PublicationAdmissionError::MissingDependency)?;
         pending.extend(
             node.candidate
-                .request()
                 .artifact()
                 .unverified_dependencies()
                 .iter()
@@ -162,7 +169,7 @@ pub(super) fn load_unstored_root<S: StructuredDurableDomainStateStore>(
         bytes: root_bytes,
     };
     budget.nodes.insert(
-        candidate.request().artifact().origin().clone(),
+        candidate.artifact().origin().clone(),
         CachedPublication {
             candidate: candidate.clone(),
             request_id: None,
@@ -212,8 +219,12 @@ pub(crate) fn load_verified_publication_with_budget<S: StructuredDurableDomainSt
         root.candidate.clone(),
         budget,
     )?;
-    let submission: PublicationSubmission =
-        PublicationSubmission::new(request_id, root.candidate.request().clone())?;
+    let legacy_request: execution::publication::PublicationRequest = root
+        .candidate
+        .request()
+        .ok_or(PublicationAdmissionError::CorruptRecord)?
+        .clone();
+    let submission: PublicationSubmission = PublicationSubmission::new(request_id, legacy_request)?;
     let reads: Vec<StateReadAssertion> = budget
         .reads
         .iter()

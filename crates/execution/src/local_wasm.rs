@@ -13,15 +13,18 @@ use std::sync::Arc;
 use wasmi::{Config, Engine, Linker, Module, Store};
 
 mod admission;
-// The DR-0124 reserve/application/settle phase coordinator is internal and
-// TEST-ONLY: no paid signing envelope, committed fee-policy type or
-// authenticated paid admission exists yet, so it is compiled only for
-// tests and is never reachable from `execute`, this crate's public API, or
-// node-core. It drives the same production store, host, frame validator
-// and effect collector as the zero-fee root path below.
-#[cfg(test)]
+// The DR-0124 reserve/application/settle phase coordinator is private to
+// this module: its raw phase/grant/source API is `pub(super)` at most and is
+// never re-exported from `execution`. Its only non-test caller is the `paid`
+// sibling below, which implements the injectable
+// `crate::paid_execution::PaidContractEngine` for `LocalWasmExecutionEngine`
+// from an already authenticated paid intent, trusted policies and an
+// independently validated scope set; it is never reachable directly from
+// node-core/HTTP/CLI. It drives the same production store, host, frame
+// validator and effect collector as the zero-fee root path below.
 mod coordinator;
 mod host;
+mod paid;
 mod runner;
 use host::{ArenaObject, Grant, HostState};
 
@@ -38,13 +41,13 @@ impl LocalWasmExecutionEngine {
 fn reference(
     interface: &VerifiedPublicationInterface,
 ) -> Result<UnverifiedDependencyRef, publication::PublicationError> {
-    let request = interface.candidate().request();
-    let artifact = request.artifact();
+    let candidate = interface.candidate();
+    let artifact = candidate.artifact();
     UnverifiedDependencyRef::new(
         artifact.origin().clone(),
         artifact.revision(),
         artifact.context().clone(),
-        *request.artifact_digest(),
+        *candidate.digest(),
     )
 }
 

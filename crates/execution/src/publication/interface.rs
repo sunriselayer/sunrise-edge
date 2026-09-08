@@ -108,12 +108,11 @@ impl VerifiedPublicationInterface {
         let root: AuthenticatedPublicationCandidate = self
             .dependencies
             .iter()
-            .find(|candidate| candidate.request().artifact().origin() == origin)
+            .find(|candidate| candidate.artifact().origin() == origin)
             .ok_or(InterfaceError::MissingDependency)?
             .clone();
         let mut required: BTreeSet<PackageOrigin> = BTreeSet::new();
         let mut pending: Vec<PackageOrigin> = root
-            .request()
             .artifact()
             .unverified_dependencies()
             .iter()
@@ -127,12 +126,11 @@ impl VerifiedPublicationInterface {
             let candidate: AuthenticatedPublicationCandidate = self
                 .dependencies
                 .iter()
-                .find(|candidate| candidate.request().artifact().origin() == &origin)
+                .find(|candidate| candidate.artifact().origin() == &origin)
                 .ok_or(InterfaceError::MissingDependency)?
                 .clone();
             pending.extend(
                 candidate
-                    .request()
                     .artifact()
                     .unverified_dependencies()
                     .iter()
@@ -195,7 +193,6 @@ impl VerifiedPublicationInterface {
         origin == &self.abi.objects.origin
             || self
                 .candidate
-                .request()
                 .artifact()
                 .unverified_dependencies()
                 .iter()
@@ -249,14 +246,14 @@ pub fn verify_publication_interface(
     let mut total: usize = 0;
     let mut indices: BTreeMap<&PackageOrigin, usize> = BTreeMap::new();
     for (index, node) in nodes.iter().enumerate() {
-        let artifact = node.request().artifact();
+        let artifact = node.artifact();
         total = total
             .checked_add(artifact.unverified_abi().len())
             .ok_or(InterfaceError::Limit("ABI bytes"))?;
         if total > MAX_INTERFACE_ABI_BYTES {
             return Err(InterfaceError::Limit("ABI bytes"));
         }
-        if artifact.origin().chain_id() != candidate.request().artifact().origin().chain_id() {
+        if artifact.origin().chain_id() != candidate.artifact().origin().chain_id() {
             return Err(InterfaceError::ChainMismatch);
         }
         if indices.insert(artifact.origin(), index).is_some() {
@@ -267,15 +264,14 @@ pub fn verify_publication_interface(
     let mut graph: Vec<Vec<usize>> = Vec::with_capacity(count);
     for node in &nodes {
         let mut edges: Vec<usize> = Vec::new();
-        for reference in node.request().artifact().unverified_dependencies() {
+        for reference in node.artifact().unverified_dependencies() {
             let target: usize = *indices
                 .get(reference.origin())
                 .ok_or(InterfaceError::MissingDependency)?;
-            let request = nodes[target].request();
-            let artifact = request.artifact();
+            let artifact = nodes[target].artifact();
             if reference.revision() != artifact.revision()
                 || reference.context() != artifact.context()
-                || reference.artifact_digest() != request.artifact_digest()
+                || reference.artifact_digest() != nodes[target].digest()
             {
                 return Err(InterfaceError::DependencyMismatch);
             }
@@ -287,11 +283,11 @@ pub fn verify_publication_interface(
     let mut abis: Vec<CallAbi> = Vec::with_capacity(count);
     let mut executable_abis: BTreeMap<PackageOrigin, Arc<ExecutableAbi>> = BTreeMap::new();
     for node in &nodes {
-        let artifact = node.request().artifact();
-        if (candidate.request().artifact().wasm_profile() == 2 && artifact.wasm_profile() != 2)
-            || (candidate.request().artifact().wasm_profile() == 3
+        let artifact = node.artifact();
+        if (candidate.artifact().wasm_profile() == 2 && artifact.wasm_profile() != 2)
+            || (candidate.artifact().wasm_profile() == 3
                 && !matches!(artifact.wasm_profile(), 2 | 3))
-            || (candidate.request().artifact().wasm_profile() == 4
+            || (candidate.artifact().wasm_profile() == 4
                 && !matches!(artifact.wasm_profile(), 2..=4))
         {
             return Err(InterfaceError::Abi(ValueError::Invalid(

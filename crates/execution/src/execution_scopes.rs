@@ -13,47 +13,65 @@ use std::collections::{BTreeMap, BTreeSet};
 pub fn verified_code_reference(
     interface: &VerifiedPublicationInterface,
 ) -> Result<UnverifiedDependencyRef, LocalExecutionError> {
-    let request = interface.candidate().request();
-    let artifact = request.artifact();
+    let candidate = interface.candidate();
+    let artifact = candidate.artifact();
     Ok(UnverifiedDependencyRef::new(
         artifact.origin().clone(),
         artifact.revision(),
         artifact.context().clone(),
-        *request.artifact_digest(),
+        *candidate.digest(),
     )?)
 }
 
-/// Checks the same bounded target model before client signing and engine entry.
-/// Callers must independently verify durable read sets or locally trusted pins.
-/// Runtime still verifies current caller identity, handles and computed arguments.
-pub fn validate_local_execution_scopes(
-    resolver: &HashSuiteResolver,
-    policy: &LocalExecutionPolicy,
-    intent: &LocalExecutionIntent,
-    scopes: &[ResolvedExecutionScope],
-) -> Result<(), LocalExecutionError> {
-    let invalid = LocalExecutionError::Invalid;
-    validate_call_authorizations(&intent.call, &intent.authorizations)?;
-    let call = &intent.call;
-    if scopes.is_empty() || scopes.len() > MAX_EXECUTION_SCOPES {
-        return Err(LocalExecutionError::Limit("execution scopes"));
-    }
-    if policy.context() != &call.context
-        || resolver.chain_id() != call.context.chain_id()
-        || resolver.protocol_version() != call.context.protocol_version()
-        || intent.policy_digest != policy.digest(resolver)?
-        || call.gas_limit == 0
-        || call.gas_limit > policy.max_gas()
-        || (policy.profile() == 2 && (scopes.len() != 1 || !intent.authorizations.is_empty()))
-    {
-        return Err(invalid("execution scope policy or context"));
-    }
+/// The exact instance identities one invocation requires, keyed by
+/// `(creator, seed)`. The supplied scope set must equal this set exactly:
+/// a missing scope, a duplicate scope and an unneeded extra scope are all
+/// rejected.
+pub(crate) fn required_scope_instances(
+    root: &crate::call::InstanceTarget,
+    authorizations: &[CallAuthorization],
+) -> BTreeSet<([u8; 32], [u8; 32])> {
     let mut required: BTreeSet<([u8; 32], [u8; 32])> = BTreeSet::new();
-    required.insert((call.instance.creator, call.instance.seed));
-    for authorization in &intent.authorizations {
+    required.insert((root.creator, root.seed));
+    for authorization in authorizations {
         for target in [&authorization.caller, &authorization.callee] {
             required.insert((target.instance.creator, target.instance.seed));
         }
+    }
+    required
+}
+
+/// Validates the *entire* supplied scope set against one trusted execution
+/// context, policy and required instance identity set.
+///
+/// Every supplied scope is checked, not only the one a caller happens to
+/// select: instance context chain/protocol/epoch, the independently derived
+/// [`instance_target`], the verified code reference behind the interface,
+/// the ABI-designated initializer, and, for the complete closure of every
+/// scope, code context, WASM profile admissibility under the active policy
+/// profile and exact semantics digest. It also enforces the invocation-wide
+/// scope-count, code-node and code-byte budgets and rejects two scopes that
+/// pin conflicting revisions of the same package origin.
+///
+/// The supplied set must equal `required` exactly, so a duplicate scope, an
+/// unneeded extra scope and a missing scope are all rejected. Callers still
+/// perform their own root/mode/entrypoint and argument binding checks.
+pub(crate) fn validate_execution_scope_set(
+    resolver: &HashSuiteResolver,
+    policy: &LocalExecutionPolicy,
+    context: &publication::PublicationContext,
+    required: &BTreeSet<([u8; 32], [u8; 32])>,
+    scopes: &[ResolvedExecutionScope],
+) -> Result<(), LocalExecutionError> {
+    let invalid = LocalExecutionError::Invalid;
+    if scopes.is_empty() || scopes.len() > MAX_EXECUTION_SCOPES {
+        return Err(LocalExecutionError::Limit("execution scopes"));
+    }
+    if policy.context() != context
+        || resolver.chain_id() != context.chain_id()
+        || resolver.protocol_version() != context.protocol_version()
+    {
+        return Err(invalid("execution scope policy or context"));
     }
     let mut unique: BTreeSet<([u8; 32], [u8; 32])> = BTreeSet::new();
     let mut codes: BTreeMap<PackageOrigin, UnverifiedDependencyRef> = BTreeMap::new();
@@ -62,9 +80,9 @@ pub fn validate_local_execution_scopes(
         let instance = &scope.instance;
         if !required.contains(&(instance.creator, instance.seed))
             || !unique.insert((instance.creator, instance.seed))
-            || instance.context.chain_id() != call.context.chain_id()
-            || instance.context.protocol_version() != call.context.protocol_version()
-            || instance.context.epoch() > call.context.epoch()
+            || instance.context.chain_id() != context.chain_id()
+            || instance.context.protocol_version() != context.protocol_version()
+            || instance.context.epoch() > context.epoch()
             || instance_target(resolver, instance)? != scope.target
             || verified_code_reference(&scope.interface)? != instance.code
             || scope
@@ -78,11 +96,10 @@ pub fn validate_local_execution_scopes(
         for candidate in
             std::iter::once(scope.interface.candidate()).chain(scope.interface.dependencies())
         {
-            let request = candidate.request();
-            let artifact = request.artifact();
-            if artifact.context().chain_id() != call.context.chain_id()
-                || artifact.context().protocol_version() != call.context.protocol_version()
-                || artifact.context().epoch() > call.context.epoch()
+            let artifact = candidate.artifact();
+            if artifact.context().chain_id() != context.chain_id()
+                || artifact.context().protocol_version() != context.protocol_version()
+                || artifact.context().epoch() > context.epoch()
             {
                 return Err(invalid("execution code context"));
             }
@@ -106,7 +123,7 @@ pub fn validate_local_execution_scopes(
                 artifact.origin().clone(),
                 artifact.revision(),
                 artifact.context().clone(),
-                *request.artifact_digest(),
+                *candidate.digest(),
             )?;
             if let Some(old) = codes.get(artifact.origin()) {
                 if old != &reference {
@@ -116,7 +133,9 @@ pub fn validate_local_execution_scopes(
             }
             // A publication submission adds a 10-byte header, two 6-byte field
             // headers and a fixed 32-byte request ID to this exact request.
-            let size: usize = publication::encode_publication_request(request)?.len();
+            let size: usize = candidate
+                .encoded_len()
+                .map_err(LocalExecutionError::Publication)?;
             bytes = bytes
                 .checked_add(size)
                 .and_then(|total| total.checked_add(54))
@@ -127,35 +146,23 @@ pub fn validate_local_execution_scopes(
             }
         }
     }
-    if unique != required {
+    if &unique != required {
         return Err(invalid("missing execution scope"));
     }
-    let root: &ResolvedExecutionScope = &scopes[0];
-    if root.target != call.instance || root.instance.code != call.code {
-        return Err(invalid("root execution scope"));
-    }
-    let metadata = root
-        .interface
-        .executable_abi(call.code.origin())
-        .ok_or(invalid("root executable ABI"))?;
-    match intent.mode {
-        LocalExecutionMode::Instantiate
-            if root.instance.creator != call.sender
-                || root.instance.context != call.context
-                || metadata.initializer.as_deref() != Some(call.entrypoint.as_str())
-                || !call.access.entries.is_empty() =>
-        {
-            return Err(invalid("initializer authority"));
-        }
-        LocalExecutionMode::Call
-            if metadata.initializer.as_deref() == Some(call.entrypoint.as_str()) =>
-        {
-            return Err(invalid("initializer replay"));
-        }
-        _ => {}
-    }
-    crate::call::bind_call_intent(call, &root.interface)?;
-    for authorization in &intent.authorizations {
+    Ok(())
+}
+
+/// Validates every signed reusable call ceiling against the already
+/// set-validated scopes: both endpoints resolve to a supplied scope, their
+/// exact code is inside that instance's verified closure, the callee
+/// entrypoint is not an initializer, and the callee's declared object modes
+/// never exceed the signed per-object ceilings.
+pub(crate) fn validate_authorization_target_scopes(
+    scopes: &[ResolvedExecutionScope],
+    authorizations: &[CallAuthorization],
+) -> Result<(), LocalExecutionError> {
+    let invalid = LocalExecutionError::Invalid;
+    for authorization in authorizations {
         for target in [&authorization.caller, &authorization.callee] {
             let scope: &ResolvedExecutionScope = scopes
                 .iter()
@@ -209,4 +216,54 @@ pub fn validate_local_execution_scopes(
         }
     }
     Ok(())
+}
+
+/// Checks the same bounded target model before client signing and engine entry.
+/// Callers must independently verify durable read sets or locally trusted pins.
+/// Runtime still verifies current caller identity, handles and computed arguments.
+pub fn validate_local_execution_scopes(
+    resolver: &HashSuiteResolver,
+    policy: &LocalExecutionPolicy,
+    intent: &LocalExecutionIntent,
+    scopes: &[ResolvedExecutionScope],
+) -> Result<(), LocalExecutionError> {
+    let invalid = LocalExecutionError::Invalid;
+    validate_call_authorizations(&intent.call, &intent.authorizations)?;
+    let call = &intent.call;
+    if intent.policy_digest != policy.digest(resolver)?
+        || call.gas_limit == 0
+        || call.gas_limit > policy.max_gas()
+        || (policy.profile() == 2 && (scopes.len() != 1 || !intent.authorizations.is_empty()))
+    {
+        return Err(invalid("execution scope policy or context"));
+    }
+    let required: BTreeSet<([u8; 32], [u8; 32])> =
+        required_scope_instances(&call.instance, &intent.authorizations);
+    validate_execution_scope_set(resolver, policy, &call.context, &required, scopes)?;
+    let root: &ResolvedExecutionScope = &scopes[0];
+    if root.target != call.instance || root.instance.code != call.code {
+        return Err(invalid("root execution scope"));
+    }
+    let metadata = root
+        .interface
+        .executable_abi(call.code.origin())
+        .ok_or(invalid("root executable ABI"))?;
+    match intent.mode {
+        LocalExecutionMode::Instantiate
+            if root.instance.creator != call.sender
+                || root.instance.context != call.context
+                || metadata.initializer.as_deref() != Some(call.entrypoint.as_str())
+                || !call.access.entries.is_empty() =>
+        {
+            return Err(invalid("initializer authority"));
+        }
+        LocalExecutionMode::Call
+            if metadata.initializer.as_deref() == Some(call.entrypoint.as_str()) =>
+        {
+            return Err(invalid("initializer replay"));
+        }
+        _ => {}
+    }
+    crate::call::bind_call_intent(call, &root.interface)?;
+    validate_authorization_target_scopes(scopes, &intent.authorizations)
 }

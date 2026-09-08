@@ -161,13 +161,10 @@ fn independent_canonical_commitment_and_ed25519_vectors() {
     let wire: Vec<u8> = encode_publication_request(&request).unwrap();
     assert_eq!(decode_publication_request(&wire).unwrap(), request);
     let candidate = authenticate(decode_publication_request(&wire).unwrap()).unwrap();
-    assert_eq!(candidate.request(), &request);
+    assert_eq!(candidate.request(), Some(&request));
     // This is explicitly NOT typed-ABI admission: these arbitrary bytes
     // authenticate but no execution/persistence API consumes the witness.
-    assert_eq!(
-        candidate.request().artifact().unverified_abi(),
-        b"opaque-abi"
-    );
+    assert_eq!(candidate.artifact().unverified_abi(), b"opaque-abi");
     assert_eq!(
         authenticate(request.clone()).unwrap(),
         authenticate(request).unwrap()
