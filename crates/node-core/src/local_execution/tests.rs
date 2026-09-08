@@ -1099,3 +1099,117 @@ fn foreign_instance_checkpoint_regression_and_tombstoned_origin_fail_closed() {
     assert!(run(&store, &sign(&other, 3, 5, "init", vec![]), &engine).is_err());
     assert_eq!(nonce(&store), 3);
 }
+
+fn publish_profile_four_artifact<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    semantics: Digest32,
+) -> UnverifiedDependencyRef {
+    let origin: PackageOrigin =
+        PackageOrigin::unverified(protocol().chain_id().clone(), sender(), [40; 32]).unwrap();
+    let meta: ExecutableAbi = ExecutableAbi {
+        call: CallAbi {
+            objects: PackageAbi {
+                origin: origin.clone(),
+                constructors: vec![ConstructorDeclaration {
+                    local_id: 1,
+                    schema: 1,
+                    arguments: vec![],
+                }],
+                entrypoints: vec![EntrypointDeclaration {
+                    name: "init".into(),
+                    type_parameters: vec![],
+                    objects: vec![],
+                }],
+            },
+            arguments: vec![ValueLayout::Tuple(vec![])],
+            bodies: vec![ValueLayout::U64],
+        },
+        initializer: Some("init".into()),
+        transferable_constructors: vec![],
+        results: vec![Vec::new()],
+    };
+    let artifact: CodeArtifact = CodeArtifact::new(ArtifactParts {
+        context: protocol(),
+        origin,
+        revision: 1,
+        wasm_profile: 4,
+        semantics,
+        wasm: wat::parse_str("(module (memory (export \"memory\") 1 2) (func (export \"init\")))")
+            .unwrap(),
+        unverified_abi: encode_executable_abi(&meta).unwrap(),
+        exports: vec!["init".into()],
+        unverified_dependencies: vec![],
+    })
+    .unwrap();
+    let digest: Digest32 = artifact_commitment(&resolver(), &protocol(), &artifact).unwrap();
+    let frame: Vec<u8> =
+        publication_submission_signing_frame(&resolver(), &protocol(), &artifact, 0, [40; 32])
+            .unwrap();
+    let reference: UnverifiedDependencyRef =
+        UnverifiedDependencyRef::new(artifact.origin().clone(), 1, protocol(), digest).unwrap();
+    let submission: PublicationSubmission = PublicationSubmission::new(
+        [40; 32],
+        PublicationRequest::new(artifact, 0, digest, key().sign(&frame).into()),
+    )
+    .unwrap();
+    let publication_policy: publication::LocalPublicationPolicy =
+        publication::LocalPublicationPolicy::object_results(protocol(), semantics);
+    set_state(
+        store,
+        publication::publication_policy_key_for_profile(&protocol(), 4).unwrap(),
+        StateMutation::Put(publication_policy.encode().unwrap()),
+    );
+    publication::handle_local_publication(
+        store,
+        &context(),
+        domain(),
+        &resolver(),
+        &publication_policy,
+        submission,
+    )
+    .unwrap();
+    reference
+}
+
+#[test]
+fn validate_closure_admits_profile_four_generic_object_result_semantics() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let semantics: Digest32 = generic_object_result_semantics(&resolver(), &protocol()).unwrap();
+    let reference: UnverifiedDependencyRef = publish_profile_four_artifact(&store, semantics);
+    let loaded: VerifiedDurablePublication = load_verified_publication(
+        &store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        reference.origin(),
+    )
+    .unwrap()
+    .unwrap();
+    validate_closure(&resolver(), &[], &loaded.interface).unwrap();
+}
+
+#[test]
+fn validate_closure_rejects_profile_four_with_general_semantics() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let wrong: Digest32 = general_execution_semantics(&resolver(), &protocol()).unwrap();
+    let reference: UnverifiedDependencyRef = publish_profile_four_artifact(&store, wrong);
+    let loaded: VerifiedDurablePublication = load_verified_publication(
+        &store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        reference.origin(),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(matches!(
+        validate_closure(&resolver(), &[], &loaded.interface),
+        Err(LocalExecutionAdmissionError::Invalid(
+            "non-executable publication semantics"
+        ))
+    ));
+}
