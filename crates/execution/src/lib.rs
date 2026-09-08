@@ -978,6 +978,8 @@ pub use local_wasm::LocalWasmExecutionEngine;
 /// Signed immutable artifact candidates; authentication alone grants no authority.
 pub mod publication;
 
+pub mod paid_execution;
+
 mod contract_wasm;
 pub use contract_wasm::{
     CONTRACT_WASM_ADMISSION_PROFILE_VERSION, ContractWasmValidationError,
