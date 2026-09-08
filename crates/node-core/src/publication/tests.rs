@@ -746,8 +746,8 @@ fn shared_loader_budget_rejects_next_union_node_before_record_io() {
     .unwrap();
     assert_eq!(store.state_reads.borrow().len(), reads_before_cache);
     assert!(std::ptr::eq(
-        first.as_ref().unwrap().interface.candidate().request(),
-        cached.interface.candidate().request()
+        first.as_ref().unwrap().interface.candidate().artifact(),
+        cached.interface.candidate().artifact()
     ));
     assert_eq!(cached.reads.len(), 33); // 32 immutable records and their one policy.
     assert!(matches!(

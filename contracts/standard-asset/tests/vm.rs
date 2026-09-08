@@ -46,14 +46,9 @@ fn origin(seed: u8) -> PackageOrigin {
     PackageOrigin::unverified(context().chain_id().clone(), sender(), [seed; 32]).unwrap()
 }
 fn reference(candidate: &AuthenticatedPublicationCandidate) -> UnverifiedDependencyRef {
-    let artifact = candidate.request().artifact();
-    UnverifiedDependencyRef::new(
-        artifact.origin().clone(),
-        1,
-        context(),
-        *candidate.request().artifact_digest(),
-    )
-    .unwrap()
+    let artifact = candidate.artifact();
+    UnverifiedDependencyRef::new(artifact.origin().clone(), 1, context(), *candidate.digest())
+        .unwrap()
 }
 fn publish() -> AuthenticatedPublicationCandidate {
     let package: StandardAssetPackage = build_package(&origin(1)).unwrap();

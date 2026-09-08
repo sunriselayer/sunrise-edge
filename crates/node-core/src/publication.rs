@@ -371,13 +371,13 @@ fn load_closure<S: StructuredDurableDomainStateStore>(
 }
 fn match_reference(
     reference: &UnverifiedDependencyRef,
-    request: &execution::publication::PublicationRequest,
+    artifact: &execution::publication::CodeArtifact,
+    digest: &Digest32,
 ) -> Result<(), PublicationAdmissionError> {
-    let artifact: &execution::publication::CodeArtifact = request.artifact();
     if reference.origin() != artifact.origin()
         || reference.revision() != artifact.revision()
         || reference.context() != artifact.context()
-        || reference.artifact_digest() != request.artifact_digest()
+        || reference.artifact_digest() != digest
     {
         return Err(PublicationAdmissionError::CorruptRecord);
     }
