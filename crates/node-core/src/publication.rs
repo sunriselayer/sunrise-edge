@@ -223,6 +223,16 @@ impl LocalPublicationPolicy {
     /// profile-four context-bound key, distinct from the profile-three key.
     /// It does not admit, install or expose paid execution, reservation or
     /// settlement.
+    ///
+    /// Publication admission is exact-match per profile: a profile-four
+    /// artifact is admitted only against a committed profile-four policy at
+    /// its own `v4/policies/` key (see [`publication_policy_key_for_profile`]),
+    /// never against the profile-three policy or key, even though the
+    /// corresponding *execution* host-import profile
+    /// (`GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION`) is a superset of the
+    /// profile-three host imports. The `v4`/`v3`/... key suffixes map the
+    /// profile number directly onto historical wire-version numbering; they
+    /// carry no other significance.
     #[must_use]
     pub const fn object_results(context: PublicationContext, semantics: Digest32) -> Self {
         Self {

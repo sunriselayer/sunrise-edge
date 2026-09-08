@@ -1,6 +1,7 @@
 use super::*;
 use abi::call_values::{CallAbi, ValueLayout, encode_call_abi};
-use abi::public_abi::{EntrypointDeclaration, PackageAbi};
+use abi::executable_abi::{ExecutableAbi, encode_executable_abi};
+use abi::public_abi::{ConstructorDeclaration, EntrypointDeclaration, PackageAbi};
 use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::publication::{
     ArtifactParts, CodeArtifact, PublicationRequest, artifact_commitment,
@@ -1381,6 +1382,141 @@ fn profile_four_policy_key_is_distinct_from_every_historical_profile_and_context
     );
     assert!(matches!(
         publication_policy_key_for_profile(&context, 5),
+        Err(PublicationAdmissionError::PolicyMismatch)
+    ));
+}
+
+fn general_submission(context: &PublicationContext, seed: u8, nonce: u64) -> PublicationSubmission {
+    let key: SigningKey = signing_key();
+    let publisher: [u8; 32] = VerificationKey::from(&key).into();
+    let origin: PackageOrigin =
+        PackageOrigin::unverified(context.chain_id().clone(), publisher, [seed; 32]).unwrap();
+    let meta: ExecutableAbi = ExecutableAbi {
+        call: CallAbi {
+            objects: PackageAbi {
+                origin: origin.clone(),
+                constructors: vec![],
+                entrypoints: vec![EntrypointDeclaration {
+                    name: "run".into(),
+                    type_parameters: vec![],
+                    objects: vec![],
+                }],
+            },
+            arguments: vec![ValueLayout::Tuple(vec![])],
+            bodies: vec![],
+        },
+        initializer: Some("run".into()),
+        transferable_constructors: vec![],
+        results: vec![Vec::new()],
+    };
+    let semantics: Digest32 = local_general_publication_semantics(&resolver(), context).unwrap();
+    let artifact: CodeArtifact = CodeArtifact::new(ArtifactParts {
+        context: context.clone(),
+        origin,
+        revision: 1,
+        wasm_profile: 3,
+        semantics,
+        wasm: wat::parse_str("(module (memory (export \"memory\") 1 2) (func (export \"run\")))")
+            .unwrap(),
+        unverified_abi: encode_executable_abi(&meta).unwrap(),
+        exports: vec!["run".into()],
+        unverified_dependencies: vec![],
+    })
+    .unwrap();
+    signed_artifact(artifact, nonce, [seed; 32], &key)
+}
+
+fn object_results_submission(
+    context: &PublicationContext,
+    seed: u8,
+    nonce: u64,
+) -> PublicationSubmission {
+    let key: SigningKey = signing_key();
+    let publisher: [u8; 32] = VerificationKey::from(&key).into();
+    let origin: PackageOrigin =
+        PackageOrigin::unverified(context.chain_id().clone(), publisher, [seed; 32]).unwrap();
+    let meta: ExecutableAbi = ExecutableAbi {
+        call: CallAbi {
+            objects: PackageAbi {
+                origin: origin.clone(),
+                constructors: vec![ConstructorDeclaration {
+                    local_id: 1,
+                    schema: 1,
+                    arguments: vec![],
+                }],
+                entrypoints: vec![EntrypointDeclaration {
+                    name: "init".into(),
+                    type_parameters: vec![],
+                    objects: vec![],
+                }],
+            },
+            arguments: vec![ValueLayout::Tuple(vec![])],
+            bodies: vec![ValueLayout::U64],
+        },
+        initializer: Some("init".into()),
+        transferable_constructors: vec![1],
+        results: vec![Vec::new()],
+    };
+    let semantics: Digest32 =
+        local_object_result_publication_semantics(&resolver(), context).unwrap();
+    let artifact: CodeArtifact = CodeArtifact::new(ArtifactParts {
+        context: context.clone(),
+        origin,
+        revision: 1,
+        wasm_profile: 4,
+        semantics,
+        wasm: wat::parse_str("(module (memory (export \"memory\") 1 2) (func (export \"init\")))")
+            .unwrap(),
+        unverified_abi: encode_executable_abi(&meta).unwrap(),
+        exports: vec!["init".into()],
+        unverified_dependencies: vec![],
+    })
+    .unwrap();
+    signed_artifact(artifact, nonce, [seed; 32], &key)
+}
+
+#[test]
+fn profile_four_policy_bytes_at_profile_three_key_are_rejected_by_legacy_path() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let context: PublicationContext = policy(0).context().clone();
+    let general_semantics: Digest32 =
+        local_general_publication_semantics(&resolver(), &context).unwrap();
+    let general: LocalPublicationPolicy =
+        LocalPublicationPolicy::general(context.clone(), general_semantics);
+    let object_semantics: Digest32 =
+        local_object_result_publication_semantics(&resolver(), &context).unwrap();
+    let object_results: LocalPublicationPolicy =
+        LocalPublicationPolicy::object_results(context.clone(), object_semantics);
+    set_state(
+        &store,
+        publication_policy_key_for_profile(&context, 3).unwrap(),
+        StateMutation::Put(object_results.encode().unwrap()),
+    );
+    let submission: PublicationSubmission = general_submission(&context, 51, 0);
+    assert!(matches!(
+        publish(&store, &general, submission),
+        Err(PublicationAdmissionError::PolicyMismatch)
+    ));
+}
+
+#[test]
+fn profile_four_artifact_is_rejected_by_profile_three_policy() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let context: PublicationContext = policy(0).context().clone();
+    let general_semantics: Digest32 =
+        local_general_publication_semantics(&resolver(), &context).unwrap();
+    let general: LocalPublicationPolicy =
+        LocalPublicationPolicy::general(context.clone(), general_semantics);
+    set_state(
+        &store,
+        publication_policy_key_for_profile(&context, 3).unwrap(),
+        StateMutation::Put(general.encode().unwrap()),
+    );
+    let submission: PublicationSubmission = object_results_submission(&context, 52, 0);
+    assert!(matches!(
+        publish(&store, &general, submission),
         Err(PublicationAdmissionError::PolicyMismatch)
     ));
 }
