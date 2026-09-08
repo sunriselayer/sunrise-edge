@@ -25,6 +25,10 @@ const FEE_DISTRIBUTION_TYPE_ID: u16 = 0x7008;
 const ENCODING_VERSION: u16 = 1;
 const MAX_REGISTRY_ASSETS: usize = u16::MAX as usize - 1;
 const MAX_SIGNERS: usize = u16::MAX as usize - 3;
+/// Maximum bytes of one encoded canonical [`GasSchedule`]: the 10-byte
+/// canonical frame header plus six fixed `u64` fields, each 14 bytes
+/// (2-byte field id, 4-byte length, 8-byte value).
+const MAX_GAS_SCHEDULE_BYTES: usize = 10 + 6 * 14;
 
 /// Errors returned by fee helpers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +61,8 @@ pub enum FeeError {
     CanonicalDecoding(CanonicalDecodingError),
     /// Object encoding or decoding failed.
     Object(objects::ObjectError),
+    /// The encoded [`GasSchedule`] exceeds the fixed six-`u64`-field bound.
+    GasScheduleTooLarge(usize),
 }
 
 impl fmt::Display for FeeError {
@@ -90,6 +96,10 @@ impl fmt::Display for FeeError {
             Self::CanonicalEncoding(error) => error.fmt(f),
             Self::CanonicalDecoding(error) => error.fmt(f),
             Self::Object(error) => error.fmt(f),
+            Self::GasScheduleTooLarge(length) => write!(
+                f,
+                "gas schedule has {length} bytes, exceeds canonical limit of {MAX_GAS_SCHEDULE_BYTES}"
+            ),
         }
     }
 }
@@ -394,6 +404,25 @@ pub fn encode_gas_schedule(schedule: &GasSchedule) -> Result<Vec<u8>, FeeError> 
     canonical.field_u64(5, schedule.storage_price)?;
     canonical.field_u64(6, schedule.system_module_price)?;
     Ok(canonical.finish()?)
+}
+
+/// Strictly decodes one canonical [`GasSchedule`] without changing its stable encoding.
+pub fn decode_gas_schedule(input: &[u8]) -> Result<GasSchedule, FeeError> {
+    if input.len() > MAX_GAS_SCHEDULE_BYTES {
+        return Err(FeeError::GasScheduleTooLarge(input.len()));
+    }
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(input)?;
+    frame.require_type(GAS_SCHEDULE_TYPE_ID)?;
+    frame.require_version(ENCODING_VERSION)?;
+    frame.require_only_fields(&[1, 2, 3, 4, 5, 6])?;
+    Ok(GasSchedule {
+        base_fee: frame.required_u64(1)?,
+        execution_price: frame.required_u64(2)?,
+        read_price: frame.required_u64(3)?,
+        write_price: frame.required_u64(4)?,
+        storage_price: frame.required_u64(5)?,
+        system_module_price: frame.required_u64(6)?,
+    })
 }
 
 /// Encodes fee usage.
@@ -817,5 +846,85 @@ mod tests {
             ),
             Err(FeeError::DuplicateSigner(sample_validator_id(0x11)))
         );
+    }
+
+    fn sample_schedule() -> GasSchedule {
+        GasSchedule {
+            base_fee: 10,
+            execution_price: 1,
+            read_price: 2,
+            write_price: 3,
+            storage_price: 4,
+            system_module_price: 5,
+        }
+    }
+
+    #[test]
+    fn gas_schedule_encoding_is_exactly_the_fixed_six_field_size() {
+        let encoded = encode_gas_schedule(&sample_schedule()).unwrap();
+        assert_eq!(encoded.len(), MAX_GAS_SCHEDULE_BYTES);
+    }
+
+    #[test]
+    fn gas_schedule_decoder_round_trips_existing_canonical_bytes() {
+        let schedule = sample_schedule();
+        let encoded = encode_gas_schedule(&schedule).unwrap();
+        assert_eq!(decode_gas_schedule(&encoded).unwrap(), schedule);
+    }
+
+    #[test]
+    fn gas_schedule_decoder_rejects_oversize_input_before_decoding() {
+        assert_eq!(
+            decode_gas_schedule(&[0u8; MAX_GAS_SCHEDULE_BYTES + 1]),
+            Err(FeeError::GasScheduleTooLarge(MAX_GAS_SCHEDULE_BYTES + 1))
+        );
+    }
+
+    #[test]
+    fn gas_schedule_decoder_rejects_wrong_type_and_version() {
+        let schedule = sample_schedule();
+        let mut wrong_type = encode_gas_schedule(&schedule).unwrap();
+        wrong_type[4..6].copy_from_slice(&0x7999_u16.to_le_bytes());
+        assert!(matches!(
+            decode_gas_schedule(&wrong_type),
+            Err(FeeError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedTypeId { .. }
+            ))
+        ));
+
+        let mut wrong_version = encode_gas_schedule(&schedule).unwrap();
+        wrong_version[6..8].copy_from_slice(&2_u16.to_le_bytes());
+        assert!(matches!(
+            decode_gas_schedule(&wrong_version),
+            Err(FeeError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedVersion { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn gas_schedule_decoder_rejects_unknown_fields_missing_fields_and_trailing_bytes() {
+        let mut with_unknown_field = CanonicalStruct::new(GAS_SCHEDULE_TYPE_ID, ENCODING_VERSION);
+        with_unknown_field.field_u64(1, 1).unwrap();
+        with_unknown_field.field_u64(2, 1).unwrap();
+        with_unknown_field.field_u64(3, 1).unwrap();
+        with_unknown_field.field_u64(4, 1).unwrap();
+        with_unknown_field.field_u64(5, 1).unwrap();
+        with_unknown_field.field_u64(6, 1).unwrap();
+        with_unknown_field.field_u64(7, 1).unwrap();
+        assert!(decode_gas_schedule(&with_unknown_field.finish().unwrap()).is_err());
+
+        let mut missing_field = CanonicalStruct::new(GAS_SCHEDULE_TYPE_ID, ENCODING_VERSION);
+        missing_field.field_u64(1, 1).unwrap();
+        assert!(matches!(
+            decode_gas_schedule(&missing_field.finish().unwrap()),
+            Err(FeeError::CanonicalDecoding(
+                CanonicalDecodingError::MissingField(2)
+            ))
+        ));
+
+        let mut trailing = encode_gas_schedule(&sample_schedule()).unwrap();
+        trailing.push(0);
+        assert!(decode_gas_schedule(&trailing).is_err());
     }
 }
