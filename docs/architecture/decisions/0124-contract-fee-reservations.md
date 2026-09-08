@@ -334,6 +334,68 @@ the interface, not implementation review or readiness.
 
 ## Review gate
 
+### Execution-fee consent and policy wire boundary (2026-09-08)
+
+Use one `PaidIntent` and one `ExecutePaidContract` Ed25519 signature domain
+for Call, Instantiate and Publish. A cryptographically authenticated intent is
+not durable admission: it proves neither current object ownership/version nor
+installed policy, nonce freshness, publication provenance or available balance.
+Keep the experimental coordinator private and test-only until those checks and
+the complete paid receipt/commit boundary exist.
+
+Allocate `0x6410/v1` for FeeSourceConsent, `0x6411/v1` for PaidApplication,
+`0x6412/v1` for PaidIntent, `0x6413/v1` for SignedPaidIntent, and `0x6414/v1`
+for PaidFeePolicy. All decoders bound bytes before allocation, reject unknown
+versions/fields/discriminants and require canonical re-encoding equality.
+
+- Consent fields 1..4 are the existing ObjectRef (id, version and digest),
+  reservation access (u16: Write=1, Consume=2), maximum asset units (u64),
+  and refund-recipient bytes. The original owner is the envelope's sender;
+  sponsorship or a separately selected source owner is not part of this profile.
+- Application field 1 is kind (u16: Instantiate=1, Call=2, Publish=3).
+  Kinds 1/2 have field 2 containing unsigned CallIntent bytes; kind 3 instead
+  has field 3 containing unsigned CodeArtifact bytes. PublicationRequest already
+  contains a signature and must not be nested or populated with a dummy signature.
+- Intent fields 1..8 are context, request ID, sender, nonce, fee-policy digest,
+  consent, application, and positive application gas limit L. Field 9 contains
+  the existing authorization table only when nonempty; an explicit empty table
+  is noncanonical. Authorizations are valid only for Call.
+- Signed intent fields 1/2 are the complete intent and its 64-byte signature.
+
+For Call/Instantiate, the nested context, request ID, sender, nonce and gas limit
+must exactly equal the envelope. Instantiate requires sender=instance creator,
+empty application access and empty type arguments. Publish requires artifact
+context=outer context and publisher=sender, with no nested request ID/nonce or
+signature. Structural decoding is not publication admission or a claim that
+dependency contexts are currently authorized.
+
+Consume reservation forbids the source in application access. Write reservation
+allows it only with an identical original ObjectRef; the application may retain
+any of its signed Read/Write/Consume modes. The union of original inputs includes
+the separately declared source under the existing invocation-wide object bound.
+Reservation is never added to the application's authorization-selector table.
+
+PaidFeePolicy fields 1..16 bind context, base profile-4 execution-policy digest,
+exact instance target, exact code reference, reserve/reserve_all/settle names,
+type arguments, asset type, reservation type, schema, fee recipient, the existing
+GasSchedule encoding, conversion divisor, and positive R/S allowances. Fields
+17..22 bind calls, handles, creations, events, memory and output caps shared by
+reserve/settle, fixed to this profile's stated limits. Fields 23/24 bind positive
+Publish artifact-byte and closure-node execution-unit prices; metering and their
+calibration are activation requirements, not permission to charge an estimate.
+Policy validation rejects unsupported resource prices, invalid recipients,
+nonpositive actual fees at A=0, arithmetic overflow and incompatible base policy.
+
+Hash the complete policy under the trusted context's ProtocolConfig purpose.
+The base execution policy does not reference the fee policy, and neither policy
+references an invocation, so commitments are acyclic. Hash the complete signed
+intent under NodeEvent for replay and reservation identity. Authentication takes
+a trusted expected policy/resolver, checks their contexts and digest equality,
+and verifies the distinct signature before deriving the immutable reservation
+quote from L and max_fee. Never convert an authenticated zero-fee wrapper into a
+paid wrapper. Policy codec validity and quote validity do not establish calibrated
+R/S, installation, governance authority or storage authority.
+
 ### Coordinator implementation boundary (2026-09-08)
 
 The VM phase runner is internal until a distinct authenticated paid envelope
