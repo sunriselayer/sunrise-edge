@@ -45,7 +45,9 @@ impl PublicationCache {
         Ok(())
     }
     fn retain(&mut self, candidate: AuthenticatedPublicationCandidate) -> Result<(), ClientError> {
-        let request = candidate.request();
+        let request = candidate
+            .request()
+            .ok_or_else(|| invalid("paid publication candidate has no legacy request"))?;
         let artifact = request.artifact();
         let reference: UnverifiedDependencyRef = UnverifiedDependencyRef::new(
             artifact.origin().clone(),
@@ -304,7 +306,7 @@ impl<T: Transport> Client<T> {
                 cache.retain(candidate.clone())?;
                 candidate
             };
-            let artifact = candidate.request().artifact();
+            let artifact = candidate.artifact();
             let semantics = match artifact.wasm_profile() {
                 2 => local_execution_semantics(resolver, reference.context())?,
                 3 if policy.profile() == 3 => {
