@@ -18,7 +18,9 @@
 //!   has been attempted — including a receipt-assembly or final encoding
 //!   failure discovered after the VM finished — is an `Ok` zero-charge
 //!   [`PaidExecutionStatus::HostRejected`] receipt carrying the exact
-//!   measured gas. It is never a bare `Err`, because the caller must still
+//!   measured gas, except that an internal accounting-bound violation reports
+//!   the admitted total ceiling instead. It is never a bare `Err`, because
+//!   the caller must still
 //!   commit the consumed nonce and that receipt.
 use super::LocalWasmExecutionEngine;
 use super::coordinator::{

@@ -1015,7 +1015,9 @@ fn zero_charge(
 }
 
 /// Discards the arena entirely and reports a zero-charge `HostRejected`
-/// outcome with exact measured gas. Used only for a deterministic host
+/// outcome with exact measured gas, or the admitted total ceiling if the
+/// retained counters themselves violate the accounting bound. Used only for
+/// a deterministic host
 /// invariant/finalization failure discovered once reserve was attempted:
 /// it never calls `restore`/`zero_charge` again (no failed restore
 /// recursion) and never inspects arena state that may itself be
