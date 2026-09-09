@@ -27,7 +27,7 @@ pub fn verified_code_reference(
 /// `(creator, seed)`. The supplied scope set must equal this set exactly:
 /// a missing scope, a duplicate scope and an unneeded extra scope are all
 /// rejected.
-pub(crate) fn required_scope_instances(
+pub fn required_scope_instances(
     root: &crate::call::InstanceTarget,
     authorizations: &[CallAuthorization],
 ) -> BTreeSet<([u8; 32], [u8; 32])> {
@@ -56,7 +56,7 @@ pub(crate) fn required_scope_instances(
 /// The supplied set must equal `required` exactly, so a duplicate scope, an
 /// unneeded extra scope and a missing scope are all rejected. Callers still
 /// perform their own root/mode/entrypoint and argument binding checks.
-pub(crate) fn validate_execution_scope_set(
+pub fn validate_execution_scope_set(
     resolver: &HashSuiteResolver,
     policy: &LocalExecutionPolicy,
     context: &publication::PublicationContext,
@@ -157,7 +157,7 @@ pub(crate) fn validate_execution_scope_set(
 /// exact code is inside that instance's verified closure, the callee
 /// entrypoint is not an initializer, and the callee's declared object modes
 /// never exceed the signed per-object ceilings.
-pub(crate) fn validate_authorization_target_scopes(
+pub fn validate_authorization_target_scopes(
     scopes: &[ResolvedExecutionScope],
     authorizations: &[CallAuthorization],
 ) -> Result<(), LocalExecutionError> {

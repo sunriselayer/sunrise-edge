@@ -14,6 +14,7 @@ use abi::package_types::PackageOrigin;
 use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::LocalWasmExecutionEngine;
 use execution::call::CallIntent;
+use execution::call_authorization::{CallAuthorization, ExecutionTarget};
 use execution::local_execution::{
     LocalExecutionIntent, LocalExecutionMode, SignedLocalExecutionIntent,
     decode_local_execution_result, encode_signed_local_execution, generic_object_result_semantics,
@@ -21,8 +22,8 @@ use execution::local_execution::{
 };
 use execution::paid_execution::{
     FeeSourceConsent, PaidExecutionResult, PaidResultTarget, SignedPaidIntent,
-    decode_paid_execution_result, encode_signed_paid_intent, paid_fee_policy_digest,
-    paid_intent_signing_frame,
+    decode_paid_execution_result, decode_signed_paid_intent, encode_signed_paid_intent,
+    paid_fee_policy_digest, paid_intent_signing_frame,
 };
 use execution::publication::{
     ArtifactParts, CodeArtifact, PublicationRequest, PublicationSubmission,
@@ -490,6 +491,49 @@ fn transfer_call(fixture: &Fixture, request: u8, nonce: u64) -> Vec<u8> {
         entrypoint: "transfer",
         arguments: public_standard_asset::transfer_arguments(&refund_account()).unwrap(),
         access: vec![entry(&fixture.coin, AccessMode::Write)],
+    })
+}
+
+/// The canonical successful path, but signing the given reusable call
+/// authorization table alongside it. Used only to exercise the independent
+/// scope/authorization admission barrier; the root application call itself
+/// is unchanged and never an initializer.
+fn transfer_call_with_authorizations(
+    fixture: &Fixture,
+    request: u8,
+    nonce: u64,
+    authorizations: Vec<CallAuthorization>,
+) -> Vec<u8> {
+    let application: CallIntent = CallIntent {
+        context: protocol(),
+        request_id: [request; 32],
+        sender: sender(),
+        nonce,
+        code: fixture.code.clone(),
+        instance: instance_target(&resolver(), &fixture.instance).unwrap(),
+        entrypoint: "transfer".into(),
+        type_arguments: vec![public_standard_asset::asset_type_argument(&fixture.asset)],
+        access: abi::AccessManifest {
+            entries: vec![entry(&fixture.coin, AccessMode::Write)],
+        },
+        arguments: public_standard_asset::transfer_arguments(&refund_account()).unwrap(),
+        gas_limit: 100_000,
+    };
+    sign_paid(PaidIntent {
+        context: protocol(),
+        request_id: [request; 32],
+        sender: sender(),
+        nonce,
+        fee_policy_digest: paid_fee_policy_digest(&resolver(), &fixture.policy).unwrap(),
+        consent: FeeSourceConsent {
+            source: object_reference(&fixture.coin),
+            access: ReservationAccessKind::Write,
+            max_fee: Amount::new(1_000_000),
+            refund_recipient: refund_account(),
+        },
+        application: PaidApplication::Call(application),
+        gas_limit: 100_000,
+        authorizations,
     })
 }
 
@@ -1658,4 +1702,302 @@ fn sqlite_reopen_replays_exactly_and_a_stale_writer_generation_is_fenced() {
         assert_eq!(tracked(&store, &generation(2), &fixture, &other), expected);
     }
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+// ── adversarial: an injectable engine is never the sole barrier ───────────
+//
+// `handle_paid_execution` is generic over `E: PaidContractEngine`. Every test
+// above runs the real, trusted `LocalWasmExecutionEngine`; the tests below
+// model a forged, buggy or otherwise untrusted implementation of that same
+// trait and prove that node-core's own independent barriers -- not the
+// engine's internal validation -- are what stand between such an engine and
+// a durable commit.
+
+/// Panics if the engine boundary is ever entered. Used to prove that a
+/// rejection happened at the independent pre-engine admission barrier, not
+/// merely that the (trusted) engine also happens to reject the request.
+struct PanicOnCallEngine;
+impl PaidContractEngine for PanicOnCallEngine {
+    fn execute_paid(
+        &self,
+        _request: PaidExecutionRequest<'_>,
+    ) -> Result<PaidExecutionOutcome, PaidExecutionError> {
+        panic!("the independent scope/authorization barrier must reject before any engine call");
+    }
+}
+
+/// Wraps the real engine and applies an arbitrary post-execution tamper,
+/// modeling an injectable engine that is forged, buggy, or otherwise not the
+/// trusted `LocalWasmExecutionEngine`. Everything it tampers with must still
+/// be caught by node-core's own independent verification.
+struct TamperingEngine<F> {
+    inner: LocalWasmExecutionEngine,
+    tamper: F,
+}
+impl<F: Fn(&mut PaidExecutionOutcome)> PaidContractEngine for TamperingEngine<F> {
+    fn execute_paid(
+        &self,
+        request: PaidExecutionRequest<'_>,
+    ) -> Result<PaidExecutionOutcome, PaidExecutionError> {
+        let mut outcome: PaidExecutionOutcome = self.inner.execute_paid(request)?;
+        (self.tamper)(&mut outcome);
+        Ok(outcome)
+    }
+}
+
+#[test]
+fn independent_barrier_rejects_a_mismatched_signed_root_target_before_engine_call() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let other: PackageOrigin =
+        PackageOrigin::unverified(protocol().chain_id().clone(), sender(), [60; 32]).unwrap();
+    let before: Tracked = tracked(&store, &context(), &fixture, &other);
+    let canonical: Vec<u8> = transfer_call(&fixture, 5, FIRST_PAID_NONCE);
+    let mut signed: SignedPaidIntent = decode_signed_paid_intent(&canonical).unwrap();
+    let PaidApplication::Call(call) = &mut signed.intent.application else {
+        panic!("call fixture");
+    };
+    call.instance.record_digest = resolver()
+        .hash_for_purpose(
+            protocol().epoch(),
+            HashPurpose::Object,
+            b"mismatched-signed-root-target",
+        )
+        .unwrap();
+    let bytes: Vec<u8> = sign_paid(signed.intent);
+    let result = handle_paid_execution(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &PanicOnCallEngine,
+        &bytes,
+        10,
+    );
+    assert!(matches!(
+        result,
+        Err(PaidExecutionAdmissionError::Invalid("root execution scope"))
+    ));
+    assert_eq!(tracked(&store, &context(), &fixture, &other), before);
+    assert_eq!(next_nonce(&store), FIRST_PAID_NONCE);
+}
+
+#[test]
+fn independent_barrier_rejects_a_nested_initializer_authorization_before_any_engine_call() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let other: PackageOrigin =
+        PackageOrigin::unverified(protocol().chain_id().clone(), sender(), [60; 32]).unwrap();
+    let before: Tracked = tracked(&store, &context(), &fixture, &other);
+    // A reusable authorization whose callee entrypoint is the instance's own
+    // ABI-designated initializer. The wire-level structural check
+    // (`validate_call_authorizations`) knows nothing about ABI initializers,
+    // so only the independent scope-set/authorization-target barrier can
+    // catch this before an engine ever runs.
+    let target: ExecutionTarget = ExecutionTarget {
+        instance: instance_target(&resolver(), &fixture.instance).unwrap(),
+        code: fixture.code.clone(),
+    };
+    let authorization: CallAuthorization = CallAuthorization {
+        caller: target.clone(),
+        callee: target,
+        entrypoint: "init".into(),
+        type_arguments: vec![],
+        objects: vec![],
+    };
+    let bytes: Vec<u8> =
+        transfer_call_with_authorizations(&fixture, 5, FIRST_PAID_NONCE, vec![authorization]);
+    let result = handle_paid_execution(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &PanicOnCallEngine,
+        &bytes,
+        10,
+    );
+    assert!(matches!(
+        result,
+        Err(PaidExecutionAdmissionError::Execution(_))
+    ));
+    assert_eq!(tracked(&store, &context(), &fixture, &other), before);
+    assert_eq!(next_nonce(&store), FIRST_PAID_NONCE);
+}
+
+#[test]
+fn forged_engine_cannot_smuggle_an_application_effect_under_application_failed() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let other: PackageOrigin =
+        PackageOrigin::unverified(protocol().chain_id().clone(), sender(), [60; 32]).unwrap();
+    let before: Tracked = tracked(&store, &context(), &fixture, &other);
+    let bytes: Vec<u8> = trapping_mint_call(&fixture, 5, FIRST_PAID_NONCE);
+    // The real coordinator legitimately produces `ApplicationFailed` here
+    // (the TreasuryCap write is discarded, only the fee settles). A forged
+    // engine instead keeps that application effect alongside the genuine
+    // settlement footprint.
+    let cap_version: u64 = fixture.cap.version;
+    let stolen_cap: Object = Object {
+        version: cap_version + 1,
+        ..fixture.cap.clone()
+    };
+    let engine: TamperingEngine<_> = TamperingEngine {
+        inner: LocalWasmExecutionEngine::new(),
+        tamper: move |outcome: &mut PaidExecutionOutcome| {
+            if outcome.result.status == PaidExecutionStatus::ApplicationFailed {
+                outcome
+                    .result
+                    .effects
+                    .object_effects
+                    .push(ObjectEffect::Mutated {
+                        previous_version: cap_version,
+                        new_object: stolen_cap.clone(),
+                    });
+            }
+        },
+    };
+    let result = handle_paid_execution(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &engine,
+        &bytes,
+        10,
+    );
+    assert!(result.is_err());
+    assert_eq!(tracked(&store, &context(), &fixture, &other), before);
+    assert_eq!(next_nonce(&store), FIRST_PAID_NONCE);
+}
+
+#[test]
+fn forged_engine_cannot_smuggle_effects_under_a_zero_charge_status() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let other: PackageOrigin =
+        PackageOrigin::unverified(protocol().chain_id().clone(), sender(), [60; 32]).unwrap();
+    let before: Tracked = tracked(&store, &context(), &fixture, &other);
+    // The 400-unit Coin cannot fund the worst-case reservation, so the
+    // pinned contract's `reserve` genuinely traps: `ReservationFailed`,
+    // zero charge, no effects. A forged engine instead reports a created
+    // object alongside that zero-charge status.
+    let bytes: Vec<u8> = paid_call(PaidCall {
+        fixture: &fixture,
+        policy: &fixture.policy,
+        request: 5,
+        nonce: FIRST_PAID_NONCE,
+        source: &fixture.small,
+        entrypoint: "transfer",
+        arguments: public_standard_asset::transfer_arguments(&refund_account()).unwrap(),
+        access: vec![entry(&fixture.small, AccessMode::Write)],
+    });
+    let bogus: Object = fixture.cap.clone();
+    let engine: TamperingEngine<_> = TamperingEngine {
+        inner: LocalWasmExecutionEngine::new(),
+        tamper: move |outcome: &mut PaidExecutionOutcome| {
+            if outcome.result.charged.is_none() {
+                outcome
+                    .result
+                    .effects
+                    .object_effects
+                    .push(ObjectEffect::Created(bogus.clone()));
+            }
+        },
+    };
+    let result = handle_paid_execution(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &engine,
+        &bytes,
+        10,
+    );
+    assert!(result.is_err());
+    assert_eq!(tracked(&store, &context(), &fixture, &other), before);
+    assert_eq!(next_nonce(&store), FIRST_PAID_NONCE);
+}
+
+#[test]
+fn forged_engine_cannot_report_a_surviving_reservation_authority() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let other: PackageOrigin =
+        PackageOrigin::unverified(protocol().chain_id().clone(), sender(), [60; 32]).unwrap();
+    let before: Tracked = tracked(&store, &context(), &fixture, &other);
+    let bytes: Vec<u8> = transfer_call(&fixture, 5, FIRST_PAID_NONCE);
+    let bogus_id: ObjectId = ObjectId::new([250; 32]);
+    let bogus_object: Object = Object {
+        id: bogus_id,
+        version: 1,
+        owner: Owner::Address(Address::new(sender())),
+        type_hash: fixture.cap.type_hash,
+        schema_version: fixture.cap.schema_version,
+        data: Vec::new(),
+    };
+    let reservation_type: abi::package_types::ScopedTypeTag =
+        fixture.policy.reservation_type.clone();
+    let instance_context = fixture.instance.context.clone();
+    let instance_target: execution::call::InstanceTarget =
+        instance_target(&resolver(), &fixture.instance).unwrap();
+    let code: UnverifiedDependencyRef = fixture.code.clone();
+    let engine: TamperingEngine<_> = TamperingEngine {
+        inner: LocalWasmExecutionEngine::new(),
+        tamper: move |outcome: &mut PaidExecutionOutcome| {
+            if outcome.result.status == PaidExecutionStatus::Success {
+                outcome
+                    .result
+                    .effects
+                    .object_effects
+                    .push(ObjectEffect::Created(bogus_object.clone()));
+                outcome.created_authorities.push(CreatedObjectAuthority {
+                    creation_ordinal: 4_000_000,
+                    authority: ObjectAuthority {
+                        object_id: bogus_id,
+                        instance_context: instance_context.clone(),
+                        instance: instance_target.clone(),
+                        code: code.clone(),
+                        ty: reservation_type.clone(),
+                    },
+                });
+            }
+        },
+    };
+    let result = handle_paid_execution(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &engine,
+        &bytes,
+        10,
+    );
+    assert!(result.is_err());
+    assert_eq!(tracked(&store, &context(), &fixture, &other), before);
+    assert_eq!(next_nonce(&store), FIRST_PAID_NONCE);
 }

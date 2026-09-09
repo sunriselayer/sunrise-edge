@@ -30,18 +30,21 @@
 //! route reaches this function, and no policy is installed by it.
 use super::*;
 use execution::call_authorization::MAX_EXECUTION_SCOPES;
+use execution::execution_scopes::{
+    required_scope_instances, validate_authorization_target_scopes, validate_execution_scope_set,
+};
 use execution::local_execution::{
-    InstanceRecord, LocalExecutionError, LocalExecutionPolicy, ObjectAuthority,
-    ResolvedExecutionScope, ScopedResolvedObject, decode_instance_record, decode_object_authority,
-    encode_instance_record, instance_target,
+    CreatedObjectAuthority, InstanceRecord, LocalExecutionError, LocalExecutionPolicy,
+    ObjectAuthority, ResolvedExecutionScope, ScopedResolvedObject, decode_instance_record,
+    decode_object_authority, encode_instance_record, instance_target,
 };
 use execution::paid_execution::{
-    AuthenticatedPaidIntent, PaidApplication, PaidApplicationScopes, PaidContractEngine,
-    PaidExecutionError, PaidExecutionOutcome, PaidExecutionRequest, PaidExecutionStatus,
-    PaidFeePolicy, PaidIntent, ReservationAccessKind, authenticate_paid_intent,
-    authenticate_paid_publication_candidate, encode_paid_execution_result, encode_paid_fee_policy,
-    encode_signed_paid_intent, paid_invocation_digest, quote_paid_intent,
-    verify_paid_execution_result,
+    AuthenticatedPaidIntent, PaidApplication, PaidApplicationScopes, PaidChargedOutcome,
+    PaidContractEngine, PaidExecutionError, PaidExecutionOutcome, PaidExecutionRequest,
+    PaidExecutionStatus, PaidFeePolicy, PaidIntent, ReservationAccessKind,
+    authenticate_paid_intent, authenticate_paid_publication_candidate,
+    encode_paid_execution_result, encode_paid_fee_policy, encode_signed_paid_intent,
+    paid_invocation_digest, quote_paid_intent, verify_paid_execution_result,
 };
 use execution::publication::{
     AuthenticatedPublicationCandidate, BoundObjectSignature, PublicationContext,
@@ -136,6 +139,93 @@ const fn stronger(left: AccessMode, right: AccessMode) -> AccessMode {
     } else {
         left
     }
+}
+
+/// Independently checks that a non-`Success` charged outcome's reported
+/// effects and events are exactly the fee settlement footprint derivable
+/// from `charged` and the resolved fee source: the fee source's own
+/// mutation (`Write`) or deletion (`Consume`), an optional consumed
+/// transient reservation deletion, the fresh fee output and an optional
+/// fresh refund output, with created authorities naming exactly those
+/// fresh outputs. [`verify_paid_execution_result`] already proves the fee
+/// and refund outputs and the absent surviving reservation type in
+/// isolation; this additionally proves that nothing else -- no
+/// application-created object, mutation, deletion or event -- survives
+/// into the durable commit under a forged or buggy `ApplicationFailed`
+/// receipt. Events are required empty because the real reserve/
+/// application/settle coordinator never emits one from reserve or settle;
+/// this is deliberately not an open allowlist for "fee events" it does not
+/// actually produce.
+fn validate_application_failed_footprint(
+    effects: &ExecutionEffects,
+    created_authorities: &[CreatedObjectAuthority],
+    charged: &PaidChargedOutcome,
+    source: &Object,
+    source_mode: AccessMode,
+) -> PaidResult<()> {
+    if !effects.events.is_empty() {
+        return invalid("application-failed events must be empty");
+    }
+    let mut remaining: Vec<&ObjectEffect> = effects.object_effects.iter().collect();
+    let source_index: usize = remaining
+        .iter()
+        .position(|effect| match (source_mode, effect) {
+            (
+                AccessMode::Write,
+                ObjectEffect::Mutated {
+                    previous_version,
+                    new_object,
+                },
+            ) => *previous_version == source.version && new_object.id == source.id,
+            (AccessMode::Consume, ObjectEffect::Deleted { id, version }) => {
+                *id == source.id && *version == source.version
+            }
+            _ => false,
+        })
+        .ok_or(PaidExecutionAdmissionError::Invalid(
+            "application-failed fee source footprint",
+        ))?;
+    remaining.remove(source_index);
+    let fee_index: usize = remaining
+        .iter()
+        .position(|effect| {
+            matches!(effect, ObjectEffect::Created(object) if object.id == charged.fee_output.id)
+        })
+        .ok_or(PaidExecutionAdmissionError::Invalid(
+            "application-failed fee output footprint",
+        ))?;
+    remaining.remove(fee_index);
+    if let Some(refund_output) = &charged.refund_output {
+        let refund_index: usize = remaining
+            .iter()
+            .position(|effect| {
+                matches!(effect, ObjectEffect::Created(object) if object.id == refund_output.id)
+            })
+            .ok_or(PaidExecutionAdmissionError::Invalid(
+                "application-failed refund output footprint",
+            ))?;
+        remaining.remove(refund_index);
+    }
+    match remaining.as_slice() {
+        [] => {}
+        [ObjectEffect::Deleted { id, .. }] if *id == charged.reservation => {}
+        _ => return invalid("application-failed effect footprint"),
+    }
+    let mut expected_authorities: BTreeSet<ObjectId> = BTreeSet::new();
+    expected_authorities.insert(charged.fee_output.id);
+    if let Some(refund_output) = &charged.refund_output {
+        expected_authorities.insert(refund_output.id);
+    }
+    let mut actual_authorities: BTreeSet<ObjectId> = BTreeSet::new();
+    for created in created_authorities {
+        if !actual_authorities.insert(created.authority.object_id) {
+            return invalid("application-failed duplicate creation authority");
+        }
+    }
+    if actual_authorities != expected_authorities {
+        return invalid("application-failed creation authority footprint");
+    }
+    Ok(())
 }
 
 fn scope_index(
@@ -507,6 +597,50 @@ pub fn handle_paid_execution<
         }
     };
 
+    // 5b. An independent node-core barrier, never delegated to the injectable
+    //     `E: PaidContractEngine`. It revalidates the *entire* admitted scope
+    //     set against exactly the same required-instance set, cross-protocol/
+    //     cross-chain rejection, conflicting-revision, code-node/code-byte
+    //     budget and authorization-target-ceiling rules
+    //     `execution::execution_scopes` enforces inside the engine boundary
+    //     itself, using the same shared public validators. A forged or
+    //     buggy engine that skips its own internal call to
+    //     `validate_paid_request` therefore still cannot commit a request
+    //     whose admitted scopes disagree on context, collide, omit a
+    //     required instance, exceed the closure budget, or grant an
+    //     authorization target beyond its signed ceiling: the engine's own
+    //     validation stays defense in depth, not the sole barrier.
+    let mut required_scopes: BTreeSet<([u8; 32], [u8; 32])> = match &intent.application {
+        PaidApplication::Call(inner) | PaidApplication::Instantiate(inner) => {
+            required_scope_instances(&inner.instance, &intent.authorizations)
+        }
+        PaidApplication::Publish(_) => BTreeSet::new(),
+    };
+    required_scopes.insert((fee_policy.instance.creator, fee_policy.instance.seed));
+    validate_execution_scope_set(
+        resolver,
+        base_policy,
+        &intent.context,
+        &required_scopes,
+        &admitted,
+    )?;
+    if let PaidApplication::Call(inner) | PaidApplication::Instantiate(inner) = &intent.application
+    {
+        let index: usize = application
+            .scope
+            .ok_or(PaidExecutionAdmissionError::Invalid("application scope"))?;
+        let root: &ResolvedExecutionScope =
+            admitted
+                .get(index)
+                .ok_or(PaidExecutionAdmissionError::Invalid(
+                    "application scope not admitted",
+                ))?;
+        if root.target != inner.instance || root.instance.code != inner.code {
+            return invalid("root execution scope");
+        }
+    }
+    validate_authorization_target_scopes(&admitted, &intent.authorizations)?;
+
     // 6. The durable union of original inputs: the declared fee source plus
     //    every signed application input, deduplicated by ObjectId and loaded
     //    exactly once. The durable union takes the stronger of the two signed
@@ -596,8 +730,14 @@ pub fn handle_paid_execution<
     {
         return invalid("fee source authority");
     }
+    let fee_interface: &VerifiedPublicationInterface = admitted
+        .get(application.fee_scope)
+        .map(|scope| &scope.interface)
+        .ok_or(PaidExecutionAdmissionError::Invalid(
+            "fee scope not admitted",
+        ))?;
     execution::publication::validate_nominal_body(
-        &admitted[application.fee_scope].interface,
+        fee_interface,
         &fee_policy.asset_type,
         fee_policy.schema,
         &source_input.resolved.object.data,
@@ -618,8 +758,12 @@ pub fn handle_paid_execution<
         let index: usize = application
             .scope
             .ok_or(PaidExecutionAdmissionError::Invalid("application scope"))?;
+        let application_interface: &VerifiedPublicationInterface =
+            admitted.get(index).map(|scope| &scope.interface).ok_or(
+                PaidExecutionAdmissionError::Invalid("application scope not admitted"),
+            )?;
         let binding: BoundObjectSignature<'_> =
-            execution::call::bind_call_intent(inner, &admitted[index].interface)
+            execution::call::bind_call_intent(inner, application_interface)
                 .map_err(|_| PaidExecutionAdmissionError::Invalid("application ABI binding"))?;
         if binding.objects().len() != inner.access.entries.len() {
             return invalid("application input count");
@@ -707,47 +851,61 @@ pub fn handle_paid_execution<
     //    and fee effect; zero-charge phase failures commit only the consumed
     //    nonce and the receipt.
     let mut mutations: Vec<StateMutationEntry> = Vec::new();
-    let object_mutations: Vec<DurableObjectMutationEntry> = if outcome.result.charged.is_some() {
-        for created in &outcome.created_authorities {
-            if created.authority.ty == fee_policy.reservation_type {
-                return invalid("surviving reservation authority");
+    let object_mutations: Vec<DurableObjectMutationEntry> =
+        if let Some(charged) = outcome.result.charged.as_ref() {
+            for created in &outcome.created_authorities {
+                if created.authority.ty == fee_policy.reservation_type {
+                    return invalid("surviving reservation authority");
+                }
             }
-        }
-        effects::translate(
-            store,
-            context,
-            domain,
-            resolver,
-            &admitted,
-            &effects::CheckedEffects {
-                context: &intent.context,
-                effects: &outcome.result.effects,
-                created_authorities: &outcome.created_authorities,
-            },
-            created_checkpoint,
-            &inputs,
-            &snapshots,
-            &mut reads,
-            &mut head_reads,
-            &mut mutations,
-        )?
-    } else {
-        if !outcome.result.effects.object_effects.is_empty()
-            || !outcome.result.effects.events.is_empty()
-            || !outcome.created_authorities.is_empty()
-        {
-            return invalid("zero-charge paid outcome must have no effects");
-        }
-        Vec::new()
-    };
+            if !success {
+                validate_application_failed_footprint(
+                    &outcome.result.effects,
+                    &outcome.created_authorities,
+                    charged,
+                    &source_input.resolved.object,
+                    source_mode,
+                )?;
+            }
+            effects::translate(
+                store,
+                context,
+                domain,
+                resolver,
+                &admitted,
+                &effects::CheckedEffects {
+                    context: &intent.context,
+                    effects: &outcome.result.effects,
+                    created_authorities: &outcome.created_authorities,
+                },
+                created_checkpoint,
+                &inputs,
+                &snapshots,
+                &mut reads,
+                &mut head_reads,
+                &mut mutations,
+            )?
+        } else {
+            if !outcome.result.effects.object_effects.is_empty()
+                || !outcome.result.effects.events.is_empty()
+                || !outcome.created_authorities.is_empty()
+            {
+                return invalid("zero-charge paid outcome must have no effects");
+            }
+            Vec::new()
+        };
     if success {
         if let Some(key) = application.instantiate_key {
             let index: usize = application
                 .scope
                 .ok_or(PaidExecutionAdmissionError::Invalid("application scope"))?;
+            let created_instance: &InstanceRecord =
+                admitted.get(index).map(|scope| &scope.instance).ok_or(
+                    PaidExecutionAdmissionError::Invalid("instantiate scope not admitted"),
+                )?;
             mutations.push(StateMutationEntry::new(
                 key,
-                StateMutation::Put(encode_instance_record(&admitted[index].instance)?),
+                StateMutation::Put(encode_instance_record(created_instance)?),
             )?);
         }
         if let Some(key) = application.publication_key {

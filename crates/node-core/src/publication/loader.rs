@@ -2,21 +2,21 @@
 //! byte budget precedes decoding/authentication/retention of a returned row.
 //!
 //! A stored row is dispatched by its strict canonical frame type: the legacy
-//! `PublicationSubmission` frame `0x6308` keeps its original verification
-//! rules, and the DR-0124 paid `SignedPaidIntent` frame `0x6413` is
+//! `PublicationSubmission` frame [`PUBLICATION_SUBMISSION_FRAME_TYPE`] keeps
+//! its original verification rules, and the DR-0124 paid `SignedPaidIntent`
+//! frame [`SIGNED_PAID_INTENT_FRAME_TYPE`] is
 //! reauthenticated under its own trusted original resolver and must present a
 //! committed successful paid Publish receipt. No third wrapper type or type ID
-//! is allocated, and an unknown type fails closed.
+//! is allocated, and an unknown type fails closed. Both constants are the
+//! same authoritative identifiers their defining `execution` modules encode
+//! and decode against, imported rather than re-declared, so dispatch here can
+//! never drift from the canonical wire type.
 use super::*;
 use execution::paid_execution::{
-    MAX_SIGNED_PAID_INTENT_BYTES, PaidApplication, SignedPaidIntent, authenticate_paid_intent,
-    authenticate_paid_publication_candidate, decode_signed_paid_intent,
+    MAX_SIGNED_PAID_INTENT_BYTES, PaidApplication, SIGNED_PAID_INTENT_FRAME_TYPE, SignedPaidIntent,
+    authenticate_paid_intent, authenticate_paid_publication_candidate, decode_signed_paid_intent,
 };
-
-/// Canonical frame type of a legacy stored `PublicationSubmission`.
-const LEGACY_SUBMISSION_FRAME_TYPE: u16 = 0x6308;
-/// Canonical frame type of a stored DR-0124 `SignedPaidIntent`.
-const SIGNED_PAID_INTENT_FRAME_TYPE: u16 = 0x6413;
+use execution::publication::PUBLICATION_SUBMISSION_FRAME_TYPE;
 
 /// The actual provenance of one cached node.
 #[derive(Clone)]
@@ -204,7 +204,7 @@ fn load_node<S: StructuredDurableDomainStateStore>(
     // unknown stored type fails closed.
     let frame: canonical_encoding::CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
     let cached: CachedPublication = match frame.type_id() {
-        LEGACY_SUBMISSION_FRAME_TYPE => legacy_node(
+        PUBLICATION_SUBMISSION_FRAME_TYPE => legacy_node(
             store,
             context,
             domain,
@@ -435,4 +435,23 @@ pub(crate) fn load_verified_publication_with_budget<S: StructuredDurableDomainSt
         interface: view,
         reads,
     }))
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::{PUBLICATION_SUBMISSION_FRAME_TYPE, SIGNED_PAID_INTENT_FRAME_TYPE};
+
+    /// Pins the two dispatch constants to their allocated canonical values.
+    /// A change to either constant's defining module without an explicit
+    /// protocol/encoding version would break this stable vector rather than
+    /// silently redirecting the loader's dispatch to a different frame type.
+    #[test]
+    fn dispatch_frame_types_are_stable() {
+        assert_eq!(PUBLICATION_SUBMISSION_FRAME_TYPE, 0x6308);
+        assert_eq!(SIGNED_PAID_INTENT_FRAME_TYPE, 0x6413);
+        assert_ne!(
+            PUBLICATION_SUBMISSION_FRAME_TYPE,
+            SIGNED_PAID_INTENT_FRAME_TYPE
+        );
+    }
 }
