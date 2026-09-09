@@ -351,13 +351,39 @@ fn application_scope<'a>(
 /// Publish's deterministic metered application units:
 /// `artifact_encoded_bytes * artifact_byte_price + unique_closure_nodes *
 /// closure_node_price`, where the candidate itself counts as one node.
-fn publish_units(
+///
+/// This is the one shared exact helper: it authenticates the candidate from
+/// the signed intent itself and verifies the *complete* dependency closure
+/// through [`verify_publication_interface`], so the resulting unit count
+/// never trusts a caller-supplied node count or a fabricated closure proof.
+/// [`crate::paid_execution::verify::verify_paid_execution_result`]
+/// recomputes the identical value from its
+/// own trusted `dependencies` input, rather than accepting any reported `A`
+/// bounded only by `A <= L`.
+pub(super) fn publish_units(
     resolver: &HashSuiteResolver,
     authenticated: &AuthenticatedPaidIntent,
     policy: &PaidFeePolicy,
-    artifact: &crate::publication::CodeArtifact,
     dependencies: &[AuthenticatedPublicationCandidate],
 ) -> Result<u64, PaidExecutionError> {
+    let artifact: &crate::publication::CodeArtifact = match &authenticated.intent().application {
+        PaidApplication::Publish(artifact) => artifact,
+        _ => {
+            return Err(PaidExecutionError::Invalid(
+                "publish units require a Publish intent",
+            ));
+        }
+    };
+    // Reject an oversized closure before doing any expensive candidate
+    // authentication or cloning the dependency slice: the count check is
+    // exact and cheap, and must gate all heavier structural work below.
+    let count: usize = dependencies
+        .len()
+        .checked_add(1)
+        .ok_or(PaidExecutionError::Invalid("publish closure size"))?;
+    if count > crate::publication::MAX_INTERFACE_NODES {
+        return Err(PaidExecutionError::Invalid("publish closure size"));
+    }
     let candidate: AuthenticatedPublicationCandidate =
         authenticate_paid_publication_candidate(resolver, authenticated)?;
     let interface = verify_publication_interface(candidate, dependencies.to_vec())?;
@@ -549,7 +575,6 @@ pub(crate) fn validate_paid_request(
                     request.resolver,
                     request.authenticated,
                     request.fee_policy,
-                    artifact,
                     dependencies,
                 )?,
             },

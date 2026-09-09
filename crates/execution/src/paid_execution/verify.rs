@@ -29,14 +29,14 @@
 use super::engine::PaidExecutionOutcome;
 use super::{
     AuthenticatedPaidIntent, PaidApplication, PaidChargedOutcome, PaidExecutionError,
-    PaidExecutionResult, PaidFeePolicy, PaidResultKind, PaidResultTarget,
+    PaidExecutionResult, PaidExecutionStatus, PaidFeePolicy, PaidResultKind, PaidResultTarget,
     encode_paid_execution_result, paid_invocation_digest, quote_paid_intent,
 };
 use crate::local_execution::{
     CreatedObjectAuthority, InstanceRecord, LocalExecutionPolicy, derive_local_created_object_id,
     instance_target,
 };
-use crate::publication::PublicationContext;
+use crate::publication::{AuthenticatedPublicationCandidate, PublicationContext};
 use crate::{ExecutionEffects, ObjectEffect};
 use abi::package_types::verify_scoped_type_id;
 use fees::Amount;
@@ -413,6 +413,51 @@ fn check_creation_authority(
     Ok(())
 }
 
+/// Independently recomputes Publish's deterministic application units `A`
+/// from the trusted signed artifact and a bounded dependency closure whose
+/// candidates are already signature-authenticated, exactly as
+/// [`super::engine::publish_units`](crate::paid_execution::engine::publish_units)
+/// does inside the engine. This never accepts the receipt's own reported `A`
+/// as evidence: a caller-supplied count or a fabricated closure proof is
+/// worthless here, because the closure graph and ABI compatibility are
+/// reverified from scratch, not merely the individual candidate signatures.
+/// `Success` is admitted only when the recomputed units do not
+/// exceed the signed limit `L`, with `A` exactly equal to those units;
+/// otherwise the only admissible outcome is `ApplicationFailed` with `A`
+/// exactly equal to `L` (exhaustion never charges more than the admitted
+/// limit).
+fn check_publish_units(
+    verifier: &Verifier<'_>,
+    authenticated: &AuthenticatedPaidIntent,
+    dependencies: &[AuthenticatedPublicationCandidate],
+    gas_limit: u64,
+    status: PaidExecutionStatus,
+    charged: &PaidChargedOutcome,
+) -> Result<(), PaidExecutionError> {
+    let units: u64 = super::engine::publish_units(
+        verifier.resolver,
+        authenticated,
+        verifier.fee_policy,
+        dependencies,
+    )?;
+    let (expected_status, expected_units): (PaidExecutionStatus, u64) = if units <= gas_limit {
+        (PaidExecutionStatus::Success, units)
+    } else {
+        (PaidExecutionStatus::ApplicationFailed, gas_limit)
+    };
+    if status != expected_status {
+        return Err(invalid(
+            "paid result publish status does not match the recomputed units",
+        ));
+    }
+    if charged.application_gas_units != expected_units {
+        return Err(invalid(
+            "paid result publish application gas does not match the recomputed units",
+        ));
+    }
+    Ok(())
+}
+
 /// Independently verifies one paid receipt against the signed intent and the
 /// trusted policies. See the module documentation for what this does and does
 /// not establish.
@@ -423,6 +468,16 @@ pub fn verify_paid_execution_result(
     base_policy: &LocalExecutionPolicy,
     fee_policy: &PaidFeePolicy,
     fee_instance: &InstanceRecord,
+    // Bounded dependency candidates for a Publish application's declared
+    // closure (DR-0124's shared exact Publish helper). Each candidate's own
+    // signature is already authenticated on construction of
+    // `AuthenticatedPublicationCandidate`; what this call re-verifies from
+    // scratch is the closure graph and ABI compatibility across the whole
+    // set, not the individual signatures again, and it proves nothing about
+    // durable on-chain provenance beyond this receipt. Ignored for
+    // Call/Instantiate receipts, which have no publication closure to
+    // recompute.
+    publish_dependencies: &[AuthenticatedPublicationCandidate],
 ) -> Result<(), PaidExecutionError> {
     let result: &PaidExecutionResult = &outcome.result;
     // Canonical/self-consistency first; it is necessary but never sufficient.
@@ -458,24 +513,44 @@ pub fn verify_paid_execution_result(
     }
 
     match &result.charged {
-        Some(charged) => check_charged(
-            &Verifier {
+        Some(charged) => {
+            let verifier: Verifier<'_> = Verifier {
                 resolver,
                 epoch,
                 call_context: &intent.context,
                 event,
                 fee_policy,
                 fee_instance,
-            },
-            result,
-            charged,
-            &outcome.created_authorities,
-            &admission,
-            &SignedTerms {
-                gas_limit: intent.gas_limit,
-                refund_recipient: intent.consent.refund_recipient,
-            },
-        ),
+            };
+            check_charged(
+                &verifier,
+                result,
+                charged,
+                &outcome.created_authorities,
+                &admission,
+                &SignedTerms {
+                    gas_limit: intent.gas_limit,
+                    refund_recipient: intent.consent.refund_recipient,
+                },
+            )?;
+            // Call/Instantiate's charged `A` is already pinned to the
+            // recomputed quote above; Publish additionally requires `A`
+            // itself -- not merely the quote it feeds -- to be the exact
+            // deterministic unit count independently recomputed from the
+            // authenticated artifact and closure, never simply bounded by
+            // `A <= L`.
+            if matches!(&intent.application, PaidApplication::Publish(_)) {
+                check_publish_units(
+                    &verifier,
+                    authenticated,
+                    publish_dependencies,
+                    intent.gas_limit,
+                    result.status,
+                    charged,
+                )?;
+            }
+            Ok(())
+        }
         None => {
             if !outcome.created_authorities.is_empty() {
                 return Err(invalid("zero-charge paid result must have empty effects"));
