@@ -136,6 +136,29 @@ Activation rejects schedules below the measured calibration requirements.
 
 ## Durable boundary and activation
 
+### Charging-integrity clarification (2026-09-09)
+
+The no-surviving-reservation postcondition must not give application code a
+zero-charge escape. Before reserve, reject original application inputs whose
+authenticated nominal type is the policy's exact reservation type. This initial
+paid profile does not admit manually created reservations as application inputs;
+it does not ban the contract's exports from ordinary composition generally.
+After application execution and before settle, detect any live object of that
+type other than the protected host reservation. Treat it as application failure:
+restore the post-reserve object/event savepoint, retain measured application gas
+and all monotonic resource counters, and settle the protected reservation.
+The final settlement postcondition still rejects every surviving reservation.
+Neither check inspects amounts or depends on a Standard Asset function name.
+
+For Publish, independent outcome verification resolves the same exact bounded
+authenticated dependency closure used for execution and recomputes artifact-byte
+plus unique-node units. A charged Success requires units <= L and A = units;
+charged ApplicationFailed requires units > L and A = L. Missing, extra,
+duplicate or mismatched closure evidence is not an alternative metering input.
+Call/Instantiate still rely on measured VM application gas within signed L.
+This tightens internal outcome verification without changing canonical bytes or
+granting durable publication authority. Activation gates below remain unchanged.
+
 Authenticate and reconcile exact replay before policy/code/object reads. Verify
 every source, scope, policy and publication read in the same final fenced CAS.
 One commit writes final objects and authority, original versions advanced at

@@ -267,6 +267,17 @@ and coordinator. Bootstrap is a closed, atomic manifest installer, not an
 externally callable fee exemption. The host validates output authority and
 provenance, while the pinned contract remains responsible for opaque amounts.
 
+The application cannot convert its own reservation-type outputs into a
+settlement failure that avoids charging. The initial paid profile rejects
+original application inputs of the policy's exact reservation type before
+reservation. If application execution leaves another live object of that type,
+discard the application effects, retain its measured gas, and settle the private
+host reservation normally. This is a policy-type invariant, not a blacklist of
+Standard Asset exports or a native decoder of reservation bodies.
+Publish receipts must independently reproduce application units from the exact
+authenticated artifact and verified dependency closure, including exhaustion;
+merely accepting a reported value below the signed limit is insufficient.
+
 Application effects and settlement commit atomically. A normalized execution
 trap may discard application effects while committing only authorized fees and
 the rejected receipt under the defined fee policy. Pre-execution rejection and
