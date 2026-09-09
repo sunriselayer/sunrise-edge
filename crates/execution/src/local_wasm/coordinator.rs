@@ -649,8 +649,19 @@ fn validate(plan: &PhasePlan<'_>) -> Result<Validated, LocalExecutionError> {
         if plan.scopes.get(call.scope).is_none() {
             return Err(invalid("application scope"));
         }
-        if call.mode == LocalExecutionMode::Instantiate && call.scope != 0 {
-            return Err(invalid("instantiate application must be the root scope"));
+        if call.mode == LocalExecutionMode::Instantiate {
+            if call.scope != 0 {
+                return Err(invalid("instantiate application must be the root scope"));
+            }
+            // The instance about to be created can never simultaneously be
+            // the pinned fee scope: the fee source and its committed
+            // reserve/settle exports must resolve against an existing
+            // instance, not the one this very invocation is instantiating.
+            if call.scope == plan.target.scope {
+                return Err(invalid(
+                    "instantiate application scope collides with the fee scope",
+                ));
+            }
         }
     }
     // The pinned fee implementation is the exact instance code revision.
@@ -717,6 +728,14 @@ fn validate(plan: &PhasePlan<'_>) -> Result<Validated, LocalExecutionError> {
         return Err(invalid("fee source authority"));
     }
     for input in application_inputs {
+        // Any original application input already typed as the pinned
+        // reservation resource is rejected before reserve is attempted: a
+        // caller-supplied leftover reservation must never be admitted as
+        // ordinary application access, regardless of its body bytes. This is
+        // an exact typed-authority comparison, never a decode of the body.
+        if input.authority.ty == plan.target.reservation_type {
+            return Err(invalid("reservation input not permitted"));
+        }
         if input.resolved.object.id != source.resolved.object.id {
             continue;
         }
@@ -928,6 +947,7 @@ fn validated_settlement(
             || item.original.is_some()
             || item.ordinal.is_none()
             || item.consumed
+            || item.transferred
             || item.object.owner != Owner::Address(Address::new(*recipient))
             || item.object.schema_version != plan.target.schema
             || item.authority.ty != plan.target.asset_type
@@ -950,6 +970,27 @@ fn validated_settlement(
         None => None,
     };
     Ok((fee_id, refund_id))
+}
+
+/// True when the arena holds a live object of the pinned reservation type
+/// other than the coordinator's own private reservation at
+/// `reservation_index`. Used only after the application phase has run and
+/// before settlement: an application that reserves against its own
+/// remainder (or otherwise produces a second resource of this exact typed
+/// authority) must not be allowed to force the strict post-settlement
+/// `no_surviving_reservation` check into a zero-charge settlement failure.
+/// It is classified as an application failure instead, so the host
+/// reservation still settles normally.
+fn application_reservation_survivor(
+    state: &HostState,
+    plan: &PhasePlan<'_>,
+    reservation_index: usize,
+) -> bool {
+    state.arena.iter().enumerate().any(|(index, item)| {
+        index != reservation_index
+            && !item.consumed
+            && item.authority.ty == plan.target.reservation_type
+    })
 }
 
 /// Rejects any surviving object of the pinned reservation type as a
@@ -1211,7 +1252,14 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
                 );
             }
         };
-    let reservation_id: ObjectId = store.data().arena[reservation_index].object.id;
+    let Some(reservation_id): Option<ObjectId> = store
+        .data()
+        .arena
+        .get(reservation_index)
+        .map(|item| item.object.id)
+    else {
+        return Ok(host_rejected(plan, gas, bound));
+    };
     let post_reserve: Savepoint = savepoint(store.data());
 
     // ---- application: only the declared application inputs are exposed.
@@ -1225,7 +1273,7 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
                     // The application phase never opened a fuel window.
                     Err(_) => return Ok(host_rejected(plan, gas, bound)),
                 };
-            let run: PhaseRun = match run_phase(
+            let mut run: PhaseRun = match run_phase(
                 &mut store,
                 &linker,
                 call.scope,
@@ -1250,6 +1298,19 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
                 if restore(store.data_mut(), &post_reserve).is_err() {
                     return Ok(host_rejected(plan, gas, bound));
                 }
+            } else if application_reservation_survivor(store.data(), plan, reservation_index) {
+                // The application produced a live object of the pinned
+                // reservation type (e.g. a self-reserve against its own
+                // remainder). Roll back exactly like an ordinary application
+                // failure -- discarding effects and events, never gas or any
+                // cumulative resource counter -- and classify this as an
+                // application failure so the host's own private reservation
+                // still settles normally instead of forcing a zero-charge
+                // settlement failure at the final strict postcondition.
+                if restore(store.data_mut(), &post_reserve).is_err() {
+                    return Ok(host_rejected(plan, gas, bound));
+                }
+                run.failed = true;
             }
             run
         }
@@ -1304,10 +1365,19 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
     let outputs: Option<(ObjectId, Option<ObjectId>)> = if settle.failed {
         None
     } else {
-        validated_settlement(store.data(), &settle.returned, plan, settlement.refund)
-            .ok()
-            .filter(|_| store.data().arena[reservation_index].consumed)
-            .filter(|_| no_surviving_reservation(store.data(), plan).is_ok())
+        match store.data().arena.get(reservation_index) {
+            // The coordinator's own private reservation slot cannot vanish
+            // between reserve and settle: the arena only grows. Its absence
+            // here is a host implementation invariant violation, never a
+            // contract-influenced settlement outcome.
+            None => return Ok(host_rejected(plan, gas, bound)),
+            Some(item) if !item.consumed => None,
+            Some(_) => {
+                validated_settlement(store.data(), &settle.returned, plan, settlement.refund)
+                    .ok()
+                    .filter(|_| no_surviving_reservation(store.data(), plan).is_ok())
+            }
+        }
     };
     let Some((fee_output, refund_output)) = outputs else {
         return Ok(

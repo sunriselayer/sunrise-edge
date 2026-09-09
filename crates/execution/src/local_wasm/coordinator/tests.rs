@@ -474,12 +474,20 @@ fn the_application_can_neither_select_nor_return_the_private_reservation() {
 }
 
 #[test]
-fn an_application_created_reservation_cannot_survive_the_commit() {
+fn an_application_created_reservation_is_an_application_failure_that_still_settles() {
+    // The application calls the pinned public `reserve` entrypoint on its
+    // own remainder, producing a second live object of the exact pinned
+    // reservation type that nothing settles. The old behavior scanned the
+    // whole arena only after settle and reported a zero-charge
+    // `SettlementFailed`, letting an application-created survivor suppress
+    // the entire charge. The coordinator now detects that survivor right
+    // after the application phase, classifies it as an application failure
+    // (discarding the application's own effects and events exactly like an
+    // ordinary trap), and still settles the host's private reservation
+    // normally.
     let harness: Harness = harness(8, 8, 1_000, vec![]);
     let mut input: ScopedResolvedObject = harness.asset.coin.clone();
     input.resolved.mode = AccessMode::Write;
-    // The application reserves against its own remainder, producing a
-    // second resource of the pinned reservation type that nothing settles.
     let plan: PhasePlan<'_> = harness.plan(
         ReservationAccess::Write,
         harness.source(ReservationAccess::Write),
@@ -499,7 +507,30 @@ fn an_application_created_reservation_cannot_survive_the_commit() {
         pricer(),
     );
     let outcome: PhaseOutcome = run(&plan).expect("phase outcome");
-    zero_charge_outcome(&outcome, PhaseStatus::SettlementFailed);
+    assert_eq!(outcome.status, PhaseStatus::ApplicationFailed);
+    // The application's own reservation-creating effects and events were
+    // discarded, exactly like an ordinary application trap: only the host's
+    // own reserve debit against the source survives, never the
+    // application's second, self-issued debit against the same coin.
+    assert!(outcome.effects.events.is_empty());
+    // The fee was still settled from the reserved amount.
+    let fee: Object = owned(&outcome, treasury());
+    assert_eq!(
+        coin_amount(&fee.data).expect("fee amount"),
+        outcome.actual_charge.get()
+    );
+    assert!(outcome.actual_charge.get() > 0);
+    // The reservation debit against the source is committed exactly once.
+    let mutated: Vec<(u64, &Object)> = mutations(&outcome);
+    assert_eq!(mutated.len(), 1);
+    assert_eq!(mutated[0].1.id, harness.asset.coin.resolved.object.id);
+    assert_eq!(
+        coin_amount(&mutated[0].1.data).expect("remainder"),
+        1_000 - outcome.reserved.get()
+    );
+    assert!(deletions(&outcome).is_empty());
+    reservation_is_transient(&outcome);
+    no_reservation_survives(&outcome, &plan);
 }
 
 #[test]
@@ -1002,4 +1033,100 @@ fn a_settle_argument_encoding_failure_after_reserve_yields_host_rejected_not_err
     let outcome: PhaseOutcome = run(&plan).expect("run never errors once reserve is attempted");
     assert_ne!(outcome.status, PhaseStatus::HostRejected);
     zero_charge_outcome(&outcome, PhaseStatus::SettlementFailed);
+}
+
+#[test]
+fn a_preexisting_reservation_object_as_an_application_input_is_rejected_before_reserve() {
+    // A genuine Reservation<A>, minted by an ordinary zero-fee `reserve`
+    // call on the same asset instance, is then declared as an application
+    // input of an unrelated phase plan, completely unchanged. Rejection
+    // must come from the exact pinned reservation type on its normal typed
+    // authority record -- never from decoding its body -- and must happen
+    // before reserve is attempted, exactly like the existing overlap and
+    // scope-selector rejections above.
+    let harness: Harness = harness(62, 62, 1_000, vec![]);
+    let scopes: Vec<ResolvedExecutionScope> = vec![harness.asset.scope.clone()];
+    let mut reserve_source: ScopedResolvedObject = harness.asset.coin.clone();
+    reserve_source.resolved.mode = AccessMode::Write;
+    let reserve_outcome: LocalExecutionOutcome = call(
+        &scopes,
+        "reserve",
+        public_standard_asset::reserve_arguments(
+            1,
+            &digest(b"paid-invocation"),
+            &digest(b"paid-fee-policy"),
+            &treasury(),
+            &refund_account(),
+        )
+        .expect("reserve arguments"),
+        &[reserve_source],
+        vec![public_standard_asset::asset_type_argument(
+            &harness.asset.id,
+        )],
+    );
+    assert_eq!(reserve_outcome.effects.status, ExecutionStatus::Success);
+    let reservation: ScopedResolvedObject = created(&reserve_outcome, 0, AccessMode::Consume);
+    assert_eq!(
+        reservation.authority.ty,
+        target(&harness.asset, 0).reservation_type,
+        "the minted object must carry the exact pinned reservation type"
+    );
+    // The application is otherwise an ordinary, well-formed `transfer` call;
+    // only the extra reservation input is added, unmodified.
+    let mut coin_input: ScopedResolvedObject = harness.asset.coin.clone();
+    coin_input.resolved.mode = AccessMode::Write;
+    let reservation_bytes_before: Vec<u8> = reservation.resolved.object.data.clone();
+    let plan: PhasePlan<'_> = harness.plan(
+        ReservationAccess::Write,
+        harness.source(ReservationAccess::Write),
+        harness.asset_application(
+            "transfer",
+            transfer_arguments(&refund_account()).expect("transfer arguments"),
+            vec![coin_input, reservation.clone()],
+        ),
+        LIMIT,
+        pricer(),
+    );
+    // Rejected before any phase executes, not after a partial reservation.
+    let error: LocalExecutionError = match run(&plan) {
+        Err(error) => error,
+        Ok(_) => panic!("reservation input must be rejected"),
+    };
+    assert!(matches!(
+        error,
+        LocalExecutionError::Invalid("reservation input not permitted")
+    ));
+    // Confirms rejection came from the typed authority check alone, never
+    // from decoding or mutating the reservation body.
+    assert_eq!(reservation.resolved.object.data, reservation_bytes_before);
+}
+
+#[test]
+fn an_instantiate_application_scope_colliding_with_the_fee_scope_is_rejected() {
+    // Instantiate already requires the application scope to be the root
+    // scope (index zero). If the pinned fee target also names that same
+    // scope, the instance the invocation is about to create would
+    // simultaneously be treated as an already-existing fee implementation,
+    // which must be rejected explicitly rather than reaching the WASM
+    // frame validator.
+    let harness: Harness = harness(63, 63, 1_000, vec![]);
+    let application: ApplicationCall = ApplicationCall {
+        scope: 0,
+        code: harness.asset.scope.instance.code.clone(),
+        entrypoint: "init".into(),
+        mode: LocalExecutionMode::Instantiate,
+        type_arguments: Vec::new(),
+        arguments: no_arguments().expect("no arguments"),
+        inputs: Vec::new(),
+        authorizations: Vec::new(),
+    };
+    let plan: PhasePlan<'_> = harness.plan(
+        ReservationAccess::Write,
+        harness.source(ReservationAccess::Write),
+        application,
+        LIMIT,
+        pricer(),
+    );
+    assert_eq!(plan.target.scope, 0);
+    assert!(run(&plan).is_err());
 }
