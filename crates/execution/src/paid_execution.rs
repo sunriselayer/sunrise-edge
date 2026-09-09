@@ -74,6 +74,11 @@ pub use result::{
 };
 pub use verify::verify_paid_execution_result;
 
+/// Canonical frame type of an encoded [`SignedPaidIntent`]. Authoritative for
+/// any dispatch that must distinguish a stored DR-0124 paid Publish row from
+/// another canonical frame type sharing the same storage key space.
+pub const SIGNED_PAID_INTENT_FRAME_TYPE: u16 = 0x6413;
+
 /// Maximum bytes of one encoded [`FeeSourceConsent`].
 pub const MAX_CONSENT_BYTES: usize = 256;
 /// Maximum bytes of one encoded Call/Instantiate [`PaidApplication`].
@@ -109,7 +114,6 @@ use crate::phase_limits::{
 const CONSENT_TYPE: u16 = 0x6410;
 const APPLICATION_TYPE: u16 = 0x6411;
 const INTENT_TYPE: u16 = 0x6412;
-const SIGNED_INTENT_TYPE: u16 = 0x6413;
 const POLICY_TYPE: u16 = 0x6414;
 const VERSION_1: u16 = 1;
 
@@ -593,7 +597,7 @@ pub struct SignedPaidIntent {
 /// Encodes Frame0x6413/v1.
 pub fn encode_signed_paid_intent(signed: &SignedPaidIntent) -> Result<Vec<u8>, PaidExecutionError> {
     let intent_bytes: Vec<u8> = encode_paid_intent(&signed.intent)?;
-    let mut frame: CanonicalStruct = CanonicalStruct::new(SIGNED_INTENT_TYPE, VERSION_1);
+    let mut frame: CanonicalStruct = CanonicalStruct::new(SIGNED_PAID_INTENT_FRAME_TYPE, VERSION_1);
     frame.field_bytes(1, intent_bytes)?;
     frame.field_bytes(2, signed.signature.to_vec())?;
     let bytes: Vec<u8> = frame.finish()?;
@@ -614,7 +618,7 @@ pub fn decode_signed_paid_intent(bytes: &[u8]) -> Result<SignedPaidIntent, PaidE
         MAX_SIGNED_PAID_INTENT_BYTES,
     )?;
     let frame = decode_canonical_frame(bytes)?;
-    frame.require_type(SIGNED_INTENT_TYPE)?;
+    frame.require_type(SIGNED_PAID_INTENT_FRAME_TYPE)?;
     frame.require_version(VERSION_1)?;
     frame.require_only_fields(&[1, 2])?;
     let intent: PaidIntent = decode_paid_intent(frame.required_field(1)?)?;

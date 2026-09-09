@@ -12,8 +12,8 @@ use local_instance_state::{
 use publication::{
     PublicationAdmissionError, VerifiedDurablePublication, load_verified_publication,
 };
-mod effects;
-mod scopes;
+pub(crate) mod effects;
+pub(crate) mod scopes;
 #[cfg(test)]
 mod tests;
 
@@ -59,7 +59,7 @@ conversion!(LocalExecutionError, Execution);
 conversion!(PublicationAdmissionError, Publication);
 type AdmissionResult<T> = Result<T, LocalExecutionAdmissionError>;
 
-fn original_resolver<'a>(
+pub(crate) fn original_resolver<'a>(
     current: &'a HashSuiteResolver,
     history: &'a [HashSuiteResolver],
     context: &PublicationContext,
@@ -78,7 +78,7 @@ fn original_resolver<'a>(
             "trusted historical resolver unavailable",
         ))
 }
-fn reference_matches(
+pub(crate) fn reference_matches(
     reference: &UnverifiedDependencyRef,
     interface: &VerifiedPublicationInterface,
 ) -> bool {
@@ -89,7 +89,7 @@ fn reference_matches(
         && reference.revision() == artifact.revision()
         && reference.artifact_digest() == candidate.digest()
 }
-fn validate_closure(
+pub(crate) fn validate_closure(
     resolver: &HashSuiteResolver,
     history: &[HashSuiteResolver],
     interface: &VerifiedPublicationInterface,
@@ -117,7 +117,7 @@ fn validate_closure(
     }
     Ok(())
 }
-fn read_state<S: StructuredDurableDomainStateStore>(
+pub(crate) fn read_state<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -132,7 +132,7 @@ fn read_state<S: StructuredDurableDomainStateStore>(
     }
     Ok(value)
 }
-fn validate_authority(
+pub(crate) fn validate_authority(
     authority: &ObjectAuthority,
     instance: &InstanceRecord,
     target: &execution::call::InstanceTarget,
@@ -440,7 +440,14 @@ pub fn handle_local_execution<
         &resolved,
     )
     .map_err(|_| LocalExecutionAdmissionError::Invalid("input body mismatch"))?;
-    scopes::validate_inputs(&authenticated, &scopes, &inputs, resolver)?;
+    scopes::validate_inputs(
+        &call.context,
+        &call.access,
+        &authenticated.intent().authorizations,
+        &scopes,
+        &inputs,
+        resolver,
+    )?;
     let outcome: LocalExecutionOutcome = engine.execute(LocalExecutionRequest {
         scopes: &scopes,
         intent: &authenticated,
@@ -470,11 +477,14 @@ pub fn handle_local_execution<
         domain,
         resolver,
         &scopes,
-        &authenticated,
+        &effects::CheckedEffects {
+            context: &call.context,
+            effects: &outcome.effects,
+            created_authorities: &outcome.created_authorities,
+        },
         created_checkpoint,
         &inputs,
         &snapshots,
-        &outcome,
         &mut reads,
         &mut head_reads,
         &mut mutations,

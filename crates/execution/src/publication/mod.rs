@@ -14,9 +14,9 @@ mod interface;
 mod submission;
 
 pub use submission::{
-    MAX_PUBLICATION_SUBMISSION_BYTES, PublicationSubmission, authenticate_publication_submission,
-    decode_publication_submission, encode_publication_submission,
-    publication_submission_signing_frame,
+    MAX_PUBLICATION_SUBMISSION_BYTES, PUBLICATION_SUBMISSION_FRAME_TYPE, PublicationSubmission,
+    authenticate_publication_submission, decode_publication_submission,
+    encode_publication_submission, publication_submission_signing_frame,
 };
 
 pub use binding::{

@@ -954,6 +954,7 @@ dependencies = [
  "objects",
  "protocol-config",
  "protocol-types",
+ "public-standard-asset",
  "runtime",
  "runtime-sqlite",
  "sha2 0.11.0",

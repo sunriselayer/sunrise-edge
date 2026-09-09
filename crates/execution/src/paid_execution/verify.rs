@@ -30,7 +30,7 @@ use super::engine::PaidExecutionOutcome;
 use super::{
     AuthenticatedPaidIntent, PaidApplication, PaidChargedOutcome, PaidExecutionError,
     PaidExecutionResult, PaidExecutionStatus, PaidFeePolicy, PaidResultKind, PaidResultTarget,
-    encode_paid_execution_result, paid_invocation_digest, quote_paid_intent,
+    ReservationAccessKind, encode_paid_execution_result, paid_invocation_digest, quote_paid_intent,
 };
 use crate::local_execution::{
     CreatedObjectAuthority, InstanceRecord, LocalExecutionPolicy, derive_local_created_object_id,
@@ -270,11 +270,15 @@ fn check_target(
 
 /// Everything the charged-branch check needs from the signed intent, so it
 /// never reads a recipient or limit back out of the receipt it is checking.
-struct SignedTerms {
+struct SignedTerms<'a> {
     /// Signed application gas limit `L`.
     gas_limit: u64,
     /// Signed refund recipient.
     refund_recipient: [u8; 32],
+    /// Signed original fee source reference.
+    source: &'a ObjectRef,
+    /// Signed reservation access mode.
+    access: ReservationAccessKind,
 }
 
 fn check_charged(
@@ -283,7 +287,7 @@ fn check_charged(
     charged: &PaidChargedOutcome,
     authorities: &[CreatedObjectAuthority],
     admission: &Admission,
-    signed: &SignedTerms,
+    signed: &SignedTerms<'_>,
 ) -> Result<(), PaidExecutionError> {
     let fee_policy: &PaidFeePolicy = verifier.fee_policy;
     // The metered application gas the charge is based on can never exceed
@@ -375,7 +379,77 @@ fn check_charged(
     {
         return Err(invalid("paid result reservation type survives"));
     }
+    // `ApplicationFailed` must have discarded every application effect and
+    // event: only the fee settlement's own footprint may survive. This does
+    // not depend on any node storage lookup, only the signed consent and the
+    // already-verified charged fields above, so it holds even against an
+    // injectable engine that never ran the real reserve/application/settle
+    // coordinator at all.
+    if result.status != PaidExecutionStatus::Success {
+        check_application_failed_footprint(result, charged, signed.source, signed.access)?;
+    }
     Ok(())
+}
+
+/// Independently checks that a non-`Success` charged receipt's effects and
+/// events are exactly the fee settlement footprint derivable from `charged`
+/// and the signed consent: the original fee source's own mutation/deletion,
+/// an optional consumed transient reservation deletion, the fresh fee output
+/// and an optional fresh refund output, and nothing else. The real
+/// reserve/application/settle coordinator currently never emits an event
+/// from reserve or settle, so a nonempty event list is never legitimate here
+/// either; this is deliberately not an open allowlist for "fee events" that
+/// the coordinator does not actually produce.
+fn check_application_failed_footprint(
+    result: &PaidExecutionResult,
+    charged: &PaidChargedOutcome,
+    source: &ObjectRef,
+    access: ReservationAccessKind,
+) -> Result<(), PaidExecutionError> {
+    if !result.effects.events.is_empty() {
+        return Err(invalid(
+            "paid result application-failed events must be empty",
+        ));
+    }
+    let mut remaining: Vec<&ObjectEffect> = result.effects.object_effects.iter().collect();
+    let source_index: usize = remaining
+        .iter()
+        .position(|effect| match (access, effect) {
+            (
+                ReservationAccessKind::Write,
+                ObjectEffect::Mutated {
+                    previous_version,
+                    new_object,
+                },
+            ) => *previous_version == source.version && new_object.id == source.id,
+            (ReservationAccessKind::Consume, ObjectEffect::Deleted { id, version }) => {
+                *id == source.id && *version == source.version
+            }
+            _ => false,
+        })
+        .ok_or(invalid("paid result application-failed source footprint"))?;
+    remaining.remove(source_index);
+    let fee_index: usize = remaining
+        .iter()
+        .position(|effect| {
+            matches!(effect, ObjectEffect::Created(object) if object.id == charged.fee_output.id)
+        })
+        .ok_or(invalid("paid result application-failed fee footprint"))?;
+    remaining.remove(fee_index);
+    if let Some(refund_output) = &charged.refund_output {
+        let refund_index: usize = remaining
+            .iter()
+            .position(|effect| {
+                matches!(effect, ObjectEffect::Created(object) if object.id == refund_output.id)
+            })
+            .ok_or(invalid("paid result application-failed refund footprint"))?;
+        remaining.remove(refund_index);
+    }
+    match remaining.as_slice() {
+        [] => Ok(()),
+        [ObjectEffect::Deleted { id, .. }] if *id == charged.reservation => Ok(()),
+        _ => Err(invalid("paid result application-failed effect footprint")),
+    }
 }
 
 /// Requires the reported creation authority to describe exactly the created
@@ -531,6 +605,8 @@ pub fn verify_paid_execution_result(
                 &SignedTerms {
                     gas_limit: intent.gas_limit,
                     refund_recipient: intent.consent.refund_recipient,
+                    source: &intent.consent.source,
+                    access: intent.consent.access,
                 },
             )?;
             // Call/Instantiate's charged `A` is already pinned to the

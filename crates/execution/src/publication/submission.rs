@@ -15,6 +15,10 @@ use protocol_types::{Digest32, SignatureSchemeId};
 
 /// Complete bounded ingress envelope limit, including request identity.
 pub const MAX_PUBLICATION_SUBMISSION_BYTES: usize = super::MAX_PUBLICATION_BYTES + 128;
+/// Canonical frame type of an encoded [`PublicationSubmission`]. Authoritative
+/// for any dispatch that must distinguish a stored legacy submission row from
+/// another canonical frame type sharing the same storage key space.
+pub const PUBLICATION_SUBMISSION_FRAME_TYPE: u16 = 0x6308;
 
 /// Unverified publication request whose single signature binds its request ID.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,7 +111,7 @@ pub fn authenticate_publication_submission(
 
 /// Encodes the closed version-one submission frame.
 pub fn encode_publication_submission(submission: &PublicationSubmission) -> Result<Vec<u8>, E> {
-    let mut frame: CanonicalStruct = CanonicalStruct::new(0x6308, 1);
+    let mut frame: CanonicalStruct = CanonicalStruct::new(PUBLICATION_SUBMISSION_FRAME_TYPE, 1);
     frame.field_bytes(1, submission.request_id.to_vec())?;
     frame.field_bytes(2, encode_publication_request(&submission.request)?)?;
     let bytes: Vec<u8> = frame.finish()?;
@@ -130,7 +134,7 @@ fn check_size(actual: usize) -> Result<(), E> {
 pub fn decode_publication_submission(bytes: &[u8]) -> Result<PublicationSubmission, E> {
     check_size(bytes.len())?;
     let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
-    frame.require_type(0x6308)?;
+    frame.require_type(PUBLICATION_SUBMISSION_FRAME_TYPE)?;
     frame.require_version(1)?;
     frame.require_only_fields(&[1, 2])?;
     let request_id: [u8; 32] = frame
