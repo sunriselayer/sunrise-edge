@@ -911,7 +911,10 @@ fn paid_contract_engine_rejects_a_genuine_preexisting_reservation_application_in
     // this invocation's own fee.
     let mut coin_source: ScopedResolvedObject = mutated(&reserve, &asset.coin);
     coin_source.resolved.mode = AccessMode::Write;
-    assert_ne!(coin_source.resolved.object.id, reservation.resolved.object.id);
+    assert_ne!(
+        coin_source.resolved.object.id,
+        reservation.resolved.object.id
+    );
 
     let application = CallIntent {
         context: context(),
@@ -2266,7 +2269,12 @@ fn independent_publish_verification_rejects_a_forged_exhaustion_success() {
         PaidExecutionStatus::ApplicationFailed
     );
     assert_eq!(
-        outcome.result.charged.as_ref().unwrap().application_gas_units,
+        outcome
+            .result
+            .charged
+            .as_ref()
+            .unwrap()
+            .application_gas_units,
         gas_limit
     );
 
