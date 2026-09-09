@@ -2624,20 +2624,31 @@ statements such as “body validation remains open” are not the live work queu
     accounting-fault gas comments. This is not main-merge or activation approval.
     After integration at `4ace466`, the parent repeated both required commands
     in this feature checkout; the complete local repository gate passes.
-    Before durable activation:
+    Charging-integrity follow-up (2026-09-09), implemented at `2b6abd9` and
+    integrated at `2c276fb`: application-created reservation survivors now cause
+    charged ApplicationFailed with application effects rolled back; original
+    pinned reservation inputs reject before reserve. The independent verifier
+    recomputes exact Publish units/status from the complete authenticated closure,
+    with a node-count guard before cloning or candidate structural validation.
+    Reservation indexing is checked, settlement outputs reject transferred state,
+    and Instantiate/fee-scope collisions reject explicitly. No wire bytes changed.
+    The parent independently passed all 28 paid-engine tests, including real
+    signed pre-existing reservation input, source/fee/refund conservation,
+    dependency omission/extra/duplicate/replacement/limit, inflated/reduced A and
+    both forged Publish status directions. Temporarily disabling the two
+    reservation guards produced exactly the two intended regression failures;
+    restoring them passed. After formatting-only follow-up `7878135`, the parent
+    passed `npm ci --prefix adapters/cloudflare-workers` and the complete
+    `./scripts/check-all.sh` gate in this feature checkout. Fresh independent
+    read-only Opus review of `e79a5a1..2c276fb` returned
+    `APPROVE INTERNAL CHARGING INTEGRATION`, with no blockers for this scope.
+    This does not approve main merge or paid activation. The genuine exhausted
+    Publish case also passes independent verification inside the shared
+    `run_publish` test helper, not only status/fee assertions in its caller.
 
-    - Prevent application-owned reservation objects from forcing a zero-charge
-      SettlementFailed outcome. Detect application-created survivors before
-      settlement, roll back application effects and charge normally; define
-      fail-closed admission for pre-existing reservation inputs. Add actual-WASM
-      regressions for both routes, preserving the protected host reservation.
-    - Recompute deterministic Publish application units from the verified shared
-      closure in the independent result verifier, rather than accepting any A <= L.
-    - Authenticate historical object framing from durable provenance; the current
-      engine supports hash-suite rotation within one protocol version, not
-      cross-protocol historical object admission.
-    - Harden coordinator reservation indexing, mirror settlement transferred-state
-      checks, and reject Instantiate/fee-scope collisions explicitly.
+    Before durable activation, authenticate historical object framing from
+    durable provenance; the current engine supports hash-suite rotation within
+    one protocol version, not cross-protocol historical object admission.
 
     No paid node handler, atomic commit/restart evidence or activation is claimed.
     Implementation and review resumed after the Claude session limit cleared;
