@@ -78,7 +78,11 @@ fn profile_two_requires_its_own_committed_policy_and_returns_cas_closure() {
         load_verified_publication(&store, &context(), domain(), &resolver(), &[], origin)
             .unwrap()
             .unwrap();
-    assert_eq!(loaded.submission, submission);
+    assert_eq!(
+        loaded.record,
+        VerifiedPublicationRecord::Legacy(submission.clone())
+    );
+    assert_eq!(loaded.record.submission(), Some(&submission));
     assert_eq!(
         loaded
             .interface
