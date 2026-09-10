@@ -1,29 +1,47 @@
 //! Independent bounded effect validation and immutable authority persistence.
 use super::*;
 
+/// The intent-neutral view [`translate`] validates.
+///
+/// It deliberately carries no signed envelope: zero-fee local execution and
+/// DR-0124 paid execution supply the same three trusted values, and every
+/// effect in [`Self::effects`] is validated identically regardless of which
+/// phase produced it. For a paid invocation that means the reserve, the
+/// application and the settle effects are all checked here; there is no
+/// unchecked "fee effect" shortcut.
+pub(crate) struct CheckedEffects<'a> {
+    /// The signed invocation context. It supplies the creation-identity
+    /// domain separation, the active epoch for type/body commitments and the
+    /// durable object provenance; it is never read back from the effects.
+    pub context: &'a PublicationContext,
+    /// The complete effects proposed by the engine, application and fee alike.
+    pub effects: &'a ExecutionEffects,
+    /// The surviving creation authority reported alongside those effects.
+    pub created_authorities: &'a [CreatedObjectAuthority],
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(super) fn translate<S: StructuredDurableDomainStateStore>(
+pub(crate) fn translate<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     resolver: &HashSuiteResolver,
     scopes: &[ResolvedExecutionScope],
-    authenticated: &AuthenticatedLocalExecutionIntent,
+    view: &CheckedEffects<'_>,
     checkpoint: u64,
     inputs: &[ScopedResolvedObject],
     snapshots: &BTreeMap<ObjectId, object_snapshots::ObjectSnapshot>,
-    outcome: &LocalExecutionOutcome,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
     head_reads: &mut Vec<DurableObjectHeadRead>,
     state: &mut Vec<StateMutationEntry>,
 ) -> AdmissionResult<Vec<DurableObjectMutationEntry>> {
-    let call = &authenticated.intent().call;
-    if outcome.created_authorities.len() > MAX_LOCAL_CREATED_OBJECTS as usize {
+    let call_context: &PublicationContext = view.context;
+    if view.created_authorities.len() > MAX_LOCAL_CREATED_OBJECTS as usize {
         return Err(LocalExecutionAdmissionError::Invalid("creation count"));
     }
     let mut created: BTreeMap<ObjectId, &CreatedObjectAuthority> = BTreeMap::new();
     let mut ordinals: BTreeSet<u32> = BTreeSet::new();
-    for entry in &outcome.created_authorities {
+    for entry in view.created_authorities {
         if !ordinals.insert(entry.creation_ordinal)
             || created.insert(entry.authority.object_id, entry).is_some()
         {
@@ -40,11 +58,11 @@ pub(super) fn translate<S: StructuredDurableDomainStateStore>(
         )?;
         let id: ObjectId = derive_local_created_object_id(
             resolver,
-            &call.context,
+            call_context,
             &scope.instance.context,
             &scope.target,
             &entry.authority.code,
-            outcome.effects.tx_hash,
+            view.effects.tx_hash,
             entry.creation_ordinal,
         )?;
         if id != entry.authority.object_id {
@@ -56,7 +74,7 @@ pub(super) fn translate<S: StructuredDurableDomainStateStore>(
     let mut seen: BTreeSet<ObjectId> = BTreeSet::new();
     let mut mutations: Vec<DurableObjectMutationEntry> = Vec::new();
     let mut bytes: usize = 0;
-    for effect in &outcome.effects.object_effects {
+    for effect in &view.effects.object_effects {
         let (object, is_creation, previous): (
             &Object,
             bool,
@@ -168,7 +186,7 @@ pub(super) fn translate<S: StructuredDurableDomainStateStore>(
         if !abi::package_types::verify_scoped_type_id(
             resolver,
             &object.type_hash,
-            call.context.epoch(),
+            call_context.epoch(),
             &authority.ty,
         )
         .map_err(|_| LocalExecutionAdmissionError::Invalid("output type fingerprint"))?
@@ -188,13 +206,13 @@ pub(super) fn translate<S: StructuredDurableDomainStateStore>(
             return Err(LocalExecutionAdmissionError::Invalid("output body limit"));
         }
         let digest: Digest32 =
-            resolver.hash_for_purpose(call.context.epoch(), HashPurpose::Object, &canonical)?;
+            resolver.hash_for_purpose(call_context.epoch(), HashPurpose::Object, &canonical)?;
         let version: DurableObjectVersionRecord = DurableObjectVersionRecord::from_inline_object(
             object.clone(),
             digest,
             runtime::DurableObjectProvenance::new(
-                call.context.chain_id().clone(),
-                call.context.protocol_version(),
+                call_context.chain_id().clone(),
+                call_context.protocol_version(),
             ),
             checkpoint,
         )?;
@@ -253,7 +271,7 @@ pub(super) fn translate<S: StructuredDurableDomainStateStore>(
             "extra creation authority",
         ));
     }
-    for event in &outcome.effects.events {
+    for event in &view.effects.events {
         let ty = abi::package_types::decode_scoped_type_tag(&event.type_tag)
             .map_err(|_| LocalExecutionAdmissionError::Invalid("event type"))?;
         let interface: &VerifiedPublicationInterface = &scopes

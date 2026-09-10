@@ -86,6 +86,7 @@ fn fixture_dependencies(
         },
         initializer: Some("init".to_owned()),
         transferable_constructors: vec![],
+        results: vec![Vec::new(); 2],
     };
     let semantics = if profile == 3 {
         general_execution_semantics(&resolver, &context).unwrap()
@@ -95,13 +96,12 @@ fn fixture_dependencies(
     let references: Vec<UnverifiedDependencyRef> = dependencies
         .iter()
         .map(|candidate| {
-            let request = candidate.request();
-            let artifact = request.artifact();
+            let artifact = candidate.artifact();
             UnverifiedDependencyRef::new(
                 artifact.origin().clone(),
                 artifact.revision(),
                 artifact.context().clone(),
-                *request.artifact_digest(),
+                *candidate.digest(),
             )
             .unwrap()
         })
@@ -215,7 +215,8 @@ fn scope_loader_shares_code_and_stops_before_the_34th_publication_fetch() {
                         break;
                     }
                     let submission =
-                        PublicationSubmission::new([1; 32], candidate.request().clone()).unwrap();
+                        PublicationSubmission::new([1; 32], candidate.request().unwrap().clone())
+                            .unwrap();
                     responses
                         .push_back(response(context.encode().unwrap(), QUERY_RESULT_MEDIA_TYPE));
                     responses.push_back(response(
@@ -410,7 +411,8 @@ fn profile_three_query_requires_explicit_trusted_policy() {
     )
     .unwrap();
     let submission =
-        PublicationSubmission::new([1; 32], interface.candidate().request().clone()).unwrap();
+        PublicationSubmission::new([1; 32], interface.candidate().request().unwrap().clone())
+            .unwrap();
     for general in [false, true] {
         let client = Client::new(Fake(RefCell::new(VecDeque::from([
             response(context.encode().unwrap(), QUERY_RESULT_MEDIA_TYPE),
@@ -641,7 +643,8 @@ fn executable_interface_rejects_valid_publication_for_a_different_commitment() {
     )
     .unwrap();
     let submission =
-        PublicationSubmission::new([1; 32], interface.candidate().request().clone()).unwrap();
+        PublicationSubmission::new([1; 32], interface.candidate().request().unwrap().clone())
+            .unwrap();
     for changed in [false, true] {
         let reference = if changed {
             UnverifiedDependencyRef::new(

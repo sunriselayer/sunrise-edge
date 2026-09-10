@@ -245,7 +245,15 @@ pub(super) fn admission_error(
         E::Publication(_) | E::Interface(_) | E::MissingDependency | E::Limit => {
             error_response(StatusCode::BAD_REQUEST, "publication-rejected")
         }
-        E::PolicyMismatch | E::CorruptRecord | E::HistoricalContextUnavailable => error_response(
+        // A stored record that fails paid decoding/authentication, and a
+        // stored provenance this submission-shaped surface cannot represent,
+        // are both node-state faults, exactly like a corrupt record. No paid
+        // route is activated by classifying them.
+        E::PolicyMismatch
+        | E::CorruptRecord
+        | E::Paid(_)
+        | E::UnsupportedRecordProvenance
+        | E::HistoricalContextUnavailable => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "publication-policy-or-state-invalid",
         ),

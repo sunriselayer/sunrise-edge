@@ -68,6 +68,7 @@ fn metadata(seed: u8, initializer: Option<&str>) -> ExecutableAbi {
         },
         initializer: initializer.map(str::to_owned),
         transferable_constructors: vec![1],
+        results: vec![vec![], vec![]],
     }
 }
 fn publication(
@@ -95,12 +96,12 @@ fn publication(
     .unwrap()
 }
 fn reference(candidate: &AuthenticatedPublicationCandidate) -> UnverifiedDependencyRef {
-    let artifact: &CodeArtifact = candidate.request().artifact();
+    let artifact: &CodeArtifact = candidate.artifact();
     UnverifiedDependencyRef::new(
         artifact.origin().clone(),
         1,
         artifact.context().clone(),
-        *candidate.request().artifact_digest(),
+        *candidate.digest(),
     )
     .unwrap()
 }
@@ -170,7 +171,13 @@ fn typed_profile_whitelists_only_sunrise_and_exact_signatures() {
     let wrong:Vec<u8>=wat::parse_str("(module (import \"sunrise\" \"create_object\" (func (param i32 i32 i32 i32 i32 i32) (result i32))) (memory (export \"memory\") 1 2) (func (export \"run\")))").unwrap();
     assert!(validate_contract_wasm_profile(&wrong, &["run"], 2).is_err());
     assert!(validate_contract_wasm_profile(&typed, &["run"], 3).is_ok());
-    assert!(validate_contract_wasm_profile(&typed, &["run"], 4).is_err());
+    assert_eq!(
+        validate_contract_wasm_profile(&typed, &["run"], 4)
+            .unwrap()
+            .profile_version(),
+        4
+    );
+    assert!(validate_contract_wasm_profile(&typed, &["run"], 5).is_err());
 }
 
 #[test]
@@ -257,13 +264,15 @@ fn execution_domain_policy_and_creator_are_signed_before_admission() {
 #[test]
 fn library_views_share_immutable_wasm_and_retain_defining_metadata() {
     let library = publication(1, None, vec![]);
-    let origin = library.request().artifact().origin().clone();
+    let origin = library.artifact().origin().clone();
     let root = publication(2, Some("init"), vec![reference(&library)]);
     let interface = verify_publication_interface(root, vec![library]).unwrap();
     let view = interface.for_origin(&origin).unwrap();
     assert!(std::ptr::eq(
-        view.candidate().request(),
-        interface.dependencies()[0].request()
+        view.candidate().request().expect("legacy candidate"),
+        interface.dependencies()[0]
+            .request()
+            .expect("legacy candidate")
     ));
     assert_eq!(view.executable_abi(&origin).unwrap().initializer, None);
     let ty: ScopedTypeTag = ScopedTypeTag::new(origin, 1, vec![]).unwrap();

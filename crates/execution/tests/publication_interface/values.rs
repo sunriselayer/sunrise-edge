@@ -388,7 +388,7 @@ fn signature_binds_layout_changes_even_with_recomputed_artifact_digest() {
         objects: minimal(1),
         arguments: vec![ValueLayout::U64],
     });
-    let request = original.request();
+    let request = original.request().expect("legacy publication candidate");
     let a = request.artifact();
     let changed = CodeArtifact::new(ArtifactParts {
         context: a.context().clone(),

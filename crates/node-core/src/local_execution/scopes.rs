@@ -2,7 +2,7 @@
 use super::*;
 use execution::call_authorization::{ExecutionTarget, MAX_EXECUTION_SCOPES};
 
-pub(super) fn for_authority<'a>(
+pub(crate) fn for_authority<'a>(
     scopes: &'a [ResolvedExecutionScope],
     authority: &ObjectAuthority,
 ) -> AdmissionResult<&'a ResolvedExecutionScope> {
@@ -40,14 +40,18 @@ fn selected_view(
     Ok(view)
 }
 
-pub(super) fn validate_inputs(
-    authenticated: &AuthenticatedLocalExecutionIntent,
+/// Revalidates every signed reusable call authorization against the loaded
+/// original inputs. Intent-neutral: zero-fee local execution and DR-0124 paid
+/// Call supply the same signed context, root access manifest and table.
+pub(crate) fn validate_inputs(
+    call_context: &PublicationContext,
+    access: &abi::AccessManifest,
+    authorizations: &[execution::call_authorization::CallAuthorization],
     scopes: &[ResolvedExecutionScope],
     inputs: &[ScopedResolvedObject],
     resolver: &HashSuiteResolver,
 ) -> AdmissionResult<()> {
-    let call = &authenticated.intent().call;
-    for authorization in &authenticated.intent().authorizations {
+    for authorization in authorizations {
         let scope: &ResolvedExecutionScope = scopes
             .iter()
             .find(|scope| scope.target == authorization.callee.instance)
@@ -68,8 +72,7 @@ pub(super) fn validate_inputs(
                 .ok_or(LocalExecutionAdmissionError::Invalid(
                     "authorized input absent",
                 ))?;
-            let original: &AccessEntry = call
-                .access
+            let original: &AccessEntry = access
                 .entries
                 .iter()
                 .find(|entry| entry.object_ref.id == selector.object_id)
@@ -93,7 +96,7 @@ pub(super) fn validate_inputs(
         execution::publication::validate_object_input_bodies(
             &binding,
             resolver,
-            call.context.epoch(),
+            call_context.epoch(),
             &abi::AccessManifest { entries },
             &resolved,
         )

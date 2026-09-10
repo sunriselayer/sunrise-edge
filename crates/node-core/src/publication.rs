@@ -6,6 +6,10 @@
 use super::*;
 use abi::package_types::{PackageOrigin, encode_package_origin};
 use canonical_encoding::{CanonicalFrame, decode_digest32, encode_digest32};
+use execution::paid_execution::{
+    AuthenticatedPaidIntent, PaidExecutionError, PaidExecutionResult, PaidExecutionStatus,
+    PaidResultKind, PaidResultTarget, decode_paid_execution_result, paid_invocation_digest,
+};
 use execution::publication::{
     AuthenticatedPublicationCandidate, InterfaceError, MAX_INTERFACE_NODES, PublicationContext,
     PublicationError, PublicationSubmission, UnverifiedDependencyRef,
@@ -17,7 +21,9 @@ use execution::publication::{
 mod loader;
 #[cfg(test)]
 mod tests;
-pub(super) use loader::{PublicationLoadBudget, load_verified_publication_with_budget};
+pub(super) use loader::{
+    PublicationLoadBudget, load_paid_publish_closure, load_verified_publication_with_budget,
+};
 
 /// Namespace reserved against generic application state accesses, across upgrades.
 pub const PUBLICATION_STATE_PREFIX: &[u8] = b"se/publications/";
@@ -70,6 +76,18 @@ pub fn local_general_publication_semantics(
     )?)
 }
 
+/// Explicit profile-four publication commitment for generic typed object
+/// results (DR-0124 durable-policy prerequisite). Publication admission only;
+/// it grants no fee, reservation or settlement authority.
+pub fn local_object_result_publication_semantics(
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+) -> Result<Digest32, PublicationAdmissionError> {
+    Ok(execution::local_execution::generic_object_result_semantics(
+        resolver, expected,
+    )?)
+}
+
 fn encode_local_publication_profile() -> Result<Vec<u8>, PublicationAdmissionError> {
     let mut frame: CanonicalStruct = CanonicalStruct::new(0x630B, 1);
     frame.field_str(1, "local-devnet-publication-only")?;
@@ -88,6 +106,9 @@ pub enum PublicationAdmissionError {
     Node(NodeCoreError),
     /// Publication decoding, cryptographic or WASM validation failed.
     Publication(PublicationError),
+    /// A stored DR-0124 paid Publish frame failed decoding, authentication or
+    /// candidate derivation. Storing paid bytes is not paid query activation.
+    Paid(PaidExecutionError),
     /// Exact dependency or ABI validation failed.
     Interface(InterfaceError),
     /// Expected committed publication policy is absent or differs.
@@ -98,6 +119,10 @@ pub enum PublicationAdmissionError {
     MissingDependency,
     /// A stored publication does not match its canonical lookup identity.
     CorruptRecord,
+    /// The stored record's actual ingress provenance is not representable in
+    /// the legacy submission-shaped query API. This is fail-closed: no paid
+    /// query route is activated by reading such a record as a dependency.
+    UnsupportedRecordProvenance,
     /// The caller supplied no trusted resolver for an original protocol context.
     HistoricalContextUnavailable,
     /// A deterministic closure or resolver bound was exceeded.
@@ -109,11 +134,15 @@ impl fmt::Display for PublicationAdmissionError {
         match self {
             Self::Node(error) => error.fmt(f),
             Self::Publication(error) => error.fmt(f),
+            Self::Paid(error) => error.fmt(f),
             Self::Interface(error) => error.fmt(f),
             Self::PolicyMismatch => f.write_str("committed local publication policy mismatch"),
             Self::OriginExists => f.write_str("publication origin already exists"),
             Self::MissingDependency => f.write_str("exact durable publication dependency missing"),
             Self::CorruptRecord => f.write_str("invalid canonical durable publication record"),
+            Self::UnsupportedRecordProvenance => {
+                f.write_str("stored publication provenance is not a legacy submission")
+            }
             Self::HistoricalContextUnavailable => {
                 f.write_str("trusted original publication context unavailable")
             }
@@ -125,6 +154,11 @@ impl Error for PublicationAdmissionError {}
 impl From<NodeCoreError> for PublicationAdmissionError {
     fn from(value: NodeCoreError) -> Self {
         Self::Node(value)
+    }
+}
+impl From<PaidExecutionError> for PublicationAdmissionError {
+    fn from(value: PaidExecutionError) -> Self {
+        Self::Paid(value)
     }
 }
 impl From<PublicationError> for PublicationAdmissionError {
@@ -205,6 +239,30 @@ impl LocalPublicationPolicy {
             profile: 3,
         }
     }
+    /// Explicit profile-four publication admission for generic typed object
+    /// results (DR-0124 durable-policy prerequisite). Not a strict superset of
+    /// [`Self::general`] acceptance: profile four accepts exactly its own
+    /// profile-four context-bound key, distinct from the profile-three key.
+    /// It does not admit, install or expose paid execution, reservation or
+    /// settlement.
+    ///
+    /// Publication admission is exact-match per profile: a profile-four
+    /// artifact is admitted only against a committed profile-four policy at
+    /// its own `v4/policies/` key (see [`publication_policy_key_for_profile`]),
+    /// never against the profile-three policy or key, even though the
+    /// corresponding *execution* host-import profile
+    /// (`GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION`) is a superset of the
+    /// profile-three host imports. The `v4`/`v3`/... key suffixes map the
+    /// profile number directly onto historical wire-version numbering; they
+    /// carry no other significance.
+    #[must_use]
+    pub const fn object_results(context: PublicationContext, semantics: Digest32) -> Self {
+        Self {
+            context,
+            semantics,
+            profile: 4,
+        }
+    }
     /// Closed artifact admission profile.
     #[must_use]
     pub const fn profile(&self) -> u32 {
@@ -228,7 +286,7 @@ impl LocalPublicationPolicy {
         frame.field_u16(3, 1)?;
         frame.field_u32(4, MAX_INTERFACE_NODES as u32)?;
         frame.field_u64(5, MAX_PUBLICATION_CLOSURE_BYTES as u64)?;
-        if matches!(self.profile, 2 | 3) {
+        if matches!(self.profile, 2..=4) {
             frame.field_u32(6, self.profile)?;
         }
         Ok(frame.finish()?)
@@ -240,7 +298,7 @@ impl LocalPublicationPolicy {
         }
         let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
         frame.require_type(0x630A)?;
-        if !matches!(frame.version(), 1..=3) {
+        if !matches!(frame.version(), 1..=4) {
             return Err(PublicationAdmissionError::PolicyMismatch);
         }
         if frame.version() == 1 {
@@ -281,6 +339,7 @@ pub fn publication_policy_key_for_profile(
         1 => key.extend_from_slice(b"v1/policies/"),
         2 => key.extend_from_slice(b"v2/policies/"),
         3 => key.extend_from_slice(b"v3/policies/"),
+        4 => key.extend_from_slice(b"v4/policies/"),
         _ => return Err(PublicationAdmissionError::PolicyMismatch),
     }
     key.extend(encode_publication_context(context)?);
@@ -371,13 +430,13 @@ fn load_closure<S: StructuredDurableDomainStateStore>(
 }
 fn match_reference(
     reference: &UnverifiedDependencyRef,
-    request: &execution::publication::PublicationRequest,
+    artifact: &execution::publication::CodeArtifact,
+    digest: &Digest32,
 ) -> Result<(), PublicationAdmissionError> {
-    let artifact: &execution::publication::CodeArtifact = request.artifact();
     if reference.origin() != artifact.origin()
         || reference.revision() != artifact.revision()
         || reference.context() != artifact.context()
-        || reference.artifact_digest() != request.artifact_digest()
+        || reference.artifact_digest() != digest
     {
         return Err(PublicationAdmissionError::CorruptRecord);
     }
@@ -429,6 +488,58 @@ fn verify_publication_receipt<S: StructuredDurableDomainStateStore>(
         return Err(PublicationAdmissionError::CorruptRecord);
     }
     Ok(())
+}
+
+/// Verifies the committed durable receipt of one stored DR-0124 paid Publish
+/// frame before its artifact may be granted dependency authority.
+///
+/// Storing signed paid bytes at the immutable origin key is not publication by
+/// itself. This requires the *same* request identity and invocation digest to
+/// have committed exactly one accepted response whose body decodes as a
+/// canonical [`PaidExecutionResult`] for this request, of kind `Publish`, with
+/// status `Success`, targeting exactly this origin and carrying this
+/// invocation's event digest. A rejected receipt, an unrelated application
+/// kind or a mismatched origin is not publication. Historical fee arithmetic
+/// is deliberately not rerun here: the charge was already independently
+/// verified when that receipt was committed.
+fn verify_paid_publication_receipt<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    authenticated: &AuthenticatedPaidIntent,
+    origin: &PackageOrigin,
+) -> Result<[u8; 32], PublicationAdmissionError> {
+    let intent = authenticated.intent();
+    let event_digest: Digest32 = paid_invocation_digest(resolver, authenticated.signed())?;
+    let request_id: RequestId = RequestId::new(intent.request_id)?;
+    let output: NodeOutput = durable_reconciliation::reconcile_receipt(
+        store,
+        context,
+        domain,
+        request_id,
+        event_digest,
+    )?
+    .ok_or(PublicationAdmissionError::CorruptRecord)?;
+    let [response] = output.responses() else {
+        return Err(PublicationAdmissionError::CorruptRecord);
+    };
+    if response.request_id() != request_id || response.status() != NodeResponseStatus::Accepted {
+        return Err(PublicationAdmissionError::CorruptRecord);
+    }
+    let payload: &[u8] = response
+        .payload()
+        .ok_or(PublicationAdmissionError::CorruptRecord)?;
+    let result: PaidExecutionResult = decode_paid_execution_result(payload)?;
+    if result.request_id != intent.request_id
+        || result.kind != PaidResultKind::Publish
+        || result.status != PaidExecutionStatus::Success
+        || result.target != PaidResultTarget::Package(origin.clone())
+        || result.effects.tx_hash != event_digest
+    {
+        return Err(PublicationAdmissionError::CorruptRecord);
+    }
+    Ok(intent.request_id)
 }
 
 /// Admits one publication using the current resolver's trusted epoch history.
@@ -571,18 +682,62 @@ pub fn query_publication_with_history<S: StructuredDurableDomainStateStore>(
     history: &[HashSuiteResolver],
     origin: &PackageOrigin,
 ) -> Result<Option<PublicationSubmission>, PublicationAdmissionError> {
-    Ok(
-        load_verified_publication(store, context, domain, resolver, history, origin)?
-            .map(|loaded| loaded.submission),
-    )
+    match load_verified_publication(store, context, domain, resolver, history, origin)? {
+        // Legacy rows keep their exact historical query behavior.
+        Some(loaded) => match loaded.record {
+            VerifiedPublicationRecord::Legacy(submission) => Ok(Some(submission)),
+            // A DR-0124 paid Publish row has no `PublicationSubmission` and
+            // none is synthesized. This query surface stays submission-shaped
+            // and fails closed rather than activating a paid query route.
+            VerifiedPublicationRecord::Paid { .. } => {
+                Err(PublicationAdmissionError::UnsupportedRecordProvenance)
+            }
+        },
+        None => Ok(None),
+    }
+}
+
+/// The actual durable ingress provenance of one verified publication record.
+///
+/// Legacy rows retain their original signed [`PublicationSubmission`] and its
+/// original verification rules. A DR-0124 paid Publish row instead stores the
+/// complete signed `SignedPaidIntent` frame; no `PublicationRequest` or
+/// publisher signature is ever fabricated for it. This enum records provenance
+/// only: it activates no paid query route, no HTTP surface and no execution
+/// authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// A legacy `PublicationSubmission` is unavoidably larger than a 32-byte paid
+/// request identity. This value is one short-lived per-invocation record, not
+/// a hot array element, so boxing would only move the cost.
+#[allow(clippy::large_enum_variant)]
+pub enum VerifiedPublicationRecord {
+    /// Legacy stored `PublicationSubmission` frame `0x6308`.
+    Legacy(PublicationSubmission),
+    /// Stored `SignedPaidIntent` frame `0x6413` whose successful paid Publish
+    /// receipt was verified before dependency authority was granted.
+    Paid {
+        /// The paid request identity whose committed receipt was verified.
+        request_id: [u8; 32],
+    },
+}
+
+impl VerifiedPublicationRecord {
+    /// Returns the legacy signed submission, or `None` for a paid record.
+    #[must_use]
+    pub const fn submission(&self) -> Option<&PublicationSubmission> {
+        match self {
+            Self::Legacy(submission) => Some(submission),
+            Self::Paid { .. } => None,
+        }
+    }
 }
 
 /// Independently verified durable code and all state revisions used to verify it.
 /// Consumers must include these read assertions in their eventual atomic commit.
 #[derive(Debug)]
 pub struct VerifiedDurablePublication {
-    /// Exact originally signed ingress, including its receipt identity.
-    pub submission: PublicationSubmission,
+    /// Exact originally signed ingress and its actual provenance.
+    pub record: VerifiedPublicationRecord,
     /// Verified ABI, executable metadata and exact authenticated closure.
     pub interface: execution::publication::VerifiedPublicationInterface,
     /// Publication and retained policy read assertions, in canonical key order.

@@ -635,8 +635,8 @@ pub fn bind_call_intent<'a>(
     intent: &'a CallIntent,
     interface: &'a VerifiedPublicationInterface,
 ) -> Result<BoundObjectSignature<'a>, CallError> {
-    let request: &crate::publication::PublicationRequest = interface.candidate().request();
-    let artifact: &crate::publication::CodeArtifact = request.artifact();
+    let candidate = interface.candidate();
+    let artifact: &crate::publication::CodeArtifact = candidate.artifact();
 
     if intent.code.origin() != artifact.origin() {
         return Err(CallError::CodeMismatch);
@@ -647,7 +647,7 @@ pub fn bind_call_intent<'a>(
     if intent.code.context() != artifact.context() {
         return Err(CallError::CodeMismatch);
     }
-    if intent.code.artifact_digest() != request.artifact_digest() {
+    if intent.code.artifact_digest() != candidate.digest() {
         return Err(CallError::CodeMismatch);
     }
 

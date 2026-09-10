@@ -49,10 +49,15 @@ const FRAME_TYPE_OBJECT_PARAM: u16 = 0x5305;
 const FRAME_TYPE_TYPE_PATTERN: u16 = 0x5306;
 const FRAME_TYPE_PATTERN_ARG: u16 = 0x5307;
 const FRAME_TYPE_ORDERED_LIST: u16 = 0x5308;
+const FRAME_TYPE_OBJECT_RESULT: u16 = 0x5309;
 
 const FRAME_VERSION: u16 = 1;
 /// Maximum UTF-8 byte length of a declared entrypoint name.
 pub const MAX_ENTRYPOINT_NAME_BYTES: usize = 256;
+/// Maximum number of ordered typed object result slots declared by one
+/// entrypoint (DR-0124). Slots are positional and signed; a slot may permit
+/// absence but a required slot must be filled on normal frame exit.
+pub const MAX_ABI_OBJECT_RESULTS: usize = 4;
 
 /// Errors occurring during public ABI encoding, decoding, or shape validation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -199,6 +204,25 @@ pub struct ObjectParameter {
     pub schema: u32,
     /// Expected type pattern.
     pub ty: TypePattern,
+}
+
+/// Declaration of one ordered, signed typed object result slot (DR-0124).
+///
+/// Slots are positional, not name-addressed: `return_object(slot, handle)`
+/// names a slot by its index in the entrypoint's declared result list.
+/// `optional` permits the slot to be delivered absent (no handle, but the
+/// slot still occupies its fixed position in delivery); a non-optional slot
+/// must be filled on every normal frame exit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectResultDeclaration {
+    /// Maximum access mode delivered to the receiving frame.
+    pub mode: ObjectMode,
+    /// Non-zero schema version identifier.
+    pub schema: u32,
+    /// Expected type pattern.
+    pub ty: TypePattern,
+    /// Whether this slot may be delivered absent.
+    pub optional: bool,
 }
 
 /// Declaration of a public entrypoint exposed by a package.
@@ -622,6 +646,40 @@ fn encode_object_parameter(obj: &ObjectParameter) -> Result<Vec<u8>, PublicAbiEr
     Ok(bytes)
 }
 
+/// Canonically encodes one ordered typed object result declaration (DR-0124).
+fn encode_object_result_declaration(
+    result: &ObjectResultDeclaration,
+) -> Result<Vec<u8>, PublicAbiError> {
+    if result.schema == 0 {
+        return Err(PublicAbiError::Invalid(
+            "object result schema cannot be zero",
+        ));
+    }
+    let pattern_bytes: Vec<u8> = encode_type_pattern(&result.ty)?;
+
+    let mut s: CanonicalStruct = CanonicalStruct::new(FRAME_TYPE_OBJECT_RESULT, FRAME_VERSION);
+    s.field_u16(1, result.mode.tag())?;
+    s.field_u32(2, result.schema)?;
+    s.field_bytes(3, pattern_bytes)?;
+    s.field_u16(4, u16::from(result.optional))?;
+    let bytes: Vec<u8> = s.finish()?;
+    Ok(bytes)
+}
+
+/// Canonically encodes one entrypoint's ordered, bounded typed object result list.
+pub(crate) fn encode_object_result_list(
+    results: &[ObjectResultDeclaration],
+) -> Result<Vec<u8>, PublicAbiError> {
+    if results.len() > MAX_ABI_OBJECT_RESULTS {
+        return Err(PublicAbiError::Limit("object result count exceeds limit"));
+    }
+    let mut encoded: Vec<Vec<u8>> = Vec::with_capacity(results.len());
+    for result in results {
+        encoded.push(encode_object_result_declaration(result)?);
+    }
+    encode_canonical_list(&encoded, MAX_ABI_OBJECT_RESULTS)
+}
+
 fn encode_entrypoint_declaration(ep: &EntrypointDeclaration) -> Result<Vec<u8>, PublicAbiError> {
     let name_len: usize = ep.name.len();
     if name_len < 1 {
@@ -897,6 +955,87 @@ fn decode_object_parameter(
     let ty: TypePattern = decode_type_pattern_inner(pattern_bytes, 1, node_count, root_chain)?;
 
     Ok(ObjectParameter { mode, schema, ty })
+}
+
+fn decode_object_result_declaration(
+    bytes: &[u8],
+    root_chain: &ChainId,
+    node_count: &mut usize,
+) -> Result<ObjectResultDeclaration, PublicAbiError> {
+    if bytes.len() > MAX_PUBLIC_ABI_BYTES {
+        return Err(PublicAbiError::Limit("object result byte limit exceeded"));
+    }
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
+    frame.require_type(FRAME_TYPE_OBJECT_RESULT)?;
+    frame.require_version(FRAME_VERSION)?;
+    frame.require_only_fields(&[1, 2, 3, 4])?;
+
+    let mode_u16: u16 = frame.required_u16(1)?;
+    let mode: ObjectMode = ObjectMode::from_tag(mode_u16)?;
+    let schema: u32 = frame.required_u32(2)?;
+    if schema == 0 {
+        return Err(PublicAbiError::Invalid(
+            "object result schema cannot be zero",
+        ));
+    }
+
+    let pattern_bytes: &[u8] = frame.required_field(3)?;
+    let ty: TypePattern = decode_type_pattern_inner(pattern_bytes, 1, node_count, root_chain)?;
+
+    let optional: bool = match frame.required_u16(4)? {
+        0 => false,
+        1 => true,
+        _ => return Err(PublicAbiError::Invalid("object result optional flag")),
+    };
+
+    Ok(ObjectResultDeclaration {
+        mode,
+        schema,
+        ty,
+        optional,
+    })
+}
+
+/// Decodes one entrypoint's ordered, bounded typed object result list.
+pub(crate) fn decode_object_result_list(
+    bytes: &[u8],
+    root_chain: &ChainId,
+    node_count: &mut usize,
+) -> Result<Vec<ObjectResultDeclaration>, PublicAbiError> {
+    decode_canonical_list(bytes, MAX_ABI_OBJECT_RESULTS, |b: &[u8]| {
+        decode_object_result_declaration(b, root_chain, node_count)
+    })
+}
+
+/// Validates result-slot count, schema, and pattern shape against one
+/// entrypoint's own type-parameter scope. Does not resolve constructors
+/// against a dependency closure; see `execution::publication::interface`
+/// for the cross-package resolution step mirrored from input parameters.
+///
+/// `node_count` must be threaded by the caller across every entrypoint's
+/// result list within the same [`ExecutableAbi`](crate::executable_abi::ExecutableAbi),
+/// exactly like [`decode_object_result_list`] accumulates it across the
+/// decoded wrapper: a per-entrypoint-only counter here would let a value
+/// pass validation (and therefore encode) while its wire bytes still fail
+/// [`MAX_ABI_TYPE_NODES`] on decode.
+pub(crate) fn validate_object_result_shape(
+    results: &[ObjectResultDeclaration],
+    root_chain: &ChainId,
+    type_param_count: usize,
+    node_count: &mut usize,
+) -> Result<(), PublicAbiError> {
+    if results.len() > MAX_ABI_OBJECT_RESULTS {
+        return Err(PublicAbiError::Limit("object result count exceeds limit"));
+    }
+    for result in results {
+        if result.schema == 0 {
+            return Err(PublicAbiError::Invalid(
+                "object result schema cannot be zero",
+            ));
+        }
+        validate_pattern_shape(&result.ty, root_chain, type_param_count, 1, node_count)?;
+    }
+    Ok(())
 }
 
 fn decode_entrypoint_declaration(

@@ -47,6 +47,7 @@ pub mod fee_effects;
 pub mod local_execution;
 pub mod local_instance_state;
 mod object_snapshots;
+pub mod paid_execution;
 mod preinstalled_wasm;
 pub mod publication;
 mod query;

@@ -79,6 +79,13 @@ pub const MAX_LOCAL_EXECUTION_INTENT_BYTES: usize =
 pub const GENERAL_EXECUTION_RULES_VERSION: u32 = 2;
 /// Host ABI including the general call_contract selector.
 pub const GENERAL_TYPED_HOST_ABI_VERSION: u32 = 2;
+/// Generic typed object-result frame-entry and host ABI rules (DR-0124
+/// foundation): `return_object`, `get_object_id`, `get_object_type`, and the
+/// results-returning call selectors, on top of profile-three semantics.
+pub const GENERIC_OBJECT_RESULT_RULES_VERSION: u32 = 3;
+/// Host ABI including return_object/get_object_id/get_object_type and the
+/// results-returning call selectors.
+pub const GENERIC_OBJECT_RESULT_HOST_ABI_VERSION: u32 = 3;
 
 /// Explicit general-call semantics; profile-two bytes retain their original meaning.
 pub fn encode_general_execution_semantics() -> Result<Vec<u8>, CanonicalEncodingError> {
@@ -113,6 +120,45 @@ pub fn general_execution_semantics(
         context.epoch(),
         HashPurpose::ContractCode,
         &encode_general_execution_semantics()?,
+    )?)
+}
+
+/// Explicit generic object-result semantics (DR-0124 foundation); a distinct
+/// commitment from profile-three bytes, activated only for wasm profile four.
+pub fn encode_generic_object_result_semantics() -> Result<Vec<u8>, CanonicalEncodingError> {
+    let mut frame: CanonicalStruct = CanonicalStruct::new(0x630B, 4);
+    frame.field_str(1, "local-devnet-generic-object-results")?;
+    frame.field_u32(2, 4)?;
+    frame.field_u32(3, GENERIC_OBJECT_RESULT_RULES_VERSION)?;
+    frame.field_str(4, LOCAL_WASMI_VERSION)?;
+    frame.field_u32(5, 1)?;
+    frame.field_u32(6, LOCAL_WASM_INITIAL_STACK as u32)?;
+    frame.field_u32(7, LOCAL_WASM_MAX_STACK as u32)?;
+    frame.field_u32(8, LOCAL_WASM_MAX_RECURSION as u32)?;
+    frame.field_u32(9, GENERIC_OBJECT_RESULT_HOST_ABI_VERSION)?;
+    frame.field_u64(10, MAX_LOCAL_EXECUTION_MEMORY_BYTES)?;
+    frame.field_u32(11, MAX_CALL_AUTHORIZATIONS as u32)?;
+    frame.field_u32(12, MAX_CALL_AUTHORIZATION_BYTES as u32)?;
+    frame.field_u32(13, MAX_EXECUTION_SCOPES as u32)?;
+    frame.field_u32(14, MAX_AUTHORIZED_INPUTS as u32)?;
+    frame.field_u32(15, abi::public_abi::MAX_ABI_OBJECT_RESULTS as u32)?;
+    frame.finish()
+}
+/// Commits profile-four generic object-result semantics under the artifact's
+/// original context.
+pub fn generic_object_result_semantics(
+    resolver: &HashSuiteResolver,
+    context: &PublicationContext,
+) -> Result<Digest32, PublicationError> {
+    if resolver.chain_id() != context.chain_id()
+        || resolver.protocol_version() != context.protocol_version()
+    {
+        return Err(PublicationError::ContextMismatch);
+    }
+    Ok(resolver.hash_for_purpose(
+        context.epoch(),
+        HashPurpose::ContractCode,
+        &encode_generic_object_result_semantics()?,
     )?)
 }
 
@@ -259,6 +305,20 @@ impl LocalExecutionPolicy {
             profile: 3,
         }
     }
+    /// Explicit profile-four policy admitting generic typed object results
+    /// (DR-0124). A strict superset of [`Self::general`]: signed call
+    /// authorizations remain available, plus `return_object`,
+    /// `get_object_id`, `get_object_type` and the results-returning call
+    /// selectors. Must be separately durably committed before admission;
+    /// its bytes and digest never alias the profile-two or profile-three
+    /// policy.
+    #[must_use]
+    pub const fn generic_object_results(context: PublicationContext) -> Self {
+        Self {
+            context,
+            profile: 4,
+        }
+    }
     /// Closed executable host profile.
     #[must_use]
     pub const fn profile(&self) -> u32 {
@@ -274,10 +334,15 @@ impl LocalExecutionPolicy {
     pub const fn max_gas(&self) -> u64 {
         MAX_LOCAL_EXECUTION_GAS
     }
-    /// Canonical closed policy frame 0x6409/v1.
+    /// Canonical closed policy frame 0x6409; one distinct version per profile.
     pub fn encode(&self) -> Result<Vec<u8>, LocalExecutionError> {
-        let mut frame: CanonicalStruct =
-            CanonicalStruct::new(0x6409, if self.profile == 2 { 1 } else { 2 });
+        let version: u16 = match self.profile {
+            2 => 1,
+            3 => 2,
+            4 => 3,
+            _ => return Err(LocalExecutionError::Invalid("execution policy profile")),
+        };
+        let mut frame: CanonicalStruct = CanonicalStruct::new(0x6409, version);
         frame.field_bytes(1, encode_publication_context(&self.context)?)?;
         frame.field_u32(2, self.profile)?;
         frame.field_u16(3, 0)?;
@@ -292,23 +357,23 @@ impl LocalExecutionPolicy {
         frame.field_u64(12, LOCAL_HOST_BYTE_GAS)?;
         frame.field_u32(
             13,
-            if self.profile == 2 {
-                LOCAL_EXECUTION_RULES_VERSION
-            } else {
-                GENERAL_EXECUTION_RULES_VERSION
+            match self.profile {
+                2 => LOCAL_EXECUTION_RULES_VERSION,
+                3 => GENERAL_EXECUTION_RULES_VERSION,
+                _ => GENERIC_OBJECT_RESULT_RULES_VERSION,
             },
         )?;
         frame.field_u32(14, MAX_LOCAL_EXECUTION_EVENTS as u32)?;
         frame.field_bytes(
             15,
-            if self.profile == 2 {
-                encode_local_execution_semantics()?
-            } else {
-                encode_general_execution_semantics()?
+            match self.profile {
+                2 => encode_local_execution_semantics()?,
+                3 => encode_general_execution_semantics()?,
+                _ => encode_generic_object_result_semantics()?,
             },
         )?;
         frame.field_u64(16, LOCAL_LIBRARY_BINDING_GAS)?;
-        if self.profile == 3 {
+        if matches!(self.profile, 3 | 4) {
             frame.field_u32(17, MAX_CALL_AUTHORIZATIONS as u32)?;
             frame.field_u32(18, MAX_CALL_AUTHORIZATION_BYTES as u32)?;
             frame.field_u32(19, MAX_EXECUTION_SCOPES as u32)?;
@@ -321,6 +386,10 @@ impl LocalExecutionPolicy {
                 22,
                 crate::call_authorization::MAX_EXECUTION_CODE_BYTES as u64,
             )?;
+        }
+        if self.profile == 4 {
+            frame.field_u32(23, abi::public_abi::MAX_ABI_OBJECT_RESULTS as u32)?;
+            frame.field_u32(24, GENERIC_OBJECT_RESULT_HOST_ABI_VERSION)?;
         }
         Ok(frame.finish()?)
     }
@@ -335,6 +404,7 @@ impl LocalExecutionPolicy {
         let policy: Self = match frame.version() {
             1 => Self::new(context),
             2 => Self::general(context),
+            3 => Self::generic_object_results(context),
             _ => return Err(LocalExecutionError::Invalid("execution policy version")),
         };
         if policy.encode()? != bytes {
@@ -658,7 +728,7 @@ pub fn authenticate_local_execution(
     let signed: SignedLocalExecutionIntent = decode_signed_local_execution(bytes)?;
     if signed.intent.policy_digest != policy.digest(resolver)?
         || signed.intent.call.gas_limit > policy.max_gas()
-        || (policy.profile() != 3 && !signed.intent.authorizations.is_empty())
+        || (!matches!(policy.profile(), 3 | 4) && !signed.intent.authorizations.is_empty())
     {
         return Err(LocalExecutionError::Invalid("execution policy or gas"));
     }

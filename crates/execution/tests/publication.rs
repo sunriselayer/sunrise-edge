@@ -161,13 +161,10 @@ fn independent_canonical_commitment_and_ed25519_vectors() {
     let wire: Vec<u8> = encode_publication_request(&request).unwrap();
     assert_eq!(decode_publication_request(&wire).unwrap(), request);
     let candidate = authenticate(decode_publication_request(&wire).unwrap()).unwrap();
-    assert_eq!(candidate.request(), &request);
+    assert_eq!(candidate.request(), Some(&request));
     // This is explicitly NOT typed-ABI admission: these arbitrary bytes
     // authenticate but no execution/persistence API consumes the witness.
-    assert_eq!(
-        candidate.request().artifact().unverified_abi(),
-        b"opaque-abi"
-    );
+    assert_eq!(candidate.artifact().unverified_abi(), b"opaque-abi");
     assert_eq!(
         authenticate(request.clone()).unwrap(),
         authenticate(request).unwrap()
@@ -455,7 +452,7 @@ fn construction_fails_closed_for_unsupported_or_noncanonical_metadata() {
         p.revision = revision;
         invalid.push(p);
     }
-    for profile in [0, 4, u32::MAX] {
+    for profile in [0, 5, u32::MAX] {
         let mut p = parts();
         p.wasm_profile = profile;
         invalid.push(p);
@@ -563,7 +560,7 @@ fn wire_decoding_rejects_malleability_counts_lengths_and_unknown_fields() {
     let artifact = encode_code_artifact(request.artifact()).unwrap();
     for (field, value) in [
         (3, 2_u64.to_le_bytes().to_vec()),
-        (4, 4_u32.to_le_bytes().to_vec()),
+        (4, 5_u32.to_le_bytes().to_vec()),
         (7, vec![0; MAX_ABI_DECLARATION_BYTES + 1]),
         (8, list(0x6304, u16::MAX, vec![])),
         (9, list(0x6305, u16::MAX, vec![])),

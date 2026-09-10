@@ -12,8 +12,8 @@ use local_instance_state::{
 use publication::{
     PublicationAdmissionError, VerifiedDurablePublication, load_verified_publication,
 };
-mod effects;
-mod scopes;
+pub(crate) mod effects;
+pub(crate) mod scopes;
 #[cfg(test)]
 mod tests;
 
@@ -59,7 +59,7 @@ conversion!(LocalExecutionError, Execution);
 conversion!(PublicationAdmissionError, Publication);
 type AdmissionResult<T> = Result<T, LocalExecutionAdmissionError>;
 
-fn original_resolver<'a>(
+pub(crate) fn original_resolver<'a>(
     current: &'a HashSuiteResolver,
     history: &'a [HashSuiteResolver],
     context: &PublicationContext,
@@ -78,28 +78,30 @@ fn original_resolver<'a>(
             "trusted historical resolver unavailable",
         ))
 }
-fn reference_matches(
+pub(crate) fn reference_matches(
     reference: &UnverifiedDependencyRef,
     interface: &VerifiedPublicationInterface,
 ) -> bool {
-    let request = interface.candidate().request();
-    reference.origin() == request.artifact().origin()
-        && reference.context() == request.artifact().context()
-        && reference.revision() == request.artifact().revision()
-        && reference.artifact_digest() == request.artifact_digest()
+    let candidate = interface.candidate();
+    let artifact = candidate.artifact();
+    reference.origin() == artifact.origin()
+        && reference.context() == artifact.context()
+        && reference.revision() == artifact.revision()
+        && reference.artifact_digest() == candidate.digest()
 }
-fn validate_closure(
+pub(crate) fn validate_closure(
     resolver: &HashSuiteResolver,
     history: &[HashSuiteResolver],
     interface: &VerifiedPublicationInterface,
 ) -> AdmissionResult<()> {
     for candidate in std::iter::once(interface.candidate()).chain(interface.dependencies()) {
-        let artifact = candidate.request().artifact();
+        let artifact = candidate.artifact();
         let historical: &HashSuiteResolver =
             original_resolver(resolver, history, artifact.context())?;
         let expected = match artifact.wasm_profile() {
             2 => local_execution_semantics(historical, artifact.context()),
             3 => general_execution_semantics(historical, artifact.context()),
+            4 => generic_object_result_semantics(historical, artifact.context()),
             _ => {
                 return Err(LocalExecutionAdmissionError::Invalid(
                     "non-executable publication profile",
@@ -115,7 +117,7 @@ fn validate_closure(
     }
     Ok(())
 }
-fn read_state<S: StructuredDurableDomainStateStore>(
+pub(crate) fn read_state<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -130,7 +132,7 @@ fn read_state<S: StructuredDurableDomainStateStore>(
     }
     Ok(value)
 }
-fn validate_authority(
+pub(crate) fn validate_authority(
     authority: &ObjectAuthority,
     instance: &InstanceRecord,
     target: &execution::call::InstanceTarget,
@@ -356,8 +358,7 @@ pub fn handle_local_execution<
     if std::iter::once(interface.candidate())
         .chain(interface.dependencies())
         .any(|candidate| {
-            candidate.request().artifact().context().protocol_version()
-                != call.context.protocol_version()
+            candidate.artifact().context().protocol_version() != call.context.protocol_version()
         })
     {
         return Err(LocalExecutionAdmissionError::Invalid(
@@ -439,7 +440,14 @@ pub fn handle_local_execution<
         &resolved,
     )
     .map_err(|_| LocalExecutionAdmissionError::Invalid("input body mismatch"))?;
-    scopes::validate_inputs(&authenticated, &scopes, &inputs, resolver)?;
+    scopes::validate_inputs(
+        &call.context,
+        &call.access,
+        &authenticated.intent().authorizations,
+        &scopes,
+        &inputs,
+        resolver,
+    )?;
     let outcome: LocalExecutionOutcome = engine.execute(LocalExecutionRequest {
         scopes: &scopes,
         intent: &authenticated,
@@ -469,11 +477,14 @@ pub fn handle_local_execution<
         domain,
         resolver,
         &scopes,
-        &authenticated,
+        &effects::CheckedEffects {
+            context: &call.context,
+            effects: &outcome.effects,
+            created_authorities: &outcome.created_authorities,
+        },
         created_checkpoint,
         &inputs,
         &snapshots,
-        &outcome,
         &mut reads,
         &mut head_reads,
         &mut mutations,

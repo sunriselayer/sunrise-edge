@@ -117,6 +117,7 @@ fn publish(
         call: package.abi,
         initializer: package.initializer,
         transferable_constructors: package.transferable_constructors,
+        results: vec![Vec::new(); exports.len()],
     };
     let semantics: Digest32 = local_execution_semantics(&resolver(), &protocol()).unwrap();
     let artifact: CodeArtifact = CodeArtifact::new(ArtifactParts {

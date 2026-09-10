@@ -56,6 +56,7 @@ fn publish_code(
         },
         initializer: Some("init".into()),
         transferable_constructors: vec![1],
+        results: vec![Vec::new(); 3],
     };
     let semantics: Digest32 = general_execution_semantics(&resolver(), &protocol()).unwrap();
     let artifact:CodeArtifact=CodeArtifact::new(ArtifactParts{context:protocol(),origin:origin.clone(),revision:1,wasm_profile:3,semantics,wasm:wat::parse_str("(module (memory (export \"memory\") 1 2) (func (export \"forward\")) (func (export \"init\")) (func (export \"write\")))").unwrap(),unverified_abi:encode_executable_abi(&meta).unwrap(),exports:vec!["forward".into(),"init".into(),"write".into()],unverified_dependencies:dependency.into_iter().cloned().collect()}).unwrap();

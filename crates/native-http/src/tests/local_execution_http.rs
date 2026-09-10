@@ -163,10 +163,12 @@ fn publication(profile: u32, nonce: u64) -> PublicationSubmission {
         bodies: vec![],
     };
     let abi = if matches!(profile, 2 | 3) {
+        let entrypoints: usize = abi.objects.entrypoints.len();
         encode_executable_abi(&ExecutableAbi {
             call: abi,
             initializer: Some("init".to_owned()),
             transferable_constructors: vec![],
+            results: vec![Vec::new(); entrypoints],
         })
         .unwrap()
     } else {

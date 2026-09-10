@@ -978,12 +978,19 @@ pub use local_wasm::LocalWasmExecutionEngine;
 /// Signed immutable artifact candidates; authentication alone grants no authority.
 pub mod publication;
 
+/// Neutral crate-internal DR-0124 phase ceilings shared by the paid policy
+/// wire boundary and the private VM phase coordinator.
+mod phase_limits;
+
+pub mod paid_execution;
+
 mod contract_wasm;
 pub use contract_wasm::{
     CONTRACT_WASM_ADMISSION_PROFILE_VERSION, ContractWasmValidationError,
-    GENERAL_CONTRACT_WASM_PROFILE_VERSION, MAX_CONTRACT_ENTRYPOINT_NAME_BYTES,
-    MAX_CONTRACT_ENTRYPOINTS, MAX_CONTRACT_WASM_BYTES, TYPED_CONTRACT_WASM_PROFILE_VERSION,
-    ValidatedContractWasm, validate_contract_wasm, validate_contract_wasm_profile,
+    GENERAL_CONTRACT_WASM_PROFILE_VERSION, GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION,
+    MAX_CONTRACT_ENTRYPOINT_NAME_BYTES, MAX_CONTRACT_ENTRYPOINTS, MAX_CONTRACT_WASM_BYTES,
+    TYPED_CONTRACT_WASM_PROFILE_VERSION, ValidatedContractWasm, validate_contract_wasm,
+    validate_contract_wasm_profile,
 };
 
 mod execution_proof;

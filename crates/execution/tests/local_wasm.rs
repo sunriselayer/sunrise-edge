@@ -46,10 +46,12 @@ fn publish(
     package: inventory::InventoryPackage,
     dependencies: Vec<UnverifiedDependencyRef>,
 ) -> AuthenticatedPublicationCandidate {
+    let entrypoint_count = package.abi.objects.entrypoints.len();
     let metadata: ExecutableAbi = ExecutableAbi {
         call: package.abi,
         initializer: package.initializer,
         transferable_constructors: package.transferable_constructors,
+        results: vec![vec![]; entrypoint_count],
     };
     let exports: Vec<String> = metadata
         .call
@@ -87,12 +89,12 @@ fn publish(
     .unwrap()
 }
 fn reference(candidate: &AuthenticatedPublicationCandidate) -> UnverifiedDependencyRef {
-    let artifact = candidate.request().artifact();
+    let artifact = candidate.artifact();
     UnverifiedDependencyRef::new(
         artifact.origin().clone(),
         1,
         artifact.context().clone(),
-        *candidate.request().artifact_digest(),
+        *candidate.digest(),
     )
     .unwrap()
 }

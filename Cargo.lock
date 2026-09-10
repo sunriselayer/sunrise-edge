@@ -478,6 +478,7 @@ dependencies = [
  "hashing",
  "objects",
  "protocol-types",
+ "public-standard-asset",
  "sha2 0.11.0",
  "standard-assets",
  "wasmi",
@@ -953,6 +954,7 @@ dependencies = [
  "objects",
  "protocol-config",
  "protocol-types",
+ "public-standard-asset",
  "runtime",
  "runtime-sqlite",
  "sha2 0.11.0",
@@ -1224,6 +1226,21 @@ version = "0.1.0"
 dependencies = [
  "canonical-encoding",
  "protocol-types",
+]
+
+[[package]]
+name = "public-standard-asset"
+version = "0.1.0"
+dependencies = [
+ "abi",
+ "canonical-encoding",
+ "ed25519-zebra",
+ "execution",
+ "hashing",
+ "objects",
+ "protocol-types",
+ "sha2 0.11.0",
+ "wat",
 ]
 
 [[package]]

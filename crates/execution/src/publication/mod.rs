@@ -14,14 +14,15 @@ mod interface;
 mod submission;
 
 pub use submission::{
-    MAX_PUBLICATION_SUBMISSION_BYTES, PublicationSubmission, authenticate_publication_submission,
-    decode_publication_submission, encode_publication_submission,
-    publication_submission_signing_frame,
+    MAX_PUBLICATION_SUBMISSION_BYTES, PUBLICATION_SUBMISSION_FRAME_TYPE, PublicationSubmission,
+    authenticate_publication_submission, decode_publication_submission,
+    encode_publication_submission, publication_submission_signing_frame,
 };
 
 pub use binding::{
-    BindingError, BoundObjectParameter, BoundObjectSignature, MAX_BOUND_TYPE_BYTES,
-    bind_object_signature, match_object_input_metadata, validate_call_arguments,
+    BindingError, BoundObjectParameter, BoundObjectResult, BoundObjectSignature,
+    MAX_BOUND_TYPE_BYTES, bind_object_signature, match_object_input_metadata,
+    validate_call_arguments,
 };
 
 pub use bodies::{
@@ -40,6 +41,7 @@ pub use artifact::{
     decode_publication_request, encode_code_artifact, encode_dependency_ref,
     encode_publication_context, encode_publication_request,
 };
+pub(crate) use auth::candidate_from_paid_artifact;
 pub use auth::{
     AuthenticatedPublicationCandidate, artifact_commitment, authenticate_publication,
     publication_signing_frame,

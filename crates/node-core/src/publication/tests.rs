@@ -1,6 +1,7 @@
 use super::*;
 use abi::call_values::{CallAbi, ValueLayout, encode_call_abi};
-use abi::public_abi::{EntrypointDeclaration, PackageAbi};
+use abi::executable_abi::{ExecutableAbi, encode_executable_abi};
+use abi::public_abi::{ConstructorDeclaration, EntrypointDeclaration, PackageAbi};
 use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::publication::{
     ArtifactParts, CodeArtifact, PublicationRequest, artifact_commitment,
@@ -26,10 +27,14 @@ fn profile_two_requires_its_own_committed_policy_and_returns_cas_closure() {
     );
     let original: PublicationSubmission = make_submission(&old_policy, 15, 0, vec![]);
     let old: &CodeArtifact = original.request().artifact();
+    let call: abi::call_values::CallAbi =
+        abi::call_values::decode_call_abi(old.unverified_abi()).unwrap();
+    let entrypoints: usize = call.objects.entrypoints.len();
     let wrapper: abi::executable_abi::ExecutableAbi = abi::executable_abi::ExecutableAbi {
-        call: abi::call_values::decode_call_abi(old.unverified_abi()).unwrap(),
+        call,
         initializer: Some("run".into()),
         transferable_constructors: vec![],
+        results: vec![Vec::new(); entrypoints],
     };
     let artifact: CodeArtifact = CodeArtifact::new(ArtifactParts {
         context: old.context().clone(),
@@ -73,7 +78,11 @@ fn profile_two_requires_its_own_committed_policy_and_returns_cas_closure() {
         load_verified_publication(&store, &context(), domain(), &resolver(), &[], origin)
             .unwrap()
             .unwrap();
-    assert_eq!(loaded.submission, submission);
+    assert_eq!(
+        loaded.record,
+        VerifiedPublicationRecord::Legacy(submission.clone())
+    );
+    assert_eq!(loaded.record.submission(), Some(&submission));
     assert_eq!(
         loaded
             .interface
@@ -742,8 +751,8 @@ fn shared_loader_budget_rejects_next_union_node_before_record_io() {
     .unwrap();
     assert_eq!(store.state_reads.borrow().len(), reads_before_cache);
     assert!(std::ptr::eq(
-        first.as_ref().unwrap().interface.candidate().request(),
-        cached.interface.candidate().request()
+        first.as_ref().unwrap().interface.candidate().artifact(),
+        cached.interface.candidate().artifact()
     ));
     assert_eq!(cached.reads.len(), 33); // 32 immutable records and their one policy.
     assert!(matches!(
@@ -1307,5 +1316,211 @@ fn request_id_reuse_is_rejected_before_state_reads() {
         Err(PublicationAdmissionError::Node(
             NodeCoreError::RequestIdReuse
         ))
+    ));
+}
+
+#[test]
+fn profile_four_policy_codec_roundtrips_and_diverges_from_earlier_profiles() {
+    let context: PublicationContext = policy(0).context().clone();
+    let semantics: Digest32 =
+        local_object_result_publication_semantics(&resolver(), &context).unwrap();
+    let object_results: LocalPublicationPolicy =
+        LocalPublicationPolicy::object_results(context.clone(), semantics);
+    assert_eq!(object_results.profile(), 4);
+    let bytes: Vec<u8> = object_results.encode().unwrap();
+    assert_eq!(
+        LocalPublicationPolicy::decode(&bytes).unwrap(),
+        object_results
+    );
+
+    let general_semantics: Digest32 =
+        local_general_publication_semantics(&resolver(), &context).unwrap();
+    let general: LocalPublicationPolicy =
+        LocalPublicationPolicy::general(context.clone(), general_semantics);
+    assert_ne!(general.encode().unwrap(), bytes);
+    assert_ne!(*general.semantics(), *object_results.semantics());
+}
+
+#[test]
+fn profile_four_policy_rejects_unknown_wire_version() {
+    let context: PublicationContext = policy(0).context().clone();
+    let semantics: Digest32 =
+        local_object_result_publication_semantics(&resolver(), &context).unwrap();
+    let mut frame: CanonicalStruct = CanonicalStruct::new(0x630A, 5);
+    frame
+        .field_bytes(1, encode_publication_context(&context).unwrap())
+        .unwrap();
+    frame
+        .field_bytes(2, encode_digest32(&semantics).unwrap())
+        .unwrap();
+    frame.field_u16(3, 1).unwrap();
+    frame.field_u32(4, MAX_INTERFACE_NODES as u32).unwrap();
+    frame
+        .field_u64(5, MAX_PUBLICATION_CLOSURE_BYTES as u64)
+        .unwrap();
+    frame.field_u32(6, 5).unwrap();
+    let bytes: Vec<u8> = frame.finish().unwrap();
+    assert!(matches!(
+        LocalPublicationPolicy::decode(&bytes),
+        Err(PublicationAdmissionError::PolicyMismatch)
+    ));
+}
+
+#[test]
+fn profile_four_policy_key_is_distinct_from_every_historical_profile_and_context_bound() {
+    let context: PublicationContext = policy(0).context().clone();
+    let other_context: PublicationContext = policy(1).context().clone();
+    let keys: Vec<Vec<u8>> = (1..=4)
+        .map(|profile| publication_policy_key_for_profile(&context, profile).unwrap())
+        .collect();
+    for (index, key) in keys.iter().enumerate() {
+        for (other_index, other_key) in keys.iter().enumerate() {
+            if index != other_index {
+                assert_ne!(key, other_key);
+            }
+        }
+    }
+    assert_ne!(
+        publication_policy_key_for_profile(&context, 4).unwrap(),
+        publication_policy_key_for_profile(&other_context, 4).unwrap()
+    );
+    assert!(matches!(
+        publication_policy_key_for_profile(&context, 5),
+        Err(PublicationAdmissionError::PolicyMismatch)
+    ));
+}
+
+fn general_submission(context: &PublicationContext, seed: u8, nonce: u64) -> PublicationSubmission {
+    let key: SigningKey = signing_key();
+    let publisher: [u8; 32] = VerificationKey::from(&key).into();
+    let origin: PackageOrigin =
+        PackageOrigin::unverified(context.chain_id().clone(), publisher, [seed; 32]).unwrap();
+    let meta: ExecutableAbi = ExecutableAbi {
+        call: CallAbi {
+            objects: PackageAbi {
+                origin: origin.clone(),
+                constructors: vec![],
+                entrypoints: vec![EntrypointDeclaration {
+                    name: "run".into(),
+                    type_parameters: vec![],
+                    objects: vec![],
+                }],
+            },
+            arguments: vec![ValueLayout::Tuple(vec![])],
+            bodies: vec![],
+        },
+        initializer: Some("run".into()),
+        transferable_constructors: vec![],
+        results: vec![Vec::new()],
+    };
+    let semantics: Digest32 = local_general_publication_semantics(&resolver(), context).unwrap();
+    let artifact: CodeArtifact = CodeArtifact::new(ArtifactParts {
+        context: context.clone(),
+        origin,
+        revision: 1,
+        wasm_profile: 3,
+        semantics,
+        wasm: wat::parse_str("(module (memory (export \"memory\") 1 2) (func (export \"run\")))")
+            .unwrap(),
+        unverified_abi: encode_executable_abi(&meta).unwrap(),
+        exports: vec!["run".into()],
+        unverified_dependencies: vec![],
+    })
+    .unwrap();
+    signed_artifact(artifact, nonce, [seed; 32], &key)
+}
+
+fn object_results_submission(
+    context: &PublicationContext,
+    seed: u8,
+    nonce: u64,
+) -> PublicationSubmission {
+    let key: SigningKey = signing_key();
+    let publisher: [u8; 32] = VerificationKey::from(&key).into();
+    let origin: PackageOrigin =
+        PackageOrigin::unverified(context.chain_id().clone(), publisher, [seed; 32]).unwrap();
+    let meta: ExecutableAbi = ExecutableAbi {
+        call: CallAbi {
+            objects: PackageAbi {
+                origin: origin.clone(),
+                constructors: vec![ConstructorDeclaration {
+                    local_id: 1,
+                    schema: 1,
+                    arguments: vec![],
+                }],
+                entrypoints: vec![EntrypointDeclaration {
+                    name: "init".into(),
+                    type_parameters: vec![],
+                    objects: vec![],
+                }],
+            },
+            arguments: vec![ValueLayout::Tuple(vec![])],
+            bodies: vec![ValueLayout::U64],
+        },
+        initializer: Some("init".into()),
+        transferable_constructors: vec![1],
+        results: vec![Vec::new()],
+    };
+    let semantics: Digest32 =
+        local_object_result_publication_semantics(&resolver(), context).unwrap();
+    let artifact: CodeArtifact = CodeArtifact::new(ArtifactParts {
+        context: context.clone(),
+        origin,
+        revision: 1,
+        wasm_profile: 4,
+        semantics,
+        wasm: wat::parse_str("(module (memory (export \"memory\") 1 2) (func (export \"init\")))")
+            .unwrap(),
+        unverified_abi: encode_executable_abi(&meta).unwrap(),
+        exports: vec!["init".into()],
+        unverified_dependencies: vec![],
+    })
+    .unwrap();
+    signed_artifact(artifact, nonce, [seed; 32], &key)
+}
+
+#[test]
+fn profile_four_policy_bytes_at_profile_three_key_are_rejected_by_legacy_path() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let context: PublicationContext = policy(0).context().clone();
+    let general_semantics: Digest32 =
+        local_general_publication_semantics(&resolver(), &context).unwrap();
+    let general: LocalPublicationPolicy =
+        LocalPublicationPolicy::general(context.clone(), general_semantics);
+    let object_semantics: Digest32 =
+        local_object_result_publication_semantics(&resolver(), &context).unwrap();
+    let object_results: LocalPublicationPolicy =
+        LocalPublicationPolicy::object_results(context.clone(), object_semantics);
+    set_state(
+        &store,
+        publication_policy_key_for_profile(&context, 3).unwrap(),
+        StateMutation::Put(object_results.encode().unwrap()),
+    );
+    let submission: PublicationSubmission = general_submission(&context, 51, 0);
+    assert!(matches!(
+        publish(&store, &general, submission),
+        Err(PublicationAdmissionError::PolicyMismatch)
+    ));
+}
+
+#[test]
+fn profile_four_artifact_is_rejected_by_profile_three_policy() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let context: PublicationContext = policy(0).context().clone();
+    let general_semantics: Digest32 =
+        local_general_publication_semantics(&resolver(), &context).unwrap();
+    let general: LocalPublicationPolicy =
+        LocalPublicationPolicy::general(context.clone(), general_semantics);
+    set_state(
+        &store,
+        publication_policy_key_for_profile(&context, 3).unwrap(),
+        StateMutation::Put(general.encode().unwrap()),
+    );
+    let submission: PublicationSubmission = object_results_submission(&context, 52, 0);
+    assert!(matches!(
+        publish(&store, &general, submission),
+        Err(PublicationAdmissionError::PolicyMismatch)
     ));
 }

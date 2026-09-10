@@ -1,15 +1,15 @@
 //! Compile each already-admitted immutable module once across all scopes.
 use super::*;
 pub(super) fn scopes(
-    request: &LocalExecutionRequest<'_>,
+    scopes: &[ResolvedExecutionScope],
     engine: &Engine,
 ) -> Result<BTreeMap<PackageOrigin, Arc<Module>>, LocalExecutionError> {
     let mut modules: BTreeMap<PackageOrigin, Arc<Module>> = BTreeMap::new();
-    for scope in request.scopes {
+    for scope in scopes {
         for candidate in
             std::iter::once(scope.interface.candidate()).chain(scope.interface.dependencies())
         {
-            let artifact = candidate.request().artifact();
+            let artifact = candidate.artifact();
             if modules.contains_key(artifact.origin()) {
                 continue;
             }

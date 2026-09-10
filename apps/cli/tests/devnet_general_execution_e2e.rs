@@ -220,12 +220,14 @@ async fn cli_general_inventory_scopes_rollback_and_exact_restart_replay() {
     ] {
         fs::write(directory.join(format!("{name}.wat")), &package.wat).unwrap();
         fs::write(directory.join(format!("{name}.wasm")), &package.wasm).unwrap();
+        let entrypoints: usize = package.abi.objects.entrypoints.len();
         fs::write(
             directory.join(format!("{name}.abi")),
             encode_executable_abi(&ExecutableAbi {
                 call: package.abi,
                 initializer: package.initializer,
                 transferable_constructors: package.transferable_constructors,
+                results: vec![Vec::new(); entrypoints],
             })
             .unwrap(),
         )

@@ -316,6 +316,7 @@ fn publication(
             call: abi,
             initializer: None,
             transferable_constructors: vec![],
+            results: vec![vec![]],
         })
         .unwrap()
     };
@@ -360,14 +361,10 @@ fn profile_three_closures_accept_two_and_three_but_not_nonexecuting_artifacts() 
         [(3, 2, true), (3, 3, true), (3, 1, false), (2, 3, false)]
     {
         let child = publication(child_profile, 20, vec![]);
-        let artifact = child.request().artifact();
-        let reference = UnverifiedDependencyRef::new(
-            artifact.origin().clone(),
-            1,
-            context(),
-            *child.request().artifact_digest(),
-        )
-        .unwrap();
+        let artifact = child.artifact();
+        let reference =
+            UnverifiedDependencyRef::new(artifact.origin().clone(), 1, context(), *child.digest())
+                .unwrap();
         let root = publication(root_profile, 21, vec![reference]);
         assert_eq!(
             verify_publication_interface(root, vec![child]).is_ok(),
