@@ -6,8 +6,9 @@ remediation are existing baselines, not a completed generic contract platform.
 The public-contract foundations (DR-0112–DR-0120) and opt-in local durable code
 publication (DR-0121), opt-in independent local instance execution (DR-0122),
 and unified signed contract calls (DR-0123) are implemented and locally validated.
-Public-path Standard Asset/fee parity remains open; the generic-contract gate
-is not closed.
+The internal Standard Asset package, paid execution engine and fenced durable
+node admission are implemented; calibrated installation and public CLI/HTTP
+activation remain open, so the generic-contract gate is not closed.
 
 | Order | Deliverable | Completion evidence | Status |
 | --- | --- | --- | --- |
@@ -2526,10 +2527,12 @@ statements such as “body validation remains open” are not the live work queu
   Replace trusted-only policies
   and native asset settlement with the same public facilities and explicitly
   signed, committed, bounded fee settlement.
-  DR-0124's reserve/application/settle design was approved by Opus on 2026-09-07;
-  implementation and activation remain open. The same Coin can fund fees and
-  application work; a separate Coin is optional. Track the integrated replacement:
-  - [ ] Generic bounded typed frame returns and protected reservation handles;
+  DR-0124's reserve/application/settle design was approved by Opus on 2026-09-07.
+  The public package, paid engine and internal durable admission are implemented;
+  calibrated installation and external activation remain open. The same Coin can
+  fund fees and application work; a separate Coin is optional. Track the integrated
+  replacement:
+  - [x] Generic bounded typed frame returns and protected reservation handles;
     independent phase resource budgets, monotonic counters and savepoints.
     Internal SDK bindings for profile-4 object metadata and ordered optional
     result handles are implemented (13 native tests, targeted clippy, wasm32
@@ -2557,16 +2560,17 @@ statements such as “body validation remains open” are not the live work queu
     transfer output-window denial before mutation.
     `npm ci --prefix adapters/cloudflare-workers` and `./scripts/check-all.sh`
     pass locally.
-    These tests do not provide paid durable replay or service-backed PostgreSQL
-    fault evidence. Raw phase/grant APIs remain private; only the authenticated
-    paid engine described below exposes the internal execution boundary.
-    Durable activation still requires paid admission and the complete
-    receipt/commit boundary; no existing zero-fee signature may enter it.
-    Public Call/Instantiate/Publish integration
-    remains one combined gate, not three independent execution calls.
+    These coordinator tests alone do not provide service-backed PostgreSQL fault
+    evidence. Raw phase/grant APIs remain private; only the authenticated paid
+    engine described below exposes the internal execution boundary. The internal
+    durable handler recorded below now supplies paid admission and the atomic
+    receipt/commit boundary; no existing zero-fee signature may enter it. Public
+    Call/Instantiate/Publish activation remains one combined gate, not three
+    independent execution calls.
     The internal engine now produces a zero-charge HostRejected outcome for
     post-attempt final effect/encoding and host invariant failures, discarding
-    all effects. Durable nonce/receipt commitment remains unimplemented.
+    all effects. The node-core integration below supplies durable nonce/receipt
+    commitment without exposing an activation route.
     Normal failures retain measured gas; an internal accounting-bound violation
     reports the admitted total ceiling instead. Retain settlement rejection
     diagnostics. Non-blocking test follow-ups: assert memory exhaustion leaves
@@ -2593,11 +2597,12 @@ statements such as “body validation remains open” are not the live work queu
     Fresh read-only Opus review, followed by review of the canonicality/test
     follow-up at `6ed4ef1`, returned `APPROVE INTERNAL INTEGRATION` for the
     complete chain. This is not main-merge or activation approval.
-    This does not authenticate current source ownership/version/balance,
+    This consent/wire layer alone does not authenticate current source ownership/version/balance,
     resolve installed code/ABI/provenance, establish nonce freshness, calibrate
     Publish metering or R/S, or authorize durable reserve/application/settle.
-    Paid outcomes/receipts, replay-before-policy reconciliation, fenced atomic
-    persistence and CLI/HTTP activation remain the next integrated work.
+    Those admission checks, paid outcomes/receipts, replay-before-policy
+    reconciliation and fenced atomic persistence are supplied by the durable
+    integration below. CLI/HTTP activation remains open.
     Integration work in progress (2026-09-08): profile-4 durable policy keys,
     closure semantics checks and reserved paid-policy namespace tests are integrated
     on this feature branch. The parent independently
@@ -2646,16 +2651,39 @@ statements such as “body validation remains open” are not the live work queu
     Publish case also passes independent verification inside the shared
     `run_publish` test helper, not only status/fee assertions in its caller.
 
+    Internal durable integration (2026-09-09), implemented at `4e60864`,
+    hardened at `36e95ab` and merged into this feature branch at `fda1d50`, now
+    authenticates Call/Instantiate/Publish, reconciles exact receipts before
+    nonce/policy/code/object/blob reads, independently validates the complete
+    execution scope and exact signed root target before invoking the injectable
+    engine, verifies the returned result, and commits objects, authorities,
+    instance/publication records, nonce and receipt in one fenced transaction.
+    The paid Publish record retains its exact signed frame and requires a matching
+    successful paid receipt before dependency authority is granted; legacy
+    publication bytes and verification remain unchanged. Evidence includes 19
+    focused paid node tests with real Standard Asset WASM and both memory and
+    file-backed SQLite stores: same-boot and close/reopen exact replay without
+    re-executing the engine or rereading blobs, request-ID reuse with all tracked
+    state unchanged, writer-generation fencing, success/trap/Publish/Instantiate
+    outcomes and forged-engine rejection for scope, application-effect,
+    zero-charge and reservation-authority smuggling. The parent independently
+    passed 316 node-core library tests plus both integration suites, the complete
+    execution suite and all-feature clippy. Fresh read-only Opus review of the
+    final immutable head returned `APPROVE` with no blockers for internal
+    feature-branch integration. This is not CLI/HTTP activation, main merge or
+    production readiness.
+
     Before durable activation, authenticate historical object framing from
     durable provenance; the current engine supports hash-suite rotation within
     one protocol version, not cross-protocol historical object admission.
 
-    No paid node handler, atomic commit/restart evidence or activation is claimed.
-    Implementation and review resumed after the Claude session limit cleared;
-    partial branches must not be treated as approved integration artifacts.
-    Activation must also share one definition of phase caps between policy and
-    coordinator, and validate the selected phase entrypoints' ABI/role
-    compatibility during installation; wire-valid names alone are insufficient.
+    Activation still requires one shared definition of phase caps between policy
+    and coordinator, calibrated R/S and allowances, a closed installer/bootstrap
+    marker, and validation of selected phase entrypoints' ABI/role compatibility;
+    wire-valid names alone are insufficient. Before activation add durable
+    `ReservationAccessKind::Consume` source-deletion coverage, transitive paid
+    publication dependency coverage, paid-aware publication query behavior and
+    cross-protocol historical object admission.
   - [ ] Public Standard Asset transfer/split/merge/mint/burn and reserve/settle;
     contract-owned checked supply arithmetic, fresh fee/refund outputs and
     no surviving reservation. DR-0124 fixes asset identity to the host-created
@@ -2676,12 +2704,18 @@ statements such as “body validation remains open” are not the live work queu
     pin the WASM-generating `wat` version, and assert the Digest32 template shape
     at package build time. Add foreign-recipient mint/split and same-code,
     cross-instance object-authority regressions with the coordinator integration.
-    Paid coordination, durable/CLI activation and the combined review remain open.
+    Internal paid coordination and durable admission are covered above. Calibrated
+    installation, CLI/HTTP activation and the final combined activation review
+    remain open.
   - [ ] Fenced atomic genesis manifest installer, closed bootstrap marker,
     native HTTP/CLI activation and removal of asset-only grants/native composer.
-  - [ ] Canonical vectors, same-source/consumed/transferred-source cases,
-    phase exhaustion/traps, charged and zero-charge rejected receipts, exact
-    replay/request-conflict/SQLite-restart/fencing, full gate and fresh Opus review.
+  - [ ] Complete activation evidence. Canonical vectors,
+    same-source/transferred-source cases, phase exhaustion/traps, charged and
+    zero-charge rejected receipts, exact replay/request-conflict/SQLite-restart/
+    fencing and fresh internal Opus review are implemented. Still required are
+    durable Consume source deletion, transitive paid dependency and historical
+    resolver coverage, public CLI/HTTP paths, calibrated installed policy,
+    service-backed PostgreSQL fault evidence and the full activation gate/review.
   Public admission additionally requires analysis of fresh-request unpaid
   phase-failure abuse; this local replacement is not a readiness claim.
 

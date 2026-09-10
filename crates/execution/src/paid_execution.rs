@@ -20,8 +20,9 @@
 //! independent receipt check. It runs no WASM itself and exports no
 //! phase/grant/source API: the private reserve/application/settle coordinator
 //! stays inside `crate::local_wasm`, whose [`crate::LocalWasmExecutionEngine`]
-//! provides the only in-crate trait implementation. Nothing here is connected
-//! to node-core, HTTP or the CLI.
+//! provides the only in-crate trait implementation. Node-core consumes this
+//! boundary through an internal fenced durable handler; no bootstrap installer,
+//! HTTP route or CLI command activates it.
 use std::collections::BTreeSet;
 use std::fmt;
 

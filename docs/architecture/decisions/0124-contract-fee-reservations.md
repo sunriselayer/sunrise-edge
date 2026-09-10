@@ -426,9 +426,9 @@ durable admission. Never convert an authenticated zero-fee wrapper into a
 paid wrapper. Policy codec validity and quote validity do not establish calibrated
 R/S, installation, governance authority or storage authority.
 
-### Authenticated durable integration (2026-09-08)
+### Authenticated durable integration (2026-09-09)
 
-The next internal integration uses a separate `PaidContractEngine` request and
+The internal integration uses a separate `PaidContractEngine` request and
 outcome, not a converted zero-fee authenticated wrapper. The public request
 contains the immutable authenticated paid intent, resolved scopes/inputs and
 trusted policies. The engine rechecks their correspondence and builds its own
@@ -508,9 +508,12 @@ noncanonical, not arbitrary interpreter text in a receipt. Storage I/O/CAS/fenci
 failures remain storage errors and must not be converted into committed receipts.
 Policy and coordinator share phase-cap definitions; no second drifting set.
 
-Removal of the test-only coordinator gate requires the authenticated engine and
-all-three-kind node handler together, with real WASM and file-backed SQLite
-close/reopen, exact replay, conflict invariance and writer-fencing evidence.
+The authenticated engine and all-three-kind node handler now provide real WASM
+and file-backed SQLite close/reopen, exact replay, conflict invariance and
+writer-fencing evidence. That closes the internal coordinator-to-durable-handler
+integration gate only. Activation still requires the closed installer and
+bootstrap marker, calibrated policy/phase allowances, public CLI/HTTP surfaces,
+the remaining Consume/dependency/history evidence and a fresh combined review.
 Neither the crypto witness nor an uninstalled policy alone justifies activation.
 
 ### Coordinator implementation boundary (2026-09-08)
