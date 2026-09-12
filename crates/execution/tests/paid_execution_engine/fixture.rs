@@ -9,7 +9,6 @@ fn paid_engine() -> impl PaidContractEngine {
 fn key() -> SigningKey {
     SigningKey::from([7; 32])
 }
-
 /// Signs and authenticates one [`PaidIntent`] exactly as a sender would.
 /// Every test below goes through this: no test ever fabricates an
 /// `AuthenticatedPaidIntent` or a signature.
@@ -415,4 +414,3 @@ fn run_transfer_call(asset: &Asset, request_id: [u8; 32], nonce: u64) -> PaidExe
     .expect("independent verification");
     outcome
 }
-
