@@ -135,3 +135,10 @@ Client tests reject false acknowledgements and changed selected code/context.
 `scripts/publication-submission-vectors.mjs` independently reconstructs all four
 new frames and the exact Ed25519 signature without a Rust encoder. Rust pins
 matching lengths and hashes, and the script is part of `check-all.sh`.
+
+The integrated 2026-09-07 validation included 15 node-core publication tests
+with exact SQLite code/dependency/receipt/nonce comparisons and persisted writer
+fencing, 9 Rust client verification tests, and a real HTTP/CLI three-boot E2E
+covering dependency export/import, exact replay and disabled ingress. Independent
+Node vectors pin `0x6308` through `0x630B`. Both
+`npm ci --prefix adapters/cloudflare-workers` and `./scripts/check-all.sh` passed.
