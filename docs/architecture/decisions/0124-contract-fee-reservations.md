@@ -1,7 +1,9 @@
 # DR-0124: contract-defined fee reservation and settlement
 
-Accepted design, 2026-09-07 (Asia/Singapore). This refines `docs/design.md`
-before implementation; activation and completion evidence belong in `TODO.md`.
+Accepted design, 2026-09-07 (Asia/Singapore). This refined `docs/design.md`
+before implementation. Concise current status and remaining completion gates
+belong in [`TODO.md`](../../../TODO.md); durable implementation and verification
+evidence is retained below.
 
 ## Chosen boundary
 

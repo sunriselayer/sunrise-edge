@@ -2490,201 +2490,49 @@ statements such as “body validation remains open” are not the live work queu
   grants no execution right. This completed local flow does not itself close fee
   parity, upgrades or public-network readiness; detailed regression and validation
   evidence lives with the decision records.
-- [ ] **Standard Asset/fee parity:** implement the public package in
-  `contracts/standard-asset` under the ordinary memory-bound WASM profile,
-  with new committed code identity and no grandfathered admission exception.
-  Replace trusted-only policies
-  and native asset settlement with the same public facilities and explicitly
-  signed, committed, bounded fee settlement.
-  DR-0124's reserve/application/settle design was approved by Opus on 2026-09-07.
-  The public package, paid engine and internal durable admission are implemented;
-  calibrated installation and external activation remain open. The same Coin can
-  fund fees and application work; a separate Coin is optional. Track the integrated
-  replacement:
-  - [x] Generic bounded typed frame returns and protected reservation handles;
-    independent phase resource budgets, monotonic counters and savepoints.
-    Internal SDK bindings for profile-4 object metadata and ordered optional
-    result handles are implemented (13 native tests, targeted clippy, wasm32
-    compile check and formatting pass). The matching profile-4 ABI/VM foundation
-    implements ordered optional slots, final-frame liveness/right revalidation,
-    receiver alias rejection, permanent delivered-handle accounting and generic
-    ID/type reads without changing write/consume authority. Targeted ABI/execution
-    tests and an independent encoder/decoder boundary regression pass locally.
-    Evidence includes 13 actual-WASM regressions (signed general-call returns,
-    isolated old-profile ABI rejection and cumulative handle exhaustion) and
-    fixed semantics/policy/result-ABI wire vectors. Local full validation:
-    `npm ci --prefix adapters/cloudflare-workers` and `./scripts/check-all.sh`.
-    The internal same-store three-phase coordinator is implemented at `a3b7e97`
-    (2026-09-08). Fresh read-only Opus review returned
-    `APPROVE INTERNAL INTEGRATION`; this is not main-merge or activation approval.
-    It runs real WASM reserve/application/settle with
-    private typed results, phase headroom and non-rewinding resource counters.
-    Objects/events roll back while allocations, handles, creations and emitted
-    event counts remain charged. Transfer, write, create, delete and event output
-    costs are checked before mutation; canonical encoder tests bound their framing.
-    All 26 local-WASM tests and targeted all-feature clippy pass. Evidence includes
-    same-source transfer/consume, exact-full reserve, app/settle traps, genuine
-    cumulative memory-limiter exhaustion with successful settlement, creation/fuel
-    exhaustion, reservation isolation, pre-reserve malformed-call rejection and
-    transfer output-window denial before mutation.
-    `npm ci --prefix adapters/cloudflare-workers` and `./scripts/check-all.sh`
-    pass locally.
-    These coordinator tests alone do not provide service-backed PostgreSQL fault
-    evidence. Raw phase/grant APIs remain private; only the authenticated paid
-    engine described below exposes the internal execution boundary. The internal
-    durable handler recorded below now supplies paid admission and the atomic
-    receipt/commit boundary; no existing zero-fee signature may enter it. Public
-    Call/Instantiate/Publish activation remains one combined gate, not three
-    independent execution calls.
-    The internal engine now produces a zero-charge HostRejected outcome for
-    post-attempt final effect/encoding and host invariant failures, discarding
-    all effects. The node-core integration below supplies durable nonce/receipt
-    commitment without exposing an activation route.
-    Normal failures retain measured gas; an internal accounting-bound violation
-    reports the admitted total ceiling instead. Retain settlement rejection
-    diagnostics. Non-blocking test follow-ups: assert memory exhaustion leaves
-    fuel remaining and derive the event framing allowance from the encoder,
-    as already done for object effects.
+- [ ] **Standard Asset/fee parity:** replace trusted-only asset and fee
+  paths with the ordinary public package and explicitly signed, committed and
+  bounded fee settlement defined by
+  [DR-0124](docs/architecture/decisions/0124-contract-fee-reservations.md).
+  The public package, paid engine and internal fenced durable admission are
+  implemented and locally validated without a grandfathered admission exception.
+  The same Coin may fund fees and application work; a separate Coin is optional.
+  Calibrated installation and external activation remain open.
+  - [x] Generic bounded typed frame returns, profile-4 object metadata and ordered
+    optional result handles, independent phase budgets, monotonic counters,
+    savepoints and the private three-phase coordinator are implemented. Real-WASM
+    regressions cover rollback, reservation isolation, output bounds and resource
+    exhaustion. Detailed semantics and validation evidence are retained in
+    DR-0124. Follow-up coverage should assert that memory exhaustion leaves fuel
+    remaining and derive the event-framing allowance from the canonical encoder.
   - [ ] Explicit paid Call/Instantiate/Publish consent, pinned contract policy,
-    base/execution-only pricing and calibrated reserve/settle allowances.
-    Internal pricing component implemented: immutable admission captures the
-    schedule, conversion divisor and R/S; checked reservation/actual quotes use
-    one ceiling conversion each, and refund is their difference. The 32-test
-    fees suite (including independent u128 oracle and overflow boundaries),
-    targeted clippy and workspace formatting pass locally. This does not wire
-    paid execution, calibrate allowances or activate any fee policy.
-    The unified consent/policy wire and cryptographic boundary is implemented
-    at `6ed4ef1` (2026-09-08): Call/Instantiate/Publish share one signed
-    `PaidIntent`, explicit source ObjectRef/access/max fee/refund recipient,
-    and a pinned policy digest. Authentication reads no current policy;
-    separate quoting checks the trusted base/fee policy and recipient validity.
-    Complete signed bytes define the NodeEvent digest. Unknown wire values,
-    explicit empty authorization tables and cross-domain signature transplants
-    fail closed. Verification: 33 paid-boundary tests, one permanent Rust
-    fixed-vector test matched by an independent JavaScript encoder, 37 fees
-    tests, all-feature clippy and the complete repository gate pass locally.
-    Fresh read-only Opus review, followed by review of the canonicality/test
-    follow-up at `6ed4ef1`, returned `APPROVE INTERNAL INTEGRATION` for the
-    complete chain. This is not main-merge or activation approval.
-    This consent/wire layer alone does not authenticate current source ownership/version/balance,
-    resolve installed code/ABI/provenance, establish nonce freshness, calibrate
-    Publish metering or R/S, or authorize durable reserve/application/settle.
-    Those admission checks, paid outcomes/receipts, replay-before-policy
-    reconciliation and fenced atomic persistence are supplied by the durable
-    integration below. CLI/HTTP activation remains open.
-    Integration work in progress (2026-09-08): profile-4 durable policy keys,
-    closure semantics checks and reserved paid-policy namespace tests are integrated
-    on this feature branch. The parent independently
-    verified 296 node-core library tests, the v3/v4 fixed-vector tests and the
-    complete local repository gate after `npm ci --prefix adapters/cloudflare-workers`.
-    Fresh Opus reviews of `957023d` and the vector/profile-mismatch follow-up
-    `6d77f79` returned `APPROVE INTERNAL PREREQUISITE`; this is not approval of
-    the paid engine or combined integration. `codex/paid-runtime-work` at
-    `de0e253` combines those prerequisites with the authenticated engine and
-    provenance-neutral legacy consumer migration. All three paid operation
-    kinds execute through the shared backend; 19 engine tests cover scope/input
-    rejection, real WASM application/settlement, independent receipt rejection,
-    an actual SHA-2/SHA-3 epoch rotation, and a real final-effect version overflow
-    producing a zero-charge HostRejected outcome. The parent independently
-    passed execution tests and all-feature clippy after the final corrections.
-    The 0x6415/v1 result vector also matches an independent JavaScript byte
-    reconstruction (1101 bytes, SHA-256
-    `88ed340f5e9ee4d79a13b42375a41c1f87f541128447170f98006879c0f851ca`);
-    that second reconstruction is not yet a permanent repository check.
-    The parent also passed the combined `npm ci --prefix adapters/cloudflare-workers`
-    and `./scripts/check-all.sh` gate at `de0e253`. Fresh independent Opus review
-    of `6ce0089..de0e253` returned `APPROVE INTERNAL EXECUTION INTEGRATION`, with
-    no blockers for this internal scope. Follow-up `1f88be5` only clarifies
-    accounting-fault gas comments. This is not main-merge or activation approval.
-    After integration at `4ace466`, the parent repeated both required commands
-    in this feature checkout; the complete local repository gate passes.
-    Charging-integrity follow-up (2026-09-09), implemented at `2b6abd9` and
-    integrated at `2c276fb`: application-created reservation survivors now cause
-    charged ApplicationFailed with application effects rolled back; original
-    pinned reservation inputs reject before reserve. The independent verifier
-    recomputes exact Publish units/status from the complete authenticated closure,
-    with a node-count guard before cloning or candidate structural validation.
-    Reservation indexing is checked, settlement outputs reject transferred state,
-    and Instantiate/fee-scope collisions reject explicitly. No wire bytes changed.
-    The parent independently passed all 28 paid-engine tests, including real
-    signed pre-existing reservation input, source/fee/refund conservation,
-    dependency omission/extra/duplicate/replacement/limit, inflated/reduced A and
-    both forged Publish status directions. Temporarily disabling the two
-    reservation guards produced exactly the two intended regression failures;
-    restoring them passed. After formatting-only follow-up `7878135`, the parent
-    passed `npm ci --prefix adapters/cloudflare-workers` and the complete
-    `./scripts/check-all.sh` gate in this feature checkout. Fresh independent
-    read-only Opus review of `e79a5a1..2c276fb` returned
-    `APPROVE INTERNAL CHARGING INTEGRATION`, with no blockers for this scope.
-    This does not approve main merge or paid activation. The genuine exhausted
-    Publish case also passes independent verification inside the shared
-    `run_publish` test helper, not only status/fee assertions in its caller.
-
-    Internal durable integration (2026-09-09), implemented at `4e60864`,
-    hardened at `36e95ab` and merged into this feature branch at `fda1d50`, now
-    authenticates Call/Instantiate/Publish, reconciles exact receipts before
-    nonce/policy/code/object/blob reads, independently validates the complete
-    execution scope and exact signed root target before invoking the injectable
-    engine, verifies the returned result, and commits objects, authorities,
-    instance/publication records, nonce and receipt in one fenced transaction.
-    The paid Publish record retains its exact signed frame and requires a matching
-    successful paid receipt before dependency authority is granted; legacy
-    publication bytes and verification remain unchanged. Evidence includes 19
-    focused paid node tests with real Standard Asset WASM and both memory and
-    file-backed SQLite stores: same-boot and close/reopen exact replay without
-    re-executing the engine or rereading blobs, request-ID reuse with all tracked
-    state unchanged, writer-generation fencing, success/trap/Publish/Instantiate
-    outcomes and forged-engine rejection for scope, application-effect,
-    zero-charge and reservation-authority smuggling. The parent independently
-    passed 316 node-core library tests plus both integration suites, the complete
-    execution suite and all-feature clippy. Fresh read-only Opus review of the
-    final immutable head returned `APPROVE` with no blockers for internal
-    feature-branch integration. This is not CLI/HTTP activation, main merge or
-    production readiness.
-
-    Before durable activation, authenticate historical object framing from
-    durable provenance; the current engine supports hash-suite rotation within
-    one protocol version, not cross-protocol historical object admission.
-
-    Activation still requires one shared definition of phase caps between policy
-    and coordinator, calibrated R/S and allowances, a closed installer/bootstrap
-    marker, and validation of selected phase entrypoints' ABI/role compatibility;
-    wire-valid names alone are insufficient. Before activation add durable
-    `ReservationAccessKind::Consume` source-deletion coverage, transitive paid
-    publication dependency coverage, paid-aware publication query behavior and
-    cross-protocol historical object admission.
-  - [ ] Public Standard Asset transfer/split/merge/mint/burn and reserve/settle;
-    contract-owned checked supply arithmetic, fresh fee/refund outputs and
-    no surviving reservation. DR-0124 fixes asset identity to the host-created
-    Definition ObjectId; each Coin still has its own distinct ObjectId.
-    The public package is integrated on this feature branch. The draft `init`
-    trap was incorrect guest type-frame IDs, now matched to the existing
-    scoped type encoders (0x5202/0x5203). Amount transitions run only in WASM.
-    Verification (2026-09-08): 15 signed-VM/decoder regressions plus ordinary
-    profile-4 admission, targeted clippy, and the full repository gate pass.
-    Evidence covers all nine exports, partial/exact-full reservation, fee/refund
-    conservation, consumed object IDs, output owners/types, malformed Digest32
-    framing/unknown algorithms, amount boundaries, wrong types/access, and
-    rollback after a cap write followed by failed output creation.
-    Fresh read-only Opus review of `c1f0c1c` returned
-    `APPROVE PACKAGE INTEGRATION`; this is not merge or activation approval.
-    Before activation, validate both fee/refund addresses before reservation
-    (the guest checks length; an invalid address can strand a manual reservation),
-    pin the WASM-generating `wat` version, and assert the Digest32 template shape
-    at package build time. Add foreign-recipient mint/split and same-code,
-    cross-instance object-authority regressions with the coordinator integration.
-    Internal paid coordination and durable admission are covered above. Calibrated
-    installation, CLI/HTTP activation and the final combined activation review
-    remain open.
+    base/execution-only pricing and calibrated reserve/settle allowances. The internal
+    consent/policy wire, immutable quoting, all-three-kind paid engine, exact
+    Publish metering and independently verified result receipts are implemented.
+    The durable handler reconciles replay before policy/object I/O and atomically
+    commits paid effects, authorities, instance/publication records, nonce and
+    receipt with writer fencing. Call/Instantiate/Publish remain one combined
+    activation gate. Activation still requires:
+    - one shared, calibrated definition of phase caps, R/S and allowances;
+    - a closed installer/bootstrap marker and installed ABI/role compatibility;
+    - authenticated historical object framing across protocol versions;
+    - durable Consume source-deletion, transitive paid-dependency and paid-aware
+      publication-query coverage.
+  - [ ] Public Standard Asset transfer/split/merge/mint/burn and reserve/settle.
+    The internal public WASM package implements all amount transitions and checked
+    supply arithmetic; the host does not decode or rewrite Coin amounts. Asset
+    identity is the host-created Definition ObjectId and each Coin retains its own
+    ObjectId. Before activation, validate fee/refund addresses before reservation,
+    pin the WASM-generating `wat` version, assert the Digest32 template shape at
+    package build time, and add foreign-recipient plus same-code cross-instance
+    authority regressions.
   - [ ] Fenced atomic genesis manifest installer, closed bootstrap marker,
     native HTTP/CLI activation and removal of asset-only grants/native composer.
-  - [ ] Complete activation evidence. Canonical vectors,
-    same-source/transferred-source cases, phase exhaustion/traps, charged and
-    zero-charge rejected receipts, exact replay/request-conflict/SQLite-restart/
-    fencing and fresh internal Opus review are implemented. Still required are
-    durable Consume source deletion, transitive paid dependency and historical
-    resolver coverage, public CLI/HTTP paths, calibrated installed policy,
-    service-backed PostgreSQL fault evidence and the full activation gate/review.
+  - [ ] Complete activation evidence and fresh combined review. Existing internal
+    evidence covers canonical vectors, same-source/transferred-source behavior,
+    phase exhaustion and traps, charged/zero-charge receipts, exact replay,
+    request conflict, SQLite restart and fencing. Still required are the activation
+    items above, service-backed PostgreSQL fault evidence and the full public gate.
   Public admission additionally requires analysis of fresh-request unpaid
   phase-failure abuse; this local replacement is not a readiness claim.
 
