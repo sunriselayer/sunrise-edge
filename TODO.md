@@ -2532,7 +2532,9 @@ statements such as “body validation remains open” are not the live work queu
     evidence covers canonical vectors, same-source/transferred-source behavior,
     phase exhaustion and traps, charged/zero-charge receipts, exact replay,
     request conflict, SQLite restart and fencing. Still required are the activation
-    items above, service-backed PostgreSQL fault evidence and the full public gate.
+    items above, a permanent independent JavaScript reconstruction check for the
+    `0x6415/v1` result vector, service-backed PostgreSQL fault evidence and the
+    full public gate.
   Public admission additionally requires analysis of fresh-request unpaid
   phase-failure abuse; this local replacement is not a readiness claim.
 
