@@ -1819,12 +1819,13 @@ production-ready、mainnet-ready、監査済みを意味しない。
 このgateは、browser向けproduct surfaceより先にsingle-nodeのRust-only developer体験を
 成立させるCLI-first pivot（DR-0085）を追跡する。対象はcriteria 1-6・10・11であり、
 criteria 7-9は削除・完了扱いせず、Software Production Gate（S0-S3 + S5）通過後へ
-resequenceする。詳細な設計根拠と実装履歴はDR-0081-DR-0095、現行Standard Assetへの
+resequenceする。詳細な設計根拠と実装履歴はDR-0081–DR-0095、現行Standard Assetへの
 置換はDR-0107以降に置き、この節にはgate定義・現況・残件だけを残す。
 
-**Current status:** criteria 1-6・10・11はimplemented and validated As-Isで、
-CLI Developer MVP Gateは通過済み。S0-S3、S4a、S4b、S4c Phase 1/2aはAs-Isだが、
-S4c Phase 1/2aはsoftware-only evidenceでphysical hardware validationではない。
+**Current status (2026-09-13):** criteria 1-6・10・11はimplemented and validated As-Isで、
+CLI Developer MVP Gateは通過済み。S0-S3はimplemented and validated As-Is、S4aは
+host preflight As-Isである。S4bはSpeculos/Ragger emulator evidence、S4c Phase 1/2aは
+software-only evidenceであり、いずれもphysical hardware validationではない。
 S4c Phase 2b、S4d、その他のLedger実機/release workはdeferredであり、S4全体は未完了。
 S5とS4はDR-0095によりparallel trackで、TypeScript client・explorer・walletは
 Software Production Gate（S0-S3 + S5）までdeferredである。このstatusはcompleteな
@@ -1901,25 +1902,26 @@ criteria 7-9（TypeScript client、explorer、wallet）はverbatimのまま以�
     `--max-concurrent`）を使う（片方のtrafficがもう片方をstarveしうる）こと、
     non-production security/operationsという制約をREADMEと起動時表示へ明記する。
 
-### Completion evidence map
+### Implementation evidence summary
 
-1. local devnetとfile-backed SQLite lifecycleは`apps/devnet`およびDR-0081で実装済み。
-2. authenticated owned-object effectsとatomic durable mutationはnode-coreの
+- local devnetとfile-backed SQLite lifecycleは`apps/devnet`およびDR-0081で実装済み。
+- authenticated owned-object effectsとatomic durable mutationはnode-coreの
    structured durable pathおよびDR-0078で実装済み。generic pathの権限を広げない。
-3. exact committed preinstalled WASM executionはDR-0078/DR-0081で実装され、現行の
+- exact committed preinstalled WASM executionはDR-0078/DR-0081で実装され、現行の
    Standard Asset v1 whole-object semanticsへDR-0107以降で置換済み。
-4. native HTTP compositionは`preinstalled_wasm_structured_durable_router`へ接続済み。
-   public `POST /v1/events`はDR-0099により`SubmitTransaction`以外を認証・認可実装前に
-   fail closedとする。
-5. bounded canonical query APIはDR-0082、Rust client boundaryはDR-0083、Rust-only CLIと
+- native HTTP compositionは`preinstalled_wasm_structured_durable_router`へ接続済み。
+  public `POST /v1/events`はDR-0099により`SubmitTransaction`以外をidentity allocation、
+  clock read、storage I/O、machine transition、outbox、transportより前にfail closedとし、
+  family固有の認証・認可なしには再公開しない。
+- bounded canonical query APIはDR-0082、Rust client boundaryはDR-0083、Rust-only CLIと
    external-signer boundaryはDR-0084で実装済み。
-6. cross-owner/feeの旧development fixtureはDR-0086/DR-0087のhistorical recordであり、
+- cross-owner/feeの旧development fixtureはDR-0086/DR-0087のhistorical recordであり、
    現行のtyped policy、whole-coin transfer、split/merge/mintはDR-0106以降を参照する。
-7. TLS endpoint authenticationとsigning前のtrusted protocol-context validationは
+- TLS endpoint authenticationとsigning前のtrusted protocol-context validationは
    独立したboundaryとしてS1で実装済み。TLS成功をchain/protocol identityの証明とみなさない。
-8. Ledgerのdevice/host milestonesとsoftware-only evidenceはDR-0088-DR-0093、残る実機/
+- Ledgerのdevice/host milestonesとsoftware-only evidenceはDR-0088–DR-0093、残る実機/
    release workのdeferとsoftware trackとの並行化はDR-0095を参照する。
-9. orderly close/reopen、writer-generation fencing、same-boot/post-restart exact replay、
+- orderly close/reopen、writer-generation fencing、same-boot/post-restart exact replay、
    request-id conflict時のstate/receipt/nonce不変は
    `apps/cli/tests/devnet_restart_duplicate_e2e.rs`で検証済み。これは`kill -9`、power loss、
    torn write、load/concurrency、SQLiteのproduction適性を証明しない。
