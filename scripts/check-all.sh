@@ -5,6 +5,12 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
 
 cargo fmt --all -- --check
+rustfmt --edition 2024 --check \
+  crates/execution/tests/paid_execution_engine/fixture.rs \
+  crates/execution/tests/paid_execution_engine/call.rs \
+  crates/execution/tests/paid_execution_engine/publish.rs \
+  crates/execution/tests/paid_execution_engine/verify.rs \
+  crates/execution/tests/paid_execution_engine/codec.rs
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
 
