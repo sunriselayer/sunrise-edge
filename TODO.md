@@ -2474,53 +2474,22 @@ statements such as “body validation remains open” are not the live work queu
 
 ### Remaining feature completion
 
-- [x] **Local code publication (DR-0121):** immutable code/ABI/dependency records, committed
-  publication policy, exact durable dependency provenance, origin absence,
-  shared nonce and receipt atomicity, CLI publish/query, restart/replay/fencing.
-  Explicit devnet opt-in only; no fees, instances, execution, peer publication
-  or object privileges. Outbox is deliberately absent, not an unimplemented
-  broadcast disguised as success. Validation (2026-09-07): 15 node-core
-  publication tests including exact SQLite code/dependency/receipt/nonce
-  comparisons and persisted writer fencing; 9 Rust client verification tests;
-  real HTTP/CLI three-boot E2E with dependency export/import, replay and disabled
-  ingress; independent Node vectors for `0x6308`–`0x630B`; full
-  `npm ci --prefix adapters/cloudflare-workers` + `./scripts/check-all.sh` pass.
-- [x] **Independent instance execution (local opt-in):** authenticated create/call and
-  owner/type/lineage/revision authority, public bounded host operations and typed
-  cross-contract calls, CLI and atomic rollback/replay E2E. Never connect an
-  uncommitted candidate directly to the legacy catalog or treat signed ABI
-  declarations as rights.
-  DR-0122's integrated local implementation includes an explicit zero-fee
-  execution policy, typed `sunrise` host, immutable independent instances,
-  same-instance dependency-library calls and canonical Rust client/CLI files.
-  Targeted evidence: 19 VM authority/resource regressions; 9 durable admission
-  regressions; independently reconstructed canonical vectors; real WASM/SQLite
-  inventory with two instances, reserve/fulfil/Write transfer, nested rollback,
-  exact same-boot/restart replay and persisted writer fencing. Opt-in native
-  HTTP/devnet integration and real CLI inventory success/trap/restart tests
-  also pass, comparing signed submissions, result bytes and instance references.
-  Full validation (2026-09-07): `npm ci --prefix adapters/cloudflare-workers`
-  and `./scripts/check-all.sh` passed, including all-feature Rust tests/clippy,
-  independent vectors and every adapter gate. Do not
-  count intermediate interface commits as delivered functionality. Library
-  calls alone do not cover general targets. DR-0123 extends the single common
-  call/authority model with exact signed code+instance targets and attenuated
-  handles; it does not introduce a special cross-instance permission system.
-  The integrated implementation uses one frame validator, actual per-frame
-  instance/defining-code authority, monotonically attenuated shared handles,
-  globally bounded verified code scopes, and one fenced atomic outcome.
-  Additional evidence (2026-09-07): 14 general VM regressions, 7 durable
-  multi-scope regressions, strict signing/query cache bounds, independent
-  authorization/policy/signature vectors, and a real CLI/HTTP file-backed SQLite
-  inventory E2E with independently initialized dispatch policy. It verifies
-  computed nested arguments, correctly scoped creations, late whole-invocation
-  rollback, exact same-boot/restart submission/result/instance bytes, unchanged
-  object/authority/receipt/nonce snapshots, HTTP 409 request reuse and generation
-  fencing. `npm ci --prefix adapters/cloudflare-workers` and
-  `./scripts/check-all.sh` pass locally; service-backed PostgreSQL fault evidence
-  is additionally required from the configured CI job before merge.
-  Standard Asset/fee parity is next. Zero-fee local execution does not close
-  the generic platform gate, enable upgrades or claim public-network readiness.
+- [x] **Local code publication ([DR-0121](docs/architecture/decisions/0121-durable-local-code-publication.md)):**
+  immutable code/ABI/dependency records, committed publication policy, exact
+  durable dependency provenance, shared nonce/receipt atomicity, CLI query and
+  restart/replay/fencing are implemented. It remains an explicit local-devnet
+  opt-in and grants no fee, instance, execution, peer-publication or object
+  privileges. The outbox is intentionally absent. Stable vectors and complete
+  validation evidence live with the decision record.
+- [x] **Independent instance execution ([DR-0122](docs/architecture/decisions/0122-local-instance-execution.md),
+  [DR-0123](docs/architecture/decisions/0123-unified-contract-calls.md)):**
+  authenticated create/call, immutable instance and defining-code authority,
+  bounded typed host operations, explicitly authorized cross-instance calls,
+  CLI integration and atomic rollback/replay/fencing are implemented under the
+  zero-fee local opt-in policy. An uncommitted candidate or signed ABI declaration
+  grants no execution right. This completed local flow does not itself close fee
+  parity, upgrades or public-network readiness; detailed regression and validation
+  evidence lives with the decision records.
 - [ ] **Standard Asset/fee parity:** implement the public package in
   `contracts/standard-asset` under the ordinary memory-bound WASM profile,
   with new committed code identity and no grandfathered admission exception.

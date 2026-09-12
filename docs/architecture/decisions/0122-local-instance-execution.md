@@ -195,3 +195,29 @@ Replacing those trusted-only paths with the public facilities and explicitly
 signed fee settlement is still required by [the target design](../../design.md).
 This local flow does not establish asset equivalence, public testnet readiness,
 permissionless network execution, distributed publication or production readiness.
+
+## Verification evidence
+
+The integrated 2026-09-07 local implementation was validated with 19 VM
+authority/resource regressions, 9 durable admission regressions, independently
+reconstructed canonical vectors, and a real WASM/SQLite inventory containing two
+instances. Coverage includes reserve/fulfil/Write transfer, nested rollback, exact
+same-boot and restart replay, persisted writer fencing, and native HTTP/devnet plus
+real CLI success/trap/restart comparisons over signed submissions, result bytes and
+instance references. The full `npm ci --prefix adapters/cloudflare-workers` and
+`./scripts/check-all.sh` gate passed, including all-feature Rust tests/clippy,
+independent vectors and every adapter gate.
+
+DR-0123's integrated general-call extension uses one frame validator, actual
+per-frame instance/defining-code authority, monotonically attenuated shared
+handles, globally bounded verified code scopes and one fenced atomic outcome.
+Its additional evidence comprises 14 general VM regressions, 7 durable multi-scope
+regressions, strict signing/query cache bounds, independent authorization/policy/
+signature vectors, and a real CLI/HTTP file-backed SQLite inventory E2E with an
+independently initialized dispatch policy. It verifies computed nested arguments,
+correctly scoped creations, late whole-invocation rollback, exact same-boot/restart
+submission/result/instance bytes, unchanged object/authority/receipt/nonce
+snapshots, HTTP 409 request-ID reuse and writer-generation fencing. Both complete
+local validation commands passed; the configured CI job supplies separately gated
+service-backed PostgreSQL fault evidence. Intermediate interface commits alone do
+not count as delivered functionality.
