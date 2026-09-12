@@ -1,4 +1,3 @@
-
 /// The only in-crate [`PaidContractEngine`] implementation. Using the trait
 /// here is what proves the boundary is injectable rather than a concrete
 /// unit struct, and that `execute_paid` does not collide with the zero-fee

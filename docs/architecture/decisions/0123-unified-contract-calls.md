@@ -2,8 +2,10 @@
 
 Decision: 2026-09-07 (Asia/Singapore).
 
-This decision precedes implementation. Current progress and validation belong
-only in TODO.md. It refines DR-0122 without granting production/network authority.
+This decision precedes implementation. Concise current status and remaining
+work belong in [`TODO.md`](../../../TODO.md); durable verification evidence
+belongs in the applicable decision record. It refines DR-0122 without granting
+production/network authority.
 
 ## Decision and rejected alternative
 

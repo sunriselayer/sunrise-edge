@@ -3,8 +3,9 @@
 Decision: 2026-09-07 (Asia/Singapore).
 
 This defines the local execution composition, not network admission or
-completion of the generic-contract gate. Implementation status and verification
-evidence belong in [`TODO.md`](../../../TODO.md).
+completion of the generic-contract gate. Concise current status and remaining
+work belong in [`TODO.md`](../../../TODO.md); durable verification evidence for
+this decision is retained here.
 
 ## Explicit executable authority
 
