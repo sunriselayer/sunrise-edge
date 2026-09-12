@@ -1816,66 +1816,19 @@ production-ready、mainnet-ready、監査済みを意味しない。
 
 ## CLI Developer MVP Gate
 
-**CLI-first production戦略への転換（本節およびTODO全体でこの決定を"pivot"と呼ぶ）。**
-旧`Developer MVP Gate`は、TypeScript client・explorer・walletというブラウザ向け
-product surfaceの完成をsingle-node MVPのgoalに含めていた。この転換では、gate自体を
-`CLI Developer MVP Gate`と改名し、このgateのgoalをcriteria 1-6・10・11（native devnet、
-authenticated owned object Read/Write/Consume、preinstalled deterministic WASM、bounded
-query API、Rust client library、Rust-only CLI、restart/duplicate E2E、明示的な
-non-production limitations）だけに絞る。criteria 7-9（TypeScript client、explorer、
-wallet）はverbatimのまま以下に残すが、完了済み・削除済み・弱められたとは一切みなさず、
-["CLI-First Node Production Gate"](#cli-first-node-production-gate)内の
-[Software Production Gate](#software-and-hardware-release-gates)（S0-S3 + S5）を通過した
-"後に"resequenceする。この転換はbrowser向けproduct surfaceを断念するものではなく、
-本物のnodeのproduction hardening（persistence、operations、release evidence）を
-ブラウザ向けUIより先に固めるという順序の変更である。
+このgateは、browser向けproduct surfaceより先にsingle-nodeのRust-only developer体験を
+成立させるCLI-first pivot（DR-0085）を追跡する。対象はcriteria 1-6・10・11であり、
+criteria 7-9は削除・完了扱いせず、Software Production Gate（S0-S3 + S5）通過後へ
+resequenceする。詳細な設計根拠と実装履歴はDR-0081-DR-0095、現行Standard Assetへの
+置換はDR-0107以降に置き、この節にはgate定義・現況・残件だけを残す。
 
-Phase 15-17のproduction hardeningを先へ積み上げる前に、Rust client libraryとRust-only
-developer CLIを実際に構築・検証できるsingle-node CLI Developer MVPを完成させる。
-このgateはproduction readinessやmainnet readinessを意味せず、既存のTo-Be criteriaを
-削除しない。MVP correctnessを直接妨げる場合を除き、追加のcapacity/load/soak、PITR、
-HA/failover、provider-managed pooler、real-provider certification、provider deploymentの
-作業はgate通過後の`Post-MVP Production Hardening`へ凍結する。
-
-**Current status (2026-09-05): criteria 1-6・10・11はimplemented and validated
-As-Isであり、CLI Developer MVP Gateは通過済みである。** これはproduction readinessの
-宣言ではない。CLI-First Node Production GateのS0-S3もimplemented and validated
-As-Isであり（S1のremote TLS transportとsigning前の独立したtrusted
-protocol-context validationの両方。詳細は
-["CLI-First Node Production Gate"](#cli-first-node-production-gate)のS1参照）、
-S2のcross-owner destination policyはDR-0086、S3のuniform ordinary-asset fee
-composition・actual-gas/trap settlement・real restart/replay E2EはDR-0087のとおり
-implemented As-Isである。S4a hardware-signing profile/host preflightもDR-0088のとおり
-implemented As-Isであり、DR-0089はS4b device contract（`docs/signing/hardware-signing.md`のSLIP-0010 derivation・
-public key encoding・status word分離・device-side sender比較・device policy pin・
-duplicate ObjectId rejectionなど）をclarifyし、加えてDR-0088のsign transaction全体
-230-byte APDU capをFIRST最大255-byte・first chunk最大230-byteへ訂正した
-（continuation chunkは230-byteのまま不変。Sunrise canonical transaction/signature
-bytesやこのrepositoryの実装コードの変更はない）。DR-0090はseparate
-`sunriselayer/sunrise-edge-ledger-app` repositoryのPR #1 host-core milestoneを記録する。
-DR-0091により、そのrepositoryのmerge済みPR #2（`6f6f882`）はLedger SDK device app、
-actual SLIP-0010 derivation/Ed25519 signing、on-device NBGL review、Nano S+/Nano X/Stax/
-Flex/Apex Pのclean build、fixed-seed Nano S+ Speculos/Ragger key/signature/sender-mismatch/
-reset/rejection evidenceをimplemented and validated As-Isとして提供する。S4bはAs-Isで
-complete、DR-0092によりS4c Phase 1 host APDU/USB/HID transportとCLI signer
-selection（profile/address check、USB descriptor levelのdevice check）も
-implemented and validated As-Isである。DR-0093によりS4c Phase 2aのactive-app/
-firmware identity check（strict Ledger OS identity/dashboard response
-parsing、dashboard `BOLOS` check、bootloader/OSU rejection、exact
-caller-supplied expected firmware version、`open app`によるexactly
-`Sunrise Edge`のopen、bounded same-explicit-path reconnect、exactly
-`Sunrise Edge`/`0.1.0`のactive-app check、既存6-byte configurationへの
-`0.1.0` pin追加）もimplemented and validated As-Isだが、`FakeTransport`のみに
-対するsoftware-only実装であり、real physical hardwareに対するvalidationは
-ない。S4cはphysical hardware validationが未実装のためincompleteであり、
-S4全体もincompleteである。2026-09-04の明示的なroadmap reorderにより、S4c Phase 2b、
-S4d（physical-device HIL、golden/pixel UI evidence、release evidence）、その他すべての
-残存Ledger作業はdeferredとし、旧順序を飛び越えてnon-Ledger S5 prerequisiteを進める。
-DR-0095はこのreorderをSoftware Production Gate（S0-S3 + S5）とHardware Signing
-Release Gate（S4）のparallel trackとして明文化し、既存criteriaを変更せず、
-TypeScript client/explorer/walletはSoftware Production Gate（S0-S3 + S5）までdeferredのままであり、
-deferredなS4 Ledger hardware workの完了は待たない。S4、S5、completeな
-CLI-First Node Production Gate、production、mainnet readinessはいずれもincompleteである。
+**Current status:** criteria 1-6・10・11はimplemented and validated As-Isで、
+CLI Developer MVP Gateは通過済み。S0-S3、S4a、S4b、S4c Phase 1/2aはAs-Isだが、
+S4c Phase 1/2aはsoftware-only evidenceでphysical hardware validationではない。
+S4c Phase 2b、S4d、その他のLedger実機/release workはdeferredであり、S4全体は未完了。
+S5とS4はDR-0095によりparallel trackで、TypeScript client・explorer・walletは
+Software Production Gate（S0-S3 + S5）までdeferredである。このstatusはcompleteな
+CLI-First Node Production Gate、production、mainnet readinessを意味しない。
 
 CLI Developer MVP completion criteria（capability criteria 2-3を満たしながら、product
 surfaceはdocs/architecture/decisions/0081-0087-cli-first-roadmap.md DR-0081の順序に従う: local devnet、bounded query API、Rust
@@ -1948,384 +1901,46 @@ criteria 7-9（TypeScript client、explorer、wallet）はverbatimのまま以�
     `--max-concurrent`）を使う（片方のtrafficがもう片方をstarveしうる）こと、
     non-production security/operationsという制約をREADMEと起動時表示へ明記する。
 
-現在のMVP実装順序:
+### Completion evidence map
 
-1. verified owned-object inputとdeterministic effectのfail-closed対応、およびruntime durable
-   mutationへのpure translation（implemented As-Is）。
-2. trusted executionから得たWrite/Consume effectsをstructured durable invocationへ接続し、
-   exact object head assertionとmutationをnonce/state/receipt/outboxとatomic commitする
-   additive node-core entrypoint（implemented As-Is）。generic/read-only経路
-   （`structured_durable_router`を含む）は引き続きWrite/Consumeをstorage I/O前に拒否する
-   （step 4の`preinstalled_wasm_structured_durable_router`のみ例外）。
-3. committed `ProtocolConfig`から固定したactive system-module registryとbounded immutable
-   preinstalled catalogのcode/manifest/semantics commitmentを照合し、object-onlyの
-   deterministic WASM executionをowned-effects atomic durable entrypointへ接続する
-   （implemented As-Is in node-core）。code/manifestはcommitted digest自身のalgorithmで再検証し、
-   epoch-only hash-suite rotation後もreadableとする。専用`SystemModuleManifest` hash purpose、
-   pre-activation gas ceiling、engine-independent trap normalizationを適用し、canonical
-   `ExecutionEffects`をresponseへ返す。trapはobject mutationなしのRejected receipt/nonceとして
-   commitする。zero-object callはこのMVP pathでは明示的に拒否する。native HTTP wiringはstep 4で
-   実装済み（implemented As-Is）、devnet binary/startup wiringもstep 5で実装済み。
-4. DR-0078のpreinstalled-WASM entrypointを新しいadditive `native-http`合成
-   （`preinstalled_wasm_structured_durable_router`/`_with_executor`）経由でHTTPへ公開する
-   （implemented As-Is）。既存の`structured_durable_router`はread-only entrypointのまま変更しない。
-   両routerは認証済み準備・storage context構築・exact request-scoped outbox claim/send/ack pathを
-   共有する1つのprivate core（`invoke_structured_durable_event_with_execution`）を、小さなprivate
-   `StructuredDurableAuthenticatedExecution` policy enum（`ReadOnly`/`PreinstalledWasm`）で
-   parameterizeして再利用し、重複させない。両axum handlerも1つのprivate
-   `submit_structured_durable_event_common`ヘルパーへ統合し、content-type/body抽出/admission/
-   cancellation観測/blocking dispatchの重複を排除した。新しいpublic `PreinstalledWasmComposition`は
-   `Arc<PreinstalledModuleCatalog>`・zero-sizedな`execution::WasmExecutionEngine`・
-   `created_checkpoint: u64`のみを保持するcomposition-trusted inputで、HTTP request bytesや
-   wall clockからは決して取得しない（`created_checkpoint`はmutate対象objectについてrestart間で
-   non-decreasingでなければならず、regressionはfail closedになるとdoc化済み）。新routerの
-   `SubmitTransaction`は
-   `handle_authenticated_resolved_durable_submit_transaction_with_preinstalled_wasm_execution`を
-   呼ぶ。他のevent kindに対する既存のgeneric machine pathはnode-core内部の再利用可能な
-   behaviorとして維持する一方、DR-0099によりnative public `POST /v1/events`からは全7 familyを
-   identity/clock/storage/machine/outbox/transportより前にfail closedとした。将来いずれかを外部へ
-   再公開する場合はfamily固有のauthentication/authorizationを別sliceで実装する。blocking
-   admissionとpre-storage-dispatch cancellationは両routerで同一のsemanticsを保つ（新routerの3つの
-   pre-storage checkpointすべてで直接cancellation testを追加済み）。coarse HTTP error
-   classificationを拡張し、`execution::ExecutionError`をワイルドカードなしで明示的にmatchする。
-   malformed/inactive/unknown module reference（`MissingEntrypoint`含む）とargs/gas/
-   zero-object/resource-limit requestは引き続きdeterministic client error（422/400）、
-   `WasmEngine`（trusted catalog code）と内部encoding/hash/context failureはopaque 500 host
-   failure、catalog/commitment mismatchと`ObjectCreatedCheckpointRegression`はhost/operator
-   failure、`ObjectCreationUnsupported`は501、`ObjectVersionOverflow`（node-core/execution両方）は
-   409、`ObjectEffectMismatch`はopaque 422、`DuplicateObjectEffect`/`TooManyObjectEffects`/
-   `UndeclaredObjectEffect`/`ObjectMutationContextMissing`/`SystemModules`はopaque 500
-   invalid-outputとして分類する（内部詳細はleakしない）。fixtureはすべて
-   `HashSuiteResolver`/canonical encoderから計算し、pasted digestを使わない。discriminating
-   missing-entrypoint test（422、no receipt/mutation）とcatalog code-hash mismatch test
-   （opaque 500）をHTTPレベルで追加済み。full composition-time registry/catalog reconciliation
-   はdevnet compositionへ延期し、request-time mismatchは引き続きfail-closed 500とする。Create、
-   Shared/System、blob、native binary/devnet startup wiring、query API、TypeScript client、UI、
-   arbitrary upload、fees/meteringは引き続きこのstepの範囲外（Shared/System/blob coverageは
-   node-core側に留め、HTTP層で重複させない）。
-5. local devnet、bounded query API、Rust client（`clients/rust`）、Rust CLI（`apps/cli`）、
-   TypeScript client（`clients/typescript`）、explorer（`apps/explorer`）、wallet
-   （`apps/wallet`）、restart/duplicate E2E、explicit dev limitationsの順に追加する
-   （DR-0081；旧DR-0080の`clients/typescript`/`demo/counter`という組み合わせを置き換え、
-   `demo/counter`は作成しない）。devnetの最初のstateful preinstalled moduleは
-   `sunrise.devnet.asset_account.v1`（`transfer` entrypoint）とし、同一senderが所有する
-   2つのordinary asset-account objectの間でのみ残高を移動する。`standard_assets::AssetId`を使った
-   real 32-byte asset識別、conservation、amount underflow/overflow/asset ID mismatchの
-   fail closedを満たす。destination側owner authorizationとowner変更は既存のowned-effects
-   pathで引き続きfail closedのため、このMVPはsame-sender movementのみを示し、
-   user-to-user transferではない。devnetのfee registryは空のままとし、すべてのtransactionは
-   `fee_payment: None`でcommitする（fee assetもordinaryなasset accountの上のprotocol policyに
-   過ぎず、native coinや別実装のbalance/transfer/fee pathを持たない。DR-0081参照）。
-   **DR-0086 amendment（current status）：** 直前のsame-sender-only/cross-owner
-   fail-closed記述はDR-0081当時のMVP境界を記録したhistorical textであり、現在の実装状況ではない。
-   S2はexact committed policyで既存の別Address-owned destinationを許可し、source/destination
-   ownerをどちらも保存する形でimplemented and validated As-Is。literal owner reassignment/
-   giftingは引き続きdeferredかつfail closedである。
-   **DR-0087 amendment（current status）：** 直前のempty fee registry/
-   `fee_payment: None`記述はDR-0081当時のhistorical MVP境界であり現在の実装状況ではない。
-   S3は同じordinary `AssetAccount`/`DEVNET_ASSET_ID`をfee object/assetとして使い、distinct
-   treasury ownerのordinary destinationへactual `gas_used`由来feeをatomic settlementする。
-   active module/semanticsはv3、historical v1/v2 bytesとWAT/WASM/code hashは不変である。
-   **DR-0107 amendment（current status）：** 直前の`sunrise.devnet.asset_account.v1`/
-   `AssetAccount`/`DEVNET_ASSET_ID`/S1-S3記述はDR-0081/DR-0086/DR-0087当時のhistorical
-   fixtureであり現在の実装状況ではない。この fixture（`0xF001`-`0xF003`、
-   `0xF010`/`0xF011`、旧module ID/WAT/WASM）はprotocol version 4化に伴い削除され、
-   `standard_assets::StandardAssetCoinV1`ベースのStandard Asset v1 whole-object
-   `Coin<A>` transfer moduleへreplaceされた（migrationやdual-supportではない）。
-   新モジュールはDR-0106の`PreinstalledTypedEntrypointPolicy`/
-   `PreinstalledOwnerTransitionPolicy`を実際にcommitする最初のcatalog entryであり、
-   同一senderが所有するsource/fee coinのexact typed `Write`、hidden final treasury
-   `Write`、canonical signed recipientへのexact owner change（`transferred_access_index = 0`）を
-   node-core自身がsynthesize/再検証する。同一sender制約とliteral owner
-   reassignment不可という直前の記述はここで終わり、whole-coin owner transferが
-   最初のend-to-end reachableな経路になった。fee assetはtransferred assetと
-   forcibly一致し（`abi`のshared type variableが1つのため）、fee coinはtreasuryとは
-   別のsender-owned coinである。詳細はDR-0107参照。
-   S4a hardware-signing profile/host preflightはDR-0088で後続実装済み。DR-0089はS4b device
-   contractを`docs/signing/hardware-signing.md`上でclarifyし、DR-0088のAPDU 230-byte capをFIRST最大255-byte・
-   first chunk最大230-byteへ訂正した（continuationは230-byteで不変）。DR-0090はmerge
-   済みseparate `sunrise-edge-ledger-app` repositoryのPR #1 host-core milestoneを記録する。
-   DR-0091はmerge済みPR #2のdedicated Ledger SDK app、5 target build、fixed-seed Nano S+
-   Speculos/Ragger evidenceをAs-Isとして記録する。S4bはAs-Isでcomplete、DR-0092により
-   S4c Phase 1 host `clients/ledger` crate（APDU/USB/HID transport、FakeTransport-testedな
-   protocol、feature-gatedかつphysical-hardware未検証のHidTransport、USB descriptor
-   levelのdevice check）とCLI all-or-none signer selectionはimplemented and validated
-   As-Isである。DR-0093によりS4c Phase 2aのactive-app/firmware identity check
-   （CLA `B0`/dashboard context CLA `E0`上のstrict identity/dashboard parsing、
-   dashboard `BOLOS` check、target id・OSU rejectionをfirmware version比較より
-   先に行うorder、exact caller-supplied `ExpectedFirmwareVersion`、`open app`による
-   exactly `Sunrise Edge`のopen、bounded same-explicit-path reconnect、exactly
-   `Sunrise Edge`/`0.1.0`のactive-app check）と、既存6-byte configurationへの
-   `0.1.0` version pin追加、CLIの`--ledger-expected-firmware-version`必須flag追加も
-   `FakeTransport`のみに対するsoftware-only実装としてimplemented and validated
-   As-Isである。S4cはphysical hardware validationが
-   未実装のためincompleteであり、S4全体もincompleteである。2026-09-04の明示的な
-   roadmap reorderにより、S4c Phase 2b、S4d physical-device HIL/release evidence、
-   その他すべての残存Ledger作業はdeferredとし、旧順序を飛び越えてnon-Ledger S5
-   prerequisiteを進める。TypeScript client/explorer/walletはSoftware Production Gate
-   （S0-S3 + S5）までdeferredのままであり、S4の完了は待たない。S4、S5、completeな
-   CLI-First Node Production Gate、production、mainnet readinessは未達である。
-   前提として、`runtime-sqlite`へ`StructuredDurableDomainStateStore`/`IndexedOutboxRepository`を
-   実装するadditive、local-only、non-productionな`SqliteDurableStore`を追加済み
-   （implemented As-Is）。既存のopaque `SqliteStateStore`とは別テーブル・別`PRAGMA application_id`で、
-   opaque state-keyのprefixを型付きレコードへ再解釈しない。`application_id`はファイル単位の
-   SQLiteプロパティのため、両ストアは同一ファイルを共有できず、それぞれ別ファイルを必要とする。
-   one trusted bound `(chain, validator, atomicity domain)` namespace、永続化されたfenced writer
-   generation、deadline check、object/receipt/outbox/stateのatomic commit、immutable object
-   version、indexed request/due outbox claim、idempotentなacknowledgementをprocess-local mutex +
-   1つのSQLite transaction（複数statementから成るreadはmetadata/fence checkとpayloadを1つの
-   snapshotで観測する`Deferred` transaction、writeは`BEGIN IMMEDIATE`）の上に実装。`advance_writer_fence`
-   はoperator-only seamとしてBEGIN IMMEDIATE内でschema identityとchain/validator/domain
-   namespaceを再検証してからfenceを読み書きする。各transaction開始前にcaller側の残り
-   deadlineをそのconnectionのSQLite busy_timeoutへ伝播し、`[1ms, 5000ms]`にclampする。writer
-   fenceはBEGIN IMMEDIATE直後に一度だけ検証され、write lockによりCOMMITまで有効性が保たれる
-   （COMMIT直前に再検証されるのはdeadlineのみ）。digest・canonical record type ID・outbox
-   attempt status・boolean列は型付き内部表現ですべて厳密にdecodeし、不明なalgorithm、長さ
-   不一致、algorithm/bytesの片方欠落、想定と異なるtype ID、未知のoutbox attempt status、0/1
-   以外のcompleted値、current専用列を持つtombstoneはすべてInvalidPersistedStateとしてfail
-   closedする。object versionのprovenance chainはbound namespaceのchainとcommit時・read時の
-   両方で照合する。current object headはexact validated immutable version rowと突き合わせ、
-   それがmaximum retained versionであることとdigestの一致を確認してから信頼する
-   （load_object_headはload_object_versionを呼ぶだけで、再帰はしない）。PostgreSQLと共有する
-   conformance suite、実際のdurable state read/mutation・exact request replayでの
-   `RequestAlreadyCommitted`・reopen後のoutbox acknowledgement冪等性を含むrestart persistence
-   test、short deadlineがfixed busy timeoutを待たないことを示すbounded contention testで検証済み。
-   corruption testはrepresentativeなstrict-decode/cross-checkルールを検証するものであり、
-   すべてのルールを網羅しているわけではない。native-http経路への接続はstep 4で実装済み
-   （implemented As-Is）。`apps/devnet`はstrict config、SQLite writer-fence boot、restart-safe
-   identity source、canonical asset-account codec/stable vector、preinstalled WASM/catalog、
-   2-accountのatomicかつrestart-idempotentなseed、同じin-process artifactから構成した
-   registry/catalog commitmentのstartup整合性検証、
-   bounded native routerのstartup wiringまで実装済み（implemented As-Is）。binaryはloopbackで
-   HTTPをserveし、live smokeで`204` livenessと、同一account IDを保った次writer generationでの
-   再起動を検証済み。WASM単体実行は同一`AssetId`の送金成功と異なる`AssetId`のeffectなし拒否を
-   直接検証する。bounded query APIはDR-0082の設計のとおりstep 6で実装済み（implemented As-Is）。signed
-   duplicate-transfer HTTP E2Eはstep 9（S0）で実装済み（implemented As-Is）。
-6. DR-0082のbounded canonical query APIを、両方のstructured durable routerへadditiveに
-   実装した（implemented As-Is）。`GET /v1/context`、`/v1/objects/{object_id}`、
-   `/v1/receipts/{request_id}`、`/v1/senders/{sender}/next-nonce`だけを公開し、64文字の
-   lowercase hex selector以外をstorage I/O前に拒否する。contextはtrusted chain/epoch、exact
-   canonical `ProtocolConfig`、committed logical domainを返す。objectはabsence/tombstone/
-   verified inline/blob referenceをtyped canonical resultで表し、inlineはnode-coreがhead、
-   immutable version、digest、schema、provenance、owner projectionを照合してbody digestを再計算する。
-   receiptはouter durable receiptとcanonical `NodeDedupRecord`のidentity/digest/re-encodingを照合し、
-   nonceはcurrent trusted epochのpersisted `SenderNonceRecord`をnode-coreだけがdecodeして、true
-   absenceなら0、deleted/corrupt stateならfail closedとする。sender pathはpublic lookup selectorで
-   あって認可ではなく、submit authorizationは署名のみが与える。全successはcanonical type IDs
-   `0xE102`-`0xE105`、`Cache-Control: no-store`、typed absenceを200で返し、既存のblocking
-   admission、trusted fence/deadline/correlation identity、bounded object/receipt sizesを再利用する。
-   scan/list/prefix/arbitrary state key、blob fetch、historical version selector、proof/indexerはMVP外。
-   node-core側は`query_sender_next_nonce`/`query_object`/`query_request_receipt`を公開する
-   （内部実装はprivate moduleに置き、crate rootからre-exportする。`node_core::query`は
-   public moduleではない）。private `SenderNonceRecord`framingは外部へ漏らさない。`ObjectQueryResult`/
-   `ReceiptQueryResult`はすべてのstatus（absence/tombstoneを含む）で要求されたexact selector
-   （`object_id`/`request_id`）自体を型として保持し、HTTP層が別のlookupの結果を取り違えて
-   bindできないようにする。`query_object`はinline/blobで分岐する前に version の
-   creating-chain provenanceをtrusted chainと照合するため、cross-chainなblob recordも
-   inlineと同様にfail closedする。blob referenceの`digest`/`blob_digest`はhead/versionで
-   相互チェックされた値であり、fetchしていないbody自体をverifiedとは主張しない。
-   native-http側は`0xE102`-`0xE105`の4つのcanonical codec（`HttpContextQueryResult`/
-   `HttpObjectQueryResult`/`HttpReceiptQueryResult`/`HttpNextNonceQueryResult`）を追加し、
-   すべてのresultに対応するselector（`object_id`/`request_id`/`sender`）を全statusへ持たせた。
-   `CurrentInline`/`Present`のnested canonical bytes（`objects::Object`/`NodeDedupRecord`）は
-   decode時にサイズ上限（`MAX_AUTHENTICATED_OBJECT_BODY_BYTES`/`MAX_DURABLE_RECEIPT_BYTES`）・
-   decodability・outer selector/digestとのidentity一致・（receiptは）exact re-encodingまで
-   strictに検証する。contextはzero id（protocol version/hash suite/profile/scheme/binding）・
-   長すぎるchain id（`node_core::MAX_CHAIN_ID_BYTES`超過）・空のcanonical `ProtocolConfig` bytes
-   を拒否する。4 route全て（`/v1/context`を含む）が共通helper経由で
-   `DomainPlacementManifest::resolve_domain`を authenticated write pathと同じ
-   activation-epoch-checkedな経路で呼び出し、`placement.domain()`を無条件には
-   使わない。operational statusは、identity source unavailable・clock/runtime
-   failure・durable readのwriter fenced/deadline/unavailable・durable schema
-   generationがunsupported（`DurableReadError::SchemaMismatch`。persisted bytes
-   自体のcorruptionではなくoperator/deployment側のschema世代不一致を証明する
-   ものなので、corrupt-state側ではなくavailability側に分類する明示的な決定）・
-   committed ProtocolConfigのinactivity/misconfigurationをopaque
-   `503 query-unavailable`、corrupt/invalid persisted content・result encoding
-   failure・identity source exhaustedをopaque `500 query-state-invalid`として
-   区別する（capacity exhaustionは既存の`429`のまま）。
-   `structured_durable_router`と`preinstalled_wasm_structured_durable_router`の両方へ
-   GET routeとして配線した。stable literal vectors、round-trip/unknown-tag/selector-mismatch
-   decoderテスト、4 routeすべてのboth-router parity（populatedなcurrent-inline
-   objectとpresent receiptを含む。absenceのみに限定しない）、
-   malformed-path-before-side-effectsテスト、
-   object absent/tombstone/current-inline/current-blob/tamper/wrong-chainテスト、receipt
-   absent/present/corruptテスト、nonce zero/advanced/deleted-corruptテスト、
-   `/v1/context`と代表storage-backed object routeの
-   inactive-placement-before-side-effectsテスト、503/500 operational
-   classificationのcase tableテスト、
-   admission/cancellationテストを両crateのtest suiteに追加済み。
-7. DR-0083のMVP Rust client境界に従い、`crates/node-wire`へcanonical
-   HTTP result codec・route/media-type contractを抽出し、`native-http`から同じpublic名を
-   re-exportする。`clients/rust`は`node-core`と`node-wire`に依存して、seed-based
-   Ed25519 key/address、canonical transaction build/sign、explicit request IDでのsubmit、
-   bounded receipt wait、context/object/receipt/next-nonce queryを提供する。初期transportは
-   strictなloopback-only synchronous HTTP/1.1とtest用traitだけに限定し、TLS、remote node、
-   async、keystore、full `ProtocolConfig` decode、hash/certificate verification、blob fetch、
-   asset固有helper、CLI policyはこのsliceへ含めない。serverとclientはshared stable vectorsと
-   node-coreが受理するsigned transaction vectorでcanonical contractを固定した
-   （implemented As-Is）。clientは全query selectorを応答内selectorと再照合し、transportは
-   request framing injection、header/body超過、ambiguous length、transfer encoding、truncation、
-   trailing bytes、close timeoutをfail closedにし、per-stage socket timeoutに加えて完全な1 requestの
-   monotonic deadlineを適用する。receipt waitは同じoverall deadlineをtransportへ渡すためslow-dripで
-   elapsed boundを更新できない。effects listはdeclared countとexact field countをallocation前に照合する。
-   fake transportでsubmit/request bindingとbounded receipt wait、raw loopback TCPでadversarial response、
-   実際にcomposeしたdevnet routerへの4 query全てのTCP E2Eを検証済み。live signed transfer/duplicate/
-   restart E2Eはstep 9（S0）で実装した。
-8. criterion 6の`apps/cli`を、実行時（non-dev）の直接依存が`clients/rust`のみのRust-only
-   binaryとして実装した（`Cargo.toml`の`[dev-dependencies]`にはtest専用でreal devnetの
-   composeとfixture構築、decoded execution-effects fixtureの構築、およびreal TLS E2E
-   fixture構築のためだけの`execution`/`objects`/`runtime`/`native-http`/
-   `sunrise-edge-devnet`/`tokio`/`rcgen`/`rustls`があるが、いずれもnon-test buildからは
-   到達できない。implemented As-Is;
-   docs/architecture/decisions/0081-0087-cli-first-roadmap.md DR-0084）。Node/browser runtime、独自canonical codec、
-   独自signing/RPC pathは導入していない。引数parsingはclap等を使わない小さな手書きの
-   strict `--flag value` parserで、duplicate flag・unknown flag・flag値なし・宣言外の
-   positional argumentをすべて拒否する。`address`（明示的に指定したdevelopment seed
-   fileからAddressIsPublicKeyのaddressを導出）、`context`/`object`/`receipt`/`next-nonce`
-   （`clients/rust`の対応するquery methodへの薄いwrapper）、`transfer`（explicitな
-   destination ownerを要求するbounded devnet asset transfer）の6コマンドを提供する。
-   `--tls-server-name`/
-   `--tls-ca-cert-der-file`をいずれも指定しない場合、`--endpoint`はplaintext
-   `LoopbackHttpTransport`の下でloopbackのみを受理する。S1実装後は、両方の
-   TLSフラグを指定した場合のみ`--endpoint`を既に解決済みの`SocketAddr`として
-   扱う`RemoteTlsHttpTransport`を使い、loopback制限は課さない。片方だけの指定は
-   networkへ出る前にfail closedする（詳細はS1参照）。
-   出力はdeterministicなline-oriented `key=value`テキスト、すべてのエラーはtypedな
-   `CliError`でexit non-zeroとなる。development seed fileは明示的なpathのみを受理し
-   （home directoryのdefault path無し）、symlinkと非regular fileを拒否し、Unix上では
-   group/other permission bitを一切許可せず、内容は正確に64桁の16進数字＋任意の1個の
-   trailing `\n`のみを受理する。seedはargvへ直接渡さず、標準出力へも一切printしない。
-   `transfer`は`/v1/context`・sender自身の`/v1/senders/{sender}/next-nonce`・
-   `--source-object`/`--destination-object`の`/v1/objects/{object_id}`結果を照会し、
-   committed profileがEd25519 + AddressIsPublicKeyであること、contextとnext-nonceの
-   epochが一致することを署名前に検証し、両objectがCurrentInlineであること、source ownerが
-   signerであること、destination ownerが必須`--destination-owner` Addressと一致することを要求し、
-   source→destinationの順でexactly two `Write` access manifestを構築し、
-   `clients/rust`経由でtransactionをbuild・signし、caller指定のnon-zero request idで
-   submitする。あらゆるassetは同一の`AssetId`/account/transfer pathを使い、native coinや
-   feeの特別扱いは無い。cross-owner destination authorizationはDR-0086のtrusted
-   preinstalled-module exact policyだけで可能であり、general owned-effects pathは
-   sender-onlyのままである。literal ownership reassignment/giftingはfail closedである。
-   `transfer`はsubmission自体もfail closedとして
-   扱い、それはsubmissionに先立つqueryだけではない：submit resultの`responses()`が
-   空である場合、いずれかのresponseが`NodeResponseStatus::Rejected`を宣言している場合、
-   およびいずれかのresponseのpayloadがdecodeした結果`ExecutionStatus::Failure`である場合
-   （node-coreレベルでacceptされたresponseであっても）は、それぞれtypedでnon-zero exitの
-   `CliError`となる——このコマンドはrejectされたtransactionやfailしたtransactionを
-   successとして報告することは無い。すべてのresponseのdiagnosticsはコマンドが終了する前に
-   printされる（`responses()`を事前に検査するのではなく、iteration中に検出する）。
-   そして、いずれかのresponseがこの意味でfailした場合、`--wait`には決して入らないため、
-   `--wait`を同時に指定してもrejectされた・failしたsubmissionをapparent successへ
-   変えることはできない。
-   receiptのwaitは`--wait`で明示的に有効化した
-   場合のみ行い、その際は`--wait-max-attempts`/`--wait-initial-backoff-ms`/
-   `--wait-max-backoff-ms`/`--wait-max-elapsed-ms`をすべて明示的に指定する必要があり、
-   隠れたdefault poll boundは無い（`--wait`無しでwait-bound flagだけを渡すのも拒否する）。
-   devnetのpreinstalled moduleのentrypoint名と引数frame（DR-0107以降は
-   Standard Asset v1 whole-coin transfer moduleの`transfer`entrypointと
-   `standard_assets::StandardAssetTransferArgsV1`、DR-0081当時は
-   `sunrise.devnet.asset_account.v1`の`CanonicalStruct(0xF002,v1)`）は
-   `apps/cli`の`transfer`コマンドだけが知っており、`clients/rust`へdevnet固有の
-   意味論は置いていない。そのために`clients/rust`へ追加した最小限のgeneric re-export
-   （`abi::{AccessEntry,AccessManifest}`、`objects::{AccessMode,Object,ObjectError,
-   Owner,decode_object}`、`execution::ObjectEffect`、
-   `canonical_encoding::{CanonicalStruct,CanonicalEncodingError}`、`protocol_types`の
-   基本型群、`current_inline_object_ref`ヘルパー、`ED25519_ADDRESS_IS_PUBLIC_KEY_BINDING_ID`
-   定数、`ED25519_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID`定数）はいずれもapplication固有の
-   意味論を持たない。`objects::{ObjectError,Owner,decode_object}`と
-   `execution::ObjectEffect`は、`transfer`がqueryしたobjectのcanonical bodyをdecodeし、
-   client側でownerをdefense-in-depthとして検証し、decoded execution effectsから
-   object effectをprintできるようにするためのものである。
-   同時に`clients/rust`のtransaction構築をadditiveなsafe two-stage external-signer API
-   （`transaction::PreparedTransaction::prepare`/`finalize`/`sign_and_finalize_with`）へ
-   refactorし、`build_signed_transaction`は同じpathで実装することで既存のstable出力
-   bytesを変更していない。`prepare`はexplicitなsender/active signature scheme/
-   `TransactionRequest`からimmutableな値を構築し、実装済みでない
-   signature schemeをframing前にfail closedで、専用の
-   `ClientError::UnsupportedSignatureScheme(SignatureSchemeId)`で拒否する。この
-   two-stage API以前は、`build_signed_transaction`は同じunsupported-scheme caseを
-   より遅く・より曖昧に拒否していた：常に`SignatureSigner::sign_canonical`を呼んでおり、
-   そのscheme一致guardが代わりにwrapされた
-   `ClientError::Crypto(CryptoError::SignatureSchemeMismatch)`を返していた。
-   `build_signed_transaction`のこのcaseにおけるcaller可視なerror typeは以前と異なるが、
-   これはpurely additiveでmatchしやすくなったerror-typeの変更であり、protocolの変更ではない：
-   同じcaseがframingや署名より前にrejectされる点、および成功する全caseのstable出力
-   bytesが不変である点は変わらない。`signable_frame`はexternal
-   signerが署名すべき正確なframed bytesを公開し、`finalize`は返された署名の長さが
-   exact scheme長であることとAddressIsPublicKeyのsender公開鍵に対して暗号学的に
-   verifyされることの両方を確認してからのみ出力を生成する（scheme不一致・不正な
-   署名長・well-formedだが無効な署名・wrong signerの署名・transaction改ざんは
-   すべてadversarial testでカバー済み）。docs/architecture/decisions/0081-0087-cli-first-roadmap.md DR-0084が明記する通り、
-   real Ledger（またはその他のexternal/hardware）署名はこのsliceでは実装しておらず、
-   専用のSunrise Edge Ledger device app・APDU/host transport・on-deviceでの正確な
-   signature frameのparsingとclear signing・public key/address照合・derivation path
-   policy・device/app/version check・explicit user confirmation・host側signature
-   verification・hardware-in-the-loop testが別途必要である。既存のSolanaやEthereum
-   向けLedger appをSunriseのtransaction署名に転用することはできず、USB/HID/Ledgerへの
-   依存はどのprotocol/client crateにも存在しない。
-   **development-only residual: memory zeroizationは無い。** `load_dev_seed`の読み込み
-   bufferとdecodeされた`[u8; 32]` seed、および`LocalSigner`のin-memory signing keyは、
-   このsliceのどこにも`zeroize`-on-drop挙動を持たない通常のRust値であり、process
-   memoryのdisclosure（core dump・swap・attachされたdebugger）によって、それらまたは
-   allocatorがまだ上書きしていないcopyがresidentである間は回収され得る。これは
-   `load_dev_seed`と`LocalSigner`が既存のdocumentationで明示している
-   explicit・non-keystore・development-onlyという位置付け（production key handlingでは
-   ない）と整合しており、暗黙の前提とせずここで明記する。
-   parser/development seed file（symlink・permission・length。Unix）のadversarial
-   test、`clients/rust`側の two-stage signing adversarial test（scheme不一致・不正な
-   署名長・wrong signer・改ざん）、各query commandのfake `Transport` unit test、
-   `transfer`のsuccess pathおよびepoch不一致・unsupported scheme・non-current-inline
-   objectのadversarial test、実際にcomposeしたdevnet routerへのreal loopback TCP E2E
-   （`context`/`next-nonce`/`object`の一括実行と、freshly seedしたaccount間での完全な
-   signed `transfer`から`--wait`によるpresent receiptまでの2本）で検証済み。
-9. **S0（restart/duplicate E2E、criterion 10）**を
-   `apps/cli/tests/devnet_restart_duplicate_e2e.rs`として実装した（implemented As-Is）。
-   real file-backed `SqliteDurableStore`、実際にcomposeしたdevnet router、real loopback
-   TCP、user-facing transfer legとしての`sunrise-edge-cli::run`、独立検証としての
-   `sunrise-edge-client`を使う。別々にconfigured/seededしたsender sourceからrecipient
-   destinationへのamount 250のCLI transferをbounded waitで実行し、両accountのbalance変化と
-   recipient ownerが前後で不変であること、decoded stateとreceipt/next-nonceを独立にcaptureした
-   うえで、serverをgraceful HTTP
-   shutdownでstopしserver taskをawaitし、`Arc<SqliteDurableStore>`をすべてdropしてSQLite
-   fileを真にcloseしてから、`boot_local_store`で再openしてwriter generationがN+1へ
-   進むことをassertし、reseedがExisting outcomeで同一account identityを返すことを検証し、
-   新しいephemeral portでrouterをrecomposeする。restart後、balance/sequenceに加えて
-   object query result・receipt result・complete next-nonce resultのcanonical bytesが
-   restart直前とexactに一致することを検証する。`sunrise-edge-client`で直接構築した1つの
-   signed `SubmitTransactionRequest`をsame boot内とrestart後の両方でbyte-identicalに
-   再送信し、canonical response bytesが同一でeffectが二重適用されないことを証明する。already-committed
-   なrequest idを別のtransactionへ再利用するとtypedでnonzeroなfail-closed HTTP conflict
-   （409）になり、両object queryのcanonical bytes、CLI transferとraw transferの両receipt、
-   sender nonceがすべて不変であることも検証する。さらに、reopen後のstoreへpre-restart
-   writer generationのcontextで読み取りを試み、`WriterFenced`を返すことでold writer
-   generationがfencedであることを直接証明する。これはorderly stop/reopenのみの証明であり、
-   `kill -9`、power loss、torn write、load、concurrency、SQLiteのproduction適性は
-   証明しない。
+1. local devnetとfile-backed SQLite lifecycleは`apps/devnet`およびDR-0081で実装済み。
+2. authenticated owned-object effectsとatomic durable mutationはnode-coreの
+   structured durable pathおよびDR-0078で実装済み。generic pathの権限を広げない。
+3. exact committed preinstalled WASM executionはDR-0078/DR-0081で実装され、現行の
+   Standard Asset v1 whole-object semanticsへDR-0107以降で置換済み。
+4. native HTTP compositionは`preinstalled_wasm_structured_durable_router`へ接続済み。
+   public `POST /v1/events`はDR-0099により`SubmitTransaction`以外を認証・認可実装前に
+   fail closedとする。
+5. bounded canonical query APIはDR-0082、Rust client boundaryはDR-0083、Rust-only CLIと
+   external-signer boundaryはDR-0084で実装済み。
+6. cross-owner/feeの旧development fixtureはDR-0086/DR-0087のhistorical recordであり、
+   現行のtyped policy、whole-coin transfer、split/merge/mintはDR-0106以降を参照する。
+7. TLS endpoint authenticationとsigning前のtrusted protocol-context validationは
+   独立したboundaryとしてS1で実装済み。TLS成功をchain/protocol identityの証明とみなさない。
+8. Ledgerのdevice/host milestonesとsoftware-only evidenceはDR-0088-DR-0093、残る実機/
+   release workのdeferとsoftware trackとの並行化はDR-0095を参照する。
+9. orderly close/reopen、writer-generation fencing、same-boot/post-restart exact replay、
+   request-id conflict時のstate/receipt/nonce不変は
+   `apps/cli/tests/devnet_restart_duplicate_e2e.rs`で検証済み。これは`kill -9`、power loss、
+   torn write、load/concurrency、SQLiteのproduction適性を証明しない。
 
-**Repository-boundary decision**
-（docs/architecture/decisions/0081-0087-cli-first-roadmap.md DR-0081；
-docs/architecture/decisions/0076-0080-developer-mvp-foundation.md DR-0080の同名決定のうち
-repository-boundary/counter-demo deliverableのみを置き換える。DR-0080に記録された
-実装済みのnative-http compositionやerror classificationはhistorical recordとして
-変更しない）: CLI Developer MVP completion criteria 5-9のRust client library
-（`clients/rust`）、Rust CLI（`apps/cli`）、TypeScript client library
-（`clients/typescript`）、explorer app（`apps/explorer`）、wallet app（`apps/wallet`）は、
-CLI Developer MVP Gateの実装期間を通じてこのmonorepo内に留め、実装時点でこれらのtop-level
-ディレクトリとする。gate通過後も下記extraction条件を満たすまでは同様とする。pivot後、
-criteria 7-9（`clients/typescript`/`apps/explorer`/
-`apps/wallet`）のディレクトリ作成自体も
-[Software Production Gate](#software-and-hardware-release-gates)（S0-S3 + S5）通過後まで実装着手を
-deferする。`apps/cli`は`clients/rust`にのみ依存するRust-only client（Node/browser
-runtimeには依存しない）。`apps/explorer`と`apps/wallet`は別々のSvelteKit + shadcn-svelte
-（Luma）static/CSR app（request-time SSR、server adapter、`+page.server`/`+layout.server`/
-`+server`、server actions/remote functions/server-held session・keyなし）とし、walletの
-signing keyはbrowser限定とする。両app間で共有UI packageは、real duplicationが生じるまで
-導入しない。旧DR-0080が定めた`clients/typescript`/`demo/counter`という組み合わせは
-この6ディレクトリ構成に置き換わり、`demo/counter`は作成しない。別repoへのextractionは、
-(a) canonical wire contracts/共有test vectorsが安定し、(b) 実際のindependent consumerまたは
-独立したrelease cadenceが存在し、(c) E2Eがin-tree buildではなくreleaseされたdevnet
-artifactをtargetできるようになるまで、`clients/*`のいずれについても延期する。
+### Residual limitations retained by this gate
+
+- queryとsubmissionは1つの`NativeBlockingExecutor`/`--max-concurrent` budgetを共有し、
+  一方のtrafficが他方をstarveし得る。single validator、public unauthenticated bounded
+  query、fixed development configurationを含め、non-production postureのままである。
+- development seedの読み込みbuffer、decoded seed、`LocalSigner`のkey materialには
+  zeroize-on-dropがなく、core dump・swap・debugger等から回収され得る。これはproduction
+  key handlingではない。
+- capacity/load/soak、PITR、HA/failover、provider certification/deployment、certificate
+  publication、non-`SubmitTransaction` event-family ingressなどは本gateの完了条件へ
+  遡及追加せず、後続のproduction/security gatesで追跡する。
+
+**Repository boundary:** Rust client (`clients/rust`)、Rust CLI (`apps/cli`)と、deferredな
+TypeScript client (`clients/typescript`)、explorer (`apps/explorer`)、wallet (`apps/wallet`)は、
+DR-0081のextraction条件を満たすまでmonorepo内に置く。`demo/counter`は作成せず、browser appは
+別々のstatic/CSR-only SvelteKit surfaceとし、real duplicationが生じるまで共有UI packageを
+導入しない。
 
 ## Initial Code Security Audit Entry Gate
 
