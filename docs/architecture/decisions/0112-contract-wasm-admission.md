@@ -16,7 +16,8 @@ grant type/object rights, authorize dependencies, or establish instance scope.
 In particular, recognizing the existing `env` object-function signatures is
 not permission to create or mutate arbitrary objects. Future publication must
 combine this verifier with authenticated code/ABI/dependency records and the
-host authority checks in [`docs/design.md`](../../design.md).
+host authority checks in
+[`docs/architecture/generic-contracts.md`](../generic-contracts.md).
 
 Do not connect arbitrary validated uploads to the legacy trusted catalog as a
 shortcut. The existing preinstalled dispatch is unchanged by this slice; its

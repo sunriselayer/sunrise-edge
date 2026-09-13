@@ -193,7 +193,8 @@ The legacy trusted catalog, Standard Asset implementation and native fee
 settlement are not migrated by this decision. They remain separate from public
 execution, except for the mandatory isolation guard protecting public objects.
 Replacing those trusted-only paths with the public facilities and explicitly
-signed fee settlement is still required by [the target design](../../design.md).
+signed fee settlement is still required by the
+[contract-facing asset and fee design](../../smartcontract/assets-and-fees.md).
 This local flow does not establish asset equivalence, public testnet readiness,
 permissionless network execution, distributed publication or production readiness.
 

@@ -5,14 +5,19 @@ detailed design, operator guides, and specialist references live here.
 
 ## Architecture
 
-- [Target design: generic contracts](design.md)
-- [Design meeting records](meeting-notes/)
 - [Architecture index](architecture/README.md)
+- [Generic contract architecture](architecture/generic-contracts.md)
 - [Core protocol](architecture/core-protocol.md)
 - [Runtime and ingress](architecture/runtime-and-ingress.md)
 - [Persistence architecture](architecture/persistence.md)
 - [Developer product surfaces](architecture/product-surfaces.md)
 - [Architecture decision records](architecture/decisions/README.md)
+
+## Smart contracts
+
+- [Smart-contract documentation index](smartcontract/README.md)
+- [Publication, instances, and calls](smartcontract/lifecycle.md)
+- [Standard Asset and fees](smartcontract/assets-and-fees.md)
 
 ## Operations and guides
 

@@ -1,9 +1,11 @@
 # Architecture
 
-The accepted generic-contract To-Be is maintained in
-[`../design.md`](../design.md), with dated rationale and As-Is gaps in the
-[meeting record](../meeting-notes/2026-09-07-generic-contract-design.md).
-Read that target before extending trusted preinstalled execution paths.
+The accepted generic-contract To-Be is split by responsibility between
+[`generic-contracts.md`](generic-contracts.md) and the
+[smart-contract documentation](../smartcontract/README.md). Accepted dated
+rationale and As-Is gaps are retained in the applicable
+[decision records](decisions/README.md), not a parallel meeting-notes tree.
+Read those targets before extending trusted preinstalled execution paths.
 
 The architecture is split by responsibility so contributors can read the
 smallest relevant document. Implemented canonical bytes, stable vectors, and
@@ -18,6 +20,11 @@ roadmap describes a later target state.
   state boundary.
 - [Developer product surfaces](product-surfaces.md): sections 42–46, covering
   the devnet, query API, Rust client, CLI, and signing host boundary.
+- [Generic contract architecture](generic-contracts.md): common execution and
+  authority, type/instance/object separation, upgrades, migration and durable
+  verification obligations.
+- [Smart contracts](../smartcontract/README.md): publication/call lifecycle and
+  Standard Asset/fee semantics.
 - [Durable local code publication](decisions/0121-durable-local-code-publication.md):
   authenticated immutable code storage, exact dependency provenance, shared
   nonce/receipt atomicity, and opt-in native HTTP/CLI publication.

@@ -2055,9 +2055,9 @@ physical media faultや長期soakを同じ項目として重複実装しない�
 ## Generic Contract Publication Gate
 
 **Design baseline (DR-0111, 2026-09-07):**
-[`docs/design.md`](docs/design.md) is the accepted To-Be; the
-[dated meeting record](docs/meeting-notes/2026-09-07-generic-contract-design.md)
-preserves As-Is evidence and replacement rationale. This gate remains open:
+[`docs/architecture/generic-contracts.md`](docs/architecture/generic-contracts.md)
+and [`docs/smartcontract/`](docs/smartcontract/README.md) are the accepted To-Be;
+DR-0111 preserves dated As-Is evidence and replacement rationale. This gate remains open:
 the design record does not implement publication, instance isolation, public
 type authority, or upgrades. Standard Asset must use the same public facilities
 as user contracts; remove superseded trusted-only paths and native Coin-body

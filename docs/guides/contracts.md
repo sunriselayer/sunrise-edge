@@ -36,6 +36,7 @@ code, or execute an initializer. `--endpoint`, `--seed-file`, and Ledger flags
 are rejected. A successful result proves structural admission only, not
 correct business logic or authority to access another contract's objects.
 
-See [the target design](../design.md) for publication and authority requirements,
+See [the generic contract architecture](../architecture/generic-contracts.md)
+and [smart-contract lifecycle](../smartcontract/lifecycle.md) for publication and authority requirements,
 [DR-0112](../architecture/decisions/0112-contract-wasm-admission.md) for this
 boundary, and [TODO](../../TODO.md) for implemented scope and remaining work.
