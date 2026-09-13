@@ -1,9 +1,52 @@
 # DR-0124: contract-defined fee reservation and settlement
 
-Accepted design, 2026-09-07 (Asia/Singapore). This refined `docs/design.md`
+Accepted design, 2026-09-07 (Asia/Singapore). This refined the contract-facing
+design now maintained in
+[`../../smartcontract/assets-and-fees.md`](../../smartcontract/assets-and-fees.md)
 before implementation. Concise current status and remaining completion gates
 belong in [`TODO.md`](../../../TODO.md); durable implementation and verification
 evidence is retained below.
+
+## Decision context and replaced implementation
+
+At the decision point, the development Standard Asset module used the legacy
+`env` host, while trusted devnet catalog policies synthesized owner transitions
+and admitted creation. `apps/devnet/src/fee.rs::StandardAssetCoinFeeComposer`
+decoded and rewrote payer/treasury Coin amounts in native Rust, and node-core
+orchestrated privileged treasury access hidden from application WASM. The public
+host could not authorize mutation of a treasury Coin owned by another address,
+and the zero-fee result format could not represent fee-bearing application
+failure. These observations motivated replacement; they are not claims about
+the current implementation.
+
+The selected direction was to publish and instantiate Standard Asset through
+the same authenticated records, typed ABI, scoped handles and fenced persistence
+as user contracts. Transfer, split, merge, mint and burn keep their object and
+supply arithmetic in WASM. Fee policy pins the exact settlement target/revision,
+entrypoint, accepted asset, recipient and resource bounds; neither caller input
+nor an unsigned policy change may redirect payment. Settlement uses ordinary
+defining-code operations, with no Standard Asset-specific owner exception or
+native Coin-body callback.
+
+An earlier proposal required a separate fee Coin and created an ordinary Coin
+for the fee recipient rather than writing one shared treasury object. The shared
+treasury-write rejection remains sound, but the mandatory separate-Coin
+requirement was withdrawn after studying Sui's reservation model. The relevant
+references inspected on 2026-09-07 at Sui commit
+`0804d277859dfe2a2ab3fdbf23b75870d8f0ce6f` were:
+
+- [PTB execution and GasCoin rules](https://docs.sui.io/develop/transactions/ptbs/prog-txn-blocks);
+- [gas smashing and failure effects](https://docs.sui.io/develop/transaction-payment/gas-smashing);
+- [budget reservation/refund implementation](https://github.com/MystenLabs/sui/blob/0804d277859dfe2a2ab3fdbf23b75870d8f0ce6f/sui-execution/latest/sui-adapter/src/static_programmable_transactions/execution/context.rs#L413);
+- [native gas charging](https://github.com/MystenLabs/sui/blob/0804d277859dfe2a2ab3fdbf23b75870d8f0ce6f/sui-execution/latest/sui-adapter/src/gas_charger.rs#L452).
+
+Sui is evidence for reserving a maximum budget before application execution,
+not evidence for importing SUI-specific runtime charging or GasCoin privilege.
+The accepted boundary therefore permits one Coin to fund reservation and
+application while keeping settlement generic and contract-defined. Opus approved
+that revised design only after independent phase resource budgets, typed returns
+and explicit phase-failure receipts were required; that was design approval, not
+implementation or activation approval.
 
 ## Chosen boundary
 

@@ -7,6 +7,24 @@ work belong in [`TODO.md`](../../../TODO.md); durable verification evidence
 belongs in the applicable decision record. It refines DR-0122 without granting
 production/network authority.
 
+## Decision context
+
+The user rejected treating calls between instances as a special permission
+system: invoking another contract already requires code, ownership and delegated
+authority checks, so those checks must generalize rather than fork.
+
+At main `91822a6` (PR #153), library dispatch selected exact dependency code but
+kept one root instance in `HostState`. Durable admission rejected any non-root
+object scope, and effect validation assumed the root instance for creations.
+Those were implementation restrictions, not desired semantic distinctions.
+
+The accepted correction is an exact code plus exact instance/revision target,
+one frame-entry and object-operation validator, one object arena, one fuel
+budget, one nonce/receipt and one fenced transaction. The signed table grants
+bounded call capabilities, not a fixed externally supplied call batch: caller
+WASM chooses which authorized calls occur and computes canonically typed
+arguments.
+
 ## Decision and rejected alternative
 
 All contract calls use one execution target, frame-entry validator, object
