@@ -6,6 +6,14 @@ cd "$project_root"
 
 cargo fmt --all -- --check
 rustfmt --edition 2024 --check \
+  crates/node-core/src/tests/core_and_nonce.rs \
+  crates/node-core/src/tests/durable_object_support.rs \
+  crates/node-core/src/tests/authenticated_objects.rs \
+  crates/node-core/src/tests/preinstalled_support.rs \
+  crates/node-core/src/tests/preinstalled_execution.rs \
+  crates/node-core/src/tests/durable_handlers.rs \
+  crates/node-core/src/tests/queries.rs \
+  crates/node-core/src/tests/fees.rs \
   crates/execution/tests/paid_execution_engine/fixture.rs \
   crates/execution/tests/paid_execution_engine/call.rs \
   crates/execution/tests/paid_execution_engine/publish.rs \
