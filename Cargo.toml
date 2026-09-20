@@ -89,4 +89,5 @@ tower = { version = "0.5.3", features = ["util"] }
 wasmi = "=1.1.0"
 wasmi_core = "=1.1.0"
 wasmparser = { version = "=0.239.0", default-features = false, features = ["std", "validate", "features"] }
-wat = "1"
+# WAT-to-WASM output is protocol-relevant. Bumps require regenerated artifact vectors.
+wat = "=1.257.1"

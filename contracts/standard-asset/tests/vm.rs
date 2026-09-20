@@ -1155,3 +1155,185 @@ fn late_host_create_failure_after_cap_write_rolls_back_all_effects() {
     );
     trapped(&outcome);
 }
+
+#[test]
+fn mint_to_a_foreign_recipient_conserves_supply_and_leaves_the_cap_owner_unchanged() {
+    let (root, asset, cap) = init_asset(40);
+    let cap_owner: objects::Owner = objects::Owner::Address(objects::Address::new(sender()));
+    assert_eq!(cap.resolved.object.owner, cap_owner);
+    let recipient: [u8; 32] = other_recipient();
+    let mint: LocalExecutionOutcome = call(
+        &root,
+        "mint",
+        mint_arguments(75, &recipient).unwrap(),
+        std::slice::from_ref(&cap),
+        Some(asset),
+    );
+    success(&mint);
+    // Exactly one created object (the foreign-owned Coin); the TreasuryCap
+    // is mutated in place, not recreated.
+    assert_eq!(created_count(&mint), 1);
+    let cap: ScopedResolvedObject = mutated(&mint, &cap);
+    assert_eq!(treasury_supply(&cap.resolved.object.data).unwrap(), 75);
+    assert_eq!(cap.resolved.object.owner, cap_owner);
+    let coin: ScopedResolvedObject = created(&mint, 0, AccessMode::Write);
+    assert_eq!(coin_amount(&coin.resolved.object.data).unwrap(), 75);
+    assert_eq!(
+        coin.resolved.object.owner,
+        objects::Owner::Address(objects::Address::new(recipient))
+    );
+    assert_eq!(coin.resolved.object.type_hash, coin_type_hash(&asset));
+}
+
+#[test]
+fn split_to_a_foreign_recipient_conserves_supply_and_leaves_the_source_owner_unchanged() {
+    let (root, asset, cap) = init_asset(41);
+    let source_owner: objects::Owner = objects::Owner::Address(objects::Address::new(sender()));
+    let mint: LocalExecutionOutcome = call(
+        &root,
+        "mint",
+        mint_arguments(100, &sender()).unwrap(),
+        std::slice::from_ref(&cap),
+        Some(asset),
+    );
+    success(&mint);
+    let cap: ScopedResolvedObject = mutated(&mint, &cap);
+    assert_eq!(treasury_supply(&cap.resolved.object.data).unwrap(), 100);
+    let coin: ScopedResolvedObject = created(&mint, 0, AccessMode::Write);
+    assert_eq!(coin.resolved.object.owner, source_owner);
+    let recipient: [u8; 32] = other_recipient();
+    let split: LocalExecutionOutcome = call(
+        &root,
+        "split",
+        split_arguments(30, &recipient).unwrap(),
+        std::slice::from_ref(&coin),
+        Some(asset),
+    );
+    success(&split);
+    // split never touches the TreasuryCap: supply is unaffected.
+    assert_eq!(treasury_supply(&cap.resolved.object.data).unwrap(), 100);
+    assert_eq!(created_count(&split), 1);
+    let remainder: ScopedResolvedObject = mutated(&split, &coin);
+    assert_eq!(coin_amount(&remainder.resolved.object.data).unwrap(), 70);
+    assert_eq!(remainder.resolved.object.owner, source_owner);
+    let piece: ScopedResolvedObject = created(&split, 0, AccessMode::Write);
+    assert_eq!(coin_amount(&piece.resolved.object.data).unwrap(), 30);
+    assert_eq!(
+        piece.resolved.object.owner,
+        objects::Owner::Address(objects::Address::new(recipient))
+    );
+    assert_eq!(piece.resolved.object.type_hash, coin_type_hash(&asset));
+}
+
+/// Two instances published from the identical code (`publish()` is fully
+/// deterministic, so both `init_asset` calls authenticate the same
+/// candidate) remain distinct authority scopes. A Coin, TreasuryCap, or
+/// Reservation created under one instance must be rejected by every
+/// applicable entrypoint of the other instance, even when the caller
+/// supplies the first instance's own valid nominal asset type. Rejection
+/// must come from the generic host authority model (`execution::local_wasm::
+/// runner::bind_input` finding no scope for the object's stamped
+/// `ObjectAuthority::instance`), not a package-specific instance
+/// comparison: the call fails before the guest ever runs, so there are no
+/// object effects or events to assert on.
+#[test]
+fn cross_instance_objects_are_rejected_by_every_applicable_entrypoint() {
+    let (root_a, asset_a, cap_a) = init_asset(50);
+    let (root_b, _asset_b, _cap_b) = init_asset(51);
+
+    let mint1: LocalExecutionOutcome = call(
+        &root_a,
+        "mint",
+        mint_arguments(100, &sender()).unwrap(),
+        std::slice::from_ref(&cap_a),
+        Some(asset_a),
+    );
+    success(&mint1);
+    let cap_a: ScopedResolvedObject = mutated(&mint1, &cap_a);
+    let coin_a: ScopedResolvedObject = created(&mint1, 0, AccessMode::Write);
+
+    let mint2: LocalExecutionOutcome = call(
+        &root_a,
+        "mint",
+        mint_arguments(50, &sender()).unwrap(),
+        std::slice::from_ref(&cap_a),
+        Some(asset_a),
+    );
+    success(&mint2);
+    let cap_a: ScopedResolvedObject = mutated(&mint2, &cap_a);
+    let source_a: ScopedResolvedObject = created(&mint2, 0, AccessMode::Write);
+
+    let invocation: Digest32 = invocation_digest();
+    let policy: Digest32 = policy_digest();
+    let reserve: LocalExecutionOutcome = call(
+        &root_a,
+        "reserve",
+        reserve_arguments(40, &invocation, &policy, &sender(), &sender()).unwrap(),
+        std::slice::from_ref(&coin_a),
+        Some(asset_a),
+    );
+    success(&reserve);
+    let coin_a: ScopedResolvedObject = mutated(&reserve, &coin_a);
+    let reservation_a: ScopedResolvedObject = created(&reserve, 0, AccessMode::Consume);
+
+    let mut consume_coin_a: ScopedResolvedObject = coin_a.clone();
+    consume_coin_a.resolved.mode = AccessMode::Consume;
+    let mut consume_source_a: ScopedResolvedObject = source_a.clone();
+    consume_source_a.resolved.mode = AccessMode::Consume;
+
+    let attempts: Vec<(&str, Vec<u8>, Vec<ScopedResolvedObject>)> = vec![
+        (
+            "mint",
+            mint_arguments(1, &sender()).unwrap(),
+            vec![cap_a.clone()],
+        ),
+        (
+            "burn",
+            no_arguments().unwrap(),
+            vec![cap_a.clone(), consume_coin_a.clone()],
+        ),
+        (
+            "transfer",
+            transfer_arguments(&other_recipient()).unwrap(),
+            vec![coin_a.clone()],
+        ),
+        (
+            "split",
+            split_arguments(10, &sender()).unwrap(),
+            vec![coin_a.clone()],
+        ),
+        (
+            "merge",
+            no_arguments().unwrap(),
+            vec![coin_a.clone(), consume_source_a.clone()],
+        ),
+        (
+            "reserve",
+            reserve_arguments(10, &invocation, &policy, &sender(), &sender()).unwrap(),
+            vec![coin_a.clone()],
+        ),
+        (
+            "reserve_all",
+            reserve_arguments(60, &invocation, &policy, &sender(), &sender()).unwrap(),
+            vec![consume_coin_a.clone()],
+        ),
+        (
+            "settle",
+            settle_arguments(10, &invocation, &policy).unwrap(),
+            vec![reservation_a.clone()],
+        ),
+    ];
+    assert_eq!(
+        attempts.len(),
+        ENTRYPOINTS.len() - 1,
+        "one attempt per non-init entrypoint"
+    );
+
+    for (name, args, inputs) in attempts {
+        let result = try_call(&root_b, name, args, &inputs, Some(asset_a));
+        assert!(
+            matches!(result, Err(LocalExecutionError::Invalid("input scope"))),
+            "{name}: a cross-instance object must fail at the generic input-scope boundary, got {result:?}"
+        );
+    }
+}

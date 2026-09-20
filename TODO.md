@@ -2135,14 +2135,17 @@ statements such as “body validation remains open” are not the live work queu
     - authenticated historical object framing across protocol versions;
     - durable Consume source-deletion, transitive paid-dependency and paid-aware
       publication-query coverage.
-  - [ ] Public Standard Asset transfer/split/merge/mint/burn and reserve/settle.
-    The internal public WASM package implements all amount transitions and checked
-    supply arithmetic; the host does not decode or rewrite Coin amounts. Asset
-    identity is the host-created Definition ObjectId and each Coin retains its own
-    ObjectId. Before activation, validate fee/refund addresses before reservation,
-    pin the WASM-generating `wat` version, assert the Digest32 template shape at
-    package build time, and add foreign-recipient plus same-code cross-instance
-    authority regressions.
+  - [x] Public Standard Asset transfer/split/merge/mint/burn and reserve/settle
+    package implementation and activation hardening ([DR-0125](docs/architecture/decisions/0125-public-standard-asset-activation-hardening.md)).
+    The public WASM package implements all amount transitions and checked supply
+    arithmetic; the host does not decode or rewrite Coin amounts. Asset identity
+    is the host-created Definition ObjectId and each Coin retains its own ObjectId.
+    Fee/refund addresses are validated before reservation. The WAT compiler is
+    pinned exactly, package construction verifies the canonical Digest32 framing
+    used by every WAT check, and a permanent unchanged-WASM digest vector plus
+    foreign-recipient and all-entrypoint same-code cross-instance authority
+    regressions are implemented. This closes the package-local prerequisite only;
+    it does not install or activate the package or paid policy.
   - [ ] Fenced atomic genesis manifest installer, closed bootstrap marker,
     native HTTP/CLI activation and removal of asset-only grants/native composer.
   - [ ] Complete activation evidence and fresh combined review. Existing internal

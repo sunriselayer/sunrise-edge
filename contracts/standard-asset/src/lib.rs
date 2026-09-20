@@ -20,7 +20,7 @@
 //!   `crates/standard-assets` development representation, its fixture body
 //!   bytes, or its seed-derived AssetId.
 
-use canonical_encoding::CanonicalEncodingError;
+use canonical_encoding::{CanonicalDecodingError, CanonicalEncodingError};
 
 mod arguments;
 mod package;
@@ -91,6 +91,8 @@ pub enum StandardAssetError {
     Value(abi::call_values::ValueError),
     /// Canonical frame encoding failure.
     Encoding(CanonicalEncodingError),
+    /// Canonical frame decoding failure.
+    Decoding(CanonicalDecodingError),
     /// Scoped package type failure.
     PackageType(abi::package_types::PackageTypeError),
     /// The generated WAT source was not accepted by the text-format parser.
@@ -104,6 +106,7 @@ impl core::fmt::Display for StandardAssetError {
         match self {
             Self::Value(err) => write!(f, "canonical value error: {err}"),
             Self::Encoding(err) => write!(f, "canonical encoding error: {err}"),
+            Self::Decoding(err) => write!(f, "canonical decoding error: {err}"),
             Self::PackageType(err) => write!(f, "package type error: {err}"),
             Self::Wat(message) => write!(f, "wat parse error: {message}"),
             Self::Invalid(message) => write!(f, "invalid standard asset input: {message}"),
@@ -116,6 +119,7 @@ impl std::error::Error for StandardAssetError {
         match self {
             Self::Value(err) => Some(err),
             Self::Encoding(err) => Some(err),
+            Self::Decoding(err) => Some(err),
             Self::PackageType(err) => Some(err),
             Self::Wat(_) | Self::Invalid(_) => None,
         }
@@ -131,6 +135,12 @@ impl From<abi::call_values::ValueError> for StandardAssetError {
 impl From<CanonicalEncodingError> for StandardAssetError {
     fn from(err: CanonicalEncodingError) -> Self {
         Self::Encoding(err)
+    }
+}
+
+impl From<CanonicalDecodingError> for StandardAssetError {
+    fn from(err: CanonicalDecodingError) -> Self {
+        Self::Decoding(err)
     }
 }
 
