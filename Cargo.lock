@@ -482,7 +482,7 @@ dependencies = [
  "sha2 0.11.0",
  "standard-assets",
  "wasmi",
- "wasmi_core",
+ "wasmi_core 2.0.0",
  "wasmparser 0.239.0",
  "wat",
 ]
@@ -2105,7 +2105,7 @@ checksum = "2300d0f78cba12f14e29e8dd157ea64050c0a688179aefdb2050105805594a0c"
 dependencies = [
  "spin",
  "wasmi_collections",
- "wasmi_core",
+ "wasmi_core 1.1.0",
  "wasmi_ir",
  "wasmparser 0.239.0",
  "wat",
@@ -2130,12 +2130,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasmi_core"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69372d5fda3ea3d1e0aa6603c7888110e0187e88ea17cd8fc2e2df0a0e1f37fa"
+dependencies = [
+ "libm",
+]
+
+[[package]]
 name = "wasmi_ir"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba1fa003f79156f406d62ef0e1464dc03e11ace37170e9fa7524299a75ad8f68"
 dependencies = [
- "wasmi_core",
+ "wasmi_core 1.1.0",
 ]
 
 [[package]]
