@@ -62,7 +62,16 @@ fn check(
         entries: pairs.iter().map(|p| p.0.clone()).collect(),
     };
     let inputs: Vec<ResolvedObject> = pairs.iter().map(|p| p.1.clone()).collect();
-    validate_object_input_bodies(bound, &resolver(), Epoch::new(0), &manifest, &inputs)
+    let resolver: HashSuiteResolver = resolver();
+    let resolvers: Vec<&HashSuiteResolver> = vec![&resolver; inputs.len()];
+    validate_object_input_bodies(
+        bound,
+        &resolver,
+        &resolvers,
+        Epoch::new(0),
+        &manifest,
+        &inputs,
+    )
 }
 fn encoded_u64(value: u64) -> Vec<u8> {
     encode_call_value(&ValueLayout::U64, &CallValue::U64(value)).unwrap()

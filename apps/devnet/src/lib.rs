@@ -16,6 +16,7 @@ pub mod genesis;
 pub mod identities;
 pub mod local_execution;
 pub mod machine;
+pub mod paid_contracts;
 pub mod publication;
 pub mod seed;
 pub mod standard_asset;
@@ -26,8 +27,9 @@ pub use boot::{
 };
 pub use catalog::{DevnetAssetModule, DevnetCatalogError, build_standard_asset_module};
 pub use composition::{
-    DevnetCompositionError, compose_devnet_router, compose_devnet_router_with_execution_policies,
-    compose_devnet_router_with_local_execution, compose_devnet_router_with_publication,
+    DevnetCompositionError, compose_devnet_router, compose_devnet_router_with_contract_policies,
+    compose_devnet_router_with_execution_policies, compose_devnet_router_with_local_execution,
+    compose_devnet_router_with_publication,
 };
 pub use config::{
     DEVNET_STARTUP_LIMITATIONS_BANNER, DevOwner, DevnetConfig, DevnetConfigError,
@@ -37,6 +39,11 @@ pub use fee::StandardAssetCoinFeeComposer;
 pub use genesis::{DevnetGenesisError, DevnetProtocolContext, build_devnet_protocol_context};
 pub use identities::DevnetOutboxIdentitySource;
 pub use machine::DevnetMachine;
+pub use paid_contracts::{
+    DEVNET_PAID_FEE_COIN_BALANCE, DEVNET_PAID_GENESIS_SEED, PaidContractActivation,
+    PaidContractGenesisError, build_paid_genesis_manifest, install_paid_contracts,
+    paid_genesis_authority,
+};
 pub use seed::{
     DevnetSeedError, SeedAssetAuthorityObjectsOutcome, SeedDevOwnerCoinsOutcome,
     SeedTreasuryCoinOutcome, SeededAssetAuthorityObjects, SeededDevOwnerCoins, SeededTreasuryCoin,

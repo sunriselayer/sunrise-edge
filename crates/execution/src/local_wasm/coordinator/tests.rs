@@ -1130,3 +1130,87 @@ fn an_instantiate_application_scope_colliding_with_the_fee_scope_is_rejected() {
     assert_eq!(plan.target.scope, 0);
     assert!(run(&plan).is_err());
 }
+
+/// DR-0126 calibration evidence for `MIN_RESERVE_ALLOWANCE`/
+/// `MIN_SETTLE_ALLOWANCE` (`crate::paid_execution`).
+///
+/// Runs the real pinned public Standard Asset `reserve` (Write) and
+/// `reserve_all` (Consume) exports, each followed by `settle`, and asserts
+/// the committed protocol-critical minimums retain conservative headroom
+/// over the exact metered fuel `wasmi` reports for this pinned WASM. This is
+/// the reproducible measurement this decision requires: on 2026-09-20,
+/// against the pinned package, `wasmi` and `wat` toolchain, the measured
+/// values were `reserve_gas=13025` (Write), `reserve_gas=12667` (Consume),
+/// and `settle_gas=8741`/`8881` respectively. `MIN_RESERVE_ALLOWANCE` and
+/// `MIN_SETTLE_ALLOWANCE` were then set conservatively above those measured
+/// values (roughly 2x headroom, rounded to a readable ceiling), not derived
+/// from this assertion. A future WAT change that raises actual fuel usage
+/// past the committed floor must fail this test, forcing an explicit
+/// reviewed policy/version retune rather than a silent shortfall.
+#[test]
+fn calibrated_allowances_retain_headroom_over_measured_reserve_and_settle_fuel() {
+    {
+        let write_harness: Harness = harness(90, 90, 1_000, vec![]);
+        let plan: PhasePlan<'_> = write_harness.plan(
+            ReservationAccess::Write,
+            write_harness.source(ReservationAccess::Write),
+            write_harness.asset_application(
+                "transfer",
+                transfer_arguments(&refund_account()).expect("transfer arguments"),
+                vec![{
+                    let mut input = write_harness.asset.coin.clone();
+                    input.resolved.mode = AccessMode::Write;
+                    input
+                }],
+            ),
+            LIMIT,
+            pricer(),
+        );
+        let outcome: PhaseOutcome = run(&plan).expect("phase outcome");
+        assert_conservative_headroom(
+            outcome.reserve_gas,
+            crate::paid_execution::MIN_RESERVE_ALLOWANCE,
+        );
+        assert_conservative_headroom(
+            outcome.settle_gas,
+            crate::paid_execution::MIN_SETTLE_ALLOWANCE,
+        );
+    }
+    {
+        let reserved: u64 = reserved_for(&pricer(), LIMIT);
+        let probe: ResolvedExecutionScope = probe_scope(91, 91);
+        let consume_harness: Harness = harness(92, 92, reserved, vec![probe.clone()]);
+        let plan2: PhasePlan<'_> = consume_harness.plan(
+            ReservationAccess::Consume,
+            consume_harness.source(ReservationAccess::Consume),
+            probe_application(1, &probe.instance.code, "noop"),
+            LIMIT,
+            pricer(),
+        );
+        let outcome2: PhaseOutcome = run(&plan2).expect("phase outcome");
+        assert_conservative_headroom(
+            outcome2.reserve_gas,
+            crate::paid_execution::MIN_RESERVE_ALLOWANCE,
+        );
+        assert_conservative_headroom(
+            outcome2.settle_gas,
+            crate::paid_execution::MIN_SETTLE_ALLOWANCE,
+        );
+    }
+}
+
+/// Enforces the documented conservative headroom (roughly 2x, per
+/// `MIN_RESERVE_ALLOWANCE`/`MIN_SETTLE_ALLOWANCE`'s own doc comments): the
+/// committed allowance must retain at least double the exact measured fuel,
+/// not merely exceed it.
+#[track_caller]
+fn assert_conservative_headroom(measured_gas: u64, allowance: u64) {
+    let doubled: u64 = measured_gas
+        .checked_mul(2)
+        .expect("measured gas must not overflow when doubled");
+    assert!(
+        doubled <= allowance,
+        "measured gas {measured_gas} (doubled: {doubled}) exceeds the documented 2x headroom \
+         over the committed allowance {allowance}"
+    );
+}

@@ -820,6 +820,7 @@ where
         structured_request_authority(),
         config,
         resolver(),
+        Vec::new(),
         machine,
         NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
     )
@@ -1804,6 +1805,7 @@ where
         structured_request_authority(),
         config,
         resolver(),
+        Vec::new(),
         machine,
         NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
     )
@@ -1839,6 +1841,7 @@ where
         structured_request_authority(),
         config,
         resolver(),
+        Vec::new(),
         machine,
         NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
     )
@@ -3082,6 +3085,7 @@ async fn every_native_event_route_rejects_all_unauthenticated_families_before_si
             structured_request_authority(),
             config(),
             resolver(),
+            Vec::new(),
             Arc::clone(&preinstalled_machine),
             NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
         )
@@ -6065,6 +6069,7 @@ fn publication_router_rejects_wrong_fixed_semantics_before_storage() {
         structured_request_authority(),
         node_config,
         resolver(),
+        Vec::new(),
         Arc::new(IncrementMachine::new(config().state_key())),
         NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
     );

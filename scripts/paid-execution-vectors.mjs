@@ -15,8 +15,9 @@ const list = (id, items, width = 4) => frame(id, [[1, uint(items.length, width)]
 const sha256 = bytes => createHash('sha256').update(bytes).digest();
 const chain = Buffer.from('paid-vector');
 const digest = bytes => frame(0x0103, [[1, uint(1, 2)], [2, bytes]]);
-const hash = (purpose, bytes) => sha256(frame(0x1001, [[1, uint(1, 2)],
-  [2, uint(purpose, 2)], [3, uint(1, 2)], [4, chain], [5, uint(3, 4)], [6, bytes]]));
+const hashFor = (chainBytes, purpose, bytes) => sha256(frame(0x1001, [[1, uint(1, 2)],
+  [2, uint(purpose, 2)], [3, uint(1, 2)], [4, chainBytes], [5, uint(3, 4)], [6, bytes]]));
+const hash = (purpose, bytes) => hashFor(chain, purpose, bytes);
 const sender = Buffer.from('ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c', 'hex');
 const context = frame(0x6301, [[1, chain], [2, uint(3, 4)], [3, uint(0, 8)]]);
 const origin = seed => frame(0x5201, [[1, chain], [2, uint(1, 2)], [3, sender], [4, Buffer.alloc(32, seed)]]);
@@ -65,8 +66,8 @@ const policy = frame(0x6414, [
   [12, sender],
   [13, gasSchedule],
   [14, uint(1, 8)],
-  [15, uint(2, 8)],
-  [16, uint(5, 8)],
+  [15, uint(30000, 8)],
+  [16, uint(20000, 8)],
   [17, uint(8, 4)],
   [18, uint(16, 4)],
   [19, uint(4, 4)],
@@ -104,18 +105,62 @@ const vectors = { consent, application, policy, intent, signing, signed };
 const expected = {
   consent: [216, '74cbb9deb656ff15ca9b01e3a8ffef5c22bc5ae428b5d02d854ec5cc41f6cc36'],
   application: [694, '2a748a7be95ae2fc7c785a0333458dc4612988b1f866de09cec774cf32cd852d'],
-  policy: [1213, 'b3151c82c41aa7d52e9247671c50908604fbb4a001986be78fb985125886e6fe'],
-  intent: [1155, '1c78758ed2677619966a1f44ed29c51aacd3fc4b01f7b9d34f386bce4a3aa167'],
-  signing: [1245, '797bca75fab06caddaa60dc5fa52d88a29a422f2027062d0d39310dc5292945b'],
-  signed: [1241, '306aa3181233d2bf99a8164dfe85605bb5fd1e21171ca9eabd986876d605661a'],
+  policy: [1213, '5ada415ae7950357bbfaf603e7b45bf17179a5a8310bbb1867b19cd1db10d13d'],
+  intent: [1155, 'd4a21596fbb60b11d587e8ba29e8aa3f459b4dfe51b3e79096f06e9339c7773f'],
+  signing: [1245, '3fe63168640395db37e4e3f227316a0a9d9d8e0bada7bc7bf507697a6518be32'],
+  signed: [1241, '4d74857078fb74d34bfdf87c3856a099a17f8f2871f4b6ce2d24983258ddcff0'],
 };
 for (const [name, bytes] of Object.entries(vectors)) {
   const actual = [bytes.length, sha256(bytes).toString('hex')];
   assert.deepEqual(actual, expected[name], `vector mismatch: ${name}`);
   console.log(JSON.stringify({ name, length: actual[0], sha256: actual[1] }));
 }
-assert.equal(policyDigest.toString('hex'), '9fe73f7b612cd628ee580ebbe4a772ac82cbe8bc0bb3d3068f6c212e63428e88'.slice(0, 64));
-assert.equal(signature.toString('hex'), '20beb8360e4b54d87d9756a3b9cbf6d05b169849f24310e0f576035e3a47b29944ef7ddf5f796ef1ead202aab706361c1c905b5b281d5167cc1cd0f26d987f0e');
-assert.equal(invocationDigest.toString('hex'), '424d67cdbfd6b09978c73f1377f90f632b892bbb1b9f7c2c23be2188d6a68d35');
+assert.equal(policyDigest.toString('hex'), '2acddde1e103821c54753426941cd28f2900823f957a3277858d752a12bb822a'.slice(0, 64));
+assert.equal(signature.toString('hex'), '03de053c27d8284359f9dfa4a7377bdeef869b154aa2250d4ef6636e26213df184fb575ae1bb5f1dcc8c9091b05b8e1f125693fbb5c9083a05fb5d1487112708');
+assert.equal(invocationDigest.toString('hex'), '922b2e2fc3a335bfd065c6026cbefcb1946879fb1a5752425c3d798a68e74f73');
 console.log(JSON.stringify({ policyDigest: policyDigest.toString('hex'), signature: signature.toString('hex') }));
 console.log(JSON.stringify({ invocationDigest: invocationDigest.toString('hex') }));
+
+// ---- PaidExecutionResult 0x6415/v1 ----
+// Independent reconstruction of the Rust fixture in
+// paid_execution_engine/codec.rs. This intentionally rebuilds every nested
+// frame instead of importing or decoding the Rust vector.
+const resultChain = Buffer.from('paid-execution-engine-test');
+const resultContext = frame(0x6301, [[1, resultChain], [2, uint(3, 4)], [3, uint(0, 8)]]);
+const resultOrigin = frame(0x5201, [[1, resultChain], [2, uint(1, 2)], [3, sender], [4, Buffer.alloc(32, 1)]]);
+const resultDigest = bytes => digest(hashFor(resultChain, 2, bytes)); // HashPurpose::Object
+const resultCode = frame(0x6302, [[1, resultOrigin], [2, uint(1, 8)], [3, resultContext], [4, resultDigest(Buffer.from('vector-code'))]]);
+const instanceRecord = frame(0x6404, [
+  [1, resultContext], [2, sender], [3, Buffer.alloc(32, 3)], [4, resultCode],
+  [5, uint(1, 8)], [6, Buffer.from('init')],
+]);
+const resultObjectId = tag => frame(0x4001, [[1, Buffer.alloc(32, tag)]]);
+const resultObjectRef = (tag, version) => frame(0x4004, [
+  [1, resultObjectId(tag)], [2, uint(version, 8)], [3, resultDigest(Buffer.from([tag]))],
+]);
+const emptyObjectEffects = frame(0x6005, [[1, uint(0, 4)]]);
+const emptyEvents = frame(0x6006, [[1, uint(0, 4)]]);
+const effects = frame(0x6004, [
+  [1, resultDigest(Buffer.from('vector-event'))],
+  [2, Buffer.from([1])], // ExecutionStatus::Success
+  [4, uint(4242, 8)],
+  [5, emptyObjectEffects],
+  [6, emptyEvents],
+]);
+const paidResult = frame(0x6415, [
+  [1, Buffer.alloc(32, 4)],
+  [2, uint(2, 2)], // PaidResultKind::Call
+  [3, instanceRecord],
+  [4, uint(1, 2)], // PaidExecutionStatus::Success
+  [5, uint(500, 8)],
+  [6, uint(320, 8)],
+  [7, uint(180, 8)],
+  [8, resultObjectRef(5, 1)],
+  [9, resultObjectRef(6, 1)],
+  [10, resultObjectId(7)],
+  [11, effects],
+  [12, uint(1000, 8)],
+]);
+const paidResultVector = [paidResult.length, sha256(paidResult).toString('hex')];
+assert.deepEqual(paidResultVector, [1101, '88ed340f5e9ee4d79a13b42375a41c1f87f541128447170f98006879c0f851ca'], 'vector mismatch: paidResult');
+console.log(JSON.stringify({ name: 'paidResult', length: paidResultVector[0], sha256: paidResultVector[1] }));

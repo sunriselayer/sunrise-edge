@@ -1710,6 +1710,7 @@ dependencies = [
  "protocol-config",
  "protocol-types",
  "protocol-upgrades",
+ "public-standard-asset",
  "runtime",
  "runtime-sqlite",
  "sha2 0.11.0",

@@ -154,6 +154,7 @@ fn load(
         &durable_context(),
         domain(1),
         &resolver("sunrise-test"),
+        &[],
         Epoch::new(7),
         bound,
         manifest,
@@ -219,6 +220,7 @@ fn malformed_manifest_and_wrong_chain_fail_before_storage_reads() {
             &durable_context(),
             domain(1),
             &resolver("other-chain"),
+            &[],
             Epoch::new(7),
             &bound,
             &manifest
@@ -348,7 +350,12 @@ fn cross_chain_provenance_rejects_before_blob_fetch_and_blob_corruption_is_rejec
 }
 
 #[test]
-fn original_object_hash_context_survives_reader_protocol_and_hash_rotation() {
+fn a_foreign_protocol_version_object_with_no_matching_historical_resolver_fails_closed() {
+    // DR-0126: the current resolver is never substituted for an object's
+    // own recorded creating protocol version merely because it can still
+    // decode the bytes. The object here was created under protocol version
+    // 2; the current resolver is protocol version 3 and no historical
+    // resolver for version 2 is supplied.
     let interface = publication(1);
     let bound = bind_object_signature(&interface, "run", &[]).unwrap();
     for as_blob in [false, true] {
@@ -364,6 +371,39 @@ fn original_object_hash_context_survives_reader_protocol_and_hash_rotation() {
                 &durable_context(),
                 domain(1),
                 &current,
+                &[],
+                Epoch::new(7),
+                &bound,
+                &access(reference)
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn a_foreign_protocol_version_object_verifies_under_its_supplied_historical_resolver() {
+    // Same exact scenario as above, except the trusted historical resolver
+    // for the object's own protocol version (2) is now supplied through
+    // `history`, so DR-0126 admission selects it instead of failing closed
+    // or silently reusing the current (protocol-version-3) resolver.
+    let interface = publication(1);
+    let bound = bind_object_signature(&interface, "run", &[]).unwrap();
+    for as_blob in [false, true] {
+        let store = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+        let blob = InstrumentedBlobStore::default();
+        let object = typed_object(&interface, 1);
+        let (reference, _) = install(&store, &blob, object, as_blob, "sunrise-test", 2);
+        let current = resolver_with_rotation("sunrise-test", Epoch::new(4));
+        let historical = resolver_for_protocol("sunrise-test", ProtocolVersion::new(2));
+        assert!(
+            load_bound_object_snapshots(
+                &store,
+                &blob,
+                &durable_context(),
+                domain(1),
+                &current,
+                std::slice::from_ref(&historical),
                 Epoch::new(7),
                 &bound,
                 &access(reference)

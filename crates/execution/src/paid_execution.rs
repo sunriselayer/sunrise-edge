@@ -62,6 +62,7 @@ use objects::{ObjectError, ObjectId, ObjectRef, decode_object_ref, encode_object
 use protocol_types::{Digest32, HashPurpose, SignatureSchemeId};
 
 pub(crate) mod engine;
+mod fee_interface;
 mod result;
 mod verify;
 
@@ -69,6 +70,7 @@ pub use engine::{
     PaidApplicationScopes, PaidContractEngine, PaidExecutionOutcome, PaidExecutionRequest,
     authenticate_paid_publication_candidate,
 };
+pub use fee_interface::validate_fee_interface_admission;
 pub use result::{
     MAX_PAID_EXECUTION_RESULT_BYTES, PaidChargedOutcome, PaidExecutionResult, PaidExecutionStatus,
     PaidResultKind, PaidResultTarget, decode_paid_execution_result, encode_paid_execution_result,
@@ -112,6 +114,43 @@ use crate::phase_limits::{
     PHASE_OUTPUT_BYTES,
 };
 
+/// DR-0126 protocol-critical minimum reserve-phase fixed fuel allowance
+/// (`R`), calibrated against the pinned public Standard Asset `reserve` and
+/// `reserve_all` exports.
+///
+/// `crate::local_wasm::coordinator::tests::calibrated_allowances_retain_headroom_over_measured_reserve_and_settle_fuel`
+/// runs both real pinned exports under `wasmi`/`wat` and asserts this value
+/// retains headroom over the exact measured fuel; it is the reproducible
+/// evidence for this constant. On 2026-09-20, measured `reserve_gas` was
+/// 13025 (Write `reserve`) and 12667 (Consume `reserve_all`); this value is
+/// set with roughly 2x conservative headroom above that measurement, not
+/// derived from it. Lowering it, or shipping a WAT change that erodes this
+/// headroom, is a protocol-critical change requiring fresh measurement
+/// evidence and an explicit reviewed policy/version retune.
+pub const MIN_RESERVE_ALLOWANCE: u64 = 30_000;
+/// DR-0126 protocol-critical minimum settle-phase fixed fuel allowance
+/// (`S`), calibrated against the pinned public Standard Asset `settle`
+/// export. See [`MIN_RESERVE_ALLOWANCE`] for the measurement methodology;
+/// measured `settle_gas` was 8741 (after a Write `reserve`) and 8881 (after
+/// a Consume `reserve_all`) on 2026-09-20.
+pub const MIN_SETTLE_ALLOWANCE: u64 = 20_000;
+/// DR-0126 protocol-critical minimum `GasSchedule::execution_price`.
+///
+/// Without a positive floor, a policy could set `execution_price = 0` and
+/// price every invocation identically regardless of its signed application
+/// gas limit `L` (up to the shared `L + R + S <= 1_000_000` bound), defeating
+/// resource-based pricing while still passing the existing "nonzero actual
+/// fee at `A = 0`" check via `base_fee` alone. This floor only guarantees a
+/// strictly positive fee-unit price per unit of metered gas; it is not a
+/// claim that the final ceiling-converted asset-unit charge
+/// (`fees::reservation`'s `base_fee + execution_price * total_gas`, divided
+/// by the policy's conversion divisor) is strictly monotonic in gas under an
+/// arbitrary divisor -- integer ceiling rounding can map several adjacent
+/// gas totals to the same asset-unit amount. The existing nonzero-actual-fee
+/// check above and `fees::reservation`'s own `actual <= reserved` rounding
+/// tests are what establish the charge's real safety properties.
+pub const MIN_EXECUTION_PRICE: u64 = 1;
+
 const CONSENT_TYPE: u16 = 0x6410;
 const APPLICATION_TYPE: u16 = 0x6411;
 const INTENT_TYPE: u16 = 0x6412;
@@ -143,6 +182,9 @@ pub enum PaidExecutionError {
     /// Publication dependency-closure verification failed while pricing or
     /// authenticating a paid Publish application.
     Interface(crate::publication::InterfaceError),
+    /// Installed fee interface ABI/role binding failed
+    /// ([`fee_interface::validate_fee_interface_admission`]).
+    Binding(crate::publication::BindingError),
     Local(LocalExecutionError),
     /// Existing effects codec or engine error.
     Execution(crate::ExecutionError),
@@ -177,6 +219,7 @@ impl fmt::Display for PaidExecutionError {
             Self::Fee(error) => error.fmt(f),
             Self::Reservation(error) => error.fmt(f),
             Self::Interface(error) => error.fmt(f),
+            Self::Binding(error) => error.fmt(f),
             Self::Local(error) => error.fmt(f),
             Self::Execution(error) => error.fmt(f),
             Self::Hashing(error) => error.fmt(f),
@@ -211,6 +254,7 @@ from_error!(ObjectError, Object);
 from_error!(FeeError, Fee);
 from_error!(ReservationError, Reservation);
 from_error!(crate::publication::InterfaceError, Interface);
+from_error!(crate::publication::BindingError, Binding);
 from_error!(LocalExecutionError, Local);
 from_error!(crate::ExecutionError, Execution);
 from_error!(HashingError, Hashing);
@@ -800,6 +844,26 @@ fn validate_paid_fee_policy(
     if policy.publish_artifact_byte_price == 0 || policy.publish_closure_node_price == 0 {
         return Err(PaidExecutionError::Invalid(
             "publish prices must be positive",
+        ));
+    }
+    // DR-0126 calibrated floor: below-minimum R/S or a zero execution price
+    // would undercharge relative to the pinned contract's measured fuel or
+    // defeat resource-based pricing entirely. See `MIN_RESERVE_ALLOWANCE`,
+    // `MIN_SETTLE_ALLOWANCE` and `MIN_EXECUTION_PRICE` for the measurement
+    // evidence and rationale.
+    if policy.reserve_allowance < MIN_RESERVE_ALLOWANCE {
+        return Err(PaidExecutionError::Invalid(
+            "policy reserve allowance below calibrated minimum",
+        ));
+    }
+    if policy.settle_allowance < MIN_SETTLE_ALLOWANCE {
+        return Err(PaidExecutionError::Invalid(
+            "policy settle allowance below calibrated minimum",
+        ));
+    }
+    if policy.gas_schedule.execution_price < MIN_EXECUTION_PRICE {
+        return Err(PaidExecutionError::Invalid(
+            "policy execution price below calibrated floor",
         ));
     }
     let pricer: ReservationPricer = ReservationPricer::new(

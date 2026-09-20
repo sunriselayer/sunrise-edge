@@ -384,6 +384,7 @@ pub fn handle_local_execution<
     let mut snapshots: BTreeMap<ObjectId, object_snapshots::ObjectSnapshot> = BTreeMap::new();
     let mut head_reads: Vec<DurableObjectHeadRead> = Vec::new();
     let mut total_bytes: usize = 0;
+    let mut object_resolvers: BTreeMap<ObjectId, &HashSuiteResolver> = BTreeMap::new();
     for (entry, param) in call.access.entries.iter().zip(binding.objects()) {
         let snapshot: object_snapshots::ObjectSnapshot = object_snapshots::load_object_snapshot(
             store,
@@ -416,6 +417,19 @@ pub fn handle_local_execution<
                 "object authority type mismatch",
             ));
         }
+        // DR-0126: select the trusted resolver matching this object's own
+        // recorded creating protocol version before its nominal type is
+        // verified below; the current resolver is never substituted for a
+        // foreign historical context.
+        object_resolvers.insert(
+            snapshot.object.id,
+            object_snapshots::historical_resolver_for_provenance(
+                resolver,
+                history,
+                snapshot.object.id,
+                &snapshot.provenance,
+            )?,
+        );
         head_reads.push(DurableObjectHeadRead::new(
             snapshot.object.id,
             snapshot.head.clone(),
@@ -432,9 +446,18 @@ pub fn handle_local_execution<
         }
     }
     let resolved: Vec<ResolvedObject> = inputs.iter().map(|i| i.resolved.clone()).collect();
+    let ordered_resolvers: Vec<&HashSuiteResolver> = resolved
+        .iter()
+        .map(|input| {
+            object_resolvers.get(&input.object.id).copied().ok_or(
+                LocalExecutionAdmissionError::Invalid("resolver recorded for every loaded input"),
+            )
+        })
+        .collect::<AdmissionResult<Vec<&HashSuiteResolver>>>()?;
     execution::publication::validate_object_input_bodies(
         &binding,
         resolver,
+        &ordered_resolvers,
         call.context.epoch(),
         &call.access,
         &resolved,
@@ -447,6 +470,7 @@ pub fn handle_local_execution<
         &scopes,
         &inputs,
         resolver,
+        &object_resolvers,
     )?;
     let outcome: LocalExecutionOutcome = engine.execute(LocalExecutionRequest {
         scopes: &scopes,

@@ -430,7 +430,7 @@ fn independent_result_verification_rejects_adversarial_receipts() {
 
     // Total measured gas above `L + R + S`.
     let mut tampered = outcome.clone();
-    tampered.result.effects.gas_used = 100_000 + 200_000 + 200_000 + 1;
+    tampered.result.effects.gas_used = 100_000 + MIN_RESERVE_ALLOWANCE + MIN_SETTLE_ALLOWANCE + 1;
     assert_message(check(&tampered), "paid result gas exceeds total caps");
 
     // A fee output that is not a surviving created object at all.

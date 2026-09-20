@@ -44,7 +44,8 @@ use execution::paid_execution::{
     PaidExecutionStatus, PaidFeePolicy, PaidIntent, ReservationAccessKind,
     authenticate_paid_intent, authenticate_paid_publication_candidate,
     encode_paid_execution_result, encode_paid_fee_policy, encode_signed_paid_intent,
-    paid_invocation_digest, quote_paid_intent, verify_paid_execution_result,
+    paid_invocation_digest, quote_paid_intent, validate_fee_interface_admission,
+    verify_paid_execution_result,
 };
 use execution::publication::{
     AuthenticatedPublicationCandidate, BoundObjectSignature, PublicationContext,
@@ -431,14 +432,12 @@ pub fn handle_paid_execution<
     if observed.value() != Some(encode_paid_fee_policy(fee_policy)?.as_slice()) {
         return invalid("paid fee policy absent or different");
     }
-    // Checks the signed/base/fee contexts, the signed policy digest, the
-    // refund recipient and derives the immutable reservation quote. The engine
-    // and the independent verifier both recompute it; none of them trust a
-    // caller-supplied price.
-    let _quote = quote_paid_intent(&authenticated, resolver, base_policy, fee_policy)?;
 
     // 5. One publication budget and one read map span every fee/application
-    //    scope and the Publish dependency closure.
+    //    scope and the Publish dependency closure. The pinned fee instance
+    //    and its exact code closure are resolved here, before quoting or
+    //    consuming the nonce, so the DR-0126 installed ABI/role admission
+    //    below always runs against an already-authenticated interface.
     let mut budget: PublicationLoadBudget = PublicationLoadBudget::default();
     let fee_key: Vec<u8> = instance_record_key(
         intent.context.chain_id(),
@@ -469,6 +468,19 @@ pub fn handle_paid_execution<
     if fee_scope.target != fee_policy.instance {
         return invalid("pinned fee instance");
     }
+    // 5b. DR-0126 installed fee ABI/role admission: proves the pinned fee
+    //     code's actual `reserve`/`reserve_all`/`settle` exports match every
+    //     role the policy claims, before any quote is derived or the nonce
+    //     is committed. `PaidFeePolicy`'s own intrinsic decoding
+    //     (`validate_paid_fee_policy`) only proves the policy bytes are
+    //     self-consistent; it never resolves installed code.
+    validate_fee_interface_admission(&fee_scope.interface, fee_policy)?;
+    // Checks the signed/base/fee contexts, the signed policy digest, the
+    // refund recipient and derives the immutable reservation quote. The engine
+    // and the independent verifier both recompute it; none of them trust a
+    // caller-supplied price.
+    let _quote = quote_paid_intent(&authenticated, resolver, base_policy, fee_policy)?;
+
     let mut admitted: Vec<ResolvedExecutionScope> = vec![fee_scope];
 
     let application: ApplicationAdmission = match &intent.application {
@@ -676,6 +688,7 @@ pub fn handle_paid_execution<
     let mut head_reads: Vec<DurableObjectHeadRead> = Vec::new();
     let mut inputs: Vec<ScopedResolvedObject> = Vec::new();
     let mut total_bytes: usize = 0;
+    let mut object_resolvers: BTreeMap<ObjectId, &HashSuiteResolver> = BTreeMap::new();
     for (reference, mode) in &order {
         let snapshot: object_snapshots::ObjectSnapshot = object_snapshots::load_object_snapshot(
             store,
@@ -704,6 +717,18 @@ pub fn handle_paid_execution<
         if authority.object_id != snapshot.object.id {
             return invalid("object authority identity mismatch");
         }
+        // DR-0126: select the trusted resolver matching this object's own
+        // recorded creating protocol version, never unconditionally the
+        // current resolver.
+        object_resolvers.insert(
+            snapshot.object.id,
+            object_snapshots::historical_resolver_for_provenance(
+                resolver,
+                history,
+                snapshot.object.id,
+                &snapshot.provenance,
+            )?,
+        );
         head_reads.push(DurableObjectHeadRead::new(
             snapshot.object.id,
             snapshot.head.clone(),
@@ -790,9 +815,20 @@ pub fn handle_paid_execution<
             .iter()
             .map(|input| input.resolved.clone())
             .collect();
+        let ordered_resolvers: Vec<&HashSuiteResolver> = resolved
+            .iter()
+            .map(|input| {
+                object_resolvers.get(&input.object.id).copied().ok_or(
+                    PaidExecutionAdmissionError::Invalid(
+                        "resolver recorded for every loaded input",
+                    ),
+                )
+            })
+            .collect::<PaidResult<Vec<&HashSuiteResolver>>>()?;
         execution::publication::validate_object_input_bodies(
             &binding,
             resolver,
+            &ordered_resolvers,
             intent.context.epoch(),
             &inner.access,
             &resolved,
@@ -805,6 +841,7 @@ pub fn handle_paid_execution<
             &admitted,
             &application_inputs,
             resolver,
+            &object_resolvers,
         )?;
     }
 

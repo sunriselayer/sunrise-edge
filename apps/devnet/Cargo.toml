@@ -9,6 +9,7 @@ abi.workspace = true
 axum.workspace = true
 canonical-encoding.workspace = true
 crypto.workspace = true
+ed25519-zebra.workspace = true
 execution.workspace = true
 fees.workspace = true
 hashing.workspace = true
@@ -21,10 +22,10 @@ protocol-upgrades.workspace = true
 runtime.workspace = true
 runtime-sqlite.workspace = true
 standard-assets.workspace = true
+public-standard-asset = { path = "../../contracts/standard-asset" }
 system-modules.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 
 [dev-dependencies]
-ed25519-zebra.workspace = true
 sha2.workspace = true
 wat.workspace = true

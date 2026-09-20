@@ -273,7 +273,7 @@ impl<T: Transport> Client<T> {
                 candidate
             } else {
                 cache.check_new_node()?;
-                let submission = self
+                let result = self
                     .query_publication_with_semantics(
                         reference.origin(),
                         resolver,
@@ -288,6 +288,17 @@ impl<T: Transport> Client<T> {
                         },
                     )?
                     .ok_or_else(|| invalid("publication absent"))?;
+                // Zero-fee local dependency resolution requires an
+                // authenticated legacy submission; a DR-0124 paid Publish
+                // record has none and none is fabricated for it.
+                let submission = match result {
+                    crate::PublicationQueryResult::Legacy(submission) => submission,
+                    crate::PublicationQueryResult::Paid { .. } => {
+                        return Err(invalid(
+                            "publication dependency is a paid record, not a legacy submission",
+                        ));
+                    }
+                };
                 let request = submission.request();
                 let artifact = request.artifact();
                 let semantics = *artifact.semantics();

@@ -110,6 +110,11 @@ impl From<ValueError> for BodyError {
 
 /// Validates that resolved object input bodies conform to their declared constructor layouts.
 ///
+/// `resolver` is the caller's current/execution resolver, checked
+/// unconditionally regardless of object count. `resolvers` supplies one
+/// trusted resolver per positional input; see [`match_object_input_metadata`]
+/// for the complete DR-0126 historical-resolver rationale.
+///
 /// # Explicit Non-Claims
 ///
 /// This function verifies canonical layout representation conformance only. It deliberately
@@ -119,6 +124,7 @@ impl From<ValueError> for BodyError {
 pub fn validate_object_input_bodies(
     signature: &BoundObjectSignature<'_>,
     resolver: &HashSuiteResolver,
+    resolvers: &[&HashSuiteResolver],
     epoch: Epoch,
     manifest: &AccessManifest,
     inputs: &[ResolvedObject],
@@ -139,7 +145,7 @@ pub fn validate_object_input_bodies(
         }
     }
 
-    match_object_input_metadata(signature, resolver, epoch, manifest, inputs)?;
+    match_object_input_metadata(signature, resolver, resolvers, epoch, manifest, inputs)?;
 
     for (param, input) in signature.objects().iter().zip(inputs) {
         let layout: &ValueLayout = signature

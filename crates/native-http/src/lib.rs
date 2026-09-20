@@ -15,6 +15,7 @@ use axum::{
 };
 use core::fmt;
 mod local_execution;
+mod paid_execution;
 mod publication;
 use execution::{ExecutionError, WasmExecutionEngine};
 use hashing::HashSuiteResolver;
@@ -450,6 +451,33 @@ pub struct PreinstalledWasmComposition {
     fee: Option<PreinstalledFeeCompositionConfig>,
     publication: Option<node_core::publication::LocalPublicationPolicy>,
     local_execution: Option<LocalExecutionComposition>,
+    paid_execution: Option<PaidExecutionComposition>,
+}
+
+/// Explicit trusted profile-four and fee-policy pair for the public paid
+/// Call/Instantiate/Publish surface. Both records must already be installed
+/// durably; HTTP request bytes can select neither policy nor engine.
+#[derive(Clone, Debug)]
+pub struct PaidExecutionComposition {
+    base_policy: execution::local_execution::LocalExecutionPolicy,
+    fee_policy: execution::paid_execution::PaidFeePolicy,
+    engine: execution::LocalWasmExecutionEngine,
+}
+
+impl PaidExecutionComposition {
+    /// Creates the trusted paid composition. Router construction and every
+    /// invocation re-check the exact installed records.
+    #[must_use]
+    pub fn new(
+        base_policy: execution::local_execution::LocalExecutionPolicy,
+        fee_policy: execution::paid_execution::PaidFeePolicy,
+    ) -> Self {
+        Self {
+            base_policy,
+            fee_policy,
+            engine: execution::LocalWasmExecutionEngine::new(),
+        }
+    }
 }
 
 /// Explicit durably seeded publication and zero-fee execution policy registry.
@@ -516,6 +544,7 @@ impl PreinstalledWasmComposition {
             fee: None,
             publication: None,
             local_execution: None,
+            paid_execution: None,
         }
     }
 
@@ -542,6 +571,14 @@ impl PreinstalledWasmComposition {
     #[must_use]
     pub fn with_local_execution(mut self, composition: LocalExecutionComposition) -> Self {
         self.local_execution = Some(composition);
+        self
+    }
+
+    /// Enables the paid contract surface with an explicitly trusted,
+    /// already-installed profile-four base policy and paid fee policy.
+    #[must_use]
+    pub fn with_paid_execution(mut self, composition: PaidExecutionComposition) -> Self {
+        self.paid_execution = Some(composition);
         self
     }
 }
@@ -787,6 +824,13 @@ struct PreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I> {
     authority: StructuredDurableRequestAuthority,
     config: NodeConfig,
     resolver: HashSuiteResolver,
+    /// Explicitly trusted original protocol resolvers for object/code/
+    /// publication provenance recorded under an earlier protocol version
+    /// than `resolver`'s own (DR-0126). Fixed at router construction time,
+    /// never derived from a request; empty means this deployment trusts no
+    /// history beyond the current resolver, which still fails closed for a
+    /// genuinely historical record rather than silently substituting it.
+    history: Vec<HashSuiteResolver>,
     machine: Arc<M>,
     blocking_executor: NativeBlockingExecutor,
 }
@@ -1050,6 +1094,7 @@ pub fn preinstalled_wasm_structured_durable_router<S, B, M, T, C, I>(
     authority: StructuredDurableRequestAuthority,
     config: NodeConfig,
     resolver: HashSuiteResolver,
+    history: Vec<HashSuiteResolver>,
     machine: Arc<M>,
     blocking_policy: NativeBlockingPolicy,
 ) -> Result<Router, StructuredDurableRouterError>
@@ -1068,12 +1113,22 @@ where
         authority,
         config,
         resolver,
+        history,
         machine,
         NativeBlockingExecutor::new(blocking_policy),
     )
 }
 
 /// Builds the preinstalled-WASM durable router with shared blocking admission.
+///
+/// `history` is the explicitly trusted set of original protocol resolvers
+/// (DR-0126) this deployment carries forward for object/code/publication
+/// provenance recorded under an earlier protocol version than `resolver`'s
+/// own. It is fixed here at router-construction time -- never derived from a
+/// request -- and shared by every route this router serves. Passing an empty
+/// `Vec` preserves this router's previous behavior exactly (no historical
+/// resolver trusted beyond the current one); it does not silently substitute
+/// `resolver` for a genuinely historical record, which still fails closed.
 #[allow(clippy::too_many_arguments)]
 pub fn preinstalled_wasm_structured_durable_router_with_executor<S, B, M, T, C, I>(
     components: StructuredDurableNativeComponents<S, B, T, C, I>,
@@ -1082,6 +1137,7 @@ pub fn preinstalled_wasm_structured_durable_router_with_executor<S, B, M, T, C, 
     authority: StructuredDurableRequestAuthority,
     config: NodeConfig,
     resolver: HashSuiteResolver,
+    history: Vec<HashSuiteResolver>,
     machine: Arc<M>,
     blocking_executor: NativeBlockingExecutor,
 ) -> Result<Router, StructuredDurableRouterError>
@@ -1142,6 +1198,25 @@ where
             }
         }
     }
+    if let Some(paid) = preinstalled_wasm.paid_execution.as_ref() {
+        let expected_context = execution::publication::PublicationContext::new(
+            config.chain_id().clone(),
+            config.protocol_version(),
+            config.epoch(),
+        )
+        .map_err(|_| StructuredDurableRouterError::PublicationContextAuthorityMismatch)?;
+        let base_digest = paid
+            .base_policy
+            .digest(&resolver)
+            .map_err(|_| StructuredDurableRouterError::PublicationContextAuthorityMismatch)?;
+        if paid.base_policy.profile() != execution::GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION
+            || paid.base_policy.context() != &expected_context
+            || paid.fee_policy.context != expected_context
+            || paid.fee_policy.base_policy_digest != base_digest
+        {
+            return Err(StructuredDurableRouterError::PublicationContextAuthorityMismatch);
+        }
+    }
     let state = Arc::new(PreinstalledWasmStructuredDurableNativeHttpState {
         components,
         preinstalled_wasm,
@@ -1149,6 +1224,7 @@ where
         authority,
         config,
         resolver,
+        history,
         machine,
         blocking_executor,
     });
@@ -1177,10 +1253,15 @@ where
         .layer(DefaultBodyLimit::max(MAX_HTTP_EVENT_BODY_BYTES))
         .merge(publication::routes(
             state.preinstalled_wasm.publication.is_some()
-                || state.preinstalled_wasm.local_execution.is_some(),
+                || state.preinstalled_wasm.local_execution.is_some()
+                || state.preinstalled_wasm.paid_execution.is_some(),
         ))
         .merge(local_execution::routes(
-            state.preinstalled_wasm.local_execution.is_some(),
+            state.preinstalled_wasm.local_execution.is_some()
+                || state.preinstalled_wasm.paid_execution.is_some(),
+        ))
+        .merge(paid_execution::routes(
+            state.preinstalled_wasm.paid_execution.is_some(),
         ))
         .with_state(state))
 }

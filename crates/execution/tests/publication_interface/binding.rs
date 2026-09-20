@@ -35,6 +35,11 @@ fn snapshot(ty: &ScopedTypeTag, id: u8, mode: AccessMode) -> (AccessEntry, Resol
 fn manifest(entries: Vec<AccessEntry>) -> AccessManifest {
     AccessManifest { entries }
 }
+/// One resolver reference repeated for every positional input, for tests
+/// where every object shares one already-confirmed protocol version.
+fn uniform(resolver: &HashSuiteResolver, count: usize) -> Vec<&HashSuiteResolver> {
+    vec![resolver; count]
+}
 
 #[test]
 fn binding_repeats_flat_arguments_and_matches_ordered_metadata() {
@@ -65,13 +70,28 @@ fn binding_repeats_flat_arguments_and_matches_ordered_metadata() {
     let access: AccessManifest = manifest(pairs.iter().map(|(entry, _)| entry.clone()).collect());
     let inputs: Vec<ResolvedObject> = pairs.into_iter().map(|(_, input)| input).collect();
     assert_eq!(
-        match_object_input_metadata(&bound, &resolver(), Epoch::new(0), &access, &inputs),
+        match_object_input_metadata(
+            &bound,
+            &resolver(),
+            &uniform(&resolver(), inputs.len()),
+            Epoch::new(0),
+            &access,
+            &inputs
+        ),
         Ok(())
     );
     let mut swapped: Vec<ResolvedObject> = inputs.clone();
     swapped.swap(0, 1);
     assert!(
-        match_object_input_metadata(&bound, &resolver(), Epoch::new(0), &access, &swapped).is_err()
+        match_object_input_metadata(
+            &bound,
+            &resolver(),
+            &uniform(&resolver(), swapped.len()),
+            Epoch::new(0),
+            &access,
+            &swapped
+        )
+        .is_err()
     );
     assert!(bind_object_signature(&interface, "RUN", &args).is_err());
     assert!(bind_object_signature(&interface, &"x".repeat(257), &args).is_err());
@@ -115,8 +135,15 @@ fn metadata_mismatches_fail_and_dont_authenticate_owner_body_or_digest() {
             }
         }
         assert!(
-            match_object_input_metadata(&bound, &resolver(), Epoch::new(0), &access, &[bad])
-                .is_err()
+            match_object_input_metadata(
+                &bound,
+                &resolver(),
+                &uniform(&resolver(), 1),
+                Epoch::new(0),
+                &access,
+                &[bad]
+            )
+            .is_err()
         );
     }
     let mut wrong_mode = entry.clone();
@@ -125,6 +152,7 @@ fn metadata_mismatches_fail_and_dont_authenticate_owner_body_or_digest() {
         match_object_input_metadata(
             &bound,
             &resolver(),
+            &uniform(&resolver(), 1),
             Epoch::new(0),
             &manifest(vec![wrong_mode]),
             std::slice::from_ref(&input)
@@ -135,13 +163,16 @@ fn metadata_mismatches_fail_and_dont_authenticate_owner_body_or_digest() {
         match_object_input_metadata(
             &bound,
             &resolver(),
+            &uniform(&resolver(), 1),
             Epoch::new(0),
             &AccessManifest::new(),
             std::slice::from_ref(&input)
         )
         .is_err()
     );
-    assert!(match_object_input_metadata(&bound, &resolver(), Epoch::new(0), &access, &[]).is_err());
+    assert!(
+        match_object_input_metadata(&bound, &resolver(), &[], Epoch::new(0), &access, &[]).is_err()
+    );
     // This helper is deliberately NOT snapshot, ownership or body authentication.
     let mut changed = input.clone();
     changed.object.owner = Owner::System;
@@ -152,11 +183,57 @@ fn metadata_mismatches_fail_and_dont_authenticate_owner_body_or_digest() {
         match_object_input_metadata(
             &bound,
             &resolver(),
+            &uniform(&resolver(), 1),
             Epoch::new(0),
             &manifest(vec![changed_entry]),
             &[changed]
         ),
         Ok(())
+    );
+}
+
+/// DR-0126 regression: the wrong-chain invariant must be checked
+/// unconditionally, even for a zero-object entrypoint whose per-object
+/// `resolvers` slice is empty by construction (not merely because a caller
+/// forgot to supply objects).
+#[test]
+fn wrong_current_resolver_chain_is_rejected_even_for_a_zero_object_entrypoint() {
+    let mut abi: PackageAbi = generic(1);
+    abi.entrypoints[0].objects = Vec::new();
+    let interface = verify(abi).unwrap();
+    let bound = bind_object_signature(&interface, "run", &[arg(7)]).unwrap();
+    assert!(bound.objects().is_empty());
+    let empty_manifest: AccessManifest = manifest(Vec::new());
+    assert_eq!(
+        match_object_input_metadata(
+            &bound,
+            &resolver(),
+            &[],
+            Epoch::new(0),
+            &empty_manifest,
+            &[]
+        ),
+        Ok(())
+    );
+    let wrong_chain = HashSuiteResolver::new(
+        ChainId::new("other").unwrap(),
+        resolver().protocol_version(),
+        vec![HashSuiteSchedule {
+            activation_epoch: Epoch::new(0),
+            suite: HashSuite::genesis(),
+        }],
+    )
+    .unwrap();
+    assert_eq!(
+        match_object_input_metadata(
+            &bound,
+            &wrong_chain,
+            &[],
+            Epoch::new(0),
+            &empty_manifest,
+            &[]
+        ),
+        Err(BindingError::ChainMismatch)
     );
 }
 
@@ -173,6 +250,7 @@ fn duplicate_reads_cannot_alias_bound_parameters() {
         match_object_input_metadata(
             &bound,
             &resolver(),
+            &uniform(&resolver(), 2),
             Epoch::new(0),
             &manifest(vec![entry.clone(), entry]),
             &[input.clone(), input]
@@ -297,6 +375,7 @@ fn current_trusted_hash_history_not_publication_epoch_controls_type_checks() {
         match_object_input_metadata(
             &bound,
             &r,
+            &uniform(&r, 1),
             Epoch::new(5),
             &access,
             std::slice::from_ref(&input)
@@ -308,6 +387,7 @@ fn current_trusted_hash_history_not_publication_epoch_controls_type_checks() {
         match_object_input_metadata(
             &bound,
             &r,
+            &uniform(&r, 1),
             Epoch::new(0),
             &access,
             std::slice::from_ref(&input)
@@ -318,6 +398,7 @@ fn current_trusted_hash_history_not_publication_epoch_controls_type_checks() {
         match_object_input_metadata(
             &bound,
             &r,
+            &uniform(&r, 1),
             Epoch::new(5),
             &access,
             std::slice::from_ref(&input)
@@ -334,8 +415,15 @@ fn current_trusted_hash_history_not_publication_epoch_controls_type_checks() {
     )
     .unwrap();
     assert!(
-        match_object_input_metadata(&bound, &wrong_chain, Epoch::new(5), &access, &[input])
-            .is_err()
+        match_object_input_metadata(
+            &bound,
+            &r,
+            &uniform(&wrong_chain, 1),
+            Epoch::new(5),
+            &access,
+            &[input]
+        )
+        .is_err()
     );
 }
 

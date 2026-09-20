@@ -132,6 +132,19 @@ pub fn connect_execution(
     )
 }
 
+/// Paid Publish requests may carry the full bounded contract artifact, while
+/// responses carry the bounded paid result/effects envelope.
+pub fn connect_paid_execution(
+    endpoint: &str,
+    tls: &ParsedArgs,
+) -> Result<Client<CliTransport>, CliError> {
+    connect_with_limit(
+        endpoint,
+        tls,
+        sunrise_edge_client::local_execution::MAX_LOCAL_EXECUTION_OUTPUT_BYTES + 1024,
+    )
+}
+
 fn connect_with_limit(
     endpoint: &str,
     tls: &ParsedArgs,

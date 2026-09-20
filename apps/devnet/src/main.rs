@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use native_http::{NativeHttpServePolicy, serve_with_policy};
+use native_http::{NativeHttpServePolicy, PaidExecutionComposition, serve_with_policy};
 use objects::ObjectId;
 use runtime::{Clock, DurableOperationContext, StorageCorrelationId, StorageDeadline, SystemClock};
 use std::{error::Error, process::ExitCode, sync::Arc};
@@ -8,8 +8,8 @@ use sunrise_edge_devnet::{
     DEVNET_BLOB_DATABASE_FILE, DEVNET_DATABASE_FILE, DEVNET_STARTUP_LIMITATIONS_BANNER,
     DevnetConfig, STANDARD_ASSET_MODULE_WASM, SeedAssetAuthorityObjectsOutcome,
     SeedDevOwnerCoinsOutcome, boot_local_store, build_devnet_protocol_context,
-    build_standard_asset_module, compose_devnet_router_with_execution_policies,
-    seed_asset_authority_objects, seed_dev_owner_coins, seed_treasury_coin,
+    build_standard_asset_module, compose_devnet_router_with_contract_policies,
+    install_paid_contracts, seed_asset_authority_objects, seed_dev_owner_coins, seed_treasury_coin,
     verify_or_seed_protocol_context, verify_seeded_asset_supply,
 };
 
@@ -221,10 +221,52 @@ async fn run() -> Result<(), Box<dyn Error>> {
         println!("general_calls=true execution_fees=false publication_profiles=1,2,3");
     }
 
+    let paid_execution: Option<PaidExecutionComposition> = if config.paid_contracts() {
+        highest_seed_sequence = highest_seed_sequence
+            .checked_add(1)
+            .ok_or("paid genesis correlation overflow")?;
+        let domain = protocol_types::AtomicityDomainId::new(
+            sunrise_edge_devnet::genesis::DEVNET_DOMAIN_BYTES,
+        )?;
+        let context = execution::publication::PublicationContext::new(
+            config.chain_id().clone(),
+            asset_module.resolver().protocol_version(),
+            config.epoch(),
+        )?;
+        let activation = install_paid_contracts(
+            boot.store(),
+            &operation_context_for(u64::try_from(highest_seed_sequence)?)?,
+            domain,
+            asset_module.resolver(),
+            &context,
+            config.dev_owners(),
+            config.fee_treasury_owner(),
+        )?;
+        let status: &str = match activation.outcome {
+            node_core::genesis::GenesisInstallOutcome::FreshInstall { .. } => "created",
+            node_core::genesis::GenesisInstallOutcome::VerifiedExisting { .. } => {
+                "verified-existing"
+            }
+        };
+        println!(
+            "paid_contracts=true paid_genesis_status={} paid_manifest_digest={}",
+            status, activation.manifest_digest
+        );
+        for (owner, coin_id) in &activation.fee_coins {
+            println!("owner={owner} role=public-paid-fee-source fee_coin={coin_id}");
+        }
+        Some(PaidExecutionComposition::new(
+            activation.base_policy,
+            activation.fee_policy,
+        ))
+    } else {
+        None
+    };
+
     let (store, blob_store) = boot.into_parts();
     let store = Arc::new(store);
     let blob_store = Arc::new(blob_store);
-    let router = compose_devnet_router_with_execution_policies(
+    let router = compose_devnet_router_with_contract_policies(
         store,
         blob_store,
         asset_module,
@@ -234,6 +276,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         fee_treasury_object_id,
         publication,
         local_execution,
+        paid_execution,
     )?;
     let listener = tokio::net::TcpListener::bind(config.listen()).await?;
 
@@ -253,6 +296,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     println!("dev_owners={}", config.dev_owners().len());
     println!("fee_treasury_owner={}", config.fee_treasury_owner());
     println!("fee_treasury_object={fee_treasury_object_id}");
+    println!("paid_contracts={}", config.paid_contracts());
     println!("max_concurrent={}", config.max_concurrent());
     println!("limitations={DEVNET_STARTUP_LIMITATIONS_BANNER}");
     println!("Press Ctrl-C to stop.");

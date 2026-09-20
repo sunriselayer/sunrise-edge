@@ -22,8 +22,30 @@ pub enum ClientError {
     LocalExecution(execution::local_execution::LocalExecutionError),
     /// An execution acknowledgement's count/status disagrees with its canonical result.
     ExecutionAcknowledgementMismatch,
+    /// Paid intent, policy, quote, signature, or result validation failed.
+    PaidExecution(execution::paid_execution::PaidExecutionError),
+    /// A paid execution acknowledgement did not bind the exact submitted
+    /// request, status, kind, or canonical result payload.
+    PaidExecutionAcknowledgementMismatch,
+    /// The queried fee source is absent, non-inline, foreign-context,
+    /// mis-owned, wrong-version, wrong-schema, or not the policy asset type.
+    PaidFeeSourceInvalid,
     /// Publication framing, authentication, or admission profile validation failed.
     Publication(execution::publication::PublicationError),
+    /// A DR-0126 provenance-aware publication query response failed to
+    /// decode. This is a wire/decoding failure, distinct from `Publication`,
+    /// which covers legacy submission authentication.
+    PublicationQueryResult(node_core::publication::PublicationAdmissionError),
+    /// A DR-0126 Paid publication query result's embedded `SignedPaidIntent`
+    /// failed independent re-authentication (context, signature, or trusted
+    /// resolver mismatch). Its `SignedPaidIntent` is never trusted merely
+    /// because the server returned it in a well-formed query response.
+    PublicationQueryPaidAuthentication(execution::paid_execution::PaidExecutionError),
+    /// A DR-0126 Paid publication query result's application is not
+    /// `PaidApplication::Publish`. Only a Publish application ever produces
+    /// a durable publication record; any other kind is impossible for a
+    /// genuine record and is rejected rather than partially interpreted.
+    PublicationQueryPaidApplicationKindMismatch,
     /// The publication response belongs to a different package origin.
     PublicationQuerySelectorMismatch,
     /// Locally supplied publication hash suite or signing profile differs from expectations.
@@ -164,7 +186,19 @@ impl fmt::Display for ClientError {
         match self {
             Self::LocalExecution(error) => write!(f, "local execution validation failed: {error}"),
             Self::ExecutionAcknowledgementMismatch => f.write_str("execution acknowledgement count or status differs from its result"),
+            Self::PaidExecution(error) => write!(f, "paid execution validation failed: {error}"),
+            Self::PaidExecutionAcknowledgementMismatch => f.write_str("paid execution acknowledgement differs from the submitted intent or canonical result"),
+            Self::PaidFeeSourceInvalid => f.write_str("paid fee source failed owner, type, schema, version, or provenance validation"),
             Self::Publication(error) => write!(f, "publication validation failed: {error}"),
+            Self::PublicationQueryResult(error) => {
+                write!(f, "publication query result decoding failed: {error}")
+            }
+            Self::PublicationQueryPaidAuthentication(error) => {
+                write!(f, "paid publication query result authentication failed: {error}")
+            }
+            Self::PublicationQueryPaidApplicationKindMismatch => f.write_str(
+                "paid publication query result application is not a Publish application",
+            ),
             Self::PublicationSubmitAcknowledgementMismatch => f.write_str("publication result must contain one Accepted acknowledgement for the exact submitted code reference"),
             Self::PublicationQuerySelectorMismatch => {
                 f.write_str("publication response origin differs from the requested origin")
@@ -248,8 +282,13 @@ impl Error for ClientError {
         match self {
             Self::LocalExecution(error) => Some(error),
             Self::ExecutionAcknowledgementMismatch => None,
+            Self::PaidExecution(error) => Some(error),
+            Self::PaidExecutionAcknowledgementMismatch | Self::PaidFeeSourceInvalid => None,
             Self::Publication(error) => Some(error),
-            Self::PublicationQuerySelectorMismatch
+            Self::PublicationQueryResult(error) => Some(error),
+            Self::PublicationQueryPaidAuthentication(error) => Some(error),
+            Self::PublicationQueryPaidApplicationKindMismatch
+            | Self::PublicationQuerySelectorMismatch
             | Self::PublicationTrustMismatch
             | Self::PublicationSubmitAcknowledgementMismatch => None,
             Self::Transport(error) => Some(error),
@@ -301,6 +340,18 @@ impl From<execution::publication::PublicationError> for ClientError {
 impl From<node_wire::QueryResultError> for ClientError {
     fn from(value: node_wire::QueryResultError) -> Self {
         Self::Wire(value)
+    }
+}
+
+impl From<node_core::publication::PublicationAdmissionError> for ClientError {
+    fn from(value: node_core::publication::PublicationAdmissionError) -> Self {
+        Self::PublicationQueryResult(value)
+    }
+}
+
+impl From<execution::paid_execution::PaidExecutionError> for ClientError {
+    fn from(value: execution::paid_execution::PaidExecutionError) -> Self {
+        Self::PaidExecution(value)
     }
 }
 

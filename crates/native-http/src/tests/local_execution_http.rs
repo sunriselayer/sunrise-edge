@@ -6,8 +6,13 @@ use abi::{
     public_abi::{EntrypointDeclaration, PackageAbi},
 };
 use ed25519_zebra::{SigningKey, VerificationKey};
+use execution::call::InstanceTarget;
 use execution::local_execution::*;
+use execution::paid_execution::{
+    MIN_RESERVE_ALLOWANCE, MIN_SETTLE_ALLOWANCE, PaidFeePolicy, encode_paid_fee_policy,
+};
 use execution::publication::*;
+use fees::GasSchedule;
 use node_core::publication::{
     LocalPublicationPolicy, local_executable_publication_semantics,
     local_publication_profile_semantics, publication_policy_key_for_profile,
@@ -138,6 +143,7 @@ fn local_app_profiles(enabled: bool, general: bool) -> Router {
         structured_request_authority(),
         config(),
         resolver(),
+        Vec::new(),
         Arc::new(IncrementMachine::new(config().state_key())),
         NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
     )
@@ -221,6 +227,121 @@ async fn post(app: &Router, path: &str, body: Vec<u8>) -> Response {
         .unwrap()
 }
 
+fn paid_policy() -> PaidFeePolicy {
+    let key: SigningKey = SigningKey::from([7; 32]);
+    let publisher: [u8; 32] = VerificationKey::from(&key).into();
+    let origin: PackageOrigin =
+        PackageOrigin::unverified(config().chain_id().clone(), publisher, [0x44; 32]).unwrap();
+    let code: UnverifiedDependencyRef = UnverifiedDependencyRef::new(
+        origin.clone(),
+        1,
+        context(),
+        Digest32::new(HashAlgorithmId::Sha2_256, [0x45; 32]),
+    )
+    .unwrap();
+    let base_policy: LocalExecutionPolicy = LocalExecutionPolicy::generic_object_results(context());
+    PaidFeePolicy {
+        context: context(),
+        base_policy_digest: base_policy.digest(&resolver()).unwrap(),
+        instance: InstanceTarget {
+            creator: publisher,
+            seed: [0x46; 32],
+            revision: 1,
+            record_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x47; 32]),
+        },
+        code,
+        reserve_entrypoint: "reserve".to_owned(),
+        reserve_all_entrypoint: "reserve_all".to_owned(),
+        settle_entrypoint: "settle".to_owned(),
+        type_arguments: Vec::new(),
+        asset_type: abi::package_types::ScopedTypeTag::new(origin.clone(), 2, Vec::new()).unwrap(),
+        reservation_type: abi::package_types::ScopedTypeTag::new(origin, 4, Vec::new()).unwrap(),
+        schema: 1,
+        fee_recipient: publisher,
+        gas_schedule: GasSchedule {
+            base_fee: 10,
+            execution_price: 1,
+            read_price: 0,
+            write_price: 0,
+            storage_price: 0,
+            system_module_price: 0,
+        },
+        conversion_divisor: 1,
+        reserve_allowance: MIN_RESERVE_ALLOWANCE,
+        settle_allowance: MIN_SETTLE_ALLOWANCE,
+        calls: 8,
+        handles: 16,
+        creations: 4,
+        events: 16,
+        memory_bytes: 8 * 1024 * 1024,
+        output_bytes: 1024 * 1024,
+        publish_artifact_byte_price: 1,
+        publish_closure_node_price: 1,
+    }
+}
+
+fn paid_app(enabled: bool, installed_policy_bytes: Option<Vec<u8>>) -> Router {
+    let domain: AtomicityDomainId = AtomicityDomainId::new([0x89; 32]).unwrap();
+    let store = Arc::new(MemoryDurableStateStore::new(
+        WriterFenceGeneration::new(3).unwrap(),
+    ));
+    let policy: PaidFeePolicy = paid_policy();
+    if let Some(bytes) = installed_policy_bytes {
+        let key: Vec<u8> =
+            node_core::local_instance_state::paid_fee_policy_key(&policy.context).unwrap();
+        let operation: DurableOperationContext = DurableOperationContext::new(
+            WriterFenceGeneration::new(3).unwrap(),
+            StorageDeadline::new(u64::MAX).unwrap(),
+            StorageCorrelationId::new([0x34; 16]).unwrap(),
+        );
+        let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+            domain,
+            AtomicStateReadSet::new(vec![
+                StateReadAssertion::new(key.clone(), StateRevision::INITIAL).unwrap(),
+            ])
+            .unwrap(),
+            AtomicStateMutationSet::new(vec![
+                StateMutationEntry::new(key, StateMutation::Put(bytes)).unwrap(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            store.commit_durable(&operation, transaction),
+            DurableCommitOutcome::Committed
+        ));
+    }
+    let mut composition: PreinstalledWasmComposition = PreinstalledWasmComposition::new(
+        Arc::new(PreinstalledModuleCatalog::new(Vec::new()).unwrap()),
+        WasmExecutionEngine,
+        1,
+    );
+    if enabled {
+        composition = composition.with_paid_execution(PaidExecutionComposition::new(
+            LocalExecutionPolicy::generic_object_results(context()),
+            policy,
+        ));
+    }
+    preinstalled_wasm_structured_durable_router(
+        StructuredDurableNativeComponents::new(
+            store,
+            Arc::new(MemoryBlobStore::default()),
+            Arc::new(MemoryTransport::default()),
+            Arc::new(ManualClock::new(10_000)),
+            Arc::new(SequenceIndexedIdentities::default()),
+        ),
+        composition,
+        active_protocol_config(domain),
+        structured_request_authority(),
+        config(),
+        resolver(),
+        Vec::new(),
+        Arc::new(IncrementMachine::new(config().state_key())),
+        NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
+    )
+    .unwrap()
+}
+
 #[tokio::test]
 async fn explicit_local_http_retains_profile_one_and_executes_profile_two() {
     execute_profile(2, false).await;
@@ -243,6 +364,47 @@ async fn general_publication_is_not_enabled_by_legacy_execution_opt_in() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
+#[tokio::test]
+async fn paid_policy_route_is_explicit_and_returns_only_exact_installed_bytes() {
+    let disabled: Response = paid_app(false, None)
+        .oneshot(
+            Request::builder()
+                .uri(paid_execution::PAID_FEE_POLICY_PATH)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(disabled.status(), StatusCode::NOT_FOUND);
+
+    let exact: Vec<u8> = encode_paid_fee_policy(&paid_policy()).unwrap();
+    let enabled: Response = paid_app(true, Some(exact.clone()))
+        .oneshot(
+            Request::builder()
+                .uri(paid_execution::PAID_FEE_POLICY_PATH)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(enabled.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(enabled.into_body(), exact.len()).await.unwrap(),
+        exact
+    );
+
+    let mismatched: Response = paid_app(true, Some(vec![0x01]))
+        .oneshot(
+            Request::builder()
+                .uri(paid_execution::PAID_FEE_POLICY_PATH)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mismatched.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
 #[test]
 fn execution_registry_rejects_duplicate_and_mismatched_profiles_without_io() {
     let (_, publication, policy) = policies();
@@ -250,10 +412,18 @@ fn execution_registry_rejects_duplicate_and_mismatched_profiles_without_io() {
         context(),
         general_execution_semantics(&resolver(), &context()).unwrap(),
     );
+    let paid_publication = LocalPublicationPolicy::object_results(
+        context(),
+        generic_object_result_semantics(&resolver(), &context()).unwrap(),
+    );
+    let paid_policy = LocalExecutionPolicy::generic_object_results(context());
     for local in [
         LocalExecutionComposition::new(publication.clone(), policy.clone())
             .with_policy(publication.clone(), policy.clone()),
         LocalExecutionComposition::new(general, policy),
+        // Profile four is reserved for the separately composed paid route.
+        // Installing it into the zero-fee registry must fail before storage I/O.
+        LocalExecutionComposition::new(paid_publication, paid_policy),
     ] {
         let store = Arc::new(ScriptedIndexedStore::new(vec![], vec![]));
         let composition = PreinstalledWasmComposition::new(
@@ -275,6 +445,7 @@ fn execution_registry_rejects_duplicate_and_mismatched_profiles_without_io() {
             structured_request_authority(),
             config(),
             resolver(),
+            Vec::new(),
             Arc::new(IncrementMachine::new(config().state_key())),
             NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
         );
@@ -502,6 +673,7 @@ fn execution_composition_rejects_wrong_context_without_storage() {
         structured_request_authority(),
         config(),
         resolver(),
+        Vec::new(),
         Arc::new(IncrementMachine::new(config().state_key())),
         NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
     );
@@ -510,4 +682,213 @@ fn execution_composition_rejects_wrong_context_without_storage() {
         Err(StructuredDurableRouterError::PublicationContextAuthorityMismatch)
     ));
     assert_eq!(store.storage_calls.load(Ordering::SeqCst), 0);
+}
+
+/// DR-0126: builds a validly self-signed legacy publication durably
+/// installed under an *earlier* protocol version than the router's own
+/// current resolver, exactly as `handle_local_publication_with_history`
+/// would commit it at that earlier time. Returns the store, the seeded
+/// submission and the historical resolver that alone can re-authenticate it.
+fn seed_historical_publication() -> (
+    Arc<MemoryDurableStateStore>,
+    PublicationSubmission,
+    HashSuiteResolver,
+) {
+    let domain = AtomicityDomainId::new([0x91; 32]).unwrap();
+    let historical_resolver = HashSuiteResolver::new(
+        config().chain_id().clone(),
+        ProtocolVersion::new(config().protocol_version().get() - 1),
+        vec![HashSuiteSchedule {
+            activation_epoch: Epoch::new(0),
+            suite: HashSuite::genesis(),
+        }],
+    )
+    .unwrap();
+    let historical_context = PublicationContext::new(
+        config().chain_id().clone(),
+        historical_resolver.protocol_version(),
+        Epoch::new(0),
+    )
+    .unwrap();
+    let historical_policy = LocalPublicationPolicy::new(
+        historical_context.clone(),
+        local_publication_profile_semantics(&historical_resolver, &historical_context).unwrap(),
+    );
+    let key = SigningKey::from([0x91; 32]);
+    let origin = PackageOrigin::unverified(
+        config().chain_id().clone(),
+        VerificationKey::from(&key).into(),
+        [0x91; 32],
+    )
+    .unwrap();
+    let artifact = CodeArtifact::new(ArtifactParts {
+        context: historical_context.clone(),
+        origin,
+        revision: 1,
+        wasm_profile: 1,
+        semantics: historical_policy.semantics().to_owned(),
+        wasm: wat::parse_str("(module (memory (export \"memory\") 1 2) (func (export \"init\")))")
+            .unwrap(),
+        unverified_abi: encode_call_abi(&CallAbi {
+            objects: PackageAbi {
+                origin: PackageOrigin::unverified(
+                    config().chain_id().clone(),
+                    VerificationKey::from(&key).into(),
+                    [0x91; 32],
+                )
+                .unwrap(),
+                constructors: vec![],
+                entrypoints: vec![EntrypointDeclaration {
+                    name: "init".to_owned(),
+                    type_parameters: vec![],
+                    objects: vec![],
+                }],
+            },
+            arguments: vec![ValueLayout::Tuple(vec![])],
+            bodies: vec![],
+        })
+        .unwrap(),
+        exports: vec!["init".to_owned()],
+        unverified_dependencies: vec![],
+    })
+    .unwrap();
+    let digest = artifact_commitment(&historical_resolver, &historical_context, &artifact).unwrap();
+    let frame = publication_submission_signing_frame(
+        &historical_resolver,
+        &historical_context,
+        &artifact,
+        0,
+        [0x91; 32],
+    )
+    .unwrap();
+    let submission = PublicationSubmission::new(
+        [0x91; 32],
+        PublicationRequest::new(artifact, 0, digest, key.sign(&frame).into()),
+    )
+    .unwrap();
+
+    let store = Arc::new(MemoryDurableStateStore::new(
+        WriterFenceGeneration::new(3).unwrap(),
+    ));
+    let operation = DurableOperationContext::new(
+        WriterFenceGeneration::new(3).unwrap(),
+        StorageDeadline::new(u64::MAX).unwrap(),
+        StorageCorrelationId::new([9; 16]).unwrap(),
+    );
+    let policy_key =
+        publication_policy_key_for_profile(&historical_context, historical_policy.profile())
+            .unwrap();
+    assert!(matches!(
+        store.commit_durable(
+            &operation,
+            AtomicStateTransaction::new(
+                domain,
+                AtomicStateReadSet::new(vec![
+                    StateReadAssertion::new(policy_key.clone(), StateRevision::INITIAL).unwrap()
+                ])
+                .unwrap(),
+                AtomicStateMutationSet::new(vec![
+                    StateMutationEntry::new(
+                        policy_key,
+                        StateMutation::Put(historical_policy.encode().unwrap())
+                    )
+                    .unwrap()
+                ])
+                .unwrap(),
+            )
+            .unwrap()
+        ),
+        DurableCommitOutcome::Committed
+    ));
+    let output = node_core::publication::handle_local_publication_with_history(
+        store.as_ref(),
+        &operation,
+        domain,
+        &historical_resolver,
+        &[],
+        &historical_policy,
+        submission.clone(),
+    )
+    .unwrap();
+    assert_eq!(output.responses().len(), 1);
+    (store, submission, historical_resolver)
+}
+
+/// The router this historical-publication test queries: only a *current*
+/// (router-version) publication policy is installed so the query route is
+/// enabled; the historical record itself was durably seeded separately and
+/// is never re-derived from this router's own composition-trusted policy.
+fn historical_query_router(
+    store: Arc<MemoryDurableStateStore>,
+    history: Vec<HashSuiteResolver>,
+) -> Router {
+    let domain = AtomicityDomainId::new([0x91; 32]).unwrap();
+    let current_policy = LocalPublicationPolicy::new(
+        context(),
+        local_publication_profile_semantics(&resolver(), &context()).unwrap(),
+    );
+    let composition = PreinstalledWasmComposition::new(
+        Arc::new(PreinstalledModuleCatalog::new(vec![]).unwrap()),
+        WasmExecutionEngine,
+        1,
+    )
+    .with_local_publication(current_policy);
+    preinstalled_wasm_structured_durable_router(
+        StructuredDurableNativeComponents::new(
+            store,
+            Arc::new(MemoryBlobStore::default()),
+            Arc::new(MemoryTransport::default()),
+            Arc::new(ManualClock::new(10000)),
+            Arc::new(SequenceIndexedIdentities::default()),
+        ),
+        composition,
+        active_protocol_config(domain),
+        structured_request_authority(),
+        config(),
+        resolver(),
+        history,
+        Arc::new(IncrementMachine::new(config().state_key())),
+        NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
+    )
+    .unwrap()
+}
+
+async fn get(app: &Router, path: &str) -> Response {
+    app.clone()
+        .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_legacy_publication_from_an_earlier_protocol_version_is_queryable_with_its_historical_resolver_and_fails_closed_without_it()
+ {
+    let (store, submission, historical_resolver) = seed_historical_publication();
+    let origin = submission.request().artifact().origin().clone();
+    let path = format!(
+        "{}/{}/{}",
+        publication::PUBLICATION_PATH,
+        hex(origin.publisher()),
+        hex(origin.seed())
+    );
+
+    // Missing history: the router's own current resolver is a different
+    // protocol version than the one this record was actually signed under,
+    // and no historical resolver is supplied. This must fail closed rather
+    // than substitute the current resolver.
+    let without_history = historical_query_router(Arc::clone(&store), Vec::new());
+    let rejected = get(&without_history, &path).await;
+    assert_eq!(rejected.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    // With the exact historical resolver supplied, the same record is
+    // queryable and authenticates to its exact original signed submission.
+    let with_history = historical_query_router(store, vec![historical_resolver]);
+    let accepted = get(&with_history, &path).await;
+    assert_eq!(accepted.status(), StatusCode::OK);
+    let body = to_bytes(accepted.into_body(), 1 << 20).await.unwrap();
+    let result = node_core::publication::decode_publication_query_result(&body).unwrap();
+    assert_eq!(
+        result,
+        node_core::publication::PublicationQueryResult::Legacy(submission)
+    );
 }

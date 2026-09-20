@@ -43,6 +43,13 @@ fn selected_view(
 /// Revalidates every signed reusable call authorization against the loaded
 /// original inputs. Intent-neutral: zero-fee local execution and DR-0124 paid
 /// Call supply the same signed context, root access manifest and table.
+///
+/// `resolver` is the caller's current/execution resolver, checked
+/// unconditionally regardless of object count. `object_resolvers` supplies,
+/// per `ObjectId`, the DR-0126 trusted resolver already selected for that
+/// object's own recorded creating protocol version when it was first
+/// loaded; this revalidation reuses exactly that selection rather than
+/// re-deriving or falling back to a single resolver.
 pub(crate) fn validate_inputs(
     call_context: &PublicationContext,
     access: &abi::AccessManifest,
@@ -50,6 +57,7 @@ pub(crate) fn validate_inputs(
     scopes: &[ResolvedExecutionScope],
     inputs: &[ScopedResolvedObject],
     resolver: &HashSuiteResolver,
+    object_resolvers: &BTreeMap<ObjectId, &HashSuiteResolver>,
 ) -> AdmissionResult<()> {
     for authorization in authorizations {
         let scope: &ResolvedExecutionScope = scopes
@@ -65,6 +73,7 @@ pub(crate) fn validate_inputs(
         .map_err(|_| LocalExecutionAdmissionError::Invalid("authorized ABI binding"))?;
         let mut entries: Vec<AccessEntry> = Vec::new();
         let mut resolved: Vec<ResolvedObject> = Vec::new();
+        let mut resolvers: Vec<&HashSuiteResolver> = Vec::new();
         for (parameter, selector) in binding.objects().iter().zip(&authorization.objects) {
             let input: &ScopedResolvedObject = inputs
                 .iter()
@@ -92,10 +101,14 @@ pub(crate) fn validate_inputs(
                 object: input.resolved.object.clone(),
                 mode,
             });
+            resolvers.push(*object_resolvers.get(&selector.object_id).ok_or(
+                LocalExecutionAdmissionError::Invalid("authorized input resolver absent"),
+            )?);
         }
         execution::publication::validate_object_input_bodies(
             &binding,
             resolver,
+            &resolvers,
             call_context.epoch(),
             &abi::AccessManifest { entries },
             &resolved,

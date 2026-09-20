@@ -182,7 +182,59 @@ where
         println!("published=true");
     } else {
         match client.query_publication(&origin, &resolver, &expected, &semantics)? {
-            Some(submission) => {
+            // DR-0126: a paid Publish record is queryable and clearly
+            // labeled as such; it is never printed as if it were a legacy
+            // submission. The client has already independently re-authenticated this exact
+            // signed intent (context, signature, Publish kind, origin and
+            // semantics) before returning it, so `published=true` here
+            // reflects a verified record, not a raw server claim.
+            Some(sunrise_edge_client::PublicationQueryResult::Paid(signed)) => {
+                let request_id_hex: String = signed
+                    .intent
+                    .request_id
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                let artifact = match &signed.intent.application {
+                    sunrise_edge_client::PaidApplication::Publish(artifact) => artifact,
+                    _ => unreachable!("query_publication already rejects non-Publish paid records"),
+                };
+                if let Some(path) = parsed.get("--dependency-ref-out") {
+                    use std::io::Write;
+                    let digest = sunrise_edge_client::publication::artifact_commitment(
+                        &resolver,
+                        artifact.context(),
+                        artifact,
+                    )
+                    .map_err(failure)?;
+                    let reference = UnverifiedDependencyRef::new(
+                        artifact.origin().clone(),
+                        artifact.revision(),
+                        artifact.context().clone(),
+                        digest,
+                    )
+                    .map_err(failure)?;
+                    let bytes = sunrise_edge_client::publication::encode_dependency_ref(&reference)
+                        .map_err(failure)?;
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)
+                        .map_err(failure)?;
+                    file.write_all(&bytes).map_err(failure)?;
+                }
+                println!("published=true");
+                println!("provenance=paid");
+                println!("request_id={request_id_hex}");
+                println!("revision={}", artifact.revision());
+                println!("wasm_bytes={}", artifact.wasm().len());
+                println!("abi_bytes={}", artifact.unverified_abi().len());
+                println!(
+                    "dependency_count={}",
+                    artifact.unverified_dependencies().len()
+                );
+            }
+            Some(sunrise_edge_client::PublicationQueryResult::Legacy(submission)) => {
                 let request = submission.request();
                 if let Some(path) = parsed.get("--dependency-ref-out") {
                     use std::io::Write;
@@ -203,6 +255,7 @@ where
                     file.write_all(&bytes).map_err(failure)?;
                 }
                 println!("published=true");
+                println!("provenance=legacy");
                 println!("revision={}", request.artifact().revision());
                 println!("wasm_bytes={}", request.artifact().wasm().len());
                 println!("abi_bytes={}", request.artifact().unverified_abi().len());
