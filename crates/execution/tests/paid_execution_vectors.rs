@@ -126,8 +126,8 @@ fn independently_reconstructed_paid_execution_wires_and_digests() {
             system_module_price: 0,
         },
         conversion_divisor: 1,
-        reserve_allowance: 2,
-        settle_allowance: 5,
+        reserve_allowance: 30000,
+        settle_allowance: 20000,
         calls: 8,
         handles: 16,
         creations: 4,
@@ -141,12 +141,12 @@ fn independently_reconstructed_paid_execution_wires_and_digests() {
     vector(
         &policy_bytes,
         1213,
-        "b3151c82c41aa7d52e9247671c50908604fbb4a001986be78fb985125886e6fe",
+        "5ada415ae7950357bbfaf603e7b45bf17179a5a8310bbb1867b19cd1db10d13d",
     );
     let policy_digest: Digest32 = paid_fee_policy_digest(&resolver, &fee_policy).unwrap();
     assert_eq!(
         hex(&policy_digest.bytes()),
-        "9fe73f7b612cd628ee580ebbe4a772ac82cbe8bc0bb3d3068f6c212e63428e88"
+        "2acddde1e103821c54753426941cd28f2900823f957a3277858d752a12bb822a"
     );
 
     let intent: PaidIntent = PaidIntent {
@@ -164,19 +164,19 @@ fn independently_reconstructed_paid_execution_wires_and_digests() {
     vector(
         &intent_bytes,
         1155,
-        "1c78758ed2677619966a1f44ed29c51aacd3fc4b01f7b9d34f386bce4a3aa167",
+        "d4a21596fbb60b11d587e8ba29e8aa3f459b4dfe51b3e79096f06e9339c7773f",
     );
 
     let signing_bytes: Vec<u8> = paid_intent_signing_frame(&context, &intent).unwrap();
     vector(
         &signing_bytes,
         1245,
-        "797bca75fab06caddaa60dc5fa52d88a29a422f2027062d0d39310dc5292945b",
+        "3fe63168640395db37e4e3f227316a0a9d9d8e0bada7bc7bf507697a6518be32",
     );
     let signature: [u8; 64] = key.sign(&signing_bytes).into();
     assert_eq!(
         hex(&signature),
-        "20beb8360e4b54d87d9756a3b9cbf6d05b169849f24310e0f576035e3a47b29944ef7ddf5f796ef1ead202aab706361c1c905b5b281d5167cc1cd0f26d987f0e"
+        "03de053c27d8284359f9dfa4a7377bdeef869b154aa2250d4ef6636e26213df184fb575ae1bb5f1dcc8c9091b05b8e1f125693fbb5c9083a05fb5d1487112708"
     );
 
     let signed: SignedPaidIntent = SignedPaidIntent { intent, signature };
@@ -184,12 +184,12 @@ fn independently_reconstructed_paid_execution_wires_and_digests() {
     vector(
         &signed_bytes,
         1241,
-        "306aa3181233d2bf99a8164dfe85605bb5fd1e21171ca9eabd986876d605661a",
+        "4d74857078fb74d34bfdf87c3856a099a17f8f2871f4b6ce2d24983258ddcff0",
     );
 
     let invocation_digest: Digest32 = paid_invocation_digest(&resolver, &signed).unwrap();
     assert_eq!(
         hex(&invocation_digest.bytes()),
-        "424d67cdbfd6b09978c73f1377f90f632b892bbb1b9f7c2c23be2188d6a68d35"
+        "922b2e2fc3a335bfd065c6026cbefcb1946879fb1a5752425c3d798a68e74f73"
     );
 }

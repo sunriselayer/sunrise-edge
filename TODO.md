@@ -6,15 +6,17 @@ remediation are existing baselines, not a completed generic contract platform.
 The public-contract foundations (DR-0112–DR-0120) and opt-in local durable code
 publication (DR-0121), opt-in independent local instance execution (DR-0122),
 and unified signed contract calls (DR-0123) are implemented and locally validated.
-The internal Standard Asset package, paid execution engine and fenced durable
-node admission are implemented; calibrated installation and public CLI/HTTP
-activation remain open, so the generic-contract gate is not closed.
+The internal Standard Asset package, paid execution engine, signed atomic
+genesis installation and public paid CLI/HTTP activation are implemented and
+locally validated. Migration of the legacy asset commands/native fee composer
+and arbitrary asset creation remain open, so the generic-contract gate is not
+yet closed.
 
 | Order | Deliverable | Completion evidence | Status |
 | --- | --- | --- | --- |
 | 1 | Durable local code publication | CLI publish/query; immutable code/ABI/exact dependencies; authenticated admission; origin absence; shared nonce and receipt atomicity (no outgoing message); real SQLite restart/replay/conflict/fencing | Implemented and locally validated (DR-0121); fee-free opt-in local storage only |
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
-| 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Open |
+| 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Paid public activation implemented and locally validated (DR-0126); legacy asset-command/native-composer migration remains open |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Open |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
@@ -2057,9 +2059,10 @@ physical media faultや長期soakを同じ項目として重複実装しない�
 **Design baseline (DR-0111, 2026-09-07):**
 [`docs/architecture/generic-contracts.md`](docs/architecture/generic-contracts.md)
 and [`docs/smartcontract/`](docs/smartcontract/README.md) are the accepted To-Be;
-DR-0111 preserves dated As-Is evidence and replacement rationale. This gate remains open:
-the design record does not implement publication, instance isolation, public
-type authority, or upgrades. Standard Asset must use the same public facilities
+DR-0111 preserves dated As-Is evidence and replacement rationale. That design
+record alone did not implement publication, instance isolation, public type
+authority, or upgrades; later records implement the first three while upgrades
+remain open. Standard Asset must use the same public facilities
 as user contracts; remove superseded trusted-only paths and native Coin-body
 settlement callbacks rather than retaining unreleased compatibility branches.
 
@@ -2122,19 +2125,49 @@ statements such as “body validation remains open” are not the live work queu
     exhaustion. Detailed semantics and validation evidence are retained in
     DR-0124. Follow-up coverage should assert that memory exhaustion leaves fuel
     remaining and derive the event-framing allowance from the canonical encoder.
-  - [ ] Explicit paid Call/Instantiate/Publish consent, pinned contract policy,
+  - [x] Explicit paid Call/Instantiate/Publish consent, pinned contract policy,
     base/execution-only pricing and calibrated reserve/settle allowances. The internal
     consent/policy wire, immutable quoting, all-three-kind paid engine, exact
     Publish metering and independently verified result receipts are implemented.
     The durable handler reconciles replay before policy/object I/O and atomically
     commits paid effects, authorities, instance/publication records, nonce and
     receipt with writer fencing. Call/Instantiate/Publish remain one combined
-    activation gate. Activation still requires:
-    - one shared, calibrated definition of phase caps, R/S and allowances;
-    - a closed installer/bootstrap marker and installed ABI/role compatibility;
-    - authenticated historical object framing across protocol versions;
-    - durable Consume source-deletion, transitive paid-dependency and paid-aware
-      publication-query coverage.
+    activation gate.
+    [DR-0126](docs/architecture/decisions/0126-public-paid-contract-activation.md)
+    was completed as one local-devnet activation slice on 2026-09-20. Its
+    pre-installer prerequisites were:
+    - [x] calibrated R/S values (`MIN_RESERVE_ALLOWANCE`/`MIN_SETTLE_ALLOWANCE`)
+      and a positive execution-price floor for the existing shared phase-cap
+      definition, measured against the pinned public Standard Asset WASM with
+      a documented and test-enforced 2x conservative headroom, wired into
+      policy validation;
+    - [x] installed fee ABI/role admission (`validate_fee_interface_admission`),
+      invoked before the quote and nonce commit, with a fail-closed matrix
+      (exact-error assertions, arity 0/2, schema mismatch and
+      reservation-typed-as-reserve-object cases) and a node-core regression
+      proving the exact role-validator rejection reason before quote/nonce;
+    - [x] authenticated historical object framing across protocol versions
+      (`ObjectSnapshot` provenance plus a fail-closed historical-resolver
+      selection that preserves the unconditional wrong-chain check even for a
+      zero-object entrypoint), with old-protocol, missing-history and
+      same-version regressions at both the `execution`/`node-core` unit level
+      and through the real production native HTTP router (which now takes an
+      explicit `history: Vec<HashSuiteResolver>` instead of a hardcoded empty
+      slice);
+    - [x] durable Consume source-deletion, depth-two paid-Publish dependency and
+      paid-aware publication-query coverage. `PublicationQueryResult`
+      (canonical frame `0x6418/v1`, normatively allocated, with stable
+      Legacy/Paid vectors and a documented `MAX_PUBLICATION_QUERY_RESULT_BYTES`
+      bound) carries a Paid record's *exact* stored `SignedPaidIntent`, never
+      only a request identity; the Rust client independently
+      re-authenticates it (context/signature, `PaidApplication::Publish`,
+      origin, semantics) before returning it, with adversarial coverage for
+      each of those checks plus malformed/oversized/trailing frames, and the
+      CLI prints `published=true` only after that verification. Propagated
+      through native HTTP, the Rust client and the CLI.
+    The same slice also completed the signed closed installer/bootstrap marker,
+    exact ordinary publication receipt, native HTTP/Rust-client/CLI paid
+    submission and installed-policy query (DR-0126 items 4–5).
   - [x] Public Standard Asset transfer/split/merge/mint/burn and reserve/settle
     package implementation and activation hardening ([DR-0125](docs/architecture/decisions/0125-public-standard-asset-activation-hardening.md)).
     The public WASM package implements all amount transitions and checked supply
@@ -2146,15 +2179,24 @@ statements such as “body validation remains open” are not the live work queu
     foreign-recipient and all-entrypoint same-code cross-instance authority
     regressions are implemented. This closes the package-local prerequisite only;
     it does not install or activate the package or paid policy.
-  - [ ] Fenced atomic genesis manifest installer, closed bootstrap marker,
-    native HTTP/CLI activation and removal of asset-only grants/native composer.
-  - [ ] Complete activation evidence and fresh combined review. Existing internal
-    evidence covers canonical vectors, same-source/transferred-source behavior,
-    phase exhaustion and traps, charged/zero-charge receipts, exact replay,
-    request conflict, SQLite restart and fencing. Still required are the activation
-    items above, a permanent independent JavaScript reconstruction check for the
-    `0x6415/v1` result vector, service-backed PostgreSQL fault evidence and the
-    full public gate.
+  - [x] Fenced atomic signed genesis manifest installer, closed bootstrap marker
+    and native HTTP/Rust-client/software-signer CLI activation
+    ([DR-0126](docs/architecture/decisions/0126-public-paid-contract-activation.md)).
+    Real file-backed SQLite integration crosses CLI → HTTP → durable admission
+    for paid Publish, Instantiate and Call, including derived dependency/instance
+    pins and charged successful results. The installer commits the ordinary
+    publication receipt in the same fenced transaction and verifies it on restart.
+  - [ ] Remove asset-only grants/native composer and migrate the five historical
+    asset CLI commands now that the replacement paid route is usable. This is the
+    next implementation slice and must not preserve an indefinite compatibility
+    path.
+  - [ ] Complete activation evidence and fresh combined review. Existing evidence
+    now covers canonical vectors, same-source/transferred-source behavior, phase
+    exhaustion and traps, charged/zero-charge receipts, exact replay, request
+    conflict, SQLite restart/fencing, full CLI/HTTP paid activation, and a permanent
+    independent JavaScript reconstruction of `0x6415/v1`. Still required are the
+    fresh combined review, the legacy-path removal above, service-backed PostgreSQL
+    fault evidence and the full public gate.
   Public admission additionally requires analysis of fresh-request unpaid
   phase-failure abuse; this local replacement is not a readiness claim.
 

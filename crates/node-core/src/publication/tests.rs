@@ -102,7 +102,7 @@ fn profile_two_requires_its_own_committed_policy_and_returns_cas_closure() {
     );
     assert_eq!(
         query_publication(&store, &context(), domain(), &resolver(), origin).unwrap(),
-        Some(submission)
+        Some(PublicationQueryResult::Legacy(submission))
     );
 }
 
@@ -529,7 +529,7 @@ fn sqlite_restart_replay_retains_exact_code_dependencies_receipt_and_nonce() {
                 second.request().artifact().origin()
             )
             .unwrap(),
-            Some(second.clone())
+            Some(PublicationQueryResult::Legacy(second.clone()))
         );
         assert_eq!(
             handle_local_publication(
@@ -1055,7 +1055,7 @@ fn historical_epoch_policy_and_exact_dependency_digest() {
             publication.request().artifact().origin()
         )
         .unwrap(),
-        Some(publication)
+        Some(PublicationQueryResult::Legacy(publication))
     );
     let invalid: UnverifiedDependencyRef = UnverifiedDependencyRef::new(
         dependency.request().artifact().origin().clone(),
@@ -1135,7 +1135,7 @@ fn transitive_dependencies_are_admitted_and_reverified_from_durable_records() {
             c.request().artifact().origin()
         )
         .unwrap(),
-        Some(c.clone())
+        Some(PublicationQueryResult::Legacy(c.clone()))
     );
     assert_eq!(nonce(&store, &policy), 3);
     // C names only B, so this failure proves that readback traverses B's edge to A.
@@ -1248,7 +1248,7 @@ fn original_protocol_query_requires_explicit_trusted_history() {
             origin
         )
         .unwrap(),
-        Some(submission)
+        Some(PublicationQueryResult::Legacy(submission))
     );
 }
 
@@ -1523,4 +1523,124 @@ fn profile_four_artifact_is_rejected_by_profile_three_policy() {
         publish(&store, &general, submission),
         Err(PublicationAdmissionError::PolicyMismatch)
     ));
+}
+
+/// DR-0126: stable `0x6418/v1` vectors for both `PublicationQueryResult`
+/// provenance variants. A change to either byte length or hash here is a
+/// wire regression in the normatively allocated frame, not an update to
+/// hide silently.
+#[test]
+fn publication_query_result_legacy_and_paid_stable_vectors() {
+    use execution::paid_execution::{
+        FeeSourceConsent, PaidApplication, PaidIntent, ReservationAccessKind, SignedPaidIntent,
+        authenticate_paid_intent, encode_signed_paid_intent, paid_intent_signing_frame,
+    };
+    use objects::{ObjectId, ObjectRef};
+    use sha2::{Digest, Sha256};
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+    fn vector(bytes: &[u8], length: usize, expected_sha256: &str) {
+        assert_eq!(bytes.len(), length);
+        assert_eq!(hex(&Sha256::digest(bytes)), expected_sha256);
+    }
+
+    // ---- Legacy vector ----
+    let submission: PublicationSubmission = make_submission(&policy(0), 60, 0, vec![]);
+    let legacy_bytes: Vec<u8> =
+        encode_publication_query_result(&PublicationQueryResult::Legacy(submission.clone()))
+            .unwrap();
+    vector(
+        &legacy_bytes,
+        1005,
+        "fdc7d2881fbe073d892f9eb7c3e9eb59d37af3ffbf7337b61689fbea89f56078",
+    );
+    assert_eq!(
+        decode_publication_query_result(&legacy_bytes).unwrap(),
+        PublicationQueryResult::Legacy(submission)
+    );
+
+    // ---- Paid vector ----
+    let paid_context: PublicationContext = PublicationContext::new(
+        ChainId::new("publication-query-vector").unwrap(),
+        ProtocolVersion::new(3),
+        Epoch::new(0),
+    )
+    .unwrap();
+    let paid_resolver: HashSuiteResolver = HashSuiteResolver::new(
+        paid_context.chain_id().clone(),
+        paid_context.protocol_version(),
+        vec![HashSuiteSchedule {
+            activation_epoch: Epoch::new(0),
+            suite: HashSuite::genesis(),
+        }],
+    )
+    .unwrap();
+    let key: SigningKey = SigningKey::from([61; 32]);
+    let sender: [u8; 32] = VerificationKey::from(&key).into();
+    let artifact: execution::publication::CodeArtifact =
+        execution::publication::CodeArtifact::new(execution::publication::ArtifactParts {
+            context: paid_context.clone(),
+            origin: abi::package_types::PackageOrigin::unverified(
+                paid_context.chain_id().clone(),
+                sender,
+                [61; 32],
+            )
+            .unwrap(),
+            revision: 1,
+            wasm_profile: 4,
+            semantics: Digest32::new(HashAlgorithmId::Sha2_256, [0x77; 32]),
+            wasm: vec![0u8; 4],
+            unverified_abi: vec![1u8; 4],
+            exports: vec!["init".into()],
+            unverified_dependencies: vec![],
+        })
+        .unwrap();
+    let intent: PaidIntent = PaidIntent {
+        context: paid_context.clone(),
+        request_id: [62; 32],
+        sender,
+        nonce: 4,
+        fee_policy_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x99; 32]),
+        consent: FeeSourceConsent {
+            source: ObjectRef {
+                id: ObjectId::new([0x30; 32]),
+                version: 1,
+                digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x30; 32]),
+            },
+            access: ReservationAccessKind::Consume,
+            max_fee: fees::Amount::new(1_000_000),
+            refund_recipient: sender,
+        },
+        application: PaidApplication::Publish(artifact),
+        gas_limit: 100_000,
+        authorizations: vec![],
+    };
+    let frame: Vec<u8> = paid_intent_signing_frame(&paid_context, &intent).unwrap();
+    let signature: [u8; 64] = key.sign(&frame).into();
+    let signed: SignedPaidIntent = SignedPaidIntent { intent, signature };
+    let paid_bytes: Vec<u8> =
+        encode_publication_query_result(&PublicationQueryResult::Paid(signed.clone())).unwrap();
+    vector(
+        &paid_bytes,
+        982,
+        "5b517db5b6cb9d313b4f1c09c1610602588a7bee08dcf48047dfc4524c8738b4",
+    );
+    assert_eq!(
+        decode_publication_query_result(&paid_bytes).unwrap(),
+        PublicationQueryResult::Paid(signed.clone())
+    );
+    // The paid vector round-trips through `execution::paid_execution`'s own
+    // codec too, proving the embedded field is the exact `SignedPaidIntent`
+    // frame, not a derived or truncated encoding of it.
+    let reencoded: Vec<u8> = encode_signed_paid_intent(&signed).unwrap();
+    assert_eq!(
+        execution::paid_execution::decode_signed_paid_intent(&reencoded).unwrap(),
+        signed
+    );
+    // The embedded intent independently re-authenticates under its own
+    // context and resolver, exactly as a client's Paid re-authentication
+    // path requires.
+    assert!(authenticate_paid_intent(&paid_resolver, &paid_context, &reencoded).is_ok());
 }

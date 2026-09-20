@@ -193,8 +193,8 @@ fn fee_policy() -> PaidFeePolicy {
         fee_recipient: sender(),
         gas_schedule: schedule(),
         conversion_divisor: 1,
-        reserve_allowance: 2,
-        settle_allowance: 5,
+        reserve_allowance: MIN_RESERVE_ALLOWANCE,
+        settle_allowance: MIN_SETTLE_ALLOWANCE,
         calls: 8,
         handles: 16,
         creations: 4,
@@ -637,7 +637,7 @@ fn policy_digest_mutation_and_context_wrong_policy_are_rejected() {
     let authenticated = authenticate_paid_intent(&resolver(), &context(), &bytes).unwrap();
 
     let mut different_policy = fee_policy();
-    different_policy.reserve_allowance = 3;
+    different_policy.reserve_allowance += 1;
     assert!(
         quote_paid_intent(
             &authenticated,
@@ -706,6 +706,79 @@ fn zero_actual_fee_schedule_is_rejected() {
     policy.gas_schedule.base_fee = 0;
     policy.gas_schedule.execution_price = 0;
     assert!(encode_paid_fee_policy(&policy).is_err());
+}
+
+/// DR-0126: a reserve/settle allowance below the calibrated measured
+/// minimum, or a zero execution price, must reject before the policy is
+/// ever committed. `fee_policy()` is already exactly at the calibrated
+/// floor, so this proves the boundary is inclusive and one unit below it
+/// fails closed.
+#[test]
+fn policy_below_the_calibrated_allowance_or_price_floor_is_rejected() {
+    let at_floor = fee_policy();
+    assert_eq!(at_floor.reserve_allowance, MIN_RESERVE_ALLOWANCE);
+    assert_eq!(at_floor.settle_allowance, MIN_SETTLE_ALLOWANCE);
+    assert!(encode_paid_fee_policy(&at_floor).is_ok());
+
+    let mut below_reserve = fee_policy();
+    below_reserve.reserve_allowance = MIN_RESERVE_ALLOWANCE - 1;
+    assert!(matches!(
+        encode_paid_fee_policy(&below_reserve),
+        Err(PaidExecutionError::Invalid(
+            "policy reserve allowance below calibrated minimum"
+        ))
+    ));
+
+    let mut below_settle = fee_policy();
+    below_settle.settle_allowance = MIN_SETTLE_ALLOWANCE - 1;
+    assert!(matches!(
+        encode_paid_fee_policy(&below_settle),
+        Err(PaidExecutionError::Invalid(
+            "policy settle allowance below calibrated minimum"
+        ))
+    ));
+
+    let mut zero_price = fee_policy();
+    zero_price.gas_schedule.execution_price = 0;
+    zero_price.gas_schedule.base_fee = 1;
+    assert!(matches!(
+        encode_paid_fee_policy(&zero_price),
+        Err(PaidExecutionError::Invalid(
+            "policy execution price below calibrated floor"
+        ))
+    ));
+}
+
+/// DR-0124's `actual <= reserved` and `actual + refund == reserved`
+/// properties, proved here through the wire boundary's own
+/// [`quote_paid_intent`]/`Admission::settle` at the exact calibrated floor
+/// and near the shared `L + R + S <= 1_000_000` rounding boundary, not only
+/// inside `fees::reservation`'s unit tests.
+#[test]
+fn rounding_bound_actual_never_exceeds_reserved_at_the_calibrated_floor() {
+    let policy = fee_policy();
+    let max_limit: u64 = 1_000_000 - policy.reserve_allowance - policy.settle_allowance;
+    for &limit in &[1u64, max_limit / 2, max_limit] {
+        let mut intent = call_intent();
+        intent.gas_limit = limit;
+        intent.consent.max_fee = Amount::new(u64::MAX);
+        if let PaidApplication::Call(inner) = &mut intent.application {
+            inner.gas_limit = limit;
+        }
+        let s = signed(intent);
+        let bytes = encode_signed_paid_intent(&s).unwrap();
+        let authenticated = authenticate_paid_intent(&resolver(), &context(), &bytes).unwrap();
+        let admission =
+            quote_paid_intent(&authenticated, &resolver(), &base_policy(), &policy).unwrap();
+        for &actual in &[0u64, limit / 2, limit] {
+            let settlement = admission.settle(actual).unwrap();
+            assert!(settlement.actual <= admission.reserved());
+            assert_eq!(
+                settlement.actual.get() + settlement.refund.get(),
+                admission.reserved().get()
+            );
+        }
+    }
 }
 
 #[test]

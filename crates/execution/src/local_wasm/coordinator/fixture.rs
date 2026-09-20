@@ -659,11 +659,14 @@ pub(super) fn asset(seed: u8, instance_seed: u8, amount: u64) -> Asset {
 }
 
 /// The committed pricing used by the internal tests: positive base and
-/// execution prices, and fixed positive `R`/`S` allowances sized for the
-/// pinned exports of this package. These are test calibration values, not
-/// an installed fee policy.
-pub(super) const RESERVE_ALLOWANCE: u64 = 200_000;
-pub(super) const SETTLE_ALLOWANCE: u64 = 200_000;
+/// execution prices, and the same DR-0126 calibrated protocol-critical
+/// `R`/`S` minimums a real installed policy must use. This is not itself an
+/// installed fee policy, but it is no longer a separately chosen literal:
+/// reusing `crate::paid_execution`'s calibrated constants here means these
+/// internal phase tests always run under the exact allowances activation
+/// requires, not a looser or drifted test-only value.
+pub(super) const RESERVE_ALLOWANCE: u64 = crate::paid_execution::MIN_RESERVE_ALLOWANCE;
+pub(super) const SETTLE_ALLOWANCE: u64 = crate::paid_execution::MIN_SETTLE_ALLOWANCE;
 
 pub(super) fn pricer() -> ReservationPricer {
     ReservationPricer::new(

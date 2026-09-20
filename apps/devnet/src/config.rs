@@ -74,6 +74,7 @@ pub struct DevnetConfig {
     local_publication: bool,
     local_execution: bool,
     general_calls: bool,
+    paid_contracts: bool,
 }
 
 impl DevnetConfig {
@@ -101,11 +102,18 @@ impl DevnetConfig {
         let mut local_publication: bool = false;
         let mut local_execution: bool = false;
         let mut general_calls: bool = false;
+        let mut paid_contracts: bool = false;
         let mut iterator = args.into_iter().map(Into::into);
 
         while let Some(flag_os) = iterator.next() {
             let flag: &str = flag_os.to_str().ok_or(DevnetConfigError::NonUtf8Flag)?;
             match flag {
+                "--enable-paid-contracts" => {
+                    if paid_contracts {
+                        return Err(DevnetConfigError::DuplicateFlag("--enable-paid-contracts"));
+                    }
+                    paid_contracts = true;
+                }
                 "--enable-general-calls" => {
                     if general_calls {
                         return Err(DevnetConfigError::DuplicateFlag("--enable-general-calls"));
@@ -242,6 +250,7 @@ impl DevnetConfig {
             local_publication,
             local_execution,
             general_calls,
+            paid_contracts,
             fee_treasury_owner,
             max_concurrent: max_concurrent
                 .ok_or(DevnetConfigError::MissingFlag("--max-concurrent"))?,
@@ -270,6 +279,13 @@ impl DevnetConfig {
     #[must_use]
     pub const fn general_calls(&self) -> bool {
         self.general_calls
+    }
+
+    /// Whether the signed, fee-bearing public contract surface is enabled.
+    /// This never enables the separate zero-fee profile-four route.
+    #[must_use]
+    pub const fn paid_contracts(&self) -> bool {
+        self.paid_contracts
     }
 
     /// Returns the validated loopback listen address.
@@ -567,6 +583,7 @@ mod tests {
         assert!(!default.local_execution());
         assert!(!default.local_publication());
         assert!(!default.general_calls());
+        assert!(!default.paid_contracts());
         let mut args: Vec<OsString> = valid_args();
         args.push("--enable-local-execution".into());
         let config: DevnetConfig = DevnetConfig::parse_from(args.clone()).unwrap();
@@ -579,6 +596,22 @@ mod tests {
         assert!(matches!(
             DevnetConfig::parse_from(args),
             Err(DevnetConfigError::DuplicateFlag("--enable-local-execution"))
+        ));
+    }
+
+    #[test]
+    fn paid_contract_activation_is_explicit_and_does_not_enable_zero_fee_routes() {
+        let mut args: Vec<OsString> = valid_args();
+        args.push("--enable-paid-contracts".into());
+        let config: DevnetConfig = DevnetConfig::parse_from(args.clone()).unwrap();
+        assert!(config.paid_contracts());
+        assert!(!config.local_execution());
+        assert!(!config.local_publication());
+        assert!(!config.general_calls());
+        args.push("--enable-paid-contracts".into());
+        assert!(matches!(
+            DevnetConfig::parse_from(args),
+            Err(DevnetConfigError::DuplicateFlag("--enable-paid-contracts"))
         ));
     }
 

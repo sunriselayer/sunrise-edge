@@ -220,7 +220,7 @@ fn scope_loader_shares_code_and_stops_before_the_34th_publication_fetch() {
                     responses
                         .push_back(response(context.encode().unwrap(), QUERY_RESULT_MEDIA_TYPE));
                     responses.push_back(response(
-                        encode_publication_submission(&submission).unwrap(),
+                        legacy_query_body(&submission),
                         QUERY_RESULT_MEDIA_TYPE,
                     ));
                     unique_nodes += 1;
@@ -416,10 +416,7 @@ fn profile_three_query_requires_explicit_trusted_policy() {
     for general in [false, true] {
         let client = Client::new(Fake(RefCell::new(VecDeque::from([
             response(context.encode().unwrap(), QUERY_RESULT_MEDIA_TYPE),
-            response(
-                encode_publication_submission(&submission).unwrap(),
-                QUERY_RESULT_MEDIA_TYPE,
-            ),
+            response(legacy_query_body(&submission), QUERY_RESULT_MEDIA_TYPE),
         ]))));
         let policy = if general {
             LocalExecutionPolicy::general(call.context.clone())
@@ -450,6 +447,12 @@ fn response(body: Vec<u8>, media: &str) -> WireResponse {
         content_type: Some(media.to_owned()),
         body,
     }
+}
+
+/// Wraps a legacy submission exactly as the server now serves it under
+/// DR-0126's provenance-aware `PublicationQueryResult` framing.
+fn legacy_query_body(submission: &PublicationSubmission) -> Vec<u8> {
+    encode_publication_query_result(&PublicationQueryResult::Legacy(submission.clone())).unwrap()
 }
 
 #[test]
@@ -659,10 +662,7 @@ fn executable_interface_rejects_valid_publication_for_a_different_commitment() {
         };
         let client = Client::new(Fake(RefCell::new(VecDeque::from([
             response(context.encode().unwrap(), QUERY_RESULT_MEDIA_TYPE),
-            response(
-                encode_publication_submission(&submission).unwrap(),
-                QUERY_RESULT_MEDIA_TYPE,
-            ),
+            response(legacy_query_body(&submission), QUERY_RESULT_MEDIA_TYPE),
         ]))));
         let result = client.query_executable_interface(&reference, &resolver, &expected);
         assert_eq!(result.is_ok(), !changed);

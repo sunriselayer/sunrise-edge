@@ -32,6 +32,7 @@
 - [DR-0123: one contract-call authorization model](0123-unified-contract-calls.md)
 - [DR-0124: contract-defined fee reservation and settlement](0124-contract-fee-reservations.md)
 - [DR-0125: public Standard Asset activation hardening](0125-public-standard-asset-activation-hardening.md)
+- [DR-0126: public paid contract activation](0126-public-paid-contract-activation.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).

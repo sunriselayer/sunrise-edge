@@ -503,6 +503,19 @@ fn substitute_pattern_node(
 
 /// Matches loaded object input metadata against a bound object signature.
 ///
+/// `resolver` is the caller's current/execution resolver: its chain identity
+/// is checked against the defining interface unconditionally, even when
+/// `signature` declares zero object parameters, exactly as this invariant
+/// held before per-object historical resolution existed. It is never
+/// inferred from `resolvers`, which may legitimately be empty.
+///
+/// `resolvers` supplies one trusted resolver per positional input (DR-0126):
+/// each input's nominal type commitment is verified under the resolver
+/// matching *that object's own* recorded creating protocol version, not
+/// unconditionally the caller's current resolver. Callers with objects that
+/// share one uniform, already-confirmed protocol version may pass the same
+/// resolver reference for every slot (typically `resolver` itself).
+///
 /// # Explicit Non-Claims
 ///
 /// This function verifies metadata correspondence only: access modes, object identifiers,
@@ -515,10 +528,14 @@ fn substitute_pattern_node(
 pub fn match_object_input_metadata(
     signature: &BoundObjectSignature<'_>,
     resolver: &HashSuiteResolver,
+    resolvers: &[&HashSuiteResolver],
     epoch: Epoch,
     manifest: &AccessManifest,
     inputs: &[ResolvedObject],
 ) -> Result<(), BindingError> {
+    // Preserved unconditionally, independent of object count: a
+    // zero-object entrypoint must still reject a caller whose current
+    // resolver names a foreign chain.
     if resolver.chain_id() != signature.interface.abi().origin.chain_id() {
         return Err(BindingError::ChainMismatch);
     }
@@ -527,6 +544,7 @@ pub fn match_object_input_metadata(
     if expected_len > MAX_ABI_OBJECT_PARAMS
         || manifest.entries.len() != expected_len
         || inputs.len() != expected_len
+        || resolvers.len() != expected_len
     {
         return Err(BindingError::InputCount);
     }
@@ -541,6 +559,10 @@ pub fn match_object_input_metadata(
     for (i, bound) in signature.objects.iter().enumerate() {
         let manifest_entry = &manifest.entries[i];
         let input = &inputs[i];
+        // `verify_scoped_type_id` below independently checks this exact
+        // per-object resolver's chain identity against the bound type's own
+        // origin, so no redundant chain check is needed here.
+        let resolver: &HashSuiteResolver = resolvers[i];
 
         if manifest_entry.mode != input.mode {
             return Err(BindingError::AccessMismatch);

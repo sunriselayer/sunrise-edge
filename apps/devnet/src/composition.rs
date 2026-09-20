@@ -129,6 +129,35 @@ pub fn compose_devnet_router_with_execution_policies(
     publication: Option<node_core::publication::LocalPublicationPolicy>,
     local_execution: Option<native_http::LocalExecutionComposition>,
 ) -> Result<Router, DevnetCompositionError> {
+    compose_devnet_router_with_contract_policies(
+        store,
+        blob_store,
+        asset_module,
+        boot_generation,
+        max_concurrent,
+        reserved_correlation_sequences,
+        fee_treasury_object_id,
+        publication,
+        local_execution,
+        None,
+    )
+}
+
+/// Builds the router with independently activated zero-fee and paid contract
+/// policies. Profile four is accepted only through `paid_execution`.
+#[allow(clippy::too_many_arguments)]
+pub fn compose_devnet_router_with_contract_policies(
+    store: Arc<SqliteDurableStore>,
+    blob_store: Arc<SqliteBlobStore>,
+    asset_module: DevnetAssetModule,
+    boot_generation: WriterFenceGeneration,
+    max_concurrent: usize,
+    reserved_correlation_sequences: usize,
+    fee_treasury_object_id: ObjectId,
+    publication: Option<node_core::publication::LocalPublicationPolicy>,
+    local_execution: Option<native_http::LocalExecutionComposition>,
+    paid_execution: Option<native_http::PaidExecutionComposition>,
+) -> Result<Router, DevnetCompositionError> {
     let admission: NonZeroUsize =
         NonZeroUsize::new(max_concurrent).ok_or(DevnetCompositionError::InvalidConcurrency)?;
     let reserved_sequences: u64 = u64::try_from(reserved_correlation_sequences)
@@ -167,6 +196,9 @@ pub fn compose_devnet_router_with_execution_policies(
     if let Some(composition) = local_execution {
         preinstalled_wasm = preinstalled_wasm.with_local_execution(composition);
     }
+    if let Some(composition) = paid_execution {
+        preinstalled_wasm = preinstalled_wasm.with_paid_execution(composition);
+    }
     let authority = StructuredDurableRequestAuthority::new(
         boot_generation,
         REQUEST_OPERATION_TIMEOUT_MILLIS,
@@ -180,6 +212,10 @@ pub fn compose_devnet_router_with_execution_policies(
         authority,
         node_config,
         resolver,
+        // No historical protocol resolver is configured for this local-devnet
+        // composition; a genuinely historical record still fails closed
+        // rather than being read under the current resolver.
+        Vec::new(),
         Arc::new(DevnetMachine),
         NativeBlockingPolicy::new(admission),
     )

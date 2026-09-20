@@ -1,3 +1,5 @@
+use sha2::Digest as _;
+
 /// Locates one decoded field's payload byte range inside its original
 /// encoded frame, for targeted corruption in the codec regressions below.
 fn field_range(bytes: &[u8], field_id: u16) -> std::ops::Range<usize> {
@@ -133,5 +135,11 @@ fn paid_execution_result_stable_vector() {
     };
     let bytes: Vec<u8> = encode_paid_execution_result(&result).unwrap();
     assert_eq!(hex(&bytes), PAID_EXECUTION_RESULT_VECTOR_0X6415_V1);
+    // Independently reconstructed by scripts/paid-execution-vectors.mjs.
+    assert_eq!(bytes.len(), 1101);
+    assert_eq!(
+        hex(&sha2::Sha256::digest(&bytes)),
+        "88ed340f5e9ee4d79a13b42375a41c1f87f541128447170f98006879c0f851ca"
+    );
     assert_eq!(decode_paid_execution_result(&bytes).unwrap(), result);
 }

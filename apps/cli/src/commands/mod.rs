@@ -9,6 +9,7 @@ pub mod merge;
 pub mod mint;
 pub mod next_nonce;
 pub mod object;
+mod paid_execution;
 mod publication;
 pub mod receipt;
 pub mod split;

@@ -27,6 +27,9 @@ where
     if matches!(action, "instantiate" | "call" | "query-instance") {
         return super::local_execution::run(action, args);
     }
+    if matches!(action, "paid-publish" | "paid-instantiate" | "paid-call") {
+        return super::paid_execution::run(action, args);
+    }
     if action != "validate" {
         return Err(CliError::UnknownContractAction(action.to_owned()));
     }

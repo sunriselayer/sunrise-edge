@@ -21,13 +21,14 @@ use execution::local_execution::{
     local_execution_signing_frame,
 };
 use execution::paid_execution::{
-    FeeSourceConsent, PaidExecutionResult, PaidResultTarget, SignedPaidIntent,
-    decode_paid_execution_result, decode_signed_paid_intent, encode_signed_paid_intent,
-    paid_fee_policy_digest, paid_intent_signing_frame,
+    FeeSourceConsent, MIN_RESERVE_ALLOWANCE, MIN_SETTLE_ALLOWANCE, PaidExecutionResult,
+    PaidResultTarget, SignedPaidIntent, decode_paid_execution_result, decode_signed_paid_intent,
+    encode_signed_paid_intent, paid_fee_policy_digest, paid_intent_signing_frame,
 };
 use execution::publication::{
     ArtifactParts, CodeArtifact, PublicationRequest, PublicationSubmission,
-    UnverifiedDependencyRef, artifact_commitment, publication_submission_signing_frame,
+    UnverifiedDependencyRef, artifact_commitment, encode_code_artifact,
+    publication_submission_signing_frame,
 };
 use fees::{Amount, GasSchedule};
 use local_execution::query_local_instance;
@@ -151,6 +152,21 @@ fn publish_package<S: StructuredDurableDomainStateStore>(
     request: u8,
     nonce: u64,
 ) -> (PackageOrigin, UnverifiedDependencyRef) {
+    publish_package_with_dependencies(store, seed, request, nonce, vec![])
+}
+
+/// Same as [`publish_package`], but declaring the given exact dependency
+/// edges. The public Standard Asset ABI never references another origin's
+/// constructor, so an unused declared edge is still structurally valid --
+/// exactly what a depth-two closure test needs: a middle package that
+/// exists only to chain to a leaf.
+fn publish_package_with_dependencies<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    seed: u8,
+    request: u8,
+    nonce: u64,
+    unverified_dependencies: Vec<UnverifiedDependencyRef>,
+) -> (PackageOrigin, UnverifiedDependencyRef) {
     let origin: PackageOrigin =
         PackageOrigin::unverified(protocol().chain_id().clone(), sender(), [seed; 32]).unwrap();
     let package: StandardAssetPackage = build_package(&origin).unwrap();
@@ -164,7 +180,7 @@ fn publish_package<S: StructuredDurableDomainStateStore>(
         wasm: package.wasm,
         unverified_abi: package.encoded_abi,
         exports: package.exports,
-        unverified_dependencies: vec![],
+        unverified_dependencies,
     })
     .unwrap();
     let digest: Digest32 = artifact_commitment(&resolver(), &protocol(), &artifact).unwrap();
@@ -328,8 +344,8 @@ fn fee_policy(
             system_module_price: 0,
         },
         conversion_divisor: 1_000,
-        reserve_allowance: 200_000,
-        settle_allowance: 200_000,
+        reserve_allowance: MIN_RESERVE_ALLOWANCE,
+        settle_allowance: MIN_SETTLE_ALLOWANCE,
         calls: 8,
         handles: 16,
         creations: 4,
@@ -391,6 +407,11 @@ fn install<S: StructuredDurableDomainStateStore>(store: &S) -> Fixture {
     );
     let coin: Object = pick(&minted, &coin_tag);
     let cap: Object = pick(&minted, &cap_tag);
+    // Deliberately below the worst-case reservation for every fixture call
+    // below (`gas_limit: 100_000`, `MIN_RESERVE_ALLOWANCE = 30_000`,
+    // `MIN_SETTLE_ALLOWANCE = 20_000`, `base_fee = 100`, `execution_price =
+    // 1`, `conversion_divisor = 1_000`): `ceil((100 + 1 * (100_000 + 30_000
+    // + 20_000)) / 1_000) = 151`.
     let minted: Vec<Object> = install_call(
         store,
         &instance,
@@ -398,7 +419,7 @@ fn install<S: StructuredDurableDomainStateStore>(store: &S) -> Fixture {
         3,
         "mint",
         types,
-        public_standard_asset::mint_arguments(400, &sender()).unwrap(),
+        public_standard_asset::mint_arguments(100, &sender()).unwrap(),
         vec![entry(&cap, AccessMode::Write)],
     );
     let small: Object = pick(&minted, &coin_tag);
@@ -444,6 +465,14 @@ struct PaidCall<'a> {
 }
 
 fn paid_call(call: PaidCall<'_>) -> Vec<u8> {
+    paid_call_with_access(call, ReservationAccessKind::Write)
+}
+
+/// Same as [`paid_call`], but with an explicitly chosen reservation access
+/// kind. `ReservationAccessKind::Consume` requires `call.access` to omit the
+/// fee source (DR-0124 forbids application access to a Consume-reserved
+/// source).
+fn paid_call_with_access(call: PaidCall<'_>, access_kind: ReservationAccessKind) -> Vec<u8> {
     let application: CallIntent = CallIntent {
         context: protocol(),
         request_id: [call.request; 32],
@@ -469,7 +498,7 @@ fn paid_call(call: PaidCall<'_>) -> Vec<u8> {
         fee_policy_digest: paid_fee_policy_digest(&resolver(), call.policy).unwrap(),
         consent: FeeSourceConsent {
             source: object_reference(call.source),
-            access: ReservationAccessKind::Write,
+            access: access_kind,
             max_fee: Amount::new(1_000_000),
             refund_recipient: refund_account(),
         },
@@ -887,6 +916,142 @@ fn successful_paid_call_charges_the_fee_and_advances_the_source_once() {
     assert_eq!(next_nonce(&store), FIRST_PAID_NONCE + 1);
 }
 
+/// DR-0126: real durable `ReservationAccessKind::Consume` coverage. An
+/// exact-full `reserve_all` reservation deletes the fee source (an ordinary
+/// durable Delete, not a paid-path exception): the head tombstones and
+/// retains its last version, the version-one record itself is retained
+/// (provenance), exact replay neither re-deletes nor re-executes, and a
+/// distinct conflicting request referencing the same now-deleted object is
+/// rejected without mutating anything further.
+#[test]
+fn consume_reservation_deletes_the_source_with_retained_provenance_replay_and_conflict_invariance()
+{
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let engine: CountingEngine = CountingEngine::new();
+
+    // Exact worst-case reservation for `gas_limit: 100_000`,
+    // `MIN_RESERVE_ALLOWANCE = 30_000`, `MIN_SETTLE_ALLOWANCE = 20_000`,
+    // `base_fee = 100`, `execution_price = 1`, `conversion_divisor = 1_000`:
+    // `ceil((100 + 1 * (100_000 + 30_000 + 20_000)) / 1_000) = 151`.
+    const RESERVED: u64 = 151;
+    let coin_tag = public_standard_asset::coin_type_tag(&fixture.origin, &fixture.asset).unwrap();
+    let cap_tag =
+        public_standard_asset::treasury_cap_type_tag(&fixture.origin, &fixture.asset).unwrap();
+    let minted: Vec<Object> = install_call(
+        &store,
+        &fixture.instance,
+        20,
+        FIRST_PAID_NONCE,
+        "mint",
+        vec![public_standard_asset::asset_type_argument(&fixture.asset)],
+        public_standard_asset::mint_arguments(RESERVED, &sender()).unwrap(),
+        vec![entry(&fixture.cap, AccessMode::Write)],
+    );
+    let source: Object = pick(&minted, &coin_tag);
+    assert_eq!(source.version, 1);
+    // The cap advanced past `fixture.cap`'s stale version; every later
+    // reference to it must use this current object.
+    let cap: Object = pick(&minted, &cap_tag);
+
+    let bytes: Vec<u8> = paid_call_with_access(
+        PaidCall {
+            fixture: &fixture,
+            policy: &fixture.policy,
+            request: 21,
+            nonce: FIRST_PAID_NONCE + 1,
+            source: &source,
+            entrypoint: "mint",
+            arguments: public_standard_asset::mint_arguments(1, &sender()).unwrap(),
+            access: vec![entry(&cap, AccessMode::Write)],
+        },
+        ReservationAccessKind::Consume,
+    );
+    let output: NodeOutput = execute(&store, &fixture, &engine, &bytes).unwrap();
+    assert_eq!(output.responses()[0].status(), NodeResponseStatus::Accepted);
+    let result: PaidExecutionResult = receipt(&output);
+    assert_eq!(result.status, PaidExecutionStatus::Success);
+    // The consumed reservation is a distinct transient object, never the
+    // fee source itself.
+    let charged = result.charged.as_ref().unwrap();
+    assert_ne!(charged.reservation, source.id);
+
+    // The source is an ordinary durable Delete: the head tombstones and
+    // retains the last version it ever had.
+    let head_after: DurableObjectHead = store
+        .get_object_head(&context(), domain(), source.id)
+        .unwrap();
+    assert!(matches!(
+        head_after,
+        DurableObjectHead::Tombstoned {
+            last_object_version,
+            ..
+        } if last_object_version.get() == source.version
+    ));
+    // Retained provenance: the immutable version-one record itself survives
+    // the delete and is still independently readable.
+    assert!(
+        store
+            .get_object_version(
+                &context(),
+                domain(),
+                source.id,
+                DurableObjectVersion::new(source.version).unwrap()
+            )
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(engine.calls.get(), 1);
+
+    // Exact replay: identical output, no re-delete, no re-execution.
+    let replayed: NodeOutput = run(
+        &store,
+        &DeniedBlobStore,
+        &context(),
+        &fixture.policy,
+        &engine,
+        &bytes,
+    )
+    .unwrap();
+    assert_eq!(replayed, output);
+    assert_eq!(engine.calls.get(), 1);
+    assert_eq!(
+        store
+            .get_object_head(&context(), domain(), source.id)
+            .unwrap(),
+        head_after
+    );
+
+    // Request-conflict invariance: a distinct request (fresh request id and
+    // the next sender nonce) that still references the exact original,
+    // now-stale `ObjectRef` is rejected -- never treated as a fresh
+    // consumable source and never a second delete.
+    let conflicting: Vec<u8> = paid_call_with_access(
+        PaidCall {
+            fixture: &fixture,
+            policy: &fixture.policy,
+            request: 22,
+            nonce: FIRST_PAID_NONCE + 2,
+            source: &source,
+            entrypoint: "mint",
+            arguments: public_standard_asset::mint_arguments(1, &sender()).unwrap(),
+            access: vec![entry(&fixture.cap, AccessMode::Write)],
+        },
+        ReservationAccessKind::Consume,
+    );
+    assert!(execute(&store, &fixture, &engine, &conflicting).is_err());
+    assert_eq!(engine.calls.get(), 1);
+    assert_eq!(
+        store
+            .get_object_head(&context(), domain(), source.id)
+            .unwrap(),
+        head_after
+    );
+    // The conflicting attempt was a pre-admission rejection: it never
+    // consumed the next sender nonce.
+    assert_eq!(next_nonce(&store), FIRST_PAID_NONCE + 2);
+}
+
 #[test]
 fn application_trap_charges_only_the_fee_and_reverts_application_effects() {
     let store: MemoryDurableStateStore = memory_store();
@@ -931,7 +1096,7 @@ fn zero_charge_reservation_failure_commits_only_the_nonce_and_receipt() {
     let other: PackageOrigin =
         PackageOrigin::unverified(protocol().chain_id().clone(), sender(), [60; 32]).unwrap();
     let before: Tracked = tracked(&store, &context(), &fixture, &other);
-    // The 400-unit Coin cannot fund the worst-case reservation, so the pinned
+    // The 100-unit Coin cannot fund the worst-case reservation, so the pinned
     // contract's `reserve` traps: zero charge, no effects.
     let bytes: Vec<u8> = paid_call(PaidCall {
         fixture: &fixture,
@@ -1077,23 +1242,97 @@ fn paid_publish_stores_its_signed_frame_and_loads_as_a_verified_dependency() {
     )
     .unwrap()
     .unwrap();
+    let expected_signed: SignedPaidIntent = decode_signed_paid_intent(&bytes).unwrap();
     assert_eq!(
         loaded.record,
-        publication::VerifiedPublicationRecord::Paid {
-            request_id: [5; 32]
-        }
+        publication::VerifiedPublicationRecord::Paid(expected_signed.clone())
     );
     assert!(loaded.record.submission().is_none());
     assert_eq!(loaded.interface.candidate().artifact().origin(), &origin);
-    assert!(matches!(
-        publication::query_publication(&store, &context(), domain(), &resolver(), &origin),
-        Err(PublicationAdmissionError::UnsupportedRecordProvenance)
-    ));
-    // The legacy publication path cannot reuse a paid origin.
+    // DR-0126: the paid record is queryable with its exact stored, verified
+    // signed frame -- never a synthesized legacy signature.
+    assert_eq!(
+        publication::query_publication(&store, &context(), domain(), &resolver(), &origin).unwrap(),
+        Some(publication::PublicationQueryResult::Paid(expected_signed))
+    );
+    // The legacy publication path retains clear Legacy provenance.
     assert!(matches!(
         publication::query_publication(&store, &context(), domain(), &resolver(), &fixture.origin),
-        Ok(Some(_))
+        Ok(Some(publication::PublicationQueryResult::Legacy(_)))
     ));
+}
+
+/// DR-0126: depth-two paid-Publish dependency coverage. The paid root `C`
+/// declares only a direct edge to `B`; `B` (already durably published,
+/// zero-fee) itself declares an edge to leaf `A` (also already durably
+/// published). `load_paid_publish_closure` must recursively resolve the
+/// full three-node closure `{C, B, A}` under one shared
+/// `PublicationLoadBudget`, and the deterministic metered units must count
+/// exactly those three nodes, never merely the one directly declared edge.
+#[test]
+fn depth_two_paid_publish_dependency_resolves_under_one_shared_load_budget() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let engine: CountingEngine = CountingEngine::new();
+
+    // Leaf `A`: no dependencies.
+    let (_, leaf_ref) = publish_package(&store, 40, 20, FIRST_PAID_NONCE);
+    // Middle `B`: declares exactly one edge, to `A`.
+    let (_, middle_ref) =
+        publish_package_with_dependencies(&store, 41, 21, FIRST_PAID_NONCE + 1, vec![leaf_ref]);
+    // Root `C`: paid Publish, declaring exactly one edge, to `B`.
+    let root_origin: PackageOrigin =
+        PackageOrigin::unverified(protocol().chain_id().clone(), sender(), [42; 32]).unwrap();
+    let root_package: StandardAssetPackage = build_package(&root_origin).unwrap();
+    let root_artifact: CodeArtifact = CodeArtifact::new(ArtifactParts {
+        context: protocol(),
+        origin: root_origin.clone(),
+        revision: 1,
+        wasm_profile: 4,
+        semantics: generic_object_result_semantics(&resolver(), &protocol()).unwrap(),
+        wasm: root_package.wasm,
+        unverified_abi: root_package.encoded_abi,
+        exports: root_package.exports,
+        unverified_dependencies: vec![middle_ref],
+    })
+    .unwrap();
+    let artifact_bytes: u64 = encode_code_artifact(&root_artifact).unwrap().len() as u64;
+    // Deterministic Publish pricing: `artifact_bytes * price + closure_nodes
+    // * price`, with `fixture.policy`'s prices both fixed at 1 and
+    // `closure_nodes = 3` (root + middle + leaf).
+    let expected_units: u64 = artifact_bytes + 3;
+    let gas_limit: u64 = expected_units + 10_000;
+    let bytes: Vec<u8> = paid_publish(
+        &fixture,
+        23,
+        FIRST_PAID_NONCE + 2,
+        root_artifact,
+        &fixture.coin,
+        gas_limit,
+    );
+    let output: NodeOutput = execute(&store, &fixture, &engine, &bytes).unwrap();
+    let result: PaidExecutionResult = receipt(&output);
+    assert_eq!(result.status, PaidExecutionStatus::Success);
+    assert_eq!(
+        result.target,
+        PaidResultTarget::Package(root_origin.clone())
+    );
+    let charged = result.charged.as_ref().unwrap();
+    assert_eq!(charged.application_gas_units, expected_units);
+
+    // The published root now itself loads as a verified dependency, whose
+    // closure transitively includes the middle and leaf packages.
+    let loaded = publication::load_verified_publication(
+        &store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &root_origin,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(loaded.interface.dependencies().len(), 2);
 }
 
 #[test]
@@ -1377,6 +1616,61 @@ fn wrong_fee_instance_code_or_source_authority_reject_before_execution() {
     // Only the installed publication in (b) consumed a nonce; every paid
     // rejection above committed nothing.
     assert_eq!(next_nonce(&store), FIRST_PAID_NONCE + 1);
+}
+
+/// DR-0126: an installed policy whose pinned `asset_type` no longer matches
+/// the real installed contract's `reserve`/`reserve_all`/`settle` roles must
+/// be rejected by `validate_fee_interface_admission`, before the immutable
+/// quote is derived and before the sender's nonce is consumed. The policy
+/// bytes alone are still intrinsically well-formed (`asset_type` differs
+/// from `reservation_type` and shares the code's origin), so only the
+/// installed-ABI/role admission check -- not `validate_paid_fee_policy`'s
+/// intrinsic decoding -- can catch this mismatch.
+#[test]
+fn installed_fee_abi_role_mismatch_rejects_before_quote_and_nonce() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let engine: CountingEngine = CountingEngine::new();
+
+    // `reserve`/`reserve_all` accept `Coin<A>`, never `TreasuryCap<A>`.
+    let mut mismatched: PaidFeePolicy = fixture.policy.clone();
+    mismatched.asset_type =
+        public_standard_asset::treasury_cap_type_tag(&fixture.origin, &fixture.asset).unwrap();
+    set_state(
+        &store,
+        paid_fee_policy_key(&protocol()).unwrap(),
+        StateMutation::Put(encode_paid_fee_policy(&mismatched).unwrap()),
+    );
+    let bytes: Vec<u8> = paid_call(PaidCall {
+        fixture: &fixture,
+        policy: &mismatched,
+        request: 30,
+        nonce: FIRST_PAID_NONCE,
+        source: &fixture.coin,
+        entrypoint: "transfer",
+        arguments: public_standard_asset::transfer_arguments(&refund_account()).unwrap(),
+        access: vec![entry(&fixture.coin, AccessMode::Write)],
+    });
+    // Exactly the installed-ABI/role validator's own rejection reason, not
+    // merely some `Paid` error: this proves node-core actually fails on
+    // `validate_fee_interface_admission`, not incidentally on a different
+    // check that would also reject this mismatch.
+    assert!(matches!(
+        run(
+            &store,
+            &MemoryBlobStore::default(),
+            &context(),
+            &mismatched,
+            &engine,
+            &bytes
+        ),
+        Err(PaidExecutionAdmissionError::Paid(
+            PaidExecutionError::Invalid("reserve-shaped export object role")
+        ))
+    ));
+    assert_eq!(engine.calls.get(), 0);
+    // Rejection happened before nonce reservation was committed.
+    assert_eq!(next_nonce(&store), FIRST_PAID_NONCE);
 }
 
 #[test]
@@ -1700,6 +1994,163 @@ fn sqlite_reopen_replays_exactly_and_a_stale_writer_generation_is_fenced() {
         }
         assert_eq!(engine.calls.get(), 0);
         assert_eq!(tracked(&store, &generation(2), &fixture, &other), expected);
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// DR-0126: real file-backed SQLite writer fencing for
+/// `ReservationAccessKind::Consume`, mirroring
+/// `sqlite_reopen_replays_exactly_and_a_stale_writer_generation_is_fenced`'s
+/// evidence but for a source deletion rather than a source mutation. A
+/// stale generation-one writer is fenced out even for an exact replay after
+/// reopen, and the current-generation reopen replays identically without
+/// re-executing or re-deleting.
+#[test]
+fn consume_reservation_sqlite_reopen_replays_exactly_and_a_stale_writer_generation_is_fenced() {
+    let unique: u128 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory: std::path::PathBuf = std::env::temp_dir().join(format!(
+        "paid-durable-consume-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let state_path: std::path::PathBuf = directory.join("state.sqlite");
+    let blob_path: std::path::PathBuf = directory.join("blobs.sqlite");
+    let namespace: SqliteNamespace = SqliteNamespace::new(
+        protocol().chain_id().clone(),
+        ValidatorId::new([5; 32]),
+        domain(),
+    );
+    let blob_store: SqliteBlobStore = SqliteBlobStore::open(&blob_path).unwrap();
+    const RESERVED: u64 = 151;
+    let fixture: Fixture;
+    let call_bytes: Vec<u8>;
+    let call_output: NodeOutput;
+    let source_id: ObjectId;
+    {
+        let store: SqliteDurableStore = SqliteDurableStore::open(
+            &state_path,
+            namespace.clone(),
+            WriterFenceGeneration::new(1).unwrap(),
+        )
+        .unwrap();
+        fixture = install(&store);
+        let engine: CountingEngine = CountingEngine::new();
+        let coin_tag =
+            public_standard_asset::coin_type_tag(&fixture.origin, &fixture.asset).unwrap();
+        let cap_tag =
+            public_standard_asset::treasury_cap_type_tag(&fixture.origin, &fixture.asset).unwrap();
+        let minted: Vec<Object> = install_call(
+            &store,
+            &fixture.instance,
+            20,
+            FIRST_PAID_NONCE,
+            "mint",
+            vec![public_standard_asset::asset_type_argument(&fixture.asset)],
+            public_standard_asset::mint_arguments(RESERVED, &sender()).unwrap(),
+            vec![entry(&fixture.cap, AccessMode::Write)],
+        );
+        let source: Object = pick(&minted, &coin_tag);
+        source_id = source.id;
+        let cap: Object = pick(&minted, &cap_tag);
+        call_bytes = paid_call_with_access(
+            PaidCall {
+                fixture: &fixture,
+                policy: &fixture.policy,
+                request: 21,
+                nonce: FIRST_PAID_NONCE + 1,
+                source: &source,
+                entrypoint: "mint",
+                arguments: public_standard_asset::mint_arguments(1, &sender()).unwrap(),
+                access: vec![entry(&cap, AccessMode::Write)],
+            },
+            ReservationAccessKind::Consume,
+        );
+        call_output = run(
+            &store,
+            &blob_store,
+            &context(),
+            &fixture.policy,
+            &engine,
+            &call_bytes,
+        )
+        .unwrap();
+        assert_eq!(receipt(&call_output).status, PaidExecutionStatus::Success);
+        assert!(matches!(
+            store
+                .get_object_head(&context(), domain(), source_id)
+                .unwrap(),
+            DurableObjectHead::Tombstoned { .. }
+        ));
+        assert_eq!(engine.calls.get(), 1);
+
+        // Same-boot exact replay: no reexecution, no second delete.
+        let replayed: NodeOutput = run(
+            &store,
+            &DeniedBlobStore,
+            &context(),
+            &fixture.policy,
+            &engine,
+            &call_bytes,
+        )
+        .unwrap();
+        assert_eq!(replayed, call_output);
+        assert_eq!(engine.calls.get(), 1);
+
+        store
+            .advance_writer_fence(
+                WriterFenceGeneration::new(1).unwrap(),
+                WriterFenceGeneration::new(2).unwrap(),
+            )
+            .unwrap();
+    }
+    {
+        let store: SqliteDurableStore = SqliteDurableStore::open(
+            &state_path,
+            namespace,
+            WriterFenceGeneration::new(1).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.writer_fence().unwrap(),
+            WriterFenceGeneration::new(2).unwrap()
+        );
+        let engine: CountingEngine = CountingEngine::new();
+        // The stale generation-one writer is fenced out even for a replay.
+        assert!(
+            run(
+                &store,
+                &DeniedBlobStore,
+                &context(),
+                &fixture.policy,
+                &engine,
+                &call_bytes
+            )
+            .is_err()
+        );
+        // Post-restart exact replay under the current generation: identical
+        // receipt, no re-execution, no re-delete, retained tombstone.
+        assert_eq!(
+            run(
+                &store,
+                &DeniedBlobStore,
+                &generation(2),
+                &fixture.policy,
+                &engine,
+                &call_bytes
+            )
+            .unwrap(),
+            call_output
+        );
+        assert_eq!(engine.calls.get(), 0);
+        assert!(matches!(
+            store
+                .get_object_head(&generation(2), domain(), source_id)
+                .unwrap(),
+            DurableObjectHead::Tombstoned { .. }
+        ));
     }
     std::fs::remove_dir_all(directory).unwrap();
 }

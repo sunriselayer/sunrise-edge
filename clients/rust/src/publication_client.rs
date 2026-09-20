@@ -8,11 +8,13 @@ use abi::package_types::PackageOrigin;
 use crypto::SignatureSigner;
 use execution::publication::{
     CodeArtifact, PublicationContext, PublicationRequest, PublicationSubmission,
-    artifact_commitment, authenticate_publication_submission, decode_publication_submission,
-    encode_publication_submission, publication_submission_signing_frame,
+    artifact_commitment, authenticate_publication_submission, encode_publication_submission,
+    publication_submission_signing_frame,
 };
 use hashing::HashSuiteResolver;
 use node_core::RequestId;
+pub use node_core::publication::PublicationQueryResult;
+use node_core::publication::decode_publication_query_result;
 use node_wire::{
     HttpNodeResult, NODE_EVENT_MEDIA_TYPE, NODE_RESULT_MEDIA_TYPE, QUERY_RESULT_MEDIA_TYPE,
 };
@@ -154,13 +156,21 @@ impl<T: Transport> Client<T> {
     /// commitment and WASM against the current locally trusted context/semantics.
     /// For a publication from an earlier epoch, use `query_publication_in_context`.
     /// A 404 is only a server-reported absence, not a cryptographic absence proof.
+    ///
+    /// DR-0126: the result distinguishes an authenticated Legacy submission
+    /// from an independently re-authenticated Paid `SignedPaidIntent`. A
+    /// Paid result is never converted into a fabricated legacy submission.
+    /// Both branches verify the exact selector and caller-expected
+    /// semantics under the explicitly supplied original resolver/context;
+    /// the Paid branch additionally requires a `PaidApplication::Publish`
+    /// application and independently verifies the intent's own signature.
     pub fn query_publication(
         &self,
         origin: &PackageOrigin,
         resolver: &HashSuiteResolver,
         expected: &ExpectedProtocolContext,
         expected_semantics: &Digest32,
-    ) -> Result<Option<PublicationSubmission>, ClientError> {
+    ) -> Result<Option<PublicationQueryResult>, ClientError> {
         let context: PublicationContext = trusted_context(resolver, expected)?;
         self.query_publication_in_context(origin, resolver, expected, &context, expected_semantics)
     }
@@ -176,7 +186,7 @@ impl<T: Transport> Client<T> {
         expected: &ExpectedProtocolContext,
         original_context: &PublicationContext,
         expected_semantics: &Digest32,
-    ) -> Result<Option<PublicationSubmission>, ClientError> {
+    ) -> Result<Option<PublicationQueryResult>, ClientError> {
         self.query_publication_with_semantics(
             origin,
             original_resolver,
@@ -193,7 +203,7 @@ impl<T: Transport> Client<T> {
         expected: &ExpectedProtocolContext,
         original_context: &PublicationContext,
         semantics: impl FnOnce(&CodeArtifact) -> Result<Digest32, ClientError>,
-    ) -> Result<Option<PublicationSubmission>, ClientError> {
+    ) -> Result<Option<PublicationQueryResult>, ClientError> {
         if origin.chain_id() != expected.chain_id() {
             return Err(ClientError::PublicationTrustMismatch);
         }
@@ -227,16 +237,50 @@ impl<T: Transport> Client<T> {
             return Ok(None);
         }
         let bytes: Vec<u8> = crate::client::expect_success(response, QUERY_RESULT_MEDIA_TYPE)?;
-        let submission: PublicationSubmission = decode_publication_submission(&bytes)?;
-        if submission.request().artifact().origin() != origin {
-            return Err(ClientError::PublicationQuerySelectorMismatch);
+        let result: PublicationQueryResult = decode_publication_query_result(&bytes)?;
+        match &result {
+            PublicationQueryResult::Legacy(submission) => {
+                if submission.request().artifact().origin() != origin {
+                    return Err(ClientError::PublicationQuerySelectorMismatch);
+                }
+                authenticate_publication_submission(
+                    original_resolver,
+                    original_context,
+                    &semantics(submission.request().artifact())?,
+                    submission.clone(),
+                )?;
+            }
+            // No `PublicationSubmission` exists for a paid record and none is
+            // fabricated. The embedded `SignedPaidIntent` is instead
+            // independently re-authenticated here, under the explicitly
+            // supplied original resolver/context: exact selector, exact
+            // Publish application kind, exact caller-expected semantics, and
+            // the intent's own context/signature.
+            PublicationQueryResult::Paid(signed) => {
+                let artifact: &CodeArtifact = match &signed.intent.application {
+                    execution::paid_execution::PaidApplication::Publish(artifact) => artifact,
+                    _ => {
+                        return Err(ClientError::PublicationQueryPaidApplicationKindMismatch);
+                    }
+                };
+                if artifact.origin() != origin {
+                    return Err(ClientError::PublicationQuerySelectorMismatch);
+                }
+                if artifact.semantics() != &semantics(artifact)? {
+                    return Err(ClientError::Publication(
+                        execution::publication::PublicationError::SemanticsMismatch,
+                    ));
+                }
+                let encoded: Vec<u8> =
+                    execution::paid_execution::encode_signed_paid_intent(signed)?;
+                execution::paid_execution::authenticate_paid_intent(
+                    original_resolver,
+                    original_context,
+                    &encoded,
+                )
+                .map_err(ClientError::PublicationQueryPaidAuthentication)?;
+            }
         }
-        authenticate_publication_submission(
-            original_resolver,
-            original_context,
-            &semantics(submission.request().artifact())?,
-            submission.clone(),
-        )?;
-        Ok(Some(submission))
+        Ok(Some(result))
     }
 }

@@ -5,6 +5,8 @@
 //! Head observations must be revalidated by a later fenced commit after replay checks.
 
 use execution::publication::{BindingError, BodyError, BoundObjectParameter};
+use hashing::HashSuiteResolver;
+use runtime::DurableObjectProvenance;
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -14,6 +16,33 @@ pub(super) struct ObjectSnapshot {
     pub(super) head: DurableObjectHead,
     pub(super) object: Object,
     pub(super) created_checkpoint: u64,
+    /// The object version record's own creating chain/protocol-version
+    /// context (DR-0126), retained so callers can select the trusted
+    /// historical resolver for nominal type/body verification instead of
+    /// always assuming the current resolver's protocol version.
+    pub(super) provenance: DurableObjectProvenance,
+}
+
+/// Selects the trusted resolver whose own `(chain_id, protocol_version)`
+/// matches this object's recorded creating context, mirroring
+/// `local_execution::original_resolver`'s selection for code/instance
+/// contexts. Missing historical context fails closed with
+/// [`NodeCoreError::ObjectHistoricalResolverUnavailable`]; the current
+/// resolver is never substituted merely because it can still decode bytes
+/// under a foreign protocol version.
+pub(super) fn historical_resolver_for_provenance<'a>(
+    current: &'a HashSuiteResolver,
+    history: &'a [HashSuiteResolver],
+    object_id: ObjectId,
+    provenance: &DurableObjectProvenance,
+) -> Result<&'a HashSuiteResolver, NodeCoreError> {
+    std::iter::once(current)
+        .chain(history)
+        .find(|resolver| {
+            resolver.chain_id() == provenance.chain_id()
+                && resolver.protocol_version() == provenance.protocol_version()
+        })
+        .ok_or(NodeCoreError::ObjectHistoricalResolverUnavailable { object_id })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -178,12 +207,14 @@ where
     }
 
     let created_checkpoint: u64 = record.created_checkpoint();
+    let provenance: DurableObjectProvenance = record.provenance().clone();
     let object: Object = object.clone();
 
     Ok(ObjectSnapshot {
         head,
         object,
         created_checkpoint,
+        provenance,
     })
 }
 
@@ -259,6 +290,7 @@ pub fn load_bound_object_snapshots<S>(
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
     epoch: Epoch,
     signature: &execution::publication::BoundObjectSignature<'_>,
     manifest: &abi::AccessManifest,
@@ -306,6 +338,7 @@ where
     let mut total_body_bytes: usize = 0;
     let mut objects: Vec<ResolvedObject> = Vec::with_capacity(entries.len());
     let mut reads: Vec<runtime::DurableObjectHeadRead> = Vec::with_capacity(entries.len());
+    let mut resolvers: Vec<&HashSuiteResolver> = Vec::with_capacity(entries.len());
 
     for entry in entries {
         let snapshot: ObjectSnapshot = load_object_snapshot(
@@ -318,6 +351,15 @@ where
             &mut total_body_bytes,
         )?;
 
+        // DR-0126: nominal type verification below uses the resolver trusted
+        // for *this object's own* recorded creating protocol version, never
+        // unconditionally the caller's current resolver.
+        resolvers.push(historical_resolver_for_provenance(
+            resolver,
+            history,
+            entry.object_ref.id,
+            &snapshot.provenance,
+        )?);
         reads.push(runtime::DurableObjectHeadRead::new(
             entry.object_ref.id,
             snapshot.head,
@@ -329,7 +371,7 @@ where
     }
 
     execution::publication::validate_object_input_bodies(
-        signature, resolver, epoch, manifest, &objects,
+        signature, resolver, &resolvers, epoch, manifest, &objects,
     )?;
 
     Ok(BoundObjectSnapshots { objects, reads })

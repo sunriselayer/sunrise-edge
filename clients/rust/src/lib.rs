@@ -57,6 +57,7 @@ pub mod context;
 pub mod error;
 pub mod key;
 pub mod local_execution_client;
+pub mod paid_execution_client;
 pub mod publication_client;
 pub mod support;
 pub mod transaction;
@@ -67,6 +68,15 @@ pub use abi::{decode_access_manifest, executable_abi};
 pub use client::{Client, ReceiptPollBounds, SubmitTransactionRequest};
 pub use context::{ExpectedProtocolContext, ExpectedProtocolContextError, ProtocolContextMismatch};
 pub use error::ClientError;
+pub use execution::GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION;
+pub use execution::paid_execution::{
+    FeeSourceConsent, MAX_PAID_EXECUTION_RESULT_BYTES, MAX_SIGNED_PAID_INTENT_BYTES,
+    MIN_EXECUTION_PRICE, MIN_RESERVE_ALLOWANCE, MIN_SETTLE_ALLOWANCE, PaidApplication,
+    PaidChargedOutcome, PaidExecutionResult, PaidExecutionStatus, PaidFeePolicy, PaidIntent,
+    PaidResultKind, PaidResultTarget, ReservationAccessKind, SignedPaidIntent,
+    decode_paid_execution_result, decode_paid_fee_policy, encode_paid_execution_result,
+    encode_paid_fee_policy, encode_signed_paid_intent, paid_fee_policy_digest,
+};
 pub use execution::publication::{
     ArtifactParts, CodeArtifact, PublicationContext, PublicationSubmission,
     UnverifiedDependencyRef, decode_dependency_ref,
@@ -75,8 +85,16 @@ pub use execution::{call, call_authorization, local_execution};
 pub use hashing::HashSuiteResolver;
 pub use key::LocalSigner;
 pub use local_execution_client::{build_signed_general_execution, build_signed_local_execution};
+pub use node_core::publication::{
+    decode_publication_query_result, encode_publication_query_result,
+};
+pub use paid_execution_client::{
+    PAID_EXECUTION_PATH, PAID_FEE_POLICY_PATH, build_signed_paid_execution,
+};
 pub use protocol_types::{HashSuite, HashSuiteSchedule};
-pub use publication_client::{build_signed_publication, local_publication_resolver};
+pub use publication_client::{
+    PublicationQueryResult, build_signed_publication, local_publication_resolver,
+};
 pub use signing_view::{
     ClearSigningPolicy, ClearSigningPolicyError, ClearSigningView, DeviceSigningProfile,
     HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3, SigningViewError,

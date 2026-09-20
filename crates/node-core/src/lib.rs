@@ -44,6 +44,7 @@ use system_modules::{ModuleId, SystemModule, SystemModuleError};
 mod authenticated_object_effects;
 mod durable_reconciliation;
 pub mod fee_effects;
+pub mod genesis;
 pub mod local_execution;
 pub mod local_instance_state;
 mod object_snapshots;
@@ -68,6 +69,15 @@ pub use execution::{ObjectEffect, ResolvedObject};
 pub use fee_effects::{
     CommittedFeePolicy, FeeChargeBodies, FeeChargeRequest, FeeCompositionError, FeeEffectComposer,
     GasScheduleShapeFault, PreinstalledFeeComposition, validate_gas_schedule_shape,
+};
+pub use genesis::{
+    GENESIS_INSTALL_MARKER_FRAME_TYPE, GENESIS_INSTALL_MARKER_VERSION, GENESIS_MANIFEST_FRAME_TYPE,
+    GENESIS_MANIFEST_VERSION, GenesisError, GenesisInstallMarker, GenesisInstallOutcome,
+    GenesisManifest, GenesisObjectEntry, MAX_GENESIS_INSTALL_MARKER_BYTES,
+    MAX_GENESIS_MANIFEST_BYTES, MAX_GENESIS_OBJECTS, decode_genesis_install_marker,
+    decode_genesis_manifest, encode_genesis_install_marker, encode_genesis_manifest,
+    genesis_manifest_commitment, genesis_manifest_key, genesis_marker_key, install_genesis,
+    install_genesis_with_history,
 };
 pub use object_snapshots::{BoundObjectSnapshots, BoundSnapshotError, load_bound_object_snapshots};
 pub use preinstalled_wasm::{
@@ -466,6 +476,14 @@ pub enum NodeCoreError {
     },
     /// The version record's creating chain does not match the trusted event chain.
     ObjectProvenanceMismatch {
+        /// Object identifier.
+        object_id: ObjectId,
+    },
+    /// No trusted resolver (current or historical) matches this object's own
+    /// recorded creating chain/protocol version (DR-0126). The current
+    /// resolver is never substituted merely because it can still decode the
+    /// bytes: nominal type/body verification for this object fails closed.
+    ObjectHistoricalResolverUnavailable {
         /// Object identifier.
         object_id: ObjectId,
     },
@@ -1274,6 +1292,10 @@ impl fmt::Display for NodeCoreError {
             Self::ObjectProvenanceMismatch { object_id } => write!(
                 f,
                 "object {object_id} version provenance chain does not match the event chain"
+            ),
+            Self::ObjectHistoricalResolverUnavailable { object_id } => write!(
+                f,
+                "object {object_id} has no trusted historical resolver for its recorded protocol version"
             ),
             Self::ObjectBodyTooLarge {
                 object_id,
@@ -6269,7 +6291,7 @@ fn validate_state(state: &[u8]) -> Result<(), NodeCoreError> {
     Ok(())
 }
 
-fn validate_transactional_state_key(key: &[u8]) -> Result<(), NodeCoreError> {
+pub(crate) fn validate_transactional_state_key(key: &[u8]) -> Result<(), NodeCoreError> {
     if key.is_empty() {
         return Err(NodeCoreError::EmptyStateKey);
     }

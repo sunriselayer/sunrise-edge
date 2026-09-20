@@ -25,8 +25,10 @@ enum CachedProvenance {
     Unstored,
     /// A stored legacy submission and its signed request identity.
     Legacy([u8; 32]),
-    /// A stored paid Publish frame whose successful receipt was verified.
-    Paid([u8; 32]),
+    /// A stored paid Publish frame whose successful receipt was verified,
+    /// carried in full so a query surface can return it for independent
+    /// re-authentication rather than only its request identity.
+    Paid(Box<SignedPaidIntent>),
 }
 
 #[derive(Clone)]
@@ -139,7 +141,7 @@ fn paid_node<S: StructuredDurableDomainStateStore>(
     let original: &HashSuiteResolver = resolver_for(resolver, history, &signed.intent.context)?;
     let authenticated: AuthenticatedPaidIntent =
         authenticate_paid_intent(original, &signed.intent.context, bytes)?;
-    let request_id: [u8; 32] =
+    let _request_id: [u8; 32] =
         verify_paid_publication_receipt(store, context, domain, original, &authenticated, origin)?;
     let candidate: AuthenticatedPublicationCandidate =
         authenticate_paid_publication_candidate(original, &authenticated)?;
@@ -148,7 +150,7 @@ fn paid_node<S: StructuredDurableDomainStateStore>(
     }
     Ok(CachedPublication {
         candidate,
-        provenance: CachedProvenance::Paid(request_id),
+        provenance: CachedProvenance::Paid(Box::new(signed)),
     })
 }
 
@@ -421,7 +423,7 @@ pub(crate) fn load_verified_publication_with_budget<S: StructuredDurableDomainSt
                 legacy_request,
             )?)
         }
-        CachedProvenance::Paid(request_id) => VerifiedPublicationRecord::Paid { request_id },
+        CachedProvenance::Paid(signed) => VerifiedPublicationRecord::Paid(*signed),
         // `load_node` only ever returns stored provenance.
         CachedProvenance::Unstored => return Err(PublicationAdmissionError::CorruptRecord),
     };

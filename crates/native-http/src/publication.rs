@@ -2,9 +2,7 @@
 
 use super::*;
 use abi::package_types::PackageOrigin;
-use execution::publication::{
-    MAX_PUBLICATION_SUBMISSION_BYTES, decode_publication_submission, encode_publication_submission,
-};
+use execution::publication::{MAX_PUBLICATION_SUBMISSION_BYTES, decode_publication_submission};
 
 pub(super) const PUBLICATION_PATH: &str = "/v1/contracts/publications";
 const QUERY_PATH: &str = "/v1/contracts/publications/{publisher}/{origin_seed}";
@@ -197,28 +195,35 @@ where
             if state.components.is_cancelled() {
                 return cancelled_before_storage_response();
             }
-            match node_core::publication::query_publication(
+            match node_core::publication::query_publication_with_history(
                 state.components.store.as_ref(),
                 &context,
                 domain,
                 &state.resolver,
+                &state.history,
                 &origin,
             ) {
-                Ok(Some(submission)) => match encode_publication_submission(&submission) {
-                    Ok(bytes) => (
-                        StatusCode::OK,
-                        [
-                            (header::CONTENT_TYPE, QUERY_RESULT_MEDIA_TYPE),
-                            (header::CACHE_CONTROL, "no-store"),
-                        ],
-                        bytes,
-                    )
-                        .into_response(),
-                    Err(_) => error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "publication-result-encoding",
-                    ),
-                },
+                // DR-0126: the response is always the provenance-aware
+                // `PublicationQueryResult` frame, whether the stored record
+                // is a Legacy submission or a Paid Publish receipt. This
+                // never synthesizes a legacy signature for a paid record.
+                Ok(Some(result)) => {
+                    match node_core::publication::encode_publication_query_result(&result) {
+                        Ok(bytes) => (
+                            StatusCode::OK,
+                            [
+                                (header::CONTENT_TYPE, QUERY_RESULT_MEDIA_TYPE),
+                                (header::CACHE_CONTROL, "no-store"),
+                            ],
+                            bytes,
+                        )
+                            .into_response(),
+                        Err(_) => error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "publication-result-encoding",
+                        ),
+                    }
+                }
                 Ok(None) => error_response(StatusCode::NOT_FOUND, "publication-not-found"),
                 Err(error) => match error {
                     node_core::publication::PublicationAdmissionError::Node(error) => {
@@ -245,18 +250,14 @@ pub(super) fn admission_error(
         E::Publication(_) | E::Interface(_) | E::MissingDependency | E::Limit => {
             error_response(StatusCode::BAD_REQUEST, "publication-rejected")
         }
-        // A stored record that fails paid decoding/authentication, and a
-        // stored provenance this submission-shaped surface cannot represent,
-        // are both node-state faults, exactly like a corrupt record. No paid
-        // route is activated by classifying them.
-        E::PolicyMismatch
-        | E::CorruptRecord
-        | E::Paid(_)
-        | E::UnsupportedRecordProvenance
-        | E::HistoricalContextUnavailable => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "publication-policy-or-state-invalid",
-        ),
+        // A stored record that fails paid decoding/authentication is a
+        // node-state fault, exactly like a corrupt record.
+        E::PolicyMismatch | E::CorruptRecord | E::Paid(_) | E::HistoricalContextUnavailable => {
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "publication-policy-or-state-invalid",
+            )
+        }
     }
 }
 
