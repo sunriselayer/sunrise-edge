@@ -14,7 +14,7 @@ activation remain open, so the generic-contract gate is not closed.
 | --- | --- | --- | --- |
 | 1 | Durable local code publication | CLI publish/query; immutable code/ABI/exact dependencies; authenticated admission; origin absence; shared nonce and receipt atomicity (no outgoing message); real SQLite restart/replay/conflict/fencing | Implemented and locally validated (DR-0121); fee-free opt-in local storage only |
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
-| 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Open |
+| 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Partially implemented; public activation open |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Open |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
@@ -2057,9 +2057,10 @@ physical media faultや長期soakを同じ項目として重複実装しない�
 **Design baseline (DR-0111, 2026-09-07):**
 [`docs/architecture/generic-contracts.md`](docs/architecture/generic-contracts.md)
 and [`docs/smartcontract/`](docs/smartcontract/README.md) are the accepted To-Be;
-DR-0111 preserves dated As-Is evidence and replacement rationale. This gate remains open:
-the design record does not implement publication, instance isolation, public
-type authority, or upgrades. Standard Asset must use the same public facilities
+DR-0111 preserves dated As-Is evidence and replacement rationale. That design
+record alone did not implement publication, instance isolation, public type
+authority, or upgrades; later records implement the first three while upgrades
+remain open. Standard Asset must use the same public facilities
 as user contracts; remove superseded trusted-only paths and native Coin-body
 settlement callbacks rather than retaining unreleased compatibility branches.
 
@@ -2130,11 +2131,12 @@ statements such as “body validation remains open” are not the live work queu
     commits paid effects, authorities, instance/publication records, nonce and
     receipt with writer fencing. Call/Instantiate/Publish remain one combined
     activation gate. Activation still requires:
-    - one shared, calibrated definition of phase caps, R/S and allowances;
+    - calibrated R/S values and a schedule floor for the existing shared
+      phase-cap definition;
     - a closed installer/bootstrap marker and installed ABI/role compatibility;
     - authenticated historical object framing across protocol versions;
-    - durable Consume source-deletion, transitive paid-dependency and paid-aware
-      publication-query coverage.
+    - durable Consume source-deletion coverage, transitive paid-dependency and
+      paid-aware publication-query coverage.
   - [x] Public Standard Asset transfer/split/merge/mint/burn and reserve/settle
     package implementation and activation hardening ([DR-0125](docs/architecture/decisions/0125-public-standard-asset-activation-hardening.md)).
     The public WASM package implements all amount transitions and checked supply
@@ -2146,8 +2148,10 @@ statements such as “body validation remains open” are not the live work queu
     foreign-recipient and all-entrypoint same-code cross-instance authority
     regressions are implemented. This closes the package-local prerequisite only;
     it does not install or activate the package or paid policy.
-  - [ ] Fenced atomic genesis manifest installer, closed bootstrap marker,
-    native HTTP/CLI activation and removal of asset-only grants/native composer.
+  - [ ] Fenced atomic genesis manifest installer, closed bootstrap marker and
+    native HTTP/CLI activation ([DR-0126](docs/architecture/decisions/0126-public-paid-contract-activation.md)),
+    followed by removal of asset-only grants/native composer after the replacement
+    paid route is usable.
   - [ ] Complete activation evidence and fresh combined review. Existing internal
     evidence covers canonical vectors, same-source/transferred-source behavior,
     phase exhaustion and traps, charged/zero-charge receipts, exact replay,
