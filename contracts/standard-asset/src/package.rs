@@ -14,7 +14,7 @@ use abi::public_abi::{
     ObjectResultDeclaration, PackageAbi,
 };
 
-use crate::source::{contract_wasm, contract_wat};
+use crate::source::{contract_wat, parse_wat};
 use crate::types::{
     bound_pattern, coin_body_layout, definition_body_layout, empty_argument_layout,
     mint_argument_layout, reservation_body_layout, reserve_argument_layout, settle_argument_layout,
@@ -228,9 +228,11 @@ pub fn build_package(origin: &PackageOrigin) -> Result<StandardAssetPackage, Sta
         .iter()
         .map(|entry| entry.name.clone())
         .collect();
+    let wat: String = contract_wat()?;
+    let wasm: Vec<u8> = parse_wat(&wat)?;
     Ok(StandardAssetPackage {
-        wat: contract_wat()?,
-        wasm: contract_wasm()?,
+        wat,
+        wasm,
         abi,
         encoded_abi,
         exports,

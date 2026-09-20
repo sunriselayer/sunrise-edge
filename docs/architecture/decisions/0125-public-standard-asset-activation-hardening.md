@@ -66,3 +66,18 @@ catalog/native composer remain later DR-0124 activation work.
 - package tests, workspace format/clippy/tests, stable vectors, and a fresh
   independent review before merge.
 
+## Implementation evidence
+
+The workspace pins `wat` exactly and the package builder validates all three
+admitted self-describing digest encodings before producing source. The verified
+length is substituted into every guest check; `build_package` parses the same
+WAT string it returns instead of regenerating it. A permanent SHA-256 vector
+fixes the 3,808-byte package WASM. An independent detached-baseline build
+confirmed that this vector also matches the package before the refactor.
+
+The VM suite proves direct foreign-recipient mint and split behavior and fixes
+the exact generic `input scope` rejection for mint, burn, transfer, split,
+merge, reserve, reserve-all, and settle across two instances of identical code.
+These tests exercise generic host authority and introduce no guest-side
+instance exception. Repository-gate and review results belong to the pull
+request evidence; none of this activates paid admission or closes DR-0124.

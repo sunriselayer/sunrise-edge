@@ -23,9 +23,61 @@
 //! |   24576 |    32 | constructed `u64` body                      |
 
 use abi::call_values::{CallValue, encode_call_value};
+use canonical_encoding::{decode_digest32, encode_digest32};
+use protocol_types::{Digest32, HashAlgorithmId};
 
 use crate::StandardAssetError;
 use crate::types::{coin_body_layout, definition_body_layout};
+
+/// Every digest algorithm this package admits in a caller-attested field.
+/// The WAT `$digest` walker's own bounded range check (algorithm ids one
+/// through three) must keep admitting exactly this set.
+const ADMITTED_DIGEST_ALGORITHMS: [HashAlgorithmId; 3] = [
+    HashAlgorithmId::Sha2_256,
+    HashAlgorithmId::Sha3_256,
+    HashAlgorithmId::Blake3_256,
+];
+
+/// Independently encodes and decodes a self-describing `Digest32` for every
+/// admitted algorithm and returns the one frame length they all share.
+///
+/// This is the single verified source every WAT digest length check and
+/// copy is generated from: canonical framing drift for any admitted
+/// algorithm, or drift from the declared [`crate::ENCODED_DIGEST32_BYTES`]
+/// constant, fails package construction instead of silently mismatching the
+/// guest's fixed-offset frame walker.
+fn verified_digest32_frame_len() -> Result<u32, StandardAssetError> {
+    let mut frame_len: Option<u32> = None;
+    for algorithm in ADMITTED_DIGEST_ALGORITHMS {
+        let digest: Digest32 = Digest32::new(algorithm, [algorithm.as_u16() as u8; 32]);
+        let encoded: Vec<u8> = encode_digest32(&digest)?;
+        let len: u32 = u32::try_from(encoded.len())
+            .map_err(|_| StandardAssetError::Invalid("digest32 frame length overflow"))?;
+        match frame_len {
+            None => frame_len = Some(len),
+            Some(expected) if expected == len => {}
+            Some(_) => {
+                return Err(StandardAssetError::Invalid(
+                    "digest32 frame length differs across admitted algorithms",
+                ));
+            }
+        }
+        if decode_digest32(&encoded)? != digest {
+            return Err(StandardAssetError::Invalid(
+                "digest32 frame did not round-trip through decode_digest32",
+            ));
+        }
+    }
+    let len: u32 = frame_len.ok_or(StandardAssetError::Invalid(
+        "no admitted digest32 algorithms",
+    ))?;
+    if len != crate::ENCODED_DIGEST32_BYTES {
+        return Err(StandardAssetError::Invalid(
+            "digest32 frame length drifted from the declared constant",
+        ));
+    }
+    Ok(len)
+}
 
 fn segment(address: u32, bytes: &[u8]) -> String {
     let escaped: String = bytes.iter().map(|byte| format!("\\{byte:02x}")).collect();
@@ -37,6 +89,7 @@ fn segment(address: u32, bytes: &[u8]) -> String {
 /// The source embeds only origin-independent canonical constants, so the
 /// same bytes are published for every publisher and instance.
 pub fn contract_wat() -> Result<String, StandardAssetError> {
+    let digest_len: u32 = verified_digest32_frame_len()?;
     let template: Vec<u8> = encode_call_value(&coin_body_layout(), &CallValue::U64(0))?;
     if template.len() != 32 || template[24..] != [0u8; 8] {
         return Err(StandardAssetError::Invalid(
@@ -177,7 +230,7 @@ pub fn contract_wat() -> Result<String, StandardAssetError> {
  (local.set $n (call $read_body (local.get $handle) (i32.const 0)
    (i32.const 12288) (i32.const 1024)))
  (call $tuple (i32.const 12288) (local.get $n) (i32.const 5)))
-;; Validates one caller-attested field as the exact 56-byte canonical
+;; Validates one caller-attested field as the exact {digest_len}-byte canonical
 ;; self-describing Digest32 frame produced by `canonical_encoding::
 ;; encode_digest32` and accepted by `canonical_encoding::decode_digest32`:
 ;; magic "SNRE", type 0x0103, version 1, field count 2, field 1 (id 1,
@@ -186,7 +239,7 @@ pub fn contract_wat() -> Result<String, StandardAssetError> {
 ;; unknown algorithm ids, extra/reordered fields, or mismatched lengths.
 (func $digest (param $p i32) (result i32)
  (local $v i32) (local $alg i32)
- (local.set $v (call $bytes (local.get $p) (i32.const 56)))
+ (local.set $v (call $bytes (local.get $p) (i32.const {digest_len})))
  (call $require (i32.eq (i32.load (local.get $v)) (i32.const 1163021907)))
  (call $require (i32.eq (i32.load16_u offset=4 (local.get $v)) (i32.const 259)))
  (call $require (i32.eq (i32.load16_u offset=6 (local.get $v)) (i32.const 1)))
@@ -398,11 +451,11 @@ pub fn contract_wat() -> Result<String, StandardAssetError> {
  (call $require (call $equal
    (call $digest (call $item (local.get $list) (i32.const 1)))
    (call $digest (call $item (local.get $body) (i32.const 1)))
-   (i32.const 56)))
+   (i32.const {digest_len})))
  (call $require (call $equal
    (call $digest (call $item (local.get $list) (i32.const 2)))
    (call $digest (call $item (local.get $body) (i32.const 2)))
-   (i32.const 56)))
+   (i32.const {digest_len})))
  (local.set $fee (call $bytes (call $item (local.get $body) (i32.const 3)) (i32.const 32)))
  (local.set $refund (call $bytes (call $item (local.get $body) (i32.const 4)) (i32.const 32)))
  (local.set $len (call $retag (i32.const 0) (i32.const 2)))
@@ -418,8 +471,16 @@ pub fn contract_wat() -> Result<String, StandardAssetError> {
     ))
 }
 
+/// Parses one exact WAT source string into core WASM bytes.
+pub(crate) fn parse_wat(source: &str) -> Result<Vec<u8>, StandardAssetError> {
+    wat::parse_str(source).map_err(|error| StandardAssetError::Wat(error.to_string()))
+}
+
 /// Parses the package source into core WASM bytes.
+///
+/// Generates a fresh [`contract_wat`] source; callers that already hold the
+/// generated source (such as [`crate::package::build_package`]) should parse
+/// it directly with [`parse_wat`] instead of regenerating it here.
 pub fn contract_wasm() -> Result<Vec<u8>, StandardAssetError> {
-    let source: String = contract_wat()?;
-    wat::parse_str(&source).map_err(|error| StandardAssetError::Wat(error.to_string()))
+    parse_wat(&contract_wat()?)
 }
