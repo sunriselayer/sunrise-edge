@@ -163,7 +163,6 @@ fn apply_transfer<S: StructuredDurableDomainStateStore>(
         &CountingEngine::new(),
         &bytes,
         certificate_bytes,
-        10,
     )
 }
 
@@ -490,6 +489,155 @@ fn independent_validators_derive_byte_identical_commitment_and_a_quorum_certific
     assert_eq!(next_nonce(&store_a), FIRST_PAID_NONCE + 1);
 }
 
+/// Regression coverage for the durably bound `created_checkpoint`: `prepare`
+/// admits and votes at one checkpoint, and `apply` -- which no longer
+/// accepts a checkpoint argument at all -- must re-derive admission against
+/// that exact stored value rather than any value visible only at apply
+/// time. Before this bound the two independently, so checkpoint progress
+/// between vote and apply could re-derive a different commitment for an
+/// otherwise perfectly valid certificate and strand both locks (phase 1 has
+/// no rollback or expiry).
+#[test]
+fn apply_uses_the_prepare_time_checkpoint_and_releases_both_locks() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let (signers, entries) = install_four_validators(&store);
+    let request: u8 = 40;
+    let bytes: Vec<u8> = paid_call_with_access(
+        PaidCall {
+            fixture: &fixture,
+            policy: &fixture.policy,
+            request,
+            nonce: FIRST_PAID_NONCE,
+            source: &fixture.coin,
+            entrypoint: "transfer",
+            arguments: public_standard_asset::transfer_arguments(&refund_account()).unwrap(),
+            access: vec![entry(&fixture.coin, objects::AccessMode::Write)],
+        },
+        ReservationAccessKind::Write,
+    );
+
+    // Prepare at a checkpoint deliberately distinct from every other
+    // fixture's checkpoint-10 convention in this file, so a later apply
+    // that used any other checkpoint would be unmistakable in the committed
+    // object version below.
+    let prepare_checkpoint: u64 = 777;
+    let vote: FastVote = prepare(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &CountingEngine::new(),
+        &signers[0],
+        &bytes,
+        prepare_checkpoint,
+    )
+    .unwrap();
+
+    let validator_set: ValidatorSet = ValidatorSet::new(
+        protocol().epoch(),
+        entries
+            .iter()
+            .map(|entry| ValidatorInfo {
+                id: entry.id,
+                voting_power: entry.voting_power,
+                signature_scheme: entry.signature_scheme,
+                public_key: entry.public_key.clone(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    let cert: consensus::FastPathCertifier = certifier(validator_set);
+    let remote_votes: Vec<FastVote> = signers[1..3]
+        .iter()
+        .map(|signer| {
+            cert.cast_vote(vote.tx_hash, vote.execution_effects_hash, signer)
+                .unwrap()
+        })
+        .collect();
+    let mut all_votes: Vec<FastVote> = vec![vote.clone()];
+    all_votes.extend(remote_votes);
+    let certificate: FastCertificate = cert
+        .try_form_certificate(
+            vote.tx_hash,
+            vote.execution_effects_hash,
+            &all_votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .unwrap();
+    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+
+    // `apply` takes no checkpoint argument at all: this call compiling and
+    // succeeding is itself part of the regression coverage that the
+    // prepare-time value is the only one that can ever be used.
+    let output: NodeOutput = apply(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &CountingEngine::new(),
+        &bytes,
+        &certificate_bytes,
+    )
+    .unwrap();
+    assert_eq!(receipt(&output).status, PaidExecutionStatus::Success);
+    assert_eq!(next_nonce(&store), FIRST_PAID_NONCE + 1);
+
+    // The committed object version durably carries the exact checkpoint
+    // `prepare` bound, proving `apply` re-derived admission against the
+    // stored value rather than any value visible only at apply time.
+    let head: DurableObjectHead = store
+        .get_object_head(&context(), domain(), fixture.coin.id)
+        .unwrap();
+    let DurableObjectHead::Current { object_version, .. } = head else {
+        panic!("coin must have a current head after a successful apply");
+    };
+    let version: DurableObjectVersionRecord = store
+        .get_object_version(&context(), domain(), fixture.coin.id, object_version)
+        .unwrap()
+        .expect("committed object version must be readable");
+    assert_eq!(version.created_checkpoint(), prepare_checkpoint);
+
+    // Both exclusive locks are released by the successful apply above: the
+    // fee-source Coin's nonce lock and its own per-object fast-path lock are
+    // both gone, exactly as a phase-1 apply that never diverges from the
+    // certified commitment must leave them.
+    let chain: ChainId = protocol().chain_id().clone();
+    assert!(
+        store
+            .get_versioned_durable(
+                &context(),
+                domain(),
+                &fastpath_nonce_lock_key(&chain, &sender(), protocol().epoch()).unwrap(),
+            )
+            .unwrap()
+            .value()
+            .is_none()
+    );
+    assert!(
+        store
+            .get_versioned_durable(
+                &context(),
+                domain(),
+                &fastpath_lock_key(&chain, fixture.coin.id).unwrap(),
+            )
+            .unwrap()
+            .value()
+            .is_none()
+    );
+}
+
 /// One validator's independent pair of file-backed SQLite stores (state and
 /// blobs), reopened repeatedly across this test to prove restart-durable
 /// behavior. Mirrors one real node process's persistence, not shared with
@@ -681,7 +829,6 @@ fn four_validator_sqlite_restart_e2e_derives_identical_votes_and_replays_prepare
             &apply_engine,
             &signed_bytes,
             &certificate_bytes,
-            10,
         )
         .unwrap();
         assert_eq!(
@@ -711,7 +858,6 @@ fn four_validator_sqlite_restart_e2e_derives_identical_votes_and_replays_prepare
             &replay_engine,
             &signed_bytes,
             &certificate_bytes,
-            10,
         )
         .unwrap();
         assert_eq!(replayed_output, applied_output);
@@ -929,7 +1075,6 @@ fn application_failed_fee_only_outcome_prepares_and_applies() {
         &CountingEngine::new(),
         &bytes,
         &certificate_bytes,
-        10,
     )
     .unwrap();
     let result = receipt(&output);
@@ -1169,7 +1314,6 @@ fn stale_writer_fence_rejects_apply_atomically() {
         &CountingEngine::new(),
         &bytes,
         &certificate_bytes,
-        10,
     );
     assert!(matches!(
         result,
@@ -1282,7 +1426,6 @@ fn certificate_with_wrong_commitment_for_the_correct_tx_hash_is_rejected_before_
         &apply_engine,
         &bytes,
         &certificate_bytes,
-        10,
     );
     assert!(matches!(
         result,
@@ -1549,7 +1692,6 @@ fn indeterminate_apply_commit_reconciles_on_exact_retry_without_reexecution_or_d
         &first_engine,
         &bytes,
         &certificate_bytes,
-        10,
     );
     assert!(matches!(
         first_result,
@@ -1577,7 +1719,6 @@ fn indeterminate_apply_commit_reconciles_on_exact_retry_without_reexecution_or_d
         &retry_engine,
         &bytes,
         &certificate_bytes,
-        10,
     )
     .unwrap();
     assert_eq!(receipt(&second_output).status, PaidExecutionStatus::Success);
@@ -1947,12 +2088,12 @@ fn fastpath_prepared_record_frame_0x641c_is_stable() {
         vote: vec![0x99; 4],
         locked_objects,
         pending_nonce: 5,
-        created_checkpoint: 10,
+        created_checkpoint: 6,
     };
     let bytes: Vec<u8> = records::encode_fastpath_prepared_record(&record).unwrap();
     assert_eq!(
         hex(&bytes),
-        "534e52451c640100080001003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f72730200040000000300000003000800000009000000000000000200200000006666666666666666666666666666666666666666666666666666666666666666030038000000534e524503010100020001000200000001000200200000007777777777777777777777777777777777777777777777777777777777777777040038000000534e52450301010002000100020000000100020020000000888888888888888888888888888888888888888888888888888888888888888805000400000099999999060038010000534e52452064010003000100040000000200000002008c000000534e5245044001000300010030000000534e5245014001000100010020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0200080000000100000000000000030038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb03008c000000534e5245044001000300010030000000534e5245014001000100010020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0200080000000200000000000000030038000000534e52450301010002000100020000000100020020000000dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd07000800000005000000000000000800080000000a00000000000000"
+        "534e52451c640100080001003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f72730200040000000300000003000800000009000000000000000200200000006666666666666666666666666666666666666666666666666666666666666666030038000000534e524503010100020001000200000001000200200000007777777777777777777777777777777777777777777777777777777777777777040038000000534e52450301010002000100020000000100020020000000888888888888888888888888888888888888888888888888888888888888888805000400000099999999060038010000534e52452064010003000100040000000200000002008c000000534e5245044001000300010030000000534e5245014001000100010020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0200080000000100000000000000030038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb03008c000000534e5245044001000300010030000000534e5245014001000100010020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0200080000000200000000000000030038000000534e52450301010002000100020000000100020020000000dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd07000800000005000000000000000800080000000600000000000000"
     );
 
     // Extract and pin the nested `0x6420` object-ref-list frame (field 6)

@@ -105,12 +105,11 @@ pub struct FastPathPreparedRecord {
     pub locked_objects: Vec<ObjectRef>,
     /// The exact sender nonce prepare reserved without advancing.
     pub pending_nonce: u64,
-    /// The `created_checkpoint` prepare used to build every created object
-    /// version record folded into `commitment`. `apply` must reuse this
-    /// exact value rather than a fresh caller-supplied one: a later apply
-    /// using a different (for example higher, chain-progressed) checkpoint
-    /// re-derives a different commitment for the same certificate and fails
-    /// closed permanently, since phase 1 has no lock rollback or timeout.
+    /// The exact `created_checkpoint` prepare admitted and voted on. Durably
+    /// bound here so `apply` re-derives the identical staged commitment
+    /// regardless of how far checkpoint progress has moved by the time a
+    /// certificate lands: `apply` uses this stored value rather than
+    /// accepting one from its own caller.
     pub created_checkpoint: u64,
 }
 

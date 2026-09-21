@@ -325,6 +325,11 @@ pub(crate) fn install_validator_set<S: StructuredDurableDomainStateStore>(
 /// stored vote without re-executing anything. A conflicting replay, an
 /// `Instantiate`/`Publish` application, or an input locked by a different
 /// request id all fail closed and write nothing.
+///
+/// `created_checkpoint` feeds the staged commitment this call votes on, and
+/// is durably bound into the prepared record so [`apply`] later re-admits
+/// against this exact same value rather than one supplied fresh by its own
+/// caller, however far checkpoint progress has moved since.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare<S, E, C>(
     store: &S,
@@ -573,12 +578,14 @@ where
 /// same request id, or a duplicate/reordered certificate for the same
 /// request) it is returned unchanged without re-executing anything.
 ///
-/// `created_checkpoint` is only sanity-checked against the checkpoint
-/// [`prepare`] originally bound on [`records::FastPathPreparedRecord`]; the
-/// admission and commitment re-derivation below always use that prepared
-/// value, never this fresh one, so a later apply observing a higher
-/// (chain-progressed) checkpoint cannot change the recomputed commitment out
-/// from under an already-cast vote.
+/// Re-admission always uses the `created_checkpoint` durably bound in the
+/// prepared record itself, not a value from this call's caller: the
+/// checkpoint feeds the staged commitment `prepare` voted on, so re-deriving
+/// it from anything other than that exact stored value could make a
+/// correct, quorum-certified vote fail the fresh-commitment check below
+/// purely because checkpoint progress moved between vote and apply --
+/// stranding the request's locks (phase 1 has no rollback or expiry) even
+/// though nothing about the certified outcome actually changed.
 #[allow(clippy::too_many_arguments)]
 pub fn apply<S, E>(
     store: &S,
@@ -593,7 +600,6 @@ pub fn apply<S, E>(
     engine: &E,
     signed_bytes: &[u8],
     certificate_bytes: &[u8],
-    created_checkpoint: u64,
 ) -> FastPathResult<NodeOutput>
 where
     S: StructuredDurableDomainStateStore,
