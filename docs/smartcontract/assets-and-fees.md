@@ -18,6 +18,15 @@ Identity belongs to the nominal type, not a duplicated amount-body field.
 Exact instance/defining-code authority is still required for every mutation;
 type equality alone is not provenance evidence.
 
+Creating an asset is ordinary contract instantiation. The authenticated creator
+selects a fresh creator-scoped instance seed and pays through the existing paid
+execution envelope. The public initializer creates exactly one Definition and
+one creator-owned, zero-supply TreasuryCap; the Definition's host-derived
+ObjectId becomes `A`. Re-instantiating the same authenticated code therefore
+creates a distinct asset and authority scope without republishing code or
+adding an asset-specific node transaction. Display metadata is separate
+ordinary state and never substitutes a name or symbol for this identity.
+
 Fee admission, accepted fee assets, gas pricing, and settlement authorization
 remain explicit protocol policy. Actual asset-state settlement uses a pinned,
 committed contract revision with a bounded interface, rather than an arbitrary

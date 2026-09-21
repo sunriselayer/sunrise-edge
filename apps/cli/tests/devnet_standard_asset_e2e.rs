@@ -1,27 +1,21 @@
 //! Real SQLite -> native HTTP -> CLI coverage for every public Standard Asset verb.
 
+mod common;
+
+use common::{
+    TestDirectory, application_created_object, current_coin_amount, decode_result, devnet_config,
+    operation, test_directory, transport, write_seed,
+};
+
 use execution::{
     ObjectEffect,
-    paid_execution::{
-        PaidExecutionResult, PaidExecutionStatus, decode_paid_execution_result,
-        decode_signed_paid_intent,
-    },
+    paid_execution::{PaidExecutionResult, PaidExecutionStatus, decode_signed_paid_intent},
     publication::PublicationContext,
 };
 use fees::{Amount, reservation::ReservationPricer};
-use objects::decode_object;
 use protocol_types::AtomicityDomainId;
-use public_standard_asset::coin_amount;
-use runtime::{DurableOperationContext, DurableReadError, StorageCorrelationId, StorageDeadline};
-use std::{
-    ffi::OsString,
-    fs,
-    net::SocketAddr,
-    num::NonZeroUsize,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
+use runtime::DurableReadError;
+use std::{ffi::OsString, fs, net::SocketAddr, path::PathBuf, sync::Arc};
 use sunrise_edge_client::{
     Client, HttpObjectQueryResult, LocalSigner, LoopbackHttpTransport, ObjectId, RequestId,
 };
@@ -36,8 +30,6 @@ const EPOCH: u64 = 9;
 const GAS_LIMIT: u64 = 200_000;
 const MAX_FEE: u64 = 1_000_000;
 
-struct TestDirectory(PathBuf);
-
 struct OperationOutcome {
     split_coin: ObjectId,
     minted_coin: ObjectId,
@@ -48,120 +40,14 @@ struct OperationOutcome {
     separate_refunds: Vec<(ObjectId, u64)>,
 }
 
-impl Drop for TestDirectory {
-    fn drop(&mut self) {
-        if !std::thread::panicking() {
-            let _ignored: Result<(), std::io::Error> = fs::remove_dir_all(&self.0);
-        }
-    }
-}
-
-fn test_directory() -> TestDirectory {
-    let unique: u128 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path: PathBuf = std::env::temp_dir().join(format!(
-        "sunrise-cli-public-asset-{}-{unique}",
-        std::process::id()
-    ));
-    fs::create_dir(&path).unwrap();
-    TestDirectory(path)
-}
-
-fn write_seed(path: &Path, byte: u8) {
-    fs::write(path, format!("{byte:02x}").repeat(32)).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
-    }
-}
-
-fn config(directory: &Path, owner: &LocalSigner, fee_recipient: &LocalSigner) -> DevnetConfig {
-    DevnetConfig::parse_from(vec![
-        "--data-dir".into(),
-        directory.display().to_string(),
-        "--listen".into(),
-        "127.0.0.1:7400".into(),
-        "--chain-id".into(),
-        CHAIN_ID.into(),
-        "--epoch".into(),
-        EPOCH.to_string(),
-        "--dev-owner".into(),
-        owner.address().to_string(),
-        "--fee-recipient".into(),
-        fee_recipient.address().to_string(),
-        "--max-concurrent".into(),
-        "4".into(),
-    ])
-    .unwrap()
-}
-
-fn operation(generation: runtime::WriterFenceGeneration, sequence: u8) -> DurableOperationContext {
-    DurableOperationContext::new(
-        generation,
-        StorageDeadline::new(u64::MAX).unwrap(),
-        StorageCorrelationId::new([sequence; 16]).unwrap(),
-    )
-}
-
-fn transport(address: SocketAddr) -> LoopbackHttpTransport {
-    LoopbackHttpTransport::new(
-        address,
-        Duration::from_secs(2),
-        Duration::from_secs(2),
-        Duration::from_secs(2),
-        NonZeroUsize::new(16 * 1024).unwrap(),
-        NonZeroUsize::new(1024 * 1024).unwrap(),
-    )
-    .unwrap()
-}
-
-fn decode_result(path: &Path) -> PaidExecutionResult {
-    decode_paid_execution_result(&fs::read(path).unwrap()).unwrap()
-}
-
-fn application_created_object(result: &PaidExecutionResult) -> ObjectId {
-    let charged = result.charged.as_ref().unwrap();
-    let fee_id: ObjectId = charged.fee_output.id;
-    let refund_id: Option<ObjectId> = charged.refund_output.as_ref().map(|value| value.id);
-    let created: Vec<ObjectId> = result
-        .effects
-        .object_effects
-        .iter()
-        .filter_map(|effect: &ObjectEffect| match effect {
-            ObjectEffect::Created(object)
-                if object.id != fee_id && Some(object.id) != refund_id =>
-            {
-                Some(object.id)
-            }
-            _ => None,
-        })
-        .collect();
-    assert_eq!(created.len(), 1);
-    created[0]
-}
-
-fn current_coin_amount(result: &HttpObjectQueryResult) -> u64 {
-    let HttpObjectQueryResult::CurrentInline {
-        canonical_object_bytes,
-        ..
-    } = result
-    else {
-        panic!("expected a current inline Coin");
-    };
-    coin_amount(&decode_object(canonical_object_bytes).unwrap().data).unwrap()
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn public_asset_cli_five_operations_and_state_survive_sqlite_restart() {
-    let directory: TestDirectory = test_directory();
+    let directory: TestDirectory = test_directory("public-asset");
     let seed_path: PathBuf = directory.0.join("owner.seed");
     write_seed(&seed_path, 7);
     let owner: LocalSigner = LocalSigner::from_seed([7; 32]);
     let recipient: LocalSigner = LocalSigner::from_seed([9; 32]);
-    let config: DevnetConfig = config(&directory.0, &owner, &recipient);
+    let config: DevnetConfig = devnet_config(&directory.0, &owner, &recipient, CHAIN_ID, EPOCH);
     let domain: AtomicityDomainId = AtomicityDomainId::new(DEVNET_DOMAIN_BYTES).unwrap();
 
     let boot = boot_local_store(&config).unwrap();
@@ -684,7 +570,8 @@ async fn public_asset_cli_five_operations_and_state_survive_sqlite_restart() {
     })
     .await
     .unwrap();
-    assert!(conflict.is_err());
+    let conflict_error: String = conflict.unwrap_err();
+    assert!(conflict_error.contains("state-or-context-conflict"));
     let conflict_after: Vec<HttpObjectQueryResult> = tracked
         .iter()
         .map(|id: &ObjectId| second_client.query_object(*id).unwrap())

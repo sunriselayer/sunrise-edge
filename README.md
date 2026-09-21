@@ -107,6 +107,7 @@ reproducible walkthrough for:
 - creating two development-only keys;
 - starting the loopback-only single-validator devnet, which installs the
   public Standard Asset package at genesis;
+- creating a separate Standard Asset through ordinary paid instantiation;
 - submitting Standard Asset transfer, split, merge, mint, and burn as
   ordinary signed paid contract calls;
 - querying the receipt, objects, and next nonce; and

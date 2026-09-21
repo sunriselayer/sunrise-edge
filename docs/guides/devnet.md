@@ -5,9 +5,10 @@ Rust CLI. It is a single-validator, non-production environment. Never expose it
 to another network or use it to custody real assets.
 
 The devnet installs Standard Asset as an ordinary published contract and routes
-all five asset commands through the same signed, paid call path available to
-user contracts. There is no native coin, privileged balance table, preinstalled
-asset module, or asset-specific node-core mutation path.
+asset creation plus all five asset commands through the same signed, paid
+instantiate/call paths available to user contracts. There is no native coin,
+privileged balance table, preinstalled asset module, or asset-specific node-core
+mutation path.
 
 ## Prerequisites
 
@@ -79,9 +80,11 @@ SIGNING=(--seed-file "$OWNER_SEED_FILE" --fee-source "$FEE_COIN" --max-fee 10000
 
 The `EXPECTED` values are local operator configuration. They are deliberately
 checked separately from TLS endpoint validation and from values returned by the
-server. The asset code, instance, type argument, schema, and fee recipient are
-read from the installed policy and verified before signing; callers cannot
-override them.
+server. The fee code, fee instance, fee-asset type argument, schema, and fee
+recipient are read from the installed policy and verified before signing. A
+caller may select a separately created application asset only by providing its
+exact canonical instance pin and Definition ObjectId together; that never
+changes the policy-pinned asset used for fees.
 
 ## Read-only queries
 
@@ -103,6 +106,62 @@ For those two commands, the application-created Coin is the created
 Run `split`, `merge`, `mint`, and `burn` before `transfer`: `transfer` changes
 `SPEND_COIN`'s owner to `RECIPIENT`, so it must be the last operation that uses
 `SPEND_COIN` as the signer's own coin.
+
+### Create a separate asset
+
+`create-asset` instantiates the already published Standard Asset code. It does
+not publish another copy and does not make the new asset eligible for fees. The
+initializer creates a zero-supply TreasuryCap owned by the creator. Preserve
+the canonical instance reference and copy the printed `asset=` and
+`treasury_cap=` values:
+
+```bash
+ASSET_INSTANCE_SEED="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+ASSET_REQUEST_ID="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+cargo run -q -p sunrise-edge-cli -- create-asset \
+  "${EXPECTED[@]}" "${SIGNING[@]}" \
+  --instance-seed "$ASSET_INSTANCE_SEED" \
+  --instance-ref-out new-asset.instance \
+  --submission-out create-asset.signed \
+  --result-out create-asset.result \
+  --request-id "$ASSET_REQUEST_ID"
+
+NEW_ASSET="PASTE_ASSET"
+NEW_TREASURY_CAP="PASTE_TREASURY_CAP"
+NEW_ASSET_SELECTION=(--asset "$NEW_ASSET" --instance-ref new-asset.instance)
+```
+
+The three output paths are reserved with create-new semantics before the POST.
+The signed submission and canonical instance reference are written and synced
+before the POST; the result file is filled only after a validated response.
+Capture the printed `request_id=` and `nonce=` lines. After an uncertain
+response, keep all three files and query the receipt by `ASSET_REQUEST_ID`. A
+present successful receipt means `new-asset.instance` is the usable instance
+pin. There is currently no command that directly resubmits
+`create-asset.signed`; do not rebuild under the same request ID after fee or
+other signed inputs may have changed. For a clean new asset attempt, use a new
+request ID, instance seed, and output paths.
+
+Mint the first Coin from its capability, then transfer it through the same
+ordinary call path. The fee source remains `FEE_COIN` from genesis:
+
+```bash
+cargo run -q -p sunrise-edge-cli -- mint \
+  "${EXPECTED[@]}" "${SIGNING[@]}" "${NEW_ASSET_SELECTION[@]}" \
+  --treasury-cap "$NEW_TREASURY_CAP" --amount 50 --recipient "$OWNER" \
+  --request-id "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+
+NEW_ASSET_COIN="PASTE_CREATED_COIN"
+cargo run -q -p sunrise-edge-cli -- transfer \
+  "${EXPECTED[@]}" "${SIGNING[@]}" "${NEW_ASSET_SELECTION[@]}" \
+  --coin "$NEW_ASSET_COIN" --recipient "$RECIPIENT" \
+  --request-id "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+```
+
+`--asset` without `--instance-ref`, or the reverse, is rejected before signing.
+A Coin or TreasuryCap from the genesis asset cannot be substituted under
+`NEW_ASSET_SELECTION` because its nominal type and exact instance authority
+differ.
 
 ### Split and merge
 

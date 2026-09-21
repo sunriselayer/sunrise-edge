@@ -9,19 +9,22 @@ and unified signed contract calls (DR-0123) are implemented and locally validate
 The internal Standard Asset package, paid execution engine, signed atomic
 genesis installation, public paid CLI/HTTP activation, and migration of all five
 asset commands away from the deleted preinstalled/native fee path are
-implemented and locally validated under DR-0127. The complete repository gate
-and fresh combined review passed, so the generic-contract gate is closed;
-arbitrary asset creation follows it.
+implemented and locally validated under DR-0127. The generic-contract gate is
+closed. DR-0128 adds arbitrary Standard Asset creation as an ordinary paid
+instance plus immediate mint/transfer use. Its complete repository gate,
+focused Codex Security delta scan, and fresh Opus tech-lead review have passed;
+FastVote and multi-validator integration are next.
 
 | Order | Deliverable | Completion evidence | Status |
 | --- | --- | --- | --- |
 | 1 | Durable local code publication | CLI publish/query; immutable code/ABI/exact dependencies; authenticated admission; origin absence; shared nonce and receipt atomicity (no outgoing message); real SQLite restart/replay/conflict/fencing | Implemented and locally validated (DR-0121); fee-free opt-in local storage only |
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
-| 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Open |
+| 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Implemented and validated (DR-0128); focused Codex Security scan found 0 reportable findings and fresh Opus review approved |
+| 5 | FastVote and multi-validator integration | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | Next |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
-Asset creation follows that gate, then FastVote/multi-validator integration.
+Asset creation is the final focused delta before FastVote/multi-validator integration.
 Contract upgrades/migrations remain a separate explicit capability after the
 initial immutable-code flow, not a prerequisite for claiming that first flow.
 Production recovery/HA/provider certification, Ledger, TypeScript, explorer,
@@ -2203,6 +2206,17 @@ statements such as “body validation remains open” are not the live work queu
     SQLite/HTTP/CLI E2E covers all five operations, exact metered charge,
     close/reopen persistence, exact replay non-reapplication, request-ID reuse
     conflict with object/receipt/nonce invariance, and stale writer fencing.
+  - [x] Add arbitrary Standard Asset creation and initial use through the same
+    paid public facilities ([DR-0128](docs/architecture/decisions/0128-arbitrary-standard-asset-creation.md)).
+    `create-asset` signs an ordinary `PaidApplication::Instantiate` against the
+    already published Standard Asset code and creates a fresh instance-scoped
+    Definition plus zero-supply TreasuryCap. The five asset verbs accept an
+    all-or-none exact asset/instance pin while fees remain on the separately
+    policy-pinned genesis asset. A real SQLite/HTTP/CLI E2E proves creation,
+    mint, transfer, same-boot and post-restart replay non-reapplication,
+    request-ID conflict invariance and writer fencing without a node-core asset
+    branch. Complete repository gate、focused Codex Security scan、fresh Opus
+    tech-lead reviewまで通過済みである。
   - [ ] Complete activation evidence and fresh combined review. Existing evidence
     now covers canonical vectors, same-source/transferred-source behavior, phase
     exhaustion and traps, charged/zero-charge receipts, exact replay, request
@@ -2312,11 +2326,14 @@ Address-owned outputをcommit前に再検証するprerequisiteに加え、`Asset
 dependency-lightな`standard-assets` crateへownershipを移した。各consumerは
 `standard-assets`から直接importし、未リリースAPIのcompatibility facadeは設けない。Sunrise Edgeはまだreleaseされておらず、
 devnet-local `0xF001`/`0xF010`/`0xF011`はpublic compatibility obligationではない
- development fixtureであり、Standard Asset v1 activationはこれをmigrateや
+development fixtureであり、Standard Asset v1 activationはこれをmigrateや
 dual-supportではなくreplaceする前提とする。local devnetではtransfer/split/mergeが有効で、
 既存derived assetに対するcapability-authorized mintはDR-0109のbounded devnet sliceとして
-実装・complete repository gate検証・fresh independent tech-lead review済みである。以下の残存criteriaはopenであり、任意asset作成、Unique Asset v1、
-builder/public-testnet asset surfaceはまだ有効ではない。
+実装・complete repository gate検証・fresh independent tech-lead review済みである。その後の
+public contract replacementはDR-0127でfive verbsをgeneric paid Callへ移し、DR-0128で同じ
+published codeのordinary paid Instantiateによる任意asset作成とinitial mint/transferを
+実装した。以下の残存criteriaはopenであり、metadata、capability delegation/destruction、
+Unique Asset v1、builder/public-testnet asset surfaceはまだ有効ではない。
 
 ### Completion criteria
 
@@ -2454,10 +2471,24 @@ builder/public-testnet asset surfaceはまだ有効ではない。
     tombstoned coin/fee/treasury object、全receipt、nonce不変をcanonical bytesで検証した。
     `npm ci --prefix adapters/cloudflare-workers`と`./scripts/check-all.sh`は通過し、fresh read-only
     Opus tech-lead reviewもblocking findingなしで`APPROVE`した。これはgeneric contract publication、
-    arbitrary asset creation、public-testnet、production/mainnet readinessの完了を意味しない。
+    DR-0110単独ではarbitrary asset creation、public-testnet、production/mainnet readinessの
+    完了を意味しない。
 
-arbitrary authenticated asset creation、metadata authenticity、partial burn、
-authority capabilityのlifecycle、freeze/close/
+11. **実装・ローカル検証済み（DR-0128、public arbitrary creation slice）。**
+    `create-asset`はfee policyが認証したpublic Standard Asset codeを別のcreator-scoped
+    instanceとしてordinary `PaidApplication::Instantiate`し、initializerがhost-derived
+    Definition ObjectIdをasset identity `A`としてzero-supply `TreasuryCap<A>`を作る。
+    node-coreへasset専用Create、constructor、body decoder、supply rewriteを追加しない。
+    five verbsはall-or-none `--asset`/`--instance-ref`でexact application instanceを選べるが、
+    fee reserve/settleは引き続き別のgenesis instance/assetへ固定される。real file-backed
+    SQLite/native HTTP/CLI E2Eはcreate→mint→transfer、wrong genesis capのsign前拒否、
+    same-boot/post-restart exact replay非再適用、request-ID conflict時の両instance・objects・
+    receipts・nonce不変、writer-generation fencingを検証する。complete repository gate、
+    focused Codex Security delta scan（reportable finding 0件、scan
+    `6eb51995-7f20-4ee4-b836-31f3b1f8e03c`）、fresh read-only Opus tech-lead reviewは
+    通過済みである。この項目はmetadata、public-testnet、production/mainnet readinessを完了しない。
+
+metadata authenticity、partial burn、authority capabilityのdelegation/destruction、freeze/close/
 allowance、governed fee-asset admission、Unique Asset v1の実装は後続sliceである。
 これらを完了扱いにせず、このgateはそれぞれの後続実装とdelta reviewを
 追跡し続ける。
