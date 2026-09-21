@@ -938,6 +938,166 @@ fn application_failed_fee_only_outcome_prepares_and_applies() {
 }
 
 #[test]
+fn apply_reuses_the_prepared_checkpoint_even_when_a_later_higher_checkpoint_is_supplied() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let (signers, entries) = install_four_validators(&store);
+    // `prepare_transfer` always uses `created_checkpoint = 10`.
+    let vote: FastVote =
+        prepare_transfer(&store, &fixture, &signers[0], 40, FIRST_PAID_NONCE).unwrap();
+    let validator_set: ValidatorSet = ValidatorSet::new(
+        protocol().epoch(),
+        entries
+            .iter()
+            .map(|entry| ValidatorInfo {
+                id: entry.id,
+                voting_power: entry.voting_power,
+                signature_scheme: entry.signature_scheme,
+                public_key: entry.public_key.clone(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    let cert: consensus::FastPathCertifier = certifier(validator_set);
+    let remote_votes: Vec<FastVote> = signers[1..3]
+        .iter()
+        .map(|signer| {
+            cert.cast_vote(vote.tx_hash, vote.execution_effects_hash, signer)
+                .unwrap()
+        })
+        .collect();
+    let mut all_votes: Vec<FastVote> = vec![vote.clone()];
+    all_votes.extend(remote_votes);
+    let certificate: FastCertificate = cert
+        .try_form_certificate(
+            vote.tx_hash,
+            vote.execution_effects_hash,
+            &all_votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .unwrap();
+    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+
+    let bytes: Vec<u8> = paid_call_with_access(
+        PaidCall {
+            fixture: &fixture,
+            policy: &fixture.policy,
+            request: 40,
+            nonce: FIRST_PAID_NONCE,
+            source: &fixture.coin,
+            entrypoint: "transfer",
+            arguments: public_standard_asset::transfer_arguments(&refund_account()).unwrap(),
+            access: vec![entry(&fixture.coin, objects::AccessMode::Write)],
+        },
+        ReservationAccessKind::Write,
+    );
+
+    // Trusted chain progress advanced between prepare and apply: a real
+    // caller would now pass a strictly higher `created_checkpoint`. Apply
+    // must still succeed by reusing the checkpoint `prepare` bound in its
+    // commitment, not this fresher one, or the certificate the quorum
+    // already formed over the original commitment would be rejected and the
+    // object/nonce locks would stay held forever.
+    let output: NodeOutput = apply(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &CountingEngine::new(),
+        &bytes,
+        &certificate_bytes,
+        25,
+    )
+    .unwrap();
+    assert_eq!(receipt(&output).status, PaidExecutionStatus::Success);
+}
+
+#[test]
+fn apply_rejects_a_checkpoint_that_regressed_below_the_prepared_checkpoint() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let (signers, entries) = install_four_validators(&store);
+    // `prepare_transfer` always uses `created_checkpoint = 10`.
+    let vote: FastVote =
+        prepare_transfer(&store, &fixture, &signers[0], 41, FIRST_PAID_NONCE).unwrap();
+    let validator_set: ValidatorSet = ValidatorSet::new(
+        protocol().epoch(),
+        entries
+            .iter()
+            .map(|entry| ValidatorInfo {
+                id: entry.id,
+                voting_power: entry.voting_power,
+                signature_scheme: entry.signature_scheme,
+                public_key: entry.public_key.clone(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    let cert: consensus::FastPathCertifier = certifier(validator_set);
+    let remote_votes: Vec<FastVote> = signers[1..3]
+        .iter()
+        .map(|signer| {
+            cert.cast_vote(vote.tx_hash, vote.execution_effects_hash, signer)
+                .unwrap()
+        })
+        .collect();
+    let mut all_votes: Vec<FastVote> = vec![vote.clone()];
+    all_votes.extend(remote_votes);
+    let certificate: FastCertificate = cert
+        .try_form_certificate(
+            vote.tx_hash,
+            vote.execution_effects_hash,
+            &all_votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .unwrap();
+    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+
+    let bytes: Vec<u8> = paid_call_with_access(
+        PaidCall {
+            fixture: &fixture,
+            policy: &fixture.policy,
+            request: 41,
+            nonce: FIRST_PAID_NONCE,
+            source: &fixture.coin,
+            entrypoint: "transfer",
+            arguments: public_standard_asset::transfer_arguments(&refund_account()).unwrap(),
+            access: vec![entry(&fixture.coin, objects::AccessMode::Write)],
+        },
+        ReservationAccessKind::Write,
+    );
+
+    let result = apply(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &CountingEngine::new(),
+        &bytes,
+        &certificate_bytes,
+        5,
+    );
+    assert!(matches!(
+        result,
+        Err(FastPathError::Invalid(
+            "fast-path apply checkpoint regressed below the prepared checkpoint"
+        ))
+    ));
+}
+
+#[test]
 fn stale_writer_fence_rejects_apply_atomically() {
     let store: MemoryDurableStateStore = memory_store();
     let fixture: Fixture = install(&store);
@@ -1787,11 +1947,12 @@ fn fastpath_prepared_record_frame_0x641c_is_stable() {
         vote: vec![0x99; 4],
         locked_objects,
         pending_nonce: 5,
+        created_checkpoint: 10,
     };
     let bytes: Vec<u8> = records::encode_fastpath_prepared_record(&record).unwrap();
     assert_eq!(
         hex(&bytes),
-        "534e52451c640100070001003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f72730200040000000300000003000800000009000000000000000200200000006666666666666666666666666666666666666666666666666666666666666666030038000000534e524503010100020001000200000001000200200000007777777777777777777777777777777777777777777777777777777777777777040038000000534e52450301010002000100020000000100020020000000888888888888888888888888888888888888888888888888888888888888888805000400000099999999060038010000534e52452064010003000100040000000200000002008c000000534e5245044001000300010030000000534e5245014001000100010020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0200080000000100000000000000030038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb03008c000000534e5245044001000300010030000000534e5245014001000100010020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0200080000000200000000000000030038000000534e52450301010002000100020000000100020020000000dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd0700080000000500000000000000"
+        "534e52451c640100080001003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f72730200040000000300000003000800000009000000000000000200200000006666666666666666666666666666666666666666666666666666666666666666030038000000534e524503010100020001000200000001000200200000007777777777777777777777777777777777777777777777777777777777777777040038000000534e52450301010002000100020000000100020020000000888888888888888888888888888888888888888888888888888888888888888805000400000099999999060038010000534e52452064010003000100040000000200000002008c000000534e5245044001000300010030000000534e5245014001000100010020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0200080000000100000000000000030038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb03008c000000534e5245044001000300010030000000534e5245014001000100010020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0200080000000200000000000000030038000000534e52450301010002000100020000000100020020000000dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd07000800000005000000000000000800080000000a00000000000000"
     );
 
     // Extract and pin the nested `0x6420` object-ref-list frame (field 6)

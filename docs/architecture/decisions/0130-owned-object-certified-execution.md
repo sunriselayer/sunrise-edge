@@ -252,10 +252,14 @@ namespaces (see `docs/operations/persistence.md`):
 - **Prepared intent/vote record.** Keyed by chain and the original signed
   request ID. Holds the trusted context, signed-intent digest, staged-commit
   commitment, exact locally cast vote bytes, exact locked object references,
-  and pending nonce. Apply receives and re-authenticates the canonical signed
-  intent bytes and re-executes the shared admission pipeline; the record does
-  not preserve a second copy of those potentially large bytes or of the
-  staged effects.
+  pending nonce, and the exact `created_checkpoint` prepare used to build
+  every created object version record folded into that commitment. Apply
+  receives and re-authenticates the canonical signed intent bytes and
+  re-executes the shared admission pipeline using this stored checkpoint,
+  never a fresh caller-supplied one, so a later apply observing a higher
+  (chain-progressed) checkpoint cannot re-derive a different commitment for
+  an already-cast vote; the record does not preserve a second copy of those
+  potentially large bytes or of the staged effects.
 - **Object lock record.** Keyed by `(chain, ObjectId)` and containing the
   exact `(ObjectId, version, digest)` plus owning request ID. This is stronger
   than a key scoped only to one version: no later version of the same object

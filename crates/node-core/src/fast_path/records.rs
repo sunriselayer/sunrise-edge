@@ -105,6 +105,13 @@ pub struct FastPathPreparedRecord {
     pub locked_objects: Vec<ObjectRef>,
     /// The exact sender nonce prepare reserved without advancing.
     pub pending_nonce: u64,
+    /// The `created_checkpoint` prepare used to build every created object
+    /// version record folded into `commitment`. `apply` must reuse this
+    /// exact value rather than a fresh caller-supplied one: a later apply
+    /// using a different (for example higher, chain-progressed) checkpoint
+    /// re-derives a different commitment for the same certificate and fails
+    /// closed permanently, since phase 1 has no lock rollback or timeout.
+    pub created_checkpoint: u64,
 }
 
 /// Encodes Frame `0x641C/v1`.
@@ -135,6 +142,7 @@ pub fn encode_fastpath_prepared_record(
     frame.field_bytes(5, record.vote.clone())?;
     frame.field_bytes(6, objects_bytes)?;
     frame.field_u64(7, record.pending_nonce)?;
+    frame.field_u64(8, record.created_checkpoint)?;
     Ok(frame.finish()?)
 }
 
@@ -145,7 +153,7 @@ pub fn decode_fastpath_prepared_record(
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(FASTPATH_PREPARED_RECORD_TYPE)?;
     frame.require_version(1)?;
-    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7])?;
+    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8])?;
     let context: PublicationContext = decode_publication_context(frame.required_field(1)?)
         .map_err(|_| NodeCoreError::PersistenceInvariant("invalid prepared record context"))?;
     let request_id: [u8; 32] = frame
@@ -168,6 +176,7 @@ pub fn decode_fastpath_prepared_record(
         );
     }
     let pending_nonce: u64 = frame.required_u64(7)?;
+    let created_checkpoint: u64 = frame.required_u64(8)?;
     let record: FastPathPreparedRecord = FastPathPreparedRecord {
         context,
         request_id,
@@ -176,6 +185,7 @@ pub fn decode_fastpath_prepared_record(
         vote,
         locked_objects,
         pending_nonce,
+        created_checkpoint,
     };
     if encode_fastpath_prepared_record(&record)? != bytes {
         return Err(NodeCoreError::PersistenceInvariant(

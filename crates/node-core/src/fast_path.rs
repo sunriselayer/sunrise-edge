@@ -472,6 +472,7 @@ where
         vote: vote_bytes,
         locked_objects: admission.locked_objects.clone(),
         pending_nonce,
+        created_checkpoint,
     };
     let prepared_bytes: Vec<u8> = records::encode_fastpath_prepared_record(&prepared_record)?;
 
@@ -571,6 +572,13 @@ where
 /// final receipt already exists (a prior apply, direct commit under the
 /// same request id, or a duplicate/reordered certificate for the same
 /// request) it is returned unchanged without re-executing anything.
+///
+/// `created_checkpoint` is only sanity-checked against the checkpoint
+/// [`prepare`] originally bound on [`records::FastPathPreparedRecord`]; the
+/// admission and commitment re-derivation below always use that prepared
+/// value, never this fresh one, so a later apply observing a higher
+/// (chain-progressed) checkpoint cannot change the recomputed commitment out
+/// from under an already-cast vote.
 #[allow(clippy::too_many_arguments)]
 pub fn apply<S, E>(
     store: &S,
@@ -626,6 +634,19 @@ where
     {
         return invalid("fast-path prepared record metadata mismatch");
     }
+    // `created_checkpoint` is not bound in the signed intent: it is trusted
+    // node composition (chain-progress) input, not caller intent, and it
+    // naturally advances between prepare and a later apply. The commitment
+    // `prepare` voted on was derived using prepare's own checkpoint value,
+    // folded into every created object version record; apply must reuse
+    // that exact value below, not the caller's fresh one, or it re-derives
+    // a different commitment and rejects its own matching certificate
+    // permanently (phase 1 has no lock rollback or timeout). The caller's
+    // value is only sanity-checked here for the non-decreasing invariant
+    // every `created_checkpoint` caller must already uphold.
+    if created_checkpoint < prepared.created_checkpoint {
+        return invalid("fast-path apply checkpoint regressed below the prepared checkpoint");
+    }
 
     let certificate: FastCertificate = consensus::decode_fast_certificate(certificate_bytes)?;
     let validator_set: ValidatorSet = load_validator_set(store, context, domain, &intent_context)?;
@@ -657,7 +678,7 @@ where
         engine,
         authenticated,
         event_digest,
-        created_checkpoint,
+        prepared.created_checkpoint,
         NonceMode::PreparedApply,
     )?;
     if admission.locked_objects != prepared.locked_objects {
