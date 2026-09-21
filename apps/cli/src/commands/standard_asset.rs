@@ -367,10 +367,14 @@ where
         Some(value) => decode_hex_32(REFUND_RECIPIENT, value)?,
         None => *signer.address().as_bytes(),
     };
+    let max_fee_value: u64 = parse_u64(MAX_FEE, parsed.require(MAX_FEE)?)?;
+    if max_fee_value == 0 {
+        return Err(invalid("--max-fee must be nonzero"));
+    }
     let consent = FeeSourceConsent {
         source: fee_source.clone(),
         access: ReservationAccessKind::Write,
-        max_fee: Amount::new(parse_u64(MAX_FEE, parsed.require(MAX_FEE)?)?),
+        max_fee: Amount::new(max_fee_value),
         refund_recipient,
     };
     client.validate_paid_fee_source(&signer, &resolver, &expected, &policy, &consent)?;
@@ -388,6 +392,9 @@ where
         }
     };
     let gas_limit: u64 = parse_u64(GAS_LIMIT, parsed.require(GAS_LIMIT)?)?;
+    if gas_limit == 0 {
+        return Err(invalid("--gas-limit must be nonzero"));
+    }
     let operation: AssetOperation = operation(action, &parsed)?;
     let mut access: AccessManifest = AccessManifest::new();
     for (id, mode, kind, flag) in &operation.inputs {
