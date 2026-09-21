@@ -18,9 +18,8 @@ use runtime::{Clock, DurableOperationContext, StorageCorrelationId, StorageDeadl
 use std::{ffi::OsString, fs, path::PathBuf, sync::Arc};
 use sunrise_edge_client::LocalSigner;
 use sunrise_edge_devnet::{
-    DevnetConfig, STANDARD_ASSET_MODULE_WASM, boot_local_store, build_devnet_protocol_context,
-    build_standard_asset_module, compose_devnet_router_with_contract_policies,
-    install_paid_contracts, seed::verify_or_seed_protocol_context,
+    DevnetConfig, boot_local_store, build_devnet_protocol_context, compose_devnet_router,
+    install_paid_contracts, verify_or_seed_protocol_context,
 };
 
 struct OwnedDirectory(PathBuf);
@@ -54,7 +53,7 @@ async fn paid_publish_instantiate_and_call_cross_cli_http_and_sqlite() {
     fs::create_dir(&directory).unwrap();
     let _owned_directory = OwnedDirectory(directory.clone());
     let signer: LocalSigner = LocalSigner::from_seed([7; 32]);
-    let treasury: LocalSigner = LocalSigner::from_seed([9; 32]);
+    let fee_recipient: LocalSigner = LocalSigner::from_seed([9; 32]);
     let config: DevnetConfig = DevnetConfig::parse_from(vec![
         "--data-dir".into(),
         directory.display().to_string(),
@@ -66,9 +65,8 @@ async fn paid_publish_instantiate_and_call_cross_cli_http_and_sqlite() {
         "0".into(),
         "--dev-owner".into(),
         signer.address().to_string(),
-        "--fee-treasury-owner".into(),
-        treasury.address().to_string(),
-        "--enable-paid-contracts".into(),
+        "--fee-recipient".into(),
+        fee_recipient.address().to_string(),
         "--max-concurrent".into(),
         "4".into(),
     ])
@@ -123,18 +121,17 @@ async fn paid_publish_instantiate_and_call_cross_cli_http_and_sqlite() {
 
     let boot = boot_local_store(&config).unwrap();
     let generation = boot.boot_generation();
-    let protocol =
+    let protocol_context =
         build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
-    let module =
-        build_standard_asset_module(protocol, STANDARD_ASSET_MODULE_WASM.to_vec()).unwrap();
-    let resolver = module.resolver().clone();
+    let resolver = protocol_context.resolver().clone();
     let domain: AtomicityDomainId =
         AtomicityDomainId::new(sunrise_edge_devnet::genesis::DEVNET_DOMAIN_BYTES).unwrap();
     let operation = |sequence: u8| -> DurableOperationContext {
+        let correlation_byte: u8 = sequence.checked_add(1).unwrap();
         DurableOperationContext::new(
             generation,
             StorageDeadline::new(SystemClock.now_unix_millis().unwrap() + 30_000).unwrap(),
-            StorageCorrelationId::new([sequence; 16]).unwrap(),
+            StorageCorrelationId::new([correlation_byte; 16]).unwrap(),
         )
     };
     verify_or_seed_protocol_context(
@@ -159,25 +156,21 @@ async fn paid_publish_instantiate_and_call_cross_cli_http_and_sqlite() {
         &resolver,
         &context,
         config.dev_owners(),
-        config.fee_treasury_owner(),
+        config.fee_recipient(),
     )
     .unwrap();
-    let fee_coin: ObjectId = activation.fee_coins[0].1;
+    let fee_coin: ObjectId = activation.metadata.owner_coins[0].fee_coin;
+    let paid_execution =
+        native_http::PaidExecutionComposition::new(activation.base_policy, activation.fee_policy);
     let (store, blobs) = boot.into_parts();
-    let router = compose_devnet_router_with_contract_policies(
+    let router = compose_devnet_router(
         Arc::new(store),
         Arc::new(blobs),
-        module,
+        protocol_context,
         generation,
         4,
         2,
-        ObjectId::new([0xFE; 32]),
-        None,
-        None,
-        Some(native_http::PaidExecutionComposition::new(
-            activation.base_policy,
-            activation.fee_policy,
-        )),
+        paid_execution,
     )
     .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

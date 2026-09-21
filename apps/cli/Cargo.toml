@@ -15,7 +15,7 @@ path = "src/main.rs"
 [dependencies]
 sunrise-edge-client.workspace = true
 sunrise-edge-ledger.workspace = true
-standard-assets.workspace = true
+public-standard-asset = { path = "../../contracts/standard-asset" }
 
 [features]
 default = []
@@ -26,6 +26,7 @@ usb-hid = ["sunrise-edge-ledger/usb-hid"]
 [dev-dependencies]
 abi.workspace = true
 execution.workspace = true
+fees.workspace = true
 hashing.workspace = true
 native-http.workspace = true
 node-core.workspace = true

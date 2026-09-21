@@ -252,11 +252,9 @@ pub fn reconnect_same_hid_path(path: &str) -> Result<sunrise_edge_ledger::HidTra
 /// then independently verifies the returned signature before producing
 /// canonical signed transaction bytes.
 ///
-/// No current CLI command calls this in production: `transfer`'s Ledger
-/// path rejects with `CliError::LedgerStandardAssetTransferUnsupported`
-/// before any signing attempt (DR-0107 deferred a Ledger clear-signing
-/// policy for the new Standard Asset v1 transfer entrypoint), and `address`
-/// never signs at all. It is kept — and exercised only by this module's own
+/// No current CLI command calls this in production: `standard_asset::run`
+/// rejects every Ledger-selected paid Standard Asset command before network
+/// or device I/O, and `address` never signs at all. It is kept — and exercised only by this module's own
 /// tests below — to retain DR-0088's host preflight and independent
 /// signature-verification coverage for the historical
 /// `HISTORICAL_ASSET_ACCOUNT_TRANSFER_POLICY_V3` shape until a future

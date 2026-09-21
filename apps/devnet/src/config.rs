@@ -15,11 +15,8 @@ use std::{
 /// Hard admission ceiling for the local-only devnet.
 pub const MAX_DEVNET_CONCURRENCY: usize = 1_024;
 /// Maximum total ordinary Standard Asset coin seed owners handled by one local
-/// process boot, including the distinct fee-treasury owner.
+/// process boot.
 pub const MAX_DEVNET_OWNERS: usize = 64;
-/// Maximum caller-configured transfer owners, reserving one seed slot for the
-/// required distinct fee-treasury owner.
-const MAX_CONFIGURED_DEV_OWNERS: usize = MAX_DEVNET_OWNERS - 1;
 
 /// Known-limitations banner printed once at every devnet startup.
 ///
@@ -32,7 +29,7 @@ const MAX_CONFIGURED_DEV_OWNERS: usize = MAX_DEVNET_OWNERS - 1;
 /// authorization), and query and submission share one admission budget
 /// (the single `NativeBlockingExecutor` constructed by the native router), so
 /// a burst of one can starve the other.
-pub const DEVNET_STARTUP_LIMITATIONS_BANNER: &str = "single-validator,owned-objects-only,standard-asset-v1-whole-coin-transfer,bounded-split-merge,bounded-supply-mint,whole-coin-burn,owner-held-devnet-treasury-cap,owner-transition-index-0-only,separate-fee-coin-required,single-ordinary-fee-asset,ordinary-treasury-not-certificate-distributed,local-sqlite,unauthenticated-bounded-public-read-query-api,shared-query-submission-admission-budget,non-production";
+pub const DEVNET_STARTUP_LIMITATIONS_BANNER: &str = "single-validator,owned-objects-only,public-standard-asset-paid-calls,first-dev-owner-mint-authority,two-initial-coins-per-dev-owner,fee-settlement-creates-coin-objects,no-ledger-paid-clear-signing,local-sqlite,unauthenticated-bounded-public-read-query-api,shared-query-submission-admission-budget,non-production";
 
 /// One browser/client-controlled development owner address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -69,12 +66,11 @@ pub struct DevnetConfig {
     chain_id: ChainId,
     epoch: Epoch,
     dev_owners: Vec<DevOwner>,
-    fee_treasury_owner: DevOwner,
+    fee_recipient: DevOwner,
     max_concurrent: usize,
     local_publication: bool,
     local_execution: bool,
     general_calls: bool,
-    paid_contracts: bool,
 }
 
 impl DevnetConfig {
@@ -82,11 +78,12 @@ impl DevnetConfig {
     ///
     /// Every scalar flag is required exactly once. `--dev-owner` is required
     /// at least once and may be repeated with distinct, exact 32-byte lowercase
-    /// or uppercase hexadecimal values. `--fee-treasury-owner` is required
-    /// exactly once, parsed with the same strict hexadecimal rule, and must
-    /// not equal any `--dev-owner`: the fee sink is seeded and queried as an
-    /// ordinary owner distinct from every transfer participant. Binding is
-    /// restricted to loopback.
+    /// or uppercase hexadecimal values; the first configured value is the
+    /// fixed local-devnet mint authority. `--fee-recipient` is required
+    /// exactly once, parsed with the same strict hexadecimal rule, and need
+    /// not be distinct from any `--dev-owner`. Binding is restricted to
+    /// loopback. Paid contract genesis is mandatory and unconditional; there
+    /// is no opt-in flag for it.
     pub fn parse_from<I, S>(args: I) -> Result<Self, DevnetConfigError>
     where
         I: IntoIterator<Item = S>,
@@ -97,23 +94,16 @@ impl DevnetConfig {
         let mut chain_id: Option<ChainId> = None;
         let mut epoch: Option<Epoch> = None;
         let mut dev_owners: Vec<DevOwner> = Vec::new();
-        let mut fee_treasury_owner: Option<DevOwner> = None;
+        let mut fee_recipient: Option<DevOwner> = None;
         let mut max_concurrent: Option<usize> = None;
         let mut local_publication: bool = false;
         let mut local_execution: bool = false;
         let mut general_calls: bool = false;
-        let mut paid_contracts: bool = false;
         let mut iterator = args.into_iter().map(Into::into);
 
         while let Some(flag_os) = iterator.next() {
             let flag: &str = flag_os.to_str().ok_or(DevnetConfigError::NonUtf8Flag)?;
             match flag {
-                "--enable-paid-contracts" => {
-                    if paid_contracts {
-                        return Err(DevnetConfigError::DuplicateFlag("--enable-paid-contracts"));
-                    }
-                    paid_contracts = true;
-                }
                 "--enable-general-calls" => {
                     if general_calls {
                         return Err(DevnetConfigError::DuplicateFlag("--enable-general-calls"));
@@ -183,9 +173,9 @@ impl DevnetConfig {
                     epoch = Some(Epoch::new(parsed));
                 }
                 "--dev-owner" => {
-                    if dev_owners.len() >= MAX_CONFIGURED_DEV_OWNERS {
+                    if dev_owners.len() >= MAX_DEVNET_OWNERS {
                         return Err(DevnetConfigError::TooManyDevOwners {
-                            maximum: MAX_CONFIGURED_DEV_OWNERS,
+                            maximum: MAX_DEVNET_OWNERS,
                         });
                     }
                     let value: String = required_utf8_value(&mut iterator, "--dev-owner")?;
@@ -195,22 +185,22 @@ impl DevnetConfig {
                     }
                     dev_owners.push(owner);
                 }
-                "--fee-treasury-owner" => {
-                    ensure_absent("--fee-treasury-owner", &fee_treasury_owner)?;
-                    let value: String = required_utf8_value(&mut iterator, "--fee-treasury-owner")?;
+                "--fee-recipient" => {
+                    ensure_absent("--fee-recipient", &fee_recipient)?;
+                    let value: String = required_utf8_value(&mut iterator, "--fee-recipient")?;
                     let bytes: [u8; 32] = parse_hex_owner(&value)
-                        .ok_or_else(|| DevnetConfigError::InvalidFeeTreasuryOwner(value.clone()))?;
+                        .ok_or_else(|| DevnetConfigError::InvalidFeeRecipient(value.clone()))?;
                     validate_ed25519_owner_address(
                         &bytes,
                         Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
                     )
                     .map_err(|source: Ed25519OwnerAddressError| {
-                        DevnetConfigError::InadmissibleFeeTreasuryOwner {
+                        DevnetConfigError::InadmissibleFeeRecipient {
                             value: value.clone(),
                             source,
                         }
                     })?;
-                    fee_treasury_owner = Some(DevOwner::new(bytes));
+                    fee_recipient = Some(DevOwner::new(bytes));
                 }
                 "--max-concurrent" => {
                     ensure_absent("--max-concurrent", &max_concurrent)?;
@@ -234,13 +224,8 @@ impl DevnetConfig {
         if dev_owners.is_empty() {
             return Err(DevnetConfigError::MissingDevOwner);
         }
-        let fee_treasury_owner: DevOwner =
-            fee_treasury_owner.ok_or(DevnetConfigError::MissingFlag("--fee-treasury-owner"))?;
-        if dev_owners.contains(&fee_treasury_owner) {
-            return Err(DevnetConfigError::FeeTreasuryOwnerDuplicatesDevOwner(
-                fee_treasury_owner,
-            ));
-        }
+        let fee_recipient: DevOwner =
+            fee_recipient.ok_or(DevnetConfigError::MissingFlag("--fee-recipient"))?;
         Ok(Self {
             data_dir: data_dir.ok_or(DevnetConfigError::MissingFlag("--data-dir"))?,
             listen: listen.ok_or(DevnetConfigError::MissingFlag("--listen"))?,
@@ -250,8 +235,7 @@ impl DevnetConfig {
             local_publication,
             local_execution,
             general_calls,
-            paid_contracts,
-            fee_treasury_owner,
+            fee_recipient,
             max_concurrent: max_concurrent
                 .ok_or(DevnetConfigError::MissingFlag("--max-concurrent"))?,
         })
@@ -281,13 +265,6 @@ impl DevnetConfig {
         self.general_calls
     }
 
-    /// Whether the signed, fee-bearing public contract surface is enabled.
-    /// This never enables the separate zero-fee profile-four route.
-    #[must_use]
-    pub const fn paid_contracts(&self) -> bool {
-        self.paid_contracts
-    }
-
     /// Returns the validated loopback listen address.
     #[must_use]
     pub const fn listen(&self) -> SocketAddr {
@@ -312,10 +289,11 @@ impl DevnetConfig {
         &self.dev_owners
     }
 
-    /// Returns the fee-treasury owner, distinct from every `--dev-owner`.
+    /// Returns the configured fee recipient. Need not be distinct from any
+    /// `--dev-owner`.
     #[must_use]
-    pub const fn fee_treasury_owner(&self) -> DevOwner {
-        self.fee_treasury_owner
+    pub const fn fee_recipient(&self) -> DevOwner {
+        self.fee_recipient
     }
 
     /// Returns the bounded synchronous admission limit.
@@ -450,18 +428,16 @@ pub enum DevnetConfigError {
     },
     /// A development owner appeared more than once.
     DuplicateDevOwner(DevOwner),
-    /// The fee-treasury owner was not exactly 32 bytes of hexadecimal.
-    InvalidFeeTreasuryOwner(String),
-    /// A syntactically valid fee-treasury owner was not a canonical,
+    /// The fee recipient was not exactly 32 bytes of hexadecimal.
+    InvalidFeeRecipient(String),
+    /// A syntactically valid fee recipient was not a canonical,
     /// non-identity, prime-order Ed25519 public key.
-    InadmissibleFeeTreasuryOwner {
+    InadmissibleFeeRecipient {
         /// Rejected hexadecimal input.
         value: String,
         /// Exact cryptographic admissibility failure.
         source: Ed25519OwnerAddressError,
     },
-    /// The fee-treasury owner equaled a `--dev-owner`.
-    FeeTreasuryOwnerDuplicatesDevOwner(DevOwner),
 }
 
 impl fmt::Display for DevnetConfigError {
@@ -504,18 +480,13 @@ impl fmt::Display for DevnetConfigError {
             Self::DuplicateDevOwner(owner) => {
                 write!(f, "--dev-owner must be unique, duplicate {owner}")
             }
-            Self::InvalidFeeTreasuryOwner(value) => write!(
+            Self::InvalidFeeRecipient(value) => write!(
                 f,
-                "--fee-treasury-owner must be exactly 64 hexadecimal characters, got {value:?}"
+                "--fee-recipient must be exactly 64 hexadecimal characters, got {value:?}"
             ),
-            Self::InadmissibleFeeTreasuryOwner { value, source } => write!(
-                f,
-                "--fee-treasury-owner {value:?} is not admissible: {source}"
-            ),
-            Self::FeeTreasuryOwnerDuplicatesDevOwner(owner) => write!(
-                f,
-                "--fee-treasury-owner must be distinct from every --dev-owner, got {owner}"
-            ),
+            Self::InadmissibleFeeRecipient { value, source } => {
+                write!(f, "--fee-recipient {value:?} is not admissible: {source}")
+            }
         }
     }
 }
@@ -526,7 +497,7 @@ impl Error for DevnetConfigError {
             Self::InvalidListen { source, .. } => Some(source),
             Self::InvalidInteger { source, .. } => Some(source),
             Self::InadmissibleDevOwner { source, .. }
-            | Self::InadmissibleFeeTreasuryOwner { source, .. } => Some(source),
+            | Self::InadmissibleFeeRecipient { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -561,7 +532,7 @@ mod tests {
             owner_hex(0x11).into(),
             "--max-concurrent".into(),
             "16".into(),
-            "--fee-treasury-owner".into(),
+            "--fee-recipient".into(),
             owner_hex(0x22).into(),
         ]
     }
@@ -574,7 +545,7 @@ mod tests {
         assert_eq!(config.epoch(), Epoch::new(7));
         assert_eq!(config.dev_owners()[0].to_string(), owner_hex(0x11));
         assert_eq!(config.max_concurrent(), 16);
-        assert_eq!(config.fee_treasury_owner().to_string(), owner_hex(0x22));
+        assert_eq!(config.fee_recipient().to_string(), owner_hex(0x22));
     }
 
     #[test]
@@ -583,7 +554,6 @@ mod tests {
         assert!(!default.local_execution());
         assert!(!default.local_publication());
         assert!(!default.general_calls());
-        assert!(!default.paid_contracts());
         let mut args: Vec<OsString> = valid_args();
         args.push("--enable-local-execution".into());
         let config: DevnetConfig = DevnetConfig::parse_from(args.clone()).unwrap();
@@ -600,19 +570,21 @@ mod tests {
     }
 
     #[test]
-    fn paid_contract_activation_is_explicit_and_does_not_enable_zero_fee_routes() {
+    fn enable_paid_contracts_flag_is_no_longer_recognized() {
         let mut args: Vec<OsString> = valid_args();
-        args.push("--enable-paid-contracts".into());
-        let config: DevnetConfig = DevnetConfig::parse_from(args.clone()).unwrap();
-        assert!(config.paid_contracts());
-        assert!(!config.local_execution());
-        assert!(!config.local_publication());
-        assert!(!config.general_calls());
         args.push("--enable-paid-contracts".into());
         assert!(matches!(
             DevnetConfig::parse_from(args),
-            Err(DevnetConfigError::DuplicateFlag("--enable-paid-contracts"))
+            Err(DevnetConfigError::UnknownFlag(_))
         ));
+    }
+
+    #[test]
+    fn fee_recipient_need_not_be_distinct_from_a_dev_owner() {
+        let mut args: Vec<OsString> = valid_args();
+        args[13] = args[9].clone();
+        let config: DevnetConfig = DevnetConfig::parse_from(args).unwrap();
+        assert_eq!(config.fee_recipient(), config.dev_owners()[0]);
     }
 
     #[test]
@@ -629,33 +601,26 @@ mod tests {
     }
 
     #[test]
-    fn requires_fee_treasury_owner_and_rejects_malformed_or_duplicate_value() {
-        let mut without_treasury = valid_args();
-        without_treasury.drain(12..14);
+    fn requires_fee_recipient_and_rejects_malformed_or_duplicate_value() {
+        let mut without_recipient = valid_args();
+        without_recipient.drain(12..14);
         assert!(matches!(
-            DevnetConfig::parse_from(without_treasury),
-            Err(DevnetConfigError::MissingFlag("--fee-treasury-owner"))
+            DevnetConfig::parse_from(without_recipient),
+            Err(DevnetConfigError::MissingFlag("--fee-recipient"))
         ));
 
         let mut malformed = valid_args();
         malformed[13] = "22".into();
         assert!(matches!(
             DevnetConfig::parse_from(malformed),
-            Err(DevnetConfigError::InvalidFeeTreasuryOwner(_))
+            Err(DevnetConfigError::InvalidFeeRecipient(_))
         ));
 
         let mut duplicated_flag = valid_args();
-        duplicated_flag.extend(["--fee-treasury-owner".into(), owner_hex(0x33).into()]);
+        duplicated_flag.extend(["--fee-recipient".into(), owner_hex(0x33).into()]);
         assert!(matches!(
             DevnetConfig::parse_from(duplicated_flag),
-            Err(DevnetConfigError::DuplicateFlag("--fee-treasury-owner"))
-        ));
-
-        let mut collides_with_dev_owner = valid_args();
-        collides_with_dev_owner[13] = collides_with_dev_owner[9].clone();
-        assert!(matches!(
-            DevnetConfig::parse_from(collides_with_dev_owner),
-            Err(DevnetConfigError::FeeTreasuryOwnerDuplicatesDevOwner(_))
+            Err(DevnetConfigError::DuplicateFlag("--fee-recipient"))
         ));
     }
 
@@ -712,7 +677,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_universal_zip215_owner_for_dev_and_treasury_configuration() {
+    fn rejects_universal_zip215_owner_for_dev_and_recipient_configuration() {
         let universal_owner: OsString = OsString::from(format!("01{}80", "00".repeat(30)));
 
         let mut dev_owner_args: Vec<OsString> = valid_args();
@@ -725,11 +690,11 @@ mod tests {
             })
         ));
 
-        let mut treasury_args: Vec<OsString> = valid_args();
-        treasury_args[13] = universal_owner;
+        let mut recipient_args: Vec<OsString> = valid_args();
+        recipient_args[13] = universal_owner;
         assert!(matches!(
-            DevnetConfig::parse_from(treasury_args),
-            Err(DevnetConfigError::InadmissibleFeeTreasuryOwner {
+            DevnetConfig::parse_from(recipient_args),
+            Err(DevnetConfigError::InadmissibleFeeRecipient {
                 source: Ed25519OwnerAddressError::NonCanonicalPoint,
                 ..
             })
@@ -741,7 +706,7 @@ mod tests {
         let mut args: Vec<OsString> = valid_args();
         args.drain(8..10);
         let max_concurrent: Vec<OsString> = args.split_off(8);
-        for value in 1..=MAX_DEVNET_OWNERS {
+        for value in 1..=(MAX_DEVNET_OWNERS + 1) {
             args.push(OsString::from("--dev-owner"));
             let seed: u8 = 0x80_u8.checked_add(u8::try_from(value).unwrap()).unwrap();
             args.push(OsString::from(owner_hex(seed)));
@@ -751,17 +716,17 @@ mod tests {
         assert!(matches!(
             DevnetConfig::parse_from(args),
             Err(DevnetConfigError::TooManyDevOwners {
-                maximum: MAX_CONFIGURED_DEV_OWNERS
+                maximum: MAX_DEVNET_OWNERS
             })
         ));
     }
 
     #[test]
-    fn exact_owner_boundary_reserves_one_seed_slot_for_treasury() {
+    fn exact_owner_boundary_is_accepted() {
         let mut args: Vec<OsString> = valid_args();
         args.drain(8..10);
         let suffix: Vec<OsString> = args.split_off(8);
-        for value in 1..=MAX_CONFIGURED_DEV_OWNERS {
+        for value in 1..=MAX_DEVNET_OWNERS {
             args.push(OsString::from("--dev-owner"));
             let seed: u8 = 0x80_u8.checked_add(u8::try_from(value).unwrap()).unwrap();
             args.push(OsString::from(owner_hex(seed)));
@@ -769,9 +734,8 @@ mod tests {
         args.extend(suffix);
 
         let config: DevnetConfig = DevnetConfig::parse_from(args)
-            .expect("the exact transfer-owner boundary must remain valid");
-        assert_eq!(config.dev_owners().len(), MAX_DEVNET_OWNERS - 1);
-        assert_eq!(config.dev_owners().len() + 1, MAX_DEVNET_OWNERS);
+            .expect("the exact bounded owner count must remain valid");
+        assert_eq!(config.dev_owners().len(), MAX_DEVNET_OWNERS);
     }
 
     #[test]
@@ -805,11 +769,9 @@ mod tests {
 
     #[test]
     fn startup_limitations_banner_names_bounded_query_read_and_shared_admission() {
-        assert!(
-            DEVNET_STARTUP_LIMITATIONS_BANNER.contains("standard-asset-v1-whole-coin-transfer")
-        );
-        assert!(DEVNET_STARTUP_LIMITATIONS_BANNER.contains("owner-transition-index-0-only"));
-        assert!(DEVNET_STARTUP_LIMITATIONS_BANNER.contains("separate-fee-coin-required"));
+        assert!(DEVNET_STARTUP_LIMITATIONS_BANNER.contains("public-standard-asset-paid-calls"));
+        assert!(DEVNET_STARTUP_LIMITATIONS_BANNER.contains("two-initial-coins-per-dev-owner"));
+        assert!(DEVNET_STARTUP_LIMITATIONS_BANNER.contains("fee-settlement-creates-coin-objects"));
         assert!(
             DEVNET_STARTUP_LIMITATIONS_BANNER
                 .contains("unauthenticated-bounded-public-read-query-api")
@@ -817,12 +779,8 @@ mod tests {
         assert!(
             DEVNET_STARTUP_LIMITATIONS_BANNER.contains("shared-query-submission-admission-budget")
         );
-        assert!(DEVNET_STARTUP_LIMITATIONS_BANNER.contains("single-ordinary-fee-asset"));
-        assert!(
-            DEVNET_STARTUP_LIMITATIONS_BANNER
-                .contains("ordinary-treasury-not-certificate-distributed")
-        );
-        assert!(!DEVNET_STARTUP_LIMITATIONS_BANNER.contains("fee-free"));
+        assert!(!DEVNET_STARTUP_LIMITATIONS_BANNER.contains("owner-transition-index-0-only"));
+        assert!(!DEVNET_STARTUP_LIMITATIONS_BANNER.contains("native-fee"));
         assert!(
             DEVNET_STARTUP_LIMITATIONS_BANNER
                 .split(',')

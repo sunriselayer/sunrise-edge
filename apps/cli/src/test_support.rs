@@ -48,12 +48,3 @@ pub fn query_ok(body: Vec<u8>) -> Result<WireResponse, TransportError> {
         body,
     })
 }
-
-/// Builds a well-formed `200` node-event-result response.
-pub fn node_result_ok(body: Vec<u8>) -> Result<WireResponse, TransportError> {
-    Ok(WireResponse {
-        status: 200,
-        content_type: Some(sunrise_edge_client::NODE_RESULT_MEDIA_TYPE.to_string()),
-        body,
-    })
-}

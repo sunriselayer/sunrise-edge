@@ -1,21 +1,19 @@
 //! Trusted native-router composition for the local developer network.
 
 use crate::{
-    catalog::DevnetAssetModule,
-    fee::StandardAssetCoinFeeComposer,
+    genesis::DevnetProtocolContext,
     identities::DevnetOutboxIdentitySource,
     machine::{DEVNET_GENERIC_STATE_KEY, DevnetMachine},
     transport::DevnetTransport,
 };
 use axum::Router;
 use native_http::{
-    IndexedOutboxRecoveryAuthorityError, NativeBlockingPolicy, PreinstalledFeeCompositionConfig,
+    IndexedOutboxRecoveryAuthorityError, NativeBlockingPolicy, PaidExecutionComposition,
     PreinstalledWasmComposition, StructuredDurableNativeComponents,
     StructuredDurableRequestAuthority, StructuredDurableRouterError,
     preinstalled_wasm_structured_durable_router,
 };
-use node_core::{NodeConfig, NodeCoreError};
-use objects::ObjectId;
+use node_core::{NodeConfig, NodeCoreError, PreinstalledModuleCatalog};
 use runtime::{SystemClock, WriterFenceGeneration};
 use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore};
 use std::{error::Error, fmt, num::NonZeroUsize, sync::Arc};
@@ -27,11 +25,11 @@ const OUTBOX_LEASE_MILLIS: u64 = 30_000;
 ///
 /// `reserved_correlation_sequences` is the number of seed operations already
 /// assigned operational correlation IDs in this boot. Outbox identities begin
-/// strictly after that range. `fee_treasury_object_id` is the trusted
-/// composition's fee sink: the seeded treasury owner's ordinary treasury
-/// coin, never request input. Every preinstalled-WASM invocation is wired
-/// through [`StandardAssetCoinFeeComposer`], the devnet's trusted
-/// `FeeEffectComposer` implementation.
+/// strictly after that range. `paid_execution` is mandatory (DR-0127): paid
+/// contract genesis is installed on every boot, so the router always carries
+/// the installed base policy and `PaidFeePolicy`. The router composes an
+/// empty preinstalled module catalog and no native `FeeEffectComposer`; fees
+/// are ordinary public Standard Asset contract state, never node-core-native.
 ///
 /// `blob_store` is the file-backed `SqliteBlobStore` opened by
 /// [`crate::boot_local_store`] alongside the structured store (DR-0096): a
@@ -39,24 +37,25 @@ const OUTBOX_LEASE_MILLIS: u64 = 30_000;
 /// process-local `MemoryBlobStore` DR-0094 wired here previously. Durable
 /// provider (PostgreSQL/Cloudflare/AWS) blob storage and GC/checkpoint
 /// manifest work remain deferred.
+#[allow(clippy::too_many_arguments)]
 pub fn compose_devnet_router(
     store: Arc<SqliteDurableStore>,
     blob_store: Arc<SqliteBlobStore>,
-    asset_module: DevnetAssetModule,
+    protocol_context: DevnetProtocolContext,
     boot_generation: WriterFenceGeneration,
     max_concurrent: usize,
     reserved_correlation_sequences: usize,
-    fee_treasury_object_id: ObjectId,
+    paid_execution: PaidExecutionComposition,
 ) -> Result<Router, DevnetCompositionError> {
     compose_devnet_router_with_publication(
         store,
         blob_store,
-        asset_module,
+        protocol_context,
         boot_generation,
         max_concurrent,
         reserved_correlation_sequences,
-        fee_treasury_object_id,
         None,
+        paid_execution,
     )
 }
 
@@ -65,23 +64,23 @@ pub fn compose_devnet_router(
 pub fn compose_devnet_router_with_publication(
     store: Arc<SqliteDurableStore>,
     blob_store: Arc<SqliteBlobStore>,
-    asset_module: DevnetAssetModule,
+    protocol_context: DevnetProtocolContext,
     boot_generation: WriterFenceGeneration,
     max_concurrent: usize,
     reserved_correlation_sequences: usize,
-    fee_treasury_object_id: ObjectId,
     publication: Option<node_core::publication::LocalPublicationPolicy>,
+    paid_execution: PaidExecutionComposition,
 ) -> Result<Router, DevnetCompositionError> {
     compose_devnet_router_with_local_execution(
         store,
         blob_store,
-        asset_module,
+        protocol_context,
         boot_generation,
         max_concurrent,
         reserved_correlation_sequences,
-        fee_treasury_object_id,
         publication,
         None,
+        paid_execution,
     )
 }
 
@@ -90,80 +89,51 @@ pub fn compose_devnet_router_with_publication(
 pub fn compose_devnet_router_with_local_execution(
     store: Arc<SqliteDurableStore>,
     blob_store: Arc<SqliteBlobStore>,
-    asset_module: DevnetAssetModule,
+    protocol_context: DevnetProtocolContext,
     boot_generation: WriterFenceGeneration,
     max_concurrent: usize,
     reserved_correlation_sequences: usize,
-    fee_treasury_object_id: ObjectId,
     publication: Option<node_core::publication::LocalPublicationPolicy>,
     local_execution: Option<(
         node_core::publication::LocalPublicationPolicy,
         execution::local_execution::LocalExecutionPolicy,
     )>,
+    paid_execution: PaidExecutionComposition,
 ) -> Result<Router, DevnetCompositionError> {
     compose_devnet_router_with_execution_policies(
         store,
         blob_store,
-        asset_module,
+        protocol_context,
         boot_generation,
         max_concurrent,
         reserved_correlation_sequences,
-        fee_treasury_object_id,
         publication,
         local_execution.map(|(publication, policy)| {
             native_http::LocalExecutionComposition::new(publication, policy)
         }),
+        paid_execution,
     )
 }
 
-/// Builds the same router with a bounded, explicitly seeded execution registry.
+/// Builds the router with the mandatory installed paid contract policy and an
+/// optional bounded, explicitly seeded zero-fee execution registry.
 #[allow(clippy::too_many_arguments)]
 pub fn compose_devnet_router_with_execution_policies(
     store: Arc<SqliteDurableStore>,
     blob_store: Arc<SqliteBlobStore>,
-    asset_module: DevnetAssetModule,
+    protocol_context: DevnetProtocolContext,
     boot_generation: WriterFenceGeneration,
     max_concurrent: usize,
     reserved_correlation_sequences: usize,
-    fee_treasury_object_id: ObjectId,
     publication: Option<node_core::publication::LocalPublicationPolicy>,
     local_execution: Option<native_http::LocalExecutionComposition>,
-) -> Result<Router, DevnetCompositionError> {
-    compose_devnet_router_with_contract_policies(
-        store,
-        blob_store,
-        asset_module,
-        boot_generation,
-        max_concurrent,
-        reserved_correlation_sequences,
-        fee_treasury_object_id,
-        publication,
-        local_execution,
-        None,
-    )
-}
-
-/// Builds the router with independently activated zero-fee and paid contract
-/// policies. Profile four is accepted only through `paid_execution`.
-#[allow(clippy::too_many_arguments)]
-pub fn compose_devnet_router_with_contract_policies(
-    store: Arc<SqliteDurableStore>,
-    blob_store: Arc<SqliteBlobStore>,
-    asset_module: DevnetAssetModule,
-    boot_generation: WriterFenceGeneration,
-    max_concurrent: usize,
-    reserved_correlation_sequences: usize,
-    fee_treasury_object_id: ObjectId,
-    publication: Option<node_core::publication::LocalPublicationPolicy>,
-    local_execution: Option<native_http::LocalExecutionComposition>,
-    paid_execution: Option<native_http::PaidExecutionComposition>,
+    paid_execution: PaidExecutionComposition,
 ) -> Result<Router, DevnetCompositionError> {
     let admission: NonZeroUsize =
         NonZeroUsize::new(max_concurrent).ok_or(DevnetCompositionError::InvalidConcurrency)?;
     let reserved_sequences: u64 = u64::try_from(reserved_correlation_sequences)
         .map_err(|_| DevnetCompositionError::ReservedSequenceOverflow)?;
-    let (chain_id, epoch, _domain, protocol_config, resolver, catalog, _module_ref) =
-        asset_module.into_parts();
+    let (chain_id, epoch, _domain, protocol_config, resolver) = protocol_context.into_parts();
     let node_config: NodeConfig = NodeConfig::new(
         chain_id,
         protocol_config.protocol_version,
@@ -181,24 +151,24 @@ pub fn compose_devnet_router_with_contract_policies(
             reserved_sequences,
         )),
     );
+    // The active devnet composes an empty preinstalled module catalog and no
+    // native fee composer (DR-0127): the installed public Standard Asset
+    // package and paid-execution envelope are the only active path for the
+    // five asset commands.
+    let catalog: PreinstalledModuleCatalog =
+        PreinstalledModuleCatalog::new(Vec::new()).map_err(DevnetCompositionError::NodeCore)?;
     let mut preinstalled_wasm = PreinstalledWasmComposition::new(
         Arc::new(catalog),
         execution::WasmExecutionEngine,
         boot_generation.get(),
-    )
-    .with_fee_composition(PreinstalledFeeCompositionConfig::new(
-        fee_treasury_object_id,
-        Arc::new(StandardAssetCoinFeeComposer),
-    ));
+    );
     if let Some(policy) = publication {
         preinstalled_wasm = preinstalled_wasm.with_local_publication(policy);
     }
     if let Some(composition) = local_execution {
         preinstalled_wasm = preinstalled_wasm.with_local_execution(composition);
     }
-    if let Some(composition) = paid_execution {
-        preinstalled_wasm = preinstalled_wasm.with_paid_execution(composition);
-    }
+    preinstalled_wasm = preinstalled_wasm.with_paid_execution(paid_execution);
     let authority = StructuredDurableRequestAuthority::new(
         boot_generation,
         REQUEST_OPERATION_TIMEOUT_MILLIS,
@@ -266,10 +236,12 @@ impl Error for DevnetCompositionError {
 mod tests {
     use super::*;
     use crate::{
-        boot::boot_local_store, catalog::build_standard_asset_module, config::DevnetConfig,
-        genesis::build_devnet_protocol_context, standard_asset::STANDARD_ASSET_MODULE_WASM,
+        boot::boot_local_store, config::DevnetConfig, genesis::build_devnet_protocol_context,
+        paid_contracts::install_paid_contracts,
     };
     use ed25519_zebra::{SigningKey, VerificationKey};
+    use execution::publication::PublicationContext;
+    use runtime::{DurableOperationContext, StorageCorrelationId, StorageDeadline};
     use std::{
         ffi::OsString,
         fs,
@@ -323,26 +295,51 @@ mod tests {
             OsString::from(owner_hex(0x22)),
             OsString::from("--max-concurrent"),
             OsString::from("4"),
-            OsString::from("--fee-treasury-owner"),
+            OsString::from("--fee-recipient"),
             OsString::from(owner_hex(0x33)),
         ])
         .unwrap();
         let boot = boot_local_store(&config).unwrap();
         let generation = boot.boot_generation();
-        let context =
+        let protocol_context =
             build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
-        let module =
-            build_standard_asset_module(context, STANDARD_ASSET_MODULE_WASM.to_vec()).unwrap();
+        let publication_context = PublicationContext::new(
+            config.chain_id().clone(),
+            protocol_context.protocol_config().protocol_version,
+            config.epoch(),
+        )
+        .unwrap();
+        let domain =
+            protocol_types::AtomicityDomainId::new(crate::genesis::DEVNET_DOMAIN_BYTES).unwrap();
+        let operation = DurableOperationContext::new(
+            generation,
+            StorageDeadline::new(u64::MAX).unwrap(),
+            StorageCorrelationId::new([0x61; 16]).unwrap(),
+        );
+        let activation = install_paid_contracts(
+            boot.store(),
+            &operation,
+            domain,
+            protocol_context.resolver(),
+            &publication_context,
+            config.dev_owners(),
+            config.fee_recipient(),
+        )
+        .unwrap();
+        let paid_execution = native_http::PaidExecutionComposition::new(
+            activation.base_policy,
+            activation.fee_policy,
+        );
         let (store, blob_store) = boot.into_parts();
 
         let router = compose_devnet_router(
             Arc::new(store),
             Arc::new(blob_store),
-            module,
+            protocol_context,
             generation,
             config.max_concurrent(),
             config.dev_owners().len(),
-            ObjectId::new([0xCE; 32]),
+            paid_execution,
         )
         .unwrap();
 

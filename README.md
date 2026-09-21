@@ -104,10 +104,11 @@ cd adapters/deno && deno task check
 [`docs/guides/devnet.md`](docs/guides/devnet.md) contains the complete
 reproducible walkthrough for:
 
-- creating development-only sender, recipient, and treasury keys;
-- starting the loopback-only single-validator devnet;
-- submitting Standard Asset v1 transfer, split, merge, bounded local-devnet
-  mint, and whole-coin burn operations with fees;
+- creating two development-only keys;
+- starting the loopback-only single-validator devnet, which installs the
+  public Standard Asset package at genesis;
+- submitting Standard Asset transfer, split, merge, mint, and burn as
+  ordinary signed paid contract calls;
 - querying the receipt, objects, and next nonce; and
 - orderly restart and persisted-state comparison.
 

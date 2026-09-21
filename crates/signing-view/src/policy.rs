@@ -288,9 +288,11 @@ impl ClearSigningPolicy {
 
 /// A **historical** (no longer live) reference-build recognition entry for
 /// the protocol-3 local-devnet `sunrise.devnet.asset_account.v1` transfer
-/// module, superseded by the protocol-4 Standard Asset v1 whole-coin
-/// transfer module (see `apps/devnet/src/standard_asset.rs`,
-/// `apps/devnet/src/catalog.rs`, and DR-0107).
+/// module. DR-0107 superseded it with a protocol-4 preinstalled Standard
+/// Asset v1 whole-coin transfer module; DR-0127 subsequently removed that
+/// preinstalled module entirely in favor of the published `transfer`
+/// entrypoint in `contracts/standard-asset`, reached only through an
+/// ordinary signed paid contract call (see DR-0107 and DR-0127).
 ///
 /// No live devnet build matches this policy's `protocol_version`, `module_id`,
 /// `module_version`, or code digest: they name the deleted

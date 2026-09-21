@@ -5,6 +5,7 @@ mod inventory;
 use abi::executable_abi::{ExecutableAbi, encode_executable_abi};
 use abi::{AccessEntry, AccessManifest, encode_access_manifest};
 use execution::local_execution::{LocalExecutionResult, decode_local_execution_result};
+use execution::publication::PublicationContext;
 use execution::{ExecutionStatus, ObjectEffect};
 use hashing::HashSuiteResolver;
 use objects::{AccessMode, Object, ObjectRef};
@@ -18,8 +19,8 @@ use std::{
 };
 use sunrise_edge_client::{LocalSigner, PackageOrigin};
 use sunrise_edge_devnet::{
-    DevnetConfig, STANDARD_ASSET_MODULE_WASM, boot_local_store, build_devnet_protocol_context,
-    build_standard_asset_module,
+    DevnetConfig, boot_local_store, build_devnet_protocol_context, install_paid_contracts,
+    verify_or_seed_protocol_context,
 };
 
 struct Directory(PathBuf);
@@ -79,7 +80,7 @@ async fn cli_inventory_success_trap_and_exact_files_survive_restart() {
         "9".into(),
         "--dev-owner".into(),
         signer.address().to_string(),
-        "--fee-treasury-owner".into(),
+        "--fee-recipient".into(),
         recipient.address().to_string(),
         "--enable-local-execution".into(),
         "--max-concurrent".into(),
@@ -134,24 +135,54 @@ async fn cli_inventory_success_trap_and_exact_files_survive_restart() {
     for boot_index in 0..2 {
         let boot = boot_local_store(&config).unwrap();
         let generation = boot.boot_generation();
-        let module = build_standard_asset_module(
-            build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap(),
-            STANDARD_ASSET_MODULE_WASM.to_vec(),
-        )
-        .unwrap();
-        let resolver = module.resolver().clone();
+        let object_store_was_empty = boot.store().object_store_is_empty().unwrap();
+        let protocol_context =
+            build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
+        let resolver = protocol_context.resolver().clone();
         let domain = sunrise_edge_client::AtomicityDomainId::new(
             sunrise_edge_devnet::genesis::DEVNET_DOMAIN_BYTES,
         )
         .unwrap();
-        let operation = DurableOperationContext::new(
+        let operation = |sequence: u8| -> DurableOperationContext {
+            let correlation_byte: u8 = sequence.checked_add(1).unwrap();
+            DurableOperationContext::new(
+                generation,
+                StorageDeadline::new(u64::MAX).unwrap(),
+                StorageCorrelationId::new([correlation_byte; 16]).unwrap(),
+            )
+        };
+        verify_or_seed_protocol_context(
+            boot.store(),
+            &resolver,
+            config.epoch(),
             generation,
-            StorageDeadline::new(u64::MAX).unwrap(),
-            StorageCorrelationId::new([9; 16]).unwrap(),
+            &operation(1),
+            object_store_was_empty,
+        )
+        .unwrap();
+        let publication_context = PublicationContext::new(
+            config.chain_id().clone(),
+            resolver.protocol_version(),
+            config.epoch(),
+        )
+        .unwrap();
+        let activation = install_paid_contracts(
+            boot.store(),
+            &operation(2),
+            domain,
+            &resolver,
+            &publication_context,
+            config.dev_owners(),
+            config.fee_recipient(),
+        )
+        .unwrap();
+        let paid_execution = native_http::PaidExecutionComposition::new(
+            activation.base_policy,
+            activation.fee_policy,
         );
         let policies = sunrise_edge_devnet::local_execution::seed_local_execution_policies(
             boot.store(),
-            &operation,
+            &operation(9),
             domain,
             &resolver,
             config.epoch(),
@@ -161,13 +192,13 @@ async fn cli_inventory_success_trap_and_exact_files_survive_restart() {
         let router = sunrise_edge_devnet::composition::compose_devnet_router_with_local_execution(
             Arc::new(store),
             Arc::new(blobs),
-            module,
+            protocol_context,
             generation,
             4,
             5,
-            objects::ObjectId::new([0xfe; 32]),
             None,
             Some(policies),
+            paid_execution,
         )
         .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
