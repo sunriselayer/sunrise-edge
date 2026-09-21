@@ -12,9 +12,9 @@ use protocol_types::Digest32;
 
 use crate::StandardAssetError;
 use crate::types::{
-    coin_body_layout, empty_argument_layout, mint_argument_layout, reservation_body_layout,
-    reserve_argument_layout, settle_argument_layout, split_argument_layout,
-    transfer_argument_layout, treasury_cap_body_layout,
+    coin_body_layout, definition_body_layout, empty_argument_layout, mint_argument_layout,
+    reservation_body_layout, reserve_argument_layout, settle_argument_layout,
+    split_argument_layout, transfer_argument_layout, treasury_cap_body_layout,
 };
 
 /// The stored, caller-attested reservation commitment.
@@ -43,6 +43,11 @@ fn encode(layout: &ValueLayout, value: &CallValue) -> Result<Vec<u8>, StandardAs
 /// Encodes the empty argument tuple used by `burn`, `init`, and `merge`.
 pub fn no_arguments() -> Result<Vec<u8>, StandardAssetError> {
     encode(&empty_argument_layout(), &CallValue::Tuple(Vec::new()))
+}
+
+/// Encodes the canonical stored body of a `Definition` object.
+pub fn definition_body() -> Result<Vec<u8>, StandardAssetError> {
+    encode(&definition_body_layout(), &CallValue::Tuple(Vec::new()))
 }
 
 /// Encodes `mint` arguments. The amount must be positive.

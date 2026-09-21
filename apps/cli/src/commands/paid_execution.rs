@@ -33,7 +33,19 @@ fn invalid(message: &'static str) -> CliError {
         message,
     ))
 }
-fn read(path: &str, maximum: usize) -> Result<Vec<u8>, CliError> {
+pub(super) const MAX_INSTANCE_RECORD_BYTES: usize = 2048;
+
+pub(super) fn validate_remote_instance(
+    record: &InstanceRecord,
+    remote: Option<&InstanceRecord>,
+) -> Result<(), CliError> {
+    if remote != Some(record) {
+        return Err(invalid("remote instance differs from pinned instance file"));
+    }
+    Ok(())
+}
+
+pub(super) fn read(path: &str, maximum: usize) -> Result<Vec<u8>, CliError> {
     let mut bytes: Vec<u8> = Vec::new();
     File::open(path)
         .map_err(failure)?
@@ -45,9 +57,10 @@ fn read(path: &str, maximum: usize) -> Result<Vec<u8>, CliError> {
     }
     Ok(bytes)
 }
-/// Reserves every requested artifact before the mutating POST. A reserved file
-/// remains in place on failure so a caller cannot accidentally overwrite an
-/// earlier operation while recovering by exact replay.
+/// Reserves every requested artifact before the mutating POST. The signed
+/// submission and deterministic derived reference are persisted before the
+/// POST so they survive an uncertain response. A reserved file remains in
+/// place on failure so recovery cannot overwrite an earlier operation.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn submit_with_outputs(
     result_path: Option<&str>,
@@ -73,6 +86,10 @@ pub(super) fn submit_with_outputs(
         file.write_all(submission).map_err(failure)?;
         file.sync_all().map_err(failure)?;
     }
+    if let (Some(file), Some(bytes)) = (&mut derived_file, derived) {
+        file.write_all(bytes).map_err(failure)?;
+        file.sync_all().map_err(failure)?;
+    }
     println!("request_id={request_id}");
     println!("nonce={nonce}");
     let result: PaidExecutionResult = submit()?;
@@ -85,12 +102,6 @@ pub(super) fn submit_with_outputs(
         let bytes: Vec<u8> =
             encode_paid_execution_result(&result).map_err(|error| recovery(&error))?;
         file.write_all(&bytes).map_err(|error| recovery(&error))?;
-        file.sync_all().map_err(|error| recovery(&error))?;
-    }
-    if result.status == PaidExecutionStatus::Success
-        && let (Some(file), Some(bytes)) = (&mut derived_file, derived)
-    {
-        file.write_all(bytes).map_err(|error| recovery(&error))?;
         file.sync_all().map_err(|error| recovery(&error))?;
     }
     Ok(result)
@@ -354,8 +365,11 @@ fn build_call_application<T: Transport>(
 ) -> Result<(PaidApplication, Option<InstanceRecord>), CliError> {
     let loaded: Option<InstanceRecord> = if action == "paid-call" {
         Some(
-            decode_instance_record(&read(parsed.require("--instance-ref")?, 4096)?)
-                .map_err(failure)?,
+            decode_instance_record(&read(
+                parsed.require("--instance-ref")?,
+                MAX_INSTANCE_RECORD_BYTES,
+            )?)
+            .map_err(failure)?,
         )
     } else {
         None
@@ -373,13 +387,9 @@ fn build_call_application<T: Transport>(
         .ok_or_else(|| invalid("code has no initializer"))?;
     let instance: InstanceRecord = match loaded {
         Some(record) => {
-            if client
-                .query_instance(record.creator, record.seed, resolver, expected)?
-                .as_ref()
-                != Some(&record)
-            {
-                return Err(invalid("remote instance differs from pinned instance file"));
-            }
+            let remote: Option<InstanceRecord> =
+                client.query_instance(record.creator, record.seed, resolver, expected)?;
+            validate_remote_instance(&record, remote.as_ref())?;
             record
         }
         None => InstanceRecord {
@@ -481,6 +491,30 @@ mod tests {
         assert_eq!(std::fs::read(&derived_path).unwrap(), b"preserve");
         assert_eq!(std::fs::read(&result_path).unwrap(), b"");
         assert_eq!(std::fs::read(&submission_path).unwrap(), b"");
+        for path in [result_path, submission_path, derived_path] {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn submission_and_derived_reference_survive_an_uncertain_post() {
+        let result_path = temporary_path("uncertain-result");
+        let submission_path = temporary_path("uncertain-submission");
+        let derived_path = temporary_path("uncertain-derived");
+        let outcome = submit_with_outputs(
+            result_path.to_str(),
+            submission_path.to_str(),
+            derived_path.to_str(),
+            b"signed",
+            Some(b"reference"),
+            RequestId::new([4; 32]).unwrap(),
+            8,
+            || Err(invalid("uncertain POST")),
+        );
+        assert!(outcome.is_err());
+        assert_eq!(std::fs::read(&result_path).unwrap(), b"");
+        assert_eq!(std::fs::read(&submission_path).unwrap(), b"signed");
+        assert_eq!(std::fs::read(&derived_path).unwrap(), b"reference");
         for path in [result_path, submission_path, derived_path] {
             std::fs::remove_file(path).unwrap();
         }

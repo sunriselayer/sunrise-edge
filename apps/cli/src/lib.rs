@@ -10,12 +10,13 @@
 //! RPC path.
 //!
 //! `contract` exposes structural validation and the explicit local or paid
-//! publication/instance/call workflows. The top-level `transfer`, `split`,
-//! `merge`, `mint`, and `burn` verbs are convenience builders for ordinary
-//! signed paid calls to the policy-pinned public Standard Asset package. They
-//! validate the configured protocol context and current owned object types
-//! before signing. Ledger paid-intent clear signing is not yet specified, so
-//! those five verbs reject Ledger selection before device or network access.
+//! publication/instance/call workflows. The top-level `create-asset`,
+//! `transfer`, `split`, `merge`, `mint`, and `burn` verbs are convenience
+//! builders for ordinary signed paid Standard Asset instantiation or calls.
+//! They validate the configured protocol context, exact application instance,
+//! and current object types before signing. Ledger paid-intent clear signing is
+//! not yet specified, so these verbs reject Ledger selection before device or
+//! network access.
 //!
 //! Output is deterministic line-oriented `key=value` text. Every error exits
 //! non-zero, and successful paid operations print charge plus object-effect
@@ -80,7 +81,7 @@ where
         "object" => commands::object::run(iterator),
         "receipt" => commands::receipt::run(iterator),
         "next-nonce" => commands::next_nonce::run(iterator),
-        "transfer" | "split" | "merge" | "mint" | "burn" => {
+        "create-asset" | "transfer" | "split" | "merge" | "mint" | "burn" => {
             commands::standard_asset::run(command.as_str(), iterator)
         }
         other => Err(CliError::UnknownCommand(other.to_string())),

@@ -34,6 +34,7 @@
 - [DR-0125: public Standard Asset activation hardening](0125-public-standard-asset-activation-hardening.md)
 - [DR-0126: public paid contract activation](0126-public-paid-contract-activation.md)
 - [DR-0127: public Standard Asset CLI migration](0127-public-standard-asset-cli-migration.md)
+- [DR-0128: arbitrary Standard Asset creation](0128-arbitrary-standard-asset-creation.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).

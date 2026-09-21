@@ -28,7 +28,7 @@ mod source;
 mod types;
 
 pub use arguments::{
-    ReservationBody, coin_amount, mint_arguments, no_arguments, reservation_body,
+    ReservationBody, coin_amount, definition_body, mint_arguments, no_arguments, reservation_body,
     reserve_arguments, settle_arguments, split_arguments, transfer_arguments, treasury_supply,
 };
 pub use package::{StandardAssetPackage, build_package, encoded_executable_abi, executable_abi};
