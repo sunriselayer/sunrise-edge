@@ -325,6 +325,11 @@ pub(crate) fn install_validator_set<S: StructuredDurableDomainStateStore>(
 /// stored vote without re-executing anything. A conflicting replay, an
 /// `Instantiate`/`Publish` application, or an input locked by a different
 /// request id all fail closed and write nothing.
+///
+/// `created_checkpoint` feeds the staged commitment this call votes on, and
+/// is durably bound into the prepared record so [`apply`] later re-admits
+/// against this exact same value rather than one supplied fresh by its own
+/// caller, however far checkpoint progress has moved since.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare<S, E, C>(
     store: &S,
@@ -472,6 +477,7 @@ where
         vote: vote_bytes,
         locked_objects: admission.locked_objects.clone(),
         pending_nonce,
+        created_checkpoint,
     };
     let prepared_bytes: Vec<u8> = records::encode_fastpath_prepared_record(&prepared_record)?;
 
@@ -571,6 +577,15 @@ where
 /// final receipt already exists (a prior apply, direct commit under the
 /// same request id, or a duplicate/reordered certificate for the same
 /// request) it is returned unchanged without re-executing anything.
+///
+/// Re-admission always uses the `created_checkpoint` durably bound in the
+/// prepared record itself, not a value from this call's caller: the
+/// checkpoint feeds the staged commitment `prepare` voted on, so re-deriving
+/// it from anything other than that exact stored value could make a
+/// correct, quorum-certified vote fail the fresh-commitment check below
+/// purely because checkpoint progress moved between vote and apply --
+/// stranding the request's locks (phase 1 has no rollback or expiry) even
+/// though nothing about the certified outcome actually changed.
 #[allow(clippy::too_many_arguments)]
 pub fn apply<S, E>(
     store: &S,
@@ -585,7 +600,6 @@ pub fn apply<S, E>(
     engine: &E,
     signed_bytes: &[u8],
     certificate_bytes: &[u8],
-    created_checkpoint: u64,
 ) -> FastPathResult<NodeOutput>
 where
     S: StructuredDurableDomainStateStore,
@@ -657,7 +671,7 @@ where
         engine,
         authenticated,
         event_digest,
-        created_checkpoint,
+        prepared.created_checkpoint,
         NonceMode::PreparedApply,
     )?;
     if admission.locked_objects != prepared.locked_objects {
