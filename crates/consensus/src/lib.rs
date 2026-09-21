@@ -8,16 +8,25 @@
 //! newly committed blocks. It does not spawn tasks, own sockets, or rely on
 //! process memory surviving between invocations.
 
-use canonical_encoding::{CanonicalEncodingError, CanonicalStruct, encode_digest32};
+use canonical_encoding::{
+    CanonicalDecodingError, CanonicalEncodingError, CanonicalStruct, encode_digest32,
+};
 use core::fmt;
 use crypto::{CryptoError, SignatureDomain, SignatureMessageType, frame_signature_message};
 use hashing::{HashSuiteResolver, HashingError};
 use protocol_types::{
-    ChainId, Digest32, Epoch, HashPurpose, ProtocolVersion, SignatureSchemeId, ValidatorId,
+    ChainId, Digest32, Epoch, HashPurpose, ProtocolVersion, SignatureSchemeId, TypeError,
+    ValidatorId,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use validator_set::{ValidatorSet, ValidatorSetError};
+
+mod fast_vote;
+pub use fast_vote::{
+    FastCertificate, FastPathCertifier, FastVote, decode_fast_certificate, decode_fast_vote,
+    encode_fast_certificate, encode_fast_vote, encode_fast_vote_payload,
+};
 
 const PROPOSAL_TYPE_ID: u16 = 0xD001;
 const VOTE_PAYLOAD_TYPE_ID: u16 = 0xD002;
@@ -91,6 +100,10 @@ impl ConsensusParameters {
 pub enum ConsensusError {
     /// Canonical encoding failed.
     CanonicalEncoding(CanonicalEncodingError),
+    /// Canonical decoding failed.
+    CanonicalDecoding(CanonicalDecodingError),
+    /// A decoded protocol identifier failed validation.
+    ProtocolType(TypeError),
     /// Domain-separated hashing failed.
     Hashing(HashingError),
     /// Signature framing failed.
@@ -180,6 +193,8 @@ impl fmt::Display for ConsensusError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CanonicalEncoding(error) => error.fmt(f),
+            Self::CanonicalDecoding(error) => error.fmt(f),
+            Self::ProtocolType(error) => error.fmt(f),
             Self::Hashing(error) => error.fmt(f),
             Self::Crypto(error) => error.fmt(f),
             Self::ValidatorSet(error) => error.fmt(f),
@@ -275,6 +290,18 @@ impl Error for ConsensusError {}
 impl From<CanonicalEncodingError> for ConsensusError {
     fn from(value: CanonicalEncodingError) -> Self {
         Self::CanonicalEncoding(value)
+    }
+}
+
+impl From<CanonicalDecodingError> for ConsensusError {
+    fn from(value: CanonicalDecodingError) -> Self {
+        Self::CanonicalDecoding(value)
+    }
+}
+
+impl From<TypeError> for ConsensusError {
+    fn from(value: TypeError) -> Self {
+        Self::ProtocolType(value)
     }
 }
 

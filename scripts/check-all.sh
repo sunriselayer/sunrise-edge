@@ -28,6 +28,7 @@ node scripts/publication-submission-vectors.mjs
 node scripts/local-execution-vectors.mjs
 node scripts/call-authorization-vectors.mjs
 node scripts/paid-execution-vectors.mjs
+node scripts/fast-vote-vectors.mjs
 
 npm --prefix adapters/cloudflare-workers run check
 

@@ -472,15 +472,29 @@ Objects are not implemented in Phase 1. Future object versions will reference se
 Transactions are not implemented in Phase 1. They will be canonically serialized first, then hashed by the active suite selected from `(chain_id, protocol_version, epoch)`.
 
 ## 11. Fast Path lifecycle
-Fast Path is deferred. Its certificates will rely on the Phase 1 digest, suite-resolution, and signature-domain primitives.
+DR-0129 phase 0 adds only the owned-object fast path's canonical
+`FastVote`/`FastCertificate` types, wire codec, and a stateless, epoch-scoped
+`FastPathCertifier` (`crates/consensus`) that signs/verifies votes and
+deterministically forms the minimal, canonically validator-ID-ordered quorum
+certificate for one `(tx_hash, execution_effects_hash)` pair — independent of
+`ChainedHotStuff`'s persisted view/height state and using a distinct
+`"fast-path-vote-v1"` signature domain. This is a types/codec/aggregation
+library only: it does not lock objects, apply execution effects, publish
+anything durably, or reach any HTTP/CLI ingress. Validator-side execution,
+per-object locking, atomic certificate publication, and any live activation
+remain a separate, not-yet-designed follow-up. See DR-0129 and `TODO.md` for
+exact scope and current status.
 
 ## 12. Certificate lifecycle
 Phase 13 adds shared-consensus quorum certificates. Each certificate binds the
 chain, protocol version, epoch, view, height, and proposal digest to a
 canonically sorted set of domain-separated validator votes. A non-genesis
 certificate must carry voting power strictly greater than two thirds; replaying
-an already processed certificate is a no-op. Fast-path certificates remain a
-separate follow-up.
+an already processed certificate is a no-op. DR-0129 phase 0 adds the
+owned-object fast-path's `FastCertificate` as a separate, non-view/height
+quorum certificate type over one transaction's execution-effects hash (see
+section 11); it does not change `QuorumCertificate` or its activation status,
+and nothing yet applies or durably publishes a `FastCertificate`.
 
 ## 13. Persistent state layout
 Runtime persistence uses deterministic chain/version namespaces for protocol

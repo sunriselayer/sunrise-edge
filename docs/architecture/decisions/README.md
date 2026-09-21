@@ -35,6 +35,7 @@
 - [DR-0126: public paid contract activation](0126-public-paid-contract-activation.md)
 - [DR-0127: public Standard Asset CLI migration](0127-public-standard-asset-cli-migration.md)
 - [DR-0128: arbitrary Standard Asset creation](0128-arbitrary-standard-asset-creation.md)
+- [DR-0129: owned-object FastVote/FastCertificate canonical library (phase 0)](0129-fastvote-fastcertificate-fast-path.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).

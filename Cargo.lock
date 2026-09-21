@@ -268,6 +268,7 @@ version = "0.1.0"
 dependencies = [
  "canonical-encoding",
  "crypto",
+ "ed25519-zebra",
  "hashing",
  "protocol-types",
  "sha2 0.11.0",

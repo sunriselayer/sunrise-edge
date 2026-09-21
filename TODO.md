@@ -12,8 +12,15 @@ asset commands away from the deleted preinstalled/native fee path are
 implemented and locally validated under DR-0127. The generic-contract gate is
 closed. DR-0128 adds arbitrary Standard Asset creation as an ordinary paid
 instance plus immediate mint/transfer use. Its complete repository gate,
-focused Codex Security delta scan, and fresh Opus tech-lead review have passed;
-FastVote and multi-validator integration are next.
+focused Codex Security delta scan, and fresh Opus tech-lead review have passed.
+DR-0129 phase 0 adds only the owned-object `FastVote`/`FastCertificate`
+canonical types, wire codec, and signature/quorum aggregation library in
+`crates/consensus` (compiled, tested, and vector-checked; see status below).
+It does not lock objects, apply effects, publish anything durably, or wire
+into any ingress — validator-side execution, per-object locking, atomic
+certificate publication, HTTP/CLI activation, and multi-validator Standard
+Asset E2E evidence are separate, still-unresolved follow-up slices requiring
+their own design decision.
 
 | Order | Deliverable | Completion evidence | Status |
 | --- | --- | --- | --- |
@@ -21,15 +28,22 @@ FastVote and multi-validator integration are next.
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Implemented and validated (DR-0128); focused Codex Security scan found 0 reportable findings and fresh Opus review approved |
-| 5 | FastVote and multi-validator integration | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | Next |
+| 5 | FastVote and multi-validator integration | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | Phase 0 implemented and validated (DR-0129): `FastVote`/`FastCertificate` canonical types, codec, and signature/quorum aggregation library only, in `crates/consensus`, independent of `ChainedHotStuff`. `cargo test -p consensus`, `cargo clippy -p consensus --all-targets --all-features`, and the independent `scripts/fast-vote-vectors.mjs` pinned-vector checker pass. **Still open and not yet designed:** validator-side execution/locking of owned objects, atomic certificate publication, any durable records, HTTP/CLI ingress, HotStuff wiring, validator-set changes, slashing, fee distribution, and multi-validator paid Standard Asset E2E evidence |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
-Asset creation is the final focused delta before FastVote/multi-validator integration.
-Contract upgrades/migrations remain a separate explicit capability after the
-initial immutable-code flow, not a prerequisite for claiming that first flow.
-Production recovery/HA/provider certification, Ledger, TypeScript, explorer,
-wallet, Unique Asset and multisig remain separate deferred gates below; none
-is deleted or silently treated as complete by this ordering.
+Asset creation was the final focused delta before FastVote/multi-validator
+integration; DR-0129 phase 0 is only that integration's canonical-types/codec
+foundation, deliberately kept inert (no locking, no effects application, no
+durable publication, no ingress). Validator-side execution, atomic
+certificate publication, HTTP/CLI ingress, and multi-validator paid Standard
+Asset E2E evidence remain a separate next slice requiring its own design
+decision, complete repository gate, and fresh review. Contract
+upgrades/migrations remain a separate explicit
+capability after the initial immutable-code flow, not a prerequisite for
+claiming that first flow. Production recovery/HA/provider certification,
+Ledger, TypeScript, explorer, wallet, Unique Asset and multisig remain
+separate deferred gates below; none is deleted or silently treated as
+complete by this ordering.
 
 **Working rule:** internal tasks may be small, but a PR should deliver a usable
 operation or an independently testable safety boundary. Do not split a feature
