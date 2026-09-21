@@ -13,14 +13,28 @@ implemented and locally validated under DR-0127. The generic-contract gate is
 closed. DR-0128 adds arbitrary Standard Asset creation as an ordinary paid
 instance plus immediate mint/transfer use. Its complete repository gate,
 focused Codex Security delta scan, and fresh Opus tech-lead review have passed.
-DR-0129 phase 0 adds only the owned-object `FastVote`/`FastCertificate`
+DR-0129 phase 0 added the owned-object `FastVote`/`FastCertificate`
 canonical types, wire codec, and signature/quorum aggregation library in
-`crates/consensus` (compiled, tested, and vector-checked; see status below).
-It does not lock objects, apply effects, publish anything durably, or wire
-into any ingress — validator-side execution, per-object locking, atomic
-certificate publication, HTTP/CLI activation, and multi-validator Standard
-Asset E2E evidence are separate, still-unresolved follow-up slices requiring
-their own design decision.
+`crates/consensus`. DR-0130 phase 1 now adds the local `node-core`
+certified-execution boundary: signed paid-intent preparation, durable
+object/nonce locks, complete staged-commit commitment, static signed-genesis
+validator-set verification, and atomic certificate apply. It deliberately
+adds no HTTP/CLI or other externally reachable FastVote ingress. FastVote is
+delivered across four phases (see the
+[FastVote Certified Execution Gate](#fastvote-certified-execution-gate)):
+phase 0 (DR-0129, done); phase 1, owned-object certified execution — signed
+paid intent authentication, exact replay reconciliation, nonce/policy/
+object/ABI validation, deterministic paid execution, a canonical commitment
+over the complete staged commit, durable exclusive owned-object version
+locks, quorum certificate verification, and atomic certificate apply
+(implemented and locally validated in
+[DR-0130](docs/architecture/decisions/0130-owned-object-certified-execution.md));
+phase 2, validator lifecycle (epoch/validator-set
+transitions, equivocation evidence, multi-validator fault/restart tests, not
+yet designed); and phase 3, economics/security completion (bond-linked
+slashing and deterministic fee distribution to the final certificate signer
+set, not yet designed). **FastVote is complete only after phase 3.** A
+testnet may launch after phase 1, but that is not FastVote completion.
 
 | Order | Deliverable | Completion evidence | Status |
 | --- | --- | --- | --- |
@@ -28,16 +42,15 @@ their own design decision.
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Implemented and validated (DR-0128); focused Codex Security scan found 0 reportable findings and fresh Opus review approved |
-| 5 | FastVote and multi-validator integration | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | Phase 0 implemented and validated (DR-0129): `FastVote`/`FastCertificate` canonical types, codec, and signature/quorum aggregation library only, in `crates/consensus`, independent of `ChainedHotStuff`. `cargo test -p consensus`, `cargo clippy -p consensus --all-targets --all-features`, and the independent `scripts/fast-vote-vectors.mjs` pinned-vector checker pass. **Still open and not yet designed:** validator-side execution/locking of owned objects, atomic certificate publication, any durable records, HTTP/CLI ingress, HotStuff wiring, validator-set changes, slashing, fee distribution, and multi-validator paid Standard Asset E2E evidence |
+| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0 and 1 implemented and locally validated** (DR-0129/DR-0130). Phase 1 is a local Rust `node-core` boundary only: four independent file-backed SQLite validator stores form and apply a real quorum certificate; restart/replay, conflict, commitment mismatch, fencing and indeterminate-commit cases are covered; new frames have independent JS vectors. It exposes no FastVote HTTP/CLI ingress. **Phase 2 (validator lifecycle) and phase 3 (economics/security completion: slashing, fee distribution) remain not yet designed.** FastVote is complete only after phase 3; a testnet may launch after phase 1, but that is not FastVote completion |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
 Asset creation was the final focused delta before FastVote/multi-validator
-integration; DR-0129 phase 0 is only that integration's canonical-types/codec
-foundation, deliberately kept inert (no locking, no effects application, no
-durable publication, no ingress). Validator-side execution, atomic
-certificate publication, HTTP/CLI ingress, and multi-validator paid Standard
-Asset E2E evidence remain a separate next slice requiring its own design
-decision, complete repository gate, and fresh review. Contract
+integration. DR-0129 phase 0 supplied its canonical-types/codec foundation;
+DR-0130 phase 1 supplies local certified execution without adding external
+ingress. Phase 2 validator lifecycle and phase 3 economics/security completion
+still require their own design decisions, complete repository gates, and fresh
+reviews before being claimed done. Contract
 upgrades/migrations remain a separate explicit
 capability after the initial immutable-code flow, not a prerequisite for
 claiming that first flow. Production recovery/HA/provider certification,
@@ -2506,6 +2519,85 @@ metadata authenticity、partial burn、authority capabilityのdelegation/destruc
 allowance、governed fee-asset admission、Unique Asset v1の実装は後続sliceである。
 これらを完了扱いにせず、このgateはそれぞれの後続実装とdelta reviewを
 追跡し続ける。
+
+## FastVote Certified Execution Gate
+
+FastVote/multi-validator integration (roadmap item 5) is delivered across
+four phases. This gate is the live status tracker for all four; it does not
+replace or loosen the hard activation constraint recorded in the "Generic
+Contract Publication Gate", "CLI-First Node Production Gate", and
+`docs/architecture/core-protocol.md` section 8, which independently keeps
+protocol version 3 live activation blocked until `FastVote`/`FastCertificate`,
+certificate publication, and every other externally accepted event family's
+authenticated/authorized ingress are implemented, atomically composed, and
+S4/S5 plus independent security/release gates are complete.
+
+**FastVote is complete only after phase 3.** A testnet may launch after
+phase 1 on the static signed genesis validator set phase 1 defines, but that
+launch is a deployment decision, not a claim that FastVote itself is
+finished. Validator-set changes, slashing, and fee/reward distribution are
+FastVote completion criteria in this plan, not vague "production" deferrals.
+
+- [x] **Phase 0 — canonical types/codec/signature/quorum library
+  ([DR-0129](docs/architecture/decisions/0129-fastvote-fastcertificate-fast-path.md)).**
+  `FastVote`/`FastCertificate` canonical types, wire codec, and a stateless,
+  epoch-scoped `FastPathCertifier` signature/quorum aggregation library in
+  `crates/consensus`, independent of `ChainedHotStuff`. Implemented, tested
+  (32 co-located unit tests with real Ed25519 signing), and vector-checked
+  (`scripts/fast-vote-vectors.mjs`). Does not lock objects, apply effects,
+  publish anything durably, or reach any ingress.
+- [x] **Phase 1 — owned-object certified execution
+  ([DR-0130](docs/architecture/decisions/0130-owned-object-certified-execution.md)).**
+  Implemented and locally validated as one coherent local `node-core` slice:
+  1. signed paid intent authentication reusing the existing
+     `execution::paid_execution::authenticate_paid_intent`/DR-0124 boundary, starting from
+     canonical signed intent bytes on both prepare and apply (never a
+     caller-supplied tx/effects hash);
+  2. exact replay reconciliation before nonce/lock/execution work;
+  3. nonce/policy/object/ABI validation reusing the existing paid-path
+     validation layers;
+  4. deterministic paid execution reusing the existing paid execution
+     engine and fee composition (DR-0087, DR-0126/DR-0127);
+  5. a canonical commitment over the complete staged commit — effects,
+     pending post-certificate nonce advance, receipt outcome, fee settlement, and every locked
+     object's `(id, version, digest)` — not merely the `ExecutionEffects`
+     hash;
+  6. durable exclusive sender-authorized owned-object version locks plus a
+     sender/epoch nonce lock and exact current-nonce assertion,
+     permanent until apply (no timeout/clock-based unlock after a vote in
+     phase 1);
+  7. byte-stable `FastVote` (re-preparing an already-prepared intent returns
+     the identical signed vote, not a fresh signature);
+  8. quorum certificate verification against a static signed genesis
+     validator set for one frozen epoch;
+  9. atomic certificate apply: application/fee-escrow mutations, nonce advance,
+     receipt, certificate publication, settlement metadata, and lock release
+     commit together or not at all, and a certificate that does not match
+     the locally recomputed commitment is rejected without applying or
+     releasing the lock.
+
+  The current paid fee recipient becomes protocol escrow for this phase
+  boundary; distribution to the final certificate signer set is phase 3, not
+  implemented here. Durable prepared/lock/certificate/settlement records use
+  the reserved fast-path namespace and canonical frame IDs `0x641B`-`0x6425`.
+  The gate includes 25 `node-core` fast-path tests, four independent
+  file-backed SQLite validator stores with close/reopen replay, 10 signed
+  genesis tests, and independent `scripts/fast-path-vectors.mjs`
+  reconstruction. No new externally reachable event family goes live in
+  phase 1. See DR-0130 for the exact safety invariants, evidence, and deferred
+  Phase 2 recovery/lifecycle work.
+- [ ] **Phase 2 — validator lifecycle.** Not yet designed. Epoch/
+  validator-set transitions, retired/wrong-epoch rejection, relay/
+  event-family authorization, explicit equivocation evidence, and
+  multi-validator fault/restart tests. Must guarantee that any lock-recovery
+  procedure it introduces can never permit two conflicting certificates to
+  apply for the same object version (phase 1 defines no recovery path at
+  all).
+- [ ] **Phase 3 — economics/security completion.** Not yet designed.
+  Bond-linked slashing execution and deterministic transaction-fee escrow
+  distribution to the final certificate signer set, including a canonical
+  rounding-remainder rule and vectors. FastVote is not complete until this
+  phase closes.
 
 ## CLI-First Node Production Gate
 

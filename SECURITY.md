@@ -124,7 +124,13 @@ confirmed vulnerability.
 
 The following are deferred from the first audit engagement:
 
-- FastCertificate and atomic certificate publication;
+- externally reachable FastVote/FastCertificate ingress, validator lifecycle,
+  and economics/security completion (the local Phase 1 certified-execution
+  boundary and atomic certificate publication are implemented under
+  [DR-0130](docs/architecture/decisions/0130-owned-object-certified-execution.md),
+  but Phase 2 validator-set transitions/recovery and Phase 3 slashing/reward
+  distribution remain deferred — see `TODO.md`'s FastVote Certified Execution
+  Gate);
 - externally accepted non-`SubmitTransaction` event families;
 - production multi-validator consensus activation;
 - checkpoint/state-root publication and verified restore;

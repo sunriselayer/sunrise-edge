@@ -157,13 +157,44 @@ it is wired into `scripts/check-all.sh`.
 * Validator-side execution and per-object locking for owned objects.
 * Atomic certificate publication (durable records, idempotent replay).
 * `node-core` (or any other) wiring of `cast_fast_vote`/`apply_fast_certificate`
-  or equivalents — no such functions exist after this revision.
+  or equivalents — no such functions were introduced by this phase-0
+  revision; DR-0130 later introduced the local Phase 1 equivalents.
 * Any HTTP/CLI ingress for votes or certificates.
 * HotStuff wiring, validator-set changes, slashing, fee distribution.
 * Multi-validator paid Standard Asset end-to-end evidence.
 
-None of the above is implemented, partially implemented, or assumed by this
-DR's code; `TODO.md` tracks them as open.
+None of the above was implemented by DR-0129's phase-0 code. DR-0130 now
+implements the local validator-side execution, locking, durable certificate
+publication, and multi-validator paid Standard Asset evidence as Phase 1;
+external ingress, validator lifecycle, slashing, and fee distribution remain
+open in `TODO.md`.
+
+## Phase roadmap
+
+This DR is phase 0 of a four-phase FastVote delivery plan tracked in
+`TODO.md`'s delivery roadmap (item 5) and
+`docs/architecture/core-protocol.md` section 11:
+
+* **Phase 0 (this DR).** Canonical `FastVote`/`FastCertificate` types, wire
+  codec, and signature/quorum aggregation library only. Done.
+* **Phase 1.** One coherent certified-execution slice: signed paid intent
+  authentication, exact replay reconciliation, nonce/policy/object/ABI
+  validation, deterministic paid execution, a canonical commitment over the
+  complete staged commit, durable exclusive sender-authorized owned-object
+  version locks, byte-stable `FastVote`, quorum certificate verification, and
+  atomic certificate apply. Implemented under
+  [DR-0130](0130-owned-object-certified-execution.md); it was deliberately
+  not part of this phase-0 DR.
+* **Phase 2.** Validator lifecycle: epoch/validator-set transitions,
+  retired/wrong-epoch rejection, relay/event-family authorization, explicit
+  equivocation evidence, multi-validator fault/restart tests. Not yet
+  designed.
+* **Phase 3.** Economics/security completion: bond-linked slashing execution
+  and deterministic transaction-fee escrow distribution to the final
+  certificate signer set. Not yet designed.
+
+FastVote is complete only after phase 3. A testnet may launch after phase 1,
+but that launch is not itself FastVote completion.
 
 ## Verification
 

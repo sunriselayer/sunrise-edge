@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 abi.workspace = true
 canonical-encoding.workspace = true
+consensus.workspace = true
 crypto.workspace = true
 execution.workspace = true
 fees.workspace = true
@@ -17,6 +18,7 @@ protocol-types.workspace = true
 runtime.workspace = true
 system-modules.workspace = true
 standard-assets.workspace = true
+validator-set.workspace = true
 
 [dev-dependencies]
 sha2.workspace = true

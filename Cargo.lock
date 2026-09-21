@@ -947,6 +947,7 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "canonical-encoding",
+ "consensus",
  "crypto",
  "ed25519-zebra",
  "execution",
@@ -961,6 +962,7 @@ dependencies = [
  "sha2 0.11.0",
  "standard-assets",
  "system-modules",
+ "validator-set",
  "wat",
 ]
 
