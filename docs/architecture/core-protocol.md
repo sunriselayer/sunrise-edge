@@ -472,18 +472,33 @@ Objects are not implemented in Phase 1. Future object versions will reference se
 Transactions are not implemented in Phase 1. They will be canonically serialized first, then hashed by the active suite selected from `(chain_id, protocol_version, epoch)`.
 
 ## 11. Fast Path lifecycle
-DR-0129 phase 0 adds only the owned-object fast path's canonical
-`FastVote`/`FastCertificate` types, wire codec, and a stateless, epoch-scoped
-`FastPathCertifier` (`crates/consensus`) that signs/verifies votes and
+DR-0129 phase 0 defines the owned-object fast path's canonical
+`FastVote`/`FastCertificate` types, wire codec, and stateless, epoch-scoped
+`FastPathCertifier` (`crates/consensus`). It signs/verifies votes and
 deterministically forms the minimal, canonically validator-ID-ordered quorum
-certificate for one `(tx_hash, execution_effects_hash)` pair — independent of
-`ChainedHotStuff`'s persisted view/height state and using a distinct
-`"fast-path-vote-v1"` signature domain. This is a types/codec/aggregation
-library only: it does not lock objects, apply execution effects, publish
-anything durably, or reach any HTTP/CLI ingress. Validator-side execution,
-per-object locking, atomic certificate publication, and any live activation
-remain a separate, not-yet-designed follow-up. See DR-0129 and `TODO.md` for
-exact scope and current status.
+certificate for one `(tx_hash, execution_effects_hash)` pair, independently
+of `ChainedHotStuff` and under the distinct `"fast-path-vote-v1"` signature
+domain.
+
+DR-0130 phase 1 adds the local certified-execution state machine in
+`node-core` for authenticated paid `Call` intents over sender-owned objects.
+Prepare reuses the ordinary paid admission/ABI/fee engine, asserts but does
+not advance the sender nonce, and atomically persists one nonce lock, exact
+object locks, the complete staged-commit commitment, and the locally cast
+vote. Apply requires that local prepared state, verifies a quorum certificate
+against the static validator set bound into the signed genesis manifest,
+re-runs the same deterministic admission, and atomically commits application
+and fee effects, one nonce advance, the ordinary receipt, certificate and
+settlement records, and every lock deletion. Exact prepare/apply replay is
+durable and non-reapplying across SQLite close/reopen; a request already
+finalized through the direct paid path cannot be prepared afterward.
+
+Phase 1 deliberately exposes only this local Rust boundary. It adds no public
+HTTP/CLI event family and no timeout/clock-based lock recovery. Validator-set
+transitions/equivocation handling remain phase 2; bond-linked slashing and
+deterministic fee/reward distribution remain phase 3. FastVote is complete
+only after phase 3. See DR-0129, DR-0130, and `TODO.md` for exact evidence and
+remaining activation gates.
 
 ## 12. Certificate lifecycle
 Phase 13 adds shared-consensus quorum certificates. Each certificate binds the
@@ -492,9 +507,11 @@ canonically sorted set of domain-separated validator votes. A non-genesis
 certificate must carry voting power strictly greater than two thirds; replaying
 an already processed certificate is a no-op. DR-0129 phase 0 adds the
 owned-object fast-path's `FastCertificate` as a separate, non-view/height
-quorum certificate type over one transaction's execution-effects hash (see
-section 11); it does not change `QuorumCertificate` or its activation status,
-and nothing yet applies or durably publishes a `FastCertificate`.
+quorum certificate type over one transaction's full staged-commit commitment
+(carried in the historical `execution_effects_hash` field; see section 11).
+DR-0130's local phase-1 apply path verifies and durably records such a
+certificate atomically with the certified transaction, without changing
+`QuorumCertificate` or activating a public certificate ingress.
 
 ## 13. Persistent state layout
 Runtime persistence uses deterministic chain/version namespaces for protocol

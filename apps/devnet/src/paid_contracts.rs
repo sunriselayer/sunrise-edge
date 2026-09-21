@@ -25,12 +25,13 @@ use execution::{
 };
 use fees::GasSchedule;
 use hashing::HashSuiteResolver;
+use node_core::fast_path::{FastPathValidatorEntry, FastPathValidatorSetRecord};
 use node_core::genesis::{
     GenesisError, GenesisInstallOutcome, GenesisManifest, GenesisObjectEntry,
     genesis_manifest_commitment, genesis_manifest_signing_frame, install_genesis,
 };
 use objects::{Address, Object, ObjectId, Owner};
-use protocol_types::{Digest32, Epoch, HashPurpose};
+use protocol_types::{Digest32, Epoch, HashPurpose, SignatureSchemeId, ValidatorId};
 use public_standard_asset::{
     SCHEMA_VERSION, asset_type_argument, build_package, coin_amount, coin_body_layout,
     coin_type_tag, definition_body_layout, definition_type_tag, no_arguments, reservation_type_tag,
@@ -462,6 +463,15 @@ pub fn build_paid_genesis_manifest(
         initialization,
         fee_policy,
         objects,
+        validator_set: FastPathValidatorSetRecord {
+            context: context.clone(),
+            validators: vec![FastPathValidatorEntry {
+                id: ValidatorId::new(genesis_authority),
+                voting_power: 1,
+                signature_scheme: SignatureSchemeId::Ed25519,
+                public_key: genesis_authority.to_vec(),
+            }],
+        },
         signature: [0; 64],
     };
     manifest.signature = genesis_key()

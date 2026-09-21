@@ -17,7 +17,7 @@ use hashing::HashSuiteResolver;
 use objects::{Address, Object, ObjectId, Owner, encode_object};
 use protocol_types::{
     ChainId, Digest32, Epoch, HashAlgorithmId, HashPurpose, HashSuite, HashSuiteSchedule,
-    ProtocolVersion, ValidatorId,
+    ProtocolVersion, SignatureSchemeId, ValidatorId,
 };
 use runtime::{
     AtomicStateMutationSet, AtomicStateReadSet, AtomicStateTransaction, AtomicityDomainId,
@@ -34,6 +34,7 @@ use runtime_sqlite::{SqliteDurableStore, SqliteNamespace};
 use sha2::{Digest, Sha256};
 
 use super::*;
+use crate::fast_path::{FastPathValidatorEntry, FastPathValidatorSetRecord};
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -252,6 +253,15 @@ fn build_fixture() -> (
                 authority: coin_auth,
             },
         ],
+        validator_set: FastPathValidatorSetRecord {
+            context: protocol(),
+            validators: vec![FastPathValidatorEntry {
+                id: ValidatorId::new(sender()),
+                voting_power: 1,
+                signature_scheme: SignatureSchemeId::Ed25519,
+                public_key: sender().to_vec(),
+            }],
+        },
         signature: [0; 64],
     };
     manifest.signature = key()
@@ -265,11 +275,11 @@ fn build_fixture() -> (
 fn stable_vectors_0x6416_manifest_and_0x6417_marker() {
     let (manifest, _, _, _, _) = build_fixture();
     let manifest_bytes = encode_genesis_manifest(&manifest).unwrap();
-    assert_eq!(manifest_bytes.len(), 15964);
+    assert_eq!(manifest_bytes.len(), 16178);
     let manifest_sha256 = hex(&Sha256::digest(&manifest_bytes));
     assert_eq!(
         manifest_sha256,
-        "4dca0d2690f5198a0e64a1fbe595bad60388f007d38b33f37e3f111cd8ada458"
+        "f3b70b105f64a021566b8221644ddeedecad64e060ad2069b004c7db679b35d4"
     );
 
     let decoded = decode_genesis_manifest(&manifest_bytes).unwrap();
@@ -287,7 +297,7 @@ fn stable_vectors_0x6416_manifest_and_0x6417_marker() {
     let marker_sha256 = hex(&Sha256::digest(&marker_bytes));
     assert_eq!(
         marker_sha256,
-        "4f7a7a32443803ed6127bbd23242116c3e57d7a713fd812bf3c538e8261c34f9"
+        "4539c12765ea9166c7bfeee95cb3db430b231c00c39ed4de6132a2cc24b3ebab"
     );
 
     let decoded_marker = decode_genesis_install_marker(&marker_bytes).unwrap();
@@ -723,6 +733,57 @@ fn missing_or_tampered_records_fail_closed() {
     let err2 =
         install_genesis(&store2, &context(1), domain(), &resolver(), &manifest, 10).unwrap_err();
     assert!(matches!(err2, GenesisError::ManifestCommitmentMismatch));
+
+    // 3. The signed static FastVote validator set is part of the exact
+    // installed genesis image. A restart must reject any byte-level drift
+    // instead of silently accepting a different consensus authority.
+    let store3: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    install_genesis(&store3, &context(1), domain(), &resolver(), &manifest, 10).unwrap();
+    let validator_set_key: Vec<u8> =
+        local_instance_state::fastpath_validator_set_key(&protocol()).unwrap();
+    let validator_set_observation: VersionedStateValue = store3
+        .get_versioned_durable(&context(1), domain(), &validator_set_key)
+        .unwrap();
+    let mut tampered_validator_set: Vec<u8> = validator_set_observation
+        .value()
+        .expect("genesis validator set")
+        .to_vec();
+    let last: &mut u8 = tampered_validator_set
+        .last_mut()
+        .expect("non-empty validator-set record");
+    *last ^= 0x01;
+    let tamper_transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(
+                validator_set_key.clone(),
+                validator_set_observation.revision(),
+            )
+            .unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(
+                validator_set_key,
+                StateMutation::Put(tampered_validator_set),
+            )
+            .unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store3.commit_durable(&context(1), tamper_transaction),
+        DurableCommitOutcome::Committed
+    );
+
+    let err3 =
+        install_genesis(&store3, &context(1), domain(), &resolver(), &manifest, 10).unwrap_err();
+    assert!(matches!(
+        err3,
+        GenesisError::TamperedInstalledRecord("fast-path validator set")
+    ));
 }
 
 #[test]

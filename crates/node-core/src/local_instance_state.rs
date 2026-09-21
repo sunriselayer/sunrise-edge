@@ -84,6 +84,252 @@ pub(super) fn is_reserved(key: &[u8]) -> bool {
     key.starts_with(INSTANCE_STATE_PREFIX) || key.starts_with(OBJECT_AUTHORITY_STATE_PREFIX)
 }
 
+/// Reserved under [`INSTANCE_STATE_PREFIX`], so every existing enforcement
+/// point that already calls [`is_reserved`] covers it for free: no contract
+/// or generic transactional plan may read or write here.
+pub(crate) const FASTPATH_STATE_PREFIX: &[u8] = b"se/instances/v1/fastpath/";
+
+/// One durable prepared-vote record, keyed by the *original* signed
+/// [`execution::paid_execution::PaidIntent::request_id`]. Reconciled before
+/// any nonce/policy/object read so exact replay is byte-identical and a
+/// conflicting replay fails closed.
+pub fn fastpath_prepared_record_key(
+    chain: &ChainId,
+    request_id: &[u8; 32],
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"prepared/");
+    key.extend(encode_chain_id(chain)?);
+    key.extend_from_slice(request_id);
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+/// One exclusive per-object lock, held from a successful prepare commit
+/// until the owning request's certificate apply deletes it. Phase 1 locks
+/// have no expiry and are released by exactly one mechanism: a successful
+/// [`crate::fast_path::apply`].
+pub fn fastpath_lock_key(chain: &ChainId, object_id: ObjectId) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"lock/");
+    key.extend(encode_chain_id(chain)?);
+    key.extend_from_slice(object_id.as_bytes());
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+/// One exclusive sender/epoch nonce lock. Prepare asserts the ordinary
+/// sender-nonce row but does not advance it; certificate apply advances that
+/// row and deletes this lock in the same durable invocation.
+pub fn fastpath_nonce_lock_key(
+    chain: &ChainId,
+    sender: &[u8; 32],
+    epoch: Epoch,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"nonce-lock/");
+    key.extend(encode_chain_id(chain)?);
+    key.extend_from_slice(sender);
+    key.extend_from_slice(&epoch.get().to_be_bytes());
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+/// The exact verified [`consensus::FastCertificate`] bytes a successful
+/// apply committed for one original request id, retained as a permanent
+/// audit record.
+pub fn fastpath_certificate_key(
+    chain: &ChainId,
+    request_id: &[u8; 32],
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"certificate/");
+    key.extend(encode_chain_id(chain)?);
+    key.extend_from_slice(request_id);
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+/// Charged-amount/fee-output/signer-set settlement metadata for later
+/// (Phase 3, not implemented here) fee distribution to certificate signers.
+pub fn fastpath_settlement_key(
+    chain: &ChainId,
+    request_id: &[u8; 32],
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"settlement/");
+    key.extend(encode_chain_id(chain)?);
+    key.extend_from_slice(request_id);
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+/// The durable, epoch-scoped static validator set a [`consensus::FastPathCertifier`]
+/// is bound to. Production installs it atomically from the signed
+/// [`crate::genesis::GenesisManifest`]; the focused test helper in
+/// [`crate::fast_path`] writes the same record shape. Contracts and generic
+/// transactional plans can never write this reserved namespace.
+pub fn fastpath_validator_set_key(context: &PublicationContext) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"validators/");
+    key.extend(
+        encode_publication_context(context)
+            .map_err(|_| NodeCoreError::PersistenceInvariant("invalid validator set context"))?,
+    );
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+/// First 8 bytes of every synthetic fast-path prepare-receipt
+/// [`RequestId`](crate::RequestId): a fixed ASCII tag chosen so a
+/// legitimately random, externally supplied 32-byte
+/// [`execution::paid_execution::PaidIntent::request_id`] lands here with
+/// negligible probability, and so it is trivial to reject any signed intent
+/// that *does* land here before it could squat the namespace.
+pub const FASTPATH_SYNTHETIC_REQUEST_ID_TAG: [u8; 8] = *b"SE:FPv1:";
+
+/// True exactly for a 32-byte request id inside the reserved synthetic
+/// fast-path prepare-receipt namespace. A [`execution::paid_execution::PaidIntent`]
+/// carrying one of these must be rejected before any admission, so the
+/// namespace can never be squatted by an externally chosen request id.
+#[must_use]
+pub fn is_reserved_paid_request_id(request_id: &[u8; 32]) -> bool {
+    request_id[..FASTPATH_SYNTHETIC_REQUEST_ID_TAG.len()] == FASTPATH_SYNTHETIC_REQUEST_ID_TAG
+}
+
+/// Deterministically derives the synthetic
+/// [`DurableRequestId`](runtime::DurableRequestId) a prepare commit's
+/// mandatory [`runtime::DurableRequestReceipt`] is keyed by: the reserved
+/// tag followed by 24 bytes of a dedicated hash of the *original* request
+/// id, so exact replay always re-derives the identical synthetic id and two
+/// different original request ids collide only with cryptographically
+/// negligible probability. This is bookkeeping only: prepare's own replay
+/// idempotency is governed by [`fastpath_prepared_record_key`], not by this
+/// synthetic id.
+pub fn fastpath_synthetic_prepare_request_id(
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    original_request_id: &[u8; 32],
+) -> Result<[u8; 32], NodeCoreError> {
+    let mut preimage: Vec<u8> = b"se-fastpath-prepare-receipt-v1".to_vec();
+    preimage.extend_from_slice(original_request_id);
+    let digest: Digest32 = resolver
+        .hash_for_purpose(epoch, HashPurpose::NodeEvent, &preimage)
+        .map_err(NodeCoreError::Hashing)?;
+    let mut synthetic: [u8; 32] = [0u8; 32];
+    let tag_len: usize = FASTPATH_SYNTHETIC_REQUEST_ID_TAG.len();
+    synthetic[..tag_len].copy_from_slice(&FASTPATH_SYNTHETIC_REQUEST_ID_TAG);
+    synthetic[tag_len..].copy_from_slice(&digest.bytes()[tag_len..]);
+    Ok(synthetic)
+}
+
+/// Frame `0x641B/v1`: one exclusive fast-path object lock, stored at
+/// [`fastpath_lock_key`]. Held from a successful prepare commit until the
+/// owning request's certificate apply deletes it; never written or deleted
+/// by anything else.
+pub const FASTPATH_LOCK_RECORD_TYPE: u16 = 0x641B;
+/// Frame type for one sender/epoch nonce lock.
+pub const FASTPATH_NONCE_LOCK_RECORD_TYPE: u16 = 0x6425;
+
+/// One durable fast-path object lock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FastPathLockRecord {
+    /// Original request id of the prepared record that owns this lock.
+    pub request_id: [u8; 32],
+    /// Exact object identity/version/digest observed and locked at prepare time.
+    pub object: ObjectRef,
+}
+
+/// Durable ownership of one exact sender nonce while a certificate is being
+/// collected. Unlike the object locks, this prevents the ordinary direct
+/// paid path from advancing beyond a prepared request before it is applied.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FastPathNonceLockRecord {
+    /// Original request id that owns the lock.
+    pub request_id: [u8; 32],
+    /// Authenticated paid-intent sender.
+    pub sender: [u8; 32],
+    /// Epoch-scoped nonce domain.
+    pub epoch: Epoch,
+    /// Exact current nonce asserted at prepare and advanced at apply.
+    pub nonce: u64,
+}
+
+/// Encodes Frame `0x641B/v1`.
+pub fn encode_fastpath_lock_record(record: &FastPathLockRecord) -> Result<Vec<u8>, NodeCoreError> {
+    let mut frame: CanonicalStruct = CanonicalStruct::new(FASTPATH_LOCK_RECORD_TYPE, 1);
+    frame.field_bytes(1, record.request_id.to_vec())?;
+    frame.field_bytes(
+        2,
+        objects::encode_object_ref(&record.object)
+            .map_err(|_| NodeCoreError::PersistenceInvariant("invalid fastpath lock object"))?,
+    )?;
+    Ok(frame.finish()?)
+}
+
+/// Strictly decodes Frame `0x641B/v1`.
+pub fn decode_fastpath_lock_record(bytes: &[u8]) -> Result<FastPathLockRecord, NodeCoreError> {
+    let frame = decode_canonical_frame(bytes)?;
+    frame.require_type(FASTPATH_LOCK_RECORD_TYPE)?;
+    frame.require_version(1)?;
+    frame.require_only_fields(&[1, 2])?;
+    let request_id: [u8; 32] = frame
+        .required_field(1)?
+        .try_into()
+        .map_err(|_| NodeCoreError::PersistenceInvariant("fastpath lock request id length"))?;
+    let object: ObjectRef = objects::decode_object_ref(frame.required_field(2)?)
+        .map_err(|_| NodeCoreError::PersistenceInvariant("invalid fastpath lock object"))?;
+    let record: FastPathLockRecord = FastPathLockRecord { request_id, object };
+    if encode_fastpath_lock_record(&record)? != bytes {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "noncanonical fastpath lock record",
+        ));
+    }
+    Ok(record)
+}
+
+/// Encodes frame `0x6425/v1`.
+pub fn encode_fastpath_nonce_lock_record(
+    record: &FastPathNonceLockRecord,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut frame: CanonicalStruct = CanonicalStruct::new(FASTPATH_NONCE_LOCK_RECORD_TYPE, 1);
+    frame.field_bytes(1, record.request_id.to_vec())?;
+    frame.field_bytes(2, record.sender.to_vec())?;
+    frame.field_u64(3, record.epoch.get())?;
+    frame.field_u64(4, record.nonce)?;
+    Ok(frame.finish()?)
+}
+
+/// Strictly decodes frame `0x6425/v1`.
+pub fn decode_fastpath_nonce_lock_record(
+    bytes: &[u8],
+) -> Result<FastPathNonceLockRecord, NodeCoreError> {
+    let frame = decode_canonical_frame(bytes)?;
+    frame.require_type(FASTPATH_NONCE_LOCK_RECORD_TYPE)?;
+    frame.require_version(1)?;
+    frame.require_only_fields(&[1, 2, 3, 4])?;
+    let request_id: [u8; 32] = frame
+        .required_field(1)?
+        .try_into()
+        .map_err(|_| NodeCoreError::PersistenceInvariant("fastpath nonce-lock request id"))?;
+    let sender: [u8; 32] = frame
+        .required_field(2)?
+        .try_into()
+        .map_err(|_| NodeCoreError::PersistenceInvariant("fastpath nonce-lock sender"))?;
+    let record: FastPathNonceLockRecord = FastPathNonceLockRecord {
+        request_id,
+        sender,
+        epoch: Epoch::new(frame.required_u64(3)?),
+        nonce: frame.required_u64(4)?,
+    };
+    if encode_fastpath_nonce_lock_record(&record)? != bytes {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "noncanonical fastpath nonce-lock record",
+        ));
+    }
+    Ok(record)
+}
+
 /// Absence is asserted at commit, never treated as a permanent authorization.
 /// Tombstones reject too: removing a sidecar cannot downgrade a public object.
 pub(super) fn legacy_absence<S: StructuredDurableDomainStateStore>(

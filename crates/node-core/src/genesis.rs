@@ -49,7 +49,12 @@ use runtime::{
     RuntimeError, StateMutation, StateMutationEntry, StateReadAssertion, StateRevision,
     StructuredDurableDomainStateStore, VersionedStateValue,
 };
+use validator_set::{ValidatorInfo, ValidatorSet};
 
+use crate::fast_path::records::{
+    FastPathValidatorSetRecord, decode_fastpath_validator_set_record,
+    encode_fastpath_validator_set_record,
+};
 use crate::local_execution::LocalExecutionAdmissionError;
 use crate::local_instance_state;
 use crate::publication::{self, LocalPublicationPolicy, PublicationAdmissionError};
@@ -93,6 +98,7 @@ pub const MAX_GENESIS_MANIFEST_BYTES: usize =
         + execution::local_execution::MAX_LOCAL_EXECUTION_INTENT_BYTES
         + MAX_PAID_FEE_POLICY_BYTES
         + (MAX_GENESIS_OBJECTS * (MAX_AUTHENTICATED_OBJECT_BODY_BYTES + 4096))
+        + (10_000 * 640)
         + 8192;
 
 /// Maximum byte size of an encoded [`GenesisInstallMarker`].
@@ -120,7 +126,9 @@ pub struct GenesisManifest {
     pub fee_policy: PaidFeePolicy,
     /// Initialized objects and their authorities.
     pub objects: Vec<GenesisObjectEntry>,
-    /// Ed25519 signature by `genesis_authority` over fields 1 through 5.
+    /// Static FastVote validator set for this genesis epoch.
+    pub validator_set: FastPathValidatorSetRecord,
+    /// Ed25519 signature by `genesis_authority` over fields 1 through 6.
     pub signature: [u8; 64],
 }
 
@@ -469,14 +477,18 @@ fn encode_genesis_manifest_payload(manifest: &GenesisManifest) -> Result<Vec<u8>
     frame.field_bytes(3, encode_signed_local_execution(&manifest.initialization)?)?;
     frame.field_bytes(4, encode_paid_fee_policy(&manifest.fee_policy)?)?;
     frame.field_bytes(5, encode_genesis_object_entries(&manifest.objects)?)?;
+    frame.field_bytes(
+        6,
+        encode_fastpath_validator_set_record(&manifest.validator_set)?,
+    )?;
     Ok(frame.finish()?)
 }
 
 /// Returns the exact domain-separated bytes signed by the genesis authority.
 ///
-/// The payload is the canonical manifest frame containing fields 1 through 5;
-/// the outer stored frame adds the signature as field 6. This binds every
-/// initialized object and authority without creating a circular signature.
+/// The payload is the canonical manifest frame containing fields 1 through 6;
+/// the outer stored frame adds the signature as field 7. This binds every
+/// initialized object, authority and validator without a circular signature.
 pub fn genesis_manifest_signing_frame(manifest: &GenesisManifest) -> Result<Vec<u8>, GenesisError> {
     let context: &PublicationContext = manifest.context();
     let domain: SignatureDomain = SignatureDomain {
@@ -498,10 +510,10 @@ pub fn encode_genesis_manifest(manifest: &GenesisManifest) -> Result<Vec<u8>, Ge
     let decoded: CanonicalFrame<'_> = decode_canonical_frame(&payload)?;
     let mut frame: CanonicalStruct =
         CanonicalStruct::new(GENESIS_MANIFEST_FRAME_TYPE, GENESIS_MANIFEST_VERSION);
-    for field_id in 1_u16..=5_u16 {
+    for field_id in 1_u16..=6_u16 {
         frame.field_bytes(field_id, decoded.required_field(field_id)?)?;
     }
-    frame.field_bytes(6, manifest.signature.to_vec())?;
+    frame.field_bytes(7, manifest.signature.to_vec())?;
     let bytes: Vec<u8> = frame.finish()?;
     if bytes.len() > MAX_GENESIS_MANIFEST_BYTES {
         return Err(GenesisError::Limit("manifest bytes"));
@@ -517,7 +529,7 @@ pub fn decode_genesis_manifest(bytes: &[u8]) -> Result<GenesisManifest, GenesisE
     let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
     frame.require_type(GENESIS_MANIFEST_FRAME_TYPE)?;
     frame.require_version(GENESIS_MANIFEST_VERSION)?;
-    frame.require_only_fields(&[1, 2, 3, 4, 5, 6])?;
+    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7])?;
     let authority_bytes: &[u8] = frame.required_field(1)?;
     let genesis_authority: [u8; 32] = authority_bytes
         .try_into()
@@ -528,7 +540,9 @@ pub fn decode_genesis_manifest(bytes: &[u8]) -> Result<GenesisManifest, GenesisE
         decode_signed_local_execution(frame.required_field(3)?)?;
     let fee_policy: PaidFeePolicy = decode_paid_fee_policy(frame.required_field(4)?)?;
     let objects: Vec<GenesisObjectEntry> = decode_genesis_object_entries(frame.required_field(5)?)?;
-    let signature_bytes: &[u8] = frame.required_field(6)?;
+    let validator_set: FastPathValidatorSetRecord =
+        decode_fastpath_validator_set_record(frame.required_field(6)?)?;
+    let signature_bytes: &[u8] = frame.required_field(7)?;
     let signature: [u8; 64] = signature_bytes
         .try_into()
         .map_err(|_| GenesisError::Invalid("genesis manifest signature length"))?;
@@ -538,6 +552,7 @@ pub fn decode_genesis_manifest(bytes: &[u8]) -> Result<GenesisManifest, GenesisE
         initialization,
         fee_policy,
         objects,
+        validator_set,
         signature,
     };
     if encode_genesis_manifest(&manifest)? != bytes {
@@ -686,6 +701,29 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
     if &manifest.fee_policy.context != manifest_context {
         return Err(GenesisError::ContextMismatch);
     }
+    if &manifest.validator_set.context != manifest_context {
+        return Err(GenesisError::ContextMismatch);
+    }
+    let validator_info: Vec<ValidatorInfo> = manifest
+        .validator_set
+        .validators
+        .iter()
+        .map(|validator| {
+            if validator.signature_scheme != SignatureSchemeId::Ed25519 {
+                return Err(GenesisError::Invalid(
+                    "genesis fast-path validators must use Ed25519",
+                ));
+            }
+            Ok(ValidatorInfo {
+                id: validator.id,
+                voting_power: validator.voting_power,
+                signature_scheme: validator.signature_scheme,
+                public_key: validator.public_key.clone(),
+            })
+        })
+        .collect::<Result<Vec<ValidatorInfo>, GenesisError>>()?;
+    let _: ValidatorSet = ValidatorSet::new(manifest_context.epoch(), validator_info)
+        .map_err(|_| GenesisError::Invalid("invalid genesis fast-path validator set"))?;
     if manifest
         .publication
         .request()
@@ -867,12 +905,16 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
     let exec_policy_key: Vec<u8> =
         local_instance_state::execution_policy_key_for_profile(manifest_context, 4)?;
     let fee_policy_key: Vec<u8> = local_instance_state::paid_fee_policy_key(manifest_context)?;
+    let validator_set_key: Vec<u8> =
+        local_instance_state::fastpath_validator_set_key(manifest_context)?;
 
     let publication_policy: LocalPublicationPolicy =
         LocalPublicationPolicy::object_results(manifest_context.clone(), publication_semantics);
     let publication_policy_bytes: Vec<u8> = publication_policy.encode()?;
     let execution_policy_bytes: Vec<u8> = execution_policy.encode()?;
     let fee_policy_bytes: Vec<u8> = encode_paid_fee_policy(&manifest.fee_policy)?;
+    let validator_set_bytes: Vec<u8> =
+        encode_fastpath_validator_set_record(&manifest.validator_set)?;
     let instance_bytes: Vec<u8> = encode_instance_record(&instance_record)?;
     let publication_bytes: Vec<u8> = encode_publication_submission(&manifest.publication)?;
     let publication_event_digest: Digest32 = resolver.hash_for_purpose(
@@ -963,6 +1005,15 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             return Err(GenesisError::TamperedInstalledRecord("fee policy"));
         }
 
+        // Verify the signed static FastVote validator set.
+        let obs: VersionedStateValue =
+            store.get_versioned_durable(context, domain, &validator_set_key)?;
+        if obs.value() != Some(validator_set_bytes.as_slice()) {
+            return Err(GenesisError::TamperedInstalledRecord(
+                "fast-path validator set",
+            ));
+        }
+
         // Verify initialized objects and authorities.
         for entry in &manifest.objects {
             let auth_key: Vec<u8> = local_instance_state::object_authority_key(entry.object.id);
@@ -1034,6 +1085,7 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             ("publication_policy", &pub_policy_key),
             ("execution_policy", &exec_policy_key),
             ("fee_policy", &fee_policy_key),
+            ("fastpath_validator_set", &validator_set_key),
         ] {
             let obs: VersionedStateValue = store.get_versioned_durable(context, domain, key)?;
             if obs.value().is_some() || obs.revision() != StateRevision::INITIAL {
@@ -1081,6 +1133,10 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
                 StateMutation::Put(execution_policy_bytes),
             )?,
             StateMutationEntry::new(fee_policy_key.clone(), StateMutation::Put(fee_policy_bytes))?,
+            StateMutationEntry::new(
+                validator_set_key.clone(),
+                StateMutation::Put(validator_set_bytes),
+            )?,
             StateMutationEntry::new(marker_key.clone(), StateMutation::Put(marker_bytes))?,
         ];
         let mut read_assertions: Vec<StateReadAssertion> = vec![
@@ -1090,6 +1146,7 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             StateReadAssertion::new(pub_policy_key, StateRevision::INITIAL)?,
             StateReadAssertion::new(exec_policy_key, StateRevision::INITIAL)?,
             StateReadAssertion::new(fee_policy_key, StateRevision::INITIAL)?,
+            StateReadAssertion::new(validator_set_key, StateRevision::INITIAL)?,
             StateReadAssertion::new(marker_key, StateRevision::INITIAL)?,
         ];
 

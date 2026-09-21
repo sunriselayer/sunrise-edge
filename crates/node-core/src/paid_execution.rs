@@ -1,4 +1,6 @@
-//! Fenced durable admission for DR-0124 paid Call/Instantiate/Publish.
+//! Fenced durable admission for DR-0124 paid Call/Instantiate/Publish, shared
+//! by the direct commit path here and the DR-0130 fast-path prepare/apply
+//! flow in [`crate::fast_path`].
 //!
 //! This is the node-core counterpart of the internal
 //! [`PaidContractEngine`](execution::paid_execution::PaidContractEngine)
@@ -10,21 +12,36 @@
 //!
 //! Admission order is exactly DR-0124's:
 //!
-//! 1. signature/context authentication of the signed paid bytes;
+//! 1. signature/context authentication of the signed paid bytes, and
+//!    rejection of any request id inside the reserved fast-path synthetic
+//!    receipt namespace (DR-0130) so that namespace can never be squatted;
 //! 2. exact replay reconciliation, before any nonce, policy, code, object or
 //!    blob read, so a replay re-executes nothing and a conflicting request ID
 //!    still returns `RequestIdReuse` unchanged;
-//! 3. sender nonce freshness;
+//! 3. sender nonce freshness and fast-path nonce-lock reconciliation;
 //! 4. the installed profile-four base execution policy and the installed paid
 //!    fee policy, compared as exact stored bytes, then the immutable quote;
 //! 5. the pinned fee instance, the application instance/publication origin and
 //!    every exact code closure, through one shared publication budget and one
 //!    shared read map;
-//! 6. original object snapshots, authority rows, nominal bodies and ABI types;
+//! 6. original object snapshots, authority rows, nominal bodies, ABI types,
+//!    and (DR-0130) the fast-path lock row for every input: an input locked
+//!    by a *different* request id fails closed, so an in-flight prepare's
+//!    inputs cannot be reused by a direct commit or a different prepare;
 //! 7. the engine, then independent verification of its receipt;
 //! 8. one fenced [`DurableInvocationTransaction`] carrying object heads and
 //!    versions, immutable creation authority, the instance or publication
-//!    record, the consumed nonce and the complete receipt.
+//!    record, the nonce advance and the complete receipt.
+//!
+//! [`build_paid_admission`] performs steps 1 (minus authentication itself,
+//! done by [`authenticate_and_identify`]) through 7 plus the effect
+//! translation half of step 8, returning a complete staged envelope neither
+//! committed nor turned into a final receipt. [`handle_paid_execution`] is a
+//! thin wrapper that authenticates, reconciles the final receipt, calls the
+//! shared builder in [`NonceMode::Fresh`] with locking disabled, and commits
+//! its own real receipt unchanged from before this refactor.
+//! `crate::fast_path::prepare`/`crate::fast_path::apply` are the other two
+//! callers: neither duplicates this admission/execution pipeline.
 //!
 //! Nothing here activates paid execution: no CLI, HTTP, bootstrap or installer
 //! route reaches this function, and no policy is installed by it.
@@ -56,13 +73,15 @@ use local_execution::{
     scopes, validate_authority, validate_closure,
 };
 use local_instance_state::{
-    execution_policy_key_for_profile, instance_record_key, object_authority_key,
-    paid_fee_policy_key,
+    FastPathLockRecord, FastPathNonceLockRecord, decode_fastpath_lock_record,
+    decode_fastpath_nonce_lock_record, execution_policy_key_for_profile, fastpath_lock_key,
+    fastpath_nonce_lock_key, instance_record_key, is_reserved_paid_request_id,
+    object_authority_key, paid_fee_policy_key,
 };
 use publication::{PublicationAdmissionError, PublicationLoadBudget};
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// Fail-closed paid admission errors. A pre-admission rejection writes nothing
 /// and consumes no nonce; only an executed invocation commits a receipt.
@@ -119,7 +138,7 @@ impl From<LocalExecutionAdmissionError> for PaidExecutionAdmissionError {
         }
     }
 }
-type PaidResult<T> = Result<T, PaidExecutionAdmissionError>;
+pub(crate) type PaidResult<T> = Result<T, PaidExecutionAdmissionError>;
 
 fn invalid<T>(message: &'static str) -> PaidResult<T> {
     Err(PaidExecutionAdmissionError::Invalid(message))
@@ -348,14 +367,141 @@ struct ApplicationAdmission {
     dependencies: Vec<AuthenticatedPublicationCandidate>,
 }
 
-/// Authenticates, admits and durably commits one paid invocation.
-///
-/// `expected` is the caller's trusted execution context; `base_policy` and
-/// `fee_policy` are the caller's trusted expected records, each of which must
-/// equal the installed durable bytes exactly. `Err` before the engine runs
-/// writes nothing and consumes no nonce.
+/// How [`build_paid_admission`] treats the sender nonce and fast-path locks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NonceMode {
+    /// Direct commit or first prepare: the ordinary nonce must be fresh and
+    /// no sender/epoch nonce lock or object lock may already exist.
+    Fresh,
+    /// Certificate apply: the ordinary nonce is still fresh because prepare
+    /// did not advance it, while the exact request must own every nonce/object
+    /// lock. Apply commits the returned nonce write with all effects.
+    PreparedApply,
+}
+
+/// The complete staged, uncommitted admission envelope [`build_paid_admission`]
+/// returns. Every durable side effect a caller commits from this must come
+/// from these fields unchanged: nothing else observed during admission may
+/// silently leak into a transaction.
+pub(crate) struct PaidAdmissionOutput {
+    pub(crate) event_digest: Digest32,
+    pub(crate) outcome: PaidExecutionOutcome,
+    pub(crate) result_bytes: Vec<u8>,
+    pub(crate) success: bool,
+    /// Every state key this admission observed, other than the sender-nonce
+    /// row (the caller's own responsibility). Includes one fast-path lock
+    /// key read per locked input, in both [`NonceMode`] variants.
+    pub(crate) reads: BTreeMap<Vec<u8>, StateRevision>,
+    pub(crate) head_reads: Vec<DurableObjectHeadRead>,
+    /// State mutations other than the sender-nonce write and any fast-path
+    /// lock write: the instantiate/publication record and every created
+    /// object's authority row.
+    pub(crate) state_mutations: Vec<StateMutationEntry>,
+    pub(crate) object_mutations: Vec<DurableObjectMutationEntry>,
+    /// Present in both modes: prepare uses its read assertion without writing
+    /// the next nonce; direct commit and certificate apply commit the write.
+    pub(crate) nonce_write: Option<PendingSenderNonceWrite>,
+    /// The fee source plus every application input, in the exact versions
+    /// this admission observed and validated: the complete fast-path
+    /// exclusive-lock set for this request.
+    pub(crate) locked_objects: Vec<ObjectRef>,
+}
+
+/// Step 1 (authentication, event digest, request id) plus the DR-0130
+/// reserved synthetic request-id rejection, shared unchanged by the direct
+/// commit path and both fast-path entry points.
+pub(crate) fn authenticate_and_identify(
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+    signed_bytes: &[u8],
+) -> PaidResult<(AuthenticatedPaidIntent, Digest32, RequestId)> {
+    let authenticated: AuthenticatedPaidIntent =
+        authenticate_paid_intent(resolver, expected, signed_bytes)?;
+    if is_reserved_paid_request_id(&authenticated.intent().request_id) {
+        return invalid("request id reserved for fast-path synthetic receipts");
+    }
+    let event_digest: Digest32 = paid_invocation_digest(resolver, authenticated.signed())?;
+    let request_id: RequestId = RequestId::new(authenticated.intent().request_id)?;
+    Ok((authenticated, event_digest, request_id))
+}
+
+/// Reads, and validates ownership of, the fast-path lock row for one input
+/// object. A lock owned by a different request id fails closed: an
+/// in-flight prepare's exclusive inputs can never be reused by a direct
+/// commit, by a different prepare, or (because ownership binds to the
+/// original request id, unaffected by [`NonceMode`]) by anything other than
+/// that same request's own certificate apply.
+#[allow(clippy::too_many_arguments)]
+fn check_object_lock<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain: &ChainId,
+    object_ref: &ObjectRef,
+    current_request_id: &[u8; 32],
+    nonce_mode: NonceMode,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> PaidResult<()> {
+    let key: Vec<u8> = fastpath_lock_key(chain, object_ref.id)?;
+    let observed: VersionedStateValue = read_state(store, context, domain, key, reads)?;
+    match (nonce_mode, observed.value()) {
+        (NonceMode::Fresh, None) => Ok(()),
+        (NonceMode::Fresh, Some(_)) => invalid("object locked by a pending fast-path certificate"),
+        (NonceMode::PreparedApply, Some(bytes)) => {
+            let lock: FastPathLockRecord = decode_fastpath_lock_record(bytes)?;
+            if &lock.request_id != current_request_id || &lock.object != object_ref {
+                return invalid("fast-path apply does not own the exact object lock");
+            }
+            Ok(())
+        }
+        (NonceMode::PreparedApply, None) => invalid("fast-path apply object lock absent"),
+    }
+}
+
+/// Reconciles the sender/epoch nonce lock with the admission mode. Fresh
+/// direct/prepare calls require absence; certificate apply requires the exact
+/// locally prepared request and nonce. The ordinary nonce row is separately
+/// read by `reserve_sender_nonce` and remains unchanged until final apply.
+fn check_nonce_lock<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    intent: &PaidIntent,
+    nonce_mode: NonceMode,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> PaidResult<()> {
+    let key: Vec<u8> = fastpath_nonce_lock_key(
+        intent.context.chain_id(),
+        &intent.sender,
+        intent.context.epoch(),
+    )?;
+    let observed: VersionedStateValue = read_state(store, context, domain, key, reads)?;
+    match (nonce_mode, observed.value()) {
+        (NonceMode::Fresh, None) => Ok(()),
+        (NonceMode::Fresh, Some(_)) => invalid("sender nonce locked by a pending fast path"),
+        (NonceMode::PreparedApply, Some(bytes)) => {
+            let lock: FastPathNonceLockRecord = decode_fastpath_nonce_lock_record(bytes)?;
+            if lock.request_id != intent.request_id
+                || lock.sender != intent.sender
+                || lock.epoch != intent.context.epoch()
+                || lock.nonce != intent.nonce
+            {
+                return invalid("fast-path apply does not own the exact nonce lock");
+            }
+            Ok(())
+        }
+        (NonceMode::PreparedApply, None) => invalid("fast-path apply nonce lock absent"),
+    }
+}
+
+/// Steps 2..7 plus the effect-translation half of step 8: authenticated,
+/// admitted, executed and translated, but neither committed nor turned into
+/// a final receipt. Every one of [`handle_paid_execution`],
+/// `crate::fast_path::prepare` and `crate::fast_path::apply` calls this once
+/// and assembles its own transaction from the result; none of them
+/// duplicates this pipeline.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-pub fn handle_paid_execution<
+pub(crate) fn build_paid_admission<
     S: StructuredDurableDomainStateStore,
     E: PaidContractEngine + ?Sized,
 >(
@@ -365,50 +511,39 @@ pub fn handle_paid_execution<
     domain: AtomicityDomainId,
     resolver: &HashSuiteResolver,
     history: &[HashSuiteResolver],
-    expected: &PublicationContext,
     base_policy: &LocalExecutionPolicy,
     fee_policy: &PaidFeePolicy,
     engine: &E,
-    signed_bytes: &[u8],
+    authenticated: AuthenticatedPaidIntent,
+    event_digest: Digest32,
     created_checkpoint: u64,
-) -> PaidResult<NodeOutput> {
-    if history.len() > publication::MAX_PUBLICATION_HISTORY {
-        return invalid("resolver history bound");
-    }
-    // 1. Cryptographic authentication under the caller's trusted expected
-    //    context. This proves signed bytes only, never durable admission.
-    let authenticated: AuthenticatedPaidIntent =
-        authenticate_paid_intent(resolver, expected, signed_bytes)?;
+    nonce_mode: NonceMode,
+) -> PaidResult<PaidAdmissionOutput> {
     let intent: &PaidIntent = authenticated.intent();
-    let event_digest: Digest32 = paid_invocation_digest(resolver, authenticated.signed())?;
-    let request_id: RequestId = RequestId::new(intent.request_id)?;
-    // 2. Exact replay reconciliation, immediately after authentication and
-    //    before every nonce, policy, code, object and blob read. A conflicting
-    //    request ID returns `RequestIdReuse` from here, unchanged.
-    if let Some(output) =
-        durable_reconciliation::reconcile_receipt(store, context, domain, request_id, event_digest)?
-    {
-        return Ok(output);
-    }
-    // 3. Sender nonce freshness.
+    let current_request_id: [u8; 32] = intent.request_id;
+    // 3. Sender nonce freshness. Prepare only asserts this row and installs a
+    //    separate nonce lock; direct commit and certificate apply commit the
+    //    returned next-nonce write.
     let layout: PersistenceLayout = PersistenceLayout::new(
         intent.context.chain_id().clone(),
         intent.context.protocol_version(),
     );
-    let nonce: PendingSenderNonceWrite = durable_reconciliation::reserve_sender_nonce(
-        store,
-        context,
-        domain,
-        &layout,
-        SenderNonceReservation {
-            sender: intent.sender,
-            epoch: intent.context.epoch(),
-            nonce: intent.nonce,
-        },
-    )?;
+    let nonce_write: Option<PendingSenderNonceWrite> =
+        Some(durable_reconciliation::reserve_sender_nonce(
+            store,
+            context,
+            domain,
+            &layout,
+            SenderNonceReservation {
+                sender: intent.sender,
+                epoch: intent.context.epoch(),
+                nonce: intent.nonce,
+            },
+        )?);
     // 4. Installed profile-four base policy and installed paid fee policy, as
     //    exact stored bytes. A missing or different value fails closed.
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    check_nonce_lock(store, context, domain, intent, nonce_mode, &mut reads)?;
     if base_policy.profile() != execution::GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION {
         return invalid("paid execution requires the profile-four base policy");
     }
@@ -595,7 +730,7 @@ pub fn handle_paid_execution<
                 resolver,
                 history,
                 candidate,
-                signed_bytes.len(),
+                encode_signed_paid_intent(authenticated.signed())?.len(),
                 &mut budget,
             )?;
             validate_closure(resolver, history, &interface)?;
@@ -689,6 +824,7 @@ pub fn handle_paid_execution<
     let mut inputs: Vec<ScopedResolvedObject> = Vec::new();
     let mut total_bytes: usize = 0;
     let mut object_resolvers: BTreeMap<ObjectId, &HashSuiteResolver> = BTreeMap::new();
+    let mut locked_objects: Vec<ObjectRef> = Vec::new();
     for (reference, mode) in &order {
         let snapshot: object_snapshots::ObjectSnapshot = object_snapshots::load_object_snapshot(
             store,
@@ -702,6 +838,27 @@ pub fn handle_paid_execution<
         if snapshot.object.owner != Owner::Address(Address::new(intent.sender)) {
             return invalid("paid inputs require sender address ownership");
         }
+        // DR-0130: fail closed on an input another in-flight fast-path
+        // prepare already holds an exclusive lock on.
+        check_object_lock(
+            store,
+            context,
+            domain,
+            intent.context.chain_id(),
+            reference,
+            &current_request_id,
+            nonce_mode,
+            &mut reads,
+        )?;
+        let digest: Digest32 = match &snapshot.head {
+            DurableObjectHead::Current { digest, .. } => *digest,
+            _ => return invalid("locked object head not current"),
+        };
+        locked_objects.push(ObjectRef {
+            id: snapshot.object.id,
+            version: snapshot.object.version,
+            digest,
+        });
         let observed: VersionedStateValue = read_state(
             store,
             context,
@@ -884,10 +1041,9 @@ pub fn handle_paid_execution<
     let result_bytes: Vec<u8> = encode_paid_execution_result(&outcome.result)?;
     let success: bool = outcome.result.status == PaidExecutionStatus::Success;
 
-    // 8. One fenced transaction. Charged outcomes translate every application
-    //    and fee effect; zero-charge phase failures commit only the consumed
-    //    nonce and the receipt.
-    let mut mutations: Vec<StateMutationEntry> = Vec::new();
+    // 8 (translation half). Charged outcomes translate every application and
+    //    fee effect; zero-charge phase failures translate nothing.
+    let mut state_mutations: Vec<StateMutationEntry> = Vec::new();
     let object_mutations: Vec<DurableObjectMutationEntry> =
         if let Some(charged) = outcome.result.charged.as_ref() {
             for created in &outcome.created_authorities {
@@ -920,7 +1076,7 @@ pub fn handle_paid_execution<
                 &snapshots,
                 &mut reads,
                 &mut head_reads,
-                &mut mutations,
+                &mut state_mutations,
             )?
         } else {
             if !outcome.result.effects.object_effects.is_empty()
@@ -940,7 +1096,7 @@ pub fn handle_paid_execution<
                 admitted.get(index).map(|scope| &scope.instance).ok_or(
                     PaidExecutionAdmissionError::Invalid("instantiate scope not admitted"),
                 )?;
-            mutations.push(StateMutationEntry::new(
+            state_mutations.push(StateMutationEntry::new(
                 key,
                 StateMutation::Put(encode_instance_record(created_instance)?),
             )?);
@@ -948,15 +1104,92 @@ pub fn handle_paid_execution<
         if let Some(key) = application.publication_key {
             // The complete canonical signed paid frame is the durable record.
             let record: Vec<u8> = encode_signed_paid_intent(authenticated.signed())?;
-            if record != signed_bytes {
-                return invalid("noncanonical signed paid record");
-            }
-            mutations.push(StateMutationEntry::new(key, StateMutation::Put(record))?);
+            state_mutations.push(StateMutationEntry::new(key, StateMutation::Put(record))?);
         }
     }
     budget.merge_reads(&mut reads)?;
+
+    Ok(PaidAdmissionOutput {
+        event_digest,
+        outcome,
+        result_bytes,
+        success,
+        reads,
+        head_reads,
+        state_mutations,
+        object_mutations,
+        nonce_write,
+        locked_objects,
+    })
+}
+
+/// Authenticates, admits and durably commits one paid invocation.
+///
+/// `expected` is the caller's trusted execution context; `base_policy` and
+/// `fee_policy` are the caller's trusted expected records, each of which must
+/// equal the installed durable bytes exactly. `Err` before the engine runs
+/// writes nothing and consumes no nonce.
+#[allow(clippy::too_many_arguments)]
+pub fn handle_paid_execution<
+    S: StructuredDurableDomainStateStore,
+    E: PaidContractEngine + ?Sized,
+>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    base_policy: &LocalExecutionPolicy,
+    fee_policy: &PaidFeePolicy,
+    engine: &E,
+    signed_bytes: &[u8],
+    created_checkpoint: u64,
+) -> PaidResult<NodeOutput> {
+    if history.len() > publication::MAX_PUBLICATION_HISTORY {
+        return invalid("resolver history bound");
+    }
+    let (authenticated, event_digest, request_id) =
+        authenticate_and_identify(resolver, expected, signed_bytes)?;
+    // 2. Exact replay reconciliation, immediately after authentication and
+    //    before every nonce, policy, code, object and blob read. A conflicting
+    //    request ID returns `RequestIdReuse` from here, unchanged.
+    if let Some(output) =
+        durable_reconciliation::reconcile_receipt(store, context, domain, request_id, event_digest)?
+    {
+        return Ok(output);
+    }
+    let admission: PaidAdmissionOutput = build_paid_admission(
+        store,
+        blob_store,
+        context,
+        domain,
+        resolver,
+        history,
+        base_policy,
+        fee_policy,
+        engine,
+        authenticated,
+        event_digest,
+        created_checkpoint,
+        NonceMode::Fresh,
+    )?;
+    let PaidAdmissionOutput {
+        result_bytes,
+        success,
+        mut reads,
+        head_reads,
+        mut state_mutations,
+        object_mutations,
+        nonce_write,
+        ..
+    } = admission;
+    let nonce: PendingSenderNonceWrite = nonce_write.ok_or(
+        PaidExecutionAdmissionError::Invalid("direct commit always reserves a fresh nonce"),
+    )?;
     reads.insert(nonce.key.clone(), nonce.read_revision);
-    mutations.push(StateMutationEntry::new(
+    state_mutations.push(StateMutationEntry::new(
         nonce.key,
         StateMutation::Put(nonce.record.encode()?),
     )?);
@@ -964,8 +1197,11 @@ pub fn handle_paid_execution<
         .into_iter()
         .map(|(key, revision)| StateReadAssertion::new(key, revision))
         .collect::<Result<_, RuntimeError>>()?;
-    let state: DurableStateTransaction =
-        DurableStateTransaction::new(domain, AtomicStateReadSet::new(assertions)?, mutations)?;
+    let state: DurableStateTransaction = DurableStateTransaction::new(
+        domain,
+        AtomicStateReadSet::new(assertions)?,
+        state_mutations,
+    )?;
     let output: NodeOutput = NodeOutput::new(
         vec![NodeResponse::new(
             request_id,
@@ -981,7 +1217,7 @@ pub fn handle_paid_execution<
     let dedup: NodeDedupRecord =
         NodeDedupRecord::new(request_id, event_digest, output.responses().to_vec())?;
     let receipt: DurableRequestReceipt = DurableRequestReceipt::new(
-        DurableRequestId::new(intent.request_id)
+        DurableRequestId::new(*request_id.as_bytes())
             .map_err(|_| PaidExecutionAdmissionError::Invalid("request id"))?,
         event_digest,
         dedup.encode()?,

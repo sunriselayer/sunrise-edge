@@ -43,19 +43,19 @@ use std::cell::Cell;
 
 // ── trusted fixture configuration ───────────────────────────────────────
 
-fn key() -> SigningKey {
+pub(crate) fn key() -> SigningKey {
     SigningKey::from([7; 32])
 }
-fn sender() -> [u8; 32] {
+pub(crate) fn sender() -> [u8; 32] {
     VerificationKey::from(&key()).into()
 }
 fn treasury() -> [u8; 32] {
     VerificationKey::from(&SigningKey::from([9; 32])).into()
 }
-fn refund_account() -> [u8; 32] {
+pub(crate) fn refund_account() -> [u8; 32] {
     VerificationKey::from(&SigningKey::from([11; 32])).into()
 }
-fn resolver() -> HashSuiteResolver {
+pub(crate) fn resolver() -> HashSuiteResolver {
     HashSuiteResolver::new(
         ChainId::new("paid-durable").unwrap(),
         ProtocolVersion::new(3),
@@ -66,7 +66,7 @@ fn resolver() -> HashSuiteResolver {
     )
     .unwrap()
 }
-fn protocol() -> PublicationContext {
+pub(crate) fn protocol() -> PublicationContext {
     PublicationContext::new(
         resolver().chain_id().clone(),
         resolver().protocol_version(),
@@ -74,10 +74,10 @@ fn protocol() -> PublicationContext {
     )
     .unwrap()
 }
-fn base_policy() -> LocalExecutionPolicy {
+pub(crate) fn base_policy() -> LocalExecutionPolicy {
     LocalExecutionPolicy::generic_object_results(protocol())
 }
-fn domain() -> AtomicityDomainId {
+pub(crate) fn domain() -> AtomicityDomainId {
     AtomicityDomainId::new([8; 32]).unwrap()
 }
 fn generation(value: u64) -> DurableOperationContext {
@@ -87,10 +87,10 @@ fn generation(value: u64) -> DurableOperationContext {
         StorageCorrelationId::new([3; 16]).unwrap(),
     )
 }
-fn context() -> DurableOperationContext {
+pub(crate) fn context() -> DurableOperationContext {
     generation(1)
 }
-fn object_reference(object: &Object) -> ObjectRef {
+pub(crate) fn object_reference(object: &Object) -> ObjectRef {
     ObjectRef {
         id: object.id,
         version: object.version,
@@ -103,7 +103,7 @@ fn object_reference(object: &Object) -> ObjectRef {
             .unwrap(),
     }
 }
-fn entry(object: &Object, mode: AccessMode) -> AccessEntry {
+pub(crate) fn entry(object: &Object, mode: AccessMode) -> AccessEntry {
     AccessEntry {
         object_ref: object_reference(object),
         mode,
@@ -306,15 +306,15 @@ fn pick(objects: &[Object], tag: &abi::package_types::ScopedTypeTag) -> Object {
 
 /// The complete installed fixture: published profile-four asset code, one
 /// instance, its TreasuryCap and two sender-owned Coins.
-struct Fixture {
-    origin: PackageOrigin,
-    code: UnverifiedDependencyRef,
-    instance: InstanceRecord,
-    asset: ObjectId,
-    cap: Object,
-    coin: Object,
-    small: Object,
-    policy: PaidFeePolicy,
+pub(crate) struct Fixture {
+    pub(crate) origin: PackageOrigin,
+    pub(crate) code: UnverifiedDependencyRef,
+    pub(crate) instance: InstanceRecord,
+    pub(crate) asset: ObjectId,
+    pub(crate) cap: Object,
+    pub(crate) coin: Object,
+    pub(crate) small: Object,
+    pub(crate) policy: PaidFeePolicy,
 }
 
 fn fee_policy(
@@ -359,9 +359,9 @@ fn fee_policy(
 
 /// The first paid sender nonce, after the installed publication and the three
 /// installed zero-fee invocations.
-const FIRST_PAID_NONCE: u64 = 4;
+pub(crate) const FIRST_PAID_NONCE: u64 = 4;
 
-fn install<S: StructuredDurableDomainStateStore>(store: &S) -> Fixture {
+pub(crate) fn install<S: StructuredDurableDomainStateStore>(store: &S) -> Fixture {
     set_state(
         store,
         execution_policy_key_for_profile(&protocol(), 4).unwrap(),
@@ -444,7 +444,7 @@ fn install<S: StructuredDurableDomainStateStore>(store: &S) -> Fixture {
 
 // ── paid request builders ───────────────────────────────────────────────
 
-fn sign_paid(intent: PaidIntent) -> Vec<u8> {
+pub(crate) fn sign_paid(intent: PaidIntent) -> Vec<u8> {
     let frame: Vec<u8> = paid_intent_signing_frame(&protocol(), &intent).unwrap();
     encode_signed_paid_intent(&SignedPaidIntent {
         intent,
@@ -453,15 +453,15 @@ fn sign_paid(intent: PaidIntent) -> Vec<u8> {
     .unwrap()
 }
 
-struct PaidCall<'a> {
-    fixture: &'a Fixture,
-    policy: &'a PaidFeePolicy,
-    request: u8,
-    nonce: u64,
-    source: &'a Object,
-    entrypoint: &'a str,
-    arguments: Vec<u8>,
-    access: Vec<AccessEntry>,
+pub(crate) struct PaidCall<'a> {
+    pub(crate) fixture: &'a Fixture,
+    pub(crate) policy: &'a PaidFeePolicy,
+    pub(crate) request: u8,
+    pub(crate) nonce: u64,
+    pub(crate) source: &'a Object,
+    pub(crate) entrypoint: &'a str,
+    pub(crate) arguments: Vec<u8>,
+    pub(crate) access: Vec<AccessEntry>,
 }
 
 fn paid_call(call: PaidCall<'_>) -> Vec<u8> {
@@ -472,7 +472,10 @@ fn paid_call(call: PaidCall<'_>) -> Vec<u8> {
 /// kind. `ReservationAccessKind::Consume` requires `call.access` to omit the
 /// fee source (DR-0124 forbids application access to a Consume-reserved
 /// source).
-fn paid_call_with_access(call: PaidCall<'_>, access_kind: ReservationAccessKind) -> Vec<u8> {
+pub(crate) fn paid_call_with_access(
+    call: PaidCall<'_>,
+    access_kind: ReservationAccessKind,
+) -> Vec<u8> {
     let application: CallIntent = CallIntent {
         context: protocol(),
         request_id: [call.request; 32],
@@ -568,7 +571,7 @@ fn transfer_call_with_authorizations(
 
 /// `mint` with an undecodable all-zero recipient: the application writes the
 /// TreasuryCap supply and only then traps at the host create boundary.
-fn trapping_mint_call(fixture: &Fixture, request: u8, nonce: u64) -> Vec<u8> {
+pub(crate) fn trapping_mint_call(fixture: &Fixture, request: u8, nonce: u64) -> Vec<u8> {
     paid_call(PaidCall {
         fixture,
         policy: &fixture.policy,
@@ -674,12 +677,12 @@ fn paid_publish(
 // ── invocation helpers ──────────────────────────────────────────────────
 
 /// Counts engine entries, so exact replay can be proven not to reexecute.
-struct CountingEngine {
-    inner: LocalWasmExecutionEngine,
-    calls: Cell<u32>,
+pub(crate) struct CountingEngine {
+    pub(crate) inner: LocalWasmExecutionEngine,
+    pub(crate) calls: Cell<u32>,
 }
 impl CountingEngine {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: LocalWasmExecutionEngine::new(),
             calls: Cell::new(0),
@@ -736,10 +739,10 @@ fn execute<S: StructuredDurableDomainStateStore>(
     )
 }
 
-fn receipt(output: &NodeOutput) -> PaidExecutionResult {
+pub(crate) fn receipt(output: &NodeOutput) -> PaidExecutionResult {
     decode_paid_execution_result(output.responses()[0].payload().unwrap()).unwrap()
 }
-fn next_nonce<S: StructuredDurableDomainStateStore>(store: &S) -> u64 {
+pub(crate) fn next_nonce<S: StructuredDurableDomainStateStore>(store: &S) -> u64 {
     query_sender_next_nonce(
         store,
         &context(),
@@ -826,7 +829,7 @@ fn tracked<S: StructuredDurableDomainStateStore>(
     }
 }
 
-fn memory_store() -> MemoryDurableStateStore {
+pub(crate) fn memory_store() -> MemoryDurableStateStore {
     MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap())
 }
 
