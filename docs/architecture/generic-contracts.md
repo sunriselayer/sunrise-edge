@@ -1,17 +1,19 @@
 # Generic contract architecture
 
-This is the normative **To-Be** architecture for generic contract authority,
+This document defines the normative architecture for generic contract authority,
 type/instance/object separation, upgrades, migration, durability and verification.
 Contract publication/call lifecycle is specified in
 [`../smartcontract/lifecycle.md`](../smartcontract/lifecycle.md), and Standard Asset/fee
 semantics in [`../smartcontract/assets-and-fees.md`](../smartcontract/assets-and-fees.md).
 Current status, sequencing and completion gates belong only in
 [`TODO.md`](../../TODO.md). The accepted rationale is retained in
-[DR-0111](decisions/0111-generic-contract-design.md).
+[DR-0111](decisions/0111-generic-contract-design.md), and the DR-0127 migration
+([DR-0127](decisions/0127-public-standard-asset-cli-migration.md)) reconciles the
+active local devnet to this architecture.
 
 ## One execution and authorization model
 
-Standard Asset and user-published contracts must use the same validated
+Standard Asset and user-published contracts use the same validated
 publication records, typed ABI, object operations, execution, fees, and atomic
 persistence boundaries. Installing code at genesis does not grant blanket
 permission to create objects, change owners, or modify another type's state.
@@ -22,11 +24,19 @@ Do not expose trusted preinstalled policy constructors to arbitrary publishers
 and treat their declarations as authorization. A commitment authenticates the
 declared bytes; it does not prove entitlement to the requested authority.
 
-During replacement, remove Standard Asset-only execution paths and discarded
-unreleased fixture compatibility branches. Do not maintain parallel privileged
-and public implementations to preserve development history. Historical decision
-records may remain as evidence. This cleanup is distinct from the deliberate
-contract upgrade and signed-revision rules below.
+Under [DR-0127](decisions/0127-public-standard-asset-cli-migration.md), the
+active local devnet installs the public Standard Asset package and paid fee
+policy through closed signed genesis, composes an empty preinstalled module
+catalog, and has no native Standard Asset fee composer. Standard Asset-only
+execution paths, native fee composers, and discarded unreleased fixture
+compatibility branches have been removed from the active devnet rather than
+maintaining parallel privileged and public implementations. Historical
+preinstalled module fixtures and development paths are retained as evidence only
+in dated decision records ([DR-0107](decisions/0107-standard-asset-v1-devnet-activation.md),
+[DR-0108](decisions/0108-standard-asset-v1-split-and-merge.md),
+[DR-0109](decisions/0109-standard-asset-v1-mint.md),
+[DR-0110](decisions/0110-standard-asset-supply-control.md)). This cleanup is
+distinct from the deliberate contract upgrade and signed-revision rules below.
 
 ## Code, types, instances, and objects
 

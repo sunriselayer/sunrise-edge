@@ -5,8 +5,8 @@ use std::net::{AddrParseError, SocketAddr};
 use std::num::ParseIntError;
 
 use sunrise_edge_client::{
-    CanonicalEncodingError, ClientError, ExpectedProtocolContextError, NodeCoreError, ObjectError,
-    StandardAssetError, TransportError, TypeError,
+    CanonicalEncodingError, ClientError, ExpectedProtocolContextError, NodeCoreError,
+    TransportError, TypeError,
 };
 
 use crate::args::ArgsError;
@@ -91,60 +91,6 @@ pub enum CliError {
         /// Parser failure.
         source: ParseIntError,
     },
-    /// A hash-algorithm identifier was not one this workspace implements.
-    InvalidHashAlgorithm(u16),
-    /// `--gas-limit` was zero.
-    ZeroGasLimit,
-    /// `--source-coin` and `--fee-coin` named the same object.
-    SameSourceCoinAndFeeCoin,
-    /// `--max-fee` was zero.
-    ZeroMaxFee,
-    /// `split --amount` was zero.
-    ZeroSplitAmount,
-    /// `mint --amount` was zero.
-    ZeroMintAmount,
-    /// A split amount would empty the source coin; split requires a
-    /// non-zero remainder.
-    SplitAmountNotBelowSource { amount: u64, source_amount: u64 },
-    /// Merge coin inputs must be three different object ids.
-    MergeCoinsMustBeDistinct,
-    /// Treasury cap, operation coin, fee coin, and fee treasury must be
-    /// pairwise-distinct as applicable to the operation.
-    StandardAssetOperationObjectsMustBeDistinct,
-    /// Adding the requested mint amount overflowed `u64`.
-    MintSupplyOverflow,
-    /// The requested mint would exceed the cap's fixed maximum supply.
-    MintExceedsMaxSupply {
-        /// Supply recorded before this mint.
-        total_supply: u64,
-        /// Requested mint amount.
-        amount: u64,
-        /// Fixed cap maximum.
-        max_supply: u64,
-    },
-    /// The burned coin amount exceeded the cap's recorded total supply.
-    BurnExceedsTotalSupply {
-        /// Supply recorded before this burn.
-        total_supply: u64,
-        /// Whole-coin amount requested for destruction.
-        amount: u64,
-    },
-    /// The two source amounts cannot be represented by `u64` when summed.
-    MergeAmountOverflow,
-    /// `--fee-treasury-object` named one of the operation's coin inputs.
-    FeeTreasuryConflictsWithTransfer,
-    /// The transferred and fee coins decoded with different `AssetId`s.
-    CoinAssetMismatch,
-    /// The treasury cap and operation/fee coin decoded with different
-    /// `AssetId`s.
-    TreasuryCapAssetMismatch,
-    /// `--fee-asset-id` differed from the operation inputs' required shared
-    /// `AssetId`.
-    FeeAssetMismatch,
-    /// A `--wait-*` bound flag was supplied without `--wait`.
-    WaitBoundWithoutWait(&'static str),
-    /// `--wait` was supplied without one of its required bound flags.
-    WaitBoundRequired(&'static str),
     /// An `--expected-chain-id` or `--expected-domain` flag failed to
     /// construct a valid protocol type (an empty chain id, or an all-zero
     /// domain).
@@ -159,83 +105,6 @@ pub enum CliError {
         context_epoch: u64,
         /// Epoch reported by the next-nonce query.
         nonce_epoch: u64,
-    },
-    /// A referenced object is not currently a live, `Write`-usable inline
-    /// object.
-    ObjectNotCurrentlyInline {
-        /// Flag naming the object.
-        flag: &'static str,
-        /// The object identifier, as hex.
-        object_id: String,
-        /// A stable status label (`absent`, `tombstoned`, or
-        /// `current_blob_reference`).
-        status: &'static str,
-    },
-    /// A `CurrentInline` object's canonical body failed to decode.
-    ObjectBodyDecodeFailed {
-        /// Flag naming the object.
-        flag: &'static str,
-        /// The object identifier, as hex.
-        object_id: String,
-        /// The decode failure.
-        source: ObjectError,
-    },
-    /// A `CurrentInline` object's body failed to decode as a
-    /// `StandardAssetCoinV1`.
-    CoinBodyDecodeFailed {
-        /// Flag naming the object.
-        flag: &'static str,
-        /// The object identifier, as hex.
-        object_id: String,
-        /// The decode failure.
-        source: StandardAssetError,
-    },
-    /// A `CurrentInline` object's body failed to decode as an exact
-    /// `StandardAssetTreasuryCapV1`.
-    TreasuryCapBodyDecodeFailed {
-        /// The treasury-cap object identifier, as hex.
-        object_id: String,
-        /// The strict treasury-cap decode failure.
-        source: StandardAssetError,
-    },
-    /// Canonically encoding the `StandardAssetTransferArgsV1` frame failed.
-    TransferArgsEncodingFailed(StandardAssetError),
-    /// Canonically encoding the `StandardAssetSplitArgsV1` frame failed.
-    SplitArgsEncodingFailed(StandardAssetError),
-    /// Canonically encoding the `StandardAssetMintArgsV1` frame failed.
-    MintArgsEncodingFailed(StandardAssetError),
-    /// A referenced object exists and is `CurrentInline`, but its owner does
-    /// not equal the locally required address for that access.
-    ObjectOwnerMismatch {
-        /// Flag naming the object.
-        flag: &'static str,
-        /// The object identifier, as hex.
-        object_id: String,
-        /// The exact locally required Address owner, as hex.
-        expected_owner: String,
-        /// A stable label describing the actual owner
-        /// (`address:<hex>`, `shared`, `immutable`, or `system`).
-        owner: String,
-    },
-    /// `submit_transaction` returned zero responses for the submitted
-    /// request.
-    EmptySubmitResponse,
-    /// A submitted transaction's response declared
-    /// `NodeResponseStatus::Rejected`.
-    TransactionRejected {
-        /// Index into the submit result's `responses()` for the rejected
-        /// response.
-        index: usize,
-    },
-    /// A submitted transaction's response was `Accepted` at the node-core
-    /// level, but its decoded execution effects declared
-    /// `ExecutionStatus::Failure`.
-    TransactionExecutionFailed {
-        /// Index into the submit result's `responses()` for the failed
-        /// response.
-        index: usize,
-        /// The sanitized execution failure reason.
-        reason: String,
     },
     /// Canonical argument-frame encoding failed.
     CanonicalEncoding(CanonicalEncodingError),
@@ -289,13 +158,6 @@ pub enum CliError {
     /// A Ledger signer was selected, but this binary was built without the
     /// `usb-hid` Cargo feature, so no real USB/HID transport is available.
     LedgerTransportFeatureDisabled,
-    /// A Ledger signer was selected for the live Standard Asset v1 transfer,
-    /// but its clear-signing policy/device profile has not been implemented.
-    /// Reported before device or network dispatch.
-    LedgerStandardAssetTransferUnsupported,
-    /// A Ledger signer was selected for a Standard Asset operation whose
-    /// clear-signing policy/device profile is not implemented.
-    LedgerStandardAssetOperationUnsupported { operation: &'static str },
 }
 
 impl fmt::Display for CliError {
@@ -338,63 +200,6 @@ impl fmt::Display for CliError {
             Self::InvalidInteger { flag, value, source } => {
                 write!(f, "invalid decimal integer for {flag}: {value:?}: {source}")
             }
-            Self::InvalidHashAlgorithm(id) => {
-                write!(f, "hash-algorithm id {id} is not implemented")
-            }
-            Self::ZeroGasLimit => f.write_str("--gas-limit must be non-zero"),
-            Self::SameSourceCoinAndFeeCoin => {
-                f.write_str("--source-coin and --fee-coin must name distinct objects")
-            }
-            Self::ZeroMaxFee => f.write_str("--max-fee must be non-zero"),
-            Self::ZeroSplitAmount => f.write_str("--amount must be non-zero"),
-            Self::ZeroMintAmount => f.write_str("--amount must be non-zero"),
-            Self::SplitAmountNotBelowSource { amount, source_amount } => write!(
-                f,
-                "--amount must be below the source coin amount (amount={amount}, source_amount={source_amount})",
-            ),
-            Self::MergeCoinsMustBeDistinct => {
-                f.write_str("--primary-coin, --secondary-coin, and --fee-coin must name distinct objects")
-            }
-            Self::StandardAssetOperationObjectsMustBeDistinct => f.write_str(
-                "--treasury-cap, operation coin, --fee-coin, and --fee-treasury-object must name distinct objects",
-            ),
-            Self::MintSupplyOverflow => {
-                f.write_str("the treasury cap total supply overflows u64 after this mint")
-            }
-            Self::MintExceedsMaxSupply {
-                total_supply,
-                amount,
-                max_supply,
-            } => write!(
-                f,
-                "mint would exceed max supply (total_supply={total_supply}, amount={amount}, max_supply={max_supply})"
-            ),
-            Self::BurnExceedsTotalSupply {
-                total_supply,
-                amount,
-            } => write!(
-                f,
-                "burn amount exceeds treasury cap total supply (total_supply={total_supply}, amount={amount})"
-            ),
-            Self::MergeAmountOverflow => f.write_str("the two source coin amounts overflow u64 when merged"),
-            Self::FeeTreasuryConflictsWithTransfer => f.write_str(
-                "--fee-treasury-object must be distinct from every operation coin input",
-            ),
-            Self::CoinAssetMismatch => {
-                f.write_str("the transferred and fee coins do not share one AssetId")
-            }
-            Self::TreasuryCapAssetMismatch => {
-                f.write_str("the treasury cap and operation coins do not share one AssetId")
-            }
-            Self::FeeAssetMismatch => {
-                f.write_str("--fee-asset-id must equal the operation inputs' shared AssetId")
-            }
-            Self::WaitBoundWithoutWait(flag) => {
-                write!(f, "{flag} requires --wait to also be supplied")
-            }
-            Self::WaitBoundRequired(flag) => {
-                write!(f, "--wait requires {flag} to also be supplied")
-            }
             Self::InvalidExpectedProtocolType(error) => {
                 write!(f, "invalid --expected-* value: {error}")
             }
@@ -408,61 +213,6 @@ impl fmt::Display for CliError {
                 f,
                 "context epoch {context_epoch} disagrees with next-nonce epoch {nonce_epoch}; retry"
             ),
-            Self::ObjectNotCurrentlyInline {
-                flag,
-                object_id,
-                status,
-            } => write!(
-                f,
-                "{flag} {object_id} is not currently a live inline object (status={status})"
-            ),
-            Self::ObjectBodyDecodeFailed {
-                flag,
-                object_id,
-                source,
-            } => write!(
-                f,
-                "{flag} {object_id}'s canonical object body failed to decode: {source}"
-            ),
-            Self::CoinBodyDecodeFailed {
-                flag,
-                object_id,
-                source,
-            } => write!(
-                f,
-                "{flag} {object_id}'s body failed to decode as a Standard Asset v1 coin: {source}"
-            ),
-            Self::TreasuryCapBodyDecodeFailed { object_id, source } => write!(
-                f,
-                "--treasury-cap {object_id}'s body failed to decode as a Standard Asset v1 treasury cap: {source}"
-            ),
-            Self::TransferArgsEncodingFailed(error) => {
-                write!(f, "failed to encode transfer arguments: {error}")
-            }
-            Self::SplitArgsEncodingFailed(error) => {
-                write!(f, "failed to encode split arguments: {error}")
-            }
-            Self::MintArgsEncodingFailed(error) => {
-                write!(f, "failed to encode mint arguments: {error}")
-            }
-            Self::ObjectOwnerMismatch {
-                flag,
-                object_id,
-                expected_owner,
-                owner,
-            } => write!(
-                f,
-                "{flag} {object_id} owner mismatch (expected=address:{expected_owner}, owner={owner})"
-            ),
-            Self::EmptySubmitResponse => {
-                f.write_str("submit_transaction returned no responses for the submitted request")
-            }
-            Self::TransactionRejected { index } => {
-                write!(f, "response[{index}] was rejected by the node")
-            }
-            Self::TransactionExecutionFailed { index, reason } => {
-                write!(f, "response[{index}] execution failed: {reason}")
-            }
             Self::CanonicalEncoding(error) => write!(f, "canonical encoding failed: {error}"),
             Self::NodeCore(error) => write!(f, "{error}"),
             Self::Transport(error) => write!(f, "{error}"),
@@ -495,13 +245,6 @@ impl fmt::Display for CliError {
             Self::LedgerTransportFeatureDisabled => f.write_str(
                 "a Ledger signer was selected, but this binary was built without the usb-hid feature",
             ),
-            Self::LedgerStandardAssetTransferUnsupported => f.write_str(
-                "Ledger signing for the Standard Asset v1 transfer is not implemented; use --seed-file for this development-only command",
-            ),
-            Self::LedgerStandardAssetOperationUnsupported { operation } => write!(
-                f,
-                "Ledger signing for the Standard Asset v1 {operation} is not implemented; use --seed-file for this development-only command",
-            ),
         }
     }
 }
@@ -519,12 +262,6 @@ impl std::error::Error for CliError {
             Self::InvalidEndpoint { source, .. } => Some(source),
             Self::CaCertificateFileRead { source, .. } => Some(source),
             Self::InvalidInteger { source, .. } => Some(source),
-            Self::ObjectBodyDecodeFailed { source, .. } => Some(source),
-            Self::CoinBodyDecodeFailed { source, .. } => Some(source),
-            Self::TreasuryCapBodyDecodeFailed { source, .. } => Some(source),
-            Self::TransferArgsEncodingFailed(error) => Some(error),
-            Self::SplitArgsEncodingFailed(error) => Some(error),
-            Self::MintArgsEncodingFailed(error) => Some(error),
             Self::CanonicalEncoding(error) => Some(error),
             Self::NodeCore(error) => Some(error),
             Self::Transport(error) => Some(error),
@@ -590,11 +327,5 @@ impl From<ExpectedProtocolContextError> for CliError {
 impl From<CanonicalEncodingError> for CliError {
     fn from(value: CanonicalEncodingError) -> Self {
         Self::CanonicalEncoding(value)
-    }
-}
-
-impl From<StandardAssetError> for CliError {
-    fn from(value: StandardAssetError) -> Self {
-        Self::TransferArgsEncodingFailed(value)
     }
 }

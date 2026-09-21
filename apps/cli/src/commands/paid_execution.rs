@@ -49,7 +49,7 @@ fn read(path: &str, maximum: usize) -> Result<Vec<u8>, CliError> {
 /// remains in place on failure so a caller cannot accidentally overwrite an
 /// earlier operation while recovering by exact replay.
 #[allow(clippy::too_many_arguments)]
-fn submit_with_outputs(
+pub(super) fn submit_with_outputs(
     result_path: Option<&str>,
     submission_path: Option<&str>,
     derived_path: Option<&str>,
@@ -156,7 +156,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
             return Err(invalid("Ledger paid contract signing is not supported"));
         }
     };
-    let expected: ExpectedProtocolContext = super::transfer::parse_expected_context(&parsed)?;
+    let expected: ExpectedProtocolContext = super::standard_asset::parse_expected_context(&parsed)?;
     let resolver: HashSuiteResolver = local_publication_resolver(&expected)?;
     let context: PublicationContext = PublicationContext::new(
         expected.chain_id().clone(),

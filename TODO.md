@@ -7,16 +7,17 @@ The public-contract foundations (DR-0112–DR-0120) and opt-in local durable cod
 publication (DR-0121), opt-in independent local instance execution (DR-0122),
 and unified signed contract calls (DR-0123) are implemented and locally validated.
 The internal Standard Asset package, paid execution engine, signed atomic
-genesis installation and public paid CLI/HTTP activation are implemented and
-locally validated. Migration of the legacy asset commands/native fee composer
-and arbitrary asset creation remain open, so the generic-contract gate is not
-yet closed.
+genesis installation, public paid CLI/HTTP activation, and migration of all five
+asset commands away from the deleted preinstalled/native fee path are
+implemented and locally validated under DR-0127. The complete repository gate
+and fresh combined review passed, so the generic-contract gate is closed;
+arbitrary asset creation follows it.
 
 | Order | Deliverable | Completion evidence | Status |
 | --- | --- | --- | --- |
 | 1 | Durable local code publication | CLI publish/query; immutable code/ABI/exact dependencies; authenticated admission; origin absence; shared nonce and receipt atomicity (no outgoing message); real SQLite restart/replay/conflict/fencing | Implemented and locally validated (DR-0121); fee-free opt-in local storage only |
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
-| 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Paid public activation implemented and locally validated (DR-0126); legacy asset-command/native-composer migration remains open |
+| 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Open |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
@@ -1882,22 +1883,26 @@ criteria 7-9（TypeScript client、explorer、wallet）はverbatimのまま以�
    [Software Production Gate](#software-and-hardware-release-gates)（S0-S3 + S5）通過後まで
    deferする。）**
 10. devnet再起動後もstate/object/receipt/nonceが保持され、同一request retryがeffectを
-    二重適用しないことを自動E2Eで証明する（`apps/cli/tests/devnet_restart_duplicate_e2e.rs`
+    二重適用しないことを自動E2Eで証明する（DR-0127以降`apps/cli/tests/devnet_standard_asset_e2e.rs`
     でimplemented As-Is。real file-backed `SqliteDurableStore`、composeしたdevnet router、
-    real loopback TCP、`sunrise-edge-cli::run`によるuser-facing transferと
+    real loopback TCP、`sunrise-edge-cli::run`によるuser-facing split/merge/mint/burn/transferと
     `sunrise-edge-client`による独立検証を使い、orderly stop/reopen後のobject・receipt・
     next-nonce query resultとsubmit resultのcanonical bytes一致、same-bootおよび
-    restart後のbyte-identicalなsuccessfulおよびtrapped fee-only duplicate submissionの
-    非再適用、actual `gas_used`に一致するordinary asset fee debit/treasury credit、
-    already-committedな
-    request idの別transactionでの再利用がfail closedになること、pre-restart writer
+    restart後のbyte-identicalな成功済み`transfer`署名済みsubmissionのexact replay非再適用、
+    installed `PaidFeePolicy`による actual `application_gas_units`に一致するexact fee
+    reservation/settlement、already-committedな
+    request idの別transaction（異なるsigned bytes）での再利用がfail closedになりobject/
+    receipt/nonceを一切変更しないこと、pre-restart writer
     generationがreopen後にfencedであることを証明する。orderly stop/reopenのみの証明であり、
     `kill -9`、power loss、torn write、load、concurrency、SQLiteのproduction適性は
     証明しない。下記S0参照）。
-11. single validator、owned-object only、1つのfixed ordinary fee assetとdistinct ordinary
-    treasury（validator/certificate distributionやproduction economicsなし）、local SQLite、
-    cross-owner movementはexact committed destination policyだけ（literal owner reassignment/
-    giftingはfail closed）、4 bounded query routeがunauthenticated public-read API（呼び出し元は誰でも
+11. single validator、owned-object only、installed `PaidFeePolicy`が指す単一のpublic
+    Standard Asset `Coin<A>`をfee objectとして使う（専用のtreasury objectはなく、fee
+    recipientは`--fee-recipient`で指定するaddress。validator/certificate distributionや
+    production economicsなし）、local SQLite、`transfer`/`split`/`merge`/`mint`/`burn`は
+    すべてpolicy-pinnedなordinary paid contract callであり（node-core固有のdestination/
+    owner-transition policyは存在せず、owner変更は published WASMパッケージ自身が行う）、
+    4 bounded query routeがunauthenticated public-read API（呼び出し元は誰でも
     任意のobject/receipt/next-nonce/contextを読める。`/v1/senders/{sender}/next-nonce`の
     addressはpublic lookup selectorでありauthorizationではない）であること、queryと
     submissionが単一の共有admission budget（`NativeBlockingExecutor`／
@@ -1909,8 +1914,10 @@ criteria 7-9（TypeScript client、explorer、wallet）はverbatimのまま以�
 - local devnetとfile-backed SQLite lifecycleは`apps/devnet`およびDR-0081で実装済み。
 - authenticated owned-object effectsとatomic durable mutationはnode-coreの
    structured durable pathおよびDR-0078で実装済み。generic pathの権限を広げない。
-- exact committed preinstalled WASM executionはDR-0078/DR-0081で実装され、現行の
-   Standard Asset v1 whole-object semanticsへDR-0107以降で置換済み。
+- exact committed preinstalled WASM executionはDR-0078/DR-0081で実装され、DR-0107で
+   Standard Asset v1 whole-object semanticsへ置換された。DR-0127以降、active devnetは
+   このpreinstalled/native fee composer pathを完全に削除し、public Standard Asset
+   packageへのordinary policy-pinned paid contract callへ統一した。
 - native HTTP compositionは`preinstalled_wasm_structured_durable_router`へ接続済み。
   public `POST /v1/events`はDR-0099により`SubmitTransaction`以外をidentity allocation、
   clock read、storage I/O、machine transition、outbox、transportより前にfail closedとし、
@@ -1924,8 +1931,8 @@ criteria 7-9（TypeScript client、explorer、wallet）はverbatimのまま以�
 - Ledgerのdevice/host milestonesとsoftware-only evidenceはDR-0088–DR-0093、残る実機/
    release workのdeferとsoftware trackとの並行化はDR-0095を参照する。
 - orderly close/reopen、writer-generation fencing、same-boot/post-restart exact replay、
-   request-id conflict時のstate/receipt/nonce不変は
-   `apps/cli/tests/devnet_restart_duplicate_e2e.rs`で検証済み。これは`kill -9`、power loss、
+   request-id conflict時のstate/receipt/nonce不変は DR-0127の
+   `apps/cli/tests/devnet_standard_asset_e2e.rs`で検証済み。これは`kill -9`、power loss、
    torn write、load/concurrency、SQLiteのproduction適性を証明しない。
 
 ### Residual limitations retained by this gate
@@ -2186,17 +2193,23 @@ statements such as “body validation remains open” are not the live work queu
     for paid Publish, Instantiate and Call, including derived dependency/instance
     pins and charged successful results. The installer commits the ordinary
     publication receipt in the same fenced transaction and verifies it on restart.
-  - [ ] Remove asset-only grants/native composer and migrate the five historical
-    asset CLI commands now that the replacement paid route is usable. This is the
-    next implementation slice and must not preserve an indefinite compatibility
-    path.
+  - [x] Remove asset-only grants/native composer and migrate the five historical
+    asset CLI commands to the replacement paid route
+    ([DR-0127](docs/architecture/decisions/0127-public-standard-asset-cli-migration.md)).
+    Protocol v7 installs the public package and paid policy on every boot,
+    composes an empty preinstalled catalog with no native fee composer, deletes
+    the old WASM/catalog/seeding implementation, and makes `transfer`, `split`,
+    `merge`, `mint`, and `burn` ordinary policy-pinned paid calls. One real
+    SQLite/HTTP/CLI E2E covers all five operations, exact metered charge,
+    close/reopen persistence, exact replay non-reapplication, request-ID reuse
+    conflict with object/receipt/nonce invariance, and stale writer fencing.
   - [ ] Complete activation evidence and fresh combined review. Existing evidence
     now covers canonical vectors, same-source/transferred-source behavior, phase
     exhaustion and traps, charged/zero-charge receipts, exact replay, request
     conflict, SQLite restart/fencing, full CLI/HTTP paid activation, and a permanent
     independent JavaScript reconstruction of `0x6415/v1`. Still required are the
-    fresh combined review, the legacy-path removal above, service-backed PostgreSQL
-    fault evidence and the full public gate.
+    fresh combined review, service-backed PostgreSQL fault evidence and the full
+    public gate.
   Public admission additionally requires analysis of fresh-request unpaid
   phase-failure abuse; this local replacement is not a readiness claim.
 
@@ -2528,13 +2541,13 @@ hard constraintも変更しない。
 **common baseline and parallel tracks（S0-S3, then S4/S5）:**
 
 - **S0**: automated restart/duplicate E2Eと、それとは別の、local devnet/CLIの
-  start・transfer・receipt・orderly restart・persisted stateをhandsで再現できる
-  documented command列（implemented As-Is；criteria 10、
-  `apps/cli/tests/devnet_restart_duplicate_e2e.rs`が
+  start・split/merge/mint/burn/transfer・receipt・orderly restart・persisted state
+  をhandsで再現できるdocumented command列（implemented As-Is；criteria 10、DR-0127の
+  `apps/cli/tests/devnet_standard_asset_e2e.rs`が
   raw byte-identical duplicate replayを証明し、`docs/guides/devnet.md`の
-  local devnet/CLIコマンド列がそれとは独立にstart/transfer/receipt/orderly
-  restart/persisted stateをhandsで再現する。documented commandはraw byte-identical
-  duplicate replay自体を再現するものではない）。
+  local devnet/CLIコマンド列がそれとは独立にstart/split/merge/mint/burn/transfer/
+  receipt/orderly restart/persisted stateをhandsで再現する。documented commandはraw
+  byte-identical duplicate replay自体を再現するものではない）。
 - **S1**: remote TLS transportと、signing前のmandatory trusted protocol-context
   検証を実装する。この2つは別の懸念であり、混同しない：(a) remote TLS transportは
   明示的なtrust policy（例: システムCA + hostname検証、または明示的に設定した
@@ -2638,6 +2651,11 @@ hard constraintも変更しない。
   DR-0109のdevelopment fixtureはfirst dev ownerの`Read MintCapability<A>`とsender-owned fee
   `Write Coin<A>`を同じassetへunifyし、既存devnet assetのrecipient coinをexact-one
   Createする。任意asset作成とgeneric contract Createは引き続き許可しない。
+  **DR-0127以降、この段落全体はhistorical recordである。** この preinstalled
+  typed-entrypoint destination policyとpreinstalled module catalog自体がactive devnetから
+  削除され、`transfer`/`split`/`merge`/`mint`/`burn`はすべてpolicy-pinnedなordinary paid
+  contract call（`apps/cli/tests/devnet_standard_asset_e2e.rs`、[Asset Standards
+  Gate](#asset-standards-gate)参照）に置き換わっている。
 - **S3**: **implemented and validated baseline（DR-0087、DR-0107で現行化）。** committed
   scheduleはbase=1、execution=`gas_used`単価=1、他category=0、fee registryはderived devnet
   `AssetId`を1:1で1つだけenableする。transfer対象とはdistinctなsender-owned
@@ -2648,6 +2666,12 @@ hard constraintも変更しない。
   Rejected receiptとcommitする。real file-backed SQLite E2Eはexact fee、same-boot/post-restart replay
   non-reapplication、request-id reuse時の全coin/receipt/nonce不変を証明する。single hot treasury、
   fee distribution/production gas calibrationはdeferred。
+  **DR-0127以降、この段落全体はhistorical recordである。** この native
+  `FeeEffectComposer`とordinary treasury coin構成はactive devnetから削除され、paid
+  pricingはinstalled `PaidFeePolicy`（reserve/settle allowanceを使う`ReservationPricer`。
+  [DR-0126](docs/architecture/decisions/0126-public-paid-contract-activation.md)/
+  [DR-0127](docs/architecture/decisions/0127-public-standard-asset-cli-migration.md)参照）
+  のみが担う。
 - **S4**: secure signer（`LocalSigner`の development-only in-memory鍵に代わる
   production-oriented signing boundary）と、dedicated Sunrise Edge Ledger device
   applicationを使った実際のLedger統合

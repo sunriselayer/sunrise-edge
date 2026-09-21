@@ -9,8 +9,10 @@ publication) and [DR-0122](decisions/0122-local-instance-execution.md) (typed
 local instances and execution). `--enable-local-execution` installs the exact
 executable publication/execution policy pair and enables matching router and
 pre-parser capabilities. Defaults stay closed; the shared sender nonce and
-fenced SQLite transaction are unchanged. The exact operator commands and
-restart comparisons live in the [devnet guide](../guides/devnet.md#12-opt-in-independent-contract-instances).
+fenced SQLite transaction are unchanged. The [devnet guide](../guides/devnet.md#optional-generic-contract-surfaces)
+lists the current opt-in flag surface; the execution and security model for
+these generic-contract capabilities is defined in
+[`docs/smartcontract/`](../smartcontract/).
 
 [DR-0123](decisions/0123-unified-contract-calls.md) adds the explicit
 `--enable-general-calls` opt-in. Boot installs its publication/execution pair in
@@ -23,6 +25,12 @@ caller/callee targets and object ceilings. A shared bounded code cache enforces
 the invocation-wide limit before another code fetch and reuses overlapping
 closures. All queried instance revisions/digests must match the signed pins
 before signing; TLS and protocol-context verification remain separate checks.
+
+[DR-0126](decisions/0126-public-paid-contract-activation.md) and
+[DR-0127](decisions/0127-public-standard-asset-cli-migration.md) activate the
+mandatory paid contract path on the local devnet, installing the public
+Standard Asset package and paid fee policy at genesis and routing the five
+asset CLI verbs through ordinary signed paid calls.
 
 ## 42. Local devnet architecture
 
@@ -50,148 +58,65 @@ protocol behavior:
   ([DR-0079](decisions/0076-0080-developer-mvp-foundation.md)), never
   the opaque legacy `SqliteStateStore`; the two require separate files because
   `PRAGMA application_id` is a whole-file SQLite property.
-- **Registry/catalog reconciliation at startup.** Before serving any request,
-  startup constructs its dev-profile `SystemModuleRegistry` and bounded
-  immutable `PreinstalledModuleCatalog` from the same committed in-process
-  artifact, then validates their code/manifest/semantics commitments before
-  router construction. This proves internal composition consistency and fails
-  boot with an operator-legible error if either representation is altered; it
-  is not an independent comparison with persisted governance configuration.
-  The general preinstalled-WASM route's request-time mismatch behavior remains
-  unchanged.
-- **Seeded Standard Asset v1 coins (DR-0107).** Startup seeds one
-  transferable `StandardAssetCoinV1` and one distinct fee-payer coin per
-  configured development owner, and one ordinary treasury coin for the
-  required distinct fee-treasury owner. At most 63 transfer owners may be
-  configured, reserving the 64th bounded seed slot for the treasury owner.
-  All coins carry the same derived (never hardcoded)
-  `standard_assets::AssetId`; the treasury coin's amount must be non-zero
-  (`StandardAssetCoinV1` forbids zero, unlike the removed `AssetAccount`).
-  A recipient of a transfer need not be configured or seeded at all: it is
-  simply a signed, admissible address. Object IDs remain distinct and
-  deterministic per owner, role, and asset id. Restart verifies every
-  current coin's exact identity/type/schema/canonical-body/digest/provenance
-  via `abi::verify_type_id` (never raw `Digest32` equality) and its immutable
-  version-one seed history and receipt, then checks the fixed total seeded
-  supply as a function of the configured dev-owner count and the fixed
-  treasury seed amount — never of current balances. A dev owner's two seeded
-  coins are protocol-indistinguishable, so either's *current* owner may
-  differ from its seed owner (to any admissible `Owner::Address`, from real
-  use as a whole-coin transfer source) and either's amount may differ from
-  its seed amount (from real use as a fee payer), independently of which
-  role it was seeded into; only the treasury coin keeps its exact seed owner
-  across every restart, while its amount may vary. A data directory seeded
-  under a different committed protocol version or epoch fails to boot with a
-  typed `ProtocolVersionMismatch` or `EpochMismatch` rather than silently
-  seeding a disjoint object set alongside the old one.
-- **Standard Asset v1 whole-object transfer (DR-0106/DR-0107).** The
-  preinstalled module commits one `PreinstalledTypedEntrypointPolicy` for its
-  `transfer` entrypoint: an `EntrypointSignature` of exactly two
-  `ParamDeclaration`s, both `AccessMode::Write`, both bound to the
-  `StandardAssetCoinV1` constructor at `STANDARD_ASSET_SCHEMA_VERSION_V1` —
-  index 0 the transferred coin, index 1 a distinct fee-payer coin, unified by
-  `abi`'s one shared type variable per signature so both must carry the same
-  `AssetId` (this also forces the fee asset to equal the transferred asset
-  for this entrypoint, a deliberate limitation). It commits one
-  `PreinstalledOwnerTransitionPolicy` naming `transferred_access_index = 0`
-  and `standard_assets::STANDARD_ASSET_TRANSFER_ARGS_V1_TYPE_ID` (`0x7104`,
-  one field: a 32-byte recipient `Address`) as the exact recipient-args
-  frame. `object_access_policies` stays empty: there is no cross-owner
-  object-access policy, since both engine-visible params remain ordinary
-  sender-owned `Write`s and only the committed owner-transition policy
-  relaxes the post-execution owner-preservation check, only for index 0. The
-  committed WASM asserts `get_object_count() == 2` and
-  `get_args_len() == 48` and then returns: it performs no state transition,
-  reads no object data, and writes none. Node-core independently synthesizes
-  the owner-only mutation of index 0 (preserving `data`/`type_hash`/
-  `schema_version` exactly, advancing `version` by one) and independently
-  re-verifies it through the unchanged translation boundary; devnet protocol
-  version 3 → 4 makes the committed owner-transition policy reachable at all
-  (`node_core::MIN_OWNER_TRANSITION_PROTOCOL_VERSION`).
-- **Standard Asset v1 split and merge development slice (DR-0108).** The
-  protocol-v5 development fixture added two bounded operations. It is now
-  retained under a separate disabled legacy module identifier; the canonical
-  module starts at version 1 with these semantics included. `split` accepts
-  source `Write` index 0 plus a distinct fee `Write`
-  index 1, checks a nonzero amount strictly below the source balance, mutates
-  the source to its remainder, and creates exactly one same-typed recipient
-  coin. `merge` accepts primary `Write` index 0, secondary `Consume` index 1,
-  and distinct fee `Write` index 2, checked-adds the two same-asset balances
-  into the primary, and consumes the secondary; it creates no coin. Both
-  operations use the committed shared `Coin<A>` type variable and keep the
-  trusted treasury access hidden from WASM.
-
-  The creation policy is generic but closed: only the committed `split`
-  entrypoint may create exactly one object at ordinal zero. Node-core derives
-  the id from the signed transaction, projects the recipient from the exact
-  canonical args field, copies type/schema from the verified source input,
-  reprojects the created body's nominal type through the committed constructor,
-  and pre-reads the head, requiring `Absent` (not current or tombstoned).
-  Wrong index/mode/type/schema/owner, extra or duplicate effects, malformed or
-  out-of-range arguments, generic Create, and caller-selected ids fail closed.
-  Replay reconciliation precedes module/policy resolution and object I/O;
-  successful effects, fees, nonce, receipt, and outbox are committed once.
-  Arbitrary asset creation, burn, supply accounting, coin discovery/selection
-  or dust consolidation, Unique Asset v1, multisig, Ledger,
-  TypeScript/explorer/wallet/UI, production fee aggregation, and
-  public-testnet/mainnet readiness remain deferred.
-- **Standard Asset v1 mint development slice (DR-0109).** The protocol-v5
-  development fixture added one bounded `mint` entrypoint for the
-  already-derived local-devnet asset. It is retained under a separate disabled
-  legacy module identifier rather than consuming a canonical module version.
-  Startup atomically
-  seeds its immutable `StandardAssetDefinitionV1` plus a
-  `StandardAssetMintCapabilityV1` owned by the first configured development
-  owner. The exact typed signature is `Read MintCapability<A>` index 0 and
-  sender-owned `Write Coin<A>` fee index 1; their shared ABI variable forces
-  one `AssetId`, while the final trusted treasury `Write` remains hidden from
-  WASM. Canonical `StandardAssetMintArgsV1` (`0x7106`) carries a nonzero amount
-  and recipient. The module creates one recipient `Coin<A>` and node-core
-  independently verifies its ordinal-zero signed-transaction-derived id,
-  recipient, nominal type/schema/body projection, and exact `Absent` head.
-  The capability is reusable and this devnet slice has no supply ceiling.
-  Arbitrary asset creation, burn, supply accounting, capability lifecycle,
-  metadata, discovery, Unique Asset v1, multisig, Ledger clear signing,
-  production fee aggregation, and public-testnet/mainnet readiness remain
-  deferred.
-- **Standard Asset v1 supply control (DR-0110).** Protocol v6 activates the
-  canonical `sunrise.standard_asset.v1` module at version 1. Discarded
-  development transfer/split/merge/unbounded-mint fixtures use distinct
-  disabled module identifiers and do not consume canonical versions. The
-  active bounded mint uses owner-held `Write TreasuryCap<A>` state.
-  The cap canonically records one asset's current `total_supply` and fixed
-  `max_supply`. Mint checked-adds supply and atomically creates exactly one
-  recipient coin; whole-coin burn checked-subtracts supply and consumes exactly
-  one sender-owned coin. Both paths use committed typed signatures, keep the
-  trusted fee-treasury access final and hidden, and leave node-core
-  asset-generic. Startup pins the cap's immutable genesis history but accepts
-  and verifies its current advanced version; consumed seed coins remain
-  tombstoned across restart and are never recreated. Arbitrary asset creation,
-  partial burn, authority lifecycle, Unique Asset v1, multisig, Ledger clear
-  signing, production fee aggregation, and public-testnet/mainnet readiness
-  remain deferred.
-- **Uniform post-execution fee composition.** Devnet protocol version 4
-  commits a base fee of 1, an execution price of 1 per actual `gas_used`,
-  zero prices for unmetered categories, and exactly one enabled, derived
-  `AssetId` quoted 1:1. A transfer declares its sender-owned, distinct fee
-  coin as `fee_object` and appends the trusted treasury owner's ordinary
-  treasury coin as the final `Write`. Node-core hides that final access from
-  WASM, settles only after execution, and asks the pure devnet
-  `StandardAssetCoinFeeComposer` to debit payer and credit treasury using the
-  strict `StandardAssetCoinV1` codec — explicitly rejecting a debit that
-  would leave the payer coin at exactly zero, before ever calling
-  `StandardAssetCoinV1::new` (which categorically forbids a zero amount). A
-  normalized trap discards application effects, consumes full declared gas,
-  and commits only payer/treasury fee effects with a rejected receipt. Exact
-  replay reconciles before object I/O or composition.
-- **Dev-profile identities are not protocol claims.** The seeded `AssetId`
-  is a derived (chain/epoch/protocol-version-bound), non-placeholder
-  dev-profile identifier so clients can render and exercise the local
-  fixture. Its seeded immutable definition and supply-controlled treasury cap vouch
-  only for this committed local-devnet composition; no general on-chain asset
-  registry or authenticated metadata surface exists. Wallet and explorer must
-  therefore render the ID as opaque bytes plus an explicitly local label,
-  never as production asset metadata.
+- **Empty preinstalled module catalog and no native fee composer (DR-0127).**
+  The active devnet composes an empty `PreinstalledModuleCatalog` and no
+  native Standard Asset fee composer (`FeeEffectComposer`). The legacy devnet
+  catalog, preinstalled WASM modules, and native fee composer are deleted from
+  the active devnet fixture. Generic preinstalled transaction machinery is
+  retained only as inactive protocol infrastructure where unit tests exercise
+  it, not as an active devnet surface.
+- **Protocol version 7 and fee policy (DR-0127).** Devnet protocol version 7
+  removes the legacy fee asset registry (`fee_assets` is empty) and legacy
+  transaction gas schedule (`gas_schedule` base fee and execution price are
+  zero). Paid pricing is carried solely by the installed `PaidFeePolicy`
+  ([DR-0127](decisions/0127-public-standard-asset-cli-migration.md)).
+- **Mandatory closed signed genesis (DR-0125, DR-0126, DR-0127).** Paid
+  contract genesis is mandatory on every boot; the historical
+  `--enable-paid-contracts` opt-in flag is removed. Startup installs or
+  verifies the public Standard Asset package, an independent Standard Asset
+  instance, its `Definition`, and one `TreasuryCap<A>` through a closed
+  signed genesis manifest (`node_core::genesis::install_genesis`). The
+  genesis authority address owns the `Definition`; the first configured
+  development owner owns the `TreasuryCap<A>` as the fixed local-devnet mint
+  authority — neither object uses the object model's `Immutable` ownership
+  kind.
+- **Genesis dev-owner coins and mint authority.** Genesis seeds two initial
+  `Coin<A>` objects per configured development owner (`--dev-owner`): one
+  initial fee-source coin (`DEVNET_PAID_FEE_COIN_BALANCE` = 10,000,000) and one
+  initial spend-source coin (`DEVNET_PAID_SPEND_COIN_BALANCE` = 10,000,000). The
+  first configured development owner owns the installed `TreasuryCap<A>`,
+  making it the devnet mint authority so `mint` and `burn` CLI workflows are
+  immediately usable without the public genesis signing key. Total supply is
+  derived from both initial coin sets and asserted against the TreasuryCap body
+  during manifest construction.
+- **Fee recipient address.** Devnet requires `--fee-recipient` specifying an
+  admissible `Address`. There is no seeded native treasury object, and the
+  recipient need not be distinct from a development owner.
+- **Historical preinstalled module and seeding fixtures (DR-0106–DR-0110).**
+  Prior devnet iterations relied on privileged preinstalled modules, native fee
+  composition, and seed-time coin generation:
+  - Protocol 4 / [DR-0106](decisions/0106-typed-entrypoint-owner-transition.md)
+    and [DR-0107](decisions/0107-standard-asset-v1-devnet-activation.md)
+    introduced preinstalled typed entrypoint/owner-transition policies, seeded
+    one transferable coin and one fee-payer coin per owner plus an ordinary
+    treasury coin for a distinct fee-treasury owner, and used
+    `StandardAssetCoinFeeComposer` for post-execution debit/credit.
+  - Protocol 5 / [DR-0108](decisions/0108-standard-asset-v1-split-and-merge.md)
+    added split and merge entrypoints; [DR-0109](decisions/0109-standard-asset-v1-mint.md)
+    added an unbounded mint capability fixture.
+  - Protocol 6 / [DR-0110](decisions/0110-standard-asset-supply-control.md)
+    introduced supply-controlled mint and whole-coin burn using `TreasuryCap<A>`
+    under canonical `sunrise.standard_asset.v1`.
+  Under [DR-0127](decisions/0127-public-standard-asset-cli-migration.md), these
+  preinstalled fixtures and native composers are superseded and removed from the
+  active devnet. Existing development databases seeded under earlier versions
+  are incompatible and not migrated; startup fails closed on their committed
+  protocol context, and operators must use a fresh data directory.
+- **Dev-profile identities are not protocol claims.** The public Standard
+  Asset package and instance IDs vouch only for this committed local-devnet
+  composition; no general on-chain asset registry or authenticated metadata
+  surface exists. Wallet and explorer must render the ID as opaque bytes plus an
+  explicitly local label, never as production asset metadata.
 - **No background sweeper.** The devnet runs no resident outbox-recovery loop,
   timer, or scheduler; unattended recovery, when needed, is invoked the same
   way the native binary already exposes it (see
@@ -199,58 +124,19 @@ protocol behavior:
   scheduler-callable recovery API in
   [persistence.md §41](persistence.md#41-production-persistence-architecture)), consistent with
   treating process lifetime as a non-requirement.
-  The current generic machine and asset transition produce responses but no
+  The current generic machine and contract transitions produce responses but no
   outbound messages, so the local transport queue does not grow on this route;
   its fixed capacity remains a fail-closed bound for a future message-producing
   transition.
 
-Current vs. planned: `apps/devnet` now has strict loopback-only configuration,
-persisted writer-fence advancement across SQLite reopen, a restart-safe
-bounded identity source, exact canonical `standard_assets::StandardAssetCoinV1`/
-`StandardAssetTransferArgsV1` codecs/vectors, a committed WAT/WASM validation-only
-module, reconciled registry/catalog composition, and atomic restart-idempotent
-coin seeding. Its binary composes those pieces into the bounded preinstalled-WASM
-native router and serves HTTP on the configured loopback address. Live smoke
-validation observed a `204` liveness response and verified the same seeded
-object IDs after reopening under the next writer generation. Direct WASM tests
-prove the validation-only module accepts the exact engine-visible shape and
-rejects any other. The bounded query API (chain/context info, object reads,
-receipts, and an authenticated sender's next nonce), the Rust client
-(`clients/rust`), the Rust-only CLI (`apps/cli`), and a signed whole-coin-transfer
-restart/duplicate HTTP E2E (`apps/cli/tests/devnet_restart_duplicate_e2e.rs`,
-including a restart strictly after real ownership transfers and one transfer
-that swaps the two seed-time operator labels) are implemented
-As-Is per
-the designs defined below and in "Rust client library" / "Rust client
-external-signer boundary and Developer MVP CLI". Under the CLI-first
-production-strategy pivot (see "Local devnet architecture" above and
-[DR-0085](decisions/0081-0087-cli-first-roadmap.md), amended by
-[DR-0095](decisions/0094-0098-blobs-audit-and-documentation.md)), the
-TypeScript client, explorer, and wallet remain deferred until the Software
-Production Gate (S0-S3 + S5) passes
-([software and hardware release gates](../../TODO.md#software-and-hardware-release-gates)); no other
-`clients/*`/`apps/*` path from
-[DR-0081](decisions/0081-0087-cli-first-roadmap.md) exists yet. Known current
-limitations that must stay visible at devnet startup and in documentation once
-implemented:
-single validator; owned-object only (Create and Shared/System ownership remain
-fail-closed; a blob-backed input is fetched and independently verified through
-an explicit `BlobStore` component
-([DR-0094](decisions/0094-0098-blobs-audit-and-documentation.md)), and
-[DR-0096](decisions/0094-0098-blobs-audit-and-documentation.md) publishes only
-a new version larger than the fixed inline threshold); one fixed ordinary fee
-asset and one ordinary treasury without validator/certificate distribution,
-gas categories other than base/execution pricing, or production economics;
-only the exact policy-bounded existing Address-owned destination may differ
-from the sender, while literal owner reassignment/gifting remains fail-closed;
-local SQLite only; the four bounded query routes are an
-unauthenticated public-read API (any caller can read any object/receipt/
-next-nonce/context — the address in `/v1/senders/{sender}/next-nonce` is a
-public lookup selector, not authorization); query and submission share one
-admission budget (`compose_devnet_router`'s single `NativeBlockingExecutor`
-sized from `--max-concurrent`), so a burst of query traffic can starve
-submissions and vice versa; and an overall non-production security/
-operations posture.
+The devnet profile is deliberately loopback-only, single-validator and
+non-production. It uses local SQLite, one shared bounded query/submission
+executor, an unauthenticated public-read query API, and paid pricing carried
+only by `PaidFeePolicy`; it does not define validator/certificate fee
+distribution, production economics, HA, or public-network admission. The
+address in `/v1/senders/{sender}/next-nonce` is a lookup selector, not
+authorization. Roadmap status, readiness gates, and deferred product surfaces
+belong only in [`TODO.md`](../../TODO.md).
 
 ## 43. Bounded Developer MVP query API
 
@@ -382,8 +268,8 @@ The Developer MVP Rust client is a runtime-neutral library at `clients/rust`.
 It exposes seed-based Ed25519 key/address handling, canonical transaction
 construction and signing, submission, bounded receipt waiting, and the four
 query operations from section 43. It stays application-agnostic: preinstalled
-module entrypoint names/argument frames, native-coin conventions, fee
-selection, and other contract semantics belong to later consumers such as
+or published package entrypoint names/argument frames, native-coin conventions,
+fee selection, and other contract semantics belong to later consumers such as
 `apps/cli`, never to the base client.
 
 Canonical HTTP result frames and route/media-type constants are shared through
@@ -509,121 +395,114 @@ host-side signature verification (which `PreparedTransaction::finalize`
 already provides); and hardware-in-the-loop tests. None of this is
 implemented or claimed here.
 
-`apps/cli` is a new, additive, Rust-only Developer MVP CLI with exactly one
-non-development/runtime dependency: `sunrise-edge-client`. (`Cargo.toml` also
-declares a handful of `[dev-dependencies]` — `execution`, `native-http`,
-`objects`, `rcgen`, `runtime`, `rustls`, `sunrise-edge-devnet`, `tokio` —
-used only to compose a real local devnet, build canonical test fixtures,
-build a decoded execution-effects fixture directly in this crate's own test
-suite, and (`rcgen`/`rustls`) construct real TLS end-to-end test fixtures;
-none of them are reachable from `main`, `lib`, or any non-test build.) It has no
+`apps/cli` is a Rust-only Developer MVP CLI. Its runtime dependencies are the
+Rust client, Ledger host library, and public Standard Asset package used to
+construct exact public ABI calls. Additional dev-dependencies compose real
+local-devnet, persistence, canonical-fixture, and TLS end-to-end tests; none
+are reachable from a non-test build. It has no
 Node/browser runtime, no argument-parsing crate (flags are
 parsed by a small hand-written, strict `--flag value` parser that rejects
 duplicates, unknown flags, and any non-flag/extra positional token), no
 `unsafe` (`#![forbid(unsafe_code)]`), and no independent canonical
 encode/decode, signing, or RPC path — every protocol interaction goes
-through `sunrise-edge-client`. It provides six
-commands: `address` (derives and prints the `AddressIsPublicKey` address
-bound to an explicitly named development seed file — never a keystore, never
-a home-directory default, and the seed is never accepted on argv or printed);
-`context`, `object`, `receipt`, and `next-nonce` (thin wrappers over the
-matching `sunrise-edge-client` query methods); and `transfer`, the bounded
-devnet asset transfer command. Every network subcommand targets an
-explicit `--endpoint`; with neither TLS flag supplied, `--endpoint` must be
-loopback and this binary talks the legacy plaintext `LoopbackHttpTransport`
-(a non-loopback address is rejected before any connection is attempted). With
-both paired `--tls-server-name`/`--tls-ca-cert-der-file` flags supplied,
-`--endpoint` is instead treated as an already-resolved `SocketAddr` with no
-loopback restriction, and this binary dials `RemoteTlsHttpTransport`; this binary
-performs no DNS resolution of its own, so `--endpoint` remains a literal
-address either way. Output is deterministic,
-line-oriented `key=value` text; every error is a typed, actionable
-`CliError`, and every error exits the process non-zero. A successful node
-response payload is decoded through `sunrise-edge-client`'s already-generic
+through `sunrise-edge-client`. It provides network subcommands: `address`
+(derives and prints the `AddressIsPublicKey` address bound to an explicitly
+named development seed file — never a keystore, never a home-directory default,
+and the seed is never accepted on argv or printed); `context`, `object`,
+`receipt`, and `next-nonce` (thin wrappers over the matching
+`sunrise-edge-client` query methods); `contract` (structural validation, local
+or paid publication, instantiation, call, and query); and the five human-facing
+Standard Asset operations: `transfer`, `split`, `merge`, `mint`, and `burn`.
+Every network subcommand targets an explicit `--endpoint`; with neither TLS
+flag supplied, `--endpoint` must be loopback and this binary talks the legacy
+plaintext `LoopbackHttpTransport` (a non-loopback address is rejected before any
+connection is attempted). With both paired
+`--tls-server-name`/`--tls-ca-cert-der-file` flags supplied, `--endpoint` is
+instead treated as an already-resolved `SocketAddr` with no loopback restriction,
+and this binary dials `RemoteTlsHttpTransport`; this binary performs no DNS
+resolution of its own, so `--endpoint` remains a literal address either way.
+Output is deterministic, line-oriented `key=value` text; every error is a typed,
+actionable `CliError`, and every error exits the process non-zero. A successful
+node response payload is decoded through `sunrise-edge-client`'s already-generic
 `execution::ExecutionEffects` decoder when possible; receipts, object bodies,
-and any payload that does not decode as effects are printed as bounded
-lowercase hex instead of inventing a claim about their meaning.
+and any payload that does not decode as effects are printed as bounded lowercase
+hex instead of inventing a claim about their meaning.
 
-The CLI command modules are the only places outside `apps/devnet` that know
-the fixed Standard Asset v1 `transfer`, `split`, `merge`, and `mint`
-entrypoint names and their exact argument/access shapes (DR-0107 through
-DR-0109); `clients/rust` stays application-agnostic. To build those frames
-and transaction access manifests, the CLI imports the operation-specific
-argument frames directly from `standard-assets`; `clients/rust` additively
-re-exports a smaller generic surface with no devnet-specific semantics:
-`abi::{AccessEntry,
-AccessManifest}`, `objects::{AccessMode, Object, ObjectError, Owner,
-decode_object}`, `execution::ObjectEffect`, `canonical_encoding::{
-CanonicalStruct, CanonicalEncodingError}`, `protocol_types::{AtomicityDomainId,
-ChainId, Digest32, Epoch, HashAlgorithmId, HashSuiteId, ProtocolVersion,
-SignatureSchemeId, TypeError}` plus the common `AssetId`, coin, transfer-args,
-and strict codec types (the same general-purpose, protocol-owned schemas every
-other Standard Asset v1 consumer uses — not devnet-specific types),
-`NODE_RESULT_MEDIA_TYPE`, and
-three small helpers/constants: `current_inline_object_ref` (extracts the
-exact `ObjectRef` from a `CurrentInline` object-query result, `None` for
-every other status — generic over any object, not asset-specific), the
-profile-1 and profile-2 address-binding constants, duplicated as plain `u16`
-values so a caller can
-compare it against `HttpContextQueryResult::address_binding_id()` without a
-direct `protocol-config` dependency; `protocol-config` remains a `clients/rust`
-dev-dependency only, and a dedicated test pins the two values together so
-they cannot silently drift), and matching profile-id constants (the committed
-profile-2 `TransactionAuthProfile` id `transfer` checks
-`HttpContextQueryResult::transaction_auth_profile_id()` against before
-signing, duplicated the same way and for the same reason). `objects::{
-ObjectError, Owner, decode_object}` and `execution::ObjectEffect` exist so
-`transfer` can decode a queried coin's canonical body, check its owner
-client-side as defense in depth, and print each object effect from decoded
-execution effects, without a direct dependency on either lower crate.
+Under [DR-0127](decisions/0127-public-standard-asset-cli-migration.md), the five
+top-level CLI verbs (`transfer`, `split`, `merge`, `mint`, and `burn`) remain as
+the human-facing interface, but they are thin builders for an ordinary
+`PaidApplication::Call` to the policy-pinned public Standard Asset package. They
+receive no native entrypoint, type, ownership, amount, fee, or settlement
+privilege.
 
-`transfer` queries `/v1/context`, the sender's `/v1/senders/{sender}/next-nonce`,
-and both `/v1/objects/{object_id}` results for the caller's exact
-`--source-coin`/`--fee-coin` identifiers; validates the
-committed profile is Ed25519 profile 2 with canonical-prime-order address
-binding and that the context
-and next-nonce queries agree on epoch, all before signing; requires both
-coins to be `CurrentInline` (any other status is a typed, actionable
-rejection); decodes both as `StandardAssetCoinV1` and requires them to be
-owned by the signer, to share one `AssetId`, and for `--fee-asset-id` to
-equal that shared id (the protocol forces the fee asset to equal the
-transferred asset for this entrypoint — DR-0107, a single shared type
-variable per signature); constructs the exact three-entry `AccessManifest`
-with `Write` access to the source coin, the fee coin, then the fee treasury,
-in that order; encodes `StandardAssetTransferArgsV1{recipient: --recipient}`;
-builds and signs the transaction through `PreparedTransaction::prepare_submission`,
-which signs canonical envelope `0xE009` over the explicit non-zero request
-id and exact Transaction v1 signable bytes; and submits it under that same
-id. There is no `--amount` or destination-account concept: this is always a
-whole-object transfer of `--source-coin` to `--recipient`. Owner-change
-authorization comes only from the committed
-[DR-0106](decisions/0106-typed-entrypoint-owner-transition.md)
-`PreinstalledOwnerTransitionPolicy`; the general owned-effects path remains
-sender-only. `transfer` treats the submission itself as fail-closed, not merely the
-queries that precede it: an empty submit-result `responses()` list, any
-response declaring `NodeResponseStatus::Rejected`, and any response whose
-payload decodes to `ExecutionStatus::Failure` (even one the node accepted at
-the node-core level) are each a typed, non-zero-exit `CliError` — this
-command never reports a rejected or failed transaction as success. Every
-response's diagnostics are printed before the command exits — the failure
-is detected while iterating, not by inspecting `responses()` up front — and
-`--wait` is never entered once any response has failed this way, so a
-rejected or failed submission can never be turned into an apparent success
-by also requesting `--wait`.
-Waiting for the resulting receipt is optional (`--wait`) and, when
-requested, every one of `--wait-max-attempts`, `--wait-initial-backoff-ms`,
-`--wait-max-backoff-ms`, and `--wait-max-elapsed-ms` must also be supplied —
-there is no hidden default poll bound, and supplying a wait-bound flag
-without `--wait` is itself rejected.
+The CLI fetches and validates the installed `PaidFeePolicy` after validating the
+separately configured expected protocol context (`--expected-chain-id`,
+`--expected-protocol-version`, `--expected-epoch`, `--expected-hash-suite-id`,
+`--expected-domain`). For this devnet profile, that policy pins the public
+Standard Asset code, instance, `Coin<A>` type, schema, fee recipient, and the
+single type argument `A`. The five asset commands target that exact code and
+instance and reuse that exact type argument. They do not accept a
+caller-selected module ID, module version, module digest, fee asset ID, fee
+treasury object, code reference, instance reference, or type argument.
 
-The live Standard Asset v1 entrypoints have no Ledger clear-signing policy yet.
-Selecting Ledger for `transfer`, `split`, `merge`, or `mint` therefore returns
-a typed local error after argument validation and before any device connection
-or network dispatch; only the explicitly development-only `--seed-file` path
-can submit these commands in the current profile. The `address` command and
-reusable Ledger host libraries remain available, but their historical
-protocol-3 transfer fixture
-is not accepted as authority for this protocol-4 transaction.
+Every command:
+1. rejects Ledger selection before device or network access until paid-intent
+   clear signing is separately specified;
+2. validates TLS endpoint configuration separately from the expected protocol
+   context;
+3. fetches the installed fee policy and current object snapshots before
+   signing;
+4. requires every application input to be a current inline object owned by the
+   signer and to match the exact published nominal type and schema;
+5. signs one paid envelope (`encode_signed_paid_intent`) containing the
+   application call, fee consent, request ID, nonce, gas limit, maximum fee,
+   and optional refund recipient;
+6. submits through the existing paid HTTP route (`/v1/contracts/paid-executions`) and
+   independently verifies the returned paid result; and
+7. writes requested recovery artifacts (`--submission-out`, `--result-out`)
+   before reporting success.
+
+The application access and argument shapes are:
+
+| Command | Entrypoint | Application access, in order | Arguments |
+| --- | --- | --- | --- |
+| `transfer` | `transfer` | source `Coin<A>` Write | recipient |
+| `split` | `split` | source `Coin<A>` Write | positive amount, recipient |
+| `merge` | `merge` | primary `Coin<A>` Write, secondary `Coin<A>` Consume | empty tuple |
+| `mint` | `mint` | `TreasuryCap<A>` Write | positive amount, recipient |
+| `burn` | `burn` | `TreasuryCap<A>` Write, `Coin<A>` Consume | empty tuple |
+
+Fee consent is separate from application access and is fixed to Write
+reservation for these five commands. The fee source (`--fee-source`) may be the
+same object as any application input, including an application Consume input;
+the signed reference must then be identical and the application sees only the
+post-reservation remainder. Only a fee consent using `reserve_all`/Consume is
+forbidden from overlapping application access. `mint` necessarily uses a Coin
+separate from its TreasuryCap input; the other four operations may use one of
+their Coin inputs for both roles.
+
+The CLI derives arguments with the public package helpers and uses the
+policy-pinned type argument. It does not decode or predict application balance
+transitions as authority. Local decoding is limited to presenting and
+pre-validating host-authenticated current object bodies; the WASM package
+performs the state transition.
+
+Historical preinstalled transfer fixtures ([DR-0106](decisions/0106-typed-entrypoint-owner-transition.md),
+[DR-0107](decisions/0107-standard-asset-v1-devnet-activation.md)) previously
+constructed a three-entry `AccessManifest` (source Write, fee Write, treasury
+Write) evaluated by a validation-only preinstalled WASM module with node-core
+synthesizing owner transition and `StandardAssetCoinFeeComposer` debiting
+payer and crediting treasury. That preinstalled path has been deleted from the
+active devnet in favor of the unified paid contract call path.
+
+The live Standard Asset entrypoints have no Ledger clear-signing policy yet.
+Selecting Ledger for `transfer`, `split`, `merge`, `mint`, or `burn` therefore
+returns a typed local error after argument validation and before any device
+connection or network dispatch; only the explicitly development-only
+`--seed-file` path can submit these commands in the current profile. The
+`address` command and reusable Ledger host libraries remain available, but
+their historical protocol-3 transfer fixture is not accepted as authority for
+these transactions.
 
 The development seed file loaded by `address` and Standard Asset commands must
 be an explicit path (there is no default or home-directory location), must not be
@@ -669,14 +548,11 @@ allocator has not yet overwritten, remain resident. This is consistent with
 `load_dev_seed`'s and `LocalSigner`'s existing documented status as
 explicit, non-keystore, development-only conveniences — not production key
 handling — and is called out here rather than silently assumed.
-The restart/duplicate E2E is implemented As-Is (see
-`apps/cli/tests/devnet_restart_duplicate_e2e.rs` and "Local devnet
-architecture" above). Under the CLI-first production-strategy pivot
-([DR-0085](decisions/0081-0087-cli-first-roadmap.md)),
-`clients/typescript`, `apps/explorer`, and `apps/wallet` remain deferred until
-the Software Production Gate (S0-S3 + S5) passes (see
-[CLI Developer MVP Gate](../../TODO.md#cli-developer-mvp-gate) and
-[CLI-First Node Production Gate](../../TODO.md#cli-first-node-production-gate)).
+The devnet start/split/merge/mint/burn/transfer, restart, and duplicate-replay
+E2E is implemented As-Is (see `apps/cli/tests/devnet_standard_asset_e2e.rs`,
+[DR-0127](decisions/0127-public-standard-asset-cli-migration.md), and "Local
+devnet architecture" above). Current readiness and product-surface sequencing
+belong only in [TODO.md](../../TODO.md).
 
 ## 46. Hardware Signing Profile v1 and external-signer preflight
 
@@ -695,8 +571,10 @@ release-evidence gate. S4 is not complete
 until S4d passes and the CLI has an actual production signing path replacing
 its development-only seed flow. DR-0107 also removed the only live transfer
 shape recognized by the current Ledger policy: `address` still exercises the
-host/device identity path, while protocol-4 `transfer` rejects Ledger selection
-before device or network dispatch until a new policy is separately reviewed.
+host/device identity path, while the five asset commands (`transfer`, `split`,
+`merge`, `mint`, `burn`) reject Ledger selection before device or network
+dispatch until a paid-intent clear-signing policy is separately specified and
+reviewed.
 
 `crypto::decode_signature_frame` is the strict counterpart to the established
 `frame_signature_message` encoder. It accepts only canonical type `0x2001`,

@@ -14,22 +14,24 @@ depend on a daemon, persistent connection, scheduler, transport, or cloud
 provider for safety (`README.md:3-15`, `README.md:40-62`).
 
 The concrete executable node profile in this repository is a loopback-only,
-single-validator devnet. It composes native HTTP, authenticated
-`SubmitTransaction`, a trusted preinstalled Standard Asset v1 whole-coin
-transfer WASM module, ordinary coin-denominated asset fees, separate local
-SQLite structured/blob stores, and a bounded
-process-local outbound queue (`apps/devnet/src/config.rs:23-34`,
-`apps/devnet/src/main.rs:16-129`, `apps/devnet/src/composition.rs:42-99`). It is
-not a production node.
+single-validator devnet. It composes native HTTP, authenticated paid contract
+submission, a closed genesis installation of the published Standard Asset
+package, ordinary Coin-denominated contract settlement, separate local SQLite
+structured/blob stores, and a bounded process-local outbound queue. The active
+devnet has an empty preinstalled module catalog and no native asset fee
+composer; Standard Asset uses the same typed instance/code/object authority as
+other published contracts (`apps/devnet/src/paid_contracts.rs`,
+`apps/devnet/src/composition.rs`, `apps/devnet/src/main.rs`). It is not a
+production node.
 
 ```mermaid
 flowchart LR
     U[Unauthenticated caller] --> I[Native or serverless HTTP ingress]
     S[Valid sender and signer] --> C[Rust client or CLI]
     C --> I
-    I --> A[Event context and transaction authentication]
-    A --> O[Object, nonce, module, and fee authorization]
-    O --> W[Preinstalled deterministic WASM]
+    I --> A[Context and signed-intent authentication]
+    A --> O[Object, nonce, instance, code, and fee authorization]
+    O --> W[Published deterministic WASM]
     W --> V[Validated invocation]
     V --> B[Publish large content-addressed blobs]
     B --> D[Atomic state, object, receipt, and outbox commit]
@@ -56,10 +58,10 @@ flowchart LR
 
 | Deployment or workflow | Resource or capability | Effective value/location and authority | Enforcing control | Evidence or unknowns |
 | --- | --- | --- | --- | --- |
-| Local devnet | HTTP listener | Required `--listen` `SocketAddr`; only loopback is accepted | Config validation before `TcpListener::bind` | `apps/devnet/src/config.rs:75-120`, `apps/devnet/src/main.rs:86-124` |
+| Local devnet | HTTP listener | Required `--listen` `SocketAddr`; only loopback is accepted | Config validation before `TcpListener::bind` | `apps/devnet/src/config.rs` (`DevnetConfig::parse_from`'s `--listen` loopback check), `apps/devnet/src/main.rs` (`TcpListener::bind(config.listen())` in `main`) |
 | Local devnet | Structured state | `<--data-dir>/structured.sqlite3`; devnet process reads/writes one chain/validator/domain namespace | SQLite transaction plus persisted writer fence | `apps/devnet/src/boot.rs:12-20`, `apps/devnet/src/boot.rs:80-115` |
 | Local devnet | Object blobs | `<--data-dir>/blobs.sqlite3`; separate insert-if-absent content-addressed file | Digest-key conflict rejects; no independent writer fence | `apps/devnet/src/boot.rs:14-19`, `crates/runtime-sqlite/src/blob.rs:111-206`; GC/capacity is deferred |
-| Local devnet | Executable module | `apps/devnet/modules/standard_asset_transfer.wasm`, embedded and catalogued as module version 1 (Standard Asset v1 whole-coin transfer, DR-0107) | Code/manifest/semantics digests are recomputed from trusted composition | `apps/devnet/src/standard_asset.rs:79-80`, `apps/devnet/src/catalog.rs:39`, `apps/devnet/src/catalog.rs:202-296` |
+| Local devnet | Standard Asset code and instance | Closed signed genesis manifest installs the public package, instance, Definition, TreasuryCap and two Coin objects per configured owner | Manifest signature/commitment, ordinary publication and instance authority, exact installed fee policy, and restart reconciliation | `apps/devnet/src/paid_contracts.rs`; DR-0126 and DR-0127 |
 | Local CLI | Development signing seed | Explicit `--seed-file`; exact 32-byte hex seed | Symlink/regular-file/permission/inode checks on Unix and bounded read | `apps/cli/src/seed.rs:105-167`; non-Unix permission/inode checks are absent and this is not a keystore |
 | Remote CLI | TLS trust | Literal endpoint plus explicit DNS name and one CA DER file, capped at 16 KiB | rustls server authentication, hostname verification, fixed timeouts; no mTLS/system roots/redirect/retry/proxy | `apps/cli/src/net.rs:100-203`, `clients/rust/src/transport.rs:461-594` |
 | Deno/Vercel/Supabase/AWS relay | Node-core capability | Exact `SUNRISE_NODE_CORE_URL` `/v1/events` endpoint plus `SUNRISE_NODE_CORE_BEARER_TOKEN` | HTTPS, ASCII token validation, redirect rejection, bounded timeout | `adapters/shared/authenticated-node-core.ts:6-107`; provisioning, rotation, and downstream enforcement are deployment assumptions |
@@ -73,7 +75,8 @@ flowchart LR
 - Sender and validator signing authority, development seeds, optional hardware
   approvals, relay Bearer capabilities, and TLS trust anchors.
 - Canonical bytes, stable identifiers and domains, protocol configuration,
-  preinstalled code/semantics, and historical digest compatibility.
+  published code/ABI/semantics/dependency lineage, instance authority, and
+  historical digest compatibility.
 - Object heads and immutable versions, owners, balances, nonces, receipts,
   outbox records, writer generations, and the integrity of committed history.
 - Availability under bounded parsing, hashing, WASM execution, persistence,
@@ -95,7 +98,7 @@ receipt/outbox effects must commit atomically.
   delay, reorder, replay, or mutate messages. They are not protocol-safety
   trust roots (`README.md:148-151`).
 - An operator controls protocol configuration, hash schedule, placement,
-  preinstalled catalog, fee treasury/composer, checkpoint, writer fence,
+  genesis manifest and installed fee policy, checkpoint, writer fence,
   persistence namespace, clock/identity sources, and deployment credentials.
   Those are trusted composition inputs, not attacker starting capabilities
   (`crates/native-http/src/lib.rs:74-125`,
@@ -126,22 +129,23 @@ committed profile, bounds signable bytes, binds the signature domain, and uses
 the sender's exact public-key bytes for Ed25519 verification
 (`crates/node-core/src/transaction_auth.rs:288-348`).
 
-### Boundary 3: authenticated sender to object/module/fee authority
+### Boundary 3: authenticated sender to object/code/fee authority
 
 Signed references must match the current head and immutable version; object
-chain provenance and inline/blob body digests are independently verified
-(`crates/node-core/src/lib.rs:4536-4700`). Address-owned mutation defaults to
-the sender. The only cross-owner destination relaxation is an exact committed
-entrypoint/index/mode/type/schema policy; the fee treasury is an exact final
-write selected by trusted composition (`crates/node-core/src/lib.rs:4703-4748`).
-Effects must match signed Read/Write/Consume modes, and updates preserve
-owner/type/schema while incrementing version exactly once
-(`crates/node-core/src/authenticated_object_effects.rs:181-268`,
-`crates/node-core/src/authenticated_object_effects.rs:387-495`).
+chain provenance and inline/blob body digests are independently verified.
+Published code and ABI, exact instance/defining-code authority, declared typed
+access, and host object operations bound every application effect. Address-owned
+mutation requires the authenticated sender unless an explicitly authorized
+typed cross-instance call grants narrower authority. Effects must match signed
+Read/Write/Consume modes, and generic output validation enforces owner, type,
+schema, provenance, and version rules.
 
-The caller supplies a module reference, not executable bytes. The active
-devnet module and semantics are reconstructed from trusted catalog and protocol
-configuration (`apps/devnet/src/catalog.rs:186-289`).
+The caller supplies an authenticated code revision and instance target, not
+executable bytes. For fees, installed policy pins the exact Standard Asset code,
+instance, type argument, fee recipient, pricing and reserve/settle entrypoints.
+The caller signs consent and a maximum charge but cannot select another fee
+implementation or redirect settlement. Node core treats Coin and reservation
+bodies as opaque contract state.
 
 ### Boundary 4: execution to durable state
 
@@ -186,8 +190,8 @@ intended chain: the client separately compares locally trusted chain, version,
 epoch, hash suite, authentication profile, signature scheme, address binding,
 and domain before later queries or signing (`clients/rust/src/context.rs:1-23`,
 `clients/rust/src/context.rs:160-217`,
-`apps/cli/src/commands/transfer.rs:345-452`). Full canonical `ProtocolConfig`
-byte pinning remains deferred.
+`apps/cli/src/commands/standard_asset.rs` (`parse_expected_context`)). Full
+canonical `ProtocolConfig` byte pinning remains deferred.
 
 ### Assumptions and explicit unknowns
 
@@ -225,10 +229,10 @@ a severity finding.
 | P0 | H-2: reuse one request ID or nonce so one signed intent causes a second mutation or fee | Duplicate/reordered delivery plus dedup/atomicity defect | Duplicate transfer, fee, receipt, or durable-history divergence | Receipt/event-digest check precedes nonce/app work; exact next nonce; atomic invocation | Trace normal, conflicting, and indeterminate commits across both stores; `crates/node-core/src/lib.rs:4035-4095`, `crates/runtime/src/lib.rs:2669-2682` |
 | P0 | H-3: obtain mutation authority over an undeclared, stale, foreign-owned, Shared/System, or treasury object | Valid sender plus object loader/effect-policy mismatch | Unauthorized balance movement or object corruption | Exact ref/head/version/digest/provenance checks; sender/policy authorization; exact effect matching | Review cross-owner destination and treasury exceptions as distinct capabilities; `crates/node-core/src/lib.rs:4499-4758`, `crates/node-core/src/authenticated_object_effects.rs:181-268` |
 | P0 | H-4: cause a partially committed state/object/nonce/receipt/outbox transaction or misclassify an ambiguous commit | Backend error, conflict, timeout, cancellation, connection loss, or adapter mapping defect | Durable-history corruption or duplicate effects after retry | Typed all-or-none envelope; transactional SQLite/PostgreSQL mappings; explicit Indeterminate outcome | Verify every pre/post-commit error classification and reconciliation path; `crates/runtime/src/lib.rs:1967-2078`, `crates/runtime-postgres/src/lib.rs:2823-2954` |
-| P1 | H-5: substitute executable WASM or committed semantics, or escape signed access through a host call | Valid sender plus catalog/host binding defect | Arbitrary module execution or unauthorized object effects | Preinstalled catalog with recomputed digests; fuel; host access-mode checks; post-execution effect validation | Verify module-ref resolution, semantics hash binding, imports, memory access, traps, and effect materialization; `apps/devnet/src/catalog.rs:186-289`, `crates/execution/src/wasm_engine.rs:181-212`, `crates/execution/src/wasm_engine.rs:513-637` |
-| P1 | H-6: manipulate actual-gas or rejected-result fee composition to debit the wrong payer, redirect treasury, overcharge, mint, or lose value | Valid signed fee declaration plus gas/composer/atomicity defect | Unauthorized fee or supply change | Treasury is composition-selected and hidden from WASM; checked debit/credit; fee effects share invocation atomicity | Review success/trap/insufficient/overflow/replay paths; `apps/devnet/src/catalog.rs:66-85`, `apps/devnet/src/fee.rs:18-59`, `crates/node-core/src/lib.rs:4114-4121` |
+| P1 | H-5: substitute published WASM, ABI, semantics, dependencies, code revision, or instance authority; or escape declared access through a host call | Valid sender plus publication/instance/host binding defect | Arbitrary code execution or unauthorized object effects | Authenticated immutable publication, exact dependency closure, defining-code and instance authority, fuel, typed host access checks, and generic post-execution effect validation | Verify artifact commitments, revision/dependency/instance pins, imports, memory access, traps, typed cross-instance authority, and effect materialization; `crates/execution/src/publication.rs`, `crates/execution/src/local_execution.rs`, `crates/execution/src/wasm_engine.rs` |
+| P1 | H-6: manipulate quoting, reserve/settle execution, actual gas, refund ownership, or rejected-result handling to debit the wrong payer, redirect fees, overcharge, mint, or lose value | Valid signed paid intent plus policy/coordinator/atomicity defect | Unauthorized fee or supply change | Installed policy pins code, instance, types, pricing and fee recipient; signed consent caps charge; private typed reservation crosses bounded phases; application and settlement effects share one fenced atomic commit | Review success/trap/exhaustion/insufficient/overflow/replay/conflict paths and prove node core never decodes Coin amounts; `crates/execution/src/paid_execution.rs`, `crates/node-core/src/paid_execution.rs`, `apps/devnet/src/paid_contracts.rs` |
 | P1 | H-7: bypass the submit-only external boundary and deliver vote/certificate/governance/upgrade/validator-set/Tick without family authentication | Exposed native route plus event-kind classification/routing defect | Unauthorized consensus or administrative transition | Exhaustive external rejection before side effects | Confirm all router families and future enum additions remain classified; `crates/native-http/src/lib.rs:2203-2263` |
-| P1 | H-8: make remote CLI sign for an attacker-selected chain despite a valid TLS session | User invokes remote mode and endpoint/context checks diverge or occur too late | Cross-chain or wrong-protocol signed transaction | Explicit CA/name TLS plus separate locally expected context before nonce/object/signing | Review every network command and all context fields; full config-byte pinning remains an explicit gap; `clients/rust/src/context.rs:1-23`, `apps/cli/src/commands/transfer.rs:379-452` |
+| P1 | H-8: make remote CLI sign for an attacker-selected chain despite a valid TLS session | User invokes remote mode and endpoint/context checks diverge or occur too late | Cross-chain or wrong-protocol signed transaction | Explicit CA/name TLS plus separate locally expected context before nonce/object/signing | Review every network command and all context fields; full config-byte pinning remains an explicit gap; `clients/rust/src/context.rs:1-23`, `apps/cli/src/commands/standard_asset.rs` (`parse_expected_context`, `run`) |
 | P2 | H-9: exhaust CPU, memory, sockets, database connections/locks, WASM memory, or the shared query/submission pool with slow or expensive work | Exposed endpoint and sufficient request/connection rate | Bounded but material service unavailability | Pre-parser connection cap; finite header/body reads; one request per connection; body/object/output/fuel/deadline/pool/concurrency bounds and immediate post-parse 429 | Re-test DR-0100 under the selected production proxy/kernel topology and measure effective budgets; separately confirm whether wasmi linear-memory growth has an enforceable host cap beyond fuel because the inspected engine uses `Config::default()` plus fuel (`crates/execution/src/wasm_engine.rs:535-569`). |
 | P2 | H-10: exploit blob/structured ordering to substitute content, create partial state, or consume storage with unreachable blobs | Ability to drive large object updates and repeated later commit rejection | Integrity violation or storage exhaustion | Digest verification and conflict-no-overwrite; publication only after envelope validation; structured transaction remains atomic | Prove no reference can commit without its blob and quantify orphan controls before production; `crates/node-core/src/lib.rs:4213-4272`, `crates/runtime/src/lib.rs:3097-3119` |
 | P2 | H-11: steal or redirect relay capability through URL parsing, redirects, logs, or deployment misconfiguration | Possession/influence over provider environment or public deployment prerequisite | Unauthorized downstream invocation or secret disclosure | Exact HTTPS path, no URL credentials/query/fragment, ASCII bounded token, redirect error, coarse logs | Source establishes client-side restrictions only; validate real secret rotation, node-core Bearer enforcement, network policy, and logs in a deployment audit; `adapters/shared/authenticated-node-core.ts:41-107`, `adapters/shared/web-ingress.ts:73-112` |

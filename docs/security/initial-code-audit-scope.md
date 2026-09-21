@@ -18,8 +18,8 @@ The first engagement includes these path and component families:
 | `crates/runtime/**`, `crates/runtime-sqlite/**`, `crates/runtime-postgres/**` | Structured all-or-none state/object/receipt/outbox contract; writer fences, deadlines, namespaces, ambiguous-commit semantics, indexed claim/ack; SQLite/PostgreSQL mappings; and both adapters' inline/blob-reference projections. |
 | `crates/node-wire/**`, `crates/node-core/**`, `crates/native-http/**` | Canonical HTTP/query frames, authenticated `SubmitTransaction`, nonce/replay/dedup, owned-object authorization/effect matching, blob publication/verification, preinstalled module/fee composition, native ingress bounds, submit-only event-family policy, error mapping, and outbox delivery. |
 | `clients/rust/**`, `crates/signing-view/**` | Bounded loopback/TLS transports, expected-protocol-context verification, transaction construction/final signature verification, and the clear-signing policy reached by the Rust client. |
-| `apps/devnet/**` | Concrete loopback composition, trusted protocol/module/treasury configuration, asset-account WASM and fees, local SQLite/blob resources, persisted writer generation, request authority, and bounded local transport. |
-| `apps/cli/src/**`, `apps/cli/tests/{devnet_query_e2e.rs,devnet_restart_duplicate_e2e.rs,devnet_transfer_e2e.rs,tls_cli_e2e.rs}` | CLI parsing and network transaction path, local development signer selection/seed loading/address derivation, TLS/context pre-signing boundary, query/transfer behavior, final signature verification, and existing end-to-end evidence. Ledger-specific branches in the shared signer and command files are excluded below. |
+| `apps/devnet/**` | Concrete loopback composition, mandatory closed signed paid-contract genesis installing the public Standard Asset package/instance and `PaidFeePolicy`, local SQLite/blob resources, persisted writer generation, request authority, and bounded local transport. |
+| `apps/cli/src/**`, `apps/cli/tests/{devnet_query_e2e.rs,devnet_standard_asset_e2e.rs,tls_cli_e2e.rs}` | CLI parsing and network transaction path, local development signer selection/seed loading/address derivation, TLS/context pre-signing boundary, query/public paid Standard Asset command behavior, final signature verification, and existing end-to-end evidence. Ledger-specific branches in the shared signer and command files are excluded below. |
 
 Co-located `#[cfg(test)]` modules and test/fixture directories beneath an
 included path are included. Generated build output and downloaded dependency
@@ -62,9 +62,9 @@ The first engagement excludes:
   WASM host-ABI unsafe boundary;
 - `clients/ledger/**` and the Ledger-specific branches/functions co-located in
   `apps/cli/src/signer.rs`, `apps/cli/src/commands/address.rs`, and
-  `apps/cli/src/commands/transfer.rs`, including USB, physical-device, HIL, UI,
-  reproducible-build, and release evidence; the local-signer paths in those
-  shared CLI files remain in scope;
+  `apps/cli/src/commands/standard_asset.rs`, including USB, physical-device,
+  HIL, UI, reproducible-build, and release evidence; the local-signer paths
+  in those shared CLI files remain in scope;
 - `adapters/**`, including provider-specific serverless ingress source,
   deployment configuration, authentication policy, networking, WAF/rate
   policy, secret lifecycle, and operational certification;

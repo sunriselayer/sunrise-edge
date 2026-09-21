@@ -167,15 +167,7 @@ impl Error for DevnetBootError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        catalog::build_standard_asset_module,
-        config::DevOwner,
-        genesis::build_devnet_protocol_context,
-        seed::{SeedDevOwnerCoinsOutcome, seed_dev_owner_coins},
-        standard_asset::STANDARD_ASSET_MODULE_WASM,
-    };
     use ed25519_zebra::{SigningKey, VerificationKey};
-    use runtime::{DurableOperationContext, StorageCorrelationId, StorageDeadline};
     use std::{
         ffi::OsString,
         sync::atomic::{AtomicU64, Ordering},
@@ -226,7 +218,7 @@ mod tests {
             OsString::from(owner_hex(0x22)),
             OsString::from("--max-concurrent"),
             OsString::from("4"),
-            OsString::from("--fee-treasury-owner"),
+            OsString::from("--fee-recipient"),
             OsString::from(owner_hex(0x33)),
         ])
         .unwrap()
@@ -289,68 +281,5 @@ mod tests {
                 SqliteDurableStoreError::NamespaceMismatch
             ))
         ));
-    }
-
-    #[test]
-    fn sqlite_reopen_verifies_the_same_seeded_coin_refs() {
-        let directory = TestDirectory::new();
-        let config = config(&directory.0, "devnet-seed-reopen-test");
-        let owner: DevOwner = config.dev_owners()[0];
-
-        let first = boot_local_store(&config).unwrap();
-        let first_generation = first.boot_generation();
-        let first_context = DurableOperationContext::new(
-            first_generation,
-            StorageDeadline::new(u64::MAX).unwrap(),
-            StorageCorrelationId::new([0x31; 16]).unwrap(),
-        );
-        let first_protocol =
-            build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
-        let first_asset_id = first_protocol.asset_id();
-        let first_module =
-            build_standard_asset_module(first_protocol, STANDARD_ASSET_MODULE_WASM.to_vec())
-                .unwrap();
-        let created = seed_dev_owner_coins(
-            first.store(),
-            first.blob_store(),
-            first_module.resolver(),
-            config.epoch(),
-            first_asset_id,
-            owner,
-            first_generation,
-            &first_context,
-        )
-        .unwrap();
-        assert!(matches!(created, SeedDevOwnerCoinsOutcome::Created(_)));
-        drop(first);
-
-        let second = boot_local_store(&config).unwrap();
-        let second_generation = second.boot_generation();
-        let second_context = DurableOperationContext::new(
-            second_generation,
-            StorageDeadline::new(u64::MAX).unwrap(),
-            StorageCorrelationId::new([0x32; 16]).unwrap(),
-        );
-        let second_protocol =
-            build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
-        let second_asset_id = second_protocol.asset_id();
-        assert_eq!(first_asset_id, second_asset_id);
-        let second_module =
-            build_standard_asset_module(second_protocol, STANDARD_ASSET_MODULE_WASM.to_vec())
-                .unwrap();
-        let existing = seed_dev_owner_coins(
-            second.store(),
-            second.blob_store(),
-            second_module.resolver(),
-            config.epoch(),
-            second_asset_id,
-            owner,
-            second_generation,
-            &second_context,
-        )
-        .unwrap();
-
-        assert!(matches!(existing, SeedDevOwnerCoinsOutcome::Existing(_)));
-        assert_eq!(created.coins(), existing.coins());
     }
 }

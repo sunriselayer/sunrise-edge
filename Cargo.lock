@@ -1649,15 +1649,16 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "execution",
+ "fees",
  "hashing",
  "native-http",
  "node-core",
  "objects",
  "protocol-types",
+ "public-standard-asset",
  "rcgen",
  "runtime",
  "rustls",
- "standard-assets",
  "sunrise-edge-client",
  "sunrise-edge-devnet",
  "sunrise-edge-ledger",
@@ -1713,11 +1714,8 @@ dependencies = [
  "public-standard-asset",
  "runtime",
  "runtime-sqlite",
- "sha2 0.11.0",
- "standard-assets",
  "system-modules",
  "tokio",
- "wat",
 ]
 
 [[package]]

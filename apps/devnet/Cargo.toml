@@ -21,11 +21,6 @@ protocol-types.workspace = true
 protocol-upgrades.workspace = true
 runtime.workspace = true
 runtime-sqlite.workspace = true
-standard-assets.workspace = true
 public-standard-asset = { path = "../../contracts/standard-asset" }
 system-modules.workspace = true
 tokio = { workspace = true, features = ["signal"] }
-
-[dev-dependencies]
-sha2.workspace = true
-wat.workspace = true

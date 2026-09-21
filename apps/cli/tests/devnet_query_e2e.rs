@@ -9,10 +9,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use objects::ObjectId;
+use execution::publication::PublicationContext;
+use protocol_types::AtomicityDomainId;
+use runtime::{DurableOperationContext, StorageCorrelationId, StorageDeadline};
 use sunrise_edge_devnet::{
-    DevnetConfig, STANDARD_ASSET_MODULE_WASM, boot_local_store, build_devnet_protocol_context,
-    build_standard_asset_module, compose_devnet_router,
+    DevnetConfig, boot_local_store, build_devnet_protocol_context, compose_devnet_router,
+    genesis::DEVNET_DOMAIN_BYTES, install_paid_contracts, verify_or_seed_protocol_context,
 };
 
 static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
@@ -38,7 +40,7 @@ impl Drop for TestDirectory {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cli_context_and_next_nonce_commands_reach_the_real_devnet_router_over_tcp() {
     let dev_owner = sunrise_edge_client::LocalSigner::from_seed([0x33; 32]).address();
-    let treasury_owner = sunrise_edge_client::LocalSigner::from_seed([0x44; 32]).address();
+    let fee_recipient = sunrise_edge_client::LocalSigner::from_seed([0x44; 32]).address();
     let directory = TestDirectory::new();
     let config = DevnetConfig::parse_from(vec![
         OsString::from("--data-dir"),
@@ -51,27 +53,62 @@ async fn cli_context_and_next_nonce_commands_reach_the_real_devnet_router_over_t
         OsString::from("9"),
         OsString::from("--dev-owner"),
         OsString::from(dev_owner.to_string()),
-        OsString::from("--fee-treasury-owner"),
-        OsString::from(treasury_owner.to_string()),
+        OsString::from("--fee-recipient"),
+        OsString::from(fee_recipient.to_string()),
         OsString::from("--max-concurrent"),
         OsString::from("4"),
     ])
     .unwrap();
     let boot = boot_local_store(&config).unwrap();
     let generation = boot.boot_generation();
+    let object_store_was_empty = boot.store().object_store_is_empty().unwrap();
     let protocol_context =
         build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
-    let module =
-        build_standard_asset_module(protocol_context, STANDARD_ASSET_MODULE_WASM.to_vec()).unwrap();
+    let domain: AtomicityDomainId = AtomicityDomainId::new(DEVNET_DOMAIN_BYTES).unwrap();
+    let operation = |sequence: u8| -> DurableOperationContext {
+        let correlation_byte: u8 = sequence.checked_add(1).unwrap();
+        DurableOperationContext::new(
+            generation,
+            StorageDeadline::new(u64::MAX).unwrap(),
+            StorageCorrelationId::new([correlation_byte; 16]).unwrap(),
+        )
+    };
+    verify_or_seed_protocol_context(
+        boot.store(),
+        protocol_context.resolver(),
+        config.epoch(),
+        generation,
+        &operation(0),
+        object_store_was_empty,
+    )
+    .unwrap();
+    let publication_context = PublicationContext::new(
+        config.chain_id().clone(),
+        protocol_context.resolver().protocol_version(),
+        config.epoch(),
+    )
+    .unwrap();
+    let activation = install_paid_contracts(
+        boot.store(),
+        &operation(1),
+        domain,
+        protocol_context.resolver(),
+        &publication_context,
+        config.dev_owners(),
+        config.fee_recipient(),
+    )
+    .unwrap();
+    let paid_execution =
+        native_http::PaidExecutionComposition::new(activation.base_policy, activation.fee_policy);
     let (structured_store, blob_store) = boot.into_parts();
     let router = compose_devnet_router(
         Arc::new(structured_store),
         Arc::new(blob_store),
-        module,
+        protocol_context,
         generation,
         config.max_concurrent(),
-        config.dev_owners().len(),
-        ObjectId::new([0xFE; 32]),
+        2,
+        paid_execution,
     )
     .unwrap();
 

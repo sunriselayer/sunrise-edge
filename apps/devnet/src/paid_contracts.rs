@@ -11,7 +11,7 @@ use abi::{
 };
 use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::{
-    call::CallIntent,
+    call::{CallIntent, InstanceTarget},
     local_execution::{
         InstanceRecord, LocalExecutionIntent, LocalExecutionMode, LocalExecutionPolicy,
         ObjectAuthority, SignedLocalExecutionIntent, generic_object_result_semantics,
@@ -32,9 +32,9 @@ use node_core::genesis::{
 use objects::{Address, Object, ObjectId, Owner};
 use protocol_types::{Digest32, Epoch, HashPurpose};
 use public_standard_asset::{
-    SCHEMA_VERSION, asset_type_argument, build_package, coin_body_layout, coin_type_tag,
-    definition_body_layout, definition_type_tag, no_arguments, reservation_type_tag,
-    treasury_cap_body_layout, treasury_cap_type_tag,
+    SCHEMA_VERSION, asset_type_argument, build_package, coin_amount, coin_body_layout,
+    coin_type_tag, definition_body_layout, definition_type_tag, no_arguments, reservation_type_tag,
+    treasury_cap_body_layout, treasury_cap_type_tag, treasury_supply,
 };
 use runtime::{AtomicityDomainId, DurableOperationContext, StructuredDurableDomainStateStore};
 use std::{error::Error, fmt};
@@ -44,17 +44,45 @@ use crate::config::DevOwner;
 /// Development-only seed for the fixed genesis authority. This is public test
 /// material, never a production or operator secret.
 pub const DEVNET_PAID_GENESIS_SEED: [u8; 32] = [0x47; 32];
-/// Initial fee balance in each configured development owner's public Coin.
+/// Initial balance of each configured development owner's public fee-source
+/// Coin.
 pub const DEVNET_PAID_FEE_COIN_BALANCE: u64 = 10_000_000;
+/// Initial balance of each configured development owner's public spend-source
+/// Coin, distinct from [`DEVNET_PAID_FEE_COIN_BALANCE`].
+pub const DEVNET_PAID_SPEND_COIN_BALANCE: u64 = 10_000_000;
 const GENESIS_CHECKPOINT: u64 = 1;
 const APPLICATION_GAS_LIMIT: u64 = 500_000;
+
+/// The two initial public `Coin<A>` objects seeded for one configured
+/// development owner.
+#[derive(Clone, Copy, Debug)]
+pub struct PaidOwnerCoins {
+    pub owner: DevOwner,
+    pub fee_coin: ObjectId,
+    pub spend_coin: ObjectId,
+}
+
+/// Bounded activation metadata a devnet boot needs to report and to serve
+/// `mint`/`burn` without the public genesis signing key.
+#[derive(Clone, Debug)]
+pub struct PaidGenesisActivationMetadata {
+    /// The first configured development owner, which owns the installed
+    /// `TreasuryCap<A>` and is therefore the fixed local-devnet mint
+    /// authority. The genesis authority itself owns no Coin or TreasuryCap.
+    pub mint_authority: DevOwner,
+    pub definition_id: ObjectId,
+    pub treasury_cap_id: ObjectId,
+    pub instance: InstanceTarget,
+    pub code: UnverifiedDependencyRef,
+    pub owner_coins: Vec<PaidOwnerCoins>,
+}
 
 /// Fully verified output used to compose the paid native HTTP route.
 #[derive(Clone, Debug)]
 pub struct PaidContractActivation {
     pub base_policy: LocalExecutionPolicy,
     pub fee_policy: PaidFeePolicy,
-    pub fee_coins: Vec<(DevOwner, ObjectId)>,
+    pub metadata: PaidGenesisActivationMetadata,
     pub manifest_digest: Digest32,
     pub outcome: GenesisInstallOutcome,
 }
@@ -149,6 +177,19 @@ fn derived_object_id(
     ))
 }
 
+fn derived_owner_coin_id(
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    prefix: &[u8],
+    owner_index: u64,
+    owner: DevOwner,
+) -> Result<ObjectId, PaidContractGenesisError> {
+    let mut label: Vec<u8> = prefix.to_vec();
+    label.extend_from_slice(&owner_index.to_le_bytes());
+    label.extend_from_slice(owner.as_bytes());
+    derived_object_id(resolver, epoch, &label)
+}
+
 fn authority(
     object_id: ObjectId,
     context: &PublicationContext,
@@ -172,10 +213,11 @@ pub fn build_paid_genesis_manifest(
     context: &PublicationContext,
     dev_owners: &[DevOwner],
     fee_recipient: DevOwner,
-) -> Result<(GenesisManifest, Vec<(DevOwner, ObjectId)>), PaidContractGenesisError> {
+) -> Result<(GenesisManifest, PaidGenesisActivationMetadata), PaidContractGenesisError> {
     if dev_owners.is_empty() {
         return Err(PaidContractGenesisError::Invalid("no development owners"));
     }
+    let mint_authority: DevOwner = dev_owners[0];
     let genesis_authority: [u8; 32] = paid_genesis_authority();
     let origin_seed: [u8; 32] = derived_bytes(
         resolver,
@@ -276,13 +318,17 @@ pub fn build_paid_genesis_manifest(
     let definition_tag = definition_type_tag(&origin)?;
     let treasury_tag = treasury_cap_type_tag(&origin, &definition_id)?;
     let coin_tag = coin_type_tag(&origin, &definition_id)?;
-    let total_supply: u64 =
-        DEVNET_PAID_FEE_COIN_BALANCE
-            .checked_mul(u64::try_from(dev_owners.len()).map_err(|_| {
-                PaidContractGenesisError::Invalid("development owner count overflow")
-            })?)
-            .ok_or(PaidContractGenesisError::Invalid("initial supply overflow"))?;
-    let mut objects: Vec<GenesisObjectEntry> = Vec::with_capacity(dev_owners.len() + 2);
+    let owner_count: u64 = u64::try_from(dev_owners.len())
+        .map_err(|_| PaidContractGenesisError::Invalid("development owner count overflow"))?;
+    let per_owner_balance: u64 = DEVNET_PAID_FEE_COIN_BALANCE
+        .checked_add(DEVNET_PAID_SPEND_COIN_BALANCE)
+        .ok_or(PaidContractGenesisError::Invalid(
+            "per-owner initial balance overflow",
+        ))?;
+    let total_supply: u64 = per_owner_balance
+        .checked_mul(owner_count)
+        .ok_or(PaidContractGenesisError::Invalid("initial supply overflow"))?;
+    let mut objects: Vec<GenesisObjectEntry> = Vec::with_capacity(dev_owners.len() * 2 + 2);
     let definition: Object = Object {
         id: definition_id,
         version: 1,
@@ -295,47 +341,88 @@ pub fn build_paid_genesis_manifest(
         authority: authority(definition.id, context, &instance, &code, definition_tag),
         object: definition,
     });
+    // The mint authority, never the genesis authority, owns the TreasuryCap:
+    // the genesis authority must own no Coin or TreasuryCap.
     let treasury: Object = Object {
         id: treasury_cap_id,
         version: 1,
-        owner: Owner::Address(Address::new(genesis_authority)),
+        owner: Owner::Address(Address::new(*mint_authority.as_bytes())),
         type_hash: derive_scoped_type_id(resolver, context.epoch(), &treasury_tag)?,
         schema_version: SCHEMA_VERSION,
         data: encode_call_value(&treasury_cap_body_layout(), &CallValue::U64(total_supply))?,
     };
     objects.push(GenesisObjectEntry {
         authority: authority(treasury.id, context, &instance, &code, treasury_tag),
-        object: treasury,
+        object: treasury.clone(),
     });
 
-    let mut fee_coins: Vec<(DevOwner, ObjectId)> = Vec::with_capacity(dev_owners.len());
+    let mut owner_coins: Vec<PaidOwnerCoins> = Vec::with_capacity(dev_owners.len());
     for (index, owner) in dev_owners.iter().copied().enumerate() {
-        let mut label: Vec<u8> = b"sunrise.devnet.public-standard-asset.fee-coin.v1/".to_vec();
-        label.extend_from_slice(
-            &u64::try_from(index)
-                .map_err(|_| PaidContractGenesisError::Invalid("owner index overflow"))?
-                .to_le_bytes(),
-        );
-        label.extend_from_slice(owner.as_bytes());
-        let coin_id: ObjectId = derived_object_id(resolver, context.epoch(), &label)?;
-        let coin: Object = Object {
-            id: coin_id,
-            version: 1,
-            owner: Owner::Address(Address::new(*owner.as_bytes())),
-            type_hash: derive_scoped_type_id(resolver, context.epoch(), &coin_tag)?,
-            schema_version: SCHEMA_VERSION,
-            data: encode_call_value(
-                &coin_body_layout(),
-                &CallValue::U64(DEVNET_PAID_FEE_COIN_BALANCE),
-            )?,
-        };
-        objects.push(GenesisObjectEntry {
-            authority: authority(coin.id, context, &instance, &code, coin_tag.clone()),
-            object: coin,
+        let owner_index: u64 = u64::try_from(index)
+            .map_err(|_| PaidContractGenesisError::Invalid("owner index overflow"))?;
+        let fee_coin_id: ObjectId = derived_owner_coin_id(
+            resolver,
+            context.epoch(),
+            b"sunrise.devnet.public-standard-asset.fee-coin.v1/",
+            owner_index,
+            owner,
+        )?;
+        let spend_coin_id: ObjectId = derived_owner_coin_id(
+            resolver,
+            context.epoch(),
+            b"sunrise.devnet.public-standard-asset.spend-coin.v1/",
+            owner_index,
+            owner,
+        )?;
+        for (coin_id, balance) in [
+            (fee_coin_id, DEVNET_PAID_FEE_COIN_BALANCE),
+            (spend_coin_id, DEVNET_PAID_SPEND_COIN_BALANCE),
+        ] {
+            let coin: Object = Object {
+                id: coin_id,
+                version: 1,
+                owner: Owner::Address(Address::new(*owner.as_bytes())),
+                type_hash: derive_scoped_type_id(resolver, context.epoch(), &coin_tag)?,
+                schema_version: SCHEMA_VERSION,
+                data: encode_call_value(&coin_body_layout(), &CallValue::U64(balance))?,
+            };
+            objects.push(GenesisObjectEntry {
+                authority: authority(coin.id, context, &instance, &code, coin_tag.clone()),
+                object: coin,
+            });
+        }
+        owner_coins.push(PaidOwnerCoins {
+            owner,
+            fee_coin: fee_coin_id,
+            spend_coin: spend_coin_id,
         });
-        fee_coins.push((owner, coin_id));
     }
 
+    // Fail-closed supply consistency: the generic installer intentionally
+    // knows nothing about asset supply, so this builder alone asserts the
+    // exact seeded Coin total matches the TreasuryCap body it just encoded.
+    let mut seeded_supply: u64 = 0;
+    for entry in &objects[2..] {
+        let amount: u64 = coin_amount(&entry.object.data)?;
+        seeded_supply = seeded_supply
+            .checked_add(amount)
+            .ok_or(PaidContractGenesisError::Invalid("seeded supply overflow"))?;
+    }
+    let committed_supply: u64 = treasury_supply(&treasury.data)?;
+    if seeded_supply != total_supply || committed_supply != total_supply {
+        return Err(PaidContractGenesisError::Invalid(
+            "seeded coin supply is inconsistent with the TreasuryCap total supply",
+        ));
+    }
+
+    let metadata: PaidGenesisActivationMetadata = PaidGenesisActivationMetadata {
+        mint_authority,
+        definition_id,
+        treasury_cap_id,
+        instance: instance.clone(),
+        code: code.clone(),
+        owner_coins,
+    };
     let fee_policy: PaidFeePolicy = PaidFeePolicy {
         context: context.clone(),
         base_policy_digest,
@@ -380,7 +467,7 @@ pub fn build_paid_genesis_manifest(
     manifest.signature = genesis_key()
         .sign(&genesis_manifest_signing_frame(&manifest)?)
         .into();
-    Ok((manifest, fee_coins))
+    Ok((manifest, metadata))
 }
 
 /// Builds and atomically installs, or verify-only checks, the paid genesis.
@@ -394,7 +481,7 @@ pub fn install_paid_contracts<S: StructuredDurableDomainStateStore>(
     dev_owners: &[DevOwner],
     fee_recipient: DevOwner,
 ) -> Result<PaidContractActivation, PaidContractGenesisError> {
-    let (manifest, fee_coins): (GenesisManifest, Vec<(DevOwner, ObjectId)>) =
+    let (manifest, metadata): (GenesisManifest, PaidGenesisActivationMetadata) =
         build_paid_genesis_manifest(resolver, context, dev_owners, fee_recipient)?;
     let manifest_digest: Digest32 = genesis_manifest_commitment(resolver, &manifest)?;
     let outcome: GenesisInstallOutcome = install_genesis(
@@ -408,7 +495,7 @@ pub fn install_paid_contracts<S: StructuredDurableDomainStateStore>(
     Ok(PaidContractActivation {
         base_policy: LocalExecutionPolicy::generic_object_results(context.clone()),
         fee_policy: manifest.fee_policy,
-        fee_coins,
+        metadata,
         manifest_digest,
         outcome,
     })
@@ -450,18 +537,35 @@ mod tests {
         )
         .unwrap();
         let owners: Vec<DevOwner> = vec![owner(1), owner(2)];
-        let (manifest, fee_coins) =
+        let (manifest, metadata) =
             build_paid_genesis_manifest(protocol.resolver(), &context, &owners, owner(3)).unwrap();
-        assert_eq!(fee_coins.len(), owners.len());
+        assert_eq!(metadata.owner_coins.len(), owners.len());
+        assert_eq!(metadata.mint_authority, owners[0]);
+        let expected_total_supply: u64 =
+            (DEVNET_PAID_FEE_COIN_BALANCE + DEVNET_PAID_SPEND_COIN_BALANCE) * 2;
         assert_eq!(
             public_standard_asset::treasury_supply(&manifest.objects[1].object.data).unwrap(),
-            DEVNET_PAID_FEE_COIN_BALANCE * 2
+            expected_total_supply
+        );
+        assert_eq!(
+            manifest.objects[1].object.owner,
+            Owner::Address(Address::new(*owners[0].as_bytes()))
         );
         let coin_total: u64 = manifest.objects[2..]
             .iter()
             .map(|entry| public_standard_asset::coin_amount(&entry.object.data).unwrap())
             .sum();
-        assert_eq!(coin_total, DEVNET_PAID_FEE_COIN_BALANCE * 2);
+        assert_eq!(coin_total, expected_total_supply);
+        for owner_coins in &metadata.owner_coins {
+            assert_ne!(owner_coins.fee_coin, owner_coins.spend_coin);
+        }
+        let genesis_owner: Owner = Owner::Address(Address::new(paid_genesis_authority()));
+        for entry in &manifest.objects[1..] {
+            assert_ne!(
+                entry.object.owner, genesis_owner,
+                "genesis authority must own no Coin or TreasuryCap"
+            );
+        }
 
         let domain: AtomicityDomainId = AtomicityDomainId::new(DEVNET_DOMAIN_BYTES).unwrap();
         let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());

@@ -72,7 +72,7 @@ where
     } else {
         None
     };
-    let expected: ExpectedProtocolContext = super::transfer::parse_expected_context(&parsed)?;
+    let expected: ExpectedProtocolContext = super::standard_asset::parse_expected_context(&parsed)?;
     let resolver = local_publication_resolver(&expected)?;
     let context: PublicationContext = PublicationContext::new(
         expected.chain_id().clone(),

@@ -4,12 +4,14 @@ use abi::{
     call_values::{CallAbi, ValueLayout, encode_call_abi},
     public_abi::{EntrypointDeclaration, PackageAbi},
 };
+use execution::publication::PublicationContext;
 use runtime::{DurableOperationContext, StorageCorrelationId, StorageDeadline};
 use std::{ffi::OsString, fs, path::PathBuf, sync::Arc};
 use sunrise_edge_client::{LocalSigner, PackageOrigin};
 use sunrise_edge_devnet::{
-    DevnetConfig, STANDARD_ASSET_MODULE_WASM, boot_local_store, build_devnet_protocol_context,
-    build_standard_asset_module, compose_devnet_router_with_publication,
+    DevnetConfig, boot_local_store, build_devnet_protocol_context,
+    compose_devnet_router_with_publication, install_paid_contracts,
+    verify_or_seed_protocol_context,
 };
 
 struct Directory(PathBuf);
@@ -27,7 +29,7 @@ async fn cli_publish_query_dependency_and_exact_replay_survive_sqlite_restart() 
     )));
     fs::create_dir_all(&directory.0).unwrap();
     let signer: LocalSigner = LocalSigner::from_seed([7; 32]);
-    let treasury: LocalSigner = LocalSigner::from_seed([8; 32]);
+    let fee_recipient: LocalSigner = LocalSigner::from_seed([8; 32]);
     let args: Vec<String> = vec![
         "--data-dir".into(),
         directory.0.display().to_string(),
@@ -39,8 +41,8 @@ async fn cli_publish_query_dependency_and_exact_replay_survive_sqlite_restart() 
         "9".into(),
         "--dev-owner".into(),
         signer.address().to_string(),
-        "--fee-treasury-owner".into(),
-        treasury.address().to_string(),
+        "--fee-recipient".into(),
+        fee_recipient.address().to_string(),
         "--max-concurrent".into(),
         "4".into(),
         "--enable-local-publication".into(),
@@ -90,25 +92,63 @@ async fn cli_publish_query_dependency_and_exact_replay_survive_sqlite_restart() 
     for boot_index in 0..3 {
         let boot = boot_local_store(&config).unwrap();
         let generation = boot.boot_generation();
-        let context =
+        let object_store_was_empty = boot.store().object_store_is_empty().unwrap();
+        let protocol_context =
             build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
-        let module =
-            build_standard_asset_module(context, STANDARD_ASSET_MODULE_WASM.to_vec()).unwrap();
-        let protocol_version = module.resolver().protocol_version().get().to_string();
-        let operation = DurableOperationContext::new(
-            generation,
-            StorageDeadline::new(u64::MAX).unwrap(),
-            StorageCorrelationId::new([9; 16]).unwrap(),
-        );
+        let protocol_version = protocol_context
+            .resolver()
+            .protocol_version()
+            .get()
+            .to_string();
         let domain = sunrise_edge_client::AtomicityDomainId::new(
             sunrise_edge_devnet::genesis::DEVNET_DOMAIN_BYTES,
         )
         .unwrap();
+        let operation = |sequence: u8| -> DurableOperationContext {
+            let correlation_byte: u8 = sequence.checked_add(1).unwrap();
+            DurableOperationContext::new(
+                generation,
+                StorageDeadline::new(u64::MAX).unwrap(),
+                StorageCorrelationId::new([correlation_byte; 16]).unwrap(),
+            )
+        };
+        // Matches production boot equivalence (`main.rs`): the fail-closed
+        // protocol-context marker is verified or seeded before paid genesis,
+        // which is installed or verified on every restart (DR-0127).
+        verify_or_seed_protocol_context(
+            boot.store(),
+            protocol_context.resolver(),
+            config.epoch(),
+            generation,
+            &operation(1),
+            object_store_was_empty,
+        )
+        .unwrap();
+        let publication_context = PublicationContext::new(
+            config.chain_id().clone(),
+            protocol_context.resolver().protocol_version(),
+            config.epoch(),
+        )
+        .unwrap();
+        let activation = install_paid_contracts(
+            boot.store(),
+            &operation(2),
+            domain,
+            protocol_context.resolver(),
+            &publication_context,
+            config.dev_owners(),
+            config.fee_recipient(),
+        )
+        .unwrap();
+        let paid_execution = native_http::PaidExecutionComposition::new(
+            activation.base_policy,
+            activation.fee_policy,
+        );
         let policy = sunrise_edge_devnet::publication::seed_local_publication_policy(
             boot.store(),
-            &operation,
+            &operation(9),
             domain,
-            module.resolver(),
+            protocol_context.resolver(),
             config.epoch(),
         )
         .unwrap();
@@ -121,12 +161,12 @@ async fn cli_publish_query_dependency_and_exact_replay_survive_sqlite_restart() 
         let router = compose_devnet_router_with_publication(
             Arc::new(store),
             Arc::new(blobs),
-            module,
+            protocol_context,
             generation,
             4,
             4,
-            objects::ObjectId::new([0xfe; 32]),
             if boot_index < 2 { Some(policy) } else { None },
+            paid_execution,
         )
         .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

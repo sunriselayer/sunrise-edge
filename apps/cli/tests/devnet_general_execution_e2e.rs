@@ -8,6 +8,7 @@ use execution::call_authorization::{
     AuthorizedObject, CallAuthorization, ExecutionTarget, encode_call_authorizations,
 };
 use execution::local_execution::*;
+use execution::publication::PublicationContext;
 use execution::{ExecutionStatus, ObjectEffect};
 use hashing::HashSuiteResolver;
 use objects::{AccessMode, Object, ObjectId, ObjectRef};
@@ -25,8 +26,8 @@ use std::{
 };
 use sunrise_edge_client::{LocalSigner, PackageOrigin};
 use sunrise_edge_devnet::{
-    DevnetConfig, STANDARD_ASSET_MODULE_WASM, boot_local_store, build_devnet_protocol_context,
-    build_standard_asset_module,
+    DevnetConfig, boot_local_store, build_devnet_protocol_context, install_paid_contracts,
+    verify_or_seed_protocol_context,
 };
 
 /// Construct only after this test successfully creates its unique directory.
@@ -193,7 +194,7 @@ async fn cli_general_inventory_scopes_rollback_and_exact_restart_replay() {
         "9".into(),
         "--dev-owner".into(),
         signer.address().to_string(),
-        "--fee-treasury-owner".into(),
+        "--fee-recipient".into(),
         recipient.address().to_string(),
         "--enable-general-calls".into(),
         "--max-concurrent".into(),
@@ -252,12 +253,10 @@ async fn cli_general_inventory_scopes_rollback_and_exact_restart_replay() {
     for boot_index in 0..2 {
         let boot = boot_local_store(&config).unwrap();
         let generation = boot.boot_generation();
-        let module = build_standard_asset_module(
-            build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap(),
-            STANDARD_ASSET_MODULE_WASM.to_vec(),
-        )
-        .unwrap();
-        let resolver: HashSuiteResolver = module.resolver().clone();
+        let object_store_was_empty = boot.store().object_store_is_empty().unwrap();
+        let protocol_context =
+            build_devnet_protocol_context(config.chain_id().clone(), config.epoch()).unwrap();
+        let resolver: HashSuiteResolver = protocol_context.resolver().clone();
         let domain: AtomicityDomainId =
             AtomicityDomainId::new(sunrise_edge_devnet::genesis::DEVNET_DOMAIN_BYTES).unwrap();
         let operation: DurableOperationContext = DurableOperationContext::new(
@@ -272,6 +271,45 @@ async fn cli_general_inventory_scopes_rollback_and_exact_restart_replay() {
                     .is_err()
             );
         }
+        let marker_operation: DurableOperationContext = DurableOperationContext::new(
+            generation,
+            StorageDeadline::new(u64::MAX).unwrap(),
+            StorageCorrelationId::new([1; 16]).unwrap(),
+        );
+        verify_or_seed_protocol_context(
+            boot.store(),
+            &resolver,
+            config.epoch(),
+            generation,
+            &marker_operation,
+            object_store_was_empty,
+        )
+        .unwrap();
+        let publication_context = PublicationContext::new(
+            config.chain_id().clone(),
+            resolver.protocol_version(),
+            config.epoch(),
+        )
+        .unwrap();
+        let paid_operation: DurableOperationContext = DurableOperationContext::new(
+            generation,
+            StorageDeadline::new(u64::MAX).unwrap(),
+            StorageCorrelationId::new([2; 16]).unwrap(),
+        );
+        let activation = install_paid_contracts(
+            boot.store(),
+            &paid_operation,
+            domain,
+            &resolver,
+            &publication_context,
+            config.dev_owners(),
+            config.fee_recipient(),
+        )
+        .unwrap();
+        let paid_execution = native_http::PaidExecutionComposition::new(
+            activation.base_policy,
+            activation.fee_policy,
+        );
         let local = sunrise_edge_devnet::local_execution::seed_local_execution_policies(
             boot.store(),
             &operation,
@@ -312,16 +350,16 @@ async fn cli_general_inventory_scopes_rollback_and_exact_restart_replay() {
             sunrise_edge_devnet::composition::compose_devnet_router_with_execution_policies(
                 store.clone(),
                 Arc::new(blobs),
-                module,
+                protocol_context,
                 generation,
                 4,
                 6,
-                ObjectId::new([0xfe; 32]),
                 None,
                 Some(
                     native_http::LocalExecutionComposition::new(local.0, local.1)
                         .with_policy(general.0, general.1),
                 ),
+                paid_execution,
             )
             .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

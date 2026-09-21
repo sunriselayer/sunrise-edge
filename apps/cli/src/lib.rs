@@ -1,57 +1,25 @@
 #![forbid(unsafe_code)]
 
-//! Sunrise Edge Developer MVP Rust CLI (`apps/cli`, docs/architecture/product-surfaces.md §45;
-//! docs/architecture/decisions/0081-0087-cli-first-roadmap.md DR-0084;
-//! docs/architecture/decisions/0088-0093-hardware-signing.md DR-0092).
+//! Sunrise Edge's Rust CLI.
 //!
-//! Rust-only, with exactly two non-development/runtime dependencies:
-//! `sunrise-edge-client` and, as of S4c (DR-0092, amending DR-0084's
-//! original one-dependency invariant), `sunrise-edge-ledger` — the crate
-//! that owns every Ledger/APDU/USB/HID dependency in this workspace. (A
-//! handful of crates are declared under `[dev-dependencies]` only, to
-//! compose a real local devnet and build test fixtures directly in this
-//! crate's own test suite; none of them are reachable from `main`, `lib`,
-//! or any non-test build.) There is no Node/browser runtime, no
-//! argument-parsing crate, and no independent canonical encode/decode,
-//! signing, or RPC path — every protocol interaction goes through
-//! `sunrise-edge-client`, and every Ledger interaction goes through
-//! `sunrise-edge-ledger`.
+//! Protocol construction, signing, response verification, and transport live
+//! in `sunrise-edge-client`; Ledger device access remains isolated in
+//! `sunrise-edge-ledger`. `public-standard-asset` supplies only the public
+//! contract's canonical ABI arguments and nominal type descriptions. The CLI
+//! has no native balance mutation, module grant, fee composer, or alternate
+//! RPC path.
 //!
-//! `contract validate` performs local, non-executing structural WASM checks
-//! through the Rust client; it neither signs nor publishes a contract.
-//! `contract publish` and `contract query` use the explicitly enabled local
-//! immutable publication service. Publishing never instantiates or executes code.
-//! `contract publish --executable` selects the separate typed-host profile;
-//! `contract instantiate`, `contract call`, and `contract query-instance` use
-//! the explicitly enabled zero-fee local execution service and canonical files.
-//! `--general-calls` explicitly selects profile three for publication/query and
-//! execution. `contract call` and `instantiate` accept a canonical
-//! `--authorizations` file only with that flag; all target record digests and
-//! exact code references are checked before signing. Omitting the file uses an
-//! empty table, without changing the selected policy or refreshing object refs.
+//! `contract` exposes structural validation and the explicit local or paid
+//! publication/instance/call workflows. The top-level `transfer`, `split`,
+//! `merge`, `mint`, and `burn` verbs are convenience builders for ordinary
+//! signed paid calls to the policy-pinned public Standard Asset package. They
+//! validate the configured protocol context and current owned object types
+//! before signing. Ledger paid-intent clear signing is not yet specified, so
+//! those five verbs reject Ledger selection before device or network access.
 //!
-//! Commands: `address`, `context`, `object`, `receipt`, `next-nonce`, and
-//! `transfer`, `split`, `merge`, `mint`, and `burn` (the devnet Standard Asset v1
-//! coin operations). `address`, `transfer`, `split`, `merge`, `mint`, and `burn` each require an
-//! explicit, all-or-none signer selection (see
-//! `signer::parse_signer_selection`):
-//! `--seed-file` (the development-only, non-keystore local signer) or all
-//! three of `--ledger-hid-path`, `--ledger-account`, and
-//! `--ledger-expected-firmware-version` (a Ledger hardware signer). `address`
-//! runs a staged identity check: the device's
-//! dashboard/firmware identity is verified against
-//! `--ledger-expected-firmware-version`, the Sunrise application is opened
-//! and its own reported app/version identity verified, and only then are the
-//! device-reported configuration and on-device-confirmed public key/address
-//! checked. The live Standard Asset v1 `transfer`, `split`, `merge`, `mint`, and `burn`
-//! operations reject Ledger selection before device or network dispatch because
-//! their clear-signing policies remain deferred. The real USB/HID transport
-//! (`--ledger-hid-path`) requires this
-//! binary to be built with the `usb-hid` Cargo feature; without it, a Ledger
-//! selection fails closed with a typed, actionable error rather than
-//! silently falling back to the local signer. Output is deterministic,
-//! line-oriented `key=value` text; every error is typed and actionable, and
-//! every error exits the process non-zero.
+//! Output is deterministic line-oriented `key=value` text. Every error exits
+//! non-zero, and successful paid operations print charge plus object-effect
+//! identities so newly created fee, refund, split, or mint Coins are not lost.
 
 mod args;
 mod commands;
@@ -112,11 +80,9 @@ where
         "object" => commands::object::run(iterator),
         "receipt" => commands::receipt::run(iterator),
         "next-nonce" => commands::next_nonce::run(iterator),
-        "transfer" => commands::transfer::run(iterator),
-        "split" => commands::split::run(iterator),
-        "merge" => commands::merge::run(iterator),
-        "mint" => commands::mint::run(iterator),
-        "burn" => commands::burn::run(iterator),
+        "transfer" | "split" | "merge" | "mint" | "burn" => {
+            commands::standard_asset::run(command.as_str(), iterator)
+        }
         other => Err(CliError::UnknownCommand(other.to_string())),
     }
 }
