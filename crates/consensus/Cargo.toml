@@ -13,3 +13,4 @@ validator-set.workspace = true
 
 [dev-dependencies]
 sha2.workspace = true
+ed25519-zebra.workspace = true
