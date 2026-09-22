@@ -2891,7 +2891,7 @@ async fn structured_route_rejects_invalid_submit_before_every_side_effect() {
 }
 
 #[tokio::test]
-async fn structured_route_rejects_outer_event_context_mismatch_before_every_side_effect() {
+async fn structured_route_rejects_outer_chain_or_protocol_mismatch_before_every_side_effect() {
     let domain = AtomicityDomainId::new([0x8A; 32]).unwrap();
     let protocol_config = active_protocol_config(domain);
 
@@ -2923,7 +2923,7 @@ async fn structured_route_rejects_outer_event_context_mismatch_before_every_side
     .unwrap();
     assert_submit_rejected_before_side_effects(
         wrong_version_event.encode().unwrap(),
-        protocol_config.clone(),
+        protocol_config,
         StatusCode::CONFLICT,
         "state-or-context-conflict",
     )

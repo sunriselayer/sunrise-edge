@@ -45,8 +45,9 @@
 //! `crate::fast_path::prepare`/`crate::fast_path::apply` are the other two
 //! callers: neither duplicates this admission/execution pipeline.
 //!
-//! Nothing here activates paid execution: no CLI, HTTP, bootstrap or installer
-//! route reaches this function, and no policy is installed by it.
+//! Nothing here activates paid execution by itself: adapters must explicitly
+//! compose a route and bootstrap must install the exact policies. This module
+//! installs no route or policy.
 use super::*;
 use execution::call_authorization::MAX_EXECUTION_SCOPES;
 use execution::execution_scopes::{

@@ -2416,13 +2416,13 @@ fn hex_nibble(byte: u8) -> Option<u8> {
     }
 }
 
-/// Resolves the logical domain for a query request through
+/// Resolves the logical domain for static-epoch query paths through
 /// [`DomainPlacementManifest::resolve_domain`] at `config.epoch()` with one
 /// bounded access — the same activation-epoch-checked path the authenticated
-/// write path uses — rather than reading `placement.domain()`
-/// unconditionally, so an inactive placement classifies identically across
-/// every query route, including `/v1/context`, instead of only where storage
-/// I/O happens to run.
+/// write path historically used — rather than reading `placement.domain()`
+/// unconditionally. Live-epoch `/v1/context` and next-nonce paths instead use
+/// [`prepare_authoritative_epoch_storage_context`] and revalidate placement at
+/// the committed epoch after reading that authoritative record.
 fn resolve_query_domain(
     placement: &DomainPlacementManifest,
     config: &NodeConfig,
