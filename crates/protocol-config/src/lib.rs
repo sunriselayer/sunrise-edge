@@ -3,7 +3,7 @@
 //! Canonically encoded protocol configuration values.
 
 use bonds::{
-    BondAssetRegistry, BondError, ValidatorAdmissionPolicy, encode_bond_asset_registry,
+    BondError, BondResourceRegistry, ValidatorAdmissionPolicy, encode_bond_resource_registry,
     encode_validator_admission_policy,
 };
 use canonical_encoding::{CanonicalEncodingError, CanonicalStruct, encode_signature_scheme_id};
@@ -584,8 +584,8 @@ pub struct ProtocolConfig {
     pub gas_schedule: GasSchedule,
     /// Approved fee assets and conversion parameters.
     pub fee_assets: FeeAssetRegistry,
-    /// Approved bond assets and validator collateral rules.
-    pub bond_assets: BondAssetRegistry,
+    /// Approved bond resources and validator collateral rules.
+    pub bond_resources: BondResourceRegistry,
     /// Current validator admission policy.
     pub validator_admission_policy: ValidatorAdmissionPolicy,
     /// On-chain governance parameters.
@@ -617,7 +617,7 @@ impl ProtocolConfig {
             commitment_scheme_id: CommitmentSchemeId::SparseMerkleSha256V1,
             gas_schedule: GasSchedule::genesis(),
             fee_assets: FeeAssetRegistry::new(),
-            bond_assets: BondAssetRegistry::new(),
+            bond_resources: BondResourceRegistry::new(),
             validator_admission_policy: ValidatorAdmissionPolicy::GenesisPermissioned,
             governance_config: GovernanceConfig::genesis(),
             system_modules: SystemModuleRegistry::new(),
@@ -639,7 +639,7 @@ impl ProtocolConfig {
             return Err(ProtocolConfigError::ZeroHashSuiteId);
         }
         self.fee_assets.validate()?;
-        self.bond_assets.validate()?;
+        self.bond_resources.validate()?;
         self.governance_config.validate()?;
         self.system_modules.validate()?;
         self.feature_flags.validate()?;
@@ -710,7 +710,7 @@ pub fn encode_protocol_config(config: &ProtocolConfig) -> Result<Vec<u8>, Protoc
     canonical.field_bytes(3, encode_commitment_scheme_id(config.commitment_scheme_id)?)?;
     canonical.field_bytes(4, encode_gas_schedule(&config.gas_schedule)?)?;
     canonical.field_bytes(5, encode_fee_asset_registry(&config.fee_assets)?)?;
-    canonical.field_bytes(6, encode_bond_asset_registry(&config.bond_assets)?)?;
+    canonical.field_bytes(6, encode_bond_resource_registry(&config.bond_resources)?)?;
     canonical.field_bytes(
         7,
         encode_validator_admission_policy(config.validator_admission_policy)?,
@@ -739,7 +739,7 @@ pub fn encode_protocol_config(config: &ProtocolConfig) -> Result<Vec<u8>, Protoc
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bonds::BondAssetConfig;
+    use bonds::{BondResourceConfig, BondResourceId};
     use fees::{Amount, FeeAsset};
     use governance::GovernanceConfig;
     use protocol_types::{Epoch, HashAlgorithmId, HashSuite};
@@ -907,7 +907,7 @@ mod tests {
             commitment_scheme_id: CommitmentSchemeId::SparseMerkleSha256V1,
             gas_schedule: GasSchedule::genesis(),
             fee_assets: FeeAssetRegistry::new(),
-            bond_assets: BondAssetRegistry::new(),
+            bond_resources: BondResourceRegistry::new(),
             validator_admission_policy: ValidatorAdmissionPolicy::GenesisPermissioned,
             governance_config: GovernanceConfig::genesis(),
             system_modules: SystemModuleRegistry::new(),
@@ -931,7 +931,7 @@ mod tests {
             commitment_scheme_id: CommitmentSchemeId::SparseMerkleSha256V1,
             gas_schedule: GasSchedule::genesis(),
             fee_assets: FeeAssetRegistry::new(),
-            bond_assets: BondAssetRegistry::new(),
+            bond_resources: BondResourceRegistry::new(),
             validator_admission_policy: ValidatorAdmissionPolicy::GenesisPermissioned,
             governance_config: GovernanceConfig::genesis(),
             system_modules: SystemModuleRegistry::new(),
@@ -1143,12 +1143,12 @@ mod tests {
     }
 
     #[test]
-    fn bond_asset_registry_is_included_in_encoding() {
+    fn bond_resource_registry_is_included_in_encoding() {
         let mut config = ProtocolConfig::genesis();
         config
-            .bond_assets
-            .add_asset(BondAssetConfig {
-                asset_id: AssetId::new([0xBC; 32]),
+            .bond_resources
+            .add_resource(BondResourceConfig {
+                resource_id: BondResourceId::new(7, [0xBC; 32]).unwrap(),
                 min_bond: Amount::new(100),
                 enabled: true,
                 unbonding_epochs: 7,
@@ -1156,10 +1156,10 @@ mod tests {
             })
             .unwrap();
 
-        let with_asset = encode_protocol_config(&config).unwrap();
-        let without_asset = encode_protocol_config(&ProtocolConfig::genesis()).unwrap();
+        let with_resource = encode_protocol_config(&config).unwrap();
+        let without_resource = encode_protocol_config(&ProtocolConfig::genesis()).unwrap();
 
-        assert_ne!(with_asset, without_asset);
+        assert_ne!(with_resource, without_resource);
     }
 
     #[test]

@@ -180,7 +180,6 @@ dependencies = [
  "objects",
  "protocol-types",
  "runtime",
- "standard-assets",
 ]
 
 [[package]]
