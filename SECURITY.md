@@ -145,8 +145,8 @@ confirmed vulnerability.
 
 The following are deferred from the first audit engagement:
 
-- externally reachable FastVote/FastCertificate ingress and
-  economics/security completion (the local Phase 1
+- externally reachable FastVote/FastCertificate ingress, validator lifecycle
+  completion, and economics/security completion (the local Phase 1
   certified-execution boundary and atomic certificate publication are
   implemented under
   [DR-0130](docs/architecture/decisions/0130-owned-object-certified-execution.md);

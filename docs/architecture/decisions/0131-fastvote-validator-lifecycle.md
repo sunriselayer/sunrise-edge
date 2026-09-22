@@ -101,8 +101,8 @@ must never derive different active authority sets from local configuration.
   Declares which authorization class each Phase 2 mutation belongs to
   (local-operator-authorized vs. validator-authenticated vs. still-closed
   external ingress), states that the external ingress boundary remains
-  closed by default, and closes the Phase 2 gate entry in `TODO.md` and this
-  ADR index once Slices 1-3 are implemented and reviewed.
+  closed by default, and defines the companion implementation and review gate
+  that must land before the Phase 2 entry in `TODO.md` can close.
 
 **Phase 2 is not complete until DR-0134's implementation gate closes**, and FastVote overall
 remains incomplete until Phase 3 (bond-linked slashing execution and

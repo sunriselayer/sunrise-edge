@@ -66,6 +66,10 @@ does not repurpose `ReceiveVote`, `ReceiveCertificate`,
 to reject every non-`SubmitTransaction` event family through DR-0099's
 exhaustive fail-closed boundary.
 
+No existing canonical ID or byte encoding changes in this slice. In
+particular, the checked-in fast-vote and fast-path vector outputs remain
+byte-for-byte unchanged.
+
 No synthetic `LocalOperatorAuthorization` token is introduced. Without an
 operator identity and authenticator, a publicly constructible marker would be
 ceremony rather than authority. Local-operator trust remains an embedding and
@@ -98,18 +102,29 @@ cached as authorization.
 
 Slice 4, and therefore Phase 2, closes only when all of the following are true:
 
-1. Existing structured native ingress and epoch-sensitive queries use the
+1. Code contains one closed `FastVotePhase2Operation` inventory with exactly
+   the seven operations in the matrix. A wildcard-free exhaustive match maps
+   every operation to its exact invocation, validator-proof, and ingress
+   policy, and an exact matrix test asserts all seven rows. This classification
+   is typed metadata, not an operator credential or new externally callable
+   API.
+2. Existing structured native ingress and epoch-sensitive queries use the
    committed epoch as specified above, while mutation-time CAS fencing remains.
-2. A real `e -> e+1` test proves context, next-nonce, paid-policy, and
-   authenticated submission behavior follows `e+1`, while stale `e` input
-   fails closed.
-3. A transition racing ingress resolution cannot admit an old-epoch mutation.
-4. Every non-`SubmitTransaction` `NodeEventKind` remains rejected on every
+3. A real `e -> e+1` test proves context, next-nonce, paid-policy,
+   authenticated submission, and paid execution use and accept `e+1`, while
+   stale-`e` input is rejected. For an enabled opt-in profile, absence of its
+   policy at `e+1` makes the applicable query, submission, and paid execution
+   unavailable; none may fall back to the profile or policy from `e`.
+4. A transition racing ingress resolution cannot admit an old-epoch mutation.
+5. Every non-`SubmitTransaction` `NodeEventKind` remains rejected on every
    native router family, and no FastVote-specific route, CLI, or client surface
    exists.
-5. The existing unknown-signer, insufficient-quorum, wrong-epoch, and invalid
+6. The existing unknown-signer, insufficient-quorum, wrong-epoch, and invalid
    historical-evidence tests continue to prove the matrix's validator side.
-6. The complete repository gate and fresh focused security and tech-lead
+7. No canonical ID or byte encoding changes, and the exact outputs of
+   `scripts/fast-vote-vectors.mjs` and `scripts/fast-path-vectors.mjs` remain
+   unchanged.
+8. The complete repository gate and fresh focused security and tech-lead
    reviews pass on the integrated code and documentation.
 
 ## Consequences and deferred work

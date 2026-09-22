@@ -29,8 +29,9 @@ over the complete staged commit, durable exclusive owned-object version
 locks, quorum certificate verification, and atomic certificate apply
 (implemented and locally validated in
 [DR-0130](docs/architecture/decisions/0130-owned-object-certified-execution.md));
-phase 2, validator lifecycle, architecture fixed and delivered as four
-slices (epoch/validator-set transitions, equivocation evidence,
+phase 2, validator lifecycle, architecture fixed and organized as four
+slices, with slices 1-3 implemented and slice 4 conditional on its companion
+implementation (epoch/validator-set transitions, equivocation evidence,
 multi-validator fault/restart tests; slice 1, general mutation
 authorization/fencing, implemented in
 [DR-0131](docs/architecture/decisions/0131-fastvote-validator-lifecycle.md),
@@ -2623,7 +2624,7 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
   "Retired validator" means only absent from the committed current epoch's
   validator set after a certified transition; no locally mutable membership
   action exists, so every node derives authority from the same committed set.
-  Delivered as four slices, tracked here; phase 2 is not complete until
+  Tracked as four slices; phase 2 is not complete until
   DR-0134's implementation gate closes:
   - [x] **Slice 1 — general mutation authorization/fencing layer
     (implemented, 2026-09-22; see DR-0131's slice completion criteria).**
