@@ -132,6 +132,14 @@ pub const MAX_OUTBOX_LEASE_MILLIS: u64 = 5 * 60 * 1_000;
 /// design note on the `MAX_TRANSACTION_MANIFEST_ENTRIES`/
 /// `MAX_DURABLE_OBJECT_READS` envelope.
 const MAX_AUTHENTICATED_OBJECT_READS: usize = 32;
+/// DR-0131: worst-case extra reads the shared mutation fence adds to one
+/// authenticated `SubmitTransaction` commit, beyond its own declared
+/// application accesses -- the pending sender-nonce reservation, the
+/// singleton `FastPathEpochRecord`, the sender/epoch nonce lock, and one
+/// `FastPathLockRecord` per declared non-read object access (bounded by
+/// `MAX_AUTHENTICATED_OBJECT_READS`, since every non-read access is also a
+/// declared object access).
+const RESERVED_FASTPATH_FENCE_READS: usize = 1 + 1 + 1 + MAX_AUTHENTICATED_OBJECT_READS;
 /// Per-object body bound applied before any hashing or decode work, to both
 /// an inline body and a body fetched from a `BlobStore`.
 ///
@@ -5100,8 +5108,15 @@ where
     let nonce_prefix = layout.sender_nonce_prefix();
 
     if reservation.is_some() {
+        // DR-0131: beyond the pending sender-nonce read/write, the shared
+        // mutation fence below unconditionally CAS-asserts the committed
+        // epoch record and the sender/epoch nonce lock, and CAS-asserts one
+        // more lock per declared non-read object access. Reserve that same
+        // worst case here so a plan sitting at the advertised maximum cannot
+        // pass this check and then fail deeper inside `AtomicStateReadSet::new`.
         let maximum_application_accesses =
-            core::cmp::min(MAX_ATOMIC_STATE_READS, MAX_ATOMIC_STATE_WRITES).saturating_sub(1);
+            core::cmp::min(MAX_ATOMIC_STATE_READS, MAX_ATOMIC_STATE_WRITES)
+                .saturating_sub(RESERVED_FASTPATH_FENCE_READS);
         if plan.accesses().len() > maximum_application_accesses {
             return Err(NodeCoreError::TooManyStateAccesses {
                 count: plan.accesses().len(),

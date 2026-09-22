@@ -2083,7 +2083,7 @@ fn app_plan_at_max_atomic_state_writes_exceeds_reserved_nonce_capacity() {
         error,
         NodeCoreError::TooManyStateAccesses {
             count: MAX_ATOMIC_STATE_WRITES,
-            maximum: MAX_ATOMIC_STATE_WRITES - 1,
+            maximum: MAX_ATOMIC_STATE_WRITES - RESERVED_FASTPATH_FENCE_READS,
         }
     );
     assert_eq!(store.state_reads.load(Ordering::SeqCst), 0);
