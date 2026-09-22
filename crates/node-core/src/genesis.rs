@@ -850,7 +850,7 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
     }
     let mut seen_ids: BTreeSet<objects::ObjectId> = BTreeSet::new();
     let mut seen_bond_keys: BTreeSet<Vec<u8>> = BTreeSet::new();
-    let mut bond_records: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut bond_records: Vec<(Vec<u8>, FastPathBondRecord)> = Vec::new();
     for entry in &manifest.objects {
         if !seen_ids.insert(entry.object.id) {
             return Err(GenesisError::Invalid("duplicate genesis object id"));
@@ -996,7 +996,7 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
                 amount,
                 committed_at_checkpoint: checkpoint,
             };
-            bond_records.push((bond_key, encode_fastpath_bond_record(&bond_record)?));
+            bond_records.push((bond_key, bond_record));
         }
     }
 
@@ -1155,7 +1155,15 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
 
         // Re-derive every DR-0136 bond row from the signed manifest and
         // authenticated ABI. Restart never repairs a missing or changed row.
-        for (bond_key, expected_bytes) in &bond_records {
+        // The commitment checkpoint is not part of the signed manifest, so
+        // restart verification binds it to the already-installed marker's
+        // `installed_at_checkpoint` rather than this call's own checkpoint
+        // argument, which may legitimately differ after a lawful epoch
+        // advance.
+        for (bond_key, record) in &bond_records {
+            let mut expected_record: FastPathBondRecord = record.clone();
+            expected_record.committed_at_checkpoint = marker.installed_at_checkpoint;
+            let expected_bytes: Vec<u8> = encode_fastpath_bond_record(&expected_record)?;
             let observed: VersionedStateValue =
                 store.get_versioned_durable(context, domain, bond_key)?;
             if observed.value() != Some(expected_bytes.as_slice()) {
@@ -1315,10 +1323,11 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             StateReadAssertion::new(marker_key, StateRevision::INITIAL)?,
         ];
 
-        for (bond_key, bond_bytes) in &bond_records {
+        for (bond_key, record) in &bond_records {
+            let bond_bytes: Vec<u8> = encode_fastpath_bond_record(record)?;
             mutations.push(StateMutationEntry::new(
                 bond_key.clone(),
-                StateMutation::Put(bond_bytes.clone()),
+                StateMutation::Put(bond_bytes),
             )?);
             read_assertions.push(StateReadAssertion::new(
                 bond_key.clone(),
