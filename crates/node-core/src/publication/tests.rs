@@ -146,6 +146,19 @@ fn make_submission(
     nonce: u64,
     dependencies: Vec<UnverifiedDependencyRef>,
 ) -> PublicationSubmission {
+    make_submission_with_request_id(policy, seed, nonce, dependencies, [seed; 32])
+}
+/// Same as [`make_submission`], but with an explicitly chosen exact 32-byte
+/// request id, unlike `seed: u8` (which always fills all 32 bytes with the
+/// same repeated byte and so can never land inside the reserved fast-path
+/// synthetic namespace).
+fn make_submission_with_request_id(
+    policy: &LocalPublicationPolicy,
+    seed: u8,
+    nonce: u64,
+    dependencies: Vec<UnverifiedDependencyRef>,
+    request_id: [u8; 32],
+) -> PublicationSubmission {
     let key: SigningKey = signing_key();
     let publisher: [u8; 32] = VerificationKey::from(&key).into();
     let origin: PackageOrigin =
@@ -177,7 +190,7 @@ fn make_submission(
         unverified_dependencies: dependencies,
     })
     .unwrap();
-    signed_artifact(artifact, nonce, [seed; 32], &key)
+    signed_artifact(artifact, nonce, request_id, &key)
 }
 fn signed_artifact(
     artifact: CodeArtifact,
@@ -233,10 +246,37 @@ fn set_state<S: StructuredDurableDomainStateStore>(
     );
 }
 fn seed<S: StructuredDurableDomainStateStore>(store: &S, policy: &LocalPublicationPolicy) {
+    ensure_fastpath_epoch_installed(store);
     set_state(
         store,
         publication_policy_key(policy.context()).unwrap(),
         StateMutation::Put(policy.encode().unwrap()),
+    );
+}
+/// DR-0131: publication serializes against the singleton epoch record but
+/// keeps `policy.context.epoch()` as a historical selector, so one fixed
+/// chain-scoped record is enough for every fixture in this file.
+fn ensure_fastpath_epoch_installed<S: StructuredDurableDomainStateStore>(store: &S) {
+    set_state(
+        store,
+        local_instance_state::fastpath_epoch_record_key(resolver().chain_id()).unwrap(),
+        StateMutation::Put(
+            local_instance_state::encode_fastpath_epoch_record(
+                &local_instance_state::FastPathEpochRecord {
+                    current_epoch: Epoch::new(0),
+                    current_validator_set_digest: resolver()
+                        .hash_for_purpose(
+                            Epoch::new(0),
+                            HashPurpose::NodeEvent,
+                            b"publication-tests-fastpath-epoch-placeholder",
+                        )
+                        .unwrap(),
+                    previous_epoch: None,
+                    activated_at_checkpoint: 0,
+                },
+            )
+            .unwrap(),
+        ),
     );
 }
 fn nonce<S: StructuredDurableDomainStateStore>(store: &S, policy: &LocalPublicationPolicy) -> u64 {
@@ -656,6 +696,7 @@ fn failed_admission_leaves_no_publication_receipt_or_nonce() {
     let store: MemoryDurableStateStore =
         MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
     let policy: LocalPublicationPolicy = policy(0);
+    ensure_fastpath_epoch_installed(&store);
     let missing: PublicationSubmission = make_submission(&policy, 10, 0, vec![]);
     let submission: PublicationSubmission =
         make_submission(&policy, 11, 0, vec![reference(&missing)]);
@@ -699,6 +740,32 @@ fn failed_admission_leaves_no_publication_receipt_or_nonce() {
         publish(&store, &policy, missing),
         Err(PublicationAdmissionError::OriginExists)
     ));
+}
+
+/// DR-0131 criterion 7: the publication-submission event family rejects an
+/// externally supplied request id inside the reserved fast-path synthetic
+/// namespace, through the one shared validation boundary
+/// (`local_instance_state::reject_reserved_request_id`).
+#[test]
+fn reserved_request_id_is_rejected_before_any_state_read() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let policy: LocalPublicationPolicy = policy(0);
+    seed(&store, &policy);
+    let tag: [u8; 8] = crate::local_instance_state::FASTPATH_SYNTHETIC_REQUEST_ID_TAG;
+    let mut reserved_id: [u8; 32] = [0u8; 32];
+    reserved_id[..tag.len()].copy_from_slice(&tag);
+    let submission: PublicationSubmission =
+        make_submission_with_request_id(&policy, 12, 0, vec![], reserved_id);
+    assert!(matches!(
+        publish(&store, &policy, submission),
+        Err(PublicationAdmissionError::Node(
+            NodeCoreError::PersistenceInvariant(
+                "request id reserved for fast-path synthetic receipts"
+            )
+        ))
+    ));
+    assert_eq!(nonce(&store, &policy), 0);
 }
 
 #[test]
@@ -1484,6 +1551,7 @@ fn profile_four_policy_bytes_at_profile_three_key_are_rejected_by_legacy_path() 
     let store: MemoryDurableStateStore =
         MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
     let context: PublicationContext = policy(0).context().clone();
+    ensure_fastpath_epoch_installed(&store);
     let general_semantics: Digest32 =
         local_general_publication_semantics(&resolver(), &context).unwrap();
     let general: LocalPublicationPolicy =

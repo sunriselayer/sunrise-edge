@@ -81,6 +81,25 @@ fn local_app_profiles(enabled: bool, general: bool) -> Router {
             node_core::local_instance_state::execution_policy_key(policy.context()).unwrap(),
             policy.encode().unwrap(),
         ),
+        (
+            node_core::local_instance_state::fastpath_epoch_record_key(context().chain_id())
+                .unwrap(),
+            node_core::local_instance_state::encode_fastpath_epoch_record(
+                &node_core::local_instance_state::FastPathEpochRecord {
+                    current_epoch: context().epoch(),
+                    current_validator_set_digest: resolver()
+                        .hash_for_purpose(
+                            context().epoch(),
+                            protocol_types::HashPurpose::NodeEvent,
+                            b"native-http-local-execution-tests-fastpath-epoch-placeholder",
+                        )
+                        .unwrap(),
+                    previous_epoch: None,
+                    activated_at_checkpoint: 0,
+                },
+            )
+            .unwrap(),
+        ),
     ];
     if general {
         entries.push((
@@ -775,6 +794,7 @@ fn seed_historical_publication() -> (
         StorageDeadline::new(u64::MAX).unwrap(),
         StorageCorrelationId::new([9; 16]).unwrap(),
     );
+    install_fastpath_epoch_record(store.as_ref(), &operation, domain);
     let policy_key =
         publication_policy_key_for_profile(&historical_context, historical_policy.profile())
             .unwrap();

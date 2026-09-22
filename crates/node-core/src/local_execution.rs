@@ -245,6 +245,8 @@ pub fn handle_local_execution<
         authenticate_local_execution(resolver, policy, signed_bytes)?;
     let intent: &LocalExecutionIntent = authenticated.intent();
     let call = &intent.call;
+    local_instance_state::reject_reserved_request_id(&call.request_id)
+        .map_err(LocalExecutionAdmissionError::Invalid)?;
     let event_digest: Digest32 = local_execution_event_digest(resolver, authenticated.signed())?;
     let request_id: RequestId = RequestId::new(call.request_id)?;
     if let Some(output) =
@@ -268,6 +270,30 @@ pub fn handle_local_execution<
         },
     )?;
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    // DR-0131: CAS-fence the committed epoch record and reject a request
+    // bound to a non-current epoch before any lock, execution, or mutation.
+    mutation_fence::fence_current_epoch(
+        store,
+        context,
+        domain,
+        call.context.chain_id(),
+        call.context.epoch(),
+        &mut reads,
+    )?;
+    // DR-0131: honor a sender/epoch nonce a pending fast-path prepare already
+    // holds locked, before this direct path can advance the same sequence.
+    mutation_fence::fence_sender_nonce_lock(
+        store,
+        context,
+        domain,
+        call.context.chain_id(),
+        &call.sender,
+        call.context.epoch(),
+        &call.request_id,
+        call.nonce,
+        mutation_fence::LockMode::Fresh,
+        &mut reads,
+    )?;
     let observed: VersionedStateValue = read_state(
         store,
         context,
@@ -386,6 +412,22 @@ pub fn handle_local_execution<
     let mut total_bytes: usize = 0;
     let mut object_resolvers: BTreeMap<ObjectId, &HashSuiteResolver> = BTreeMap::new();
     for (entry, param) in call.access.entries.iter().zip(binding.objects()) {
+        // DR-0131: a `Write`/`Consume` input already exclusively locked by a
+        // pending fast-path certificate blocks this direct mutation branch,
+        // closing the gap DR-0130's own evidence did not cover.
+        if entry.mode != AccessMode::Read {
+            mutation_fence::fence_object_lock(
+                store,
+                context,
+                domain,
+                call.context.chain_id(),
+                &entry.object_ref,
+                &call.request_id,
+                call.context.epoch(),
+                mutation_fence::LockMode::Fresh,
+                &mut reads,
+            )?;
+        }
         let snapshot: object_snapshots::ObjectSnapshot = object_snapshots::load_object_snapshot(
             store,
             blob_store,

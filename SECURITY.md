@@ -97,6 +97,17 @@ certification.
   bounded.
 - Unknown algorithms, versions, event kinds, modules, encodings, and policies
   must fail closed without downgrade or fallback.
+- FastVote mutation paths must fence a non-current epoch, a validator absent
+  from the one committed active validator set, and a conflicting object or
+  sender/epoch nonce lock before any lock, execution, or mutation. Validator
+  membership must never be locally, unilaterally mutable by a single node;
+  it changes only through a certified state transition every node observes
+  identically. Implemented by
+  [DR-0131](docs/architecture/decisions/0131-fastvote-validator-lifecycle.md)
+  slice 1: there is no post-genesis local action that changes the active
+  set yet, so retired-validator/wrong-epoch rejection have no end-to-end
+  observable effect beyond genesis-set membership until slice 2's epoch
+  transition exists; see the "Initial-Audit Exclusions" below.
 
 ## Reportable Findings and Severity Context
 
@@ -124,13 +135,20 @@ confirmed vulnerability.
 
 The following are deferred from the first audit engagement:
 
-- externally reachable FastVote/FastCertificate ingress, validator lifecycle,
-  and economics/security completion (the local Phase 1 certified-execution
-  boundary and atomic certificate publication are implemented under
-  [DR-0130](docs/architecture/decisions/0130-owned-object-certified-execution.md),
-  but Phase 2 validator-set transitions/recovery and Phase 3 slashing/reward
-  distribution remain deferred — see `TODO.md`'s FastVote Certified Execution
-  Gate);
+- externally reachable FastVote/FastCertificate ingress, validator lifecycle
+  completion, and economics/security completion (the local Phase 1
+  certified-execution boundary and atomic certificate publication are
+  implemented under
+  [DR-0130](docs/architecture/decisions/0130-owned-object-certified-execution.md);
+  Phase 2's architecture is fixed and slice 1's general mutation-fencing
+  layer is implemented under
+  [DR-0131](docs/architecture/decisions/0131-fastvote-validator-lifecycle.md),
+  still with no externally reachable ingress; Phase 2 slices 2-4 (epoch
+  transition, equivocation evidence, and authorization-class/ingress
+  declaration) remain unimplemented, with their safety contract fixed by
+  DR-0131 and detailed wire/API decisions pending, and Phase 3
+  slashing/reward distribution remains undesigned — see `TODO.md`'s
+  FastVote Certified Execution Gate);
 - externally accepted non-`SubmitTransaction` event families;
 - production multi-validator consensus activation;
 - checkpoint/state-root publication and verified restore;

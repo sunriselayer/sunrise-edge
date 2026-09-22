@@ -722,8 +722,12 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             })
         })
         .collect::<Result<Vec<ValidatorInfo>, GenesisError>>()?;
-    let _: ValidatorSet = ValidatorSet::new(manifest_context.epoch(), validator_info)
-        .map_err(|_| GenesisError::Invalid("invalid genesis fast-path validator set"))?;
+    let genesis_validator_set: ValidatorSet =
+        ValidatorSet::new(manifest_context.epoch(), validator_info)
+            .map_err(|_| GenesisError::Invalid("invalid genesis fast-path validator set"))?;
+    let genesis_validator_set_digest: Digest32 = genesis_validator_set
+        .digest(resolver)
+        .map_err(|_| GenesisError::Invalid("genesis fast-path validator set digest"))?;
     if manifest
         .publication
         .request()
@@ -907,6 +911,11 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
     let fee_policy_key: Vec<u8> = local_instance_state::paid_fee_policy_key(manifest_context)?;
     let validator_set_key: Vec<u8> =
         local_instance_state::fastpath_validator_set_key(manifest_context)?;
+    // DR-0131: the committed epoch record is created once, atomically with
+    // this genesis validator-set activation, extending this existing
+    // genesis-install commit rather than adding a second one.
+    let epoch_record_key: Vec<u8> =
+        local_instance_state::fastpath_epoch_record_key(manifest_context.chain_id())?;
 
     let publication_policy: LocalPublicationPolicy =
         LocalPublicationPolicy::object_results(manifest_context.clone(), publication_semantics);
@@ -915,6 +924,14 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
     let fee_policy_bytes: Vec<u8> = encode_paid_fee_policy(&manifest.fee_policy)?;
     let validator_set_bytes: Vec<u8> =
         encode_fastpath_validator_set_record(&manifest.validator_set)?;
+    let epoch_record_bytes: Vec<u8> = local_instance_state::encode_fastpath_epoch_record(
+        &local_instance_state::FastPathEpochRecord {
+            current_epoch: manifest_context.epoch(),
+            current_validator_set_digest: genesis_validator_set_digest,
+            previous_epoch: None,
+            activated_at_checkpoint: checkpoint,
+        },
+    )?;
     let instance_bytes: Vec<u8> = encode_instance_record(&instance_record)?;
     let publication_bytes: Vec<u8> = encode_publication_submission(&manifest.publication)?;
     let publication_event_digest: Digest32 = resolver.hash_for_purpose(
@@ -1014,6 +1031,15 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             ));
         }
 
+        // Verify the committed DR-0131 epoch record.
+        let obs: VersionedStateValue =
+            store.get_versioned_durable(context, domain, &epoch_record_key)?;
+        if obs.value() != Some(epoch_record_bytes.as_slice()) {
+            return Err(GenesisError::TamperedInstalledRecord(
+                "fast-path epoch record",
+            ));
+        }
+
         // Verify initialized objects and authorities.
         for entry in &manifest.objects {
             let auth_key: Vec<u8> = local_instance_state::object_authority_key(entry.object.id);
@@ -1086,6 +1112,7 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             ("execution_policy", &exec_policy_key),
             ("fee_policy", &fee_policy_key),
             ("fastpath_validator_set", &validator_set_key),
+            ("fastpath_epoch_record", &epoch_record_key),
         ] {
             let obs: VersionedStateValue = store.get_versioned_durable(context, domain, key)?;
             if obs.value().is_some() || obs.revision() != StateRevision::INITIAL {
@@ -1137,6 +1164,10 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
                 validator_set_key.clone(),
                 StateMutation::Put(validator_set_bytes),
             )?,
+            StateMutationEntry::new(
+                epoch_record_key.clone(),
+                StateMutation::Put(epoch_record_bytes),
+            )?,
             StateMutationEntry::new(marker_key.clone(), StateMutation::Put(marker_bytes))?,
         ];
         let mut read_assertions: Vec<StateReadAssertion> = vec![
@@ -1147,6 +1178,7 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             StateReadAssertion::new(exec_policy_key, StateRevision::INITIAL)?,
             StateReadAssertion::new(fee_policy_key, StateRevision::INITIAL)?,
             StateReadAssertion::new(validator_set_key, StateRevision::INITIAL)?,
+            StateReadAssertion::new(epoch_record_key, StateRevision::INITIAL)?,
             StateReadAssertion::new(marker_key, StateRevision::INITIAL)?,
         ];
 

@@ -73,10 +73,8 @@ use local_execution::{
     scopes, validate_authority, validate_closure,
 };
 use local_instance_state::{
-    FastPathLockRecord, FastPathNonceLockRecord, decode_fastpath_lock_record,
-    decode_fastpath_nonce_lock_record, execution_policy_key_for_profile, fastpath_lock_key,
-    fastpath_nonce_lock_key, instance_record_key, is_reserved_paid_request_id,
-    object_authority_key, paid_fee_policy_key,
+    execution_policy_key_for_profile, instance_record_key, object_authority_key,
+    paid_fee_policy_key,
 };
 use publication::{PublicationAdmissionError, PublicationLoadBudget};
 
@@ -417,20 +415,43 @@ pub(crate) fn authenticate_and_identify(
 ) -> PaidResult<(AuthenticatedPaidIntent, Digest32, RequestId)> {
     let authenticated: AuthenticatedPaidIntent =
         authenticate_paid_intent(resolver, expected, signed_bytes)?;
-    if is_reserved_paid_request_id(&authenticated.intent().request_id) {
-        return invalid("request id reserved for fast-path synthetic receipts");
-    }
+    local_instance_state::reject_reserved_request_id(&authenticated.intent().request_id)
+        .map_err(PaidExecutionAdmissionError::Invalid)?;
     let event_digest: Digest32 = paid_invocation_digest(resolver, authenticated.signed())?;
     let request_id: RequestId = RequestId::new(authenticated.intent().request_id)?;
     Ok((authenticated, event_digest, request_id))
 }
 
+/// Translates paid admission's own [`NonceMode`] into the shared
+/// [`mutation_fence::LockMode`] every mutation path fences through.
+const fn lock_mode(nonce_mode: NonceMode) -> mutation_fence::LockMode {
+    match nonce_mode {
+        NonceMode::Fresh => mutation_fence::LockMode::Fresh,
+        NonceMode::PreparedApply => mutation_fence::LockMode::OwnedByRequest,
+    }
+}
+
+/// Preserves this module's pre-existing `Invalid(&'static str)` shape for a
+/// shared fence's fail-closed rejection message, rather than exposing every
+/// caller to the newly shared [`NodeCoreError::PersistenceInvariant`]
+/// wrapping: every one of this module's own lock-conflict messages was, and
+/// remains, an [`PaidExecutionAdmissionError::Invalid`].
+fn fence_lock_result<T>(result: Result<T, NodeCoreError>) -> PaidResult<T> {
+    result.map_err(|error| match error {
+        NodeCoreError::PersistenceInvariant(message) => {
+            PaidExecutionAdmissionError::Invalid(message)
+        }
+        other => PaidExecutionAdmissionError::Node(other),
+    })
+}
+
 /// Reads, and validates ownership of, the fast-path lock row for one input
-/// object. A lock owned by a different request id fails closed: an
-/// in-flight prepare's exclusive inputs can never be reused by a direct
-/// commit, by a different prepare, or (because ownership binds to the
-/// original request id, unaffected by [`NonceMode`]) by anything other than
-/// that same request's own certificate apply.
+/// object, through the DR-0131 shared fence
+/// ([`mutation_fence::fence_object_lock`]). A lock owned by a different
+/// request id fails closed: an in-flight prepare's exclusive inputs can
+/// never be reused by a direct commit, by a different prepare, or (because
+/// ownership binds to the original request id, unaffected by [`NonceMode`])
+/// by anything other than that same request's own certificate apply.
 #[allow(clippy::too_many_arguments)]
 fn check_object_lock<S: StructuredDurableDomainStateStore>(
     store: &S,
@@ -439,29 +460,29 @@ fn check_object_lock<S: StructuredDurableDomainStateStore>(
     chain: &ChainId,
     object_ref: &ObjectRef,
     current_request_id: &[u8; 32],
+    current_epoch: Epoch,
     nonce_mode: NonceMode,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> PaidResult<()> {
-    let key: Vec<u8> = fastpath_lock_key(chain, object_ref.id)?;
-    let observed: VersionedStateValue = read_state(store, context, domain, key, reads)?;
-    match (nonce_mode, observed.value()) {
-        (NonceMode::Fresh, None) => Ok(()),
-        (NonceMode::Fresh, Some(_)) => invalid("object locked by a pending fast-path certificate"),
-        (NonceMode::PreparedApply, Some(bytes)) => {
-            let lock: FastPathLockRecord = decode_fastpath_lock_record(bytes)?;
-            if &lock.request_id != current_request_id || &lock.object != object_ref {
-                return invalid("fast-path apply does not own the exact object lock");
-            }
-            Ok(())
-        }
-        (NonceMode::PreparedApply, None) => invalid("fast-path apply object lock absent"),
-    }
+    fence_lock_result(mutation_fence::fence_object_lock(
+        store,
+        context,
+        domain,
+        chain,
+        object_ref,
+        current_request_id,
+        current_epoch,
+        lock_mode(nonce_mode),
+        reads,
+    ))
 }
 
-/// Reconciles the sender/epoch nonce lock with the admission mode. Fresh
-/// direct/prepare calls require absence; certificate apply requires the exact
-/// locally prepared request and nonce. The ordinary nonce row is separately
-/// read by `reserve_sender_nonce` and remains unchanged until final apply.
+/// Reconciles the sender/epoch nonce lock with the admission mode, through
+/// the DR-0131 shared fence ([`mutation_fence::fence_sender_nonce_lock`]).
+/// Fresh direct/prepare calls require absence; certificate apply requires
+/// the exact locally prepared request and nonce. The ordinary nonce row is
+/// separately read by `reserve_sender_nonce` and remains unchanged until
+/// final apply.
 fn check_nonce_lock<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
@@ -470,28 +491,18 @@ fn check_nonce_lock<S: StructuredDurableDomainStateStore>(
     nonce_mode: NonceMode,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> PaidResult<()> {
-    let key: Vec<u8> = fastpath_nonce_lock_key(
+    fence_lock_result(mutation_fence::fence_sender_nonce_lock(
+        store,
+        context,
+        domain,
         intent.context.chain_id(),
         &intent.sender,
         intent.context.epoch(),
-    )?;
-    let observed: VersionedStateValue = read_state(store, context, domain, key, reads)?;
-    match (nonce_mode, observed.value()) {
-        (NonceMode::Fresh, None) => Ok(()),
-        (NonceMode::Fresh, Some(_)) => invalid("sender nonce locked by a pending fast path"),
-        (NonceMode::PreparedApply, Some(bytes)) => {
-            let lock: FastPathNonceLockRecord = decode_fastpath_nonce_lock_record(bytes)?;
-            if lock.request_id != intent.request_id
-                || lock.sender != intent.sender
-                || lock.epoch != intent.context.epoch()
-                || lock.nonce != intent.nonce
-            {
-                return invalid("fast-path apply does not own the exact nonce lock");
-            }
-            Ok(())
-        }
-        (NonceMode::PreparedApply, None) => invalid("fast-path apply nonce lock absent"),
-    }
+        &intent.request_id,
+        intent.nonce,
+        lock_mode(nonce_mode),
+        reads,
+    ))
 }
 
 /// Steps 2..7 plus the effect-translation half of step 8: authenticated,
@@ -543,6 +554,18 @@ pub(crate) fn build_paid_admission<
     // 4. Installed profile-four base policy and installed paid fee policy, as
     //    exact stored bytes. A missing or different value fails closed.
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    // DR-0131: CAS-fence the committed epoch record and reject a request
+    // bound to a non-current epoch before any lock, execution, or mutation.
+    // Shared unchanged by the direct commit path and both fast-path entry
+    // points, since both call this function.
+    mutation_fence::fence_current_epoch(
+        store,
+        context,
+        domain,
+        intent.context.chain_id(),
+        intent.context.epoch(),
+        &mut reads,
+    )?;
     check_nonce_lock(store, context, domain, intent, nonce_mode, &mut reads)?;
     if base_policy.profile() != execution::GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION {
         return invalid("paid execution requires the profile-four base policy");
@@ -826,6 +849,20 @@ pub(crate) fn build_paid_admission<
     let mut object_resolvers: BTreeMap<ObjectId, &HashSuiteResolver> = BTreeMap::new();
     let mut locked_objects: Vec<ObjectRef> = Vec::new();
     for (reference, mode) in &order {
+        // Reject a held lock from durable state before any object head/body
+        // I/O. Certificate apply additionally proves the lock was acquired
+        // by this exact request in this exact committed epoch.
+        check_object_lock(
+            store,
+            context,
+            domain,
+            intent.context.chain_id(),
+            reference,
+            &current_request_id,
+            intent.context.epoch(),
+            nonce_mode,
+            &mut reads,
+        )?;
         let snapshot: object_snapshots::ObjectSnapshot = object_snapshots::load_object_snapshot(
             store,
             blob_store,
@@ -838,18 +875,6 @@ pub(crate) fn build_paid_admission<
         if snapshot.object.owner != Owner::Address(Address::new(intent.sender)) {
             return invalid("paid inputs require sender address ownership");
         }
-        // DR-0130: fail closed on an input another in-flight fast-path
-        // prepare already holds an exclusive lock on.
-        check_object_lock(
-            store,
-            context,
-            domain,
-            intent.context.chain_id(),
-            reference,
-            &current_request_id,
-            nonce_mode,
-            &mut reads,
-        )?;
         let digest: Digest32 = match &snapshot.head {
             DurableObjectHead::Current { digest, .. } => *digest,
             _ => return invalid("locked object head not current"),

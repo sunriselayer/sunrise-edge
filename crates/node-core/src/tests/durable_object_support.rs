@@ -62,7 +62,7 @@ struct ScriptedDurableStore {
 
 impl ScriptedDurableStore {
     fn new(commit_outcome: DurableCommitOutcome) -> Self {
-        Self {
+        let store: Self = Self {
             receipt: Mutex::new(None),
             commits: Mutex::new(Vec::new()),
             state_reads: AtomicUsize::new(0),
@@ -71,7 +71,14 @@ impl ScriptedDurableStore {
             object_versions: Mutex::new(BTreeMap::new()),
             commit_outcome,
             preloaded: Mutex::new(BTreeMap::new()),
-        }
+        };
+        // Authenticated `SubmitTransaction` tests use this store as their
+        // standard committed-state fixture. Genesis now always installs the
+        // DR-0131 epoch singleton, so mirror that production invariant once
+        // here instead of letting dozens of unrelated branch tests fail at
+        // the new lifecycle fence before reaching their intended assertion.
+        preload_fastpath_epoch_record(&store, "sunrise-test", Epoch::new(7));
+        store
     }
 
     /// Scripts a fixed read response for one exact key, overriding the
@@ -355,6 +362,7 @@ fn commit_memory_inline_object_with_protocol_version(
     created_checkpoint: u64,
     receipt_byte: u8,
 ) -> ObjectRef {
+    ensure_fastpath_epoch_record(store, context, object_domain, chain, Epoch::new(7));
     let object_id: ObjectId = object.id;
     let object_version: u64 = object.version;
     let owner: Owner = object.owner.clone();
@@ -400,6 +408,100 @@ fn commit_memory_inline_object_with_protocol_version(
         version: object_version,
         digest,
     }
+}
+
+/// DR-0131: the live owned-effects `SubmitTransaction` path now fences the
+/// singleton `FastPathEpochRecord`. Scripts a fixed read response for it on
+/// a [`ScriptedDurableStore`], matching `preload`'s own convention.
+fn preload_fastpath_epoch_record(store: &ScriptedDurableStore, chain: &str, epoch: Epoch) {
+    let chain_id: ChainId = ChainId::new(chain).unwrap();
+    let key: Vec<u8> = local_instance_state::fastpath_epoch_record_key(&chain_id).unwrap();
+    let record = local_instance_state::FastPathEpochRecord {
+        current_epoch: epoch,
+        current_validator_set_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0u8; 32]),
+        previous_epoch: None,
+        activated_at_checkpoint: 0,
+    };
+    store.preload(
+        key,
+        StateRevision::INITIAL.checked_next().unwrap(),
+        local_instance_state::encode_fastpath_epoch_record(&record).unwrap(),
+    );
+}
+
+/// Same as [`preload_fastpath_epoch_record`], but durably committed on a real
+/// [`MemoryDurableStateStore`] at the exact domain the caller's own admission
+/// call resolves to.
+fn commit_fastpath_epoch_record(
+    store: &MemoryDurableStateStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain: &str,
+    epoch: Epoch,
+) {
+    let chain_id: ChainId = ChainId::new(chain).unwrap();
+    let key: Vec<u8> = local_instance_state::fastpath_epoch_record_key(&chain_id).unwrap();
+    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key).unwrap();
+    let record = local_instance_state::FastPathEpochRecord {
+        current_epoch: epoch,
+        current_validator_set_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0u8; 32]),
+        previous_epoch: None,
+        activated_at_checkpoint: 0,
+    };
+    let bytes: Vec<u8> = local_instance_state::encode_fastpath_epoch_record(&record).unwrap();
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain,
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(key, StateMutation::Put(bytes)).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(context, transaction),
+        DurableCommitOutcome::Committed
+    );
+}
+
+/// Installs the genesis lifecycle record only when a fixture has not already
+/// selected an explicit current epoch of its own.
+fn ensure_fastpath_epoch_record(
+    store: &MemoryDurableStateStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain: &str,
+    epoch: Epoch,
+) {
+    let chain_id: ChainId = ChainId::new(chain).unwrap();
+    let key: Vec<u8> = local_instance_state::fastpath_epoch_record_key(&chain_id).unwrap();
+    if store
+        .get_versioned_durable(context, domain, &key)
+        .unwrap()
+        .value()
+        .is_none()
+    {
+        commit_fastpath_epoch_record(store, context, domain, chain, epoch);
+    }
+}
+
+/// Production-like in-memory fixture for authenticated transaction tests:
+/// genesis has already installed the chain's current epoch singleton in the
+/// same placement domain the test will commit through.
+fn memory_store_with_fastpath_epoch(domain: AtomicityDomainId) -> MemoryDurableStateStore {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    commit_fastpath_epoch_record(
+        &store,
+        &durable_context(),
+        domain,
+        "sunrise-test",
+        Epoch::new(7),
+    );
+    store
 }
 
 struct OwnedObjectEffectMachine {

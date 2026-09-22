@@ -64,6 +64,49 @@ const TEST_STATE_TYPE_ID: u16 = 0xEF11;
 const TEST_PAYLOAD_TYPE_ID: u16 = 0xEF12;
 static NEXT_DATABASE_PATH: AtomicU64 = AtomicU64::new(0);
 
+/// Mirrors the genesis lifecycle singleton required by every authenticated
+/// `SubmitTransaction` mutation path after DR-0131.
+fn install_fastpath_epoch_record<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    operation: &DurableOperationContext,
+    domain: AtomicityDomainId,
+) {
+    let chain: ChainId = ChainId::new("sunrise-test").unwrap();
+    let key: Vec<u8> = node_core::local_instance_state::fastpath_epoch_record_key(&chain).unwrap();
+    let observed: VersionedStateValue = store
+        .get_versioned_durable(operation, domain, &key)
+        .unwrap();
+    let record: node_core::local_instance_state::FastPathEpochRecord =
+        node_core::local_instance_state::FastPathEpochRecord {
+            current_epoch: Epoch::new(7),
+            current_validator_set_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0u8; 32]),
+            previous_epoch: None,
+            activated_at_checkpoint: 0,
+        };
+    let bytes: Vec<u8> =
+        node_core::local_instance_state::encode_fastpath_epoch_record(&record).unwrap();
+    if let Some(existing) = observed.value() {
+        assert_eq!(existing, bytes.as_slice());
+        return;
+    }
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain,
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(key, StateMutation::Put(bytes)).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(operation, transaction),
+        DurableCommitOutcome::Committed
+    );
+}
+
 struct TestDatabase {
     path: PathBuf,
 }
@@ -611,6 +654,7 @@ fn commit_owned_object<S>(
 where
     S: IndexedOutboxRepository,
 {
+    install_fastpath_epoch_record(store, context, domain);
     let object_id = object.id;
     let object_version = object.version;
     let owner = object.owner.clone();
@@ -719,6 +763,7 @@ fn commit_owned_blob_object<S>(
 where
     S: IndexedOutboxRepository,
 {
+    install_fastpath_epoch_record(store, context, domain);
     let object_id = object.id;
     let object_version = object.version;
     let owner = object.owner.clone();
@@ -1984,6 +2029,7 @@ async fn structured_route_authenticates_submit_before_commit_and_replay() {
     let config = config();
     let machine = Arc::new(CountingMachine::new(config.state_key()));
     let domain = AtomicityDomainId::new([0x86; 32]).unwrap();
+    install_fastpath_epoch_record(store.as_ref(), &live_operation_context(fence, 0xF1), domain);
     let app = structured_durable_router(
         StructuredDurableNativeComponents::new(
             Arc::clone(&store),
@@ -2063,6 +2109,8 @@ async fn structured_event_route_rejects_excess_blocking_work_without_blocking_li
     });
     let blocking_executor: NativeBlockingExecutor =
         NativeBlockingExecutor::new(NativeBlockingPolicy::new(NonZeroUsize::new(1).unwrap()));
+    let domain: AtomicityDomainId = AtomicityDomainId::new([0x8B; 32]).unwrap();
+    install_fastpath_epoch_record(store.as_ref(), &live_operation_context(fence, 0xF2), domain);
     let app: Router = structured_durable_router_with_executor(
         StructuredDurableNativeComponents::new(
             store,
@@ -2071,7 +2119,7 @@ async fn structured_event_route_rejects_excess_blocking_work_without_blocking_li
             Arc::new(ManualClock::new(10_000)),
             Arc::new(SequenceIndexedIdentities::default()),
         ),
-        active_protocol_config(AtomicityDomainId::new([0x8B; 32]).unwrap()),
+        active_protocol_config(domain),
         structured_request_authority(),
         config,
         resolver(),
@@ -4057,6 +4105,8 @@ async fn structured_route_ignores_cancellation_after_storage_dispatch_begins() {
     let fence: WriterFenceGeneration = WriterFenceGeneration::new(3).unwrap();
     let inner: MemoryDurableStateStore = MemoryDurableStateStore::new(fence);
     inner.set_time(10_000);
+    let domain: AtomicityDomainId = AtomicityDomainId::new([0x85; 32]).unwrap();
+    install_fastpath_epoch_record(&inner, &live_operation_context(fence, 0xF3), domain);
     let cancellation: Arc<ManualCancellation> = Arc::new(ManualCancellation::default());
     let store: Arc<CancelOnFirstReceiptReadStore> = Arc::new(CancelOnFirstReceiptReadStore::new(
         inner,
@@ -4064,7 +4114,6 @@ async fn structured_route_ignores_cancellation_after_storage_dispatch_begins() {
     ));
     let transport: Arc<MemoryTransport> = Arc::new(MemoryTransport::default());
     let config: NodeConfig = config();
-    let domain: AtomicityDomainId = AtomicityDomainId::new([0x85; 32]).unwrap();
     let protocol_config: ProtocolConfig = active_protocol_config(domain);
     let id: RequestId = request_id(0x35);
     let signing_key: ed25519_zebra::SigningKey = dev_signing_key(0x35);
@@ -4120,6 +4169,7 @@ async fn structured_route_commits_and_claims_only_the_exact_request() {
     let config = config();
     let placement = placement(0x81, 7);
     let domain = placement.domain();
+    install_fastpath_epoch_record(store.as_ref(), &live_operation_context(fence, 0xF4), domain);
     let machine = IncrementMachine::new(config.state_key());
     let older_request_id = request_id(0x21);
     let older_context = DurableOperationContext::new(
@@ -4210,11 +4260,12 @@ async fn structured_route_never_sends_an_unreconciled_request_claim() {
     let fence = WriterFenceGeneration::new(3).unwrap();
     let inner = MemoryDurableStateStore::new(fence);
     inner.set_time(10_000);
+    let placement = placement(0x82, 7);
+    let domain = placement.domain();
+    install_fastpath_epoch_record(&inner, &live_operation_context(fence, 0xF5), domain);
     let store = Arc::new(IndeterminateRequestClaimStore::new(inner));
     let transport = Arc::new(MemoryTransport::default());
     let config = config();
-    let placement = placement(0x82, 7);
-    let domain = placement.domain();
     let protocol_config = active_protocol_config(domain);
     let id = request_id(0x23);
     let signing_key: ed25519_zebra::SigningKey = dev_signing_key(0x23);
@@ -7145,6 +7196,7 @@ async fn receipt_and_next_nonce_routes_reflect_a_real_submission() {
     let transport = Arc::new(MemoryTransport::default());
     let config = config();
     let domain = AtomicityDomainId::new([0xE8; 32]).unwrap();
+    install_fastpath_epoch_record(store.as_ref(), &live_operation_context(fence, 0xF6), domain);
     let protocol_config = active_protocol_config(domain);
     let app = structured_app(
         Arc::clone(&store),

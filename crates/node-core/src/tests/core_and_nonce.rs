@@ -872,6 +872,32 @@ fn authenticate_submit_transaction_event_rejects_wrong_kind() {
     assert_eq!(error, NodeCoreError::ExpectedSubmitTransaction);
 }
 
+/// DR-0131 criterion 7: the `SubmitTransaction` event family -- the one
+/// shared external admission boundary for the read-only, owned-mutations,
+/// and preinstalled-WASM entrypoints alike -- rejects an externally
+/// supplied request id inside the reserved fast-path synthetic namespace,
+/// before any inner-transaction authentication or storage work.
+#[test]
+fn authenticate_submit_transaction_event_rejects_reserved_request_id() {
+    let config = config("sunrise-test");
+    let protocol_config = active_protocol_config(0xD9);
+    let tag: [u8; 8] = local_instance_state::FASTPATH_SYNTHETIC_REQUEST_ID_TAG;
+    let mut reserved_id: [u8; 32] = [0u8; 32];
+    reserved_id[..tag.len()].copy_from_slice(&tag);
+
+    let error = authenticate_submit_transaction_event(
+        submit_event("sunrise-test", RequestId::new(reserved_id).unwrap()),
+        &config,
+        &protocol_config,
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        NodeCoreError::PersistenceInvariant("request id reserved for fast-path synthetic receipts")
+    ));
+}
+
 #[test]
 fn authenticate_submit_transaction_event_rejects_protocol_config_version_mismatch() {
     let config = config("sunrise-test");
@@ -939,9 +965,9 @@ fn authenticate_submit_transaction_event_happy_path_authenticates_transaction() 
 
     assert_eq!(resolved.domain(), domain(0xD7));
     assert_eq!(machine.calls.load(Ordering::SeqCst), 1);
-    // One read for the sender-nonce record and one for the machine's
-    // single declared application state key.
-    assert_eq!(store.state_reads.load(Ordering::SeqCst), 2);
+    // Sender nonce, committed epoch, fast-path nonce lock, then the machine's
+    // one application state key.
+    assert_eq!(store.state_reads.load(Ordering::SeqCst), 4);
     let commits = store.commits.lock().unwrap();
     assert_eq!(commits.len(), 1);
     let state = commits[0].state().unwrap();
@@ -967,6 +993,110 @@ fn authenticate_submit_transaction_event_happy_path_authenticates_transaction() 
     }
 }
 
+/// DR-0131: the established object-read-only `SubmitTransaction` entrypoint
+/// still advances a sender nonce, so it must honor a fast-path prepare's
+/// sender/epoch nonce lock even though it never mutates an object.
+#[test]
+fn authenticated_read_only_submit_honors_fastpath_nonce_lock() {
+    let store: ScriptedDurableStore = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+    let node_config: NodeConfig = config("sunrise-test");
+    let protocol_config: ProtocolConfig = active_protocol_config(0xE0);
+    let signing_key: SigningKey = dev_signing_key(0x90);
+    let sender: [u8; 32] = *dev_sender_address(&signing_key).as_bytes();
+    let epoch: Epoch = Epoch::new(7);
+    let chain: ChainId = ChainId::new("sunrise-test").unwrap();
+    let lock_key: Vec<u8> =
+        local_instance_state::fastpath_nonce_lock_key(&chain, &sender, epoch).unwrap();
+    let lock: local_instance_state::FastPathNonceLockRecord =
+        local_instance_state::FastPathNonceLockRecord {
+            request_id: [0x33; 32],
+            sender,
+            epoch,
+            nonce: 0,
+        };
+    store.preload(
+        lock_key,
+        StateRevision::INITIAL.checked_next().unwrap(),
+        local_instance_state::encode_fastpath_nonce_lock_record(&lock).unwrap(),
+    );
+    let submission: AuthenticatedSubmitTransaction = authenticated_submission(
+        "sunrise-test",
+        request(0xD9),
+        &signing_key,
+        epoch,
+        0,
+        &node_config,
+        &protocol_config,
+    );
+    let machine: IdempotentMachine = IdempotentMachine {
+        calls: AtomicUsize::new(0),
+    };
+
+    let error: NodeCoreError = handle_authenticated_resolved_durable_submit_transaction(
+        &MemoryBlobStore::default(),
+        &store,
+        &durable_context(),
+        &resolver("sunrise-test"),
+        submission,
+        &machine,
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        NodeCoreError::PersistenceInvariant("sender nonce locked by a pending fast path")
+    );
+    assert_eq!(machine.calls.load(Ordering::SeqCst), 0);
+    assert!(store.commits.lock().unwrap().is_empty());
+}
+
+/// DR-0131 criterion 4: the established object-read-only `SubmitTransaction`
+/// entrypoint rejects a request bound to a non-current epoch before any
+/// lock, machine execution, or mutation -- proven the same way as the
+/// fast-path nonce-lock rejection above: zero machine calls and an empty
+/// commit log (so no nonce advance and no state mutation survive either).
+#[test]
+fn authenticated_read_only_submit_rejects_a_wrong_current_epoch() {
+    let store: ScriptedDurableStore = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+    let node_config: NodeConfig = config("sunrise-test");
+    let protocol_config: ProtocolConfig = active_protocol_config(0xE1);
+    let signing_key: SigningKey = dev_signing_key(0x91);
+    let submission: AuthenticatedSubmitTransaction = authenticated_submission(
+        "sunrise-test",
+        request(0xDA),
+        &signing_key,
+        Epoch::new(7),
+        0,
+        &node_config,
+        &protocol_config,
+    );
+    let machine: IdempotentMachine = IdempotentMachine {
+        calls: AtomicUsize::new(0),
+    };
+    // Overrides the store's own default (Epoch::new(7)) installed by
+    // `ScriptedDurableStore::new`, simulating a Slice-2 transition this DR
+    // does not implement.
+    preload_fastpath_epoch_record(&store, "sunrise-test", Epoch::new(8));
+
+    let error: NodeCoreError = handle_authenticated_resolved_durable_submit_transaction(
+        &MemoryBlobStore::default(),
+        &store,
+        &durable_context(),
+        &resolver("sunrise-test"),
+        submission,
+        &machine,
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        NodeCoreError::EpochMismatch { expected, actual }
+            if expected == Epoch::new(8) && actual == Epoch::new(7)
+    ));
+    assert_eq!(machine.calls.load(Ordering::SeqCst), 0);
+    assert!(store.commits.lock().unwrap().is_empty());
+}
+
 fn sender_nonce_key_for(chain: &str, sender: [u8; 32], epoch: Epoch) -> Vec<u8> {
     PersistenceLayout::new(ChainId::new(chain).unwrap(), ProtocolVersion::new(3))
         .sender_nonce_key(sender, epoch)
@@ -974,7 +1104,7 @@ fn sender_nonce_key_for(chain: &str, sender: [u8; 32], epoch: Epoch) -> Vec<u8> 
 
 #[test]
 fn sender_nonce_sequential_submissions_advance_persisted_next_nonce() {
-    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let store: MemoryDurableStateStore = memory_store_with_fastpath_epoch(domain(0xE1));
     store.set_time(100);
     let config = config("sunrise-test");
     let protocol_config = active_protocol_config(0xE1);
@@ -1035,7 +1165,7 @@ fn sender_nonce_sequential_submissions_advance_persisted_next_nonce() {
 
 #[test]
 fn sender_nonce_sequence_isolated_by_epoch() {
-    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let store: MemoryDurableStateStore = memory_store_with_fastpath_epoch(domain(0xEE));
     store.set_time(100);
     let protocol_config = active_protocol_config(0xEE);
     let signing_key = dev_signing_key(0x9E);
@@ -1058,6 +1188,18 @@ fn sender_nonce_sequence_isolated_by_epoch() {
         (request(0xCE), Epoch::new(7), &epoch_seven_config),
         (request(0xCF), Epoch::new(8), &epoch_eight_config),
     ] {
+        if epoch == Epoch::new(8) {
+            // Model the committed lifecycle transition before submitting in
+            // the new epoch; processing two independently "current" epochs
+            // without advancing the singleton is no longer a valid fixture.
+            commit_fastpath_epoch_record(
+                &store,
+                &context,
+                domain(0xEE),
+                "sunrise-test",
+                Epoch::new(8),
+            );
+        }
         let submission = authenticated_submission(
             "sunrise-test",
             request_id,
@@ -1174,9 +1316,7 @@ fn assert_one_nonce_commit_and_one_conflict(
 
 #[test]
 fn concurrent_first_nonce_submissions_commit_at_most_once() {
-    let store = Arc::new(MemoryDurableStateStore::new(
-        WriterFenceGeneration::new(1).unwrap(),
-    ));
+    let store = Arc::new(memory_store_with_fastpath_epoch(domain(0xEF)));
     store.set_time(100);
     let config = config("sunrise-test");
     let protocol_config = active_protocol_config(0xEF);
@@ -1226,9 +1366,7 @@ fn concurrent_first_nonce_submissions_commit_at_most_once() {
 
 #[test]
 fn concurrent_existing_nonce_submissions_commit_at_most_once() {
-    let store = Arc::new(MemoryDurableStateStore::new(
-        WriterFenceGeneration::new(1).unwrap(),
-    ));
+    let store = Arc::new(memory_store_with_fastpath_epoch(domain(0xF0)));
     store.set_time(100);
     let config = config("sunrise-test");
     let protocol_config = active_protocol_config(0xF0);
@@ -1345,7 +1483,7 @@ fn stale_nonce_on_fresh_request_id_rejects_before_app_state_read_transition_or_c
 
 #[test]
 fn exact_request_replay_returns_persisted_output_without_reconsuming_nonce() {
-    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let store: MemoryDurableStateStore = memory_store_with_fastpath_epoch(domain(0xE3));
     store.set_time(100);
     let config = config("sunrise-test");
     let protocol_config = active_protocol_config(0xE3);
@@ -1760,7 +1898,7 @@ impl TransactionalNodeStateMachine for RejectingMachine {
 
 #[test]
 fn committed_deterministic_rejection_still_consumes_the_nonce() {
-    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let store: MemoryDurableStateStore = memory_store_with_fastpath_epoch(domain(0xE9));
     store.set_time(100);
     let config = config("sunrise-test");
     let protocol_config = active_protocol_config(0xE9);
@@ -1820,7 +1958,7 @@ impl TransactionalNodeStateMachine for ErrMachine {
 
 #[test]
 fn transition_error_does_not_consume_the_nonce() {
-    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let store: MemoryDurableStateStore = memory_store_with_fastpath_epoch(domain(0xEA));
     store.set_time(100);
     let config = config("sunrise-test");
     let protocol_config = active_protocol_config(0xEA);

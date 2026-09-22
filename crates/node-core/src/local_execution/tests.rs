@@ -84,6 +84,32 @@ fn set_state<S: StructuredDurableDomainStateStore>(
         DurableCommitOutcome::Committed
     );
 }
+/// DR-0131: every current mutation path fences the singleton
+/// `FastPathEpochRecord`; this file never loads a `ValidatorSet`, so any
+/// fixed digest satisfies its own fence.
+fn ensure_fastpath_epoch_installed<S: StructuredDurableDomainStateStore>(store: &S) {
+    set_state(
+        store,
+        local_instance_state::fastpath_epoch_record_key(protocol().chain_id()).unwrap(),
+        StateMutation::Put(
+            local_instance_state::encode_fastpath_epoch_record(
+                &local_instance_state::FastPathEpochRecord {
+                    current_epoch: protocol().epoch(),
+                    current_validator_set_digest: resolver()
+                        .hash_for_purpose(
+                            protocol().epoch(),
+                            HashPurpose::NodeEvent,
+                            b"local-execution-tests-fastpath-epoch-placeholder",
+                        )
+                        .unwrap(),
+                    previous_epoch: None,
+                    activated_at_checkpoint: 0,
+                },
+            )
+            .unwrap(),
+        ),
+    );
+}
 fn fixture<S: StructuredDurableDomainStateStore>(store: &S) -> InstanceRecord {
     fixture_with_transfer(store, true)
 }
@@ -91,6 +117,7 @@ fn fixture_with_transfer<S: StructuredDurableDomainStateStore>(
     store: &S,
     transferable: bool,
 ) -> InstanceRecord {
+    ensure_fastpath_epoch_installed(store);
     let origin: PackageOrigin =
         PackageOrigin::unverified(protocol().chain_id().clone(), sender(), [1; 32]).unwrap();
     let names: [(&str, Option<ObjectMode>); 4] = [
@@ -462,6 +489,232 @@ fn creation_and_mutation_share_nonce_and_immutable_authority() {
             .get(),
         2
     );
+}
+
+/// Same as [`sign`], but for an explicitly chosen signing key/sender,
+/// needed to prove a fast-path object-lock rejection independent of any
+/// sender/epoch nonce lock (a different sender never shares the locked
+/// sender's nonce-lock key, so the nonce-lock cannot be masking the
+/// rejection).
+fn sign_as(
+    signing_key: &SigningKey,
+    record: &InstanceRecord,
+    nonce: u64,
+    request: u8,
+    name: &str,
+    access: Vec<AccessEntry>,
+) -> Vec<u8> {
+    let sender: [u8; 32] = VerificationKey::from(signing_key).into();
+    let call: execution::call::CallIntent = execution::call::CallIntent {
+        context: protocol(),
+        request_id: [request; 32],
+        sender,
+        nonce,
+        code: record.code.clone(),
+        instance: instance_target(&resolver(), record).unwrap(),
+        entrypoint: name.into(),
+        type_arguments: vec![],
+        access: abi::AccessManifest { entries: access },
+        arguments: encode_call_value(&ValueLayout::Tuple(vec![]), &CallValue::Tuple(vec![]))
+            .unwrap(),
+        gas_limit: 10000,
+    };
+    let intent: LocalExecutionIntent = LocalExecutionIntent {
+        authorizations: Vec::new(),
+        mode: if name == "init" {
+            LocalExecutionMode::Instantiate
+        } else {
+            LocalExecutionMode::Call
+        },
+        policy_digest: policy().digest(&resolver()).unwrap(),
+        call,
+    };
+    let frame: Vec<u8> = local_execution_signing_frame(&protocol(), &intent).unwrap();
+    encode_signed_local_execution(&SignedLocalExecutionIntent {
+        intent,
+        signature: signing_key.sign(&frame).into(),
+    })
+    .unwrap()
+}
+
+/// DR-0131 criterion 8: a previously uncovered direct mutation branch --
+/// local execution's owned-object `Write` -- now honors a held
+/// `FastPathLockRecord`. The conflicting request is signed by a *different*
+/// sender than the one whose fast-path prepare holds the lock, so the
+/// sender/epoch nonce-lock (scoped to the locking sender) cannot be masking
+/// the object-lock rejection: the second sender's own nonce is never locked
+/// at all.
+#[test]
+fn a_fastpath_object_lock_blocks_local_execution_write_from_a_different_sender() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let record: InstanceRecord = fixture(&store);
+    let engine: Engine = Engine::new(Behavior::Create);
+    let init: Vec<u8> = sign(&record, 1, 2, "init", vec![]);
+    let created: Object = object(&run(&store, &init, &engine).unwrap());
+
+    // Simulate an in-flight fast-path prepare (owned by `sender()`) holding
+    // an exclusive lock on the created object, without invoking the fast
+    // path at all: this proves the direct local-execution branch itself now
+    // consults the lock, not merely that the fast path writes one.
+    let lock_key: Vec<u8> =
+        local_instance_state::fastpath_lock_key(protocol().chain_id(), created.id).unwrap();
+    let lock: local_instance_state::FastPathLockRecord = local_instance_state::FastPathLockRecord {
+        request_id: [0x99; 32],
+        object: ObjectRef {
+            id: created.id,
+            version: created.version,
+            digest: resolver()
+                .hash_for_purpose(
+                    protocol().epoch(),
+                    HashPurpose::Object,
+                    &objects::encode_object(&created).unwrap(),
+                )
+                .unwrap(),
+        },
+        locked_epoch: protocol().epoch(),
+    };
+    let observed: VersionedStateValue = store
+        .get_versioned_durable(&context(), domain(), &lock_key)
+        .unwrap();
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(lock_key.clone(), observed.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(
+                lock_key,
+                StateMutation::Put(
+                    local_instance_state::encode_fastpath_lock_record(&lock).unwrap(),
+                ),
+            )
+            .unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&context(), transaction),
+        DurableCommitOutcome::Committed
+    );
+
+    // A genuinely different sender, with its own fresh nonce (0) and no
+    // nonce-lock of its own, attempts to write the locked object.
+    let other_key: SigningKey = SigningKey::from([0x42; 32]);
+    let write: Vec<u8> = sign_as(
+        &other_key,
+        &record,
+        0,
+        9,
+        "write",
+        vec![entry(&created, AccessMode::Write)],
+    );
+    let result = run(&store, &write, &Engine::new(Behavior::Write));
+    assert!(matches!(
+        result,
+        Err(LocalExecutionAdmissionError::Node(
+            NodeCoreError::PersistenceInvariant("object locked by a pending fast-path certificate")
+        ))
+    ));
+    // The object is untouched and the other sender's own nonce never moved.
+    assert_eq!(
+        store
+            .get_object_head(&context(), domain(), created.id)
+            .unwrap()
+            .object_version()
+            .unwrap()
+            .get(),
+        1
+    );
+}
+
+/// DR-0131 criterion 7: the local-execution-intent event family rejects an
+/// externally supplied request id inside the reserved fast-path synthetic
+/// namespace, through the one shared validation boundary
+/// (`local_instance_state::reject_reserved_request_id`).
+#[test]
+fn reserved_request_id_prefix_is_rejected_before_any_admission() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let record: InstanceRecord = fixture(&store);
+    let nonce_before: u64 = nonce(&store);
+    let mut reserved_id: [u8; 32] = [0u8; 32];
+    reserved_id[..local_instance_state::FASTPATH_SYNTHETIC_REQUEST_ID_TAG.len()]
+        .copy_from_slice(&local_instance_state::FASTPATH_SYNTHETIC_REQUEST_ID_TAG);
+    let call: execution::call::CallIntent = execution::call::CallIntent {
+        context: protocol(),
+        request_id: reserved_id,
+        sender: sender(),
+        nonce: nonce_before,
+        code: record.code.clone(),
+        instance: instance_target(&resolver(), &record).unwrap(),
+        entrypoint: "init".into(),
+        type_arguments: vec![],
+        access: abi::AccessManifest { entries: vec![] },
+        arguments: encode_call_value(&ValueLayout::Tuple(vec![]), &CallValue::Tuple(vec![]))
+            .unwrap(),
+        gas_limit: 10000,
+    };
+    let intent: LocalExecutionIntent = LocalExecutionIntent {
+        authorizations: Vec::new(),
+        mode: LocalExecutionMode::Instantiate,
+        policy_digest: policy().digest(&resolver()).unwrap(),
+        call,
+    };
+    let bytes: Vec<u8> = resign(intent);
+    let result = run(&store, &bytes, &Engine::new(Behavior::Create));
+    assert!(matches!(
+        result,
+        Err(LocalExecutionAdmissionError::Invalid(
+            "request id reserved for fast-path synthetic receipts"
+        ))
+    ));
+    assert_eq!(nonce(&store), nonce_before);
+}
+
+/// DR-0131 criterion 4: local execution rejects a request bound to a
+/// non-current epoch before any lock, engine execution, or mutation.
+/// `engine.calls` staying at zero proves the fence rejects before the engine
+/// boundary is ever entered; the unmoved nonce proves no mutation survives.
+#[test]
+fn a_wrong_current_epoch_is_rejected_before_any_engine_call_or_nonce_advance() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let record: InstanceRecord = fixture(&store);
+    let nonce_before: u64 = nonce(&store);
+    set_state(
+        &store,
+        local_instance_state::fastpath_epoch_record_key(protocol().chain_id()).unwrap(),
+        StateMutation::Put(
+            local_instance_state::encode_fastpath_epoch_record(
+                &local_instance_state::FastPathEpochRecord {
+                    current_epoch: Epoch::new(protocol().epoch().get() + 1),
+                    current_validator_set_digest: resolver()
+                        .hash_for_purpose(
+                            protocol().epoch(),
+                            HashPurpose::NodeEvent,
+                            b"local-execution-tests-fastpath-epoch-placeholder",
+                        )
+                        .unwrap(),
+                    previous_epoch: None,
+                    activated_at_checkpoint: 0,
+                },
+            )
+            .unwrap(),
+        ),
+    );
+    let init: Vec<u8> = sign(&record, nonce_before, 2, "init", vec![]);
+    let engine: Engine = Engine::new(Behavior::Create);
+    let result = run(&store, &init, &engine);
+    assert!(matches!(
+        result,
+        Err(LocalExecutionAdmissionError::Node(NodeCoreError::EpochMismatch { expected, actual }))
+            if expected == Epoch::new(protocol().epoch().get() + 1) && actual == protocol().epoch()
+    ));
+    assert_eq!(engine.calls.get(), 0);
+    assert_eq!(nonce(&store), nonce_before);
 }
 
 #[test]
@@ -1104,6 +1357,7 @@ fn publish_profile_four_artifact<S: StructuredDurableDomainStateStore>(
     store: &S,
     semantics: Digest32,
 ) -> UnverifiedDependencyRef {
+    ensure_fastpath_epoch_installed(store);
     let origin: PackageOrigin =
         PackageOrigin::unverified(protocol().chain_id().clone(), sender(), [40; 32]).unwrap();
     let meta: ExecutableAbi = ExecutableAbi {

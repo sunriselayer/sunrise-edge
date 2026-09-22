@@ -497,8 +497,33 @@ Phase 1 deliberately exposes only this local Rust boundary. It adds no public
 HTTP/CLI event family and no timeout/clock-based lock recovery. Validator-set
 transitions/equivocation handling remain phase 2; bond-linked slashing and
 deterministic fee/reward distribution remain phase 3. FastVote is complete
-only after phase 3. See DR-0129, DR-0130, and `TODO.md` for exact evidence and
-remaining activation gates.
+only after phase 3.
+
+DR-0131 fixes phase 2's architecture and implements slice 1: a committed
+`FastPathEpochRecord` (current epoch, active validator-set digest, no
+locally mutable membership state) and an epoch-stamped `FastPathLockRecord`,
+fenced by a two-tier check — every mutation path CAS-fences the epoch
+record, and validator-authorized prepare/apply additionally CAS-fence the
+active per-epoch `ValidatorSet` row — that rejects a non-current epoch, a
+signer absent from the committed active set, or a lock/nonce-lock conflict
+before any mutation. "Retired validator" means only absent from that
+committed set after a certified transition; there is no locally mutable
+membership action that could make nodes disagree about the active authority
+set. Slice 1 adds no epoch-transition procedure and no lock reclamation;
+`FastPathEpochRecord` never changes after genesis until slice 2 exists.
+DR-0131 also states the key transition safety proof slice 2 must satisfy:
+apply requires prepared/certificate/current epoch equality; apply and
+transition CAS-fence the identical epoch record so exactly one serializes
+before the other; a transitioned-away epoch's certificates are permanently
+invalid, which is what lets a stale lock be reclaimed under CAS without
+risking two conflicting applies; and no timeout-based unlock exists
+anywhere. Epoch transition, equivocation evidence, and the
+authorization-class/ingress boundary declaration are slices 2-4, whose
+safety contract this DR fixes but whose detailed wire/API decisions are
+pending. Phase 2 is not complete until slice 4 closes, and slice 1 alone
+does not make retired-validator/wrong-epoch rejection end-to-end observable
+beyond genesis-set membership. See DR-0129, DR-0130, DR-0131, and
+`TODO.md` for exact evidence and remaining activation gates.
 
 ## 12. Certificate lifecycle
 Phase 13 adds shared-consensus quorum certificates. Each certificate binds the
@@ -534,7 +559,20 @@ separate concepts; a larger stablecoin bond does not implicitly grant more
 votes. Validator records commit the signature scheme and public verification
 key used for consensus messages. Sets are canonically sorted by validator ID,
 reject duplicates and zero power, and compute quorum as strictly greater than
-two thirds of total voting power.
+two thirds of total voting power. DR-0131 slice 1 adds rejection of two
+validator entries sharing an identical public key, wherever a `ValidatorSet`
+is admitted.
+
+DR-0131 slice 1 defines no locally mutable membership state or
+operator-authorized retirement action. Slice 1's fast-path fencing checks a
+validator's membership directly
+against the fast path's own committed per-epoch `ValidatorSet` row (a
+persisted snapshot of this section's `ValidatorSet` type, distinct from the
+still-deferred, governance-driven `ApplyValidatorSetChange` mechanism). A
+validator is "retired," in the only sense FastVote phase 2 recognizes,
+exactly when FastVote phase 2 slice 2's own outgoing-set-certified epoch
+transition (not yet designed in detail) commits a new committed set that
+excludes it — never through an independent local action.
 
 ## 15. Genesis bootstrap
 Genesis starts with a permissioned validator set and a conservative default hash suite. Phase 1 encodes this by exposing a `HashSuite::genesis()` helper that selects SHA-256 for all required purposes.

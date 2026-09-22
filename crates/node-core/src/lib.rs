@@ -48,6 +48,7 @@ pub mod fee_effects;
 pub mod genesis;
 pub mod local_execution;
 pub mod local_instance_state;
+mod mutation_fence;
 mod object_snapshots;
 pub mod paid_execution;
 mod preinstalled_wasm;
@@ -2083,6 +2084,12 @@ pub fn authenticate_submit_transaction_event(
     if event.kind() != NodeEventKind::SubmitTransaction {
         return Err(NodeCoreError::ExpectedSubmitTransaction);
     }
+    // DR-0131: the one shared external-request validation boundary for the
+    // entire `SubmitTransaction` event/mutation family (read-only,
+    // owned-mutations, and preinstalled-WASM execution all construct their
+    // `AuthenticatedSubmitTransaction` only from this function's output).
+    local_instance_state::reject_reserved_request_id(event.request_id().as_bytes())
+        .map_err(NodeCoreError::PersistenceInvariant)?;
     if config.protocol_version() != protocol_config.protocol_version {
         return Err(NodeCoreError::ProtocolConfigVersionMismatch {
             node_config: config.protocol_version(),
@@ -5132,6 +5139,63 @@ where
         None => None,
     };
 
+    // DR-0131: every authenticated `SubmitTransaction` family carries a
+    // sender/epoch nonce reservation, including the object-read-only and
+    // preinstalled-WASM entrypoints. Fence the committed epoch and any
+    // pending fast-path nonce/object locks once here, after exact receipt and
+    // stale-nonce reconciliation but before module resolution, object I/O,
+    // execution, or mutation. Keeping this at the shared durable boundary
+    // prevents a new entrypoint from accidentally bypassing the lifecycle
+    // fence. Generic non-transaction events have no reservation and therefore
+    // no sender-owned mutation authority to fence.
+    let fastpath_fence_reads: Vec<StateReadAssertion> = match reservation.as_ref() {
+        Some(reservation) => {
+            let mut fence_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+            mutation_fence::fence_current_epoch(
+                store,
+                context,
+                domain,
+                event.chain_id(),
+                event.epoch(),
+                &mut fence_reads,
+            )?;
+            mutation_fence::fence_sender_nonce_lock(
+                store,
+                context,
+                domain,
+                event.chain_id(),
+                &reservation.sender,
+                reservation.epoch,
+                event.request_id().as_bytes(),
+                reservation.nonce,
+                mutation_fence::LockMode::Fresh,
+                &mut fence_reads,
+            )?;
+            if let Some(dispatch) = dispatch.as_ref() {
+                for access in &dispatch.accesses {
+                    if access.mode != AccessMode::Read {
+                        mutation_fence::fence_object_lock(
+                            store,
+                            context,
+                            domain,
+                            event.chain_id(),
+                            &access.object_ref,
+                            event.request_id().as_bytes(),
+                            event.epoch(),
+                            mutation_fence::LockMode::Fresh,
+                            &mut fence_reads,
+                        )?;
+                    }
+                }
+            }
+            fence_reads
+                .into_iter()
+                .map(|(key, revision)| StateReadAssertion::new(key, revision))
+                .collect::<Result<Vec<StateReadAssertion>, RuntimeError>>()?
+        }
+        None => Vec::new(),
+    };
+
     // Resolve the exact committed module and its semantics envelope once,
     // after receipt and nonce reconciliation but before the first object I/O.
     // Generic owned-effects callers never provide a preinstalled machine and
@@ -5377,6 +5441,10 @@ where
     };
     let (mut reads, mut mutations) = domain_transition_parts(&plan, &snapshot, transition.updates)?;
     reads.extend(authority_reads);
+    // DR-0131: fold in the authenticated transaction family's already-
+    // checked epoch/nonce/object-lock fence reads, so this same durable
+    // invocation CAS-fences the authorization state it relied on.
+    reads.extend(fastpath_fence_reads);
     if let Some(mutation) = mutations.iter().find(|mutation| {
         mutation.key().starts_with(nonce_prefix.as_slice())
             || mutation

@@ -164,6 +164,7 @@ impl From<ValidatorSetError> for FastPathError {
                 "fast-path validator public key too large"
             }
             ValidatorSetError::DuplicateValidator(_) => "fast-path duplicate validator",
+            ValidatorSetError::DuplicatePublicKey(_) => "fast-path duplicate validator public key",
             ValidatorSetError::VotingPowerOverflow => "fast-path voting power overflow",
             ValidatorSetError::CanonicalEncoding(_) => "fast-path validator set encoding",
             ValidatorSetError::Hashing(_) => "fast-path validator set hashing",
@@ -214,14 +215,28 @@ impl ConsensusVerifier for FastPathEd25519Verifier {
     }
 }
 
+/// Loads the active per-epoch [`ValidatorSet`] and, per DR-0131's two-tier
+/// fence model, additionally CAS-fences that durable row (asserting its own
+/// revision as part of `reads`, unaffected by this call) and verifies its
+/// digest matches `epoch_record.current_validator_set_digest` -- strictly
+/// additive to [`mutation_fence::fence_current_epoch`], which the caller has
+/// already run to obtain `epoch_record`.
 fn load_validator_set<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
     validator_context: &PublicationContext,
+    epoch_record: &local_instance_state::FastPathEpochRecord,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> FastPathResult<ValidatorSet> {
     let key: Vec<u8> = fastpath_validator_set_key(validator_context)?;
     let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    if let Some(previous_revision) = reads.insert(key, observed.revision())
+        && previous_revision != observed.revision()
+    {
+        return Err(FastPathError::Node(NodeCoreError::StateConflict));
+    }
     let bytes: &[u8] = observed.value().ok_or(FastPathError::Invalid(
         "fast-path validator set not installed",
     ))?;
@@ -241,17 +256,29 @@ fn load_validator_set<S: StructuredDurableDomainStateStore>(
             public_key: validator.public_key.clone(),
         });
     }
-    Ok(ValidatorSet::new(validator_context.epoch(), info)?)
+    let validator_set: ValidatorSet = ValidatorSet::new(validator_context.epoch(), info)?;
+    let digest: Digest32 = validator_set.digest(resolver)?;
+    if digest != epoch_record.current_validator_set_digest {
+        return invalid("fast-path validator set digest does not match the committed epoch record");
+    }
+    Ok(validator_set)
 }
 
 /// Strict test helper: idempotent for byte-identical validators and fail
-/// closed on a conflicting reinstall. Production installation is atomic with
-/// the signed [`genesis::GenesisManifest`].
+/// closed on a conflicting reinstall. Also installs/overwrites the matching
+/// [`local_instance_state::FastPathEpochRecord`] so `prepare`/`apply` can
+/// fence against it, mirroring (for tests) the atomic genesis install
+/// [`genesis::install_genesis_with_history`] performs in production. The
+/// epoch record write is an unconditional upsert rather than the strict
+/// fresh-install-only semantics genesis uses, since this helper -- unlike
+/// genesis -- may be called by a test that already seeded a placeholder
+/// epoch record for a non-fast-path fixture.
 #[cfg(test)]
 pub(crate) fn install_validator_set<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
     validator_context: PublicationContext,
     validators: Vec<FastPathValidatorEntry>,
 ) -> FastPathResult<()> {
@@ -271,10 +298,12 @@ pub(crate) fn install_validator_set<S: StructuredDurableDomainStateStore>(
             })
         })
         .collect::<FastPathResult<Vec<ValidatorInfo>>>()?;
-    // Structural validation only (bounds, no duplicates, no zero power/keys);
-    // the resulting `ValidatorSet` is not itself persisted, only used to
-    // prove these durable bytes are actually usable by `FastPathCertifier`.
-    let _: ValidatorSet = ValidatorSet::new(validator_context.epoch(), info)?;
+    // Structural validation (bounds, no duplicates, no zero power/keys, no
+    // shared public keys); also used to compute the digest the epoch record
+    // binds, so these durable bytes are actually usable by
+    // `FastPathCertifier`.
+    let validator_set: ValidatorSet = ValidatorSet::new(validator_context.epoch(), info)?;
+    let digest: Digest32 = validator_set.digest(resolver)?;
 
     let record: FastPathValidatorSetRecord = FastPathValidatorSetRecord {
         context: validator_context.clone(),
@@ -283,23 +312,40 @@ pub(crate) fn install_validator_set<S: StructuredDurableDomainStateStore>(
     let bytes: Vec<u8> = records::encode_fastpath_validator_set_record(&record)?;
     let key: Vec<u8> = fastpath_validator_set_key(&validator_context)?;
     let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
-    if let Some(existing) = observed.value() {
-        return if existing == bytes.as_slice() {
-            Ok(())
-        } else {
-            invalid("fast-path validator set already installed with different bytes")
-        };
+    if let Some(existing) = observed.value()
+        && existing != bytes.as_slice()
+    {
+        return invalid("fast-path validator set already installed with different bytes");
     }
+
+    let epoch_key: Vec<u8> =
+        local_instance_state::fastpath_epoch_record_key(validator_context.chain_id())?;
+    let epoch_observed: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &epoch_key)?;
+    let epoch_record: local_instance_state::FastPathEpochRecord =
+        local_instance_state::FastPathEpochRecord {
+            current_epoch: validator_context.epoch(),
+            current_validator_set_digest: digest,
+            previous_epoch: None,
+            activated_at_checkpoint: 0,
+        };
+    let epoch_bytes: Vec<u8> = local_instance_state::encode_fastpath_epoch_record(&epoch_record)?;
+    if epoch_observed.value() == Some(epoch_bytes.as_slice())
+        && observed.value() == Some(bytes.as_slice())
+    {
+        return Ok(());
+    }
+
     let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
         domain,
-        AtomicStateReadSet::new(vec![StateReadAssertion::new(
-            key.clone(),
-            observed.revision(),
-        )?])?,
-        AtomicStateMutationSet::new(vec![StateMutationEntry::new(
-            key,
-            StateMutation::Put(bytes),
-        )?])?,
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(key.clone(), observed.revision())?,
+            StateReadAssertion::new(epoch_key.clone(), epoch_observed.revision())?,
+        ])?,
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(key, StateMutation::Put(bytes))?,
+            StateMutationEntry::new(epoch_key, StateMutation::Put(epoch_bytes))?,
+        ])?,
     )?;
     match store.commit_durable(context, transaction) {
         DurableCommitOutcome::Committed => Ok(()),
@@ -363,6 +409,21 @@ where
     let sender: [u8; 32] = authenticated.intent().sender;
     let pending_nonce: u64 = authenticated.intent().nonce;
 
+    // DR-0131: CAS-fence the committed epoch record and the active per-epoch
+    // validator set, and reject a request bound to a non-current epoch,
+    // before any lock, execution, or mutation, on both the exact-replay and
+    // fresh branches below.
+    let mut fence_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let epoch_record: local_instance_state::FastPathEpochRecord =
+        mutation_fence::fence_current_epoch(
+            store,
+            context,
+            domain,
+            &chain,
+            intent_context.epoch(),
+            &mut fence_reads,
+        )?;
+
     // Reconcile an existing prepared record before any nonce, policy or
     // object read: exact replay returns the stored vote unchanged, and a
     // conflicting replay (a different request digest under the same
@@ -392,8 +453,15 @@ where
         {
             return invalid("fast-path prepared replay vote mismatch");
         }
-        let validator_set: ValidatorSet =
-            load_validator_set(store, context, domain, &intent_context)?;
+        let validator_set: ValidatorSet = load_validator_set(
+            store,
+            context,
+            domain,
+            resolver,
+            &intent_context,
+            &epoch_record,
+            &mut fence_reads,
+        )?;
         let certifier: consensus::FastPathCertifier = consensus::FastPathCertifier::new(
             chain.clone(),
             intent_context.protocol_version(),
@@ -415,7 +483,15 @@ where
         return invalid("paid intent already finalized outside the fast path");
     }
 
-    let validator_set: ValidatorSet = load_validator_set(store, context, domain, &intent_context)?;
+    let validator_set: ValidatorSet = load_validator_set(
+        store,
+        context,
+        domain,
+        resolver,
+        &intent_context,
+        &epoch_record,
+        &mut fence_reads,
+    )?;
     let certifier: consensus::FastPathCertifier = consensus::FastPathCertifier::new(
         chain.clone(),
         intent_context.protocol_version(),
@@ -490,6 +566,7 @@ where
     // application effects) fed only the commitment above and is discarded
     // here: prepare never applies them.
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = admission.reads;
+    reads.extend(fence_reads);
     reads.insert(nonce.key.clone(), nonce.read_revision);
     reads.insert(prepared_key.clone(), observed_prepared.revision());
     let mut mutations: Vec<StateMutationEntry> = Vec::new();
@@ -509,6 +586,7 @@ where
         let lock: FastPathLockRecord = FastPathLockRecord {
             request_id: original_request_id,
             object: object.clone(),
+            locked_epoch: intent_context.epoch(),
         };
         mutations.push(StateMutationEntry::new(
             lock_key,
@@ -623,6 +701,22 @@ where
     let intent_sender: [u8; 32] = authenticated.intent().sender;
     let intent_nonce: u64 = authenticated.intent().nonce;
 
+    // DR-0131 key transition safety proof, leg 3 of 3: `prepared epoch ==
+    // certificate epoch == current committed epoch`. The first two legs are
+    // checked below against `prepared`/`certificate`; this CAS-fences the
+    // committed epoch record and rejects a request bound to a non-current
+    // epoch before any lock, execution, or mutation.
+    let mut fence_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let epoch_record: local_instance_state::FastPathEpochRecord =
+        mutation_fence::fence_current_epoch(
+            store,
+            context,
+            domain,
+            &chain,
+            intent_context.epoch(),
+            &mut fence_reads,
+        )?;
+
     let prepared_key: Vec<u8> = fastpath_prepared_record_key(&chain, &original_request_id)?;
     let observed_prepared: VersionedStateValue =
         store.get_versioned_durable(context, domain, &prepared_key)?;
@@ -642,7 +736,15 @@ where
     }
 
     let certificate: FastCertificate = consensus::decode_fast_certificate(certificate_bytes)?;
-    let validator_set: ValidatorSet = load_validator_set(store, context, domain, &intent_context)?;
+    let validator_set: ValidatorSet = load_validator_set(
+        store,
+        context,
+        domain,
+        resolver,
+        &intent_context,
+        &epoch_record,
+        &mut fence_reads,
+    )?;
     let certifier: consensus::FastPathCertifier = consensus::FastPathCertifier::new(
         chain.clone(),
         intent_context.protocol_version(),
@@ -724,6 +826,7 @@ where
     } = admission;
 
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = admission_reads;
+    reads.extend(fence_reads);
     reads.insert(prepared_key, observed_prepared.revision());
 
     let nonce: PendingSenderNonceWrite = nonce_write.ok_or(FastPathError::Invalid(

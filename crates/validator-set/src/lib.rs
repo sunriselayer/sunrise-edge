@@ -38,6 +38,8 @@ pub enum ValidatorSetError {
     },
     /// A validator appears more than once.
     DuplicateValidator(ValidatorId),
+    /// Two distinct validators share an identical public key (DR-0131).
+    DuplicatePublicKey(ValidatorId),
     /// Total voting power overflowed `u64`.
     VotingPowerOverflow,
     /// Canonical encoding failed.
@@ -63,6 +65,12 @@ impl fmt::Display for ValidatorSetError {
                 "validator {validator} public key is {length} bytes, maximum is {MAX_PUBLIC_KEY_BYTES}"
             ),
             Self::DuplicateValidator(id) => write!(f, "duplicate validator {id}"),
+            Self::DuplicatePublicKey(id) => {
+                write!(
+                    f,
+                    "validator {id} shares a public key with another validator"
+                )
+            }
             Self::VotingPowerOverflow => write!(f, "total validator voting power overflowed"),
             Self::CanonicalEncoding(error) => error.fmt(f),
             Self::Hashing(error) => error.fmt(f),
@@ -149,6 +157,17 @@ impl ValidatorSet {
             total_voting_power = total_voting_power
                 .checked_add(validator.voting_power)
                 .ok_or(ValidatorSetError::VotingPowerOverflow)?;
+        }
+
+        // DR-0131: no two distinct validators may share a signing key, which
+        // would otherwise let one physical key claim two voting-power slots.
+        // Checked independently of the `ValidatorId` order above.
+        let mut seen_public_keys: std::collections::BTreeSet<&[u8]> =
+            std::collections::BTreeSet::new();
+        for validator in &validators {
+            if !seen_public_keys.insert(validator.public_key.as_slice()) {
+                return Err(ValidatorSetError::DuplicatePublicKey(validator.id));
+            }
         }
 
         Ok(Self {
@@ -300,6 +319,42 @@ mod tests {
                 [1; 32]
             )))
         );
+    }
+
+    /// DR-0131: two distinct `ValidatorId`s sharing an identical public key
+    /// must be rejected even though their identities differ, distinct from
+    /// [`duplicate_validator_is_rejected`]'s identical-`ValidatorId` case.
+    #[test]
+    fn duplicate_public_key_across_distinct_validator_ids_is_rejected() {
+        let shared_key: Vec<u8> = vec![0xAB; 32];
+        let first: ValidatorInfo = ValidatorInfo {
+            id: ValidatorId::new([1; 32]),
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: shared_key.clone(),
+        };
+        let second: ValidatorInfo = ValidatorInfo {
+            id: ValidatorId::new([2; 32]),
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: shared_key,
+        };
+        assert_eq!(
+            ValidatorSet::new(Epoch::new(1), vec![first, second]),
+            Err(ValidatorSetError::DuplicatePublicKey(ValidatorId::new(
+                [2; 32]
+            )))
+        );
+    }
+
+    #[test]
+    fn distinct_public_keys_across_distinct_validators_are_admitted() {
+        let set: ValidatorSet = ValidatorSet::new(
+            Epoch::new(1),
+            vec![validator(1, 1), validator(2, 1), validator(3, 1)],
+        )
+        .unwrap();
+        assert_eq!(set.validators().len(), 3);
     }
 
     #[test]
