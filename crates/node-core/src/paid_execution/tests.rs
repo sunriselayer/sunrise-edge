@@ -1552,6 +1552,42 @@ fn absent_or_different_installed_policies_reject_before_execution() {
 }
 
 #[test]
+fn exact_replay_precedes_missing_or_corrupt_current_policy_rows_while_fresh_fails_closed() {
+    for (key, mutation) in [
+        (
+            paid_fee_policy_key(&protocol()).unwrap(),
+            StateMutation::Delete,
+        ),
+        (
+            execution_policy_key_for_profile(&protocol(), 4).unwrap(),
+            StateMutation::Put(vec![0x01]),
+        ),
+    ] {
+        let store: MemoryDurableStateStore = memory_store();
+        let fixture: Fixture = install(&store);
+        let engine: CountingEngine = CountingEngine::new();
+        let replay_bytes: Vec<u8> = transfer_call(&fixture, 52, FIRST_PAID_NONCE);
+        let committed: NodeOutput = execute(&store, &fixture, &engine, &replay_bytes).unwrap();
+        assert_eq!(engine.calls.get(), 1);
+
+        set_state(&store, key, mutation);
+
+        let replayed: NodeOutput = execute(&store, &fixture, &engine, &replay_bytes).unwrap();
+        assert_eq!(replayed, committed);
+        assert_eq!(engine.calls.get(), 1);
+
+        let fresh_bytes: Vec<u8> = transfer_call(&fixture, 53, FIRST_PAID_NONCE + 1);
+        assert!(matches!(
+            execute(&store, &fixture, &engine, &fresh_bytes),
+            Err(PaidExecutionAdmissionError::Invalid(
+                "execution policy absent or different" | "paid fee policy absent or different"
+            ))
+        ));
+        assert_eq!(engine.calls.get(), 1);
+    }
+}
+
+#[test]
 fn wrong_fee_instance_code_or_source_authority_reject_before_execution() {
     let store: MemoryDurableStateStore = memory_store();
     let fixture: Fixture = install(&store);

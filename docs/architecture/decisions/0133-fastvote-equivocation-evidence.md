@@ -22,10 +22,10 @@ normalized signature-excluding evidence identity, restart-verified transition-ch
 anchored historical validator resolution, deterministic transactional store/query
 with `AlreadyRecorded`, comprehensive unit/adversarial tests across `consensus`
 and `node-core`, and independent JS vectors. Completing this slice does not by itself
-close the FastVote Certified Execution Gate's Phase 2 entry in `TODO.md` — DR-0131's
-Slice 4 still owns that. This DR implements no bonding, slashing, penalty, reward, or
-external ingress. **Phase 2 remains open with Slice 4 next, and FastVote overall
-remains incomplete until Phase 3.**
+close the FastVote Certified Execution Gate's Phase 2 entry in `TODO.md`;
+[DR-0134](0134-fastvote-authorization-boundary.md)'s companion Slice 4 code and
+review gate still must land. This DR implements no bonding, slashing, penalty,
+reward, or external ingress. FastVote overall remains incomplete until Phase 3.
 
 **Revision (2026-09-22, same day, review correction).** The original text
 found that `FastVote`'s existing `tx_hash`-scoped conflict key made a
@@ -880,8 +880,9 @@ in-process node-core functions, the same authorization class as
 historical validator set serving as the only authorization needed —
 exactly as an untrusted relay may hand `FastPathCertifier::try_form_certificate`
 arbitrary candidate votes and rely entirely on its own verification.
-`native-http` gains nothing from this DR. DR-0131's Slice 4 still owns the
-formal authorization-class declaration and Phase 2 gate closure.
+`native-http` gains nothing from this DR. DR-0134 declares the formal
+authorization classes and closed external boundary; its companion
+implementation owns Phase 2 gate closure.
 
 ## Invariants
 
@@ -980,9 +981,9 @@ formal authorization-class declaration and Phase 2 gate closure.
    and `./scripts/check-all.sh` all pass, plus a focused security review and
    a fresh tech-lead review.
 
-Satisfying these does not by itself close the Phase 2 gate (Slice 4 still
-owns that) and does not authorize testnet/production activation, bonding,
-slashing, or reward distribution.
+Satisfying these does not by itself close the Phase 2 gate (DR-0134's
+companion implementation still must land) and does not authorize
+testnet/production activation, bonding, slashing, or reward distribution.
 
 ## Test and evidence plan
 
@@ -1114,14 +1115,11 @@ tech-lead review.
 
 ## Consequences / Deferred
 
-- Fixes and specifies (design-only) Slice 3 in `crates/consensus/src/fast_vote.rs`
-  (in-place revision), `crates/consensus/src/equivocation.rs`,
-  `crates/node-core/src/equivocation.rs`; a future implementation PR also
-  touches `crates/consensus/src/lib.rs` (module + `ConsensusError` variants
-  + new `objects` dependency), `crates/node-core/src/fast_path.rs` (`cast_vote`
-  call site, factored `decode_validator_set_row`), `crates/node-core/src/query.rs`,
-  `crates/node-core/src/lib.rs`, both vector scripts, and `TODO.md`'s Slice 3
-  entry.
+- Implements Slice 3 in `crates/consensus/src/fast_vote.rs` (in-place
+  revision), `crates/consensus/src/equivocation.rs`, and
+  `crates/node-core/src/equivocation.rs`, with the supporting consensus,
+  fast-path, query, export, vector, and roadmap changes listed in the Status
+  and completion evidence above.
 - `locked_objects_digest` **is** needed, reversing the original design's
   finding — see §1 class (b) and the Revision note above.
 - Reused, not reinvented (once implemented): `FastPathCertifier::verify_vote`/
@@ -1134,8 +1132,9 @@ tech-lead review.
   `fast_path::tests::ValidatorFiles`/`four_validators()`.
 - No bonding, slashing, penalty, reward, or distribution mechanism of any
   kind is implemented by this DR.
-- Authorization-class declaration and closing the external ingress boundary
-  remain Slice 4.
+- DR-0134 declares Slice 4's authorization classes and still-closed external
+  ingress boundary; Phase 2 closure remains conditional on its companion code
+  and reviews landing.
 - `EpochTransitionVote`/`EpochTransitionCertificate` (`0xD009`-`0xD00B`),
   the `FastPathEpochRecord`/`FastPathLockRecord` fencing model, and the
   epoch-transition activation/reclamation design are all unchanged by this

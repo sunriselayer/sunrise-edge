@@ -49,8 +49,9 @@ use protocol_types::{
     ValidatorId,
 };
 use runtime::{
-    DurableDomainStateStore, MemoryDurableStateStore, StorageCorrelationId, StorageDeadline,
-    WriterFenceGeneration,
+    DurableDomainStateStore, DurableOutboxClaimOutcome, DurableOutboxLeaseId,
+    IndexedOutboxRepository, MemoryDurableStateStore, OutboxRequestId, RequestOutboxClaimRequest,
+    StorageCorrelationId, StorageDeadline, WriterFenceGeneration,
 };
 use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore, SqliteNamespace};
 
@@ -2508,6 +2509,124 @@ fn a_stale_object_lock_is_deleted_by_a_direct_paid_commit_at_the_next_epoch() {
     );
 }
 
+/// C7 regression at the real certified activation boundary: direct paid
+/// execution accepts only the freshly installed e+1 context/policies. An
+/// intent still signed for e is rejected, and deleting either e+1 policy row
+/// never falls back to the intact e row.
+#[test]
+fn direct_paid_after_real_transition_rejects_stale_epoch_and_missing_current_policies() {
+    let success_store: MemoryDurableStateStore = memory_store();
+    let (success_fixture, success_context, success_fee_policy) =
+        install_lightweight_and_activate_one_transition(&success_store);
+    let success_bytes: Vec<u8> = sign_transfer(
+        &success_fixture,
+        &success_context,
+        &success_fee_policy,
+        91,
+        0,
+    );
+    let success_output: NodeOutput = crate::paid_execution::handle_paid_execution(
+        &success_store,
+        &runtime::MemoryBlobStore::default(),
+        &pe_context(),
+        pe_domain(),
+        &pe_resolver(),
+        &[],
+        &success_context,
+        &LocalExecutionPolicy::generic_object_results(success_context.clone()),
+        &success_fee_policy,
+        &CountingEngine::new(),
+        &success_bytes,
+        10,
+    )
+    .unwrap();
+    assert_eq!(
+        receipt(&success_output).status,
+        PaidExecutionStatus::Success
+    );
+
+    let stale_store: MemoryDurableStateStore = memory_store();
+    let (stale_fixture, next_context, next_fee_policy) =
+        install_lightweight_and_activate_one_transition(&stale_store);
+    let stale_bytes: Vec<u8> =
+        sign_transfer(&stale_fixture, &pe_protocol(), &stale_fixture.policy, 92, 0);
+    let stale_engine: CountingEngine = CountingEngine::new();
+    let stale_result = crate::paid_execution::handle_paid_execution(
+        &stale_store,
+        &runtime::MemoryBlobStore::default(),
+        &pe_context(),
+        pe_domain(),
+        &pe_resolver(),
+        &[],
+        &next_context,
+        &LocalExecutionPolicy::generic_object_results(next_context.clone()),
+        &next_fee_policy,
+        &stale_engine,
+        &stale_bytes,
+        10,
+    );
+    assert!(matches!(
+        stale_result,
+        Err(crate::paid_execution::PaidExecutionAdmissionError::Paid(
+            PaidExecutionError::ContextMismatch
+        ))
+    ));
+    assert_eq!(stale_engine.calls.get(), 0);
+
+    for missing_key in [
+        local_instance_state::execution_policy_key_for_profile(&next_context, 4).unwrap(),
+        local_instance_state::paid_fee_policy_key(&next_context).unwrap(),
+    ] {
+        let store: MemoryDurableStateStore = memory_store();
+        let (fixture, current_context, current_fee_policy) =
+            install_lightweight_and_activate_one_transition(&store);
+        let observed: VersionedStateValue = store
+            .get_versioned_durable(&pe_context(), pe_domain(), &missing_key)
+            .unwrap();
+        assert!(observed.value().is_some());
+        let deletion: AtomicStateTransaction = AtomicStateTransaction::new(
+            pe_domain(),
+            AtomicStateReadSet::new(vec![
+                StateReadAssertion::new(missing_key.clone(), observed.revision()).unwrap(),
+            ])
+            .unwrap(),
+            AtomicStateMutationSet::new(vec![
+                StateMutationEntry::new(missing_key, StateMutation::Delete).unwrap(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.commit_durable(&pe_context(), deletion),
+            DurableCommitOutcome::Committed
+        );
+        let fresh_bytes: Vec<u8> =
+            sign_transfer(&fixture, &current_context, &current_fee_policy, 93, 0);
+        let engine: CountingEngine = CountingEngine::new();
+        let result = crate::paid_execution::handle_paid_execution(
+            &store,
+            &runtime::MemoryBlobStore::default(),
+            &pe_context(),
+            pe_domain(),
+            &pe_resolver(),
+            &[],
+            &current_context,
+            &LocalExecutionPolicy::generic_object_results(current_context.clone()),
+            &current_fee_policy,
+            &engine,
+            &fresh_bytes,
+            10,
+        );
+        assert!(matches!(
+            result,
+            Err(crate::paid_execution::PaidExecutionAdmissionError::Invalid(
+                "execution policy absent or different" | "paid fee policy absent or different"
+            ))
+        ));
+        assert_eq!(engine.calls.get(), 0);
+    }
+}
+
 /// DR-0132 §3.D, fast-path prepare: a lock stamped a strictly older epoch is
 /// reclaimed -- `prepare` overwrites it with its own fresh, current-epoch
 /// lock under the same CAS revision, instead of blocking.
@@ -3760,6 +3879,232 @@ fn activate_races_activate_on_the_same_epoch_record_and_outgoing_fee_policy_and_
     )
     .unwrap();
     assert!(matches!(retry, EpochActivationOutcome::AlreadyActivated(_)));
+}
+
+/// Synchronizes a direct paid admission and a real activation after both have
+/// read epoch e, then deliberately lets activation commit first. The paid
+/// commit is released only afterward, so its mutation-time epoch CAS must be
+/// the authority that rejects the stale preliminary read.
+struct ActivateWinsPaidRaceStore {
+    inner: MemoryDurableStateStore,
+    epoch_record_key: Vec<u8>,
+    reads_barrier: std::sync::Barrier,
+    activation_committed: std::sync::Mutex<bool>,
+    activation_signal: std::sync::Condvar,
+}
+
+impl runtime::DurableDomainStateStore for ActivateWinsPaidRaceStore {
+    fn get_versioned_durable(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        key: &[u8],
+    ) -> Result<VersionedStateValue, DurableReadError> {
+        let observed: Result<VersionedStateValue, DurableReadError> =
+            self.inner.get_versioned_durable(context, domain, key);
+        if key == self.epoch_record_key.as_slice() {
+            self.reads_barrier.wait();
+        }
+        observed
+    }
+
+    fn commit_durable(
+        &self,
+        context: &DurableOperationContext,
+        transaction: AtomicStateTransaction,
+    ) -> DurableCommitOutcome {
+        let outcome: DurableCommitOutcome = self.inner.commit_durable(context, transaction);
+        let mut committed = self.activation_committed.lock().unwrap();
+        *committed = true;
+        self.activation_signal.notify_all();
+        outcome
+    }
+}
+
+impl StructuredDurableDomainStateStore for ActivateWinsPaidRaceStore {
+    fn get_object_head(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+    ) -> Result<DurableObjectHead, DurableReadError> {
+        self.inner.get_object_head(context, domain, object_id)
+    }
+
+    fn get_object_version(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+        object_version: runtime::DurableObjectVersion,
+    ) -> Result<Option<DurableObjectVersionRecord>, DurableReadError> {
+        self.inner
+            .get_object_version(context, domain, object_id, object_version)
+    }
+
+    fn get_request_receipt(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        request_id: runtime::DurableRequestId,
+    ) -> Result<Option<DurableRequestReceipt>, DurableReadError> {
+        self.inner.get_request_receipt(context, domain, request_id)
+    }
+
+    fn commit_invocation(
+        &self,
+        context: &DurableOperationContext,
+        transaction: DurableInvocationTransaction,
+    ) -> DurableCommitOutcome {
+        let mut committed = self.activation_committed.lock().unwrap();
+        while !*committed {
+            committed = self.activation_signal.wait(committed).unwrap();
+        }
+        drop(committed);
+        self.inner.commit_invocation(context, transaction)
+    }
+}
+
+#[test]
+fn real_activation_wins_a_direct_paid_race_and_the_loser_commits_nothing() {
+    let store: MemoryDurableStateStore = memory_store();
+    let (fixture, signers, entries) = install_lightweight(&store);
+    let (_next_signers, next_entries) = four_next_validators();
+    let (certificate, _, _) =
+        propose_vote_and_certify(&store, &signers, &entries, next_entries.clone());
+    let certificate_bytes: Vec<u8> =
+        consensus::encode_epoch_transition_certificate(&certificate).unwrap();
+    let paid_request: u8 = 0xA1;
+    let paid_bytes: Vec<u8> = sign_transfer(
+        &fixture,
+        &pe_protocol(),
+        &fixture.policy,
+        paid_request,
+        crate::paid_execution::tests::FIRST_PAID_NONCE,
+    );
+    let paid_fresh: crate::paid_execution::FreshPaidExecution =
+        match crate::paid_execution::preflight_paid_execution(
+            &store,
+            &pe_context(),
+            pe_domain(),
+            &pe_resolver(),
+            &pe_protocol(),
+            &paid_bytes,
+        )
+        .unwrap()
+        {
+            crate::paid_execution::PaidExecutionPreflight::Fresh(fresh) => *fresh,
+            crate::paid_execution::PaidExecutionPreflight::Replayed { .. } => {
+                panic!("new paid request must not reconcile as a replay")
+            }
+        };
+    let initial_coin_head: DurableObjectHead = store
+        .get_object_head(&pe_context(), pe_domain(), fixture.coin.id)
+        .unwrap();
+    let racing_store: std::sync::Arc<ActivateWinsPaidRaceStore> =
+        std::sync::Arc::new(ActivateWinsPaidRaceStore {
+            inner: store,
+            epoch_record_key: local_instance_state::fastpath_epoch_record_key(
+                pe_protocol().chain_id(),
+            )
+            .unwrap(),
+            reads_barrier: std::sync::Barrier::new(2),
+            activation_committed: std::sync::Mutex::new(false),
+            activation_signal: std::sync::Condvar::new(),
+        });
+
+    let paid_store: std::sync::Arc<ActivateWinsPaidRaceStore> =
+        std::sync::Arc::clone(&racing_store);
+    let paid_policy: execution::paid_execution::PaidFeePolicy = fixture.policy.clone();
+    let paid_handle = std::thread::spawn(move || {
+        crate::paid_execution::handle_preflighted_paid_execution(
+            paid_store.as_ref(),
+            &runtime::MemoryBlobStore::default(),
+            &pe_context(),
+            pe_domain(),
+            &pe_resolver(),
+            &[],
+            &LocalExecutionPolicy::generic_object_results(pe_protocol()),
+            &paid_policy,
+            &CountingEngine::new(),
+            paid_fresh,
+            40,
+        )
+    });
+    let activation_store: std::sync::Arc<ActivateWinsPaidRaceStore> =
+        std::sync::Arc::clone(&racing_store);
+    let activation_handle = std::thread::spawn(move || {
+        activate(
+            activation_store.as_ref(),
+            &pe_context(),
+            pe_domain(),
+            &pe_resolver(),
+            pe_protocol().chain_id(),
+            pe_protocol().protocol_version(),
+            next_entries,
+            &certificate_bytes,
+            41,
+        )
+    });
+
+    let activation_result = activation_handle.join().unwrap().unwrap();
+    assert!(matches!(
+        activation_result,
+        EpochActivationOutcome::Activated(_)
+    ));
+    let paid_result = paid_handle.join().unwrap();
+    assert!(matches!(
+        paid_result,
+        Err(crate::paid_execution::PaidExecutionAdmissionError::Node(
+            NodeCoreError::StateConflict
+        ))
+    ));
+
+    assert_eq!(
+        query_sender_next_nonce(
+            &racing_store.inner,
+            &pe_context(),
+            pe_domain(),
+            pe_protocol().chain_id().clone(),
+            pe_protocol().protocol_version(),
+            pe_protocol().epoch(),
+            crate::paid_execution::tests::sender(),
+        )
+        .unwrap(),
+        crate::paid_execution::tests::FIRST_PAID_NONCE
+    );
+    assert_eq!(
+        racing_store
+            .inner
+            .get_request_receipt(
+                &pe_context(),
+                pe_domain(),
+                runtime::DurableRequestId::new([paid_request; 32]).unwrap(),
+            )
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        racing_store
+            .inner
+            .get_object_head(&pe_context(), pe_domain(), fixture.coin.id)
+            .unwrap(),
+        initial_coin_head
+    );
+    let claim: RequestOutboxClaimRequest = RequestOutboxClaimRequest::new(
+        pe_domain(),
+        OutboxRequestId::new([paid_request; 32]).unwrap(),
+        1,
+        DurableOutboxLeaseId::new([0xA2; 32]).unwrap(),
+        2,
+    )
+    .unwrap();
+    assert_eq!(
+        racing_store
+            .inner
+            .claim_request_outbox(&pe_context(), claim),
+        DurableOutboxClaimOutcome::NoDueWork
+    );
 }
 
 // ── wrong chain/protocol on the already-activated path (DR-0132 §3.C.1) ────

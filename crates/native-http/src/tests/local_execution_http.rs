@@ -9,10 +9,13 @@ use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::call::InstanceTarget;
 use execution::local_execution::*;
 use execution::paid_execution::{
-    MIN_RESERVE_ALLOWANCE, MIN_SETTLE_ALLOWANCE, PaidFeePolicy, encode_paid_fee_policy,
+    FeeSourceConsent, MIN_RESERVE_ALLOWANCE, MIN_SETTLE_ALLOWANCE, PaidApplication, PaidFeePolicy,
+    PaidIntent, ReservationAccessKind, SignedPaidIntent, encode_paid_fee_policy,
+    encode_signed_paid_intent, paid_fee_policy_digest, paid_intent_signing_frame,
+    paid_invocation_digest,
 };
 use execution::publication::*;
-use fees::GasSchedule;
+use fees::{Amount, GasSchedule};
 use node_core::publication::{
     LocalPublicationPolicy, local_executable_publication_semantics,
     local_publication_profile_semantics, publication_policy_key_for_profile,
@@ -300,14 +303,46 @@ fn paid_policy() -> PaidFeePolicy {
 }
 
 fn paid_app(enabled: bool, installed_policy_bytes: Option<Vec<u8>>) -> Router {
+    paid_app_at_committed_epoch(enabled, installed_policy_bytes, Epoch::new(7))
+}
+
+fn paid_app_at_committed_epoch(
+    enabled: bool,
+    installed_policy_bytes: Option<Vec<u8>>,
+    committed_epoch: Epoch,
+) -> Router {
+    paid_app_at_committed_epoch_with_store(enabled, installed_policy_bytes, committed_epoch).0
+}
+
+fn paid_app_at_committed_epoch_with_store(
+    enabled: bool,
+    installed_policy_bytes: Option<Vec<u8>>,
+    committed_epoch: Epoch,
+) -> (Router, Arc<MemoryDurableStateStore>) {
     let domain: AtomicityDomainId = AtomicityDomainId::new([0x89; 32]).unwrap();
     let store = Arc::new(MemoryDurableStateStore::new(
         WriterFenceGeneration::new(3).unwrap(),
     ));
     let policy: PaidFeePolicy = paid_policy();
+    let operation: DurableOperationContext = DurableOperationContext::new(
+        WriterFenceGeneration::new(3).unwrap(),
+        StorageDeadline::new(u64::MAX).unwrap(),
+        StorageCorrelationId::new([0x35; 16]).unwrap(),
+    );
+    install_fastpath_epoch_record_for_epoch(
+        store.as_ref(),
+        &operation,
+        domain,
+        committed_epoch,
+        (committed_epoch != Epoch::new(7)).then_some(Epoch::new(7)),
+    );
     if let Some(bytes) = installed_policy_bytes {
+        let installed_context: PublicationContext =
+            execution::paid_execution::decode_paid_fee_policy(&bytes)
+                .map(|installed_policy: PaidFeePolicy| installed_policy.context)
+                .unwrap_or_else(|_| policy.context.clone());
         let key: Vec<u8> =
-            node_core::local_instance_state::paid_fee_policy_key(&policy.context).unwrap();
+            node_core::local_instance_state::paid_fee_policy_key(&installed_context).unwrap();
         let operation: DurableOperationContext = DurableOperationContext::new(
             WriterFenceGeneration::new(3).unwrap(),
             StorageDeadline::new(u64::MAX).unwrap(),
@@ -341,9 +376,9 @@ fn paid_app(enabled: bool, installed_policy_bytes: Option<Vec<u8>>) -> Router {
             policy,
         ));
     }
-    preinstalled_wasm_structured_durable_router(
+    let router: Router = preinstalled_wasm_structured_durable_router(
         StructuredDurableNativeComponents::new(
-            store,
+            Arc::clone(&store),
             Arc::new(MemoryBlobStore::default()),
             Arc::new(MemoryTransport::default()),
             Arc::new(ManualClock::new(10_000)),
@@ -358,7 +393,8 @@ fn paid_app(enabled: bool, installed_policy_bytes: Option<Vec<u8>>) -> Router {
         Arc::new(IncrementMachine::new(config().state_key())),
         NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
     )
-    .unwrap()
+    .unwrap();
+    (router, store)
 }
 
 #[tokio::test]
@@ -422,6 +458,236 @@ async fn paid_policy_route_is_explicit_and_returns_only_exact_installed_bytes() 
         .await
         .unwrap();
     assert_eq!(mismatched.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn paid_policy_route_follows_committed_epoch_without_static_fallback() {
+    let next_context: PublicationContext = PublicationContext::new(
+        config().chain_id().clone(),
+        config().protocol_version(),
+        Epoch::new(8),
+    )
+    .unwrap();
+    let next_base_policy: LocalExecutionPolicy =
+        LocalExecutionPolicy::generic_object_results(next_context.clone());
+    let next_policy: PaidFeePolicy = PaidFeePolicy {
+        context: next_context,
+        base_policy_digest: next_base_policy.digest(&resolver()).unwrap(),
+        ..paid_policy()
+    };
+    let next_bytes: Vec<u8> = encode_paid_fee_policy(&next_policy).unwrap();
+    let current: Response =
+        paid_app_at_committed_epoch(true, Some(next_bytes.clone()), Epoch::new(8))
+            .oneshot(
+                Request::builder()
+                    .uri(paid_execution::PAID_FEE_POLICY_PATH)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    assert_eq!(current.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(current.into_body(), next_bytes.len())
+            .await
+            .unwrap(),
+        next_bytes
+    );
+
+    let stale_only: Vec<u8> = encode_paid_fee_policy(&paid_policy()).unwrap();
+    let missing_current: Response =
+        paid_app_at_committed_epoch(true, Some(stale_only), Epoch::new(8))
+            .oneshot(
+                Request::builder()
+                    .uri(paid_execution::PAID_FEE_POLICY_PATH)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    assert_eq!(missing_current.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+fn signed_paid_publish(request: u8) -> (SignedPaidIntent, Vec<u8>) {
+    let key: SigningKey = SigningKey::from([7; 32]);
+    let sender: [u8; 32] = VerificationKey::from(&key).into();
+    let intent: PaidIntent = PaidIntent {
+        context: context(),
+        request_id: [request; 32],
+        sender,
+        nonce: 0,
+        fee_policy_digest: paid_fee_policy_digest(&resolver(), &paid_policy()).unwrap(),
+        consent: FeeSourceConsent {
+            source: ObjectRef {
+                id: ObjectId::new([0x61; 32]),
+                version: 1,
+                digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x62; 32]),
+            },
+            access: ReservationAccessKind::Write,
+            max_fee: Amount::new(1_000_000),
+            refund_recipient: sender,
+        },
+        application: PaidApplication::Publish(publication(1, 0).request().artifact().clone()),
+        gas_limit: 100_000,
+        authorizations: Vec::new(),
+    };
+    let frame: Vec<u8> = paid_intent_signing_frame(&context(), &intent).unwrap();
+    let signed: SignedPaidIntent = SignedPaidIntent {
+        intent,
+        signature: key.sign(&frame).into(),
+    };
+    let bytes: Vec<u8> = encode_signed_paid_intent(&signed).unwrap();
+    (signed, bytes)
+}
+
+#[tokio::test]
+async fn paid_http_invalid_signature_rejects_before_runtime_identity_or_storage() {
+    let domain: AtomicityDomainId = AtomicityDomainId::new([0x89; 32]).unwrap();
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(3).unwrap();
+    let inner: MemoryDurableStateStore = MemoryDurableStateStore::new(fence);
+    let setup_context: DurableOperationContext = DurableOperationContext::new(
+        fence,
+        StorageDeadline::new(u64::MAX).unwrap(),
+        StorageCorrelationId::new([0x38; 16]).unwrap(),
+    );
+    install_fastpath_epoch_record(&inner, &setup_context, domain);
+
+    let cancellation: Arc<ManualCancellation> = Arc::new(ManualCancellation::default());
+    let store: Arc<CancelOnFirstReceiptReadStore> = Arc::new(CancelOnFirstReceiptReadStore::new(
+        inner,
+        Arc::clone(&cancellation),
+    ));
+    let clock: Arc<CountingClock> = Arc::new(CountingClock::new(10_000));
+    let identities: Arc<CountingIndexedIdentities> = Arc::new(CountingIndexedIdentities::default());
+    let composition: PreinstalledWasmComposition = PreinstalledWasmComposition::new(
+        Arc::new(PreinstalledModuleCatalog::new(Vec::new()).unwrap()),
+        WasmExecutionEngine,
+        1,
+    )
+    .with_paid_execution(PaidExecutionComposition::new(
+        LocalExecutionPolicy::generic_object_results(context()),
+        paid_policy(),
+    ));
+    let app: Router = preinstalled_wasm_structured_durable_router(
+        StructuredDurableNativeComponents::new(
+            Arc::clone(&store),
+            Arc::new(MemoryBlobStore::default()),
+            Arc::new(MemoryTransport::default()),
+            Arc::clone(&clock),
+            Arc::clone(&identities),
+        ),
+        composition,
+        active_protocol_config(domain),
+        structured_request_authority(),
+        config(),
+        resolver(),
+        Vec::new(),
+        Arc::new(IncrementMachine::new(config().state_key())),
+        NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
+    )
+    .unwrap();
+
+    let (mut signed, _): (SignedPaidIntent, Vec<u8>) = signed_paid_publish(0x66);
+    signed.signature[0] ^= 0x80;
+    let body: Vec<u8> = encode_signed_paid_intent(&signed).unwrap();
+    let response: Response = post(&app, paid_execution::PAID_EXECUTION_PATH, body).await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(identities.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(clock.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(store.durable_reads(), 0);
+    assert_eq!(store.receipt_reads(), 0);
+    assert!(!cancellation.is_cancelled());
+}
+
+fn set_paid_test_state(store: &MemoryDurableStateStore, key: Vec<u8>, mutation: StateMutation) {
+    let operation: DurableOperationContext = DurableOperationContext::new(
+        WriterFenceGeneration::new(3).unwrap(),
+        StorageDeadline::new(u64::MAX).unwrap(),
+        StorageCorrelationId::new([0x36; 16]).unwrap(),
+    );
+    let observed: VersionedStateValue = store
+        .get_versioned_durable(
+            &operation,
+            AtomicityDomainId::new([0x89; 32]).unwrap(),
+            &key,
+        )
+        .unwrap();
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        AtomicityDomainId::new([0x89; 32]).unwrap(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![StateMutationEntry::new(key, mutation).unwrap()]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&operation, transaction),
+        DurableCommitOutcome::Committed
+    );
+}
+
+async fn assert_paid_replay_precedes_policy_lookup(key: Vec<u8>, mutation: StateMutation) {
+    let exact_policy: Vec<u8> = encode_paid_fee_policy(&paid_policy()).unwrap();
+    let (app, store): (Router, Arc<MemoryDurableStateStore>) =
+        paid_app_at_committed_epoch_with_store(true, Some(exact_policy), Epoch::new(7));
+    let (replay_signed, replay_bytes): (SignedPaidIntent, Vec<u8>) = signed_paid_publish(0x63);
+    let event_digest: Digest32 = paid_invocation_digest(&resolver(), &replay_signed).unwrap();
+    let request_id: RequestId = RequestId::new(replay_signed.intent.request_id).unwrap();
+    let response: NodeResponse =
+        NodeResponse::new(request_id, NodeResponseStatus::Accepted, None).unwrap();
+    let receipt: DurableRequestReceipt = DurableRequestReceipt::new(
+        DurableRequestId::new(replay_signed.intent.request_id).unwrap(),
+        event_digest,
+        NodeDedupRecord::new(request_id, event_digest, vec![response.clone()])
+            .unwrap()
+            .encode()
+            .unwrap(),
+    )
+    .unwrap();
+    let operation: DurableOperationContext = DurableOperationContext::new(
+        WriterFenceGeneration::new(3).unwrap(),
+        StorageDeadline::new(u64::MAX).unwrap(),
+        StorageCorrelationId::new([0x37; 16]).unwrap(),
+    );
+    let transaction: DurableInvocationTransaction = DurableInvocationTransaction::new(
+        AtomicityDomainId::new([0x89; 32]).unwrap(),
+        None,
+        DurableObjectChanges::new(Vec::new(), Vec::new()).unwrap(),
+        receipt,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_invocation(&operation, transaction),
+        DurableCommitOutcome::Committed
+    );
+    set_paid_test_state(store.as_ref(), key, mutation);
+
+    let replay: Response = post(&app, paid_execution::PAID_EXECUTION_PATH, replay_bytes).await;
+    assert_eq!(replay.status(), StatusCode::OK);
+    let replayed: HttpNodeResult =
+        HttpNodeResult::decode(&to_bytes(replay.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(replayed.responses(), &[response]);
+
+    let (_, fresh_bytes): (SignedPaidIntent, Vec<u8>) = signed_paid_publish(0x65);
+    let fresh: Response = post(&app, paid_execution::PAID_EXECUTION_PATH, fresh_bytes).await;
+    assert_ne!(fresh.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn paid_http_exact_replay_precedes_missing_or_corrupt_current_policy_rows() {
+    assert_paid_replay_precedes_policy_lookup(
+        node_core::local_instance_state::paid_fee_policy_key(&context()).unwrap(),
+        StateMutation::Delete,
+    )
+    .await;
+    assert_paid_replay_precedes_policy_lookup(
+        node_core::local_instance_state::execution_policy_key_for_profile(&context(), 4).unwrap(),
+        StateMutation::Put(vec![0x01]),
+    )
+    .await;
 }
 
 #[test]

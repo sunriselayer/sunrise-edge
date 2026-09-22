@@ -33,18 +33,21 @@
 //!    versions, immutable creation authority, the instance or publication
 //!    record, the nonce advance and the complete receipt.
 //!
-//! [`build_paid_admission`] performs steps 1 (minus authentication itself,
-//! done by [`authenticate_and_identify`]) through 7 plus the effect
+//! [`authenticate_paid_execution`] performs step 1 without storage I/O.
+//! [`reconcile_authenticated_paid_execution`] performs step 2 and returns
+//! either the exact committed replay or an unforgeable fresh witness.
+//! [`preflight_paid_execution`] composes both for trusted in-process callers.
+//! [`build_paid_admission`] performs steps 3 through 7 plus the effect
 //! translation half of step 8, returning a complete staged envelope neither
 //! committed nor turned into a final receipt. [`handle_paid_execution`] is a
-//! thin wrapper that authenticates, reconciles the final receipt, calls the
-//! shared builder in [`NonceMode::Fresh`] with locking disabled, and commits
-//! its own real receipt unchanged from before this refactor.
+//! thin wrapper over that preflight and [`handle_preflighted_paid_execution`],
+//! which admits the fresh witness and commits its real receipt.
 //! `crate::fast_path::prepare`/`crate::fast_path::apply` are the other two
 //! callers: neither duplicates this admission/execution pipeline.
 //!
-//! Nothing here activates paid execution: no CLI, HTTP, bootstrap or installer
-//! route reaches this function, and no policy is installed by it.
+//! Nothing here activates paid execution by itself: adapters must explicitly
+//! compose a route and bootstrap must install the exact policies. This module
+//! installs no route or policy.
 use super::*;
 use execution::call_authorization::MAX_EXECUTION_SCOPES;
 use execution::execution_scopes::{
@@ -140,6 +143,56 @@ pub(crate) type PaidResult<T> = Result<T, PaidExecutionAdmissionError>;
 
 fn invalid<T>(message: &'static str) -> PaidResult<T> {
     Err(PaidExecutionAdmissionError::Invalid(message))
+}
+
+/// Cryptographically authenticated paid invocation, before any storage I/O.
+///
+/// Fields are private so an adapter can carry this proof across its trusted
+/// committed-epoch lookup without substituting the intent, digest, or request
+/// identity. This witness grants no replay, nonce, policy, object, or mutation
+/// authority.
+pub struct AuthenticatedPaidExecution {
+    authenticated: AuthenticatedPaidIntent,
+    event_digest: Digest32,
+    request_id: RequestId,
+}
+
+impl AuthenticatedPaidExecution {
+    /// Returns the signature-authenticated protocol context.
+    #[must_use]
+    pub fn context(&self) -> &PublicationContext {
+        &self.authenticated.intent().context
+    }
+}
+
+/// Authenticated fresh paid invocation returned only after exact durable
+/// receipt reconciliation proved that no final result exists yet.
+///
+/// Fields are private so callers cannot fabricate or alter the authenticated
+/// intent, digest, or request identity between preflight and admission.
+pub struct FreshPaidExecution {
+    authenticated: AuthenticatedPaidExecution,
+}
+
+impl FreshPaidExecution {
+    /// Returns the authenticated request identity.
+    #[must_use]
+    pub const fn request_id(&self) -> RequestId {
+        self.authenticated.request_id
+    }
+}
+
+/// Result of paid authentication plus receipt reconciliation.
+pub enum PaidExecutionPreflight {
+    /// An exact committed replay; no current nonce or policy row was read.
+    Replayed {
+        /// Authenticated request identity of the persisted result.
+        request_id: RequestId,
+        /// Exact independently reverified durable result.
+        output: NodeOutput,
+    },
+    /// A fresh authenticated request that still requires current admission.
+    Fresh(Box<FreshPaidExecution>),
 }
 
 /// Durable conflict/mutation authority uses the stronger of the signed
@@ -1168,6 +1221,112 @@ pub(crate) fn build_paid_admission<
     })
 }
 
+/// Authenticates and reconciles one paid invocation before any nonce, policy,
+/// code, object, or blob read.
+pub fn preflight_paid_execution<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+    signed_bytes: &[u8],
+) -> PaidResult<PaidExecutionPreflight> {
+    let authenticated: AuthenticatedPaidExecution =
+        authenticate_paid_execution(resolver, expected, signed_bytes)?;
+    reconcile_authenticated_paid_execution(store, context, domain, expected, authenticated)
+}
+
+/// Authenticates one paid invocation and derives its stable replay identity
+/// without consulting runtime identity, clock, storage, policy, code, object,
+/// or blob state.
+pub fn authenticate_paid_execution(
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+    signed_bytes: &[u8],
+) -> PaidResult<AuthenticatedPaidExecution> {
+    let (authenticated, event_digest, request_id): (AuthenticatedPaidIntent, Digest32, RequestId) =
+        authenticate_and_identify(resolver, expected, signed_bytes)?;
+    Ok(AuthenticatedPaidExecution {
+        authenticated,
+        event_digest,
+        request_id,
+    })
+}
+
+/// Reconciles an already authenticated paid invocation against its exact
+/// durable receipt before any nonce, policy, code, object, or blob read.
+pub fn reconcile_authenticated_paid_execution<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    expected_current: &PublicationContext,
+    authenticated: AuthenticatedPaidExecution,
+) -> PaidResult<PaidExecutionPreflight> {
+    if authenticated.context() != expected_current {
+        return Err(PaidExecutionError::ContextMismatch.into());
+    }
+    let request_id: RequestId = authenticated.request_id;
+    let event_digest: Digest32 = authenticated.event_digest;
+    if let Some(output) =
+        durable_reconciliation::reconcile_receipt(store, context, domain, request_id, event_digest)?
+    {
+        return Ok(PaidExecutionPreflight::Replayed { request_id, output });
+    }
+    Ok(PaidExecutionPreflight::Fresh(Box::new(
+        FreshPaidExecution { authenticated },
+    )))
+}
+
+/// Admits and durably commits a fresh invocation returned by
+/// [`preflight_paid_execution`].
+///
+/// The private fields of [`FreshPaidExecution`] preserve the exact
+/// authenticated request and digest across the adapter's current-policy
+/// lookup without repeating authentication or replay reconciliation.
+#[allow(clippy::too_many_arguments)]
+pub fn handle_preflighted_paid_execution<
+    S: StructuredDurableDomainStateStore,
+    E: PaidContractEngine + ?Sized,
+>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    base_policy: &LocalExecutionPolicy,
+    fee_policy: &PaidFeePolicy,
+    engine: &E,
+    fresh: FreshPaidExecution,
+    created_checkpoint: u64,
+) -> PaidResult<NodeOutput> {
+    if history.len() > publication::MAX_PUBLICATION_HISTORY {
+        return invalid("resolver history bound");
+    }
+    let FreshPaidExecution { authenticated } = fresh;
+    let AuthenticatedPaidExecution {
+        authenticated,
+        event_digest,
+        request_id,
+    } = authenticated;
+    let admission: PaidAdmissionOutput = build_paid_admission(
+        store,
+        blob_store,
+        context,
+        domain,
+        resolver,
+        history,
+        base_policy,
+        fee_policy,
+        engine,
+        authenticated,
+        event_digest,
+        created_checkpoint,
+        NonceMode::Fresh,
+    )?;
+    commit_direct_paid_admission(store, context, domain, request_id, event_digest, admission)
+}
+
 /// Authenticates, admits and durably commits one paid invocation.
 ///
 /// `expected` is the caller's trusted execution context; `base_policy` and
@@ -1192,34 +1351,32 @@ pub fn handle_paid_execution<
     signed_bytes: &[u8],
     created_checkpoint: u64,
 ) -> PaidResult<NodeOutput> {
-    if history.len() > publication::MAX_PUBLICATION_HISTORY {
-        return invalid("resolver history bound");
+    match preflight_paid_execution(store, context, domain, resolver, expected, signed_bytes)? {
+        PaidExecutionPreflight::Replayed { output, .. } => Ok(output),
+        PaidExecutionPreflight::Fresh(fresh) => handle_preflighted_paid_execution(
+            store,
+            blob_store,
+            context,
+            domain,
+            resolver,
+            history,
+            base_policy,
+            fee_policy,
+            engine,
+            *fresh,
+            created_checkpoint,
+        ),
     }
-    let (authenticated, event_digest, request_id) =
-        authenticate_and_identify(resolver, expected, signed_bytes)?;
-    // 2. Exact replay reconciliation, immediately after authentication and
-    //    before every nonce, policy, code, object and blob read. A conflicting
-    //    request ID returns `RequestIdReuse` from here, unchanged.
-    if let Some(output) =
-        durable_reconciliation::reconcile_receipt(store, context, domain, request_id, event_digest)?
-    {
-        return Ok(output);
-    }
-    let admission: PaidAdmissionOutput = build_paid_admission(
-        store,
-        blob_store,
-        context,
-        domain,
-        resolver,
-        history,
-        base_policy,
-        fee_policy,
-        engine,
-        authenticated,
-        event_digest,
-        created_checkpoint,
-        NonceMode::Fresh,
-    )?;
+}
+
+fn commit_direct_paid_admission<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    request_id: RequestId,
+    event_digest: Digest32,
+    admission: PaidAdmissionOutput,
+) -> PaidResult<NodeOutput> {
     let PaidAdmissionOutput {
         result_bytes,
         success,

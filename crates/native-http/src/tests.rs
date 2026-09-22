@@ -71,6 +71,16 @@ fn install_fastpath_epoch_record<S: StructuredDurableDomainStateStore>(
     operation: &DurableOperationContext,
     domain: AtomicityDomainId,
 ) {
+    install_fastpath_epoch_record_for_epoch(store, operation, domain, Epoch::new(7), None);
+}
+
+fn install_fastpath_epoch_record_for_epoch<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    operation: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    current_epoch: Epoch,
+    previous_epoch: Option<Epoch>,
+) {
     let chain: ChainId = ChainId::new("sunrise-test").unwrap();
     let key: Vec<u8> = node_core::local_instance_state::fastpath_epoch_record_key(&chain).unwrap();
     let observed: VersionedStateValue = store
@@ -78,15 +88,14 @@ fn install_fastpath_epoch_record<S: StructuredDurableDomainStateStore>(
         .unwrap();
     let record: node_core::local_instance_state::FastPathEpochRecord =
         node_core::local_instance_state::FastPathEpochRecord {
-            current_epoch: Epoch::new(7),
+            current_epoch,
             current_validator_set_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0u8; 32]),
-            previous_epoch: None,
+            previous_epoch,
             activated_at_checkpoint: 0,
         };
     let bytes: Vec<u8> =
         node_core::local_instance_state::encode_fastpath_epoch_record(&record).unwrap();
-    if let Some(existing) = observed.value() {
-        assert_eq!(existing, bytes.as_slice());
+    if observed.value() == Some(bytes.as_slice()) {
         return;
     }
     let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
@@ -255,10 +264,18 @@ fn event_with_kind(request_id: RequestId, kind: NodeEventKind, chain_id: ChainId
 /// verbatim, for tests that construct malformed or deliberately
 /// mis-signed transaction bytes.
 fn submit_transaction_event(request_id: RequestId, payload: Vec<u8>) -> NodeEvent {
+    submit_transaction_event_at_epoch(Epoch::new(7), request_id, payload)
+}
+
+fn submit_transaction_event_at_epoch(
+    epoch: Epoch,
+    request_id: RequestId,
+    payload: Vec<u8>,
+) -> NodeEvent {
     NodeEvent::new(
         ChainId::new("sunrise-test").unwrap(),
         ProtocolVersion::new(3),
-        Epoch::new(7),
+        epoch,
         request_id,
         node_core::NodeEventKind::SubmitTransaction,
         payload,
@@ -1523,6 +1540,7 @@ struct CancelOnFirstReceiptReadStore {
     inner: MemoryDurableStateStore,
     cancellation: Arc<ManualCancellation>,
     cancelled: AtomicBool,
+    durable_reads: AtomicUsize,
     receipt_reads: AtomicUsize,
 }
 
@@ -1532,8 +1550,13 @@ impl CancelOnFirstReceiptReadStore {
             inner,
             cancellation,
             cancelled: AtomicBool::new(false),
+            durable_reads: AtomicUsize::new(0),
             receipt_reads: AtomicUsize::new(0),
         }
+    }
+
+    fn durable_reads(&self) -> usize {
+        self.durable_reads.load(Ordering::SeqCst)
     }
 
     fn receipt_reads(&self) -> usize {
@@ -1548,6 +1571,7 @@ impl DurableDomainStateStore for CancelOnFirstReceiptReadStore {
         domain: AtomicityDomainId,
         key: &[u8],
     ) -> Result<VersionedStateValue, DurableReadError> {
+        self.durable_reads.fetch_add(1, Ordering::SeqCst);
         self.inner.get_versioned_durable(context, domain, key)
     }
 
@@ -1903,6 +1927,13 @@ async fn assert_submit_rejected_before_side_effects_with_config(
     let fence = WriterFenceGeneration::new(3).unwrap();
     let inner = MemoryDurableStateStore::new(fence);
     inner.set_time(10_000);
+    let setup_context: DurableOperationContext = DurableOperationContext::new(
+        fence,
+        StorageDeadline::new(20_000).unwrap(),
+        StorageCorrelationId::new([0x86; 16]).unwrap(),
+    );
+    let domain: AtomicityDomainId = protocol_config.domain_placement.as_ref().unwrap().domain();
+    install_fastpath_epoch_record(&inner, &setup_context, domain);
     let cancellation = Arc::new(ManualCancellation::default());
     let store = Arc::new(CancelOnFirstReceiptReadStore::new(
         inner,
@@ -1941,6 +1972,7 @@ async fn assert_submit_rejected_before_side_effects_with_config(
     assert_eq!(machine.transition_calls.load(Ordering::SeqCst), 0);
     assert_eq!(identities.calls.load(Ordering::SeqCst), 0);
     assert_eq!(clock.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(store.durable_reads(), 0);
     assert_eq!(store.receipt_reads(), 0);
     assert!(!cancellation.is_cancelled());
     assert!(transport.drain_outbound().unwrap().is_empty());
@@ -2189,6 +2221,12 @@ async fn structured_route_maps_fresh_request_nonce_mismatch_without_transition_o
     let config = config();
     let machine = Arc::new(CountingMachine::new(config.state_key()));
     let domain = AtomicityDomainId::new([0x96; 32]).unwrap();
+    let setup_context: DurableOperationContext = DurableOperationContext::new(
+        fence,
+        StorageDeadline::new(20_000).unwrap(),
+        StorageCorrelationId::new([0x96; 16]).unwrap(),
+    );
+    install_fastpath_epoch_record(store.as_ref(), &setup_context, domain);
     let app = structured_durable_router(
         StructuredDurableNativeComponents::new(
             Arc::clone(&store),
@@ -2853,7 +2891,7 @@ async fn structured_route_rejects_invalid_submit_before_every_side_effect() {
 }
 
 #[tokio::test]
-async fn structured_route_rejects_outer_event_context_mismatch_before_every_side_effect() {
+async fn structured_route_rejects_outer_chain_or_protocol_mismatch_before_every_side_effect() {
     let domain = AtomicityDomainId::new([0x8A; 32]).unwrap();
     let protocol_config = active_protocol_config(domain);
 
@@ -2885,28 +2923,15 @@ async fn structured_route_rejects_outer_event_context_mismatch_before_every_side
     .unwrap();
     assert_submit_rejected_before_side_effects(
         wrong_version_event.encode().unwrap(),
-        protocol_config.clone(),
-        StatusCode::CONFLICT,
-        "state-or-context-conflict",
-    )
-    .await;
-
-    let wrong_epoch_event = NodeEvent::new(
-        ChainId::new("sunrise-test").unwrap(),
-        ProtocolVersion::new(3),
-        Epoch::new(8),
-        request_id(0x42),
-        NodeEventKind::SubmitTransaction,
-        canonical(TEST_PAYLOAD_TYPE_ID, 9),
-    )
-    .unwrap();
-    assert_submit_rejected_before_side_effects(
-        wrong_epoch_event.encode().unwrap(),
         protocol_config,
         StatusCode::CONFLICT,
         "state-or-context-conflict",
     )
     .await;
+
+    // A validly authenticated but stale/future epoch necessarily reaches the
+    // authoritative epoch read; the post-activation regression below covers
+    // that path. Malformed or invalidly signed submissions never reach it.
 }
 
 #[tokio::test]
@@ -4978,6 +5003,13 @@ async fn preinstalled_route_zero_object_call_rejects_before_storage_dispatch() {
     let fence = WriterFenceGeneration::new(3).unwrap();
     let inner = MemoryDurableStateStore::new(fence);
     inner.set_time(10_000);
+    let domain = AtomicityDomainId::new([0xC0; 32]).unwrap();
+    let setup_context: DurableOperationContext = DurableOperationContext::new(
+        fence,
+        StorageDeadline::new(20_000).unwrap(),
+        StorageCorrelationId::new([0xC0; 16]).unwrap(),
+    );
+    install_fastpath_epoch_record(&inner, &setup_context, domain);
     let cancellation = Arc::new(ManualCancellation::default());
     let store = Arc::new(CancelOnFirstReceiptReadStore::new(
         inner,
@@ -4985,7 +5017,6 @@ async fn preinstalled_route_zero_object_call_rejects_before_storage_dispatch() {
     ));
     let transport = Arc::new(MemoryTransport::default());
     let config = config();
-    let domain = AtomicityDomainId::new([0xC0; 32]).unwrap();
     let module_id = ModuleId::new([0x74; 32]);
     let (registry, catalog, module_ref) = preinstalled_module_fixture(
         &resolver(),
@@ -5278,6 +5309,12 @@ async fn structured_route_still_rejects_write_and_consume_access() {
     let transport = Arc::new(MemoryTransport::default());
     let config = config();
     let domain = AtomicityDomainId::new([0xC2; 32]).unwrap();
+    let setup_context: DurableOperationContext = DurableOperationContext::new(
+        fence,
+        StorageDeadline::new(20_000).unwrap(),
+        StorageCorrelationId::new([0xC2; 16]).unwrap(),
+    );
+    install_fastpath_epoch_record(store.as_ref(), &setup_context, domain);
     let protocol_config = active_protocol_config(domain);
     let app = structured_app(
         Arc::clone(&store),
@@ -6376,6 +6413,12 @@ async fn context_route_returns_trusted_composition() {
     let config = config();
     let domain = AtomicityDomainId::new([0xD1; 32]).unwrap();
     let protocol_config = active_protocol_config(domain);
+    let setup_context: DurableOperationContext = DurableOperationContext::new(
+        fence,
+        StorageDeadline::new(20_000).unwrap(),
+        StorageCorrelationId::new([0xD1; 16]).unwrap(),
+    );
+    install_fastpath_epoch_record(store.as_ref(), &setup_context, domain);
     let expected_bytes = protocol_config.canonical_bytes().unwrap();
     let app = structured_app(
         store,
@@ -6414,6 +6457,113 @@ async fn context_route_returns_trusted_composition() {
     assert_eq!(result.protocol_config_bytes(), expected_bytes.as_slice());
 }
 
+/// DR-0132 C7: the public epoch-bearing reads and authenticated native
+/// mutation boundary follow the committed singleton after the same e -> e+1
+/// record change installed by `epoch_transition::activate`, even while the
+/// process-local `NodeConfig` remains at e. The node-core transition suite
+/// separately drives the real certified activation that produces this row
+/// and deterministically races that activation against direct paid admission,
+/// proving the adapter's preliminary read is not mutation authority.
+#[tokio::test]
+async fn committed_epoch_advance_drives_context_nonce_and_submit_authority() {
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(3).unwrap();
+    let store: Arc<MemoryDurableStateStore> = Arc::new(MemoryDurableStateStore::new(fence));
+    store.set_time(10_000);
+    let domain: AtomicityDomainId = AtomicityDomainId::new([0xD0; 32]).unwrap();
+    let setup_context: DurableOperationContext = DurableOperationContext::new(
+        fence,
+        StorageDeadline::new(20_000).unwrap(),
+        StorageCorrelationId::new([0xD0; 16]).unwrap(),
+    );
+    install_fastpath_epoch_record(store.as_ref(), &setup_context, domain);
+    install_fastpath_epoch_record_for_epoch(
+        store.as_ref(),
+        &setup_context,
+        domain,
+        Epoch::new(8),
+        Some(Epoch::new(7)),
+    );
+    let app: Router = structured_app(
+        Arc::clone(&store),
+        Arc::new(MemoryTransport::default()),
+        Arc::new(ManualClock::new(10_000)),
+        active_protocol_config(domain),
+        config(),
+    );
+
+    let context_response: Response = app
+        .clone()
+        .oneshot(
+            Request::get(QUERY_CONTEXT_PATH)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(context_response.status(), StatusCode::OK);
+    let context_bytes: Bytes = to_bytes(context_response.into_body(), MAX_HTTP_EVENT_BODY_BYTES)
+        .await
+        .unwrap();
+    let context_result: HttpContextQueryResult =
+        HttpContextQueryResult::decode(&context_bytes).unwrap();
+    assert_eq!(context_result.epoch(), Epoch::new(8));
+
+    let signing_key: ed25519_zebra::SigningKey = dev_signing_key(0xD0);
+    let sender: Address = dev_sender_address(&signing_key);
+    let nonce_response: Response = app
+        .clone()
+        .oneshot(
+            Request::get(query_next_nonce_path(&sender))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(nonce_response.status(), StatusCode::OK);
+    let nonce_bytes: Bytes = to_bytes(nonce_response.into_body(), MAX_HTTP_EVENT_BODY_BYTES)
+        .await
+        .unwrap();
+    let nonce_result: HttpNextNonceQueryResult =
+        HttpNextNonceQueryResult::decode(&nonce_bytes).unwrap();
+    assert_eq!(nonce_result.epoch(), Epoch::new(8));
+    assert_eq!(nonce_result.next_nonce(), 0);
+
+    let stale: NodeEvent = signed_submit_transaction_event(&signing_key, request_id(0xD1), 0);
+    let stale_response: Response = app
+        .clone()
+        .oneshot(
+            Request::post(NODE_EVENT_PATH)
+                .header(header::CONTENT_TYPE, NODE_EVENT_MEDIA_TYPE)
+                .body(Body::from(stale.encode().unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale_response.status(), StatusCode::CONFLICT);
+
+    let fresh_transaction: Transaction = unsigned_transaction(
+        sender,
+        ChainId::new("sunrise-test").unwrap(),
+        Epoch::new(8),
+        0,
+    );
+    let fresh: NodeEvent = submit_transaction_event_at_epoch(
+        Epoch::new(8),
+        request_id(0xD2),
+        signed_transaction_bytes(&signing_key, &fresh_transaction),
+    );
+    let fresh_response: Response = app
+        .oneshot(
+            Request::post(NODE_EVENT_PATH)
+                .header(header::CONTENT_TYPE, NODE_EVENT_MEDIA_TYPE)
+                .body(Body::from(fresh.encode().unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fresh_response.status(), StatusCode::OK);
+}
+
 #[tokio::test]
 async fn context_route_rejects_inactive_domain_placement_before_any_side_effect() {
     let fence = WriterFenceGeneration::new(3).unwrap();
@@ -6425,6 +6575,16 @@ async fn context_route_rejects_inactive_domain_placement_before_any_side_effect(
     // storage-backed routes' inactive-placement rejection.
     let mut protocol_config = active_protocol_config(AtomicityDomainId::new([0xFC; 32]).unwrap());
     protocol_config.domain_placement = Some(placement(0xFC, 100));
+    let setup_context: DurableOperationContext = DurableOperationContext::new(
+        fence,
+        StorageDeadline::new(20_000).unwrap(),
+        StorageCorrelationId::new([0xFC; 16]).unwrap(),
+    );
+    install_fastpath_epoch_record(
+        store.as_ref(),
+        &setup_context,
+        AtomicityDomainId::new([0xFC; 32]).unwrap(),
+    );
     let clock = Arc::new(CountingClock::new(10_000));
     let identities = Arc::new(CountingIndexedIdentities::default());
     let machine = Arc::new(IncrementMachine::new(config.state_key()));
@@ -6459,8 +6619,8 @@ async fn context_route_rejects_inactive_domain_placement_before_any_side_effect(
         to_bytes(response.into_body(), 128).await.unwrap(),
         "query-unavailable"
     );
-    assert_eq!(clock.calls.load(Ordering::SeqCst), 0);
-    assert_eq!(identities.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(clock.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(identities.calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -7275,6 +7435,12 @@ async fn next_nonce_route_true_absence_returns_zero() {
     let config = config();
     let domain = AtomicityDomainId::new([0xEB; 32]).unwrap();
     let protocol_config = active_protocol_config(domain);
+    let setup_context: DurableOperationContext = DurableOperationContext::new(
+        fence,
+        StorageDeadline::new(20_000).unwrap(),
+        StorageCorrelationId::new([0xEB; 16]).unwrap(),
+    );
+    install_fastpath_epoch_record(store.as_ref(), &setup_context, domain);
     let app = structured_app(
         store,
         transport,

@@ -2,7 +2,8 @@
 
 use super::*;
 use execution::paid_execution::{
-    MAX_SIGNED_PAID_INTENT_BYTES, decode_signed_paid_intent, encode_paid_fee_policy,
+    MAX_SIGNED_PAID_INTENT_BYTES, decode_paid_fee_policy, decode_signed_paid_intent,
+    encode_paid_fee_policy,
 };
 
 pub const PAID_EXECUTION_PATH: &str = "/v1/contracts/paid-executions";
@@ -62,7 +63,27 @@ where
             let Some(paid) = state.preinstalled_wasm.paid_execution.as_ref() else {
                 return error_response(StatusCode::NOT_FOUND, "paid-execution-disabled");
             };
-            let (domain, context) = match prepare_storage_context(
+            let signed_context: execution::publication::PublicationContext =
+                match execution::publication::PublicationContext::new(
+                    state.config.chain_id().clone(),
+                    state.config.protocol_version(),
+                    signed.intent.context.epoch(),
+                ) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return error_response(StatusCode::BAD_REQUEST, "invalid-paid-execution");
+                    }
+                };
+            let authenticated: node_core::paid_execution::AuthenticatedPaidExecution =
+                match node_core::paid_execution::authenticate_paid_execution(
+                    &state.resolver,
+                    &signed_context,
+                    &body,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return admission_error(&error),
+                };
+            let (domain, context, epoch_record) = match prepare_authoritative_epoch_storage_context(
                 &state.components,
                 &state.protocol_config,
                 &state.authority,
@@ -74,22 +95,101 @@ where
             if state.components.is_cancelled() {
                 return cancelled_before_storage_response();
             }
-            let request_id: RequestId = match RequestId::new(signed.intent.request_id) {
-                Ok(value) => value,
-                Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid-request-id"),
+            let current_context: execution::publication::PublicationContext =
+                match execution::publication::PublicationContext::new(
+                    state.config.chain_id().clone(),
+                    state.config.protocol_version(),
+                    epoch_record.current_epoch,
+                ) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "paid-execution-context-invalid",
+                        );
+                    }
+                };
+            let preflight: node_core::paid_execution::PaidExecutionPreflight =
+                match node_core::paid_execution::reconcile_authenticated_paid_execution(
+                    state.components.store.as_ref(),
+                    &context,
+                    domain,
+                    &current_context,
+                    authenticated,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return admission_error(&error),
+                };
+            let fresh: Box<node_core::paid_execution::FreshPaidExecution> = match preflight {
+                node_core::paid_execution::PaidExecutionPreflight::Replayed {
+                    request_id,
+                    output,
+                } => {
+                    return match HttpNodeResult::new(request_id, output.responses().to_vec())
+                        .and_then(|result| result.encode())
+                    {
+                        Ok(bytes) => (
+                            StatusCode::OK,
+                            [
+                                (header::CONTENT_TYPE, NODE_RESULT_MEDIA_TYPE),
+                                (header::CACHE_CONTROL, "no-store"),
+                            ],
+                            bytes,
+                        )
+                            .into_response(),
+                        Err(_) => error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "paid-execution-result-encoding",
+                        ),
+                    };
+                }
+                node_core::paid_execution::PaidExecutionPreflight::Fresh(fresh) => fresh,
             };
-            let output = match node_core::paid_execution::handle_paid_execution(
+            let policy_key: Vec<u8> =
+                match node_core::local_instance_state::paid_fee_policy_key(&current_context) {
+                    Ok(value) => value,
+                    Err(error) => return node_error_response(&error),
+                };
+            let observed_policy: runtime::VersionedStateValue = match state
+                .components
+                .store
+                .get_versioned_durable(&context, domain, &policy_key)
+            {
+                Ok(value) => value,
+                Err(error) => return node_error_response(&NodeCoreError::from(error)),
+            };
+            let Some(policy_bytes) = observed_policy.value() else {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "paid-fee-policy-not-installed",
+                );
+            };
+            let current_fee_policy: execution::paid_execution::PaidFeePolicy =
+                match decode_paid_fee_policy(policy_bytes) {
+                    Ok(value) if value.context == current_context => value,
+                    Ok(_) | Err(_) => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "paid-fee-policy-invalid",
+                        );
+                    }
+                };
+            let current_base_policy: execution::local_execution::LocalExecutionPolicy =
+                execution::local_execution::LocalExecutionPolicy::generic_object_results(
+                    current_context.clone(),
+                );
+            let request_id: RequestId = fresh.request_id();
+            let output = match node_core::paid_execution::handle_preflighted_paid_execution(
                 state.components.store.as_ref(),
                 state.components.blob_store.as_ref(),
                 &context,
                 domain,
                 &state.resolver,
                 &state.history,
-                &paid.fee_policy.context,
-                &paid.base_policy,
-                &paid.fee_policy,
+                &current_base_policy,
+                &current_fee_policy,
                 &paid.engine,
-                &body,
+                *fresh,
                 state.preinstalled_wasm.created_checkpoint,
             ) {
                 Ok(value) => value,
@@ -132,10 +232,10 @@ where
         state.components.is_cancelled(),
         state.blocking_executor.clone(),
         move || {
-            let Some(paid) = state.preinstalled_wasm.paid_execution.as_ref() else {
+            let Some(_paid) = state.preinstalled_wasm.paid_execution.as_ref() else {
                 return error_response(StatusCode::NOT_FOUND, "paid-execution-disabled");
             };
-            let (domain, context) = match prepare_storage_context(
+            let (domain, context, epoch_record) = match prepare_authoritative_epoch_storage_context(
                 &state.components,
                 &state.protocol_config,
                 &state.authority,
@@ -144,39 +244,59 @@ where
                 Ok(value) => value,
                 Err(error) => return query_invocation_error_response(&error),
             };
-            let key: Vec<u8> = match node_core::local_instance_state::paid_fee_policy_key(
-                &paid.fee_policy.context,
-            ) {
-                Ok(value) => value,
-                Err(error) => return node_error_response(&error),
-            };
-            let expected: Vec<u8> = match encode_paid_fee_policy(&paid.fee_policy) {
-                Ok(value) => value,
-                Err(_) => {
-                    return error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "paid-fee-policy-invalid",
-                    );
-                }
-            };
+            let current_context: execution::publication::PublicationContext =
+                match execution::publication::PublicationContext::new(
+                    state.config.chain_id().clone(),
+                    state.config.protocol_version(),
+                    epoch_record.current_epoch,
+                ) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "paid-fee-policy-invalid",
+                        );
+                    }
+                };
+            let key: Vec<u8> =
+                match node_core::local_instance_state::paid_fee_policy_key(&current_context) {
+                    Ok(value) => value,
+                    Err(error) => return node_error_response(&error),
+                };
             match state
                 .components
                 .store
                 .get_versioned_durable(&context, domain, &key)
             {
-                Ok(observed) if observed.value() == Some(expected.as_slice()) => (
-                    StatusCode::OK,
-                    [
-                        (header::CONTENT_TYPE, QUERY_RESULT_MEDIA_TYPE),
-                        (header::CACHE_CONTROL, "no-store"),
-                    ],
-                    expected,
-                )
-                    .into_response(),
-                Ok(_) => error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "paid-fee-policy-not-installed",
-                ),
+                Ok(observed) => match observed.value() {
+                    Some(bytes) => match decode_paid_fee_policy(bytes) {
+                        Ok(policy) if policy.context == current_context => {
+                            match encode_paid_fee_policy(&policy) {
+                                Ok(encoded) if encoded.as_slice() == bytes => (
+                                    StatusCode::OK,
+                                    [
+                                        (header::CONTENT_TYPE, QUERY_RESULT_MEDIA_TYPE),
+                                        (header::CACHE_CONTROL, "no-store"),
+                                    ],
+                                    encoded,
+                                )
+                                    .into_response(),
+                                Ok(_) | Err(_) => error_response(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "paid-fee-policy-invalid",
+                                ),
+                            }
+                        }
+                        Ok(_) | Err(_) => error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "paid-fee-policy-invalid",
+                        ),
+                    },
+                    None => error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "paid-fee-policy-not-installed",
+                    ),
+                },
                 Err(error) => query_invocation_error_response(&QueryInvocationError::Node(
                     NodeCoreError::from(error),
                 )),

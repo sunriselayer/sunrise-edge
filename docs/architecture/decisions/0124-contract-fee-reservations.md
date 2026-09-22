@@ -463,6 +463,11 @@ references an invocation, so commitments are acyclic. Hash the complete signed
 intent under NodeEvent for replay and reservation identity. Cryptographic
 authentication takes only the trusted expected context/resolver and signed
 bytes, so receipt reconciliation need not consult a current fee policy.
+A public adapter may take the untrusted signed epoch only to construct that
+cryptographic expectation alongside locally trusted chain and protocol values;
+it must complete authentication before acquiring operational identity, reading
+the clock, or reading durable state. It then compares the authenticated epoch
+with the committed current epoch before exact receipt reconciliation.
 A separate policy-check/quote operation takes that immutable authenticated
 intent and a trusted expected policy, checks their contexts and digest equality,
 and derives the immutable reservation quote from L and max_fee. Run that check

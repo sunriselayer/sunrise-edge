@@ -1514,8 +1514,10 @@ fn actual_legacy_authenticated_handler_cannot_mutate_public_object() {
         Some(DomainPlacementManifest::single_domain(1, domain(), Epoch::new(0)).unwrap());
     protocol_config.transaction_auth_profile =
         Some(protocol_config::TransactionAuthProfile::ed25519_address_is_public_key());
+    let trusted_context: TrustedTransactionContext<'_> =
+        TrustedTransactionContext::new(config.chain_id().clone(), config.epoch(), &protocol_config);
     let authenticated: AuthenticatedSubmitTransaction =
-        authenticate_submit_transaction_event(event, &config, &protocol_config).unwrap();
+        authenticate_submit_transaction_event(event, &trusted_context).unwrap();
     let engine: LegacyMachine = LegacyMachine {
         calls: Cell::new(0),
     };

@@ -53,6 +53,7 @@ pub mod local_instance_state;
 mod mutation_fence;
 mod object_snapshots;
 pub mod paid_execution;
+pub mod phase2_authorization;
 mod preinstalled_wasm;
 pub mod publication;
 mod query;
@@ -2071,19 +2072,37 @@ impl AuthenticatedSubmitTransaction {
 /// Authenticates one `SubmitTransaction` event before any machine or storage
 /// operation can begin.
 ///
-/// The outer event is first matched against `NodeConfig`. Its protocol version
-/// must also equal the committed `ProtocolConfig` version. The inner canonical
-/// transaction is then authenticated with the outer trusted chain and epoch,
-/// while protocol-version and profile authority come only from
-/// `ProtocolConfig`. The returned wrapper captures that configuration's domain
-/// placement and exact matching system-module record (or its committed absence)
-/// for the later durable commit and module resolution.
+/// The outer event is first matched against an explicit transaction context.
+/// Native durable ingress uses the signed outer epoch here only to prove
+/// outer/inner consistency and verify the sender before identity, clock, or
+/// storage work. It then independently requires that authenticated epoch to
+/// equal the committed `FastPathEpochRecord` before dispatch; static startup
+/// epoch is never live authority. Protocol-version and profile authority come
+/// only from the context's `ProtocolConfig`. The returned wrapper captures that
+/// configuration's domain placement and exact matching system-module record
+/// (or its committed absence) for later durable commit and module resolution.
 pub fn authenticate_submit_transaction_event(
     event: NodeEvent,
-    config: &NodeConfig,
-    protocol_config: &ProtocolConfig,
+    trusted_context: &TrustedTransactionContext<'_>,
 ) -> Result<AuthenticatedSubmitTransaction, NodeCoreError> {
-    event.validate_context(config)?;
+    if event.chain_id() != trusted_context.chain_id() {
+        return Err(NodeCoreError::ChainMismatch {
+            expected: trusted_context.chain_id().clone(),
+            actual: event.chain_id().clone(),
+        });
+    }
+    if event.protocol_version() != trusted_context.protocol_version() {
+        return Err(NodeCoreError::ProtocolVersionMismatch {
+            expected: trusted_context.protocol_version(),
+            actual: event.protocol_version(),
+        });
+    }
+    if event.epoch() != trusted_context.epoch() {
+        return Err(NodeCoreError::EpochMismatch {
+            expected: trusted_context.epoch(),
+            actual: event.epoch(),
+        });
+    }
     if event.kind() != NodeEventKind::SubmitTransaction {
         return Err(NodeCoreError::ExpectedSubmitTransaction);
     }
@@ -2093,20 +2112,12 @@ pub fn authenticate_submit_transaction_event(
     // `AuthenticatedSubmitTransaction` only from this function's output).
     local_instance_state::reject_reserved_request_id(event.request_id().as_bytes())
         .map_err(NodeCoreError::PersistenceInvariant)?;
-    if config.protocol_version() != protocol_config.protocol_version {
-        return Err(NodeCoreError::ProtocolConfigVersionMismatch {
-            node_config: config.protocol_version(),
-            protocol_config: protocol_config.protocol_version,
-        });
-    }
-
-    let trusted_context =
-        TrustedTransactionContext::new(config.chain_id().clone(), config.epoch(), protocol_config);
     let transaction = authenticate_submit_transaction_bytes(
         event.request_id(),
         event.payload(),
-        &trusted_context,
+        trusted_context,
     )?;
+    let protocol_config: &ProtocolConfig = trusted_context.protocol_config();
     let module_ref: &ObjectRef = &transaction.transaction().module_ref;
     let module_id: ModuleId = ModuleId::new(*module_ref.id.as_bytes());
     let committed_system_module: Option<SystemModule> = protocol_config

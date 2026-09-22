@@ -18,8 +18,8 @@ SQLite test and its supporting adversarial evidence, and independent
 Rust/JS vectors are all implemented and passing, and `cargo fmt`, `cargo
 clippy -D warnings`, `cargo test --workspace`, and `./scripts/check-all.sh`
 all pass on the integrated diff. **Slice 2 is implemented, but FastVote
-Phase 2 remains open** until slices 3-4 are also implemented and reviewed
-(DR-0131's Slice 4 still owns closing the Phase 2 gate entry in `TODO.md`).
+Phase 2 remains open** until [DR-0134](0134-fastvote-authorization-boundary.md)'s
+companion Slice 4 code and review gate land.
 Nothing in this DR authorizes testnet or production activation of any new
 ingress. Retired-validator and wrong-epoch rejection are now end-to-end
 observable through a real transition (see the adversarial evidence in
@@ -210,7 +210,8 @@ signature domain, `"fast-path-epoch-transition-v1"`, and distinct frame IDs
 authoritative: the committed `FastPathEpochRecord` is. Slice 2 adds a
 read-only `query::query_committed_epoch_state` so callers can read the
 authoritative current epoch instead of trusting static config; rewiring
-`native-http` to use it is Slice 4's ingress-boundary work, not Slice 2's.
+`native-http` to use it is Slice 4's ingress-boundary work, specified by
+[DR-0134](0134-fastvote-authorization-boundary.md), not Slice 2's.
 
 ## Decision
 
@@ -489,8 +490,8 @@ No new externally reachable event family. `propose_and_vote`/`activate` are
 in-process node-core functions in the same authorization class as
 `fast_path::prepare`/`apply`: local-operator-invoked, validator-authenticated
 by the signer's membership in the fenced outgoing set. `native-http` gains
-nothing from this DR. Slice 4 still owns the authorization-class
-declaration.
+nothing from this DR. DR-0134 declares the complete two-axis authorization
+and closed-ingress boundary.
 
 `next_validators` is supplied by the operator invoking `propose_and_vote`/
 `activate`; its only source of authority is the outgoing-set quorum
@@ -709,8 +710,8 @@ complete repository gate, fresh tech-lead and security review):
     review.
 
 Satisfying these criteria implements Slice 2 but does not by itself close
-FastVote Phase 2 (Slice 4 still owns that) and does not authorize testnet or
-production activation of any new ingress.
+FastVote Phase 2; DR-0134's companion Slice 4 implementation still must land.
+It does not authorize testnet or production activation of any new ingress.
 
 ## Test and evidence plan (for the implementation this DR specifies)
 
@@ -887,13 +888,11 @@ tech-lead review.
   `activation_digest` and never quorum. `next_validators` is now sorted by
   `ValidatorId` before anything is validated or encoded — see the same
   revision.
-- Explicit canonical equivocation evidence (Slice 3) and authorization-class
-  declaration / Phase 2 gate closure (Slice 4) remain out of scope for this
-  DR, exactly as DR-0131 left them. Slice 3's detailed design (design-only,
-  not implemented) is now fixed by
+- Explicit canonical equivocation evidence is implemented by
   [DR-0133](0133-fastvote-equivocation-evidence.md), including the exact
   `EpochTransitionVote` conflict key (same outgoing validator, same outgoing
-  epoch, differing target tuple).
+  epoch, differing target tuple). DR-0134 specifies Slice 4's authorization
+  boundary; its companion code and reviews remain the Phase 2 closure gate.
 - Bond-linked slashing execution and deterministic transaction-fee escrow
   distribution to the final certificate signer set remain Phase 3,
   unaffected by this DR.
@@ -903,7 +902,6 @@ tech-lead review.
   module described above.
 - **Slice 2 is implemented, but Phase 2 remains open.** This DR closes
   Slice 2 but does not close the FastVote Certified Execution Gate's Phase 2
-  entry in `TODO.md` — that is Slice 4's own scope. Retired-validator and
-  wrong-epoch rejection are now end-to-end observable through a real
-  transition. Phase 2 is not complete until Slices 3-4 are also implemented
-  and reviewed, and FastVote is not complete until Phase 3.
+  entry in `TODO.md`; DR-0134's companion implementation owns that closure.
+  Retired-validator and wrong-epoch rejection are now end-to-end observable through a real
+  transition. FastVote is not complete until Phase 3.

@@ -380,7 +380,9 @@ fn authenticated_submission_from_transaction(
         payload,
     )
     .unwrap();
-    authenticate_submit_transaction_event(event, config, protocol_config).unwrap()
+    let trusted_context: TrustedTransactionContext<'_> =
+        TrustedTransactionContext::new(config.chain_id().clone(), config.epoch(), protocol_config);
+    authenticate_submit_transaction_event(event, &trusted_context).unwrap()
 }
 
 /// Authenticates a test transaction under profile 2's request-bound
@@ -421,7 +423,9 @@ fn authenticated_profile_2_submission_from_transaction(
         payload,
     )
     .unwrap();
-    authenticate_submit_transaction_event(event, config, protocol_config).unwrap()
+    let trusted_context: TrustedTransactionContext<'_> =
+        TrustedTransactionContext::new(config.chain_id().clone(), config.epoch(), protocol_config);
+    authenticate_submit_transaction_event(event, &trusted_context).unwrap()
 }
 
 /// Signs `tx` under the exact production `SignatureDomain` that
@@ -861,11 +865,12 @@ fn all_eight_generic_handlers_reject_submit_before_machine_or_storage_work() {
 fn authenticate_submit_transaction_event_rejects_wrong_kind() {
     let config = config("sunrise-test");
     let protocol_config = active_protocol_config(0xD5);
+    let trusted_context: TrustedTransactionContext<'_> =
+        TrustedTransactionContext::new(config.chain_id().clone(), config.epoch(), &protocol_config);
 
     let error = authenticate_submit_transaction_event(
         event("sunrise-test", request(0xA1)),
-        &config,
-        &protocol_config,
+        &trusted_context,
     )
     .unwrap_err();
 
@@ -884,11 +889,12 @@ fn authenticate_submit_transaction_event_rejects_reserved_request_id() {
     let tag: [u8; 8] = local_instance_state::FASTPATH_SYNTHETIC_REQUEST_ID_TAG;
     let mut reserved_id: [u8; 32] = [0u8; 32];
     reserved_id[..tag.len()].copy_from_slice(&tag);
+    let trusted_context: TrustedTransactionContext<'_> =
+        TrustedTransactionContext::new(config.chain_id().clone(), config.epoch(), &protocol_config);
 
     let error = authenticate_submit_transaction_event(
         submit_event("sunrise-test", RequestId::new(reserved_id).unwrap()),
-        &config,
-        &protocol_config,
+        &trusted_context,
     )
     .unwrap_err();
 
@@ -899,23 +905,24 @@ fn authenticate_submit_transaction_event_rejects_reserved_request_id() {
 }
 
 #[test]
-fn authenticate_submit_transaction_event_rejects_protocol_config_version_mismatch() {
+fn authenticate_submit_transaction_event_rejects_event_protocol_version_mismatch() {
     let config = config("sunrise-test");
     let mut protocol_config = active_protocol_config(0xD6);
     protocol_config.protocol_version = ProtocolVersion::new(2);
+    let trusted_context: TrustedTransactionContext<'_> =
+        TrustedTransactionContext::new(config.chain_id().clone(), config.epoch(), &protocol_config);
 
     let error = authenticate_submit_transaction_event(
         submit_event("sunrise-test", request(0xA2)),
-        &config,
-        &protocol_config,
+        &trusted_context,
     )
     .unwrap_err();
 
     assert_eq!(
         error,
-        NodeCoreError::ProtocolConfigVersionMismatch {
-            node_config: ProtocolVersion::new(3),
-            protocol_config: ProtocolVersion::new(2),
+        NodeCoreError::ProtocolVersionMismatch {
+            expected: ProtocolVersion::new(2),
+            actual: ProtocolVersion::new(3),
         }
     );
 }
@@ -943,8 +950,10 @@ fn authenticate_submit_transaction_event_happy_path_authenticates_transaction() 
     )
     .unwrap();
 
+    let trusted_context: TrustedTransactionContext<'_> =
+        TrustedTransactionContext::new(config.chain_id().clone(), config.epoch(), &protocol_config);
     let authenticated =
-        authenticate_submit_transaction_event(event.clone(), &config, &protocol_config).unwrap();
+        authenticate_submit_transaction_event(event.clone(), &trusted_context).unwrap();
 
     assert_eq!(authenticated.event(), &event);
     assert_eq!(authenticated.transaction().transaction().nonce, 0);

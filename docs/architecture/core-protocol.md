@@ -293,6 +293,10 @@ before access-plan derivation, operational identity allocation, clock or
 storage work, transition, outbox claim, or send. The wrapper captures the
 committed placement used by the later normalized durable handler, preventing
 authentication under one configuration followed by routing under another.
+At this pre-storage stage the signed outer epoch proves only outer/inner frame
+consistency. The route then reads the durable `FastPathEpochRecord` and requires
+that already-authenticated epoch to equal its current epoch before application
+planning or transition; the signed epoch never selects live authority.
 Exact replays authenticate again before durable receipt reconciliation.
 Generic node-core handlers and the legacy native routers fail closed on
 `SubmitTransaction`. DR-0099 additionally closes every native public
@@ -534,13 +538,16 @@ atomically with the rewritten epoch record), and lazy CAS-only stale-lock
 and stale-prepared-record reclamation rule, correcting three blocking
 assumptions DR-0131 made about the transition (genesis restart-verify,
 epoch-scoped paid-policy carry-forward, and the committed-epoch query
-boundary). DR-0133 implements and locally validates slice 3 (equivocation evidence
-covering same-transaction, cross-transaction same-object-version, and
-epoch-transition-conflicting-target misconduct). Slice 4's detailed wire/API
-decision remains pending. Phase 2 is not complete until slice 4 closes,
-with Slice 4 next. FastVote overall remains incomplete until phase 3. See DR-0129,
-DR-0130, DR-0131, DR-0132, DR-0133, and `TODO.md` for exact evidence and
-remaining activation gates.
+boundary). DR-0133 implements and locally validates slice 3 (equivocation
+evidence covering same-transaction, cross-transaction same-object-version,
+and epoch-transition-conflicting-target misconduct). DR-0134 fixes slice 4's
+two-axis authorization matrix: every FastVote operation is local-operator-
+invoked, its signing or mutating branch requires the appropriate current,
+outgoing, or historical validator proof, and every external ingress remains
+closed. It adds no wire or product surface. Slice 4 and Phase 2 are implemented
+only when DR-0134's companion code and review gate land. FastVote overall
+remains incomplete until phase 3. See DR-0129 through DR-0134 and `TODO.md` for
+exact evidence and remaining activation gates.
 
 ## 12. Certificate lifecycle
 Phase 13 adds shared-consensus quorum certificates. Each certificate binds the

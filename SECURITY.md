@@ -70,9 +70,15 @@ certification.
 
 - Canonical bytes, type and field identifiers, enum tags, hash domains, and
   stable vectors must remain deterministic and versioned.
-- A state-changing transaction must be authenticated against the trusted
-  chain ID, protocol version, epoch, authentication profile, signature scheme,
-  and sender binding before runtime identity or storage work.
+- A state-changing signed ingress, including `SubmitTransaction` and public
+  paid execution, must authenticate its canonical frame, trusted chain ID and
+  protocol version, signature scheme, sender binding, and signed epoch before
+  runtime identity, clock, or storage work. `SubmitTransaction` additionally
+  authenticates its profile and outer/inner signed-epoch consistency at this
+  stage. Because the durable current epoch is itself stored state, that
+  already-authenticated signed epoch must then equal the committed current
+  epoch before replay reconciliation, application planning, transition, or
+  mutation.
 - Request replay and request-ID reuse must reconcile against persisted receipt
   and event-digest state before nonce, object, module, or application work.
 - Sender nonce, application state, object versions, receipt, and outbox effects
@@ -111,9 +117,13 @@ certification.
   end-to-end observable across an activated transition. Local, durable,
   historical-validator-set-verified equivocation evidence is implemented by
   [DR-0133](docs/architecture/decisions/0133-fastvote-equivocation-evidence.md)
-  without external ingress or punishment. Authorization-class/ingress
-  declarations and Phase 3 economics remain open; see the "Initial-Audit
-  Exclusions" below.
+  without external ingress or punishment.
+  [DR-0134](docs/architecture/decisions/0134-fastvote-authorization-boundary.md)
+  declares the two-axis authorization boundary: every Phase 2 operation is
+  local-operator-invoked, its signing or mutating branch requires the exact
+  current/outgoing/historical validator proof, and external ingress remains
+  closed. Slice 4 and Phase 2 are implemented only when its companion code and
+  reviews land. Phase 3 economics remain open.
 
 ## Reportable Findings and Severity Context
 
@@ -155,8 +165,10 @@ The following are deferred from the first audit engagement:
   equivocation-evidence types, historical verification, durable recording,
   and point query are implemented under
   [DR-0133](docs/architecture/decisions/0133-fastvote-equivocation-evidence.md).
-  Slice 4's authorization-class/ingress declaration remains unimplemented,
-  and Phase 3 slashing/reward distribution remains undesigned — see
+  Slice 4's authorization and closed-ingress decision is accepted under
+  [DR-0134](docs/architecture/decisions/0134-fastvote-authorization-boundary.md),
+  but Phase 2 completion remains conditional on its companion code and reviews
+  landing. Phase 3 slashing/reward distribution remains undesigned — see
   `TODO.md`'s FastVote Certified Execution Gate);
 - externally accepted non-`SubmitTransaction` event families;
 - production multi-validator consensus activation;
