@@ -17,9 +17,9 @@ lazy stale-lock/prepared-record reclamation, the headline four-independent-
 SQLite test and its supporting adversarial evidence, and independent
 Rust/JS vectors are all implemented and passing, and `cargo fmt`, `cargo
 clippy -D warnings`, `cargo test --workspace`, and `./scripts/check-all.sh`
-all pass on the integrated diff. **Slice 2 is implemented, but FastVote
-Phase 2 remains open** until [DR-0134](0134-fastvote-authorization-boundary.md)'s
-companion Slice 4 code and review gate land.
+all pass on the integrated diff. **Slice 2 is implemented.** FastVote Phase 2
+subsequently closed when [DR-0134](0134-fastvote-authorization-boundary.md)'s
+companion Slice 4 code and review gate landed in PR #180.
 Nothing in this DR authorizes testnet or production activation of any new
 ingress. Retired-validator and wrong-epoch rejection are now end-to-end
 observable through a real transition (see the adversarial evidence in
@@ -900,8 +900,8 @@ tech-lead review.
   signature domain, and does not change DR-0130's or DR-0131's Phase 1/
   Slice 1 invariants; it only adds the new frame families and node-core
   module described above.
-- **Slice 2 is implemented, but Phase 2 remains open.** This DR closes
-  Slice 2 but does not close the FastVote Certified Execution Gate's Phase 2
-  entry in `TODO.md`; DR-0134's companion implementation owns that closure.
+- **Slice 2 is implemented; Phase 2 later closed in PR #180.** This DR closes
+  Slice 2 but did not by itself close the FastVote Certified Execution Gate's
+  Phase 2 entry in `TODO.md`; DR-0134's companion implementation owns that closure.
   Retired-validator and wrong-epoch rejection are now end-to-end observable through a real
   transition. FastVote is not complete until Phase 3.

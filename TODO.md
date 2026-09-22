@@ -29,9 +29,8 @@ over the complete staged commit, durable exclusive owned-object version
 locks, quorum certificate verification, and atomic certificate apply
 (implemented and locally validated in
 [DR-0130](docs/architecture/decisions/0130-owned-object-certified-execution.md));
-phase 2, validator lifecycle, architecture fixed and organized as four
-slices, with slices 1-3 implemented and slice 4 conditional on its companion
-implementation (epoch/validator-set transitions, equivocation evidence,
+phase 2, validator lifecycle, implemented as four
+slices (epoch/validator-set transitions, equivocation evidence,
 multi-validator fault/restart tests; slice 1, general mutation
 authorization/fencing, implemented in
 [DR-0131](docs/architecture/decisions/0131-fastvote-validator-lifecycle.md),
@@ -40,13 +39,12 @@ transition safety proof; slice 2, epoch transition, implemented in
 [DR-0132](docs/architecture/decisions/0132-fastvote-epoch-transition.md);
 slice 3, equivocation evidence, implemented and locally validated in
 [DR-0133](docs/architecture/decisions/0133-fastvote-equivocation-evidence.md);
-slice 4's authorization/ingress decision is accepted in
+slice 4's authorization/ingress boundary is implemented in
 [DR-0134](docs/architecture/decisions/0134-fastvote-authorization-boundary.md),
-with implementation conditional on its companion code and review gate landing);
-and phase 3, economics/security completion (bond-linked slashing and
-deterministic fee distribution to the final certificate signer set, not yet
-designed). **FastVote is complete only after phase 3, and phase 2 is not
-complete until DR-0134's implementation gate closes.** A testnet may launch after phase 1, but
+including its companion code and review gate); and phase 3,
+economics/security completion. DR-0135 accepts the first prerequisite slice:
+non-signable protocol custody, without yet claiming bond custody, slashing,
+fee distribution, or payout. **FastVote is complete only after phase 3.** A testnet may launch after phase 1, but
 that is not FastVote completion.
 
 | Order | Deliverable | Completion evidence | Status |
@@ -55,7 +53,7 @@ that is not FastVote completion.
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Implemented and validated (DR-0128); focused Codex Security scan found 0 reportable findings and fresh Opus review approved |
-| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0 and 1 implemented and locally validated** (DR-0129/DR-0130). Phase 1 is a local Rust `node-core` boundary only and exposes no FastVote HTTP/CLI ingress. **Phase 2 has Slices 1-3 implemented and Slice 4's decision accepted** (DR-0131 through DR-0134): general CAS-fenced mutation authorization, outgoing-set-certified epoch transition, and canonical historically verified equivocation evidence are implemented; DR-0134 fixes the seven-operation two-axis authorization matrix, preserves closed external ingress, and requires existing native surfaces to follow committed epoch state. Slice 4 and Phase 2 are implemented only when DR-0134's companion code, tests, complete gate, and fresh reviews land. **Phase 3 slashing and signer fee distribution remain undesigned; FastVote overall is incomplete.** |
+| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated** (DR-0129 through DR-0134). Phase 2 includes the seven-operation authorization matrix, committed-epoch native surfaces, and closed external ingress. **Phase 3 is open.** DR-0135 accepts its first prerequisite slice, non-signable protocol custody; bond recognition/custody lifecycle, evidence-driven slashing, certified signer entitlements, escrow distribution, and payout remain incomplete. FastVote overall is incomplete. |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
 Asset creation was the final focused delta before FastVote/multi-validator
@@ -64,9 +62,10 @@ DR-0130 phase 1 supplies local certified execution without adding external
 ingress. DR-0131 fixes phase 2's architecture and implements slice 1
 (general mutation authorization/fencing); DR-0132 fixes and implements
 slice 2's design (epoch transition); DR-0133 implements and locally validates
-slice 3 (equivocation evidence); DR-0134 accepts slice 4's authorization and
-closed-ingress decision, whose implementation remains conditional on companion
-code and reviews landing. Phase 3 economics/security completion remains open.
+slice 3 (equivocation evidence); DR-0134 implements slice 4's authorization and
+closed-ingress boundary, closing Phase 2. DR-0135 accepts the non-signable
+protocol-custody prerequisite for Phase 3; Phase 3 economics/security
+completion remains open.
 Contract
 upgrades/migrations remain a separate explicit
 capability after the initial immutable-code flow, not a prerequisite for
@@ -2603,7 +2602,7 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
   reconstruction. No new externally reachable event family goes live in
   phase 1. See DR-0130 for the exact safety invariants, evidence, and deferred
   Phase 2 recovery/lifecycle work.
-- [ ] **Phase 2 — validator lifecycle
+- [x] **Phase 2 — validator lifecycle (implemented and reviewed, 2026-09-22;
   ([DR-0131](docs/architecture/decisions/0131-fastvote-validator-lifecycle.md)
   is the accepted Phase 2 architecture and fully specifies slice 1;
   slices 2-4's safety contract is fixed there. Slice 2's detailed wire/API
@@ -2611,9 +2610,9 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
   [DR-0132](docs/architecture/decisions/0132-fastvote-epoch-transition.md);
   Slice 3's detailed design is accepted and now implemented per
   [DR-0133](docs/architecture/decisions/0133-fastvote-equivocation-evidence.md),
-  and Slice 4's authorization/ingress decision is accepted per
+  and Slice 4's authorization/ingress boundary is implemented per
   [DR-0134](docs/architecture/decisions/0134-fastvote-authorization-boundary.md),
-  with implementation pending its companion code and review gate).**
+  with its companion code, tests, complete gate, and fresh reviews landed).**
   Epoch/validator-set transitions,
   retired/wrong-epoch rejection, relay/event-family authorization, explicit
   equivocation evidence, and multi-validator fault/restart tests. Must
@@ -2624,8 +2623,7 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
   "Retired validator" means only absent from the committed current epoch's
   validator set after a certified transition; no locally mutable membership
   action exists, so every node derives authority from the same committed set.
-  Tracked as four slices; phase 2 is not complete until
-  DR-0134's implementation gate closes:
+  Tracked as four completed slices:
   - [x] **Slice 1 — general mutation authorization/fencing layer
     (implemented, 2026-09-22; see DR-0131's slice completion criteria).**
     A committed `FastPathEpochRecord` (`0x6426/v1`, `crates/node-core/src/
@@ -2777,21 +2775,34 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
     chain; transactional, tamper-detecting store/query with deterministic
     `AlreadyRecorded`; comprehensive unit/adversarial tests across `consensus`
     and `node-core`; and independent wire vectors in `scripts/fast-vote-vectors.mjs`
-    and `scripts/fast-path-vectors.mjs`. Phase 2 remains open until DR-0134's
-    implementation gate closes; Phase 3 economics/slashing remains incomplete.
-  - [ ] **Slice 4 — authorization-class declaration and gate closure
+    and `scripts/fast-path-vectors.mjs`. Phase 3 economics/slashing remains incomplete.
+  - [x] **Slice 4 — authorization-class declaration and gate closure
     ([DR-0134](docs/architecture/decisions/0134-fastvote-authorization-boundary.md)
-    accepted 2026-09-22; implementation conditional on companion code, tests,
-    complete gate, and fresh reviews landing).** Defines all seven Phase 2
+    implemented and reviewed 2026-09-22).** Defines all seven Phase 2
     operations as local-operator-invoked, with current-set signer/current-set
     quorum/outgoing-set signer/outgoing-set quorum/historical-evidence proof as
     applicable; every external ingress remains closed. Adds no wire,
     `NodeEventKind`, route, CLI, client, relay, or operator-token fiction.
     Closes DR-0132 C7 by making existing epoch-sensitive native surfaces derive
     the live epoch from committed `FastPathEpochRecord` while retaining the
-    mutation-time CAS fence. This documentation decision alone does not close
-    Phase 2.
-- [ ] **Phase 3 — economics/security completion.** Not yet designed.
+    mutation-time CAS fence. Companion code, tests, complete gate, Bugbot, and
+    fresh security/tech-lead reviews landed in PR #180, closing Phase 2.
+- [ ] **Phase 3 — economics/security completion.** Architecture is now split
+  into explicit slices; only the first prerequisite is accepted and not yet
+  implemented:
+  - [ ] **Slice 0 — non-signable protocol custody prerequisite
+    ([DR-0135](docs/architecture/decisions/0135-protocol-custody-owner.md),
+    accepted 2026-09-22).** Add a canonical `ProtocolCustody` owner that no
+    ordinary sender-authorized mutation path can use, with signed-genesis-only
+    creation and stable/adversarial/restart evidence. This slice is not a bond,
+    slash, fee distribution, or payout implementation and does not close Phase 3.
+  - [ ] **Slice 1 — typed asset-aware custody commitments.** Bind custody to
+    committed executable-ABI value observation and durable bond/fee records;
+    do not decode or write asset bodies in node-core.
+  - [ ] **Slice 2 — closed release authority and economics.** Define and
+    implement deposit, unbond/withdraw, evidence-driven forfeiture/jail,
+    final-certificate signer entitlements, escrow distribution, and payout
+    through the defining public contract, including exact replay and atomicity.
   Bond-linked slashing execution and deterministic transaction-fee escrow
   distribution to the final certificate signer set, including a canonical
   rounding-remainder rule and vectors. FastVote is not complete until this

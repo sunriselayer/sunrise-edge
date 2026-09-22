@@ -544,10 +544,11 @@ and epoch-transition-conflicting-target misconduct). DR-0134 fixes slice 4's
 two-axis authorization matrix: every FastVote operation is local-operator-
 invoked, its signing or mutating branch requires the appropriate current,
 outgoing, or historical validator proof, and every external ingress remains
-closed. It adds no wire or product surface. Slice 4 and Phase 2 are implemented
-only when DR-0134's companion code and review gate land. FastVote overall
-remains incomplete until phase 3. See DR-0129 through DR-0134 and `TODO.md` for
-exact evidence and remaining activation gates.
+closed. It adds no wire or product surface. DR-0134's companion code and review
+gate landed in PR #180, closing Phase 2. DR-0135 defines Phase 3's first
+prerequisite, non-signable protocol custody, without yet recognizing bonds or
+moving value. FastVote overall remains incomplete until phase 3. See DR-0129
+through DR-0135 and `TODO.md` for exact evidence and remaining activation gates.
 
 ## 12. Certificate lifecycle
 Phase 13 adds shared-consensus quorum certificates. Each certificate binds the

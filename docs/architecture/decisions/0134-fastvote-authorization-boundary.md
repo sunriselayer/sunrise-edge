@@ -2,10 +2,10 @@
 
 ## Status
 
-Accepted, 2026-09-22. This decision closes the design of FastVote Phase 2
-Slice 4. Slice 4 and Phase 2 are implemented only when the companion code,
-tests, complete repository gate, and fresh security and tech-lead reviews land
-with this decision. This documentation change alone does not make that claim.
+Accepted and implemented, 2026-09-22. The companion code, tests, complete
+repository gate, Bugbot review, focused security review, and fresh tech-lead
+review landed in PR #180. Slice 4 closes FastVote Phase 2 while preserving the
+closed external boundary.
 
 FastVote remains incomplete until Phase 3 implements bond-linked slashing and
 deterministic fee-escrow distribution to the final certificate signer set.
