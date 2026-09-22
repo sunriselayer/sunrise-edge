@@ -165,58 +165,11 @@ impl Fixture {
         gas: u64,
         protocol_custody: Option<&execution::ProtocolCustodyCapability>,
     ) -> Result<LocalExecutionOutcome, LocalExecutionError> {
-        let resolver = resolver_version(active.protocol_version());
-        let policy = LocalExecutionPolicy::new(active.clone());
-        let access = abi::AccessManifest {
-            entries: inputs
-                .iter()
-                .map(|input| abi::AccessEntry {
-                    mode: input.resolved.mode,
-                    object_ref: ObjectRef {
-                        id: input.resolved.object.id,
-                        version: input.resolved.object.version,
-                        digest: resolver
-                            .hash_for_purpose(
-                                Epoch::new(0),
-                                HashPurpose::Object,
-                                &objects::encode_object(&input.resolved.object).unwrap(),
-                            )
-                            .unwrap(),
-                    },
-                })
-                .collect(),
-        };
-        let call = CallIntent {
-            context: active.clone(),
-            request_id: [4; 32],
-            sender: sender(),
-            nonce: 0,
-            code: self.instance.code.clone(),
-            instance: instance_target(
-                &resolver_version(self.instance.context.protocol_version()),
-                &self.instance,
-            )
-            .unwrap(),
-            entrypoint: entry.into(),
-            type_arguments: vec![],
-            access,
-            arguments: args,
-            gas_limit: gas,
-        };
-        let intent = LocalExecutionIntent {
-            authorizations: Vec::new(),
-            mode: if entry == "init" {
-                LocalExecutionMode::Instantiate
-            } else {
-                LocalExecutionMode::Call
-            },
-            policy_digest: policy.digest(&resolver).unwrap(),
-            call,
-        };
-        let signature = key()
-            .sign(&local_execution_signing_frame(&active, &intent).unwrap())
-            .into();
-        let signed = SignedLocalExecutionIntent { intent, signature };
+        let (resolver, policy, signed): (
+            HashSuiteResolver,
+            LocalExecutionPolicy,
+            SignedLocalExecutionIntent,
+        ) = self.signed_invocation(active, entry, args, inputs, gas);
         let authenticated = authenticate_local_execution(
             &resolver,
             &policy,
@@ -241,6 +194,90 @@ impl Fixture {
             inputs,
             protocol_custody,
         })
+    }
+    fn event_digest(
+        &self,
+        active: PublicationContext,
+        entry: &str,
+        args: Vec<u8>,
+        inputs: &[ScopedResolvedObject],
+        gas: u64,
+    ) -> protocol_types::Digest32 {
+        let (resolver, _policy, signed): (
+            HashSuiteResolver,
+            LocalExecutionPolicy,
+            SignedLocalExecutionIntent,
+        ) = self.signed_invocation(active, entry, args, inputs, gas);
+        local_execution_event_digest(&resolver, &signed).unwrap()
+    }
+    fn signed_invocation(
+        &self,
+        active: PublicationContext,
+        entry: &str,
+        args: Vec<u8>,
+        inputs: &[ScopedResolvedObject],
+        gas: u64,
+    ) -> (
+        HashSuiteResolver,
+        LocalExecutionPolicy,
+        SignedLocalExecutionIntent,
+    ) {
+        let resolver: HashSuiteResolver = resolver_version(active.protocol_version());
+        let policy: LocalExecutionPolicy = LocalExecutionPolicy::new(active.clone());
+        let access = abi::AccessManifest {
+            entries: inputs
+                .iter()
+                .map(|input| abi::AccessEntry {
+                    mode: input.resolved.mode,
+                    object_ref: ObjectRef {
+                        id: input.resolved.object.id,
+                        version: input.resolved.object.version,
+                        digest: resolver
+                            .hash_for_purpose(
+                                Epoch::new(0),
+                                HashPurpose::Object,
+                                &objects::encode_object(&input.resolved.object).unwrap(),
+                            )
+                            .unwrap(),
+                    },
+                })
+                .collect(),
+        };
+        let call: CallIntent = CallIntent {
+            context: active.clone(),
+            request_id: [4; 32],
+            sender: sender(),
+            nonce: 0,
+            code: self.instance.code.clone(),
+            instance: instance_target(
+                &resolver_version(self.instance.context.protocol_version()),
+                &self.instance,
+            )
+            .unwrap(),
+            entrypoint: entry.into(),
+            type_arguments: vec![],
+            access,
+            arguments: args,
+            gas_limit: gas,
+        };
+        let intent: LocalExecutionIntent = LocalExecutionIntent {
+            authorizations: Vec::new(),
+            mode: if entry == "init" {
+                LocalExecutionMode::Instantiate
+            } else {
+                LocalExecutionMode::Call
+            },
+            policy_digest: policy.digest(&resolver).unwrap(),
+            call,
+        };
+        let signature: [u8; 64] = key()
+            .sign(&local_execution_signing_frame(&active, &intent).unwrap())
+            .into();
+        (
+            resolver,
+            policy,
+            SignedLocalExecutionIntent { intent, signature },
+        )
     }
 }
 fn created(
@@ -793,29 +830,31 @@ fn deposit_capability(
     fixture: &Fixture,
     source: ObjectId,
     resource: [u8; 32],
+    scope: ProtocolCustodyScope,
+    expected_event_digest: protocol_types::Digest32,
 ) -> (ProtocolCustodyCapability, ProtocolCustodyScope) {
-    for subject_byte in 1u8..=u8::MAX {
-        let scope: ProtocolCustodyScope = ProtocolCustodyScope {
-            purpose: ProtocolCustodyPurpose::BondCollateral,
-            chain_id: context().chain_id().clone(),
-            subject: [subject_byte; 32],
-            resource,
-        };
-        let capability = ProtocolCustodyCapability::new(
-            &resolver(),
-            context(),
-            custody_target(fixture, resource),
-            ProtocolCustodyDirection::Deposit {
-                source,
-                scope: scope.clone(),
-            },
-            sender(),
-        );
-        if let Ok(capability) = capability {
-            return (capability, scope);
-        }
+    let capability: ProtocolCustodyCapability = ProtocolCustodyCapability::new(
+        &resolver(),
+        context(),
+        custody_target(fixture, resource),
+        ProtocolCustodyDirection::Deposit {
+            source,
+            scope: scope.clone(),
+        },
+        sender(),
+        expected_event_digest,
+    )
+    .unwrap();
+    (capability, scope)
+}
+
+fn bond_scope(resource: [u8; 32]) -> ProtocolCustodyScope {
+    ProtocolCustodyScope {
+        purpose: ProtocolCustodyPurpose::BondCollateral,
+        chain_id: context().chain_id().clone(),
+        subject: [1; 32],
+        resource,
     }
-    panic!("a bounded non-address custody token must be derivable")
 }
 
 #[test]
@@ -829,14 +868,24 @@ fn protocol_custody_deposit_and_release_effects_are_contract_produced() {
         Owner::Address(Address::new(sender())),
         resource,
     );
+    let scope: ProtocolCustodyScope = bond_scope(resource);
+    let token: [u8; 32] =
+        execution::derive_deposit_owner_token(&resolver(), &context(), object_id, &scope).unwrap();
+    let deposit_args: Vec<u8> = inventory::recipient_argument(token);
+    let deposit_digest: protocol_types::Digest32 = fixture.event_digest(
+        context(),
+        "transfer",
+        deposit_args.clone(),
+        std::slice::from_ref(&source),
+        MAX_LOCAL_EXECUTION_GAS,
+    );
     let (deposit, scope): (ProtocolCustodyCapability, ProtocolCustodyScope) =
-        deposit_capability(&fixture, object_id, resource);
-    let token: [u8; 32] = deposit.owner_token().unwrap();
+        deposit_capability(&fixture, object_id, resource, scope, deposit_digest);
     let deposited: LocalExecutionOutcome = fixture
         .run_at_with_custody(
             context(),
             "transfer",
-            inventory::recipient_argument(token),
+            deposit_args,
             std::slice::from_ref(&source),
             MAX_LOCAL_EXECUTION_GAS,
             Some(&deposit),
@@ -859,6 +908,21 @@ fn protocol_custody_deposit_and_release_effects_are_contract_produced() {
 
     let release_key: SigningKey = SigningKey::from([8; 32]);
     let recipient: Address = Address::new(VerificationKey::from(&release_key).into());
+    let custody: ScopedResolvedObject = ScopedResolvedObject {
+        resolved: ResolvedObject {
+            object: deposited_object,
+            mode: AccessMode::Write,
+        },
+        authority: source.authority,
+    };
+    let release_args: Vec<u8> = inventory::recipient_argument(*recipient.as_bytes());
+    let release_digest: protocol_types::Digest32 = fixture.event_digest(
+        context(),
+        "transfer",
+        release_args.clone(),
+        std::slice::from_ref(&custody),
+        MAX_LOCAL_EXECUTION_GAS,
+    );
     let release: ProtocolCustodyCapability = ProtocolCustodyCapability::new(
         &resolver(),
         context(),
@@ -869,20 +933,14 @@ fn protocol_custody_deposit_and_release_effects_are_contract_produced() {
             recipient,
         },
         sender(),
+        release_digest,
     )
     .unwrap();
-    let custody: ScopedResolvedObject = ScopedResolvedObject {
-        resolved: ResolvedObject {
-            object: deposited_object,
-            mode: AccessMode::Write,
-        },
-        authority: source.authority,
-    };
     let released: LocalExecutionOutcome = fixture
         .run_at_with_custody(
             context(),
             "transfer",
-            inventory::recipient_argument(*recipient.as_bytes()),
+            release_args,
             &[custody],
             MAX_LOCAL_EXECUTION_GAS,
             Some(&release),
@@ -907,19 +965,40 @@ fn protocol_custody_rejects_wrong_input_scope_token_and_ambient_token_use() {
         Owner::Address(Address::new(sender())),
         resource,
     );
+    let scope: ProtocolCustodyScope = bond_scope(resource);
+    let token: [u8; 32] =
+        execution::derive_deposit_owner_token(&resolver(), &context(), source_id, &scope).unwrap();
+    let signed_args: Vec<u8> = inventory::recipient_argument(token);
+    let event_digest: protocol_types::Digest32 = fixture.event_digest(
+        context(),
+        "transfer",
+        signed_args.clone(),
+        std::slice::from_ref(&source),
+        MAX_LOCAL_EXECUTION_GAS,
+    );
     let (deposit, scope): (ProtocolCustodyCapability, ProtocolCustodyScope) =
-        deposit_capability(&fixture, source_id, resource);
+        deposit_capability(&fixture, source_id, resource, scope, event_digest);
     let other_key: SigningKey = SigningKey::from([9; 32]);
     let wrong_target: [u8; 32] = VerificationKey::from(&other_key).into();
+    let wrong_args: Vec<u8> = inventory::recipient_argument(wrong_target);
+    let wrong_digest: protocol_types::Digest32 = fixture.event_digest(
+        context(),
+        "transfer",
+        wrong_args.clone(),
+        std::slice::from_ref(&source),
+        MAX_LOCAL_EXECUTION_GAS,
+    );
+    let (wrong_token_capability, _): (ProtocolCustodyCapability, ProtocolCustodyScope) =
+        deposit_capability(&fixture, source_id, resource, scope.clone(), wrong_digest);
     assert_trap(
         fixture
             .run_at_with_custody(
                 context(),
                 "transfer",
-                inventory::recipient_argument(wrong_target),
+                wrong_args,
                 std::slice::from_ref(&source),
                 MAX_LOCAL_EXECUTION_GAS,
-                Some(&deposit),
+                Some(&wrong_token_capability),
             )
             .unwrap(),
     );
@@ -930,14 +1009,30 @@ fn protocol_custody_rejects_wrong_input_scope_token_and_ambient_token_use() {
         Owner::Address(Address::new(sender())),
         resource,
     );
+    let wrong_input_args: Vec<u8> = inventory::recipient_argument(deposit.owner_token().unwrap());
+    let wrong_input_digest: protocol_types::Digest32 = fixture.event_digest(
+        context(),
+        "transfer",
+        wrong_input_args.clone(),
+        std::slice::from_ref(&wrong_input),
+        MAX_LOCAL_EXECUTION_GAS,
+    );
+    let (wrong_input_capability, _): (ProtocolCustodyCapability, ProtocolCustodyScope) =
+        deposit_capability(
+            &fixture,
+            source_id,
+            resource,
+            scope.clone(),
+            wrong_input_digest,
+        );
     assert!(matches!(
         fixture.run_at_with_custody(
             context(),
             "transfer",
-            inventory::recipient_argument(deposit.owner_token().unwrap()),
+            wrong_input_args,
             &[wrong_input],
             MAX_LOCAL_EXECUTION_GAS,
-            Some(&deposit),
+            Some(&wrong_input_capability),
         ),
         Err(LocalExecutionError::Invalid(
             "missing protocol custody input"
@@ -958,10 +1053,26 @@ fn protocol_custody_rejects_wrong_input_scope_token_and_ambient_token_use() {
             recipient: Address::new(wrong_target),
         },
         sender(),
+        fixture.event_digest(
+            context(),
+            "transfer",
+            inventory::recipient_argument(wrong_target),
+            std::slice::from_ref(&custody_input(
+                &fixture,
+                source_id,
+                Owner::ProtocolCustody(scope.clone()),
+                resource,
+            )),
+            MAX_LOCAL_EXECUTION_GAS,
+        ),
     )
     .unwrap();
-    let custody: ScopedResolvedObject =
-        custody_input(&fixture, source_id, Owner::ProtocolCustody(scope), resource);
+    let custody: ScopedResolvedObject = custody_input(
+        &fixture,
+        source_id,
+        Owner::ProtocolCustody(scope.clone()),
+        resource,
+    );
     assert!(matches!(
         fixture.run_at_with_custody(
             context(),
@@ -973,6 +1084,48 @@ fn protocol_custody_rejects_wrong_input_scope_token_and_ambient_token_use() {
         ),
         Err(LocalExecutionError::Invalid("protocol custody input owner"))
     ));
+
+    let release_recipient: Address =
+        Address::new(VerificationKey::from(&SigningKey::from([10; 32])).into());
+    let exact_custody: ScopedResolvedObject = custody_input(
+        &fixture,
+        source_id,
+        Owner::ProtocolCustody(scope.clone()),
+        resource,
+    );
+    let wrong_release_args: Vec<u8> = inventory::recipient_argument(wrong_target);
+    let wrong_release_digest: protocol_types::Digest32 = fixture.event_digest(
+        context(),
+        "transfer",
+        wrong_release_args.clone(),
+        std::slice::from_ref(&exact_custody),
+        MAX_LOCAL_EXECUTION_GAS,
+    );
+    let wrong_release: ProtocolCustodyCapability = ProtocolCustodyCapability::new(
+        &resolver(),
+        context(),
+        custody_target(&fixture, resource),
+        ProtocolCustodyDirection::Release {
+            custody: source_id,
+            scope,
+            recipient: release_recipient,
+        },
+        sender(),
+        wrong_release_digest,
+    )
+    .unwrap();
+    assert_trap(
+        fixture
+            .run_at_with_custody(
+                context(),
+                "transfer",
+                wrong_release_args,
+                &[exact_custody],
+                MAX_LOCAL_EXECUTION_GAS,
+                Some(&wrong_release),
+            )
+            .unwrap(),
+    );
 
     let ambient_fixture: Fixture = Fixture::new(|package| {
         configure_custody_transfer(package, resource);
@@ -989,6 +1142,11 @@ fn protocol_custody_rejects_wrong_input_scope_token_and_ambient_token_use() {
             "(call $transfer (i32.const 0)",
             "(call $transfer (i32.const 1)",
         );
+        replace(
+            package,
+            "(call $prepare (i32.const 1))",
+            "(call $prepare (i32.const 2))",
+        );
     });
     let first: ScopedResolvedObject = custody_input(
         &ambient_fixture,
@@ -1002,15 +1160,34 @@ fn protocol_custody_rejects_wrong_input_scope_token_and_ambient_token_use() {
         Owner::Address(Address::new(sender())),
         resource,
     );
+    let ambient_scope: ProtocolCustodyScope = bond_scope(resource);
+    let ambient_token: [u8; 32] =
+        execution::derive_deposit_owner_token(&resolver(), &context(), source_id, &ambient_scope)
+            .unwrap();
+    let ambient_args: Vec<u8> = inventory::recipient_argument(ambient_token);
+    let ambient_inputs: Vec<ScopedResolvedObject> = vec![first, second];
+    let ambient_digest: protocol_types::Digest32 = ambient_fixture.event_digest(
+        context(),
+        "transfer",
+        ambient_args.clone(),
+        &ambient_inputs,
+        MAX_LOCAL_EXECUTION_GAS,
+    );
     let (ambient_capability, _): (ProtocolCustodyCapability, ProtocolCustodyScope) =
-        deposit_capability(&ambient_fixture, source_id, resource);
+        deposit_capability(
+            &ambient_fixture,
+            source_id,
+            resource,
+            ambient_scope,
+            ambient_digest,
+        );
     assert_trap(
         ambient_fixture
             .run_at_with_custody(
                 context(),
                 "transfer",
-                inventory::recipient_argument(ambient_capability.owner_token().unwrap()),
-                &[first, second],
+                ambient_args,
+                &ambient_inputs,
                 MAX_LOCAL_EXECUTION_GAS,
                 Some(&ambient_capability),
             )
@@ -1045,14 +1222,25 @@ fn protocol_custody_token_cannot_be_used_by_create_object() {
         Owner::Address(Address::new(sender())),
         resource,
     );
+    let scope: ProtocolCustodyScope = bond_scope(resource);
+    let token: [u8; 32] =
+        execution::derive_deposit_owner_token(&resolver(), &context(), source_id, &scope).unwrap();
+    let args: Vec<u8> = inventory::recipient_argument(token);
+    let digest: protocol_types::Digest32 = fixture.event_digest(
+        context(),
+        "transfer",
+        args.clone(),
+        std::slice::from_ref(&source),
+        MAX_LOCAL_EXECUTION_GAS,
+    );
     let (deposit, _): (ProtocolCustodyCapability, ProtocolCustodyScope) =
-        deposit_capability(&fixture, source_id, resource);
+        deposit_capability(&fixture, source_id, resource, scope, digest);
     assert_trap(
         fixture
             .run_at_with_custody(
                 context(),
                 "transfer",
-                inventory::recipient_argument(deposit.owner_token().unwrap()),
+                args,
                 &[source],
                 MAX_LOCAL_EXECUTION_GAS,
                 Some(&deposit),

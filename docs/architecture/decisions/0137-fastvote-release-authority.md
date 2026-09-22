@@ -95,13 +95,39 @@ bond or fee resource.
 The implementation-unit-2 prerequisite uses no generic `Owner` ABI and does
 not add an owner-constructor profile. A protocol operation constructs one
 private capability bound to the current context, authenticated sender, exact
-instance/code/type/schema/entrypoint, one exact object and one closed
-direction. For deposit it maps a derived, non-address 32-byte operand to one
+signed execution event digest, instance/code/type/schema/entrypoint, one exact
+object and one closed direction. For deposit it maps a derived, non-address 32-byte operand to one
 exact `ProtocolCustodyScope`; for release it admits one exact custody-owned
 `Write` input and maps only the exact recipient address. The mapping lives for
 one invocation, cannot be persisted, cannot authorize `Consume`, and is never
 available to `create_object`. All ordinary and paid execution paths pass no
 capability.
+
+The deposit operand is derived from canonical preimage `0x642E/v1` and the
+existing `HashPurpose::Object` domain at the invocation epoch. Its fields are:
+
+1. the exact chain id;
+2. canonical `ProtocolCustodyScope 0x4007/v1` bytes;
+3. canonical source `ObjectId 0x4001/v1` bytes; and
+4. a canonical little-endian `u32` rejection-sampling counter.
+
+Counters 0 through 63 are tried in ascending order and the first digest that is not
+a canonical prime-order Ed25519 address is selected. Address-shaped digests are
+skipped rather than making that source permanently unusable. Exhausting all 64
+attempts fails closed; it is bounded and negligible under the committed hash
+suite assumptions. The counter-zero preimage has matching Rust and independent
+JavaScript vectors. `0x642E` was the next clean unallocated execution/FastVote
+frame id in this unreleased repository; `0x642F` remains unallocated and has no
+implied compatibility meaning.
+
+`ProtocolCustodyScope.resource` remains the 32-byte value component of the
+resource identity and its existing owner bytes do not change. The opaque domain
+is still bound: the private capability pins the complete `ScopedTypeTag`
+(including opaque domain and value), defining code, instance and schema, while
+the scope value must equal that tag's sole opaque value. A different opaque
+domain is therefore a different exact target and cannot bind the admitted
+object. The scope alone is not claimed to encode the complete typed resource
+policy.
 
 This foundation only allows the defining contract to produce provisional
 effects. It neither authorizes a lifecycle operation nor commits storage.

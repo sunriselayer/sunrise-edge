@@ -2846,7 +2846,10 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
       paid execution remain closed. Effects are provisional: node-core
       lifecycle admission, generic postcondition validation and atomic durable
       commit are not implemented by this prerequisite. Rust contract-effect
-      tests and an independent `0x6430/v1` JavaScript preimage vector cover it;
+      tests and an independent `0x642E/v1` JavaScript preimage vector cover it.
+      The private capability is pinned to the complete signed execution-event
+      digest, and bounded rejection sampling prevents an address-shaped
+      counter-zero token from permanently blocking a valid source;
     - [ ] generic custody-effect validation plus whole-object
       deposit/replacement, unbond and withdrawal;
     - [ ] one-time evidence consumption, full forfeiture, jail/reactivation
