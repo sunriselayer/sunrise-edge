@@ -519,10 +519,14 @@ invalid, which is what lets a stale lock be reclaimed under CAS without
 risking two conflicting applies; and no timeout-based unlock exists
 anywhere. Epoch transition, equivocation evidence, and the
 authorization-class/ingress boundary declaration are slices 2-4, whose
-safety contract this DR fixes but whose detailed wire/API decisions are
+safety contract this DR fixes. DR-0132 fixes slice 2's detailed wire
+format, API, activation write set, and reclamation rule for the
+outgoing-set-certified `e -> e+1` transition, and corrects three
+blocking assumptions DR-0131 made about it; DR-0132 is an accepted design
+only, not yet implemented. Slices 3-4's detailed wire/API decisions remain
 pending. Phase 2 is not complete until slice 4 closes, and slice 1 alone
 does not make retired-validator/wrong-epoch rejection end-to-end observable
-beyond genesis-set membership. See DR-0129, DR-0130, DR-0131, and
+beyond genesis-set membership. See DR-0129, DR-0130, DR-0131, DR-0132, and
 `TODO.md` for exact evidence and remaining activation gates.
 
 ## 12. Certificate lifecycle
@@ -571,8 +575,12 @@ persisted snapshot of this section's `ValidatorSet` type, distinct from the
 still-deferred, governance-driven `ApplyValidatorSetChange` mechanism). A
 validator is "retired," in the only sense FastVote phase 2 recognizes,
 exactly when FastVote phase 2 slice 2's own outgoing-set-certified epoch
-transition (not yet designed in detail) commits a new committed set that
-excludes it — never through an independent local action.
+transition commits a new committed set that excludes it — never through an
+independent local action. DR-0132 fixes slice 2's detailed design (an
+outgoing-quorum-authorized, operator-supplied `next_validators` set,
+activated atomically with its epoch-scoped policy rows); it is accepted as a
+design but not yet implemented, so this remains not yet observable
+end-to-end.
 
 ## 15. Genesis bootstrap
 Genesis starts with a permissioned validator set and a conservative default hash suite. Phase 1 encodes this by exposing a `HashSuite::genesis()` helper that selects SHA-256 for all required purposes.
@@ -635,6 +643,14 @@ action-validation layer to prevent permanent lock-in of the genesis set.
 
 ## 20. Epoch transition
 Epoch transition activates configuration schedules lazily. New writes after activation may use the new suite, while historical data remains valid under its original algorithm identifier.
+
+[DR-0132](decisions/0132-fastvote-epoch-transition.md) (accepted design, not
+yet implemented) fixes the FastVote fast path's own `e -> e+1` transition as
+a distinct, outgoing-quorum-certified event: it pins the protocol version
+unchanged across the transition (a protocol upgrade is section 21's separate
+path, not this one) and permits a `HashSuiteSchedule` activation to land on
+the same transition epoch, deterministically but not yet tested — DR-0132
+requires that case to be tested, not forbidden, once implemented.
 
 ## 21. Protocol upgrade lifecycle
 Phase 12 makes protocol upgrades versioned, explicit, governance-scheduled, and
