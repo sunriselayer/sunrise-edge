@@ -529,7 +529,7 @@ governance mechanism (see "Unresolved risks" item 1).
 | `propose_and_vote` after activation | proposes the *new* current epoch's own successor transition normally (no special case: the fenced `current_epoch` already reflects the activated epoch) |
 | `propose_and_vote` observes a transition record at `current_epoch + 1`, and a live re-read of the epoch record still reads `current_epoch` | `Invalid` (genuinely partial or corrupt prior state), no vote |
 | `propose_and_vote` observes a transition record at `current_epoch + 1`, but one or more concurrent `activate` calls committed after its epoch fence and the live epoch record is now greater than `current_epoch` | `NodeCoreError::StateConflict` (retryable; benign interleaving, not corrupt state), no vote |
-| two validators propose different `next_validators` | both valid votes, different `activation_digest`, no quorum — and a canonical conflicting-statement pair for Slice 3 |
+| two validators propose different `next_validators` | both valid votes, different `activation_digest`, no quorum — an ordinary two-validator disagreement, not equivocation (only the *same* validator signing two such votes is; see [DR-0133](0133-fastvote-equivocation-evidence.md)) |
 | `next_validators` supplied in a different order but the same set | byte-identical `FastPathValidatorSetRecord` and `activation_digest` (canonicalized by `ValidatorId`, §3.A step 2) — never a spurious quorum split |
 | identical certificate applied twice | `AlreadyActivated`, no mutation |
 | alternate quorum subset, identical `(epoch, next_epoch, current_validator_set_digest, next_validator_set_digest, activation_digest)` | `AlreadyActivated` |
@@ -889,7 +889,11 @@ tech-lead review.
   revision.
 - Explicit canonical equivocation evidence (Slice 3) and authorization-class
   declaration / Phase 2 gate closure (Slice 4) remain out of scope for this
-  DR, exactly as DR-0131 left them.
+  DR, exactly as DR-0131 left them. Slice 3's detailed design (design-only,
+  not implemented) is now fixed by
+  [DR-0133](0133-fastvote-equivocation-evidence.md), including the exact
+  `EpochTransitionVote` conflict key (same outgoing validator, same outgoing
+  epoch, differing target tuple).
 - Bond-linked slashing execution and deterministic transaction-fee escrow
   distribution to the final certificate signer set remain Phase 3,
   unaffected by this DR.

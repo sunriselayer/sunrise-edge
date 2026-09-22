@@ -39,6 +39,7 @@
 - [DR-0130: owned-object certified execution (FastVote phase 1)](0130-owned-object-certified-execution.md)
 - [DR-0131: FastVote validator lifecycle and mutation fencing (phase 2, slice 1)](0131-fastvote-validator-lifecycle.md)
 - [DR-0132: FastVote epoch transition detailed design (phase 2, slice 2; implemented)](0132-fastvote-epoch-transition.md)
+- [DR-0133: FastVote equivocation evidence detailed design (phase 2, slice 3)](0133-fastvote-equivocation-evidence.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).

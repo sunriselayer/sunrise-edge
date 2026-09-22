@@ -478,7 +478,11 @@ DR-0129 phase 0 defines the owned-object fast path's canonical
 deterministically forms the minimal, canonically validator-ID-ordered quorum
 certificate for one `(tx_hash, execution_effects_hash)` pair, independently
 of `ChainedHotStuff` and under the distinct `"fast-path-vote-v1"` signature
-domain.
+domain. [DR-0133](decisions/0133-fastvote-equivocation-evidence.md)
+(design accepted, not implemented) extends this v1 payload in place with a
+`locked_objects_digest` field needed to evidence a validator locking the
+same object version across two different transactions; there is no v2 or
+compatibility decoder in this unreleased repository.
 
 DR-0130 phase 1 adds the local certified-execution state machine in
 `node-core` for authenticated paid `Call` intents over sender-owned objects.
@@ -530,10 +534,14 @@ atomically with the rewritten epoch record), and lazy CAS-only stale-lock
 and stale-prepared-record reclamation rule, correcting three blocking
 assumptions DR-0131 made about the transition (genesis restart-verify,
 epoch-scoped paid-policy carry-forward, and the committed-epoch query
-boundary). Slices 3-4's detailed wire/API decisions remain pending. Phase 2
-is not complete until slice 4 closes, but retired-validator and wrong-epoch
-rejection are now end-to-end observable through a real transition. See
-DR-0129, DR-0130, DR-0131, DR-0132, and `TODO.md` for exact evidence and
+boundary). DR-0133 fixes slice 3's detailed design (equivocation evidence
+covering same-transaction, cross-transaction same-object-version, and
+epoch-transition-conflicting-target misconduct) but is design-only: slice 3
+is not implemented. Slice 4's detailed wire/API decision remains pending.
+Phase 2 is not complete until slice 4 closes, but retired-validator and
+wrong-epoch rejection are now end-to-end observable through a real
+transition. FastVote overall remains incomplete until phase 3. See DR-0129,
+DR-0130, DR-0131, DR-0132, DR-0133, and `TODO.md` for exact evidence and
 remaining activation gates.
 
 ## 12. Certificate lifecycle
