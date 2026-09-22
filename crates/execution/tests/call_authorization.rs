@@ -390,6 +390,7 @@ fn general_runtime_rejects_missing_scopes() {
         policy: &policy,
         event_digest: local_execution_event_digest(&resolver, &signed).unwrap(),
         inputs: &[],
+        protocol_custody: None,
     };
     assert!(matches!(
         execution::LocalWasmExecutionEngine::new().execute(request),

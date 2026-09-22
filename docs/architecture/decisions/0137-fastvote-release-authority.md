@@ -4,8 +4,10 @@
 
 Accepted, 2026-09-23. Implementation unit 1 (resource-generic policy, signed
 economics/lifecycle codecs and genesis persistence/restart verification) is
-implemented and locally validated. Units 2 through 4 and the Phase 3 review
-gate remain incomplete.
+implemented and locally validated. Unit 2's invocation-local execution
+capability prerequisite is implemented locally; its node-core lifecycle,
+effect-validation and durable-commit work remains incomplete. Units 3 and 4
+and the Phase 3 review gate also remain incomplete.
 
 ## Context
 
@@ -90,6 +92,49 @@ The host cannot manufacture the released body. A resource whose public
 contract does not expose the committed ABI-compatible operations cannot be a
 bond or fee resource.
 
+The implementation-unit-2 prerequisite uses no generic `Owner` ABI and does
+not add an owner-constructor profile. A protocol operation constructs one
+private capability bound to the current context, authenticated sender, exact
+signed execution event digest, instance/code/type/schema/entrypoint, one exact
+object and one closed direction. For deposit it maps a derived, non-address 32-byte operand to one
+exact `ProtocolCustodyScope`; for release it admits one exact custody-owned
+`Write` input and maps only the exact recipient address. The mapping lives for
+one invocation, cannot be persisted, cannot authorize `Consume`, and is never
+available to `create_object`. All ordinary and paid execution paths pass no
+capability.
+
+The deposit operand is derived from canonical preimage `0x642E/v1` and the
+existing `HashPurpose::Object` domain at the invocation epoch. Its fields are:
+
+1. the exact chain id;
+2. canonical `ProtocolCustodyScope 0x4007/v1` bytes;
+3. canonical source `ObjectId 0x4001/v1` bytes; and
+4. a canonical little-endian `u32` rejection-sampling counter.
+
+Counters 0 through 63 are tried in ascending order and the first digest that is not
+a canonical prime-order Ed25519 address is selected. Address-shaped digests are
+skipped rather than making that source permanently unusable. Exhausting all 64
+attempts fails closed; it is bounded and negligible under the committed hash
+suite assumptions. The counter-zero preimage has matching Rust and independent
+JavaScript vectors. `0x642E` was the next clean unallocated execution/FastVote
+frame id in this unreleased repository; `0x642F` remains unallocated and has no
+implied compatibility meaning.
+
+`ProtocolCustodyScope.resource` remains the 32-byte value component of the
+resource identity and its existing owner bytes do not change. The opaque domain
+is still bound: the private capability pins the complete `ScopedTypeTag`
+(including opaque domain and value), defining code, instance and schema, while
+the scope value must equal that tag's sole opaque value. A different opaque
+domain is therefore a different exact target and cannot bind the admitted
+object. The scope alone is not claimed to encode the complete typed resource
+policy.
+
+This foundation only allows the defining contract to produce provisional
+effects. It neither authorizes a lifecycle operation nor commits storage.
+Node core must still construct the capability from committed economics policy,
+validate the complete effect postconditions above and atomically fence the
+object and lifecycle rows before any post-genesis custody transition is real.
+
 ### Bond lifecycle
 
 `FastPathBondRecord` is the single authoritative per-validator lifecycle row.
@@ -154,8 +199,9 @@ claim uses `transfer`. A zero share is finalized without an object mutation.
 
 1. make bond policy resource-generic; add strict economics policy and lifecycle
    codecs, keys, genesis commitment and restart verification;
-2. implement generic custody-effect validation plus deposit/replacement,
-   unbond and withdrawal;
+2. add the invocation-local contract execution capability, then implement
+   generic custody-effect validation plus deposit/replacement, unbond and
+   withdrawal;
 3. consume equivocation evidence atomically with full forfeiture, jail,
    reactivation and next-set eligibility checks; and
 4. commit fee escrow before certification, derive deterministic entitlements,

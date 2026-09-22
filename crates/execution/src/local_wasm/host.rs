@@ -15,13 +15,12 @@ const ABSENT_RESULT_SLOT: u32 = u32::MAX;
 /// deleted object in addition to its body bytes: identity, version, owner,
 /// nominal type commitment, schema, the enclosing `ObjectEffect` framing and
 /// the one list-entry field the effects list wrapper adds for it. Sized
-/// above the real canonical encoder's worst host-reachable case (`Mutated`
-/// with an `Address` owner). The current host ABI can create only `Address`
-/// owners and rejects custody inputs, so arbitrary persisted custody scopes
-/// are not output-accounting inputs. The regression below nevertheless runs
-/// every owner variant with a representative custody scope so enum growth is
-/// visible during review. A deletion emits no body at all, so charging this
-/// same bound for it is conservative, not exact.
+/// above the real canonical encoder's worst address-owned case. The host ABI
+/// can create only `Address` owners; one separately pinned invocation-local
+/// capability can produce or release one exact custody owner. Custody's
+/// variable chain bytes are charged separately by [`object_output_charge`],
+/// leaving all historical address-owned accounting unchanged. A deletion emits
+/// no body at all, so charging this same bound for it is conservative, not exact.
 pub(super) const OUTPUT_OBJECT_OVERHEAD_BYTES: usize = 384;
 /// Conservative encoded-effect overhead charged for one event record in
 /// addition to its type tag and body bytes.
@@ -89,6 +88,7 @@ pub(super) struct HostState {
     // Running encoded-effect byte accounting, unbounded unless a phase
     // coordinator installs explicit ceilings.
     pub output: OutputAccount,
+    pub protocol_custody: Option<crate::protocol_custody::BoundProtocolCustodyCapability>,
 }
 
 /// One open phase window (DR-0124): the cumulative counters observed when
@@ -450,10 +450,15 @@ fn grant(state: &HostState, handle: i32) -> Result<Grant, wasmi::Error> {
 fn writable(state: &HostState, handle: i32, consume: bool) -> Result<usize, wasmi::Error> {
     let grant: Grant = grant(state, handle)?;
     let item: &ArenaObject = &state.arena[grant.index];
+    let sender_owned: bool = item.object.owner == Owner::Address(Address::new(state.sender));
+    let custody_write: bool = state
+        .protocol_custody
+        .as_ref()
+        .is_some_and(|capability| capability.admits_custody_write(grant.index, consume));
     if grant.mode == ObjectMode::Read
         || (consume && grant.mode != ObjectMode::Consume)
         || item.authority.code != frame(state)?.code
-        || item.object.owner != Owner::Address(Address::new(state.sender))
+        || (!sender_owned && !custody_write)
         || item.authority.instance != state.scopes[frame(state)?.scope].target
         || item.authority.instance_context != state.scopes[frame(state)?.scope].instance.context
     {
@@ -466,6 +471,23 @@ fn owner(bytes: &[u8]) -> Result<Owner, wasmi::Error> {
     validate_ed25519_owner_address(&address, Ed25519OwnerAddressPolicy::CanonicalPrimeOrder)
         .map_err(|_| trap())?;
     Ok(Owner::Address(Address::new(address)))
+}
+
+/// Charges the historical address-owned effect bound plus the exact additional
+/// owner-encoding bytes, if any. This keeps ordinary execution accounting
+/// byte-for-byte unchanged while safely covering a custody scope whose chain
+/// reaches the publication-context maximum.
+fn object_output_charge(body_len: usize, owner: &Owner) -> Result<usize, wasmi::Error> {
+    let address_owner: Owner = Owner::Address(Address::new([0; 32]));
+    let address_owner_len: usize = objects::encode_owner(&address_owner)
+        .map_err(|_| trap())?
+        .len();
+    let owner_len: usize = objects::encode_owner(owner).map_err(|_| trap())?.len();
+    let owner_extra: usize = owner_len.saturating_sub(address_owner_len);
+    body_len
+        .checked_add(OUTPUT_OBJECT_OVERHEAD_BYTES)
+        .and_then(|bytes| bytes.checked_add(owner_extra))
+        .ok_or_else(trap)
 }
 fn own_body(
     state: &HostState,
@@ -582,10 +604,7 @@ pub(super) fn linker(engine: &Engine) -> Result<Linker<HostState>, wasmi::Error>
                 &bytes,
             )
             .map_err(|_| trap())?;
-            let charged: usize = bytes
-                .len()
-                .checked_add(OUTPUT_OBJECT_OVERHEAD_BYTES)
-                .ok_or_else(trap)?;
+            let charged: usize = object_output_charge(bytes.len(), &item.object.owner)?;
             caller.data_mut().output.charge(charged)?;
             let item: &mut ArenaObject = &mut caller.data_mut().arena[index];
             item.object.data = bytes;
@@ -621,8 +640,20 @@ pub(super) fn linker(engine: &Engine) -> Result<Linker<HostState>, wasmi::Error>
         |mut caller: Caller<'_, HostState>, handle: i32, ptr: i32| -> HostResult {
             charge(&mut caller, 0)?;
             let bytes: Vec<u8> = read(&mut caller, ptr, 32)?;
-            let owner: Owner = owner(&bytes)?;
             let index: usize = writable(caller.data(), handle, false)?;
+            let operand: [u8; 32] = bytes.try_into().map_err(|_| trap())?;
+            let owner: Owner = match caller
+                .data()
+                .protocol_custody
+                .as_ref()
+                .map(|capability| capability.transfer_owner(index, &operand))
+                .transpose()
+                .map_err(|_| trap())?
+                .flatten()
+            {
+                Some(owner) => owner,
+                None => owner(&operand)?,
+            };
             let current: &Frame = frame(caller.data())?;
             let metadata = current
                 .interface
@@ -640,12 +671,8 @@ pub(super) fn linker(engine: &Engine) -> Result<Linker<HostState>, wasmi::Error>
             // owner. Charge that prospective body-plus-overhead cost before
             // any mutation, exactly like a body write, so a transfer can
             // never emit output the phase or global ceiling never saw.
-            let charged: usize = caller.data().arena[index]
-                .object
-                .data
-                .len()
-                .checked_add(OUTPUT_OBJECT_OVERHEAD_BYTES)
-                .ok_or_else(trap)?;
+            let charged: usize =
+                object_output_charge(caller.data().arena[index].object.data.len(), &owner)?;
             caller.data_mut().output.charge(charged)?;
             let item: &mut ArenaObject = &mut caller.data_mut().arena[index];
             item.object.owner = owner;
@@ -672,10 +699,7 @@ pub(super) fn linker(engine: &Engine) -> Result<Linker<HostState>, wasmi::Error>
             let (ty, schema) = own_body(caller.data(), &tag, &body)?;
             caller.data().admit_creations(1)?;
             caller.data().admit_handles(1)?;
-            let charged: usize = body
-                .len()
-                .checked_add(OUTPUT_OBJECT_OVERHEAD_BYTES)
-                .ok_or_else(trap)?;
+            let charged: usize = object_output_charge(body.len(), &owner)?;
             caller.data_mut().output.charge(charged)?;
             let state: &HostState = caller.data();
             let current: &Frame = frame(state)?;
@@ -1482,10 +1506,10 @@ mod tests {
     /// Derives the real canonical-encoder overhead for one `Created`,
     /// `Mutated` or `Deleted` object effect -- including the one list-entry
     /// field the effects list wrapper adds for it -- and checks that
-    /// `OUTPUT_OBJECT_OVERHEAD_BYTES` conservatively bounds every
-    /// host-reachable output and exercises a representative value of every
-    /// persisted owner variant. A fixed body length isolates per-effect
-    /// overhead from the body it carries.
+    /// the charged address-owned base plus exact owner-size delta
+    /// conservatively bounds every host-reachable output. Custody uses the
+    /// maximum admitted chain length, not a small representative sample. A
+    /// fixed body length isolates per-effect overhead from the body it carries.
     #[test]
     fn object_overhead_bounds_the_real_encoder() {
         fn effects_len(effects: Vec<ObjectEffect>) -> usize {
@@ -1532,7 +1556,10 @@ mod tests {
             Owner::System,
             Owner::ProtocolCustody(objects::ProtocolCustodyScope {
                 purpose: objects::ProtocolCustodyPurpose::BondCollateral,
-                chain_id: protocol_types::ChainId::new("overhead-bound").unwrap(),
+                chain_id: protocol_types::ChainId::new(
+                    "x".repeat(crate::publication::MAX_CHAIN_ID_BYTES),
+                )
+                .unwrap(),
                 subject: [0x44; 32],
                 resource: [0x55; 32],
             }),
@@ -1548,20 +1575,27 @@ mod tests {
             }]);
             let created_overhead: usize = created - empty;
             let mutated_overhead: usize = mutated - empty;
+            let charged: usize = object_output_charge(0, &owner).expect("output charge");
             assert!(
-                created_overhead <= OUTPUT_OBJECT_OVERHEAD_BYTES,
+                created_overhead <= charged,
                 "created overhead {created_overhead} exceeds the charged bound for {owner:?}"
             );
             assert!(
-                mutated_overhead <= OUTPUT_OBJECT_OVERHEAD_BYTES,
+                mutated_overhead <= charged,
                 "mutated overhead {mutated_overhead} exceeds the charged bound for {owner:?}"
             );
             // The overhead is a fixed per-effect cost: every additional body
-            // byte adds exactly one encoded byte, so charging `body.len() +
-            // OUTPUT_OBJECT_OVERHEAD_BYTES` never under-charges a larger body.
-            let created_with_body: usize =
-                effects_len(vec![ObjectEffect::Created(object(vec![0u8; 100], owner))]);
+            // byte adds exactly one encoded byte, so the dynamic charge never
+            // under-charges a larger body.
+            let created_with_body: usize = effects_len(vec![ObjectEffect::Created(object(
+                vec![0u8; 100],
+                owner.clone(),
+            ))]);
             assert_eq!(created_with_body - created, 100);
+            assert_eq!(
+                object_output_charge(100, &owner).expect("body output charge"),
+                charged + 100
+            );
         }
     }
 }

@@ -960,6 +960,9 @@ pub struct LocalExecutionRequest<'a> {
     pub event_digest: Digest32,
     /// Declared, scoped inputs in signed order.
     pub inputs: &'a [ScopedResolvedObject],
+    /// Optional trusted protocol-custody authority for this invocation only.
+    /// Ordinary and fee-bearing application calls must pass `None`.
+    pub protocol_custody: Option<&'a crate::ProtocolCustodyCapability>,
 }
 impl LocalExecutionRequest<'_> {
     /// Returns the admitted root without assuming a nonempty untrusted slice.

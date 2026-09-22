@@ -347,6 +347,7 @@ fn run(
         policy: &policy,
         event_digest: local_execution_event_digest(&resolver, &signed)?,
         inputs,
+        protocol_custody: None,
     })
 }
 fn created(

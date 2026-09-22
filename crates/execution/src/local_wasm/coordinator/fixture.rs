@@ -560,6 +560,7 @@ pub(super) fn call(
             policy: &policy,
             event_digest: local_execution_event_digest(&resolver, &signed).expect("event digest"),
             inputs,
+            protocol_custody: None,
         })
         .expect("execution")
 }

@@ -30,6 +30,8 @@ pub(super) fn bind_input(
     sender: [u8; 32],
     epoch: protocol_types::Epoch,
     input: &ScopedResolvedObject,
+    input_index: usize,
+    protocol_custody: Option<&crate::protocol_custody::BoundProtocolCustodyCapability>,
 ) -> Result<ArenaObject, LocalExecutionError> {
     let object: &Object = &input.resolved.object;
     let authority: &ObjectAuthority = &input.authority;
@@ -44,7 +46,10 @@ pub(super) fn bind_input(
         .interface
         .for_origin(authority.ty.origin())
         .map_err(|_| LocalExecutionError::Invalid("input defining code"))?;
-    if object.owner != Owner::Address(Address::new(sender))
+    let sender_owned: bool = object.owner == Owner::Address(Address::new(sender));
+    let custody_admitted: bool = protocol_custody
+        .is_some_and(|capability| capability.admits_input_owner(input_index, &object.owner));
+    if (!sender_owned && !custody_admitted)
         || authority.object_id != object.id
         || authority.code != reference(&defining)?
         || !abi::package_types::verify_scoped_type_id(
@@ -110,6 +115,8 @@ pub(super) struct StateParts<'a> {
     pub modules: BTreeMap<PackageOrigin, Arc<Module>>,
     /// Shared host linker.
     pub linker: Arc<Linker<HostState>>,
+    /// Optional exact protocol-custody authority; absent on ordinary/paid paths.
+    pub protocol_custody: Option<crate::protocol_custody::BoundProtocolCustodyCapability>,
 }
 
 /// Builds the single host state shared by every frame of one invocation.
@@ -139,6 +146,7 @@ pub(super) fn host_state(parts: StateParts<'_>) -> Result<HostState, LocalExecut
         handles: 0,
         budget: None,
         output: host::OutputAccount::default(),
+        protocol_custody: parts.protocol_custody,
     })
 }
 

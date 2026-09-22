@@ -1124,6 +1124,8 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
         plan.sender,
         epoch,
         &plan.source,
+        0,
+        None,
     )?);
     runner::accumulate_body_bytes(&mut body_bytes, &plan.source.resolved.object)?;
     const SOURCE_INDEX: usize = 0;
@@ -1136,8 +1138,15 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
         let index: usize = if input.resolved.object.id == plan.source.resolved.object.id {
             SOURCE_INDEX
         } else {
-            let bound: ArenaObject =
-                runner::bind_input(plan.resolver, plan.scopes, plan.sender, epoch, input)?;
+            let bound: ArenaObject = runner::bind_input(
+                plan.resolver,
+                plan.scopes,
+                plan.sender,
+                epoch,
+                input,
+                arena.len(),
+                None,
+            )?;
             runner::accumulate_body_bytes(&mut body_bytes, &input.resolved.object)?;
             arena.push(bound);
             arena.len() - 1
@@ -1159,6 +1168,7 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
         arena,
         modules,
         linker: Arc::clone(&linker),
+        protocol_custody: None,
     })?;
     let mut store: Store<HostState> = Store::new(&engine, state);
     store.limiter(|state| &mut state.limiter);

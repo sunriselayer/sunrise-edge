@@ -2836,6 +2836,20 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
       `0x642D/v1` lifecycle state; genesis derives generation 1 `Active` only
       after the policy's exact code/instance/type/schema/ABI and minimum checks pass.
       Rust plus independent JavaScript vectors cover the changed frames;
+    - [x] invocation-local protocol-custody execution capability prerequisite
+      (implemented and locally validated 2026-09-23). One exact
+      policy-constructed capability binds context, sender,
+      instance/code/type/schema/entrypoint, object, direction, custody scope and
+      recipient. Deposit maps a derived non-address operand only for the pinned
+      source; release admits only the pinned custody `Write` input and exact
+      recipient. `Consume`, ambient token reuse, `create_object`, ordinary and
+      paid execution remain closed. Effects are provisional: node-core
+      lifecycle admission, generic postcondition validation and atomic durable
+      commit are not implemented by this prerequisite. Rust contract-effect
+      tests and an independent `0x642E/v1` JavaScript preimage vector cover it.
+      The private capability is pinned to the complete signed execution-event
+      digest, and bounded rejection sampling prevents an address-shaped
+      counter-zero token from permanently blocking a valid source;
     - [ ] generic custody-effect validation plus whole-object
       deposit/replacement, unbond and withdrawal;
     - [ ] one-time evidence consumption, full forfeiture, jail/reactivation
