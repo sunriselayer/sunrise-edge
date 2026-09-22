@@ -97,6 +97,14 @@ certification.
   bounded.
 - Unknown algorithms, versions, event kinds, modules, encodings, and policies
   must fail closed without downgrade or fallback.
+- FastVote mutation paths must fence a non-current epoch, a validator absent
+  from the one committed active validator set, and a conflicting object or
+  sender/epoch nonce lock before any lock, execution, or mutation. Validator
+  membership must never be locally, unilaterally mutable by a single node;
+  it changes only through a certified state transition every node observes
+  identically. This is a To-Be invariant designed by
+  [DR-0131](docs/architecture/decisions/0131-fastvote-validator-lifecycle.md)
+  slice 1 and not yet implemented; see the "Initial-Audit Exclusions" below.
 
 ## Reportable Findings and Severity Context
 
@@ -127,10 +135,14 @@ The following are deferred from the first audit engagement:
 - externally reachable FastVote/FastCertificate ingress, validator lifecycle,
   and economics/security completion (the local Phase 1 certified-execution
   boundary and atomic certificate publication are implemented under
-  [DR-0130](docs/architecture/decisions/0130-owned-object-certified-execution.md),
-  but Phase 2 validator-set transitions/recovery and Phase 3 slashing/reward
-  distribution remain deferred — see `TODO.md`'s FastVote Certified Execution
-  Gate);
+  [DR-0130](docs/architecture/decisions/0130-owned-object-certified-execution.md);
+  Phase 2's architecture, and slice 1's mutation-fencing layer in full, are
+  designed under
+  [DR-0131](docs/architecture/decisions/0131-fastvote-validator-lifecycle.md)
+  but not implemented; Phase 2 slices 2-4 have their safety contract fixed
+  by DR-0131 with detailed wire/API decisions pending, and Phase 3
+  slashing/reward distribution remains undesigned — see `TODO.md`'s
+  FastVote Certified Execution Gate);
 - externally accepted non-`SubmitTransaction` event families;
 - production multi-validator consensus activation;
 - checkpoint/state-root publication and verified restore;
