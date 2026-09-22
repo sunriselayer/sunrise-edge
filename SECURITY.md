@@ -86,6 +86,11 @@ certification.
 - Object access and execution effects must remain within the signed manifest.
   Owner, type, and schema changes must fail closed unless an exact committed
   policy explicitly permits them.
+- `ProtocolCustody` ownership has no sender signature authority. Only a signed
+  same-chain genesis manifest may introduce it until a later decision defines
+  an exact protocol-authorized operation; ordinary execution reads, writes,
+  consumes, owner transitions, fee use, contract creation, and FastVote locks
+  fail closed. Public object queries remain read-only and return canonical state.
 - Preinstalled WASM code and semantics must be resolved from trusted committed
   configuration, not uploaded or substituted by a transaction.
 - Fee debits and treasury credits must use ordinary asset-account state and
@@ -122,8 +127,9 @@ certification.
   declares the two-axis authorization boundary: every Phase 2 operation is
   local-operator-invoked, its signing or mutating branch requires the exact
   current/outgoing/historical validator proof, and external ingress remains
-  closed. Slice 4 and Phase 2 are implemented only when its companion code and
-  reviews land. Phase 3 economics remain open.
+  closed. Its companion code and reviews landed in PR #180, closing Phase 2.
+  Phase 3 economics remain open; DR-0135 defines only the non-signable custody
+  prerequisite and grants no custody release or asset-mutation authority.
 
 ## Reportable Findings and Severity Context
 
@@ -165,10 +171,11 @@ The following are deferred from the first audit engagement:
   equivocation-evidence types, historical verification, durable recording,
   and point query are implemented under
   [DR-0133](docs/architecture/decisions/0133-fastvote-equivocation-evidence.md).
-  Slice 4's authorization and closed-ingress decision is accepted under
+  Slice 4's authorization and closed-ingress boundary is implemented under
   [DR-0134](docs/architecture/decisions/0134-fastvote-authorization-boundary.md),
-  but Phase 2 completion remains conditional on its companion code and reviews
-  landing. Phase 3 slashing/reward distribution remains undesigned — see
+  and its companion code and reviews landed in PR #180, closing Phase 2.
+  Phase 3 slashing/reward distribution remains incomplete; DR-0135 accepts
+  only its non-signable protocol-custody prerequisite — see
   `TODO.md`'s FastVote Certified Execution Gate);
 - externally accepted non-`SubmitTransaction` event families;
 - production multi-validator consensus activation;

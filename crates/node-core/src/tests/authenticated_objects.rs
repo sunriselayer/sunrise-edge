@@ -415,6 +415,38 @@ fn authenticated_object_dispatch_fails_closed_for_every_pure_and_storage_branch(
             false,
         ),
         (
+            // DR-0135: a protocol-custody-owned object has no signing key
+            // and must be rejected exactly like Shared/System, even for a
+            // declared `Read`.
+            "protocol custody owner rejected",
+            Box::new(move || {
+                let store = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+                let object_id = ObjectId::new([0x4F; 32]);
+                let (object_ref, _head) = preload_inline_object(
+                    &store,
+                    "sunrise-test",
+                    object_id,
+                    Owner::ProtocolCustody(objects::ProtocolCustodyScope {
+                        purpose: objects::ProtocolCustodyPurpose::BondCollateral,
+                        chain_id: ChainId::new("sunrise-test").unwrap(),
+                        subject: [0x74; 32],
+                        resource: [0x75; 32],
+                    }),
+                    0x4F,
+                );
+                let manifest = manifest_with(vec![AccessEntry {
+                    object_ref,
+                    mode: AccessMode::Read,
+                }]);
+                (
+                    store,
+                    manifest,
+                    NodeCoreError::ObjectOwnerKindUnsupported { object_id },
+                )
+            }),
+            false,
+        ),
+        (
             "blob payload missing from blob store",
             Box::new(move || {
                 let store = ScriptedDurableStore::new(DurableCommitOutcome::Committed);

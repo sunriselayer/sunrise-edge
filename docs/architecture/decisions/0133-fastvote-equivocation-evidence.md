@@ -21,10 +21,11 @@ with strict rechecks on exact prepare replay and before certificate apply,
 normalized signature-excluding evidence identity, restart-verified transition-chain
 anchored historical validator resolution, deterministic transactional store/query
 with `AlreadyRecorded`, comprehensive unit/adversarial tests across `consensus`
-and `node-core`, and independent JS vectors. Completing this slice does not by itself
-close the FastVote Certified Execution Gate's Phase 2 entry in `TODO.md`;
-[DR-0134](0134-fastvote-authorization-boundary.md)'s companion Slice 4 code and
-review gate still must land. This DR implements no bonding, slashing, penalty,
+and `node-core`, and independent JS vectors. Completing this slice did not by
+itself close the FastVote Certified Execution Gate's Phase 2 entry in
+`TODO.md`; [DR-0134](0134-fastvote-authorization-boundary.md)'s companion
+Slice 4 code and review gate later landed in PR #180 and closed Phase 2.
+This DR implements no bonding, slashing, penalty,
 reward, or external ingress. FastVote overall remains incomplete until Phase 3.
 
 **Revision (2026-09-22, same day, review correction).** The original text
@@ -981,8 +982,8 @@ implementation owns Phase 2 gate closure.
    and `./scripts/check-all.sh` all pass, plus a focused security review and
    a fresh tech-lead review.
 
-Satisfying these does not by itself close the Phase 2 gate (DR-0134's
-companion implementation still must land) and does not authorize
+Satisfying these did not by itself close the Phase 2 gate (DR-0134's
+companion implementation later landed in PR #180) and does not authorize
 testnet/production activation, bonding, slashing, or reward distribution.
 
 ## Test and evidence plan
@@ -1133,8 +1134,8 @@ tech-lead review.
 - No bonding, slashing, penalty, reward, or distribution mechanism of any
   kind is implemented by this DR.
 - DR-0134 declares Slice 4's authorization classes and still-closed external
-  ingress boundary; Phase 2 closure remains conditional on its companion code
-  and reviews landing.
+  ingress boundary; its companion code and reviews landed in PR #180, closing
+  Phase 2.
 - `EpochTransitionVote`/`EpochTransitionCertificate` (`0xD009`-`0xD00B`),
   the `FastPathEpochRecord`/`FastPathLockRecord` fencing model, and the
   epoch-transition activation/reclamation design are all unchanged by this

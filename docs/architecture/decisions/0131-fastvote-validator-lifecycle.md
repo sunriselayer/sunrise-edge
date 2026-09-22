@@ -6,9 +6,8 @@ Accepted as the Phase 2 architecture, 2026-09-22. Slice 1 is fully specified
 and implemented. Slices 2-4's safety contract — in particular the key
 transition safety proof below — is fixed by this DR. DR-0132 and DR-0133
 implement Slices 2 and 3; [DR-0134](0134-fastvote-authorization-boundary.md)
-accepts Slice 4's authorization and ingress decision. Slice 4 and Phase 2 are
-implemented only when DR-0134's companion code, tests, complete gate, and fresh
-reviews land.
+implements Slice 4's authorization and ingress boundary. Its companion code,
+tests, complete gate, and fresh reviews landed in PR #180, closing Phase 2.
 [DR-0132](0132-fastvote-epoch-transition.md) fixes Slice 2's detailed
 design (wire format, API, activation write set, reclamation rule) and
 corrects seven assumptions this DR made about the transition (C1-C7 in
@@ -18,8 +17,8 @@ would otherwise brick a node on restart or leave epoch `e+1` unable to
 execute anything). **Slice 2 is now implemented** (DR-0132, 2026-09-22),
 making retired-validator and wrong-epoch rejection end-to-end observable
 through a real outgoing-set-certified `e -> e+1` transition for the first
-time. Phase 2 remains open until DR-0134's companion implementation and
-reviews land. Retired-validator and wrong-epoch rejection were
+time. DR-0134's companion implementation and reviews have since landed.
+Retired-validator and wrong-epoch rejection were
 enforced by Slice 1's fencing from day one, but had no observable
 end-to-end effect beyond what
 [DR-0130](0130-owned-object-certified-execution.md) already verified
@@ -95,17 +94,16 @@ must never derive different active authority sets from local configuration.
   v2, this repository is unreleased) — the cross-transaction case cannot be
   evidenced without it. No economics (bonding, penalties, distribution)
   implemented.
-* **Slice 4 (decision accepted in
-  [DR-0134](0134-fastvote-authorization-boundary.md); implementation pending
-  its companion code and reviews).**
+* **Slice 4 (implemented and reviewed in
+  [DR-0134](0134-fastvote-authorization-boundary.md)).**
   Declares which authorization class each Phase 2 mutation belongs to
   (local-operator-authorized vs. validator-authenticated vs. still-closed
   external ingress), states that the external ingress boundary remains
   closed by default, and defines the companion implementation and review gate
-  that must land before the Phase 2 entry in `TODO.md` can close.
+  that landed in PR #180 and closed the Phase 2 entry in `TODO.md`.
 
-**Phase 2 is not complete until DR-0134's implementation gate closes**, and FastVote overall
-remains incomplete until Phase 3 (bond-linked slashing execution and
+**Phase 2 is complete after DR-0134's implementation gate closed in PR #180**,
+and FastVote overall remains incomplete until Phase 3 (bond-linked slashing execution and
 deterministic transaction-fee escrow distribution to the final certificate
 signer set), unaffected by this DR.
 
@@ -393,9 +391,9 @@ real transition ([DR-0132](0132-fastvote-epoch-transition.md), implemented).
 - Explicit canonical equivocation evidence, including the in-place
   `FastVote`/`FastCertificate` `locked_objects_digest` extension, is
   implemented by [DR-0133](0133-fastvote-equivocation-evidence.md).
-- [DR-0134](0134-fastvote-authorization-boundary.md) declares Slice 4's
-  authorization classes and still-closed external boundary. Phase 2 closes
-  only when its companion code and review gate land.
+- [DR-0134](0134-fastvote-authorization-boundary.md) implements Slice 4's
+  authorization classes and still-closed external boundary. Its companion
+  code and review gate landed in PR #180, closing Phase 2.
 - Lock recovery for an intent whose certificate never forms is unchanged
   from DR-0130: permanent until apply, with no timeout or clock-based
   unlock. Slice 1 adds no recovery path; it only adds the epoch stamp

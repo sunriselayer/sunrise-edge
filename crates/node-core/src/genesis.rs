@@ -866,15 +866,39 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
         if &entry.authority.instance_context != manifest_context {
             return Err(GenesisError::ContextMismatch);
         }
-        let Owner::Address(owner_addr) = &entry.object.owner else {
-            return Err(GenesisError::Invalid(
-                "genesis object owner must be an Address",
-            ));
-        };
-        validate_ed25519_owner_address(
-            owner_addr.as_bytes(),
-            Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
-        )?;
+        // DR-0135: genesis may install an `Address`-owned object (the
+        // pre-existing path) or a `ProtocolCustody`-owned object, but only
+        // when the scope's own chain equals this exact manifest chain and
+        // the purpose is one of the closed purposes this release supports.
+        // `objects::decode_owner` already rejects any purpose tag other than
+        // `BondCollateral`; the exhaustive match below still names the
+        // purpose explicitly so a future purpose variant fails to compile
+        // here until this boundary makes its own decision for it. Every
+        // other owner kind is unsupported at genesis, exactly like every
+        // other creation path.
+        match &entry.object.owner {
+            Owner::Address(owner_addr) => {
+                validate_ed25519_owner_address(
+                    owner_addr.as_bytes(),
+                    Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
+                )?;
+            }
+            Owner::ProtocolCustody(scope) => {
+                if &scope.chain_id != manifest_context.chain_id() {
+                    return Err(GenesisError::Invalid(
+                        "protocol custody scope chain does not match the manifest chain",
+                    ));
+                }
+                match scope.purpose {
+                    objects::ProtocolCustodyPurpose::BondCollateral => {}
+                }
+            }
+            Owner::Shared | Owner::Immutable | Owner::System => {
+                return Err(GenesisError::Invalid(
+                    "genesis object owner must be an Address or protocol custody scope",
+                ));
+            }
+        }
         execution::publication::validate_nominal_body(
             &interface,
             &entry.authority.ty,

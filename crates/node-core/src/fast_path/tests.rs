@@ -17,8 +17,11 @@ use execution::paid_execution::{
 };
 use fees::Amount;
 use runtime::{
-    DurableDomainStateStore, MemoryBlobStore, MemoryDurableStateStore, StorageCorrelationId,
-    StorageDeadline, WriterFenceGeneration,
+    DurableCommitOutcome, DurableDomainStateStore, DurableInvocationTransaction,
+    DurableObjectChanges, DurableObjectHeadRead, DurableObjectMutation, DurableObjectMutationEntry,
+    DurableObjectOwnerProjection, DurableObjectProvenance, DurableObjectRoutingProjection,
+    DurableObjectVersionRecord, DurableRequestId, DurableRequestReceipt, MemoryBlobStore,
+    MemoryDurableStateStore, StorageCorrelationId, StorageDeadline, WriterFenceGeneration,
 };
 use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore, SqliteNamespace};
 use std::cell::Cell;
@@ -136,6 +139,125 @@ fn prepare_transfer<S: StructuredDurableDomainStateStore>(
         &bytes,
         10,
     )
+}
+
+/// Replaces one fixture object's current version with an otherwise identical
+/// protocol-custody-owned version. This is test setup, not a protocol path:
+/// DR-0135 deliberately exposes no post-genesis operation that can perform
+/// this owner transition.
+fn install_custody_owned_version<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    object: &Object,
+) -> Object {
+    let mut custody_object: Object = object.clone();
+    custody_object.version = custody_object.version.checked_add(1).unwrap();
+    custody_object.owner = Owner::ProtocolCustody(objects::ProtocolCustodyScope {
+        purpose: objects::ProtocolCustodyPurpose::BondCollateral,
+        chain_id: protocol().chain_id().clone(),
+        subject: [0x78; 32],
+        resource: [0x79; 32],
+    });
+    let canonical_bytes: Vec<u8> = objects::encode_object(&custody_object).unwrap();
+    let digest: Digest32 = resolver()
+        .hash_for_purpose(protocol().epoch(), HashPurpose::Object, &canonical_bytes)
+        .unwrap();
+    let version: DurableObjectVersionRecord = DurableObjectVersionRecord::from_inline_object(
+        custody_object.clone(),
+        digest,
+        DurableObjectProvenance::new(protocol().chain_id().clone(), protocol().protocol_version()),
+        9,
+    )
+    .unwrap();
+    let head: DurableObjectHeadRead = DurableObjectHeadRead::new(
+        custody_object.id,
+        store
+            .get_object_head(&context(), domain(), custody_object.id)
+            .unwrap(),
+    );
+    let mutation: DurableObjectMutationEntry = DurableObjectMutationEntry::new(
+        custody_object.id,
+        DurableObjectMutation::Update {
+            version,
+            owner_projection: DurableObjectOwnerProjection::from_owner(
+                custody_object.owner.clone(),
+            )
+            .unwrap(),
+            routing_projection: DurableObjectRoutingProjection::default(),
+        },
+    );
+    let changes: DurableObjectChanges =
+        DurableObjectChanges::new(vec![head], vec![mutation]).unwrap();
+    let request_id: DurableRequestId = DurableRequestId::new([0xE5; 32]).unwrap();
+    let receipt: DurableRequestReceipt =
+        DurableRequestReceipt::new(request_id, digest, vec![0xE5]).unwrap();
+    let transaction: DurableInvocationTransaction =
+        DurableInvocationTransaction::new(domain(), None, changes, receipt, None).unwrap();
+    assert_eq!(
+        store.commit_invocation(&context(), transaction),
+        DurableCommitOutcome::Committed
+    );
+    custody_object
+}
+
+/// DR-0135: FastVote preparation must reject a custody-owned lock target
+/// before executing or writing a lock, prepared record, or nonce reservation.
+#[test]
+fn prepare_rejects_protocol_custody_owned_lock_target_before_execution() {
+    let store: MemoryDurableStateStore = memory_store();
+    let mut fixture: Fixture = install(&store);
+    let (signers, _entries) = install_four_validators(&store);
+    fixture.coin = install_custody_owned_version(&store, &fixture.coin);
+    let bytes: Vec<u8> = paid_call_with_access(
+        PaidCall {
+            fixture: &fixture,
+            policy: &fixture.policy,
+            request: 0xE6,
+            nonce: FIRST_PAID_NONCE,
+            source: &fixture.coin,
+            entrypoint: "transfer",
+            arguments: public_standard_asset::transfer_arguments(&refund_account()).unwrap(),
+            access: vec![entry(&fixture.coin, objects::AccessMode::Write)],
+        },
+        ReservationAccessKind::Write,
+    );
+    let engine: CountingEngine = CountingEngine::new();
+    let result: FastPathResult<FastVote> = prepare(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &engine,
+        &signers[0],
+        &bytes,
+        10,
+    );
+    assert!(
+        matches!(
+            &result,
+            Err(FastPathError::Admission(
+                PaidExecutionAdmissionError::Invalid(
+                    "paid inputs require sender address ownership"
+                )
+            ))
+        ),
+        "unexpected custody prepare result: {result:?}"
+    );
+    assert_eq!(engine.calls.get(), 0);
+    assert_eq!(next_nonce(&store), FIRST_PAID_NONCE);
+    let lock_key: Vec<u8> =
+        local_instance_state::fastpath_lock_key(protocol().chain_id(), fixture.coin.id).unwrap();
+    assert!(
+        store
+            .get_versioned_durable(&context(), domain(), &lock_key)
+            .unwrap()
+            .value()
+            .is_none()
+    );
 }
 
 fn apply_transfer<S: StructuredDurableDomainStateStore>(

@@ -15,11 +15,14 @@ const ABSENT_RESULT_SLOT: u32 = u32::MAX;
 /// deleted object in addition to its body bytes: identity, version, owner,
 /// nominal type commitment, schema, the enclosing `ObjectEffect` framing and
 /// the one list-entry field the effects list wrapper adds for it. Sized
-/// above the real canonical encoder's worst observed case (`Mutated`, whose
-/// owner is the largest `Owner::Address` variant), checked in
-/// `object_overhead_bounds_the_real_encoder` below. A deletion emits no body
-/// at all, so charging this same bound for it is conservative, not exact.
-pub(super) const OUTPUT_OBJECT_OVERHEAD_BYTES: usize = 320;
+/// above the real canonical encoder's worst host-reachable case (`Mutated`
+/// with an `Address` owner). The current host ABI can create only `Address`
+/// owners and rejects custody inputs, so arbitrary persisted custody scopes
+/// are not output-accounting inputs. The regression below nevertheless runs
+/// every owner variant with a representative custody scope so enum growth is
+/// visible during review. A deletion emits no body at all, so charging this
+/// same bound for it is conservative, not exact.
+pub(super) const OUTPUT_OBJECT_OVERHEAD_BYTES: usize = 384;
 /// Conservative encoded-effect overhead charged for one event record in
 /// addition to its type tag and body bytes.
 const OUTPUT_EVENT_OVERHEAD_BYTES: usize = 128;
@@ -1479,9 +1482,10 @@ mod tests {
     /// Derives the real canonical-encoder overhead for one `Created`,
     /// `Mutated` or `Deleted` object effect -- including the one list-entry
     /// field the effects list wrapper adds for it -- and checks that
-    /// `OUTPUT_OBJECT_OVERHEAD_BYTES` conservatively bounds every variant,
-    /// with a fixed body length isolating the per-effect overhead from the
-    /// body it carries.
+    /// `OUTPUT_OBJECT_OVERHEAD_BYTES` conservatively bounds every
+    /// host-reachable output and exercises a representative value of every
+    /// persisted owner variant. A fixed body length isolates per-effect
+    /// overhead from the body it carries.
     #[test]
     fn object_overhead_bounds_the_real_encoder() {
         fn effects_len(effects: Vec<ObjectEffect>) -> usize {
@@ -1498,13 +1502,11 @@ mod tests {
             .expect("encode execution effects")
             .len()
         }
-        fn object(data: Vec<u8>) -> Object {
+        fn object(data: Vec<u8>, owner: Owner) -> Object {
             Object {
                 id: objects::ObjectId::new([0x11; 32]),
                 version: 1,
-                // The largest `Owner` variant: a full 32-byte address, the
-                // shape every transfer recipient uses.
-                owner: Owner::Address(Address::new([0x22; 32])),
+                owner,
                 type_hash: protocol_types::Digest32::new(
                     protocol_types::HashAlgorithmId::Sha2_256,
                     [0x33; 32],
@@ -1514,35 +1516,52 @@ mod tests {
             }
         }
         let empty: usize = effects_len(Vec::new());
-        let created: usize = effects_len(vec![ObjectEffect::Created(object(Vec::new()))]);
-        let mutated: usize = effects_len(vec![ObjectEffect::Mutated {
-            previous_version: 1,
-            new_object: object(Vec::new()),
-        }]);
         let deleted: usize = effects_len(vec![ObjectEffect::Deleted {
             id: objects::ObjectId::new([0x11; 32]),
             version: 1,
         }]);
-        let created_overhead: usize = created - empty;
-        let mutated_overhead: usize = mutated - empty;
         let deleted_overhead: usize = deleted - empty;
-        assert!(
-            created_overhead <= OUTPUT_OBJECT_OVERHEAD_BYTES,
-            "created overhead {created_overhead} exceeds the charged bound"
-        );
-        assert!(
-            mutated_overhead <= OUTPUT_OBJECT_OVERHEAD_BYTES,
-            "mutated overhead {mutated_overhead} exceeds the charged bound"
-        );
         assert!(
             deleted_overhead <= OUTPUT_OBJECT_OVERHEAD_BYTES,
             "deleted overhead {deleted_overhead} exceeds the charged bound"
         );
-        // The overhead is a fixed per-effect cost: every additional body
-        // byte adds exactly one encoded byte, so charging `body.len() +
-        // OUTPUT_OBJECT_OVERHEAD_BYTES` never under-charges a larger body.
-        let created_with_body: usize =
-            effects_len(vec![ObjectEffect::Created(object(vec![0u8; 100]))]);
-        assert_eq!(created_with_body - created, 100);
+        let owners: Vec<Owner> = vec![
+            Owner::Address(Address::new([0x22; 32])),
+            Owner::Shared,
+            Owner::Immutable,
+            Owner::System,
+            Owner::ProtocolCustody(objects::ProtocolCustodyScope {
+                purpose: objects::ProtocolCustodyPurpose::BondCollateral,
+                chain_id: protocol_types::ChainId::new("overhead-bound").unwrap(),
+                subject: [0x44; 32],
+                resource: [0x55; 32],
+            }),
+        ];
+        for owner in owners {
+            let created: usize = effects_len(vec![ObjectEffect::Created(object(
+                Vec::new(),
+                owner.clone(),
+            ))]);
+            let mutated: usize = effects_len(vec![ObjectEffect::Mutated {
+                previous_version: 1,
+                new_object: object(Vec::new(), owner.clone()),
+            }]);
+            let created_overhead: usize = created - empty;
+            let mutated_overhead: usize = mutated - empty;
+            assert!(
+                created_overhead <= OUTPUT_OBJECT_OVERHEAD_BYTES,
+                "created overhead {created_overhead} exceeds the charged bound for {owner:?}"
+            );
+            assert!(
+                mutated_overhead <= OUTPUT_OBJECT_OVERHEAD_BYTES,
+                "mutated overhead {mutated_overhead} exceeds the charged bound for {owner:?}"
+            );
+            // The overhead is a fixed per-effect cost: every additional body
+            // byte adds exactly one encoded byte, so charging `body.len() +
+            // OUTPUT_OBJECT_OVERHEAD_BYTES` never under-charges a larger body.
+            let created_with_body: usize =
+                effects_len(vec![ObjectEffect::Created(object(vec![0u8; 100], owner))]);
+            assert_eq!(created_with_body - created, 100);
+        }
     }
 }

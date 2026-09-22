@@ -14,7 +14,9 @@ use execution::publication::{
 };
 use fees::GasSchedule;
 use hashing::HashSuiteResolver;
-use objects::{Address, Object, ObjectId, Owner, encode_object};
+use objects::{
+    Address, Object, ObjectId, Owner, ProtocolCustodyPurpose, ProtocolCustodyScope, encode_object,
+};
 use protocol_types::{
     ChainId, Digest32, Epoch, HashAlgorithmId, HashPurpose, HashSuite, HashSuiteSchedule,
     ProtocolVersion, SignatureSchemeId, ValidatorId,
@@ -269,6 +271,126 @@ fn build_fixture() -> (
         .into();
 
     (manifest, origin, instance_record, def_id, coin_id)
+}
+
+/// Builds a `ProtocolCustody`-owned genesis object entry (DR-0135) sharing
+/// its authority template (instance, code, type) with the fixture's coin
+/// entry, so only ownership and identity differ from an already-admitted
+/// object.
+fn custody_object_entry(
+    manifest: &GenesisManifest,
+    object_id: ObjectId,
+    chain_id: ChainId,
+) -> GenesisObjectEntry {
+    let template = &manifest.objects[1];
+    let scope = ProtocolCustodyScope {
+        purpose: ProtocolCustodyPurpose::BondCollateral,
+        chain_id,
+        subject: [0x70; 32],
+        resource: [0x71; 32],
+    };
+    GenesisObjectEntry {
+        object: Object {
+            id: object_id,
+            version: 1,
+            owner: Owner::ProtocolCustody(scope),
+            type_hash: template.object.type_hash,
+            schema_version: template.object.schema_version,
+            data: template.object.data.clone(),
+        },
+        authority: ObjectAuthority {
+            object_id,
+            instance_context: template.authority.instance_context.clone(),
+            instance: template.authority.instance.clone(),
+            code: template.authority.code.clone(),
+            ty: template.authority.ty.clone(),
+        },
+    }
+}
+
+/// DR-0135: a signed genesis manifest may install a `ProtocolCustody` object
+/// whose scope chain equals the manifest chain, and a verify-only restart
+/// must reach `VerifiedExisting` for it exactly like any other genesis
+/// object.
+#[test]
+fn genesis_installs_protocol_custody_object_for_matching_chain() {
+    let (mut manifest, _, _, _, _) = build_fixture();
+    let custody_id = ObjectId::new([0x30; 32]);
+    manifest
+        .objects
+        .push(custody_object_entry(&manifest, custody_id, chain()));
+    manifest.signature = key()
+        .sign(&genesis_manifest_signing_frame(&manifest).unwrap())
+        .into();
+
+    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let outcome =
+        install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap();
+    assert!(matches!(
+        outcome,
+        GenesisInstallOutcome::FreshInstall { .. }
+    ));
+    assert!(matches!(
+        store
+            .get_object_head(&context(1), domain(), custody_id)
+            .unwrap(),
+        DurableObjectHead::Current { .. }
+    ));
+
+    let restart_outcome =
+        install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap();
+    assert!(matches!(
+        restart_outcome,
+        GenesisInstallOutcome::VerifiedExisting { .. }
+    ));
+}
+
+/// DR-0135: a `ProtocolCustody` scope bound to a chain other than the exact
+/// manifest chain must fail closed before any state is written.
+#[test]
+fn genesis_rejects_protocol_custody_object_bound_to_another_chain() {
+    let (mut manifest, _, _, _, _) = build_fixture();
+    let custody_id = ObjectId::new([0x31; 32]);
+    let other_chain = ChainId::new("a-different-genesis-chain").unwrap();
+    manifest
+        .objects
+        .push(custody_object_entry(&manifest, custody_id, other_chain));
+    manifest.signature = key()
+        .sign(&genesis_manifest_signing_frame(&manifest).unwrap())
+        .into();
+
+    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let error =
+        install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::Invalid("protocol custody scope chain does not match the manifest chain")
+    ));
+    assert!(matches!(
+        store
+            .get_object_head(&context(1), domain(), custody_id)
+            .unwrap(),
+        DurableObjectHead::Absent
+    ));
+}
+
+/// DR-0135: `Shared`/`Immutable`/`System` owners remain unsupported at
+/// genesis exactly as before this decision.
+#[test]
+fn genesis_rejects_shared_owner_object() {
+    let (mut manifest, _, _, _, _) = build_fixture();
+    manifest.objects[1].object.owner = Owner::Shared;
+    manifest.signature = key()
+        .sign(&genesis_manifest_signing_frame(&manifest).unwrap())
+        .into();
+
+    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let error =
+        install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::Invalid("genesis object owner must be an Address or protocol custody scope")
+    ));
 }
 
 #[test]
@@ -893,7 +1015,14 @@ fn file_backed_sqlite_fresh_install_restart_mutation_and_fencing() {
     let db_path = dir.join("state.sqlite");
     let namespace = SqliteNamespace::new(chain(), ValidatorId::new([4; 32]), domain());
 
-    let (manifest, _, _, _, coin_id) = build_fixture();
+    let (mut manifest, _, _, _, coin_id) = build_fixture();
+    let custody_id: ObjectId = ObjectId::new([0x32; 32]);
+    manifest
+        .objects
+        .push(custody_object_entry(&manifest, custody_id, chain()));
+    manifest.signature = key()
+        .sign(&genesis_manifest_signing_frame(&manifest).unwrap())
+        .into();
 
     // 1. Fresh install on file-backed SQLite with generation 1.
     {
@@ -908,6 +1037,12 @@ fn file_backed_sqlite_fresh_install_restart_mutation_and_fencing() {
         assert!(matches!(
             outcome,
             GenesisInstallOutcome::FreshInstall { .. }
+        ));
+        assert!(matches!(
+            store
+                .get_object_head(&context(1), domain(), custody_id)
+                .unwrap(),
+            DurableObjectHead::Current { .. }
         ));
     }
 
@@ -924,6 +1059,12 @@ fn file_backed_sqlite_fresh_install_restart_mutation_and_fencing() {
         assert!(matches!(
             restart_outcome,
             GenesisInstallOutcome::VerifiedExisting { .. }
+        ));
+        assert!(matches!(
+            store
+                .get_object_head(&context(1), domain(), custody_id)
+                .unwrap(),
+            DurableObjectHead::Current { .. }
         ));
     }
 
