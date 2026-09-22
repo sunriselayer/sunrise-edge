@@ -1589,6 +1589,141 @@ fn preinstalled_wasm_fee_object_not_owned_by_sender_is_rejected_before_execution
     assert!(store.commits.lock().unwrap().is_empty());
 }
 
+/// DR-0135: a protocol-custody-owned object has no signing key and must
+/// never be admitted as a paid fee source. It is rejected even earlier than
+/// an ordinary non-sender-owned `Address`: `load_and_authorize_objects`'s
+/// general declared-access admission already refuses every non-address
+/// owner kind, so this declared `Write` never reaches the fee-specific
+/// sender-ownership check at all.
+#[test]
+fn preinstalled_wasm_fee_object_owned_by_protocol_custody_is_rejected_before_execution() {
+    let node_config: NodeConfig = config("sunrise-test");
+    let mut protocol_config: ProtocolConfig = fee_active_protocol_config(0x79);
+    let signing_key: SigningKey = dev_signing_key(0x79);
+    let sender: Address = dev_sender_address(&signing_key);
+    let hash_resolver: HashSuiteResolver = resolver("sunrise-test");
+    let module_id = ModuleId::new([0x79; 32]);
+    let destination_byte: u8 = 0x2A;
+    let policy: PreinstalledObjectAccessPolicy = PreinstalledObjectAccessPolicy::new(
+        1,
+        "run".to_string(),
+        AccessMode::Write,
+        Digest32::new(
+            HashAlgorithmId::Sha2_256,
+            [destination_byte.wrapping_add(1); 32],
+        ),
+        u32::from(destination_byte),
+    )
+    .unwrap();
+    let envelope: PreinstalledModuleSemanticsEnvelope =
+        PreinstalledModuleSemanticsEnvelope::new(b"fee-owner-custody-test".to_vec(), vec![policy])
+            .unwrap();
+    let (registry, catalog, module_ref) = preinstalled_module_fixture_with_envelope(
+        &hash_resolver,
+        module_id,
+        1,
+        preinstalled_write_two_wasm_bytes(),
+        64,
+        Epoch::new(0),
+        system_modules::ModuleStatus::Active,
+        envelope,
+    );
+    protocol_config.system_modules = registry;
+
+    let store = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+    let (source_ref, _) = preload_inline_object(
+        &store,
+        "sunrise-test",
+        ObjectId::new([0x7A; 32]),
+        Owner::Address(sender),
+        0x21,
+    );
+    let (destination_ref, _) = preload_inline_object(
+        &store,
+        "sunrise-test",
+        ObjectId::new([0x7B; 32]),
+        Owner::ProtocolCustody(objects::ProtocolCustodyScope {
+            purpose: objects::ProtocolCustodyPurpose::BondCollateral,
+            chain_id: ChainId::new("sunrise-test").unwrap(),
+            subject: [0x76; 32],
+            resource: [0x77; 32],
+        }),
+        destination_byte,
+    );
+    let treasury_owner = Address::new([0x78; 32]);
+    let treasury_id = ObjectId::new([0x7C; 32]);
+    let (treasury_ref, _) = preload_inline_object(
+        &store,
+        "sunrise-test",
+        treasury_id,
+        Owner::Address(treasury_owner),
+        0x7C,
+    );
+
+    let manifest = manifest_with(vec![
+        AccessEntry {
+            object_ref: source_ref,
+            mode: AccessMode::Write,
+        },
+        AccessEntry {
+            object_ref: destination_ref.clone(),
+            mode: AccessMode::Write,
+        },
+        AccessEntry {
+            object_ref: treasury_ref,
+            mode: AccessMode::Write,
+        },
+    ]);
+    let mut tx = preinstalled_transaction(
+        sender,
+        ChainId::new("sunrise-test").unwrap(),
+        Epoch::new(7),
+        0,
+        manifest,
+        module_ref,
+        vec![1, 2],
+    );
+    tx.fee_payment = Some(fees::FeePayment {
+        asset_id: fee_asset_id(),
+        max_fee: fees::Amount::new(2_000_000),
+        fee_object: destination_ref,
+    });
+    let submission = authenticated_submission_from_transaction(
+        "sunrise-test",
+        request(0x7D),
+        &signing_key,
+        Epoch::new(7),
+        tx,
+        &node_config,
+        &protocol_config,
+    );
+    let engine = WasmExecutionEngine;
+    let composer = EchoFeeComposer;
+    let fee_composition = PreinstalledFeeComposition::new(treasury_id, &composer);
+
+    let error =
+        handle_authenticated_resolved_durable_submit_transaction_with_preinstalled_wasm_execution(
+            &MemoryBlobStore::default(),
+            &store,
+            &durable_context(),
+            &hash_resolver,
+            &catalog,
+            &engine,
+            submission,
+            9,
+            Some(fee_composition),
+        )
+        .unwrap_err();
+
+    assert_eq!(
+        error,
+        NodeCoreError::ObjectOwnerKindUnsupported {
+            object_id: ObjectId::new([0x7B; 32]),
+        }
+    );
+    assert!(store.commits.lock().unwrap().is_empty());
+}
+
 #[test]
 fn preinstalled_wasm_fee_object_equal_to_treasury_is_rejected() {
     let node_config: NodeConfig = config("sunrise-test");

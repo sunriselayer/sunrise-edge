@@ -86,6 +86,11 @@ certification.
 - Object access and execution effects must remain within the signed manifest.
   Owner, type, and schema changes must fail closed unless an exact committed
   policy explicitly permits them.
+- `ProtocolCustody` ownership has no sender signature authority. Only a signed
+  same-chain genesis manifest may introduce it until a later decision defines
+  an exact protocol-authorized operation; ordinary execution reads, writes,
+  consumes, owner transitions, fee use, contract creation, and FastVote locks
+  fail closed. Public object queries remain read-only and return canonical state.
 - Preinstalled WASM code and semantics must be resolved from trusted committed
   configuration, not uploaded or substituted by a transaction.
 - Fee debits and treasury credits must use ordinary asset-account state and

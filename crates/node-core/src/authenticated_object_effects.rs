@@ -801,7 +801,7 @@ fn translate_update_impl(
                     reason: "owner-transition mutation did not set the exact committed recipient",
                 });
             }
-            Owner::Immutable | Owner::Shared | Owner::System => {
+            Owner::Immutable | Owner::Shared | Owner::System | Owner::ProtocolCustody(_) => {
                 return Err(NodeCoreError::ObjectOwnerKindUnsupported { object_id });
             }
         }
@@ -890,7 +890,7 @@ fn translate_update_impl(
 fn require_mutable_address_owner(input: &VerifiedAuthenticatedObject) -> Result<(), NodeCoreError> {
     match input.object.owner {
         Owner::Address(_) => Ok(()),
-        Owner::Immutable | Owner::Shared | Owner::System => {
+        Owner::Immutable | Owner::Shared | Owner::System | Owner::ProtocolCustody(_) => {
             Err(NodeCoreError::ObjectOwnerKindUnsupported {
                 object_id: input.object.id,
             })
@@ -903,7 +903,7 @@ mod tests {
     use super::*;
     use ed25519_zebra::{SigningKey, VerificationKey};
     use hashing::verify_digest;
-    use objects::Address;
+    use objects::{Address, ProtocolCustodyPurpose, ProtocolCustodyScope};
     use protocol_types::{Digest32, HashAlgorithmId, HashSuite, HashSuiteSchedule};
     use runtime::{DurableObjectRoutingProjection, DurableObjectVersion, ObjectHeadRevision};
 
@@ -947,6 +947,15 @@ mod tests {
 
     fn verified(mode: AccessMode, object: Object) -> VerifiedAuthenticatedObject {
         verified_at_checkpoint(mode, object, 0)
+    }
+
+    fn custody_owner() -> Owner {
+        Owner::ProtocolCustody(ProtocolCustodyScope {
+            purpose: ProtocolCustodyPurpose::BondCollateral,
+            chain_id: ChainId::new("sunrise-mvp").unwrap(),
+            subject: [0x72; 32],
+            resource: [0x73; 32],
+        })
     }
 
     #[test]
@@ -1139,7 +1148,7 @@ mod tests {
             })
         ));
 
-        let mut changed_body: Object = valid;
+        let mut changed_body: Object = valid.clone();
         changed_body.data.push(0x03);
         assert!(matches!(
             translate_authenticated_object_effects_with_owner_transition(
@@ -1157,6 +1166,27 @@ mod tests {
                 reason: "owner-transition mutation changed the object body",
                 ..
             })
+        ));
+
+        // DR-0135: an owner-transition mutation must never install protocol
+        // custody as the "recipient" — it is fail-closed exactly like
+        // Shared/Immutable/System, never reachable through this ordinary
+        // transferable-object path.
+        let mut custody_recipient: Object = valid;
+        custody_recipient.owner = custody_owner();
+        assert!(matches!(
+            translate_authenticated_object_effects_with_owner_transition(
+                &[verified(AccessMode::Write, current.clone())],
+                &[ObjectEffect::Mutated {
+                    previous_version: 9,
+                    new_object: custody_recipient,
+                }],
+                Some(&context),
+                0,
+                current.id,
+                recipient,
+            ),
+            Err(NodeCoreError::ObjectOwnerKindUnsupported { .. })
         ));
     }
 
@@ -1427,6 +1457,23 @@ mod tests {
                 &[ObjectEffect::Deleted {
                     id: immutable.id,
                     version: immutable.version,
+                }],
+                None,
+                0,
+            ),
+            Err(NodeCoreError::ObjectOwnerKindUnsupported { .. })
+        ));
+
+        // DR-0135: a protocol-custody-owned object must never be admitted as
+        // an authenticated `Consume` (or `Write`) input, exactly like every
+        // other unsupported non-address owner.
+        let custody = object(1, custody_owner(), vec![0x0a]);
+        assert!(matches!(
+            translate_authenticated_object_effects(
+                &[verified(AccessMode::Consume, custody.clone())],
+                &[ObjectEffect::Deleted {
+                    id: custody.id,
+                    version: custody.version,
                 }],
                 None,
                 0,

@@ -255,6 +255,7 @@ enum Behavior {
     Write,
     Delete,
     Transfer,
+    CustodyOwner,
     WrongId,
     WrongBody,
     WrongVersion,
@@ -294,7 +295,10 @@ impl LocalContractEngine for Engine {
                 }
             }
             Behavior::Noop => {}
-            Behavior::Write | Behavior::WrongVersion | Behavior::Transfer => {
+            Behavior::Write
+            | Behavior::WrongVersion
+            | Behavior::Transfer
+            | Behavior::CustodyOwner => {
                 let prior: &Object = &request.inputs[0].resolved.object;
                 let mut next: Object = prior.clone();
                 next.version += 1;
@@ -306,6 +310,14 @@ impl LocalContractEngine for Engine {
                     next.owner = Owner::Address(Address::new(
                         VerificationKey::from(&SigningKey::from([9; 32])).into(),
                     ));
+                }
+                if matches!(self.behavior, Behavior::CustodyOwner) {
+                    next.owner = Owner::ProtocolCustody(objects::ProtocolCustodyScope {
+                        purpose: objects::ProtocolCustodyPurpose::BondCollateral,
+                        chain_id: protocol().chain_id().clone(),
+                        subject: [0x7A; 32],
+                        resource: [0x7B; 32],
+                    });
                 }
                 effects.object_effects.push(ObjectEffect::Mutated {
                     previous_version: prior.version,
@@ -1120,6 +1132,47 @@ fn read_cannot_mutate_or_transfer_and_consume_retains_sidecar() {
         )
         .is_err()
     );
+}
+
+/// DR-0135: even a successfully executed local contract cannot turn an
+/// ordinary sender-owned object into protocol custody. The forged effect is
+/// rejected before nonce or object state changes.
+#[test]
+fn local_execution_cannot_mutate_an_object_into_protocol_custody() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let record: InstanceRecord = fixture(&store);
+    let created: Object = object(
+        &run(
+            &store,
+            &sign(&record, 1, 2, "init", vec![]),
+            &Engine::new(Behavior::Create),
+        )
+        .unwrap(),
+    );
+    let before: Snapshot = snapshot(&store, &context(), &record, created.id);
+    let result: AdmissionResult<NodeOutput> = run(
+        &store,
+        &sign(
+            &record,
+            2,
+            3,
+            "write",
+            vec![entry(&created, AccessMode::Write)],
+        ),
+        &Engine::new(Behavior::CustodyOwner),
+    );
+    assert!(
+        matches!(
+            &result,
+            Err(LocalExecutionAdmissionError::Invalid(
+                "non-address output owner"
+            ))
+        ),
+        "unexpected custody mutation result: {result:?}"
+    );
+    assert_eq!(nonce(&store), 2);
+    assert_eq!(snapshot(&store, &context(), &record, created.id), before);
 }
 
 #[test]

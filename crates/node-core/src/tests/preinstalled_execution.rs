@@ -1275,7 +1275,17 @@ fn preinstalled_cross_owner_policy_never_authorizes_non_address_owner_kinds() {
         0x31,
     )
     .unwrap();
-    for owner in [Owner::Shared, Owner::System, Owner::Immutable] {
+    for owner in [
+        Owner::Shared,
+        Owner::System,
+        Owner::Immutable,
+        Owner::ProtocolCustody(objects::ProtocolCustodyScope {
+            purpose: objects::ProtocolCustodyPurpose::BondCollateral,
+            chain_id: ChainId::new("sunrise-test").unwrap(),
+            subject: [0x7C; 32],
+            resource: [0x7D; 32],
+        }),
+    ] {
         assert!(matches!(
             load_cross_owner_destination_with_policy(
                 Some(policy.clone()),

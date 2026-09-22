@@ -1134,8 +1134,8 @@ tech-lead review.
 - No bonding, slashing, penalty, reward, or distribution mechanism of any
   kind is implemented by this DR.
 - DR-0134 declares Slice 4's authorization classes and still-closed external
-  ingress boundary; Phase 2 closure remains conditional on its companion code
-  and reviews landing.
+  ingress boundary; its companion code and reviews landed in PR #180, closing
+  Phase 2.
 - `EpochTransitionVote`/`EpochTransitionCertificate` (`0xD009`-`0xD00B`),
   the `FastPathEpochRecord`/`FastPathLockRecord` fencing model, and the
   epoch-transition activation/reclamation design are all unchanged by this

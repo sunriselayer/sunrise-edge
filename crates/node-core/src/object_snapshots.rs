@@ -152,7 +152,10 @@ where
             let object: Object = decode_object(&bytes)
                 .map_err(DurableInvocationError::from)
                 .map_err(NodeCoreError::from)?;
-            LoadedObjectBody::Blob { bytes, object }
+            LoadedObjectBody::Blob {
+                bytes,
+                object: Box::new(object),
+            }
         }
     };
     let object: &Object = loaded_body.object();

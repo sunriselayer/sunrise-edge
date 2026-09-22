@@ -709,8 +709,9 @@ complete repository gate, fresh tech-lead and security review):
     integrated diff, plus a focused security review and a fresh tech-lead
     review.
 
-Satisfying these criteria implements Slice 2 but does not by itself close
-FastVote Phase 2; DR-0134's companion Slice 4 implementation still must land.
+Satisfying these criteria implemented Slice 2 but did not by itself close
+FastVote Phase 2; DR-0134's companion Slice 4 implementation and reviews later
+landed in PR #180 and closed Phase 2.
 It does not authorize testnet or production activation of any new ingress.
 
 ## Test and evidence plan (for the implementation this DR specifies)

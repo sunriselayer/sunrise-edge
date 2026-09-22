@@ -812,6 +812,45 @@ mod tests {
         assert!(effects.events.is_empty());
     }
 
+    /// DR-0135 regression: canonical owner tag 5 is intentionally not added
+    /// to the already-closed contract host ABI (whose tags remain 0 through
+    /// 3), so a contract cannot manufacture custody ownership.
+    #[test]
+    fn create_object_rejects_protocol_custody_owner_tag() {
+        let wat = r#"
+        (module
+          (import "env" "create_object" (func $create_object (param i32 i32 i32 i32 i32 i32)(result i32)))
+          (memory 1)
+          (export "memory" (memory 0))
+          ;; SHA2-256 type hash wire bytes followed by one data byte.
+          (data (i32.const 0) "\00\01\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\AA\BB")
+          (func (export "run")
+            (if (i32.ne
+                  (call $create_object
+                    (i32.const 34) (i32.const 1)
+                    (i32.const 0) (i32.const 1)
+                    (i32.const 5) (i32.const 0))
+                  (i32.const -1))
+              (then unreachable)))
+        )
+        "#;
+        let engine: WasmExecutionEngine = WasmExecutionEngine;
+        let wasm: Vec<u8> = wat_to_wasm(wat);
+        let effects: ExecutionEffects = engine
+            .execute(
+                sample_protocol_version(),
+                sample_digest(0x08),
+                &wasm,
+                "run",
+                &[],
+                &[],
+                1_000_000,
+            )
+            .unwrap();
+        assert_eq!(effects.status, ExecutionStatus::Success);
+        assert!(effects.object_effects.is_empty());
+    }
+
     #[test]
     fn missing_entrypoint_is_error() {
         let engine = WasmExecutionEngine;

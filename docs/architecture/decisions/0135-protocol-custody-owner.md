@@ -2,9 +2,10 @@
 
 ## Status
 
-Accepted, 2026-09-22. This decision defines the first prerequisite slice for
-FastVote phase 3. It does not implement slashing, unbonding, fee distribution,
-or payout, and it does not close phase 3.
+Accepted and implemented, 2026-09-22. This decision defines and implements
+the first prerequisite slice for FastVote phase 3. It does not implement
+slashing, unbonding, fee distribution, or payout, and it does not close phase
+3.
 
 Phase 2 is already implemented on `main` by DR-0134's companion code and
 review gate. Phase 3 remains required before FastVote is complete.
@@ -56,7 +57,8 @@ The scope uses a new canonical frame `0x4007/v1`. The existing owner frame
 `0x4003/v1` keeps field 1 as the tag, keeps field 2 exclusively for an
 encoded `Address`, and uses field 3 exclusively for the encoded custody
 scope. Decoding requires the exact field set for the selected tag and a
-byte-exact re-encode.
+structurally canonical byte representation: ordered unique fields, exact
+field widths, and no trailing bytes.
 
 ### Authority boundary
 

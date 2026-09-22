@@ -5663,8 +5663,9 @@ enum LoadedObjectBody<'a> {
     Inline(&'a DurableInlineObject),
     /// Canonical bytes fetched from `blob_store` and already independently
     /// verified against the payload's `blob_digest` before this value is
-    /// constructed.
-    Blob { bytes: Vec<u8>, object: Object },
+    /// constructed. The decoded object is boxed to keep this internal enum
+    /// small as the closed `Owner` union grows.
+    Blob { bytes: Vec<u8>, object: Box<Object> },
 }
 
 impl LoadedObjectBody<'_> {
@@ -5835,7 +5836,7 @@ where
             Owner::Immutable => {
                 return Err(NodeCoreError::ObjectOwnerKindUnsupported { object_id });
             }
-            Owner::Shared | Owner::System => {
+            Owner::Shared | Owner::System | Owner::ProtocolCustody(_) => {
                 return Err(NodeCoreError::ObjectOwnerKindUnsupported { object_id });
             }
         }
