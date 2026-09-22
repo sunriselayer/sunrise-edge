@@ -567,6 +567,9 @@ pub fn handle_local_publication_with_history<S: StructuredDurableDomainStateStor
     if submission.request().artifact().wasm_profile() != policy.profile() {
         return Err(PublicationAdmissionError::PolicyMismatch);
     }
+    local_instance_state::reject_reserved_request_id(submission.request_id())
+        .map_err(NodeCoreError::PersistenceInvariant)
+        .map_err(PublicationAdmissionError::Node)?;
     let authenticated: AuthenticatedPublicationCandidate = authenticate_publication_submission(
         resolver,
         policy.context(),
@@ -598,6 +601,37 @@ pub fn handle_local_publication_with_history<S: StructuredDurableDomainStateStor
         },
     )?;
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    // DR-0131: serialize this mutation against an epoch transition while
+    // preserving the historical-policy meaning of `policy.context.epoch()`.
+    // Unlike a transaction's own current-epoch binding
+    // (direct paid, local execution, live owned-effects `SubmitTransaction`),
+    // a publication's `policy.context.epoch()` names which historical
+    // epoch-scoped policy/code semantics it targets, not a claim about which
+    // epoch is currently committed; DR-0121's pre-existing historical-epoch
+    // publication support is not narrowed to the current epoch. The epoch row
+    // revision is nevertheless asserted by the publication commit, so it
+    // cannot interleave with a Slice 2 transition.
+    mutation_fence::fence_epoch_state(
+        store,
+        context,
+        domain,
+        policy.context.chain_id(),
+        &mut reads,
+    )?;
+    // Honor a sender/epoch nonce a pending fast-path prepare already holds,
+    // exactly like every other mutation path that can advance a sender nonce.
+    mutation_fence::fence_sender_nonce_lock(
+        store,
+        context,
+        domain,
+        policy.context.chain_id(),
+        submission.request().artifact().origin().publisher(),
+        policy.context.epoch(),
+        submission.request_id(),
+        submission.request().nonce(),
+        mutation_fence::LockMode::Fresh,
+        &mut reads,
+    )?;
     let stored_policy: LocalPublicationPolicy = read_policy(
         store,
         context,

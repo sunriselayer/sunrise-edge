@@ -317,6 +317,34 @@ fn unsigned_manifest_object_tampering_fails_before_install() {
     ));
 }
 
+/// DR-0131: a genesis validator set with two distinct `ValidatorId`s sharing
+/// an identical public key must fail closed at install time, exactly like
+/// [`validator_set::ValidatorSet::new`] rejects it directly.
+#[test]
+fn duplicate_validator_public_keys_are_rejected_at_genesis_install() {
+    let (mut manifest, _, _, _, _) = build_fixture();
+    let shared_key: Vec<u8> = manifest.validator_set.validators[0].public_key.clone();
+    manifest
+        .validator_set
+        .validators
+        .push(FastPathValidatorEntry {
+            id: ValidatorId::new([0x42; 32]),
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: shared_key,
+        });
+    manifest.signature = key()
+        .sign(&genesis_manifest_signing_frame(&manifest).unwrap())
+        .into();
+    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let error = install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 1)
+        .expect_err("a shared validator public key must fail closed at genesis");
+    assert!(matches!(
+        error,
+        GenesisError::Invalid("invalid genesis fast-path validator set")
+    ));
+}
+
 #[test]
 fn fresh_install_and_verify_only_restart_in_memory() {
     let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
@@ -399,6 +427,42 @@ fn fresh_install_and_verify_only_restart_in_memory() {
             .unwrap()
             .value()
             .is_some()
+    );
+
+    // DR-0131: the committed epoch record is created atomically alongside
+    // genesis validator-set activation, binding the exact installed
+    // checkpoint and validator-set digest.
+    let epoch_record_key =
+        local_instance_state::fastpath_epoch_record_key(protocol().chain_id()).unwrap();
+    let epoch_record_bytes = store
+        .get_versioned_durable(&context(1), domain(), &epoch_record_key)
+        .unwrap()
+        .value()
+        .unwrap()
+        .to_vec();
+    let epoch_record =
+        local_instance_state::decode_fastpath_epoch_record(&epoch_record_bytes).unwrap();
+    assert_eq!(epoch_record.current_epoch, protocol().epoch());
+    assert_eq!(epoch_record.previous_epoch, None);
+    assert_eq!(epoch_record.activated_at_checkpoint, 10);
+    let installed_validator_set: validator_set::ValidatorSet = validator_set::ValidatorSet::new(
+        protocol().epoch(),
+        manifest
+            .validator_set
+            .validators
+            .iter()
+            .map(|validator| validator_set::ValidatorInfo {
+                id: validator.id,
+                voting_power: validator.voting_power,
+                signature_scheme: validator.signature_scheme,
+                public_key: validator.public_key.clone(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    assert_eq!(
+        epoch_record.current_validator_set_digest,
+        installed_validator_set.digest(&resolver()).unwrap()
     );
 
     for obj_id in [def_id, coin_id] {

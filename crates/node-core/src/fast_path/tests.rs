@@ -79,7 +79,15 @@ fn install_four_validators<S: StructuredDurableDomainStateStore>(
     store: &S,
 ) -> (Vec<TestSigner>, Vec<FastPathValidatorEntry>) {
     let (signers, entries) = four_validators();
-    install_validator_set(store, &context(), domain(), protocol(), entries.clone()).unwrap();
+    install_validator_set(
+        store,
+        &context(),
+        domain(),
+        &resolver(),
+        protocol(),
+        entries.clone(),
+    )
+    .unwrap();
     (signers, entries)
 }
 
@@ -429,7 +437,15 @@ fn independent_validators_derive_byte_identical_commitment_and_a_quorum_certific
     let fixture_d: Fixture = install(&store_d);
     let (signers, entries) = four_validators();
     for store in [&store_a, &store_b, &store_c, &store_d] {
-        install_validator_set(store, &context(), domain(), protocol(), entries.clone()).unwrap();
+        install_validator_set(
+            store,
+            &context(),
+            domain(),
+            &resolver(),
+            protocol(),
+            entries.clone(),
+        )
+        .unwrap();
     }
 
     let vote_a: FastVote =
@@ -705,7 +721,15 @@ fn four_validator_sqlite_restart_e2e_derives_identical_votes_and_replays_prepare
     for (index, file) in files.iter().enumerate() {
         let (store, blob_store) = file.open();
         let fixture: Fixture = install(&store);
-        install_validator_set(&store, &context(), domain(), protocol(), entries.clone()).unwrap();
+        install_validator_set(
+            &store,
+            &context(),
+            domain(),
+            &resolver(),
+            protocol(),
+            entries.clone(),
+        )
+        .unwrap();
         let bytes: Vec<u8> = paid_call_with_access(
             PaidCall {
                 fixture: &fixture,
@@ -953,7 +977,15 @@ fn apply_without_a_local_prepared_record_fails_closed() {
     let store: MemoryDurableStateStore = memory_store();
     let fixture: Fixture = install(&store);
     let (signers, entries) = four_validators();
-    install_validator_set(&store, &context(), domain(), protocol(), entries).unwrap();
+    install_validator_set(
+        &store,
+        &context(),
+        domain(),
+        &resolver(),
+        protocol(),
+        entries,
+    )
+    .unwrap();
     // Cast the required votes directly (no local prepare on `store`), form a
     // structurally valid certificate, and try to apply it.
     let bytes: Vec<u8> = paid_call_with_access(
@@ -1005,6 +1037,466 @@ fn apply_without_a_local_prepared_record_fails_closed() {
         result,
         Err(FastPathError::Invalid("no local fast-path prepared record"))
     ));
+}
+
+/// Directly overwrites the committed `FastPathEpochRecord`, simulating a
+/// Slice-2 transition this DR does not implement, so Slice 1's real,
+/// enforced-from-day-one wrong-epoch/digest rejection can be exercised.
+fn overwrite_epoch_record<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    record: &local_instance_state::FastPathEpochRecord,
+) {
+    let key: Vec<u8> =
+        local_instance_state::fastpath_epoch_record_key(protocol().chain_id()).unwrap();
+    let observed: VersionedStateValue = store
+        .get_versioned_durable(&context(), domain(), &key)
+        .unwrap();
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(
+                key,
+                StateMutation::Put(
+                    local_instance_state::encode_fastpath_epoch_record(record).unwrap(),
+                ),
+            )
+            .unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&context(), transaction),
+        DurableCommitOutcome::Committed
+    );
+}
+
+/// DR-0131 criterion 4: a request bound to a non-current epoch is rejected
+/// before any lock, execution, or mutation. Simulates the committed epoch
+/// having advanced past this (now stale) prepare request.
+#[test]
+fn prepare_rejects_a_request_bound_to_a_non_current_epoch() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let (signers, _entries) = install_four_validators(&store);
+    let installed: local_instance_state::FastPathEpochRecord = {
+        let key: Vec<u8> =
+            local_instance_state::fastpath_epoch_record_key(protocol().chain_id()).unwrap();
+        let bytes: VersionedStateValue = store
+            .get_versioned_durable(&context(), domain(), &key)
+            .unwrap();
+        local_instance_state::decode_fastpath_epoch_record(bytes.value().unwrap()).unwrap()
+    };
+    overwrite_epoch_record(
+        &store,
+        &local_instance_state::FastPathEpochRecord {
+            current_epoch: Epoch::new(installed.current_epoch.get() + 1),
+            ..installed
+        },
+    );
+    let result: FastPathResult<FastVote> =
+        prepare_transfer(&store, &fixture, &signers[0], 30, FIRST_PAID_NONCE);
+    assert!(matches!(
+        result,
+        Err(FastPathError::Node(NodeCoreError::EpochMismatch { expected, actual }))
+            if expected == Epoch::new(installed.current_epoch.get() + 1) && actual == installed.current_epoch
+    ));
+    // No lock, nonce reservation, or prepared record was written.
+    assert_eq!(
+        crate::query::query_sender_next_nonce(
+            &store,
+            &context(),
+            domain(),
+            protocol().chain_id().clone(),
+            protocol().protocol_version(),
+            protocol().epoch(),
+            sender(),
+        )
+        .unwrap(),
+        FIRST_PAID_NONCE
+    );
+}
+
+/// DR-0131 key transition safety proof, leg 3: apply also rejects a request
+/// bound to a non-current epoch, after a valid local prepare and certificate
+/// already exist -- simulating the epoch record advancing between prepare
+/// and apply.
+#[test]
+fn apply_rejects_a_request_bound_to_a_non_current_epoch() {
+    let store_a: MemoryDurableStateStore = memory_store();
+    let store_b: MemoryDurableStateStore = memory_store();
+    let store_c: MemoryDurableStateStore = memory_store();
+    let fixture_a: Fixture = install(&store_a);
+    let fixture_b: Fixture = install(&store_b);
+    let fixture_c: Fixture = install(&store_c);
+    let (signers, entries) = four_validators();
+    for store in [&store_a, &store_b, &store_c] {
+        install_validator_set(
+            store,
+            &context(),
+            domain(),
+            &resolver(),
+            protocol(),
+            entries.clone(),
+        )
+        .unwrap();
+    }
+    let vote_a: FastVote =
+        prepare_transfer(&store_a, &fixture_a, &signers[0], 31, FIRST_PAID_NONCE).unwrap();
+    let vote_b: FastVote =
+        prepare_transfer(&store_b, &fixture_b, &signers[1], 31, FIRST_PAID_NONCE).unwrap();
+    let vote_c: FastVote =
+        prepare_transfer(&store_c, &fixture_c, &signers[2], 31, FIRST_PAID_NONCE).unwrap();
+    let validator_set: ValidatorSet = ValidatorSet::new(
+        protocol().epoch(),
+        entries
+            .iter()
+            .map(|entry| ValidatorInfo {
+                id: entry.id,
+                voting_power: entry.voting_power,
+                signature_scheme: entry.signature_scheme,
+                public_key: entry.public_key.clone(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    let cert: consensus::FastPathCertifier = certifier(validator_set);
+    let votes: Vec<FastVote> = vec![vote_a.clone(), vote_b, vote_c];
+    let certificate: FastCertificate = cert
+        .try_form_certificate(
+            vote_a.tx_hash,
+            vote_a.execution_effects_hash,
+            &votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .unwrap();
+    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+    let store: MemoryDurableStateStore = store_a;
+    let fixture: Fixture = fixture_a;
+    let installed: local_instance_state::FastPathEpochRecord = {
+        let key: Vec<u8> =
+            local_instance_state::fastpath_epoch_record_key(protocol().chain_id()).unwrap();
+        let bytes: VersionedStateValue = store
+            .get_versioned_durable(&context(), domain(), &key)
+            .unwrap();
+        local_instance_state::decode_fastpath_epoch_record(bytes.value().unwrap()).unwrap()
+    };
+    overwrite_epoch_record(
+        &store,
+        &local_instance_state::FastPathEpochRecord {
+            current_epoch: Epoch::new(installed.current_epoch.get() + 1),
+            ..installed
+        },
+    );
+    let result: FastPathResult<NodeOutput> =
+        apply_transfer(&store, &fixture, 31, FIRST_PAID_NONCE, &certificate_bytes);
+    assert!(matches!(
+        result,
+        Err(FastPathError::Node(NodeCoreError::EpochMismatch { expected, actual }))
+            if expected == Epoch::new(installed.current_epoch.get() + 1) && actual == installed.current_epoch
+    ));
+    // The certificate never applied: the object lock is still held.
+    let lock_key: Vec<u8> = fastpath_lock_key(protocol().chain_id(), fixture.coin.id).unwrap();
+    assert!(
+        store
+            .get_versioned_durable(&context(), domain(), &lock_key)
+            .unwrap()
+            .value()
+            .is_some()
+    );
+}
+
+/// DR-0131 two-tier fence model: validator-authorized prepare/apply
+/// additionally fence the active per-epoch `ValidatorSet` row and verify its
+/// digest matches the committed epoch record.
+#[test]
+fn prepare_rejects_a_validator_set_digest_mismatch_with_the_committed_epoch_record() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let (signers, _entries) = install_four_validators(&store);
+    let installed: local_instance_state::FastPathEpochRecord = {
+        let key: Vec<u8> =
+            local_instance_state::fastpath_epoch_record_key(protocol().chain_id()).unwrap();
+        let bytes: VersionedStateValue = store
+            .get_versioned_durable(&context(), domain(), &key)
+            .unwrap();
+        local_instance_state::decode_fastpath_epoch_record(bytes.value().unwrap()).unwrap()
+    };
+    overwrite_epoch_record(
+        &store,
+        &local_instance_state::FastPathEpochRecord {
+            current_validator_set_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x5A; 32]),
+            ..installed
+        },
+    );
+    let result: FastPathResult<FastVote> =
+        prepare_transfer(&store, &fixture, &signers[0], 32, FIRST_PAID_NONCE);
+    assert!(matches!(
+        result,
+        Err(FastPathError::Invalid(
+            "fast-path validator set digest does not match the committed epoch record"
+        ))
+    ));
+}
+
+/// DR-0131 criterion 5: prepare rejects a signer absent from the currently
+/// committed per-epoch `ValidatorSet`. There is no separate, locally mutable
+/// retirement action -- this is entirely a membership lookup against the one
+/// committed set.
+#[test]
+fn prepare_rejects_a_signer_absent_from_the_committed_validator_set() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let (_signers, _entries) = install_four_validators(&store);
+    let (rogue_signer, _rogue_entry) = validator(250);
+    let result: FastPathResult<FastVote> =
+        prepare_transfer(&store, &fixture, &rogue_signer, 33, FIRST_PAID_NONCE);
+    assert!(matches!(
+        result,
+        Err(FastPathError::Consensus(ConsensusError::UnknownValidator(
+            id
+        ))) if id == rogue_signer.validator_id()
+    ));
+}
+
+/// DR-0131 criterion 5: apply rejects a certificate whose votes are signed
+/// entirely by validators absent from the committed per-epoch `ValidatorSet`
+/// -- a rogue quorum that never actually authorizes anything against the
+/// real installed set.
+#[test]
+fn apply_rejects_a_certificate_signed_by_validators_absent_from_the_committed_set() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let (real_signers, _entries) = install_four_validators(&store);
+    // A real local prepare, so apply reaches certificate verification.
+    prepare_transfer(&store, &fixture, &real_signers[0], 34, FIRST_PAID_NONCE).unwrap();
+
+    let bytes: Vec<u8> = paid_call_with_access(
+        PaidCall {
+            fixture: &fixture,
+            policy: &fixture.policy,
+            request: 34,
+            nonce: FIRST_PAID_NONCE,
+            source: &fixture.coin,
+            entrypoint: "transfer",
+            arguments: public_standard_asset::transfer_arguments(&refund_account()).unwrap(),
+            access: vec![entry(&fixture.coin, objects::AccessMode::Write)],
+        },
+        ReservationAccessKind::Write,
+    );
+    let (_authenticated, event_digest, _request_id) =
+        crate::paid_execution::authenticate_and_identify(&resolver(), &protocol(), &bytes).unwrap();
+    let prepared: FastPathPreparedRecord = records::decode_fastpath_prepared_record(
+        store
+            .get_versioned_durable(
+                &context(),
+                domain(),
+                &fastpath_prepared_record_key(protocol().chain_id(), &[34; 32]).unwrap(),
+            )
+            .unwrap()
+            .value()
+            .unwrap(),
+    )
+    .unwrap();
+
+    // A rogue four-validator set, disjoint from the real installed set
+    // (distinct seeds), reaching quorum only among themselves.
+    let (rogue_signers, rogue_entries): (Vec<TestSigner>, Vec<FastPathValidatorEntry>) =
+        [201u8, 202, 203, 204].into_iter().map(validator).unzip();
+    let rogue_set: ValidatorSet = ValidatorSet::new(
+        protocol().epoch(),
+        rogue_entries
+            .iter()
+            .map(|entry| ValidatorInfo {
+                id: entry.id,
+                voting_power: entry.voting_power,
+                signature_scheme: entry.signature_scheme,
+                public_key: entry.public_key.clone(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    let rogue_certifier: consensus::FastPathCertifier = certifier(rogue_set);
+    let rogue_votes: Vec<FastVote> = rogue_signers
+        .iter()
+        .take(3)
+        .map(|signer| {
+            rogue_certifier
+                .cast_vote(event_digest, prepared.commitment, signer)
+                .unwrap()
+        })
+        .collect();
+    let rogue_certificate: FastCertificate = rogue_certifier
+        .try_form_certificate(
+            event_digest,
+            prepared.commitment,
+            &rogue_votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .unwrap();
+    let rogue_certificate_bytes: Vec<u8> =
+        consensus::encode_fast_certificate(&rogue_certificate).unwrap();
+
+    let result: FastPathResult<NodeOutput> = apply_transfer(
+        &store,
+        &fixture,
+        34,
+        FIRST_PAID_NONCE,
+        &rogue_certificate_bytes,
+    );
+    assert!(matches!(
+        result,
+        Err(FastPathError::Consensus(ConsensusError::UnknownValidator(
+            _
+        )))
+    ));
+}
+
+/// DR-0131 key transition safety proof: apply and a concurrent epoch-record
+/// write CAS-fence the identical row, so they cannot interleave
+/// inconsistently -- proven here with a stand-in racing write (Slice 1
+/// itself never writes this record after genesis) rather than a real
+/// Slice-2 transition.
+struct EpochRacingEngine<'a, S: StructuredDurableDomainStateStore> {
+    store: &'a S,
+    inner: CountingEngine,
+}
+impl<S: StructuredDurableDomainStateStore> execution::paid_execution::PaidContractEngine
+    for EpochRacingEngine<'_, S>
+{
+    fn execute_paid(
+        &self,
+        request: execution::paid_execution::PaidExecutionRequest<'_>,
+    ) -> Result<
+        execution::paid_execution::PaidExecutionOutcome,
+        execution::paid_execution::PaidExecutionError,
+    > {
+        let outcome = self.inner.execute_paid(request)?;
+        let installed: local_instance_state::FastPathEpochRecord = {
+            let key: Vec<u8> =
+                local_instance_state::fastpath_epoch_record_key(protocol().chain_id()).unwrap();
+            let bytes: VersionedStateValue = self
+                .store
+                .get_versioned_durable(&context(), domain(), &key)
+                .unwrap();
+            local_instance_state::decode_fastpath_epoch_record(bytes.value().unwrap()).unwrap()
+        };
+        overwrite_epoch_record(
+            self.store,
+            &local_instance_state::FastPathEpochRecord {
+                previous_epoch: Some(installed.current_epoch),
+                activated_at_checkpoint: installed.activated_at_checkpoint + 1,
+                ..installed
+            },
+        );
+        Ok(outcome)
+    }
+}
+
+#[test]
+fn a_racing_epoch_record_write_conflicts_the_apply_commit() {
+    let store_a: MemoryDurableStateStore = memory_store();
+    let store_b: MemoryDurableStateStore = memory_store();
+    let store_c: MemoryDurableStateStore = memory_store();
+    let fixture_a: Fixture = install(&store_a);
+    let fixture_b: Fixture = install(&store_b);
+    let fixture_c: Fixture = install(&store_c);
+    let (signers, entries) = four_validators();
+    for store in [&store_a, &store_b, &store_c] {
+        install_validator_set(
+            store,
+            &context(),
+            domain(),
+            &resolver(),
+            protocol(),
+            entries.clone(),
+        )
+        .unwrap();
+    }
+    let vote_a: FastVote =
+        prepare_transfer(&store_a, &fixture_a, &signers[0], 35, FIRST_PAID_NONCE).unwrap();
+    let vote_b: FastVote =
+        prepare_transfer(&store_b, &fixture_b, &signers[1], 35, FIRST_PAID_NONCE).unwrap();
+    let vote_c: FastVote =
+        prepare_transfer(&store_c, &fixture_c, &signers[2], 35, FIRST_PAID_NONCE).unwrap();
+    let validator_set: ValidatorSet = ValidatorSet::new(
+        protocol().epoch(),
+        entries
+            .iter()
+            .map(|entry| ValidatorInfo {
+                id: entry.id,
+                voting_power: entry.voting_power,
+                signature_scheme: entry.signature_scheme,
+                public_key: entry.public_key.clone(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    let cert: consensus::FastPathCertifier = certifier(validator_set);
+    let votes: Vec<FastVote> = vec![vote_a.clone(), vote_b, vote_c];
+    let certificate: FastCertificate = cert
+        .try_form_certificate(
+            vote_a.tx_hash,
+            vote_a.execution_effects_hash,
+            &votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .unwrap();
+    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+    let store: MemoryDurableStateStore = store_a;
+    let fixture: Fixture = fixture_a;
+
+    let bytes: Vec<u8> = paid_call_with_access(
+        PaidCall {
+            fixture: &fixture,
+            policy: &fixture.policy,
+            request: 35,
+            nonce: FIRST_PAID_NONCE,
+            source: &fixture.coin,
+            entrypoint: "transfer",
+            arguments: public_standard_asset::transfer_arguments(&refund_account()).unwrap(),
+            access: vec![entry(&fixture.coin, objects::AccessMode::Write)],
+        },
+        ReservationAccessKind::Write,
+    );
+    let racing: EpochRacingEngine<'_, MemoryDurableStateStore> = EpochRacingEngine {
+        store: &store,
+        inner: CountingEngine::new(),
+    };
+    let result: FastPathResult<NodeOutput> = apply(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &racing,
+        &bytes,
+        &certificate_bytes,
+    );
+    assert!(matches!(
+        result,
+        Err(FastPathError::Node(NodeCoreError::StateConflict))
+    ));
+    // The lock is still held: the racing commit never applied.
+    let lock_key: Vec<u8> = fastpath_lock_key(protocol().chain_id(), fixture.coin.id).unwrap();
+    assert!(
+        store
+            .get_versioned_durable(&context(), domain(), &lock_key)
+            .unwrap()
+            .value()
+            .is_some()
+    );
 }
 
 #[test]
@@ -1834,15 +2326,32 @@ fn instantiate_and_publish_are_rejected_by_prepare_phase_1() {
 fn install_validator_set_is_idempotent_and_rejects_a_conflicting_reinstall() {
     let store: MemoryDurableStateStore = memory_store();
     let (_signers, entries) = four_validators();
-    install_validator_set(&store, &context(), domain(), protocol(), entries.clone()).unwrap();
+    install_validator_set(
+        &store,
+        &context(),
+        domain(),
+        &resolver(),
+        protocol(),
+        entries.clone(),
+    )
+    .unwrap();
     // Byte-identical re-install is idempotent.
-    install_validator_set(&store, &context(), domain(), protocol(), entries).unwrap();
+    install_validator_set(
+        &store,
+        &context(),
+        domain(),
+        &resolver(),
+        protocol(),
+        entries,
+    )
+    .unwrap();
     // A conflicting re-install (different validator set) fails closed.
     let (_other_signers, other_entries) = validator(200);
     let result = install_validator_set(
         &store,
         &context(),
         domain(),
+        &resolver(),
         protocol(),
         vec![other_entries],
     );
@@ -1891,11 +2400,12 @@ fn fastpath_lock_record_frame_0x641b_is_stable() {
     let record: FastPathLockRecord = FastPathLockRecord {
         request_id: [0x11; 32],
         object: vector_object_ref(0x22, 7, 0x33),
+        locked_epoch: Epoch::new(9),
     };
     let bytes: Vec<u8> = encode_fastpath_lock_record(&record).unwrap();
     assert_eq!(
         hex(&bytes),
-        "534e52451b6401000200010020000000111111111111111111111111111111111111111111111111111111111111111102008c000000534e5245044001000300010030000000534e524501400100010001002000000022222222222222222222222222222222222222222222222222222222222222220200080000000700000000000000030038000000534e524503010100020001000200000001000200200000003333333333333333333333333333333333333333333333333333333333333333"
+        "534e52451b6401000300010020000000111111111111111111111111111111111111111111111111111111111111111102008c000000534e5245044001000300010030000000534e524501400100010001002000000022222222222222222222222222222222222222222222222222222222222222220200080000000700000000000000030038000000534e5245030101000200010002000000010002002000000033333333333333333333333333333333333333333333333333333333333333330300080000000900000000000000"
     );
 }
 
@@ -1911,6 +2421,38 @@ fn fastpath_nonce_lock_record_frame_0x6425_is_stable() {
     assert_eq!(
         hex(&bytes),
         "534e52452564010004000100200000004444444444444444444444444444444444444444444444444444444444444444020020000000555555555555555555555555555555555555555555555555555555555555555503000800000009000000000000000400080000002a00000000000000"
+    );
+}
+
+#[test]
+fn fastpath_epoch_record_genesis_frame_0x6426_is_stable() {
+    let record: local_instance_state::FastPathEpochRecord =
+        local_instance_state::FastPathEpochRecord {
+            current_epoch: Epoch::new(9),
+            current_validator_set_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x66; 32]),
+            previous_epoch: None,
+            activated_at_checkpoint: 0x77,
+        };
+    let bytes: Vec<u8> = local_instance_state::encode_fastpath_epoch_record(&record).unwrap();
+    assert_eq!(
+        hex(&bytes),
+        "534e52452664010003000100080000000900000000000000020038000000534e5245030101000200010002000000010002002000000066666666666666666666666666666666666666666666666666666666666666660400080000007700000000000000"
+    );
+}
+
+#[test]
+fn fastpath_epoch_record_with_previous_epoch_frame_0x6426_is_stable() {
+    let record: local_instance_state::FastPathEpochRecord =
+        local_instance_state::FastPathEpochRecord {
+            current_epoch: Epoch::new(10),
+            current_validator_set_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x88; 32]),
+            previous_epoch: Some(Epoch::new(9)),
+            activated_at_checkpoint: 0x99,
+        };
+    let bytes: Vec<u8> = local_instance_state::encode_fastpath_epoch_record(&record).unwrap();
+    assert_eq!(
+        hex(&bytes),
+        "534e52452664010004000100080000000a00000000000000020038000000534e52450301010002000100020000000100020020000000888888888888888888888888888888888888888888888888888888888888888803000800000009000000000000000400080000009900000000000000"
     );
 }
 

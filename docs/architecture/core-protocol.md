@@ -499,30 +499,31 @@ transitions/equivocation handling remain phase 2; bond-linked slashing and
 deterministic fee/reward distribution remain phase 3. FastVote is complete
 only after phase 3.
 
-DR-0131 fixes phase 2's architecture and fully specifies slice 1: a
-committed `FastPathEpochRecord` (current epoch, active validator-set
-digest, no locally mutable membership state) and an epoch-stamped
-`FastPathLockRecord`, fenced by a two-tier check — every mutation path
-CAS-fences the epoch record, and validator-authorized prepare/apply
-additionally CAS-fence the active per-epoch `ValidatorSet` row — that
-rejects a non-current epoch, a signer absent from the committed active set,
-or a lock/nonce-lock conflict before any mutation. "Retired validator"
-means only absent from that committed set after a certified transition;
-there is no locally mutable membership action that could make nodes disagree
-about the active authority set. Slice 1 adds no epoch-transition procedure
-and no lock reclamation; `FastPathEpochRecord` never changes after genesis
-until slice 2 exists. DR-0131 also states the key transition safety
-proof slice 2 must satisfy: apply requires prepared/certificate/current
-epoch equality; apply and transition CAS-fence the identical epoch record so
-exactly one serializes before the other; a transitioned-away epoch's
-certificates are permanently invalid, which is what lets a stale lock be
-reclaimed under CAS without risking two conflicting applies; and no
-timeout-based unlock exists anywhere. Epoch transition, equivocation
-evidence, and the authorization-class/ingress boundary declaration are
-slices 2-4, whose safety contract this DR fixes but whose detailed wire/API
-decisions are pending. Phase 2 is not complete until slice 4 closes. See
-DR-0129, DR-0130, DR-0131, and `TODO.md` for exact evidence and remaining
-activation gates.
+DR-0131 fixes phase 2's architecture and implements slice 1: a committed
+`FastPathEpochRecord` (current epoch, active validator-set digest, no
+locally mutable membership state) and an epoch-stamped `FastPathLockRecord`,
+fenced by a two-tier check — every mutation path CAS-fences the epoch
+record, and validator-authorized prepare/apply additionally CAS-fence the
+active per-epoch `ValidatorSet` row — that rejects a non-current epoch, a
+signer absent from the committed active set, or a lock/nonce-lock conflict
+before any mutation. "Retired validator" means only absent from that
+committed set after a certified transition; there is no locally mutable
+membership action that could make nodes disagree about the active authority
+set. Slice 1 adds no epoch-transition procedure and no lock reclamation;
+`FastPathEpochRecord` never changes after genesis until slice 2 exists.
+DR-0131 also states the key transition safety proof slice 2 must satisfy:
+apply requires prepared/certificate/current epoch equality; apply and
+transition CAS-fence the identical epoch record so exactly one serializes
+before the other; a transitioned-away epoch's certificates are permanently
+invalid, which is what lets a stale lock be reclaimed under CAS without
+risking two conflicting applies; and no timeout-based unlock exists
+anywhere. Epoch transition, equivocation evidence, and the
+authorization-class/ingress boundary declaration are slices 2-4, whose
+safety contract this DR fixes but whose detailed wire/API decisions are
+pending. Phase 2 is not complete until slice 4 closes, and slice 1 alone
+does not make retired-validator/wrong-epoch rejection end-to-end observable
+beyond genesis-set membership. See DR-0129, DR-0130, DR-0131, and
+`TODO.md` for exact evidence and remaining activation gates.
 
 ## 12. Certificate lifecycle
 Phase 13 adds shared-consensus quorum certificates. Each certificate binds the

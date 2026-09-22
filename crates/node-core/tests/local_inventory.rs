@@ -428,6 +428,29 @@ fn inventory_real_wasm_sqlite_success_nested_rollback_and_fenced_restart() {
             execution_policy_key(&protocol()).unwrap(),
             policy().encode().unwrap(),
         );
+        // DR-0131: local execution now fences the singleton
+        // `FastPathEpochRecord`; this suite never loads a `ValidatorSet`, so
+        // any fixed digest satisfies its own fence.
+        set_state(
+            &store,
+            node_core::local_instance_state::fastpath_epoch_record_key(protocol().chain_id())
+                .unwrap(),
+            node_core::local_instance_state::encode_fastpath_epoch_record(
+                &node_core::local_instance_state::FastPathEpochRecord {
+                    current_epoch: protocol().epoch(),
+                    current_validator_set_digest: resolver()
+                        .hash_for_purpose(
+                            protocol().epoch(),
+                            HashPurpose::NodeEvent,
+                            b"local-inventory-e2e-fastpath-epoch-placeholder",
+                        )
+                        .unwrap(),
+                    previous_epoch: None,
+                    activated_at_checkpoint: 0,
+                },
+            )
+            .unwrap(),
+        );
         let dependency: UnverifiedDependencyRef = publish(
             &store,
             inventory::dispatch_policy(&policy_origin),

@@ -833,6 +833,76 @@ fn authenticated_read_only_blob_reference_is_fetched_verified_and_commits() {
 /// `load_and_authorize_objects` loader and is not separately exercised
 /// here.
 #[test]
+fn authenticated_owned_write_is_blocked_by_a_held_fastpath_object_lock() {
+    let store = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+    let blob_store = InstrumentedBlobStore::default();
+    let node_config = config("sunrise-test");
+    let protocol_config = active_protocol_config(0xB6);
+    let signing_key = dev_signing_key(0xB6);
+    let sender: Address = dev_sender_address(&signing_key);
+    let object_id = ObjectId::new([0x76; 32]);
+    let (object_ref, _head) = preload_inline_object(
+        &store,
+        "sunrise-test",
+        object_id,
+        Owner::Address(sender),
+        0x76,
+    );
+    let manifest = manifest_with(vec![AccessEntry {
+        object_ref: object_ref.clone(),
+        mode: AccessMode::Write,
+    }]);
+    let submission = authenticated_submission_with_manifest(
+        "sunrise-test",
+        request(0xB6),
+        &signing_key,
+        Epoch::new(7),
+        0,
+        manifest,
+        &node_config,
+        &protocol_config,
+    );
+    let machine = OwnedObjectEffectMachine {
+        expected_inputs: vec![(object_id, AccessMode::Write)],
+        replacement_data: vec![0x77],
+        calls: AtomicUsize::new(0),
+    };
+    preload_fastpath_epoch_record(&store, "sunrise-test", Epoch::new(7));
+
+    // An in-flight fast-path prepare, for a different original request id,
+    // already holds an exclusive lock on this exact object.
+    let chain_id: ChainId = ChainId::new("sunrise-test").unwrap();
+    let lock_key: Vec<u8> = local_instance_state::fastpath_lock_key(&chain_id, object_id).unwrap();
+    let lock: local_instance_state::FastPathLockRecord = local_instance_state::FastPathLockRecord {
+        request_id: [0x11; 32],
+        object: object_ref,
+        locked_epoch: Epoch::new(7),
+    };
+    store.preload(
+        lock_key,
+        StateRevision::INITIAL.checked_next().unwrap(),
+        local_instance_state::encode_fastpath_lock_record(&lock).unwrap(),
+    );
+
+    let error = handle_authenticated_resolved_durable_submit_transaction_with_owned_object_effects(
+        &blob_store,
+        &store,
+        &durable_context(),
+        &resolver("sunrise-test"),
+        submission,
+        2,
+        &machine,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        NodeCoreError::PersistenceInvariant("object locked by a pending fast-path certificate")
+    ));
+    assert_eq!(machine.calls.load(Ordering::SeqCst), 0);
+    assert!(store.commits.lock().unwrap().is_empty());
+}
+
+#[test]
 fn authenticated_owned_write_updates_blob_backed_previous_version_stays_inline_when_small() {
     let store = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
     let blob_store = InstrumentedBlobStore::default();
@@ -868,6 +938,7 @@ fn authenticated_owned_write_updates_blob_backed_previous_version_stays_inline_w
         replacement_data: vec![0x72],
         calls: AtomicUsize::new(0),
     };
+    preload_fastpath_epoch_record(&store, "sunrise-test", Epoch::new(7));
 
     handle_authenticated_resolved_durable_submit_transaction_with_owned_object_effects(
         &blob_store,
@@ -944,6 +1015,7 @@ fn authenticated_owned_write_large_update_publishes_and_references_blob() {
         replacement_data: large_body.clone(),
         calls: AtomicUsize::new(0),
     };
+    preload_fastpath_epoch_record(&store, "sunrise-test", Epoch::new(7));
 
     handle_authenticated_resolved_durable_submit_transaction_with_owned_object_effects(
         &blob_store,
@@ -1005,6 +1077,7 @@ fn authenticated_owned_write_exact_replay_publishes_no_blob() {
         replacement_data: vec![0x78; MAX_INLINE_OBJECT_BODY_BYTES + 1],
         calls: AtomicUsize::new(0),
     };
+    preload_fastpath_epoch_record(&store, "sunrise-test", Epoch::new(7));
 
     let first_blob_store = InstrumentedBlobStore::default();
     let first_submission = authenticated_submission_with_manifest(
@@ -1114,6 +1187,7 @@ fn authenticated_owned_write_blob_publish_failure_aborts_before_commit() {
         replacement_data: vec![0x79; MAX_INLINE_OBJECT_BODY_BYTES + 1],
         calls: AtomicUsize::new(0),
     };
+    preload_fastpath_epoch_record(&store, "sunrise-test", Epoch::new(7));
 
     let error = handle_authenticated_resolved_durable_submit_transaction_with_owned_object_effects(
         &blob_store,
@@ -1188,6 +1262,7 @@ fn authenticated_owned_write_commit_rejection_leaves_only_an_orphan_blob() {
         replacement_data: large_body.clone(),
         calls: AtomicUsize::new(0),
     };
+    preload_fastpath_epoch_record(&store, "sunrise-test", Epoch::new(7));
 
     let error = handle_authenticated_resolved_durable_submit_transaction_with_owned_object_effects(
         &blob_store,
@@ -2454,8 +2529,6 @@ fn authenticated_object_head_conflict_is_retryable_and_distinct() {
 /// through the full authenticated submit-transaction path.
 #[test]
 fn memory_store_authenticated_read_only_manifest_commits_against_real_object_store() {
-    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
-    store.set_time(100);
     let node_config = config("sunrise-test");
     let protocol_config = active_protocol_config(0xF7);
     let signing_key = dev_signing_key(0xC7);
@@ -2463,6 +2536,8 @@ fn memory_store_authenticated_read_only_manifest_commits_against_real_object_sto
     let context = durable_context();
     let resolver = resolver("sunrise-test");
     let object_domain = domain(0xF7);
+    let store: MemoryDurableStateStore = memory_store_with_fastpath_epoch(object_domain);
+    store.set_time(100);
     let object_id = ObjectId::new([0x81; 32]);
 
     let object = test_object(object_id, 1, Owner::Address(sender), 0x81);
@@ -2604,6 +2679,13 @@ fn memory_store_authenticated_owned_write_commits_atomically_and_replays_receipt
         replacement_data: vec![0xA4],
         calls: AtomicUsize::new(0),
     };
+    commit_fastpath_epoch_record(
+        &store,
+        &context,
+        object_domain,
+        "sunrise-test",
+        Epoch::new(7),
+    );
 
     let blob_store: MemoryBlobStore = MemoryBlobStore::default();
     let first: ResolvedNodeOutput =

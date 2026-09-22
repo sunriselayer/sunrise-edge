@@ -197,6 +197,23 @@ pub fn is_reserved_paid_request_id(request_id: &[u8; 32]) -> bool {
     request_id[..FASTPATH_SYNTHETIC_REQUEST_ID_TAG.len()] == FASTPATH_SYNTHETIC_REQUEST_ID_TAG
 }
 
+/// DR-0131's one shared external-request validation boundary: every
+/// externally reachable event/mutation family (`SignedPaidIntent`,
+/// `SignedLocalExecutionIntent`, `PublicationSubmission`, and the
+/// `SubmitTransaction` event envelope) calls this exact function on its own
+/// admission/authentication boundary, before accepting the request id as
+/// genuine external input. It is deliberately distinct from
+/// [`fastpath_synthetic_prepare_request_id`]'s internal/system construction
+/// path, which node-owned code alone calls to build a value *inside* this
+/// reserved namespace; that path is never reachable from external input, so
+/// it needs no gate here.
+pub fn reject_reserved_request_id(request_id: &[u8; 32]) -> Result<(), &'static str> {
+    if is_reserved_paid_request_id(request_id) {
+        return Err("request id reserved for fast-path synthetic receipts");
+    }
+    Ok(())
+}
+
 /// Deterministically derives the synthetic
 /// [`DurableRequestId`](runtime::DurableRequestId) a prepare commit's
 /// mandatory [`runtime::DurableRequestReceipt`] is keyed by: the reserved
@@ -227,9 +244,15 @@ pub fn fastpath_synthetic_prepare_request_id(
 /// [`fastpath_lock_key`]. Held from a successful prepare commit until the
 /// owning request's certificate apply deletes it; never written or deleted
 /// by anything else.
+///
+/// DR-0131 redefines this canonical version-1 layout in place to add
+/// `locked_epoch`: this workspace is unreleased, so there is no v1/v2 split
+/// and no obsolete layout preserved for compatibility.
 pub const FASTPATH_LOCK_RECORD_TYPE: u16 = 0x641B;
 /// Frame type for one sender/epoch nonce lock.
 pub const FASTPATH_NONCE_LOCK_RECORD_TYPE: u16 = 0x6425;
+/// Frame type for the singleton [`FastPathEpochRecord`] (DR-0131).
+pub const FASTPATH_EPOCH_RECORD_TYPE: u16 = 0x6426;
 
 /// One durable fast-path object lock.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -238,6 +261,12 @@ pub struct FastPathLockRecord {
     pub request_id: [u8; 32],
     /// Exact object identity/version/digest observed and locked at prepare time.
     pub object: ObjectRef,
+    /// [`FastPathEpochRecord::current_epoch`] as it stood at the moment of
+    /// the same durable CAS commit that created this lock (DR-0131). Apply
+    /// verifies the stamp against its certified/current epoch; Slice 1 does
+    /// not reclaim with it. Retained so Slice 2's lazy stale-lock reclamation
+    /// has the data it needs without a later migration.
+    pub locked_epoch: Epoch,
 }
 
 /// Durable ownership of one exact sender nonce while a certificate is being
@@ -264,6 +293,7 @@ pub fn encode_fastpath_lock_record(record: &FastPathLockRecord) -> Result<Vec<u8
         objects::encode_object_ref(&record.object)
             .map_err(|_| NodeCoreError::PersistenceInvariant("invalid fastpath lock object"))?,
     )?;
+    frame.field_u64(3, record.locked_epoch.get())?;
     Ok(frame.finish()?)
 }
 
@@ -272,17 +302,103 @@ pub fn decode_fastpath_lock_record(bytes: &[u8]) -> Result<FastPathLockRecord, N
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(FASTPATH_LOCK_RECORD_TYPE)?;
     frame.require_version(1)?;
-    frame.require_only_fields(&[1, 2])?;
+    frame.require_only_fields(&[1, 2, 3])?;
     let request_id: [u8; 32] = frame
         .required_field(1)?
         .try_into()
         .map_err(|_| NodeCoreError::PersistenceInvariant("fastpath lock request id length"))?;
     let object: ObjectRef = objects::decode_object_ref(frame.required_field(2)?)
         .map_err(|_| NodeCoreError::PersistenceInvariant("invalid fastpath lock object"))?;
-    let record: FastPathLockRecord = FastPathLockRecord { request_id, object };
+    let locked_epoch: Epoch = Epoch::new(frame.required_u64(3)?);
+    let record: FastPathLockRecord = FastPathLockRecord {
+        request_id,
+        object,
+        locked_epoch,
+    };
     if encode_fastpath_lock_record(&record)? != bytes {
         return Err(NodeCoreError::PersistenceInvariant(
             "noncanonical fastpath lock record",
+        ));
+    }
+    Ok(record)
+}
+
+/// Singleton state key for the DR-0131 [`FastPathEpochRecord`]: the fenced
+/// source of truth for the fast path's current epoch and active
+/// validator-set identity, in place of scattered reads of the static
+/// signed-genesis manifest. Scoped only by chain, matching the record's own
+/// singleton nature -- unlike [`fastpath_validator_set_key`], it is never
+/// keyed by epoch, since its entire purpose is to be found without already
+/// knowing the current epoch.
+pub fn fastpath_epoch_record_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"epoch/");
+    key.extend(encode_chain_id(chain)?);
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+/// Frame `0x6426/v1`: the committed, CAS-fenced source of truth for the fast
+/// path's current epoch and active validator-set identity (DR-0131). Created
+/// once, atomically with genesis validator-set activation; Slice 1 defines no
+/// post-genesis write to this record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FastPathEpochRecord {
+    /// The current active epoch.
+    pub current_epoch: Epoch,
+    /// `ValidatorSet::digest()` of the active validator set, binding which
+    /// set is active without embedding its contents.
+    pub current_validator_set_digest: Digest32,
+    /// The prior active epoch, for audit/transition bookkeeping. Absent at
+    /// genesis; populated starting at Slice 2's first transition.
+    pub previous_epoch: Option<Epoch>,
+    /// The durable checkpoint/commit-sequence marker at which this record's
+    /// current state became active, following the same
+    /// `installed_at_checkpoint: u64` convention DR-0121's genesis install
+    /// marker already uses.
+    pub activated_at_checkpoint: u64,
+}
+
+/// Encodes Frame `0x6426/v1`.
+pub fn encode_fastpath_epoch_record(
+    record: &FastPathEpochRecord,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut frame: CanonicalStruct = CanonicalStruct::new(FASTPATH_EPOCH_RECORD_TYPE, 1);
+    frame.field_u64(1, record.current_epoch.get())?;
+    frame.field_bytes(
+        2,
+        canonical_encoding::encode_digest32(&record.current_validator_set_digest)?,
+    )?;
+    if let Some(previous_epoch) = record.previous_epoch {
+        frame.field_u64(3, previous_epoch.get())?;
+    }
+    frame.field_u64(4, record.activated_at_checkpoint)?;
+    Ok(frame.finish()?)
+}
+
+/// Strictly decodes Frame `0x6426/v1`.
+pub fn decode_fastpath_epoch_record(bytes: &[u8]) -> Result<FastPathEpochRecord, NodeCoreError> {
+    let frame = decode_canonical_frame(bytes)?;
+    frame.require_type(FASTPATH_EPOCH_RECORD_TYPE)?;
+    frame.require_version(1)?;
+    let current_epoch: Epoch = Epoch::new(frame.required_u64(1)?);
+    let current_validator_set_digest: Digest32 =
+        canonical_encoding::decode_digest32(frame.required_field(2)?)?;
+    let (previous_epoch, allowed_fields): (Option<Epoch>, &[u16]) = match frame.field(3) {
+        Some(_) => (Some(Epoch::new(frame.required_u64(3)?)), &[1, 2, 3, 4]),
+        None => (None, &[1, 2, 4]),
+    };
+    frame.require_only_fields(allowed_fields)?;
+    let activated_at_checkpoint: u64 = frame.required_u64(4)?;
+    let record: FastPathEpochRecord = FastPathEpochRecord {
+        current_epoch,
+        current_validator_set_digest,
+        previous_epoch,
+        activated_at_checkpoint,
+    };
+    if encode_fastpath_epoch_record(&record)? != bytes {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "noncanonical fastpath epoch record",
         ));
     }
     Ok(record)

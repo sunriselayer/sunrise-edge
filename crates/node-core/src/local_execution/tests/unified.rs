@@ -11,6 +11,7 @@ fn publish_code(
     nonce: u64,
     dependency: Option<&UnverifiedDependencyRef>,
 ) -> UnverifiedDependencyRef {
+    ensure_fastpath_epoch_installed(store);
     let origin: PackageOrigin =
         PackageOrigin::unverified(protocol().chain_id().clone(), sender(), [seed; 32]).unwrap();
     let foreign: PackageOrigin =
@@ -104,6 +105,7 @@ fn general_run(
     bytes: &[u8],
     engine: &impl LocalContractEngine,
 ) -> AdmissionResult<NodeOutput> {
+    ensure_fastpath_epoch_installed(store);
     handle_local_execution(
         store,
         &MemoryBlobStore::default(),

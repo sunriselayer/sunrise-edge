@@ -138,10 +138,10 @@ to extend rather than several ad hoc ones to find and fix.
    no v1/v2 split and no obsolete layout preserved for compatibility — the
    version-1 wire layout simply changes. Every lock-acquisition site stamps
    `FastPathEpochRecord.current_epoch` as it stood at the moment of the same
-   durable CAS commit that creates the lock. `locked_epoch` is inert
-   bookkeeping in Slice 1 (nothing reclaims a lock yet); it exists so
-   Slice 2's lazy stale-lock reclamation has the data it needs without a
-   later migration.
+   durable CAS commit that creates the lock. Apply verifies that stamp against
+   its certified/current epoch; Slice 1 still performs no reclamation with it.
+   The field also gives Slice 2's lazy stale-lock reclamation the data it needs
+   without a later migration.
 
 3. **Two-tier fence model.**
    - **Every mutation path** — fast-path prepare, fast-path apply, and every
@@ -387,3 +387,96 @@ ships a real transition.
 - This DR does not change DR-0129's `crates/consensus` types, wire IDs, or
   signature domain, and does not change DR-0130's Phase 1 invariants except
   by adding the fencing/epoch-stamp layer described above.
+
+## Slice 1 implementation status (2026-09-22)
+
+Slice 1 is implemented, satisfying the ten completion criteria above:
+
+- `FastPathEpochRecord` (`0x6426/v1`) and the redefined `FastPathLockRecord`
+  (`0x641B`, canonical v1, now carrying `locked_epoch`) are implemented in
+  `crates/node-core/src/local_instance_state.rs`. The epoch record is
+  created atomically with genesis validator-set activation in
+  `crates/node-core/src/genesis.rs::install_genesis_with_history`, reusing
+  the existing `installed_at_checkpoint` marker rather than a second commit,
+  and is verified byte-for-byte on the existing restart-verify path.
+- The shared two-tier fencing model lives in
+  `crates/node-core/src/mutation_fence.rs` (`fence_current_epoch`,
+  `fence_object_lock`, `fence_sender_nonce_lock`). It is called from
+  `paid_execution::build_paid_admission` (shared by the direct paid path and
+  both fast-path entry points), `local_execution::handle_local_execution`,
+  `publication::handle_local_publication_with_history`, and the shared durable
+  boundary for every authenticated `SubmitTransaction` path that advances a
+  nonce (object-read-only, owned-effects, and preinstalled WASM).
+  Validator-authorized prepare/apply additionally
+  fence the active per-epoch `ValidatorSet` row and check its digest against
+  the epoch record in `fast_path::load_validator_set`.
+- Local publication's own `policy.context.epoch()` is a historical
+  code/policy-version selector, not a claim about which epoch is currently
+  committed (DR-0121's pre-existing historical-epoch publication support
+  predates and is orthogonal to fast-path lifecycle); Slice 1 therefore
+  CAS-fences the epoch record and honors its sender/epoch nonce lock, but uses
+  `fence_epoch_state` rather than reinterpreting that historical selector as a
+  current-transaction epoch claim. Every other mutation path's declared epoch
+  is rejected when it disagrees with the committed epoch record.
+- Local signer/certificate-signer membership rejection required no new
+  check: `consensus::FastPathCertifier::cast_vote`/`verify_vote`/
+  `verify_certificate` already reject an unknown `ValidatorId` via their own
+  bound `ValidatorSet` lookup; Slice 1's contribution is binding that
+  `ValidatorSet` to the CAS-fenced, digest-verified committed row.
+- Duplicate validator public-key rejection is
+  `validator_set::ValidatorSetError::DuplicatePublicKey`, enforced in
+  `ValidatorSet::new` and therefore automatically covering both fast-path
+  installation and genesis installation.
+- The one shared external-request validation boundary is
+  `local_instance_state::reject_reserved_request_id`, called from
+  `paid_execution::authenticate_and_identify`,
+  `local_execution::handle_local_execution`,
+  `publication::handle_local_publication_with_history`, and
+  `authenticate_submit_transaction_event` (the single construction point for
+  every `SubmitTransaction`-family `AuthenticatedSubmitTransaction`). The
+  distinct internal/system construction path,
+  `local_instance_state::fastpath_synthetic_prepare_request_id`, is
+  unreachable from external input.
+- The previously uncovered direct mutation branch gap is closed in
+  `local_execution::handle_local_execution` (`Write`/`Consume` inputs) and
+  once at the shared `SubmitTransaction` durable boundary, covering the
+  object-read-only nonce, owned-effects, and preinstalled-WASM branches.
+- Dedicated adversarial test evidence (`cargo test -p node-core`, 376
+  tests passing) includes: `fast_path::tests::
+  prepare_rejects_a_request_bound_to_a_non_current_epoch`,
+  `apply_rejects_a_request_bound_to_a_non_current_epoch`,
+  `prepare_rejects_a_validator_set_digest_mismatch_with_the_committed_epoch_record`,
+  `prepare_rejects_a_signer_absent_from_the_committed_validator_set`,
+  `apply_rejects_a_certificate_signed_by_validators_absent_from_the_committed_set`,
+  `a_racing_epoch_record_write_conflicts_the_apply_commit` (a real
+  optimistic-concurrency CAS-fence proof, not just a unit-level check);
+  `validator_set::tests::duplicate_public_key_across_distinct_validator_ids_is_rejected`
+  and `genesis::tests::duplicate_validator_public_keys_are_rejected_at_genesis_install`;
+  `local_execution::tests::
+  a_fastpath_object_lock_blocks_local_execution_write_from_a_different_sender`
+  (a different sender than the locking one, so the sender/epoch nonce-lock
+  cannot be masking the object-lock rejection) and
+  `tests::authenticated_owned_write_is_blocked_by_a_held_fastpath_object_lock`;
+  `tests::authenticated_read_only_submit_honors_fastpath_nonce_lock`;
+  and reserved-request-id rejection tests in each of the four event
+  families (`fast_path::tests::
+  reserved_request_id_prefix_is_rejected_by_direct_commit_and_prepare`,
+  `local_execution::tests::reserved_request_id_prefix_is_rejected_before_any_admission`,
+  `publication::tests::reserved_request_id_is_rejected_before_any_state_read`,
+  `tests::authenticate_submit_transaction_event_rejects_reserved_request_id`).
+- Independent stable Rust/JS vectors for `0x6426` and the redefined `0x641B`
+  are pinned by `crates/node-core/src/fast_path/tests.rs` and independently
+  reconstructed byte-for-byte by `scripts/fast-path-vectors.mjs` (no Rust
+  encoder invoked), wired into `scripts/check-all.sh`.
+- `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features
+  -- -D warnings`, and `cargo test --workspace --all-targets --all-features`
+  all pass on the integrated diff. This implementation status is evidence of
+  Slice 1 alone; it does not by itself constitute the fresh security and
+  tech-lead review this index's other entries record separately, and a later
+  code change invalidates it.
+
+Consistent with the DR's own scope: this does not implement epoch
+transition, lock recovery, equivocation evidence, or authorization-class
+declaration (Slices 2-4), does not close the FastVote Certified Execution
+Gate's Phase 2 entry in `TODO.md`, and does not make retired-validator or
+wrong-epoch rejection end-to-end observable beyond genesis-set membership.

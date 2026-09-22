@@ -2475,6 +2475,13 @@ fn preinstalled_wasm_resolves_end_to_end_across_hash_suite_rotation() {
         9,
         0x40,
     );
+    commit_fastpath_epoch_record(
+        &store,
+        &context,
+        object_domain,
+        "sunrise-test",
+        Epoch::new(15),
+    );
     let manifest: AccessManifest = manifest_with(vec![AccessEntry {
         object_ref: write_ref,
         mode: AccessMode::Write,
@@ -2568,6 +2575,13 @@ fn memory_store_authenticated_owned_consume_commits_tombstone_with_nonce() {
         replacement_data: vec![0],
         calls: AtomicUsize::new(0),
     };
+    commit_fastpath_epoch_record(
+        &store,
+        &context,
+        object_domain,
+        "sunrise-test",
+        Epoch::new(7),
+    );
 
     handle_authenticated_resolved_durable_submit_transaction_with_owned_object_effects(
         &MemoryBlobStore::default(),
@@ -2626,6 +2640,7 @@ fn authenticated_owned_write_requires_exact_effect_before_commit() {
     let machine: IdempotentMachine = IdempotentMachine {
         calls: AtomicUsize::new(0),
     };
+    preload_fastpath_epoch_record(&store, "sunrise-test", Epoch::new(7));
 
     let error: NodeCoreError =
         handle_authenticated_resolved_durable_submit_transaction_with_owned_object_effects(
@@ -2729,6 +2744,7 @@ fn authenticated_owned_modes_reject_immutable_object_before_transition() {
         let machine: IdempotentMachine = IdempotentMachine {
             calls: AtomicUsize::new(0),
         };
+        preload_fastpath_epoch_record(&store, "sunrise-test", Epoch::new(7));
 
         let error: NodeCoreError =
             handle_authenticated_resolved_durable_submit_transaction_with_owned_object_effects(
@@ -2790,6 +2806,13 @@ fn authenticated_owned_write_checkpoint_regression_commits_nothing() {
         replacement_data: vec![0xA7],
         calls: AtomicUsize::new(0),
     };
+    commit_fastpath_epoch_record(
+        &store,
+        &context,
+        object_domain,
+        "sunrise-test",
+        Epoch::new(7),
+    );
 
     let error: NodeCoreError =
         handle_authenticated_resolved_durable_submit_transaction_with_owned_object_effects(
@@ -3020,6 +3043,13 @@ fn memory_store_stale_head_race_yields_object_conflict_without_consuming_nonce_t
         &protocol_config,
     );
 
+    commit_fastpath_epoch_record(
+        &store,
+        &context,
+        object_domain,
+        "sunrise-test",
+        Epoch::new(7),
+    );
     let race_error =
         handle_authenticated_resolved_durable_submit_transaction_with_owned_object_effects(
             &MemoryBlobStore::default(),

@@ -109,6 +109,35 @@ pub(crate) fn entry(object: &Object, mode: AccessMode) -> AccessEntry {
         mode,
     }
 }
+/// DR-0131: every current mutation path fences the singleton
+/// `FastPathEpochRecord`, so every fixture that exercises one now needs this
+/// installed first. The digest here is a placeholder no test in this file
+/// ever loads a `ValidatorSet` against; `fast_path::tests::install_four_validators`
+/// overwrites it with the real digest-matching record for fast-path tests
+/// that also install a validator set.
+pub(crate) fn ensure_fastpath_epoch_installed<S: StructuredDurableDomainStateStore>(store: &S) {
+    set_state(
+        store,
+        local_instance_state::fastpath_epoch_record_key(protocol().chain_id()).unwrap(),
+        StateMutation::Put(
+            local_instance_state::encode_fastpath_epoch_record(
+                &local_instance_state::FastPathEpochRecord {
+                    current_epoch: protocol().epoch(),
+                    current_validator_set_digest: resolver()
+                        .hash_for_purpose(
+                            protocol().epoch(),
+                            HashPurpose::NodeEvent,
+                            b"paid-execution-tests-fastpath-epoch-placeholder",
+                        )
+                        .unwrap(),
+                    previous_epoch: None,
+                    activated_at_checkpoint: 0,
+                },
+            )
+            .unwrap(),
+        ),
+    );
+}
 fn set_state<S: StructuredDurableDomainStateStore>(
     store: &S,
     key: Vec<u8>,
@@ -362,6 +391,7 @@ fn fee_policy(
 pub(crate) const FIRST_PAID_NONCE: u64 = 4;
 
 pub(crate) fn install<S: StructuredDurableDomainStateStore>(store: &S) -> Fixture {
+    ensure_fastpath_epoch_installed(store);
     set_state(
         store,
         execution_policy_key_for_profile(&protocol(), 4).unwrap(),
