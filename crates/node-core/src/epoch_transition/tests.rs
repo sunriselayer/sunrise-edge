@@ -3993,7 +3993,7 @@ fn real_activation_wins_a_direct_paid_race_and_the_loser_commits_nothing() {
         )
         .unwrap()
         {
-            crate::paid_execution::PaidExecutionPreflight::Fresh(fresh) => fresh,
+            crate::paid_execution::PaidExecutionPreflight::Fresh(fresh) => *fresh,
             crate::paid_execution::PaidExecutionPreflight::Replayed { .. } => {
                 panic!("new paid request must not reconcile as a replay")
             }

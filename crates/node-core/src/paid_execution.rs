@@ -171,7 +171,7 @@ pub enum PaidExecutionPreflight {
         output: NodeOutput,
     },
     /// A fresh authenticated request that still requires current admission.
-    Fresh(FreshPaidExecution),
+    Fresh(Box<FreshPaidExecution>),
 }
 
 /// Durable conflict/mutation authority uses the stronger of the signed
@@ -1217,11 +1217,13 @@ pub fn preflight_paid_execution<S: StructuredDurableDomainStateStore>(
     {
         return Ok(PaidExecutionPreflight::Replayed { request_id, output });
     }
-    Ok(PaidExecutionPreflight::Fresh(FreshPaidExecution {
-        authenticated,
-        event_digest,
-        request_id,
-    }))
+    Ok(PaidExecutionPreflight::Fresh(Box::new(
+        FreshPaidExecution {
+            authenticated,
+            event_digest,
+            request_id,
+        },
+    )))
 }
 
 /// Admits and durably commits a fresh invocation returned by
@@ -1309,7 +1311,7 @@ pub fn handle_paid_execution<
             base_policy,
             fee_policy,
             engine,
-            fresh,
+            *fresh,
             created_checkpoint,
         ),
     }

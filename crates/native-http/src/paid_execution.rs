@@ -101,7 +101,7 @@ where
                     Ok(value) => value,
                     Err(error) => return admission_error(&error),
                 };
-            let fresh: node_core::paid_execution::FreshPaidExecution = match preflight {
+            let fresh: Box<node_core::paid_execution::FreshPaidExecution> = match preflight {
                 node_core::paid_execution::PaidExecutionPreflight::Replayed {
                     request_id,
                     output,
@@ -170,7 +170,7 @@ where
                 &current_base_policy,
                 &current_fee_policy,
                 &paid.engine,
-                fresh,
+                *fresh,
                 state.preinstalled_wasm.created_checkpoint,
             ) {
                 Ok(value) => value,
