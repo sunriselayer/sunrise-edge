@@ -23,6 +23,13 @@ use protocol_types::HashPurpose;
 const OWNER_TOKEN_PREIMAGE_TYPE_ID: u16 = 0x6430;
 const OWNER_TOKEN_PREIMAGE_VERSION: u16 = 1;
 const MAX_CUSTODY_ENTRYPOINT_BYTES: usize = 64;
+/// Bound on deterministic rehash attempts while deriving one non-address
+/// deposit token. The scope/source preimage is fixed by policy, so a single
+/// hash that happens to land on a canonical address must not permanently
+/// block that deposit; rehashing the digest itself (rather than varying any
+/// policy-fixed input) finds a non-address value with overwhelming
+/// probability well inside this bound.
+const MAX_OWNER_TOKEN_DERIVATION_ATTEMPTS: usize = 256;
 
 /// One exact typed-contract target admitted for a protocol-custody operation.
 ///
@@ -155,18 +162,25 @@ impl ProtocolCustodyCapability {
         let owner_target: Option<PinnedOwnerTarget> = match &direction {
             ProtocolCustodyDirection::Deposit { scope, .. } => {
                 let preimage: Vec<u8> = owner_token_preimage(&context, scope, source)?;
-                let token: [u8; 32] = resolver
+                let mut token: [u8; 32] = resolver
                     .hash_for_purpose(context.epoch(), HashPurpose::Object, &preimage)?
                     .bytes();
-                if validate_ed25519_owner_address(
+                let mut attempts: usize = 0;
+                while validate_ed25519_owner_address(
                     &token,
                     Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
                 )
                 .is_ok()
                 {
-                    return Err(LocalExecutionError::Invalid(
-                        "protocol custody token aliases address",
-                    ));
+                    attempts += 1;
+                    if attempts >= MAX_OWNER_TOKEN_DERIVATION_ATTEMPTS {
+                        return Err(LocalExecutionError::Invalid(
+                            "protocol custody token derivation exhausted",
+                        ));
+                    }
+                    token = resolver
+                        .hash_for_purpose(context.epoch(), HashPurpose::Object, &token)?
+                        .bytes();
                 }
                 Some(PinnedOwnerTarget {
                     token,
@@ -396,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn capability_rejects_a_token_that_aliases_a_canonical_address() {
+    fn capability_rederives_a_token_whose_first_hash_aliases_a_canonical_address() {
         let chain_id: ChainId = ChainId::new("custody-alias").expect("chain");
         let version: ProtocolVersion = ProtocolVersion::new(9);
         let context: PublicationContext =
@@ -465,17 +479,29 @@ mod tests {
                 .is_ok()
             })
             .expect("bounded search finds an address-shaped digest");
-        assert!(matches!(
-            ProtocolCustodyCapability::new(
-                &resolver,
-                context,
-                target,
-                ProtocolCustodyDirection::Deposit { source, scope },
-                sender,
-            ),
-            Err(LocalExecutionError::Invalid(
-                "protocol custody token aliases address"
-            ))
-        ));
+        let first_hash: [u8; 32] = resolver
+            .hash_for_purpose(
+                context.epoch(),
+                HashPurpose::Object,
+                &owner_token_preimage(&context, &scope, source).expect("preimage"),
+            )
+            .expect("token")
+            .bytes();
+        // Subject, resource and source are fixed by policy: an address-shaped
+        // first hash must not permanently block this exact deposit.
+        let capability: ProtocolCustodyCapability = ProtocolCustodyCapability::new(
+            &resolver,
+            context,
+            target,
+            ProtocolCustodyDirection::Deposit { source, scope },
+            sender,
+        )
+        .expect("rehashing derives a usable non-address token");
+        let token: [u8; 32] = capability.owner_token().expect("deposit token");
+        assert!(
+            validate_ed25519_owner_address(&token, Ed25519OwnerAddressPolicy::CanonicalPrimeOrder)
+                .is_err()
+        );
+        assert_ne!(token, first_hash);
     }
 }
