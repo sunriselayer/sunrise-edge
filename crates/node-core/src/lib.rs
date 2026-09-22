@@ -4290,7 +4290,7 @@ impl<'a> PreinstalledWasmMachine<'a> {
         };
 
         let request = FeeChargeRequest {
-            asset_id: fee_payment.asset_id,
+            resource: *fee_payment.asset_id.as_bytes(),
             amount,
             payer_body: &payer_effective_body,
             treasury_body: &treasury_loaded.data,

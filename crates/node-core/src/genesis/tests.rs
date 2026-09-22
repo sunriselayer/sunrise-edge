@@ -419,6 +419,41 @@ fn genesis_rejects_protocol_custody_object_bound_to_another_chain() {
 }
 
 #[test]
+fn genesis_rejects_derived_protocol_custody_purposes() {
+    let purposes: [ProtocolCustodyPurpose; 2] = [
+        ProtocolCustodyPurpose::FeeEscrow,
+        ProtocolCustodyPurpose::ForfeitedCollateral,
+    ];
+    for (index, purpose) in purposes.into_iter().enumerate() {
+        let suffix: u8 = u8::try_from(index).unwrap();
+        let custody_id: ObjectId = ObjectId::new([0x40_u8 + suffix; 32]);
+        let mut manifest: GenesisManifest = manifest_with_custody(custody_id);
+        let scope: &mut ProtocolCustodyScope =
+            match &mut manifest.objects.last_mut().unwrap().object.owner {
+                Owner::ProtocolCustody(scope) => scope,
+                _ => panic!("expected protocol custody owner"),
+            };
+        scope.purpose = purpose;
+        resign_manifest(&mut manifest);
+
+        let store: MemoryDurableStateStore =
+            MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+        let error: GenesisError =
+            install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap_err();
+        assert!(matches!(
+            error,
+            GenesisError::Invalid("protocol custody purpose cannot be installed at genesis")
+        ));
+        assert_eq!(
+            store
+                .get_object_head(&context(1), domain(), custody_id)
+                .unwrap(),
+            DurableObjectHead::Absent
+        );
+    }
+}
+
+#[test]
 fn genesis_bond_commitment_rejects_unknown_validator_resource_mismatch_and_zero_value() {
     let custody_id: ObjectId = ObjectId::new([0x33; 32]);
 

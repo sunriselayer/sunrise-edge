@@ -874,12 +874,9 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
         // pre-existing path) or a `ProtocolCustody`-owned object, but only
         // when the scope's own chain equals this exact manifest chain and
         // the purpose is one of the closed purposes this release supports.
-        // `objects::decode_owner` already rejects any purpose tag other than
-        // `BondCollateral`; the exhaustive match below still names the
-        // purpose explicitly so a future purpose variant fails to compile
-        // here until this boundary makes its own decision for it. Every
-        // other owner kind is unsupported at genesis, exactly like every
-        // other creation path.
+        // Only bond collateral is valid at genesis. Fee escrow must be
+        // derived from a certified fee output and forfeiture must consume
+        // verified evidence, so accepting either here would bypass DR-0137.
         match &entry.object.owner {
             Owner::Address(owner_addr) => {
                 validate_ed25519_owner_address(
@@ -895,6 +892,12 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
                 }
                 match scope.purpose {
                     objects::ProtocolCustodyPurpose::BondCollateral => {}
+                    objects::ProtocolCustodyPurpose::FeeEscrow
+                    | objects::ProtocolCustodyPurpose::ForfeitedCollateral => {
+                        return Err(GenesisError::Invalid(
+                            "protocol custody purpose cannot be installed at genesis",
+                        ));
+                    }
                 }
             }
             Owner::Shared | Owner::Immutable | Owner::System => {

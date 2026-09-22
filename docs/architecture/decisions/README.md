@@ -43,6 +43,7 @@
 - [DR-0134: FastVote authorization boundary (phase 2, slice 4)](0134-fastvote-authorization-boundary.md)
 - [DR-0135: protocol custody owner (FastVote phase 3 prerequisite)](0135-protocol-custody-owner.md)
 - [DR-0136: typed FastVote bond commitment (phase 3, slice 1)](0136-fastvote-bond-commitment.md)
+- [DR-0137: FastVote release authority and economics state machine](0137-fastvote-release-authority.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).

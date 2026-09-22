@@ -19,15 +19,15 @@ use std::error::Error;
 
 use fees::{FeeAssetRegistry, GasSchedule};
 use objects::ObjectId;
-use standard_assets::AssetId;
 
 /// Deterministic settlement input for one fee charge over two asset-account
 /// bodies: the payer (declared, sender-owned) and the trusted composition
 /// treasury.
 #[derive(Clone, Copy, Debug)]
 pub struct FeeChargeRequest<'a> {
-    /// Fee asset the sender authorized.
-    pub asset_id: AssetId,
+    /// Opaque 32-byte fee resource the sender authorized. Node core does not
+    /// import or interpret the defining application's identifier type.
+    pub resource: [u8; 32],
     /// Settled charge amount in asset units. Always non-zero: node-core
     /// never calls the composer for a zero-amount charge.
     pub amount: fees::Amount,
@@ -232,7 +232,7 @@ mod tests {
         let composer = EchoComposer;
         let dynamic: &dyn FeeEffectComposer = &composer;
         let request = FeeChargeRequest {
-            asset_id: AssetId::new([0x11; 32]),
+            resource: [0x11; 32],
             amount: fees::Amount::new(5),
             payer_body: &[1, 2, 3],
             treasury_body: &[4, 5, 6],
