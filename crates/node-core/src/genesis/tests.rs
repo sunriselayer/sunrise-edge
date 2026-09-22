@@ -36,7 +36,9 @@ use runtime_sqlite::{SqliteDurableStore, SqliteNamespace};
 use sha2::{Digest, Sha256};
 
 use super::*;
+use crate::fast_path::records::{FastPathBondRecord, decode_fastpath_bond_record};
 use crate::fast_path::{FastPathValidatorEntry, FastPathValidatorSetRecord};
+use crate::local_instance_state::fastpath_bond_record_key;
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -283,11 +285,20 @@ fn custody_object_entry(
     chain_id: ChainId,
 ) -> GenesisObjectEntry {
     let template = &manifest.objects[1];
+    let validator = manifest
+        .validator_set
+        .validators
+        .first()
+        .expect("fixture validator");
+    let resource: [u8; 32] = match template.authority.ty.args() {
+        [abi::package_types::ScopedTypeArg::Opaque { value, .. }] => *value,
+        _ => panic!("fixture coin type must carry one opaque resource"),
+    };
     let scope = ProtocolCustodyScope {
         purpose: ProtocolCustodyPurpose::BondCollateral,
         chain_id,
-        subject: [0x70; 32],
-        resource: [0x71; 32],
+        subject: *validator.id.as_bytes(),
+        resource,
     };
     GenesisObjectEntry {
         object: Object {
@@ -306,6 +317,20 @@ fn custody_object_entry(
             ty: template.authority.ty.clone(),
         },
     }
+}
+
+fn resign_manifest(manifest: &mut GenesisManifest) {
+    manifest.signature = key()
+        .sign(&genesis_manifest_signing_frame(manifest).unwrap())
+        .into();
+}
+
+fn manifest_with_custody(object_id: ObjectId) -> GenesisManifest {
+    let (mut manifest, _, _, _, _) = build_fixture();
+    let custody: GenesisObjectEntry = custody_object_entry(&manifest, object_id, chain());
+    manifest.objects.push(custody);
+    resign_manifest(&mut manifest);
+    manifest
 }
 
 /// DR-0135: a signed genesis manifest may install a `ProtocolCustody` object
@@ -336,6 +361,18 @@ fn genesis_installs_protocol_custody_object_for_matching_chain() {
             .unwrap(),
         DurableObjectHead::Current { .. }
     ));
+    let bond_key = fastpath_bond_record_key(&chain(), &ValidatorId::new(sender())).unwrap();
+    let bond_bytes = store
+        .get_versioned_durable(&context(1), domain(), &bond_key)
+        .unwrap()
+        .value()
+        .unwrap()
+        .to_vec();
+    let bond: FastPathBondRecord = decode_fastpath_bond_record(&bond_bytes).unwrap();
+    assert_eq!(bond.validator_id, ValidatorId::new(sender()));
+    assert_eq!(bond.custody_object.id, custody_id);
+    assert_eq!(bond.amount, 1_000_000);
+    assert_eq!(bond.committed_at_checkpoint, 10);
 
     let restart_outcome =
         install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap();
@@ -343,6 +380,13 @@ fn genesis_installs_protocol_custody_object_for_matching_chain() {
         restart_outcome,
         GenesisInstallOutcome::VerifiedExisting { .. }
     ));
+    let replayed_bond_bytes = store
+        .get_versioned_durable(&context(1), domain(), &bond_key)
+        .unwrap()
+        .value()
+        .unwrap()
+        .to_vec();
+    assert_eq!(replayed_bond_bytes, bond_bytes);
 }
 
 /// DR-0135: a `ProtocolCustody` scope bound to a chain other than the exact
@@ -372,6 +416,334 @@ fn genesis_rejects_protocol_custody_object_bound_to_another_chain() {
             .unwrap(),
         DurableObjectHead::Absent
     ));
+}
+
+#[test]
+fn genesis_bond_commitment_rejects_unknown_validator_resource_mismatch_and_zero_value() {
+    let custody_id: ObjectId = ObjectId::new([0x33; 32]);
+
+    let mut unknown_validator: GenesisManifest = manifest_with_custody(custody_id);
+    let unknown_scope: &mut ProtocolCustodyScope =
+        match &mut unknown_validator.objects.last_mut().unwrap().object.owner {
+            Owner::ProtocolCustody(scope) => scope,
+            _ => panic!("expected protocol custody owner"),
+        };
+    unknown_scope.subject = [0x99; 32];
+    resign_manifest(&mut unknown_validator);
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let error: GenesisError = install_genesis(
+        &store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &unknown_validator,
+        10,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::Invalid("bond custody subject is not a genesis validator")
+    ));
+    assert_eq!(
+        store
+            .get_object_head(&context(1), domain(), custody_id)
+            .unwrap(),
+        DurableObjectHead::Absent
+    );
+
+    let mut mismatched_resource: GenesisManifest = manifest_with_custody(custody_id);
+    let mismatched_scope: &mut ProtocolCustodyScope =
+        match &mut mismatched_resource.objects.last_mut().unwrap().object.owner {
+            Owner::ProtocolCustody(scope) => scope,
+            _ => panic!("expected protocol custody owner"),
+        };
+    mismatched_scope.resource = [0x98; 32];
+    resign_manifest(&mut mismatched_resource);
+    let mismatch_store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let error: GenesisError = install_genesis(
+        &mismatch_store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &mismatched_resource,
+        10,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::Invalid("bond custody resource does not match the nominal type")
+    ));
+
+    let mut zero_value: GenesisManifest = manifest_with_custody(custody_id);
+    zero_value.objects.last_mut().unwrap().object.data = encode_call_value(
+        &public_standard_asset::coin_body_layout(),
+        &CallValue::U64(0),
+    )
+    .unwrap();
+    resign_manifest(&mut zero_value);
+    let zero_store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let error: GenesisError = install_genesis(
+        &zero_store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &zero_value,
+        10,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::Invalid("bond amount must be positive")
+    ));
+}
+
+#[test]
+fn genesis_bond_commitment_rejects_non_resource_type_and_duplicate_validator() {
+    let (mut non_resource, _, _, _, _) = build_fixture();
+    let definition_template: GenesisObjectEntry = non_resource.objects[0].clone();
+    let definition_id: ObjectId = ObjectId::new([0x34; 32]);
+    let mut definition_custody: GenesisObjectEntry = definition_template;
+    definition_custody.object.id = definition_id;
+    definition_custody.object.owner = Owner::ProtocolCustody(ProtocolCustodyScope {
+        purpose: ProtocolCustodyPurpose::BondCollateral,
+        chain_id: chain(),
+        subject: sender(),
+        resource: [0x77; 32],
+    });
+    definition_custody.authority.object_id = definition_id;
+    non_resource.objects.push(definition_custody);
+    resign_manifest(&mut non_resource);
+    let non_resource_store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let error: GenesisError = install_genesis(
+        &non_resource_store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &non_resource,
+        10,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::Invalid("bond custody type must carry one opaque resource")
+    ));
+
+    let (mut non_scalar, origin, _, definition_id, _) = build_fixture();
+    let mut reservation_custody: GenesisObjectEntry =
+        custody_object_entry(&non_scalar, ObjectId::new([0x39; 32]), chain());
+    let reservation_type =
+        public_standard_asset::reservation_type_tag(&origin, &definition_id).unwrap();
+    reservation_custody.object.type_hash =
+        derive_scoped_type_id(&resolver(), Epoch::new(0), &reservation_type).unwrap();
+    reservation_custody.object.data = encode_call_value(
+        &public_standard_asset::reservation_body_layout(),
+        &CallValue::Tuple(vec![
+            CallValue::U64(1),
+            CallValue::Bytes(vec![
+                0x01;
+                public_standard_asset::ENCODED_DIGEST32_BYTES as usize
+            ]),
+            CallValue::Bytes(vec![
+                0x02;
+                public_standard_asset::ENCODED_DIGEST32_BYTES as usize
+            ]),
+            CallValue::Bytes(vec![0x03; 32]),
+            CallValue::Bytes(vec![0x04; 32]),
+        ]),
+    )
+    .unwrap();
+    reservation_custody.authority.ty = reservation_type;
+    non_scalar.objects.push(reservation_custody);
+    resign_manifest(&mut non_scalar);
+    let non_scalar_store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let error: GenesisError = install_genesis(
+        &non_scalar_store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &non_scalar,
+        10,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::Invalid("bond custody value must be a scalar u64")
+    ));
+
+    let (mut duplicate, _, _, _, _) = build_fixture();
+    let first: GenesisObjectEntry =
+        custody_object_entry(&duplicate, ObjectId::new([0x35; 32]), chain());
+    let second: GenesisObjectEntry =
+        custody_object_entry(&duplicate, ObjectId::new([0x36; 32]), chain());
+    duplicate.objects.extend([first, second]);
+    resign_manifest(&mut duplicate);
+    let duplicate_store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let error: GenesisError = install_genesis(
+        &duplicate_store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &duplicate,
+        10,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::Invalid("duplicate genesis bond for validator")
+    ));
+}
+
+#[test]
+fn genesis_bond_commitment_rejects_partial_and_tampered_durable_rows() {
+    let manifest: GenesisManifest = manifest_with_custody(ObjectId::new([0x37; 32]));
+    let bond_key: Vec<u8> =
+        fastpath_bond_record_key(&chain(), &ValidatorId::new(sender())).unwrap();
+
+    let partial_store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let initial: VersionedStateValue = partial_store
+        .get_versioned_durable(&context(1), domain(), &bond_key)
+        .unwrap();
+    let partial_tx: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(bond_key.clone(), initial.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(bond_key.clone(), StateMutation::Put(vec![1])).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        partial_store.commit_durable(&context(1), partial_tx),
+        DurableCommitOutcome::Committed
+    );
+    let error: GenesisError = install_genesis(
+        &partial_store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &manifest,
+        10,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::PartialPriorState("fast-path bond record")
+    ));
+
+    let installed_store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    install_genesis(
+        &installed_store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &manifest,
+        10,
+    )
+    .unwrap();
+    let installed: VersionedStateValue = installed_store
+        .get_versioned_durable(&context(1), domain(), &bond_key)
+        .unwrap();
+    let mut tampered: Vec<u8> = installed.value().unwrap().to_vec();
+    *tampered.last_mut().unwrap() ^= 0x01;
+    let tamper_tx: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(bond_key.clone(), installed.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(bond_key.clone(), StateMutation::Put(tampered)).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        installed_store.commit_durable(&context(1), tamper_tx),
+        DurableCommitOutcome::Committed
+    );
+    let error: GenesisError = install_genesis(
+        &installed_store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &manifest,
+        10,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::TamperedInstalledRecord("fast-path bond record")
+    ));
+
+    let missing_store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    install_genesis(
+        &missing_store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &manifest,
+        10,
+    )
+    .unwrap();
+    let missing_observation: VersionedStateValue = missing_store
+        .get_versioned_durable(&context(1), domain(), &bond_key)
+        .unwrap();
+    let delete_tx: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(bond_key.clone(), missing_observation.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(bond_key, StateMutation::Delete).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        missing_store.commit_durable(&context(1), delete_tx),
+        DurableCommitOutcome::Committed
+    );
+    let error: GenesisError = install_genesis(
+        &missing_store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &manifest,
+        10,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::TamperedInstalledRecord("fast-path bond record")
+    ));
+}
+
+#[test]
+fn address_only_genesis_does_not_create_a_bond_row() {
+    let (manifest, _, _, _, _) = build_fixture();
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap();
+    let bond_key: Vec<u8> =
+        fastpath_bond_record_key(&chain(), &ValidatorId::new(sender())).unwrap();
+    let observed: VersionedStateValue = store
+        .get_versioned_durable(&context(1), domain(), &bond_key)
+        .unwrap();
+    assert_eq!(observed.revision(), StateRevision::INITIAL);
+    assert!(observed.value().is_none());
 }
 
 /// DR-0135: `Shared`/`Immutable`/`System` owners remain unsupported at
@@ -1023,6 +1395,9 @@ fn file_backed_sqlite_fresh_install_restart_mutation_and_fencing() {
     manifest.signature = key()
         .sign(&genesis_manifest_signing_frame(&manifest).unwrap())
         .into();
+    let bond_key: Vec<u8> =
+        fastpath_bond_record_key(&chain(), &ValidatorId::new(sender())).unwrap();
+    let fresh_bond_bytes: Vec<u8>;
 
     // 1. Fresh install on file-backed SQLite with generation 1.
     {
@@ -1044,6 +1419,16 @@ fn file_backed_sqlite_fresh_install_restart_mutation_and_fencing() {
                 .unwrap(),
             DurableObjectHead::Current { .. }
         ));
+        fresh_bond_bytes = store
+            .get_versioned_durable(&context(1), domain(), &bond_key)
+            .unwrap()
+            .value()
+            .expect("fresh SQLite bond record")
+            .to_vec();
+        let bond: FastPathBondRecord = decode_fastpath_bond_record(&fresh_bond_bytes).unwrap();
+        assert_eq!(bond.validator_id, ValidatorId::new(sender()));
+        assert_eq!(bond.custody_object.id, custody_id);
+        assert_eq!(bond.amount, 1_000_000);
     }
 
     // 2. Reopen and verify-only restart.
@@ -1066,6 +1451,13 @@ fn file_backed_sqlite_fresh_install_restart_mutation_and_fencing() {
                 .unwrap(),
             DurableObjectHead::Current { .. }
         ));
+        let reopened_bond_bytes: Vec<u8> = store
+            .get_versioned_durable(&context(1), domain(), &bond_key)
+            .unwrap()
+            .value()
+            .expect("reopened SQLite bond record")
+            .to_vec();
+        assert_eq!(reopened_bond_bytes, fresh_bond_bytes);
     }
 
     // 3. Mutate coin object to version 2 on SQLite.

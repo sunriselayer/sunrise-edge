@@ -2879,6 +2879,82 @@ fn fastpath_settlement_record_uncharged_frame_0x641e_is_stable() {
 }
 
 #[test]
+fn fastpath_bond_record_frame_0x642a_is_stable() {
+    let context: PublicationContext = vector_context();
+    let origin: abi::package_types::PackageOrigin = abi::package_types::PackageOrigin::unverified(
+        context.chain_id().clone(),
+        [0x10; 32],
+        [0x11; 32],
+    )
+    .unwrap();
+    let code: execution::publication::UnverifiedDependencyRef =
+        execution::publication::UnverifiedDependencyRef::new(
+            origin.clone(),
+            1,
+            context.clone(),
+            Digest32::new(HashAlgorithmId::Sha2_256, [0x12; 32]),
+        )
+        .unwrap();
+    let authority: execution::local_execution::ObjectAuthority =
+        execution::local_execution::ObjectAuthority {
+            object_id: ObjectId::new([0x20; 32]),
+            instance_context: context.clone(),
+            instance: execution::call::InstanceTarget {
+                creator: [0x13; 32],
+                seed: [0x14; 32],
+                revision: 1,
+                record_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x15; 32]),
+            },
+            code,
+            ty: abi::package_types::ScopedTypeTag::new(
+                origin,
+                2,
+                vec![abi::package_types::ScopedTypeArg::Opaque {
+                    domain: 7,
+                    value: [0x30; 32],
+                }],
+            )
+            .unwrap(),
+        };
+    let record: FastPathBondRecord = FastPathBondRecord {
+        context,
+        validator_id: ValidatorId::new([0x16; 32]),
+        resource_domain: 7,
+        resource: [0x30; 32],
+        custody_object: vector_object_ref(0x20, 1, 0x21),
+        authority,
+        amount: 1_000,
+        committed_at_checkpoint: 0x22,
+    };
+    let bytes: Vec<u8> = records::encode_fastpath_bond_record(&record).unwrap();
+    assert_eq!(
+        records::decode_fastpath_bond_record(&bytes).unwrap(),
+        record
+    );
+    assert_eq!(
+        hex(&bytes),
+        "534e52452a640100080001003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f727302000400000003000000030008000000090000000000000002002000000016161616161616161616161616161616161616161616161616161616161616160300020000000700040020000000303030303030303030303030303030303030303030303030303030303030303005008c000000534e5245044001000300010030000000534e524501400100010001002000000020202020202020202020202020202020202020202020202020202020202020200200080000000100000000000000030038000000534e524503010100020001000200000001000200200000002121212121212121212121212121212121212121212121212121212121212121060026030000534e5245076401000500010020000000202020202020202020202020202020202020202020202020202020202020202002003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f72730200040000000300000003000800000009000000000000000300a2000000534e5245016401000400010020000000131313131313131313131313131313131313131313131313131313131313131302002000000014141414141414141414141414141414141414141414141414141414141414140300080000000100000000000000040038000000534e52450301010002000100020000000100020020000000151515151515151515151515151515151515151515151515151515151515151504001c010000534e524502630100040001007b000000534e52450152010004000100170000006472303133302d66617374706174682d766563746f7273020002000000010003002000000010101010101010101010101010101010101010101010101010101010101010100400200000001111111111111111111111111111111111111111111111111111111111111111020008000000010000000000000003003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f7273020004000000030000000300080000000900000000000000040038000000534e5245030101000200010002000000010002002000000012121212121212121212121212121212121212121212121212121212121212120500e1000000534e524503520100040001007b000000534e52450152010004000100170000006472303133302d66617374706174682d766563746f727302000200000001000300200000001010101010101010101010101010101010101010101010101010101010101010040020000000111111111111111111111111111111111111111111111111111111111111111102000200000002000300020000000100040040000000534e5245025201000300010002000000020002000200000007000300200000003030303030303030303030303030303030303030303030303030303030303030070008000000e8030000000000000800080000002200000000000000"
+    );
+
+    let mut trailing: Vec<u8> = bytes.clone();
+    trailing.push(0);
+    assert!(records::decode_fastpath_bond_record(&trailing).is_err());
+
+    let mut wrong_type: Vec<u8> = bytes.clone();
+    wrong_type[4..6].copy_from_slice(&0x642Bu16.to_le_bytes());
+    assert!(records::decode_fastpath_bond_record(&wrong_type).is_err());
+
+    let mut zero_amount: FastPathBondRecord = record;
+    zero_amount.amount = 0;
+    assert!(records::encode_fastpath_bond_record(&zero_amount).is_err());
+
+    let mut mismatched_resource: FastPathBondRecord =
+        records::decode_fastpath_bond_record(&bytes).unwrap();
+    mismatched_resource.resource = [0x31; 32];
+    assert!(records::encode_fastpath_bond_record(&mismatched_resource).is_err());
+}
+
+#[test]
 fn fastpath_validator_set_record_frame_0x641f_is_stable() {
     let validators: Vec<FastPathValidatorEntry> = vec![
         FastPathValidatorEntry {

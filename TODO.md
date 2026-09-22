@@ -42,9 +42,11 @@ slice 3, equivocation evidence, implemented and locally validated in
 slice 4's authorization/ingress boundary is implemented in
 [DR-0134](docs/architecture/decisions/0134-fastvote-authorization-boundary.md),
 including its companion code and review gate); and phase 3,
-economics/security completion. DR-0135 implements and locally validates the
-first prerequisite slice: non-signable protocol custody, without yet claiming
-bond custody, slashing, fee distribution, or payout. **FastVote is complete
+economics/security completion. DR-0135 implements the non-signable protocol
+custody prerequisite, and DR-0136 implements typed, positive genesis bond
+commitments derived through authenticated generic executable ABI metadata.
+Neither slice authorizes post-genesis custody mutation, slashing, fee
+distribution, or payout. **FastVote is complete
 only after phase 3.** A testnet may launch after phase 1, but that is not
 FastVote completion.
 
@@ -54,7 +56,7 @@ FastVote completion.
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Implemented and validated (DR-0128); focused Codex Security scan found 0 reportable findings and fresh Opus review approved |
-| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated** (DR-0129 through DR-0134). Phase 2 includes the seven-operation authorization matrix, committed-epoch native surfaces, and closed external ingress. **Phase 3 is open.** DR-0135 implements and locally validates its first prerequisite slice, non-signable protocol custody; bond recognition/custody lifecycle, evidence-driven slashing, certified signer entitlements, escrow distribution, and payout remain incomplete. FastVote overall is incomplete. |
+| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated** (DR-0129 through DR-0134). Phase 2 includes the seven-operation authorization matrix, committed-epoch native surfaces, and closed external ingress. **Phase 3 is open.** DR-0135 implements non-signable protocol custody and DR-0136 implements typed genesis bond commitments without a Standard Asset exception. Post-genesis bond lifecycle, evidence-driven slashing, certified signer entitlements, escrow distribution, and payout remain incomplete. FastVote overall is incomplete. |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
 Asset creation was the final focused delta before FastVote/multi-validator
@@ -64,9 +66,11 @@ ingress. DR-0131 fixes phase 2's architecture and implements slice 1
 (general mutation authorization/fencing); DR-0132 fixes and implements
 slice 2's design (epoch transition); DR-0133 implements and locally validates
 slice 3 (equivocation evidence); DR-0134 implements slice 4's authorization and
-closed-ingress boundary, closing Phase 2. DR-0135 implements and locally
-validates the non-signable protocol-custody prerequisite for Phase 3; Phase 3 economics/security
-completion remains open.
+closed-ingress boundary, closing Phase 2. DR-0135 implements the non-signable
+protocol-custody prerequisite for Phase 3; DR-0136 binds that custody to an
+authenticated executable-ABI value observation and a durable genesis bond
+record without importing Standard Asset into node-core. Phase 3
+economics/security completion remains open.
 Contract
 upgrades/migrations remain a separate explicit
 capability after the initial immutable-code flow, not a prerequisite for
@@ -2789,7 +2793,8 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
     mutation-time CAS fence. Companion code, tests, complete gate, Bugbot, and
     fresh security/tech-lead reviews landed in PR #180, closing Phase 2.
 - [ ] **Phase 3 — economics/security completion.** Architecture is split into
-  explicit slices; only the first prerequisite is implemented:
+  explicit slices; the custody prerequisite and typed genesis commitment are
+  implemented, while every value-moving lifecycle remains closed:
   - [x] **Slice 0 — non-signable protocol custody prerequisite
     ([DR-0135](docs/architecture/decisions/0135-protocol-custody-owner.md),
     implemented and locally validated 2026-09-22).** Adds canonical owner tag
@@ -2799,9 +2804,15 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
     contract creation, authenticated input, owner transition, paid fee source,
     and FastVote lock acquisition fail closed. This slice is not a bond, slash,
     fee distribution, or payout implementation and does not close Phase 3.
-  - [ ] **Slice 1 — typed asset-aware custody commitments.** Bind custody to
-    committed executable-ABI value observation and durable bond/fee records;
-    do not decode or write asset bodies in node-core.
+  - [x] **Slice 1 — typed asset-aware genesis bond commitments
+    ([DR-0136](docs/architecture/decisions/0136-fastvote-bond-commitment.md),
+    implemented and locally validated 2026-09-22).** Adds generic value
+    observation through authenticated executable-ABI metadata and atomically
+    derives canonical `0x642A/v1` validator/resource/object/authority/amount
+    records during signed genesis installation. Exact restart verification,
+    partial/tampered-row rejection, independent JS vectors, and real SQLite
+    close/reopen evidence are covered. Node-core imports no Standard Asset
+    type or body codec. Fee escrow and every custody mutation remain Slice 2.
   - [ ] **Slice 2 — closed release authority and economics.** Define and
     implement deposit, unbond/withdraw, evidence-driven forfeiture/jail,
     final-certificate signer entitlements, escrow distribution, and payout

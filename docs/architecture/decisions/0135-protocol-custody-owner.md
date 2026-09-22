@@ -144,16 +144,17 @@ and closed public FastVote ingress remain unchanged.
 This decision creates the non-signable ownership primitive needed by both
 halves of Phase 3 without embedding asset-specific logic in `objects`.
 
-It deliberately leaves Phase 3 open. The next design must add typed,
-read-only value observation through committed executable ABI metadata and
-bind a custody object to an asset-aware bond record. After that, one decision
-must define the closed protocol-authorized release operations together:
+It deliberately leaves Phase 3 open. DR-0136 now adds typed, read-only value
+observation through committed executable ABI metadata and binds a genesis
+custody object to an asset-aware bond record. The next decision must define
+the closed protocol-authorized release operations together:
 deposit, unbond/withdraw, evidence-driven forfeiture, fee-escrow conversion,
 signer entitlement, and payout. These operations must execute amount changes
 through the defining public contract; node-core must never write asset bodies
 directly.
 
-Until those slices land, custody objects installed by genesis are immobile and
-must not be presented as working bonds or distributed fees. Testnet or
-production activation remains a separate decision under the existing hard
-activation constraints.
+Until that release-authority slice lands, custody objects installed by genesis
+remain immobile. DR-0136 records their validated bond value, but must not be
+presented as working slashing, unbonding, payout, or distributed-fee
+machinery. Testnet or production activation remains a separate decision under
+the existing hard activation constraints.

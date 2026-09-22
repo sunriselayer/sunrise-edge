@@ -11,6 +11,10 @@
 //! direct commit path -- reads it directly and must not depend on this
 //! fast-path-only module.
 use super::*;
+use abi::package_types::ScopedTypeArg;
+use execution::local_execution::{
+    ObjectAuthority, decode_object_authority, encode_object_authority,
+};
 
 const FASTPATH_PREPARED_RECORD_TYPE: u16 = 0x641C;
 const FASTPATH_CERTIFICATE_RECORD_TYPE: u16 = 0x641D;
@@ -20,6 +24,7 @@ const FASTPATH_OBJECT_REF_LIST_TYPE: u16 = 0x6420;
 const FASTPATH_ID_LIST_TYPE: u16 = 0x6421;
 const FASTPATH_VALIDATOR_ENTRY_LIST_TYPE: u16 = 0x6422;
 const FASTPATH_VALIDATOR_ENTRY_TYPE: u16 = 0x6423;
+const FASTPATH_BOND_RECORD_TYPE: u16 = 0x642A;
 const ENCODING_VERSION: u16 = 1;
 
 /// Bounds every nested fast-path record list. Locked-object and
@@ -254,6 +259,109 @@ pub struct FastPathSettlementRecord {
     pub actual_amount: Option<u64>,
     /// Canonical ascending-`ValidatorId` order of the certificate's signers.
     pub signer_ids: Vec<ValidatorId>,
+}
+
+/// Frame `0x642A/v1`: one typed, positive genesis bond commitment derived
+/// from a signed manifest custody object through its authenticated executable
+/// ABI. This record observes value; it grants no release or mutation
+/// authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FastPathBondRecord {
+    /// Genesis context whose signed manifest introduced the custody object.
+    pub context: PublicationContext,
+    /// Validator named by the custody scope subject.
+    pub validator_id: ValidatorId,
+    /// Non-zero opaque nominal-type domain carrying the resource identity.
+    pub resource_domain: u16,
+    /// Exact custody scope resource and opaque nominal type value.
+    pub resource: [u8; 32],
+    /// Exact custody object version observed at commitment time.
+    pub custody_object: ObjectRef,
+    /// Complete immutable public-contract authority for the custody object.
+    pub authority: ObjectAuthority,
+    /// Positive scalar value decoded only through the signed executable ABI.
+    pub amount: u64,
+    /// Checkpoint of the atomic genesis install that committed this row.
+    pub committed_at_checkpoint: u64,
+}
+
+/// Encodes Frame `0x642A/v1`.
+pub fn encode_fastpath_bond_record(record: &FastPathBondRecord) -> Result<Vec<u8>, NodeCoreError> {
+    let resource_matches_type: bool = matches!(
+        record.authority.ty.args(),
+        [ScopedTypeArg::Opaque { domain, value }]
+            if *domain == record.resource_domain && *value == record.resource
+    );
+    if record.resource_domain == 0
+        || record.amount == 0
+        || record.authority.object_id != record.custody_object.id
+        || record.authority.instance_context != record.context
+        || !resource_matches_type
+    {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "invalid fast-path bond record",
+        ));
+    }
+    let mut frame: CanonicalStruct = CanonicalStruct::new(FASTPATH_BOND_RECORD_TYPE, 1);
+    frame.field_bytes(
+        1,
+        encode_publication_context(&record.context)
+            .map_err(|_| NodeCoreError::PersistenceInvariant("invalid bond context"))?,
+    )?;
+    frame.field_bytes(2, record.validator_id.as_bytes().to_vec())?;
+    frame.field_u16(3, record.resource_domain)?;
+    frame.field_bytes(4, record.resource.to_vec())?;
+    frame.field_bytes(
+        5,
+        objects::encode_object_ref(&record.custody_object)
+            .map_err(|_| NodeCoreError::PersistenceInvariant("invalid bond object ref"))?,
+    )?;
+    frame.field_bytes(
+        6,
+        encode_object_authority(&record.authority)
+            .map_err(|_| NodeCoreError::PersistenceInvariant("invalid bond authority"))?,
+    )?;
+    frame.field_u64(7, record.amount)?;
+    frame.field_u64(8, record.committed_at_checkpoint)?;
+    Ok(frame.finish()?)
+}
+
+/// Strictly decodes Frame `0x642A/v1`.
+pub fn decode_fastpath_bond_record(bytes: &[u8]) -> Result<FastPathBondRecord, NodeCoreError> {
+    let frame = decode_canonical_frame(bytes)?;
+    frame.require_type(FASTPATH_BOND_RECORD_TYPE)?;
+    frame.require_version(1)?;
+    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8])?;
+    let context: PublicationContext = decode_publication_context(frame.required_field(1)?)
+        .map_err(|_| NodeCoreError::PersistenceInvariant("invalid bond context"))?;
+    let validator_bytes: [u8; 32] = frame
+        .required_field(2)?
+        .try_into()
+        .map_err(|_| NodeCoreError::PersistenceInvariant("bond validator id length"))?;
+    let resource: [u8; 32] = frame
+        .required_field(4)?
+        .try_into()
+        .map_err(|_| NodeCoreError::PersistenceInvariant("bond resource length"))?;
+    let custody_object: ObjectRef = objects::decode_object_ref(frame.required_field(5)?)
+        .map_err(|_| NodeCoreError::PersistenceInvariant("invalid bond object ref"))?;
+    let authority: ObjectAuthority = decode_object_authority(frame.required_field(6)?)
+        .map_err(|_| NodeCoreError::PersistenceInvariant("invalid bond authority"))?;
+    let record: FastPathBondRecord = FastPathBondRecord {
+        context,
+        validator_id: ValidatorId::new(validator_bytes),
+        resource_domain: frame.required_u16(3)?,
+        resource,
+        custody_object,
+        authority,
+        amount: frame.required_u64(7)?,
+        committed_at_checkpoint: frame.required_u64(8)?,
+    };
+    if encode_fastpath_bond_record(&record)? != bytes {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "noncanonical fast-path bond record",
+        ));
+    }
+    Ok(record)
 }
 
 /// Encodes Frame `0x641E/v1`.

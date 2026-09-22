@@ -81,8 +81,8 @@ pub mod records;
 mod tests;
 
 pub use records::{
-    FastPathCertificateRecord, FastPathPreparedRecord, FastPathSettlementRecord,
-    FastPathValidatorEntry, FastPathValidatorSetRecord,
+    FastPathBondRecord, FastPathCertificateRecord, FastPathPreparedRecord,
+    FastPathSettlementRecord, FastPathValidatorEntry, FastPathValidatorSetRecord,
 };
 
 /// Fail-closed DR-0130 fast-path errors.
