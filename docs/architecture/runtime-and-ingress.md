@@ -234,6 +234,22 @@ kind native-http actually authenticates; implementing authenticated ingress for
 the other seven kinds remains open future work, not something this change
 claims.
 
+DR-0134 preserves that closed boundary for all seven FastVote Phase 2
+operations: no new `NodeEventKind`, HTTP route, CLI command, client transport,
+relay, or watcher is added. Local invocation and validator authentication are
+separate axes; operator access cannot replace current-set signer membership,
+current/outgoing quorum, or historical-evidence verification.
+
+After an outgoing-set-certified epoch transition, static `NodeConfig.epoch` is
+not live ingress authority. Existing native surfaces that validate, select, or
+report an epoch must read the committed `FastPathEpochRecord` through
+`query_committed_epoch_state`. This includes authenticated
+`SubmitTransaction`, `/v1/context`, next-nonce, paid execution, and paid-policy
+queries. The read is only preliminary: the eventual mutation must retain its
+same-commit epoch-record CAS fence, so an activation race rejects the stale
+operation. Missing current-epoch policy disables that opt-in surface rather
+than permitting fallback to a prior epoch.
+
 Malformed events return 400, oversized bodies return 413, unsupported media or
 content encoding returns 415, context/CAS conflicts return 409, deterministic
 application rejection returns 422, and runtime/outbound delivery failure

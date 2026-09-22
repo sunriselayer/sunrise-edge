@@ -111,9 +111,13 @@ certification.
   end-to-end observable across an activated transition. Local, durable,
   historical-validator-set-verified equivocation evidence is implemented by
   [DR-0133](docs/architecture/decisions/0133-fastvote-equivocation-evidence.md)
-  without external ingress or punishment. Authorization-class/ingress
-  declarations and Phase 3 economics remain open; see the "Initial-Audit
-  Exclusions" below.
+  without external ingress or punishment.
+  [DR-0134](docs/architecture/decisions/0134-fastvote-authorization-boundary.md)
+  declares the two-axis authorization boundary: every Phase 2 operation is
+  local-operator-invoked, its signing or mutating branch requires the exact
+  current/outgoing/historical validator proof, and external ingress remains
+  closed. Slice 4 and Phase 2 are implemented only when its companion code and
+  reviews land. Phase 3 economics remain open.
 
 ## Reportable Findings and Severity Context
 
@@ -141,8 +145,8 @@ confirmed vulnerability.
 
 The following are deferred from the first audit engagement:
 
-- externally reachable FastVote/FastCertificate ingress, validator lifecycle
-  completion, and economics/security completion (the local Phase 1
+- externally reachable FastVote/FastCertificate ingress and
+  economics/security completion (the local Phase 1
   certified-execution boundary and atomic certificate publication are
   implemented under
   [DR-0130](docs/architecture/decisions/0130-owned-object-certified-execution.md);
@@ -155,8 +159,10 @@ The following are deferred from the first audit engagement:
   equivocation-evidence types, historical verification, durable recording,
   and point query are implemented under
   [DR-0133](docs/architecture/decisions/0133-fastvote-equivocation-evidence.md).
-  Slice 4's authorization-class/ingress declaration remains unimplemented,
-  and Phase 3 slashing/reward distribution remains undesigned — see
+  Slice 4's authorization and closed-ingress decision is accepted under
+  [DR-0134](docs/architecture/decisions/0134-fastvote-authorization-boundary.md),
+  but Phase 2 completion remains conditional on its companion code and reviews
+  landing. Phase 3 slashing/reward distribution remains undesigned — see
   `TODO.md`'s FastVote Certified Execution Gate);
 - externally accepted non-`SubmitTransaction` event families;
 - production multi-validator consensus activation;
