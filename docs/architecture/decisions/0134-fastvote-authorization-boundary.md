@@ -78,19 +78,23 @@ enforced inside the seven operations above.
 
 ### Committed epoch at existing ingress (DR-0132 C7)
 
-Every existing native surface that validates, selects, or reports a live epoch
-must derive it from the durable `FastPathEpochRecord`, via
-`query::query_committed_epoch_state`, after resolving trusted storage authority.
-Static `NodeConfig.epoch` remains bootstrap/composition input and is not live
-post-transition authority.
+The affected native surfaces must derive the live epoch from the durable
+`FastPathEpochRecord`, via `query::query_committed_epoch_state`, after resolving
+trusted storage authority. They are authenticated `SubmitTransaction` context
+validation; `GET /v1/context`; `GET /v1/senders/{sender}/next-nonce`; public
+paid execution's expected context, base-profile-4 execution policy, and paid
+fee policy; and the paid-policy query. Static `NodeConfig.epoch` remains
+bootstrap/composition input and is not live post-transition authority. The
+profile-4 and fee-policy rows must match the committed context exactly; these
+surfaces must not reuse their epoch-`e` rows after activation to `e+1`.
 
-This applies at least to authenticated `SubmitTransaction` context validation,
-`GET /v1/context`, `GET /v1/senders/{sender}/next-nonce`, paid-execution expected
-context, and the paid-fee-policy query. An epoch-scoped policy must be loaded or
-deterministically derived for that committed context and strictly checked
-against durable state; an adapter must not silently reuse a prior epoch's
-in-memory policy. An opt-in local profile with no policy at the committed epoch
-is unavailable, not silently reinterpreted.
+This does not reinterpret local publication's `policy.context.epoch()`.
+DR-0131 defines that field as a historical code/policy-version selector, not a
+claim about the live epoch; local publication preserves that selector while
+retaining its current-epoch CAS fence and epoch-disjoint sender-nonce lock.
+Nor does activation invent profile-2 or profile-3 local-execution rows at
+`e+1`. Those local profiles are not dynamically upgraded: their old-epoch
+intents remain unavailable because the core current-epoch fence rejects them.
 
 The preliminary epoch read is not a mutation fence. Every mutation retains the
 existing same-commit `FastPathEpochRecord` CAS assertion. If activation races
@@ -108,13 +112,18 @@ Slice 4, and therefore Phase 2, closes only when all of the following are true:
    policy, and an exact matrix test asserts all seven rows. This classification
    is typed metadata, not an operator credential or new externally callable
    API.
-2. Existing structured native ingress and epoch-sensitive queries use the
-   committed epoch as specified above, while mutation-time CAS fencing remains.
+2. Authenticated `SubmitTransaction`, `/v1/context`, next-nonce, public paid
+   execution's expected context/base-profile-4 policy/fee policy, and the
+   paid-policy query use the committed epoch as specified above, while every
+   mutation retains its CAS fence. Local publication preserves its historical
+   selector, and no profile-2 or profile-3 `e+1` row is synthesized.
 3. A real `e -> e+1` test proves context, next-nonce, paid-policy,
-   authenticated submission, and paid execution use and accept `e+1`, while
-   stale-`e` input is rejected. For an enabled opt-in profile, absence of its
-   policy at `e+1` makes the applicable query, submission, and paid execution
-   unavailable; none may fall back to the profile or policy from `e`.
+   authenticated submission, and public paid execution use `e+1`; the paid
+   path uses the activated base-profile-4 and fee-policy rows, and stale-`e`
+   input is rejected. An absent or mismatched `e+1` profile-4 or fee-policy row
+   makes the applicable paid-policy query and public paid execution unavailable
+   without fallback to epoch `e`. This test does not require profile-2 or
+   profile-3 local execution to acquire an invented `e+1` policy.
 4. A transition racing ingress resolution cannot admit an old-epoch mutation.
 5. Every non-`SubmitTransaction` `NodeEventKind` remains rejected on every
    native router family, and no FastVote-specific route, CLI, or client surface
