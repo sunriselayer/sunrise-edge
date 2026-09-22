@@ -21,6 +21,7 @@ const SLASHING_REASON_TYPE_ID: u16 = 0x8005;
 const SLASHING_EVIDENCE_TYPE_ID: u16 = 0x8006;
 const VALIDATOR_ADMISSION_TYPE_ID: u16 = 0x8007;
 const BOND_RESOURCE_ID_TYPE_ID: u16 = 0x8008;
+const EPOCH_TYPE_ID: u16 = 0x0107;
 const ENCODING_VERSION: u16 = 1;
 const MAX_REGISTRY_RESOURCES: usize = u16::MAX as usize - 1;
 
@@ -389,10 +390,13 @@ impl BondResourceRegistry {
         let mut previous: Option<BondResourceId> = None;
         for resource in &self.resources {
             resource.validate()?;
-            if previous
-                .is_some_and(|resource_id: BondResourceId| resource_id >= resource.resource_id)
-            {
-                return Err(BondError::DuplicateResource(resource.resource_id));
+            if let Some(resource_id) = previous {
+                if resource_id == resource.resource_id {
+                    return Err(BondError::DuplicateResource(resource.resource_id));
+                }
+                if resource_id > resource.resource_id {
+                    return Err(BondError::NonCanonicalEncoding("bond resource registry"));
+                }
             }
             previous = Some(resource.resource_id);
         }
@@ -775,8 +779,13 @@ pub fn decode_bond_resource_registry(input: &[u8]) -> Result<BondResourceRegistr
             u16::try_from(index + 2).map_err(|_| BondError::RegistryTooLarge(declared))?;
         let resource: BondResourceConfig =
             decode_bond_resource_config(frame.required_field(field_id)?)?;
-        if previous.is_some_and(|resource_id: BondResourceId| resource_id >= resource.resource_id) {
-            return Err(BondError::NonCanonicalEncoding("bond resource registry"));
+        if let Some(resource_id) = previous {
+            if resource_id == resource.resource_id {
+                return Err(BondError::DuplicateResource(resource.resource_id));
+            }
+            if resource_id > resource.resource_id {
+                return Err(BondError::NonCanonicalEncoding("bond resource registry"));
+            }
         }
         previous = Some(resource.resource_id);
         resources.push(resource);
@@ -962,7 +971,7 @@ fn decode_optional_u64_field(
 
 fn decode_epoch_exact(input: &[u8]) -> Result<Epoch, BondError> {
     let frame: CanonicalFrame<'_> = decode_canonical_frame(input)?;
-    frame.require_type(0x0107)?;
+    frame.require_type(EPOCH_TYPE_ID)?;
     frame.require_version(ENCODING_VERSION)?;
     frame.require_only_fields(&[1])?;
     let epoch: Epoch = Epoch::new(frame.required_u64(1)?);
@@ -1043,6 +1052,26 @@ mod tests {
 
         assert_eq!(registry.resources()[0].resource_id, resource(0xAA));
         assert_eq!(registry.resources()[1].resource_id, resource(0xBB));
+    }
+
+    #[test]
+    fn registry_validation_distinguishes_duplicates_from_noncanonical_order() {
+        let duplicate_id: BondResourceId = resource(0xAA);
+        let duplicate: BondResourceRegistry = BondResourceRegistry {
+            resources: vec![sample_resource_config(0xAA), sample_resource_config(0xAA)],
+        };
+        assert_eq!(
+            duplicate.validate(),
+            Err(BondError::DuplicateResource(duplicate_id))
+        );
+
+        let reversed: BondResourceRegistry = BondResourceRegistry {
+            resources: vec![sample_resource_config(0xBB), sample_resource_config(0xAA)],
+        };
+        assert_eq!(
+            reversed.validate(),
+            Err(BondError::NonCanonicalEncoding("bond resource registry"))
+        );
     }
 
     #[test]
@@ -1378,6 +1407,20 @@ mod tests {
         assert_eq!(
             decode_bond_resource_registry(&reversed.finish().unwrap()),
             Err(BondError::NonCanonicalEncoding("bond resource registry"))
+        );
+
+        let mut duplicated: CanonicalStruct =
+            CanonicalStruct::new(BOND_RESOURCE_REGISTRY_TYPE_ID, ENCODING_VERSION);
+        duplicated.field_u32(1, 2).unwrap();
+        duplicated
+            .field_bytes(2, encode_bond_resource_config(&low).unwrap())
+            .unwrap();
+        duplicated
+            .field_bytes(3, encode_bond_resource_config(&low).unwrap())
+            .unwrap();
+        assert_eq!(
+            decode_bond_resource_registry(&duplicated.finish().unwrap()),
+            Err(BondError::DuplicateResource(low.resource_id))
         );
     }
 

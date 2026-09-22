@@ -878,6 +878,11 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
                 "economics resource authority does not match the genesis instance",
             ));
         }
+        execution::publication::validate_nominal_declaration(
+            &interface,
+            &resource_policy.ty,
+            resource_policy.schema,
+        )?;
         if interface
             .argument_layout(&resource_policy.split_entrypoint)
             .is_none()
@@ -1106,6 +1111,7 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
                 amount,
                 committed_at_checkpoint: checkpoint,
                 generation: 1,
+                lifecycle_epoch: manifest_context.epoch(),
                 required_minimum: bond_policy.min_bond.get(),
                 state: FastPathBondState::Active,
             };

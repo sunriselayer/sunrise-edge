@@ -10,8 +10,13 @@ gate remain incomplete.
 ## Context
 
 DR-0135 makes protocol custody non-signable. DR-0136 observes one positive,
-typed genesis bond per validator without importing Standard Asset into node
-core. Neither decision grants an authority that can mutate custody.
+typed genesis bond per validator without a runtime `node-core` import of
+Standard Asset or a private asset-body decoder. Neither decision grants an
+authority that can mutate custody. Standard Asset remains a dev-dependency for
+fixtures, and the existing generic fee layer still carries `fees::AssetId`,
+therefore retaining a transitive `fees -> standard-assets` dependency.
+Removing that separate generic fee identifier dependency is not part of
+implementation unit 1.
 
 Phase 3 still needs four related value-moving operations:
 
@@ -88,6 +93,9 @@ bond or fee resource.
 ### Bond lifecycle
 
 `FastPathBondRecord` is the single authoritative per-validator lifecycle row.
+Every generation records the epoch in which that lifecycle transition was
+committed. An `Unbonding` generation must name an unlock epoch strictly after
+that lifecycle epoch, rather than after the defining publication epoch.
 Before release it is extended in place, without a compatibility version, with
 a positive generation, the policy minimum captured for the transition, and
 one state:
@@ -155,7 +163,10 @@ claim uses `transfer`. A zero share is finalized without an object mutation.
 
 ## Invariants
 
-1. Node core has no Standard Asset dependency, constructor id or body codec.
+1. Node core runtime code has no Standard Asset import, constructor id,
+   private body codec or asset-specific economics branch. Standard Asset test
+   fixtures remain dev-dependencies, and the generic fee layer's existing
+   transitive `AssetId` dependency is not an economics authority.
 2. Every release is authorized by signed bytes or verified evidence and a
    committed economics policy.
 3. Replay reconciliation precedes policy/object/ABI work after authentication.
@@ -180,8 +191,10 @@ claim uses `transfer`. A zero share is finalized without an object mutation.
 - next-set rejection for unbonding, jailed, exited or under-bonded validators;
 - signer-order-invariant rounding vectors including `T < N`, exact division,
   remainder ordering and `u64::MAX`; and
-- a dependency/source guard proving economics code has no Standard Asset
-  special case or direct asset-body rewrite.
+- a dependency/source guard proving economics runtime code has no Standard
+  Asset import, Standard Asset special case or direct asset-body rewrite;
+  dev fixtures remain permitted, while eliminating the generic fee layer's
+  transitive `AssetId` dependency remains separate follow-up work.
 
 ## Consequences
 

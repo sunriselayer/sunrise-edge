@@ -141,7 +141,10 @@ write an asset body directly.
 
 ## Invariants
 
-1. Node core contains no Standard Asset dependency or private coin decoder.
+1. Node core runtime code contains no Standard Asset import, constructor
+   special case or private coin decoder. Standard Asset test fixtures remain
+   dev-dependencies, and the generic fee layer's existing transitive
+   `fees::AssetId` dependency is outside this genesis-bond boundary.
 2. Bond amount observation is derived only from authenticated executable ABI
    metadata and generic canonical `CallValue` decoding.
 3. Every bond record binds one committed validator, one resource, one exact

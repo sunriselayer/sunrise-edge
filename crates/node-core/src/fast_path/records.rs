@@ -379,6 +379,8 @@ pub struct FastPathBondRecord {
     pub committed_at_checkpoint: u64,
     /// Positive monotonically increasing lifecycle generation.
     pub generation: u64,
+    /// Epoch in which this lifecycle generation was committed.
+    pub lifecycle_epoch: Epoch,
     /// Positive policy minimum captured for this transition.
     pub required_minimum: u64,
     /// Exact lifecycle state for this generation.
@@ -394,7 +396,7 @@ pub fn encode_fastpath_bond_record(record: &FastPathBondRecord) -> Result<Vec<u8
     );
     let lifecycle_valid: bool = match &record.state {
         FastPathBondState::Unbonding { unlock_epoch, .. } => {
-            unlock_epoch.get() > record.context.epoch().get()
+            unlock_epoch.get() > record.lifecycle_epoch.get()
         }
         FastPathBondState::Active
         | FastPathBondState::Jailed { .. }
@@ -403,6 +405,7 @@ pub fn encode_fastpath_bond_record(record: &FastPathBondRecord) -> Result<Vec<u8
     if record.resource_domain == 0
         || record.amount == 0
         || record.generation == 0
+        || record.lifecycle_epoch.get() < record.context.epoch().get()
         || record.required_minimum == 0
         || record.amount < record.required_minimum
         || record.authority.object_id != record.custody_object.id
@@ -436,8 +439,9 @@ pub fn encode_fastpath_bond_record(record: &FastPathBondRecord) -> Result<Vec<u8
     frame.field_u64(7, record.amount)?;
     frame.field_u64(8, record.committed_at_checkpoint)?;
     frame.field_u64(9, record.generation)?;
-    frame.field_u64(10, record.required_minimum)?;
-    frame.field_bytes(11, encode_fastpath_bond_state(&record.state)?)?;
+    frame.field_u64(10, record.lifecycle_epoch.get())?;
+    frame.field_u64(11, record.required_minimum)?;
+    frame.field_bytes(12, encode_fastpath_bond_state(&record.state)?)?;
     Ok(frame.finish()?)
 }
 
@@ -446,7 +450,7 @@ pub fn decode_fastpath_bond_record(bytes: &[u8]) -> Result<FastPathBondRecord, N
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(FASTPATH_BOND_RECORD_TYPE)?;
     frame.require_version(1)?;
-    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])?;
+    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])?;
     let context: PublicationContext = decode_publication_context(frame.required_field(1)?)
         .map_err(|_| NodeCoreError::PersistenceInvariant("invalid bond context"))?;
     let validator_bytes: [u8; 32] = frame
@@ -471,8 +475,9 @@ pub fn decode_fastpath_bond_record(bytes: &[u8]) -> Result<FastPathBondRecord, N
         amount: frame.required_u64(7)?,
         committed_at_checkpoint: frame.required_u64(8)?,
         generation: frame.required_u64(9)?,
-        required_minimum: frame.required_u64(10)?,
-        state: decode_fastpath_bond_state(frame.required_field(11)?)?,
+        lifecycle_epoch: Epoch::new(frame.required_u64(10)?),
+        required_minimum: frame.required_u64(11)?,
+        state: decode_fastpath_bond_state(frame.required_field(12)?)?,
     };
     if encode_fastpath_bond_record(&record)? != bytes {
         return Err(NodeCoreError::PersistenceInvariant(

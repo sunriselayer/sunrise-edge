@@ -9,8 +9,9 @@ use execution::local_execution::{
 };
 use execution::paid_execution::{MIN_RESERVE_ALLOWANCE, MIN_SETTLE_ALLOWANCE, PaidFeePolicy};
 use execution::publication::{
-    ArtifactParts, CodeArtifact, PublicationContext, PublicationRequest, PublicationSubmission,
-    UnverifiedDependencyRef, artifact_commitment, publication_submission_signing_frame,
+    ArtifactParts, BindingError, BodyError, CodeArtifact, PublicationContext, PublicationRequest,
+    PublicationSubmission, UnverifiedDependencyRef, artifact_commitment,
+    publication_submission_signing_frame,
 };
 use fees::GasSchedule;
 use hashing::HashSuiteResolver;
@@ -406,6 +407,7 @@ fn genesis_installs_protocol_custody_object_for_matching_chain() {
     assert_eq!(bond.amount, 1_000_000);
     assert_eq!(bond.committed_at_checkpoint, 10);
     assert_eq!(bond.generation, 1);
+    assert_eq!(bond.lifecycle_epoch, Epoch::new(0));
     assert_eq!(bond.required_minimum, 100);
     assert_eq!(bond.state, FastPathBondState::Active);
 
@@ -1559,6 +1561,66 @@ fn signed_economics_policy_fails_closed_on_fee_bond_and_abi_mismatch() {
     assert!(matches!(
         error,
         GenesisError::Invalid("economics resource entrypoint is not in the authenticated ABI")
+    ));
+
+    let (mut unknown_constructor, _, _, _, _) = build_fixture();
+    let mut unused_resource: FastPathEconomicsResourcePolicy =
+        unknown_constructor.economics_policy.resources[0].clone();
+    let unused_value: [u8; 32] = [0xFF; 32];
+    unused_resource.resource_id = BondResourceId::new(7, unused_value).unwrap();
+    unused_resource.ty = abi::package_types::ScopedTypeTag::new(
+        unused_resource.ty.origin().clone(),
+        u16::MAX,
+        vec![abi::package_types::ScopedTypeArg::Opaque {
+            domain: 7,
+            value: unused_value,
+        }],
+    )
+    .unwrap();
+    unused_resource.bond = None;
+    unused_resource.fee_escrow = true;
+    unknown_constructor
+        .economics_policy
+        .resources
+        .push(unused_resource);
+    unknown_constructor
+        .economics_policy
+        .resources
+        .sort_by_key(|resource: &FastPathEconomicsResourcePolicy| resource.resource_id);
+    resign_manifest(&mut unknown_constructor);
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let error: GenesisError = install_genesis(
+        &store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &unknown_constructor,
+        10,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::Body(BodyError::Binding(BindingError::UnknownConstructor))
+    ));
+
+    let (mut wrong_schema, _, _, _, _) = build_fixture();
+    wrong_schema.economics_policy.resources[0].schema += 1;
+    resign_manifest(&mut wrong_schema);
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let error: GenesisError = install_genesis(
+        &store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &wrong_schema,
+        10,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::Body(BodyError::Binding(BindingError::SchemaMismatch))
     ));
 }
 
