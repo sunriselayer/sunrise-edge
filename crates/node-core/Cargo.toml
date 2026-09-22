@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 abi.workspace = true
+bonds.workspace = true
 canonical-encoding.workspace = true
 consensus.workspace = true
 crypto.workspace = true

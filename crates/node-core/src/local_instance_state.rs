@@ -81,6 +81,23 @@ pub fn paid_fee_policy_key(context: &PublicationContext) -> Result<Vec<u8>, Node
     Ok(key)
 }
 
+/// Signed FastVote economics policy installed atomically with genesis.
+///
+/// The row is context-bound and lives under the already-reserved instance
+/// namespace. Generic contract execution therefore cannot observe or mutate
+/// the protocol's collateral and fee-custody authority.
+pub fn fastpath_economics_policy_key(
+    context: &PublicationContext,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"economics-policy/");
+    key.extend(encode_publication_context(context).map_err(|_| {
+        NodeCoreError::PersistenceInvariant("invalid fast-path economics policy context")
+    })?);
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
 pub(super) fn is_reserved(key: &[u8]) -> bool {
     key.starts_with(INSTANCE_STATE_PREFIX) || key.starts_with(OBJECT_AUTHORITY_STATE_PREFIX)
 }
@@ -733,5 +750,19 @@ mod tests {
         assert!(
             matches!(validate_sender_nonce_namespace(&plan, &layout), Err(NodeCoreError::ReservedStateAccess(actual)) if actual == key)
         );
+    }
+
+    #[test]
+    fn fastpath_economics_policy_key_is_context_bound_reserved_and_distinct() {
+        let chain: ChainId = ChainId::new("fastpath-economics-policy").unwrap();
+        let context: PublicationContext =
+            PublicationContext::new(chain.clone(), ProtocolVersion::new(3), Epoch::new(0)).unwrap();
+        let other_context: PublicationContext =
+            PublicationContext::new(chain, ProtocolVersion::new(3), Epoch::new(1)).unwrap();
+        let key: Vec<u8> = fastpath_economics_policy_key(&context).unwrap();
+        assert_ne!(key, fastpath_economics_policy_key(&other_context).unwrap());
+        assert_ne!(key, paid_fee_policy_key(&context).unwrap());
+        assert_ne!(key, fastpath_validator_set_key(&context).unwrap());
+        assert!(is_reserved(&key));
     }
 }

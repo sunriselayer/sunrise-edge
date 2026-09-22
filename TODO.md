@@ -2820,8 +2820,17 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
     evidence consumption and fee escrow without a Standard Asset node-core
     path. Delivery is dependency-ordered but remains one Phase 3 completion
     slice:
-    - [ ] resource-generic bond policy, signed economics policy, lifecycle
-      codecs/keys, genesis commitment and exact restart verification;
+    - [x] resource-generic bond policy, signed economics policy, lifecycle
+      codecs/keys, genesis commitment and exact restart verification
+      (implemented and locally validated 2026-09-23). `BondResourceId`
+      replaces the Standard-Asset-specific registry boundary; signed
+      `0x642B/v1` resource entries and `0x642C/v1` policy bytes are committed
+      inside clean `GenesisManifest 0x6416/v1`, persisted under a reserved
+      context key and byte-exactly restart-verified. `0x642A/v1` is now the
+      authoritative generation/minimum/state row with closed `0x642D/v1`
+      lifecycle state; genesis derives generation 1 `Active` only after the
+      policy's exact code/instance/type/schema/ABI and minimum checks pass.
+      Rust plus independent JavaScript vectors cover the changed frames;
     - [ ] generic custody-effect validation plus whole-object
       deposit/replacement, unbond and withdrawal;
     - [ ] one-time evidence consumption, full forfeiture, jail/reactivation

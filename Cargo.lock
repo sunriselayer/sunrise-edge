@@ -946,6 +946,7 @@ name = "node-core"
 version = "0.1.0"
 dependencies = [
  "abi",
+ "bonds",
  "canonical-encoding",
  "consensus",
  "crypto",
@@ -1702,6 +1703,7 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "axum",
+ "bonds",
  "canonical-encoding",
  "crypto",
  "ed25519-zebra",

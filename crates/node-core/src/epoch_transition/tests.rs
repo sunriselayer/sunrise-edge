@@ -13,6 +13,7 @@
 //!   four-validator SQLite test and the restart-verify (C1) tests: both need
 //!   a real genesis install to exercise, not a hand-poked one.
 use super::*;
+use crate::economics::{FastPathEconomicsPolicy, FastPathEconomicsResourcePolicy};
 use crate::genesis::{
     GenesisError, GenesisInstallOutcome, GenesisManifest, GenesisObjectEntry,
     genesis_manifest_signing_frame, install_genesis_with_history,
@@ -23,7 +24,8 @@ use crate::paid_execution::tests::{
     resolver as pe_resolver,
 };
 use abi::call_values::{CallValue, encode_call_value};
-use abi::package_types::{PackageOrigin, derive_scoped_type_id};
+use abi::package_types::{PackageOrigin, ScopedTypeArg, derive_scoped_type_id};
+use bonds::{BondResourceConfig, BondResourceId};
 use consensus::{FastCertificate, FastVote};
 use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::call::CallIntent;
@@ -1370,6 +1372,32 @@ pub(crate) fn build_genesis_fixture(validators: Vec<FastPathValidatorEntry>) -> 
             publish_artifact_byte_price: 1,
             publish_closure_node_price: 1,
         };
+    let (resource_domain, resource): (u16, [u8; 32]) = match coin_tag.args() {
+        [ScopedTypeArg::Opaque { domain, value }] => (*domain, *value),
+        _ => panic!("fixture coin type must carry one opaque resource"),
+    };
+    let resource_id: BondResourceId = BondResourceId::new(resource_domain, resource).unwrap();
+    let economics_policy: FastPathEconomicsPolicy = FastPathEconomicsPolicy {
+        context: context.clone(),
+        resources: vec![FastPathEconomicsResourcePolicy {
+            resource_id,
+            context: context.clone(),
+            instance: target.clone(),
+            code: code_ref.clone(),
+            ty: coin_tag.clone(),
+            schema: public_standard_asset::SCHEMA_VERSION,
+            split_entrypoint: "split".to_owned(),
+            transfer_entrypoint: "transfer".to_owned(),
+            bond: Some(BondResourceConfig {
+                resource_id,
+                min_bond: Amount::new(100),
+                enabled: true,
+                unbonding_epochs: 7,
+                max_validator_exposure: None,
+            }),
+            fee_escrow: true,
+        }],
+    };
 
     let def_type_hash = derive_scoped_type_id(&resolver(), Epoch::new(0), &def_tag).unwrap();
     let coin_type_hash = derive_scoped_type_id(&resolver(), Epoch::new(0), &coin_tag).unwrap();
@@ -1418,6 +1446,7 @@ pub(crate) fn build_genesis_fixture(validators: Vec<FastPathValidatorEntry>) -> 
         publication: submission,
         initialization: signed_init,
         fee_policy: fee_policy.clone(),
+        economics_policy,
         objects: vec![
             GenesisObjectEntry {
                 object: def_obj,

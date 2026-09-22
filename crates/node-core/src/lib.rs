@@ -43,6 +43,7 @@ use system_modules::{ModuleId, SystemModule, SystemModuleError};
 
 mod authenticated_object_effects;
 mod durable_reconciliation;
+pub mod economics;
 pub mod epoch_transition;
 pub mod equivocation;
 pub mod fast_path;

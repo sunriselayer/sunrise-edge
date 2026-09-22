@@ -7,8 +7,9 @@
 use abi::{
     AccessManifest,
     call_values::{CallValue, encode_call_value},
-    package_types::{PackageOrigin, derive_scoped_type_id},
+    package_types::{PackageOrigin, ScopedTypeArg, derive_scoped_type_id},
 };
+use bonds::{BondResourceConfig, BondResourceId};
 use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::{
     call::{CallIntent, InstanceTarget},
@@ -23,8 +24,9 @@ use execution::{
         UnverifiedDependencyRef, artifact_commitment, publication_submission_signing_frame,
     },
 };
-use fees::GasSchedule;
+use fees::{Amount, GasSchedule};
 use hashing::HashSuiteResolver;
+use node_core::economics::{FastPathEconomicsPolicy, FastPathEconomicsResourcePolicy};
 use node_core::fast_path::{FastPathValidatorEntry, FastPathValidatorSetRecord};
 use node_core::genesis::{
     GenesisError, GenesisInstallOutcome, GenesisManifest, GenesisObjectEntry,
@@ -416,6 +418,38 @@ pub fn build_paid_genesis_manifest(
         ));
     }
 
+    let (resource_domain, resource): (u16, [u8; 32]) = match coin_tag.args() {
+        [ScopedTypeArg::Opaque { domain, value }] => (*domain, *value),
+        _ => {
+            return Err(PaidContractGenesisError::Invalid(
+                "devnet coin type must carry one opaque resource",
+            ));
+        }
+    };
+    let resource_id: BondResourceId = BondResourceId::new(resource_domain, resource)
+        .map_err(|_| PaidContractGenesisError::Invalid("invalid devnet bond resource"))?;
+    let economics_policy: FastPathEconomicsPolicy = FastPathEconomicsPolicy {
+        context: context.clone(),
+        resources: vec![FastPathEconomicsResourcePolicy {
+            resource_id,
+            context: context.clone(),
+            instance: instance.clone(),
+            code: code.clone(),
+            ty: coin_tag.clone(),
+            schema: SCHEMA_VERSION,
+            split_entrypoint: "split".to_owned(),
+            transfer_entrypoint: "transfer".to_owned(),
+            bond: Some(BondResourceConfig {
+                resource_id,
+                min_bond: Amount::new(1),
+                enabled: true,
+                unbonding_epochs: 7,
+                max_validator_exposure: None,
+            }),
+            fee_escrow: true,
+        }],
+    };
+
     let metadata: PaidGenesisActivationMetadata = PaidGenesisActivationMetadata {
         mint_authority,
         definition_id,
@@ -427,8 +461,8 @@ pub fn build_paid_genesis_manifest(
     let fee_policy: PaidFeePolicy = PaidFeePolicy {
         context: context.clone(),
         base_policy_digest,
-        instance,
-        code,
+        instance: instance.clone(),
+        code: code.clone(),
         reserve_entrypoint: "reserve".to_owned(),
         reserve_all_entrypoint: "reserve_all".to_owned(),
         settle_entrypoint: "settle".to_owned(),
@@ -462,6 +496,7 @@ pub fn build_paid_genesis_manifest(
         publication,
         initialization,
         fee_policy,
+        economics_policy,
         objects,
         validator_set: FastPathValidatorSetRecord {
             context: context.clone(),

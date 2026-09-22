@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 abi.workspace = true
 axum.workspace = true
+bonds.workspace = true
 canonical-encoding.workspace = true
 crypto.workspace = true
 ed25519-zebra.workspace = true

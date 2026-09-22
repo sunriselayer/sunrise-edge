@@ -156,6 +156,15 @@ write an asset body directly.
 8. Existing transaction, object, vote, certificate, receipt and genesis
    manifest canonical bytes remain unchanged.
 
+## Subsequent decision
+
+[DR-0137](0137-fastvote-release-authority.md) intentionally supersedes the
+last byte-stability statement for the unreleased `GenesisManifest` and
+`FastPathBondRecord`. It keeps both as clean v1 formats while adding the signed
+economics policy to `0x6416/v1` and generation/minimum/lifecycle state to
+`0x642A/v1`; it retains unchanged transaction, object, vote, certificate and
+receipt bytes and adds no compatibility decoder.
+
 ## Required evidence
 
 - generic value-observation tests for a positive scalar, zero, wrong shape,

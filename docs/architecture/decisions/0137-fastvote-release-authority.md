@@ -2,8 +2,10 @@
 
 ## Status
 
-Accepted, 2026-09-23. Implementation is dependency-ordered below and remains
-incomplete until every unit and the Phase 3 review gate passes.
+Accepted, 2026-09-23. Implementation unit 1 (resource-generic policy, signed
+economics/lifecycle codecs and genesis persistence/restart verification) is
+implemented and locally validated. Units 2 through 4 and the Phase 3 review
+gate remain incomplete.
 
 ## Context
 
