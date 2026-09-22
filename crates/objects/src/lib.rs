@@ -261,25 +261,28 @@ impl Owner {
     }
 }
 
-/// Closed protocol custody purpose (DR-0135).
-///
-/// This slice admits only [`Self::BondCollateral`]. A later purpose,
-/// including fee escrow, must add its own explicit variant and validation
-/// decision rather than overloading this one.
+/// Closed protocol custody purpose (DR-0135, DR-0137).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProtocolCustodyPurpose {
     /// Immobilized validator bond collateral.
     ///
     /// A higher layer interprets [`ProtocolCustodyScope::subject`] as a
-    /// `ValidatorId` and [`ProtocolCustodyScope::resource`] as an `AssetId`.
-    /// Those meanings are not imported into this crate.
+    /// `ValidatorId` and [`ProtocolCustodyScope::resource`] as an opaque
+    /// resource identity. Those meanings are not imported into this crate.
     BondCollateral,
+    /// Certified fee output awaiting deterministic signer claims.
+    FeeEscrow,
+    /// Fully forfeited validator collateral retained for a later explicit
+    /// disposal policy.
+    ForfeitedCollateral,
 }
 
 impl ProtocolCustodyPurpose {
     const fn tag(self) -> u16 {
         match self {
             Self::BondCollateral => 1,
+            Self::FeeEscrow => 2,
+            Self::ForfeitedCollateral => 3,
         }
     }
 }
@@ -539,6 +542,8 @@ fn decode_protocol_custody_scope(input: &[u8]) -> Result<ProtocolCustodyScope, O
     let purpose_tag: u16 = frame.required_u16(1)?;
     let purpose: ProtocolCustodyPurpose = match purpose_tag {
         1 => ProtocolCustodyPurpose::BondCollateral,
+        2 => ProtocolCustodyPurpose::FeeEscrow,
+        3 => ProtocolCustodyPurpose::ForfeitedCollateral,
         other => return Err(ObjectError::UnknownProtocolCustodyPurpose(other)),
     };
     let chain_id: ChainId = ChainId::new(frame.required_str(2)?.to_owned())
@@ -737,6 +742,26 @@ mod tests {
         let owner = Owner::ProtocolCustody(sample_custody_scope());
         let canonical: Vec<u8> = encode_owner(&owner).unwrap();
         assert_eq!(decode_owner(&canonical), Ok(owner));
+    }
+
+    #[test]
+    fn every_protocol_custody_purpose_round_trips_with_a_distinct_tag() {
+        let purposes: [ProtocolCustodyPurpose; 3] = [
+            ProtocolCustodyPurpose::BondCollateral,
+            ProtocolCustodyPurpose::FeeEscrow,
+            ProtocolCustodyPurpose::ForfeitedCollateral,
+        ];
+        let mut encoded: Vec<Vec<u8>> = Vec::with_capacity(purposes.len());
+        for purpose in purposes {
+            let mut scope: ProtocolCustodyScope = sample_custody_scope();
+            scope.purpose = purpose;
+            let bytes: Vec<u8> = encode_protocol_custody_scope(&scope).unwrap();
+            assert_eq!(decode_protocol_custody_scope(&bytes), Ok(scope));
+            encoded.push(bytes);
+        }
+        assert_ne!(encoded[0], encoded[1]);
+        assert_ne!(encoded[1], encoded[2]);
+        assert_ne!(encoded[0], encoded[2]);
     }
 
     #[test]

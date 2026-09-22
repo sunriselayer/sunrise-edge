@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 abi.workspace = true
+bonds.workspace = true
 canonical-encoding.workspace = true
 consensus.workspace = true
 crypto.workspace = true
@@ -17,7 +18,6 @@ protocol-config.workspace = true
 protocol-types.workspace = true
 runtime.workspace = true
 system-modules.workspace = true
-standard-assets.workspace = true
 validator-set.workspace = true
 
 [dev-dependencies]
@@ -26,3 +26,4 @@ runtime-sqlite.workspace = true
 ed25519-zebra.workspace = true
 wat.workspace = true
 public-standard-asset = { path = "../../contracts/standard-asset" }
+standard-assets.workspace = true

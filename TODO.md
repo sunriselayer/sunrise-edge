@@ -69,7 +69,9 @@ slice 3 (equivocation evidence); DR-0134 implements slice 4's authorization and
 closed-ingress boundary, closing Phase 2. DR-0135 implements the non-signable
 protocol-custody prerequisite for Phase 3; DR-0136 binds that custody to an
 authenticated executable-ABI value observation and a durable genesis bond
-record without importing Standard Asset into node-core. Phase 3
+record without importing Standard Asset into node-core runtime code. Standard
+Asset remains a dev fixture, and the generic fee layer retains its transitive
+`AssetId` dependency. Phase 3
 economics/security completion remains open.
 Contract
 upgrades/migrations remain a separate explicit
@@ -2811,12 +2813,35 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
     derives canonical `0x642A/v1` validator/resource/object/authority/amount
     records during signed genesis installation. Exact restart verification,
     partial/tampered-row rejection, independent JS vectors, and real SQLite
-    close/reopen evidence are covered. Node-core imports no Standard Asset
-    type or body codec. Fee escrow and every custody mutation remain Slice 2.
-  - [ ] **Slice 2 — closed release authority and economics.** Define and
-    implement deposit, unbond/withdraw, evidence-driven forfeiture/jail,
-    final-certificate signer entitlements, escrow distribution, and payout
-    through the defining public contract, including exact replay and atomicity.
+    close/reopen evidence are covered. Node-core runtime code imports no
+    Standard Asset type or body codec and contains no asset-specific
+    genesis-bond path; Standard Asset remains a dev fixture and the generic fee
+    layer still carries its existing transitive `AssetId` dependency. Fee
+    escrow and every custody mutation remain Slice 2.
+  - [ ] **Slice 2 — closed release authority and economics
+    ([DR-0137](docs/architecture/decisions/0137-fastvote-release-authority.md),
+    accepted 2026-09-23; implementation in progress).** One closed,
+    policy-pinned public-contract execution boundary covers bond lifecycle,
+    evidence consumption and fee escrow without a Standard Asset node-core
+    path. Delivery is dependency-ordered but remains one Phase 3 completion
+    slice:
+    - [x] resource-generic bond policy, signed economics policy, lifecycle
+      codecs/keys, genesis commitment and exact restart verification
+      (implemented and locally validated 2026-09-23). `BondResourceId`
+      replaces the Standard-Asset-specific registry boundary; signed
+      `0x642B/v1` resource entries and `0x642C/v1` policy bytes are committed
+      inside clean `GenesisManifest 0x6416/v1`, persisted under a reserved
+      context key and byte-exactly restart-verified. `0x642A/v1` is now the
+      authoritative generation/lifecycle-epoch/minimum/state row with closed
+      `0x642D/v1` lifecycle state; genesis derives generation 1 `Active` only
+      after the policy's exact code/instance/type/schema/ABI and minimum checks pass.
+      Rust plus independent JavaScript vectors cover the changed frames;
+    - [ ] generic custody-effect validation plus whole-object
+      deposit/replacement, unbond and withdrawal;
+    - [ ] one-time evidence consumption, full forfeiture, jail/reactivation
+      and next-set eligibility coupling; and
+    - [ ] pre-certification fee escrow, deterministic signer entitlements,
+      claims, race/restart evidence and the Phase 3 review gate.
 
   **Remaining Phase 3 completion:** bond-linked slashing execution and
   deterministic transaction-fee escrow

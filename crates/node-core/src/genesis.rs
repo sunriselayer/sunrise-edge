@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 
 use abi::call_values::CallValue;
 use abi::package_types::{PackageTypeError, ScopedTypeArg};
+use bonds::{BondObject, BondResourceId};
 use canonical_encoding::{
     CanonicalDecodingError, CanonicalEncodingError, CanonicalFrame, CanonicalStruct,
     decode_canonical_frame, decode_digest32, encode_digest32,
@@ -53,10 +54,15 @@ use runtime::{
 };
 use validator_set::{ValidatorInfo, ValidatorSet};
 
+use crate::economics::{
+    FastPathEconomicsPolicy, MAX_FASTPATH_ECONOMICS_POLICY_BYTES, decode_fastpath_economics_policy,
+    encode_fastpath_economics_policy,
+};
 use crate::epoch_transition;
 use crate::fast_path::records::{
-    FastPathBondRecord, FastPathValidatorSetRecord, decode_fastpath_validator_set_record,
-    encode_fastpath_bond_record, encode_fastpath_validator_set_record,
+    FastPathBondRecord, FastPathBondState, FastPathValidatorSetRecord,
+    decode_fastpath_validator_set_record, encode_fastpath_bond_record,
+    encode_fastpath_validator_set_record,
 };
 use crate::local_execution::LocalExecutionAdmissionError;
 use crate::local_instance_state;
@@ -100,6 +106,7 @@ pub const MAX_GENESIS_MANIFEST_BYTES: usize =
     execution::publication::MAX_PUBLICATION_SUBMISSION_BYTES
         + execution::local_execution::MAX_LOCAL_EXECUTION_INTENT_BYTES
         + MAX_PAID_FEE_POLICY_BYTES
+        + MAX_FASTPATH_ECONOMICS_POLICY_BYTES
         + (MAX_GENESIS_OBJECTS * (MAX_AUTHENTICATED_OBJECT_BODY_BYTES + 4096))
         + (10_000 * 640)
         + 8192;
@@ -127,11 +134,13 @@ pub struct GenesisManifest {
     pub initialization: SignedLocalExecutionIntent,
     /// Paid fee policy to install.
     pub fee_policy: PaidFeePolicy,
+    /// Signed public-contract authority for collateral and fee custody.
+    pub economics_policy: FastPathEconomicsPolicy,
     /// Initialized objects and their authorities.
     pub objects: Vec<GenesisObjectEntry>,
     /// Static FastVote validator set for this genesis epoch.
     pub validator_set: FastPathValidatorSetRecord,
-    /// Ed25519 signature by `genesis_authority` over fields 1 through 6.
+    /// Ed25519 signature by `genesis_authority` over fields 1 through 7.
     pub signature: [u8; 64],
 }
 
@@ -479,9 +488,13 @@ fn encode_genesis_manifest_payload(manifest: &GenesisManifest) -> Result<Vec<u8>
     frame.field_bytes(2, encode_publication_submission(&manifest.publication)?)?;
     frame.field_bytes(3, encode_signed_local_execution(&manifest.initialization)?)?;
     frame.field_bytes(4, encode_paid_fee_policy(&manifest.fee_policy)?)?;
-    frame.field_bytes(5, encode_genesis_object_entries(&manifest.objects)?)?;
     frame.field_bytes(
-        6,
+        5,
+        encode_fastpath_economics_policy(&manifest.economics_policy)?,
+    )?;
+    frame.field_bytes(6, encode_genesis_object_entries(&manifest.objects)?)?;
+    frame.field_bytes(
+        7,
         encode_fastpath_validator_set_record(&manifest.validator_set)?,
     )?;
     Ok(frame.finish()?)
@@ -489,8 +502,8 @@ fn encode_genesis_manifest_payload(manifest: &GenesisManifest) -> Result<Vec<u8>
 
 /// Returns the exact domain-separated bytes signed by the genesis authority.
 ///
-/// The payload is the canonical manifest frame containing fields 1 through 6;
-/// the outer stored frame adds the signature as field 7. This binds every
+/// The payload is the canonical manifest frame containing fields 1 through 7;
+/// the outer stored frame adds the signature as field 8. This binds every
 /// initialized object, authority and validator without a circular signature.
 pub fn genesis_manifest_signing_frame(manifest: &GenesisManifest) -> Result<Vec<u8>, GenesisError> {
     let context: &PublicationContext = manifest.context();
@@ -513,10 +526,10 @@ pub fn encode_genesis_manifest(manifest: &GenesisManifest) -> Result<Vec<u8>, Ge
     let decoded: CanonicalFrame<'_> = decode_canonical_frame(&payload)?;
     let mut frame: CanonicalStruct =
         CanonicalStruct::new(GENESIS_MANIFEST_FRAME_TYPE, GENESIS_MANIFEST_VERSION);
-    for field_id in 1_u16..=6_u16 {
+    for field_id in 1_u16..=7_u16 {
         frame.field_bytes(field_id, decoded.required_field(field_id)?)?;
     }
-    frame.field_bytes(7, manifest.signature.to_vec())?;
+    frame.field_bytes(8, manifest.signature.to_vec())?;
     let bytes: Vec<u8> = frame.finish()?;
     if bytes.len() > MAX_GENESIS_MANIFEST_BYTES {
         return Err(GenesisError::Limit("manifest bytes"));
@@ -532,7 +545,7 @@ pub fn decode_genesis_manifest(bytes: &[u8]) -> Result<GenesisManifest, GenesisE
     let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
     frame.require_type(GENESIS_MANIFEST_FRAME_TYPE)?;
     frame.require_version(GENESIS_MANIFEST_VERSION)?;
-    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7])?;
+    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8])?;
     let authority_bytes: &[u8] = frame.required_field(1)?;
     let genesis_authority: [u8; 32] = authority_bytes
         .try_into()
@@ -542,10 +555,12 @@ pub fn decode_genesis_manifest(bytes: &[u8]) -> Result<GenesisManifest, GenesisE
     let initialization: SignedLocalExecutionIntent =
         decode_signed_local_execution(frame.required_field(3)?)?;
     let fee_policy: PaidFeePolicy = decode_paid_fee_policy(frame.required_field(4)?)?;
-    let objects: Vec<GenesisObjectEntry> = decode_genesis_object_entries(frame.required_field(5)?)?;
+    let economics_policy: FastPathEconomicsPolicy =
+        decode_fastpath_economics_policy(frame.required_field(5)?)?;
+    let objects: Vec<GenesisObjectEntry> = decode_genesis_object_entries(frame.required_field(6)?)?;
     let validator_set: FastPathValidatorSetRecord =
-        decode_fastpath_validator_set_record(frame.required_field(6)?)?;
-    let signature_bytes: &[u8] = frame.required_field(7)?;
+        decode_fastpath_validator_set_record(frame.required_field(7)?)?;
+    let signature_bytes: &[u8] = frame.required_field(8)?;
     let signature: [u8; 64] = signature_bytes
         .try_into()
         .map_err(|_| GenesisError::Invalid("genesis manifest signature length"))?;
@@ -554,6 +569,7 @@ pub fn decode_genesis_manifest(bytes: &[u8]) -> Result<GenesisManifest, GenesisE
         publication,
         initialization,
         fee_policy,
+        economics_policy,
         objects,
         validator_set,
         signature,
@@ -704,6 +720,9 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
     if &manifest.fee_policy.context != manifest_context {
         return Err(GenesisError::ContextMismatch);
     }
+    if &manifest.economics_policy.context != manifest_context {
+        return Err(GenesisError::ContextMismatch);
+    }
     if &manifest.validator_set.context != manifest_context {
         return Err(GenesisError::ContextMismatch);
     }
@@ -844,6 +863,67 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
     }
     validate_fee_interface_admission(&interface, &manifest.fee_policy)?;
 
+    // The manifest signature is the only authority for protocol economics.
+    // Genesis installs a single self-contained contract, so every admitted
+    // resource must pin that exact code revision and instance. Merely naming
+    // a resource or entrypoint in node-local configuration grants nothing.
+    let economics_policy_bytes: Vec<u8> =
+        encode_fastpath_economics_policy(&manifest.economics_policy)?;
+    let _ = decode_fastpath_economics_policy(&economics_policy_bytes)?;
+    for resource_policy in &manifest.economics_policy.resources {
+        if resource_policy.code != manifest.initialization.intent.call.code
+            || resource_policy.instance != expected_target
+        {
+            return Err(GenesisError::Invalid(
+                "economics resource authority does not match the genesis instance",
+            ));
+        }
+        execution::publication::validate_nominal_declaration(
+            &interface,
+            &resource_policy.ty,
+            resource_policy.schema,
+        )?;
+        if interface
+            .argument_layout(&resource_policy.split_entrypoint)
+            .is_none()
+            || interface
+                .argument_layout(&resource_policy.transfer_entrypoint)
+                .is_none()
+        {
+            return Err(GenesisError::Invalid(
+                "economics resource entrypoint is not in the authenticated ABI",
+            ));
+        }
+    }
+    let fee_resource_id: BondResourceId = match manifest.fee_policy.asset_type.args() {
+        [ScopedTypeArg::Opaque { domain, value }] => BondResourceId::new(*domain, *value)
+            .map_err(|_| GenesisError::Invalid("fee type resource is invalid"))?,
+        _ => {
+            return Err(GenesisError::Invalid(
+                "fee type must carry one opaque resource",
+            ));
+        }
+    };
+    let fee_resource_policy = manifest
+        .economics_policy
+        .resources
+        .binary_search_by_key(&fee_resource_id, |entry| entry.resource_id)
+        .ok()
+        .map(|index: usize| &manifest.economics_policy.resources[index])
+        .ok_or(GenesisError::Invalid(
+            "fee resource is absent from the signed economics policy",
+        ))?;
+    if !fee_resource_policy.fee_escrow
+        || fee_resource_policy.code != manifest.fee_policy.code
+        || fee_resource_policy.instance != manifest.fee_policy.instance
+        || fee_resource_policy.ty != manifest.fee_policy.asset_type
+        || fee_resource_policy.schema != manifest.fee_policy.schema
+    {
+        return Err(GenesisError::Invalid(
+            "fee resource does not match the signed economics policy",
+        ));
+    }
+
     // 7. Validate initialized objects.
     if manifest.objects.len() > MAX_GENESIS_OBJECTS {
         return Err(GenesisError::Limit("too many genesis objects"));
@@ -874,12 +954,9 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
         // pre-existing path) or a `ProtocolCustody`-owned object, but only
         // when the scope's own chain equals this exact manifest chain and
         // the purpose is one of the closed purposes this release supports.
-        // `objects::decode_owner` already rejects any purpose tag other than
-        // `BondCollateral`; the exhaustive match below still names the
-        // purpose explicitly so a future purpose variant fails to compile
-        // here until this boundary makes its own decision for it. Every
-        // other owner kind is unsupported at genesis, exactly like every
-        // other creation path.
+        // Only bond collateral is valid at genesis. Fee escrow must be
+        // derived from a certified fee output and forfeiture must consume
+        // verified evidence, so accepting either here would bypass DR-0137.
         match &entry.object.owner {
             Owner::Address(owner_addr) => {
                 validate_ed25519_owner_address(
@@ -895,6 +972,12 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
                 }
                 match scope.purpose {
                     objects::ProtocolCustodyPurpose::BondCollateral => {}
+                    objects::ProtocolCustodyPurpose::FeeEscrow
+                    | objects::ProtocolCustodyPurpose::ForfeitedCollateral => {
+                        return Err(GenesisError::Invalid(
+                            "protocol custody purpose cannot be installed at genesis",
+                        ));
+                    }
                 }
             }
             Owner::Shared | Owner::Immutable | Owner::System => {
@@ -966,6 +1049,38 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
                     ));
                 }
             };
+            let resource_id: BondResourceId = BondResourceId::new(resource_domain, resource)
+                .map_err(|_| GenesisError::Invalid("bond resource is invalid"))?;
+            let resource_policy = manifest
+                .economics_policy
+                .resources
+                .binary_search_by_key(&resource_id, |candidate| candidate.resource_id)
+                .ok()
+                .map(|index: usize| &manifest.economics_policy.resources[index])
+                .ok_or(GenesisError::Invalid(
+                    "bond resource is absent from the signed economics policy",
+                ))?;
+            let bond_policy = resource_policy.bond.as_ref().ok_or(GenesisError::Invalid(
+                "bond resource is not enabled by the signed economics policy",
+            ))?;
+            if resource_policy.code != entry.authority.code
+                || resource_policy.instance != entry.authority.instance
+                || resource_policy.ty != entry.authority.ty
+                || resource_policy.schema != entry.object.schema_version
+            {
+                return Err(GenesisError::Invalid(
+                    "bond authority does not match the signed economics policy",
+                ));
+            }
+            let bond: BondObject = BondObject {
+                validator_id,
+                resource_id,
+                amount: fees::Amount::new(amount),
+                bonded_epoch: manifest_context.epoch(),
+                unlock_epoch: None,
+            };
+            bond.validate_against(bond_policy)
+                .map_err(|_| GenesisError::Invalid("bond violates the signed economics policy"))?;
             let canonical_object: Vec<u8> = encode_object(&entry.object)?;
             let object_digest: Digest32 = resolver.hash_for_purpose(
                 manifest_context.epoch(),
@@ -995,6 +1110,10 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
                 authority: entry.authority.clone(),
                 amount,
                 committed_at_checkpoint: checkpoint,
+                generation: 1,
+                lifecycle_epoch: manifest_context.epoch(),
+                required_minimum: bond_policy.min_bond.get(),
+                state: FastPathBondState::Active,
             };
             bond_records.push((bond_key, encode_fastpath_bond_record(&bond_record)?));
         }
@@ -1017,6 +1136,8 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
     let exec_policy_key: Vec<u8> =
         local_instance_state::execution_policy_key_for_profile(manifest_context, 4)?;
     let fee_policy_key: Vec<u8> = local_instance_state::paid_fee_policy_key(manifest_context)?;
+    let economics_policy_key: Vec<u8> =
+        local_instance_state::fastpath_economics_policy_key(manifest_context)?;
     let validator_set_key: Vec<u8> =
         local_instance_state::fastpath_validator_set_key(manifest_context)?;
     // DR-0131: the committed epoch record is created once, atomically with
@@ -1130,6 +1251,16 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             return Err(GenesisError::TamperedInstalledRecord("fee policy"));
         }
 
+        // Verify the signed economics authority independently from the
+        // manifest row. Restart never repairs a missing or changed policy.
+        let obs: VersionedStateValue =
+            store.get_versioned_durable(context, domain, &economics_policy_key)?;
+        if obs.value() != Some(economics_policy_bytes.as_slice()) {
+            return Err(GenesisError::TamperedInstalledRecord(
+                "fast-path economics policy",
+            ));
+        }
+
         // Verify the signed static FastVote validator set.
         let obs: VersionedStateValue =
             store.get_versioned_durable(context, domain, &validator_set_key)?;
@@ -1236,6 +1367,7 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             ("publication_policy", &pub_policy_key),
             ("execution_policy", &exec_policy_key),
             ("fee_policy", &fee_policy_key),
+            ("fastpath_economics_policy", &economics_policy_key),
             ("fastpath_validator_set", &validator_set_key),
             ("fastpath_epoch_record", &epoch_record_key),
         ] {
@@ -1294,6 +1426,10 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             )?,
             StateMutationEntry::new(fee_policy_key.clone(), StateMutation::Put(fee_policy_bytes))?,
             StateMutationEntry::new(
+                economics_policy_key.clone(),
+                StateMutation::Put(economics_policy_bytes),
+            )?,
+            StateMutationEntry::new(
                 validator_set_key.clone(),
                 StateMutation::Put(validator_set_bytes),
             )?,
@@ -1310,6 +1446,7 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             StateReadAssertion::new(pub_policy_key, StateRevision::INITIAL)?,
             StateReadAssertion::new(exec_policy_key, StateRevision::INITIAL)?,
             StateReadAssertion::new(fee_policy_key, StateRevision::INITIAL)?,
+            StateReadAssertion::new(economics_policy_key, StateRevision::INITIAL)?,
             StateReadAssertion::new(validator_set_key, StateRevision::INITIAL)?,
             StateReadAssertion::new(epoch_record_key, StateRevision::INITIAL)?,
             StateReadAssertion::new(marker_key, StateRevision::INITIAL)?,

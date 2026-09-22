@@ -31,14 +31,11 @@ use protocol_types::Epoch;
 
 use super::binding::{BindingError, BoundObjectSignature, match_object_input_metadata};
 
-/// Decodes and returns the generic call value of a concrete nominal body against its exact signed layout.
-/// This is representation observation, not permission to create or mutate the type.
-pub fn observe_nominal_value(
-    interface: &super::VerifiedPublicationInterface,
+fn nominal_layout<'a>(
+    interface: &'a super::VerifiedPublicationInterface,
     ty: &abi::package_types::ScopedTypeTag,
     schema: u32,
-    bytes: &[u8],
-) -> Result<CallValue, BodyError> {
+) -> Result<&'a ValueLayout, BodyError> {
     super::binding::validate_supplied_nominal_tag(ty, interface)?;
     let constructor = interface
         .defining_abi(ty.origin())
@@ -51,9 +48,33 @@ pub fn observe_nominal_value(
     if constructor.schema != schema {
         return Err(BindingError::SchemaMismatch.into());
     }
-    let layout: &ValueLayout = interface
+    interface
         .body_layout(ty.origin(), ty.constructor())
-        .ok_or(BindingError::UnknownConstructor)?;
+        .ok_or(BodyError::MissingLayout)
+}
+
+/// Checks that a nominal constructor and schema exist in the exact signed ABI.
+///
+/// This validates a declaration only. It grants no permission to create,
+/// mutate, own, transfer, or otherwise use a value of the declared type.
+pub fn validate_nominal_declaration(
+    interface: &super::VerifiedPublicationInterface,
+    ty: &abi::package_types::ScopedTypeTag,
+    schema: u32,
+) -> Result<(), BodyError> {
+    let _: &ValueLayout = nominal_layout(interface, ty, schema)?;
+    Ok(())
+}
+
+/// Decodes and returns the generic call value of a concrete nominal body against its exact signed layout.
+/// This is representation observation, not permission to create or mutate the type.
+pub fn observe_nominal_value(
+    interface: &super::VerifiedPublicationInterface,
+    ty: &abi::package_types::ScopedTypeTag,
+    schema: u32,
+    bytes: &[u8],
+) -> Result<CallValue, BodyError> {
+    let layout: &ValueLayout = nominal_layout(interface, ty, schema)?;
     let value = decode_call_value(layout, bytes)?;
     Ok(value)
 }

@@ -27,7 +27,7 @@ pub use binding::{
 
 pub use bodies::{
     BodyError, MAX_BOUND_BODY_BYTES, observe_nominal_value, validate_nominal_body,
-    validate_object_input_bodies,
+    validate_nominal_declaration, validate_object_input_bodies,
 };
 
 pub use interface::{

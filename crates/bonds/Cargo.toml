@@ -10,4 +10,3 @@ fees.workspace = true
 objects.workspace = true
 protocol-types.workspace = true
 runtime.workspace = true
-standard-assets.workspace = true

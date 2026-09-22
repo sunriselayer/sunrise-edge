@@ -25,6 +25,7 @@ const FASTPATH_ID_LIST_TYPE: u16 = 0x6421;
 const FASTPATH_VALIDATOR_ENTRY_LIST_TYPE: u16 = 0x6422;
 const FASTPATH_VALIDATOR_ENTRY_TYPE: u16 = 0x6423;
 const FASTPATH_BOND_RECORD_TYPE: u16 = 0x642A;
+const FASTPATH_BOND_STATE_TYPE: u16 = 0x642D;
 const ENCODING_VERSION: u16 = 1;
 
 /// Bounds every nested fast-path record list. Locked-object and
@@ -261,13 +262,106 @@ pub struct FastPathSettlementRecord {
     pub signer_ids: Vec<ValidatorId>,
 }
 
-/// Frame `0x642A/v1`: one typed, positive genesis bond commitment derived
-/// from a signed manifest custody object through its authenticated executable
-/// ABI. This record observes value; it grants no release or mutation
-/// authority.
+/// Frame `0x642D/v1`: exact lifecycle state of one validator bond generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FastPathBondState {
+    /// Bond is active and eligible for a future validator set.
+    Active,
+    /// Bond remains slashable until `unlock_epoch`, then may be released to
+    /// the exact validator-authorized recipient.
+    Unbonding {
+        /// First epoch at which withdrawal may succeed.
+        unlock_epoch: Epoch,
+        /// Exact address that must receive the released object.
+        recipient: [u8; 32],
+    },
+    /// Verified evidence consumed this generation and forfeited its value.
+    Jailed {
+        /// Canonical identity of the consumed evidence.
+        evidence_digest: Digest32,
+    },
+    /// The last committed bond object has been released and cannot re-enter.
+    Exited,
+}
+
+/// Encodes Frame `0x642D/v1`.
+pub fn encode_fastpath_bond_state(state: &FastPathBondState) -> Result<Vec<u8>, NodeCoreError> {
+    let mut frame: CanonicalStruct = CanonicalStruct::new(FASTPATH_BOND_STATE_TYPE, 1);
+    match state {
+        FastPathBondState::Active => {
+            frame.field_u16(1, 1)?;
+        }
+        FastPathBondState::Unbonding {
+            unlock_epoch,
+            recipient,
+        } => {
+            frame.field_u16(1, 2)?;
+            frame.field_u64(2, unlock_epoch.get())?;
+            frame.field_bytes(3, recipient.to_vec())?;
+        }
+        FastPathBondState::Jailed { evidence_digest } => {
+            frame.field_u16(1, 3)?;
+            frame.field_bytes(4, encode_digest32(evidence_digest)?)?;
+        }
+        FastPathBondState::Exited => {
+            frame.field_u16(1, 4)?;
+        }
+    }
+    Ok(frame.finish()?)
+}
+
+/// Strictly decodes Frame `0x642D/v1`.
+pub fn decode_fastpath_bond_state(bytes: &[u8]) -> Result<FastPathBondState, NodeCoreError> {
+    let frame = decode_canonical_frame(bytes)?;
+    frame.require_type(FASTPATH_BOND_STATE_TYPE)?;
+    frame.require_version(1)?;
+    let state: FastPathBondState = match frame.required_u16(1)? {
+        1 => {
+            frame.require_only_fields(&[1])?;
+            FastPathBondState::Active
+        }
+        2 => {
+            frame.require_only_fields(&[1, 2, 3])?;
+            let recipient: [u8; 32] = frame
+                .required_field(3)?
+                .try_into()
+                .map_err(|_| NodeCoreError::PersistenceInvariant("bond recipient length"))?;
+            FastPathBondState::Unbonding {
+                unlock_epoch: Epoch::new(frame.required_u64(2)?),
+                recipient,
+            }
+        }
+        3 => {
+            frame.require_only_fields(&[1, 4])?;
+            FastPathBondState::Jailed {
+                evidence_digest: decode_digest32(frame.required_field(4)?)?,
+            }
+        }
+        4 => {
+            frame.require_only_fields(&[1])?;
+            FastPathBondState::Exited
+        }
+        _ => {
+            return Err(NodeCoreError::PersistenceInvariant(
+                "unknown fast-path bond state",
+            ));
+        }
+    };
+    if encode_fastpath_bond_state(&state)? != bytes {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "noncanonical fast-path bond state",
+        ));
+    }
+    Ok(state)
+}
+
+/// Frame `0x642A/v1`: one typed, positive authoritative bond lifecycle row.
+/// It binds each transition to a public-contract custody object and a signed
+/// economics-policy minimum; it grants no release or mutation authority by
+/// itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FastPathBondRecord {
-    /// Genesis context whose signed manifest introduced the custody object.
+    /// Exact publication context of the defining contract authority.
     pub context: PublicationContext,
     /// Validator named by the custody scope subject.
     pub validator_id: ValidatorId,
@@ -281,8 +375,16 @@ pub struct FastPathBondRecord {
     pub authority: ObjectAuthority,
     /// Positive scalar value decoded only through the signed executable ABI.
     pub amount: u64,
-    /// Checkpoint of the atomic genesis install that committed this row.
+    /// Checkpoint of the atomic transition that committed this generation.
     pub committed_at_checkpoint: u64,
+    /// Positive monotonically increasing lifecycle generation.
+    pub generation: u64,
+    /// Epoch in which this lifecycle generation was committed.
+    pub lifecycle_epoch: Epoch,
+    /// Positive policy minimum captured for this transition.
+    pub required_minimum: u64,
+    /// Exact lifecycle state for this generation.
+    pub state: FastPathBondState,
 }
 
 /// Encodes Frame `0x642A/v1`.
@@ -292,11 +394,24 @@ pub fn encode_fastpath_bond_record(record: &FastPathBondRecord) -> Result<Vec<u8
         [ScopedTypeArg::Opaque { domain, value }]
             if *domain == record.resource_domain && *value == record.resource
     );
+    let lifecycle_valid: bool = match &record.state {
+        FastPathBondState::Unbonding { unlock_epoch, .. } => {
+            unlock_epoch.get() > record.lifecycle_epoch.get()
+        }
+        FastPathBondState::Active
+        | FastPathBondState::Jailed { .. }
+        | FastPathBondState::Exited => true,
+    };
     if record.resource_domain == 0
         || record.amount == 0
+        || record.generation == 0
+        || record.lifecycle_epoch.get() < record.context.epoch().get()
+        || record.required_minimum == 0
+        || record.amount < record.required_minimum
         || record.authority.object_id != record.custody_object.id
         || record.authority.instance_context != record.context
         || !resource_matches_type
+        || !lifecycle_valid
     {
         return Err(NodeCoreError::PersistenceInvariant(
             "invalid fast-path bond record",
@@ -323,6 +438,10 @@ pub fn encode_fastpath_bond_record(record: &FastPathBondRecord) -> Result<Vec<u8
     )?;
     frame.field_u64(7, record.amount)?;
     frame.field_u64(8, record.committed_at_checkpoint)?;
+    frame.field_u64(9, record.generation)?;
+    frame.field_u64(10, record.lifecycle_epoch.get())?;
+    frame.field_u64(11, record.required_minimum)?;
+    frame.field_bytes(12, encode_fastpath_bond_state(&record.state)?)?;
     Ok(frame.finish()?)
 }
 
@@ -331,7 +450,7 @@ pub fn decode_fastpath_bond_record(bytes: &[u8]) -> Result<FastPathBondRecord, N
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(FASTPATH_BOND_RECORD_TYPE)?;
     frame.require_version(1)?;
-    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8])?;
+    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])?;
     let context: PublicationContext = decode_publication_context(frame.required_field(1)?)
         .map_err(|_| NodeCoreError::PersistenceInvariant("invalid bond context"))?;
     let validator_bytes: [u8; 32] = frame
@@ -355,6 +474,10 @@ pub fn decode_fastpath_bond_record(bytes: &[u8]) -> Result<FastPathBondRecord, N
         authority,
         amount: frame.required_u64(7)?,
         committed_at_checkpoint: frame.required_u64(8)?,
+        generation: frame.required_u64(9)?,
+        lifecycle_epoch: Epoch::new(frame.required_u64(10)?),
+        required_minimum: frame.required_u64(11)?,
+        state: decode_fastpath_bond_state(frame.required_field(12)?)?,
     };
     if encode_fastpath_bond_record(&record)? != bytes {
         return Err(NodeCoreError::PersistenceInvariant(

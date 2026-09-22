@@ -43,6 +43,7 @@ use system_modules::{ModuleId, SystemModule, SystemModuleError};
 
 mod authenticated_object_effects;
 mod durable_reconciliation;
+pub mod economics;
 pub mod epoch_transition;
 pub mod equivocation;
 pub mod fast_path;
@@ -4290,7 +4291,7 @@ impl<'a> PreinstalledWasmMachine<'a> {
         };
 
         let request = FeeChargeRequest {
-            asset_id: fee_payment.asset_id,
+            resource: *fee_payment.asset_id.as_bytes(),
             amount,
             payer_body: &payer_effective_body,
             treasury_body: &treasury_loaded.data,

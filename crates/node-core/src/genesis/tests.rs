@@ -9,8 +9,9 @@ use execution::local_execution::{
 };
 use execution::paid_execution::{MIN_RESERVE_ALLOWANCE, MIN_SETTLE_ALLOWANCE, PaidFeePolicy};
 use execution::publication::{
-    ArtifactParts, CodeArtifact, PublicationContext, PublicationRequest, PublicationSubmission,
-    UnverifiedDependencyRef, artifact_commitment, publication_submission_signing_frame,
+    ArtifactParts, BindingError, BodyError, CodeArtifact, PublicationContext, PublicationRequest,
+    PublicationSubmission, UnverifiedDependencyRef, artifact_commitment,
+    publication_submission_signing_frame,
 };
 use fees::GasSchedule;
 use hashing::HashSuiteResolver;
@@ -36,9 +37,14 @@ use runtime_sqlite::{SqliteDurableStore, SqliteNamespace};
 use sha2::{Digest, Sha256};
 
 use super::*;
-use crate::fast_path::records::{FastPathBondRecord, decode_fastpath_bond_record};
+use crate::economics::{FastPathEconomicsPolicy, FastPathEconomicsResourcePolicy};
+use crate::fast_path::records::{
+    FastPathBondRecord, FastPathBondState, decode_fastpath_bond_record,
+};
 use crate::fast_path::{FastPathValidatorEntry, FastPathValidatorSetRecord};
 use crate::local_instance_state::fastpath_bond_record_key;
+use bonds::{BondResourceConfig, BondResourceId};
+use fees::Amount;
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -197,6 +203,32 @@ fn build_fixture() -> (
         publish_artifact_byte_price: 1,
         publish_closure_node_price: 1,
     };
+    let (resource_domain, resource): (u16, [u8; 32]) = match coin_tag.args() {
+        [abi::package_types::ScopedTypeArg::Opaque { domain, value }] => (*domain, *value),
+        _ => panic!("fixture coin type must carry one opaque resource"),
+    };
+    let resource_id: BondResourceId = BondResourceId::new(resource_domain, resource).unwrap();
+    let economics_policy: FastPathEconomicsPolicy = FastPathEconomicsPolicy {
+        context: protocol(),
+        resources: vec![FastPathEconomicsResourcePolicy {
+            resource_id,
+            context: protocol(),
+            instance: target.clone(),
+            code: code_ref.clone(),
+            ty: coin_tag.clone(),
+            schema: public_standard_asset::SCHEMA_VERSION,
+            split_entrypoint: "split".to_owned(),
+            transfer_entrypoint: "transfer".to_owned(),
+            bond: Some(BondResourceConfig {
+                resource_id,
+                min_bond: Amount::new(100),
+                enabled: true,
+                unbonding_epochs: 7,
+                max_validator_exposure: None,
+            }),
+            fee_escrow: true,
+        }],
+    };
 
     let def_type_hash = derive_scoped_type_id(&resolver(), Epoch::new(0), &def_tag).unwrap();
     let coin_type_hash = derive_scoped_type_id(&resolver(), Epoch::new(0), &coin_tag).unwrap();
@@ -247,6 +279,7 @@ fn build_fixture() -> (
         publication: submission,
         initialization: signed_init,
         fee_policy,
+        economics_policy,
         objects: vec![
             GenesisObjectEntry {
                 object: def_obj,
@@ -373,6 +406,10 @@ fn genesis_installs_protocol_custody_object_for_matching_chain() {
     assert_eq!(bond.custody_object.id, custody_id);
     assert_eq!(bond.amount, 1_000_000);
     assert_eq!(bond.committed_at_checkpoint, 10);
+    assert_eq!(bond.generation, 1);
+    assert_eq!(bond.lifecycle_epoch, Epoch::new(0));
+    assert_eq!(bond.required_minimum, 100);
+    assert_eq!(bond.state, FastPathBondState::Active);
 
     let restart_outcome =
         install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap();
@@ -416,6 +453,41 @@ fn genesis_rejects_protocol_custody_object_bound_to_another_chain() {
             .unwrap(),
         DurableObjectHead::Absent
     ));
+}
+
+#[test]
+fn genesis_rejects_derived_protocol_custody_purposes() {
+    let purposes: [ProtocolCustodyPurpose; 2] = [
+        ProtocolCustodyPurpose::FeeEscrow,
+        ProtocolCustodyPurpose::ForfeitedCollateral,
+    ];
+    for (index, purpose) in purposes.into_iter().enumerate() {
+        let suffix: u8 = u8::try_from(index).unwrap();
+        let custody_id: ObjectId = ObjectId::new([0x40_u8 + suffix; 32]);
+        let mut manifest: GenesisManifest = manifest_with_custody(custody_id);
+        let scope: &mut ProtocolCustodyScope =
+            match &mut manifest.objects.last_mut().unwrap().object.owner {
+                Owner::ProtocolCustody(scope) => scope,
+                _ => panic!("expected protocol custody owner"),
+            };
+        scope.purpose = purpose;
+        resign_manifest(&mut manifest);
+
+        let store: MemoryDurableStateStore =
+            MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+        let error: GenesisError =
+            install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap_err();
+        assert!(matches!(
+            error,
+            GenesisError::Invalid("protocol custody purpose cannot be installed at genesis")
+        ));
+        assert_eq!(
+            store
+                .get_object_head(&context(1), domain(), custody_id)
+                .unwrap(),
+            DurableObjectHead::Absent
+        );
+    }
 }
 
 #[test]
@@ -769,11 +841,11 @@ fn genesis_rejects_shared_owner_object() {
 fn stable_vectors_0x6416_manifest_and_0x6417_marker() {
     let (manifest, _, _, _, _) = build_fixture();
     let manifest_bytes = encode_genesis_manifest(&manifest).unwrap();
-    assert_eq!(manifest_bytes.len(), 16178);
+    assert_eq!(manifest_bytes.len(), 17210);
     let manifest_sha256 = hex(&Sha256::digest(&manifest_bytes));
     assert_eq!(
         manifest_sha256,
-        "f3b70b105f64a021566b8221644ddeedecad64e060ad2069b004c7db679b35d4"
+        "84bbd63b21df55e77f595982d6f261068c72079f87872cc04a931789f3bba215"
     );
 
     let decoded = decode_genesis_manifest(&manifest_bytes).unwrap();
@@ -791,7 +863,7 @@ fn stable_vectors_0x6416_manifest_and_0x6417_marker() {
     let marker_sha256 = hex(&Sha256::digest(&marker_bytes));
     assert_eq!(
         marker_sha256,
-        "4539c12765ea9166c7bfeee95cb3db430b231c00c39ed4de6132a2cc24b3ebab"
+        "1e134d0daf7a42936031a7098bdfab1e82b08d13c279123f8cc20a1e2cfe56a5"
     );
 
     let decoded_marker = decode_genesis_install_marker(&marker_bytes).unwrap();
@@ -872,6 +944,8 @@ fn fresh_install_and_verify_only_restart_in_memory() {
     let exec_pol_key =
         local_instance_state::execution_policy_key_for_profile(&protocol(), 4).unwrap();
     let fee_pol_key = local_instance_state::paid_fee_policy_key(&protocol()).unwrap();
+    let economics_policy_key =
+        local_instance_state::fastpath_economics_policy_key(&protocol()).unwrap();
 
     assert!(
         store
@@ -879,6 +953,17 @@ fn fresh_install_and_verify_only_restart_in_memory() {
             .unwrap()
             .value()
             .is_some()
+    );
+    assert_eq!(
+        store
+            .get_versioned_durable(&context(1), domain(), &economics_policy_key)
+            .unwrap()
+            .value(),
+        Some(
+            encode_fastpath_economics_policy(&manifest.economics_policy)
+                .unwrap()
+                .as_slice()
+        )
     );
     assert!(
         store
@@ -1342,6 +1427,45 @@ fn missing_or_tampered_records_fail_closed() {
         err3,
         GenesisError::TamperedInstalledRecord("fast-path validator set")
     ));
+
+    // 4. The separately persisted economics policy is verified byte-for-byte
+    // on restart and cannot be repaired from the still-valid manifest row.
+    let store4: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    install_genesis(&store4, &context(1), domain(), &resolver(), &manifest, 10).unwrap();
+    let economics_key: Vec<u8> =
+        local_instance_state::fastpath_economics_policy_key(&protocol()).unwrap();
+    let economics_observation: VersionedStateValue = store4
+        .get_versioned_durable(&context(1), domain(), &economics_key)
+        .unwrap();
+    let mut tampered_economics: Vec<u8> = economics_observation
+        .value()
+        .expect("genesis economics policy")
+        .to_vec();
+    *tampered_economics.last_mut().expect("non-empty policy") ^= 0x01;
+    let tamper_economics: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(economics_key.clone(), economics_observation.revision())
+                .unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(economics_key, StateMutation::Put(tampered_economics)).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store4.commit_durable(&context(1), tamper_economics),
+        DurableCommitOutcome::Committed
+    );
+    let err4: GenesisError =
+        install_genesis(&store4, &context(1), domain(), &resolver(), &manifest, 10).unwrap_err();
+    assert!(matches!(
+        err4,
+        GenesisError::TamperedInstalledRecord("fast-path economics policy")
+    ));
 }
 
 #[test]
@@ -1374,6 +1498,130 @@ fn fee_abi_admission_mismatch_fails_closed() {
     let err =
         install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap_err();
     assert!(matches!(err, GenesisError::FeeInterfaceAdmission(_)));
+}
+
+#[test]
+fn signed_economics_policy_fails_closed_on_fee_bond_and_abi_mismatch() {
+    let (mut fee_disabled, _, _, _, _) = build_fixture();
+    fee_disabled.economics_policy.resources[0].fee_escrow = false;
+    resign_manifest(&mut fee_disabled);
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let error: GenesisError = install_genesis(
+        &store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &fee_disabled,
+        10,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::Invalid("fee resource does not match the signed economics policy")
+    ));
+
+    let mut below_minimum: GenesisManifest = manifest_with_custody(ObjectId::new([0x61; 32]));
+    below_minimum.economics_policy.resources[0]
+        .bond
+        .as_mut()
+        .unwrap()
+        .min_bond = Amount::new(2_000_000);
+    resign_manifest(&mut below_minimum);
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let error: GenesisError = install_genesis(
+        &store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &below_minimum,
+        10,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::Invalid("bond violates the signed economics policy")
+    ));
+
+    let (mut unknown_entrypoint, _, _, _, _) = build_fixture();
+    unknown_entrypoint.economics_policy.resources[0].split_entrypoint = "unknown_split".to_owned();
+    resign_manifest(&mut unknown_entrypoint);
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let error: GenesisError = install_genesis(
+        &store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &unknown_entrypoint,
+        10,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::Invalid("economics resource entrypoint is not in the authenticated ABI")
+    ));
+
+    let (mut unknown_constructor, _, _, _, _) = build_fixture();
+    let mut unused_resource: FastPathEconomicsResourcePolicy =
+        unknown_constructor.economics_policy.resources[0].clone();
+    let unused_value: [u8; 32] = [0xFF; 32];
+    unused_resource.resource_id = BondResourceId::new(7, unused_value).unwrap();
+    unused_resource.ty = abi::package_types::ScopedTypeTag::new(
+        unused_resource.ty.origin().clone(),
+        u16::MAX,
+        vec![abi::package_types::ScopedTypeArg::Opaque {
+            domain: 7,
+            value: unused_value,
+        }],
+    )
+    .unwrap();
+    unused_resource.bond = None;
+    unused_resource.fee_escrow = true;
+    unknown_constructor
+        .economics_policy
+        .resources
+        .push(unused_resource);
+    unknown_constructor
+        .economics_policy
+        .resources
+        .sort_by_key(|resource: &FastPathEconomicsResourcePolicy| resource.resource_id);
+    resign_manifest(&mut unknown_constructor);
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let error: GenesisError = install_genesis(
+        &store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &unknown_constructor,
+        10,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::Body(BodyError::Binding(BindingError::UnknownConstructor))
+    ));
+
+    let (mut wrong_schema, _, _, _, _) = build_fixture();
+    wrong_schema.economics_policy.resources[0].schema += 1;
+    resign_manifest(&mut wrong_schema);
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let error: GenesisError = install_genesis(
+        &store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &wrong_schema,
+        10,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::Body(BodyError::Binding(BindingError::SchemaMismatch))
+    ));
 }
 
 #[test]

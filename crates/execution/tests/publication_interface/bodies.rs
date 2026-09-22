@@ -389,6 +389,7 @@ fn observe_nominal_value_positive_u64_and_error_cases() {
     let call: CallAbi = envelope(generic(1), vec![ValueLayout::U64]);
     let interface = verify_publication_interface(signed(&call, &[]), vec![]).unwrap();
     let tag = ScopedTypeTag::new(origin(1), 1, vec![opaque()]).unwrap();
+    assert_eq!(validate_nominal_declaration(&interface, &tag, 1), Ok(()));
 
     // Positive U64 is returned exactly
     let positive_val = 42_u64;
@@ -425,6 +426,10 @@ fn observe_nominal_value_positive_u64_and_error_cases() {
     // Wrong schema fails with SchemaMismatch
     let wrong_schema = 2;
     assert_eq!(
+        validate_nominal_declaration(&interface, &tag, wrong_schema),
+        Err(BodyError::Binding(BindingError::SchemaMismatch))
+    );
+    assert_eq!(
         observe_nominal_value(&interface, &tag, wrong_schema, &u64_bytes),
         Err(BodyError::Binding(BindingError::SchemaMismatch))
     );
@@ -435,6 +440,10 @@ fn observe_nominal_value_positive_u64_and_error_cases() {
 
     // Unknown nominal type: constructor not present in defining ABI
     let unknown_ctor_tag = ScopedTypeTag::new(origin(1), 99, vec![]).unwrap();
+    assert_eq!(
+        validate_nominal_declaration(&interface, &unknown_ctor_tag, 1),
+        Err(BodyError::Binding(BindingError::UnknownConstructor))
+    );
     assert_eq!(
         observe_nominal_value(&interface, &unknown_ctor_tag, 1, &u64_bytes),
         Err(BodyError::Binding(BindingError::UnknownConstructor))

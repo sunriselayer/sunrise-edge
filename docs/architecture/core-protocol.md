@@ -550,8 +550,19 @@ prerequisite, non-signable protocol custody. DR-0136 recognizes a closed
 genesis subset as typed, positive validator bonds by observing their value
 only through authenticated generic executable-ABI metadata and commits exact
 `0x642A/v1` rows atomically with genesis. It adds no custody mutation or
-external ingress. FastVote overall remains incomplete until phase 3. See
-DR-0129 through DR-0136 and `TODO.md` for exact evidence and remaining
+external ingress. DR-0137 fixes the remaining Phase 3 authority model: one
+signed economics policy pins the public-contract resource/type/instance/
+schema and release entrypoints; bond lifecycle, verified-evidence forfeiture,
+certified fee escrow and signer claims all use the same generic custody-effect
+validation and CAS-fenced durable boundary. It explicitly forbids direct body
+rewrites and Standard Asset knowledge in node core. Its first implementation
+unit is complete locally: resource-generic bond policy, signed economics
+resource/policy frames (`0x642B`/`0x642C`), authoritative bond lifecycle state
+(`0x642A` plus `0x642D`), reserved durable policy storage, clean-v1 genesis
+signature coverage and byte-exact restart verification. Custody execution,
+bond mutations, slashing and fee claims remain closed. FastVote overall
+remains incomplete until the remaining three units and their review gate pass.
+See DR-0129 through DR-0137 and `TODO.md` for exact evidence and remaining
 activation gates.
 
 ## 12. Certificate lifecycle
