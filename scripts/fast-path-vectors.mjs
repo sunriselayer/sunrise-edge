@@ -8,14 +8,15 @@
 // validator-id list (0x6421), validator-entry list (0x6422) and
 // validator-entry (0x6423) frames, the staged-commit commitment envelope
 // (0x6424) plus its `HashPurpose::ExecutionEffects` digest, the nonce lock
-// (0x6425), the DR-0131 committed epoch record (0x6426), and DR-0132's
+// (0x6425), the DR-0131 committed epoch record (0x6426), DR-0132's
 // epoch-transition record (0x6427) and activation-set digest preimage
-// (0x6428). No Rust encoder is invoked; this reimplements the shared canonical-frame layout
+// (0x6428), and DR-0133's fastpath equivocation evidence record (0x6429). No Rust encoder is invoked; this reimplements the shared canonical-frame layout
 // (crates/canonical-encoding), the self-describing Digest32 frame (0x0103),
 // the PublicationContext frame (0x6301), the ObjectRef/ObjectId frames
 // (0x4004/0x4001) and the domain-separated hash frame (0x1001) from
 // scratch, and checks the result against the exact hex pinned by the
-// co-located Rust vectors in crates/node-core/src/fast_path/tests.rs.
+// co-located Rust vectors in crates/node-core/src/fast_path/tests.rs and
+// crates/node-core/src/equivocation/tests.rs.
 // Run: node scripts/fast-path-vectors.mjs
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
@@ -256,6 +257,13 @@ const commitmentDigest = hashForPurpose(
   commitmentEnvelope,
 );
 
+// ---- FastPathEquivocationEvidenceRecord 0x6429/v1 (DR-0133) ----
+const FASTPATH_EQUIVOCATION_EVIDENCE_RECORD_TYPE_ID = 0x6429;
+const equivocationEvidenceRecord = frame(FASTPATH_EQUIVOCATION_EVIDENCE_RECORD_TYPE_ID, [
+  [1, Buffer.from([0xaa, 0xbb, 0xcc])],
+  [2, uint(0x42, 8)],
+]);
+
 const vectors = {
   fastpathLockRecord0x641b: lockRecord,
   fastpathNonceLockRecord0x6425: nonceLockRecord,
@@ -274,6 +282,7 @@ const vectors = {
   fastpathValidatorEntryList0x6422: validatorEntryList,
   fastpathValidatorEntry0x6423: firstValidatorEntry,
   fastpathCommitmentEnvelope0x6424: commitmentEnvelope,
+  fastpathEquivocationEvidenceRecord0x6429: equivocationEvidenceRecord,
 };
 
 const expected = {
@@ -294,6 +303,7 @@ const expected = {
   fastpathValidatorEntryList0x6422: '534e52452264010003000100040000000200000002004f000000534e524523640100040001002000000011111111111111111111111111111111111111111111111111111111111111110200080000006400000000000000030002000000010004000300000022222203004f000000534e52452364010004000100200000003333333333333333333333333333333333333333333333333333333333333333020008000000c8000000000000000300020000000100040003000000444444',
   fastpathValidatorEntry0x6423: '534e5245236401000400010020000000111111111111111111111111111111111111111111111111111111111111111102000800000064000000000000000300020000000100040003000000222222',
   fastpathCommitmentEnvelope0x6424: '534e5245246401000a00010038000000534e52450301010002000100020000000100020020000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1020004000000a2a2a2a2030004000000000000000400290000000000000100000021b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0000500290000000000000100000021b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b000060017000000000000010000000f00000003b1b1b10000000000000006070016000000000000010000000e00000003b2b2b20100000002b3b3080004000000a3a3a3a309000800000005000000000000000a0004000000a4a4a4a4',
+  fastpathEquivocationEvidenceRecord0x6429: '534e5245296401000200010003000000aabbcc0200080000004200000000000000',
 };
 
 for (const [name, bytes] of Object.entries(vectors)) {

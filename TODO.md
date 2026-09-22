@@ -36,8 +36,10 @@ authorization/fencing, implemented in
 [DR-0131](docs/architecture/decisions/0131-fastvote-validator-lifecycle.md),
 which also fixes slices 2-4's safety contract, including the key
 transition safety proof; slice 2, epoch transition, implemented in
-[DR-0132](docs/architecture/decisions/0132-fastvote-epoch-transition.md),
-and slices 3-4's detailed wire/API decisions remain pending);
+[DR-0132](docs/architecture/decisions/0132-fastvote-epoch-transition.md);
+slice 3, equivocation evidence, implemented and locally validated in
+[DR-0133](docs/architecture/decisions/0133-fastvote-equivocation-evidence.md);
+and only slice 4's detailed wire/API decision remains pending);
 and phase 3, economics/security completion (bond-linked slashing and
 deterministic fee distribution to the final certificate signer set, not yet
 designed). **FastVote is complete only after phase 3, and phase 2 is not
@@ -50,7 +52,7 @@ that is not FastVote completion.
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Implemented and validated (DR-0128); focused Codex Security scan found 0 reportable findings and fresh Opus review approved |
-| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0 and 1 implemented and locally validated** (DR-0129/DR-0130). Phase 1 is a local Rust `node-core` boundary only: four independent file-backed SQLite validator stores form and apply a real quorum certificate; restart/replay, conflict, commitment mismatch, fencing and indeterminate-commit cases are covered; new frames have independent JS vectors. It exposes no FastVote HTTP/CLI ingress. **Phase 2 (validator lifecycle, 4 slices) has its architecture fixed and slices 1-2 implemented** ([DR-0131](docs/architecture/decisions/0131-fastvote-validator-lifecycle.md), [DR-0132](docs/architecture/decisions/0132-fastvote-epoch-transition.md)): slice 1 is a CAS-fenced `FastPathEpochRecord`/epoch-stamped object lock, the shared two-tier mutation-fencing layer used by every current mutation path, duplicate validator public-key rejection, and the one shared reserved-request-id boundary; slice 2 is the outgoing-set-certified `e -> e+1` epoch transition itself (`propose_and_vote`/`activate`, atomic five-row activation, restart-verify chain re-derivation, stale-lock/prepared-record reclamation), making retired-validator and wrong-epoch rejection end-to-end observable for the first time; both evidenced by dedicated adversarial tests (including real-thread CAS races and restart-verify tamper-surface coverage) and independent `0x6426`/`0x641B`/`0x6427`-`0x6428`/`0xD009`-`0xD00B` JS vectors; slices 3-4 remain unimplemented and phase 2 is not complete until slice 4 closes; slices 3-4's safety contract is fixed in DR-0131 too, and their detailed wire/API decisions remain pending; and **phase 3 (economics/security completion: slashing, fee distribution) remains not yet designed.** FastVote is complete only after phase 3; a testnet may launch after phase 1, but that is not FastVote completion |
+| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0 and 1 implemented and locally validated** (DR-0129/DR-0130). Phase 1 is a local Rust `node-core` boundary only: four independent file-backed SQLite validator stores form and apply a real quorum certificate; restart/replay, conflict, commitment mismatch, fencing and indeterminate-commit cases are covered; new frames have independent JS vectors. It exposes no FastVote HTTP/CLI ingress. **Phase 2 (validator lifecycle, 4 slices) has its architecture fixed and slices 1-3 implemented** ([DR-0131](docs/architecture/decisions/0131-fastvote-validator-lifecycle.md), [DR-0132](docs/architecture/decisions/0132-fastvote-epoch-transition.md), [DR-0133](docs/architecture/decisions/0133-fastvote-equivocation-evidence.md)): slice 1 is a CAS-fenced `FastPathEpochRecord`/epoch-stamped object lock, the shared two-tier mutation-fencing layer used by every current mutation path, duplicate validator public-key rejection, and the one shared reserved-request-id boundary; slice 2 is the outgoing-set-certified `e -> e+1` epoch transition itself (`propose_and_vote`/`activate`, atomic five-row activation, restart-verify chain re-derivation, stale-lock/prepared-record reclamation), making retired-validator and wrong-epoch rejection end-to-end observable for the first time; both evidenced by dedicated adversarial tests (including real-thread CAS races and restart-verify tamper-surface coverage) and independent `0x6426`/`0x641B`/`0x6427`-`0x6428`/`0xD009`-`0xD00B` JS vectors; slice 3 (equivocation evidence covering same-transaction, cross-transaction same-object-version, and epoch-transition-conflicting-target misconduct) implemented and locally validated in [DR-0133](docs/architecture/decisions/0133-fastvote-equivocation-evidence.md), revising `FastVote`/`FastCertificate` v1 in place with `locked_objects_digest`, implementing canonical frames `0xD00C`-`0xD00F` and record `0x6429`, normalized signature-excluding evidence identity, restart-verified transition-chain anchored validator set resolution, and deterministic transactional recording/query; slice 4 remains unimplemented and phase 2 is not complete until slice 4 closes; only slice 4's detailed wire/API decision remains pending; and **phase 3 (economics/security completion: slashing, fee distribution) remains not yet designed.** FastVote is complete only after phase 3; a testnet may launch after phase 1, but that is not FastVote completion |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
 Asset creation was the final focused delta before FastVote/multi-validator
@@ -58,10 +60,11 @@ integration. DR-0129 phase 0 supplied its canonical-types/codec foundation;
 DR-0130 phase 1 supplies local certified execution without adding external
 ingress. DR-0131 fixes phase 2's architecture and implements slice 1
 (general mutation authorization/fencing); DR-0132 fixes and implements
-slice 2's design (epoch transition); phase 2 slices 3-4's detailed wire/API
-decisions and phase 3 economics/security completion still require their own
-design decisions, complete repository gates, and fresh reviews
-before being claimed done. Contract
+slice 2's design (epoch transition); DR-0133 implements and locally validates
+slice 3 (equivocation evidence); slice 4's detailed design and implementation,
+and phase 3 economics/security completion still require their complete repository
+gates and fresh reviews before being claimed done.
+Contract
 upgrades/migrations remain a separate explicit
 capability after the initial immutable-code flow, not a prerequisite for
 claiming that first flow. Production recovery/HA/provider certification,
@@ -2603,8 +2606,10 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
   slices 2-4's safety contract is fixed there. Slice 2's detailed wire/API
   design is accepted and now implemented per
   [DR-0132](docs/architecture/decisions/0132-fastvote-epoch-transition.md);
-  slices 3-4's detailed wire/API decisions remain pending their own
-  ADRs).** Epoch/validator-set transitions,
+  Slice 3's detailed design is accepted and now implemented per
+  [DR-0133](docs/architecture/decisions/0133-fastvote-equivocation-evidence.md),
+  and only Slice 4's detailed wire/API decision remains pending).**
+  Epoch/validator-set transitions,
   retired/wrong-epoch rejection, relay/event-family authorization, explicit
   equivocation evidence, and multi-validator fault/restart tests. Must
   guarantee that any lock-recovery procedure it introduces can never permit
@@ -2751,11 +2756,24 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
     still owns that) and does not authorize testnet or production
     activation of any new ingress — see DR-0132 for the exact records,
     invariants, and completion criteria.
-  - [ ] **Slice 3 — equivocation evidence (safety contract fixed by
-    DR-0131; detailed wire/API decision pending).** Explicit canonical
-    equivocation evidence, adding `locked_objects_digest` or another
-    lock-set preimage only if needed, normalized for later phase 3
-    slashing; no economics implemented.
+  - [x] **Slice 3 — equivocation evidence (implemented, 2026-09-22; see
+    [DR-0133](docs/architecture/decisions/0133-fastvote-equivocation-evidence.md)'s
+    slice completion criteria).**
+    Explicit canonical equivocation evidence covering same-transaction
+    conflicting-outcome (`0xD00D/v1`), cross-transaction same-object-version
+    (via `0xD00E/v1` and the in-place `FastVote`/`FastCertificate`
+    `locked_objects_digest` extension and `0xD00C/v1`
+    `LockedObjectSetPreimage`, no v2/compat layer), and epoch-transition
+    conflicting-target misconduct (`0xD00F/v1`), with durable record `0x6429/v1`
+    in `crates/node-core/src/equivocation.rs`. Strict recheck of
+    `locked_objects_digest` on exact prepare replay and before certificate
+    apply; normalized signature-excluding evidence identity; historical
+    validator resolution anchored against the restart-verified transition
+    chain; transactional, tamper-detecting store/query with deterministic
+    `AlreadyRecorded`; comprehensive unit/adversarial tests across `consensus`
+    and `node-core`; and independent wire vectors in `scripts/fast-vote-vectors.mjs`
+    and `scripts/fast-path-vectors.mjs`. Phase 2 remains open with Slice 4 next;
+    Phase 3 economics/slashing remains incomplete.
   - [ ] **Slice 4 — authorization-class declaration and gate closure
     (safety contract fixed by DR-0131; detailed wire/API decision
     pending).** Declares each phase 2 mutation's authorization class

@@ -229,3 +229,12 @@ reviews and requires them to be refreshed.
   ingress is implemented and reviewed. The next slice (validator-side
   execution, locking, atomic publication, and ingress) requires a separate
   decision.
+* **[DR-0133](0133-fastvote-equivocation-evidence.md) (2026-09-22, design
+  only, not implemented) extends `FastVote`/`FastCertificate`'s (`0xD006`,
+  `0xD008`) canonical v1 payload in place**, adding a `locked_objects_digest`
+  field needed to evidence a validator locking the same object version
+  across two different transactions. This repository is unreleased: there is
+  no `0xD006`v2 or compatibility decoder: the version-1 wire layout simply
+  changes, exactly as DR-0131 later redefined `0x641B` in place. Pre-DR-0133
+  encoded bytes, including this DR's own pinned vectors, no longer decode
+  once that revision is implemented.

@@ -375,3 +375,11 @@ form used by DR-0121-DR-0129:
   implementation PR to define, vector, and review.
 - `ChainedHotStuff`, shared-object consensus, and Standard Asset's status as
   ordinary paid contract state are unchanged by this DR.
+- **[DR-0133](0133-fastvote-equivocation-evidence.md) (2026-09-22, design
+  only, not implemented) extends `FastVote`'s canonical v1 payload in place**
+  with a `locked_objects_digest` field hashed from this DR's own
+  `PaidAdmissionOutput::locked_objects`, threaded through the `cast_vote`
+  call site this DR introduced (`fast_path.rs`'s `certifier.cast_vote(event_digest,
+  commitment, signer)`, which gains a third argument). This is an in-place
+  wire revision, not a new field this DR itself defines; no v2 or
+  compatibility decoder exists in this unreleased repository.

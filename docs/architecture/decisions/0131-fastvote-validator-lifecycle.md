@@ -24,7 +24,10 @@ end-to-end effect beyond what
 (membership against one static genesis set) until Slice 2's transition
 existed. Completing Slices 1-2 does not close the FastVote Certified
 Execution Gate's Phase 2 entry in `TODO.md`. FastVote remains incomplete
-until Phase 3.
+until Phase 3. [DR-0133](0133-fastvote-equivocation-evidence.md) fixes
+Slice 3's detailed design (evidence envelope, conflict keys, historical
+verification rule, persistence key) but is design-only: Slice 3 is not
+implemented.
 
 ## Context
 
@@ -81,12 +84,16 @@ must never derive different active authority sets from local configuration.
   Retired-validator and wrong-epoch rejection are now end-to-end observable.
   DR-0132 also corrects seven of this DR's own assumptions that would
   otherwise block Slice 2 (see Status).
-* **Slice 3 (architecture fixed here; detailed wire/API decision pending).**
-  Explicit canonical equivocation evidence — two conflicting signed
-  statements from the same validator for the same context — normalized so
-  Phase 3 slashing can consume it later, adding `locked_objects_digest` or
-  another lock-set preimage to existing frames only if the evidence design
-  needs one. No economics (bonding, penalties, distribution) implemented.
+* **Slice 3 (architecture fixed here; detailed design accepted, not yet
+  implemented, in [DR-0133](0133-fastvote-equivocation-evidence.md)).**
+  Explicit canonical equivocation evidence covering same-transaction
+  conflicting-outcome, cross-transaction same-object-version, and
+  epoch-transition conflicting-target misconduct, normalized so Phase 3
+  slashing can consume it later. DR-0133 does add `locked_objects_digest`,
+  extending `FastVote`/`FastCertificate`'s canonical v1 payload in place (no
+  v2, this repository is unreleased) — the cross-transaction case cannot be
+  evidenced without it. No economics (bonding, penalties, distribution)
+  implemented.
 * **Slice 4 (architecture fixed here; detailed wire/API decision pending).**
   Declares which authorization class each Phase 2 mutation belongs to
   (local-operator-authorized vs. validator-authenticated vs. still-closed
@@ -380,8 +387,11 @@ real transition ([DR-0132](0132-fastvote-epoch-transition.md), implemented).
   Slice 2's own scope; their safety contract is fixed by the "Key transition
   safety proof" above and their detailed design and implementation are now
   in [DR-0132](0132-fastvote-epoch-transition.md).
-- Explicit canonical equivocation evidence, and any `locked_objects_digest`
-  or lock-set preimage it needs, remain Slice 3 to implement.
+- Explicit canonical equivocation evidence remains Slice 3 to implement; its
+  detailed design — including an in-place `FastVote`/`FastCertificate`
+  `locked_objects_digest` extension — is now fixed by
+  [DR-0133](0133-fastvote-equivocation-evidence.md), design-only as of that
+  DR.
 - Authorization-class declaration and closing the still-closed external
   ingress boundary for Phase 2 as a whole remain Slice 4 to implement.
 - Lock recovery for an intent whose certificate never forms is unchanged

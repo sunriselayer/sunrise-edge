@@ -44,6 +44,7 @@ use system_modules::{ModuleId, SystemModule, SystemModuleError};
 mod authenticated_object_effects;
 mod durable_reconciliation;
 pub mod epoch_transition;
+pub mod equivocation;
 pub mod fast_path;
 pub mod fee_effects;
 pub mod genesis;
@@ -97,8 +98,9 @@ pub use preinstalled_wasm::{
     encode_preinstalled_typed_entrypoint_policy, reconcile_preinstalled_registry_and_catalog,
 };
 pub use query::{
-    ObjectQueryResult, ReceiptQueryResult, query_committed_epoch_state, query_object,
-    query_request_receipt, query_sender_next_nonce,
+    ObjectQueryResult, ReceiptQueryResult, query_committed_epoch_state,
+    query_fastpath_equivocation_evidence, query_object, query_request_receipt,
+    query_sender_next_nonce,
 };
 pub use transaction_auth::{
     AuthenticatedTransaction, MAX_TRANSACTION_SIGNABLE_BYTES, SUBMIT_TRANSACTION_SIGNABLE_TYPE_ID,

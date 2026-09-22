@@ -952,6 +952,7 @@ mod tests {
             execution_effects_hash: vote.activation_digest,
             validator: validator_id(1),
             signature_scheme: SignatureSchemeId::Ed25519,
+            locked_objects_digest: vote.next_validator_set_digest,
             signature: Vec::new(),
         };
         let payload = crate::encode_fast_vote_payload(&fast_vote).unwrap();
@@ -1000,6 +1001,7 @@ mod tests {
             execution_effects_hash: vote.activation_digest,
             validator: vote.validator,
             signature_scheme: vote.signature_scheme,
+            locked_objects_digest: vote.next_validator_set_digest,
             signature: vote.signature.clone(),
         };
         assert_eq!(

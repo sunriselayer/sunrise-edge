@@ -13,9 +13,9 @@
 
 use super::{
     MAX_AUTHENTICATED_OBJECT_BODY_BYTES, NodeCoreError, NodeDedupRecord, RequestId,
-    SenderNonceRecord, local_instance_state,
+    SenderNonceRecord, equivocation, local_instance_state,
 };
-use hashing::HashingError;
+use hashing::{HashSuiteResolver, HashingError};
 use objects::{Object, ObjectId};
 use protocol_types::{ChainId, Digest32, Epoch, HashPurpose, ProtocolVersion};
 use runtime::{
@@ -419,4 +419,68 @@ where
         event_digest: receipt.event_digest(),
         record,
     })
+}
+
+/// Queries one durable DR-0133 equivocation-evidence row by its exact
+/// selector: `chain`/`evidence_epoch`/`validator`/`conflict_digest`.
+///
+/// This does not return whatever merely decodes at the key: after decoding,
+/// it recomputes the record's own normalized-identity digest (dispatched to
+/// whichever of the three evidence classes the nested type id names) and
+/// requires it, and the decoded chain/epoch/validator, equal the caller's
+/// own selector. A caller must be able to trust that a returned record
+/// actually answers the exact selector it asked for, not merely "something
+/// happened to be stored at that key" -- so any disagreement is
+/// [`NodeCoreError::PersistenceInvariant`], never a silent wrong-answer
+/// return.
+#[allow(clippy::too_many_arguments)]
+pub fn query_fastpath_equivocation_evidence<S>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    chain: &ChainId,
+    evidence_epoch: Epoch,
+    validator: [u8; 32],
+    conflict_digest: Digest32,
+) -> Result<Option<equivocation::FastPathEquivocationEvidenceRecord>, NodeCoreError>
+where
+    S: StructuredDurableDomainStateStore,
+{
+    let key: Vec<u8> = local_instance_state::fastpath_equivocation_evidence_key(
+        chain,
+        evidence_epoch,
+        validator,
+        conflict_digest,
+    )?;
+    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let Some(bytes) = observed.value() else {
+        return Ok(None);
+    };
+    let record: equivocation::FastPathEquivocationEvidenceRecord =
+        equivocation::decode_fastpath_equivocation_evidence_record(bytes)?;
+    let decoded: equivocation::DecodedEquivocationEvidence =
+        equivocation::decode_dispatched(&record.evidence_bytes).map_err(|_| {
+            NodeCoreError::PersistenceInvariant("stored equivocation evidence does not decode")
+        })?;
+    if decoded.chain_id() != chain
+        || decoded.epoch() != evidence_epoch
+        || *decoded.validator().as_bytes() != validator
+    {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "stored equivocation evidence does not match its own key selector",
+        ));
+    }
+    let identity_digest: Digest32 = equivocation::normalized_identity_digest(resolver, &decoded)
+        .map_err(|_| {
+            NodeCoreError::PersistenceInvariant(
+                "stored equivocation evidence normalized identity could not be recomputed",
+            )
+        })?;
+    if identity_digest != conflict_digest {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "stored equivocation evidence does not match its own key digest",
+        ));
+    }
+    Ok(Some(record))
 }

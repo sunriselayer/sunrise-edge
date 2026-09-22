@@ -40,7 +40,7 @@ use publication::{LocalPublicationPolicy, PublicationAdmissionError};
 use validator_set::{ValidatorInfo, ValidatorSet, ValidatorSetError};
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 const FASTPATH_EPOCH_TRANSITION_RECORD_TYPE: u16 = 0x6427;
 const FASTPATH_EPOCH_ACTIVATION_SET_TYPE: u16 = 0x6428;

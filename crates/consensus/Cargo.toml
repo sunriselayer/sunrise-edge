@@ -8,6 +8,7 @@ license.workspace = true
 canonical-encoding.workspace = true
 crypto.workspace = true
 hashing.workspace = true
+objects.workspace = true
 protocol-types.workspace = true
 validator-set.workspace = true
 

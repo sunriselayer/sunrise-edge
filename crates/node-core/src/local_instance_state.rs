@@ -479,6 +479,30 @@ pub fn decode_fastpath_nonce_lock_record(
     Ok(record)
 }
 
+/// Permanent, append-only key for one DR-0133 equivocation-evidence record
+/// (`crate::equivocation::FastPathEquivocationEvidenceRecord`, `0x6429`):
+/// the deterministic, normalized-identity `conflict_digest` (excluding
+/// signatures, §6) makes the identical logical conflict, submitted any
+/// number of times in any signature encoding, resolve to exactly this one
+/// row. Never fenced against the live [`FastPathEpochRecord`]: evidence for
+/// `evidence_epoch` remains addressable forever, including for a since-
+/// retired validator or epoch.
+pub fn fastpath_equivocation_evidence_key(
+    chain: &ChainId,
+    evidence_epoch: Epoch,
+    validator: [u8; 32],
+    conflict_digest: Digest32,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"equivocation/");
+    key.extend(encode_chain_id(chain)?);
+    key.extend_from_slice(&evidence_epoch.get().to_be_bytes());
+    key.extend_from_slice(&validator);
+    key.extend_from_slice(&conflict_digest.bytes());
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
 /// Absence is asserted at commit, never treated as a permanent authorization.
 /// Tombstones reject too: removing a sidecar cannot downgrade a public object.
 pub(super) fn legacy_absence<S: StructuredDurableDomainStateStore>(
