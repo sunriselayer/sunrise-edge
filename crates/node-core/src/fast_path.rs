@@ -215,6 +215,36 @@ impl ConsensusVerifier for FastPathEd25519Verifier {
     }
 }
 
+/// Decodes and structurally validates one [`FastPathValidatorSetRecord`] row
+/// into a [`ValidatorSet`]: rejects a non-Ed25519 member and a context that
+/// disagrees with `validator_context`. Shared by [`load_validator_set`]
+/// (fenced against the *live* epoch record) and
+/// [`crate::equivocation::load_historical_validator_set`] (DR-0133 §7,
+/// fenced against the chain-anchored historical digest instead) so the
+/// per-row decode/validate logic is reused, not reinvented.
+pub(crate) fn decode_validator_set_row(
+    bytes: &[u8],
+    validator_context: &PublicationContext,
+) -> FastPathResult<ValidatorSet> {
+    let record: FastPathValidatorSetRecord = records::decode_fastpath_validator_set_record(bytes)?;
+    if record.context != *validator_context {
+        return invalid("fast-path validator set context mismatch");
+    }
+    let mut info: Vec<ValidatorInfo> = Vec::with_capacity(record.validators.len());
+    for validator in &record.validators {
+        if validator.signature_scheme != SignatureSchemeId::Ed25519 {
+            return invalid("fast-path validator set supports only Ed25519");
+        }
+        info.push(ValidatorInfo {
+            id: validator.id,
+            voting_power: validator.voting_power,
+            signature_scheme: validator.signature_scheme,
+            public_key: validator.public_key.clone(),
+        });
+    }
+    Ok(ValidatorSet::new(validator_context.epoch(), info)?)
+}
+
 /// Loads the active per-epoch [`ValidatorSet`] and, per DR-0131's two-tier
 /// fence model, additionally CAS-fences that durable row (asserting its own
 /// revision as part of `reads`, unaffected by this call) and verifies its
@@ -240,28 +270,37 @@ pub(crate) fn load_validator_set<S: StructuredDurableDomainStateStore>(
     let bytes: &[u8] = observed.value().ok_or(FastPathError::Invalid(
         "fast-path validator set not installed",
     ))?;
-    let record: FastPathValidatorSetRecord = records::decode_fastpath_validator_set_record(bytes)?;
-    if record.context != *validator_context {
-        return invalid("fast-path validator set context mismatch");
-    }
-    let mut info: Vec<ValidatorInfo> = Vec::with_capacity(record.validators.len());
-    for validator in &record.validators {
-        if validator.signature_scheme != SignatureSchemeId::Ed25519 {
-            return invalid("fast-path validator set supports only Ed25519");
-        }
-        info.push(ValidatorInfo {
-            id: validator.id,
-            voting_power: validator.voting_power,
-            signature_scheme: validator.signature_scheme,
-            public_key: validator.public_key.clone(),
-        });
-    }
-    let validator_set: ValidatorSet = ValidatorSet::new(validator_context.epoch(), info)?;
+    let validator_set: ValidatorSet = decode_validator_set_row(bytes, validator_context)?;
     let digest: Digest32 = validator_set.digest(resolver)?;
     if digest != epoch_record.current_validator_set_digest {
         return invalid("fast-path validator set digest does not match the committed epoch record");
     }
     Ok(validator_set)
+}
+
+/// Sorts `locked_objects` ascending by [`ObjectId`] and hashes the resulting
+/// [`consensus::LockedObjectSetPreimage`] under
+/// [`HashPurpose::ExecutionEffects`] (DR-0133 §2) -- the one procedure used
+/// at every point that computes, re-derives, or replay-checks a
+/// `locked_objects_digest`: `cast_vote`'s own call site, prepare's
+/// exact-replay stored-vote check, and apply's independent re-derivation.
+fn compute_locked_objects_digest(
+    resolver: &HashSuiteResolver,
+    chain: &ChainId,
+    protocol_version: ProtocolVersion,
+    epoch: Epoch,
+    locked_objects: &[ObjectRef],
+) -> FastPathResult<Digest32> {
+    let mut entries: Vec<ObjectRef> = locked_objects.to_vec();
+    entries.sort_by_key(|object| object.id);
+    let preimage = consensus::LockedObjectSetPreimage {
+        chain_id: chain.clone(),
+        protocol_version,
+        epoch,
+        entries,
+    };
+    let bytes: Vec<u8> = consensus::encode_locked_object_set_preimage(&preimage)?;
+    Ok(resolver.hash_for_purpose(epoch, HashPurpose::ExecutionEffects, &bytes)?)
 }
 
 /// Strict test helper: idempotent for byte-identical validators and fail
@@ -451,6 +490,13 @@ where
                 return invalid("fast-path prepared replay metadata mismatch");
             }
             let vote: FastVote = consensus::decode_fast_vote(&existing.vote)?;
+            let existing_locked_objects_digest: Digest32 = compute_locked_objects_digest(
+                resolver,
+                &chain,
+                intent_context.protocol_version(),
+                intent_context.epoch(),
+                &existing.locked_objects,
+            )?;
             if vote.chain_id != chain
                 || vote.protocol_version != intent_context.protocol_version()
                 || vote.epoch != intent_context.epoch()
@@ -458,6 +504,7 @@ where
                 || vote.execution_effects_hash != existing.commitment
                 || vote.validator != signer.validator_id()
                 || vote.signature_scheme != signer.signature_scheme()
+                || vote.locked_objects_digest != existing_locked_objects_digest
             {
                 return invalid("fast-path prepared replay vote mismatch");
             }
@@ -547,7 +594,15 @@ where
         &pending_nonce_bytes,
     )?;
 
-    let vote: FastVote = certifier.cast_vote(event_digest, commitment, signer)?;
+    let locked_objects_digest: Digest32 = compute_locked_objects_digest(
+        resolver,
+        &chain,
+        intent_context.protocol_version(),
+        intent_context.epoch(),
+        &admission.locked_objects,
+    )?;
+    let vote: FastVote =
+        certifier.cast_vote(event_digest, commitment, locked_objects_digest, signer)?;
     let vote_bytes: Vec<u8> = consensus::encode_fast_vote(&vote)?;
 
     let nonce: PendingSenderNonceWrite = admission.nonce_write.ok_or(FastPathError::Invalid(
@@ -820,6 +875,18 @@ where
     )?;
     if fresh_commitment != prepared.commitment {
         return invalid("fast-path re-derived commitment no longer matches the certificate");
+    }
+    let fresh_locked_objects_digest: Digest32 = compute_locked_objects_digest(
+        resolver,
+        &chain,
+        intent_context.protocol_version(),
+        intent_context.epoch(),
+        &admission.locked_objects,
+    )?;
+    if fresh_locked_objects_digest != certificate.locked_objects_digest {
+        return invalid(
+            "fast-path re-derived locked-object digest no longer matches the certificate",
+        );
     }
 
     let PaidAdmissionOutput {

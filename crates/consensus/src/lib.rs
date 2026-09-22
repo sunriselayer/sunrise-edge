@@ -23,12 +23,24 @@ use std::error::Error;
 use validator_set::{ValidatorSet, ValidatorSetError};
 
 mod epoch_transition;
+mod equivocation;
 mod fast_vote;
 pub use epoch_transition::{
     EpochTransitionCertificate, EpochTransitionCertifier, EpochTransitionVote,
     decode_epoch_transition_certificate, decode_epoch_transition_vote,
     encode_epoch_transition_certificate, encode_epoch_transition_vote,
     encode_epoch_transition_vote_payload,
+};
+pub use equivocation::{
+    EpochTransitionEquivocationEvidence, FastVoteEquivocationEvidence,
+    FastVoteObjectConflictEvidence, LockedObjectSetPreimage, MAX_LOCKED_OBJECT_SET_ENTRIES,
+    build_epoch_transition_equivocation_evidence, build_fast_vote_equivocation_evidence,
+    build_fast_vote_object_conflict_evidence, decode_epoch_transition_equivocation_evidence,
+    decode_fast_vote_equivocation_evidence, decode_fast_vote_object_conflict_evidence,
+    decode_locked_object_set_preimage, encode_epoch_transition_equivocation_evidence,
+    encode_fast_vote_equivocation_evidence, encode_fast_vote_object_conflict_evidence,
+    encode_locked_object_set_preimage, verify_epoch_transition_equivocation_evidence,
+    verify_fast_vote_equivocation_evidence, verify_fast_vote_object_conflict_evidence,
 };
 pub use fast_vote::{
     FastCertificate, FastPathCertifier, FastVote, decode_fast_certificate, decode_fast_vote,
@@ -202,6 +214,34 @@ pub enum ConsensusError {
         /// The claimed incoming epoch.
         next: Epoch,
     },
+    /// A [`objects::ObjectRef`]/`ObjectId` encode or decode failed while
+    /// building or reading a [`LockedObjectSetPreimage`] (DR-0133 §3).
+    Object(objects::ObjectError),
+    /// Equivocation evidence's required-equal conflict-key fields differ
+    /// (DR-0133 §1, classes a/b/c).
+    EquivocationEvidenceConflictKeyMismatch,
+    /// Equivocation evidence build was given two byte-identical signable
+    /// payloads (DR-0133 §1, classes a/c; structurally unreachable for class
+    /// b, which already requires `tx_hash` to differ).
+    EquivocationEvidenceStatementsIdentical,
+    /// An equivocation evidence envelope's `low`/`high` statements are not
+    /// in canonical order (DR-0133 §5, all three classes).
+    NonCanonicalEquivocationEvidenceOrder,
+    /// A [`LockedObjectSetPreimage`]'s entries are misordered or duplicated
+    /// (DR-0133 §3).
+    NonCanonicalLockedObjectOrder,
+    /// Class (b) object-conflict evidence build was called with an equal
+    /// `tx_hash` on both statements; use class (a) instead (DR-0133 §1/§5).
+    ObjectConflictRequiresDistinctTransactions,
+    /// Class (b) object-conflict evidence build found no `(ObjectId,
+    /// version)` pair shared by both attached preimages (DR-0133 §5).
+    ObjectConflictNotFound,
+    /// Class (b) object-conflict evidence decode/verify: the claimed
+    /// `conflicting_object_id`/`conflicting_version` either is absent from
+    /// one or both attached preimages, or is present but is not the
+    /// smallest `(ObjectId, version)` pair the two preimages actually share
+    /// (DR-0133 §5).
+    ObjectConflictNotProvenByPreimages,
 }
 
 impl fmt::Display for ConsensusError {
@@ -302,6 +342,35 @@ impl fmt::Display for ConsensusError {
                 next.get(),
                 current.get()
             ),
+            Self::Object(error) => error.fmt(f),
+            Self::EquivocationEvidenceConflictKeyMismatch => {
+                write!(f, "equivocation evidence conflict-key fields differ")
+            }
+            Self::EquivocationEvidenceStatementsIdentical => {
+                write!(f, "equivocation evidence statements are byte-identical")
+            }
+            Self::NonCanonicalEquivocationEvidenceOrder => {
+                write!(
+                    f,
+                    "equivocation evidence statements are not canonically ordered"
+                )
+            }
+            Self::NonCanonicalLockedObjectOrder => write!(
+                f,
+                "locked-object-set preimage entries are misordered or duplicated"
+            ),
+            Self::ObjectConflictRequiresDistinctTransactions => write!(
+                f,
+                "object-conflict evidence requires two distinct transactions"
+            ),
+            Self::ObjectConflictNotFound => write!(
+                f,
+                "object-conflict evidence preimages share no locked object version"
+            ),
+            Self::ObjectConflictNotProvenByPreimages => write!(
+                f,
+                "claimed conflicting object version is not proven by the attached preimages"
+            ),
         }
     }
 }
@@ -341,6 +410,12 @@ impl From<CryptoError> for ConsensusError {
 impl From<ValidatorSetError> for ConsensusError {
     fn from(value: ValidatorSetError) -> Self {
         Self::ValidatorSet(value)
+    }
+}
+
+impl From<objects::ObjectError> for ConsensusError {
+    fn from(value: objects::ObjectError) -> Self {
+        Self::Object(value)
     }
 }
 

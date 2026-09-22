@@ -484,6 +484,7 @@ fn independent_validators_derive_byte_identical_commitment_and_a_quorum_certific
         .try_form_certificate(
             vote_a.tx_hash,
             vote_a.execution_effects_hash,
+            vote_a.locked_objects_digest,
             &votes,
             &FastPathEd25519Verifier,
         )
@@ -572,8 +573,13 @@ fn apply_uses_the_prepare_time_checkpoint_and_releases_both_locks() {
     let remote_votes: Vec<FastVote> = signers[1..3]
         .iter()
         .map(|signer| {
-            cert.cast_vote(vote.tx_hash, vote.execution_effects_hash, signer)
-                .unwrap()
+            cert.cast_vote(
+                vote.tx_hash,
+                vote.execution_effects_hash,
+                vote.locked_objects_digest,
+                signer,
+            )
+            .unwrap()
         })
         .collect();
     let mut all_votes: Vec<FastVote> = vec![vote.clone()];
@@ -582,6 +588,7 @@ fn apply_uses_the_prepare_time_checkpoint_and_releases_both_locks() {
         .try_form_certificate(
             vote.tx_hash,
             vote.execution_effects_hash,
+            vote.locked_objects_digest,
             &all_votes,
             &FastPathEd25519Verifier,
         )
@@ -827,6 +834,7 @@ fn four_validator_sqlite_restart_e2e_derives_identical_votes_and_replays_prepare
         .try_form_certificate(
             votes[0].tx_hash,
             votes[0].execution_effects_hash,
+            votes[0].locked_objects_digest,
             &votes,
             &FastPathEd25519Verifier,
         )
@@ -922,6 +930,7 @@ fn duplicate_and_reordered_certificates_apply_idempotently() {
             cert.cast_vote(
                 vote_local.tx_hash,
                 vote_local.execution_effects_hash,
+                vote_local.locked_objects_digest,
                 signer,
             )
             .unwrap()
@@ -933,6 +942,7 @@ fn duplicate_and_reordered_certificates_apply_idempotently() {
         .try_form_certificate(
             vote_local.tx_hash,
             vote_local.execution_effects_hash,
+            vote_local.locked_objects_digest,
             &all_votes,
             &FastPathEd25519Verifier,
         )
@@ -946,6 +956,7 @@ fn duplicate_and_reordered_certificates_apply_idempotently() {
         .try_form_certificate(
             vote_local.tx_hash,
             vote_local.execution_effects_hash,
+            vote_local.locked_objects_digest,
             &reversed_votes,
             &FastPathEd25519Verifier,
         )
@@ -1021,7 +1032,10 @@ fn apply_without_a_local_prepared_record_fails_closed() {
     // is even inspected, because there is no local prepared record at all.
     let votes: Vec<FastVote> = signers
         .iter()
-        .map(|signer| cert.cast_vote(event_digest, event_digest, signer).unwrap())
+        .map(|signer| {
+            cert.cast_vote(event_digest, event_digest, event_digest, signer)
+                .unwrap()
+        })
         .collect();
     let certificate: FastCertificate = FastCertificate {
         chain_id: protocol().chain_id().clone(),
@@ -1029,6 +1043,7 @@ fn apply_without_a_local_prepared_record_fails_closed() {
         epoch: protocol().epoch(),
         tx_hash: event_digest,
         execution_effects_hash: event_digest,
+        locked_objects_digest: event_digest,
         votes,
     };
     let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
@@ -1170,6 +1185,7 @@ fn apply_rejects_a_request_bound_to_a_non_current_epoch() {
         .try_form_certificate(
             vote_a.tx_hash,
             vote_a.execution_effects_hash,
+            vote_a.locked_objects_digest,
             &votes,
             &FastPathEd25519Verifier,
         )
@@ -1327,13 +1343,19 @@ fn apply_rejects_a_certificate_signed_by_validators_absent_from_the_committed_se
         .take(3)
         .map(|signer| {
             rogue_certifier
-                .cast_vote(event_digest, prepared.commitment, signer)
+                .cast_vote(
+                    event_digest,
+                    prepared.commitment,
+                    prepared.commitment,
+                    signer,
+                )
                 .unwrap()
         })
         .collect();
     let rogue_certificate: FastCertificate = rogue_certifier
         .try_form_certificate(
             event_digest,
+            prepared.commitment,
             prepared.commitment,
             &rogue_votes,
             &FastPathEd25519Verifier,
@@ -1444,6 +1466,7 @@ fn a_racing_epoch_record_write_conflicts_the_apply_commit() {
         .try_form_certificate(
             vote_a.tx_hash,
             vote_a.execution_effects_hash,
+            vote_a.locked_objects_digest,
             &votes,
             &FastPathEd25519Verifier,
         )
@@ -1538,8 +1561,13 @@ fn application_failed_fee_only_outcome_prepares_and_applies() {
     let remote_votes: Vec<FastVote> = signers[1..3]
         .iter()
         .map(|signer| {
-            cert.cast_vote(vote.tx_hash, vote.execution_effects_hash, signer)
-                .unwrap()
+            cert.cast_vote(
+                vote.tx_hash,
+                vote.execution_effects_hash,
+                vote.locked_objects_digest,
+                signer,
+            )
+            .unwrap()
         })
         .collect();
     let mut all_votes: Vec<FastVote> = vec![vote.clone()];
@@ -1548,6 +1576,7 @@ fn application_failed_fee_only_outcome_prepares_and_applies() {
         .try_form_certificate(
             vote.tx_hash,
             vote.execution_effects_hash,
+            vote.locked_objects_digest,
             &all_votes,
             &FastPathEd25519Verifier,
         )
@@ -1598,8 +1627,13 @@ fn stale_writer_fence_rejects_apply_atomically() {
     let remote_votes: Vec<FastVote> = signers[1..3]
         .iter()
         .map(|signer| {
-            cert.cast_vote(vote.tx_hash, vote.execution_effects_hash, signer)
-                .unwrap()
+            cert.cast_vote(
+                vote.tx_hash,
+                vote.execution_effects_hash,
+                vote.locked_objects_digest,
+                signer,
+            )
+            .unwrap()
         })
         .collect();
     let mut all_votes: Vec<FastVote> = vec![vote.clone()];
@@ -1608,6 +1642,7 @@ fn stale_writer_fence_rejects_apply_atomically() {
         .try_form_certificate(
             vote.tx_hash,
             vote.execution_effects_hash,
+            vote.locked_objects_digest,
             &all_votes,
             &FastPathEd25519Verifier,
         )
@@ -1728,14 +1763,20 @@ fn certificate_with_wrong_commitment_for_the_correct_tx_hash_is_rejected_before_
     let votes: Vec<FastVote> = signers
         .iter()
         .map(|signer| {
-            cert.cast_vote(vote.tx_hash, wrong_commitment, signer)
-                .unwrap()
+            cert.cast_vote(
+                vote.tx_hash,
+                wrong_commitment,
+                vote.locked_objects_digest,
+                signer,
+            )
+            .unwrap()
         })
         .collect();
     let certificate: FastCertificate = cert
         .try_form_certificate(
             vote.tx_hash,
             wrong_commitment,
+            vote.locked_objects_digest,
             &votes,
             &FastPathEd25519Verifier,
         )
@@ -1876,6 +1917,156 @@ fn certificate_with_wrong_commitment_for_the_correct_tx_hash_is_rejected_before_
     ));
 }
 
+/// DR-0133 §2: prepare's exact-replay stored-vote check additionally
+/// compares `vote.locked_objects_digest` against the digest re-derived from
+/// `existing.locked_objects`; a stored vote whose `locked_objects_digest`
+/// disagrees with the record it was replayed alongside must not be silently
+/// returned as if consistent.
+#[test]
+fn fast_path_prepare_replay_rejects_a_stored_vote_whose_locked_objects_digest_disagrees_with_the_prepared_lock_set()
+ {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let (signers, entries) = install_four_validators(&store);
+    let vote: FastVote =
+        prepare_transfer(&store, &fixture, &signers[0], 60, FIRST_PAID_NONCE).unwrap();
+
+    let validator_set: ValidatorSet = ValidatorSet::new(
+        protocol().epoch(),
+        entries
+            .iter()
+            .map(|entry| ValidatorInfo {
+                id: entry.id,
+                voting_power: entry.voting_power,
+                signature_scheme: entry.signature_scheme,
+                public_key: entry.public_key.clone(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    let cert: consensus::FastPathCertifier = certifier(validator_set);
+    let mut wrong_digest_bytes: [u8; 32] = vote.locked_objects_digest.bytes();
+    wrong_digest_bytes[0] ^= 0xFF;
+    let wrong_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, wrong_digest_bytes);
+    let re_signed_vote: FastVote = cert
+        .cast_vote(
+            vote.tx_hash,
+            vote.execution_effects_hash,
+            wrong_digest,
+            &signers[0],
+        )
+        .unwrap();
+
+    // Overwrite the stored prepared record's vote bytes with the
+    // re-signed-but-wrong-digest vote, keeping every other field --
+    // including `locked_objects` -- exactly as prepare originally committed.
+    let key: Vec<u8> = fastpath_prepared_record_key(protocol().chain_id(), &[60; 32]).unwrap();
+    let observed: VersionedStateValue = store
+        .get_versioned_durable(&context(), domain(), &key)
+        .unwrap();
+    let existing: FastPathPreparedRecord =
+        records::decode_fastpath_prepared_record(observed.value().unwrap()).unwrap();
+    let tampered: FastPathPreparedRecord = FastPathPreparedRecord {
+        vote: consensus::encode_fast_vote(&re_signed_vote).unwrap(),
+        ..existing
+    };
+    let bytes: Vec<u8> = records::encode_fastpath_prepared_record(&tampered).unwrap();
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(key, StateMutation::Put(bytes)).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&context(), transaction),
+        DurableCommitOutcome::Committed
+    );
+
+    let result: FastPathResult<FastVote> =
+        prepare_transfer(&store, &fixture, &signers[0], 60, FIRST_PAID_NONCE);
+    assert!(matches!(
+        result,
+        Err(FastPathError::Invalid(
+            "fast-path prepared replay vote mismatch"
+        ))
+    ));
+}
+
+/// DR-0133 §2: apply's independent re-derivation additionally computes
+/// `fresh_locked_objects_digest` from `admission.locked_objects` and
+/// requires it equal `certificate.locked_objects_digest` -- independent of,
+/// and strictly beyond, `verify_certificate`'s own per-vote consistency
+/// check, which only proves the certificate's votes agree with its header,
+/// never that the header agrees with a fresh, independent re-admission. A
+/// quorum-carrying certificate that is internally self-consistent (every
+/// vote signs the identical, but simply wrong, `locked_objects_digest`) must
+/// still be rejected.
+#[test]
+fn fast_path_apply_rejects_a_certificate_whose_locked_objects_digest_does_not_match_the_freshly_rederived_lock_set()
+ {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let (signers, entries) = install_four_validators(&store);
+    let vote: FastVote =
+        prepare_transfer(&store, &fixture, &signers[0], 61, FIRST_PAID_NONCE).unwrap();
+    let validator_set: ValidatorSet = ValidatorSet::new(
+        protocol().epoch(),
+        entries
+            .iter()
+            .map(|entry| ValidatorInfo {
+                id: entry.id,
+                voting_power: entry.voting_power,
+                signature_scheme: entry.signature_scheme,
+                public_key: entry.public_key.clone(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    let cert: consensus::FastPathCertifier = certifier(validator_set);
+
+    let mut wrong_digest_bytes: [u8; 32] = vote.locked_objects_digest.bytes();
+    wrong_digest_bytes[0] ^= 0xFF;
+    let wrong_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, wrong_digest_bytes);
+    let votes: Vec<FastVote> = signers
+        .iter()
+        .map(|signer| {
+            cert.cast_vote(
+                vote.tx_hash,
+                vote.execution_effects_hash,
+                wrong_digest,
+                signer,
+            )
+            .unwrap()
+        })
+        .collect();
+    let certificate: FastCertificate = cert
+        .try_form_certificate(
+            vote.tx_hash,
+            vote.execution_effects_hash,
+            wrong_digest,
+            &votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .unwrap();
+    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+
+    let result: FastPathResult<NodeOutput> =
+        apply_transfer(&store, &fixture, 61, FIRST_PAID_NONCE, &certificate_bytes);
+    assert!(matches!(
+        result,
+        Err(FastPathError::Invalid(
+            "fast-path re-derived locked-object digest no longer matches the certificate"
+        ))
+    ));
+}
+
 /// Delegates every read/write to a real in-memory store, but reports
 /// [`IndeterminateCommitReason::ConnectionLost`] on the very next
 /// `commit_invocation` call *after* the underlying commit has already been
@@ -1978,8 +2169,13 @@ fn indeterminate_apply_commit_reconciles_on_exact_retry_without_reexecution_or_d
     let remote_votes: Vec<FastVote> = signers[1..3]
         .iter()
         .map(|signer| {
-            cert.cast_vote(vote.tx_hash, vote.execution_effects_hash, signer)
-                .unwrap()
+            cert.cast_vote(
+                vote.tx_hash,
+                vote.execution_effects_hash,
+                vote.locked_objects_digest,
+                signer,
+            )
+            .unwrap()
         })
         .collect();
     let mut all_votes: Vec<FastVote> = vec![vote.clone()];
@@ -1988,6 +2184,7 @@ fn indeterminate_apply_commit_reconciles_on_exact_retry_without_reexecution_or_d
         .try_form_certificate(
             vote.tx_hash,
             vote.execution_effects_hash,
+            vote.locked_objects_digest,
             &all_votes,
             &FastPathEd25519Verifier,
         )
@@ -2128,6 +2325,7 @@ fn an_uncertifiable_prepare_leaves_its_lock_permanently_held() {
         epoch: protocol().epoch(),
         tx_hash: vote.tx_hash,
         execution_effects_hash: vote.execution_effects_hash,
+        locked_objects_digest: vote.locked_objects_digest,
         votes: vec![vote.clone()],
     };
     let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&below_quorum).unwrap();

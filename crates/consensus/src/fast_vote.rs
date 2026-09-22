@@ -69,6 +69,11 @@ pub struct FastVote {
     pub validator: ValidatorId,
     /// Signature scheme registered for `validator` in the active set.
     pub signature_scheme: SignatureSchemeId,
+    /// Digest of a [`crate::LockedObjectSetPreimage`] over the bounded,
+    /// canonical, validator-independent ordered set of exact `(ObjectId,
+    /// version, digest)` references this vote's transaction locks
+    /// (DR-0133 §2, in-place revision of this field's canonical v1 payload).
+    pub locked_objects_digest: Digest32,
     /// Signature over the domain-framed vote payload.
     pub signature: Vec<u8>,
 }
@@ -87,6 +92,8 @@ pub struct FastCertificate {
     pub tx_hash: Digest32,
     /// Certified execution effects hash.
     pub execution_effects_hash: Digest32,
+    /// Certified locked-object-set digest (DR-0133 §2).
+    pub locked_objects_digest: Digest32,
     /// Canonically validator-ID-ordered, deduplicated votes.
     pub votes: Vec<FastVote>,
 }
@@ -157,11 +164,13 @@ impl FastPathCertifier {
         self.validator_set.quorum_threshold()
     }
 
-    /// Signs and returns one [`FastVote`] for `(tx_hash, execution_effects_hash)`.
+    /// Signs and returns one [`FastVote`] for `(tx_hash,
+    /// execution_effects_hash, locked_objects_digest)`.
     pub fn cast_vote<S: ConsensusSigner>(
         &self,
         tx_hash: Digest32,
         execution_effects_hash: Digest32,
+        locked_objects_digest: Digest32,
         signer: &S,
     ) -> Result<FastVote, ConsensusError> {
         self.ensure_registered_scheme(signer.validator_id(), signer.signature_scheme())?;
@@ -173,6 +182,7 @@ impl FastPathCertifier {
             execution_effects_hash,
             validator: signer.validator_id(),
             signature_scheme: signer.signature_scheme(),
+            locked_objects_digest,
             signature: Vec::new(),
         };
         let framed =
@@ -251,12 +261,16 @@ impl FastPathCertifier {
         &self,
         tx_hash: Digest32,
         execution_effects_hash: Digest32,
+        locked_objects_digest: Digest32,
         votes: &[FastVote],
         verifier: &V,
     ) -> Result<Option<FastCertificate>, ConsensusError> {
         let mut by_validator: BTreeMap<ValidatorId, &FastVote> = BTreeMap::new();
         for vote in votes {
-            if vote.tx_hash != tx_hash || vote.execution_effects_hash != execution_effects_hash {
+            if vote.tx_hash != tx_hash
+                || vote.execution_effects_hash != execution_effects_hash
+                || vote.locked_objects_digest != locked_objects_digest
+            {
                 continue;
             }
             if vote.chain_id != self.chain_id
@@ -304,6 +318,7 @@ impl FastPathCertifier {
                     epoch: self.epoch,
                     tx_hash,
                     execution_effects_hash,
+                    locked_objects_digest,
                     votes: selected,
                 }));
             }
@@ -342,6 +357,7 @@ impl FastPathCertifier {
                 || vote.epoch != certificate.epoch
                 || vote.tx_hash != certificate.tx_hash
                 || vote.execution_effects_hash != certificate.execution_effects_hash
+                || vote.locked_objects_digest != certificate.locked_objects_digest
             {
                 return Err(ConsensusError::CertificateVoteMismatch);
             }
@@ -422,6 +438,7 @@ pub fn encode_fast_vote_payload(vote: &FastVote) -> Result<Vec<u8>, ConsensusErr
     canonical.field_bytes(5, encode_digest32(&vote.execution_effects_hash)?)?;
     canonical.field_bytes(6, vote.validator.as_bytes())?;
     canonical.field_u16(7, vote.signature_scheme.as_u16())?;
+    canonical.field_bytes(8, encode_digest32(&vote.locked_objects_digest)?)?;
     Ok(canonical.finish()?)
 }
 
@@ -437,7 +454,7 @@ pub fn encode_fast_vote(vote: &FastVote) -> Result<Vec<u8>, ConsensusError> {
 /// Decodes and strictly re-validates one canonical [`FastVote`].
 ///
 /// Beyond the shared canonical-frame guarantees, this requires the fast-vote
-/// type id/encoding version, exactly fields 1-7 in the nested payload frame
+/// type id/encoding version, exactly fields 1-8 in the nested payload frame
 /// and 1-2 in the outer frame, a non-empty bounded signature, and byte-exact
 /// re-encoding of the decoded value.
 pub fn decode_fast_vote(input: &[u8]) -> Result<FastVote, ConsensusError> {
@@ -451,7 +468,7 @@ pub fn decode_fast_vote(input: &[u8]) -> Result<FastVote, ConsensusError> {
     let payload = decode_canonical_frame(payload_bytes)?;
     payload.require_type(FAST_VOTE_PAYLOAD_TYPE_ID)?;
     payload.require_version(ENCODING_VERSION)?;
-    payload.require_only_fields(&[1, 2, 3, 4, 5, 6, 7])?;
+    payload.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8])?;
 
     let chain_id =
         ChainId::new(payload.required_str(1)?.to_owned()).map_err(ConsensusError::ProtocolType)?;
@@ -469,6 +486,7 @@ pub fn decode_fast_vote(input: &[u8]) -> Result<FastVote, ConsensusError> {
     })?;
     let signature_scheme = SignatureSchemeId::try_from(payload.required_u16(7)?)
         .map_err(ConsensusError::ProtocolType)?;
+    let locked_objects_digest = decode_digest32(payload.required_field(8)?)?;
 
     let vote = FastVote {
         chain_id,
@@ -478,6 +496,7 @@ pub fn decode_fast_vote(input: &[u8]) -> Result<FastVote, ConsensusError> {
         execution_effects_hash,
         validator: ValidatorId::new(validator_bytes),
         signature_scheme,
+        locked_objects_digest,
         signature,
     };
     if encode_fast_vote(&vote)?.as_slice() != input {
@@ -501,14 +520,15 @@ pub fn encode_fast_certificate(certificate: &FastCertificate) -> Result<Vec<u8>,
     canonical.field_u64(3, certificate.epoch.get())?;
     canonical.field_bytes(4, encode_digest32(&certificate.tx_hash)?)?;
     canonical.field_bytes(5, encode_digest32(&certificate.execution_effects_hash)?)?;
+    canonical.field_bytes(6, encode_digest32(&certificate.locked_objects_digest)?)?;
     canonical.field_u32(
-        6,
+        7,
         u32::try_from(certificate.votes.len())
             .map_err(|_| ConsensusError::NonCanonicalCertificateVotes)?,
     )?;
     for (index, vote) in certificate.votes.iter().enumerate() {
         let field =
-            u16::try_from(index + 7).map_err(|_| ConsensusError::NonCanonicalCertificateVotes)?;
+            u16::try_from(index + 8).map_err(|_| ConsensusError::NonCanonicalCertificateVotes)?;
         canonical.field_bytes(field, encode_fast_vote(vote)?)?;
     }
     Ok(canonical.finish()?)
@@ -533,13 +553,14 @@ pub fn decode_fast_certificate(input: &[u8]) -> Result<FastCertificate, Consensu
     let epoch = Epoch::new(frame.required_u64(3)?);
     let tx_hash = decode_digest32(frame.required_field(4)?)?;
     let execution_effects_hash = decode_digest32(frame.required_field(5)?)?;
-    let count = usize::try_from(frame.required_u32(6)?)
+    let locked_objects_digest = decode_digest32(frame.required_field(6)?)?;
+    let count = usize::try_from(frame.required_u32(7)?)
         .map_err(|_| ConsensusError::NonCanonicalCertificateVotes)?;
     if count > MAX_FAST_CERTIFICATE_VOTES {
         return Err(ConsensusError::NonCanonicalCertificateVotes);
     }
     let expected_field_count = count
-        .checked_add(6)
+        .checked_add(7)
         .ok_or(ConsensusError::NonCanonicalCertificateVotes)?;
     if frame.field_count() != expected_field_count {
         return Err(ConsensusError::NonCanonicalCertificateVotes);
@@ -548,7 +569,7 @@ pub fn decode_fast_certificate(input: &[u8]) -> Result<FastCertificate, Consensu
     let mut previous: Option<ValidatorId> = None;
     for index in 0..count {
         let field =
-            u16::try_from(index + 7).map_err(|_| ConsensusError::NonCanonicalCertificateVotes)?;
+            u16::try_from(index + 8).map_err(|_| ConsensusError::NonCanonicalCertificateVotes)?;
         let vote = decode_fast_vote(frame.required_field(field)?)?;
         if previous.is_some_and(|validator| validator >= vote.validator) {
             return Err(ConsensusError::NonCanonicalCertificateVotes);
@@ -563,6 +584,7 @@ pub fn decode_fast_certificate(input: &[u8]) -> Result<FastCertificate, Consensu
         epoch,
         tx_hash,
         execution_effects_hash,
+        locked_objects_digest,
         votes,
     };
     if encode_fast_certificate(&certificate)?.as_slice() != input {
@@ -592,6 +614,9 @@ mod tests {
     }
     fn effects_hash() -> Digest32 {
         Digest32::new(HashAlgorithmId::Sha2_256, [0x22; 32])
+    }
+    fn locked_objects_digest() -> Digest32 {
+        Digest32::new(HashAlgorithmId::Sha2_256, [0x33; 32])
     }
     fn validator_id(byte: u8) -> ValidatorId {
         ValidatorId::new([byte; 32])
@@ -709,7 +734,12 @@ mod tests {
 
     fn cast(certifier: &FastPathCertifier, byte: u8) -> FastVote {
         certifier
-            .cast_vote(tx_hash(), effects_hash(), &signer(byte))
+            .cast_vote(
+                tx_hash(),
+                effects_hash(),
+                locked_objects_digest(),
+                &signer(byte),
+            )
             .unwrap()
     }
 
@@ -718,7 +748,13 @@ mod tests {
     fn quorum_certificate(certifier: &FastPathCertifier) -> FastCertificate {
         let votes: Vec<FastVote> = (1..=4).map(|byte| cast(certifier, byte)).collect();
         certifier
-            .try_form_certificate(tx_hash(), effects_hash(), &votes, &Ed25519TestVerifier)
+            .try_form_certificate(
+                tx_hash(),
+                effects_hash(),
+                locked_objects_digest(),
+                &votes,
+                &Ed25519TestVerifier,
+            )
             .unwrap()
             .expect("4 equal-power validators exceed the 3-of-4 quorum threshold")
     }
@@ -835,7 +871,13 @@ mod tests {
         let votes: Vec<FastVote> = (1..=2).map(|byte| cast(&certifier, byte)).collect();
         assert_eq!(
             certifier
-                .try_form_certificate(tx_hash(), effects_hash(), &votes, &Ed25519TestVerifier)
+                .try_form_certificate(
+                    tx_hash(),
+                    effects_hash(),
+                    locked_objects_digest(),
+                    &votes,
+                    &Ed25519TestVerifier
+                )
                 .unwrap(),
             None
         );
@@ -846,12 +888,24 @@ mod tests {
         let certifier = certifier(4);
         let mut votes: Vec<FastVote> = (1..=4).map(|byte| cast(&certifier, byte)).collect();
         let forward = certifier
-            .try_form_certificate(tx_hash(), effects_hash(), &votes, &Ed25519TestVerifier)
+            .try_form_certificate(
+                tx_hash(),
+                effects_hash(),
+                locked_objects_digest(),
+                &votes,
+                &Ed25519TestVerifier,
+            )
             .unwrap()
             .expect("quorum reached");
         votes.reverse();
         let reversed = certifier
-            .try_form_certificate(tx_hash(), effects_hash(), &votes, &Ed25519TestVerifier)
+            .try_form_certificate(
+                tx_hash(),
+                effects_hash(),
+                locked_objects_digest(),
+                &votes,
+                &Ed25519TestVerifier,
+            )
             .unwrap()
             .expect("quorum reached");
 
@@ -879,12 +933,24 @@ mod tests {
         votes.push(alternate);
 
         let forward = certifier
-            .try_form_certificate(tx_hash(), effects_hash(), &votes, &AcceptingVerifier)
+            .try_form_certificate(
+                tx_hash(),
+                effects_hash(),
+                locked_objects_digest(),
+                &votes,
+                &AcceptingVerifier,
+            )
             .unwrap()
             .expect("quorum reached");
         votes.reverse();
         let reversed = certifier
-            .try_form_certificate(tx_hash(), effects_hash(), &votes, &AcceptingVerifier)
+            .try_form_certificate(
+                tx_hash(),
+                effects_hash(),
+                locked_objects_digest(),
+                &votes,
+                &AcceptingVerifier,
+            )
             .unwrap()
             .expect("quorum reached");
 
@@ -900,13 +966,20 @@ mod tests {
         let certifier = certifier(4);
         let votes: Vec<FastVote> = (1..=4).map(|byte| cast(&certifier, byte)).collect();
         let minimal = certifier
-            .try_form_certificate(tx_hash(), effects_hash(), &votes, &Ed25519TestVerifier)
+            .try_form_certificate(
+                tx_hash(),
+                effects_hash(),
+                locked_objects_digest(),
+                &votes,
+                &Ed25519TestVerifier,
+            )
             .unwrap()
             .expect("quorum reached");
         let alternate = certifier
             .try_form_certificate(
                 tx_hash(),
                 effects_hash(),
+                locked_objects_digest(),
                 &votes[1..4],
                 &Ed25519TestVerifier,
             )
@@ -957,6 +1030,7 @@ mod tests {
             certifier.try_form_certificate(
                 tx_hash(),
                 effects_hash(),
+                locked_objects_digest(),
                 &votes,
                 &FailingInfraVerifier
             ),
@@ -973,7 +1047,13 @@ mod tests {
         votes[0].signature[0] ^= 0xFF;
 
         let certificate = certifier
-            .try_form_certificate(tx_hash(), effects_hash(), &votes, &Ed25519TestVerifier)
+            .try_form_certificate(
+                tx_hash(),
+                effects_hash(),
+                locked_objects_digest(),
+                &votes,
+                &Ed25519TestVerifier,
+            )
             .unwrap()
             .expect("quorum reached from the 3 remaining valid votes");
 
@@ -1182,14 +1262,20 @@ mod tests {
                 encode_digest32(&certificate.execution_effects_hash).unwrap(),
             )
             .unwrap();
+        frame
+            .field_bytes(
+                6,
+                encode_digest32(&certificate.locked_objects_digest).unwrap(),
+            )
+            .unwrap();
         // Declares one more vote than the 3 actually present.
         frame
-            .field_u32(6, u32::try_from(certificate.votes.len()).unwrap() + 1)
+            .field_u32(7, u32::try_from(certificate.votes.len()).unwrap() + 1)
             .unwrap();
         for (index, vote) in certificate.votes.iter().enumerate() {
             frame
                 .field_bytes(
-                    u16::try_from(index + 7).unwrap(),
+                    u16::try_from(index + 8).unwrap(),
                     encode_fast_vote(vote).unwrap(),
                 )
                 .unwrap();
@@ -1221,7 +1307,13 @@ mod tests {
             )
             .unwrap();
         frame
-            .field_u32(6, u32::try_from(MAX_FAST_CERTIFICATE_VOTES + 1).unwrap())
+            .field_bytes(
+                6,
+                encode_digest32(&certificate.locked_objects_digest).unwrap(),
+            )
+            .unwrap();
+        frame
+            .field_u32(7, u32::try_from(MAX_FAST_CERTIFICATE_VOTES + 1).unwrap())
             .unwrap();
         let bytes = frame.finish().unwrap();
         assert_eq!(
@@ -1246,6 +1338,7 @@ mod tests {
             execution_effects_hash: Digest32::new(HashAlgorithmId::Sha2_256, [0xBB; 32]),
             validator: ValidatorId::new([0x01; 32]),
             signature_scheme: SignatureSchemeId::Ed25519,
+            locked_objects_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0xCC; 32]),
             signature: vec![0x5A; 64],
         }
     }
@@ -1255,7 +1348,7 @@ mod tests {
         let bytes = encode_fast_vote_payload(&vector_vote()).unwrap();
         assert_eq!(
             hex(&bytes),
-            "534e524506d00100070001000e0000006472303132392d766563746f7273020004000000030000000300080000000900000000000000040038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa050038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb06002000000001010101010101010101010101010101010101010101010101010101010101010700020000000100"
+            "534e524506d00100080001000e0000006472303132392d766563746f7273020004000000030000000300080000000900000000000000040038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa050038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb06002000000001010101010101010101010101010101010101010101010101010101010101010700020000000100080038000000534e52450301010002000100020000000100020020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
         );
     }
 
@@ -1264,7 +1357,7 @@ mod tests {
         let bytes = encode_fast_vote(&vector_vote()).unwrap();
         assert_eq!(
             hex(&bytes),
-            "534e524507d0010002000100e0000000534e524506d00100070001000e0000006472303132392d766563746f7273020004000000030000000300080000000900000000000000040038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa050038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb060020000000010101010101010101010101010101010101010101010101010101010101010107000200000001000200400000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+            "534e524507d00100020001001e010000534e524506d00100080001000e0000006472303132392d766563746f7273020004000000030000000300080000000900000000000000040038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa050038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb06002000000001010101010101010101010101010101010101010101010101010101010101010700020000000100080038000000534e52450301010002000100020000000100020020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0200400000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
         );
     }
 
@@ -1280,12 +1373,13 @@ mod tests {
             epoch: vote_a.epoch,
             tx_hash: vote_a.tx_hash,
             execution_effects_hash: vote_a.execution_effects_hash,
+            locked_objects_digest: vote_a.locked_objects_digest,
             votes: vec![vote_a, vote_b],
         };
         let bytes = encode_fast_certificate(&certificate).unwrap();
         assert_eq!(
             hex(&bytes),
-            "534e524508d00100080001000e0000006472303132392d766563746f7273020004000000030000000300080000000900000000000000040038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa050038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb06000400000002000000070036010000534e524507d0010002000100e0000000534e524506d00100070001000e0000006472303132392d766563746f7273020004000000030000000300080000000900000000000000040038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa050038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb060020000000010101010101010101010101010101010101010101010101010101010101010107000200000001000200400000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a080036010000534e524507d0010002000100e0000000534e524506d00100070001000e0000006472303132392d766563746f7273020004000000030000000300080000000900000000000000040038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa050038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb060020000000020202020202020202020202020202020202020202020202020202020202020207000200000001000200400000007c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c"
+            "534e524508d00100090001000e0000006472303132392d766563746f7273020004000000030000000300080000000900000000000000040038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa050038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb060038000000534e52450301010002000100020000000100020020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc07000400000002000000080074010000534e524507d00100020001001e010000534e524506d00100080001000e0000006472303132392d766563746f7273020004000000030000000300080000000900000000000000040038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa050038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb06002000000001010101010101010101010101010101010101010101010101010101010101010700020000000100080038000000534e52450301010002000100020000000100020020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0200400000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a090074010000534e524507d00100020001001e010000534e524506d00100080001000e0000006472303132392d766563746f7273020004000000030000000300080000000900000000000000040038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa050038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb06002000000002020202020202020202020202020202020202020202020202020202020202020700020000000100080038000000534e52450301010002000100020000000100020020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0200400000007c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c"
         );
     }
 }

@@ -56,13 +56,13 @@ use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore, SqliteNamespace};
 
 // ── shared context helpers ──────────────────────────────────────────────
 
-fn chain() -> ChainId {
+pub(crate) fn chain() -> ChainId {
     ChainId::new("epoch-transition-test").unwrap()
 }
-fn protocol_version() -> ProtocolVersion {
+pub(crate) fn protocol_version() -> ProtocolVersion {
     ProtocolVersion::new(3)
 }
-fn resolver() -> HashSuiteResolver {
+pub(crate) fn resolver() -> HashSuiteResolver {
     HashSuiteResolver::new(
         chain(),
         protocol_version(),
@@ -1241,13 +1241,13 @@ fn genesis_authority() -> [u8; 32] {
     VerificationKey::from(&genesis_authority_key()).into()
 }
 
-struct GenesisFixture {
-    manifest: GenesisManifest,
-    instance: InstanceRecord,
-    code: UnverifiedDependencyRef,
-    asset: ObjectId,
-    coin: Object,
-    fee_policy: execution::paid_execution::PaidFeePolicy,
+pub(crate) struct GenesisFixture {
+    pub(crate) manifest: GenesisManifest,
+    pub(crate) instance: InstanceRecord,
+    pub(crate) code: UnverifiedDependencyRef,
+    pub(crate) asset: ObjectId,
+    pub(crate) coin: Object,
+    pub(crate) fee_policy: execution::paid_execution::PaidFeePolicy,
 }
 
 /// Builds a real, signed [`GenesisManifest`] at `epoch_context(0)` carrying
@@ -1255,7 +1255,7 @@ struct GenesisFixture {
 /// its definition object, and one 1,000,000-unit Coin owned by the genesis
 /// authority. Mirrors `crate::genesis::tests::build_fixture`, generalized to
 /// an arbitrary validator set.
-fn build_genesis_fixture(validators: Vec<FastPathValidatorEntry>) -> GenesisFixture {
+pub(crate) fn build_genesis_fixture(validators: Vec<FastPathValidatorEntry>) -> GenesisFixture {
     let context: PublicationContext = epoch_context(0);
     let origin: PackageOrigin =
         PackageOrigin::unverified(chain(), genesis_authority(), [1; 32]).unwrap();
@@ -1673,6 +1673,7 @@ fn four_validator_sqlite_epoch_transition_activates_and_certified_execution_cont
         .try_form_certificate(
             baseline_votes[0].tx_hash,
             baseline_votes[0].execution_effects_hash,
+            baseline_votes[0].locked_objects_digest,
             &baseline_votes,
             &FastPathEd25519Verifier,
         )
@@ -1892,6 +1893,7 @@ fn four_validator_sqlite_epoch_transition_activates_and_certified_execution_cont
         .try_form_certificate(
             next_votes[0].tx_hash,
             next_votes[0].execution_effects_hash,
+            next_votes[0].locked_objects_digest,
             &next_votes,
             &FastPathEd25519Verifier,
         )
@@ -2830,6 +2832,7 @@ fn activate_and_apply_contend_on_the_same_epoch_record_and_exactly_one_commits()
                 .cast_vote(
                     first_vote.tx_hash,
                     first_vote.execution_effects_hash,
+                    first_vote.locked_objects_digest,
                     signer,
                 )
                 .unwrap(),
@@ -2839,6 +2842,7 @@ fn activate_and_apply_contend_on_the_same_epoch_record_and_exactly_one_commits()
         .try_form_certificate(
             fast_votes[0].tx_hash,
             fast_votes[0].execution_effects_hash,
+            fast_votes[0].locked_objects_digest,
             &fast_votes,
             &FastPathEd25519Verifier,
         )

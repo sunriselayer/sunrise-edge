@@ -108,9 +108,12 @@ certification.
   implemented by
   [DR-0132](docs/architecture/decisions/0132-fastvote-epoch-transition.md)
   slice 2. Retired-validator and wrong-epoch rejection are therefore
-  end-to-end observable across an activated transition. Equivocation
-  evidence, authorization-class/ingress declarations, and Phase 3 economics
-  remain open; see the "Initial-Audit Exclusions" below.
+  end-to-end observable across an activated transition. Local, durable,
+  historical-validator-set-verified equivocation evidence is implemented by
+  [DR-0133](docs/architecture/decisions/0133-fastvote-equivocation-evidence.md)
+  without external ingress or punishment. Authorization-class/ingress
+  declarations and Phase 3 economics remain open; see the "Initial-Audit
+  Exclusions" below.
 
 ## Reportable Findings and Severity Context
 
@@ -148,11 +151,13 @@ The following are deferred from the first audit engagement:
   [DR-0131](docs/architecture/decisions/0131-fastvote-validator-lifecycle.md),
   and slice 2's outgoing-set-certified epoch transition is implemented under
   [DR-0132](docs/architecture/decisions/0132-fastvote-epoch-transition.md),
-  still with no externally reachable ingress. Phase 2 slices 3-4
-  (equivocation evidence and authorization-class/ingress declaration) remain
-  unimplemented, with their safety contract fixed and detailed wire/API
-  decisions pending, and Phase 3 slashing/reward distribution remains
-  undesigned — see `TODO.md`'s FastVote Certified Execution Gate);
+  still with no externally reachable ingress. Phase 2 slice 3's local
+  equivocation-evidence types, historical verification, durable recording,
+  and point query are implemented under
+  [DR-0133](docs/architecture/decisions/0133-fastvote-equivocation-evidence.md).
+  Slice 4's authorization-class/ingress declaration remains unimplemented,
+  and Phase 3 slashing/reward distribution remains undesigned — see
+  `TODO.md`'s FastVote Certified Execution Gate);
 - externally accepted non-`SubmitTransaction` event families;
 - production multi-validator consensus activation;
 - checkpoint/state-root publication and verified restore;

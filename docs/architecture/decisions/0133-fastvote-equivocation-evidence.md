@@ -12,14 +12,20 @@ rule, and restart/tamper posture for explicit canonical equivocation
 evidence that [DR-0131](0131-fastvote-validator-lifecycle.md) named but left
 pending its own decision record.
 
-**This DR is design-only: nothing described here is implemented.** No Rust
-or JavaScript code, test, or vector exists yet for `0xD00C`-`0xD00F` or
-`0x6429`. Implementing this design does not by itself close the FastVote
-Certified Execution Gate's Phase 2 entry in `TODO.md` — DR-0131's Slice 4
-still owns that, and Slice 4 still needs Slice 3 actually implemented and
-reviewed first. This DR implements no bonding, slashing, penalty, reward, or
-external ingress. **Phase 2 is not complete until Slices 3-4 are
-implemented, and FastVote overall remains incomplete until Phase 3.**
+**Implemented and locally validated, 2026-09-22.** Canonical frames
+`0xD006`/`0xD008` have been revised in place with `locked_objects_digest`;
+`0xD00C` (`LockedObjectSetPreimage`), `0xD00D` (`FastVoteEquivocationEvidence`),
+`0xD00E` (`FastVoteObjectConflictEvidence`), `0xD00F` (`EpochTransitionEquivocationEvidence`),
+and node-core `0x6429` (`FastPathEquivocationEvidenceRecord`) are implemented
+with strict rechecks on exact prepare replay and before certificate apply,
+normalized signature-excluding evidence identity, restart-verified transition-chain
+anchored historical validator resolution, deterministic transactional store/query
+with `AlreadyRecorded`, comprehensive unit/adversarial tests across `consensus`
+and `node-core`, and independent JS vectors. Completing this slice does not by itself
+close the FastVote Certified Execution Gate's Phase 2 entry in `TODO.md` — DR-0131's
+Slice 4 still owns that. This DR implements no bonding, slashing, penalty, reward, or
+external ingress. **Phase 2 remains open with Slice 4 next, and FastVote overall
+remains incomplete until Phase 3.**
 
 **Revision (2026-09-22, same day, review correction).** The original text
 found that `FastVote`'s existing `tx_hash`-scoped conflict key made a

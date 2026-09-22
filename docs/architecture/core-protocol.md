@@ -479,7 +479,7 @@ deterministically forms the minimal, canonically validator-ID-ordered quorum
 certificate for one `(tx_hash, execution_effects_hash)` pair, independently
 of `ChainedHotStuff` and under the distinct `"fast-path-vote-v1"` signature
 domain. [DR-0133](decisions/0133-fastvote-equivocation-evidence.md)
-(design accepted, not implemented) extends this v1 payload in place with a
+(implemented and locally validated) extends this v1 payload in place with a
 `locked_objects_digest` field needed to evidence a validator locking the
 same object version across two different transactions; there is no v2 or
 compatibility decoder in this unreleased repository.
@@ -534,13 +534,11 @@ atomically with the rewritten epoch record), and lazy CAS-only stale-lock
 and stale-prepared-record reclamation rule, correcting three blocking
 assumptions DR-0131 made about the transition (genesis restart-verify,
 epoch-scoped paid-policy carry-forward, and the committed-epoch query
-boundary). DR-0133 fixes slice 3's detailed design (equivocation evidence
+boundary). DR-0133 implements and locally validates slice 3 (equivocation evidence
 covering same-transaction, cross-transaction same-object-version, and
-epoch-transition-conflicting-target misconduct) but is design-only: slice 3
-is not implemented. Slice 4's detailed wire/API decision remains pending.
-Phase 2 is not complete until slice 4 closes, but retired-validator and
-wrong-epoch rejection are now end-to-end observable through a real
-transition. FastVote overall remains incomplete until phase 3. See DR-0129,
+epoch-transition-conflicting-target misconduct). Slice 4's detailed wire/API
+decision remains pending. Phase 2 is not complete until slice 4 closes,
+with Slice 4 next. FastVote overall remains incomplete until phase 3. See DR-0129,
 DR-0130, DR-0131, DR-0132, DR-0133, and `TODO.md` for exact evidence and
 remaining activation gates.
 
