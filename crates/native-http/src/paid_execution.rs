@@ -56,13 +56,33 @@ where
         state.components.is_cancelled(),
         state.blocking_executor.clone(),
         move || {
-            let _signed = match decode_signed_paid_intent(&body) {
+            let signed = match decode_signed_paid_intent(&body) {
                 Ok(signed) => signed,
                 Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid-paid-execution"),
             };
             let Some(paid) = state.preinstalled_wasm.paid_execution.as_ref() else {
                 return error_response(StatusCode::NOT_FOUND, "paid-execution-disabled");
             };
+            let signed_context: execution::publication::PublicationContext =
+                match execution::publication::PublicationContext::new(
+                    state.config.chain_id().clone(),
+                    state.config.protocol_version(),
+                    signed.intent.context.epoch(),
+                ) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return error_response(StatusCode::BAD_REQUEST, "invalid-paid-execution");
+                    }
+                };
+            let authenticated: node_core::paid_execution::AuthenticatedPaidExecution =
+                match node_core::paid_execution::authenticate_paid_execution(
+                    &state.resolver,
+                    &signed_context,
+                    &body,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return admission_error(&error),
+                };
             let (domain, context, epoch_record) = match prepare_authoritative_epoch_storage_context(
                 &state.components,
                 &state.protocol_config,
@@ -90,13 +110,12 @@ where
                     }
                 };
             let preflight: node_core::paid_execution::PaidExecutionPreflight =
-                match node_core::paid_execution::preflight_paid_execution(
+                match node_core::paid_execution::reconcile_authenticated_paid_execution(
                     state.components.store.as_ref(),
                     &context,
                     domain,
-                    &state.resolver,
                     &current_context,
-                    &body,
+                    authenticated,
                 ) {
                     Ok(value) => value,
                     Err(error) => return admission_error(&error),

@@ -126,9 +126,10 @@ Slice 4, and therefore Phase 2, closes only when all of the following are true:
    paid-policy query use the committed epoch as specified above, while every
    mutation retains its CAS fence. Local publication preserves its historical
    selector, and no profile-2 or profile-3 `e+1` row is synthesized. Invalid
-   transaction bytes and signatures reject before identity, clock, or storage;
-   only an authenticated signed epoch reaches the committed-epoch equality
-   check.
+   transaction and paid-execution bytes or signatures reject before identity,
+   clock, or storage; only an authenticated signed epoch reaches the
+   committed-epoch equality check. Paid execution then performs exact receipt
+   reconciliation before current policy, nonce, code, or object reads.
 3. A real `e -> e+1` test proves context, next-nonce, paid-policy,
    authenticated submission, and public paid execution use `e+1`; the paid
    path uses the activated base-profile-4 and fee-policy rows, and stale-`e`

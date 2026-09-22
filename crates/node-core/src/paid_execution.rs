@@ -33,8 +33,10 @@
 //!    versions, immutable creation authority, the instance or publication
 //!    record, the nonce advance and the complete receipt.
 //!
-//! [`preflight_paid_execution`] performs steps 1 and 2 and returns either the
-//! exact committed replay or an unforgeable fresh witness.
+//! [`authenticate_paid_execution`] performs step 1 without storage I/O.
+//! [`reconcile_authenticated_paid_execution`] performs step 2 and returns
+//! either the exact committed replay or an unforgeable fresh witness.
+//! [`preflight_paid_execution`] composes both for trusted in-process callers.
 //! [`build_paid_admission`] performs steps 3 through 7 plus the effect
 //! translation half of step 8, returning a complete staged envelope neither
 //! committed nor turned into a final receipt. [`handle_paid_execution`] is a
@@ -142,22 +144,40 @@ fn invalid<T>(message: &'static str) -> PaidResult<T> {
     Err(PaidExecutionAdmissionError::Invalid(message))
 }
 
+/// Cryptographically authenticated paid invocation, before any storage I/O.
+///
+/// Fields are private so an adapter can carry this proof across its trusted
+/// committed-epoch lookup without substituting the intent, digest, or request
+/// identity. This witness grants no replay, nonce, policy, object, or mutation
+/// authority.
+pub struct AuthenticatedPaidExecution {
+    authenticated: AuthenticatedPaidIntent,
+    event_digest: Digest32,
+    request_id: RequestId,
+}
+
+impl AuthenticatedPaidExecution {
+    /// Returns the signature-authenticated protocol context.
+    #[must_use]
+    pub fn context(&self) -> &PublicationContext {
+        &self.authenticated.intent().context
+    }
+}
+
 /// Authenticated fresh paid invocation returned only after exact durable
 /// receipt reconciliation proved that no final result exists yet.
 ///
 /// Fields are private so callers cannot fabricate or alter the authenticated
 /// intent, digest, or request identity between preflight and admission.
 pub struct FreshPaidExecution {
-    authenticated: AuthenticatedPaidIntent,
-    event_digest: Digest32,
-    request_id: RequestId,
+    authenticated: AuthenticatedPaidExecution,
 }
 
 impl FreshPaidExecution {
     /// Returns the authenticated request identity.
     #[must_use]
     pub const fn request_id(&self) -> RequestId {
-        self.request_id
+        self.authenticated.request_id
     }
 }
 
@@ -1210,19 +1230,49 @@ pub fn preflight_paid_execution<S: StructuredDurableDomainStateStore>(
     expected: &PublicationContext,
     signed_bytes: &[u8],
 ) -> PaidResult<PaidExecutionPreflight> {
-    let (authenticated, event_digest, request_id) =
+    let authenticated: AuthenticatedPaidExecution =
+        authenticate_paid_execution(resolver, expected, signed_bytes)?;
+    reconcile_authenticated_paid_execution(store, context, domain, expected, authenticated)
+}
+
+/// Authenticates one paid invocation and derives its stable replay identity
+/// without consulting runtime identity, clock, storage, policy, code, object,
+/// or blob state.
+pub fn authenticate_paid_execution(
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+    signed_bytes: &[u8],
+) -> PaidResult<AuthenticatedPaidExecution> {
+    let (authenticated, event_digest, request_id): (AuthenticatedPaidIntent, Digest32, RequestId) =
         authenticate_and_identify(resolver, expected, signed_bytes)?;
+    Ok(AuthenticatedPaidExecution {
+        authenticated,
+        event_digest,
+        request_id,
+    })
+}
+
+/// Reconciles an already authenticated paid invocation against its exact
+/// durable receipt before any nonce, policy, code, object, or blob read.
+pub fn reconcile_authenticated_paid_execution<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    expected_current: &PublicationContext,
+    authenticated: AuthenticatedPaidExecution,
+) -> PaidResult<PaidExecutionPreflight> {
+    if authenticated.context() != expected_current {
+        return Err(PaidExecutionError::ContextMismatch.into());
+    }
+    let request_id: RequestId = authenticated.request_id;
+    let event_digest: Digest32 = authenticated.event_digest;
     if let Some(output) =
         durable_reconciliation::reconcile_receipt(store, context, domain, request_id, event_digest)?
     {
         return Ok(PaidExecutionPreflight::Replayed { request_id, output });
     }
     Ok(PaidExecutionPreflight::Fresh(Box::new(
-        FreshPaidExecution {
-            authenticated,
-            event_digest,
-            request_id,
-        },
+        FreshPaidExecution { authenticated },
     )))
 }
 
@@ -1252,11 +1302,12 @@ pub fn handle_preflighted_paid_execution<
     if history.len() > publication::MAX_PUBLICATION_HISTORY {
         return invalid("resolver history bound");
     }
-    let FreshPaidExecution {
+    let FreshPaidExecution { authenticated } = fresh;
+    let AuthenticatedPaidExecution {
         authenticated,
         event_digest,
         request_id,
-    } = fresh;
+    } = authenticated;
     let admission: PaidAdmissionOutput = build_paid_admission(
         store,
         blob_store,

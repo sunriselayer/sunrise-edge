@@ -540,6 +540,66 @@ fn signed_paid_publish(request: u8) -> (SignedPaidIntent, Vec<u8>) {
     (signed, bytes)
 }
 
+#[tokio::test]
+async fn paid_http_invalid_signature_rejects_before_runtime_identity_or_storage() {
+    let domain: AtomicityDomainId = AtomicityDomainId::new([0x89; 32]).unwrap();
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(3).unwrap();
+    let inner: MemoryDurableStateStore = MemoryDurableStateStore::new(fence);
+    let setup_context: DurableOperationContext = DurableOperationContext::new(
+        fence,
+        StorageDeadline::new(u64::MAX).unwrap(),
+        StorageCorrelationId::new([0x38; 16]).unwrap(),
+    );
+    install_fastpath_epoch_record(&inner, &setup_context, domain);
+
+    let cancellation: Arc<ManualCancellation> = Arc::new(ManualCancellation::default());
+    let store: Arc<CancelOnFirstReceiptReadStore> = Arc::new(CancelOnFirstReceiptReadStore::new(
+        inner,
+        Arc::clone(&cancellation),
+    ));
+    let clock: Arc<CountingClock> = Arc::new(CountingClock::new(10_000));
+    let identities: Arc<CountingIndexedIdentities> = Arc::new(CountingIndexedIdentities::default());
+    let composition: PreinstalledWasmComposition = PreinstalledWasmComposition::new(
+        Arc::new(PreinstalledModuleCatalog::new(Vec::new()).unwrap()),
+        WasmExecutionEngine,
+        1,
+    )
+    .with_paid_execution(PaidExecutionComposition::new(
+        LocalExecutionPolicy::generic_object_results(context()),
+        paid_policy(),
+    ));
+    let app: Router = preinstalled_wasm_structured_durable_router(
+        StructuredDurableNativeComponents::new(
+            Arc::clone(&store),
+            Arc::new(MemoryBlobStore::default()),
+            Arc::new(MemoryTransport::default()),
+            Arc::clone(&clock),
+            Arc::clone(&identities),
+        ),
+        composition,
+        active_protocol_config(domain),
+        structured_request_authority(),
+        config(),
+        resolver(),
+        Vec::new(),
+        Arc::new(IncrementMachine::new(config().state_key())),
+        NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
+    )
+    .unwrap();
+
+    let (mut signed, _): (SignedPaidIntent, Vec<u8>) = signed_paid_publish(0x66);
+    signed.signature[0] ^= 0x80;
+    let body: Vec<u8> = encode_signed_paid_intent(&signed).unwrap();
+    let response: Response = post(&app, paid_execution::PAID_EXECUTION_PATH, body).await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(identities.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(clock.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(store.durable_reads(), 0);
+    assert_eq!(store.receipt_reads(), 0);
+    assert!(!cancellation.is_cancelled());
+}
+
 fn set_paid_test_state(store: &MemoryDurableStateStore, key: Vec<u8>, mutation: StateMutation) {
     let operation: DurableOperationContext = DurableOperationContext::new(
         WriterFenceGeneration::new(3).unwrap(),

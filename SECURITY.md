@@ -70,12 +70,15 @@ certification.
 
 - Canonical bytes, type and field identifiers, enum tags, hash domains, and
   stable vectors must remain deterministic and versioned.
-- A state-changing transaction's canonical frame, trusted chain ID and
-  protocol version, authentication profile, signature scheme, sender binding,
-  and outer/inner signed epoch consistency must be authenticated before runtime
-  identity or storage work. Because the durable current epoch is itself stored
-  state, that already-authenticated signed epoch must then equal the committed
-  current epoch before application planning, transition, or mutation.
+- A state-changing signed ingress, including `SubmitTransaction` and public
+  paid execution, must authenticate its canonical frame, trusted chain ID and
+  protocol version, signature scheme, sender binding, and signed epoch before
+  runtime identity, clock, or storage work. `SubmitTransaction` additionally
+  authenticates its profile and outer/inner signed-epoch consistency at this
+  stage. Because the durable current epoch is itself stored state, that
+  already-authenticated signed epoch must then equal the committed current
+  epoch before replay reconciliation, application planning, transition, or
+  mutation.
 - Request replay and request-ID reuse must reconcile against persisted receipt
   and event-digest state before nonce, object, module, or application work.
 - Sender nonce, application state, object versions, receipt, and outbox effects
