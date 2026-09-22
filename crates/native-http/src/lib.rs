@@ -3183,7 +3183,17 @@ where
     let event = NodeEvent::decode(body).map_err(InvocationError::Node)?;
     reject_unauthenticated_event_family(&event)?;
     validate_native_event_chain_and_protocol(&event, config).map_err(InvocationError::Node)?;
-    let request_id = event.request_id();
+    // The signed epoch is not accepted as current authority here. It is used
+    // only to prove outer/inner frame consistency and verify the sender before
+    // any operational identity, clock, or storage work. The durable epoch read
+    // below remains authoritative and must match before dispatch.
+    let signed_context: TrustedTransactionContext<'_> =
+        TrustedTransactionContext::new(config.chain_id().clone(), event.epoch(), protocol_config);
+    let submission: Box<node_core::AuthenticatedSubmitTransaction> = Box::new(
+        authenticate_submit_transaction_event(event, &signed_context)
+            .map_err(InvocationError::Node)?,
+    );
+    let request_id: RequestId = submission.event().request_id();
     let identity: IndexedOutboxAttemptIdentity = components
         .identities
         .next_attempt_identity()
@@ -3234,14 +3244,16 @@ where
             "committed epoch resolved a different native HTTP domain",
         )));
     }
-    let trusted_context: TrustedTransactionContext<'_> = TrustedTransactionContext::new(
+    if submission.event().epoch() != epoch_record.current_epoch {
+        return Err(InvocationError::Node(NodeCoreError::EpochMismatch {
+            expected: epoch_record.current_epoch,
+            actual: submission.event().epoch(),
+        }));
+    }
+    let committed_context: TrustedTransactionContext<'_> = TrustedTransactionContext::new(
         config.chain_id().clone(),
         epoch_record.current_epoch,
         protocol_config,
-    );
-    let submission = Box::new(
-        authenticate_submit_transaction_event(event, &trusted_context)
-            .map_err(InvocationError::Node)?,
     );
     let resolved = match execution {
         StructuredDurableAuthenticatedExecution::ReadOnly => {
@@ -3296,7 +3308,7 @@ where
         }
         let outbound = NodeEvent::decode(claim.canonical_payload())
             .map_err(|error| InvocationError::Indexed(IndexedOutboxRecoveryError::Node(error)))?;
-        validate_native_event_against_trusted_context(&outbound, &trusted_context)
+        validate_native_event_against_trusted_context(&outbound, &committed_context)
             .map_err(|error| InvocationError::Indexed(IndexedOutboxRecoveryError::Node(error)))?;
         let canonical_payload = outbound
             .encode()

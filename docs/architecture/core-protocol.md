@@ -293,6 +293,10 @@ before access-plan derivation, operational identity allocation, clock or
 storage work, transition, outbox claim, or send. The wrapper captures the
 committed placement used by the later normalized durable handler, preventing
 authentication under one configuration followed by routing under another.
+At this pre-storage stage the signed outer epoch proves only outer/inner frame
+consistency. The route then reads the durable `FastPathEpochRecord` and requires
+that already-authenticated epoch to equal its current epoch before application
+planning or transition; the signed epoch never selects live authority.
 Exact replays authenticate again before durable receipt reconciliation.
 Generic node-core handlers and the legacy native routers fail closed on
 `SubmitTransaction`. DR-0099 additionally closes every native public

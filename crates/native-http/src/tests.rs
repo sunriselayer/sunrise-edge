@@ -1540,6 +1540,7 @@ struct CancelOnFirstReceiptReadStore {
     inner: MemoryDurableStateStore,
     cancellation: Arc<ManualCancellation>,
     cancelled: AtomicBool,
+    durable_reads: AtomicUsize,
     receipt_reads: AtomicUsize,
 }
 
@@ -1549,8 +1550,13 @@ impl CancelOnFirstReceiptReadStore {
             inner,
             cancellation,
             cancelled: AtomicBool::new(false),
+            durable_reads: AtomicUsize::new(0),
             receipt_reads: AtomicUsize::new(0),
         }
+    }
+
+    fn durable_reads(&self) -> usize {
+        self.durable_reads.load(Ordering::SeqCst)
     }
 
     fn receipt_reads(&self) -> usize {
@@ -1565,6 +1571,7 @@ impl DurableDomainStateStore for CancelOnFirstReceiptReadStore {
         domain: AtomicityDomainId,
         key: &[u8],
     ) -> Result<VersionedStateValue, DurableReadError> {
+        self.durable_reads.fetch_add(1, Ordering::SeqCst);
         self.inner.get_versioned_durable(context, domain, key)
     }
 
@@ -1963,6 +1970,9 @@ async fn assert_submit_rejected_before_side_effects_with_config(
     );
     assert_eq!(machine.access_plan_calls.load(Ordering::SeqCst), 0);
     assert_eq!(machine.transition_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(identities.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(clock.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(store.durable_reads(), 0);
     assert_eq!(store.receipt_reads(), 0);
     assert!(!cancellation.is_cancelled());
     assert!(transport.drain_outbound().unwrap().is_empty());
@@ -2919,22 +2929,9 @@ async fn structured_route_rejects_outer_event_context_mismatch_before_every_side
     )
     .await;
 
-    let wrong_epoch_event = NodeEvent::new(
-        ChainId::new("sunrise-test").unwrap(),
-        ProtocolVersion::new(3),
-        Epoch::new(8),
-        request_id(0x42),
-        NodeEventKind::SubmitTransaction,
-        canonical(TEST_PAYLOAD_TYPE_ID, 9),
-    )
-    .unwrap();
-    assert_submit_rejected_before_side_effects(
-        wrong_epoch_event.encode().unwrap(),
-        protocol_config,
-        StatusCode::CONFLICT,
-        "state-or-context-conflict",
-    )
-    .await;
+    // A validly authenticated but stale/future epoch necessarily reaches the
+    // authoritative epoch read; the post-activation regression below covers
+    // that path. Malformed or invalidly signed submissions never reach it.
 }
 
 #[tokio::test]

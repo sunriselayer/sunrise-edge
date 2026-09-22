@@ -250,6 +250,14 @@ same-commit epoch-record CAS fence, so an activation race rejects the stale
 operation. Missing current-epoch policy disables that opt-in surface rather
 than permitting fallback to a prior epoch.
 
+`SubmitTransaction` keeps signature work ahead of storage: bounded canonical
+inner decoding, profile resolution, sender binding, signature verification, and
+outer/inner signed-epoch consistency complete before operational identity,
+clock, or durable reads. Only then does the route read the epoch singleton and
+require the authenticated signed epoch to equal its committed current epoch.
+This two-stage check avoids treating request epoch as authority without making
+invalid signatures a storage-backed admission path.
+
 Malformed events return 400, oversized bodies return 413, unsupported media or
 content encoding returns 415, context/CAS conflicts return 409, deterministic
 application rejection returns 422, and runtime/outbound delivery failure

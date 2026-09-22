@@ -2072,13 +2072,15 @@ impl AuthenticatedSubmitTransaction {
 /// Authenticates one `SubmitTransaction` event before any machine or storage
 /// operation can begin.
 ///
-/// The outer event is first matched against an explicit trusted transaction
-/// context. Native durable ingress constructs that context with the epoch read
-/// from the committed `FastPathEpochRecord`, never the static startup epoch.
-/// Protocol-version and profile authority come only from the context's
-/// `ProtocolConfig`. The returned wrapper captures that configuration's domain
-/// placement and exact matching system-module record (or its committed absence)
-/// for the later durable commit and module resolution.
+/// The outer event is first matched against an explicit transaction context.
+/// Native durable ingress uses the signed outer epoch here only to prove
+/// outer/inner consistency and verify the sender before identity, clock, or
+/// storage work. It then independently requires that authenticated epoch to
+/// equal the committed `FastPathEpochRecord` before dispatch; static startup
+/// epoch is never live authority. Protocol-version and profile authority come
+/// only from the context's `ProtocolConfig`. The returned wrapper captures that
+/// configuration's domain placement and exact matching system-module record
+/// (or its committed absence) for later durable commit and module resolution.
 pub fn authenticate_submit_transaction_event(
     event: NodeEvent,
     trusted_context: &TrustedTransactionContext<'_>,

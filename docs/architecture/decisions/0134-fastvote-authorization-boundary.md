@@ -88,6 +88,15 @@ bootstrap/composition input and is not live post-transition authority. The
 profile-4 and fee-policy rows must match the committed context exactly; these
 surfaces must not reuse their epoch-`e` rows after activation to `e+1`.
 
+For `SubmitTransaction`, deriving live epoch does not move cryptographic
+admission behind storage. The route first authenticates the bounded canonical
+transaction, sender binding, signature, and outer/inner signed-epoch
+consistency using trusted chain/protocol/profile configuration. It allocates
+operational identity and reads the epoch singleton only after that succeeds,
+then requires the authenticated epoch to equal the committed current epoch
+before application planning or transition. Request epoch is therefore never
+live authority, while invalid signatures cannot force the epoch read.
+
 This does not reinterpret local publication's `policy.context.epoch()`.
 DR-0131 defines that field as a historical code/policy-version selector, not a
 claim about the live epoch; local publication preserves that selector while
@@ -116,7 +125,10 @@ Slice 4, and therefore Phase 2, closes only when all of the following are true:
    execution's expected context/base-profile-4 policy/fee policy, and the
    paid-policy query use the committed epoch as specified above, while every
    mutation retains its CAS fence. Local publication preserves its historical
-   selector, and no profile-2 or profile-3 `e+1` row is synthesized.
+   selector, and no profile-2 or profile-3 `e+1` row is synthesized. Invalid
+   transaction bytes and signatures reject before identity, clock, or storage;
+   only an authenticated signed epoch reaches the committed-epoch equality
+   check.
 3. A real `e -> e+1` test proves context, next-nonce, paid-policy,
    authenticated submission, and public paid execution use `e+1`; the paid
    path uses the activated base-profile-4 and fee-policy rows, and stale-`e`
