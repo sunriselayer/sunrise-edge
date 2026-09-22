@@ -902,6 +902,89 @@ fn authenticated_owned_write_is_blocked_by_a_held_fastpath_object_lock() {
     assert!(store.commits.lock().unwrap().is_empty());
 }
 
+/// DR-0132 §3.D: the same shared object-lock boundary the test above
+/// exercises, but with the pre-existing lock stamped a strictly older epoch
+/// than the fenced current epoch: this is stale (the transition that would
+/// have consumed it can never reach `apply` again, DR-0132's fenced-epoch
+/// proof), so the owned-effects `SubmitTransaction` entrypoint proceeds and
+/// reclaims it by emitting a `Delete` for it in the same commit as this
+/// request's own effect mutations, instead of failing closed.
+#[test]
+fn authenticated_owned_write_reclaims_a_stale_fastpath_object_lock() {
+    let store = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+    let blob_store = InstrumentedBlobStore::default();
+    let node_config = config("sunrise-test");
+    let protocol_config = active_protocol_config(0xB7);
+    let signing_key = dev_signing_key(0xB7);
+    let sender: Address = dev_sender_address(&signing_key);
+    let object_id = ObjectId::new([0x77; 32]);
+    let (object_ref, _head) = preload_inline_object(
+        &store,
+        "sunrise-test",
+        object_id,
+        Owner::Address(sender),
+        0x77,
+    );
+    let manifest = manifest_with(vec![AccessEntry {
+        object_ref: object_ref.clone(),
+        mode: AccessMode::Write,
+    }]);
+    let submission = authenticated_submission_with_manifest(
+        "sunrise-test",
+        request(0xB7),
+        &signing_key,
+        Epoch::new(7),
+        0,
+        manifest,
+        &node_config,
+        &protocol_config,
+    );
+    let machine = OwnedObjectEffectMachine {
+        expected_inputs: vec![(object_id, AccessMode::Write)],
+        replacement_data: vec![0x78],
+        calls: AtomicUsize::new(0),
+    };
+    preload_fastpath_epoch_record(&store, "sunrise-test", Epoch::new(7));
+
+    // A lock stamped epoch 6, strictly older than the fenced current epoch
+    // 7: stale, and lazily reclaimable rather than blocking.
+    let chain_id: ChainId = ChainId::new("sunrise-test").unwrap();
+    let lock_key: Vec<u8> = local_instance_state::fastpath_lock_key(&chain_id, object_id).unwrap();
+    let lock: local_instance_state::FastPathLockRecord = local_instance_state::FastPathLockRecord {
+        request_id: [0x11; 32],
+        object: object_ref,
+        locked_epoch: Epoch::new(6),
+    };
+    store.preload(
+        lock_key.clone(),
+        StateRevision::INITIAL.checked_next().unwrap(),
+        local_instance_state::encode_fastpath_lock_record(&lock).unwrap(),
+    );
+
+    handle_authenticated_resolved_durable_submit_transaction_with_owned_object_effects(
+        &blob_store,
+        &store,
+        &durable_context(),
+        &resolver("sunrise-test"),
+        submission,
+        2,
+        &machine,
+    )
+    .unwrap();
+
+    assert_eq!(machine.calls.load(Ordering::SeqCst), 1);
+    let commits = store.commits.lock().unwrap();
+    let state = commits[0].state().expect("effect mutations were committed");
+    assert!(
+        state
+            .mutations()
+            .iter()
+            .any(|entry| entry.key() == lock_key.as_slice()
+                && matches!(entry.mutation(), StateMutation::Delete)),
+        "the stale lock must be deleted in the same commit as this request's own mutations"
+    );
+}
+
 /// DR-0131 criterion 4: the owned-effects `SubmitTransaction` entrypoint
 /// rejects a request bound to a non-current epoch before any lock, machine
 /// execution, or mutation -- the same shared boundary the held-lock test

@@ -6,14 +6,23 @@ Accepted as the Phase 2 architecture, 2026-09-22. Slice 1 is fully specified
 and implemented. Slices 2-4's safety
 contract — in particular the key transition safety proof below — is fixed
 by this DR; their detailed wire formats and APIs are pending their own
-decision records before implementation. **Slice 1 alone does not implement
-epoch transition or lock recovery.** Retired-validator and wrong-epoch
-rejection are enforced by Slice 1's fencing from day one, but they have no
-observable end-to-end effect beyond what
+decision records before implementation.
+[DR-0132](0132-fastvote-epoch-transition.md) fixes Slice 2's detailed
+design (wire format, API, activation write set, reclamation rule) and
+corrects seven assumptions this DR made about the transition (C1-C7 in
+DR-0132; C1, C3, and C7 are blocking-severity — the restart-verify check
+below and the epoch-scoped policy rows in the "Two-tier fence model" section
+would otherwise brick a node on restart or leave epoch `e+1` unable to
+execute anything). **Slice 2 is now implemented** (DR-0132, 2026-09-22),
+making retired-validator and wrong-epoch rejection end-to-end observable
+through a real outgoing-set-certified `e -> e+1` transition for the first
+time; Phase 2 nonetheless remains open until Slices 3-4 are also
+implemented and reviewed. Retired-validator and wrong-epoch rejection were
+enforced by Slice 1's fencing from day one, but had no observable
+end-to-end effect beyond what
 [DR-0130](0130-owned-object-certified-execution.md) already verified
 (membership against one static genesis set) until Slice 2's transition
-exists — there is no post-genesis local action that changes the active set
-in Slice 1. Completing Slice 1 does not close the FastVote Certified
+existed. Completing Slices 1-2 does not close the FastVote Certified
 Execution Gate's Phase 2 entry in `TODO.md`. FastVote remains incomplete
 until Phase 3.
 
@@ -62,14 +71,16 @@ must never derive different active authority sets from local configuration.
   internal/system construction path for node-owned synthetic IDs, and
   closed direct object-lock branch gaps. No epoch-transition procedure
   exists yet; `FastPathEpochRecord` never changes after genesis in Slice 1.
-* **Slice 2 (architecture fixed here; detailed wire/API decision pending).**
+* **Slice 2 (architecture fixed here; detailed design accepted and
+  implemented in [DR-0132](0132-fastvote-epoch-transition.md)).**
   The actual epoch transition: an outgoing-set-certified strict `e -> e+1`
   transition, byte-stable transition votes, atomic next-set/epoch
   activation, and lazy stale-lock reclamation under CAS — safe only because
   of the key transition safety proof below, never a timeout. Requires
   four-independent-SQLite fault/restart evidence for the transition itself.
-  Retired-validator and wrong-epoch rejection become end-to-end observable
-  only once this slice exists.
+  Retired-validator and wrong-epoch rejection are now end-to-end observable.
+  DR-0132 also corrects seven of this DR's own assumptions that would
+  otherwise block Slice 2 (see Status).
 * **Slice 3 (architecture fixed here; detailed wire/API decision pending).**
   Explicit canonical equivocation evidence — two conflicting signed
   statements from the same validator for the same context — normalized so
@@ -358,16 +369,17 @@ tests, complete repository gate, fresh tech-lead and security review):
 Slice 1 satisfying these criteria does not by itself authorize testnet or
 production activation of any new ingress, and does not close the FastVote
 Certified Execution Gate's Phase 2 entry in `TODO.md` — that requires
-Slices 2-4. In particular, retired-validator and wrong-epoch rejection have
-no end-to-end observable effect beyond genesis-set membership until Slice 2
-ships a real transition.
+Slices 2-4. Retired-validator and wrong-epoch rejection had no end-to-end
+observable effect beyond genesis-set membership until Slice 2 shipped a
+real transition ([DR-0132](0132-fastvote-epoch-transition.md), implemented).
 
 ## Consequences / Deferred
 
 - Epoch transition (`e -> e+1`), byte-stable transition votes, atomic
-  next-set/epoch activation, and lazy CAS-fenced stale-lock reclamation
-  remain Slice 2 to implement, though their safety contract is fixed by the
-  "Key transition safety proof" above.
+  next-set/epoch activation, and lazy CAS-fenced stale-lock reclamation were
+  Slice 2's own scope; their safety contract is fixed by the "Key transition
+  safety proof" above and their detailed design and implementation are now
+  in [DR-0132](0132-fastvote-epoch-transition.md).
 - Explicit canonical equivocation evidence, and any `locked_objects_digest`
   or lock-set preimage it needs, remain Slice 3 to implement.
 - Authorization-class declaration and closing the still-closed external

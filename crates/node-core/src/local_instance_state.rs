@@ -106,8 +106,11 @@ pub fn fastpath_prepared_record_key(
 }
 
 /// One exclusive per-object lock, held from a successful prepare commit
-/// until the owning request's certificate apply deletes it. Phase 1 locks
-/// have no expiry and are released by exactly one mechanism: a successful
+/// until the owning request's certificate apply deletes it. There is no
+/// timeout or clock-based expiry. DR-0132 additionally permits a lock stamped
+/// with a permanently retired epoch to be lazily overwritten or deleted by a
+/// later current-epoch mutation under the same CAS revision; a current-epoch
+/// lock remains releasable only by its own successful
 /// [`crate::fast_path::apply`].
 pub fn fastpath_lock_key(chain: &ChainId, object_id: ObjectId) -> Result<Vec<u8>, NodeCoreError> {
     let mut key: Vec<u8> = FASTPATH_STATE_PREFIX.to_vec();
@@ -217,18 +220,29 @@ pub fn reject_reserved_request_id(request_id: &[u8; 32]) -> Result<(), &'static 
 /// Deterministically derives the synthetic
 /// [`DurableRequestId`](runtime::DurableRequestId) a prepare commit's
 /// mandatory [`runtime::DurableRequestReceipt`] is keyed by: the reserved
-/// tag followed by 24 bytes of a dedicated hash of the *original* request
-/// id, so exact replay always re-derives the identical synthetic id and two
-/// different original request ids collide only with cryptographically
-/// negligible probability. This is bookkeeping only: prepare's own replay
-/// idempotency is governed by [`fastpath_prepared_record_key`], not by this
-/// synthetic id.
+/// tag followed by 24 bytes of a dedicated hash of the *epoch* and the
+/// *original* request id, so exact replay always re-derives the identical
+/// synthetic id and two different `(epoch, original_request_id)` pairs
+/// collide only with cryptographically negligible probability. This is
+/// bookkeeping only: prepare's own replay idempotency is governed by
+/// [`fastpath_prepared_record_key`], not by this synthetic id.
+///
+/// The epoch is mixed directly into the preimage bytes, not left to
+/// `resolver.hash_for_purpose`'s own epoch-indexed suite selection alone
+/// (DR-0132 C5): a [`HashSuiteResolver`] with one schedule entry spanning
+/// both the outgoing and incoming epoch selects the identical suite for
+/// both, which would otherwise make this function produce the identical
+/// synthetic id for the same original request id reused at the next epoch
+/// (DR-0132's own stale-prepared-record supersession case) -- silently
+/// colliding with the outgoing epoch's already-committed synthetic receipt
+/// instead of the two epochs' prepares ever being distinguishable.
 pub fn fastpath_synthetic_prepare_request_id(
     resolver: &HashSuiteResolver,
     epoch: Epoch,
     original_request_id: &[u8; 32],
 ) -> Result<[u8; 32], NodeCoreError> {
     let mut preimage: Vec<u8> = b"se-fastpath-prepare-receipt-v1".to_vec();
+    preimage.extend_from_slice(&epoch.get().to_be_bytes());
     preimage.extend_from_slice(original_request_id);
     let digest: Digest32 = resolver
         .hash_for_purpose(epoch, HashPurpose::NodeEvent, &preimage)
@@ -323,6 +337,25 @@ pub fn decode_fastpath_lock_record(bytes: &[u8]) -> Result<FastPathLockRecord, N
     Ok(record)
 }
 
+/// Per-`next_epoch` audit key for the DR-0132
+/// [`crate::epoch_transition::FastPathEpochTransitionRecord`] (`0x6427`):
+/// the exact verified certificate plus the activation write set's digest,
+/// retained permanently so restart can re-walk and re-verify the whole
+/// transition chain (C1). Unlike [`fastpath_epoch_record_key`] (the live
+/// singleton), one row exists per completed transition and is never
+/// overwritten.
+pub fn fastpath_epoch_transition_key(
+    chain: &ChainId,
+    next_epoch: Epoch,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"transition/");
+    key.extend(encode_chain_id(chain)?);
+    key.extend_from_slice(&next_epoch.get().to_be_bytes());
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
 /// Singleton state key for the DR-0131 [`FastPathEpochRecord`]: the fenced
 /// source of truth for the fast path's current epoch and active
 /// validator-set identity, in place of scattered reads of the static
@@ -340,8 +373,8 @@ pub fn fastpath_epoch_record_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreErr
 
 /// Frame `0x6426/v1`: the committed, CAS-fenced source of truth for the fast
 /// path's current epoch and active validator-set identity (DR-0131). Created
-/// once, atomically with genesis validator-set activation; Slice 1 defines no
-/// post-genesis write to this record.
+/// atomically with genesis validator-set activation, then rewritten only by
+/// an outgoing-set-certified DR-0132 epoch transition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FastPathEpochRecord {
     /// The current active epoch.

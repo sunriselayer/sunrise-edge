@@ -43,6 +43,7 @@ use system_modules::{ModuleId, SystemModule, SystemModuleError};
 
 mod authenticated_object_effects;
 mod durable_reconciliation;
+pub mod epoch_transition;
 pub mod fast_path;
 pub mod fee_effects;
 pub mod genesis;
@@ -96,8 +97,8 @@ pub use preinstalled_wasm::{
     encode_preinstalled_typed_entrypoint_policy, reconcile_preinstalled_registry_and_catalog,
 };
 pub use query::{
-    ObjectQueryResult, ReceiptQueryResult, query_object, query_request_receipt,
-    query_sender_next_nonce,
+    ObjectQueryResult, ReceiptQueryResult, query_committed_epoch_state, query_object,
+    query_request_receipt, query_sender_next_nonce,
 };
 pub use transaction_auth::{
     AuthenticatedTransaction, MAX_TRANSACTION_SIGNABLE_BYTES, SUBMIT_TRANSACTION_SIGNABLE_TYPE_ID,
@@ -5148,6 +5149,10 @@ where
     // prevents a new entrypoint from accidentally bypassing the lifecycle
     // fence. Generic non-transaction events have no reservation and therefore
     // no sender-owned mutation authority to fence.
+    // DR-0132 §3.D: a stale (strictly older epoch) object lock observed here
+    // is reclaimed by emitting a `Delete` for it into this transaction's own
+    // mutations, below, alongside this request's effect mutations.
+    let mut reclaimed_lock_keys: Vec<Vec<u8>> = Vec::new();
     let fastpath_fence_reads: Vec<StateReadAssertion> = match reservation.as_ref() {
         Some(reservation) => {
             let mut fence_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
@@ -5174,7 +5179,7 @@ where
             if let Some(dispatch) = dispatch.as_ref() {
                 for access in &dispatch.accesses {
                     if access.mode != AccessMode::Read {
-                        mutation_fence::fence_object_lock(
+                        let lock_state = mutation_fence::fence_object_lock(
                             store,
                             context,
                             domain,
@@ -5185,6 +5190,12 @@ where
                             mutation_fence::LockMode::Fresh,
                             &mut fence_reads,
                         )?;
+                        if lock_state == mutation_fence::ObjectLockState::Reclaimable {
+                            reclaimed_lock_keys.push(local_instance_state::fastpath_lock_key(
+                                event.chain_id(),
+                                access.object_ref.id,
+                            )?);
+                        }
                     }
                 }
             }
@@ -5463,6 +5474,12 @@ where
             pending.key,
             StateMutation::Put(pending.record.encode()?),
         )?);
+    }
+    // DR-0132 §3.D: added after the reserved-state-access check above (this
+    // reclaims fast-path bookkeeping the node itself observed, not a mutation
+    // the user's own transition plan supplied).
+    for key in reclaimed_lock_keys {
+        mutations.push(StateMutationEntry::new(key, StateMutation::Delete)?);
     }
     let state = DurableStateTransaction::new(domain, AtomicStateReadSet::new(reads)?, mutations)?;
     let objects = DurableObjectChanges::new(loaded_objects.into_reads(), object_mutations)?;

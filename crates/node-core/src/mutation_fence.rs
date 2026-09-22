@@ -68,21 +68,41 @@ fn read_and_fence<S: StructuredDurableDomainStateStore>(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LockMode {
     /// Direct commit, local execution, local publication, live owned-effects
-    /// `SubmitTransaction`, or a fresh fast-path prepare: no fast-path lock
-    /// may already exist for this object/sender-epoch.
+    /// `SubmitTransaction`, or a fresh fast-path prepare: no current-epoch
+    /// fast-path lock may already exist for this object/sender-epoch. A
+    /// lock stamped a strictly older epoch is stale (DR-0132 §3.D) and may
+    /// be reclaimed.
     Fresh,
     /// Certificate apply: the exact original request must own every
     /// object/nonce lock it touches.
     OwnedByRequest,
 }
 
+/// How one observed [`FastPathLockRecord`] relates to the fenced current
+/// epoch under [`LockMode::Fresh`] (DR-0132 §3.D). Lazy, CAS-only
+/// reclamation: eligibility derives purely from the CAS-fenced epoch record,
+/// never from elapsed time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ObjectLockState {
+    /// No lock row exists.
+    Absent,
+    /// A lock row exists, stamped a strictly older epoch than the fenced
+    /// current epoch: safe to reclaim (overwrite or delete) under the CAS
+    /// revision already recorded in `reads`.
+    Reclaimable,
+    /// [`LockMode::OwnedByRequest`] observed the exact expected owner.
+    OwnedByThisRequest,
+}
+
 /// Reads, and (in [`LockMode::OwnedByRequest`]) validates ownership of, the
 /// fast-path object-lock row for one object. A lock owned by a different
-/// request id, or held at all under [`LockMode::Fresh`], fails closed: an
-/// in-flight fast-path prepare's exclusive inputs can never be reused by a
-/// direct commit, local execution, local publication, live owned-effects
-/// `SubmitTransaction`, a different prepare, or anything other than that same
-/// request's own certificate apply.
+/// request id, or held at the current epoch under [`LockMode::Fresh`], fails
+/// closed: an in-flight fast-path prepare's exclusive inputs can never be
+/// reused by a direct commit, local execution, local publication, live
+/// owned-effects `SubmitTransaction`, a different prepare, or anything other
+/// than that same request's own certificate apply. A [`LockMode::Fresh`]
+/// lock stamped a strictly older epoch is reclaimable (DR-0132 §3.D); one
+/// stamped a future epoch is a storage invariant violation and fails closed.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fence_object_lock<S: StructuredDurableDomainStateStore>(
     store: &S,
@@ -91,28 +111,39 @@ pub(crate) fn fence_object_lock<S: StructuredDurableDomainStateStore>(
     chain: &ChainId,
     object_ref: &ObjectRef,
     current_request_id: &[u8; 32],
-    expected_epoch: Epoch,
+    current_epoch: Epoch,
     mode: LockMode,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
-) -> Result<(), NodeCoreError> {
+) -> Result<ObjectLockState, NodeCoreError> {
     let key: Vec<u8> = fastpath_lock_key(chain, object_ref.id)?;
     let observed: VersionedStateValue = read_and_fence(store, context, domain, key, reads)?;
     match (mode, observed.value()) {
-        (LockMode::Fresh, None) => Ok(()),
-        (LockMode::Fresh, Some(_)) => Err(NodeCoreError::PersistenceInvariant(
-            "object locked by a pending fast-path certificate",
-        )),
+        (LockMode::Fresh, None) => Ok(ObjectLockState::Absent),
+        (LockMode::Fresh, Some(bytes)) => {
+            let lock: FastPathLockRecord = decode_fastpath_lock_record(bytes)?;
+            if lock.locked_epoch == current_epoch {
+                Err(NodeCoreError::PersistenceInvariant(
+                    "object locked by a pending fast-path certificate",
+                ))
+            } else if lock.locked_epoch < current_epoch {
+                Ok(ObjectLockState::Reclaimable)
+            } else {
+                Err(NodeCoreError::PersistenceInvariant(
+                    "fast-path lock stamped a future epoch",
+                ))
+            }
+        }
         (LockMode::OwnedByRequest, Some(bytes)) => {
             let lock: FastPathLockRecord = decode_fastpath_lock_record(bytes)?;
             if &lock.request_id != current_request_id
                 || &lock.object != object_ref
-                || lock.locked_epoch != expected_epoch
+                || lock.locked_epoch != current_epoch
             {
                 return Err(NodeCoreError::PersistenceInvariant(
                     "fast-path apply does not own the exact object lock",
                 ));
             }
-            Ok(())
+            Ok(ObjectLockState::OwnedByThisRequest)
         }
         (LockMode::OwnedByRequest, None) => Err(NodeCoreError::PersistenceInvariant(
             "fast-path apply object lock absent",
@@ -166,10 +197,9 @@ pub(crate) fn fence_sender_nonce_lock<S: StructuredDurableDomainStateStore>(
 
 /// Reads and CAS-fences the singleton [`FastPathEpochRecord`], and rejects
 /// `request_epoch` before any lock, execution, or mutation if it does not
-/// equal the currently committed epoch. Slice 1 defines no post-genesis
-/// write to this record, so a rejection here is only reachable once Slice 2
-/// ships a real transition; the check itself is real and enforced from
-/// Slice 1's first commit.
+/// equal the currently committed epoch. Slice 1 introduced this check before
+/// any post-genesis writer existed; Slice 2 now advances the record through
+/// an outgoing-set-certified transition, making the rejection observable.
 pub(crate) fn fence_epoch_state<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
@@ -445,5 +475,109 @@ mod tests {
             &mut reads,
         )
         .unwrap();
+    }
+
+    /// DR-0132 §3.D: a lock stamped a strictly older epoch than the fenced
+    /// current epoch is `Reclaimable` under `Fresh`, one stamped the current
+    /// epoch still fails closed (negative control), and one stamped a future
+    /// epoch is a storage-invariant violation that also fails closed.
+    #[test]
+    fn fence_object_lock_fresh_reclaims_a_stale_lock_and_rejects_a_future_epoch_stamp() {
+        let (store, context, domain) = store_context();
+        let chain: ChainId = ChainId::new("lock-reclaim").unwrap();
+        let object_ref: ObjectRef = ObjectRef {
+            id: ObjectId::new([9; 32]),
+            version: 1,
+            digest: Digest32::new(HashAlgorithmId::Sha2_256, [1; 32]),
+        };
+        let lock_key: Vec<u8> = fastpath_lock_key(&chain, object_ref.id).unwrap();
+        let install = |locked_epoch: Epoch| {
+            let observed: VersionedStateValue = store
+                .get_versioned_durable(&context, domain, &lock_key)
+                .unwrap();
+            let lock: FastPathLockRecord = FastPathLockRecord {
+                request_id: [3; 32],
+                object: object_ref.clone(),
+                locked_epoch,
+            };
+            let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+                domain,
+                AtomicStateReadSet::new(vec![
+                    StateReadAssertion::new(lock_key.clone(), observed.revision()).unwrap(),
+                ])
+                .unwrap(),
+                AtomicStateMutationSet::new(vec![
+                    StateMutationEntry::new(
+                        lock_key.clone(),
+                        StateMutation::Put(encode_fastpath_lock_record(&lock).unwrap()),
+                    )
+                    .unwrap(),
+                ])
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                store.commit_durable(&context, transaction),
+                DurableCommitOutcome::Committed
+            );
+        };
+
+        // Stale (epoch 0), fenced at current epoch 1: reclaimable.
+        install(Epoch::new(0));
+        let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+        assert_eq!(
+            fence_object_lock(
+                &store,
+                &context,
+                domain,
+                &chain,
+                &object_ref,
+                &[4; 32],
+                Epoch::new(1),
+                LockMode::Fresh,
+                &mut reads,
+            ),
+            Ok(ObjectLockState::Reclaimable)
+        );
+
+        // Current epoch (1): still blocks (negative control).
+        install(Epoch::new(1));
+        let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+        assert!(matches!(
+            fence_object_lock(
+                &store,
+                &context,
+                domain,
+                &chain,
+                &object_ref,
+                &[4; 32],
+                Epoch::new(1),
+                LockMode::Fresh,
+                &mut reads,
+            ),
+            Err(NodeCoreError::PersistenceInvariant(
+                "object locked by a pending fast-path certificate"
+            ))
+        ));
+
+        // Future epoch (2), fenced at current epoch 1: fails closed.
+        install(Epoch::new(2));
+        let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+        assert!(matches!(
+            fence_object_lock(
+                &store,
+                &context,
+                domain,
+                &chain,
+                &object_ref,
+                &[4; 32],
+                Epoch::new(1),
+                LockMode::Fresh,
+                &mut reads,
+            ),
+            Err(NodeCoreError::PersistenceInvariant(
+                "fast-path lock stamped a future epoch"
+            ))
+        ));
     }
 }

@@ -73,7 +73,7 @@ use local_execution::{
     scopes, validate_authority, validate_closure,
 };
 use local_instance_state::{
-    execution_policy_key_for_profile, instance_record_key, object_authority_key,
+    execution_policy_key_for_profile, fastpath_lock_key, instance_record_key, object_authority_key,
     paid_fee_policy_key,
 };
 use publication::{PublicationAdmissionError, PublicationLoadBudget};
@@ -452,6 +452,9 @@ fn fence_lock_result<T>(result: Result<T, NodeCoreError>) -> PaidResult<T> {
 /// never be reused by a direct commit, by a different prepare, or (because
 /// ownership binds to the original request id, unaffected by [`NonceMode`])
 /// by anything other than that same request's own certificate apply.
+/// DR-0132: under [`NonceMode::Fresh`], a lock stamped a strictly older
+/// epoch is [`mutation_fence::ObjectLockState::Reclaimable`] rather than a
+/// rejection.
 #[allow(clippy::too_many_arguments)]
 fn check_object_lock<S: StructuredDurableDomainStateStore>(
     store: &S,
@@ -463,7 +466,7 @@ fn check_object_lock<S: StructuredDurableDomainStateStore>(
     current_epoch: Epoch,
     nonce_mode: NonceMode,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
-) -> PaidResult<()> {
+) -> PaidResult<mutation_fence::ObjectLockState> {
     fence_lock_result(mutation_fence::fence_object_lock(
         store,
         context,
@@ -848,11 +851,22 @@ pub(crate) fn build_paid_admission<
     let mut total_bytes: usize = 0;
     let mut object_resolvers: BTreeMap<ObjectId, &HashSuiteResolver> = BTreeMap::new();
     let mut locked_objects: Vec<ObjectRef> = Vec::new();
+    // DR-0132 §3.D: a stale (strictly older epoch) lock observed under
+    // `NonceMode::Fresh` is reclaimed by emitting a `Delete` for it into
+    // `state_mutations` below. `fast_path::prepare` never applies
+    // `state_mutations` (it always writes its own fresh `Put` per locked
+    // object instead, under the same fenced CAS revision), so this only
+    // takes effect for the direct commit path
+    // (`handle_paid_execution`); `apply`'s `NonceMode::PreparedApply` never
+    // observes `Reclaimable` in the first place. Lock keys are excluded from
+    // the fast-path commitment (`commitment::is_excluded_from_commitment`),
+    // so this never perturbs a `FastVote`/`FastCertificate` digest.
+    let mut reclaimed_lock_keys: Vec<Vec<u8>> = Vec::new();
     for (reference, mode) in &order {
         // Reject a held lock from durable state before any object head/body
         // I/O. Certificate apply additionally proves the lock was acquired
         // by this exact request in this exact committed epoch.
-        check_object_lock(
+        let lock_state: mutation_fence::ObjectLockState = check_object_lock(
             store,
             context,
             domain,
@@ -863,6 +877,9 @@ pub(crate) fn build_paid_admission<
             nonce_mode,
             &mut reads,
         )?;
+        if lock_state == mutation_fence::ObjectLockState::Reclaimable {
+            reclaimed_lock_keys.push(fastpath_lock_key(intent.context.chain_id(), reference.id)?);
+        }
         let snapshot: object_snapshots::ObjectSnapshot = object_snapshots::load_object_snapshot(
             store,
             blob_store,
@@ -1068,7 +1085,10 @@ pub(crate) fn build_paid_admission<
 
     // 8 (translation half). Charged outcomes translate every application and
     //    fee effect; zero-charge phase failures translate nothing.
-    let mut state_mutations: Vec<StateMutationEntry> = Vec::new();
+    let mut state_mutations: Vec<StateMutationEntry> = reclaimed_lock_keys
+        .into_iter()
+        .map(|key| StateMutationEntry::new(key, StateMutation::Delete))
+        .collect::<Result<_, RuntimeError>>()?;
     let object_mutations: Vec<DurableObjectMutationEntry> =
         if let Some(charged) = outcome.result.charged.as_ref() {
             for created in &outcome.created_authorities {

@@ -2257,10 +2257,20 @@ fn synthetic_prepare_request_id_is_deterministic_and_collision_resistant() {
         &[2; 32],
     )
     .unwrap();
+    let next_epoch: [u8; 32] = local_instance_state::fastpath_synthetic_prepare_request_id(
+        &resolver(),
+        Epoch::new(protocol().epoch().get() + 1),
+        &[1; 32],
+    )
+    .unwrap();
     assert_eq!(first, first_again);
     assert_ne!(first, second);
+    assert_ne!(first, next_epoch);
     assert!(local_instance_state::is_reserved_paid_request_id(&first));
     assert!(local_instance_state::is_reserved_paid_request_id(&second));
+    assert!(local_instance_state::is_reserved_paid_request_id(
+        &next_epoch
+    ));
 }
 
 #[test]

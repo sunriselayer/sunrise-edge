@@ -22,7 +22,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use validator_set::{ValidatorSet, ValidatorSetError};
 
+mod epoch_transition;
 mod fast_vote;
+pub use epoch_transition::{
+    EpochTransitionCertificate, EpochTransitionCertifier, EpochTransitionVote,
+    decode_epoch_transition_certificate, decode_epoch_transition_vote,
+    encode_epoch_transition_certificate, encode_epoch_transition_vote,
+    encode_epoch_transition_vote_payload,
+};
 pub use fast_vote::{
     FastCertificate, FastPathCertifier, FastVote, decode_fast_certificate, decode_fast_vote,
     encode_fast_certificate, encode_fast_vote, encode_fast_vote_payload,
@@ -187,6 +194,14 @@ pub enum ConsensusError {
     },
     /// Arithmetic overflow would make a transition ambiguous.
     ArithmeticOverflow,
+    /// An epoch-transition vote or certificate's `next_epoch` was not
+    /// exactly one greater than its outgoing `epoch` (DR-0132).
+    NonSuccessiveEpoch {
+        /// The outgoing epoch.
+        current: Epoch,
+        /// The claimed incoming epoch.
+        next: Epoch,
+    },
 }
 
 impl fmt::Display for ConsensusError {
@@ -281,6 +296,12 @@ impl fmt::Display for ConsensusError {
                 "validator {validator} equivocated in view {view}: {first} and {second}"
             ),
             Self::ArithmeticOverflow => write!(f, "consensus arithmetic overflow"),
+            Self::NonSuccessiveEpoch { current, next } => write!(
+                f,
+                "epoch transition next epoch {} does not directly follow outgoing epoch {}",
+                next.get(),
+                current.get()
+            ),
         }
     }
 }
