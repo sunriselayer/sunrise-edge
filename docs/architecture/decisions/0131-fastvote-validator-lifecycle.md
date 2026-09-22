@@ -460,10 +460,18 @@ Slice 1 is implemented, satisfying the ten completion criteria above:
   `local_execution::handle_local_execution` (`Write`/`Consume` inputs) and
   once at the shared `SubmitTransaction` durable boundary, covering the
   object-read-only nonce, owned-effects, and preinstalled-WASM branches.
-- Dedicated adversarial test evidence (`cargo test -p node-core`, 376
+- Dedicated adversarial test evidence (`cargo test -p node-core`, 381
   tests passing) includes: `fast_path::tests::
   prepare_rejects_a_request_bound_to_a_non_current_epoch`,
   `apply_rejects_a_request_bound_to_a_non_current_epoch`,
+  `paid_execution::tests::
+  direct_commit_rejects_a_request_bound_to_a_non_current_epoch`,
+  `local_execution::tests::
+  a_wrong_current_epoch_is_rejected_before_any_engine_call_or_nonce_advance`,
+  `tests::authenticated_read_only_submit_rejects_a_wrong_current_epoch`,
+  `tests::authenticated_owned_write_rejects_a_wrong_current_epoch`,
+  `tests::
+  preinstalled_wasm_rejects_a_wrong_current_epoch_before_any_execution_or_mutation`,
   `prepare_rejects_a_validator_set_digest_mismatch_with_the_committed_epoch_record`,
   `prepare_rejects_a_signer_absent_from_the_committed_validator_set`,
   `apply_rejects_a_certificate_signed_by_validators_absent_from_the_committed_set`,
