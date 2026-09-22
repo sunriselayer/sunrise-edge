@@ -49,7 +49,7 @@ pub const MAX_CALL_ARGUMENT_BYTES: usize = 64 * 1024;
 
 const MAX_SIGNED_CALL_INTENT_BYTES: usize = MAX_CALL_INTENT_BYTES + 128;
 const MAX_INSTANCE_TARGET_BYTES: usize = 256;
-const MAX_ENTRYPOINT_BYTES: usize = 64;
+pub(crate) const MAX_ENTRYPOINT_BYTES: usize = 64;
 const MAX_ACCESS_ENTRIES: usize = 32;
 
 const INSTANCE_TARGET_TYPE: u16 = 0x6401;

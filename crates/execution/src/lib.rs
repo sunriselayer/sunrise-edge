@@ -978,6 +978,7 @@ pub use local_wasm::LocalWasmExecutionEngine;
 pub mod protocol_custody;
 pub use protocol_custody::{
     ProtocolCustodyCapability, ProtocolCustodyDirection, ProtocolCustodyTarget,
+    derive_deposit_owner_token,
 };
 /// Signed immutable artifact candidates; authentication alone grants no authority.
 pub mod publication;

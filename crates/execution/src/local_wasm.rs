@@ -78,7 +78,7 @@ impl LocalContractEngine for LocalWasmExecutionEngine {
         let protocol_custody: Option<crate::protocol_custody::BoundProtocolCustodyCapability> =
             request
                 .protocol_custody
-                .map(|capability| capability.bind(call, request.inputs))
+                .map(|capability| capability.bind(call, request.inputs, request.event_digest))
                 .transpose()?;
         let mut arena: Vec<ArenaObject> = Vec::new();
         let mut grants: Vec<Grant> = Vec::new();

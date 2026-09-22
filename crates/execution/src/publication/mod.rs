@@ -35,6 +35,8 @@ pub use interface::{
     VerifiedPublicationInterface, verify_publication_interface,
 };
 
+#[cfg(test)]
+pub(crate) use artifact::MAX_CHAIN_ID_BYTES;
 pub use artifact::{
     ArtifactParts, CodeArtifact, MAX_ABI_DECLARATION_BYTES, MAX_DEPENDENCIES,
     MAX_PUBLICATION_BYTES, PublicationContext, PublicationRequest, UnverifiedDependencyRef,
