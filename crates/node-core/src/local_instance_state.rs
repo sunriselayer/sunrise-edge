@@ -6,6 +6,7 @@
 use super::*;
 use canonical_encoding::encode_chain_id;
 use execution::publication::{PublicationContext, encode_publication_context};
+use protocol_types::ValidatorId;
 
 /// Reserved across storage-profile and protocol upgrades.
 pub const INSTANCE_STATE_PREFIX: &[u8] = b"se/instances/";
@@ -163,6 +164,22 @@ pub fn fastpath_settlement_key(
     key.extend_from_slice(b"settlement/");
     key.extend(encode_chain_id(chain)?);
     key.extend_from_slice(request_id);
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+/// One DR-0136 typed bond commitment for a validator. The chain and
+/// validator identify the single active bond row; the row itself binds the
+/// resource and exact custody object. A second genesis custody object for the
+/// same validator therefore collides instead of being summed implicitly.
+pub fn fastpath_bond_record_key(
+    chain: &ChainId,
+    validator: &ValidatorId,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"bond/");
+    key.extend(encode_chain_id(chain)?);
+    key.extend_from_slice(validator.as_bytes());
     validate_transactional_state_key(&key)?;
     Ok(key)
 }
@@ -573,6 +590,18 @@ mod tests {
         let authority: Vec<u8> = object_authority_key(ObjectId::new([7; 32]));
         assert!(is_reserved(&authority));
         assert_eq!(&authority[authority.len() - 32..], &[7; 32]);
+        let validator: ValidatorId = ValidatorId::new([8; 32]);
+        let bond: Vec<u8> = fastpath_bond_record_key(&chain, &validator).unwrap();
+        assert!(is_reserved(&bond));
+        assert_eq!(&bond[bond.len() - 32..], validator.as_bytes());
+        assert_ne!(
+            bond,
+            fastpath_bond_record_key(&chain, &ValidatorId::new([9; 32])).unwrap()
+        );
+        assert_ne!(
+            bond,
+            fastpath_bond_record_key(&ChainId::new("other-chain").unwrap(), &validator).unwrap()
+        );
         for prefix in [INSTANCE_STATE_PREFIX, OBJECT_AUTHORITY_STATE_PREFIX] {
             let mut future: Vec<u8> = prefix.to_vec();
             future.extend_from_slice(b"v999/arbitrary");

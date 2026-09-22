@@ -128,8 +128,10 @@ certification.
   local-operator-invoked, its signing or mutating branch requires the exact
   current/outgoing/historical validator proof, and external ingress remains
   closed. Its companion code and reviews landed in PR #180, closing Phase 2.
-  Phase 3 economics remain open; DR-0135 defines only the non-signable custody
-  prerequisite and grants no custody release or asset-mutation authority.
+  Phase 3 economics remain open; DR-0135 defines the non-signable custody
+  prerequisite and DR-0136 derives typed, positive genesis bond commitments
+  through authenticated generic ABI metadata. Neither grants custody release
+  or asset-mutation authority.
 
 ## Reportable Findings and Severity Context
 
@@ -175,7 +177,8 @@ The following are deferred from the first audit engagement:
   [DR-0134](docs/architecture/decisions/0134-fastvote-authorization-boundary.md),
   and its companion code and reviews landed in PR #180, closing Phase 2.
   Phase 3 slashing/reward distribution remains incomplete; DR-0135 accepts
-  only its non-signable protocol-custody prerequisite — see
+  its non-signable protocol-custody prerequisite and DR-0136 adds read-only,
+  typed genesis bond commitments without a Standard Asset exception — see
   `TODO.md`'s FastVote Certified Execution Gate);
 - externally accepted non-`SubmitTransaction` event families;
 - production multi-validator consensus activation;

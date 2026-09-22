@@ -4,13 +4,15 @@
 //! policies, paid fee policy, initialized objects, object authorities,
 //! and closed marker using writer-fenced durable invocation machinery.
 //!
-//! Node core stays asset-agnostic: no Standard Asset amount or supply
-//! field is decoded here.
+//! Node core stays asset-agnostic: no Standard Asset type, body codec, amount
+//! field, or supply field is recognized here. DR-0136 observes a generic
+//! signed-ABI `CallValue` and applies only the protocol's bond value shape.
 
 use core::fmt;
 use std::collections::BTreeSet;
 
-use abi::package_types::PackageTypeError;
+use abi::call_values::CallValue;
+use abi::package_types::{PackageTypeError, ScopedTypeArg};
 use canonical_encoding::{
     CanonicalDecodingError, CanonicalEncodingError, CanonicalFrame, CanonicalStruct,
     decode_canonical_frame, decode_digest32, encode_digest32,
@@ -37,8 +39,8 @@ use execution::publication::{
     verify_publication_interface,
 };
 use hashing::{HashSuiteResolver, HashingError};
-use objects::{Object, ObjectError, Owner, decode_object, encode_object};
-use protocol_types::{Digest32, Epoch, HashPurpose, SignatureSchemeId};
+use objects::{Object, ObjectError, ObjectRef, Owner, decode_object, encode_object};
+use protocol_types::{Digest32, Epoch, HashPurpose, SignatureSchemeId, ValidatorId};
 use runtime::{
     AtomicStateReadSet, AtomicityDomainId, DurableCommitOutcome, DurableCommitRejection,
     DurableInvocationError, DurableInvocationTransaction, DurableObjectChanges, DurableObjectHead,
@@ -53,8 +55,8 @@ use validator_set::{ValidatorInfo, ValidatorSet};
 
 use crate::epoch_transition;
 use crate::fast_path::records::{
-    FastPathValidatorSetRecord, decode_fastpath_validator_set_record,
-    encode_fastpath_validator_set_record,
+    FastPathBondRecord, FastPathValidatorSetRecord, decode_fastpath_validator_set_record,
+    encode_fastpath_bond_record, encode_fastpath_validator_set_record,
 };
 use crate::local_execution::LocalExecutionAdmissionError;
 use crate::local_instance_state;
@@ -847,6 +849,8 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
         return Err(GenesisError::Limit("too many genesis objects"));
     }
     let mut seen_ids: BTreeSet<objects::ObjectId> = BTreeSet::new();
+    let mut seen_bond_keys: BTreeSet<Vec<u8>> = BTreeSet::new();
+    let mut bond_records: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     for entry in &manifest.objects {
         if !seen_ids.insert(entry.object.id) {
             return Err(GenesisError::Invalid("duplicate genesis object id"));
@@ -914,6 +918,85 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             return Err(GenesisError::Invalid(
                 "genesis object type fingerprint mismatch",
             ));
+        }
+
+        // DR-0136: a custody owner becomes recognized bond collateral only
+        // after its subject, resource, complete nominal type and positive
+        // scalar value are bound through the authenticated executable ABI.
+        // This policy knows only generic CallValue and ScopedTypeArg shapes;
+        // it neither imports Standard Asset nor decodes an application body.
+        if let Owner::ProtocolCustody(scope) = &entry.object.owner {
+            let validator_id: ValidatorId = ValidatorId::new(scope.subject);
+            if !manifest
+                .validator_set
+                .validators
+                .iter()
+                .any(|validator| validator.id == validator_id)
+            {
+                return Err(GenesisError::Invalid(
+                    "bond custody subject is not a genesis validator",
+                ));
+            }
+            let (resource_domain, resource): (u16, [u8; 32]) = match entry.authority.ty.args() {
+                [ScopedTypeArg::Opaque { domain, value }] if *domain != 0 => (*domain, *value),
+                _ => {
+                    return Err(GenesisError::Invalid(
+                        "bond custody type must carry one opaque resource",
+                    ));
+                }
+            };
+            if resource != scope.resource {
+                return Err(GenesisError::Invalid(
+                    "bond custody resource does not match the nominal type",
+                ));
+            }
+            let amount: u64 = match execution::publication::observe_nominal_value(
+                &interface,
+                &entry.authority.ty,
+                entry.object.schema_version,
+                &entry.object.data,
+            )? {
+                CallValue::U64(amount) if amount > 0 => amount,
+                CallValue::U64(_) => {
+                    return Err(GenesisError::Invalid("bond amount must be positive"));
+                }
+                _ => {
+                    return Err(GenesisError::Invalid(
+                        "bond custody value must be a scalar u64",
+                    ));
+                }
+            };
+            let canonical_object: Vec<u8> = encode_object(&entry.object)?;
+            let object_digest: Digest32 = resolver.hash_for_purpose(
+                manifest_context.epoch(),
+                HashPurpose::Object,
+                &canonical_object,
+            )?;
+            let custody_object: ObjectRef = ObjectRef {
+                id: entry.object.id,
+                version: entry.object.version,
+                digest: object_digest,
+            };
+            let bond_key: Vec<u8> = local_instance_state::fastpath_bond_record_key(
+                manifest_context.chain_id(),
+                &validator_id,
+            )?;
+            if !seen_bond_keys.insert(bond_key.clone()) {
+                return Err(GenesisError::Invalid(
+                    "duplicate genesis bond for validator",
+                ));
+            }
+            let bond_record: FastPathBondRecord = FastPathBondRecord {
+                context: manifest_context.clone(),
+                validator_id,
+                resource_domain,
+                resource,
+                custody_object,
+                authority: entry.authority.clone(),
+                amount,
+                committed_at_checkpoint: checkpoint,
+            };
+            bond_records.push((bond_key, encode_fastpath_bond_record(&bond_record)?));
         }
     }
 
@@ -1070,6 +1153,18 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             &epoch_record_bytes,
         )?;
 
+        // Re-derive every DR-0136 bond row from the signed manifest and
+        // authenticated ABI. Restart never repairs a missing or changed row.
+        for (bond_key, expected_bytes) in &bond_records {
+            let observed: VersionedStateValue =
+                store.get_versioned_durable(context, domain, bond_key)?;
+            if observed.value() != Some(expected_bytes.as_slice()) {
+                return Err(GenesisError::TamperedInstalledRecord(
+                    "fast-path bond record",
+                ));
+            }
+        }
+
         // Verify initialized objects and authorities.
         for entry in &manifest.objects {
             let auth_key: Vec<u8> = local_instance_state::object_authority_key(entry.object.id);
@@ -1150,6 +1245,14 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             }
         }
 
+        for (bond_key, _) in &bond_records {
+            let observed: VersionedStateValue =
+                store.get_versioned_durable(context, domain, bond_key)?;
+            if observed.value().is_some() || observed.revision() != StateRevision::INITIAL {
+                return Err(GenesisError::PartialPriorState("fast-path bond record"));
+            }
+        }
+
         for entry in &manifest.objects {
             let auth_key: Vec<u8> = local_instance_state::object_authority_key(entry.object.id);
             let obs: VersionedStateValue =
@@ -1211,6 +1314,17 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             StateReadAssertion::new(epoch_record_key, StateRevision::INITIAL)?,
             StateReadAssertion::new(marker_key, StateRevision::INITIAL)?,
         ];
+
+        for (bond_key, bond_bytes) in &bond_records {
+            mutations.push(StateMutationEntry::new(
+                bond_key.clone(),
+                StateMutation::Put(bond_bytes.clone()),
+            )?);
+            read_assertions.push(StateReadAssertion::new(
+                bond_key.clone(),
+                StateRevision::INITIAL,
+            )?);
+        }
 
         for entry in &manifest.objects {
             let auth_key: Vec<u8> = local_instance_state::object_authority_key(entry.object.id);

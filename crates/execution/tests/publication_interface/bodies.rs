@@ -383,3 +383,140 @@ fn well_formed_bodies_do_not_authenticate_owner_digest_or_business_invariants() 
         assert_eq!(check(&bound, std::slice::from_ref(&pair)), Ok(()));
     }
 }
+
+#[test]
+fn observe_nominal_value_positive_u64_and_error_cases() {
+    let call: CallAbi = envelope(generic(1), vec![ValueLayout::U64]);
+    let interface = verify_publication_interface(signed(&call, &[]), vec![]).unwrap();
+    let tag = ScopedTypeTag::new(origin(1), 1, vec![opaque()]).unwrap();
+
+    // Positive U64 is returned exactly
+    let positive_val = 42_u64;
+    let u64_bytes = encoded_u64(positive_val);
+    let observed = observe_nominal_value(&interface, &tag, 1, &u64_bytes).unwrap();
+    assert_eq!(observed, CallValue::U64(positive_val));
+    assert_eq!(
+        validate_nominal_body(&interface, &tag, 1, &u64_bytes),
+        Ok(())
+    );
+
+    // Another positive U64 (boundary check)
+    let max_bytes = encoded_u64(u64::MAX);
+    assert_eq!(
+        observe_nominal_value(&interface, &tag, 1, &max_bytes).unwrap(),
+        CallValue::U64(u64::MAX)
+    );
+    assert_eq!(
+        validate_nominal_body(&interface, &tag, 1, &max_bytes),
+        Ok(())
+    );
+
+    // Malformed bytes fail with Value error
+    let malformed_bytes = vec![0xff, 0x00];
+    assert!(matches!(
+        observe_nominal_value(&interface, &tag, 1, &malformed_bytes),
+        Err(BodyError::Value(_))
+    ));
+    assert!(matches!(
+        validate_nominal_body(&interface, &tag, 1, &malformed_bytes),
+        Err(BodyError::Value(_))
+    ));
+
+    // Wrong schema fails with SchemaMismatch
+    let wrong_schema = 2;
+    assert_eq!(
+        observe_nominal_value(&interface, &tag, wrong_schema, &u64_bytes),
+        Err(BodyError::Binding(BindingError::SchemaMismatch))
+    );
+    assert_eq!(
+        validate_nominal_body(&interface, &tag, wrong_schema, &u64_bytes),
+        Err(BodyError::Binding(BindingError::SchemaMismatch))
+    );
+
+    // Unknown nominal type: constructor not present in defining ABI
+    let unknown_ctor_tag = ScopedTypeTag::new(origin(1), 99, vec![]).unwrap();
+    assert_eq!(
+        observe_nominal_value(&interface, &unknown_ctor_tag, 1, &u64_bytes),
+        Err(BodyError::Binding(BindingError::UnknownConstructor))
+    );
+    assert_eq!(
+        validate_nominal_body(&interface, &unknown_ctor_tag, 1, &u64_bytes),
+        Err(BodyError::Binding(BindingError::UnknownConstructor))
+    );
+
+    // Unknown nominal type: undeclared origin
+    let unknown_origin_tag = ScopedTypeTag::new(origin(99), 1, vec![]).unwrap();
+    assert_eq!(
+        observe_nominal_value(&interface, &unknown_origin_tag, 1, &u64_bytes),
+        Err(BodyError::Binding(BindingError::UndeclaredOrigin))
+    );
+    assert_eq!(
+        validate_nominal_body(&interface, &unknown_origin_tag, 1, &u64_bytes),
+        Err(BodyError::Binding(BindingError::UndeclaredOrigin))
+    );
+}
+
+#[test]
+fn observe_nominal_value_tuple_vs_u64_represented_only_as_generic_call_value() {
+    let mut objects: PackageAbi = minimal(1);
+    objects.constructors = vec![
+        ConstructorDeclaration {
+            local_id: 1,
+            schema: 1,
+            arguments: vec![],
+        },
+        ConstructorDeclaration {
+            local_id: 2,
+            schema: 1,
+            arguments: vec![],
+        },
+    ];
+    let tuple_layout = ValueLayout::Tuple(vec![ValueLayout::U64, ValueLayout::Bool]);
+    let call: CallAbi = envelope(objects, vec![ValueLayout::U64, tuple_layout.clone()]);
+    let interface = verify_publication_interface(signed(&call, &[]), vec![]).unwrap();
+
+    let u64_tag = ScopedTypeTag::new(origin(1), 1, vec![]).unwrap();
+    let tuple_tag = ScopedTypeTag::new(origin(1), 2, vec![]).unwrap();
+
+    let u64_val = CallValue::U64(12345);
+    let u64_bytes = encode_call_value(&ValueLayout::U64, &u64_val).unwrap();
+
+    let tuple_val = CallValue::Tuple(vec![CallValue::U64(12345), CallValue::Bool(true)]);
+    let tuple_bytes = encode_call_value(&tuple_layout, &tuple_val).unwrap();
+
+    // U64 constructor returns exact CallValue::U64 shape
+    let observed_u64 = observe_nominal_value(&interface, &u64_tag, 1, &u64_bytes).unwrap();
+    assert_eq!(observed_u64, u64_val);
+    assert_eq!(
+        validate_nominal_body(&interface, &u64_tag, 1, &u64_bytes),
+        Ok(())
+    );
+
+    // Tuple constructor returns exact generic CallValue::Tuple shape
+    let observed_tuple = observe_nominal_value(&interface, &tuple_tag, 1, &tuple_bytes).unwrap();
+    assert_eq!(observed_tuple, tuple_val);
+    assert_eq!(
+        validate_nominal_body(&interface, &tuple_tag, 1, &tuple_bytes),
+        Ok(())
+    );
+
+    // Tuple-vs-U64 mismatch: tuple bytes passed to U64 layout fail decoding
+    assert!(matches!(
+        observe_nominal_value(&interface, &u64_tag, 1, &tuple_bytes),
+        Err(BodyError::Value(_))
+    ));
+    assert!(matches!(
+        validate_nominal_body(&interface, &u64_tag, 1, &tuple_bytes),
+        Err(BodyError::Value(_))
+    ));
+
+    // Tuple-vs-U64 mismatch: U64 bytes passed to Tuple layout fail decoding
+    assert!(matches!(
+        observe_nominal_value(&interface, &tuple_tag, 1, &u64_bytes),
+        Err(BodyError::Value(_))
+    ));
+    assert!(matches!(
+        validate_nominal_body(&interface, &tuple_tag, 1, &u64_bytes),
+        Err(BodyError::Value(_))
+    ));
+}

@@ -545,11 +545,14 @@ two-axis authorization matrix: every FastVote operation is local-operator-
 invoked, its signing or mutating branch requires the appropriate current,
 outgoing, or historical validator proof, and every external ingress remains
 closed. It adds no wire or product surface. DR-0134's companion code and review
-gate landed in PR #180, closing Phase 2. DR-0135 implements and locally
-validates Phase 3's first prerequisite, non-signable protocol custody, without
-yet recognizing bonds or moving value. FastVote overall remains incomplete
-until phase 3. See DR-0129 through DR-0135 and `TODO.md` for exact evidence and
-remaining activation gates.
+gate landed in PR #180, closing Phase 2. DR-0135 implements Phase 3's first
+prerequisite, non-signable protocol custody. DR-0136 recognizes a closed
+genesis subset as typed, positive validator bonds by observing their value
+only through authenticated generic executable-ABI metadata and commits exact
+`0x642A/v1` rows atomically with genesis. It adds no custody mutation or
+external ingress. FastVote overall remains incomplete until phase 3. See
+DR-0129 through DR-0136 and `TODO.md` for exact evidence and remaining
+activation gates.
 
 ## 12. Certificate lifecycle
 Phase 13 adds shared-consensus quorum certificates. Each certificate binds the
@@ -609,7 +612,14 @@ transition.
 Genesis starts with a permissioned validator set and a conservative default hash suite. Phase 1 encodes this by exposing a `HashSuite::genesis()` helper that selects SHA-256 for all required purposes.
 
 ## 16. Bond lifecycle
-Bond assets and bond lifecycle are deferred.
+DR-0136 implements the read-only genesis commitment boundary: a
+`ProtocolCustody(BondCollateral)` object must name a committed validator, bind
+its resource to the complete nominal type, and expose a positive scalar value
+through its defining package's authenticated executable ABI. Genesis stores
+the exact validator/resource/object/authority/amount commitment atomically and
+re-verifies its bytes on restart. Post-genesis deposit, replacement,
+unbond/withdraw, forfeiture, jail/reactivation, and all release authority are
+deferred to FastVote phase 3 slice 2.
 
 ## 17. Slashing lifecycle
 Slashing is deferred, but the architecture already separates message families for future equivocation evidence signatures.
