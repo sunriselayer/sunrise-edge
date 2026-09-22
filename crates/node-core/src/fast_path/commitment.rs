@@ -7,8 +7,24 @@
 //! paid result, every created object authority, every durable object head
 //! assertion and mutation, every application state read assertion and
 //! mutation, and the exact pending sender-nonce CAS/write. Only fast-path
-//! bookkeeping (lock reads/writes and prepare's own synthetic receipt) is
-//! excluded.
+//! bookkeeping is excluded: lock reads/writes, prepare's own synthetic
+//! receipt, and -- as of DR-0131 -- the CAS-fenced
+//! [`crate::local_instance_state::FastPathEpochRecord`] read
+//! ([`crate::mutation_fence::fence_current_epoch`]) and, for
+//! validator-authorized prepare/apply, the active per-epoch `ValidatorSet`
+//! row read (`crate::fast_path::load_validator_set`). Neither read's
+//! *content* varies within one committed epoch -- every honest node
+//! observes the identical row -- so hashing it into the commitment would add
+//! nothing a certificate signer doesn't already imply by admitting under
+//! that same committed epoch; and its *durable-store CAS revision* is a
+//! per-node, per-attempt artifact, not transaction content, so folding it in
+//! would make one logical vote hash differently depending on unrelated
+//! concurrent activity against that row. This exclusion does not weaken the
+//! fence: apply still independently CAS-fences both records in its own
+//! commit ([`crate::mutation_fence::fence_current_epoch`] and
+//! `crate::fast_path::load_validator_set`'s digest check), so a concurrent
+//! Slice 2 transition landing between prepare and apply is still rejected
+//! there -- just never through this commitment.
 //!
 //! [`compute`] hashes this deterministically from the same
 //! [`crate::paid_execution::PaidAdmissionOutput`] both `prepare` and `apply`

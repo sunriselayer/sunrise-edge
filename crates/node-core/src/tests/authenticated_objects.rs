@@ -902,6 +902,70 @@ fn authenticated_owned_write_is_blocked_by_a_held_fastpath_object_lock() {
     assert!(store.commits.lock().unwrap().is_empty());
 }
 
+/// DR-0131 criterion 4: the owned-effects `SubmitTransaction` entrypoint
+/// rejects a request bound to a non-current epoch before any lock, machine
+/// execution, or mutation -- the same shared boundary the held-lock test
+/// above exercises, but for the epoch fence rather than the object-lock
+/// fence.
+#[test]
+fn authenticated_owned_write_rejects_a_wrong_current_epoch() {
+    let store = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+    let blob_store = InstrumentedBlobStore::default();
+    let node_config = config("sunrise-test");
+    let protocol_config = active_protocol_config(0xB8);
+    let signing_key = dev_signing_key(0xB8);
+    let sender: Address = dev_sender_address(&signing_key);
+    let object_id = ObjectId::new([0x79; 32]);
+    let (object_ref, _head) = preload_inline_object(
+        &store,
+        "sunrise-test",
+        object_id,
+        Owner::Address(sender),
+        0x79,
+    );
+    let manifest = manifest_with(vec![AccessEntry {
+        object_ref,
+        mode: AccessMode::Write,
+    }]);
+    let submission = authenticated_submission_with_manifest(
+        "sunrise-test",
+        request(0xB8),
+        &signing_key,
+        Epoch::new(7),
+        0,
+        manifest,
+        &node_config,
+        &protocol_config,
+    );
+    let machine = OwnedObjectEffectMachine {
+        expected_inputs: vec![(object_id, AccessMode::Write)],
+        replacement_data: vec![0x7A],
+        calls: AtomicUsize::new(0),
+    };
+    // Overrides the store's own default (Epoch::new(7)) installed by
+    // `ScriptedDurableStore::new`, simulating a Slice-2 transition this DR
+    // does not implement.
+    preload_fastpath_epoch_record(&store, "sunrise-test", Epoch::new(8));
+
+    let error = handle_authenticated_resolved_durable_submit_transaction_with_owned_object_effects(
+        &blob_store,
+        &store,
+        &durable_context(),
+        &resolver("sunrise-test"),
+        submission,
+        2,
+        &machine,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        NodeCoreError::EpochMismatch { expected, actual }
+            if expected == Epoch::new(8) && actual == Epoch::new(7)
+    ));
+    assert_eq!(machine.calls.load(Ordering::SeqCst), 0);
+    assert!(store.commits.lock().unwrap().is_empty());
+}
+
 #[test]
 fn authenticated_owned_write_updates_blob_backed_previous_version_stays_inline_when_small() {
     let store = ScriptedDurableStore::new(DurableCommitOutcome::Committed);

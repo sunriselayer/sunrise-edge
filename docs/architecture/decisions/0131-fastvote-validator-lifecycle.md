@@ -387,6 +387,25 @@ ships a real transition.
 - This DR does not change DR-0129's `crates/consensus` types, wire IDs, or
   signature domain, and does not change DR-0130's Phase 1 invariants except
   by adding the fencing/epoch-stamp layer described above.
+- This repository is unreleased, so Slice 1 changed the durable canonical
+  layout in place rather than adding a migration: `FastPathLockRecord`
+  (`0x641B`) gained `locked_epoch` as a breaking wire-layout change to an
+  existing frame, and genesis installation now atomically creates the new
+  `FastPathEpochRecord` (`0x6426`) singleton alongside the existing
+  DR-0130 genesis-install commit. There is no v1/v2 split, no compatibility
+  shim, and no migration path from a pre-DR-0131 local database: any local
+  database created before this change must be recreated (re-run genesis
+  installation from scratch) before running node-core built from this DR.
+  Both restart-verify and every authenticated mutation path fail closed
+  against exactly that absent-singleton state, rather than silently treating
+  the fast path as unfenced: `genesis::install_genesis_with_history`'s
+  `VerifiedExisting` path now also byte-for-byte re-verifies the installed
+  `FastPathEpochRecord`, returning `GenesisError::TamperedInstalledRecord
+  ("fast-path epoch record")` when it is absent or different; and every
+  authenticated mutation path's shared fence
+  (`mutation_fence::fence_epoch_state`) returns
+  `NodeCoreError::PersistenceInvariant("fast-path epoch record not
+  installed")` when it is absent.
 
 ## Slice 1 implementation status (2026-09-22)
 

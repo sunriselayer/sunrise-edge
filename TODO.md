@@ -2645,9 +2645,18 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
     `Consume` inputs and once at the common authenticated `SubmitTransaction`
     durable boundary for read-only nonce, owned-effects, and preinstalled-WASM,
     left uncovered by phase 1's evidence. No epoch-transition procedure and
-    no lock reclamation exist yet. Evidenced by dedicated adversarial tests
-    (wrong-epoch and validator-set-digest-mismatch rejection at prepare and
-    apply, an unknown-signer rejection at prepare and at apply against a
+    no lock reclamation exist yet. This repository is unreleased, so the
+    canonical-layout change (the redefined `0x641B` and the new `0x6426`
+    singleton) was made in place with no migration: any local database
+    created before this change must be recreated, and restart-verify and
+    every authenticated mutation path fail closed if the epoch record is
+    absent (see DR-0131's consequences/deferred section). Evidenced by
+    dedicated adversarial tests
+    (dedicated wrong-epoch rejection at prepare, apply, direct paid, local
+    execution, object-read-only `SubmitTransaction`, owned-effects
+    `SubmitTransaction`, and preinstalled-WASM `SubmitTransaction`;
+    validator-set-digest-mismatch rejection at prepare and apply; an
+    unknown-signer rejection at prepare and at apply against a
     rogue quorum, an epoch-record CAS-fence conflict test, a duplicate
     validator public key rejected by `ValidatorSet` and at genesis install,
     a fast-path object lock now blocking `local_execution`'s direct `Write`

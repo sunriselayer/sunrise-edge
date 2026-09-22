@@ -946,6 +946,122 @@ fn preinstalled_wasm_owned_write_commits_object_nonce_and_receipt() {
     assert_eq!(nonce_record.next_nonce, 1);
 }
 
+/// DR-0131 criterion 4: the preinstalled-WASM `SubmitTransaction` entrypoint
+/// rejects a request bound to a non-current epoch at the shared durable
+/// boundary, before durable module/object work or mutation. The precise
+/// `EpochMismatch`, unchanged object version, and absent receipt pin that
+/// entrypoint-level contract without adding a test-only execution engine to
+/// the concrete preinstalled-WASM API.
+#[test]
+fn preinstalled_wasm_rejects_a_wrong_current_epoch_before_any_execution_or_mutation() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    store.set_time(100);
+    let node_config: NodeConfig = config("sunrise-test");
+    let mut protocol_config: ProtocolConfig = active_protocol_config(0xF3);
+    protocol_config.transaction_auth_profile =
+        Some(TransactionAuthProfile::ed25519_canonical_prime_order_address_is_public_key());
+    let signing_key: SigningKey = dev_signing_key(0xE9);
+    let sender: Address = dev_sender_address(&signing_key);
+    let context: DurableOperationContext = durable_context();
+    let hash_resolver: HashSuiteResolver = resolver("sunrise-test");
+    let object_domain: AtomicityDomainId = domain(0xF3);
+    let module_id = ModuleId::new([0x73; 32]);
+    let (registry, catalog, module_ref) = preinstalled_module_fixture(
+        &hash_resolver,
+        module_id,
+        1,
+        preinstalled_write_wasm_bytes(),
+        64,
+        Epoch::new(0),
+        system_modules::ModuleStatus::Active,
+    );
+    protocol_config.system_modules = registry;
+    let write_id: ObjectId = ObjectId::new([0x98; 32]);
+    let write_ref: ObjectRef = commit_memory_inline_object(
+        &store,
+        &context,
+        object_domain,
+        test_object(write_id, 1, Owner::Address(sender), 0x98),
+        "sunrise-test",
+        9,
+        0x3D,
+    );
+    let manifest: AccessManifest = manifest_with(vec![AccessEntry {
+        object_ref: write_ref,
+        mode: AccessMode::Write,
+    }]);
+    let tx = preinstalled_transaction(
+        sender,
+        ChainId::new("sunrise-test").unwrap(),
+        Epoch::new(7),
+        0,
+        manifest,
+        module_ref,
+        vec![1, 2],
+    );
+    let submission: AuthenticatedSubmitTransaction =
+        authenticated_profile_2_submission_from_transaction(
+            "sunrise-test",
+            request(0xF3),
+            &signing_key,
+            Epoch::new(7),
+            tx,
+            &node_config,
+            &protocol_config,
+        );
+    // Overrides `commit_memory_inline_object`'s own installed epoch record
+    // (Epoch::new(7)), simulating a Slice-2 transition this DR does not
+    // implement.
+    commit_fastpath_epoch_record(
+        &store,
+        &context,
+        object_domain,
+        "sunrise-test",
+        Epoch::new(8),
+    );
+    let engine = WasmExecutionEngine;
+    let blob_store: MemoryBlobStore = MemoryBlobStore::default();
+
+    let error =
+        handle_authenticated_resolved_durable_submit_transaction_with_preinstalled_wasm_execution(
+            &blob_store,
+            &store,
+            &context,
+            &hash_resolver,
+            &catalog,
+            &engine,
+            submission,
+            9,
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        NodeCoreError::EpochMismatch {
+            expected: Epoch::new(8),
+            actual: Epoch::new(7),
+        }
+    );
+    assert!(
+        store
+            .get_object_version(
+                &context,
+                object_domain,
+                write_id,
+                DurableObjectVersion::new(2).unwrap(),
+            )
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        query_request_receipt(&store, &context, object_domain, request(0xF3)).unwrap(),
+        ReceiptQueryResult::Absent {
+            request_id: request(0xF3)
+        }
+    );
+}
+
 #[test]
 fn preinstalled_wasm_committed_policy_allows_exact_cross_owner_destination_write() {
     let store: MemoryDurableStateStore =

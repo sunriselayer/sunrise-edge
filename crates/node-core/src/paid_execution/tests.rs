@@ -2318,6 +2318,71 @@ fn independent_barrier_rejects_a_nested_initializer_authorization_before_any_eng
     assert_eq!(next_nonce(&store), FIRST_PAID_NONCE);
 }
 
+/// DR-0131: overwrites the committed `FastPathEpochRecord` to a different
+/// epoch than every fixture's `protocol()` epoch, simulating a Slice-2
+/// transition this DR does not implement, so the direct paid commit path's
+/// wrong-epoch rejection can be exercised.
+fn overwrite_epoch_record_to_a_different_epoch<S: StructuredDurableDomainStateStore>(store: &S) {
+    set_state(
+        store,
+        local_instance_state::fastpath_epoch_record_key(protocol().chain_id()).unwrap(),
+        StateMutation::Put(
+            local_instance_state::encode_fastpath_epoch_record(
+                &local_instance_state::FastPathEpochRecord {
+                    current_epoch: Epoch::new(protocol().epoch().get() + 1),
+                    current_validator_set_digest: resolver()
+                        .hash_for_purpose(
+                            protocol().epoch(),
+                            HashPurpose::NodeEvent,
+                            b"paid-execution-tests-fastpath-epoch-placeholder",
+                        )
+                        .unwrap(),
+                    previous_epoch: None,
+                    activated_at_checkpoint: 0,
+                },
+            )
+            .unwrap(),
+        ),
+    );
+}
+
+/// DR-0131 criterion 4: the direct paid commit path rejects a request bound
+/// to a non-current epoch before any lock, engine execution, or mutation.
+/// `PanicOnCallEngine` proves the independent fence -- not the engine --
+/// rejects first; `Tracked` equality and the unmoved nonce prove no durable
+/// effect survives the rejection.
+#[test]
+fn direct_commit_rejects_a_request_bound_to_a_non_current_epoch() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let other: PackageOrigin =
+        PackageOrigin::unverified(protocol().chain_id().clone(), sender(), [60; 32]).unwrap();
+    let before: Tracked = tracked(&store, &context(), &fixture, &other);
+    overwrite_epoch_record_to_a_different_epoch(&store);
+    let bytes: Vec<u8> = transfer_call(&fixture, 5, FIRST_PAID_NONCE);
+    let result = handle_paid_execution(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &PanicOnCallEngine,
+        &bytes,
+        10,
+    );
+    assert!(matches!(
+        result,
+        Err(PaidExecutionAdmissionError::Node(NodeCoreError::EpochMismatch { expected, actual }))
+            if expected == Epoch::new(protocol().epoch().get() + 1) && actual == protocol().epoch()
+    ));
+    assert_eq!(tracked(&store, &context(), &fixture, &other), before);
+    assert_eq!(next_nonce(&store), FIRST_PAID_NONCE);
+}
+
 #[test]
 fn forged_engine_cannot_smuggle_an_application_effect_under_application_failed() {
     let store: MemoryDurableStateStore = memory_store();

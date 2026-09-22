@@ -674,6 +674,49 @@ fn reserved_request_id_prefix_is_rejected_before_any_admission() {
     assert_eq!(nonce(&store), nonce_before);
 }
 
+/// DR-0131 criterion 4: local execution rejects a request bound to a
+/// non-current epoch before any lock, engine execution, or mutation.
+/// `engine.calls` staying at zero proves the fence rejects before the engine
+/// boundary is ever entered; the unmoved nonce proves no mutation survives.
+#[test]
+fn a_wrong_current_epoch_is_rejected_before_any_engine_call_or_nonce_advance() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let record: InstanceRecord = fixture(&store);
+    let nonce_before: u64 = nonce(&store);
+    set_state(
+        &store,
+        local_instance_state::fastpath_epoch_record_key(protocol().chain_id()).unwrap(),
+        StateMutation::Put(
+            local_instance_state::encode_fastpath_epoch_record(
+                &local_instance_state::FastPathEpochRecord {
+                    current_epoch: Epoch::new(protocol().epoch().get() + 1),
+                    current_validator_set_digest: resolver()
+                        .hash_for_purpose(
+                            protocol().epoch(),
+                            HashPurpose::NodeEvent,
+                            b"local-execution-tests-fastpath-epoch-placeholder",
+                        )
+                        .unwrap(),
+                    previous_epoch: None,
+                    activated_at_checkpoint: 0,
+                },
+            )
+            .unwrap(),
+        ),
+    );
+    let init: Vec<u8> = sign(&record, nonce_before, 2, "init", vec![]);
+    let engine: Engine = Engine::new(Behavior::Create);
+    let result = run(&store, &init, &engine);
+    assert!(matches!(
+        result,
+        Err(LocalExecutionAdmissionError::Node(NodeCoreError::EpochMismatch { expected, actual }))
+            if expected == Epoch::new(protocol().epoch().get() + 1) && actual == protocol().epoch()
+    ));
+    assert_eq!(engine.calls.get(), 0);
+    assert_eq!(nonce(&store), nonce_before);
+}
+
 #[test]
 fn forged_engine_outputs_commit_nothing() {
     for behavior in [

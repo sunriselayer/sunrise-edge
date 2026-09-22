@@ -281,8 +281,14 @@ mod tests {
         ));
     }
 
+    /// The read is recorded as a CAS precondition *before* `fence_current_epoch`
+    /// ever compares the epoch: `fence_epoch_state` inserts into `reads`
+    /// unconditionally, then its caller decides whether to reject. So a
+    /// rejected request does not commit, but the helper's returned read map
+    /// still truthfully records what it observed -- proven here by asserting
+    /// the read landed in `reads` even though the call returned `Err`.
     #[test]
-    fn fence_current_epoch_rejects_a_non_current_epoch_before_recording_a_read() {
+    fn fence_current_epoch_rejects_a_non_current_epoch_after_recording_the_read() {
         let (store, context, domain) = store_context();
         let chain: ChainId = ChainId::new("epoch-fence").unwrap();
         install_epoch_record(
@@ -305,6 +311,13 @@ mod tests {
             Err(NodeCoreError::EpochMismatch { expected, actual })
                 if expected == Epoch::new(0) && actual == Epoch::new(1)
         ));
+        let key: Vec<u8> = fastpath_epoch_record_key(&chain).unwrap();
+        let observed_revision: StateRevision = store
+            .get_versioned_durable(&context, domain, &key)
+            .unwrap()
+            .revision();
+        assert_eq!(reads.get(&key), Some(&observed_revision));
+
         let record: FastPathEpochRecord =
             fence_current_epoch(&store, &context, domain, &chain, Epoch::new(0), &mut reads)
                 .unwrap();

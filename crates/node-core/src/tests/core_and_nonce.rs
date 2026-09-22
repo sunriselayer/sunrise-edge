@@ -1050,6 +1050,53 @@ fn authenticated_read_only_submit_honors_fastpath_nonce_lock() {
     assert!(store.commits.lock().unwrap().is_empty());
 }
 
+/// DR-0131 criterion 4: the established object-read-only `SubmitTransaction`
+/// entrypoint rejects a request bound to a non-current epoch before any
+/// lock, machine execution, or mutation -- proven the same way as the
+/// fast-path nonce-lock rejection above: zero machine calls and an empty
+/// commit log (so no nonce advance and no state mutation survive either).
+#[test]
+fn authenticated_read_only_submit_rejects_a_wrong_current_epoch() {
+    let store: ScriptedDurableStore = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+    let node_config: NodeConfig = config("sunrise-test");
+    let protocol_config: ProtocolConfig = active_protocol_config(0xE1);
+    let signing_key: SigningKey = dev_signing_key(0x91);
+    let submission: AuthenticatedSubmitTransaction = authenticated_submission(
+        "sunrise-test",
+        request(0xDA),
+        &signing_key,
+        Epoch::new(7),
+        0,
+        &node_config,
+        &protocol_config,
+    );
+    let machine: IdempotentMachine = IdempotentMachine {
+        calls: AtomicUsize::new(0),
+    };
+    // Overrides the store's own default (Epoch::new(7)) installed by
+    // `ScriptedDurableStore::new`, simulating a Slice-2 transition this DR
+    // does not implement.
+    preload_fastpath_epoch_record(&store, "sunrise-test", Epoch::new(8));
+
+    let error: NodeCoreError = handle_authenticated_resolved_durable_submit_transaction(
+        &MemoryBlobStore::default(),
+        &store,
+        &durable_context(),
+        &resolver("sunrise-test"),
+        submission,
+        &machine,
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        NodeCoreError::EpochMismatch { expected, actual }
+            if expected == Epoch::new(8) && actual == Epoch::new(7)
+    ));
+    assert_eq!(machine.calls.load(Ordering::SeqCst), 0);
+    assert!(store.commits.lock().unwrap().is_empty());
+}
+
 fn sender_nonce_key_for(chain: &str, sender: [u8; 32], epoch: Epoch) -> Vec<u8> {
     PersistenceLayout::new(ChainId::new(chain).unwrap(), ProtocolVersion::new(3))
         .sender_nonce_key(sender, epoch)
