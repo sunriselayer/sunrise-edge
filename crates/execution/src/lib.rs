@@ -975,6 +975,10 @@ pub mod execution_scopes;
 pub mod local_execution;
 mod local_wasm;
 pub use local_wasm::LocalWasmExecutionEngine;
+pub mod protocol_custody;
+pub use protocol_custody::{
+    ProtocolCustodyCapability, ProtocolCustodyDirection, ProtocolCustodyTarget,
+};
 /// Signed immutable artifact candidates; authentication alone grants no authority.
 pub mod publication;
 

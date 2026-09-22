@@ -559,9 +559,14 @@ rewrites and Standard Asset knowledge in node core. Its first implementation
 unit is complete locally: resource-generic bond policy, signed economics
 resource/policy frames (`0x642B`/`0x642C`), authoritative bond lifecycle state
 (`0x642A` plus `0x642D`), reserved durable policy storage, clean-v1 genesis
-signature coverage and byte-exact restart verification. Custody execution,
-bond mutations, slashing and fee claims remain closed. FastVote overall
-remains incomplete until the remaining three units and their review gate pass.
+signature coverage and byte-exact restart verification. Unit 2's execution
+prerequisite is also complete locally: one invocation-local capability lets
+the defining typed-WASM contract produce a provisional owner effect for one
+exact deposit or release, without a generic Owner ABI, ambient authority,
+storage authority or Standard Asset special case. Node-core lifecycle
+admission, generic effect validation, atomic custody commit, bond mutations,
+slashing and fee claims remain closed. FastVote overall remains incomplete
+until the remaining work and its review gate pass.
 See DR-0129 through DR-0137 and `TODO.md` for exact evidence and remaining
 activation gates.
 

@@ -7,6 +7,13 @@ the first prerequisite slice for FastVote phase 3. It does not implement
 slashing, unbonding, fee distribution, or payout, and it does not close phase
 3.
 
+DR-0137 partially supersedes only this decision's temporary creation and
+mutation closure: its implementation-unit-2 execution prerequisite now admits
+one exact protocol-constructed, invocation-local capability through the normal
+typed-WASM path. Ordinary sender-authorized, paid and contract-creation paths
+remain closed, and no bond lifecycle operation or durable custody mutation is
+complete yet.
+
 Phase 2 is already implemented on `main` by DR-0134's companion code and
 review gate. Phase 3 remains required before FastVote is complete.
 
@@ -73,7 +80,8 @@ unsupported non-address owners. In this slice it cannot:
 - authenticate a sender;
 - be supplied as a sender-authorized `Write` or `Consume` input;
 - be used as a paid fee source;
-- change owner through the ordinary transferable-object path;
+- change owner through the ordinary transferable-object path (DR-0137's
+  separate pinned capability is not an ordinary path);
 - be acquired as a FastVote sender-owned lock; or
 - be created by an ordinary contract result.
 
@@ -116,8 +124,9 @@ and closed public FastVote ingress remain unchanged.
 3. No ordinary sender signature authorizes a custody-owned object.
 4. No ordinary execution, paid execution, owner-transition, or FastVote lock
    path writes or consumes a custody-owned object.
-5. Only a valid signed genesis manifest can introduce custody ownership in
-   this slice.
+5. Only a valid signed genesis manifest can introduce custody ownership under
+   this decision alone; DR-0137 separately defines the exact contract-produced
+   capability required for a post-genesis transition.
 6. Genesis custody installation does not claim that the object is collateral,
    does not inspect an asset balance, and grants no future release authority.
 7. No native code gains authority to decode or write a Standard Asset balance.
@@ -158,3 +167,11 @@ remain immobile. DR-0136 records their validated bond value, but must not be
 presented as working slashing, unbonding, payout, or distributed-fee
 machinery. Testnet or production activation remains a separate decision under
 the existing hard activation constraints.
+
+DR-0137's first execution prerequisite has since landed locally: a private,
+non-address transfer operand is derived for one exact source and custody scope,
+and the host resolves it only inside one exact policy-pinned invocation. The
+inverse release capability accepts only the exact custody input and exact
+recipient. These effects remain provisional; node-core lifecycle admission,
+postcondition validation and atomic durable commit are still required before
+custody is actually movable.

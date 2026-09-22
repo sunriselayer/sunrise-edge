@@ -195,6 +195,7 @@ fn call(
             policy: &policy,
             event_digest: local_execution_event_digest(&resolver, &signed).unwrap(),
             inputs,
+            protocol_custody: None,
         })
         .unwrap()
 }

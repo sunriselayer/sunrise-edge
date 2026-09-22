@@ -75,17 +75,26 @@ impl LocalContractEngine for LocalWasmExecutionEngine {
         {
             return Err(LocalExecutionError::Invalid("input count"));
         }
+        let protocol_custody: Option<crate::protocol_custody::BoundProtocolCustodyCapability> =
+            request
+                .protocol_custody
+                .map(|capability| capability.bind(call, request.inputs))
+                .transpose()?;
         let mut arena: Vec<ArenaObject> = Vec::new();
         let mut grants: Vec<Grant> = Vec::new();
         let mut ids: BTreeSet<objects::ObjectId> = BTreeSet::new();
         let mut body_bytes: usize = 0;
-        for (input, access) in request.inputs.iter().zip(&call.access.entries) {
+        for (input_index, (input, access)) in
+            request.inputs.iter().zip(&call.access.entries).enumerate()
+        {
             let bound: ArenaObject = runner::bind_input(
                 request.resolver,
                 request.scopes,
                 call.sender,
                 call.context.epoch(),
                 input,
+                input_index,
+                protocol_custody.as_ref(),
             )?;
             let object: &Object = &input.resolved.object;
             if !ids.insert(object.id)
@@ -123,6 +132,7 @@ impl LocalContractEngine for LocalWasmExecutionEngine {
             arena,
             modules,
             linker: Arc::clone(&linker),
+            protocol_custody,
         })?;
         let prepared = host::prepare_frame(
             &state,

@@ -15,13 +15,12 @@ const ABSENT_RESULT_SLOT: u32 = u32::MAX;
 /// deleted object in addition to its body bytes: identity, version, owner,
 /// nominal type commitment, schema, the enclosing `ObjectEffect` framing and
 /// the one list-entry field the effects list wrapper adds for it. Sized
-/// above the real canonical encoder's worst host-reachable case (`Mutated`
-/// with an `Address` owner). The current host ABI can create only `Address`
-/// owners and rejects custody inputs, so arbitrary persisted custody scopes
-/// are not output-accounting inputs. The regression below nevertheless runs
-/// every owner variant with a representative custody scope so enum growth is
-/// visible during review. A deletion emits no body at all, so charging this
-/// same bound for it is conservative, not exact.
+/// above the real canonical encoder's worst host-reachable case. The host ABI
+/// can create only `Address` owners; one separately pinned invocation-local
+/// capability can produce or release one exact custody owner. The regression
+/// below therefore runs every owner variant with a representative custody
+/// scope so enum growth remains visible during review. A deletion emits no
+/// body at all, so charging this same bound for it is conservative, not exact.
 pub(super) const OUTPUT_OBJECT_OVERHEAD_BYTES: usize = 384;
 /// Conservative encoded-effect overhead charged for one event record in
 /// addition to its type tag and body bytes.
@@ -89,6 +88,7 @@ pub(super) struct HostState {
     // Running encoded-effect byte accounting, unbounded unless a phase
     // coordinator installs explicit ceilings.
     pub output: OutputAccount,
+    pub protocol_custody: Option<crate::protocol_custody::BoundProtocolCustodyCapability>,
 }
 
 /// One open phase window (DR-0124): the cumulative counters observed when
@@ -450,10 +450,15 @@ fn grant(state: &HostState, handle: i32) -> Result<Grant, wasmi::Error> {
 fn writable(state: &HostState, handle: i32, consume: bool) -> Result<usize, wasmi::Error> {
     let grant: Grant = grant(state, handle)?;
     let item: &ArenaObject = &state.arena[grant.index];
+    let sender_owned: bool = item.object.owner == Owner::Address(Address::new(state.sender));
+    let custody_write: bool = state
+        .protocol_custody
+        .as_ref()
+        .is_some_and(|capability| capability.admits_custody_write(grant.index, consume));
     if grant.mode == ObjectMode::Read
         || (consume && grant.mode != ObjectMode::Consume)
         || item.authority.code != frame(state)?.code
-        || item.object.owner != Owner::Address(Address::new(state.sender))
+        || (!sender_owned && !custody_write)
         || item.authority.instance != state.scopes[frame(state)?.scope].target
         || item.authority.instance_context != state.scopes[frame(state)?.scope].instance.context
     {
@@ -621,8 +626,20 @@ pub(super) fn linker(engine: &Engine) -> Result<Linker<HostState>, wasmi::Error>
         |mut caller: Caller<'_, HostState>, handle: i32, ptr: i32| -> HostResult {
             charge(&mut caller, 0)?;
             let bytes: Vec<u8> = read(&mut caller, ptr, 32)?;
-            let owner: Owner = owner(&bytes)?;
             let index: usize = writable(caller.data(), handle, false)?;
+            let operand: [u8; 32] = bytes.try_into().map_err(|_| trap())?;
+            let owner: Owner = match caller
+                .data()
+                .protocol_custody
+                .as_ref()
+                .map(|capability| capability.transfer_owner(index, &operand))
+                .transpose()
+                .map_err(|_| trap())?
+                .flatten()
+            {
+                Some(owner) => owner,
+                None => owner(&operand)?,
+            };
             let current: &Frame = frame(caller.data())?;
             let metadata = current
                 .interface

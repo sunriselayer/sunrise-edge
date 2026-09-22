@@ -250,6 +250,7 @@ fn a_transfer_is_denied_before_mutation_once_it_would_cross_the_output_window() 
         arena: Vec::new(),
         modules,
         linker: Arc::clone(&linker),
+        protocol_custody: None,
     })
     .expect("state");
     let mut store: Store<HostState> = Store::new(&engine, state);
@@ -739,6 +740,7 @@ fn the_application_profile_withholds_settlement_headroom() {
         arena: Vec::new(),
         modules,
         linker,
+        protocol_custody: None,
     })
     .expect("state");
     let profile: PhaseProfile = application_profile(&state, LIMIT).expect("profile");

@@ -531,6 +531,7 @@ pub fn handle_local_execution<
         policy,
         event_digest,
         inputs: &inputs,
+        protocol_custody: None,
     })?;
     let result: LocalExecutionResult = LocalExecutionResult {
         request_id: call.request_id,

@@ -4,8 +4,10 @@
 
 Accepted, 2026-09-23. Implementation unit 1 (resource-generic policy, signed
 economics/lifecycle codecs and genesis persistence/restart verification) is
-implemented and locally validated. Units 2 through 4 and the Phase 3 review
-gate remain incomplete.
+implemented and locally validated. Unit 2's invocation-local execution
+capability prerequisite is implemented locally; its node-core lifecycle,
+effect-validation and durable-commit work remains incomplete. Units 3 and 4
+and the Phase 3 review gate also remain incomplete.
 
 ## Context
 
@@ -90,6 +92,23 @@ The host cannot manufacture the released body. A resource whose public
 contract does not expose the committed ABI-compatible operations cannot be a
 bond or fee resource.
 
+The implementation-unit-2 prerequisite uses no generic `Owner` ABI and does
+not add an owner-constructor profile. A protocol operation constructs one
+private capability bound to the current context, authenticated sender, exact
+instance/code/type/schema/entrypoint, one exact object and one closed
+direction. For deposit it maps a derived, non-address 32-byte operand to one
+exact `ProtocolCustodyScope`; for release it admits one exact custody-owned
+`Write` input and maps only the exact recipient address. The mapping lives for
+one invocation, cannot be persisted, cannot authorize `Consume`, and is never
+available to `create_object`. All ordinary and paid execution paths pass no
+capability.
+
+This foundation only allows the defining contract to produce provisional
+effects. It neither authorizes a lifecycle operation nor commits storage.
+Node core must still construct the capability from committed economics policy,
+validate the complete effect postconditions above and atomically fence the
+object and lifecycle rows before any post-genesis custody transition is real.
+
 ### Bond lifecycle
 
 `FastPathBondRecord` is the single authoritative per-validator lifecycle row.
@@ -154,8 +173,9 @@ claim uses `transfer`. A zero share is finalized without an object mutation.
 
 1. make bond policy resource-generic; add strict economics policy and lifecycle
    codecs, keys, genesis commitment and restart verification;
-2. implement generic custody-effect validation plus deposit/replacement,
-   unbond and withdrawal;
+2. add the invocation-local contract execution capability, then implement
+   generic custody-effect validation plus deposit/replacement, unbond and
+   withdrawal;
 3. consume equivocation evidence atomically with full forfeiture, jail,
    reactivation and next-set eligibility checks; and
 4. commit fee escrow before certification, derive deterministic entitlements,

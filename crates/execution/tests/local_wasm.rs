@@ -1,14 +1,20 @@
 #[path = "common/inventory.rs"]
 mod inventory;
 use abi::executable_abi::{ExecutableAbi, encode_executable_abi};
-use abi::package_types::PackageOrigin;
+use abi::package_types::{PackageOrigin, ScopedTypeArg, ScopedTypeTag, derive_scoped_type_id};
 use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::call::CallIntent;
 use execution::local_execution::*;
 use execution::publication::*;
-use execution::{ExecutionStatus, LocalWasmExecutionEngine, ObjectEffect, ResolvedObject};
+use execution::{
+    ExecutionStatus, LocalWasmExecutionEngine, ObjectEffect, ProtocolCustodyCapability,
+    ProtocolCustodyDirection, ProtocolCustodyTarget, ResolvedObject,
+};
 use hashing::HashSuiteResolver;
-use objects::{AccessMode, ObjectRef};
+use objects::{
+    AccessMode, Address, Object, ObjectId, ObjectRef, Owner, ProtocolCustodyPurpose,
+    ProtocolCustodyScope,
+};
 use protocol_types::{ChainId, Epoch, HashPurpose, HashSuite, HashSuiteSchedule, ProtocolVersion};
 
 fn resolver() -> HashSuiteResolver {
@@ -148,6 +154,17 @@ impl Fixture {
         inputs: &[ScopedResolvedObject],
         gas: u64,
     ) -> Result<LocalExecutionOutcome, LocalExecutionError> {
+        self.run_at_with_custody(active, entry, args, inputs, gas, None)
+    }
+    fn run_at_with_custody(
+        &self,
+        active: PublicationContext,
+        entry: &str,
+        args: Vec<u8>,
+        inputs: &[ScopedResolvedObject],
+        gas: u64,
+        protocol_custody: Option<&execution::ProtocolCustodyCapability>,
+    ) -> Result<LocalExecutionOutcome, LocalExecutionError> {
         let resolver = resolver_version(active.protocol_version());
         let policy = LocalExecutionPolicy::new(active.clone());
         let access = abi::AccessManifest {
@@ -222,6 +239,7 @@ impl Fixture {
             policy: &policy,
             event_digest,
             inputs,
+            protocol_custody,
         })
     }
 }
@@ -690,6 +708,357 @@ fn transfer_downgrades_even_self_transfer_and_forbids_undeclared_constructor() {
 fn data_segment(address: u32, bytes: &[u8]) -> String {
     let escaped: String = bytes.iter().map(|byte| format!("\\{byte:02x}")).collect();
     format!("(data (i32.const {address}) \"{escaped}\")")
+}
+
+const CUSTODY_RESOURCE_DOMAIN: u16 = 9;
+
+fn custody_type(resource: [u8; 32]) -> ScopedTypeTag {
+    ScopedTypeTag::new(
+        origin(1),
+        4,
+        vec![ScopedTypeArg::Opaque {
+            domain: CUSTODY_RESOURCE_DOMAIN,
+            value: resource,
+        }],
+    )
+    .unwrap()
+}
+
+fn configure_custody_transfer(package: &mut inventory::InventoryPackage, resource: [u8; 32]) {
+    package.abi.objects.constructors[3].arguments = vec![abi::public_abi::ArgumentKind::Opaque(
+        CUSTODY_RESOURCE_DOMAIN,
+    )];
+    let transfer = package
+        .abi
+        .objects
+        .entrypoints
+        .iter_mut()
+        .find(|entry| entry.name == "transfer")
+        .unwrap();
+    transfer.objects[0].ty.arguments = vec![abi::public_abi::PatternArgument::Opaque {
+        domain: CUSTODY_RESOURCE_DOMAIN,
+        value: resource,
+    }];
+}
+
+fn custody_input(
+    fixture: &Fixture,
+    id: ObjectId,
+    owner: Owner,
+    resource: [u8; 32],
+) -> ScopedResolvedObject {
+    let ty: ScopedTypeTag = custody_type(resource);
+    ScopedResolvedObject {
+        resolved: ResolvedObject {
+            object: Object {
+                id,
+                version: 1,
+                owner,
+                type_hash: derive_scoped_type_id(&resolver(), context().epoch(), &ty).unwrap(),
+                schema_version: 1,
+                data: inventory::tuple_arguments(&[1, 2, 3]),
+            },
+            mode: AccessMode::Write,
+        },
+        authority: ObjectAuthority {
+            object_id: id,
+            instance_context: fixture.instance.context.clone(),
+            instance: instance_target(
+                &resolver_version(fixture.instance.context.protocol_version()),
+                &fixture.instance,
+            )
+            .unwrap(),
+            code: fixture.instance.code.clone(),
+            ty,
+        },
+    }
+}
+
+fn custody_target(fixture: &Fixture, resource: [u8; 32]) -> ProtocolCustodyTarget {
+    ProtocolCustodyTarget::new(
+        instance_target(
+            &resolver_version(fixture.instance.context.protocol_version()),
+            &fixture.instance,
+        )
+        .unwrap(),
+        fixture.instance.code.clone(),
+        custody_type(resource),
+        1,
+        "transfer".to_owned(),
+    )
+    .unwrap()
+}
+
+fn deposit_capability(
+    fixture: &Fixture,
+    source: ObjectId,
+    resource: [u8; 32],
+) -> (ProtocolCustodyCapability, ProtocolCustodyScope) {
+    for subject_byte in 1u8..=u8::MAX {
+        let scope: ProtocolCustodyScope = ProtocolCustodyScope {
+            purpose: ProtocolCustodyPurpose::BondCollateral,
+            chain_id: context().chain_id().clone(),
+            subject: [subject_byte; 32],
+            resource,
+        };
+        let capability = ProtocolCustodyCapability::new(
+            &resolver(),
+            context(),
+            custody_target(fixture, resource),
+            ProtocolCustodyDirection::Deposit {
+                source,
+                scope: scope.clone(),
+            },
+            sender(),
+        );
+        if let Ok(capability) = capability {
+            return (capability, scope);
+        }
+    }
+    panic!("a bounded non-address custody token must be derivable")
+}
+
+#[test]
+fn protocol_custody_deposit_and_release_effects_are_contract_produced() {
+    let resource: [u8; 32] = [0x51; 32];
+    let fixture: Fixture = Fixture::new(|package| configure_custody_transfer(package, resource));
+    let object_id: ObjectId = ObjectId::new([0x61; 32]);
+    let source: ScopedResolvedObject = custody_input(
+        &fixture,
+        object_id,
+        Owner::Address(Address::new(sender())),
+        resource,
+    );
+    let (deposit, scope): (ProtocolCustodyCapability, ProtocolCustodyScope) =
+        deposit_capability(&fixture, object_id, resource);
+    let token: [u8; 32] = deposit.owner_token().unwrap();
+    let deposited: LocalExecutionOutcome = fixture
+        .run_at_with_custody(
+            context(),
+            "transfer",
+            inventory::recipient_argument(token),
+            std::slice::from_ref(&source),
+            MAX_LOCAL_EXECUTION_GAS,
+            Some(&deposit),
+        )
+        .unwrap();
+    assert_eq!(deposited.effects.status, ExecutionStatus::Success);
+    let deposited_object: Object = match &deposited.effects.object_effects[..] {
+        [
+            ObjectEffect::Mutated {
+                previous_version: 1,
+                new_object,
+            },
+        ] => new_object.clone(),
+        effects => panic!("unexpected deposit effects: {effects:?}"),
+    };
+    assert_eq!(
+        deposited_object.owner,
+        Owner::ProtocolCustody(scope.clone())
+    );
+
+    let release_key: SigningKey = SigningKey::from([8; 32]);
+    let recipient: Address = Address::new(VerificationKey::from(&release_key).into());
+    let release: ProtocolCustodyCapability = ProtocolCustodyCapability::new(
+        &resolver(),
+        context(),
+        custody_target(&fixture, resource),
+        ProtocolCustodyDirection::Release {
+            custody: object_id,
+            scope,
+            recipient,
+        },
+        sender(),
+    )
+    .unwrap();
+    let custody: ScopedResolvedObject = ScopedResolvedObject {
+        resolved: ResolvedObject {
+            object: deposited_object,
+            mode: AccessMode::Write,
+        },
+        authority: source.authority,
+    };
+    let released: LocalExecutionOutcome = fixture
+        .run_at_with_custody(
+            context(),
+            "transfer",
+            inventory::recipient_argument(*recipient.as_bytes()),
+            &[custody],
+            MAX_LOCAL_EXECUTION_GAS,
+            Some(&release),
+        )
+        .unwrap();
+    assert_eq!(released.effects.status, ExecutionStatus::Success);
+    assert!(matches!(
+        &released.effects.object_effects[..],
+        [ObjectEffect::Mutated { new_object, .. }]
+            if new_object.owner == Owner::Address(recipient)
+    ));
+}
+
+#[test]
+fn protocol_custody_rejects_wrong_input_scope_token_and_ambient_token_use() {
+    let resource: [u8; 32] = [0x52; 32];
+    let fixture: Fixture = Fixture::new(|package| configure_custody_transfer(package, resource));
+    let source_id: ObjectId = ObjectId::new([0x62; 32]);
+    let source: ScopedResolvedObject = custody_input(
+        &fixture,
+        source_id,
+        Owner::Address(Address::new(sender())),
+        resource,
+    );
+    let (deposit, scope): (ProtocolCustodyCapability, ProtocolCustodyScope) =
+        deposit_capability(&fixture, source_id, resource);
+    let other_key: SigningKey = SigningKey::from([9; 32]);
+    let wrong_target: [u8; 32] = VerificationKey::from(&other_key).into();
+    assert_trap(
+        fixture
+            .run_at_with_custody(
+                context(),
+                "transfer",
+                inventory::recipient_argument(wrong_target),
+                std::slice::from_ref(&source),
+                MAX_LOCAL_EXECUTION_GAS,
+                Some(&deposit),
+            )
+            .unwrap(),
+    );
+
+    let wrong_input: ScopedResolvedObject = custody_input(
+        &fixture,
+        ObjectId::new([0x63; 32]),
+        Owner::Address(Address::new(sender())),
+        resource,
+    );
+    assert!(matches!(
+        fixture.run_at_with_custody(
+            context(),
+            "transfer",
+            inventory::recipient_argument(deposit.owner_token().unwrap()),
+            &[wrong_input],
+            MAX_LOCAL_EXECUTION_GAS,
+            Some(&deposit),
+        ),
+        Err(LocalExecutionError::Invalid(
+            "missing protocol custody input"
+        ))
+    ));
+
+    let wrong_scope: ProtocolCustodyScope = ProtocolCustodyScope {
+        subject: [0x99; 32],
+        ..scope.clone()
+    };
+    let release: ProtocolCustodyCapability = ProtocolCustodyCapability::new(
+        &resolver(),
+        context(),
+        custody_target(&fixture, resource),
+        ProtocolCustodyDirection::Release {
+            custody: source_id,
+            scope: wrong_scope,
+            recipient: Address::new(wrong_target),
+        },
+        sender(),
+    )
+    .unwrap();
+    let custody: ScopedResolvedObject =
+        custody_input(&fixture, source_id, Owner::ProtocolCustody(scope), resource);
+    assert!(matches!(
+        fixture.run_at_with_custody(
+            context(),
+            "transfer",
+            inventory::recipient_argument(wrong_target),
+            &[custody],
+            MAX_LOCAL_EXECUTION_GAS,
+            Some(&release),
+        ),
+        Err(LocalExecutionError::Invalid("protocol custody input owner"))
+    ));
+
+    let ambient_fixture: Fixture = Fixture::new(|package| {
+        configure_custody_transfer(package, resource);
+        let transfer = package
+            .abi
+            .objects
+            .entrypoints
+            .iter_mut()
+            .find(|entry| entry.name == "transfer")
+            .unwrap();
+        transfer.objects.push(transfer.objects[0].clone());
+        replace(
+            package,
+            "(call $transfer (i32.const 0)",
+            "(call $transfer (i32.const 1)",
+        );
+    });
+    let first: ScopedResolvedObject = custody_input(
+        &ambient_fixture,
+        source_id,
+        Owner::Address(Address::new(sender())),
+        resource,
+    );
+    let second: ScopedResolvedObject = custody_input(
+        &ambient_fixture,
+        ObjectId::new([0x64; 32]),
+        Owner::Address(Address::new(sender())),
+        resource,
+    );
+    let (ambient_capability, _): (ProtocolCustodyCapability, ProtocolCustodyScope) =
+        deposit_capability(&ambient_fixture, source_id, resource);
+    assert_trap(
+        ambient_fixture
+            .run_at_with_custody(
+                context(),
+                "transfer",
+                inventory::recipient_argument(ambient_capability.owner_token().unwrap()),
+                &[first, second],
+                MAX_LOCAL_EXECUTION_GAS,
+                Some(&ambient_capability),
+            )
+            .unwrap(),
+    );
+}
+
+#[test]
+fn protocol_custody_token_cannot_be_used_by_create_object() {
+    let resource: [u8; 32] = [0x53; 32];
+    let fixture: Fixture = Fixture::new(|package| {
+        configure_custody_transfer(package, resource);
+        let tag_len: usize = abi::package_types::encode_scoped_type_tag(
+            &ScopedTypeTag::new(origin(1), 1, vec![]).unwrap(),
+        )
+        .unwrap()
+        .len();
+        let body_len: usize = inventory::tuple_arguments(&[]).len();
+        let marker = "(call $zero (call $transfer (i32.const 0) (local.get $recipient)))";
+        replace(
+            package,
+            marker,
+            &format!(
+                "(drop (call $create (i32.const 1024) (i32.const {tag_len}) (local.get $recipient) (i32.const 18432) (i32.const {body_len}))) {marker}"
+            ),
+        );
+    });
+    let source_id: ObjectId = ObjectId::new([0x65; 32]);
+    let source: ScopedResolvedObject = custody_input(
+        &fixture,
+        source_id,
+        Owner::Address(Address::new(sender())),
+        resource,
+    );
+    let (deposit, _): (ProtocolCustodyCapability, ProtocolCustodyScope) =
+        deposit_capability(&fixture, source_id, resource);
+    assert_trap(
+        fixture
+            .run_at_with_custody(
+                context(),
+                "transfer",
+                inventory::recipient_argument(deposit.owner_token().unwrap()),
+                &[source],
+                MAX_LOCAL_EXECUTION_GAS,
+                Some(&deposit),
+            )
+            .unwrap(),
+    );
 }
 
 #[test]
