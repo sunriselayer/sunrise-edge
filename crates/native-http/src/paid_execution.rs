@@ -56,7 +56,7 @@ where
         state.components.is_cancelled(),
         state.blocking_executor.clone(),
         move || {
-            let signed = match decode_signed_paid_intent(&body) {
+            let _signed = match decode_signed_paid_intent(&body) {
                 Ok(signed) => signed,
                 Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid-paid-execution"),
             };
@@ -89,6 +89,43 @@ where
                         );
                     }
                 };
+            let preflight: node_core::paid_execution::PaidExecutionPreflight =
+                match node_core::paid_execution::preflight_paid_execution(
+                    state.components.store.as_ref(),
+                    &context,
+                    domain,
+                    &state.resolver,
+                    &current_context,
+                    &body,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return admission_error(&error),
+                };
+            let fresh: node_core::paid_execution::FreshPaidExecution = match preflight {
+                node_core::paid_execution::PaidExecutionPreflight::Replayed {
+                    request_id,
+                    output,
+                } => {
+                    return match HttpNodeResult::new(request_id, output.responses().to_vec())
+                        .and_then(|result| result.encode())
+                    {
+                        Ok(bytes) => (
+                            StatusCode::OK,
+                            [
+                                (header::CONTENT_TYPE, NODE_RESULT_MEDIA_TYPE),
+                                (header::CACHE_CONTROL, "no-store"),
+                            ],
+                            bytes,
+                        )
+                            .into_response(),
+                        Err(_) => error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "paid-execution-result-encoding",
+                        ),
+                    };
+                }
+                node_core::paid_execution::PaidExecutionPreflight::Fresh(fresh) => fresh,
+            };
             let policy_key: Vec<u8> =
                 match node_core::local_instance_state::paid_fee_policy_key(&current_context) {
                     Ok(value) => value,
@@ -122,22 +159,18 @@ where
                 execution::local_execution::LocalExecutionPolicy::generic_object_results(
                     current_context.clone(),
                 );
-            let request_id: RequestId = match RequestId::new(signed.intent.request_id) {
-                Ok(value) => value,
-                Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid-request-id"),
-            };
-            let output = match node_core::paid_execution::handle_paid_execution(
+            let request_id: RequestId = fresh.request_id();
+            let output = match node_core::paid_execution::handle_preflighted_paid_execution(
                 state.components.store.as_ref(),
                 state.components.blob_store.as_ref(),
                 &context,
                 domain,
                 &state.resolver,
                 &state.history,
-                &current_context,
                 &current_base_policy,
                 &current_fee_policy,
                 &paid.engine,
-                &body,
+                fresh,
                 state.preinstalled_wasm.created_checkpoint,
             ) {
                 Ok(value) => value,

@@ -6464,7 +6464,9 @@ async fn context_route_returns_trusted_composition() {
 /// mutation boundary follow the committed singleton after the same e -> e+1
 /// record change installed by `epoch_transition::activate`, even while the
 /// process-local `NodeConfig` remains at e. The node-core transition suite
-/// separately drives the real certified activation that produces this row.
+/// separately drives the real certified activation that produces this row
+/// and deterministically races that activation against direct paid admission,
+/// proving the adapter's preliminary read is not mutation authority.
 #[tokio::test]
 async fn committed_epoch_advance_drives_context_nonce_and_submit_authority() {
     let fence: WriterFenceGeneration = WriterFenceGeneration::new(3).unwrap();
