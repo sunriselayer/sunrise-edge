@@ -102,12 +102,15 @@ certification.
   sender/epoch nonce lock before any lock, execution, or mutation. Validator
   membership must never be locally, unilaterally mutable by a single node;
   it changes only through a certified state transition every node observes
-  identically. Implemented by
+  identically. The general mutation fence is implemented by
   [DR-0131](docs/architecture/decisions/0131-fastvote-validator-lifecycle.md)
-  slice 1: there is no post-genesis local action that changes the active
-  set yet, so retired-validator/wrong-epoch rejection have no end-to-end
-  observable effect beyond genesis-set membership until slice 2's epoch
-  transition exists; see the "Initial-Audit Exclusions" below.
+  slice 1, and the outgoing-set-certified `e -> e + 1` transition is
+  implemented by
+  [DR-0132](docs/architecture/decisions/0132-fastvote-epoch-transition.md)
+  slice 2. Retired-validator and wrong-epoch rejection are therefore
+  end-to-end observable across an activated transition. Equivocation
+  evidence, authorization-class/ingress declarations, and Phase 3 economics
+  remain open; see the "Initial-Audit Exclusions" below.
 
 ## Reportable Findings and Severity Context
 
@@ -140,15 +143,16 @@ The following are deferred from the first audit engagement:
   certified-execution boundary and atomic certificate publication are
   implemented under
   [DR-0130](docs/architecture/decisions/0130-owned-object-certified-execution.md);
-  Phase 2's architecture is fixed and slice 1's general mutation-fencing
-  layer is implemented under
+  Phase 2's architecture is fixed; slice 1's general mutation-fencing layer
+  is implemented under
   [DR-0131](docs/architecture/decisions/0131-fastvote-validator-lifecycle.md),
-  still with no externally reachable ingress; Phase 2 slices 2-4 (epoch
-  transition, equivocation evidence, and authorization-class/ingress
-  declaration) remain unimplemented, with their safety contract fixed by
-  DR-0131 and detailed wire/API decisions pending, and Phase 3
-  slashing/reward distribution remains undesigned — see `TODO.md`'s
-  FastVote Certified Execution Gate);
+  and slice 2's outgoing-set-certified epoch transition is implemented under
+  [DR-0132](docs/architecture/decisions/0132-fastvote-epoch-transition.md),
+  still with no externally reachable ingress. Phase 2 slices 3-4
+  (equivocation evidence and authorization-class/ingress declaration) remain
+  unimplemented, with their safety contract fixed and detailed wire/API
+  decisions pending, and Phase 3 slashing/reward distribution remains
+  undesigned — see `TODO.md`'s FastVote Certified Execution Gate);
 - externally accepted non-`SubmitTransaction` event families;
 - production multi-validator consensus activation;
 - checkpoint/state-root publication and verified restore;
