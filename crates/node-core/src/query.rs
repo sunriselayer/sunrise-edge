@@ -13,7 +13,7 @@
 
 use super::{
     MAX_AUTHENTICATED_OBJECT_BODY_BYTES, NodeCoreError, NodeDedupRecord, RequestId,
-    SenderNonceRecord,
+    SenderNonceRecord, local_instance_state,
 };
 use hashing::HashingError;
 use objects::{Object, ObjectId};
@@ -21,7 +21,7 @@ use protocol_types::{ChainId, Digest32, Epoch, HashPurpose, ProtocolVersion};
 use runtime::{
     AtomicityDomainId, DurableObjectHead, DurableObjectOwnerProjection, DurableObjectPayload,
     DurableObjectVersion, DurableOperationContext, DurableRequestId, ObjectHeadRevision,
-    PersistenceLayout, StateRevision, StructuredDurableDomainStateStore,
+    PersistenceLayout, StateRevision, StructuredDurableDomainStateStore, VersionedStateValue,
 };
 
 /// One observed persisted next-nonce value plus the exact revision it was
@@ -100,6 +100,30 @@ where
     let nonce_key = layout.sender_nonce_key(sender, epoch);
     let observation = read_sender_next_nonce(store, context, domain, &nonce_key, sender, epoch)?;
     Ok(observation.next_nonce)
+}
+
+/// Queries the singleton, CAS-fenced [`local_instance_state::FastPathEpochRecord`]
+/// (DR-0131/DR-0132): the authoritative current epoch and active
+/// validator-set digest, independent of any caller's own static
+/// configuration (DR-0132 correction C7). This is a plain read, not itself a
+/// fence: a caller that goes on to authorize or admit a mutation from this
+/// value must still fence it through `crate::mutation_fence` in that same
+/// durable commit, exactly like every other mutation path already does.
+pub fn query_committed_epoch_state<S>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain_id: &ChainId,
+) -> Result<local_instance_state::FastPathEpochRecord, NodeCoreError>
+where
+    S: StructuredDurableDomainStateStore,
+{
+    let key: Vec<u8> = local_instance_state::fastpath_epoch_record_key(chain_id)?;
+    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let bytes: &[u8] = observed.value().ok_or(NodeCoreError::PersistenceInvariant(
+        "fast-path epoch record not installed",
+    ))?;
+    local_instance_state::decode_fastpath_epoch_record(bytes)
 }
 
 /// Independently verified result of querying one durable object by identifier.

@@ -38,7 +38,7 @@ use execution::publication::{
 };
 use hashing::{HashSuiteResolver, HashingError};
 use objects::{Object, ObjectError, Owner, decode_object, encode_object};
-use protocol_types::{Digest32, HashPurpose, SignatureSchemeId};
+use protocol_types::{Digest32, Epoch, HashPurpose, SignatureSchemeId};
 use runtime::{
     AtomicStateReadSet, AtomicityDomainId, DurableCommitOutcome, DurableCommitRejection,
     DurableInvocationError, DurableInvocationTransaction, DurableObjectChanges, DurableObjectHead,
@@ -51,6 +51,7 @@ use runtime::{
 };
 use validator_set::{ValidatorInfo, ValidatorSet};
 
+use crate::epoch_transition;
 use crate::fast_path::records::{
     FastPathValidatorSetRecord, decode_fastpath_validator_set_record,
     encode_fastpath_validator_set_record,
@@ -1031,14 +1032,19 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             ));
         }
 
-        // Verify the committed DR-0131 epoch record.
-        let obs: VersionedStateValue =
-            store.get_versioned_durable(context, domain, &epoch_record_key)?;
-        if obs.value() != Some(epoch_record_bytes.as_slice()) {
-            return Err(GenesisError::TamperedInstalledRecord(
-                "fast-path epoch record",
-            ));
-        }
+        // DR-0132 C1: verify the committed DR-0131 epoch record and, if it
+        // has advanced past this manifest's own genesis epoch, the complete
+        // transition audit chain (see `verify_fastpath_epoch_chain`).
+        verify_fastpath_epoch_chain(
+            store,
+            context,
+            domain,
+            resolver,
+            manifest_context,
+            genesis_validator_set_digest,
+            &epoch_record_key,
+            &epoch_record_bytes,
+        )?;
 
         // Verify initialized objects and authorities.
         for entry in &manifest.objects {
@@ -1267,4 +1273,326 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             }
         }
     }
+}
+
+/// DR-0132 §7 (correction C1): replaces byte-for-byte re-verification of the
+/// `FastPathEpochRecord` against a freshly recomputed *genesis* record --
+/// correct only while `current_epoch` never changes -- with a rule that
+/// permits lawful advance while still refusing to start on any single
+/// tampered byte anywhere in the transition chain.
+///
+/// Let `g` be the manifest (genesis) epoch and `c` be the live
+/// `FastPathEpochRecord.current_epoch`. If `c == g`, this is byte-for-byte
+/// identical to the pre-DR-0132 check. If `c < g`, fails closed
+/// immediately: `current_epoch` can never regress below the manifest epoch.
+/// If `c > g`, walks every step `i` from `g` to `c - 1` in increasing order,
+/// at each step decoding the stored `FastPathEpochTransitionRecord` and its
+/// embedded certificate, loading the historical outgoing `ValidatorSet` row
+/// and verifying its digest against the previous step's (or genesis's)
+/// `next_validator_set_digest`, cryptographically verifying the certificate
+/// under the outgoing-set quorum, requiring the record's fields to match the
+/// certificate's payload exactly, and re-reading and re-hashing the four
+/// rows that step's activation installed against both the record's and the
+/// certificate's `activation_digest`. Finally binds the live singleton (and
+/// the live per-epoch `ValidatorSet` row) to the last verified step's
+/// `next_validator_set_digest`.
+///
+/// Any single failure at any step aborts the whole call with
+/// [`GenesisError::TamperedInstalledRecord`] (a fixed message per failure
+/// category); there is no partial acceptance.
+#[allow(clippy::too_many_arguments)]
+fn verify_fastpath_epoch_chain<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    manifest_context: &PublicationContext,
+    genesis_validator_set_digest: Digest32,
+    epoch_record_key: &[u8],
+    genesis_epoch_record_bytes: &[u8],
+) -> Result<(), GenesisError> {
+    let observed: VersionedStateValue =
+        store.get_versioned_durable(context, domain, epoch_record_key)?;
+    let installed_bytes: &[u8] = observed
+        .value()
+        .ok_or(GenesisError::MissingInstalledRecord(
+            "fast-path epoch record",
+        ))?;
+
+    let manifest_epoch: Epoch = manifest_context.epoch();
+    let current_epoch: Epoch = local_instance_state::decode_fastpath_epoch_record(installed_bytes)
+        .map_err(|_| GenesisError::TamperedInstalledRecord("fast-path epoch record"))?
+        .current_epoch;
+
+    if current_epoch == manifest_epoch {
+        if installed_bytes != genesis_epoch_record_bytes {
+            return Err(GenesisError::TamperedInstalledRecord(
+                "fast-path epoch record",
+            ));
+        }
+        return Ok(());
+    }
+    if current_epoch.get() < manifest_epoch.get() {
+        return Err(GenesisError::TamperedInstalledRecord(
+            "fast-path epoch record",
+        ));
+    }
+
+    let installed_record: local_instance_state::FastPathEpochRecord =
+        local_instance_state::decode_fastpath_epoch_record(installed_bytes)
+            .map_err(|_| GenesisError::TamperedInstalledRecord("fast-path epoch record"))?;
+    if installed_record.previous_epoch != Some(Epoch::new(current_epoch.get() - 1)) {
+        return Err(GenesisError::TamperedInstalledRecord(
+            "fast-path epoch record",
+        ));
+    }
+
+    let read_row = |key: &[u8], name: &'static str| -> Result<Vec<u8>, GenesisError> {
+        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, key)?;
+        observed
+            .value()
+            .map(<[u8]>::to_vec)
+            .ok_or(GenesisError::TamperedInstalledRecord(name))
+    };
+
+    let mut previous_validator_set_digest: Digest32 = genesis_validator_set_digest;
+    let mut step: u64 = manifest_epoch.get();
+    while step < current_epoch.get() {
+        let outgoing_epoch: Epoch = Epoch::new(step);
+        let incoming_epoch: Epoch = Epoch::new(step + 1);
+
+        // a. Decode the stored transition record.
+        let transition_key: Vec<u8> = local_instance_state::fastpath_epoch_transition_key(
+            manifest_context.chain_id(),
+            incoming_epoch,
+        )?;
+        let transition_bytes: Vec<u8> =
+            read_row(&transition_key, "fast-path epoch transition record")?;
+        let transition_record: epoch_transition::FastPathEpochTransitionRecord =
+            epoch_transition::decode_fastpath_epoch_transition_record(&transition_bytes).map_err(
+                |_| GenesisError::TamperedInstalledRecord("fast-path epoch transition record"),
+            )?;
+
+        // b. Decode the record's embedded certificate.
+        let certificate: consensus::EpochTransitionCertificate =
+            consensus::decode_epoch_transition_certificate(&transition_record.certificate)
+                .map_err(|_| {
+                    GenesisError::TamperedInstalledRecord("fast-path epoch transition certificate")
+                })?;
+
+        // c. Load the historical outgoing `ValidatorSet` row.
+        let historical_context: PublicationContext = PublicationContext::new(
+            manifest_context.chain_id().clone(),
+            manifest_context.protocol_version(),
+            outgoing_epoch,
+        )?;
+        let historical_validator_set_key: Vec<u8> =
+            local_instance_state::fastpath_validator_set_key(&historical_context)?;
+        let historical_validator_set_bytes: Vec<u8> = read_row(
+            &historical_validator_set_key,
+            "historical fast-path validator set",
+        )?;
+        let historical_validator_set_record: FastPathValidatorSetRecord =
+            decode_fastpath_validator_set_record(&historical_validator_set_bytes).map_err(
+                |_| GenesisError::TamperedInstalledRecord("historical fast-path validator set"),
+            )?;
+        if historical_validator_set_record.context != historical_context {
+            return Err(GenesisError::TamperedInstalledRecord(
+                "historical fast-path validator set",
+            ));
+        }
+        let historical_info: Vec<ValidatorInfo> = historical_validator_set_record
+            .validators
+            .iter()
+            .map(|validator| ValidatorInfo {
+                id: validator.id,
+                voting_power: validator.voting_power,
+                signature_scheme: validator.signature_scheme,
+                public_key: validator.public_key.clone(),
+            })
+            .collect();
+        let historical_validator_set: ValidatorSet =
+            ValidatorSet::new(outgoing_epoch, historical_info).map_err(|_| {
+                GenesisError::TamperedInstalledRecord("historical fast-path validator set")
+            })?;
+
+        // d. Verify that row's digest against the chain, never against a
+        //    fresh guess.
+        let historical_digest: Digest32 =
+            historical_validator_set.digest(resolver).map_err(|_| {
+                GenesisError::TamperedInstalledRecord("historical fast-path validator set")
+            })?;
+        if historical_digest != previous_validator_set_digest {
+            return Err(GenesisError::TamperedInstalledRecord(
+                "historical fast-path validator set",
+            ));
+        }
+
+        // e. Cryptographically verify the certificate itself.
+        let certifier: consensus::EpochTransitionCertifier =
+            consensus::EpochTransitionCertifier::new(
+                manifest_context.chain_id().clone(),
+                manifest_context.protocol_version(),
+                outgoing_epoch,
+                historical_validator_set,
+            )
+            .map_err(|_| {
+                GenesisError::TamperedInstalledRecord("fast-path epoch transition certificate")
+            })?;
+        certifier
+            .verify_certificate(&certificate, &crate::fast_path::FastPathEd25519Verifier)
+            .map_err(|_| {
+                GenesisError::TamperedInstalledRecord("fast-path epoch transition certificate")
+            })?;
+
+        // f. Require the record's fields to match the certificate's payload
+        //    exactly.
+        if transition_record.from_epoch != certificate.epoch
+            || certificate.epoch != outgoing_epoch
+            || transition_record.to_epoch != certificate.next_epoch
+            || certificate.next_epoch != incoming_epoch
+            || transition_record.previous_validator_set_digest
+                != certificate.current_validator_set_digest
+            || certificate.current_validator_set_digest != historical_digest
+            || transition_record.next_validator_set_digest != certificate.next_validator_set_digest
+        {
+            return Err(GenesisError::TamperedInstalledRecord(
+                "fast-path epoch transition record",
+            ));
+        }
+
+        // g. Re-read the activated validator/policy rows this step installed
+        //    and recompute `activation_digest` over them.
+        let next_context: PublicationContext = PublicationContext::new(
+            manifest_context.chain_id().clone(),
+            manifest_context.protocol_version(),
+            incoming_epoch,
+        )?;
+        let activation_set: epoch_transition::FastPathEpochActivationSet =
+            epoch_transition::FastPathEpochActivationSet {
+                next_context: next_context.clone(),
+                validator_set_record: read_row(
+                    &local_instance_state::fastpath_validator_set_key(&next_context)?,
+                    "activated fast-path validator set",
+                )?,
+                execution_policy: read_row(
+                    &local_instance_state::execution_policy_key_for_profile(&next_context, 4)?,
+                    "activated execution policy",
+                )?,
+                paid_fee_policy: read_row(
+                    &local_instance_state::paid_fee_policy_key(&next_context)?,
+                    "activated paid fee policy",
+                )?,
+                publication_policy: read_row(
+                    &publication::publication_policy_key_for_profile(&next_context, 4)?,
+                    "activated publication policy",
+                )?,
+            };
+        let activated_validator_set_record: FastPathValidatorSetRecord =
+            decode_fastpath_validator_set_record(&activation_set.validator_set_record).map_err(
+                |_| GenesisError::TamperedInstalledRecord("activated fast-path validator set"),
+            )?;
+        if activated_validator_set_record.context != next_context {
+            return Err(GenesisError::TamperedInstalledRecord(
+                "activated fast-path validator set",
+            ));
+        }
+        let activated_execution_policy: LocalExecutionPolicy =
+            LocalExecutionPolicy::decode(&activation_set.execution_policy)
+                .map_err(|_| GenesisError::TamperedInstalledRecord("activated execution policy"))?;
+        if activated_execution_policy.context() != &next_context
+            || activated_execution_policy.profile() != 4
+        {
+            return Err(GenesisError::TamperedInstalledRecord(
+                "activated execution policy",
+            ));
+        }
+        let activated_fee_policy: PaidFeePolicy =
+            decode_paid_fee_policy(&activation_set.paid_fee_policy)
+                .map_err(|_| GenesisError::TamperedInstalledRecord("activated paid fee policy"))?;
+        let activated_base_policy_digest: Digest32 = activated_execution_policy
+            .digest(resolver)
+            .map_err(|_| GenesisError::TamperedInstalledRecord("activated execution policy"))?;
+        if activated_fee_policy.context != next_context
+            || activated_fee_policy.base_policy_digest != activated_base_policy_digest
+        {
+            return Err(GenesisError::TamperedInstalledRecord(
+                "activated paid fee policy",
+            ));
+        }
+        let activated_publication_policy: LocalPublicationPolicy =
+            LocalPublicationPolicy::decode(&activation_set.publication_policy).map_err(|_| {
+                GenesisError::TamperedInstalledRecord("activated publication policy")
+            })?;
+        if activated_publication_policy.context() != &next_context
+            || activated_publication_policy.profile() != 4
+        {
+            return Err(GenesisError::TamperedInstalledRecord(
+                "activated publication policy",
+            ));
+        }
+        let recomputed_activation_digest: Digest32 = resolver
+            .hash_for_purpose(
+                incoming_epoch,
+                HashPurpose::NodeEvent,
+                &epoch_transition::encode_fastpath_epoch_activation_set(&activation_set)?,
+            )
+            .map_err(|_| GenesisError::TamperedInstalledRecord("fast-path epoch activation set"))?;
+        if recomputed_activation_digest != transition_record.activation_digest
+            || recomputed_activation_digest != certificate.activation_digest
+        {
+            return Err(GenesisError::TamperedInstalledRecord(
+                "fast-path epoch activation set",
+            ));
+        }
+
+        previous_validator_set_digest = transition_record.next_validator_set_digest;
+        step += 1;
+    }
+
+    // 4. Bind the live singleton to the last verified step.
+    if installed_record.current_validator_set_digest != previous_validator_set_digest {
+        return Err(GenesisError::TamperedInstalledRecord(
+            "fast-path epoch record",
+        ));
+    }
+    let live_context: PublicationContext = PublicationContext::new(
+        manifest_context.chain_id().clone(),
+        manifest_context.protocol_version(),
+        current_epoch,
+    )?;
+    let live_validator_set_bytes: Vec<u8> = read_row(
+        &local_instance_state::fastpath_validator_set_key(&live_context)?,
+        "fast-path validator set",
+    )?;
+    let live_validator_set_record: FastPathValidatorSetRecord =
+        decode_fastpath_validator_set_record(&live_validator_set_bytes)
+            .map_err(|_| GenesisError::TamperedInstalledRecord("fast-path validator set"))?;
+    if live_validator_set_record.context != live_context {
+        return Err(GenesisError::TamperedInstalledRecord(
+            "fast-path validator set",
+        ));
+    }
+    let live_info: Vec<ValidatorInfo> = live_validator_set_record
+        .validators
+        .iter()
+        .map(|validator| ValidatorInfo {
+            id: validator.id,
+            voting_power: validator.voting_power,
+            signature_scheme: validator.signature_scheme,
+            public_key: validator.public_key.clone(),
+        })
+        .collect();
+    let live_validator_set: ValidatorSet = ValidatorSet::new(current_epoch, live_info)
+        .map_err(|_| GenesisError::TamperedInstalledRecord("fast-path validator set"))?;
+    let live_digest: Digest32 = live_validator_set
+        .digest(resolver)
+        .map_err(|_| GenesisError::TamperedInstalledRecord("fast-path validator set"))?;
+    if live_digest != previous_validator_set_digest {
+        return Err(GenesisError::TamperedInstalledRecord(
+            "fast-path validator set",
+        ));
+    }
+
+    Ok(())
 }

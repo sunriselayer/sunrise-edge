@@ -630,6 +630,270 @@ fn a_fastpath_object_lock_blocks_local_execution_write_from_a_different_sender()
     );
 }
 
+/// An explicit later epoch, distinct from the fixture's own fixed
+/// `protocol()` (`epoch 0`) -- needed to exercise DR-0132 §3.D's stale
+/// (strictly older epoch) object-lock reclamation at local execution's
+/// direct `Write` path, which the fixed-epoch fixture above cannot reach
+/// (there is no epoch below `0`).
+fn next_epoch() -> Epoch {
+    Epoch::new(protocol().epoch().get() + 1)
+}
+fn protocol_at(epoch: Epoch) -> PublicationContext {
+    PublicationContext::new(
+        resolver().chain_id().clone(),
+        resolver().protocol_version(),
+        epoch,
+    )
+    .unwrap()
+}
+fn policy_at(epoch: Epoch) -> LocalExecutionPolicy {
+    LocalExecutionPolicy::new(protocol_at(epoch))
+}
+/// Rewrites the committed `FastPathEpochRecord` to `next_epoch`, simulating
+/// (without a real DR-0132 transition, which this lightweight fixture never
+/// runs) a node that has already advanced past the fixture's own genesis
+/// epoch -- exactly the state `mutation_fence::fence_current_epoch` and
+/// `fence_object_lock` observe after a real `activate`.
+fn advance_fastpath_epoch<S: StructuredDurableDomainStateStore>(store: &S, next_epoch: Epoch) {
+    set_state(
+        store,
+        local_instance_state::fastpath_epoch_record_key(protocol().chain_id()).unwrap(),
+        StateMutation::Put(
+            local_instance_state::encode_fastpath_epoch_record(
+                &local_instance_state::FastPathEpochRecord {
+                    current_epoch: next_epoch,
+                    current_validator_set_digest: resolver()
+                        .hash_for_purpose(
+                            next_epoch,
+                            HashPurpose::NodeEvent,
+                            b"local-execution-tests-fastpath-epoch-placeholder",
+                        )
+                        .unwrap(),
+                    previous_epoch: Some(protocol().epoch()),
+                    activated_at_checkpoint: 0,
+                },
+            )
+            .unwrap(),
+        ),
+    );
+}
+/// Identical to [`sign`], but signs against an explicitly given
+/// `context`/`policy` instead of the fixture's fixed `protocol()`/`policy()`
+/// -- needed to frame a call at a later epoch than the fixture's own
+/// genesis-like installation epoch. Always `LocalExecutionMode::Call`: this
+/// helper is never used to instantiate.
+fn sign_at(
+    context: &PublicationContext,
+    policy: &LocalExecutionPolicy,
+    record: &InstanceRecord,
+    nonce: u64,
+    request: u8,
+    name: &str,
+    access: Vec<AccessEntry>,
+) -> Vec<u8> {
+    let call: execution::call::CallIntent = execution::call::CallIntent {
+        context: context.clone(),
+        request_id: [request; 32],
+        sender: sender(),
+        nonce,
+        code: record.code.clone(),
+        instance: instance_target(&resolver(), record).unwrap(),
+        entrypoint: name.into(),
+        type_arguments: vec![],
+        access: abi::AccessManifest { entries: access },
+        arguments: encode_call_value(&ValueLayout::Tuple(vec![]), &CallValue::Tuple(vec![]))
+            .unwrap(),
+        gas_limit: 10000,
+    };
+    let intent: LocalExecutionIntent = LocalExecutionIntent {
+        authorizations: Vec::new(),
+        mode: LocalExecutionMode::Call,
+        policy_digest: policy.digest(&resolver()).unwrap(),
+        call,
+    };
+    let frame: Vec<u8> = local_execution_signing_frame(context, &intent).unwrap();
+    encode_signed_local_execution(&SignedLocalExecutionIntent {
+        intent,
+        signature: key().sign(&frame).into(),
+    })
+    .unwrap()
+}
+/// Identical to [`run`], but admits against an explicitly given `policy`
+/// instead of the fixture's fixed `policy()`.
+fn run_at<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    policy: &LocalExecutionPolicy,
+    bytes: &[u8],
+    engine: &Engine,
+) -> AdmissionResult<NodeOutput> {
+    handle_local_execution(
+        store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        policy,
+        engine,
+        bytes,
+        10,
+    )
+}
+/// Installs a `FastPathLockRecord` for `object`, stamped `locked_epoch`,
+/// exactly like the two tests below need (one stale, one current-at-`e+1`).
+fn install_lock<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    object: &Object,
+    locked_epoch: Epoch,
+    request_id: [u8; 32],
+) -> Vec<u8> {
+    let lock_key: Vec<u8> =
+        local_instance_state::fastpath_lock_key(protocol().chain_id(), object.id).unwrap();
+    let lock: local_instance_state::FastPathLockRecord = local_instance_state::FastPathLockRecord {
+        request_id,
+        object: ObjectRef {
+            id: object.id,
+            version: object.version,
+            digest: resolver()
+                .hash_for_purpose(
+                    protocol().epoch(),
+                    HashPurpose::Object,
+                    &objects::encode_object(object).unwrap(),
+                )
+                .unwrap(),
+        },
+        locked_epoch,
+    };
+    set_state(
+        store,
+        lock_key.clone(),
+        StateMutation::Put(local_instance_state::encode_fastpath_lock_record(&lock).unwrap()),
+    );
+    lock_key
+}
+
+/// DR-0132 §3.D: a fast-path object lock stamped a strictly older epoch than
+/// the fenced current epoch is stale -- the transition that would have let
+/// its owning certificate reach `apply` again can never happen (DR-0132's
+/// fenced-epoch proof) -- so local execution's direct `Write` path reclaims
+/// it: the write proceeds and the stale lock is deleted in the same commit,
+/// instead of the request failing closed the way the negative control above
+/// (a *current*-epoch lock) still does.
+#[test]
+fn a_stale_fastpath_object_lock_is_reclaimed_by_local_execution_write_at_the_next_epoch() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let record: InstanceRecord = fixture(&store);
+    let engine: Engine = Engine::new(Behavior::Create);
+    let init: Vec<u8> = sign(&record, 1, 2, "init", vec![]);
+    let created: Object = object(&run(&store, &init, &engine).unwrap());
+
+    // A lock stamped the outgoing epoch -- exactly what a `fast_path::prepare`
+    // from before the transition would have left behind, owned by some other,
+    // now-irrelevant request.
+    let lock_key: Vec<u8> = install_lock(&store, &created, protocol().epoch(), [0x55; 32]);
+
+    let next_epoch: Epoch = next_epoch();
+    let next_context: PublicationContext = protocol_at(next_epoch);
+    let next_policy: LocalExecutionPolicy = policy_at(next_epoch);
+    advance_fastpath_epoch(&store, next_epoch);
+    set_state(
+        &store,
+        execution_policy_key(&next_context).unwrap(),
+        StateMutation::Put(next_policy.encode().unwrap()),
+    );
+
+    // The nonce domain restarts at the new epoch (DR-0132 consequence): the
+    // sender's first nonce at `next_epoch` is `0`, independent of its
+    // epoch-0 sequence above.
+    let write: Vec<u8> = sign_at(
+        &next_context,
+        &next_policy,
+        &record,
+        0,
+        3,
+        "write",
+        vec![entry(&created, AccessMode::Write)],
+    );
+    run_at(&store, &next_policy, &write, &Engine::new(Behavior::Write)).unwrap();
+
+    let observed: VersionedStateValue = store
+        .get_versioned_durable(&context(), domain(), &lock_key)
+        .unwrap();
+    assert!(
+        observed.value().is_none(),
+        "the stale lock must be deleted by the write, not merely bypassed"
+    );
+    assert_eq!(
+        store
+            .get_object_head(&context(), domain(), created.id)
+            .unwrap()
+            .object_version()
+            .unwrap()
+            .get(),
+        2,
+        "the write itself must still take effect"
+    );
+}
+
+/// Negative control adjacent to the test above: a lock stamped the *current*
+/// epoch (`next_epoch`, not the outgoing one) still blocks local execution's
+/// direct `Write` path, exactly as
+/// `a_fastpath_object_lock_blocks_local_execution_write_from_a_different_sender`
+/// proves at the fixture's own genesis epoch -- proving reclamation is
+/// strictly `locked_epoch < current_epoch`, never merely "locked_epoch !=
+/// this request's own epoch".
+#[test]
+fn a_current_epoch_lock_still_blocks_local_execution_write_at_the_next_epoch() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let record: InstanceRecord = fixture(&store);
+    let engine: Engine = Engine::new(Behavior::Create);
+    let init: Vec<u8> = sign(&record, 1, 2, "init", vec![]);
+    let created: Object = object(&run(&store, &init, &engine).unwrap());
+
+    let next_epoch: Epoch = next_epoch();
+    let next_context: PublicationContext = protocol_at(next_epoch);
+    let next_policy: LocalExecutionPolicy = policy_at(next_epoch);
+    advance_fastpath_epoch(&store, next_epoch);
+    set_state(
+        &store,
+        execution_policy_key(&next_context).unwrap(),
+        StateMutation::Put(next_policy.encode().unwrap()),
+    );
+
+    // A lock stamped `next_epoch` itself -- the request's own current
+    // epoch, not a stale one.
+    install_lock(&store, &created, next_epoch, [0x66; 32]);
+
+    let write: Vec<u8> = sign_at(
+        &next_context,
+        &next_policy,
+        &record,
+        0,
+        3,
+        "write",
+        vec![entry(&created, AccessMode::Write)],
+    );
+    let result = run_at(&store, &next_policy, &write, &Engine::new(Behavior::Write));
+    assert!(matches!(
+        result,
+        Err(LocalExecutionAdmissionError::Node(
+            NodeCoreError::PersistenceInvariant("object locked by a pending fast-path certificate")
+        ))
+    ));
+    assert_eq!(
+        store
+            .get_object_head(&context(), domain(), created.id)
+            .unwrap()
+            .object_version()
+            .unwrap()
+            .get(),
+        1,
+        "the object must be untouched"
+    );
+}
+
 /// DR-0131 criterion 7: the local-execution-intent event family rejects an
 /// externally supplied request id inside the reserved fast-path synthetic
 /// namespace, through the one shared validation boundary

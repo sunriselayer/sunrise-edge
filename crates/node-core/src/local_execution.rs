@@ -7,7 +7,7 @@ use execution::publication::{
 #[cfg(test)]
 use local_instance_state::execution_policy_key;
 use local_instance_state::{
-    execution_policy_key_for_profile, instance_record_key, object_authority_key,
+    execution_policy_key_for_profile, fastpath_lock_key, instance_record_key, object_authority_key,
 };
 use publication::{
     PublicationAdmissionError, VerifiedDurablePublication, load_verified_publication,
@@ -411,12 +411,16 @@ pub fn handle_local_execution<
     let mut head_reads: Vec<DurableObjectHeadRead> = Vec::new();
     let mut total_bytes: usize = 0;
     let mut object_resolvers: BTreeMap<ObjectId, &HashSuiteResolver> = BTreeMap::new();
+    // DR-0132 §3.D: a stale (strictly older epoch) lock observed here is
+    // reclaimed by emitting a `Delete` for it below, alongside this
+    // request's own effect mutations.
+    let mut reclaimed_lock_keys: Vec<Vec<u8>> = Vec::new();
     for (entry, param) in call.access.entries.iter().zip(binding.objects()) {
         // DR-0131: a `Write`/`Consume` input already exclusively locked by a
         // pending fast-path certificate blocks this direct mutation branch,
         // closing the gap DR-0130's own evidence did not cover.
         if entry.mode != AccessMode::Read {
-            mutation_fence::fence_object_lock(
+            let lock_state = mutation_fence::fence_object_lock(
                 store,
                 context,
                 domain,
@@ -427,6 +431,12 @@ pub fn handle_local_execution<
                 mutation_fence::LockMode::Fresh,
                 &mut reads,
             )?;
+            if lock_state == mutation_fence::ObjectLockState::Reclaimable {
+                reclaimed_lock_keys.push(fastpath_lock_key(
+                    call.context.chain_id(),
+                    entry.object_ref.id,
+                )?);
+            }
         }
         let snapshot: object_snapshots::ObjectSnapshot = object_snapshots::load_object_snapshot(
             store,
@@ -536,7 +546,10 @@ pub fn handle_local_execution<
             "trapped creation authority",
         ));
     }
-    let mut mutations: Vec<StateMutationEntry> = Vec::new();
+    let mut mutations: Vec<StateMutationEntry> = reclaimed_lock_keys
+        .into_iter()
+        .map(|key| StateMutationEntry::new(key, StateMutation::Delete))
+        .collect::<Result<_, RuntimeError>>()?;
     let object_mutations: Vec<DurableObjectMutationEntry> = effects::translate(
         store,
         context,

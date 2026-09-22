@@ -221,7 +221,7 @@ impl ConsensusVerifier for FastPathEd25519Verifier {
 /// digest matches `epoch_record.current_validator_set_digest` -- strictly
 /// additive to [`mutation_fence::fence_current_epoch`], which the caller has
 /// already run to obtain `epoch_record`.
-fn load_validator_set<S: StructuredDurableDomainStateStore>(
+pub(crate) fn load_validator_set<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -433,43 +433,52 @@ where
         store.get_versioned_durable(context, domain, &prepared_key)?;
     if let Some(bytes) = observed_prepared.value() {
         let existing: FastPathPreparedRecord = records::decode_fastpath_prepared_record(bytes)?;
-        if existing.signed_intent_digest != event_digest {
-            return invalid("conflicting fast-path prepared record");
+        // DR-0132 C5: a prepared record from a strictly older epoch than the
+        // committed current epoch is stale, not a live replay candidate --
+        // its `FastVote`/`FastCertificate` context can never be certified
+        // again (§6's "epoch-`e` certificate at `apply` after activation"
+        // row). Treat it as absent here and let the ordinary fresh-prepare
+        // `Put` below supersede it under the CAS revision already captured
+        // in `observed_prepared`, exactly like a stale object lock.
+        if existing.context.epoch() >= epoch_record.current_epoch {
+            if existing.signed_intent_digest != event_digest {
+                return invalid("conflicting fast-path prepared record");
+            }
+            if existing.context != intent_context
+                || existing.request_id != original_request_id
+                || existing.pending_nonce != pending_nonce
+            {
+                return invalid("fast-path prepared replay metadata mismatch");
+            }
+            let vote: FastVote = consensus::decode_fast_vote(&existing.vote)?;
+            if vote.chain_id != chain
+                || vote.protocol_version != intent_context.protocol_version()
+                || vote.epoch != intent_context.epoch()
+                || vote.tx_hash != event_digest
+                || vote.execution_effects_hash != existing.commitment
+                || vote.validator != signer.validator_id()
+                || vote.signature_scheme != signer.signature_scheme()
+            {
+                return invalid("fast-path prepared replay vote mismatch");
+            }
+            let validator_set: ValidatorSet = load_validator_set(
+                store,
+                context,
+                domain,
+                resolver,
+                &intent_context,
+                &epoch_record,
+                &mut fence_reads,
+            )?;
+            let certifier: consensus::FastPathCertifier = consensus::FastPathCertifier::new(
+                chain.clone(),
+                intent_context.protocol_version(),
+                intent_context.epoch(),
+                validator_set,
+            )?;
+            certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+            return Ok(vote);
         }
-        if existing.context != intent_context
-            || existing.request_id != original_request_id
-            || existing.pending_nonce != pending_nonce
-        {
-            return invalid("fast-path prepared replay metadata mismatch");
-        }
-        let vote: FastVote = consensus::decode_fast_vote(&existing.vote)?;
-        if vote.chain_id != chain
-            || vote.protocol_version != intent_context.protocol_version()
-            || vote.epoch != intent_context.epoch()
-            || vote.tx_hash != event_digest
-            || vote.execution_effects_hash != existing.commitment
-            || vote.validator != signer.validator_id()
-            || vote.signature_scheme != signer.signature_scheme()
-        {
-            return invalid("fast-path prepared replay vote mismatch");
-        }
-        let validator_set: ValidatorSet = load_validator_set(
-            store,
-            context,
-            domain,
-            resolver,
-            &intent_context,
-            &epoch_record,
-            &mut fence_reads,
-        )?;
-        let certifier: consensus::FastPathCertifier = consensus::FastPathCertifier::new(
-            chain.clone(),
-            intent_context.protocol_version(),
-            intent_context.epoch(),
-            validator_set,
-        )?;
-        certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
-        return Ok(vote);
     }
 
     // A request that already finalized through the ordinary paid path must
