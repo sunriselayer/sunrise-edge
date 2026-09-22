@@ -3,7 +3,7 @@
 ## Status
 
 Accepted as the Phase 2 architecture, 2026-09-22. Slice 1 is fully specified
-and implementation-ready but **not implemented**. Slices 2-4's safety
+and implemented. Slices 2-4's safety
 contract — in particular the key transition safety proof below — is fixed
 by this DR; their detailed wire formats and APIs are pending their own
 decision records before implementation. **Slice 1 alone does not implement
@@ -51,7 +51,7 @@ must never derive different active authority sets from local configuration.
 
 ### Phase 2 slice roadmap
 
-* **Slice 1 (this DR, fully designed, not implemented).** One general
+* **Slice 1 (this DR, implemented).** One general
   mutation authorization/fencing layer: a committed epoch record, an
   epoch-stamped object-lock record, a two-tier fencing model (every
   mutation path fences the committed epoch record; validator-authorized
