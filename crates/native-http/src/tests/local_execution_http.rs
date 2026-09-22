@@ -300,14 +300,38 @@ fn paid_policy() -> PaidFeePolicy {
 }
 
 fn paid_app(enabled: bool, installed_policy_bytes: Option<Vec<u8>>) -> Router {
+    paid_app_at_committed_epoch(enabled, installed_policy_bytes, Epoch::new(7))
+}
+
+fn paid_app_at_committed_epoch(
+    enabled: bool,
+    installed_policy_bytes: Option<Vec<u8>>,
+    committed_epoch: Epoch,
+) -> Router {
     let domain: AtomicityDomainId = AtomicityDomainId::new([0x89; 32]).unwrap();
     let store = Arc::new(MemoryDurableStateStore::new(
         WriterFenceGeneration::new(3).unwrap(),
     ));
     let policy: PaidFeePolicy = paid_policy();
+    let operation: DurableOperationContext = DurableOperationContext::new(
+        WriterFenceGeneration::new(3).unwrap(),
+        StorageDeadline::new(u64::MAX).unwrap(),
+        StorageCorrelationId::new([0x35; 16]).unwrap(),
+    );
+    install_fastpath_epoch_record_for_epoch(
+        store.as_ref(),
+        &operation,
+        domain,
+        committed_epoch,
+        (committed_epoch != Epoch::new(7)).then_some(Epoch::new(7)),
+    );
     if let Some(bytes) = installed_policy_bytes {
+        let installed_context: PublicationContext =
+            execution::paid_execution::decode_paid_fee_policy(&bytes)
+                .map(|installed_policy: PaidFeePolicy| installed_policy.context)
+                .unwrap_or_else(|_| policy.context.clone());
         let key: Vec<u8> =
-            node_core::local_instance_state::paid_fee_policy_key(&policy.context).unwrap();
+            node_core::local_instance_state::paid_fee_policy_key(&installed_context).unwrap();
         let operation: DurableOperationContext = DurableOperationContext::new(
             WriterFenceGeneration::new(3).unwrap(),
             StorageDeadline::new(u64::MAX).unwrap(),
@@ -422,6 +446,54 @@ async fn paid_policy_route_is_explicit_and_returns_only_exact_installed_bytes() 
         .await
         .unwrap();
     assert_eq!(mismatched.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn paid_policy_route_follows_committed_epoch_without_static_fallback() {
+    let next_context: PublicationContext = PublicationContext::new(
+        config().chain_id().clone(),
+        config().protocol_version(),
+        Epoch::new(8),
+    )
+    .unwrap();
+    let next_base_policy: LocalExecutionPolicy =
+        LocalExecutionPolicy::generic_object_results(next_context.clone());
+    let next_policy: PaidFeePolicy = PaidFeePolicy {
+        context: next_context,
+        base_policy_digest: next_base_policy.digest(&resolver()).unwrap(),
+        ..paid_policy()
+    };
+    let next_bytes: Vec<u8> = encode_paid_fee_policy(&next_policy).unwrap();
+    let current: Response =
+        paid_app_at_committed_epoch(true, Some(next_bytes.clone()), Epoch::new(8))
+            .oneshot(
+                Request::builder()
+                    .uri(paid_execution::PAID_FEE_POLICY_PATH)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    assert_eq!(current.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(current.into_body(), next_bytes.len())
+            .await
+            .unwrap(),
+        next_bytes
+    );
+
+    let stale_only: Vec<u8> = encode_paid_fee_policy(&paid_policy()).unwrap();
+    let missing_current: Response =
+        paid_app_at_committed_epoch(true, Some(stale_only), Epoch::new(8))
+            .oneshot(
+                Request::builder()
+                    .uri(paid_execution::PAID_FEE_POLICY_PATH)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    assert_eq!(missing_current.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[test]

@@ -2508,6 +2508,94 @@ fn a_stale_object_lock_is_deleted_by_a_direct_paid_commit_at_the_next_epoch() {
     );
 }
 
+/// C7 regression at the real certified activation boundary: direct paid
+/// execution accepts only the freshly installed e+1 context/policies. An
+/// intent still signed for e is rejected, and deleting either e+1 policy row
+/// never falls back to the intact e row.
+#[test]
+fn direct_paid_after_real_transition_rejects_stale_epoch_and_missing_current_policies() {
+    let stale_store: MemoryDurableStateStore = memory_store();
+    let (stale_fixture, next_context, next_fee_policy) =
+        install_lightweight_and_activate_one_transition(&stale_store);
+    let stale_bytes: Vec<u8> =
+        sign_transfer(&stale_fixture, &pe_protocol(), &stale_fixture.policy, 92, 0);
+    let stale_engine: CountingEngine = CountingEngine::new();
+    let stale_result = crate::paid_execution::handle_paid_execution(
+        &stale_store,
+        &runtime::MemoryBlobStore::default(),
+        &pe_context(),
+        pe_domain(),
+        &pe_resolver(),
+        &[],
+        &next_context,
+        &LocalExecutionPolicy::generic_object_results(next_context.clone()),
+        &next_fee_policy,
+        &stale_engine,
+        &stale_bytes,
+        10,
+    );
+    assert!(matches!(
+        stale_result,
+        Err(crate::paid_execution::PaidExecutionAdmissionError::Paid(
+            PaidExecutionError::ContextMismatch
+        ))
+    ));
+    assert_eq!(stale_engine.calls.get(), 0);
+
+    for missing_key in [
+        local_instance_state::execution_policy_key_for_profile(&next_context, 4).unwrap(),
+        local_instance_state::paid_fee_policy_key(&next_context).unwrap(),
+    ] {
+        let store: MemoryDurableStateStore = memory_store();
+        let (fixture, current_context, current_fee_policy) =
+            install_lightweight_and_activate_one_transition(&store);
+        let observed: VersionedStateValue = store
+            .get_versioned_durable(&pe_context(), pe_domain(), &missing_key)
+            .unwrap();
+        assert!(observed.value().is_some());
+        let deletion: AtomicStateTransaction = AtomicStateTransaction::new(
+            pe_domain(),
+            AtomicStateReadSet::new(vec![
+                StateReadAssertion::new(missing_key.clone(), observed.revision()).unwrap(),
+            ])
+            .unwrap(),
+            AtomicStateMutationSet::new(vec![
+                StateMutationEntry::new(missing_key, StateMutation::Delete).unwrap(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.commit_durable(&pe_context(), deletion),
+            DurableCommitOutcome::Committed
+        );
+        let fresh_bytes: Vec<u8> =
+            sign_transfer(&fixture, &current_context, &current_fee_policy, 93, 0);
+        let engine: CountingEngine = CountingEngine::new();
+        let result = crate::paid_execution::handle_paid_execution(
+            &store,
+            &runtime::MemoryBlobStore::default(),
+            &pe_context(),
+            pe_domain(),
+            &pe_resolver(),
+            &[],
+            &current_context,
+            &LocalExecutionPolicy::generic_object_results(current_context.clone()),
+            &current_fee_policy,
+            &engine,
+            &fresh_bytes,
+            10,
+        );
+        assert!(matches!(
+            result,
+            Err(crate::paid_execution::PaidExecutionAdmissionError::Invalid(
+                "execution policy absent or different" | "paid fee policy absent or different"
+            ))
+        ));
+        assert_eq!(engine.calls.get(), 0);
+    }
+}
+
 /// DR-0132 §3.D, fast-path prepare: a lock stamped a strictly older epoch is
 /// reclaimed -- `prepare` overwrites it with its own fresh, current-epoch
 /// lock under the same CAS revision, instead of blocking.

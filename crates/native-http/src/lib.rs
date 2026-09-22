@@ -26,13 +26,13 @@ use node_core::{
     FeeEffectComposer, MAX_NODE_OUTPUT_ITEMS, MAX_NODE_PAYLOAD_BYTES, NodeConfig, NodeCoreError,
     NodeEvent, NodeEventKind, NodeOutboxBatch, NodeOutboxDelivery, OutboxClaim, OutboxLeaseId,
     PreinstalledFeeComposition, PreinstalledModuleCatalog, RequestId, TransactionAuthError,
-    TransactionalNodeStateMachine, acknowledge_outbox_message,
+    TransactionalNodeStateMachine, TrustedTransactionContext, acknowledge_outbox_message,
     acknowledge_outbox_message_in_domain, authenticate_submit_transaction_event,
     claim_next_outbox_message, claim_next_outbox_message_in_domain,
     handle_authenticated_resolved_durable_submit_transaction,
     handle_authenticated_resolved_durable_submit_transaction_with_preinstalled_wasm_execution,
-    handle_idempotent_event, handle_resolved_idempotent_event, query_object, query_request_receipt,
-    query_sender_next_nonce,
+    handle_idempotent_event, handle_resolved_idempotent_event, query_committed_epoch_state,
+    query_object, query_request_receipt, query_sender_next_nonce,
 };
 use objects::{Address, ObjectId};
 use protocol_config::{
@@ -979,8 +979,10 @@ where
 /// uses the read-only execution path, while the preinstalled router additionally
 /// executes its composition-trusted catalog. For `SubmitTransaction`,
 /// [`authenticate_submit_transaction_event`] runs from `protocol_config` and
-/// the validated ingress context before any access-plan derivation, identity
-/// allocation, clock read, storage I/O, transition, outbox claim, or send.
+/// the committed current epoch before any access-plan derivation, transition,
+/// outbox claim, or send. Resolving that epoch necessarily allocates the
+/// request's durable identity/deadline and performs one trusted storage read;
+/// unsupported event families still reject before those side effects.
 /// `protocol_config.protocol_version` must equal
 /// `config.protocol_version()` and `protocol_config` must carry a
 /// domain-placement manifest, checked once here rather than per request, so
@@ -2431,17 +2433,23 @@ fn resolve_query_domain(
         .map_err(QueryInvocationError::Node)
 }
 
-fn invoke_query_context(
+fn invoke_query_context<S, B, T, C, I>(
+    components: &StructuredDurableNativeComponents<S, B, T, C, I>,
+    authority: &StructuredDurableRequestAuthority,
     config: &NodeConfig,
     protocol_config: &ProtocolConfig,
-) -> Result<Vec<u8>, QueryInvocationError> {
-    let placement = protocol_config
-        .domain_placement
-        .as_ref()
-        .ok_or(ProtocolConfigError::MissingDomainPlacement)
-        .map_err(NodeCoreError::from)
-        .map_err(QueryInvocationError::Node)?;
-    let domain = resolve_query_domain(placement, config)?;
+) -> Result<Vec<u8>, QueryInvocationError>
+where
+    S: StructuredDurableDomainStateStore,
+    C: Clock,
+    I: IndexedOutboxIdentitySource,
+{
+    let (domain, _context, epoch_record) = prepare_authoritative_epoch_storage_context(
+        components,
+        protocol_config,
+        authority,
+        config,
+    )?;
     let profile = resolve_transaction_auth_profile(protocol_config)
         .map_err(NodeCoreError::from)
         .map_err(QueryInvocationError::Node)?;
@@ -2452,7 +2460,7 @@ fn invoke_query_context(
     let result = HttpContextQueryResult::new(
         config.chain_id().clone(),
         config.protocol_version(),
-        config.epoch(),
+        epoch_record.current_epoch,
         protocol_config.hash_suite_id,
         profile.profile_id(),
         profile.signature_scheme_id().as_u16(),
@@ -2464,6 +2472,81 @@ fn invoke_query_context(
     result
         .encode()
         .map_err(|_| QueryInvocationError::ResultEncoding)
+}
+
+/// Allocates one durable read context and resolves the current epoch from the
+/// committed singleton epoch record. The placement's single trusted domain is
+/// usable before the epoch is known; its activation rule is revalidated at the
+/// committed epoch before the value is returned.
+fn prepare_authoritative_epoch_storage_context<S, B, T, C, I>(
+    components: &StructuredDurableNativeComponents<S, B, T, C, I>,
+    protocol_config: &ProtocolConfig,
+    authority: &StructuredDurableRequestAuthority,
+    config: &NodeConfig,
+) -> Result<
+    (
+        AtomicityDomainId,
+        DurableOperationContext,
+        node_core::local_instance_state::FastPathEpochRecord,
+    ),
+    QueryInvocationError,
+>
+where
+    S: StructuredDurableDomainStateStore,
+    C: Clock,
+    I: IndexedOutboxIdentitySource,
+{
+    let placement: &DomainPlacementManifest = protocol_config
+        .domain_placement
+        .as_ref()
+        .ok_or(ProtocolConfigError::MissingDomainPlacement)
+        .map_err(NodeCoreError::from)
+        .map_err(QueryInvocationError::Node)?;
+    let domain: AtomicityDomainId = placement.domain();
+    let identity: IndexedOutboxAttemptIdentity = components
+        .identities
+        .next_attempt_identity()
+        .map_err(|error: IndexedOutboxIdentitySourceError| match error {
+            IndexedOutboxIdentitySourceError::Unavailable => {
+                QueryInvocationError::IdentityUnavailable
+            }
+            IndexedOutboxIdentitySourceError::Exhausted => QueryInvocationError::IdentityExhausted,
+        })?;
+    let now_unix_millis: u64 = components
+        .clock
+        .now_unix_millis()
+        .map_err(|error: RuntimeError| QueryInvocationError::Node(NodeCoreError::Runtime(error)))?;
+    let deadline_unix_millis: u64 = now_unix_millis
+        .checked_add(authority.operation_timeout_millis.get())
+        .ok_or(QueryInvocationError::Node(
+            NodeCoreError::PersistenceInvariant("storage deadline arithmetic overflowed"),
+        ))?;
+    let deadline: StorageDeadline =
+        StorageDeadline::new(deadline_unix_millis).ok_or(QueryInvocationError::Node(
+            NodeCoreError::PersistenceInvariant("storage deadline arithmetic overflowed"),
+        ))?;
+    let context: DurableOperationContext =
+        DurableOperationContext::new(authority.writer_fence, deadline, identity.correlation_id);
+    let epoch_record: node_core::local_instance_state::FastPathEpochRecord =
+        query_committed_epoch_state(
+            components.store.as_ref(),
+            &context,
+            domain,
+            config.chain_id(),
+        )
+        .map_err(QueryInvocationError::Node)?;
+    let resolved_domain: AtomicityDomainId = placement
+        .resolve_domain(epoch_record.current_epoch, 1)
+        .map_err(NodeCoreError::from)
+        .map_err(QueryInvocationError::Node)?;
+    if resolved_domain != domain {
+        return Err(QueryInvocationError::Node(
+            NodeCoreError::PersistenceInvariant(
+                "committed epoch resolved a different native HTTP domain",
+            ),
+        ));
+    }
+    Ok((domain, context, epoch_record))
 }
 
 /// Allocates the trusted storage authority shared by queries and publication
@@ -2614,12 +2697,16 @@ where
     if components.is_cancelled() {
         return Err(QueryInvocationError::CancelledBeforeStorage);
     }
-    let (domain, context) =
-        prepare_storage_context(components, protocol_config, authority, config)?;
+    let (domain, context, epoch_record) = prepare_authoritative_epoch_storage_context(
+        components,
+        protocol_config,
+        authority,
+        config,
+    )?;
     if components.is_cancelled() {
         return Err(QueryInvocationError::CancelledBeforeStorage);
     }
-    let epoch = config.epoch();
+    let epoch: protocol_types::Epoch = epoch_record.current_epoch;
     let next_nonce = query_sender_next_nonce(
         components.store.as_ref(),
         &context,
@@ -2649,7 +2736,12 @@ where
     let initial_cancelled = state.components.is_cancelled();
     let blocking_executor = state.blocking_executor.clone();
     query_structured_durable_common(initial_cancelled, blocking_executor, move || {
-        invoke_query_context(&state.config, &state.protocol_config)
+        invoke_query_context(
+            &state.components,
+            &state.authority,
+            &state.config,
+            &state.protocol_config,
+        )
     })
     .await
 }
@@ -2759,7 +2851,12 @@ where
     let initial_cancelled = state.components.is_cancelled();
     let blocking_executor = state.blocking_executor.clone();
     query_structured_durable_common(initial_cancelled, blocking_executor, move || {
-        invoke_query_context(&state.config, &state.protocol_config)
+        invoke_query_context(
+            &state.components,
+            &state.authority,
+            &state.config,
+            &state.protocol_config,
+        )
     })
     .await
 }
@@ -3085,38 +3182,67 @@ where
     }
     let event = NodeEvent::decode(body).map_err(InvocationError::Node)?;
     reject_unauthenticated_event_family(&event)?;
-    validate_native_event_context(&event, config).map_err(InvocationError::Node)?;
+    validate_native_event_chain_and_protocol(&event, config).map_err(InvocationError::Node)?;
     let request_id = event.request_id();
-    let submission = Box::new(
-        authenticate_submit_transaction_event(event, config, protocol_config)
-            .map_err(InvocationError::Node)?,
-    );
-    let identity = components
+    let identity: IndexedOutboxAttemptIdentity = components
         .identities
         .next_attempt_identity()
         .map_err(|error| InvocationError::Indexed(IndexedOutboxRecoveryError::Identity(error)))?;
-    let now_unix_millis = components
+    let now_unix_millis: u64 = components
         .clock
         .now_unix_millis()
         .map_err(|error| InvocationError::Indexed(IndexedOutboxRecoveryError::Runtime(error)))?;
-    let deadline_unix_millis = now_unix_millis
+    let deadline_unix_millis: u64 = now_unix_millis
         .checked_add(authority.operation_timeout_millis.get())
         .ok_or(InvocationError::Indexed(
             IndexedOutboxRecoveryError::TimeOverflow,
         ))?;
-    let lease_expires_at_unix_millis = now_unix_millis
+    let lease_expires_at_unix_millis: u64 = now_unix_millis
         .checked_add(authority.lease_duration_millis.get())
         .ok_or(InvocationError::Indexed(
             IndexedOutboxRecoveryError::TimeOverflow,
         ))?;
-    let deadline = StorageDeadline::new(deadline_unix_millis).ok_or(InvocationError::Indexed(
-        IndexedOutboxRecoveryError::TimeOverflow,
-    ))?;
-    let context =
+    let deadline: StorageDeadline = StorageDeadline::new(deadline_unix_millis).ok_or(
+        InvocationError::Indexed(IndexedOutboxRecoveryError::TimeOverflow),
+    )?;
+    let context: DurableOperationContext =
         DurableOperationContext::new(authority.writer_fence, deadline, identity.correlation_id);
     if components.is_cancelled() {
         return Err(InvocationError::CancelledBeforeStorage);
     }
+    let placement: &DomainPlacementManifest = protocol_config
+        .domain_placement
+        .as_ref()
+        .ok_or(ProtocolConfigError::MissingDomainPlacement)
+        .map_err(NodeCoreError::from)
+        .map_err(InvocationError::Node)?;
+    let epoch_domain: AtomicityDomainId = placement.domain();
+    let epoch_record: node_core::local_instance_state::FastPathEpochRecord =
+        query_committed_epoch_state(
+            components.store.as_ref(),
+            &context,
+            epoch_domain,
+            config.chain_id(),
+        )
+        .map_err(InvocationError::Node)?;
+    let resolved_epoch_domain: AtomicityDomainId = placement
+        .resolve_domain(epoch_record.current_epoch, 1)
+        .map_err(NodeCoreError::from)
+        .map_err(InvocationError::Node)?;
+    if resolved_epoch_domain != epoch_domain {
+        return Err(InvocationError::Node(NodeCoreError::PersistenceInvariant(
+            "committed epoch resolved a different native HTTP domain",
+        )));
+    }
+    let trusted_context: TrustedTransactionContext<'_> = TrustedTransactionContext::new(
+        config.chain_id().clone(),
+        epoch_record.current_epoch,
+        protocol_config,
+    );
+    let submission = Box::new(
+        authenticate_submit_transaction_event(event, &trusted_context)
+            .map_err(InvocationError::Node)?,
+    );
     let resolved = match execution {
         StructuredDurableAuthenticatedExecution::ReadOnly => {
             handle_authenticated_resolved_durable_submit_transaction(
@@ -3170,7 +3296,7 @@ where
         }
         let outbound = NodeEvent::decode(claim.canonical_payload())
             .map_err(|error| InvocationError::Indexed(IndexedOutboxRecoveryError::Node(error)))?;
-        validate_native_event_context(&outbound, config)
+        validate_native_event_against_trusted_context(&outbound, &trusted_context)
             .map_err(|error| InvocationError::Indexed(IndexedOutboxRecoveryError::Node(error)))?;
         let canonical_payload = outbound
             .encode()
@@ -3199,7 +3325,7 @@ where
         .map_err(|_| InvocationError::ResultEncoding)
 }
 
-fn validate_native_event_context(
+fn validate_native_event_chain_and_protocol(
     event: &NodeEvent,
     config: &NodeConfig,
 ) -> Result<(), NodeCoreError> {
@@ -3215,9 +3341,28 @@ fn validate_native_event_context(
             actual: event.protocol_version(),
         });
     }
-    if event.epoch() != config.epoch() {
+    Ok(())
+}
+
+fn validate_native_event_against_trusted_context(
+    event: &NodeEvent,
+    trusted_context: &TrustedTransactionContext<'_>,
+) -> Result<(), NodeCoreError> {
+    if event.chain_id() != trusted_context.chain_id() {
+        return Err(NodeCoreError::ChainMismatch {
+            expected: trusted_context.chain_id().clone(),
+            actual: event.chain_id().clone(),
+        });
+    }
+    if event.protocol_version() != trusted_context.protocol_version() {
+        return Err(NodeCoreError::ProtocolVersionMismatch {
+            expected: trusted_context.protocol_version(),
+            actual: event.protocol_version(),
+        });
+    }
+    if event.epoch() != trusted_context.epoch() {
         return Err(NodeCoreError::EpochMismatch {
-            expected: config.epoch(),
+            expected: trusted_context.epoch(),
             actual: event.epoch(),
         });
     }
