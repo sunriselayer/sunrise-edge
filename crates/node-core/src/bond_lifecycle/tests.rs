@@ -2335,12 +2335,12 @@ fn file_backed_sqlite_full_lifecycle_restart_and_fencing() {
         assert_eq!(stable, after_withdraw);
     }
 
-    // 6. Concurrent/conflicting transition: two writer handles open the same
-    //    generation-1 database simultaneously and race to submit two
-    //    different, individually valid transitions from the exact same
-    //    committed row (re-depositing after the withdrawal). Exactly one
-    //    commits; the other observes a conflict, and no partial effect from
-    //    the loser survives.
+    // 6. Competing transition: two writer handles open the same database and
+    //    submit different, individually valid transitions from the exact
+    //    same committed row (re-depositing after the withdrawal). Exactly
+    //    one commits; the later competing attempt observes the advanced row,
+    //    and no partial effect from the loser survives. This is stale-writer
+    //    competition, not a simultaneous-thread commit-collision test.
     {
         let store_a = SqliteDurableStore::open(&db_path, namespace.clone(), fence1).unwrap();
         let store_b = SqliteDurableStore::open(&db_path, namespace.clone(), fence1).unwrap();
@@ -2421,7 +2421,7 @@ fn file_backed_sqlite_full_lifecycle_restart_and_fencing() {
         assert_eq!(
             outcomes.iter().filter(|ok| **ok).count(),
             1,
-            "exactly one of the two racing writers must commit"
+            "exactly one of the two competing writers must commit"
         );
 
         let store_c = SqliteDurableStore::open(&db_path, namespace.clone(), fence1).unwrap();
