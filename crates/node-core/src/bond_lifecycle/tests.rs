@@ -2380,7 +2380,7 @@ fn file_backed_sqlite_full_lifecycle_restart_and_fencing() {
             )
             .unwrap();
             // The Withdraw leg already consumed nonce 0 for this sender at
-            // this epoch; both racing legs contend for nonce 1.
+            // this epoch; both competing legs are built from nonce 1.
             let leg = transfer_leg(
                 &fixture,
                 later_context.clone(),

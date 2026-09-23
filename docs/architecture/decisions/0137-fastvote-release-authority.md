@@ -57,9 +57,9 @@ consecutive nonces, both owner transitions, and one atomic commit) alongside
 Withdraw's real-WASM, real-storage end-to-end coverage including genesis
 restart chain-walk re-verification; a real file-backed SQLite test spans
 Deposit, Unbond and Withdraw across three independent close/reopen cycles
-plus writer-fence rejection and two competing writer attempts proving exactly one
-commit with no partial state. Units 3 and 4 and the Phase 3 review gate
-remain incomplete.
+plus writer-fence rejection and two competing writer attempts proving
+exactly one commit with no partial state. Units 3 and 4 and the Phase 3
+review gate remain incomplete.
 
 ## Context
 
