@@ -50,23 +50,23 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn key() -> SigningKey {
+pub(crate) fn key() -> SigningKey {
     SigningKey::from([7; 32])
 }
 
-fn sender() -> [u8; 32] {
+pub(crate) fn sender() -> [u8; 32] {
     VerificationKey::from(&key()).into()
 }
 
-fn chain() -> ChainId {
+pub(crate) fn chain() -> ChainId {
     ChainId::new("genesis-test").unwrap()
 }
 
-fn protocol() -> PublicationContext {
+pub(crate) fn protocol() -> PublicationContext {
     PublicationContext::new(chain(), ProtocolVersion::new(3), Epoch::new(0)).unwrap()
 }
 
-fn resolver() -> HashSuiteResolver {
+pub(crate) fn resolver() -> HashSuiteResolver {
     HashSuiteResolver::new(
         chain(),
         ProtocolVersion::new(3),
@@ -78,11 +78,11 @@ fn resolver() -> HashSuiteResolver {
     .unwrap()
 }
 
-fn domain() -> AtomicityDomainId {
+pub(crate) fn domain() -> AtomicityDomainId {
     AtomicityDomainId::new([1; 32]).unwrap()
 }
 
-fn context(generation: u64) -> DurableOperationContext {
+pub(crate) fn context(generation: u64) -> DurableOperationContext {
     DurableOperationContext::new(
         WriterFenceGeneration::new(generation).unwrap(),
         StorageDeadline::new(u64::MAX).unwrap(),
@@ -90,7 +90,7 @@ fn context(generation: u64) -> DurableOperationContext {
     )
 }
 
-fn build_fixture() -> (
+pub(crate) fn build_fixture() -> (
     GenesisManifest,
     PackageOrigin,
     InstanceRecord,
@@ -312,7 +312,7 @@ fn build_fixture() -> (
 /// its authority template (instance, code, type) with the fixture's coin
 /// entry, so only ownership and identity differ from an already-admitted
 /// object.
-fn custody_object_entry(
+pub(crate) fn custody_object_entry(
     manifest: &GenesisManifest,
     object_id: ObjectId,
     chain_id: ChainId,
@@ -352,13 +352,13 @@ fn custody_object_entry(
     }
 }
 
-fn resign_manifest(manifest: &mut GenesisManifest) {
+pub(crate) fn resign_manifest(manifest: &mut GenesisManifest) {
     manifest.signature = key()
         .sign(&genesis_manifest_signing_frame(manifest).unwrap())
         .into();
 }
 
-fn manifest_with_custody(object_id: ObjectId) -> GenesisManifest {
+pub(crate) fn manifest_with_custody(object_id: ObjectId) -> GenesisManifest {
     let (mut manifest, _, _, _, _) = build_fixture();
     let custody: GenesisObjectEntry = custody_object_entry(&manifest, object_id, chain());
     manifest.objects.push(custody);

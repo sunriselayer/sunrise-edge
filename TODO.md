@@ -43,10 +43,11 @@ slice 4's authorization/ingress boundary is implemented in
 [DR-0134](docs/architecture/decisions/0134-fastvote-authorization-boundary.md),
 including its companion code and review gate); and phase 3,
 economics/security completion. DR-0135 implements the non-signable protocol
-custody prerequisite, and DR-0136 implements typed, positive genesis bond
-commitments derived through authenticated generic executable ABI metadata.
-Neither slice authorizes post-genesis custody mutation, slashing, fee
-distribution, or payout. **FastVote is complete
+custody prerequisite, DR-0136 implements typed, positive genesis bond
+commitments derived through authenticated generic executable ABI metadata,
+and DR-0137 unit 2 implements the closed post-genesis whole-object bond
+lifecycle (Deposit/Replace/Unbond/Withdraw). Evidence-driven slashing, fee
+distribution, and payout remain unauthorized. **FastVote is complete
 only after phase 3.** A testnet may launch after phase 1, but that is not
 FastVote completion.
 
@@ -56,7 +57,7 @@ FastVote completion.
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Implemented and validated (DR-0128); focused Codex Security scan found 0 reportable findings and fresh Opus review approved |
-| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated** (DR-0129 through DR-0134). Phase 2 includes the seven-operation authorization matrix, committed-epoch native surfaces, and closed external ingress. **Phase 3 is open.** DR-0135 implements non-signable protocol custody and DR-0136 implements typed genesis bond commitments without a Standard Asset exception. Post-genesis bond lifecycle, evidence-driven slashing, certified signer entitlements, escrow distribution, and payout remain incomplete. FastVote overall is incomplete. |
+| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated** (DR-0129 through DR-0134). Phase 2 includes the seven-operation authorization matrix, committed-epoch native surfaces, and closed external ingress. **Phase 3 is open.** DR-0135 implements non-signable protocol custody, DR-0136 implements typed genesis bond commitments, and DR-0137 unit 2 implements the closed post-genesis whole-object bond lifecycle (Deposit/Replace/Unbond/Withdraw), all without a Standard Asset exception. Evidence-driven slashing, certified signer entitlements, escrow distribution, and payout remain incomplete. FastVote overall is incomplete. |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
 Asset creation was the final focused delta before FastVote/multi-validator
@@ -69,7 +70,11 @@ slice 3 (equivocation evidence); DR-0134 implements slice 4's authorization and
 closed-ingress boundary, closing Phase 2. DR-0135 implements the non-signable
 protocol-custody prerequisite for Phase 3; DR-0136 binds that custody to an
 authenticated executable-ABI value observation and a durable genesis bond
-record without importing Standard Asset into node-core runtime code. Standard
+record without importing Standard Asset into node-core runtime code; DR-0137
+unit 2 adds the closed `bond_lifecycle` execution boundary that authorizes
+the first post-genesis custody mutations (whole-object deposit, replacement,
+unbond and withdrawal) through the same generic contract-effect validation
+discipline, also without a Standard Asset exception. Standard
 Asset remains a dev fixture, and the generic fee layer retains its transitive
 `AssetId` dependency. Phase 3
 economics/security completion remains open.
@@ -2850,8 +2855,106 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
       The private capability is pinned to the complete signed execution-event
       digest, and bounded rejection sampling prevents an address-shaped
       counter-zero token from permanently blocking a valid source;
-    - [ ] generic custody-effect validation plus whole-object
-      deposit/replacement, unbond and withdrawal;
+    - [x] generic custody-effect validation plus whole-object
+      deposit/replacement, unbond and withdrawal, with a cryptographically
+      non-forgeable transition chain (implemented and locally validated
+      2026-09-23). `bond_lifecycle::effects::validate` is a contract-agnostic
+      validator: exactly one whole-object `Mutated` effect, exact
+      object/version-increment/type/schema, byte-identical body, an exact
+      owner transition, and a positive conserved `u64` value observed only
+      through the signed executable ABI; no event, creation, deletion or
+      extra effect is admitted, and any leg the engine reports having created
+      an object is independently rejected regardless of engine output. The
+      closed `BondLifecycleIntent 0x642F/v1` envelope (signed as `0x6430/v1`)
+      pins the exact `BondResourceId`, expected pre-transition generation,
+      expected previous-row digest and expected next-row digest the signer
+      committed to ahead of execution, and authorizes exactly one of Deposit
+      (`Exited -> Active`), Replace (`Active -> Active`, an atomic
+      same-sender two-leg swap with consecutive nonces and every leg's own
+      `request_id` pinned to the outer intent), Unbond (`Active ->
+      Unbonding`, no contract execution, recipient independently validated as
+      a canonical prime-order Ed25519 address) or Withdraw (`Unbonding ->
+      Exited`, requiring the unlock delay elapsed, the validator absent from
+      the committed live set, and authorized by the committed validator plus
+      an exact release-submitter signature rather than any source/deposit
+      authority). A later policy minimum raise cannot strand an already-
+      eligible Unbond or Withdraw: both preserve the current row's
+      `required_minimum` exactly. First-ever post-genesis bonding with no
+      committed row, and any transition out of `Jailed`, are rejected. The
+      unsigned intent digest used for the validator's signature is distinct
+      from the receipt/dedup digest, which hashes the exact signed envelope
+      bytes, so a different signature over an identical intent conflicts
+      rather than silently replaying. Authentication/replay follows the
+      fixed order: bounded decode, every inner leg's own signature and
+      `request_id` match, the reserved request-id guard, the receipt digest
+      and exact/conflicting replay reconciliation, the committed-epoch
+      fence, the committed bond row's resource/generation/previous-digest
+      match, the row's own validator signature, and -- while the validator
+      is still present in the committed live set -- an exact cross-check of
+      its set signature scheme/key against the committed bond row's key --
+      all before policy/nonce/lock/publication/object/execution work, and the
+      deterministically built resulting row's digest is verified byte-exact
+      against the signed `expected_next_row_digest` immediately before
+      commit. `FastPathBondRecord 0x642A/v1` is extended in place with the
+      committed validator authorization scheme/key (installed once from the
+      matching genesis validator entry, copied unchanged by every later
+      transition; Ed25519 only) and a canonical, safe `live_collateral()`
+      accessor: once `Exited` or `Jailed`, it returns `None` rather than
+      `custody_object`/`amount`, which are historical audit fields only --
+      this is a discipline the type invites for code that sums or reports
+      bonded stake, not one Rust's field visibility mechanically enforces,
+      since both fields remain public and directly readable. The permanent
+      `FastPathBondTransitionRecord 0x6431/v1` now retains the exact signed
+      envelope and the exact resulting row bytes (not a digest/signature
+      summary) for every generation, and its own redundant
+      `committed_at_checkpoint` copy is cross-checked against the decoded
+      resulting row's; genesis restart
+      (`genesis::verify_fastpath_bond_chain`) independently re-decodes each
+      stored envelope, re-derives and re-verifies the validator's signature,
+      cross-checks every signed field against the running chain state, re-
+      decodes and validates the stored resulting row's immutable
+      identity/closed state transition and checkpoint, and recomputes both
+      row digests -- so generation 1 stays byte-exact while later
+      generations re-derive and re-verify through the chain instead of
+      failing closed on the now-expected byte difference, and a deleted
+      transition, swapped generation, lifted signature, tampered envelope,
+      tampered stored row, a tampered `committed_at_checkpoint` summary, or a
+      coordinated rewrite of a transition and the final row together all
+      fail restart -- while the advanced singleton, or the transition chain
+      leading to it, remains present under the store being verified; a full
+      durable-store rollback to exactly the genesis snapshot is, by
+      construction, indistinguishable from a legitimate fresh install unless
+      a separately anchored checkpoint/state-root publication detects it,
+      which is out of this unit's scope. A trapped leg or rejected invariant
+      commits nothing (no "rejected but committed" receipt, unlike ordinary
+      local execution). Every embedded leg's own `request_id` must equal the
+      outer intent's exactly, checked before any execution or commit; both
+      share the ordinary dedup request-id namespace with every other
+      externally reachable request, so separately pre-submitting a leg on
+      its own burns that request id and any later `bond_lifecycle`
+      resubmission using it fails closed as a conflict, requiring a fresh
+      signed envelope rather than a resubmission. Partial (non-whole-object)
+      release remains deferred to unit 4. Rust plus independent JavaScript
+      vectors cover the changed `0x642A` and new `0x642F`/`0x6430`/`0x6431`
+      frames for every operation shape (not Deposit alone), including an
+      exact stable-hex assertion for the signed `0x6430` wrapper matching the
+      JS vector, not merely a round-trip; adversarial effect tests,
+      state-machine/signature/replay/reserved-id/stale-generation/
+      live-set-divergence/policy-raise/leg-request-id-mismatch tests,
+      real-WASM Deposit and Replace success tests (Replace proving both
+      owner transitions and one atomic commit), real-WASM negative tests
+      (nonconsecutive nonce, below-minimum amount, a genuine second-leg WASM
+      trap, a leg reporting a created object), an exact/conflicting replay
+      test with an engine call-counter proving non-reapplication, a real
+      file-backed SQLite test spanning Deposit/Unbond/Withdraw across three
+      independent close/reopen cycles (each reopen following an
+      object-mutating lifecycle operation) plus writer-fence rejection and
+      two competing writer attempts proving exactly one commit with no
+      partial state,
+      and the transition-chain restart tampering negatives above (deleted
+      record, swapped generation, lifted signature, tampered envelope,
+      tampered stored row, tampered checkpoint summary, coordinated rewrite)
+      all pass;
     - [ ] one-time evidence consumption, full forfeiture, jail/reactivation
       and next-set eligibility coupling; and
     - [ ] pre-certification fee escrow, deterministic signer entitlements,

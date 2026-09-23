@@ -12,6 +12,7 @@ use std::fmt;
 
 use super::*;
 
+#[derive(Clone)]
 pub(super) struct ObjectSnapshot {
     pub(super) head: DurableObjectHead,
     pub(super) object: Object,

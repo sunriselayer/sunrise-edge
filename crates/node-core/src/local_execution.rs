@@ -243,8 +243,7 @@ pub fn handle_local_execution<
 ) -> AdmissionResult<NodeOutput> {
     let authenticated: AuthenticatedLocalExecutionIntent =
         authenticate_local_execution(resolver, policy, signed_bytes)?;
-    let intent: &LocalExecutionIntent = authenticated.intent();
-    let call = &intent.call;
+    let call = authenticated.intent().call.clone();
     local_instance_state::reject_reserved_request_id(&call.request_id)
         .map_err(LocalExecutionAdmissionError::Invalid)?;
     let event_digest: Digest32 = local_execution_event_digest(resolver, authenticated.signed())?;
@@ -270,6 +269,141 @@ pub fn handle_local_execution<
         },
     )?;
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let mut head_reads: Vec<DurableObjectHeadRead> = Vec::new();
+    let mut mutations: Vec<StateMutationEntry> = Vec::new();
+    let leg: AdmittedLeg = admit_and_execute_leg(
+        store,
+        blob_store,
+        context,
+        domain,
+        resolver,
+        history,
+        policy,
+        engine,
+        &authenticated,
+        event_digest,
+        None,
+        created_checkpoint,
+        &mut reads,
+        &mut head_reads,
+        &mut mutations,
+    )?;
+    if leg.success && leg.mode == LocalExecutionMode::Instantiate {
+        mutations.push(StateMutationEntry::new(
+            leg.instance_key.clone(),
+            StateMutation::Put(encode_instance_record(&leg.instance)?),
+        )?);
+    }
+    reads.insert(nonce.key.clone(), nonce.read_revision);
+    mutations.push(StateMutationEntry::new(
+        nonce.key,
+        StateMutation::Put(nonce.record.encode()?),
+    )?);
+    let assertions: Vec<StateReadAssertion> = reads
+        .into_iter()
+        .map(|(k, r)| StateReadAssertion::new(k, r))
+        .collect::<Result<_, RuntimeError>>()?;
+    let state: DurableStateTransaction =
+        DurableStateTransaction::new(domain, AtomicStateReadSet::new(assertions)?, mutations)?;
+    let output: NodeOutput = NodeOutput::new(
+        vec![NodeResponse::new(
+            request_id,
+            if leg.success {
+                NodeResponseStatus::Accepted
+            } else {
+                NodeResponseStatus::Rejected
+            },
+            Some(leg.result_bytes),
+        )?],
+        Vec::new(),
+    )?;
+    let dedup: NodeDedupRecord =
+        NodeDedupRecord::new(request_id, event_digest, output.responses().to_vec())?;
+    let receipt: DurableRequestReceipt = DurableRequestReceipt::new(
+        DurableRequestId::new(call.request_id)
+            .map_err(|_| LocalExecutionAdmissionError::Invalid("request id"))?,
+        event_digest,
+        dedup.encode()?,
+    )?;
+    let transaction: DurableInvocationTransaction = DurableInvocationTransaction::new(
+        domain,
+        Some(state),
+        DurableObjectChanges::new(head_reads, leg.object_mutations)?,
+        receipt,
+        None,
+    )?;
+    Ok(durable_reconciliation::committed_output(
+        store.commit_invocation(context, transaction),
+        output,
+    )?)
+}
+
+/// One admitted and executed [`LocalExecutionIntent`] ("leg"), independent of
+/// its own nonce reservation or durable receipt. [`crate::bond_lifecycle`]
+/// merges one or two legs -- plus its own bond-row and transition-record
+/// mutations -- into a single outer [`DurableInvocationTransaction`]; ordinary
+/// [`handle_local_execution`] wraps exactly one.
+pub(crate) struct AdmittedLeg {
+    pub(crate) instance: InstanceRecord,
+    pub(crate) instance_key: Vec<u8>,
+    pub(crate) mode: LocalExecutionMode,
+    pub(crate) result_bytes: Vec<u8>,
+    pub(crate) success: bool,
+    pub(crate) effects: ExecutionEffects,
+    /// The engine's reported surviving creation authorities. A
+    /// protocol-custody caller must independently reject any non-empty
+    /// value: a whole-object custody transfer never creates an object, and
+    /// [`Self::object_mutations`] is not populated for that path, so nothing
+    /// else would otherwise check this list.
+    pub(crate) created_authorities: Vec<CreatedObjectAuthority>,
+    /// Populated only for the ordinary (`protocol_custody: None`) path.
+    /// A protocol-custody leg's caller runs its own generic custody-effect
+    /// validator on [`Self::effects`]/[`Self::snapshots`] instead.
+    pub(crate) object_mutations: Vec<DurableObjectMutationEntry>,
+    pub(crate) snapshots: BTreeMap<ObjectId, object_snapshots::ObjectSnapshot>,
+    pub(crate) inputs: Vec<ScopedResolvedObject>,
+    pub(crate) interface: VerifiedPublicationInterface,
+}
+
+/// Authenticates-adjacent admission shared by ordinary zero-fee local
+/// execution and every DR-0137 `bond_lifecycle` leg: policy check, durable
+/// publication closure, instance authority, scope admission, per-input
+/// object-lock fencing/loading/authority validation and typed-WASM
+/// execution. Does not reconcile a receipt, reserve a nonce or fence the
+/// committed epoch: those are reserved for the caller's own outer atomic
+/// commit, since a `bond_lifecycle` operation shares one receipt and one
+/// nonce reservation across up to two legs.
+///
+/// `protocol_custody` narrowly admits one non-sender-owned custody input
+/// ([`execution::protocol_custody::ProtocolCustodyCapability::admits_release_input`])
+/// and is threaded into typed-WASM execution; when `None`, every input must
+/// be owned by `call.sender`, exactly like every other local-execution
+/// caller.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn admit_and_execute_leg<
+    S: StructuredDurableDomainStateStore,
+    E: LocalContractEngine + ?Sized,
+>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    policy: &LocalExecutionPolicy,
+    engine: &E,
+    authenticated: &AuthenticatedLocalExecutionIntent,
+    event_digest: Digest32,
+    protocol_custody: Option<&execution::protocol_custody::ProtocolCustodyCapability>,
+    created_checkpoint: u64,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+    head_reads: &mut Vec<DurableObjectHeadRead>,
+    state_mutations: &mut Vec<StateMutationEntry>,
+) -> AdmissionResult<AdmittedLeg> {
+    let intent: &LocalExecutionIntent = authenticated.intent();
+    let call = &intent.call;
+    local_instance_state::reject_reserved_request_id(&call.request_id)
+        .map_err(LocalExecutionAdmissionError::Invalid)?;
     // DR-0131: CAS-fence the committed epoch record and reject a request
     // bound to a non-current epoch before any lock, execution, or mutation.
     mutation_fence::fence_current_epoch(
@@ -278,7 +412,7 @@ pub fn handle_local_execution<
         domain,
         call.context.chain_id(),
         call.context.epoch(),
-        &mut reads,
+        reads,
     )?;
     // DR-0131: honor a sender/epoch nonce a pending fast-path prepare already
     // holds locked, before this direct path can advance the same sequence.
@@ -292,14 +426,14 @@ pub fn handle_local_execution<
         &call.request_id,
         call.nonce,
         mutation_fence::LockMode::Fresh,
-        &mut reads,
+        reads,
     )?;
     let observed: VersionedStateValue = read_state(
         store,
         context,
         domain,
         execution_policy_key_for_profile(policy.context(), policy.profile())?,
-        &mut reads,
+        reads,
     )?;
     if observed.value() != Some(policy.encode()?.as_slice()) {
         return Err(LocalExecutionAdmissionError::Invalid(
@@ -330,14 +464,14 @@ pub fn handle_local_execution<
         }
     }
     let interface: VerifiedPublicationInterface = loaded.interface;
-    let binding = bind_local_execution(&authenticated, &interface)?;
-    let key: Vec<u8> = instance_record_key(
+    let binding = bind_local_execution(authenticated, &interface)?;
+    let instance_key: Vec<u8> = instance_record_key(
         call.context.chain_id(),
         &call.instance.creator,
         &call.instance.seed,
     )?;
     let instance_observed: VersionedStateValue =
-        read_state(store, context, domain, key.clone(), &mut reads)?;
+        read_state(store, context, domain, instance_key.clone(), reads)?;
     let instance: InstanceRecord = match intent.mode {
         LocalExecutionMode::Instantiate => {
             if instance_observed.value().is_some()
@@ -398,23 +532,18 @@ pub fn handle_local_execution<
         resolver,
         history,
         policy,
-        &authenticated,
+        authenticated,
         ResolvedExecutionScope {
             instance: instance.clone(),
             target: call.instance.clone(),
             interface: interface.clone(),
         },
-        &mut reads,
+        reads,
         &mut publication_budget,
     )?;
     let mut snapshots: BTreeMap<ObjectId, object_snapshots::ObjectSnapshot> = BTreeMap::new();
-    let mut head_reads: Vec<DurableObjectHeadRead> = Vec::new();
     let mut total_bytes: usize = 0;
     let mut object_resolvers: BTreeMap<ObjectId, &HashSuiteResolver> = BTreeMap::new();
-    // DR-0132 §3.D: a stale (strictly older epoch) lock observed here is
-    // reclaimed by emitting a `Delete` for it below, alongside this
-    // request's own effect mutations.
-    let mut reclaimed_lock_keys: Vec<Vec<u8>> = Vec::new();
     for (entry, param) in call.access.entries.iter().zip(binding.objects()) {
         // DR-0131: a `Write`/`Consume` input already exclusively locked by a
         // pending fast-path certificate blocks this direct mutation branch,
@@ -429,12 +558,15 @@ pub fn handle_local_execution<
                 &call.request_id,
                 call.context.epoch(),
                 mutation_fence::LockMode::Fresh,
-                &mut reads,
+                reads,
             )?;
+            // DR-0132 §3.D: a stale (strictly older epoch) lock observed here
+            // is reclaimed by emitting a `Delete` for it now, alongside this
+            // request's own effect mutations.
             if lock_state == mutation_fence::ObjectLockState::Reclaimable {
-                reclaimed_lock_keys.push(fastpath_lock_key(
-                    call.context.chain_id(),
-                    entry.object_ref.id,
+                state_mutations.push(StateMutationEntry::new(
+                    fastpath_lock_key(call.context.chain_id(), entry.object_ref.id)?,
+                    StateMutation::Delete,
                 )?);
             }
         }
@@ -447,7 +579,11 @@ pub fn handle_local_execution<
             &entry.object_ref,
             &mut total_bytes,
         )?;
-        if snapshot.object.owner != Owner::Address(Address::new(call.sender)) {
+        let sender_owned: bool = snapshot.object.owner == Owner::Address(Address::new(call.sender));
+        let custody_admitted: bool = protocol_custody.is_some_and(|capability| {
+            capability.admits_release_input(snapshot.object.id, &snapshot.object.owner)
+        });
+        if !sender_owned && !custody_admitted {
             return Err(LocalExecutionAdmissionError::Invalid(
                 "local inputs require sender address ownership",
             ));
@@ -457,7 +593,7 @@ pub fn handle_local_execution<
             context,
             domain,
             object_authority_key(snapshot.object.id),
-            &mut reads,
+            reads,
         )?;
         let authority: ObjectAuthority = decode_object_authority(observed.value().ok_or(
             LocalExecutionAdmissionError::Invalid("object authority absent"),
@@ -526,12 +662,12 @@ pub fn handle_local_execution<
     )?;
     let outcome: LocalExecutionOutcome = engine.execute(LocalExecutionRequest {
         scopes: &scopes,
-        intent: &authenticated,
+        intent: authenticated,
         resolver,
         policy,
         event_digest,
         inputs: &inputs,
-        protocol_custody: None,
+        protocol_custody,
     })?;
     let result: LocalExecutionResult = LocalExecutionResult {
         request_id: call.request_id,
@@ -547,74 +683,39 @@ pub fn handle_local_execution<
             "trapped creation authority",
         ));
     }
-    let mut mutations: Vec<StateMutationEntry> = reclaimed_lock_keys
-        .into_iter()
-        .map(|key| StateMutationEntry::new(key, StateMutation::Delete))
-        .collect::<Result<_, RuntimeError>>()?;
-    let object_mutations: Vec<DurableObjectMutationEntry> = effects::translate(
-        store,
-        context,
-        domain,
-        resolver,
-        &scopes,
-        &effects::CheckedEffects {
-            context: &call.context,
-            effects: &outcome.effects,
-            created_authorities: &outcome.created_authorities,
-        },
-        created_checkpoint,
-        &inputs,
-        &snapshots,
-        &mut reads,
-        &mut head_reads,
-        &mut mutations,
-    )?;
-    if success && intent.mode == LocalExecutionMode::Instantiate {
-        mutations.push(StateMutationEntry::new(
-            key,
-            StateMutation::Put(encode_instance_record(&instance)?),
-        )?);
-    }
-    reads.insert(nonce.key.clone(), nonce.read_revision);
-    mutations.push(StateMutationEntry::new(
-        nonce.key,
-        StateMutation::Put(nonce.record.encode()?),
-    )?);
-    let assertions: Vec<StateReadAssertion> = reads
-        .into_iter()
-        .map(|(k, r)| StateReadAssertion::new(k, r))
-        .collect::<Result<_, RuntimeError>>()?;
-    let state: DurableStateTransaction =
-        DurableStateTransaction::new(domain, AtomicStateReadSet::new(assertions)?, mutations)?;
-    let output: NodeOutput = NodeOutput::new(
-        vec![NodeResponse::new(
-            request_id,
-            if success {
-                NodeResponseStatus::Accepted
-            } else {
-                NodeResponseStatus::Rejected
+    let object_mutations: Vec<DurableObjectMutationEntry> = if protocol_custody.is_some() {
+        Vec::new()
+    } else {
+        effects::translate(
+            store,
+            context,
+            domain,
+            resolver,
+            &scopes,
+            &effects::CheckedEffects {
+                context: &call.context,
+                effects: &outcome.effects,
+                created_authorities: &outcome.created_authorities,
             },
-            Some(result_bytes),
-        )?],
-        Vec::new(),
-    )?;
-    let dedup: NodeDedupRecord =
-        NodeDedupRecord::new(request_id, event_digest, output.responses().to_vec())?;
-    let receipt: DurableRequestReceipt = DurableRequestReceipt::new(
-        DurableRequestId::new(call.request_id)
-            .map_err(|_| LocalExecutionAdmissionError::Invalid("request id"))?,
-        event_digest,
-        dedup.encode()?,
-    )?;
-    let transaction: DurableInvocationTransaction = DurableInvocationTransaction::new(
-        domain,
-        Some(state),
-        DurableObjectChanges::new(head_reads, object_mutations)?,
-        receipt,
-        None,
-    )?;
-    Ok(durable_reconciliation::committed_output(
-        store.commit_invocation(context, transaction),
-        output,
-    )?)
+            created_checkpoint,
+            &inputs,
+            &snapshots,
+            reads,
+            head_reads,
+            state_mutations,
+        )?
+    };
+    Ok(AdmittedLeg {
+        instance,
+        instance_key,
+        mode: intent.mode,
+        result_bytes,
+        success,
+        effects: outcome.effects,
+        created_authorities: outcome.created_authorities,
+        object_mutations,
+        snapshots,
+        inputs,
+        interface,
+    })
 }
