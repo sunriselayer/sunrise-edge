@@ -42,6 +42,7 @@ use std::error::Error;
 use system_modules::{ModuleId, SystemModule, SystemModuleError};
 
 mod authenticated_object_effects;
+pub mod bond_lifecycle;
 mod durable_reconciliation;
 pub mod economics;
 pub mod epoch_transition;
@@ -55,6 +56,7 @@ mod mutation_fence;
 mod object_snapshots;
 pub mod paid_execution;
 pub mod phase2_authorization;
+pub mod phase3_authorization;
 mod preinstalled_wasm;
 pub mod publication;
 mod query;

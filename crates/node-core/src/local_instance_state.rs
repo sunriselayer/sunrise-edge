@@ -201,6 +201,23 @@ pub fn fastpath_bond_record_key(
     Ok(key)
 }
 
+/// One permanent DR-0137 [`crate::fast_path::records::FastPathBondTransitionRecord`]
+/// audit row, keyed by validator and the post-transition generation. Never
+/// overwritten: each lifecycle commit writes exactly one fresh key.
+pub fn fastpath_bond_transition_key(
+    chain: &ChainId,
+    validator: &ValidatorId,
+    generation: u64,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"bond-transition/");
+    key.extend(encode_chain_id(chain)?);
+    key.extend_from_slice(validator.as_bytes());
+    key.extend_from_slice(&generation.to_be_bytes());
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
 /// The durable, epoch-scoped static validator set a [`consensus::FastPathCertifier`]
 /// is bound to. Production installs it atomically from the signed
 /// [`crate::genesis::GenesisManifest`]; the focused test helper in

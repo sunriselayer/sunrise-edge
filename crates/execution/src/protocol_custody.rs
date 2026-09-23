@@ -183,6 +183,21 @@ impl ProtocolCustodyCapability {
         self.owner_target.as_ref().map(|target| target.token)
     }
 
+    /// Pre-bind check: true exactly when `object_id`/`owner` is this exact
+    /// capability's own release target. Node-core admission calls this to
+    /// admit one non-sender-owned protocol-custody input before the full
+    /// typed-WASM [`Self::bind`] runs; `bind` still independently
+    /// re-validates the exact input's authority, mode and index, so this
+    /// accessor alone grants no execution or storage authority.
+    #[must_use]
+    pub fn admits_release_input(&self, object_id: ObjectId, owner: &Owner) -> bool {
+        matches!(
+            &self.direction,
+            ProtocolCustodyDirection::Release { custody, scope, .. }
+                if *custody == object_id && owner == &Owner::ProtocolCustody(scope.clone())
+        )
+    }
+
     pub(crate) fn bind(
         &self,
         call: &CallIntent,

@@ -26,6 +26,7 @@ const FASTPATH_VALIDATOR_ENTRY_LIST_TYPE: u16 = 0x6422;
 const FASTPATH_VALIDATOR_ENTRY_TYPE: u16 = 0x6423;
 const FASTPATH_BOND_RECORD_TYPE: u16 = 0x642A;
 const FASTPATH_BOND_STATE_TYPE: u16 = 0x642D;
+const FASTPATH_BOND_TRANSITION_RECORD_TYPE: u16 = 0x6431;
 const ENCODING_VERSION: u16 = 1;
 
 /// Bounds every nested fast-path record list. Locked-object and
@@ -369,11 +370,22 @@ pub struct FastPathBondRecord {
     pub resource_domain: u16,
     /// Exact custody scope resource and opaque nominal type value.
     pub resource: [u8; 32],
-    /// Exact custody object version observed at commitment time.
+    /// Exact custody object version observed at commitment time. Once
+    /// [`Self::state`] is [`FastPathBondState::Exited`] or
+    /// [`FastPathBondState::Jailed`], this is a historical audit pointer to
+    /// the last-known custody object only: the object itself has already
+    /// been released or forfeited and is no longer custody-owned. Never read
+    /// this field to compute live collateral; call [`Self::live_collateral`].
     pub custody_object: ObjectRef,
     /// Complete immutable public-contract authority for the custody object.
+    /// Historical once [`Self::state`] is `Exited` or `Jailed`, exactly like
+    /// [`Self::custody_object`].
     pub authority: ObjectAuthority,
-    /// Positive scalar value decoded only through the signed executable ABI.
+    /// Positive scalar value decoded only through the signed executable ABI
+    /// at the generation this row was committed. Once [`Self::state`] is
+    /// `Exited` or `Jailed`, this is a historical record of the amount that
+    /// was released or forfeited, not a live balance. Never read this field
+    /// to compute live collateral; call [`Self::live_collateral`].
     pub amount: u64,
     /// Checkpoint of the atomic transition that committed this generation.
     pub committed_at_checkpoint: u64,
@@ -385,6 +397,39 @@ pub struct FastPathBondRecord {
     pub required_minimum: u64,
     /// Exact lifecycle state for this generation.
     pub state: FastPathBondState,
+    /// Committed validator authorization signature scheme. Installed once
+    /// from the matching genesis validator entry (DR-0137) and copied
+    /// unchanged by every later lifecycle transition; only [`SignatureSchemeId::Ed25519`]
+    /// is accepted.
+    pub authorization_scheme: SignatureSchemeId,
+    /// Committed validator authorization verifying key: the exact canonical
+    /// 32-byte Ed25519 key every [`crate::bond_lifecycle`] envelope for this
+    /// validator must be signed by.
+    pub authorization_key: [u8; 32],
+}
+
+impl FastPathBondRecord {
+    /// The canonical, safe accessor for live collateral. Returns
+    /// `Some((&self.custody_object, self.amount))` only while `self.state`
+    /// is [`FastPathBondState::Active`] or [`FastPathBondState::Unbonding`]
+    /// (still slashable, still custody-owned); returns `None` for
+    /// [`FastPathBondState::Exited`] and [`FastPathBondState::Jailed`], whose
+    /// `custody_object`/`amount` are historical audit fields only. Any code
+    /// that sums or reports bonded stake should call this instead of reading
+    /// [`Self::custody_object`]/[`Self::amount`] directly, so it does not
+    /// silently double-count an exited or forfeited row. This is a
+    /// discipline the type invites, not one Rust's field visibility
+    /// mechanically enforces: [`Self::custody_object`]/[`Self::amount`]
+    /// remain public fields a caller can still read directly.
+    #[must_use]
+    pub fn live_collateral(&self) -> Option<(&ObjectRef, u64)> {
+        match self.state {
+            FastPathBondState::Active | FastPathBondState::Unbonding { .. } => {
+                Some((&self.custody_object, self.amount))
+            }
+            FastPathBondState::Exited | FastPathBondState::Jailed { .. } => None,
+        }
+    }
 }
 
 /// Encodes Frame `0x642A/v1`.
@@ -412,6 +457,8 @@ pub fn encode_fastpath_bond_record(record: &FastPathBondRecord) -> Result<Vec<u8
         || record.authority.instance_context != record.context
         || !resource_matches_type
         || !lifecycle_valid
+        || record.authorization_scheme != SignatureSchemeId::Ed25519
+        || Ed25519Verifier::from_verifying_key_bytes(&record.authorization_key).is_err()
     {
         return Err(NodeCoreError::PersistenceInvariant(
             "invalid fast-path bond record",
@@ -442,6 +489,8 @@ pub fn encode_fastpath_bond_record(record: &FastPathBondRecord) -> Result<Vec<u8
     frame.field_u64(10, record.lifecycle_epoch.get())?;
     frame.field_u64(11, record.required_minimum)?;
     frame.field_bytes(12, encode_fastpath_bond_state(&record.state)?)?;
+    frame.field_u16(13, record.authorization_scheme.as_u16())?;
+    frame.field_bytes(14, record.authorization_key.to_vec())?;
     Ok(frame.finish()?)
 }
 
@@ -450,7 +499,7 @@ pub fn decode_fastpath_bond_record(bytes: &[u8]) -> Result<FastPathBondRecord, N
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(FASTPATH_BOND_RECORD_TYPE)?;
     frame.require_version(1)?;
-    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])?;
+    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])?;
     let context: PublicationContext = decode_publication_context(frame.required_field(1)?)
         .map_err(|_| NodeCoreError::PersistenceInvariant("invalid bond context"))?;
     let validator_bytes: [u8; 32] = frame
@@ -465,6 +514,13 @@ pub fn decode_fastpath_bond_record(bytes: &[u8]) -> Result<FastPathBondRecord, N
         .map_err(|_| NodeCoreError::PersistenceInvariant("invalid bond object ref"))?;
     let authority: ObjectAuthority = decode_object_authority(frame.required_field(6)?)
         .map_err(|_| NodeCoreError::PersistenceInvariant("invalid bond authority"))?;
+    let authorization_scheme: SignatureSchemeId =
+        SignatureSchemeId::try_from(frame.required_u16(13)?)
+            .map_err(|_| NodeCoreError::PersistenceInvariant("bond authorization scheme"))?;
+    let authorization_key: [u8; 32] = frame
+        .required_field(14)?
+        .try_into()
+        .map_err(|_| NodeCoreError::PersistenceInvariant("bond authorization key length"))?;
     let record: FastPathBondRecord = FastPathBondRecord {
         context,
         validator_id: ValidatorId::new(validator_bytes),
@@ -478,10 +534,205 @@ pub fn decode_fastpath_bond_record(bytes: &[u8]) -> Result<FastPathBondRecord, N
         lifecycle_epoch: Epoch::new(frame.required_u64(10)?),
         required_minimum: frame.required_u64(11)?,
         state: decode_fastpath_bond_state(frame.required_field(12)?)?,
+        authorization_scheme,
+        authorization_key,
     };
     if encode_fastpath_bond_record(&record)? != bytes {
         return Err(NodeCoreError::PersistenceInvariant(
             "noncanonical fast-path bond record",
+        ));
+    }
+    Ok(record)
+}
+
+/// Closed DR-0137 bond lifecycle operation tag, permanently recorded inside
+/// [`FastPathBondTransitionRecord`] for audit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FastPathBondLifecycleOperation {
+    /// `Exited -> Active`.
+    Deposit,
+    /// `Active -> Active`, atomic two-leg swap.
+    Replace,
+    /// `Active -> Unbonding`.
+    Unbond,
+    /// `Unbonding -> Exited`.
+    Withdraw,
+}
+
+impl FastPathBondLifecycleOperation {
+    pub(crate) const fn as_u16(self) -> u16 {
+        match self {
+            Self::Deposit => 1,
+            Self::Replace => 2,
+            Self::Unbond => 3,
+            Self::Withdraw => 4,
+        }
+    }
+
+    const fn decode(value: u16) -> Result<Self, NodeCoreError> {
+        match value {
+            1 => Ok(Self::Deposit),
+            2 => Ok(Self::Replace),
+            3 => Ok(Self::Unbond),
+            4 => Ok(Self::Withdraw),
+            _ => Err(NodeCoreError::PersistenceInvariant(
+                "unknown fast-path bond lifecycle operation",
+            )),
+        }
+    }
+
+    /// True exactly for the one closed `(previous, resulting)` state pair
+    /// this operation is allowed to produce: `Deposit` is
+    /// `Exited -> Active`, `Replace` is `Active -> Active`, `Unbond` is
+    /// `Active -> Unbonding`, `Withdraw` is `Unbonding -> Exited`. Shared by
+    /// [`crate::bond_lifecycle`]'s own live admission and
+    /// [`crate::genesis::verify_fastpath_bond_chain`]'s independent restart
+    /// re-derivation, so both enforce the identical closed state machine.
+    #[must_use]
+    pub fn validates_transition(
+        self,
+        previous: &FastPathBondState,
+        resulting: &FastPathBondState,
+    ) -> bool {
+        match self {
+            Self::Deposit => {
+                *previous == FastPathBondState::Exited
+                    && matches!(resulting, FastPathBondState::Active)
+            }
+            Self::Replace => {
+                matches!(previous, FastPathBondState::Active)
+                    && matches!(resulting, FastPathBondState::Active)
+            }
+            Self::Unbond => {
+                matches!(previous, FastPathBondState::Active)
+                    && matches!(resulting, FastPathBondState::Unbonding { .. })
+            }
+            Self::Withdraw => {
+                matches!(previous, FastPathBondState::Unbonding { .. })
+                    && *resulting == FastPathBondState::Exited
+            }
+        }
+    }
+}
+
+/// Maximum bytes of the exact canonical signed `bond_lifecycle` envelope
+/// (`0x6430/v1`) a [`FastPathBondTransitionRecord`] retains. Generous enough
+/// for a `Replace` envelope's two embedded local-execution legs.
+pub const MAX_BOND_TRANSITION_ENVELOPE_BYTES: usize = 1_500_000;
+/// Maximum bytes of the exact canonical resulting [`FastPathBondRecord`]
+/// (`0x642A/v1`) a [`FastPathBondTransitionRecord`] retains.
+pub const MAX_BOND_TRANSITION_ROW_BYTES: usize = 64 * 1024;
+
+/// Frame `0x6431/v1`: one permanent audit row binding a validator's bond
+/// generation transition to the exact canonical bytes that produced it.
+/// Keyed by validator and the *new* (post-transition) generation
+/// ([`local_instance_state::fastpath_bond_transition_key`]). Generation 1 has
+/// no transition record: it is re-derived byte-exactly from the signed
+/// genesis manifest. Restart re-verifies every later generation by walking
+/// this chain from generation 1 (see `genesis::verify_fastpath_bond_chain`),
+/// which needs nothing beyond [`Self::signed_envelope`] and
+/// [`Self::resulting_row`]: both are retained in full (not merely digested),
+/// so restart independently re-decodes, re-hashes and re-verifies the
+/// validator's signature and every bound field rather than trusting any
+/// redundant summary column. [`Self::context`], [`Self::previous_row_digest`],
+/// [`Self::current_row_digest`], [`Self::operation`] and
+/// [`Self::committed_at_checkpoint`] are redundant, informational copies of
+/// data already inside [`Self::signed_envelope`]/[`Self::resulting_row`);
+/// restart cross-checks them against the decoded envelope/row rather than
+/// trusting them on their own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FastPathBondTransitionRecord {
+    /// Exact signing [`PublicationContext`] of [`Self::signed_envelope`]'s
+    /// intent -- never an ambient or genesis-pinned context.
+    pub context: PublicationContext,
+    /// Validator this transition belongs to.
+    pub validator_id: ValidatorId,
+    /// Post-transition generation (matches the current [`FastPathBondRecord::generation`]).
+    pub generation: u64,
+    /// Canonical digest of the exact previous generation's [`FastPathBondRecord`] bytes.
+    pub previous_row_digest: Digest32,
+    /// Canonical digest of the exact resulting [`FastPathBondRecord`] bytes.
+    pub current_row_digest: Digest32,
+    /// Closed operation that produced this transition.
+    pub operation: FastPathBondLifecycleOperation,
+    /// Checkpoint of the atomic commit that produced this generation.
+    pub committed_at_checkpoint: u64,
+    /// Exact canonical `SignedBondLifecycleIntent 0x6430/v1` bytes that
+    /// authorized this transition, retained in full so its validator
+    /// signature is independently re-verifiable at restart from nothing but
+    /// this record.
+    pub signed_envelope: Vec<u8>,
+    /// Exact canonical [`FastPathBondRecord`] `0x642A/v1` bytes this
+    /// transition produced.
+    pub resulting_row: Vec<u8>,
+}
+
+/// Encodes Frame `0x6431/v1`.
+pub fn encode_fastpath_bond_transition_record(
+    record: &FastPathBondTransitionRecord,
+) -> Result<Vec<u8>, NodeCoreError> {
+    if record.generation == 0
+        || record.signed_envelope.len() > MAX_BOND_TRANSITION_ENVELOPE_BYTES
+        || record.resulting_row.len() > MAX_BOND_TRANSITION_ROW_BYTES
+    {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "invalid fast-path bond transition record",
+        ));
+    }
+    let mut frame: CanonicalStruct = CanonicalStruct::new(FASTPATH_BOND_TRANSITION_RECORD_TYPE, 1);
+    frame.field_bytes(
+        1,
+        encode_publication_context(&record.context)
+            .map_err(|_| NodeCoreError::PersistenceInvariant("invalid bond transition context"))?,
+    )?;
+    frame.field_bytes(2, record.validator_id.as_bytes().to_vec())?;
+    frame.field_u64(3, record.generation)?;
+    frame.field_bytes(4, encode_digest32(&record.previous_row_digest)?)?;
+    frame.field_bytes(5, encode_digest32(&record.current_row_digest)?)?;
+    frame.field_u16(6, record.operation.as_u16())?;
+    frame.field_u64(7, record.committed_at_checkpoint)?;
+    frame.field_bytes(8, record.signed_envelope.clone())?;
+    frame.field_bytes(9, record.resulting_row.clone())?;
+    Ok(frame.finish()?)
+}
+
+/// Strictly decodes Frame `0x6431/v1`.
+pub fn decode_fastpath_bond_transition_record(
+    bytes: &[u8],
+) -> Result<FastPathBondTransitionRecord, NodeCoreError> {
+    let frame = decode_canonical_frame(bytes)?;
+    frame.require_type(FASTPATH_BOND_TRANSITION_RECORD_TYPE)?;
+    frame.require_version(1)?;
+    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9])?;
+    let context: PublicationContext = decode_publication_context(frame.required_field(1)?)
+        .map_err(|_| NodeCoreError::PersistenceInvariant("invalid bond transition context"))?;
+    let validator_bytes: [u8; 32] = frame
+        .required_field(2)?
+        .try_into()
+        .map_err(|_| NodeCoreError::PersistenceInvariant("bond transition validator id length"))?;
+    let signed_envelope: Vec<u8> = frame.required_field(8)?.to_vec();
+    let resulting_row: Vec<u8> = frame.required_field(9)?.to_vec();
+    if signed_envelope.len() > MAX_BOND_TRANSITION_ENVELOPE_BYTES
+        || resulting_row.len() > MAX_BOND_TRANSITION_ROW_BYTES
+    {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "invalid fast-path bond transition record",
+        ));
+    }
+    let record: FastPathBondTransitionRecord = FastPathBondTransitionRecord {
+        context,
+        validator_id: ValidatorId::new(validator_bytes),
+        generation: frame.required_u64(3)?,
+        previous_row_digest: decode_digest32(frame.required_field(4)?)?,
+        current_row_digest: decode_digest32(frame.required_field(5)?)?,
+        operation: FastPathBondLifecycleOperation::decode(frame.required_u16(6)?)?,
+        committed_at_checkpoint: frame.required_u64(7)?,
+        signed_envelope,
+        resulting_row,
+    };
+    if record.generation == 0 || encode_fastpath_bond_transition_record(&record)? != bytes {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "noncanonical fast-path bond transition record",
         ));
     }
     Ok(record)

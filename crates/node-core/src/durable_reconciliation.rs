@@ -44,6 +44,28 @@ pub(super) fn reserve_sender_nonce<S: StructuredDurableDomainStateStore>(
     layout: &PersistenceLayout,
     reservation: SenderNonceReservation,
 ) -> Result<PendingSenderNonceWrite, NodeCoreError> {
+    reserve_sender_nonce_range(store, context, domain, layout, reservation, 1)
+}
+
+/// Reserves `count` consecutive sender nonces starting at
+/// `reservation.nonce`, merged into one pending write: the sequence lives
+/// under one `(sender, epoch)` key, so reserving several consecutive values
+/// (DR-0137 `bond_lifecycle` multi-leg operations) advances that single row
+/// once rather than writing it once per leg. `count == 1` is exactly
+/// [`reserve_sender_nonce`]'s existing behavior.
+pub(super) fn reserve_sender_nonce_range<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    layout: &PersistenceLayout,
+    reservation: SenderNonceReservation,
+    count: u64,
+) -> Result<PendingSenderNonceWrite, NodeCoreError> {
+    if count == 0 {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "sender nonce reservation count must be nonzero",
+        ));
+    }
     let key: Vec<u8> = layout.sender_nonce_key(reservation.sender, reservation.epoch);
     let observation: query::SenderNextNonceObservation = query::read_sender_next_nonce(
         store,
@@ -63,7 +85,7 @@ pub(super) fn reserve_sender_nonce<S: StructuredDurableDomainStateStore>(
     let next_nonce: u64 =
         reservation
             .nonce
-            .checked_add(1)
+            .checked_add(count)
             .ok_or(NodeCoreError::SenderNonceOverflow {
                 sender: reservation.sender,
             })?;

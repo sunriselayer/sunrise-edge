@@ -4,10 +4,62 @@
 
 Accepted, 2026-09-23. Implementation unit 1 (resource-generic policy, signed
 economics/lifecycle codecs and genesis persistence/restart verification) is
-implemented and locally validated. Unit 2's invocation-local execution
-capability prerequisite is implemented locally; its node-core lifecycle,
-effect-validation and durable-commit work remains incomplete. Units 3 and 4
-and the Phase 3 review gate also remain incomplete.
+implemented and locally validated. Unit 2 is now implemented and locally
+validated: the invocation-local protocol-custody execution capability; a
+generic, contract-agnostic whole-object custody-effect validator
+(`bond_lifecycle::effects`) that independently rejects any leg reporting a
+created object regardless of engine output; the closed
+`BondLifecycleIntent 0x642F/v1` envelope (signed as `0x6430/v1`), which pins
+the exact `BondResourceId`, expected pre-transition generation, expected
+previous-row digest and expected next-row digest the validator committed to
+ahead of execution, verified against the committed bond row's own
+authorization key both at submission (against the row actually read) and at
+commit (against the deterministically built resulting row, byte-exact,
+before any state is written) -- making the transition chain
+cryptographically non-forgeable rather than merely digest-summarized; a
+receipt/dedup digest kept distinct from the signing digest, hashing the
+exact signed envelope bytes so a resubmission under a different signature
+over an identical intent conflicts instead of replaying; the complete closed
+Deposit/Replace/Unbond/Withdraw state machine (Withdraw authorized by the
+committed validator plus an exact release-submitter signature, not any
+source/deposit authority; Unbond/Withdraw preserving the current row's
+`required_minimum` exactly so a later policy minimum raise cannot strand an
+already-eligible exit; Unbond independently validating a canonical
+prime-order Ed25519 recipient address; every leg's own `request_id` pinned
+to the outer intent's), each committing through one atomic
+`DurableInvocationTransaction`; a canonical, safe
+`FastPathBondRecord::live_collateral()` accessor that returns `None` once
+`Exited`/`Jailed` -- a discipline the type invites for any code that sums or
+reports bonded stake, not one Rust's field visibility mechanically enforces,
+since `custody_object`/`amount` remain public fields a caller can still read
+directly; the permanent `FastPathBondTransitionRecord 0x6431/v1` audit
+chain, now retaining the exact signed envelope and exact resulting row
+bytes (not a digest/signature summary) for independent re-verification, and
+now also cross-checking its own redundant `committed_at_checkpoint` copy
+against the decoded resulting row's; and genesis restart re-verification
+that walks that chain (`genesis::verify_fastpath_bond_chain`), independently
+re-decoding and re-verifying every stored envelope's signature and every
+stored row's identity/closed-transition from first principles, so a
+post-genesis transition no longer makes restart fail closed on the
+now-expected byte difference, while a deleted transition, swapped
+generation, lifted signature, tampered envelope, tampered stored row, a
+tampered `committed_at_checkpoint` summary, or a coordinated rewrite of a
+transition and the final row together all still fail restart -- while the
+advanced singleton itself, or the transition chain leading to it, remains
+present under this store; a full durable-store rollback to exactly the
+genesis snapshot is, by construction, indistinguishable from a legitimate
+fresh install unless a separately anchored checkpoint/state-root publication
+detects it, which remains out of this decision's scope. Partial
+(non-whole-object) release remains deferred to unit 4's fee-claims work,
+unchanged from unit 1. Deposit and Replace now each have dedicated
+real-WASM success-path integration tests (Replace proving same-sender
+consecutive nonces, both owner transitions, and one atomic commit) alongside
+Withdraw's real-WASM, real-storage end-to-end coverage including genesis
+restart chain-walk re-verification; a real file-backed SQLite test spans
+Deposit, Unbond and Withdraw across three independent close/reopen cycles
+plus writer-fence rejection and two racing writers proving exactly one
+commit with no partial state. Units 3 and 4 and the Phase 3 review gate
+remain incomplete.
 
 ## Context
 
@@ -161,6 +213,19 @@ The bond remains slashable before the unlock epoch. Withdrawal requires the
 delay to have elapsed, the validator to be absent from the committed live set,
 the exact bond generation/object to remain unchanged, and no jail or
 forfeiture record.
+
+Every embedded leg's own `request_id` is required to equal the outer
+`BondLifecycleIntent::request_id` exactly, and both share the ordinary
+`DurableRequestId` dedup namespace with every other externally reachable
+request. This closes ordinary-path/outer-path replay, but it also means a
+leg cannot be pre-submitted or resubmitted on its own once its request id has
+been consumed: whichever path (the bare leg through ordinary local execution,
+or the leg embedded in a `bond_lifecycle` envelope) commits or is rejected
+first for that request id fails-closed conflicts the other. An operator who
+separately pre-submits or replays a leg's own bytes before submitting the
+full `bond_lifecycle` envelope therefore burns that request id and must sign
+a fresh envelope (a new outer and leg request id) rather than resubmit the
+same one; this is deliberate fail-closed behavior, not a defect.
 
 ### Evidence consumption and jailing
 
