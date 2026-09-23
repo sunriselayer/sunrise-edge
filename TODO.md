@@ -2949,7 +2949,7 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
       file-backed SQLite test spanning Deposit/Unbond/Withdraw across three
       independent close/reopen cycles (each reopen following an
       object-mutating lifecycle operation) plus writer-fence rejection and
-      two racing writers proving exactly one commit with no partial state,
+      two competing writer attempts proving exactly one commit with no partial state,
       and the transition-chain restart tampering negatives above (deleted
       record, swapped generation, lifted signature, tampered envelope,
       tampered stored row, tampered checkpoint summary, coordinated rewrite)
