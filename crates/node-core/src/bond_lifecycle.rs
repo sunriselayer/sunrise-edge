@@ -10,6 +10,11 @@
 //! * [`BondLifecycleOperation::Replace`]: `Active -> Active`, an atomic
 //!   same-sender two-leg swap (consecutive nonces) that deposits a new
 //!   object and releases the old one to a validator-authorized recipient.
+//!   The new amount must be at least the previous live bond amount (and no
+//!   more than the committed maximum): any reduction must go through
+//!   [`BondLifecycleOperation::Unbond`]/[`BondLifecycleOperation::Withdraw`]
+//!   instead, so it observes their unlock delay rather than instantly
+//!   evading forfeiture on the released amount.
 //! * [`BondLifecycleOperation::Unbond`]: `Active -> Unbonding`, recording an
 //!   unlock epoch and signed recipient. No contract execution.
 //! * [`BondLifecycleOperation::Withdraw`]: `Unbonding -> Exited`, releasing
@@ -48,9 +53,9 @@ use crate::economics::{
     FastPathEconomicsPolicy, FastPathEconomicsResourcePolicy, decode_fastpath_economics_policy,
 };
 use crate::fast_path::records::{
-    FastPathBondLifecycleOperation, FastPathBondRecord, FastPathBondState,
-    FastPathBondTransitionRecord, decode_fastpath_bond_record, encode_fastpath_bond_record,
-    encode_fastpath_bond_transition_record,
+    BondTransitionAuthorization, FastPathBondLifecycleOperation, FastPathBondRecord,
+    FastPathBondState, FastPathBondTransitionRecord, decode_fastpath_bond_record,
+    encode_fastpath_bond_record, encode_fastpath_bond_transition_record,
 };
 use crate::local_execution::{AdmittedLeg, LocalExecutionAdmissionError, admit_and_execute_leg};
 use bonds::{BondError, BondResourceConfig, BondResourceId, decode_bond_resource_id};
@@ -70,6 +75,7 @@ use protocol_types::{SignatureSchemeId, ValidatorId};
 use validator_set::ValidatorSet;
 
 mod effects;
+pub mod slash;
 #[cfg(test)]
 mod tests;
 
@@ -83,6 +89,7 @@ const OPERATION_TAG_DEPOSIT: u16 = 1;
 const OPERATION_TAG_REPLACE: u16 = 2;
 const OPERATION_TAG_UNBOND: u16 = 3;
 const OPERATION_TAG_WITHDRAW: u16 = 4;
+const OPERATION_TAG_REACTIVATE: u16 = 5;
 
 /// Fail-closed DR-0137 bond-lifecycle errors.
 #[derive(Debug)]
@@ -185,7 +192,9 @@ pub enum BondLifecycleOperation {
         /// The deposit's signed local-execution leg (raw canonical bytes).
         leg: Vec<u8>,
     },
-    /// `Active -> Active`. Same-sender, consecutive-nonce two-leg swap.
+    /// `Active -> Active`. Same-sender, consecutive-nonce two-leg swap. The
+    /// new object's amount must be non-decreasing relative to the previous
+    /// live bond amount (see the module-level documentation).
     Replace {
         /// The new object's signed deposit leg.
         deposit_leg: Vec<u8>,
@@ -205,6 +214,16 @@ pub enum BondLifecycleOperation {
         /// The release leg (raw canonical bytes).
         leg: Vec<u8>,
     },
+    /// `Jailed -> Active`. Reuses [`Self::Deposit`]'s exact mechanics: `leg`
+    /// is the exact canonical `0x6406/v1` bytes of one signed local-execution
+    /// call moving a fresh sender-owned object into this validator's
+    /// `BondCollateral` scope, checked against the current committed
+    /// enabled/min/max policy exactly as a deposit is.
+    Reactivate {
+        /// The reactivation deposit's signed local-execution leg (raw
+        /// canonical bytes).
+        leg: Vec<u8>,
+    },
 }
 
 impl BondLifecycleOperation {
@@ -214,6 +233,7 @@ impl BondLifecycleOperation {
             Self::Replace { .. } => OPERATION_TAG_REPLACE,
             Self::Unbond { .. } => OPERATION_TAG_UNBOND,
             Self::Withdraw { .. } => OPERATION_TAG_WITHDRAW,
+            Self::Reactivate { .. } => OPERATION_TAG_REACTIVATE,
         }
     }
 }
@@ -281,7 +301,9 @@ pub fn encode_bond_lifecycle_intent(
     frame.field_bytes(3, intent.validator_id.as_bytes().to_vec())?;
     frame.field_u16(4, intent.operation.tag())?;
     match &intent.operation {
-        BondLifecycleOperation::Deposit { leg } | BondLifecycleOperation::Withdraw { leg } => {
+        BondLifecycleOperation::Deposit { leg }
+        | BondLifecycleOperation::Withdraw { leg }
+        | BondLifecycleOperation::Reactivate { leg } => {
             frame.field_bytes(5, leg.clone())?;
         }
         BondLifecycleOperation::Replace {
@@ -346,6 +368,12 @@ pub fn decode_bond_lifecycle_intent(
         OPERATION_TAG_WITHDRAW => {
             frame.require_only_fields(&[fixed_fields, &[5]].concat())?;
             BondLifecycleOperation::Withdraw {
+                leg: frame.required_field(5)?.to_vec(),
+            }
+        }
+        OPERATION_TAG_REACTIVATE => {
+            frame.require_only_fields(&[fixed_fields, &[5]].concat())?;
+            BondLifecycleOperation::Reactivate {
                 leg: frame.required_field(5)?.to_vec(),
             }
         }
@@ -535,12 +563,17 @@ enum OperationLegs {
     Withdraw {
         leg: AuthenticatedLocalExecutionIntent,
     },
+    Reactivate {
+        leg: AuthenticatedLocalExecutionIntent,
+    },
 }
 
 impl OperationLegs {
     fn iter(&self) -> Vec<&AuthenticatedLocalExecutionIntent> {
         match self {
-            Self::Deposit { leg } | Self::Withdraw { leg } => vec![leg],
+            Self::Deposit { leg } | Self::Withdraw { leg } | Self::Reactivate { leg } => {
+                vec![leg]
+            }
             Self::Replace {
                 deposit_leg,
                 release_leg,
@@ -567,6 +600,9 @@ fn authenticate_legs(
             leg: authenticate(leg)?,
         },
         BondLifecycleOperation::Withdraw { leg } => OperationLegs::Withdraw {
+            leg: authenticate(leg)?,
+        },
+        BondLifecycleOperation::Reactivate { leg } => OperationLegs::Reactivate {
             leg: authenticate(leg)?,
         },
         BondLifecycleOperation::Replace {
@@ -878,9 +914,16 @@ where
             "bond lifecycle envelope signature",
         ));
     }
-    // Any transition out of `Jailed` is rejected. Evidence-driven jail and
-    // reactivation are implementation unit 3, not this one.
-    if matches!(bond.state, FastPathBondState::Jailed { .. }) {
+    // Every transition out of `Jailed` is rejected except `Reactivate`,
+    // which is the only operation this closed state machine permits from
+    // `Jailed`. Evidence-driven jail itself is `handle_bond_slash`, not this
+    // signed-envelope path.
+    if matches!(bond.state, FastPathBondState::Jailed { .. })
+        && !matches!(
+            signed.intent.operation,
+            BondLifecycleOperation::Reactivate { .. }
+        )
+    {
         return Err(BondLifecycleError::Invalid("bond is jailed"));
     }
 
@@ -963,19 +1006,23 @@ where
         } => replace(preamble, deposit_leg, release_leg, release_recipient),
         OperationLegs::Unbond { recipient } => unbond(preamble, recipient),
         OperationLegs::Withdraw { leg } => withdraw(preamble, leg),
+        OperationLegs::Reactivate { leg } => reactivate(preamble, leg),
     }
 }
 
 /// One atomic commit: every touched object head, the new bond row, the new
 /// (never overwritten) transition record, and the one outer receipt. The
-/// response payload is the canonical encoded next bond row.
+/// response payload is the canonical encoded next bond row. Thin wrapper
+/// over [`commit_bond_transition`] for the four validator-signed lifecycle
+/// operations; [`slash::handle_bond_slash`] calls
+/// [`commit_bond_transition`] directly since it has no [`Preamble`].
 fn commit<S, E>(
     preamble: Preamble<'_, S, E>,
     operation: FastPathBondLifecycleOperation,
     new_bond: FastPathBondRecord,
     head_reads: Vec<DurableObjectHeadRead>,
     object_mutations: Vec<DurableObjectMutationEntry>,
-    mut state_mutations: Vec<StateMutationEntry>,
+    state_mutations: Vec<StateMutationEntry>,
 ) -> Result<NodeOutput, BondLifecycleError>
 where
     S: StructuredDurableDomainStateStore,
@@ -995,9 +1042,74 @@ where
         previous_bond_bytes,
         bond: previous_bond,
         created_checkpoint,
-        mut reads,
+        reads,
         ..
     } = preamble;
+    let expected_next_row_digest: Digest32 = signed.intent.expected_next_row_digest;
+    commit_bond_transition(
+        store,
+        context,
+        domain,
+        resolver,
+        request_id,
+        receipt_digest,
+        bond_key,
+        bond_row_revision,
+        previous_bond_bytes,
+        previous_bond,
+        created_checkpoint,
+        reads,
+        signed.intent.context.clone(),
+        operation,
+        BondTransitionAuthorization::ValidatorEnvelope {
+            signed_envelope: signed_bytes,
+        },
+        Some(expected_next_row_digest),
+        new_bond,
+        head_reads,
+        object_mutations,
+        state_mutations,
+    )
+}
+
+/// The shared atomic commit every DR-0137 bond transition -- lifecycle or
+/// slash -- goes through: every touched object head, the new bond row, the
+/// new (never overwritten) transition record, and the one outer receipt. The
+/// response payload is the canonical encoded next bond row.
+///
+/// `expected_next_row_digest` is `Some` for every validator-signed lifecycle
+/// transition (the signer cryptographically pinned the exact resulting row
+/// ahead of execution, so deterministic execution must reproduce it exactly
+/// or this fails closed before anything commits -- no coordinated rewrite of
+/// this row, or any later one, can ever match a signature that was never
+/// issued for it) and `None` for evidence-driven `Slash`, which has no
+/// signer to pin a row ahead of time: the caller instead deterministically
+/// derives `new_bond` from the committed previous row and independently
+/// re-verified evidence alone, so there is nothing an attacker could
+/// substitute a different resulting row against.
+#[allow(clippy::too_many_arguments)]
+fn commit_bond_transition<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    request_id: RequestId,
+    receipt_digest: Digest32,
+    bond_key: Vec<u8>,
+    bond_row_revision: StateRevision,
+    previous_bond_bytes: Vec<u8>,
+    previous_bond: FastPathBondRecord,
+    created_checkpoint: u64,
+    mut reads: BTreeMap<Vec<u8>, StateRevision>,
+    transition_context: PublicationContext,
+    operation: FastPathBondLifecycleOperation,
+    authorization: BondTransitionAuthorization,
+    expected_next_row_digest: Option<Digest32>,
+    new_bond: FastPathBondRecord,
+    head_reads: Vec<DurableObjectHeadRead>,
+    object_mutations: Vec<DurableObjectMutationEntry>,
+    mut state_mutations: Vec<StateMutationEntry>,
+) -> Result<NodeOutput, BondLifecycleError> {
     let new_bond_bytes: Vec<u8> = encode_fastpath_bond_record(&new_bond)?;
     // Each row's digest is hashed at its own `lifecycle_epoch`, not the
     // committing transition's epoch: this makes a row's digest a pure,
@@ -1012,25 +1124,22 @@ where
     )?;
     let current_digest: Digest32 =
         bond_row_digest(resolver, new_bond.lifecycle_epoch, &new_bond_bytes)?;
-    // The signer cryptographically pinned the exact resulting row ahead of
-    // execution; deterministic execution must reproduce it exactly, or this
-    // fails closed before anything commits. This is what makes the chain
-    // non-forgeable: no coordinated rewrite of this row (or any later one)
-    // can ever match a validator signature that was never issued for it.
-    if current_digest != signed.intent.expected_next_row_digest {
+    if let Some(expected) = expected_next_row_digest
+        && current_digest != expected
+    {
         return Err(BondLifecycleError::Invalid(
             "bond lifecycle next row digest mismatch",
         ));
     }
     let transition: FastPathBondTransitionRecord = FastPathBondTransitionRecord {
-        context: signed.intent.context.clone(),
+        context: transition_context,
         validator_id: new_bond.validator_id,
         generation: new_bond.generation,
         previous_row_digest: previous_digest,
         current_row_digest: current_digest,
         operation,
         committed_at_checkpoint: created_checkpoint,
-        signed_envelope: signed_bytes,
+        authorization,
         resulting_row: new_bond_bytes.clone(),
     };
     let transition_bytes: Vec<u8> = encode_fastpath_bond_transition_record(&transition)?;
@@ -1094,20 +1203,79 @@ where
     )?)
 }
 
+/// [`deposit`] and [`reactivate`] share identical mechanics -- a fresh
+/// sender-owned whole object checked against the current committed
+/// enabled/min/max policy -- and differ only in the required previous state
+/// and the recorded [`FastPathBondLifecycleOperation`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DepositKind {
+    /// `Exited -> Active`.
+    Deposit,
+    /// `Jailed -> Active`.
+    Reactivate,
+}
+
+impl DepositKind {
+    fn accepts(self, state: &FastPathBondState) -> bool {
+        match self {
+            Self::Deposit => *state == FastPathBondState::Exited,
+            Self::Reactivate => matches!(state, FastPathBondState::Jailed { .. }),
+        }
+    }
+
+    const fn invalid_state_message(self) -> &'static str {
+        match self {
+            Self::Deposit => "bond deposit requires an exited bond",
+            Self::Reactivate => "bond reactivate requires a jailed bond",
+        }
+    }
+
+    const fn operation(self) -> FastPathBondLifecycleOperation {
+        match self {
+            Self::Deposit => FastPathBondLifecycleOperation::Deposit,
+            Self::Reactivate => FastPathBondLifecycleOperation::Reactivate,
+        }
+    }
+}
+
 /// `Exited -> Active`. Rejects a validator with no committed bond row
 /// before this point ever runs (the shared preamble already required one).
 fn deposit<S, E>(
-    mut preamble: Preamble<'_, S, E>,
+    preamble: Preamble<'_, S, E>,
     leg: AuthenticatedLocalExecutionIntent,
 ) -> Result<NodeOutput, BondLifecycleError>
 where
     S: StructuredDurableDomainStateStore,
     E: LocalContractEngine + ?Sized,
 {
-    if preamble.bond.state != FastPathBondState::Exited {
-        return Err(BondLifecycleError::Invalid(
-            "bond deposit requires an exited bond",
-        ));
+    deposit_or_reactivate(preamble, leg, DepositKind::Deposit)
+}
+
+/// `Jailed -> Active`. Reuses [`deposit`]'s exact mechanics: a fresh
+/// sender-owned whole object, checked against the current committed
+/// enabled/min/max policy exactly as a deposit is.
+fn reactivate<S, E>(
+    preamble: Preamble<'_, S, E>,
+    leg: AuthenticatedLocalExecutionIntent,
+) -> Result<NodeOutput, BondLifecycleError>
+where
+    S: StructuredDurableDomainStateStore,
+    E: LocalContractEngine + ?Sized,
+{
+    deposit_or_reactivate(preamble, leg, DepositKind::Reactivate)
+}
+
+fn deposit_or_reactivate<S, E>(
+    mut preamble: Preamble<'_, S, E>,
+    leg: AuthenticatedLocalExecutionIntent,
+    kind: DepositKind,
+) -> Result<NodeOutput, BondLifecycleError>
+where
+    S: StructuredDurableDomainStateStore,
+    E: LocalContractEngine + ?Sized,
+{
+    if !kind.accepts(&preamble.bond.state) {
+        return Err(BondLifecycleError::Invalid(kind.invalid_state_message()));
     }
     let resource_context: PublicationContext = preamble.bond.context.clone();
     let policy: FastPathEconomicsPolicy = read_economics_policy(
@@ -1123,6 +1291,11 @@ where
         preamble.bond.resource,
     )?;
     let bond_cfg: &BondResourceConfig = bond_config(resource)?;
+    if !bond_cfg.enabled {
+        return Err(BondLifecycleError::Invalid(
+            "bond resource is disabled by the committed economics policy",
+        ));
+    }
     let scope: ProtocolCustodyScope = custody_scope(
         &resource_context,
         preamble.bond.validator_id,
@@ -1206,6 +1379,13 @@ where
             "bond deposit amount below the committed minimum",
         ));
     }
+    if let Some(max_exposure) = bond_cfg.max_validator_exposure
+        && amount > max_exposure.get()
+    {
+        return Err(BondLifecycleError::Invalid(
+            "bond deposit amount exceeds the committed max validator exposure",
+        ));
+    }
     let (mutation_entry, digest) = effects::build_mutation_entry(
         preamble.resolver,
         &preamble.current_context,
@@ -1218,6 +1398,19 @@ where
         nonce.key,
         StateMutation::Put(nonce.record.encode()?),
     )?);
+    let deposit_epoch: Epoch = preamble.current_context.epoch();
+    // Fresh collateral can only ever join the *next* validator set (DR-0137
+    // eligibility gates on the *committed current* epoch, strictly before
+    // this one activates): its liability floor is therefore the committing
+    // epoch plus one, never the committing epoch itself, so evidence dated
+    // at or before the deposit cannot forfeit collateral that was not yet
+    // posted when the misbehavior happened.
+    let slashable_from_epoch: Epoch = Epoch::new(
+        deposit_epoch
+            .get()
+            .checked_add(1)
+            .ok_or(BondLifecycleError::Invalid("bond slashable epoch overflow"))?,
+    );
     let new_bond: FastPathBondRecord = FastPathBondRecord {
         context: resource_context,
         validator_id: preamble.bond.validator_id,
@@ -1228,6 +1421,9 @@ where
             version: new_object.version,
             digest,
         },
+        // This deposit/reactivate leg mints the fresh object ref this row
+        // now carries, at exactly the committing epoch.
+        custody_object_epoch: deposit_epoch,
         authority: input.authority.clone(),
         amount,
         committed_at_checkpoint: preamble.created_checkpoint,
@@ -1236,7 +1432,8 @@ where
             .generation
             .checked_add(1)
             .ok_or(BondLifecycleError::Invalid("bond generation overflow"))?,
-        lifecycle_epoch: preamble.current_context.epoch(),
+        lifecycle_epoch: deposit_epoch,
+        slashable_from_epoch,
         required_minimum: bond_cfg.min_bond.get(),
         state: FastPathBondState::Active,
         authorization_scheme: preamble.bond.authorization_scheme,
@@ -1244,7 +1441,7 @@ where
     };
     commit(
         preamble,
-        FastPathBondLifecycleOperation::Deposit,
+        kind.operation(),
         new_bond,
         head_reads,
         vec![mutation_entry],
@@ -1308,6 +1505,11 @@ where
         preamble.bond.resource,
     )?;
     let bond_cfg: &BondResourceConfig = bond_config(resource)?;
+    if !bond_cfg.enabled {
+        return Err(BondLifecycleError::Invalid(
+            "bond resource is disabled by the committed economics policy",
+        ));
+    }
     let deposit_scope: ProtocolCustodyScope = custody_scope(
         &resource_context,
         preamble.bond.validator_id,
@@ -1434,6 +1636,25 @@ where
             "bond replace amount below the committed minimum",
         ));
     }
+    if let Some(max_exposure) = bond_cfg.max_validator_exposure
+        && amount > max_exposure.get()
+    {
+        return Err(BondLifecycleError::Invalid(
+            "bond replace amount exceeds the committed max validator exposure",
+        ));
+    }
+    // Non-decreasing: `Replace` releases the *entire* old collateral object
+    // (see `release_leg` below), so permitting a smaller replacement amount
+    // -- while still passing the committed minimum -- would let a validator
+    // reduce its live collateral instantly and without the `Unbond`/
+    // `Withdraw` delay, evading full forfeiture for any pre-existing
+    // liability window on the released amount. Any legitimate reduction
+    // must go through `Unbond`/`Withdraw` instead.
+    if amount < preamble.bond.amount {
+        return Err(BondLifecycleError::Invalid(
+            "bond replace amount below the previous live bond amount",
+        ));
+    }
     let release_owner_before: Owner = Owner::ProtocolCustody(release_scope);
     let release_owner_after: Owner = Owner::Address(release_recipient);
     let release_snapshot: &object_snapshots::ObjectSnapshot = admitted_release
@@ -1490,6 +1711,8 @@ where
             version: new_object.version,
             digest: deposit_digest,
         },
+        // Replace mints a fresh object ref at exactly the committing epoch.
+        custody_object_epoch: preamble.current_context.epoch(),
         authority: deposit_input.authority.clone(),
         amount,
         committed_at_checkpoint: preamble.created_checkpoint,
@@ -1499,6 +1722,11 @@ where
             .checked_add(1)
             .ok_or(BondLifecycleError::Invalid("bond generation overflow"))?,
         lifecycle_epoch: preamble.current_context.epoch(),
+        // Liability provenance survives a same-state collateral swap:
+        // `Replace` preserves the previous row's floor exactly rather than
+        // resetting it, since the validator's underlying liability window
+        // never closed.
+        slashable_from_epoch: preamble.bond.slashable_from_epoch,
         required_minimum: bond_cfg.min_bond.get(),
         state: FastPathBondState::Active,
         authorization_scheme: preamble.bond.authorization_scheme,
@@ -1561,6 +1789,10 @@ where
         resource_domain: preamble.bond.resource_domain,
         resource: preamble.bond.resource,
         custody_object: preamble.bond.custody_object.clone(),
+        // `Unbond` executes no leg and never touches the custody object: the
+        // digest-provenance epoch is carried forward unchanged even though
+        // `lifecycle_epoch` itself advances to this transition's own epoch.
+        custody_object_epoch: preamble.bond.custody_object_epoch,
         authority: preamble.bond.authority.clone(),
         amount: preamble.bond.amount,
         committed_at_checkpoint: preamble.created_checkpoint,
@@ -1570,8 +1802,10 @@ where
             .checked_add(1)
             .ok_or(BondLifecycleError::Invalid("bond generation overflow"))?,
         lifecycle_epoch: current_epoch,
-        // Preserved exactly from the current row: a later policy minimum
-        // raise must not strand an existing, already-eligible bond.
+        // Preserved exactly from the current row: liability provenance
+        // survives entering `Unbonding`, and a later policy minimum raise
+        // must not strand an existing, already-eligible bond.
+        slashable_from_epoch: preamble.bond.slashable_from_epoch,
         required_minimum: preamble.bond.required_minimum,
         state: FastPathBondState::Unbonding {
             unlock_epoch,
@@ -1751,6 +1985,11 @@ where
             version: new_object.version,
             digest,
         },
+        // The release leg mints a fresh (owner-changed) object ref at
+        // exactly the committing epoch, even though the object leaves
+        // custody: `FastPathBondRecord::custody_object` on an `Exited` row
+        // is a historical audit pointer only (see its own doc comment).
+        custody_object_epoch: current_epoch,
         authority: input.authority.clone(),
         amount: preamble.bond.amount,
         committed_at_checkpoint: preamble.created_checkpoint,
@@ -1760,7 +1999,9 @@ where
             .checked_add(1)
             .ok_or(BondLifecycleError::Invalid("bond generation overflow"))?,
         lifecycle_epoch: current_epoch,
-        // Preserved exactly from the current row -- see the `unbond` comment.
+        // Preserved exactly from the current row, purely as audit data now
+        // that the bond is no longer live -- see the `unbond` comment.
+        slashable_from_epoch: preamble.bond.slashable_from_epoch,
         required_minimum: preamble.bond.required_minimum,
         state: FastPathBondState::Exited,
         authorization_scheme: preamble.bond.authorization_scheme,

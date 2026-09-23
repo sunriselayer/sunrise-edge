@@ -20,6 +20,8 @@ pub enum BondLifecycleOperation {
     Unbond,
     /// `Unbonding -> Exited`.
     Withdraw,
+    /// `Jailed -> Active`. Reuses [`Self::Deposit`]'s exact authority shape.
+    Reactivate,
 }
 
 /// In-process caller authority for a bond-lifecycle operation.
@@ -50,6 +52,13 @@ pub enum CryptographicAuthority {
     /// custody object is never sender-owned) and the recipient was already
     /// fixed by the committed validator at the prior `Unbond`.
     ValidatorAndReleaseSubmitter,
+    /// One already-verified, re-verified DR-0133 evidence row (see
+    /// [`slash_policy`]'s own doc), plus an exact `ExecuteLocalContract`
+    /// signature from whichever account submits/invokes the one embedded
+    /// forfeiture leg. No committed validator signature is required or
+    /// possible: the validator being slashed is exactly who this operation
+    /// acts against.
+    EvidenceAndLegSubmitter,
 }
 
 /// External ingress availability for a bond-lifecycle operation.
@@ -74,7 +83,9 @@ pub struct Phase3AuthorizationPolicy {
 #[must_use]
 pub const fn policy(operation: BondLifecycleOperation) -> Phase3AuthorizationPolicy {
     let cryptographic: CryptographicAuthority = match operation {
-        BondLifecycleOperation::Deposit => CryptographicAuthority::ValidatorAndSourceOwner,
+        BondLifecycleOperation::Deposit | BondLifecycleOperation::Reactivate => {
+            CryptographicAuthority::ValidatorAndSourceOwner
+        }
         BondLifecycleOperation::Replace => CryptographicAuthority::ValidatorAndTwoLegOwner,
         BondLifecycleOperation::Unbond => CryptographicAuthority::ValidatorOnly,
         BondLifecycleOperation::Withdraw => CryptographicAuthority::ValidatorAndReleaseSubmitter,
@@ -86,13 +97,31 @@ pub const fn policy(operation: BondLifecycleOperation) -> Phase3AuthorizationPol
     }
 }
 
+/// [`crate::bond_lifecycle::slash::handle_bond_slash`]'s authorization class:
+/// not a signed [`BondLifecycleOperation`] at all. Its authority is exactly
+/// one already-verified DR-0133 evidence row (re-verified again against the
+/// chain-anchored historical validator set before it may be consumed) plus
+/// an exact `ExecuteLocalContract` signature from whichever account
+/// submits/invokes the one embedded forfeiture leg -- that submitter signs
+/// only to spend its own nonce and relay the call; it proves no ownership or
+/// authority over the bond, and grants none, since the entire transition is
+/// authorized by the evidence, never by any submitter identity.
+#[must_use]
+pub const fn slash_policy() -> Phase3AuthorizationPolicy {
+    Phase3AuthorizationPolicy {
+        invocation: InvocationAuthority::LocalOperator,
+        cryptographic: CryptographicAuthority::EvidenceAndLegSubmitter,
+        external_ingress: ExternalIngress::Closed,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn exact_phase3_authorization_matrix_is_closed_and_exhaustive() {
-        let cases: [(BondLifecycleOperation, CryptographicAuthority); 4] = [
+        let cases: [(BondLifecycleOperation, CryptographicAuthority); 5] = [
             (
                 BondLifecycleOperation::Deposit,
                 CryptographicAuthority::ValidatorAndSourceOwner,
@@ -109,6 +138,10 @@ mod tests {
                 BondLifecycleOperation::Withdraw,
                 CryptographicAuthority::ValidatorAndReleaseSubmitter,
             ),
+            (
+                BondLifecycleOperation::Reactivate,
+                CryptographicAuthority::ValidatorAndSourceOwner,
+            ),
         ];
         for (operation, expected_cryptographic) in cases {
             let actual: Phase3AuthorizationPolicy = policy(operation);
@@ -116,5 +149,16 @@ mod tests {
             assert_eq!(actual.cryptographic, expected_cryptographic);
             assert_eq!(actual.external_ingress, ExternalIngress::Closed);
         }
+    }
+
+    #[test]
+    fn slash_authorization_is_evidence_driven_and_externally_closed() {
+        let actual: Phase3AuthorizationPolicy = slash_policy();
+        assert_eq!(actual.invocation, InvocationAuthority::LocalOperator);
+        assert_eq!(
+            actual.cryptographic,
+            CryptographicAuthority::EvidenceAndLegSubmitter
+        );
+        assert_eq!(actual.external_ingress, ExternalIngress::Closed);
     }
 }

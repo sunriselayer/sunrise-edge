@@ -24,6 +24,8 @@
 //! bytes, at restart-verify time.
 #![allow(clippy::result_large_err)]
 use super::*;
+use crate::economics::{FastPathEconomicsPolicy, decode_fastpath_economics_policy};
+use bonds::BondResourceId;
 use canonical_encoding::{CanonicalDecodingError, decode_digest32, encode_digest32};
 use consensus::{
     ConsensusError, ConsensusSigner, EpochTransitionCertificate, EpochTransitionCertifier,
@@ -32,7 +34,10 @@ use consensus::{
 use execution::local_execution::{LocalExecutionError, LocalExecutionPolicy};
 use execution::paid_execution::{PaidExecutionError, PaidFeePolicy, decode_paid_fee_policy};
 use execution::publication::{PublicationContext, PublicationError};
-use fast_path::records::{FastPathValidatorEntry, FastPathValidatorSetRecord};
+use fast_path::records::{
+    FastPathBondRecord, FastPathBondState, FastPathValidatorEntry, FastPathValidatorSetRecord,
+    decode_fastpath_bond_record,
+};
 use fast_path::{FastPathEd25519Verifier, load_validator_set};
 use local_instance_state::FastPathEpochRecord;
 use protocol_types::SignatureSchemeId;
@@ -270,6 +275,18 @@ pub fn encode_fastpath_epoch_activation_set(
 }
 
 /// The deterministic result of deriving one `e -> e+1` activation set (DR-0132 §3.A).
+///
+/// Deliberately carries no bond-eligibility information: a certificate that
+/// already exists was validly formed (every signer independently ran
+/// [`derive_eligibility_reads`] before voting -- see [`propose_and_vote`]),
+/// and applying it in [`activate`] must be a pure function of the
+/// certificate and this struct's own byte-stable fields, never of live
+/// mutable bond state that a concurrent [`crate::bond_lifecycle::slash`]
+/// could change between certificate formation and activation. Coupling
+/// activation to eligibility would let whether a slash happened to commit
+/// first change whether an already-quorum-certified transition applies,
+/// which is exactly the divergence DR-0137 unit 3 must not introduce.
+#[derive(Debug)]
 pub(crate) struct DerivedActivation {
     pub(crate) next_validator_set_digest: Digest32,
     pub(crate) activation_digest: Digest32,
@@ -280,6 +297,132 @@ pub(crate) struct DerivedActivation {
     /// bytes different from those the certificate committed to.
     pub(crate) current_fee_policy_key: Vec<u8>,
     pub(crate) current_fee_policy_revision: StateRevision,
+}
+
+/// Reads the committed economics policy and every `next_validators` row's
+/// committed [`FastPathBondRecord`] at `current_epoch`, and requires each
+/// entry to be `Active`/live, bound to the exact chain and validator id,
+/// committed no later than `current_epoch`, signed with the exact
+/// registered authorization scheme/key, and amount-eligible under the
+/// current committed policy (the resource enabled, the amount at least the
+/// current minimum and at most the current maximum exposure).
+///
+/// Called from [`propose_and_vote`] alone, strictly before a vote is cast: a
+/// candidate failing this check is never voted on, so it can never enter a
+/// legitimately quorum-certified `next_validators` set in the first place.
+/// [`activate`]/[`derive_activation_set`] deliberately never call this --
+/// once a certificate exists, applying it is a pure derivation of the
+/// certificate's own bytes (DR-0137 unit 3: "certificate-wins ordering").
+/// This is a pure eligibility gate, not a CAS: unlike
+/// [`bond_lifecycle::read_economics_policy`], it returns nothing a caller
+/// could use to fence a later write against the rows it reads, and no test
+/// consumes its local reads either. The local revision map exists purely as
+/// bookkeeping while iterating `next_validators` -- each visited bond row's
+/// `StateRevision` is recorded once per unique key (duplicate bond/policy
+/// keys cannot occur here: `next_validators` was already validated
+/// duplicate-free by `ValidatorSet::new` inside [`derive_activation_set`],
+/// and `policy_cache` avoids re-fetching a shared resource context) -- and
+/// is discarded once this call returns.
+fn derive_eligibility_reads<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain: &ChainId,
+    current_epoch: Epoch,
+    next_validators: &[FastPathValidatorEntry],
+) -> EtResult<()> {
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    // Small linear cache keyed by each bond's own genesis-pinned resource
+    // context (never the transitioning `current_epoch`'s context, exactly
+    // like `bond_lifecycle::read_economics_policy` reads it) -- in practice
+    // one entry, since every bond shares one resource context, but a bond
+    // cannot be assumed to.
+    let mut policy_cache: Vec<(PublicationContext, FastPathEconomicsPolicy)> = Vec::new();
+
+    let mut sorted_validators: Vec<&FastPathValidatorEntry> = next_validators.iter().collect();
+    sorted_validators.sort_by_key(|validator| validator.id);
+    for validator in sorted_validators {
+        let bond_key: Vec<u8> =
+            local_instance_state::fastpath_bond_record_key(chain, &validator.id)?;
+        let bond_observed: VersionedStateValue =
+            store.get_versioned_durable(context, domain, &bond_key)?;
+        let bond_bytes: &[u8] = bond_observed.value().ok_or(EpochTransitionError::Invalid(
+            "fast-path next validator set requires a committed, eligible bond",
+        ))?;
+        let bond: FastPathBondRecord = decode_fastpath_bond_record(bond_bytes)?;
+        // A fresh `Deposit`/`Reactivate` at `current_epoch` legitimately
+        // carries `slashable_from_epoch == current_epoch + 1`: that is
+        // exactly the next set this candidate is being considered for, and
+        // its liability begins precisely when it joins. Any larger value
+        // could never have been produced by any closed DR-0137 operation
+        // (see `FastPathBondRecord`'s own encode-time invariant) and is
+        // rejected here as corrupt/forged state rather than silently
+        // admitted as an over-conservative floor.
+        let max_slashable_from_epoch: Option<u64> = current_epoch.get().checked_add(1);
+        if bond.context.chain_id() != chain
+            || bond.validator_id != validator.id
+            || bond.state != FastPathBondState::Active
+            || bond.lifecycle_epoch.get() > current_epoch.get()
+            || max_slashable_from_epoch.is_none_or(|bound| bond.slashable_from_epoch.get() > bound)
+            || bond.authorization_scheme != validator.signature_scheme
+            || bond.authorization_key.as_slice() != validator.public_key.as_slice()
+        {
+            return invalid("fast-path next validator set requires a committed, eligible bond");
+        }
+        reads.insert(bond_key, bond_observed.revision());
+
+        let policy_index: usize = match policy_cache
+            .iter()
+            .position(|(policy_context, _)| *policy_context == bond.context)
+        {
+            Some(index) => index,
+            None => {
+                let policy_key: Vec<u8> =
+                    local_instance_state::fastpath_economics_policy_key(&bond.context)?;
+                let policy_observed: VersionedStateValue =
+                    store.get_versioned_durable(context, domain, &policy_key)?;
+                let policy_bytes: &[u8] =
+                    policy_observed
+                        .value()
+                        .ok_or(EpochTransitionError::Invalid(
+                            "fast-path next validator set requires a committed, eligible bond",
+                        ))?;
+                let policy: FastPathEconomicsPolicy =
+                    decode_fastpath_economics_policy(policy_bytes)?;
+                reads.insert(policy_key, policy_observed.revision());
+                policy_cache.push((bond.context.clone(), policy));
+                policy_cache.len() - 1
+            }
+        };
+        let policy: &FastPathEconomicsPolicy = &policy_cache[policy_index].1;
+
+        let resource_id: BondResourceId = BondResourceId::new(bond.resource_domain, bond.resource)
+            .map_err(|_| {
+                EpochTransitionError::Invalid(
+                    "fast-path next validator set requires a committed, eligible bond",
+                )
+            })?;
+        let resource = policy
+            .resources
+            .binary_search_by_key(&resource_id, |candidate| candidate.resource_id)
+            .ok()
+            .map(|index: usize| &policy.resources[index])
+            .ok_or(EpochTransitionError::Invalid(
+                "fast-path next validator set requires a committed, eligible bond",
+            ))?;
+        let bond_cfg = resource.bond.as_ref().ok_or(EpochTransitionError::Invalid(
+            "fast-path next validator set requires a committed, eligible bond",
+        ))?;
+        if !bond_cfg.enabled
+            || bond.amount < bond_cfg.min_bond.get()
+            || bond_cfg
+                .max_validator_exposure
+                .is_some_and(|max| bond.amount > max.get())
+        {
+            return invalid("fast-path next validator set requires a committed, eligible bond");
+        }
+    }
+    Ok(())
 }
 
 /// Deterministically derives the activation write set for `current_epoch ->
@@ -419,6 +562,14 @@ pub(crate) fn derive_activation_set<S: StructuredDurableDomainStateStore>(
 ///   activation and this fails closed with [`EpochTransitionError::Invalid`]
 ///   (for example, a non-atomic write that should never exist, or on-disk
 ///   tampering).
+///
+/// This is the one and only place DR-0137 unit 3 gates next-set candidate
+/// bond eligibility ([`derive_eligibility_reads`]): a candidate that is
+/// jailed, unbonding, exited, below the minimum, above the maximum
+/// exposure, disabled by policy, key-mismatched or altogether absent fails
+/// this call closed, so no vote is ever cast over it and it can never enter
+/// a legitimately quorum-certified set. [`activate`] never repeats this
+/// check -- see [`DerivedActivation`].
 #[allow(clippy::too_many_arguments)]
 pub fn propose_and_vote<S, C>(
     store: &S,
@@ -495,6 +646,20 @@ where
         &next_validators,
     )?;
 
+    // Gate candidate bond eligibility here, strictly after the incoming set
+    // is already known structurally valid (`ValidatorSet::new`, inside
+    // `derive_activation_set`) and strictly before a vote is cast -- never
+    // inside `derive_activation_set`/`activate` (see `DerivedActivation`'s
+    // doc comment).
+    derive_eligibility_reads(
+        store,
+        context,
+        domain,
+        chain,
+        current_epoch,
+        &next_validators,
+    )?;
+
     let certifier: EpochTransitionCertifier = EpochTransitionCertifier::new(
         chain.clone(),
         protocol_version,
@@ -531,6 +696,17 @@ pub enum EpochActivationOutcome {
 /// the activation set from it and requires the result to match the
 /// certificate exactly (§3.C.6) -- a node never installs bytes it did not
 /// itself derive.
+///
+/// Deliberately does not re-check next-set bond eligibility
+/// ([`derive_eligibility_reads`] runs only in [`propose_and_vote`], before a
+/// vote is ever cast): a certificate that verifies here was already validly
+/// formed, and applying it is a pure derivation of the certificate's own
+/// bytes plus the current committed policy/validator-set state needed to
+/// reproduce [`FastPathEpochActivationSet`] -- never of a next-set
+/// validator's live bond state. A `handle_bond_slash` that commits at any
+/// point relative to this call therefore cannot change whether this exact
+/// certificate activates; jailing a validator here only ever affects which
+/// candidates the *next* `propose_and_vote` round is willing to vote on.
 #[allow(clippy::too_many_arguments)]
 pub fn activate<S: StructuredDurableDomainStateStore>(
     store: &S,

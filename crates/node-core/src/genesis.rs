@@ -40,7 +40,10 @@ use execution::publication::{
     verify_publication_interface,
 };
 use hashing::{HashSuiteResolver, HashingError};
-use objects::{Object, ObjectError, ObjectRef, Owner, decode_object, encode_object};
+use objects::{
+    AccessMode, Object, ObjectError, ObjectRef, Owner, ProtocolCustodyPurpose,
+    ProtocolCustodyScope, decode_object, encode_object,
+};
 use protocol_types::{Digest32, Epoch, HashPurpose, SignatureSchemeId, ValidatorId};
 use runtime::{
     AtomicStateReadSet, AtomicityDomainId, DurableCommitOutcome, DurableCommitRejection,
@@ -56,13 +59,15 @@ use validator_set::{ValidatorInfo, ValidatorSet};
 
 use crate::bond_lifecycle;
 use crate::economics::{
-    FastPathEconomicsPolicy, MAX_FASTPATH_ECONOMICS_POLICY_BYTES, decode_fastpath_economics_policy,
-    encode_fastpath_economics_policy,
+    FastPathEconomicsPolicy, FastPathEconomicsResourcePolicy, MAX_FASTPATH_ECONOMICS_POLICY_BYTES,
+    decode_fastpath_economics_policy, encode_fastpath_economics_policy,
 };
 use crate::epoch_transition;
+use crate::equivocation;
+use crate::fast_path;
 use crate::fast_path::records::{
-    FastPathBondRecord, FastPathBondState, FastPathBondTransitionRecord,
-    FastPathValidatorSetRecord, decode_fastpath_bond_record,
+    BondTransitionAuthorization, FastPathBondRecord, FastPathBondState,
+    FastPathBondTransitionRecord, FastPathValidatorSetRecord, decode_fastpath_bond_record,
     decode_fastpath_bond_transition_record, decode_fastpath_validator_set_record,
     encode_fastpath_bond_record, encode_fastpath_validator_set_record,
 };
@@ -1120,17 +1125,41 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
                 resource_domain,
                 resource,
                 custody_object,
+                // Genesis mints this validator's one and only generation-1
+                // object at exactly the genesis epoch.
+                custody_object_epoch: manifest_context.epoch(),
                 authority: entry.authority.clone(),
                 amount,
                 committed_at_checkpoint: checkpoint,
                 generation: 1,
                 lifecycle_epoch: manifest_context.epoch(),
+                // A genesis bond is part of the genesis validator set itself,
+                // not a fresh deposit joining some later set: it is liable
+                // from the genesis epoch onward, not genesis_epoch + 1.
+                slashable_from_epoch: manifest_context.epoch(),
                 required_minimum: bond_policy.min_bond.get(),
                 state: FastPathBondState::Active,
                 authorization_scheme: SignatureSchemeId::Ed25519,
                 authorization_key,
             };
             bond_records.push((bond_key, encode_fastpath_bond_record(&bond_record)?));
+        }
+    }
+
+    // DR-0136: every genesis validator has exactly one genesis bond record.
+    // `seen_bond_keys` above already fails closed on a second custody
+    // object for the same validator; this closes the other half -- a
+    // validator with no matching custody object must fail genesis
+    // installation rather than enter a set without slashable collateral.
+    for validator in &manifest.validator_set.validators {
+        let bond_key: Vec<u8> = local_instance_state::fastpath_bond_record_key(
+            manifest_context.chain_id(),
+            &validator.id,
+        )?;
+        if !seen_bond_keys.contains(&bond_key) {
+            return Err(GenesisError::Invalid(
+                "genesis validator has no matching genesis bond",
+            ));
         }
     }
 
@@ -1703,58 +1732,428 @@ fn verify_fastpath_bond_chain<S: StructuredDurableDomainStateStore>(
             ));
         }
 
-        // Independently re-decode the exact retained signed envelope and
-        // re-verify the validator's signature over its own recomputed
-        // intent digest -- never trusting a stored digest or signature
-        // summary alone.
-        let signed: bond_lifecycle::SignedBondLifecycleIntent =
-            bond_lifecycle::decode_signed_bond_lifecycle_intent(&transition.signed_envelope)
-                .map_err(|_| {
-                    GenesisError::TamperedInstalledRecord("fast-path bond transition record")
-                })?;
-        let intent: &bond_lifecycle::BondLifecycleIntent = &signed.intent;
+        // Selects the trusted resolver matching the transition's own
+        // persisted signing context, used both to recompute the previous
+        // row's digest and, for a validator-signed transition, to verify
+        // the signature -- never a resolver carried forward from a prior
+        // transition, which may belong to a different protocol version and
+        // therefore a different hash framing of the identical bytes.
         let signing_resolver: &HashSuiteResolver =
-            bond_transition_resolver(resolver, history, &intent.context)?;
-        let intent_digest: Digest32 =
-            bond_lifecycle::bond_lifecycle_intent_digest(signing_resolver, intent).map_err(
-                |_| GenesisError::TamperedInstalledRecord("fast-path bond transition record"),
-            )?;
-        let framed: Vec<u8> =
-            bond_lifecycle::bond_lifecycle_signing_frame(&intent.context, intent_digest).map_err(
-                |_| GenesisError::TamperedInstalledRecord("fast-path bond transition record"),
-            )?;
-        if !verifier.verify_framed(&framed, &signed.signature)? {
-            return Err(GenesisError::TamperedInstalledRecord(
-                "fast-path bond transition record",
-            ));
-        }
+            bond_transition_resolver(resolver, history, &transition.context)?;
 
         // Independently recompute the previous row's digest from the exact
         // retained previous row bytes, under *this* transition's own
-        // signing resolver -- never a digest carried forward from a prior
-        // transition's resolver, which may belong to a different protocol
-        // version and therefore a different hash framing of the identical
-        // bytes.
+        // signing resolver.
         let previous_digest: Digest32 = bond_lifecycle::bond_row_digest(
             signing_resolver,
             previous_row.lifecycle_epoch,
             &last_resulting_row,
-        )?;
-
-        // Cross-check the decoded intent against the running chain state and
-        // the transition's own redundant summary fields.
-        if intent.context != transition.context
-            || intent.validator_id != genesis_row.validator_id
-            || intent.resource_id != genesis_resource_id
-            || intent.expected_generation != generation
-            || intent.expected_previous_row_digest != previous_digest
-            || intent.expected_previous_row_digest != transition.previous_row_digest
-            || intent.operation.tag() != transition.operation.as_u16()
-        {
+        )
+        .map_err(|_| GenesisError::TamperedInstalledRecord("fast-path bond transition record"))?;
+        if previous_digest != transition.previous_row_digest {
             return Err(GenesisError::TamperedInstalledRecord(
                 "fast-path bond transition record",
             ));
         }
+
+        // Branch on the closed authorization tag: a validator-signed
+        // lifecycle transition retains the signer's own pinned resulting-row
+        // digest; evidence-driven forfeiture has no signer to pin one and is
+        // instead fully re-decoded and re-verified against the
+        // chain-anchored historical validator set, the retained forfeiture
+        // leg's own signature/target, and the retained previous/resulting
+        // object bytes -- `evidence_resulting_ref` is the independently
+        // recomputed resulting `ObjectRef`, cross-checked against
+        // `resulting_row.custody_object` below, since evidence-driven
+        // forfeiture has no signed `expected_next_row_digest` to pin the
+        // resulting row any other way.
+        let (expected_next_row_digest, evidence_resulting_ref): (
+            Option<Digest32>,
+            Option<ObjectRef>,
+        ) = match &transition.authorization {
+            BondTransitionAuthorization::ValidatorEnvelope { signed_envelope } => {
+                // Independently re-decode the exact retained signed envelope
+                // and re-verify the validator's signature over its own
+                // recomputed intent digest -- never trusting a stored digest
+                // or signature summary alone.
+                let signed: bond_lifecycle::SignedBondLifecycleIntent =
+                    bond_lifecycle::decode_signed_bond_lifecycle_intent(signed_envelope).map_err(
+                        |_| {
+                            GenesisError::TamperedInstalledRecord(
+                                "fast-path bond transition record",
+                            )
+                        },
+                    )?;
+                let intent: &bond_lifecycle::BondLifecycleIntent = &signed.intent;
+                let intent_digest: Digest32 =
+                    bond_lifecycle::bond_lifecycle_intent_digest(signing_resolver, intent)
+                        .map_err(|_| {
+                            GenesisError::TamperedInstalledRecord(
+                                "fast-path bond transition record",
+                            )
+                        })?;
+                let framed: Vec<u8> =
+                    bond_lifecycle::bond_lifecycle_signing_frame(&intent.context, intent_digest)
+                        .map_err(|_| {
+                            GenesisError::TamperedInstalledRecord(
+                                "fast-path bond transition record",
+                            )
+                        })?;
+                if !verifier.verify_framed(&framed, &signed.signature)? {
+                    return Err(GenesisError::TamperedInstalledRecord(
+                        "fast-path bond transition record",
+                    ));
+                }
+                // Cross-check the decoded intent against the running chain
+                // state and the transition's own redundant summary fields.
+                if intent.context != transition.context
+                    || intent.validator_id != genesis_row.validator_id
+                    || intent.resource_id != genesis_resource_id
+                    || intent.expected_generation != generation
+                    || intent.expected_previous_row_digest != previous_digest
+                    || intent.operation.tag() != transition.operation.as_u16()
+                {
+                    return Err(GenesisError::TamperedInstalledRecord(
+                        "fast-path bond transition record",
+                    ));
+                }
+                (Some(intent.expected_next_row_digest), None)
+            }
+            BondTransitionAuthorization::ConsumedEvidence {
+                evidence_bytes,
+                evidence_epoch,
+                evidence_digest,
+                forfeiture_leg,
+                previous_object,
+                resulting_object,
+            } => {
+                // Fully re-decode and re-verify the retained evidence:
+                // structural decode, identity/selector cross-check, class
+                // (b)'s mandatory preimage-hash-to-signed-digest checks, and
+                // a full reverification against the chain-anchored
+                // historical validator set -- never trusting the stored
+                // summary fields alone.
+                let decoded: equivocation::DecodedEquivocationEvidence =
+                    equivocation::decode_dispatched(evidence_bytes).map_err(|_| {
+                        GenesisError::TamperedInstalledRecord("fast-path bond transition record")
+                    })?;
+                if decoded.chain_id() != transition.context.chain_id()
+                    || decoded.epoch() != *evidence_epoch
+                    || decoded.validator() != genesis_row.validator_id
+                {
+                    return Err(GenesisError::TamperedInstalledRecord(
+                        "fast-path bond transition record",
+                    ));
+                }
+                let recomputed_digest: Digest32 = equivocation::normalized_identity_digest(
+                    signing_resolver,
+                    &decoded,
+                )
+                .map_err(|_| {
+                    GenesisError::TamperedInstalledRecord("fast-path bond transition record")
+                })?;
+                if recomputed_digest != *evidence_digest {
+                    return Err(GenesisError::TamperedInstalledRecord(
+                        "fast-path bond transition record",
+                    ));
+                }
+                if let equivocation::DecodedEquivocationEvidence::ObjectConflict(evidence) =
+                    &decoded
+                {
+                    let low_hash: Digest32 = signing_resolver.hash_for_purpose(
+                        evidence.low.epoch,
+                        HashPurpose::ExecutionEffects,
+                        &consensus::encode_locked_object_set_preimage(&evidence.low_preimage)
+                            .map_err(|_| {
+                                GenesisError::TamperedInstalledRecord(
+                                    "fast-path bond transition record",
+                                )
+                            })?,
+                    )?;
+                    if low_hash != evidence.low.locked_objects_digest {
+                        return Err(GenesisError::TamperedInstalledRecord(
+                            "fast-path bond transition record",
+                        ));
+                    }
+                    let high_hash: Digest32 = signing_resolver.hash_for_purpose(
+                        evidence.high.epoch,
+                        HashPurpose::ExecutionEffects,
+                        &consensus::encode_locked_object_set_preimage(&evidence.high_preimage)
+                            .map_err(|_| {
+                                GenesisError::TamperedInstalledRecord(
+                                    "fast-path bond transition record",
+                                )
+                            })?,
+                    )?;
+                    if high_hash != evidence.high.locked_objects_digest {
+                        return Err(GenesisError::TamperedInstalledRecord(
+                            "fast-path bond transition record",
+                        ));
+                    }
+                }
+                let validator_set: ValidatorSet = equivocation::load_historical_validator_set(
+                    store,
+                    context,
+                    domain,
+                    signing_resolver,
+                    transition.context.chain_id(),
+                    transition.context.protocol_version(),
+                    *evidence_epoch,
+                )
+                .map_err(|_| {
+                    GenesisError::TamperedInstalledRecord("fast-path bond transition record")
+                })?;
+                match &decoded {
+                    equivocation::DecodedEquivocationEvidence::FastVote(evidence) => {
+                        consensus::verify_fast_vote_equivocation_evidence(
+                            evidence,
+                            validator_set,
+                            &fast_path::FastPathEd25519Verifier,
+                        )
+                        .map_err(|_| {
+                            GenesisError::TamperedInstalledRecord(
+                                "fast-path bond transition record",
+                            )
+                        })?;
+                    }
+                    equivocation::DecodedEquivocationEvidence::ObjectConflict(evidence) => {
+                        consensus::verify_fast_vote_object_conflict_evidence(
+                            evidence,
+                            validator_set,
+                            &fast_path::FastPathEd25519Verifier,
+                        )
+                        .map_err(|_| {
+                            GenesisError::TamperedInstalledRecord(
+                                "fast-path bond transition record",
+                            )
+                        })?;
+                    }
+                    equivocation::DecodedEquivocationEvidence::EpochTransition(evidence) => {
+                        consensus::verify_epoch_transition_equivocation_evidence(
+                            evidence,
+                            validator_set,
+                            &fast_path::FastPathEd25519Verifier,
+                        )
+                        .map_err(|_| {
+                            GenesisError::TamperedInstalledRecord(
+                                "fast-path bond transition record",
+                            )
+                        })?;
+                    }
+                }
+                // The previous row's own liability floor must not postdate
+                // the evidence it was slashed by -- gated on
+                // `slashable_from_epoch`, never `lifecycle_epoch`, exactly
+                // like the live `handle_bond_slash` check: a validator that
+                // merely `Unbond`ed or `Replace`d since misbehaving (both of
+                // which advance `lifecycle_epoch` while preserving
+                // `slashable_from_epoch`) must remain slashable for
+                // evidence predating that later transition. The permanent
+                // evidence-consumed marker must exactly match this
+                // transition's own selector/generation.
+                if evidence_epoch.get() < previous_row.slashable_from_epoch.get() {
+                    return Err(GenesisError::TamperedInstalledRecord(
+                        "fast-path bond transition record",
+                    ));
+                }
+                let consumed_key: Vec<u8> = local_instance_state::fastpath_evidence_consumed_key(
+                    transition.context.chain_id(),
+                    *evidence_epoch,
+                    *genesis_row.validator_id.as_bytes(),
+                    *evidence_digest,
+                )?;
+                let consumed_observed: VersionedStateValue =
+                    store.get_versioned_durable(context, domain, &consumed_key)?;
+                let consumed_bytes: &[u8] =
+                    consumed_observed
+                        .value()
+                        .ok_or(GenesisError::TamperedInstalledRecord(
+                            "fast-path bond transition record",
+                        ))?;
+                let consumed: bond_lifecycle::slash::EvidenceConsumptionRecord =
+                    bond_lifecycle::slash::decode_evidence_consumption_record(consumed_bytes)
+                        .map_err(|_| {
+                            GenesisError::TamperedInstalledRecord(
+                                "fast-path bond transition record",
+                            )
+                        })?;
+                if consumed.validator_id != genesis_row.validator_id
+                    || consumed.evidence_epoch != *evidence_epoch
+                    || consumed.conflict_digest != *evidence_digest
+                    || consumed.generation != next_generation
+                    || consumed.consumed_at_checkpoint != transition.committed_at_checkpoint
+                {
+                    return Err(GenesisError::TamperedInstalledRecord(
+                        "fast-path bond transition record",
+                    ));
+                }
+
+                // Authenticate the retained signed local-execution
+                // forfeiture leg under the exact generic-object-results
+                // policy for this transition's own context. Restart has no
+                // engine/blob store and therefore never re-executes the
+                // leg; this independently re-verifies its signature and
+                // structural target, and the retained previous/resulting
+                // object bytes below independently stand in for what
+                // re-execution would have produced.
+                let leg_policy: LocalExecutionPolicy =
+                    LocalExecutionPolicy::generic_object_results(transition.context.clone());
+                let leg =
+                    authenticate_local_execution(signing_resolver, &leg_policy, forfeiture_leg)
+                        .map_err(|_| {
+                            GenesisError::TamperedInstalledRecord(
+                                "fast-path bond transition record",
+                            )
+                        })?;
+                let call = &leg.intent().call;
+
+                // The committed economics policy resource, read at the
+                // previous row's own genesis-pinned context -- never the
+                // transitioning epoch's.
+                let resource_id: BondResourceId =
+                    BondResourceId::new(previous_row.resource_domain, previous_row.resource)
+                        .map_err(|_| {
+                            GenesisError::TamperedInstalledRecord(
+                                "fast-path bond transition record",
+                            )
+                        })?;
+                let policy_key: Vec<u8> =
+                    local_instance_state::fastpath_economics_policy_key(&previous_row.context)?;
+                let policy_observed: VersionedStateValue =
+                    store.get_versioned_durable(context, domain, &policy_key)?;
+                let policy: FastPathEconomicsPolicy =
+                    decode_fastpath_economics_policy(policy_observed.value().ok_or(
+                        GenesisError::TamperedInstalledRecord("fast-path bond transition record"),
+                    )?)
+                    .map_err(|_| {
+                        GenesisError::TamperedInstalledRecord("fast-path bond transition record")
+                    })?;
+                let resource: &FastPathEconomicsResourcePolicy = policy
+                    .resources
+                    .binary_search_by_key(&resource_id, |candidate| candidate.resource_id)
+                    .ok()
+                    .map(|index: usize| &policy.resources[index])
+                    .ok_or(GenesisError::TamperedInstalledRecord(
+                        "fast-path bond transition record",
+                    ))?;
+
+                // The bond's own pinned authority must still match the
+                // committed resource's own instance/code/type -- otherwise a
+                // rewritten resource could authorize a forfeiture leg
+                // against an object the bond's own authority no longer
+                // actually describes.
+                if previous_row.authority.instance != resource.instance
+                    || previous_row.authority.code != resource.code
+                    || previous_row.authority.ty != resource.ty
+                {
+                    return Err(GenesisError::TamperedInstalledRecord(
+                        "fast-path bond transition record",
+                    ));
+                }
+
+                // Exactly one signed `Write` access to the exact previous
+                // custody object, through the policy-pinned code/instance/
+                // transfer entrypoint, under the exact transition context.
+                if call.context != transition.context
+                    || call.access.entries.len() != 1
+                    || call.access.entries[0].mode != AccessMode::Write
+                    || call.access.entries[0].object_ref != previous_row.custody_object
+                    || call.entrypoint != resource.transfer_entrypoint
+                    || call.code != resource.code
+                    || call.instance != resource.instance
+                {
+                    return Err(GenesisError::TamperedInstalledRecord(
+                        "fast-path bond transition record",
+                    ));
+                }
+
+                // Independently decode both retained whole-object bodies,
+                // re-encode each to its own canonical bytes (never trusting
+                // the retained bytes to already be canonical), and recompute
+                // their `ObjectRef` digests at their own correct lifecycle/
+                // transition epochs -- exactly mirroring
+                // `bond_lifecycle::effects::build_mutation_entry`'s own
+                // digest convention.
+                let previous_object: Object = decode_object(previous_object).map_err(|_| {
+                    GenesisError::TamperedInstalledRecord("fast-path bond transition record")
+                })?;
+                let resulting_object: Object = decode_object(resulting_object).map_err(|_| {
+                    GenesisError::TamperedInstalledRecord("fast-path bond transition record")
+                })?;
+                let previous_canonical: Vec<u8> =
+                    encode_object(&previous_object).map_err(|_| {
+                        GenesisError::TamperedInstalledRecord("fast-path bond transition record")
+                    })?;
+                let resulting_canonical: Vec<u8> =
+                    encode_object(&resulting_object).map_err(|_| {
+                        GenesisError::TamperedInstalledRecord("fast-path bond transition record")
+                    })?;
+                let previous_ref: ObjectRef = ObjectRef {
+                    id: previous_object.id,
+                    version: previous_object.version,
+                    // Hashed at the previous row's own recorded
+                    // `custody_object_epoch`, never its `lifecycle_epoch`:
+                    // an intervening `Unbond` advances `lifecycle_epoch`
+                    // without ever touching the custody object, so hashing
+                    // at `lifecycle_epoch` would silently miscompute this
+                    // digest under a schedule that rotated hash suites in
+                    // between.
+                    digest: signing_resolver.hash_for_purpose(
+                        previous_row.custody_object_epoch,
+                        HashPurpose::Object,
+                        &previous_canonical,
+                    )?,
+                };
+                let resulting_ref: ObjectRef = ObjectRef {
+                    id: resulting_object.id,
+                    version: resulting_object.version,
+                    digest: signing_resolver.hash_for_purpose(
+                        transition.context.epoch(),
+                        HashPurpose::Object,
+                        &resulting_canonical,
+                    )?,
+                };
+
+                // The previous object must be the exact previous row's own
+                // live custody object, owned by exactly `BondCollateral`.
+                let bond_collateral_scope: ProtocolCustodyScope = ProtocolCustodyScope {
+                    purpose: ProtocolCustodyPurpose::BondCollateral,
+                    chain_id: previous_row.context.chain_id().clone(),
+                    subject: *previous_row.validator_id.as_bytes(),
+                    resource: previous_row.resource,
+                };
+                if previous_ref != previous_row.custody_object
+                    || previous_object.owner != Owner::ProtocolCustody(bond_collateral_scope)
+                {
+                    return Err(GenesisError::TamperedInstalledRecord(
+                        "fast-path bond transition record",
+                    ));
+                }
+
+                // The resulting object must be identical to the previous
+                // object except version+1 and exactly `ForfeitedCollateral`
+                // ownership -- never a body/type/schema change.
+                let forfeited_scope: ProtocolCustodyScope = ProtocolCustodyScope {
+                    purpose: ProtocolCustodyPurpose::ForfeitedCollateral,
+                    chain_id: previous_row.context.chain_id().clone(),
+                    subject: *previous_row.validator_id.as_bytes(),
+                    resource: previous_row.resource,
+                };
+                if resulting_object.id != previous_object.id
+                    || resulting_object.version != previous_object.version + 1
+                    || resulting_object.type_hash != previous_object.type_hash
+                    || resulting_object.schema_version != previous_object.schema_version
+                    || resulting_object.data != previous_object.data
+                    || resulting_object.owner != Owner::ProtocolCustody(forfeited_scope)
+                {
+                    return Err(GenesisError::TamperedInstalledRecord(
+                        "fast-path bond transition record",
+                    ));
+                }
+
+                (None, Some(resulting_ref))
+            }
+        };
 
         // Independently re-decode the exact retained resulting row, and
         // validate its immutable key/identity and the exact closed
@@ -1779,14 +2178,51 @@ fn verify_fastpath_bond_chain<S: StructuredDurableDomainStateStore>(
                 "fast-path bond transition record",
             ));
         }
+        if let BondTransitionAuthorization::ConsumedEvidence {
+            evidence_digest, ..
+        } = &transition.authorization
+            && resulting_row.state
+                != (FastPathBondState::Jailed {
+                    evidence_digest: *evidence_digest,
+                })
+        {
+            return Err(GenesisError::TamperedInstalledRecord(
+                "fast-path bond transition record",
+            ));
+        }
+        // Evidence-driven forfeiture has no signed `expected_next_row_digest`
+        // to pin the resulting row: close that gap here by requiring the
+        // resulting row's own custody object to equal the independently
+        // recomputed resulting `ObjectRef` (see `evidence_resulting_ref`
+        // above), that its `custody_object_epoch` names exactly this
+        // transition's own epoch (the forfeiture leg mints the resulting
+        // object here), that `slashable_from_epoch` is carried forward
+        // unchanged as audit data, and every other field this operation
+        // must copy unchanged from the previous row (a permanent forfeiture
+        // audit record, not a live balance) to be exactly what it was, at
+        // the exact new lifecycle epoch.
+        if let Some(expected_ref) = &evidence_resulting_ref
+            && (resulting_row.custody_object != *expected_ref
+                || resulting_row.custody_object_epoch != transition.context.epoch()
+                || resulting_row.authority != previous_row.authority
+                || resulting_row.amount != previous_row.amount
+                || resulting_row.required_minimum != previous_row.required_minimum
+                || resulting_row.slashable_from_epoch != previous_row.slashable_from_epoch
+                || resulting_row.lifecycle_epoch != transition.context.epoch())
+        {
+            return Err(GenesisError::TamperedInstalledRecord(
+                "fast-path bond transition record",
+            ));
+        }
 
         let current_digest: Digest32 = bond_lifecycle::bond_row_digest(
             signing_resolver,
             resulting_row.lifecycle_epoch,
             &transition.resulting_row,
-        )?;
-        if current_digest != intent.expected_next_row_digest
-            || current_digest != transition.current_row_digest
+        )
+        .map_err(|_| GenesisError::TamperedInstalledRecord("fast-path bond transition record"))?;
+        if current_digest != transition.current_row_digest
+            || expected_next_row_digest.is_some_and(|expected| current_digest != expected)
         {
             return Err(GenesisError::TamperedInstalledRecord(
                 "fast-path bond transition record",

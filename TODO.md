@@ -45,11 +45,13 @@ including its companion code and review gate); and phase 3,
 economics/security completion. DR-0135 implements the non-signable protocol
 custody prerequisite, DR-0136 implements typed, positive genesis bond
 commitments derived through authenticated generic executable ABI metadata,
-and DR-0137 unit 2 implements the closed post-genesis whole-object bond
-lifecycle (Deposit/Replace/Unbond/Withdraw). Evidence-driven slashing, fee
-distribution, and payout remain unauthorized. **FastVote is complete
-only after phase 3.** A testnet may launch after phase 1, but that is not
-FastVote completion.
+DR-0137 unit 2 implements the closed post-genesis whole-object bond
+lifecycle (Deposit/Replace/Unbond/Withdraw), and DR-0137 unit 3 implements
+one-time evidence-driven forfeiture, jail/reactivation and next-set
+eligibility coupling. Certified signer entitlements, fee escrow
+distribution, and payout remain unauthorized (unit 4). **FastVote is
+complete only after phase 3.** A testnet may launch after phase 1, but that
+is not FastVote completion.
 
 | Order | Deliverable | Completion evidence | Status |
 | --- | --- | --- | --- |
@@ -57,7 +59,7 @@ FastVote completion.
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Implemented and validated (DR-0128); focused Codex Security scan found 0 reportable findings and fresh Opus review approved |
-| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated** (DR-0129 through DR-0134). Phase 2 includes the seven-operation authorization matrix, committed-epoch native surfaces, and closed external ingress. **Phase 3 is open.** DR-0135 implements non-signable protocol custody, DR-0136 implements typed genesis bond commitments, and DR-0137 unit 2 implements the closed post-genesis whole-object bond lifecycle (Deposit/Replace/Unbond/Withdraw), all without a Standard Asset exception. Evidence-driven slashing, certified signer entitlements, escrow distribution, and payout remain incomplete. FastVote overall is incomplete. |
+| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated** (DR-0129 through DR-0134). Phase 2 includes the seven-operation authorization matrix, committed-epoch native surfaces, and closed external ingress. **Phase 3 is open.** DR-0135 implements non-signable protocol custody, DR-0136 implements typed genesis bond commitments, DR-0137 unit 2 implements the closed post-genesis whole-object bond lifecycle (Deposit/Replace/Unbond/Withdraw), and DR-0137 unit 3 implements one-time evidence-driven forfeiture, jail/reactivation and next-set eligibility coupling, all without a Standard Asset exception. Certified signer entitlements, fee escrow distribution, and payout remain incomplete (unit 4). FastVote overall is incomplete. |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
 Asset creation was the final focused delta before FastVote/multi-validator
@@ -2871,7 +2873,9 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
       committed to ahead of execution, and authorizes exactly one of Deposit
       (`Exited -> Active`), Replace (`Active -> Active`, an atomic
       same-sender two-leg swap with consecutive nonces and every leg's own
-      `request_id` pinned to the outer intent), Unbond (`Active ->
+      `request_id` pinned to the outer intent; the replacement amount must be
+      at least the previous live amount because reduction goes only through
+      the Unbond/Withdraw delay), Unbond (`Active ->
       Unbonding`, no contract execution, recipient independently validated as
       a canonical prime-order Ed25519 address) or Withdraw (`Unbonding ->
       Exited`, requiring the unlock delay elapsed, the validator absent from
@@ -2942,9 +2946,11 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
       state-machine/signature/replay/reserved-id/stale-generation/
       live-set-divergence/policy-raise/leg-request-id-mismatch tests,
       real-WASM Deposit and Replace success tests (Replace proving both
-      owner transitions and one atomic commit), real-WASM negative tests
-      (nonconsecutive nonce, below-minimum amount, a genuine second-leg WASM
-      trap, a leg reporting a created object), an exact/conflicting replay
+      owner transitions and one atomic commit, including equality at the
+      non-decreasing floor), real-WASM negative tests (nonconsecutive nonce,
+      below-minimum and below-previous-live amounts with exact atomic
+      non-mutation, a genuine second-leg WASM trap, a leg reporting a created
+      object), an exact/conflicting replay
       test with an engine call-counter proving non-reapplication, a real
       file-backed SQLite test spanning Deposit/Unbond/Withdraw across three
       independent close/reopen cycles (each reopen following an
@@ -2955,16 +2961,231 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
       record, swapped generation, lifted signature, tampered envelope,
       tampered stored row, tampered checkpoint summary, coordinated rewrite)
       all pass;
-    - [ ] one-time evidence consumption, full forfeiture, jail/reactivation
-      and next-set eligibility coupling; and
+    - [x] one-time evidence consumption, full forfeiture, jail/reactivation
+      and next-set eligibility coupling (implemented and locally validated
+      2026-09-23). All three DR-0133 evidence families (class a/b/c) are
+      eligible for consumption only after their existing canonical
+      verification against the chain-anchored historical validator set,
+      re-run in full (including class (b)'s mandatory preimage-hash-to-
+      signed-digest checks) rather than trusted from the stored row alone.
+      New canonical frames: `EvidenceConsumptionRecord 0x6432/v1` (the
+      permanent evidence-consumed-once absence-fence marker, keyed like the
+      DR-0133 evidence row under a distinct `evidence-consumed/` prefix),
+      the closed `BondTransitionAuthorization 0x6433/v1` union
+      (`ValidatorEnvelope` retaining the exact signed `0x6430` bytes, or
+      `ConsumedEvidence` retaining the exact evidence bytes, evidence
+      epoch/digest and exact signed forfeiture leg), and the unsigned
+      `SlashIntent 0x6434/v1` (authorized by the evidence itself, not a
+      signature, since the validator being slashed cannot authorize its own
+      forfeiture). `FastPathBondTransitionRecord 0x6431/v1` is revised in
+      place: field 8 is now the encoded authorization union instead of raw
+      signed-envelope bytes. `FastPathBondRecord 0x642A/v1` gains two new
+      fields, both distinct from the pre-existing `lifecycle_epoch` (pure
+      transition time, never overloaded to carry liability or object-mint
+      provenance): `slashable_from_epoch` (field 15), the earliest evidence
+      epoch this generation's live collateral is liable for -- `Deposit`
+      from `Exited` and `Reactivate` from `Jailed` set it to the committing
+      epoch plus one (fresh collateral can only ever join the *next*
+      validator set and must never be liable for evidence at or before the
+      epoch it was posted), every other operation (including the one
+      genesis generation, liable from the genesis epoch itself) preserves it
+      unchanged; and `custody_object_epoch` (field 16), the exact epoch
+      `custody_object`'s own digest was actually computed at -- every
+      operation that mints a fresh object ref (genesis, `Deposit`,
+      `Reactivate`, `Replace`, `Withdraw`, `Slash`) sets it to that
+      transition's own committing epoch, while `Unbond` (which executes no
+      leg and never touches the custody object) carries it forward unchanged
+      even as `lifecycle_epoch` itself advances. `FastPathBondLifecycleOperation` and the local
+      `BondLifecycleOperation`/`0x642F`/`0x6430` intent gain `Reactivate`
+      (tag 5, `Jailed -> Active`, reusing `Deposit`'s exact mechanics --
+      current enabled/min/max policy checks and a fresh sender-owned whole
+      object) and `Slash` (`(Active | Unbonding) -> Jailed`); `Deposit` and
+      `Replace` now also enforce the committed policy's `enabled`/max-
+      exposure fields, which unit 2 left unchecked. `handle_bond_slash`
+      follows the fixed order: bounded decode; leg authentication;
+      leg/outer request-id equality; reserved-id guards; the exact
+      intent-bytes receipt digest (embedding the leg's own signed bytes, so
+      a differently-signed leg over an identical intent conflicts rather
+      than replaying) and reconciliation; the committed-epoch fence; the
+      committed bond row with resource/generation cross-checked against the
+      intent's pins; the named permanent evidence row, cross-checked
+      against its own key selector and recomputed normalized identity;
+      class (b)'s preimage checks; full evidence reverification against the
+      historical validator set; live-collateral and
+      `evidence_epoch >= bond.slashable_from_epoch` requirements -- gated on
+      `slashable_from_epoch`, never on `lifecycle_epoch`: `Unbond` and
+      `Replace` both stamp `lifecycle_epoch` to their own committing epoch
+      while carrying forward the same (or, for `Replace`, freshly re-posted
+      but liability-equivalent) live collateral a validator was already
+      liable for, so gating on `lifecycle_epoch` instead would let a
+      validator launder away old equivocation evidence for free merely by
+      unbonding or replacing after misbehaving but before evidence lands;
+      the evidence-consumed absence fence; the committed economics policy read
+      without requiring the resource still accept new bonds; the
+      forfeiture leg run through the existing local-execution admission
+      under a new, narrowly scoped `ProtocolCustodyDirection::Forfeit`
+      capability (custody-to-custody, `BondCollateral -> ForfeitedCollateral`,
+      requiring identical chain/subject/resource and generalizing the
+      pinned custody input to an exact operand/resulting-owner pair so
+      `Release`'s recipient-address shape and `Forfeit`'s reused
+      `0x642E` owner-token shape share one code path); and generic
+      whole-object effect validation before one atomic commit of the
+      forfeited object, the `Jailed` bond row (preserving the historical
+      amount/minimum and immutable identity, generation+1, the current
+      lifecycle epoch, the new forfeited object ref and
+      `Jailed{conflict_digest}`), the permanent transition record, the
+      evidence-consumed marker, the sender nonce range, stale lock cleanup
+      and the one outer receipt. An exact replay returns the original
+      receipt without reaching the absence fence; a different request
+      against already-consumed evidence fails closed at the fence.
+      `commit()` is refactored into a shared `commit_bond_transition`
+      taking the tagged authorization and an `Option` expected-next-row
+      digest (`Some` for every validator-signed transition including
+      `Reactivate`, `None` for evidence-driven `Slash`, which has no
+      signer to pin a row ahead of time). `genesis::verify_fastpath_bond_chain`
+      branches per transition on the authorization tag: a validator tag
+      keeps the existing signature/pin checks; an evidence tag fully
+      re-decodes and re-verifies the retained evidence, checks the
+      historical set and class-b preimages, the previous row's
+      `slashable_from_epoch` against the evidence epoch, the exact `Jailed`
+      state, and the
+      matching consumption marker/generation/checkpoint, while every prior
+      tamper check (deleted/swapped/lifted-signature/tampered-row) is
+      preserved for both tags. Restart closure for the evidence tag goes
+      further than re-verifying the evidence alone: `ConsumedEvidence`
+      additionally retains the exact canonical previous/resulting whole-
+      `Object` bodies (`previous_object`/`resulting_object`, `0x6433/v1`
+      fields 7/8, each independently bounded), and restart independently
+      re-authenticates the retained signed forfeiture leg under
+      `LocalExecutionPolicy::generic_object_results(transition.context)`
+      (exact context, policy-pinned code/instance/transfer entrypoint, the
+      one signed `Write` access matching `previous_row.custody_object`
+      exactly), decodes and re-encodes both retained objects to canonical
+      bytes, recomputes each one's own `ObjectRef` digest at its recorded
+      `custody_object_epoch`/transition epoch, requires the previous object to match
+      `previous_row.custody_object` under exactly `BondCollateral` (hashed at
+      the previous row's own recorded `custody_object_epoch`, never at the
+      transitioning epoch, so an intervening `Unbond` that carried
+      `custody_object_epoch` forward unchanged under a since-rotated hash
+      suite still verifies) and the resulting object to be identical to it
+      except version+1 and exactly `ForfeitedCollateral`, and requires the
+      resulting row's own `custody_object`/`authority`/`amount`/
+      `required_minimum`/`lifecycle_epoch` to equal that independently
+      recomputed ref and the previous row's own copied fields, its
+      `custody_object_epoch` to equal exactly this transition's own
+      committing epoch (the forfeiture leg mints the resulting object here),
+      and its `slashable_from_epoch` to be carried forward unchanged from
+      the previous row as permanent audit data (no longer gating anything
+      once the row is `Jailed`, but still tied to independently-verified
+      facts like every other copied field). Unlike a validator-signed
+      transition (pinned end to end by `expected_next_row_digest`), evidence-
+      driven forfeiture has no signer to pin the resulting row ahead of time,
+      so without this, a coordinated rewrite of `resulting_row` and its own
+      `current_row_digest` together (and the final installed singleton to
+      match) could substitute an arbitrary resulting row that is merely
+      internally self-consistent; this closes that gap by tying the
+      resulting row back to independently-verified evidence-external facts
+      (the leg's own signature and the two whole-object bodies) instead.
+      `handle_bond_slash` records the exact `previous_object`/
+      `resulting_object` bytes at live-slash time (the read snapshot and the
+      validated resulting object, respectively) and now folds the named
+      evidence row's own read revision into its atomic CAS read set (it
+      previously read but never tracked it), and `0x6433`'s `evidence_bytes`
+      field has its own explicit per-field bound restored alongside
+      `forfeiture_leg`'s (previously bounded only by the frame aggregate).
+      Certificate application is deterministic and independent of slash
+      timing: `epoch_transition::derive_activation_set`/`activate` never
+      touch bond state at all (no `eligibility_reads`, no CAS merge with
+      bond/policy rows) -- `derive_eligibility_reads` (requiring every
+      candidate next-set validator's committed bond, read at its own
+      genesis-pinned economics-policy context, to be `Active`/live, correct
+      chain/id, `lifecycle_epoch <= current_epoch`, an exact auth scheme/key
+      match, an enabled current policy resource, and amount within
+      `[min_bond, max_validator_exposure]`) now runs exclusively inside
+      `propose_and_vote`, strictly before a vote is cast, so an ineligible
+      candidate is simply never voted on and can never enter a legitimately
+      quorum-certified set in the first place. `activate` re-derives and
+      installs the certified activation set purely from the certificate and
+      current committed policy/validator-set state; a slash landing at any
+      point relative to certificate formation or activation cannot change
+      whether that exact certificate applies -- jailing only ever affects
+      which candidates a *later* `propose_and_vote` round is willing to vote
+      on (see ADR-0137's "This eligibility gate is checked in exactly one
+      place" and DR-0132 §3.A/§3.C, corrected here). Genesis installation
+      now fails closed unless every genesis validator has exactly one valid
+      genesis bond (previously only rejected a *second* bond per validator,
+      not a missing one); the shared `paid_contracts` devnet genesis builder
+      and every affected genesis/epoch-transition/equivocation Rust fixture
+      are updated to install one accordingly, with a dedicated test
+      asserting the new fail-closed behavior in place of the old
+      "address-only genesis creates no bond row" test it replaces. Focused
+      new tests cover: frame round-trips and stable hex for `0x6432`/`0x6433`
+      (both tags, including the revised evidence-tag shape with
+      `previous_object`/`resulting_object` and a `Slash`-operation transition
+      record) / `0x6434`; the full closed `validates_transition` state
+      matrix for all six operations; a `Forfeit`-direction capability test;
+      real end-to-end evidence-driven slashes for all three DR-0133 evidence
+      families (class a `FastVote`, class b `FastVoteObjectConflict`, class c
+      `EpochTransitionEquivocation`), each proving `Jailed` state, one-time
+      full forfeiture, the forfeited object's owner projection and the
+      consumption marker; a test proving current-epoch `FastCertificate`
+      verification for a validator is byte-for-byte unaffected by that same
+      validator's own later slash; exact-replay-without-re-execution (engine
+      call-counter); the absence-fence rejecting a different request against
+      already-consumed evidence; every non-`Reactivate` operation rejecting
+      a `Jailed` bond; a real-WASM `Reactivate` end-to-end test; restart
+      re-verification of a real slash transition plus tampered-consumed-
+      marker, tampered-evidence-bytes, tampered-forfeiture-leg, tampered-
+      previous-object and tampered-resulting-object restart negatives, plus
+      coordinated-rewrite negatives for the resulting row's amount, custody
+      object, lifecycle epoch, `custody_object_epoch` and
+      `slashable_from_epoch` (each paired with a matching, self-consistent
+      `current_row_digest` and installed singleton, proving the independent
+      object/leg re-derivation -- not mere digest self-consistency -- is
+      what catches them); `propose_and_vote` rejecting every one of the
+      eight closed ineligibility reasons (jailed, unbonding, exited,
+      under-min, over-max, disabled, key-mismatch, absent); a test proving a
+      certificate formed before a slash still activates identically after
+      that slash lands locally; a real file-backed SQLite close/reopen chain
+      covering genesis install, a real slash, a restart re-verification, a
+      real `Reactivate`, and one more restart re-verification; a real
+      file-backed SQLite competing-writer test racing `Slash` against
+      `Replace` from the identical committed row, proving exactly one
+      commits and the final state restart-verifies; a second real file-backed
+      SQLite test forming a valid two-validator certificate, unbonding and
+      retiring one validator, then racing its independently valid `Slash`
+      and `Withdraw` from the identical unlocked `Unbonding` row, proving the
+      Withdraw winner leaves no slash receipt, extra nonce advance or
+      consumed-evidence marker and the complete epoch/bond history
+      restart-verifies; three real, multi-epoch
+      end-to-end tests proving `slashable_from_epoch`/`custody_object_epoch`
+      are actually load-bearing, not merely stored -- real evidence recorded
+      at genesis epoch `E`, a real DR-0132 epoch bump to `E + 1`, then a real
+      `Unbond` (respectively `Replace`) committing at `E + 1`, then a real
+      evidence-driven `Slash` using the old evidence that still succeeds
+      because gating is on `slashable_from_epoch` and not the now-advanced
+      `lifecycle_epoch`, followed by full genesis restart re-verification of
+      the complete chain; and a third that additionally rotates the active
+      hash suite exactly at that same `E + 1` boundary, proving restart
+      hashes the previous custody object at its own recorded
+      `custody_object_epoch` (the pre-rotation suite) rather than uniformly
+      at each transition's own committing epoch (the post-rotation suite);
+      a focused negative test proving a freshly `Deposit`ed bond's
+      `slashable_from_epoch == committing epoch + 1` floor actually rejects
+      real evidence dated at or before the deposit itself (`Reactivate`
+      shares the identical code path and floor, already covered positively
+      by its own end-to-end test). Rust and independent JavaScript vectors
+      cover the new/changed frames only (`0x6431` revised, `0x6432`/`0x6433`
+      (now with `previous_object`/`resulting_object`)/`0x6434` new, plus the
+      `Reactivate` `0x642F`/`0x6430` shape and `0x642A`'s two new fields);
+      and
     - [ ] pre-certification fee escrow, deterministic signer entitlements,
       claims, race/restart evidence and the Phase 3 review gate.
 
-  **Remaining Phase 3 completion:** bond-linked slashing execution and
-  deterministic transaction-fee escrow
+  **Remaining Phase 3 completion:** deterministic transaction-fee escrow
   distribution to the final certificate signer set, including a canonical
-  rounding-remainder rule and vectors. FastVote is not complete until this
-  phase closes.
+  rounding-remainder rule and vectors, plus the Phase 3 review gate.
+  FastVote is not complete until this phase closes.
 
 ## CLI-First Node Production Gate
 

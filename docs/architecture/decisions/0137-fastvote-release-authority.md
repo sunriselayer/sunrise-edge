@@ -191,11 +191,23 @@ object and lifecycle rows before any post-genesis custody transition is real.
 
 `FastPathBondRecord` is the single authoritative per-validator lifecycle row.
 Every generation records the epoch in which that lifecycle transition was
-committed. An `Unbonding` generation must name an unlock epoch strictly after
-that lifecycle epoch, rather than after the defining publication epoch.
-Before release it is extended in place, without a compatibility version, with
-a positive generation, the policy minimum captured for the transition, and
-one state:
+committed (`lifecycle_epoch`) -- pure transition time, never overloaded to
+carry liability or object-mint provenance. An `Unbonding` generation must
+name an unlock epoch strictly after that lifecycle epoch, rather than after
+the defining publication epoch. Two further epochs are tracked separately,
+each answering a distinct question `lifecycle_epoch` cannot: `custody_object_epoch`
+names the exact epoch the live `custody_object`'s own digest was actually
+computed at -- every operation that mints a fresh object ref (genesis,
+`Deposit`, `Reactivate`, `Replace`, `Withdraw`, `Slash`) sets it to that
+transition's own committing epoch, while `Unbond` (which executes no leg and
+never touches the custody object) carries it forward unchanged even as
+`lifecycle_epoch` itself advances -- restart must hash a retained previous
+object body at exactly this recorded epoch, never at `lifecycle_epoch`, or a
+hash-suite rotation that occurred while a bond sat `Unbonding` silently
+miscomputes the digest; `slashable_from_epoch` is the liability floor
+(below). Before release it is extended in place, without a compatibility
+version, with a positive generation, the policy minimum captured for the
+transition, and one state:
 
 - `Active`;
 - `Unbonding { unlock_epoch, recipient }`;
@@ -206,13 +218,20 @@ Whole-object deposit or replacement is the first supported profile. Arbitrary
 partial top-up is deferred because it is not required for FastVote safety.
 Replacement requires source-owner authorization, validator authorization, the
 same policy-pinned resource/type/instance, a newer generation and an amount at
-least the committed minimum.
+least the previous live bond amount (and therefore also at least the committed
+minimum), while still respecting the committed maximum exposure. Replacement
+releases the complete prior object, so allowing a smaller replacement would
+bypass the Unbond/Withdraw delay and reduce collateral still exposed to old
+evidence. Amount reduction therefore goes only through Unbond/Withdraw.
 
 Unbond records `current_epoch + unbonding_epochs` and the signed recipient.
-The bond remains slashable before the unlock epoch. Withdrawal requires the
-delay to have elapsed, the validator to be absent from the committed live set,
-the exact bond generation/object to remain unchanged, and no jail or
-forfeiture record.
+The bond remains slashable for as long as the collateral remains custody-owned,
+including after the unlock epoch and until withdrawal actually commits.
+Withdrawal requires the delay to have elapsed, the validator to be absent from
+the committed live set, the exact bond generation/object to remain unchanged,
+and no jail or forfeiture record. Slash-versus-withdraw is resolved by the
+shared bond-row and object-head compare-and-swap fences, so exactly one may
+commit.
 
 Every embedded leg's own `request_id` is required to equal the outer
 `BondLifecycleIntent::request_id` exactly, and both share the ordinary
@@ -233,6 +252,24 @@ All three DR-0133 evidence families are eligible only after their existing
 canonical verification against the chain-anchored historical validator set.
 One evidence digest may be consumed once.
 
+Slashing gates on `slashable_from_epoch`, never on `lifecycle_epoch`:
+`evidence_epoch >= bond.slashable_from_epoch` is required, but `evidence_epoch`
+is never compared against `lifecycle_epoch`. `slashable_from_epoch` is the
+earliest evidence epoch a generation's live collateral is liable for. Fresh
+collateral (`Deposit` from `Exited`, `Reactivate` from `Jailed`) sets it to
+the committing epoch plus one -- it can only ever join the *next* validator
+set and must never be liable for evidence at or before the epoch it was
+posted; every other operation, including `Unbond` and `Replace`, preserves it
+unchanged from the previous generation; the one genesis generation is liable
+from the genesis epoch itself. `Unbond` and `Replace` both stamp
+`lifecycle_epoch` to their own committing epoch while carrying forward the
+same (or, for `Replace`, freshly re-posted but liability-equivalent) live
+collateral a validator was already liable for; gating on `lifecycle_epoch`
+instead would let a validator launder away old equivocation evidence for free
+merely by unbonding or replacing after misbehaving but before evidence lands.
+`Withdraw` and `Slash` also preserve `slashable_from_epoch` unchanged, purely
+as historical audit data once the row is no longer live.
+
 The initial slash rule is full forfeiture. One atomic commit consumes the
 evidence, moves the complete bond into `ForfeitedCollateral`, advances the
 bond generation and records `Jailed`. Percentages, discretionary penalties
@@ -242,6 +279,37 @@ Jailing never changes current-epoch certificate verification. It disables
 local signing and prevents the validator from entering a later certified set.
 Reactivation requires a newly authorized policy-compliant bond and affects
 only a future epoch transition.
+
+Every proposed next-set validator must have an `Active`, custody-owned bond
+whose authorization key matches the proposed validator key and whose amount
+satisfies the current committed economics policy. `Unbonding`, `Jailed`,
+`Exited`, absent, disabled, under-bonded and over-exposed records fail closed.
+Genesis therefore requires exactly one policy-compliant bond per genesis
+validator; this invariant is established at install instead of being
+discovered only at the first epoch transition.
+
+This eligibility gate is checked in exactly one place: before a validator
+casts its own epoch-transition vote. It is never re-checked when a
+certificate is later applied. Certificate application is a pure function of
+an already-quorum-certified transition: whether a slash happens to commit
+before or after a certificate is formed or activated must never change
+whether that certificate applies. A slash that lands between certificate
+formation and activation therefore has no effect on that transition -- the
+now-jailed validator's bond simply fails the gate the *next* time a set is
+proposed. Coupling activation to live bond eligibility (for example by
+folding bond/policy revisions into activation's own compare-and-swap read
+set) would let a race between a slash and an activation determine whether an
+already-certified transition commits, which is exactly the divergence this
+ordering rule forecloses.
+
+Under the full-forfeiture profile, a second evidence item for the same
+misconduct epoch cannot take a later reactivation bond: the first item removes
+the only live collateral, and a reactivated generation's `slashable_from_epoch`
+is set to strictly after the reactivation's own committing epoch, which is
+itself strictly after the old evidence's epoch -- not because
+`lifecycle_epoch` merely advanced (an advancing `lifecycle_epoch` alone never
+gates a slash; see above). This is deliberate; partial or cumulative
+penalties require a later policy.
 
 ### Certified fee escrow and claims
 
@@ -299,6 +367,17 @@ claim uses `transfer`. A zero share is finalized without an object mutation.
   commit tests in memory and real file-backed SQLite;
 - withdraw-versus-slash, replacement-versus-slash and duplicate-claim races;
 - one-time full forfeiture for each DR-0133 evidence family;
+- real, multi-epoch evidence-versus-later-transition coverage: evidence
+  recorded at epoch `E`, a real epoch bump to `E + 1`, then a real `Unbond`
+  (respectively `Replace`) committing at `E + 1`, then a real evidence-driven
+  slash using the old evidence that still succeeds and restart-verifies,
+  proving the `slashable_from_epoch` gate -- not `lifecycle_epoch` -- is what
+  actually decides eligibility; plus a hash-suite-rotation variant proving
+  restart hashes a bond's previous custody object at its own recorded
+  `custody_object_epoch`, never at the transitioning epoch;
+- a focused negative test proving a freshly deposited/reactivated bond's
+  `slashable_from_epoch == committing epoch + 1` floor rejects real evidence
+  dated at or before the deposit/reactivation itself;
 - next-set rejection for unbonding, jailed, exited or under-bonded validators;
 - signer-order-invariant rounding vectors including `T < N`, exact division,
   remainder ordering and `u64::MAX`; and

@@ -138,7 +138,7 @@ pub(crate) fn ensure_fastpath_epoch_installed<S: StructuredDurableDomainStateSto
         ),
     );
 }
-fn set_state<S: StructuredDurableDomainStateStore>(
+pub(crate) fn set_state<S: StructuredDurableDomainStateStore>(
     store: &S,
     key: Vec<u8>,
     mutation: StateMutation,

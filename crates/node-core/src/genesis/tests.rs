@@ -366,6 +366,26 @@ pub(crate) fn manifest_with_custody(object_id: ObjectId) -> GenesisManifest {
     manifest
 }
 
+/// [`build_fixture`] plus one genesis bond for its single validator: DR-0136
+/// now requires every genesis validator to have exactly one genesis bond, so
+/// any test that expects `install_genesis`/`install_genesis_with_history` to
+/// succeed (or to fail for a reason other than a missing bond) needs this,
+/// not the bare fixture.
+pub(crate) fn build_bonded_fixture() -> (
+    GenesisManifest,
+    PackageOrigin,
+    InstanceRecord,
+    ObjectId,
+    ObjectId,
+) {
+    let (mut manifest, origin, instance_record, def_id, coin_id) = build_fixture();
+    let custody: GenesisObjectEntry =
+        custody_object_entry(&manifest, ObjectId::new([0x30; 32]), chain());
+    manifest.objects.push(custody);
+    resign_manifest(&mut manifest);
+    (manifest, origin, instance_record, def_id, coin_id)
+}
+
 /// DR-0135: a signed genesis manifest may install a `ProtocolCustody` object
 /// whose scope chain equals the manifest chain, and a verify-only restart
 /// must reach `VerifiedExisting` for it exactly like any other genesis
@@ -803,12 +823,20 @@ fn genesis_bond_commitment_rejects_partial_and_tampered_durable_rows() {
     ));
 }
 
+/// DR-0136 (revised): every genesis validator has exactly one genesis bond
+/// record. A validator with no matching custody object must fail genesis
+/// installation rather than enter a set without slashable collateral.
 #[test]
-fn address_only_genesis_does_not_create_a_bond_row() {
+fn address_only_genesis_fails_closed_when_a_validator_has_no_matching_bond() {
     let (manifest, _, _, _, _) = build_fixture();
     let store: MemoryDurableStateStore =
         MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
-    install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap();
+    let error =
+        install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap_err();
+    assert!(matches!(
+        error,
+        GenesisError::Invalid("genesis validator has no matching genesis bond")
+    ));
     let bond_key: Vec<u8> =
         fastpath_bond_record_key(&chain(), &ValidatorId::new(sender())).unwrap();
     let observed: VersionedStateValue = store
@@ -914,7 +942,7 @@ fn duplicate_validator_public_keys_are_rejected_at_genesis_install() {
 #[test]
 fn fresh_install_and_verify_only_restart_in_memory() {
     let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
-    let (manifest, origin, instance_record, def_id, coin_id) = build_fixture();
+    let (manifest, origin, instance_record, def_id, coin_id) = build_bonded_fixture();
 
     // 1. Fresh install.
     let outcome =
@@ -1084,7 +1112,7 @@ fn fresh_install_and_verify_only_restart_in_memory() {
 fn mutable_balance_changes_tolerated_while_version_1_provenance_exact_and_supply_reissue_prevented()
 {
     let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
-    let (manifest, _, _, _, coin_id) = build_fixture();
+    let (manifest, _, _, _, coin_id) = build_bonded_fixture();
 
     // 1. Fresh install.
     install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap();
@@ -1171,7 +1199,7 @@ fn mutable_balance_changes_tolerated_while_version_1_provenance_exact_and_supply
 #[test]
 fn partial_prior_state_fails_closed() {
     let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
-    let (manifest, origin, _, _, coin_id) = build_fixture();
+    let (manifest, origin, _, _, coin_id) = build_bonded_fixture();
 
     // Partial case 1: publication record exists without marker.
     let pub_key = publication::publication_record_key(&origin).unwrap();
@@ -1253,7 +1281,7 @@ fn partial_prior_state_fails_closed() {
 #[test]
 fn tombstoned_marker_fails_closed() {
     let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
-    let (manifest, _, _, _, _) = build_fixture();
+    let (manifest, _, _, _, _) = build_bonded_fixture();
 
     let mark_key = genesis_marker_key(&protocol()).unwrap();
     // Put then delete marker.
@@ -1305,7 +1333,7 @@ fn tombstoned_marker_fails_closed() {
 #[test]
 fn missing_or_tampered_records_fail_closed() {
     let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
-    let (manifest, origin, _, _, _) = build_fixture();
+    let (manifest, origin, _, _, _) = build_bonded_fixture();
 
     install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap();
 
@@ -1472,7 +1500,7 @@ fn missing_or_tampered_records_fail_closed() {
 fn fencing_rejects_stale_writer() {
     // Store fenced at generation 2.
     let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(2).unwrap());
-    let (manifest, _, _, _, _) = build_fixture();
+    let (manifest, _, _, _, _) = build_bonded_fixture();
 
     // Invocation with generation 1 (stale).
     let err =

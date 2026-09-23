@@ -1,13 +1,17 @@
+use super::slash;
 use super::*;
+use crate::equivocation;
 use crate::fast_path::records::{
     FastPathBondLifecycleOperation, decode_fastpath_bond_transition_record,
 };
 use crate::genesis::tests::{
-    build_fixture, chain, context, domain, key, manifest_with_custody, protocol, resolver, sender,
+    build_fixture, chain, context, custody_object_entry, domain, key, manifest_with_custody,
+    protocol, resign_manifest, resolver, sender,
 };
 use crate::genesis::{self, GenesisError, GenesisInstallOutcome};
 use crate::local_instance_state::fastpath_bond_transition_key;
 use abi::call_values::{CallValue, encode_call_value};
+use consensus::{ConsensusSigner, FastPathCertifier};
 use ed25519_zebra::SigningKey;
 use execution::LocalWasmExecutionEngine;
 use execution::call::CallIntent;
@@ -159,8 +163,37 @@ fn transfer_leg(
     request_id: [u8; 32],
     operand: [u8; 32],
 ) -> Vec<u8> {
+    transfer_leg_with_resolver(
+        &resolver(),
+        fixture,
+        current_context,
+        object,
+        sender_bytes,
+        nonce,
+        request_id,
+        operand,
+    )
+}
+
+/// Like [`transfer_leg`], but computes the leg's own self-declared
+/// `policy_digest` (and the instance target digest, though that is anchored
+/// at the fixture's own genesis-pinned `context` regardless) under an
+/// explicit `resolver` rather than always the plain [`resolver`] test
+/// fixture -- needed once a leg commits at an epoch where a rotating
+/// resolver's schedule has actually diverged from the plain one.
+#[allow(clippy::too_many_arguments)]
+fn transfer_leg_with_resolver(
+    resolver: &HashSuiteResolver,
+    fixture: &Fixture,
+    current_context: PublicationContext,
+    object: ObjectRef,
+    sender_bytes: [u8; 32],
+    nonce: u64,
+    request_id: [u8; 32],
+    operand: [u8; 32],
+) -> Vec<u8> {
     let (manifest, _origin, instance_record, def_id, coin_id) = fixture;
-    let target = execution::local_execution::instance_target(&resolver(), instance_record).unwrap();
+    let target = execution::local_execution::instance_target(resolver, instance_record).unwrap();
     let call = CallIntent {
         context: current_context.clone(),
         request_id,
@@ -183,7 +216,7 @@ fn transfer_leg(
     let base_policy = LocalExecutionPolicy::generic_object_results(current_context);
     let intent = LocalExecutionIntent {
         mode: LocalExecutionMode::Call,
-        policy_digest: base_policy.digest(&resolver()).unwrap(),
+        policy_digest: base_policy.digest(resolver).unwrap(),
         call,
         authorizations: Vec::new(),
     };
@@ -554,6 +587,12 @@ fn bond_lifecycle_intent_covers_every_operation_shape_and_is_stable() {
             base(BondLifecycleOperation::Withdraw { leg: vec![8, 9] }),
             "534e52452f640100090001003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f727302000400000003000000030008000000090000000000000002002000000072727272727272727272727272727272727272727272727272727272727272720300200000007272727272727272727272727272727272727272727272727272727272727272040002000000040005000200000008090a0038000000534e5245088001000200010002000000070002002000000079797979797979797979797979797979797979797979797979797979797979790b000800000001000000000000000c0038000000534e5245030101000200010002000000010002002000000001010101010101010101010101010101010101010101010101010101010101010d0038000000534e524503010100020001000200000001000200200000000202020202020202020202020202020202020202020202020202020202020202",
         ),
+        (
+            base(BondLifecycleOperation::Reactivate {
+                leg: vec![10, 11, 12],
+            }),
+            "534e52452f640100090001003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f72730200040000000300000003000800000009000000000000000200200000007272727272727272727272727272727272727272727272727272727272727272030020000000727272727272727272727272727272727272727272727272727272727272727204000200000005000500030000000a0b0c0a0038000000534e5245088001000200010002000000070002002000000079797979797979797979797979797979797979797979797979797979797979790b000800000001000000000000000c0038000000534e5245030101000200010002000000010002002000000001010101010101010101010101010101010101010101010101010101010101010d0038000000534e524503010100020001000200000001000200200000000202020202020202020202020202020202020202020202020202020202020202",
+        ),
     ];
     for (intent, expected_hex) in cases {
         let bytes = encode_bond_lifecycle_intent(&intent).unwrap();
@@ -572,7 +611,9 @@ fn fastpath_bond_transition_record_round_trips_and_is_stable() {
         current_row_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x12; 32]),
         operation: FastPathBondLifecycleOperation::Deposit,
         committed_at_checkpoint: 9,
-        signed_envelope: vec![0xAA, 0xBB],
+        authorization: BondTransitionAuthorization::ValidatorEnvelope {
+            signed_envelope: vec![0xAA, 0xBB],
+        },
         resulting_row: vec![0xCC, 0xDD, 0xEE],
     };
     let bytes =
@@ -583,7 +624,7 @@ fn fastpath_bond_transition_record_round_trips_and_is_stable() {
     );
     assert_eq!(
         hex(&bytes),
-        "534e524531640100090001003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f727302000400000003000000030008000000090000000000000002002000000079797979797979797979797979797979797979797979797979797979797979790300080000000200000000000000040038000000534e524503010100020001000200000001000200200000001111111111111111111111111111111111111111111111111111111111111111050038000000534e52450301010002000100020000000100020020000000121212121212121212121212121212121212121212121212121212121212121206000200000001000700080000000900000000000000080002000000aabb090003000000ccddee"
+        "534e524531640100090001003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f727302000400000003000000030008000000090000000000000002002000000079797979797979797979797979797979797979797979797979797979797979790300080000000200000000000000040038000000534e524503010100020001000200000001000200200000001111111111111111111111111111111111111111111111111111111111111111050038000000534e5245030101000200010002000000010002002000000012121212121212121212121212121212121212121212121212121212121212120600020000000100070008000000090000000000000008001a000000534e52453364010002000100020000000100020002000000aabb090003000000ccddee"
     );
 
     let mut zero_generation = transition.clone();
@@ -1411,6 +1452,7 @@ fn policy_minimum_raise_does_not_strand_unbond_or_withdraw() {
     let mut withdraw_next = predicted_next(&unbonding, 12, Epoch::new(7));
     withdraw_next.state = FastPathBondState::Exited;
     withdraw_next.custody_object = oref;
+    withdraw_next.custody_object_epoch = withdraw_next.lifecycle_epoch;
     withdraw_next.authority.object_id = new_object.id;
 
     let withdraw_intent = base_intent(
@@ -1489,6 +1531,8 @@ fn deposit_transitions_exited_to_active_with_real_wasm_execution() {
     );
     let mut next = predicted_next(&bond, 20, protocol().epoch());
     next.custody_object = oref;
+    next.custody_object_epoch = next.lifecycle_epoch;
+    next.slashable_from_epoch = Epoch::new(next.lifecycle_epoch.get() + 1);
     next.authority = source_authority;
     next.amount = 5_000;
     next.required_minimum = 100;
@@ -1564,6 +1608,8 @@ fn deposit_rejects_a_leg_whose_request_id_differs_from_the_outer_intent() {
     );
     let mut next = predicted_next(&bond, 20, protocol().epoch());
     next.custody_object = oref;
+    next.custody_object_epoch = next.lifecycle_epoch;
+    next.slashable_from_epoch = Epoch::new(next.lifecycle_epoch.get() + 1);
     next.authority = source_authority;
     next.amount = 5_000;
     next.required_minimum = 100;
@@ -1605,8 +1651,14 @@ fn replace_swaps_custody_atomically_with_same_sender_consecutive_nonces() {
 
     let fixture = build_fixture();
     let new_source_id = ObjectId::new([0x4D; 32]);
-    let (new_source_object, new_source_authority) =
-        seed_owned_coin(&store, &fixture, new_source_id, 7_000, sender(), [0x72; 32]);
+    let (new_source_object, new_source_authority) = seed_owned_coin(
+        &store,
+        &fixture,
+        new_source_id,
+        1_200_000,
+        sender(),
+        [0x72; 32],
+    );
 
     let scope = custody_scope_of(&bond);
     let token: [u8; 32] = execution::protocol_custody::derive_deposit_owner_token(
@@ -1649,8 +1701,9 @@ fn replace_swaps_custody_atomically_with_same_sender_consecutive_nonces() {
 
     let mut next = predicted_next(&bond, 21, protocol().epoch());
     next.custody_object = deposit_oref;
+    next.custody_object_epoch = next.lifecycle_epoch;
     next.authority = new_source_authority;
-    next.amount = 7_000;
+    next.amount = 1_200_000;
     next.required_minimum = 100;
     next.state = FastPathBondState::Active;
 
@@ -1670,7 +1723,7 @@ fn replace_swaps_custody_atomically_with_same_sender_consecutive_nonces() {
     let committed = decode_fastpath_bond_record(output.responses()[0].payload().unwrap()).unwrap();
     assert_eq!(committed, next);
     assert_eq!(committed.custody_object.id, new_deposit_object.id);
-    assert_eq!(committed.amount, 7_000);
+    assert_eq!(committed.amount, 1_200_000);
 
     // Both owner transitions actually committed in the single atomic
     // transaction: the new source is now custody-owned, and the old
@@ -1700,6 +1753,219 @@ fn replace_swaps_custody_atomically_with_same_sender_consecutive_nonces() {
         .get_versioned_durable(&context(1), domain(), &nonce_key)
         .unwrap();
     assert!(nonce_bytes.value().is_some());
+}
+
+/// `Replace` must never let a validator instantly reduce its live collateral
+/// below what it already posted: the new amount is required to be at least
+/// the previous live bond amount, exactly like the committed maximum/minimum
+/// checks alongside it. Both legs still genuinely execute through real WASM
+/// (proving this is a late, not an admission-time, rejection) but the
+/// rejection happens before `commit`, so nothing -- not the bond row, either
+/// object, the nonce range, or a request receipt -- is left partially
+/// mutated.
+#[test]
+fn replace_rejects_a_decreasing_amount_atomically_with_no_partial_state() {
+    let object_id = ObjectId::new([0x4C; 32]);
+    let manifest = manifest_with_custody(object_id);
+    let store = store();
+    install(&store, &manifest);
+    let bond = get_bond(&store, ValidatorId::new(sender()));
+    assert_eq!(bond.state, FastPathBondState::Active);
+    assert_eq!(bond.amount, 1_000_000);
+
+    let fixture = build_fixture();
+    let new_source_id = ObjectId::new([0x4D; 32]);
+    // Below the previous live bond amount (1_000_000), even though still
+    // above the committed minimum (100): the decreasing-amount check alone
+    // must reject this.
+    let (new_source_object, new_source_authority) = seed_owned_coin(
+        &store,
+        &fixture,
+        new_source_id,
+        900_000,
+        sender(),
+        [0x7F; 32],
+    );
+
+    let scope = custody_scope_of(&bond);
+    let token: [u8; 32] = execution::protocol_custody::derive_deposit_owner_token(
+        &resolver(),
+        &protocol(),
+        new_source_id,
+        &scope,
+    )
+    .unwrap();
+    let release_recipient = canonical_address(0x59);
+    let request_id: [u8; 32] = [0x80; 32];
+    let deposit_leg = transfer_leg(
+        &fixture,
+        protocol(),
+        object_ref(&resolver(), &new_source_object),
+        sender(),
+        0,
+        request_id,
+        token,
+    );
+    let release_leg = transfer_leg(
+        &fixture,
+        protocol(),
+        bond.custody_object.clone(),
+        sender(),
+        1,
+        request_id,
+        *release_recipient.as_bytes(),
+    );
+    let (_new_deposit_object, deposit_oref) = transferred(
+        &new_source_object,
+        Owner::ProtocolCustody(scope),
+        protocol().epoch(),
+    );
+    let mut next = predicted_next(&bond, 21, protocol().epoch());
+    next.custody_object = deposit_oref;
+    next.custody_object_epoch = next.lifecycle_epoch;
+    next.authority = new_source_authority;
+    next.amount = 900_000;
+    next.required_minimum = 100;
+    next.state = FastPathBondState::Active;
+    let intent = base_intent(
+        &protocol(),
+        request_id,
+        &bond,
+        &next,
+        BondLifecycleOperation::Replace {
+            deposit_leg,
+            release_leg,
+            release_recipient,
+        },
+    );
+    let signed = signed_envelope(intent, &key());
+    let error = call(&store, &signed, &protocol(), &leg_policy(), 21).unwrap_err();
+    assert!(matches!(
+        error,
+        BondLifecycleError::Invalid("bond replace amount below the previous live bond amount")
+    ));
+
+    // No partial state: the bond row is byte-for-byte unchanged.
+    assert_eq!(get_bond(&store, ValidatorId::new(sender())), bond);
+    // Neither leg's object mutation survived, despite both legs' WASM having
+    // genuinely executed: the new source is still sender-owned at version 1,
+    // and the old custody object is still untouched.
+    let new_source_head = store
+        .get_object_head(&context(1), domain(), new_source_id)
+        .unwrap();
+    assert!(matches!(
+        new_source_head,
+        DurableObjectHead::Current { object_version, .. } if object_version.get() == 1
+    ));
+    let new_source_owner = new_source_head
+        .owner_projection()
+        .and_then(DurableObjectOwnerProjection::owner)
+        .unwrap();
+    assert_eq!(*new_source_owner, Owner::Address(Address::new(sender())));
+    let old_custody_head = store
+        .get_object_head(&context(1), domain(), bond.custody_object.id)
+        .unwrap();
+    assert!(matches!(
+        old_custody_head,
+        DurableObjectHead::Current { object_version, .. } if object_version.get() == 1
+    ));
+    // No nonce range was reserved.
+    let layout = PersistenceLayout::new(chain(), protocol().protocol_version());
+    let nonce_key = layout.sender_nonce_key(sender(), protocol().epoch());
+    let nonce_bytes = store
+        .get_versioned_durable(&context(1), domain(), &nonce_key)
+        .unwrap();
+    assert!(nonce_bytes.value().is_none());
+    // No request receipt was committed either: an exact replay of the
+    // identical signed bytes re-runs from scratch and fails the same way,
+    // rather than a reconciled receipt short-circuiting to any outcome.
+    let replay_error = call(&store, &signed, &protocol(), &leg_policy(), 21).unwrap_err();
+    assert!(matches!(
+        replay_error,
+        BondLifecycleError::Invalid("bond replace amount below the previous live bond amount")
+    ));
+}
+
+/// The non-decreasing `Replace` floor is `>=`, not `>`: an amount exactly
+/// equal to the previous live bond amount must still succeed.
+#[test]
+fn replace_succeeds_with_an_amount_exactly_equal_to_the_previous_live_amount() {
+    let object_id = ObjectId::new([0x4C; 32]);
+    let manifest = manifest_with_custody(object_id);
+    let store = store();
+    install(&store, &manifest);
+    let bond = get_bond(&store, ValidatorId::new(sender()));
+    assert_eq!(bond.state, FastPathBondState::Active);
+    assert_eq!(bond.amount, 1_000_000);
+
+    let fixture = build_fixture();
+    let new_source_id = ObjectId::new([0x4D; 32]);
+    let (new_source_object, new_source_authority) = seed_owned_coin(
+        &store,
+        &fixture,
+        new_source_id,
+        1_000_000,
+        sender(),
+        [0x81; 32],
+    );
+
+    let scope = custody_scope_of(&bond);
+    let token: [u8; 32] = execution::protocol_custody::derive_deposit_owner_token(
+        &resolver(),
+        &protocol(),
+        new_source_id,
+        &scope,
+    )
+    .unwrap();
+    let release_recipient = canonical_address(0x5A);
+    let request_id: [u8; 32] = [0x82; 32];
+    let deposit_leg = transfer_leg(
+        &fixture,
+        protocol(),
+        object_ref(&resolver(), &new_source_object),
+        sender(),
+        0,
+        request_id,
+        token,
+    );
+    let release_leg = transfer_leg(
+        &fixture,
+        protocol(),
+        bond.custody_object.clone(),
+        sender(),
+        1,
+        request_id,
+        *release_recipient.as_bytes(),
+    );
+    let (new_deposit_object, deposit_oref) = transferred(
+        &new_source_object,
+        Owner::ProtocolCustody(scope),
+        protocol().epoch(),
+    );
+    let mut next = predicted_next(&bond, 21, protocol().epoch());
+    next.custody_object = deposit_oref;
+    next.custody_object_epoch = next.lifecycle_epoch;
+    next.authority = new_source_authority;
+    next.amount = 1_000_000;
+    next.required_minimum = 100;
+    next.state = FastPathBondState::Active;
+    let intent = base_intent(
+        &protocol(),
+        request_id,
+        &bond,
+        &next,
+        BondLifecycleOperation::Replace {
+            deposit_leg,
+            release_leg,
+            release_recipient,
+        },
+    );
+    let signed = signed_envelope(intent, &key());
+    let output = call(&store, &signed, &protocol(), &leg_policy(), 21).unwrap();
+    let committed = decode_fastpath_bond_record(output.responses()[0].payload().unwrap()).unwrap();
+    assert_eq!(committed, next);
+    assert_eq!(committed.amount, 1_000_000);
+    assert_eq!(committed.custody_object.id, new_deposit_object.id);
 }
 
 #[test]
@@ -1888,6 +2154,7 @@ fn replace_second_leg_trap_commits_nothing() {
     );
     let mut next = predicted_next(&bond, 21, protocol().epoch());
     next.custody_object = deposit_oref;
+    next.custody_object_epoch = next.lifecycle_epoch;
     next.authority = source_authority;
     next.amount = 7_000;
     next.required_minimum = 100;
@@ -1959,6 +2226,8 @@ fn deposit_exact_and_conflicting_replay_never_reexecutes_the_leg() {
     );
     let mut next = predicted_next(&bond, 20, protocol().epoch());
     next.custody_object = oref;
+    next.custody_object_epoch = next.lifecycle_epoch;
+    next.slashable_from_epoch = Epoch::new(next.lifecycle_epoch.get() + 1);
     next.authority = source_authority;
     next.amount = 5_000;
     next.required_minimum = 100;
@@ -2071,6 +2340,8 @@ fn deposit_rejects_a_leg_that_reports_a_created_authority() {
     );
     let mut next = predicted_next(&bond, 20, protocol().epoch());
     next.custody_object = oref;
+    next.custody_object_epoch = next.lifecycle_epoch;
+    next.slashable_from_epoch = Epoch::new(next.lifecycle_epoch.get() + 1);
     next.authority = source_authority;
     next.amount = 5_000;
     next.required_minimum = 100;
@@ -2142,8 +2413,14 @@ fn file_backed_sqlite_full_lifecycle_restart_and_fencing() {
         let bond = get_bond(&store, ValidatorId::new(sender()));
 
         let new_source_id = ObjectId::new([0x62; 32]);
-        let (new_source_object, new_source_authority) =
-            seed_owned_coin(&store, &fixture, new_source_id, 5_000, sender(), [0x91; 32]);
+        let (new_source_object, new_source_authority) = seed_owned_coin(
+            &store,
+            &fixture,
+            new_source_id,
+            1_100_000,
+            sender(),
+            [0x91; 32],
+        );
         let scope = custody_scope_of(&bond);
         let token: [u8; 32] = execution::protocol_custody::derive_deposit_owner_token(
             &resolver(),
@@ -2180,8 +2457,9 @@ fn file_backed_sqlite_full_lifecycle_restart_and_fencing() {
         replaced_custody_object = new_object;
         let mut next = predicted_next(&bond, 20, protocol().epoch());
         next.custody_object = oref;
+        next.custody_object_epoch = next.lifecycle_epoch;
         next.authority = new_source_authority;
-        next.amount = 5_000;
+        next.amount = 1_100_000;
         next.required_minimum = 100;
         next.state = FastPathBondState::Active;
         let intent = base_intent(
@@ -2300,6 +2578,7 @@ fn file_backed_sqlite_full_lifecycle_restart_and_fencing() {
         let mut next = predicted_next(&reopened, 22, Epoch::new(7));
         next.state = FastPathBondState::Exited;
         next.custody_object = oref;
+        next.custody_object_epoch = next.lifecycle_epoch;
         next.authority.object_id = replaced_custody_object.id;
         let intent = base_intent(
             &later_context,
@@ -2397,6 +2676,8 @@ fn file_backed_sqlite_full_lifecycle_restart_and_fencing() {
             );
             let mut next = predicted_next(&base, 23, Epoch::new(7));
             next.custody_object = oref;
+            next.custody_object_epoch = next.lifecycle_epoch;
+            next.slashable_from_epoch = Epoch::new(next.lifecycle_epoch.get() + 1);
             next.authority = authority;
             next.amount = amount;
             next.required_minimum = 100;
@@ -2478,6 +2759,723 @@ fn file_backed_sqlite_full_lifecycle_restart_and_fencing() {
             ))
         ));
     }
+}
+
+/// Real file-backed SQLite coverage for the evidence-driven `Slash` path:
+/// genesis install, a real class (a) evidence-driven slash, a close/reopen
+/// full genesis restart re-verification, a real `Reactivate`, and one more
+/// close/reopen restart re-verification -- proving the complete
+/// `Active -> Jailed -> Active` chain, not merely each transition alone,
+/// re-verifies from real on-disk storage across independent process-like
+/// open/close cycles.
+#[test]
+fn file_backed_sqlite_slash_restart_and_reactivate() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "bond-lifecycle-slash-durable-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("state.sqlite");
+    let namespace = SqliteNamespace::new(chain(), ValidatorId::new([10; 32]), domain());
+    let fence1 = WriterFenceGeneration::new(1).unwrap();
+
+    let object_id = ObjectId::new([0xC0; 32]);
+    let manifest = manifest_with_custody(object_id);
+    let fixture = build_fixture();
+
+    // 1. Fresh install (Active), record real class (a) evidence, and run a
+    //    real evidence-driven slash.
+    let jailed_bond: FastPathBondRecord;
+    let conflict_digest: Digest32;
+    {
+        let store = SqliteDurableStore::open(&db_path, namespace.clone(), fence1).unwrap();
+        install(&store, &manifest);
+        let bond = get_bond(&store, ValidatorId::new(sender()));
+        assert_eq!(bond.state, FastPathBondState::Active);
+        let (evidence, digest) = record_class_a_evidence(&store, 15);
+        conflict_digest = digest;
+
+        let custody_object = custody_object_entry(&manifest, object_id, chain()).object;
+        let request_id: [u8; 32] = [0xC1; 32];
+        let (intent, ..) = build_slash_intent(
+            &fixture,
+            &protocol(),
+            &bond,
+            &custody_object,
+            evidence.epoch,
+            conflict_digest,
+            request_id,
+        );
+        let intent_bytes = slash::encode_slash_intent(&intent).unwrap();
+        let output = slash::handle_bond_slash(
+            &store,
+            &MemoryBlobStore::default(),
+            &context(1),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &leg_policy(),
+            &engine(),
+            &intent_bytes,
+            20,
+        )
+        .unwrap();
+        jailed_bond =
+            decode_fastpath_bond_record(output.responses()[0].payload().unwrap()).unwrap();
+        assert_eq!(
+            jailed_bond.state,
+            FastPathBondState::Jailed {
+                evidence_digest: conflict_digest
+            }
+        );
+        assert_eq!(jailed_bond.generation, bond.generation + 1);
+    }
+
+    // 2. Close and reopen: the jailed row survived exactly, and a full
+    //    genesis restart re-verification (walking the real permanent
+    //    transition chain, including the `ConsumedEvidence` authorization,
+    //    against real file-backed SQLite storage) succeeds.
+    {
+        let store = SqliteDurableStore::open(&db_path, namespace.clone(), fence1).unwrap();
+        let reopened = get_bond(&store, ValidatorId::new(sender()));
+        assert_eq!(reopened, jailed_bond);
+        let restart_outcome =
+            genesis::install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10)
+                .unwrap();
+        assert!(matches!(
+            restart_outcome,
+            GenesisInstallOutcome::VerifiedExisting { .. }
+        ));
+    }
+
+    // 3. Close and reopen: run a real `Reactivate` with a fresh sender-owned
+    //    coin, at the exact same committed context (reactivation needs no
+    //    epoch advance).
+    let reactivated_bond: FastPathBondRecord;
+    {
+        let store = SqliteDurableStore::open(&db_path, namespace.clone(), fence1).unwrap();
+        let reopened = get_bond(&store, ValidatorId::new(sender()));
+        assert_eq!(reopened, jailed_bond);
+
+        let source_id = ObjectId::new([0xC2; 32]);
+        let (source_object, source_authority) =
+            seed_owned_coin(&store, &fixture, source_id, 3_000, sender(), [0xC3; 32]);
+        let scope = custody_scope_of(&reopened);
+        let token: [u8; 32] = execution::protocol_custody::derive_deposit_owner_token(
+            &resolver(),
+            &protocol(),
+            source_id,
+            &scope,
+        )
+        .unwrap();
+        let request_id: [u8; 32] = [0xC4; 32];
+        let leg = transfer_leg(
+            &fixture,
+            protocol(),
+            object_ref(&resolver(), &source_object),
+            sender(),
+            1,
+            request_id,
+            token,
+        );
+        let (new_object, oref) = transferred(
+            &source_object,
+            Owner::ProtocolCustody(scope),
+            protocol().epoch(),
+        );
+        let mut next = predicted_next(&reopened, 25, protocol().epoch());
+        next.custody_object = oref;
+        next.custody_object_epoch = next.lifecycle_epoch;
+        next.slashable_from_epoch = Epoch::new(next.lifecycle_epoch.get() + 1);
+        next.authority = source_authority;
+        next.amount = 3_000;
+        next.required_minimum = 100;
+        next.state = FastPathBondState::Active;
+        let intent = base_intent(
+            &protocol(),
+            request_id,
+            &reopened,
+            &next,
+            BondLifecycleOperation::Reactivate { leg },
+        );
+        let signed = signed_envelope(intent, &key());
+        let output = call(&store, &signed, &protocol(), &leg_policy(), 25).unwrap();
+        reactivated_bond =
+            decode_fastpath_bond_record(output.responses()[0].payload().unwrap()).unwrap();
+        assert_eq!(reactivated_bond, next);
+        assert_eq!(reactivated_bond.state, FastPathBondState::Active);
+        assert_eq!(reactivated_bond.custody_object.id, new_object.id);
+    }
+
+    // 4. Close and reopen once more: the complete chain -- genesis, the real
+    //    slash, and the real reactivate -- re-verifies from disk.
+    {
+        let store = SqliteDurableStore::open(&db_path, namespace.clone(), fence1).unwrap();
+        let reopened = get_bond(&store, ValidatorId::new(sender()));
+        assert_eq!(reopened, reactivated_bond);
+        let restart_outcome =
+            genesis::install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10)
+                .unwrap();
+        assert!(matches!(
+            restart_outcome,
+            GenesisInstallOutcome::VerifiedExisting { .. }
+        ));
+    }
+}
+
+/// Real file-backed SQLite competing-writer coverage for `Slash` racing
+/// `Replace` from the exact same committed `Active` row: two independent
+/// writer handles open the same database and submit different, individually
+/// valid transitions (one evidence-driven and unsigned, one a validator-
+/// signed two-leg swap) from the identical committed generation. Exactly one
+/// commits; the loser observes the advanced row and no partial effect from
+/// it survives.
+#[test]
+fn file_backed_sqlite_slash_vs_replace_competing_writers_commit_exactly_once() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "bond-lifecycle-slash-race-durable-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("state.sqlite");
+    let namespace = SqliteNamespace::new(chain(), ValidatorId::new([11; 32]), domain());
+    let fence1 = WriterFenceGeneration::new(1).unwrap();
+
+    let object_id = ObjectId::new([0xD0; 32]);
+    let manifest = manifest_with_custody(object_id);
+    let fixture = build_fixture();
+    let active_bond: FastPathBondRecord;
+    let conflict_digest: Digest32;
+    let evidence_epoch: Epoch;
+
+    // 1. Fresh install (Active) and real class (a) evidence recorded against
+    //    the exact same store the race below runs against.
+    {
+        let store = SqliteDurableStore::open(&db_path, namespace.clone(), fence1).unwrap();
+        install(&store, &manifest);
+        active_bond = get_bond(&store, ValidatorId::new(sender()));
+        assert_eq!(active_bond.state, FastPathBondState::Active);
+        let (evidence, digest) = record_class_a_evidence(&store, 15);
+        evidence_epoch = evidence.epoch;
+        conflict_digest = digest;
+    }
+
+    // 2. Two independent writer handles open the same database and each
+    //    submit one individually valid transition against the identical
+    //    committed `Active` row: writer A slashes it (evidence-driven,
+    //    unsigned), writer B replaces it (validator-signed two-leg swap).
+    //    Only one can win.
+    let store_a = SqliteDurableStore::open(&db_path, namespace.clone(), fence1).unwrap();
+    let store_b = SqliteDurableStore::open(&db_path, namespace.clone(), fence1).unwrap();
+    let base_a = get_bond(&store_a, ValidatorId::new(sender()));
+    let base_b = get_bond(&store_b, ValidatorId::new(sender()));
+    assert_eq!(base_a, active_bond);
+    assert_eq!(base_b, active_bond);
+
+    let custody_object = custody_object_entry(&manifest, object_id, chain()).object;
+    let slash_request_id: [u8; 32] = [0xD1; 32];
+    let (slash_intent, ..) = build_slash_intent(
+        &fixture,
+        &protocol(),
+        &base_a,
+        &custody_object,
+        evidence_epoch,
+        conflict_digest,
+        slash_request_id,
+    );
+    let slash_intent_bytes = slash::encode_slash_intent(&slash_intent).unwrap();
+
+    let new_source_id = ObjectId::new([0xD2; 32]);
+    let (new_source_object, new_source_authority) = seed_owned_coin(
+        &store_b,
+        &fixture,
+        new_source_id,
+        6_000,
+        sender(),
+        [0xD3; 32],
+    );
+    let scope = custody_scope_of(&base_b);
+    let token: [u8; 32] = execution::protocol_custody::derive_deposit_owner_token(
+        &resolver(),
+        &protocol(),
+        new_source_id,
+        &scope,
+    )
+    .unwrap();
+    let release_recipient = canonical_address(0xD4);
+    let replace_request_id: [u8; 32] = [0xD5; 32];
+    let deposit_leg = transfer_leg(
+        &fixture,
+        protocol(),
+        object_ref(&resolver(), &new_source_object),
+        sender(),
+        0,
+        replace_request_id,
+        token,
+    );
+    let release_leg = transfer_leg(
+        &fixture,
+        protocol(),
+        base_b.custody_object.clone(),
+        sender(),
+        1,
+        replace_request_id,
+        *release_recipient.as_bytes(),
+    );
+    let (_new_deposit_object, deposit_oref) = transferred(
+        &new_source_object,
+        Owner::ProtocolCustody(scope),
+        protocol().epoch(),
+    );
+    let mut replaced_next = predicted_next(&base_b, 22, protocol().epoch());
+    replaced_next.custody_object = deposit_oref;
+    replaced_next.custody_object_epoch = replaced_next.lifecycle_epoch;
+    replaced_next.authority = new_source_authority;
+    replaced_next.amount = 6_000;
+    replaced_next.required_minimum = 100;
+    replaced_next.state = FastPathBondState::Active;
+    let replace_intent = base_intent(
+        &protocol(),
+        replace_request_id,
+        &base_b,
+        &replaced_next,
+        BondLifecycleOperation::Replace {
+            deposit_leg,
+            release_leg,
+            release_recipient,
+        },
+    );
+    let replace_signed = signed_envelope(replace_intent, &key());
+
+    let slash_result = slash::handle_bond_slash(
+        &store_a,
+        &MemoryBlobStore::default(),
+        &context(1),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &leg_policy(),
+        &engine(),
+        &slash_intent_bytes,
+        23,
+    );
+    let replace_result = call(&store_b, &replace_signed, &protocol(), &leg_policy(), 24);
+
+    // Exactly one commits.
+    assert_ne!(slash_result.is_ok(), replace_result.is_ok());
+
+    let final_store = SqliteDurableStore::open(&db_path, namespace.clone(), fence1).unwrap();
+    let final_bond = get_bond(&final_store, ValidatorId::new(sender()));
+    match &slash_result {
+        Ok(_) => {
+            assert_eq!(
+                final_bond.state,
+                FastPathBondState::Jailed {
+                    evidence_digest: conflict_digest
+                }
+            );
+            // Full forfeiture, not a merge with the loser's proposed swap.
+            assert_eq!(final_bond.amount, active_bond.amount);
+            assert!(matches!(
+                replace_result.unwrap_err(),
+                BondLifecycleError::Node(NodeCoreError::StateConflict)
+                    | BondLifecycleError::Node(NodeCoreError::DurableCommitRejected(
+                        DurableCommitRejection::Conflict { .. }
+                    ))
+                    | BondLifecycleError::Invalid(_)
+            ));
+        }
+        Err(_) => {
+            assert_eq!(final_bond, replaced_next);
+            assert!(matches!(
+                slash_result.unwrap_err(),
+                BondLifecycleError::Node(NodeCoreError::StateConflict)
+                    | BondLifecycleError::Node(NodeCoreError::DurableCommitRejected(
+                        DurableCommitRejection::Conflict { .. }
+                    ))
+                    | BondLifecycleError::Invalid(_)
+            ));
+        }
+    }
+    // No partial state either way: exactly one generation-2 transition
+    // record exists, and the installed singleton matches it exactly.
+    assert_eq!(final_bond.generation, active_bond.generation + 1);
+    let restart_outcome = genesis::install_genesis(
+        &final_store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &manifest,
+        10,
+    )
+    .unwrap();
+    assert!(matches!(
+        restart_outcome,
+        GenesisInstallOutcome::VerifiedExisting { .. }
+    ));
+}
+
+/// Real file-backed SQLite competing-writer coverage for `Slash` racing
+/// `Withdraw` from the exact same committed `Unbonding` row, at/after its own
+/// unlock epoch and with the validator already absent from the committed
+/// live set: two independent writer handles open the same database and
+/// submit different, individually valid transitions (one evidence-driven and
+/// unsigned, one a validator-signed release) from the identical committed
+/// generation. `Unbonding` still carries live collateral
+/// (`FastPathBondRecord::live_collateral`), so both are genuinely admissible
+/// from this exact row; `handle_bond_slash` never itself consults the live
+/// validator set, so the same absence that legitimizes `Withdraw` has no
+/// bearing on `Slash`'s own eligibility. This test deliberately commits
+/// `Withdraw` first, proving the stale `Slash` leaves no receipt, nonce
+/// advance or consumed-evidence marker; the sibling Slash-vs-Replace race
+/// covers the opposite, Slash-wins ordering. The resulting `Exited` state
+/// re-verifies through a fresh close/reopen `install_genesis` restart.
+#[test]
+fn file_backed_sqlite_slash_vs_withdraw_competing_writers_commit_exactly_once() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "bond-lifecycle-slash-withdraw-race-durable-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("state.sqlite");
+    let namespace = SqliteNamespace::new(chain(), ValidatorId::new([12; 32]), domain());
+    let fence1 = WriterFenceGeneration::new(1).unwrap();
+
+    let object_id = ObjectId::new([0xD6; 32]);
+    let alternate_object_id = ObjectId::new([0xDB; 32]);
+    let alternate_key: SigningKey = SigningKey::from([0xDC; 32]);
+    let alternate_public_key: [u8; 32] =
+        ed25519_zebra::VerificationKey::from(&alternate_key).into();
+    let alternate_validator_id: ValidatorId = ValidatorId::new(alternate_public_key);
+    let mut manifest = manifest_with_custody(object_id);
+    // This fixture needs a one-epoch release delay so a real certificate can
+    // retire the unbonding validator before Withdraw becomes valid. The
+    // second validator and its own exact genesis collateral let that
+    // certificate install a non-empty next set without the retiring sender.
+    manifest.economics_policy.resources[0]
+        .bond
+        .as_mut()
+        .unwrap()
+        .unbonding_epochs = 1;
+    manifest
+        .validator_set
+        .validators
+        .push(crate::fast_path::records::FastPathValidatorEntry {
+            id: alternate_validator_id,
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: alternate_public_key.to_vec(),
+        });
+    manifest
+        .validator_set
+        .validators
+        .sort_by_key(|validator| validator.id);
+    let mut alternate_custody = manifest.objects[2].clone();
+    alternate_custody.object.id = alternate_object_id;
+    alternate_custody.authority.object_id = alternate_object_id;
+    let alternate_scope: &mut ProtocolCustodyScope = match &mut alternate_custody.object.owner {
+        Owner::ProtocolCustody(scope) => scope,
+        _ => panic!("fixture custody object must be protocol-owned"),
+    };
+    alternate_scope.subject = alternate_public_key;
+    manifest.objects.push(alternate_custody);
+    resign_manifest(&mut manifest);
+    let fixture = build_fixture();
+    let unbonding_bond: FastPathBondRecord;
+    let conflict_digest: Digest32;
+    let evidence_epoch: Epoch;
+    let recipient: Address = canonical_address(0xD7);
+    // Genesis is at epoch 0 and this signed fixture uses a one-epoch release
+    // delay, so a real `Unbond` at genesis unlocks at exactly epoch 1.
+    let later_context: PublicationContext =
+        PublicationContext::new(chain(), protocol().protocol_version(), Epoch::new(1)).unwrap();
+    let later_leg_policy = LocalExecutionPolicy::generic_object_results(later_context.clone());
+
+    // 1. Fresh two-validator install. While both bonds are Active, form a
+    //    real quorum certificate whose next set contains only the alternate
+    //    validator. Then commit a real `Unbond` and class (a) evidence before
+    //    activating that already-certified set at epoch 1. This is the
+    //    certificate-wins ordering: the sender is now absent from the live
+    //    set, its unlock epoch has elapsed, and the complete epoch history is
+    //    restart-verifiable rather than hand-written test state.
+    {
+        let store = SqliteDurableStore::open(&db_path, namespace.clone(), fence1).unwrap();
+        install(&store, &manifest);
+        let active_bond = get_bond(&store, ValidatorId::new(sender()));
+        assert_eq!(active_bond.state, FastPathBondState::Active);
+
+        let next_validators = vec![crate::fast_path::records::FastPathValidatorEntry {
+            id: alternate_validator_id,
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: alternate_public_key.to_vec(),
+        }];
+        let sender_vote = crate::epoch_transition::propose_and_vote(
+            &store,
+            &context(1),
+            domain(),
+            &resolver(),
+            &chain(),
+            protocol().protocol_version(),
+            next_validators.clone(),
+            &FixedKeySigner(key()),
+        )
+        .unwrap();
+        let alternate_vote = crate::epoch_transition::propose_and_vote(
+            &store,
+            &context(1),
+            domain(),
+            &resolver(),
+            &chain(),
+            protocol().protocol_version(),
+            next_validators.clone(),
+            &FixedKeySigner(alternate_key),
+        )
+        .unwrap();
+        let outgoing_validators: Vec<validator_set::ValidatorInfo> = manifest
+            .validator_set
+            .validators
+            .iter()
+            .map(|validator| validator_set::ValidatorInfo {
+                id: validator.id,
+                voting_power: validator.voting_power,
+                signature_scheme: validator.signature_scheme,
+                public_key: validator.public_key.clone(),
+            })
+            .collect();
+        let outgoing_set: ValidatorSet =
+            ValidatorSet::new(protocol().epoch(), outgoing_validators).unwrap();
+        let certifier = consensus::EpochTransitionCertifier::new(
+            chain(),
+            protocol().protocol_version(),
+            protocol().epoch(),
+            outgoing_set,
+        )
+        .unwrap();
+        let votes = vec![sender_vote.clone(), alternate_vote];
+        let certificate = certifier
+            .try_form_certificate(
+                sender_vote.next_epoch,
+                sender_vote.current_validator_set_digest,
+                sender_vote.next_validator_set_digest,
+                sender_vote.activation_digest,
+                &votes,
+                &fast_path::FastPathEd25519Verifier,
+            )
+            .unwrap()
+            .expect("both equal-power validators exceed quorum");
+        let certificate_bytes: Vec<u8> =
+            consensus::encode_epoch_transition_certificate(&certificate).unwrap();
+
+        let mut next = predicted_next(&active_bond, 11, protocol().epoch());
+        next.state = FastPathBondState::Unbonding {
+            unlock_epoch: Epoch::new(1),
+            recipient: *recipient.as_bytes(),
+        };
+        let intent = base_intent(
+            &protocol(),
+            [0xD8; 32],
+            &active_bond,
+            &next,
+            BondLifecycleOperation::Unbond { recipient },
+        );
+        let signed = signed_envelope(intent, &key());
+        call(&store, &signed, &protocol(), &leg_policy(), 11).unwrap();
+        unbonding_bond = get_bond(&store, ValidatorId::new(sender()));
+        assert_eq!(
+            unbonding_bond.state,
+            FastPathBondState::Unbonding {
+                unlock_epoch: Epoch::new(1),
+                recipient: *recipient.as_bytes(),
+            }
+        );
+
+        let (evidence, digest) = record_class_a_evidence(&store, 15);
+        evidence_epoch = evidence.epoch;
+        conflict_digest = digest;
+
+        let activation = crate::epoch_transition::activate(
+            &store,
+            &context(1),
+            domain(),
+            &resolver(),
+            &chain(),
+            protocol().protocol_version(),
+            next_validators,
+            &certificate_bytes,
+            16,
+        )
+        .unwrap();
+        assert!(matches!(
+            activation,
+            crate::epoch_transition::EpochActivationOutcome::Activated { .. }
+        ));
+    }
+
+    // 2. Two independent writer handles open the same database and each
+    //    submit one individually valid transition against the identical
+    //    committed `Unbonding` row, both committing at the epoch-1 committed
+    //    current epoch: writer A slashes it (evidence-driven, unsigned;
+    //    still valid since `Unbonding` retains live collateral), writer B
+    //    withdraws it (validator-signed release; valid since the unlock
+    //    epoch has elapsed and the validator is absent from the epoch-1 live
+    //    set). Only one can win.
+    let store_a = SqliteDurableStore::open(&db_path, namespace.clone(), fence1).unwrap();
+    let store_b = SqliteDurableStore::open(&db_path, namespace.clone(), fence1).unwrap();
+    let base_a = get_bond(&store_a, ValidatorId::new(sender()));
+    let base_b = get_bond(&store_b, ValidatorId::new(sender()));
+    assert_eq!(base_a, unbonding_bond);
+    assert_eq!(base_b, unbonding_bond);
+
+    let custody_object = custody_object_entry(&manifest, object_id, chain()).object;
+    let slash_request_id: [u8; 32] = [0xD9; 32];
+    let (slash_intent, ..) = build_slash_intent(
+        &fixture,
+        &later_context,
+        &base_a,
+        &custody_object,
+        evidence_epoch,
+        conflict_digest,
+        slash_request_id,
+    );
+    let slash_intent_bytes = slash::encode_slash_intent(&slash_intent).unwrap();
+
+    let withdraw_request_id: [u8; 32] = [0xDA; 32];
+    let withdraw_leg = transfer_leg(
+        &fixture,
+        later_context.clone(),
+        base_b.custody_object.clone(),
+        sender(),
+        0,
+        withdraw_request_id,
+        *recipient.as_bytes(),
+    );
+    // The custody object is untouched by `Unbond`, so it is still exactly
+    // the genesis manifest's own custody entry (index 2).
+    let current_custody_object: &Object = &manifest.objects[2].object;
+    let (_withdrawn_object, withdrawn_oref) = transferred(
+        current_custody_object,
+        Owner::Address(recipient),
+        Epoch::new(1),
+    );
+    let mut withdrawn_next = predicted_next(&base_b, 24, Epoch::new(1));
+    withdrawn_next.state = FastPathBondState::Exited;
+    withdrawn_next.custody_object = withdrawn_oref;
+    withdrawn_next.custody_object_epoch = withdrawn_next.lifecycle_epoch;
+    let withdraw_intent = base_intent(
+        &later_context,
+        withdraw_request_id,
+        &base_b,
+        &withdrawn_next,
+        BondLifecycleOperation::Withdraw { leg: withdraw_leg },
+    );
+    let withdraw_signed = signed_envelope(withdraw_intent, &key());
+
+    // Commit Withdraw first through writer B, then submit the independently
+    // prepared Slash through writer A. This ordering specifically proves the
+    // release winner leaves no slash receipt or consumed-evidence marker;
+    // the sibling Slash-vs-Replace test already covers the Slash-wins side.
+    let withdraw_result = call(
+        &store_b,
+        &withdraw_signed,
+        &later_context,
+        &later_leg_policy,
+        24,
+    );
+    let slash_result = slash::handle_bond_slash(
+        &store_a,
+        &MemoryBlobStore::default(),
+        &context(1),
+        domain(),
+        &resolver(),
+        &[],
+        &later_context,
+        &later_leg_policy,
+        &engine(),
+        &slash_intent_bytes,
+        23,
+    );
+
+    // Exactly one commits.
+    assert_ne!(slash_result.is_ok(), withdraw_result.is_ok());
+    assert!(withdraw_result.is_ok());
+    assert!(slash_result.is_err());
+
+    let final_store = SqliteDurableStore::open(&db_path, namespace.clone(), fence1).unwrap();
+    let final_bond = get_bond(&final_store, ValidatorId::new(sender()));
+    assert_eq!(final_bond, withdrawn_next);
+    assert!(matches!(
+        slash_result.unwrap_err(),
+        BondLifecycleError::Node(NodeCoreError::StateConflict)
+            | BondLifecycleError::Node(NodeCoreError::DurableCommitRejected(
+                DurableCommitRejection::Conflict { .. }
+            ))
+            | BondLifecycleError::Invalid(_)
+    ));
+    // No partial state: exactly one generation-3 transition record exists,
+    // and the installed singleton matches it exactly.
+    assert_eq!(final_bond.generation, unbonding_bond.generation + 1);
+    let withdraw_receipt: Option<DurableRequestReceipt> = final_store
+        .get_request_receipt(
+            &context(1),
+            domain(),
+            DurableRequestId::new(withdraw_request_id).unwrap(),
+        )
+        .unwrap();
+    let slash_receipt: Option<DurableRequestReceipt> = final_store
+        .get_request_receipt(
+            &context(1),
+            domain(),
+            DurableRequestId::new(slash_request_id).unwrap(),
+        )
+        .unwrap();
+    assert!(withdraw_receipt.is_some());
+    assert!(slash_receipt.is_none());
+    let consumed_key: Vec<u8> = local_instance_state::fastpath_evidence_consumed_key(
+        &chain(),
+        evidence_epoch,
+        *unbonding_bond.validator_id.as_bytes(),
+        conflict_digest,
+    )
+    .unwrap();
+    let consumed: VersionedStateValue = final_store
+        .get_versioned_durable(&context(1), domain(), &consumed_key)
+        .unwrap();
+    assert!(consumed.value().is_none());
+    let layout = PersistenceLayout::new(chain(), protocol().protocol_version());
+    let nonce_key: Vec<u8> = layout.sender_nonce_key(sender(), later_context.epoch());
+    let nonce_bytes: VersionedStateValue = final_store
+        .get_versioned_durable(&context(1), domain(), &nonce_key)
+        .unwrap();
+    let nonce: SenderNonceRecord = SenderNonceRecord::decode(nonce_bytes.value().unwrap()).unwrap();
+    assert_eq!(nonce.next_nonce, 1);
+    let restart_outcome = genesis::install_genesis(
+        &final_store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &manifest,
+        10,
+    )
+    .unwrap();
+    assert!(matches!(
+        restart_outcome,
+        GenesisInstallOutcome::VerifiedExisting { .. }
+    ));
 }
 
 // ---------------------------------------------------------------------
@@ -2591,12 +3589,19 @@ fn restart_rejects_a_lifted_signature() {
         .get_versioned_durable(&context(1), domain(), &transition_key)
         .unwrap();
     let mut transition = decode_fastpath_bond_transition_record(observed.value().unwrap()).unwrap();
-    let mut signed = decode_signed_bond_lifecycle_intent(&transition.signed_envelope).unwrap();
+    let BondTransitionAuthorization::ValidatorEnvelope { signed_envelope } =
+        &transition.authorization
+    else {
+        panic!("expected a validator-signed envelope");
+    };
+    let mut signed = decode_signed_bond_lifecycle_intent(signed_envelope).unwrap();
     // Lift the signature bytes of a *different* validity signing over the
     // same message shape (a single flipped byte stands in for any
     // signature the validator never actually produced over this content).
     signed.signature[0] ^= 0xFF;
-    transition.signed_envelope = encode_signed_bond_lifecycle_intent(&signed).unwrap();
+    transition.authorization = BondTransitionAuthorization::ValidatorEnvelope {
+        signed_envelope: encode_signed_bond_lifecycle_intent(&signed).unwrap(),
+    };
     put_unconditionally(
         &store,
         transition_key,
@@ -2612,8 +3617,13 @@ fn restart_rejects_a_tampered_signed_envelope() {
         .get_versioned_durable(&context(1), domain(), &transition_key)
         .unwrap();
     let mut transition = decode_fastpath_bond_transition_record(observed.value().unwrap()).unwrap();
-    let last = transition.signed_envelope.len() - 1;
-    transition.signed_envelope[last] ^= 0xFF;
+    let BondTransitionAuthorization::ValidatorEnvelope { signed_envelope } =
+        &mut transition.authorization
+    else {
+        panic!("expected a validator-signed envelope");
+    };
+    let last = signed_envelope.len() - 1;
+    signed_envelope[last] ^= 0xFF;
     put_unconditionally(
         &store,
         transition_key,
@@ -2788,7 +3798,9 @@ fn build_unbonded_chain_signed_under_a_later_protocol_version(
         current_row_digest: next_digest,
         operation: FastPathBondLifecycleOperation::Unbond,
         committed_at_checkpoint: 15,
-        signed_envelope: signed_bytes,
+        authorization: BondTransitionAuthorization::ValidatorEnvelope {
+            signed_envelope: signed_bytes,
+        },
         resulting_row: next_bytes.clone(),
     };
     let transition_key =
@@ -2868,4 +3880,1851 @@ fn restart_fails_closed_when_the_historical_resolver_for_a_transition_is_wrong_o
     )
     .unwrap_err();
     assert!(matches!(error, GenesisError::TamperedInstalledRecord(_)));
+}
+
+// ── DR-0137 implementation unit 3: evidence-driven slash and reactivate ────
+
+/// Signs with a fixed key as the exact genesis validator (`sender()`/`key()`).
+struct FixedKeySigner(SigningKey);
+impl ConsensusSigner for FixedKeySigner {
+    fn validator_id(&self) -> ValidatorId {
+        let public_key: [u8; 32] = ed25519_zebra::VerificationKey::from(&self.0).into();
+        ValidatorId::new(public_key)
+    }
+    fn signature_scheme(&self) -> SignatureSchemeId {
+        SignatureSchemeId::Ed25519
+    }
+    fn sign_framed(&self, framed: &[u8]) -> Result<Vec<u8>, String> {
+        let signature_bytes: [u8; 64] = self.0.sign(framed).into();
+        Ok(signature_bytes.to_vec())
+    }
+}
+
+fn ev_digest(byte: u8) -> Digest32 {
+    Digest32::new(HashAlgorithmId::Sha2_256, [byte; 32])
+}
+
+/// One-validator [`FastPathCertifier`] bound to the exact genesis validator
+/// set `manifest_with_custody` installs.
+fn one_validator_certifier() -> FastPathCertifier {
+    let validator_set: ValidatorSet = ValidatorSet::new(
+        protocol().epoch(),
+        vec![validator_set::ValidatorInfo {
+            id: ValidatorId::new(sender()),
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: sender().to_vec(),
+        }],
+    )
+    .unwrap();
+    FastPathCertifier::new(
+        chain(),
+        protocol().protocol_version(),
+        protocol().epoch(),
+        validator_set,
+    )
+    .unwrap()
+}
+
+/// Records a real class (a) DR-0133 evidence row proving the genesis
+/// validator equivocated, and returns the decoded evidence plus its
+/// normalized-identity `conflict_digest` -- the exact selector
+/// `handle_bond_slash` requires.
+fn record_class_a_evidence<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    checkpoint: u64,
+) -> (consensus::FastVoteEquivocationEvidence, Digest32) {
+    let certifier = one_validator_certifier();
+    let signer = FixedKeySigner(key());
+    // Class (a): the identical `tx_hash`, a differing payload (here,
+    // `execution_effects_hash`).
+    let vote_a = certifier
+        .cast_vote(ev_digest(0x01), ev_digest(0x02), ev_digest(0x03), &signer)
+        .unwrap();
+    let vote_b = certifier
+        .cast_vote(ev_digest(0x01), ev_digest(0x05), ev_digest(0x03), &signer)
+        .unwrap();
+    let bytes_a = consensus::encode_fast_vote(&vote_a).unwrap();
+    let bytes_b = consensus::encode_fast_vote(&vote_b).unwrap();
+    let outcome = equivocation::submit_fast_vote_equivocation_evidence(
+        store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &chain(),
+        protocol().protocol_version(),
+        &bytes_a,
+        &bytes_b,
+        checkpoint,
+    )
+    .unwrap();
+    let record = match outcome {
+        equivocation::EquivocationEvidenceOutcome::Recorded(record) => record,
+        equivocation::EquivocationEvidenceOutcome::AlreadyRecorded(_) => {
+            panic!("expected a freshly recorded evidence row")
+        }
+    };
+    let evidence =
+        consensus::decode_fast_vote_equivocation_evidence(&record.evidence_bytes).unwrap();
+    let conflict_digest = equivocation::normalized_identity_digest(
+        &resolver(),
+        &equivocation::DecodedEquivocationEvidence::FastVote(evidence.clone()),
+    )
+    .unwrap();
+    (evidence, conflict_digest)
+}
+
+/// Records a real class (b) DR-0133 object-conflict evidence row proving the
+/// genesis validator equivocated (two differing transactions whose locked
+/// object sets share a pair), and returns its epoch plus the exact
+/// normalized-identity `conflict_digest` `handle_bond_slash` requires.
+fn record_class_b_evidence<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    checkpoint: u64,
+) -> (Epoch, Digest32) {
+    let certifier = one_validator_certifier();
+    let signer = FixedKeySigner(key());
+    let epoch: Epoch = protocol().epoch();
+    let shared: ObjectRef = ObjectRef {
+        id: ObjectId::new([0x61; 32]),
+        version: 1,
+        digest: ev_digest(0x62),
+    };
+    let mut entries_a: Vec<ObjectRef> = vec![
+        shared.clone(),
+        ObjectRef {
+            id: ObjectId::new([0x63; 32]),
+            version: 1,
+            digest: ev_digest(0x64),
+        },
+    ];
+    entries_a.sort_by_key(|entry| entry.id);
+    let mut entries_b: Vec<ObjectRef> = vec![
+        shared,
+        ObjectRef {
+            id: ObjectId::new([0x65; 32]),
+            version: 1,
+            digest: ev_digest(0x66),
+        },
+    ];
+    entries_b.sort_by_key(|entry| entry.id);
+    let preimage_a = consensus::LockedObjectSetPreimage {
+        chain_id: chain(),
+        protocol_version: protocol().protocol_version(),
+        epoch,
+        entries: entries_a,
+    };
+    let preimage_b = consensus::LockedObjectSetPreimage {
+        chain_id: chain(),
+        protocol_version: protocol().protocol_version(),
+        epoch,
+        entries: entries_b,
+    };
+    let preimage_bytes_a = consensus::encode_locked_object_set_preimage(&preimage_a).unwrap();
+    let preimage_bytes_b = consensus::encode_locked_object_set_preimage(&preimage_b).unwrap();
+    let digest_a: Digest32 = resolver()
+        .hash_for_purpose(epoch, HashPurpose::ExecutionEffects, &preimage_bytes_a)
+        .unwrap();
+    let digest_b: Digest32 = resolver()
+        .hash_for_purpose(epoch, HashPurpose::ExecutionEffects, &preimage_bytes_b)
+        .unwrap();
+    let vote_a = certifier
+        .cast_vote(ev_digest(0x67), ev_digest(0x68), digest_a, &signer)
+        .unwrap();
+    let vote_b = certifier
+        .cast_vote(ev_digest(0x69), ev_digest(0x6a), digest_b, &signer)
+        .unwrap();
+    let bytes_a = consensus::encode_fast_vote(&vote_a).unwrap();
+    let bytes_b = consensus::encode_fast_vote(&vote_b).unwrap();
+    let outcome = equivocation::submit_fast_vote_object_conflict_evidence(
+        store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &chain(),
+        protocol().protocol_version(),
+        &bytes_a,
+        &bytes_b,
+        &preimage_bytes_a,
+        &preimage_bytes_b,
+        checkpoint,
+    )
+    .unwrap();
+    let record = match outcome {
+        equivocation::EquivocationEvidenceOutcome::Recorded(record) => record,
+        equivocation::EquivocationEvidenceOutcome::AlreadyRecorded(_) => {
+            panic!("expected a freshly recorded evidence row")
+        }
+    };
+    let evidence =
+        consensus::decode_fast_vote_object_conflict_evidence(&record.evidence_bytes).unwrap();
+    let conflict_digest = equivocation::normalized_identity_digest(
+        &resolver(),
+        &equivocation::DecodedEquivocationEvidence::ObjectConflict(evidence.clone()),
+    )
+    .unwrap();
+    (evidence.epoch, conflict_digest)
+}
+
+/// Records a real class (c) DR-0133 epoch-transition-equivocation evidence
+/// row proving the genesis validator, acting as the sole outgoing-epoch
+/// signer, voted for two differing activation targets over the identical
+/// `(epoch, next_epoch)` pair. Returns the outgoing epoch plus the exact
+/// normalized-identity `conflict_digest` `handle_bond_slash` requires.
+fn record_class_c_evidence<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    checkpoint: u64,
+) -> (Epoch, Digest32) {
+    let validator_set: ValidatorSet = ValidatorSet::new(
+        protocol().epoch(),
+        vec![validator_set::ValidatorInfo {
+            id: ValidatorId::new(sender()),
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: sender().to_vec(),
+        }],
+    )
+    .unwrap();
+    let certifier = consensus::EpochTransitionCertifier::new(
+        chain(),
+        protocol().protocol_version(),
+        protocol().epoch(),
+        validator_set,
+    )
+    .unwrap();
+    let signer = FixedKeySigner(key());
+    let next_epoch = Epoch::new(protocol().epoch().get() + 1);
+    let vote_a = certifier
+        .cast_vote(
+            next_epoch,
+            ev_digest(0x71),
+            ev_digest(0x72),
+            ev_digest(0x73),
+            &signer,
+        )
+        .unwrap();
+    let vote_b = certifier
+        .cast_vote(
+            next_epoch,
+            ev_digest(0x71),
+            ev_digest(0x72),
+            ev_digest(0x74),
+            &signer,
+        )
+        .unwrap();
+    let bytes_a = consensus::encode_epoch_transition_vote(&vote_a).unwrap();
+    let bytes_b = consensus::encode_epoch_transition_vote(&vote_b).unwrap();
+    let outcome = equivocation::submit_epoch_transition_equivocation_evidence(
+        store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &chain(),
+        protocol().protocol_version(),
+        &bytes_a,
+        &bytes_b,
+        checkpoint,
+    )
+    .unwrap();
+    let record = match outcome {
+        equivocation::EquivocationEvidenceOutcome::Recorded(record) => record,
+        equivocation::EquivocationEvidenceOutcome::AlreadyRecorded(_) => {
+            panic!("expected a freshly recorded evidence row")
+        }
+    };
+    let evidence =
+        consensus::decode_epoch_transition_equivocation_evidence(&record.evidence_bytes).unwrap();
+    let conflict_digest = equivocation::normalized_identity_digest(
+        &resolver(),
+        &equivocation::DecodedEquivocationEvidence::EpochTransition(evidence.clone()),
+    )
+    .unwrap();
+    (evidence.epoch, conflict_digest)
+}
+
+/// Builds the forfeiture leg and full [`slash::SlashIntent`] bytes moving
+/// `bond`'s exact live custody object into `ForfeitedCollateral`, pinned to
+/// `conflict_digest`/`evidence_epoch`, committing at `current_context`
+/// (which need not equal `evidence_epoch`'s own context: a bond may be
+/// slashed at a later committed epoch than the evidence it is slashed by).
+/// `leg_nonce` is the forfeiture leg's own sender nonce at `current_context`
+/// -- callers that already spent earlier nonces for `sender()` at that same
+/// epoch (e.g. a preceding `Replace`) must pass the next unused value.
+#[allow(clippy::too_many_arguments)]
+fn build_slash_intent_at_nonce(
+    fixture: &Fixture,
+    current_context: &PublicationContext,
+    bond: &FastPathBondRecord,
+    custody_object: &Object,
+    evidence_epoch: Epoch,
+    conflict_digest: Digest32,
+    request_id: [u8; 32],
+    leg_nonce: u64,
+) -> (slash::SlashIntent, Object, ProtocolCustodyScope) {
+    let target_scope = ProtocolCustodyScope {
+        purpose: ProtocolCustodyPurpose::ForfeitedCollateral,
+        chain_id: bond.context.chain_id().clone(),
+        subject: *bond.validator_id.as_bytes(),
+        resource: bond.resource,
+    };
+    let forfeit_token: [u8; 32] = execution::protocol_custody::derive_deposit_owner_token(
+        &resolver(),
+        current_context,
+        bond.custody_object.id,
+        &target_scope,
+    )
+    .unwrap();
+    let leg = transfer_leg(
+        fixture,
+        current_context.clone(),
+        // Hashed at `bond`'s own recorded `custody_object_epoch`, never at
+        // `current_context.epoch()`: a bond slashed at a later committing
+        // epoch than the one that last actually minted its custody object
+        // (e.g. after an intervening `Unbond`) must still match the durable
+        // object's own pinned digest.
+        object_ref_at(&resolver(), custody_object, bond.custody_object_epoch),
+        sender(),
+        leg_nonce,
+        request_id,
+        forfeit_token,
+    );
+    let (new_object, _oref) = transferred(
+        custody_object,
+        Owner::ProtocolCustody(target_scope.clone()),
+        current_context.epoch(),
+    );
+    let intent = slash::SlashIntent {
+        context: current_context.clone(),
+        request_id,
+        validator_id: bond.validator_id,
+        resource_id: resource_id_of(bond),
+        expected_generation: bond.generation,
+        evidence_epoch,
+        conflict_digest,
+        leg,
+    };
+    (intent, new_object, target_scope)
+}
+
+/// [`build_slash_intent_at_nonce`] at leg nonce 0, for the (overwhelming)
+/// majority of callers whose sender has not already spent an earlier nonce
+/// for `current_context`'s epoch.
+#[allow(clippy::too_many_arguments)]
+fn build_slash_intent(
+    fixture: &Fixture,
+    current_context: &PublicationContext,
+    bond: &FastPathBondRecord,
+    custody_object: &Object,
+    evidence_epoch: Epoch,
+    conflict_digest: Digest32,
+    request_id: [u8; 32],
+) -> (slash::SlashIntent, Object, ProtocolCustodyScope) {
+    build_slash_intent_at_nonce(
+        fixture,
+        current_context,
+        bond,
+        custody_object,
+        evidence_epoch,
+        conflict_digest,
+        request_id,
+        0,
+    )
+}
+
+#[test]
+fn slash_forfeits_the_bond_and_jails_the_validator_with_real_wasm_execution() {
+    let object_id = ObjectId::new([0x92; 32]);
+    let manifest = manifest_with_custody(object_id);
+    let store = store();
+    install(&store, &manifest);
+    let bond = get_bond(&store, ValidatorId::new(sender()));
+    assert_eq!(bond.state, FastPathBondState::Active);
+
+    let (evidence, conflict_digest) = record_class_a_evidence(&store, 15);
+
+    let fixture = build_fixture();
+    let custody_object = custody_object_entry(&manifest, object_id, chain()).object;
+    let request_id: [u8; 32] = [0x93; 32];
+    let (intent, new_object, target_scope) = build_slash_intent(
+        &fixture,
+        &protocol(),
+        &bond,
+        &custody_object,
+        evidence.epoch,
+        conflict_digest,
+        request_id,
+    );
+    let intent_bytes = slash::encode_slash_intent(&intent).unwrap();
+
+    let output = slash::handle_bond_slash(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(1),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &leg_policy(),
+        &engine(),
+        &intent_bytes,
+        20,
+    )
+    .unwrap();
+    let committed = decode_fastpath_bond_record(output.responses()[0].payload().unwrap()).unwrap();
+    assert_eq!(
+        committed.state,
+        FastPathBondState::Jailed {
+            evidence_digest: conflict_digest
+        }
+    );
+    assert_eq!(committed.generation, bond.generation + 1);
+    // Full forfeiture: the historical amount/minimum are preserved exactly,
+    // not zeroed or reduced.
+    assert_eq!(committed.amount, bond.amount);
+    assert_eq!(committed.required_minimum, bond.required_minimum);
+    assert_eq!(committed.custody_object.id, new_object.id);
+
+    let head = store
+        .get_object_head(&context(1), domain(), object_id)
+        .unwrap();
+    match head {
+        DurableObjectHead::Current {
+            owner_projection, ..
+        } => {
+            assert_eq!(
+                owner_projection,
+                DurableObjectOwnerProjection::from_owner(Owner::ProtocolCustody(target_scope))
+                    .unwrap()
+            );
+        }
+        _ => panic!("expected a live head at the forfeited object"),
+    }
+
+    // The evidence-consumed absence fence is now occupied.
+    let consumed_key = local_instance_state::fastpath_evidence_consumed_key(
+        &chain(),
+        evidence.epoch,
+        *bond.validator_id.as_bytes(),
+        conflict_digest,
+    )
+    .unwrap();
+    let consumed_observed = store
+        .get_versioned_durable(&context(1), domain(), &consumed_key)
+        .unwrap();
+    let consumed =
+        slash::decode_evidence_consumption_record(consumed_observed.value().unwrap()).unwrap();
+    assert_eq!(consumed.generation, committed.generation);
+    assert_eq!(consumed.conflict_digest, conflict_digest);
+}
+
+/// Shared end-to-end assertion for a real evidence-driven slash, reused by
+/// the class (b)/(c) tests below: one-time full forfeiture (`Jailed` state,
+/// generation+1, exact historical amount/minimum preservation, the
+/// forfeited object's owner projection) exactly like the class (a) test
+/// above, differing only in which DR-0133 evidence family authorizes it.
+/// `record_evidence` records the real evidence row against the exact same
+/// store the slash itself commits against, and returns its
+/// `(evidence_epoch, conflict_digest)` selector.
+fn assert_slash_forfeits_and_jails(
+    record_evidence: impl FnOnce(&MemoryDurableStateStore) -> (Epoch, Digest32),
+) {
+    let object_id = ObjectId::new([0xB0; 32]);
+    let manifest = manifest_with_custody(object_id);
+    let store = store();
+    install(&store, &manifest);
+    let bond = get_bond(&store, ValidatorId::new(sender()));
+    assert_eq!(bond.state, FastPathBondState::Active);
+    let (evidence_epoch, conflict_digest) = record_evidence(&store);
+
+    let fixture = build_fixture();
+    let custody_object = custody_object_entry(&manifest, object_id, chain()).object;
+    let request_id: [u8; 32] = [0xB1; 32];
+    let (intent, new_object, target_scope) = build_slash_intent(
+        &fixture,
+        &protocol(),
+        &bond,
+        &custody_object,
+        evidence_epoch,
+        conflict_digest,
+        request_id,
+    );
+    let intent_bytes = slash::encode_slash_intent(&intent).unwrap();
+
+    let output = slash::handle_bond_slash(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(1),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &leg_policy(),
+        &engine(),
+        &intent_bytes,
+        20,
+    )
+    .unwrap();
+    let committed = decode_fastpath_bond_record(output.responses()[0].payload().unwrap()).unwrap();
+    assert_eq!(
+        committed.state,
+        FastPathBondState::Jailed {
+            evidence_digest: conflict_digest
+        }
+    );
+    assert_eq!(committed.generation, bond.generation + 1);
+    // Full forfeiture: the historical amount/minimum are preserved exactly,
+    // not zeroed or reduced.
+    assert_eq!(committed.amount, bond.amount);
+    assert_eq!(committed.required_minimum, bond.required_minimum);
+    assert_eq!(committed.custody_object.id, new_object.id);
+
+    let head = store
+        .get_object_head(&context(1), domain(), object_id)
+        .unwrap();
+    match head {
+        DurableObjectHead::Current {
+            owner_projection, ..
+        } => {
+            assert_eq!(
+                owner_projection,
+                DurableObjectOwnerProjection::from_owner(Owner::ProtocolCustody(target_scope))
+                    .unwrap()
+            );
+        }
+        _ => panic!("expected a live head at the forfeited object"),
+    }
+
+    // The evidence-consumed absence fence is now occupied, one-time only.
+    let consumed_key = local_instance_state::fastpath_evidence_consumed_key(
+        &chain(),
+        evidence_epoch,
+        *bond.validator_id.as_bytes(),
+        conflict_digest,
+    )
+    .unwrap();
+    let consumed_observed = store
+        .get_versioned_durable(&context(1), domain(), &consumed_key)
+        .unwrap();
+    let consumed =
+        slash::decode_evidence_consumption_record(consumed_observed.value().unwrap()).unwrap();
+    assert_eq!(consumed.generation, committed.generation);
+    assert_eq!(consumed.conflict_digest, conflict_digest);
+}
+
+/// DR-0133 class (b) (`FastVoteObjectConflictEvidence`) end to end: real
+/// object-conflict evidence authorizes exactly the same one-time full
+/// forfeiture as class (a) does.
+#[test]
+fn slash_forfeits_the_bond_with_real_class_b_object_conflict_evidence() {
+    assert_slash_forfeits_and_jails(|store| record_class_b_evidence(store, 15));
+}
+
+/// DR-0133 class (c) (`EpochTransitionEquivocationEvidence`) end to end:
+/// real epoch-transition-equivocation evidence authorizes exactly the same
+/// one-time full forfeiture as class (a) does.
+#[test]
+fn slash_forfeits_the_bond_with_real_class_c_epoch_transition_evidence() {
+    assert_slash_forfeits_and_jails(|store| record_class_c_evidence(store, 15));
+}
+
+/// DR-0137 ("Jailing never changes current-epoch certificate verification"):
+/// forming a `FastCertificate` over one fixed `(tx_hash,
+/// execution_effects_hash, locked_objects_digest)` tuple from the identical
+/// single vote produces byte-for-byte identical encoded certificate bytes
+/// whether formed before or after a real evidence-driven slash jails that
+/// same validator's bond mid-epoch. `FastPathCertifier`/`FastCertificate`
+/// formation and verification read only the immutable `ValidatorSet`
+/// snapshot captured at construction, never a bond row: jailing disables
+/// local signing going forward and later-set eligibility, nothing already
+/// (or independently still) certifiable from the unchanged outgoing set.
+#[test]
+fn current_epoch_certificate_verification_is_byte_for_byte_unaffected_by_a_later_slash() {
+    let object_id = ObjectId::new([0xF7; 32]);
+    let manifest = manifest_with_custody(object_id);
+    let store = store();
+    install(&store, &manifest);
+    let bond = get_bond(&store, ValidatorId::new(sender()));
+    assert_eq!(bond.state, FastPathBondState::Active);
+
+    let form_certificate = || {
+        let certifier = one_validator_certifier();
+        let signer = FixedKeySigner(key());
+        let vote = certifier
+            .cast_vote(ev_digest(0xC1), ev_digest(0xC2), ev_digest(0xC3), &signer)
+            .unwrap();
+        let certificate = certifier
+            .try_form_certificate(
+                ev_digest(0xC1),
+                ev_digest(0xC2),
+                ev_digest(0xC3),
+                std::slice::from_ref(&vote),
+                &fast_path::FastPathEd25519Verifier,
+            )
+            .unwrap()
+            .expect("the single equal-power validator exceeds quorum");
+        certifier
+            .verify_certificate(&certificate, &fast_path::FastPathEd25519Verifier)
+            .unwrap();
+        consensus::encode_fast_certificate(&certificate).unwrap()
+    };
+
+    // Formed once before the slash, over the bond's still-`Active` state.
+    let certificate_before_slash: Vec<u8> = form_certificate();
+
+    let (evidence, conflict_digest) = record_class_a_evidence(&store, 15);
+    let fixture = build_fixture();
+    let custody_object = custody_object_entry(&manifest, object_id, chain()).object;
+    let (slash_intent, ..) = build_slash_intent(
+        &fixture,
+        &protocol(),
+        &bond,
+        &custody_object,
+        evidence.epoch,
+        conflict_digest,
+        [0xF8; 32],
+    );
+    let slash_intent_bytes = slash::encode_slash_intent(&slash_intent).unwrap();
+    slash::handle_bond_slash(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(1),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &leg_policy(),
+        &engine(),
+        &slash_intent_bytes,
+        20,
+    )
+    .unwrap();
+    let jailed_bond = get_bond(&store, ValidatorId::new(sender()));
+    assert!(matches!(
+        jailed_bond.state,
+        FastPathBondState::Jailed { .. }
+    ));
+
+    // Formed again after the slash, over the identical fixed tuple/vote: a
+    // completely independent construction that never reads `store` at all.
+    let certificate_after_slash: Vec<u8> = form_certificate();
+
+    assert_eq!(certificate_before_slash, certificate_after_slash);
+}
+
+#[test]
+fn slash_exact_replay_returns_the_same_receipt_without_reexecuting_the_leg() {
+    let object_id = ObjectId::new([0x94; 32]);
+    let manifest = manifest_with_custody(object_id);
+    let store = store();
+    install(&store, &manifest);
+    let bond = get_bond(&store, ValidatorId::new(sender()));
+    let (evidence, conflict_digest) = record_class_a_evidence(&store, 15);
+    let fixture = build_fixture();
+    let custody_object = custody_object_entry(&manifest, object_id, chain()).object;
+    let request_id: [u8; 32] = [0x95; 32];
+    let (intent, ..) = build_slash_intent(
+        &fixture,
+        &protocol(),
+        &bond,
+        &custody_object,
+        evidence.epoch,
+        conflict_digest,
+        request_id,
+    );
+    let intent_bytes = slash::encode_slash_intent(&intent).unwrap();
+    let counting_engine = CountingEngine::new();
+
+    let first = slash::handle_bond_slash(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(1),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &leg_policy(),
+        &counting_engine,
+        &intent_bytes,
+        20,
+    )
+    .unwrap();
+    let calls_after_first = counting_engine
+        .calls
+        .load(std::sync::atomic::Ordering::SeqCst);
+    assert!(calls_after_first >= 1);
+
+    let second = slash::handle_bond_slash(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(1),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &leg_policy(),
+        &counting_engine,
+        &intent_bytes,
+        20,
+    )
+    .unwrap();
+    assert_eq!(
+        counting_engine
+            .calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        calls_after_first,
+        "exact replay must not re-execute the forfeiture leg"
+    );
+    assert_eq!(
+        first.responses()[0].payload(),
+        second.responses()[0].payload()
+    );
+}
+
+#[test]
+fn slash_fails_closed_when_the_evidence_digest_is_already_consumed() {
+    let object_id = ObjectId::new([0x96; 32]);
+    let manifest = manifest_with_custody(object_id);
+    let store = store();
+    install(&store, &manifest);
+    let bond = get_bond(&store, ValidatorId::new(sender()));
+    let (evidence, conflict_digest) = record_class_a_evidence(&store, 15);
+
+    // Directly occupy the evidence-consumed absence fence, as if a prior
+    // (different-request) slash had already consumed this exact evidence,
+    // without actually mutating the bond row -- isolating the fence check
+    // from the live-collateral/lifecycle-epoch checks a real double-slash
+    // would also trip.
+    let consumed_key = local_instance_state::fastpath_evidence_consumed_key(
+        &chain(),
+        evidence.epoch,
+        *bond.validator_id.as_bytes(),
+        conflict_digest,
+    )
+    .unwrap();
+    let marker = slash::EvidenceConsumptionRecord {
+        validator_id: bond.validator_id,
+        evidence_epoch: evidence.epoch,
+        conflict_digest,
+        generation: bond.generation + 1,
+        consumed_at_checkpoint: 1,
+    };
+    put_unconditionally(
+        &store,
+        consumed_key,
+        slash::encode_evidence_consumption_record(&marker).unwrap(),
+    );
+
+    let fixture = build_fixture();
+    let custody_object = custody_object_entry(&manifest, object_id, chain()).object;
+    let request_id: [u8; 32] = [0x97; 32];
+    let (intent, ..) = build_slash_intent(
+        &fixture,
+        &protocol(),
+        &bond,
+        &custody_object,
+        evidence.epoch,
+        conflict_digest,
+        request_id,
+    );
+    let intent_bytes = slash::encode_slash_intent(&intent).unwrap();
+    let error = slash::handle_bond_slash(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(1),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &leg_policy(),
+        &engine(),
+        &intent_bytes,
+        20,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        BondLifecycleError::Invalid("evidence already consumed")
+    ));
+    // Nothing committed: the bond row is untouched.
+    assert_eq!(get_bond(&store, ValidatorId::new(sender())), bond);
+}
+
+/// Forces the installed bond row into `Jailed` with an arbitrary evidence
+/// digest, as if a prior slash had already completed, so `Reactivate` tests
+/// do not each need to replay a full evidence-submission-and-slash cycle
+/// first.
+fn force_jailed<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    bond: &FastPathBondRecord,
+) -> FastPathBondRecord {
+    let mut jailed = bond.clone();
+    jailed.state = FastPathBondState::Jailed {
+        evidence_digest: ev_digest(0xAA),
+    };
+    put_bond(store, &jailed);
+    jailed
+}
+
+#[test]
+fn reactivate_transitions_jailed_to_active_with_real_wasm_execution() {
+    let object_id = ObjectId::new([0x98; 32]);
+    let manifest = manifest_with_custody(object_id);
+    let store = store();
+    install(&store, &manifest);
+    let bond = force_jailed(&store, &get_bond(&store, ValidatorId::new(sender())));
+
+    let fixture = build_fixture();
+    let source_id = ObjectId::new([0x99; 32]);
+    let (source_object, source_authority) =
+        seed_owned_coin(&store, &fixture, source_id, 7_000, sender(), [0x9A; 32]);
+
+    let scope = custody_scope_of(&bond);
+    let token: [u8; 32] = execution::protocol_custody::derive_deposit_owner_token(
+        &resolver(),
+        &protocol(),
+        source_id,
+        &scope,
+    )
+    .unwrap();
+    let request_id: [u8; 32] = [0x9B; 32];
+    let leg = transfer_leg(
+        &fixture,
+        protocol(),
+        object_ref(&resolver(), &source_object),
+        sender(),
+        0,
+        request_id,
+        token,
+    );
+    let (new_object, oref) = transferred(
+        &source_object,
+        Owner::ProtocolCustody(scope),
+        protocol().epoch(),
+    );
+    let mut next = predicted_next(&bond, 25, protocol().epoch());
+    next.custody_object = oref;
+    next.custody_object_epoch = next.lifecycle_epoch;
+    next.slashable_from_epoch = Epoch::new(next.lifecycle_epoch.get() + 1);
+    next.authority = source_authority;
+    next.amount = 7_000;
+    next.required_minimum = 100;
+    next.state = FastPathBondState::Active;
+
+    let intent = base_intent(
+        &protocol(),
+        request_id,
+        &bond,
+        &next,
+        BondLifecycleOperation::Reactivate { leg },
+    );
+    let signed = signed_envelope(intent, &key());
+    let output = call(&store, &signed, &protocol(), &leg_policy(), 25).unwrap();
+    let committed = decode_fastpath_bond_record(output.responses()[0].payload().unwrap()).unwrap();
+    assert_eq!(committed, next);
+    assert_eq!(committed.state, FastPathBondState::Active);
+    assert_eq!(committed.amount, 7_000);
+    assert_eq!(committed.custody_object.id, new_object.id);
+}
+
+#[test]
+fn every_bond_lifecycle_operation_except_reactivate_rejects_a_jailed_bond() {
+    let object_id = ObjectId::new([0x9C; 32]);
+    let manifest = manifest_with_custody(object_id);
+    let store = store();
+    install(&store, &manifest);
+    let bond = force_jailed(&store, &get_bond(&store, ValidatorId::new(sender())));
+
+    let recipient = canonical_address(0x9D);
+    let mut next = predicted_next(&bond, 30, protocol().epoch());
+    next.state = FastPathBondState::Unbonding {
+        unlock_epoch: Epoch::new(7),
+        recipient: *recipient.as_bytes(),
+    };
+    let intent = base_intent(
+        &protocol(),
+        [0x9E; 32],
+        &bond,
+        &next,
+        BondLifecycleOperation::Unbond { recipient },
+    );
+    let signed = signed_envelope(intent, &key());
+    let error = call(&store, &signed, &protocol(), &leg_policy(), 30).unwrap_err();
+    assert!(matches!(
+        error,
+        BondLifecycleError::Invalid("bond is jailed")
+    ));
+    assert_eq!(get_bond(&store, ValidatorId::new(sender())), bond);
+}
+
+/// A real genesis install immediately followed by one real evidence-driven
+/// slash, all on `store` -- the common starting point for the restart-verify
+/// `ConsumedEvidence` branch tests below.
+fn build_slashed_chain() -> (MemoryDurableStateStore, genesis::GenesisManifest) {
+    let object_id = ObjectId::new([0xA0; 32]);
+    let manifest = manifest_with_custody(object_id);
+    let store = store();
+    install(&store, &manifest);
+    let bond = get_bond(&store, ValidatorId::new(sender()));
+    let (evidence, conflict_digest) = record_class_a_evidence(&store, 15);
+    let fixture = build_fixture();
+    let custody_object = custody_object_entry(&manifest, object_id, chain()).object;
+    let request_id: [u8; 32] = [0xA1; 32];
+    let (intent, ..) = build_slash_intent(
+        &fixture,
+        &protocol(),
+        &bond,
+        &custody_object,
+        evidence.epoch,
+        conflict_digest,
+        request_id,
+    );
+    let intent_bytes = slash::encode_slash_intent(&intent).unwrap();
+    slash::handle_bond_slash(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(1),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &leg_policy(),
+        &engine(),
+        &intent_bytes,
+        20,
+    )
+    .unwrap();
+    (store, manifest)
+}
+
+#[test]
+fn restart_reverifies_a_real_evidence_driven_slash_transition() {
+    let (store, manifest) = build_slashed_chain();
+    let outcome = genesis::install_genesis_with_history(
+        &store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &[],
+        &manifest,
+        10,
+    )
+    .unwrap();
+    assert!(matches!(
+        outcome,
+        GenesisInstallOutcome::VerifiedExisting { .. }
+    ));
+}
+
+#[test]
+fn restart_rejects_a_tampered_consumed_evidence_marker_after_a_slash() {
+    let (store, manifest) = build_slashed_chain();
+    let jailed_bond = get_bond(&store, ValidatorId::new(sender()));
+    let evidence_digest = match jailed_bond.state {
+        FastPathBondState::Jailed { evidence_digest } => evidence_digest,
+        _ => panic!("expected a jailed bond"),
+    };
+    let consumed_key = local_instance_state::fastpath_evidence_consumed_key(
+        &chain(),
+        protocol().epoch(),
+        sender(),
+        evidence_digest,
+    )
+    .unwrap();
+    delete_unconditionally(&store, consumed_key);
+    assert_restart_fails_closed(&store, &manifest);
+}
+
+#[test]
+fn restart_rejects_a_tampered_evidence_bytes_inside_the_retained_transition() {
+    let (store, manifest) = build_slashed_chain();
+    let transition_key =
+        fastpath_bond_transition_key(&chain(), &ValidatorId::new(sender()), 2).unwrap();
+    let observed = store
+        .get_versioned_durable(&context(1), domain(), &transition_key)
+        .unwrap();
+    let mut transition = decode_fastpath_bond_transition_record(observed.value().unwrap()).unwrap();
+    match &mut transition.authorization {
+        BondTransitionAuthorization::ConsumedEvidence { evidence_bytes, .. } => {
+            let last = evidence_bytes.len() - 1;
+            evidence_bytes[last] ^= 0xFF;
+        }
+        BondTransitionAuthorization::ValidatorEnvelope { .. } => {
+            panic!("expected a consumed-evidence authorization")
+        }
+    }
+    put_unconditionally(
+        &store,
+        transition_key,
+        crate::fast_path::records::encode_fastpath_bond_transition_record(&transition).unwrap(),
+    );
+    assert_restart_fails_closed(&store, &manifest);
+}
+
+/// Shared scaffold for the `ConsumedEvidence` per-field tamper tests below:
+/// a single bit flip inside exactly one of the retained forfeiture leg,
+/// previous object or resulting object, leaving every other retained byte
+/// (including the installed singleton and `current_row_digest`) untouched.
+fn tampered_evidence_authorization_fails_closed(
+    mutate: impl FnOnce(&mut Vec<u8>, &mut Vec<u8>, &mut Vec<u8>),
+) {
+    let (store, manifest) = build_slashed_chain();
+    let transition_key =
+        fastpath_bond_transition_key(&chain(), &ValidatorId::new(sender()), 2).unwrap();
+    let observed = store
+        .get_versioned_durable(&context(1), domain(), &transition_key)
+        .unwrap();
+    let mut transition = decode_fastpath_bond_transition_record(observed.value().unwrap()).unwrap();
+    match &mut transition.authorization {
+        BondTransitionAuthorization::ConsumedEvidence {
+            forfeiture_leg,
+            previous_object,
+            resulting_object,
+            ..
+        } => mutate(forfeiture_leg, previous_object, resulting_object),
+        BondTransitionAuthorization::ValidatorEnvelope { .. } => {
+            panic!("expected a consumed-evidence authorization")
+        }
+    }
+    put_unconditionally(
+        &store,
+        transition_key,
+        crate::fast_path::records::encode_fastpath_bond_transition_record(&transition).unwrap(),
+    );
+    assert_restart_fails_closed(&store, &manifest);
+}
+
+/// A tampered retained forfeiture leg fails the leg's own re-authenticated
+/// signature (structural closure item 1: the leg is now authenticated on
+/// restart, not merely ignored via `forfeiture_leg: _`).
+#[test]
+fn restart_rejects_a_tampered_forfeiture_leg_inside_the_retained_transition() {
+    tampered_evidence_authorization_fails_closed(|leg, _, _| {
+        let last = leg.len() - 1;
+        leg[last] ^= 0xFF;
+    });
+}
+
+/// A tampered retained previous-object body no longer hashes to the
+/// (untouched) previous row's own `custody_object` digest.
+#[test]
+fn restart_rejects_a_tampered_previous_object_inside_the_retained_transition() {
+    tampered_evidence_authorization_fails_closed(|_, previous_object, _| {
+        let last = previous_object.len() - 1;
+        previous_object[last] ^= 0xFF;
+    });
+}
+
+/// A tampered retained resulting-object body no longer hashes to the
+/// (untouched) resulting row's own `custody_object` digest.
+#[test]
+fn restart_rejects_a_tampered_resulting_object_inside_the_retained_transition() {
+    tampered_evidence_authorization_fails_closed(|_, _, resulting_object| {
+        let last = resulting_object.len() - 1;
+        resulting_object[last] ^= 0xFF;
+    });
+}
+
+/// Shared scaffold for the fully coordinated `ConsumedEvidence` rewrite
+/// tests below: `mutate` tampers the resulting row, and both
+/// `transition.current_row_digest` and the installed singleton are rewritten
+/// to match -- exactly the "coordinated rewrite of resulting_row/
+/// current_row_digest/final bond" this unit's restart fix closes. A
+/// self-consistency check alone (current row bytes hash to
+/// `current_row_digest`) would wrongly pass; only the independently
+/// recomputed resulting `ObjectRef` and the previous-row-copied fields
+/// (never signed by anyone for evidence-driven forfeiture) catch this.
+fn coordinated_slash_row_rewrite_fails_closed(mutate: impl FnOnce(&mut FastPathBondRecord)) {
+    coordinated_slash_row_rewrite_fails_closed_on(build_slashed_chain(), mutate);
+}
+
+/// Like [`coordinated_slash_row_rewrite_fails_closed`], but against an
+/// arbitrary already-slashed `(store, manifest)` chain rather than always
+/// [`build_slashed_chain`]'s genesis-epoch one -- used by the
+/// `custody_object_epoch` variant below, which needs a slash that committed
+/// strictly after `context.epoch()` for there to be any independently
+/// tamperable value between it and `lifecycle_epoch` in the first place.
+fn coordinated_slash_row_rewrite_fails_closed_on(
+    (store, manifest): (MemoryDurableStateStore, genesis::GenesisManifest),
+    mutate: impl FnOnce(&mut FastPathBondRecord),
+) {
+    let transition_key =
+        fastpath_bond_transition_key(&chain(), &ValidatorId::new(sender()), 2).unwrap();
+    let bond_key =
+        local_instance_state::fastpath_bond_record_key(&chain(), &ValidatorId::new(sender()))
+            .unwrap();
+    let observed = store
+        .get_versioned_durable(&context(1), domain(), &transition_key)
+        .unwrap();
+    let mut transition = decode_fastpath_bond_transition_record(observed.value().unwrap()).unwrap();
+    let mut tampered_row: FastPathBondRecord =
+        decode_fastpath_bond_record(&transition.resulting_row).unwrap();
+    mutate(&mut tampered_row);
+    let tampered_row_bytes: Vec<u8> =
+        crate::fast_path::records::encode_fastpath_bond_record(&tampered_row).unwrap();
+    transition.resulting_row = tampered_row_bytes.clone();
+    transition.current_row_digest = bond_row_digest(
+        &resolver(),
+        tampered_row.lifecycle_epoch,
+        &tampered_row_bytes,
+    )
+    .unwrap();
+    put_unconditionally(
+        &store,
+        transition_key,
+        crate::fast_path::records::encode_fastpath_bond_transition_record(&transition).unwrap(),
+    );
+    put_unconditionally(&store, bond_key, tampered_row_bytes);
+    assert_restart_fails_closed(&store, &manifest);
+}
+
+#[test]
+fn restart_rejects_a_coordinated_rewrite_of_slash_amount() {
+    coordinated_slash_row_rewrite_fails_closed(|row| row.amount += 1);
+}
+
+#[test]
+fn restart_rejects_a_coordinated_rewrite_of_slash_custody_object() {
+    coordinated_slash_row_rewrite_fails_closed(|row| row.custody_object.version += 1);
+}
+
+#[test]
+fn restart_rejects_a_coordinated_rewrite_of_slash_lifecycle_epoch() {
+    coordinated_slash_row_rewrite_fails_closed(|row| {
+        row.lifecycle_epoch = Epoch::new(row.lifecycle_epoch.get() + 1);
+    });
+}
+
+/// `slashable_from_epoch` is preserved unchanged as audit data across a
+/// `Slash`: a coordinated rewrite that bumps it (even though the row is no
+/// longer live collateral) must still fail closed, since restart's
+/// `ConsumedEvidence` branch cross-checks it against the previous row
+/// exactly like every other copied-unchanged field.
+#[test]
+fn restart_rejects_a_coordinated_rewrite_of_slash_slashable_from_epoch() {
+    coordinated_slash_row_rewrite_fails_closed(|row| {
+        row.slashable_from_epoch = Epoch::new(row.slashable_from_epoch.get() + 1);
+    });
+}
+
+// ── DR-0137 unit 3: multi-epoch liability-floor / custody-object-epoch
+// end-to-end coverage ───────────────────────────────────────────────────
+
+/// Legitimately advances the committed fast-path epoch by exactly one, via a
+/// real single-validator (1-of-1 quorum) DR-0132 `propose_and_vote`/
+/// `activate` cycle that re-elects the identical genesis validator (still
+/// `Active`, hence eligible). Unlike `fast_path::install_validator_set` (a
+/// raw epoch-record overwrite this module also uses elsewhere, for tests
+/// that never restart-verify across the bump), this installs a real
+/// permanent `FastPathEpochTransitionRecord` plus the real activation-set
+/// rows (validator set, execution/fee/publication policy) at the new epoch,
+/// so a later `genesis::install_genesis` can walk the real DR-0132 chain
+/// across it and a later real leg execution finds its policy durably
+/// installed. Returns the new current epoch's `PublicationContext`.
+fn advance_epoch<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    resolver: &HashSuiteResolver,
+    current_epoch: Epoch,
+    checkpoint: u64,
+) -> PublicationContext {
+    let entries = vec![crate::fast_path::records::FastPathValidatorEntry {
+        id: ValidatorId::new(sender()),
+        voting_power: 1,
+        signature_scheme: SignatureSchemeId::Ed25519,
+        public_key: sender().to_vec(),
+    }];
+    let signer = FixedKeySigner(key());
+    let vote = crate::epoch_transition::propose_and_vote(
+        store,
+        &context(1),
+        domain(),
+        resolver,
+        &chain(),
+        protocol().protocol_version(),
+        entries.clone(),
+        &signer,
+    )
+    .unwrap();
+    let outgoing_validator_set: ValidatorSet = ValidatorSet::new(
+        current_epoch,
+        vec![validator_set::ValidatorInfo {
+            id: ValidatorId::new(sender()),
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: sender().to_vec(),
+        }],
+    )
+    .unwrap();
+    let certifier = consensus::EpochTransitionCertifier::new(
+        chain(),
+        protocol().protocol_version(),
+        current_epoch,
+        outgoing_validator_set,
+    )
+    .unwrap();
+    let certificate = certifier
+        .try_form_certificate(
+            vote.next_epoch,
+            vote.current_validator_set_digest,
+            vote.next_validator_set_digest,
+            vote.activation_digest,
+            std::slice::from_ref(&vote),
+            &fast_path::FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .expect("the single equal-power validator exceeds quorum");
+    let certificate_bytes = consensus::encode_epoch_transition_certificate(&certificate).unwrap();
+    crate::epoch_transition::activate(
+        store,
+        &context(1),
+        domain(),
+        resolver,
+        &chain(),
+        protocol().protocol_version(),
+        entries,
+        &certificate_bytes,
+        checkpoint,
+    )
+    .unwrap();
+    PublicationContext::new(chain(), protocol().protocol_version(), vote.next_epoch).unwrap()
+}
+
+/// DR-0137 unit 3's core liability-floor fix, end to end: real DR-0133
+/// evidence recorded at genesis epoch `E`, a real `Unbond` committing
+/// strictly later at `E + 1` through a real DR-0132 epoch bump (which
+/// advances `lifecycle_epoch` to `E + 1` while carrying
+/// `slashable_from_epoch`/`custody_object_epoch` forward from genesis
+/// unchanged), a real evidence-driven `Slash` while the bond is `Unbonding`
+/// that still succeeds using the old evidence, and a full genesis restart
+/// re-verification of the complete chain (genesis -> epoch bump -> Unbond ->
+/// Slash). A naive `evidence_epoch >= lifecycle_epoch` gate -- the bug
+/// `slashable_from_epoch` fixes -- would have rejected this exact slash,
+/// since the evidence's epoch `E` is strictly less than the bond's
+/// `lifecycle_epoch` of `E + 1` by the time it is slashed.
+#[test]
+fn slash_survives_an_intervening_unbond_using_evidence_older_than_the_unbond() {
+    let object_id = ObjectId::new([0xE2; 32]);
+    let manifest = manifest_with_custody(object_id);
+    let store = store();
+    install(&store, &manifest);
+    let genesis_bond = get_bond(&store, ValidatorId::new(sender()));
+    assert_eq!(genesis_bond.state, FastPathBondState::Active);
+
+    // Evidence at genesis epoch `E`.
+    let (evidence, conflict_digest) = record_class_a_evidence(&store, 15);
+    assert_eq!(evidence.epoch, genesis_bond.slashable_from_epoch);
+
+    // A real DR-0132 epoch bump to `E + 1`, re-electing the identical
+    // validator (still `Active`, so it remains eligible).
+    let next_context = advance_epoch(&store, &resolver(), protocol().epoch(), 16);
+    assert_eq!(next_context.epoch().get(), protocol().epoch().get() + 1);
+
+    // `Unbond` commits at `E + 1`: `lifecycle_epoch` advances, but
+    // `slashable_from_epoch`/`custody_object_epoch` are carried forward
+    // unchanged (no leg execution at all, so no policy row is needed).
+    let unbond_leg_policy = LocalExecutionPolicy::generic_object_results(next_context.clone());
+    let recipient = canonical_address(0xE3);
+    let mut unbonding = predicted_next(&genesis_bond, 17, next_context.epoch());
+    unbonding.state = FastPathBondState::Unbonding {
+        unlock_epoch: Epoch::new(next_context.epoch().get() + 7),
+        recipient: *recipient.as_bytes(),
+    };
+    let intent = base_intent(
+        &next_context,
+        [0xE4; 32],
+        &genesis_bond,
+        &unbonding,
+        BondLifecycleOperation::Unbond { recipient },
+    );
+    let signed = signed_envelope(intent, &key());
+    let output = call(&store, &signed, &next_context, &unbond_leg_policy, 17).unwrap();
+    let unbonding_bond =
+        decode_fastpath_bond_record(output.responses()[0].payload().unwrap()).unwrap();
+    assert_eq!(unbonding_bond, unbonding);
+    assert_eq!(unbonding_bond.lifecycle_epoch, next_context.epoch());
+    assert_eq!(
+        unbonding_bond.slashable_from_epoch,
+        genesis_bond.slashable_from_epoch
+    );
+    assert_eq!(
+        unbonding_bond.custody_object_epoch,
+        genesis_bond.custody_object_epoch
+    );
+
+    // The evidence-driven `Slash`, committing at `E + 1` too, still succeeds
+    // using the evidence recorded back at genesis epoch `E`: gating on
+    // `slashable_from_epoch` (unchanged since genesis), never on the
+    // now-advanced `lifecycle_epoch`.
+    let fixture = build_fixture();
+    let custody_object = custody_object_entry(&manifest, object_id, chain()).object;
+    let (slash_intent, ..) = build_slash_intent(
+        &fixture,
+        &next_context,
+        &unbonding_bond,
+        &custody_object,
+        evidence.epoch,
+        conflict_digest,
+        [0xE5; 32],
+    );
+    let slash_intent_bytes = slash::encode_slash_intent(&slash_intent).unwrap();
+    let slash_output = slash::handle_bond_slash(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(1),
+        domain(),
+        &resolver(),
+        &[],
+        &next_context,
+        &unbond_leg_policy,
+        &engine(),
+        &slash_intent_bytes,
+        18,
+    )
+    .unwrap();
+    let jailed =
+        decode_fastpath_bond_record(slash_output.responses()[0].payload().unwrap()).unwrap();
+    assert_eq!(
+        jailed.state,
+        FastPathBondState::Jailed {
+            evidence_digest: conflict_digest
+        }
+    );
+    assert_eq!(
+        jailed.slashable_from_epoch,
+        genesis_bond.slashable_from_epoch
+    );
+    assert_eq!(jailed.amount, genesis_bond.amount);
+
+    // Full genesis restart re-verification of the complete chain, across the
+    // real DR-0132 epoch bump.
+    let outcome =
+        genesis::install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10)
+            .unwrap();
+    assert!(matches!(
+        outcome,
+        GenesisInstallOutcome::VerifiedExisting { .. }
+    ));
+}
+
+/// The `Replace` sibling of
+/// [`slash_survives_an_intervening_unbond_using_evidence_older_than_the_unbond`]:
+/// evidence at genesis epoch `E`, a real `Replace` swapping in fresh
+/// collateral one real DR-0132 epoch bump later at `E + 1` (which mints a
+/// brand-new custody object -- `custody_object_epoch` *does* advance here,
+/// unlike `Unbond` -- while still preserving `slashable_from_epoch`
+/// unchanged: liability provenance survives a same-state collateral swap), a
+/// real evidence-driven `Slash` of the *replaced* collateral using the old
+/// evidence, and a full genesis restart re-verification. The `Replace` here
+/// also raises the amount (1_000_000 -> 1_300_000), so this doubles as
+/// coverage that a legitimate non-decreasing `Replace` still leaves the
+/// *entire* new replacement amount forfeitable by pre-existing evidence --
+/// not merely the smaller amount that was actually live when the evidence
+/// arose.
+#[test]
+fn slash_survives_an_intervening_replace_using_evidence_older_than_the_replace() {
+    let object_id = ObjectId::new([0xE6; 32]);
+    let manifest = manifest_with_custody(object_id);
+    let store = store();
+    install(&store, &manifest);
+    let genesis_bond = get_bond(&store, ValidatorId::new(sender()));
+    assert_eq!(genesis_bond.state, FastPathBondState::Active);
+
+    let (evidence, conflict_digest) = record_class_a_evidence(&store, 15);
+    assert_eq!(evidence.epoch, genesis_bond.slashable_from_epoch);
+
+    let next_context = advance_epoch(&store, &resolver(), protocol().epoch(), 16);
+
+    let fixture = build_fixture();
+    let new_source_id = ObjectId::new([0xE7; 32]);
+    let (new_source_object, new_source_authority) = seed_owned_coin(
+        &store,
+        &fixture,
+        new_source_id,
+        1_300_000,
+        sender(),
+        [0xE8; 32],
+    );
+    let scope = custody_scope_of(&genesis_bond);
+    let token: [u8; 32] = execution::protocol_custody::derive_deposit_owner_token(
+        &resolver(),
+        &next_context,
+        new_source_id,
+        &scope,
+    )
+    .unwrap();
+    let release_recipient = canonical_address(0xE9);
+    let replace_request_id: [u8; 32] = [0xEA; 32];
+    let deposit_leg = transfer_leg(
+        &fixture,
+        next_context.clone(),
+        object_ref(&resolver(), &new_source_object),
+        sender(),
+        0,
+        replace_request_id,
+        token,
+    );
+    let release_leg = transfer_leg(
+        &fixture,
+        next_context.clone(),
+        genesis_bond.custody_object.clone(),
+        sender(),
+        1,
+        replace_request_id,
+        *release_recipient.as_bytes(),
+    );
+    let (new_custody_object, new_custody_ref) = transferred(
+        &new_source_object,
+        Owner::ProtocolCustody(scope.clone()),
+        next_context.epoch(),
+    );
+    let mut replaced = predicted_next(&genesis_bond, 17, next_context.epoch());
+    replaced.custody_object = new_custody_ref;
+    replaced.custody_object_epoch = replaced.lifecycle_epoch;
+    replaced.authority = new_source_authority;
+    replaced.amount = 1_300_000;
+    replaced.required_minimum = 100;
+    replaced.state = FastPathBondState::Active;
+    let replace_intent = base_intent(
+        &next_context,
+        replace_request_id,
+        &genesis_bond,
+        &replaced,
+        BondLifecycleOperation::Replace {
+            deposit_leg,
+            release_leg,
+            release_recipient,
+        },
+    );
+    let signed = signed_envelope(replace_intent, &key());
+    let replace_leg_policy = LocalExecutionPolicy::generic_object_results(next_context.clone());
+    let output = call(&store, &signed, &next_context, &replace_leg_policy, 17).unwrap();
+    let replaced_bond =
+        decode_fastpath_bond_record(output.responses()[0].payload().unwrap()).unwrap();
+    assert_eq!(replaced_bond, replaced);
+    assert_eq!(
+        replaced_bond.slashable_from_epoch,
+        genesis_bond.slashable_from_epoch
+    );
+    assert_eq!(replaced_bond.lifecycle_epoch, next_context.epoch());
+    assert_eq!(replaced_bond.custody_object_epoch, next_context.epoch());
+
+    // Slash the replaced collateral using the OLD (pre-`Replace`) evidence:
+    // gating on `slashable_from_epoch`, preserved unchanged across the
+    // collateral swap.
+    // `sender()` already spent nonces 0 and 1 on the `Replace`'s own two legs
+    // at `next_context`'s epoch; the forfeiture leg is the third.
+    let (slash_intent, ..) = build_slash_intent_at_nonce(
+        &fixture,
+        &next_context,
+        &replaced_bond,
+        &new_custody_object,
+        evidence.epoch,
+        conflict_digest,
+        [0xEB; 32],
+        2,
+    );
+    let slash_intent_bytes = slash::encode_slash_intent(&slash_intent).unwrap();
+    let slash_output = slash::handle_bond_slash(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(1),
+        domain(),
+        &resolver(),
+        &[],
+        &next_context,
+        &replace_leg_policy,
+        &engine(),
+        &slash_intent_bytes,
+        18,
+    )
+    .unwrap();
+    let jailed =
+        decode_fastpath_bond_record(slash_output.responses()[0].payload().unwrap()).unwrap();
+    assert_eq!(
+        jailed.state,
+        FastPathBondState::Jailed {
+            evidence_digest: conflict_digest
+        }
+    );
+    assert_eq!(
+        jailed.slashable_from_epoch,
+        genesis_bond.slashable_from_epoch
+    );
+    assert_eq!(jailed.amount, 1_300_000);
+
+    let outcome =
+        genesis::install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10)
+            .unwrap();
+    assert!(matches!(
+        outcome,
+        GenesisInstallOutcome::VerifiedExisting { .. }
+    ));
+}
+
+/// A [`HashSuiteResolver`] whose schedule matches [`resolver`] exactly up to
+/// `rotation_epoch` (identical `HashSuite::genesis()` from epoch 0), then
+/// rotates to a distinct suite (a different id and object-digest algorithm)
+/// from `rotation_epoch` onward -- for proving that restart hashes a bond's
+/// previous custody object at its own recorded `custody_object_epoch`,
+/// never at the transitioning epoch.
+fn rotating_resolver(rotation_epoch: u64) -> HashSuiteResolver {
+    HashSuiteResolver::new(
+        chain(),
+        ProtocolVersion::new(3),
+        vec![
+            HashSuiteSchedule {
+                activation_epoch: Epoch::new(0),
+                suite: HashSuite::genesis(),
+            },
+            HashSuiteSchedule {
+                activation_epoch: Epoch::new(rotation_epoch),
+                suite: HashSuite::uniform(HashSuiteId::new(2), HashAlgorithmId::Sha3_256),
+            },
+        ],
+    )
+    .unwrap()
+}
+
+/// Proves `custody_object_epoch` is actually load-bearing, not merely
+/// stored: a hash-suite rotation activates exactly at the same epoch `E + 1`
+/// an `Unbond` and a later evidence-driven `Slash` commit at, using evidence
+/// recorded back at genesis epoch `E`. The bond row's own
+/// `lifecycle_epoch`/`current_row_digest` hashing correctly moves to the new
+/// suite (Sha3-256) at `E + 1`, while the *custody object*'s digest --
+/// pinned to `custody_object_epoch`, which `Unbond` carries forward
+/// unchanged from genesis -- must still be recomputed under the *old* suite
+/// (Sha2-256) at restart, and the freshly forfeited object minted by the
+/// `Slash` itself must be recomputed under the *new* suite at its own
+/// committing epoch. Restart succeeding here is only possible if
+/// `genesis::verify_fastpath_bond_chain` hashes each object at its own
+/// recorded epoch rather than uniformly at the transitioning epoch.
+#[test]
+fn restart_reverifies_a_slash_across_a_hash_suite_rotation_using_custody_object_epoch() {
+    let object_id = ObjectId::new([0xEC; 32]);
+    let manifest = manifest_with_custody(object_id);
+    let store = store();
+    let rotation_epoch: u64 = protocol().epoch().get() + 1;
+    let resolver = rotating_resolver(rotation_epoch);
+    genesis::install_genesis(&store, &context(1), domain(), &resolver, &manifest, 10).unwrap();
+    let genesis_bond = get_bond(&store, ValidatorId::new(sender()));
+    assert_eq!(genesis_bond.state, FastPathBondState::Active);
+
+    let (evidence, conflict_digest) = record_class_a_evidence(&store, 15);
+
+    // The epoch bump itself lands exactly on the rotation boundary: the
+    // certificate/activation-set digests it forms are already hashed under
+    // the new suite.
+    let next_context = advance_epoch(&store, &resolver, protocol().epoch(), 16);
+    assert_eq!(next_context.epoch().get(), rotation_epoch);
+
+    let unbond_leg_policy = LocalExecutionPolicy::generic_object_results(next_context.clone());
+    let recipient = canonical_address(0xED);
+    let mut unbonding = predicted_next(&genesis_bond, 17, next_context.epoch());
+    unbonding.state = FastPathBondState::Unbonding {
+        unlock_epoch: Epoch::new(next_context.epoch().get() + 7),
+        recipient: *recipient.as_bytes(),
+    };
+    let unbond_intent = BondLifecycleIntent {
+        context: next_context.clone(),
+        request_id: [0xEE; 32],
+        validator_id: genesis_bond.validator_id,
+        resource_id: resource_id_of(&genesis_bond),
+        expected_generation: genesis_bond.generation,
+        expected_previous_row_digest: bond_row_digest(
+            &resolver,
+            genesis_bond.lifecycle_epoch,
+            &crate::fast_path::records::encode_fastpath_bond_record(&genesis_bond).unwrap(),
+        )
+        .unwrap(),
+        expected_next_row_digest: bond_row_digest(
+            &resolver,
+            unbonding.lifecycle_epoch,
+            &crate::fast_path::records::encode_fastpath_bond_record(&unbonding).unwrap(),
+        )
+        .unwrap(),
+        operation: BondLifecycleOperation::Unbond { recipient },
+    };
+    let intent_digest = bond_lifecycle_intent_digest(&resolver, &unbond_intent).unwrap();
+    let frame = bond_lifecycle_signing_frame(&unbond_intent.context, intent_digest).unwrap();
+    let signed = SignedBondLifecycleIntent {
+        signature: key().sign(&frame).into(),
+        intent: unbond_intent,
+    };
+    let output = handle_bond_lifecycle(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(1),
+        domain(),
+        &resolver,
+        &[],
+        &next_context,
+        &unbond_leg_policy,
+        &engine(),
+        &encode_signed_bond_lifecycle_intent(&signed).unwrap(),
+        17,
+    )
+    .unwrap();
+    let unbonding_bond =
+        decode_fastpath_bond_record(output.responses()[0].payload().unwrap()).unwrap();
+    assert_eq!(unbonding_bond, unbonding);
+    // `custody_object_epoch` stayed at genesis epoch, strictly before the
+    // rotation: the object's own durable digest is still a Sha2-256 digest.
+    assert_eq!(
+        unbonding_bond.custody_object_epoch,
+        genesis_bond.custody_object_epoch
+    );
+    assert!(unbonding_bond.custody_object_epoch.get() < rotation_epoch);
+
+    let fixture = build_fixture();
+    let custody_object = custody_object_entry(&manifest, object_id, chain()).object;
+    let target_scope = ProtocolCustodyScope {
+        purpose: ProtocolCustodyPurpose::ForfeitedCollateral,
+        chain_id: unbonding_bond.context.chain_id().clone(),
+        subject: *unbonding_bond.validator_id.as_bytes(),
+        resource: unbonding_bond.resource,
+    };
+    let forfeit_token: [u8; 32] = execution::protocol_custody::derive_deposit_owner_token(
+        &resolver,
+        &next_context,
+        unbonding_bond.custody_object.id,
+        &target_scope,
+    )
+    .unwrap();
+    let slash_request_id: [u8; 32] = [0xEF; 32];
+    let leg = transfer_leg_with_resolver(
+        &resolver,
+        &fixture,
+        next_context.clone(),
+        object_ref_at(
+            &resolver,
+            &custody_object,
+            unbonding_bond.custody_object_epoch,
+        ),
+        sender(),
+        0,
+        slash_request_id,
+        forfeit_token,
+    );
+    let slash_intent = slash::SlashIntent {
+        context: next_context.clone(),
+        request_id: slash_request_id,
+        validator_id: unbonding_bond.validator_id,
+        resource_id: resource_id_of(&unbonding_bond),
+        expected_generation: unbonding_bond.generation,
+        evidence_epoch: evidence.epoch,
+        conflict_digest,
+        leg,
+    };
+    let slash_intent_bytes = slash::encode_slash_intent(&slash_intent).unwrap();
+    let slash_output = slash::handle_bond_slash(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(1),
+        domain(),
+        &resolver,
+        &[],
+        &next_context,
+        &unbond_leg_policy,
+        &engine(),
+        &slash_intent_bytes,
+        18,
+    )
+    .unwrap();
+    let jailed =
+        decode_fastpath_bond_record(slash_output.responses()[0].payload().unwrap()).unwrap();
+    assert_eq!(
+        jailed.state,
+        FastPathBondState::Jailed {
+            evidence_digest: conflict_digest
+        }
+    );
+    // The freshly forfeited object is minted at the slash's own (rotated)
+    // committing epoch.
+    assert_eq!(jailed.custody_object_epoch, next_context.epoch());
+    assert_eq!(jailed.custody_object_epoch.get(), rotation_epoch);
+
+    // Full genesis restart re-verification: only possible if the previous
+    // custody object is independently rehashed at its own recorded
+    // `custody_object_epoch` (pre-rotation, Sha2-256) rather than uniformly
+    // at each transition's own committing epoch (post-rotation, Sha3-256).
+    let outcome =
+        genesis::install_genesis(&store, &context(1), domain(), &resolver, &manifest, 10).unwrap();
+    assert!(matches!(
+        outcome,
+        GenesisInstallOutcome::VerifiedExisting { .. }
+    ));
+}
+
+/// DR-0137 unit 3: a freshly `Deposit`ed bond's liability floor
+/// (`slashable_from_epoch == committing epoch + 1`) actually gates real
+/// evidence-driven forfeiture, not merely a stored value: real evidence
+/// dated at or before the deposit itself cannot slash it, even though it is
+/// exactly the genesis validator's own equivocation evidence and would
+/// freely slash the *genesis* generation of the identical bond (see
+/// `slash_forfeits_the_bond_and_jails_the_validator_with_real_wasm_execution`).
+/// `Reactivate` shares this exact code path
+/// (`bond_lifecycle::deposit_or_reactivate`) and the identical
+/// unconditional `committing epoch + 1` floor -- see
+/// `reactivate_transitions_jailed_to_active_with_real_wasm_execution`, which
+/// already asserts the same floor value for that path -- so this one focused
+/// negative test covers both entry points rather than duplicating it.
+#[test]
+fn fresh_deposit_liability_floor_rejects_evidence_no_newer_than_the_deposit_itself() {
+    let object_id = ObjectId::new([0xF0; 32]);
+    let manifest = manifest_with_custody(object_id);
+    let store = store();
+    install(&store, &manifest);
+    let exited = force_exited(&store, &get_bond(&store, ValidatorId::new(sender())));
+
+    let fixture = build_fixture();
+    let source_id = ObjectId::new([0xF1; 32]);
+    let (source_object, source_authority) =
+        seed_owned_coin(&store, &fixture, source_id, 5_000, sender(), [0xF2; 32]);
+    let scope = custody_scope_of(&exited);
+    let token: [u8; 32] = execution::protocol_custody::derive_deposit_owner_token(
+        &resolver(),
+        &protocol(),
+        source_id,
+        &scope,
+    )
+    .unwrap();
+    let request_id: [u8; 32] = [0xF3; 32];
+    let leg = transfer_leg(
+        &fixture,
+        protocol(),
+        object_ref(&resolver(), &source_object),
+        sender(),
+        0,
+        request_id,
+        token,
+    );
+    let (new_object, oref) = transferred(
+        &source_object,
+        Owner::ProtocolCustody(scope),
+        protocol().epoch(),
+    );
+    let mut deposited = predicted_next(&exited, 20, protocol().epoch());
+    deposited.custody_object = oref;
+    deposited.custody_object_epoch = deposited.lifecycle_epoch;
+    deposited.slashable_from_epoch = Epoch::new(deposited.lifecycle_epoch.get() + 1);
+    deposited.authority = source_authority;
+    deposited.amount = 5_000;
+    deposited.required_minimum = 100;
+    deposited.state = FastPathBondState::Active;
+    let intent = base_intent(
+        &protocol(),
+        request_id,
+        &exited,
+        &deposited,
+        BondLifecycleOperation::Deposit { leg },
+    );
+    let signed = signed_envelope(intent, &key());
+    let output = call(&store, &signed, &protocol(), &leg_policy(), 20).unwrap();
+    let deposited_bond =
+        decode_fastpath_bond_record(output.responses()[0].payload().unwrap()).unwrap();
+    assert_eq!(deposited_bond, deposited);
+    assert_eq!(
+        deposited_bond.slashable_from_epoch,
+        Epoch::new(protocol().epoch().get() + 1)
+    );
+
+    // Real evidence dated at the deposit's own committing epoch: strictly
+    // older than the fresh floor.
+    let (evidence, conflict_digest) = record_class_a_evidence(&store, 21);
+    assert_eq!(evidence.epoch, protocol().epoch());
+    assert!(evidence.epoch.get() < deposited_bond.slashable_from_epoch.get());
+
+    let (slash_intent, ..) = build_slash_intent(
+        &fixture,
+        &protocol(),
+        &deposited_bond,
+        &new_object,
+        evidence.epoch,
+        conflict_digest,
+        [0xF4; 32],
+    );
+    let slash_intent_bytes = slash::encode_slash_intent(&slash_intent).unwrap();
+    let error = slash::handle_bond_slash(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(1),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &leg_policy(),
+        &engine(),
+        &slash_intent_bytes,
+        22,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        BondLifecycleError::Invalid("evidence epoch predates the bond's slashable-from epoch")
+    ));
+    // Nothing committed: the freshly deposited bond row is untouched.
+    assert_eq!(get_bond(&store, ValidatorId::new(sender())), deposited_bond);
+}
+
+/// Like [`build_slashed_chain`], but the real evidence-driven slash commits
+/// one real DR-0132 epoch bump after genesis (`E + 1`) rather than at
+/// genesis epoch `E` itself, using evidence recorded back at `E` -- giving
+/// the resulting `Jailed` row's `lifecycle_epoch`/`custody_object_epoch`
+/// (both pinned to the slash's own committing epoch, per `handle_bond_slash`)
+/// room strictly above `context.epoch()` (genesis epoch `E`) to
+/// independently tamper `custody_object_epoch` alone without first tripping
+/// `encode_fastpath_bond_record`'s own `custody_object_epoch <=
+/// lifecycle_epoch` invariant.
+fn build_slashed_chain_at_the_next_epoch() -> (MemoryDurableStateStore, genesis::GenesisManifest) {
+    let object_id = ObjectId::new([0xF5; 32]);
+    let manifest = manifest_with_custody(object_id);
+    let store = store();
+    install(&store, &manifest);
+    let bond = get_bond(&store, ValidatorId::new(sender()));
+    let (evidence, conflict_digest) = record_class_a_evidence(&store, 15);
+    let next_context = advance_epoch(&store, &resolver(), protocol().epoch(), 16);
+    let fixture = build_fixture();
+    let custody_object = custody_object_entry(&manifest, object_id, chain()).object;
+    let request_id: [u8; 32] = [0xF6; 32];
+    let (intent, ..) = build_slash_intent(
+        &fixture,
+        &next_context,
+        &bond,
+        &custody_object,
+        evidence.epoch,
+        conflict_digest,
+        request_id,
+    );
+    let intent_bytes = slash::encode_slash_intent(&intent).unwrap();
+    let leg_policy = LocalExecutionPolicy::generic_object_results(next_context.clone());
+    slash::handle_bond_slash(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(1),
+        domain(),
+        &resolver(),
+        &[],
+        &next_context,
+        &leg_policy,
+        &engine(),
+        &intent_bytes,
+        20,
+    )
+    .unwrap();
+    (store, manifest)
+}
+
+/// `custody_object_epoch` must equal exactly this transition's own
+/// committing epoch (the forfeiture leg mints the resulting
+/// `ForfeitedCollateral` object here): a coordinated rewrite that moves it
+/// down within its otherwise-locally-valid `[context.epoch(),
+/// lifecycle_epoch]` range -- using a slash that committed one real DR-0132
+/// epoch after genesis, so that range is nonempty -- must still fail closed,
+/// since restart's `ConsumedEvidence` branch requires it to equal
+/// `transition.context.epoch()` exactly, not merely satisfy
+/// `encode_fastpath_bond_record`'s own looser bound.
+#[test]
+fn restart_rejects_a_coordinated_rewrite_of_slash_custody_object_epoch() {
+    coordinated_slash_row_rewrite_fails_closed_on(build_slashed_chain_at_the_next_epoch(), |row| {
+        row.custody_object_epoch = Epoch::new(row.custody_object_epoch.get() - 1);
+    });
 }

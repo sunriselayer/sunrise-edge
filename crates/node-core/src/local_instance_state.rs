@@ -554,6 +554,32 @@ pub fn fastpath_equivocation_evidence_key(
     Ok(key)
 }
 
+/// Permanent, append-only key for one DR-0137 unit 3
+/// [`crate::bond_lifecycle::slash::EvidenceConsumptionRecord`] (`0x6432`):
+/// keyed exactly like [`fastpath_equivocation_evidence_key`]'s own selector
+/// (chain, evidence epoch, validator, normalized-identity `conflict_digest`),
+/// but under a distinct prefix. This is the absence-fence
+/// `handle_bond_slash` CAS-asserts before committing: presence proves the
+/// exact evidence digest has already produced one forfeiture, so an exact
+/// replay returns the original receipt (never reaches this fence) while a
+/// different request over the same evidence fails closed here instead of
+/// forfeiting a second time.
+pub fn fastpath_evidence_consumed_key(
+    chain: &ChainId,
+    evidence_epoch: Epoch,
+    validator: [u8; 32],
+    conflict_digest: Digest32,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"evidence-consumed/");
+    key.extend(encode_chain_id(chain)?);
+    key.extend_from_slice(&evidence_epoch.get().to_be_bytes());
+    key.extend_from_slice(&validator);
+    key.extend_from_slice(&conflict_digest.bytes());
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
 /// Absence is asserted at commit, never treated as a permanent authorization.
 /// Tombstones reject too: removing a sidecar cannot downgrade a public object.
 pub(super) fn legacy_absence<S: StructuredDurableDomainStateStore>(
