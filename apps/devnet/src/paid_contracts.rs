@@ -32,7 +32,7 @@ use node_core::genesis::{
     GenesisError, GenesisInstallOutcome, GenesisManifest, GenesisObjectEntry,
     genesis_manifest_commitment, genesis_manifest_signing_frame, install_genesis,
 };
-use objects::{Address, Object, ObjectId, Owner};
+use objects::{Address, Object, ObjectId, Owner, ProtocolCustodyPurpose, ProtocolCustodyScope};
 use protocol_types::{Digest32, Epoch, HashPurpose, SignatureSchemeId, ValidatorId};
 use public_standard_asset::{
     SCHEMA_VERSION, asset_type_argument, build_package, coin_amount, coin_body_layout,
@@ -53,6 +53,10 @@ pub const DEVNET_PAID_FEE_COIN_BALANCE: u64 = 10_000_000;
 /// Initial balance of each configured development owner's public spend-source
 /// Coin, distinct from [`DEVNET_PAID_FEE_COIN_BALANCE`].
 pub const DEVNET_PAID_SPEND_COIN_BALANCE: u64 = 10_000_000;
+/// DR-0136: every genesis validator has exactly one genesis bond record.
+/// This is the sole FastVote validator's initial `BondCollateral` amount,
+/// well above the devnet economics policy's own `min_bond`.
+const DEVNET_GENESIS_BOND_AMOUNT: u64 = 1_000_000;
 const GENESIS_CHECKPOINT: u64 = 1;
 const APPLICATION_GAS_LIMIT: u64 = 500_000;
 
@@ -321,6 +325,16 @@ pub fn build_paid_genesis_manifest(
     let definition_tag = definition_type_tag(&origin)?;
     let treasury_tag = treasury_cap_type_tag(&origin, &definition_id)?;
     let coin_tag = coin_type_tag(&origin, &definition_id)?;
+    let (resource_domain, resource): (u16, [u8; 32]) = match coin_tag.args() {
+        [ScopedTypeArg::Opaque { domain, value }] => (*domain, *value),
+        _ => {
+            return Err(PaidContractGenesisError::Invalid(
+                "devnet coin type must carry one opaque resource",
+            ));
+        }
+    };
+    let resource_id: BondResourceId = BondResourceId::new(resource_domain, resource)
+        .map_err(|_| PaidContractGenesisError::Invalid("invalid devnet bond resource"))?;
     let owner_count: u64 = u64::try_from(dev_owners.len())
         .map_err(|_| PaidContractGenesisError::Invalid("development owner count overflow"))?;
     let per_owner_balance: u64 = DEVNET_PAID_FEE_COIN_BALANCE
@@ -330,6 +344,7 @@ pub fn build_paid_genesis_manifest(
         ))?;
     let total_supply: u64 = per_owner_balance
         .checked_mul(owner_count)
+        .and_then(|supply| supply.checked_add(DEVNET_GENESIS_BOND_AMOUNT))
         .ok_or(PaidContractGenesisError::Invalid("initial supply overflow"))?;
     let mut objects: Vec<GenesisObjectEntry> = Vec::with_capacity(dev_owners.len() * 2 + 2);
     let definition: Object = Object {
@@ -401,9 +416,41 @@ pub fn build_paid_genesis_manifest(
         });
     }
 
+    // DR-0136: every genesis validator has exactly one genesis bond record.
+    // The sole FastVote validator (the genesis authority) is bonded here,
+    // in the same custody scope/resource the economics policy below pins.
+    let bond_object_id: ObjectId = derived_object_id(
+        resolver,
+        context.epoch(),
+        b"sunrise.devnet.public-standard-asset.genesis-bond.v1",
+    )?;
+    let bond_scope: ProtocolCustodyScope = ProtocolCustodyScope {
+        purpose: ProtocolCustodyPurpose::BondCollateral,
+        chain_id: context.chain_id().clone(),
+        subject: genesis_authority,
+        resource,
+    };
+    let bond_object: Object = Object {
+        id: bond_object_id,
+        version: 1,
+        owner: Owner::ProtocolCustody(bond_scope),
+        type_hash: derive_scoped_type_id(resolver, context.epoch(), &coin_tag)?,
+        schema_version: SCHEMA_VERSION,
+        data: encode_call_value(
+            &coin_body_layout(),
+            &CallValue::U64(DEVNET_GENESIS_BOND_AMOUNT),
+        )?,
+    };
+    objects.push(GenesisObjectEntry {
+        authority: authority(bond_object.id, context, &instance, &code, coin_tag.clone()),
+        object: bond_object,
+    });
+
     // Fail-closed supply consistency: the generic installer intentionally
     // knows nothing about asset supply, so this builder alone asserts the
-    // exact seeded Coin total matches the TreasuryCap body it just encoded.
+    // exact seeded Coin total (including the genesis bond, minted here
+    // exactly like every other Coin-shaped object) matches the TreasuryCap
+    // body it just encoded.
     let mut seeded_supply: u64 = 0;
     for entry in &objects[2..] {
         let amount: u64 = coin_amount(&entry.object.data)?;
@@ -417,17 +464,6 @@ pub fn build_paid_genesis_manifest(
             "seeded coin supply is inconsistent with the TreasuryCap total supply",
         ));
     }
-
-    let (resource_domain, resource): (u16, [u8; 32]) = match coin_tag.args() {
-        [ScopedTypeArg::Opaque { domain, value }] => (*domain, *value),
-        _ => {
-            return Err(PaidContractGenesisError::Invalid(
-                "devnet coin type must carry one opaque resource",
-            ));
-        }
-    };
-    let resource_id: BondResourceId = BondResourceId::new(resource_domain, resource)
-        .map_err(|_| PaidContractGenesisError::Invalid("invalid devnet bond resource"))?;
     let economics_policy: FastPathEconomicsPolicy = FastPathEconomicsPolicy {
         context: context.clone(),
         resources: vec![FastPathEconomicsResourcePolicy {
@@ -587,7 +623,8 @@ mod tests {
         assert_eq!(metadata.owner_coins.len(), owners.len());
         assert_eq!(metadata.mint_authority, owners[0]);
         let expected_total_supply: u64 =
-            (DEVNET_PAID_FEE_COIN_BALANCE + DEVNET_PAID_SPEND_COIN_BALANCE) * 2;
+            (DEVNET_PAID_FEE_COIN_BALANCE + DEVNET_PAID_SPEND_COIN_BALANCE) * 2
+                + DEVNET_GENESIS_BOND_AMOUNT;
         assert_eq!(
             public_standard_asset::treasury_supply(&manifest.objects[1].object.data).unwrap(),
             expected_total_supply

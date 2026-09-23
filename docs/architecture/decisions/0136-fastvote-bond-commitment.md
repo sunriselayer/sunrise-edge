@@ -76,10 +76,12 @@ core does not name the domain or interpret the 32-byte value as a particular
 application type. The exact defining code, instance and complete nominal type
 remain bound by the persisted `ObjectAuthority`.
 
-One validator has at most one genesis bond record. Multiple custody objects
-for the same validator fail closed instead of being summed implicitly. A
-future explicit lifecycle operation may replace the record atomically, but
-there is no hidden aggregation rule.
+Every genesis validator has exactly one genesis bond record. A validator with
+no matching custody object fails genesis installation rather than entering a
+set without slashable collateral. Multiple custody objects for the same
+validator fail closed instead of being summed implicitly. A future explicit
+lifecycle operation may replace the record atomically, but there is no hidden
+aggregation rule.
 
 ### Durable record
 

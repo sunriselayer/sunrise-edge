@@ -86,6 +86,18 @@ pub enum ProtocolCustodyDirection {
         /// Exact address permitted as the release target.
         recipient: Address,
     },
+    /// Move one exact custody object from one `BondCollateral` scope to the
+    /// matching `ForfeitedCollateral` scope -- custody to custody, never an
+    /// address. `source_scope`/`target_scope` must share the identical
+    /// `chain_id`/`subject`/`resource` and differ only in `purpose`.
+    Forfeit {
+        /// Exact custody object.
+        custody: ObjectId,
+        /// Exact current `BondCollateral` scope.
+        source_scope: ProtocolCustodyScope,
+        /// Exact resulting `ForfeitedCollateral` scope.
+        target_scope: ProtocolCustodyScope,
+    },
 }
 
 /// Private mapping from one non-address transfer operand to one exact owner.
@@ -93,6 +105,15 @@ pub enum ProtocolCustodyDirection {
 pub(crate) struct PinnedOwnerTarget {
     token: [u8; 32],
     owner: Owner,
+}
+
+/// Precomputed operand/resulting-owner pair for a `Release`/`Forfeit` input
+/// already held in custody. Computed once at capability construction time;
+/// `bind` only attaches the matched input `index`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PinnedCustodyTarget {
+    operand: [u8; 32],
+    resulting_owner: Owner,
 }
 
 /// Bounded protocol-custody authority for exactly one typed-WASM invocation.
@@ -108,6 +129,7 @@ pub struct ProtocolCustodyCapability {
     sender: [u8; 32],
     expected_event_digest: Digest32,
     owner_target: Option<PinnedOwnerTarget>,
+    custody_target: Option<PinnedCustodyTarget>,
 }
 
 impl ProtocolCustodyCapability {
@@ -130,22 +152,48 @@ impl ProtocolCustodyCapability {
             ));
         }
         validate_ed25519_owner_address(&sender, Ed25519OwnerAddressPolicy::CanonicalPrimeOrder)?;
-        let (source, scope): (ObjectId, &ProtocolCustodyScope) = match &direction {
-            ProtocolCustodyDirection::Deposit { source, scope } => (*source, scope),
-            ProtocolCustodyDirection::Release {
-                custody,
-                scope,
-                recipient,
-            } => {
-                validate_ed25519_owner_address(
-                    recipient.as_bytes(),
-                    Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
-                )?;
-                (*custody, scope)
-            }
-        };
+        let (object_id, scope, purpose_ok): (ObjectId, &ProtocolCustodyScope, bool) =
+            match &direction {
+                ProtocolCustodyDirection::Deposit { source, scope } => (
+                    *source,
+                    scope,
+                    scope.purpose == ProtocolCustodyPurpose::BondCollateral,
+                ),
+                ProtocolCustodyDirection::Release {
+                    custody,
+                    scope,
+                    recipient,
+                } => {
+                    validate_ed25519_owner_address(
+                        recipient.as_bytes(),
+                        Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
+                    )?;
+                    (
+                        *custody,
+                        scope,
+                        scope.purpose == ProtocolCustodyPurpose::BondCollateral,
+                    )
+                }
+                ProtocolCustodyDirection::Forfeit {
+                    custody,
+                    source_scope,
+                    target_scope,
+                } => {
+                    if source_scope.purpose != ProtocolCustodyPurpose::BondCollateral
+                        || target_scope.purpose != ProtocolCustodyPurpose::ForfeitedCollateral
+                        || source_scope.chain_id != target_scope.chain_id
+                        || source_scope.subject != target_scope.subject
+                        || source_scope.resource != target_scope.resource
+                    {
+                        return Err(LocalExecutionError::Invalid(
+                            "protocol custody forfeiture scope",
+                        ));
+                    }
+                    (*custody, source_scope, true)
+                }
+            };
         if scope.chain_id != *context.chain_id()
-            || scope.purpose != ProtocolCustodyPurpose::BondCollateral
+            || !purpose_ok
             || !matches!(
                 target.ty.args(),
                 [ScopedTypeArg::Opaque { value, .. }] if value == &scope.resource
@@ -159,13 +207,36 @@ impl ProtocolCustodyCapability {
         let owner_target: Option<PinnedOwnerTarget> = match &direction {
             ProtocolCustodyDirection::Deposit { scope, .. } => {
                 let token: [u8; 32] =
-                    derive_deposit_owner_token(resolver, &context, source, scope)?;
+                    derive_deposit_owner_token(resolver, &context, object_id, scope)?;
                 Some(PinnedOwnerTarget {
                     token,
                     owner: Owner::ProtocolCustody(scope.clone()),
                 })
             }
-            ProtocolCustodyDirection::Release { .. } => None,
+            ProtocolCustodyDirection::Release { .. } | ProtocolCustodyDirection::Forfeit { .. } => {
+                None
+            }
+        };
+        let custody_target: Option<PinnedCustodyTarget> = match &direction {
+            ProtocolCustodyDirection::Deposit { .. } => None,
+            ProtocolCustodyDirection::Release { recipient, .. } => Some(PinnedCustodyTarget {
+                operand: *recipient.as_bytes(),
+                resulting_owner: Owner::Address(*recipient),
+            }),
+            ProtocolCustodyDirection::Forfeit { target_scope, .. } => {
+                // Reuses the exact `0x642E` owner-token preimage/derivation a
+                // deposit uses, keyed on the forfeited object and the
+                // resulting `ForfeitedCollateral` scope instead of a sender
+                // address: forfeiture needs a non-authorizing transfer
+                // operand for exactly the same reason a deposit does -- the
+                // resulting owner is not address-shaped.
+                let operand: [u8; 32] =
+                    derive_deposit_owner_token(resolver, &context, object_id, target_scope)?;
+                Some(PinnedCustodyTarget {
+                    operand,
+                    resulting_owner: Owner::ProtocolCustody(target_scope.clone()),
+                })
+            }
         };
         Ok(Self {
             context,
@@ -174,6 +245,7 @@ impl ProtocolCustodyCapability {
             sender,
             expected_event_digest,
             owner_target,
+            custody_target,
         })
     }
 
@@ -184,18 +256,26 @@ impl ProtocolCustodyCapability {
     }
 
     /// Pre-bind check: true exactly when `object_id`/`owner` is this exact
-    /// capability's own release target. Node-core admission calls this to
-    /// admit one non-sender-owned protocol-custody input before the full
-    /// typed-WASM [`Self::bind`] runs; `bind` still independently
-    /// re-validates the exact input's authority, mode and index, so this
-    /// accessor alone grants no execution or storage authority.
+    /// capability's own already-custody-owned input target -- a `Release`'s
+    /// exact custody object, or a `Forfeit`'s exact custody object under its
+    /// `source_scope`. Node-core admission calls this to admit one
+    /// non-sender-owned protocol-custody input before the full typed-WASM
+    /// [`Self::bind`] runs; `bind` still independently re-validates the
+    /// exact input's authority, mode and index, so this accessor alone
+    /// grants no execution or storage authority.
     #[must_use]
-    pub fn admits_release_input(&self, object_id: ObjectId, owner: &Owner) -> bool {
-        matches!(
-            &self.direction,
-            ProtocolCustodyDirection::Release { custody, scope, .. }
-                if *custody == object_id && owner == &Owner::ProtocolCustody(scope.clone())
-        )
+    pub fn admits_custody_input(&self, object_id: ObjectId, owner: &Owner) -> bool {
+        match &self.direction {
+            ProtocolCustodyDirection::Deposit { .. } => false,
+            ProtocolCustodyDirection::Release { custody, scope, .. } => {
+                *custody == object_id && owner == &Owner::ProtocolCustody(scope.clone())
+            }
+            ProtocolCustodyDirection::Forfeit {
+                custody,
+                source_scope,
+                ..
+            } => *custody == object_id && owner == &Owner::ProtocolCustody(source_scope.clone()),
+        }
     }
 
     pub(crate) fn bind(
@@ -215,15 +295,15 @@ impl ProtocolCustodyCapability {
                 "protocol custody invocation target",
             ));
         }
-        let (object_id, scope, recipient): (ObjectId, &ProtocolCustodyScope, Option<Address>) =
-            match &self.direction {
-                ProtocolCustodyDirection::Deposit { source, scope } => (*source, scope, None),
-                ProtocolCustodyDirection::Release {
-                    custody,
-                    scope,
-                    recipient,
-                } => (*custody, scope, Some(*recipient)),
-            };
+        let (object_id, scope): (ObjectId, &ProtocolCustodyScope) = match &self.direction {
+            ProtocolCustodyDirection::Deposit { source, scope } => (*source, scope),
+            ProtocolCustodyDirection::Release { custody, scope, .. } => (*custody, scope),
+            ProtocolCustodyDirection::Forfeit {
+                custody,
+                source_scope,
+                ..
+            } => (*custody, source_scope),
+        };
         let mut matching: Option<usize> = None;
         for (index, input) in inputs.iter().enumerate() {
             if input.resolved.object.id == object_id && matching.replace(index).is_some() {
@@ -254,17 +334,24 @@ impl ProtocolCustodyCapability {
                 {
                     (Some(index), None)
                 }
-                (ProtocolCustodyDirection::Release { .. }, Owner::ProtocolCustody(owner_scope))
-                    if owner_scope == scope =>
-                {
+                (
+                    ProtocolCustodyDirection::Release { .. }
+                    | ProtocolCustodyDirection::Forfeit { .. },
+                    Owner::ProtocolCustody(owner_scope),
+                ) if owner_scope == scope => {
+                    let target: PinnedCustodyTarget =
+                        self.custody_target
+                            .clone()
+                            .ok_or(LocalExecutionError::Invalid(
+                                "protocol custody transfer target",
+                            ))?;
                     (
                         None,
                         Some(PinnedCustodyInput {
                             index,
                             scope: scope.clone(),
-                            recipient: recipient.ok_or(LocalExecutionError::Invalid(
-                                "protocol custody release recipient",
-                            ))?,
+                            operand: target.operand,
+                            resulting_owner: target.resulting_owner,
                         }),
                     )
                 }
@@ -344,7 +431,12 @@ pub fn derive_deposit_owner_token(
 pub(crate) struct PinnedCustodyInput {
     index: usize,
     scope: ProtocolCustodyScope,
-    recipient: Address,
+    /// Exact non-authorizing operand the transfer call must supply: the
+    /// recipient's address bytes for `Release`, or the forfeiture
+    /// destination's derived owner token for `Forfeit`.
+    operand: [u8; 32],
+    /// Exact resulting owner this input's transfer must produce.
+    resulting_owner: Owner,
 }
 
 /// Arena-bound capability. The indices are created only after the request's
@@ -379,12 +471,12 @@ impl BoundProtocolCustodyCapability {
         if let Some(input) = &self.custody_input
             && input.index == index
         {
-            if operand != input.recipient.as_bytes() {
+            if operand != &input.operand {
                 return Err(LocalExecutionError::Invalid(
-                    "protocol custody release recipient",
+                    "protocol custody transfer target",
                 ));
             }
-            return Ok(Some(Owner::Address(input.recipient)));
+            return Ok(Some(input.resulting_owner.clone()));
         }
         if let Some(target) = &self.owner_target
             && self.deposit_source == Some(index)
@@ -806,6 +898,138 @@ mod tests {
             Err(LocalExecutionError::Invalid(
                 "protocol custody input target"
             ))
+        ));
+    }
+
+    fn forfeited_scope(fixture: &CapabilityFixture) -> ProtocolCustodyScope {
+        ProtocolCustodyScope {
+            purpose: ProtocolCustodyPurpose::ForfeitedCollateral,
+            ..fixture.scope.clone()
+        }
+    }
+
+    fn forfeit_capability(fixture: &CapabilityFixture) -> ProtocolCustodyCapability {
+        ProtocolCustodyCapability::new(
+            &fixture.resolver,
+            fixture.context.clone(),
+            fixture.target.clone(),
+            ProtocolCustodyDirection::Forfeit {
+                custody: fixture.source,
+                source_scope: fixture.scope.clone(),
+                target_scope: forfeited_scope(fixture),
+            },
+            fixture.sender,
+            fixture.event,
+        )
+        .expect("capability")
+    }
+
+    fn custody_owned_input(
+        fixture: &CapabilityFixture,
+        owner_scope: ProtocolCustodyScope,
+    ) -> ScopedResolvedObject {
+        ScopedResolvedObject {
+            resolved: ResolvedObject {
+                object: Object {
+                    id: fixture.source,
+                    version: 1,
+                    owner: Owner::ProtocolCustody(owner_scope),
+                    type_hash: Digest32::new(HashAlgorithmId::Sha2_256, [0x51; 32]),
+                    schema_version: fixture.target.schema,
+                    data: Vec::new(),
+                },
+                mode: AccessMode::Write,
+            },
+            authority: crate::local_execution::ObjectAuthority {
+                object_id: fixture.source,
+                instance_context: fixture.context.clone(),
+                instance: fixture.target.instance.clone(),
+                code: fixture.target.code.clone(),
+                ty: fixture.target.ty.clone(),
+            },
+        }
+    }
+
+    #[test]
+    fn forfeit_capability_admits_a_bond_collateral_input_and_rejects_mismatched_scopes() {
+        let fixture: CapabilityFixture = capability_fixture();
+        let call: CallIntent = fixture_call(&fixture);
+        let custody_input: ScopedResolvedObject =
+            custody_owned_input(&fixture, fixture.scope.clone());
+        let capability: ProtocolCustodyCapability = forfeit_capability(&fixture);
+
+        assert!(
+            capability.admits_custody_input(fixture.source, &custody_input.resolved.object.owner)
+        );
+        // Forfeit derives its own transfer token like a deposit does, but
+        // never exposes it through the deposit-only `owner_token` accessor.
+        assert!(capability.owner_token().is_none());
+        assert!(
+            capability
+                .bind(&call, std::slice::from_ref(&custody_input), fixture.event)
+                .is_ok()
+        );
+
+        // A same-purpose pair (never actually forfeiting) is rejected before
+        // a capability is ever constructed.
+        let same_purpose_target = ProtocolCustodyScope {
+            purpose: ProtocolCustodyPurpose::BondCollateral,
+            ..fixture.scope.clone()
+        };
+        assert!(matches!(
+            ProtocolCustodyCapability::new(
+                &fixture.resolver,
+                fixture.context.clone(),
+                fixture.target.clone(),
+                ProtocolCustodyDirection::Forfeit {
+                    custody: fixture.source,
+                    source_scope: fixture.scope.clone(),
+                    target_scope: same_purpose_target,
+                },
+                fixture.sender,
+                fixture.event,
+            ),
+            Err(LocalExecutionError::Invalid(
+                "protocol custody forfeiture scope"
+            ))
+        ));
+
+        // A target scope naming a different subject (validator) is rejected
+        // too: source/target must share chain/subject/resource exactly.
+        let mismatched_subject_target = ProtocolCustodyScope {
+            purpose: ProtocolCustodyPurpose::ForfeitedCollateral,
+            subject: [0x99; 32],
+            ..fixture.scope.clone()
+        };
+        assert!(matches!(
+            ProtocolCustodyCapability::new(
+                &fixture.resolver,
+                fixture.context.clone(),
+                fixture.target.clone(),
+                ProtocolCustodyDirection::Forfeit {
+                    custody: fixture.source,
+                    source_scope: fixture.scope.clone(),
+                    target_scope: mismatched_subject_target,
+                },
+                fixture.sender,
+                fixture.event,
+            ),
+            Err(LocalExecutionError::Invalid(
+                "protocol custody forfeiture scope"
+            ))
+        ));
+
+        // An input owned under a scope other than the pinned source scope
+        // (e.g. still sender-owned, never actually deposited) is rejected
+        // by `bind`, exactly like every other direction's owner-shape check.
+        let wrong_owner_input: ScopedResolvedObject = fixture_input(&fixture, AccessMode::Write);
+        assert!(matches!(
+            capability.bind(
+                &call,
+                std::slice::from_ref(&wrong_owner_input),
+                fixture.event
+            ),
+            Err(LocalExecutionError::Invalid("protocol custody input owner"))
         ));
     }
 

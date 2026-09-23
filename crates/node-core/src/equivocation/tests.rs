@@ -4,7 +4,7 @@
 use super::*;
 use crate::epoch_transition::{
     activate, propose_and_vote,
-    tests::{GenesisFixture, build_genesis_fixture},
+    tests::{GenesisFixture, build_genesis_fixture, install_additional_bonds},
 };
 use crate::fast_path::records::{FastPathValidatorEntry, FastPathValidatorSetRecord};
 use crate::fast_path::{FastPathEd25519Verifier, records};
@@ -1673,6 +1673,7 @@ fn class_b_object_conflict_evidence_for_a_retired_validator_still_verifies_by_hi
         install_outcome,
         GenesisInstallOutcome::FreshInstall { .. }
     ));
+    install_additional_bonds(&store, &context(), domain(), &fixture, &next_entries);
 
     // 2. Offending validator (seed 101) casts two conflicting FastVotes over overlapping (ObjectId, version)
     let cert_0: FastPathCertifier = fast_certifier(epoch_0, &entries);

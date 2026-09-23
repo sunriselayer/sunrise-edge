@@ -27,6 +27,7 @@ const FASTPATH_VALIDATOR_ENTRY_TYPE: u16 = 0x6423;
 const FASTPATH_BOND_RECORD_TYPE: u16 = 0x642A;
 const FASTPATH_BOND_STATE_TYPE: u16 = 0x642D;
 const FASTPATH_BOND_TRANSITION_RECORD_TYPE: u16 = 0x6431;
+const FASTPATH_BOND_TRANSITION_AUTHORIZATION_TYPE: u16 = 0x6433;
 const ENCODING_VERSION: u16 = 1;
 
 /// Bounds every nested fast-path record list. Locked-object and
@@ -377,6 +378,19 @@ pub struct FastPathBondRecord {
     /// been released or forfeited and is no longer custody-owned. Never read
     /// this field to compute live collateral; call [`Self::live_collateral`].
     pub custody_object: ObjectRef,
+    /// The exact epoch at which [`Self::custody_object`]'s own digest was
+    /// computed -- i.e. the committing epoch of whichever generation last
+    /// actually minted a fresh object ref for this validator (genesis,
+    /// `Deposit`, `Reactivate`, `Replace`, `Withdraw` or `Slash`). `Unbond`
+    /// never touches the custody object and therefore carries this value
+    /// forward unchanged from the previous row, even though
+    /// [`Self::lifecycle_epoch`] itself advances to the `Unbond`'s own
+    /// committing epoch. Restart (`genesis::verify_fastpath_bond_chain`)
+    /// must hash a retained previous-object body at exactly this recorded
+    /// epoch, never at [`Self::lifecycle_epoch`], or a hash-suite rotation
+    /// that occurred while a bond sat `Unbonding` silently miscomputes the
+    /// digest.
+    pub custody_object_epoch: Epoch,
     /// Complete immutable public-contract authority for the custody object.
     /// Historical once [`Self::state`] is `Exited` or `Jailed`, exactly like
     /// [`Self::custody_object`].
@@ -391,8 +405,26 @@ pub struct FastPathBondRecord {
     pub committed_at_checkpoint: u64,
     /// Positive monotonically increasing lifecycle generation.
     pub generation: u64,
-    /// Epoch in which this lifecycle generation was committed.
+    /// Epoch in which this lifecycle generation was committed. Pure
+    /// transition time: never overloaded to carry liability or object-mint
+    /// provenance -- see [`Self::slashable_from_epoch`] and
+    /// [`Self::custody_object_epoch`].
     pub lifecycle_epoch: Epoch,
+    /// The earliest evidence epoch this generation's live collateral is
+    /// liable for: [`slash::handle_bond_slash`] gates on
+    /// `evidence_epoch >= slashable_from_epoch`, never on
+    /// [`Self::lifecycle_epoch`]. Fresh collateral (`Deposit` from `Exited`,
+    /// `Reactivate` from `Jailed`) sets this to the committing epoch plus
+    /// one, since it can only ever join the *next* validator set and must
+    /// never be liable for evidence at or before the epoch it was posted.
+    /// `Replace` and `Unbond` preserve the exact value carried on the
+    /// previous row unchanged (liability provenance survives a collateral
+    /// swap or an unbonding request); `Withdraw` and `Slash` also preserve it
+    /// unchanged, purely as historical audit data once the row is no longer
+    /// live. The one genesis generation is liable from the genesis epoch
+    /// itself. Distinct from [`Self::custody_object_epoch`], which tracks
+    /// object digest provenance, not liability.
+    pub slashable_from_epoch: Epoch,
     /// Positive policy minimum captured for this transition.
     pub required_minimum: u64,
     /// Exact lifecycle state for this generation.
@@ -447,6 +479,22 @@ pub fn encode_fastpath_bond_record(record: &FastPathBondRecord) -> Result<Vec<u8
         | FastPathBondState::Jailed { .. }
         | FastPathBondState::Exited => true,
     };
+    // `slashable_from_epoch` may never exceed `lifecycle_epoch + 1`: every
+    // producing operation either preserves a value inherited from a strictly
+    // earlier (or equal) generation's `lifecycle_epoch`, or -- for fresh
+    // collateral (`Deposit`/`Reactivate`) alone -- sets it to exactly
+    // `lifecycle_epoch + 1`. A larger value could never have been produced
+    // by any closed DR-0137 operation and is rejected as corrupt/forged
+    // rather than silently accepted as an even-more-conservative floor.
+    let slashable_from_valid: bool = record.slashable_from_epoch.get()
+        >= record.context.epoch().get()
+        && record.slashable_from_epoch.get() <= record.lifecycle_epoch.get().saturating_add(1);
+    // `custody_object_epoch` names the exact epoch the live `custody_object`
+    // digest was actually computed at, which can never postdate this row's
+    // own commit time nor predate genesis.
+    let custody_object_epoch_valid: bool = record.custody_object_epoch.get()
+        >= record.context.epoch().get()
+        && record.custody_object_epoch.get() <= record.lifecycle_epoch.get();
     if record.resource_domain == 0
         || record.amount == 0
         || record.generation == 0
@@ -457,6 +505,8 @@ pub fn encode_fastpath_bond_record(record: &FastPathBondRecord) -> Result<Vec<u8
         || record.authority.instance_context != record.context
         || !resource_matches_type
         || !lifecycle_valid
+        || !slashable_from_valid
+        || !custody_object_epoch_valid
         || record.authorization_scheme != SignatureSchemeId::Ed25519
         || Ed25519Verifier::from_verifying_key_bytes(&record.authorization_key).is_err()
     {
@@ -491,6 +541,8 @@ pub fn encode_fastpath_bond_record(record: &FastPathBondRecord) -> Result<Vec<u8
     frame.field_bytes(12, encode_fastpath_bond_state(&record.state)?)?;
     frame.field_u16(13, record.authorization_scheme.as_u16())?;
     frame.field_bytes(14, record.authorization_key.to_vec())?;
+    frame.field_u64(15, record.slashable_from_epoch.get())?;
+    frame.field_u64(16, record.custody_object_epoch.get())?;
     Ok(frame.finish()?)
 }
 
@@ -499,7 +551,7 @@ pub fn decode_fastpath_bond_record(bytes: &[u8]) -> Result<FastPathBondRecord, N
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(FASTPATH_BOND_RECORD_TYPE)?;
     frame.require_version(1)?;
-    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])?;
+    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])?;
     let context: PublicationContext = decode_publication_context(frame.required_field(1)?)
         .map_err(|_| NodeCoreError::PersistenceInvariant("invalid bond context"))?;
     let validator_bytes: [u8; 32] = frame
@@ -527,11 +579,13 @@ pub fn decode_fastpath_bond_record(bytes: &[u8]) -> Result<FastPathBondRecord, N
         resource_domain: frame.required_u16(3)?,
         resource,
         custody_object,
+        custody_object_epoch: Epoch::new(frame.required_u64(16)?),
         authority,
         amount: frame.required_u64(7)?,
         committed_at_checkpoint: frame.required_u64(8)?,
         generation: frame.required_u64(9)?,
         lifecycle_epoch: Epoch::new(frame.required_u64(10)?),
+        slashable_from_epoch: Epoch::new(frame.required_u64(15)?),
         required_minimum: frame.required_u64(11)?,
         state: decode_fastpath_bond_state(frame.required_field(12)?)?,
         authorization_scheme,
@@ -557,6 +611,11 @@ pub enum FastPathBondLifecycleOperation {
     Unbond,
     /// `Unbonding -> Exited`.
     Withdraw,
+    /// `Jailed -> Active`, a fresh policy-compliant bond.
+    Reactivate,
+    /// `(Active | Unbonding) -> Jailed`, one-time verified-evidence
+    /// forfeiture.
+    Slash,
 }
 
 impl FastPathBondLifecycleOperation {
@@ -566,6 +625,8 @@ impl FastPathBondLifecycleOperation {
             Self::Replace => 2,
             Self::Unbond => 3,
             Self::Withdraw => 4,
+            Self::Reactivate => 5,
+            Self::Slash => 6,
         }
     }
 
@@ -575,6 +636,8 @@ impl FastPathBondLifecycleOperation {
             2 => Ok(Self::Replace),
             3 => Ok(Self::Unbond),
             4 => Ok(Self::Withdraw),
+            5 => Ok(Self::Reactivate),
+            6 => Ok(Self::Slash),
             _ => Err(NodeCoreError::PersistenceInvariant(
                 "unknown fast-path bond lifecycle operation",
             )),
@@ -584,7 +647,9 @@ impl FastPathBondLifecycleOperation {
     /// True exactly for the one closed `(previous, resulting)` state pair
     /// this operation is allowed to produce: `Deposit` is
     /// `Exited -> Active`, `Replace` is `Active -> Active`, `Unbond` is
-    /// `Active -> Unbonding`, `Withdraw` is `Unbonding -> Exited`. Shared by
+    /// `Active -> Unbonding`, `Withdraw` is `Unbonding -> Exited`,
+    /// `Reactivate` is `Jailed -> Active`, `Slash` is
+    /// `(Active | Unbonding) -> Jailed`. Shared by
     /// [`crate::bond_lifecycle`]'s own live admission and
     /// [`crate::genesis::verify_fastpath_bond_chain`]'s independent restart
     /// re-derivation, so both enforce the identical closed state machine.
@@ -611,17 +676,201 @@ impl FastPathBondLifecycleOperation {
                 matches!(previous, FastPathBondState::Unbonding { .. })
                     && *resulting == FastPathBondState::Exited
             }
+            Self::Reactivate => {
+                matches!(previous, FastPathBondState::Jailed { .. })
+                    && matches!(resulting, FastPathBondState::Active)
+            }
+            Self::Slash => {
+                matches!(
+                    previous,
+                    FastPathBondState::Active | FastPathBondState::Unbonding { .. }
+                ) && matches!(resulting, FastPathBondState::Jailed { .. })
+            }
         }
     }
 }
 
 /// Maximum bytes of the exact canonical signed `bond_lifecycle` envelope
-/// (`0x6430/v1`) a [`FastPathBondTransitionRecord`] retains. Generous enough
-/// for a `Replace` envelope's two embedded local-execution legs.
+/// (`0x6430/v1`), DR-0133 evidence frame, or evidence-consumption leg a
+/// [`BondTransitionAuthorization`] retains. Generous enough for a `Replace`
+/// envelope's two embedded local-execution legs, and for class (b)'s
+/// worst-case pair of `MAX_LOCKED_OBJECT_SET_ENTRIES`-sized preimages.
 pub const MAX_BOND_TRANSITION_ENVELOPE_BYTES: usize = 1_500_000;
+/// Maximum bytes of one exact canonical [`Object`] `BondTransitionAuthorization::ConsumedEvidence`
+/// retains (either side of the forfeiture: the previous `BondCollateral`
+/// object or the resulting `ForfeitedCollateral` object) -- the durable
+/// object-body limit plus room for the fixed identity/owner/type fields.
+pub const MAX_BOND_TRANSITION_OBJECT_BYTES: usize =
+    crate::MAX_AUTHENTICATED_OBJECT_BODY_BYTES + 4_096;
 /// Maximum bytes of the exact canonical resulting [`FastPathBondRecord`]
 /// (`0x642A/v1`) a [`FastPathBondTransitionRecord`] retains.
 pub const MAX_BOND_TRANSITION_ROW_BYTES: usize = 64 * 1024;
+/// Maximum canonical bytes of one encoded [`BondTransitionAuthorization`]
+/// (`0x6433/v1`): the sum of every per-field bound above, generous enough
+/// for either a `Replace` envelope's two embedded legs, or a DR-0133
+/// evidence frame plus one forfeiture leg plus the retained previous/
+/// resulting object pair.
+pub const MAX_BOND_TRANSITION_AUTHORIZATION_BYTES: usize =
+    2 * MAX_BOND_TRANSITION_ENVELOPE_BYTES + 2 * MAX_BOND_TRANSITION_OBJECT_BYTES;
+
+const BOND_TRANSITION_AUTHORIZATION_TAG_VALIDATOR: u16 = 1;
+const BOND_TRANSITION_AUTHORIZATION_TAG_EVIDENCE: u16 = 2;
+
+/// Frame `0x6433/v1`: the closed DR-0137 unit 3 authority that produced one
+/// bond transition, retained in full inside
+/// [`FastPathBondTransitionRecord::authorization`] so restart independently
+/// re-verifies it from nothing but the stored row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BondTransitionAuthorization {
+    /// A validator-signed lifecycle transition: `Deposit`, `Replace`,
+    /// `Unbond`, `Withdraw` or `Reactivate`.
+    ValidatorEnvelope {
+        /// Exact canonical `SignedBondLifecycleIntent 0x6430/v1` bytes.
+        signed_envelope: Vec<u8>,
+    },
+    /// A one-time evidence-driven forfeiture: `Slash`.
+    ConsumedEvidence {
+        /// Exact encoded `0xD00D`/`0xD00E`/`0xD00F` DR-0133 evidence frame
+        /// this transition consumed.
+        evidence_bytes: Vec<u8>,
+        /// Evidence epoch the consumed evidence claims.
+        evidence_epoch: Epoch,
+        /// Normalized-identity `conflict_digest` of the consumed evidence
+        /// row (`crate::equivocation::fastpath_equivocation_evidence_key`'s
+        /// own selector).
+        evidence_digest: Digest32,
+        /// Exact signed local-execution leg that ran the forfeiture
+        /// transfer entrypoint under the `Forfeit` protocol-custody
+        /// direction.
+        forfeiture_leg: Vec<u8>,
+        /// Exact canonical `0x4005` [`Object`] bytes of the custody object as it stood
+        /// immediately before this forfeiture (the live snapshot
+        /// `handle_bond_slash` read), owned by `BondCollateral`. Retained so
+        /// restart can independently re-derive its `ObjectRef` digest and
+        /// cross-check it against `previous_row.custody_object`, rather than
+        /// trusting the resulting row's fields alone.
+        previous_object: Vec<u8>,
+        /// Exact canonical `0x4005` [`Object`] bytes of the same object immediately
+        /// after this forfeiture, owned by `ForfeitedCollateral`: identical
+        /// identity/version+1/type/schema/body to `previous_object` except
+        /// the owner. Retained so restart can independently re-derive its
+        /// `ObjectRef` digest and cross-check it against
+        /// `resulting_row.custody_object`.
+        resulting_object: Vec<u8>,
+    },
+}
+
+/// Encodes Frame `0x6433/v1`.
+pub fn encode_bond_transition_authorization(
+    authorization: &BondTransitionAuthorization,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut frame: CanonicalStruct =
+        CanonicalStruct::new(FASTPATH_BOND_TRANSITION_AUTHORIZATION_TYPE, 1);
+    match authorization {
+        BondTransitionAuthorization::ValidatorEnvelope { signed_envelope } => {
+            if signed_envelope.len() > MAX_BOND_TRANSITION_ENVELOPE_BYTES {
+                return Err(NodeCoreError::PersistenceInvariant(
+                    "invalid bond transition authorization",
+                ));
+            }
+            frame.field_u16(1, BOND_TRANSITION_AUTHORIZATION_TAG_VALIDATOR)?;
+            frame.field_bytes(2, signed_envelope.clone())?;
+        }
+        BondTransitionAuthorization::ConsumedEvidence {
+            evidence_bytes,
+            evidence_epoch,
+            evidence_digest,
+            forfeiture_leg,
+            previous_object,
+            resulting_object,
+        } => {
+            if evidence_bytes.len() > MAX_BOND_TRANSITION_ENVELOPE_BYTES
+                || forfeiture_leg.len() > MAX_BOND_TRANSITION_ENVELOPE_BYTES
+                || previous_object.len() > MAX_BOND_TRANSITION_OBJECT_BYTES
+                || resulting_object.len() > MAX_BOND_TRANSITION_OBJECT_BYTES
+            {
+                return Err(NodeCoreError::PersistenceInvariant(
+                    "invalid bond transition authorization",
+                ));
+            }
+            frame.field_u16(1, BOND_TRANSITION_AUTHORIZATION_TAG_EVIDENCE)?;
+            frame.field_bytes(3, evidence_bytes.clone())?;
+            frame.field_u64(4, evidence_epoch.get())?;
+            frame.field_bytes(5, encode_digest32(evidence_digest)?)?;
+            frame.field_bytes(6, forfeiture_leg.clone())?;
+            frame.field_bytes(7, previous_object.clone())?;
+            frame.field_bytes(8, resulting_object.clone())?;
+        }
+    }
+    let bytes: Vec<u8> = frame.finish()?;
+    if bytes.len() > MAX_BOND_TRANSITION_AUTHORIZATION_BYTES {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "invalid bond transition authorization",
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Strictly decodes Frame `0x6433/v1`.
+pub fn decode_bond_transition_authorization(
+    bytes: &[u8],
+) -> Result<BondTransitionAuthorization, NodeCoreError> {
+    if bytes.len() > MAX_BOND_TRANSITION_AUTHORIZATION_BYTES {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "invalid bond transition authorization",
+        ));
+    }
+    let frame = decode_canonical_frame(bytes)?;
+    frame.require_type(FASTPATH_BOND_TRANSITION_AUTHORIZATION_TYPE)?;
+    frame.require_version(1)?;
+    let authorization: BondTransitionAuthorization = match frame.required_u16(1)? {
+        BOND_TRANSITION_AUTHORIZATION_TAG_VALIDATOR => {
+            frame.require_only_fields(&[1, 2])?;
+            let signed_envelope: Vec<u8> = frame.required_field(2)?.to_vec();
+            if signed_envelope.len() > MAX_BOND_TRANSITION_ENVELOPE_BYTES {
+                return Err(NodeCoreError::PersistenceInvariant(
+                    "invalid bond transition authorization",
+                ));
+            }
+            BondTransitionAuthorization::ValidatorEnvelope { signed_envelope }
+        }
+        BOND_TRANSITION_AUTHORIZATION_TAG_EVIDENCE => {
+            frame.require_only_fields(&[1, 3, 4, 5, 6, 7, 8])?;
+            let evidence_bytes: Vec<u8> = frame.required_field(3)?.to_vec();
+            let forfeiture_leg: Vec<u8> = frame.required_field(6)?.to_vec();
+            let previous_object: Vec<u8> = frame.required_field(7)?.to_vec();
+            let resulting_object: Vec<u8> = frame.required_field(8)?.to_vec();
+            if evidence_bytes.len() > MAX_BOND_TRANSITION_ENVELOPE_BYTES
+                || forfeiture_leg.len() > MAX_BOND_TRANSITION_ENVELOPE_BYTES
+                || previous_object.len() > MAX_BOND_TRANSITION_OBJECT_BYTES
+                || resulting_object.len() > MAX_BOND_TRANSITION_OBJECT_BYTES
+            {
+                return Err(NodeCoreError::PersistenceInvariant(
+                    "invalid bond transition authorization",
+                ));
+            }
+            BondTransitionAuthorization::ConsumedEvidence {
+                evidence_bytes,
+                evidence_epoch: Epoch::new(frame.required_u64(4)?),
+                evidence_digest: decode_digest32(frame.required_field(5)?)?,
+                forfeiture_leg,
+                previous_object,
+                resulting_object,
+            }
+        }
+        _ => {
+            return Err(NodeCoreError::PersistenceInvariant(
+                "unknown bond transition authorization",
+            ));
+        }
+    };
+    if encode_bond_transition_authorization(&authorization)? != bytes {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "noncanonical bond transition authorization",
+        ));
+    }
+    Ok(authorization)
+}
 
 /// Frame `0x6431/v1`: one permanent audit row binding a validator's bond
 /// generation transition to the exact canonical bytes that produced it.
@@ -630,20 +879,21 @@ pub const MAX_BOND_TRANSITION_ROW_BYTES: usize = 64 * 1024;
 /// no transition record: it is re-derived byte-exactly from the signed
 /// genesis manifest. Restart re-verifies every later generation by walking
 /// this chain from generation 1 (see `genesis::verify_fastpath_bond_chain`),
-/// which needs nothing beyond [`Self::signed_envelope`] and
+/// which needs nothing beyond [`Self::authorization`] and
 /// [`Self::resulting_row`]: both are retained in full (not merely digested),
 /// so restart independently re-decodes, re-hashes and re-verifies the
-/// validator's signature and every bound field rather than trusting any
-/// redundant summary column. [`Self::context`], [`Self::previous_row_digest`],
-/// [`Self::current_row_digest`], [`Self::operation`] and
-/// [`Self::committed_at_checkpoint`] are redundant, informational copies of
-/// data already inside [`Self::signed_envelope`]/[`Self::resulting_row`);
-/// restart cross-checks them against the decoded envelope/row rather than
-/// trusting them on their own.
+/// authorizing signature(s)/evidence and every bound field rather than
+/// trusting any redundant summary column. [`Self::context`],
+/// [`Self::previous_row_digest`], [`Self::current_row_digest`],
+/// [`Self::operation`] and [`Self::committed_at_checkpoint`] are redundant,
+/// informational copies of data already inside
+/// [`Self::authorization`]/[`Self::resulting_row`]; restart cross-checks them
+/// against the decoded authorization/row rather than trusting them on their
+/// own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FastPathBondTransitionRecord {
-    /// Exact signing [`PublicationContext`] of [`Self::signed_envelope`]'s
-    /// intent -- never an ambient or genesis-pinned context.
+    /// Exact signing [`PublicationContext`] of this transition -- never an
+    /// ambient or genesis-pinned context.
     pub context: PublicationContext,
     /// Validator this transition belongs to.
     pub validator_id: ValidatorId,
@@ -657,11 +907,10 @@ pub struct FastPathBondTransitionRecord {
     pub operation: FastPathBondLifecycleOperation,
     /// Checkpoint of the atomic commit that produced this generation.
     pub committed_at_checkpoint: u64,
-    /// Exact canonical `SignedBondLifecycleIntent 0x6430/v1` bytes that
-    /// authorized this transition, retained in full so its validator
-    /// signature is independently re-verifiable at restart from nothing but
-    /// this record.
-    pub signed_envelope: Vec<u8>,
+    /// Exact encoded [`BondTransitionAuthorization`] `0x6433/v1` bytes that
+    /// authorized this transition, retained in full so it is independently
+    /// re-verifiable at restart from nothing but this record.
+    pub authorization: BondTransitionAuthorization,
     /// Exact canonical [`FastPathBondRecord`] `0x642A/v1` bytes this
     /// transition produced.
     pub resulting_row: Vec<u8>,
@@ -671,10 +920,7 @@ pub struct FastPathBondTransitionRecord {
 pub fn encode_fastpath_bond_transition_record(
     record: &FastPathBondTransitionRecord,
 ) -> Result<Vec<u8>, NodeCoreError> {
-    if record.generation == 0
-        || record.signed_envelope.len() > MAX_BOND_TRANSITION_ENVELOPE_BYTES
-        || record.resulting_row.len() > MAX_BOND_TRANSITION_ROW_BYTES
-    {
+    if record.generation == 0 || record.resulting_row.len() > MAX_BOND_TRANSITION_ROW_BYTES {
         return Err(NodeCoreError::PersistenceInvariant(
             "invalid fast-path bond transition record",
         ));
@@ -691,7 +937,10 @@ pub fn encode_fastpath_bond_transition_record(
     frame.field_bytes(5, encode_digest32(&record.current_row_digest)?)?;
     frame.field_u16(6, record.operation.as_u16())?;
     frame.field_u64(7, record.committed_at_checkpoint)?;
-    frame.field_bytes(8, record.signed_envelope.clone())?;
+    frame.field_bytes(
+        8,
+        encode_bond_transition_authorization(&record.authorization)?,
+    )?;
     frame.field_bytes(9, record.resulting_row.clone())?;
     Ok(frame.finish()?)
 }
@@ -710,11 +959,10 @@ pub fn decode_fastpath_bond_transition_record(
         .required_field(2)?
         .try_into()
         .map_err(|_| NodeCoreError::PersistenceInvariant("bond transition validator id length"))?;
-    let signed_envelope: Vec<u8> = frame.required_field(8)?.to_vec();
+    let authorization: BondTransitionAuthorization =
+        decode_bond_transition_authorization(frame.required_field(8)?)?;
     let resulting_row: Vec<u8> = frame.required_field(9)?.to_vec();
-    if signed_envelope.len() > MAX_BOND_TRANSITION_ENVELOPE_BYTES
-        || resulting_row.len() > MAX_BOND_TRANSITION_ROW_BYTES
-    {
+    if resulting_row.len() > MAX_BOND_TRANSITION_ROW_BYTES {
         return Err(NodeCoreError::PersistenceInvariant(
             "invalid fast-path bond transition record",
         ));
@@ -727,7 +975,7 @@ pub fn decode_fastpath_bond_transition_record(
         current_row_digest: decode_digest32(frame.required_field(5)?)?,
         operation: FastPathBondLifecycleOperation::decode(frame.required_u16(6)?)?,
         committed_at_checkpoint: frame.required_u64(7)?,
-        signed_envelope,
+        authorization,
         resulting_row,
     };
     if record.generation == 0 || encode_fastpath_bond_transition_record(&record)? != bytes {

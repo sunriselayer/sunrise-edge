@@ -375,7 +375,7 @@ pub(crate) struct AdmittedLeg {
 /// nonce reservation across up to two legs.
 ///
 /// `protocol_custody` narrowly admits one non-sender-owned custody input
-/// ([`execution::protocol_custody::ProtocolCustodyCapability::admits_release_input`])
+/// ([`execution::protocol_custody::ProtocolCustodyCapability::admits_custody_input`])
 /// and is threaded into typed-WASM execution; when `None`, every input must
 /// be owned by `call.sender`, exactly like every other local-execution
 /// caller.
@@ -581,7 +581,7 @@ pub(crate) fn admit_and_execute_leg<
         )?;
         let sender_owned: bool = snapshot.object.owner == Owner::Address(Address::new(call.sender));
         let custody_admitted: bool = protocol_custody.is_some_and(|capability| {
-            capability.admits_release_input(snapshot.object.id, &snapshot.object.owner)
+            capability.admits_custody_input(snapshot.object.id, &snapshot.object.owner)
         });
         if !sender_owned && !custody_admitted {
             return Err(LocalExecutionAdmissionError::Invalid(

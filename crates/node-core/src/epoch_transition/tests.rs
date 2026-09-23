@@ -21,7 +21,7 @@ use crate::genesis::{
 use crate::paid_execution::tests::{
     CountingEngine, Fixture, domain as pe_domain, entry as pe_entry, install as install_pe_fixture,
     memory_store, protocol as pe_protocol, receipt, refund_account as pe_refund_account,
-    resolver as pe_resolver,
+    resolver as pe_resolver, set_state,
 };
 use abi::call_values::{CallValue, encode_call_value};
 use abi::package_types::{PackageOrigin, ScopedTypeArg, derive_scoped_type_id};
@@ -43,9 +43,13 @@ use execution::publication::{
     ArtifactParts, CodeArtifact, PublicationRequest, PublicationSubmission,
     UnverifiedDependencyRef, artifact_commitment, publication_submission_signing_frame,
 };
-use fast_path::records::{FastPathValidatorEntry, FastPathValidatorSetRecord};
+use fast_path::records::{
+    FastPathValidatorEntry, FastPathValidatorSetRecord, encode_fastpath_bond_record,
+};
 use fees::{Amount, GasSchedule};
-use objects::{AccessMode, Address, Object, ObjectId, Owner};
+use objects::{
+    AccessMode, Address, Object, ObjectId, Owner, ProtocolCustodyPurpose, ProtocolCustodyScope,
+};
 use protocol_types::{
     HashAlgorithmId, HashPurpose, HashSuite, HashSuiteId, HashSuiteSchedule, ProtocolVersion,
     ValidatorId,
@@ -197,14 +201,137 @@ fn certifier(
 
 // ── lighter-weight fixture: `paid_execution::tests` + a real outgoing set ──
 
+/// Installs a bond-enabled economics policy (reusing the lightweight
+/// fixture's own real Standard Asset instance/code/type, exactly like
+/// `genesis::tests::build_fixture` does for the full-genesis fixture) and
+/// one committed, eligible `Active` bond for each of `validators`, all at
+/// `pe_protocol()`'s epoch. DR-0137 unit 3's pre-vote eligibility gate in
+/// `propose_and_vote` requires this for every next-set validator; idempotent
+/// across repeated calls for the same validator/key.
+fn install_bond_policy_and_bonds<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    fixture: &Fixture,
+    validators: &[FastPathValidatorEntry],
+) {
+    let context: PublicationContext = pe_protocol();
+    let instance: execution::call::InstanceTarget =
+        instance_target(&pe_resolver(), &fixture.instance).unwrap();
+    let coin_tag = public_standard_asset::coin_type_tag(&fixture.origin, &fixture.asset).unwrap();
+    let (resource_domain, resource): (u16, [u8; 32]) = match coin_tag.args() {
+        [ScopedTypeArg::Opaque { domain, value }] => (*domain, *value),
+        _ => panic!("fixture coin type must carry one opaque resource"),
+    };
+    let resource_id: BondResourceId = BondResourceId::new(resource_domain, resource).unwrap();
+
+    let policy_key: Vec<u8> =
+        local_instance_state::fastpath_economics_policy_key(&context).unwrap();
+    let policy_observed: VersionedStateValue = store
+        .get_versioned_durable(&pe_context(), pe_domain(), &policy_key)
+        .unwrap();
+    if policy_observed.value().is_none() {
+        let policy: FastPathEconomicsPolicy = FastPathEconomicsPolicy {
+            context: context.clone(),
+            resources: vec![FastPathEconomicsResourcePolicy {
+                resource_id,
+                context: context.clone(),
+                instance: instance.clone(),
+                code: fixture.code.clone(),
+                ty: coin_tag.clone(),
+                schema: public_standard_asset::SCHEMA_VERSION,
+                split_entrypoint: "split".to_owned(),
+                transfer_entrypoint: "transfer".to_owned(),
+                bond: Some(BondResourceConfig {
+                    resource_id,
+                    min_bond: Amount::new(1),
+                    enabled: true,
+                    unbonding_epochs: 7,
+                    max_validator_exposure: None,
+                }),
+                fee_escrow: false,
+            }],
+        };
+        set_state(
+            store,
+            policy_key,
+            StateMutation::Put(
+                crate::economics::encode_fastpath_economics_policy(&policy).unwrap(),
+            ),
+        );
+    }
+
+    for validator in validators {
+        let bond_key: Vec<u8> =
+            local_instance_state::fastpath_bond_record_key(context.chain_id(), &validator.id)
+                .unwrap();
+        let bond_observed: VersionedStateValue = store
+            .get_versioned_durable(&pe_context(), pe_domain(), &bond_key)
+            .unwrap();
+        if bond_observed.value().is_some() {
+            continue;
+        }
+        let mut object_id_bytes: [u8; 32] = *validator.id.as_bytes();
+        object_id_bytes[0] = 0x60;
+        let object_id: ObjectId = ObjectId::new(object_id_bytes);
+        let authorization_key: [u8; 32] = validator
+            .public_key
+            .as_slice()
+            .try_into()
+            .expect("fixture validator key length");
+        let bond: FastPathBondRecord = FastPathBondRecord {
+            context: context.clone(),
+            validator_id: validator.id,
+            resource_domain,
+            resource,
+            custody_object: ObjectRef {
+                id: object_id,
+                version: 1,
+                digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x61; 32]),
+            },
+            custody_object_epoch: context.epoch(),
+            authority: ObjectAuthority {
+                object_id,
+                instance_context: context.clone(),
+                instance: instance.clone(),
+                code: fixture.code.clone(),
+                ty: coin_tag.clone(),
+            },
+            amount: 1_000_000,
+            committed_at_checkpoint: 0,
+            generation: 1,
+            lifecycle_epoch: context.epoch(),
+            // This fixture installs a genesis-equivalent generation-1 bond
+            // directly, not via a live `Deposit`: it is immediately liable,
+            // exactly like a real genesis bond.
+            slashable_from_epoch: context.epoch(),
+            required_minimum: 1,
+            state: FastPathBondState::Active,
+            authorization_scheme: validator.signature_scheme,
+            authorization_key,
+        };
+        set_state(
+            store,
+            bond_key,
+            StateMutation::Put(encode_fastpath_bond_record(&bond).unwrap()),
+        );
+    }
+}
+
 /// Installs the `paid_execution::tests` fixture and a real matching
-/// outgoing FastVote validator set at `pe_protocol()`'s epoch (0).
+/// outgoing FastVote validator set at `pe_protocol()`'s epoch (0), plus a
+/// bond-enabled economics policy and one eligible bond for every validator
+/// in both the outgoing (`four_validators()`) and incoming
+/// (`four_next_validators()`) sets -- the two fixed sets nearly every test
+/// in this module uses.
 fn install_lightweight<S: StructuredDurableDomainStateStore>(
     store: &S,
 ) -> (Fixture, Vec<TestSigner>, Vec<FastPathValidatorEntry>) {
     let fixture: Fixture = install_pe_fixture(store);
     let (signers, entries) = four_validators();
     install_outgoing_validators(store, entries.clone());
+    let (_, next_entries) = four_next_validators();
+    let mut bonded_validators: Vec<FastPathValidatorEntry> = entries.clone();
+    bonded_validators.extend(next_entries);
+    install_bond_policy_and_bonds(store, &fixture, &bonded_validators);
     (fixture, signers, entries)
 }
 
@@ -335,6 +462,271 @@ fn derive_activation_set_is_invariant_to_next_validator_input_order() {
     // `FastPathValidatorSetRecord` bytes (and the whole activation write
     // set they are part of) are identical too.
     assert_eq!(forward.activation_set, reversed.activation_set);
+}
+
+/// DR-0137 unit 3's next-set eligibility coupling is gated exclusively by
+/// [`propose_and_vote`], strictly before a vote is cast -- never by
+/// [`derive_activation_set`]/[`activate`] (see `DerivedActivation`'s doc
+/// comment: certificate application must be a pure function of an
+/// already-certified transition, not of live mutable bond state). Every one
+/// of the eight closed ineligibility reasons must reject the vote: jailed,
+/// unbonding, exited, below the minimum, above the maximum exposure,
+/// disabled by policy, an authorization key that diverges from the bond's
+/// own committed key, and an altogether absent bond.
+#[test]
+fn propose_and_vote_rejects_every_ineligible_next_set_candidate() {
+    fn expect_ineligible<S: StructuredDurableDomainStateStore>(
+        store: &S,
+        signer: &TestSigner,
+        candidates: Vec<FastPathValidatorEntry>,
+    ) {
+        let result = propose_and_vote(
+            store,
+            &pe_context(),
+            pe_domain(),
+            &pe_resolver(),
+            pe_protocol().chain_id(),
+            pe_protocol().protocol_version(),
+            candidates,
+            signer,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(EpochTransitionError::Invalid(
+                    "fast-path next validator set requires a committed, eligible bond"
+                ))
+            ),
+            "expected an ineligible-candidate rejection, got {result:?}"
+        );
+    }
+
+    // jailed / unbonding / exited / key-mismatch: mutate the one candidate's
+    // own already-installed `Active` bond row.
+    let states = [
+        FastPathBondState::Jailed {
+            evidence_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x50; 32]),
+        },
+        FastPathBondState::Unbonding {
+            unlock_epoch: Epoch::new(99),
+            recipient: [0x51; 32],
+        },
+        FastPathBondState::Exited,
+    ];
+    for state in states {
+        let store: MemoryDurableStateStore = memory_store();
+        let (_fixture, signers, _entries) = install_lightweight(&store);
+        let (_next_signers, next_entries) = four_next_validators();
+        let bond_key = local_instance_state::fastpath_bond_record_key(
+            pe_protocol().chain_id(),
+            &next_entries[0].id,
+        )
+        .unwrap();
+        let observed = store
+            .get_versioned_durable(&pe_context(), pe_domain(), &bond_key)
+            .unwrap();
+        let mut bond: FastPathBondRecord =
+            crate::fast_path::records::decode_fastpath_bond_record(observed.value().unwrap())
+                .unwrap();
+        assert_eq!(bond.state, FastPathBondState::Active);
+        bond.state = state;
+        set_state(
+            &store,
+            bond_key,
+            StateMutation::Put(encode_fastpath_bond_record(&bond).unwrap()),
+        );
+        expect_ineligible(&store, &signers[0], next_entries);
+    }
+
+    // key-mismatch: the committed bond's own authorization key diverges from
+    // the candidate's registered public key (still a well-formed Ed25519
+    // key -- some other real validator's -- so the row itself stays valid).
+    {
+        let store: MemoryDurableStateStore = memory_store();
+        let (_fixture, signers, _entries) = install_lightweight(&store);
+        let (_next_signers, next_entries) = four_next_validators();
+        let (_other_signer, other_entry) = validator(230);
+        let bond_key = local_instance_state::fastpath_bond_record_key(
+            pe_protocol().chain_id(),
+            &next_entries[0].id,
+        )
+        .unwrap();
+        let observed = store
+            .get_versioned_durable(&pe_context(), pe_domain(), &bond_key)
+            .unwrap();
+        let mut bond: FastPathBondRecord =
+            crate::fast_path::records::decode_fastpath_bond_record(observed.value().unwrap())
+                .unwrap();
+        bond.authorization_key = other_entry
+            .public_key
+            .as_slice()
+            .try_into()
+            .expect("fixture validator key length");
+        set_state(
+            &store,
+            bond_key,
+            StateMutation::Put(encode_fastpath_bond_record(&bond).unwrap()),
+        );
+        expect_ineligible(&store, &signers[0], next_entries);
+    }
+
+    // absent: no committed bond row for the candidate at all.
+    {
+        let store: MemoryDurableStateStore = memory_store();
+        let (_fixture, signers, _entries) = install_lightweight(&store);
+        let (_next_signers, next_entries) = four_next_validators();
+        let bond_key = local_instance_state::fastpath_bond_record_key(
+            pe_protocol().chain_id(),
+            &next_entries[0].id,
+        )
+        .unwrap();
+        set_state(&store, bond_key, StateMutation::Delete);
+        expect_ineligible(&store, &signers[0], next_entries);
+    }
+
+    // under-min / over-max / disabled: mutate the shared committed economics
+    // policy resource, then use a `next_validators` list containing only the
+    // one still-`Active` candidate so the failure is unambiguously
+    // attributable to the policy change alone.
+    for mutate in [
+        (|cfg: &mut BondResourceConfig| cfg.min_bond = Amount::new(2_000_000))
+            as fn(&mut BondResourceConfig),
+        (|cfg: &mut BondResourceConfig| cfg.max_validator_exposure = Some(Amount::new(1)))
+            as fn(&mut BondResourceConfig),
+        (|cfg: &mut BondResourceConfig| cfg.enabled = false) as fn(&mut BondResourceConfig),
+    ] {
+        let store: MemoryDurableStateStore = memory_store();
+        let (_fixture, signers, _entries) = install_lightweight(&store);
+        let (_next_signers, next_entries) = four_next_validators();
+        let policy_key =
+            local_instance_state::fastpath_economics_policy_key(&pe_protocol()).unwrap();
+        let observed = store
+            .get_versioned_durable(&pe_context(), pe_domain(), &policy_key)
+            .unwrap();
+        let mut policy: FastPathEconomicsPolicy =
+            crate::economics::decode_fastpath_economics_policy(observed.value().unwrap()).unwrap();
+        let bond_cfg: &mut BondResourceConfig = policy.resources[0].bond.as_mut().unwrap();
+        mutate(bond_cfg);
+        set_state(
+            &store,
+            policy_key,
+            StateMutation::Put(
+                crate::economics::encode_fastpath_economics_policy(&policy).unwrap(),
+            ),
+        );
+        expect_ineligible(&store, &signers[0], vec![next_entries[0].clone()]);
+    }
+}
+
+/// DR-0137 unit 3's certificate-wins ordering: a certificate formed by
+/// quorum before a validator later gets slashed still activates -- byte for
+/// byte identically -- after that slash locally commits. Jailing a next-set
+/// validator can only ever change what a *later* [`propose_and_vote`] round
+/// is willing to vote on; it must never change whether an already-certified
+/// transition applies.
+#[test]
+fn activate_applies_a_precertified_transition_identically_after_a_later_local_slash() {
+    let baseline: MemoryDurableStateStore = memory_store();
+    let (_fixture, signers, entries) = install_lightweight(&baseline);
+    let (_next_signers, next_entries) = four_next_validators();
+    let (certificate, ..) =
+        propose_vote_and_certify(&baseline, &signers, &entries, next_entries.clone());
+    let certificate_bytes = consensus::encode_epoch_transition_certificate(&certificate).unwrap();
+
+    let baseline_outcome = activate(
+        &baseline,
+        &pe_context(),
+        pe_domain(),
+        &pe_resolver(),
+        pe_protocol().chain_id(),
+        pe_protocol().protocol_version(),
+        next_entries.clone(),
+        &certificate_bytes,
+        30,
+    )
+    .unwrap();
+    let baseline_record = match baseline_outcome {
+        EpochActivationOutcome::Activated(record) => record,
+        EpochActivationOutcome::AlreadyActivated(_) => panic!("expected a fresh activation"),
+    };
+
+    // An independent, identically constructed store, reaching the identical
+    // pre-activation state (both fixtures are fully deterministic), except a
+    // local slash now jails one next-set validator's bond *before*
+    // `activate` runs -- simulating a slash that committed ahead of
+    // activation.
+    let slashed: MemoryDurableStateStore = memory_store();
+    let (_fixture2, signers2, entries2) = install_lightweight(&slashed);
+    assert_eq!(entries, entries2, "fixtures must be deterministic");
+    let (next_signers2, next_entries2) = four_next_validators();
+    let (certificate2, ..) =
+        propose_vote_and_certify(&slashed, &signers2, &entries2, next_entries2.clone());
+    let certificate2_bytes = consensus::encode_epoch_transition_certificate(&certificate2).unwrap();
+    assert_eq!(
+        certificate_bytes, certificate2_bytes,
+        "deterministic fixtures must produce byte-identical certificates"
+    );
+
+    let bond_key = local_instance_state::fastpath_bond_record_key(
+        pe_protocol().chain_id(),
+        &next_entries2[0].id,
+    )
+    .unwrap();
+    let observed = slashed
+        .get_versioned_durable(&pe_context(), pe_domain(), &bond_key)
+        .unwrap();
+    let mut bond: FastPathBondRecord =
+        crate::fast_path::records::decode_fastpath_bond_record(observed.value().unwrap()).unwrap();
+    assert_eq!(bond.state, FastPathBondState::Active);
+    bond.state = FastPathBondState::Jailed {
+        evidence_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x53; 32]),
+    };
+    bond.generation += 1;
+    set_state(
+        &slashed,
+        bond_key,
+        StateMutation::Put(encode_fastpath_bond_record(&bond).unwrap()),
+    );
+
+    let slashed_outcome = activate(
+        &slashed,
+        &pe_context(),
+        pe_domain(),
+        &pe_resolver(),
+        pe_protocol().chain_id(),
+        pe_protocol().protocol_version(),
+        next_entries2,
+        &certificate2_bytes,
+        30,
+    )
+    .unwrap();
+    let slashed_record = match slashed_outcome {
+        EpochActivationOutcome::Activated(record) => record,
+        EpochActivationOutcome::AlreadyActivated(_) => panic!("expected a fresh activation"),
+    };
+
+    // Byte-for-byte identical activation, despite the intervening slash.
+    assert_eq!(baseline_record, slashed_record);
+
+    // But the jail is not forgotten: it now blocks the *next* proposal round
+    // from voting the same (still-jailed) validator back into a future set.
+    let error = propose_and_vote(
+        &slashed,
+        &pe_context(),
+        pe_domain(),
+        &pe_resolver(),
+        pe_protocol().chain_id(),
+        pe_protocol().protocol_version(),
+        vec![next_entries[0].clone()],
+        &next_signers2[0],
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        EpochTransitionError::Invalid(
+            "fast-path next validator set requires a committed, eligible bond"
+        )
+    ));
 }
 
 /// `propose_and_vote` always derives `next_epoch` from the fenced live
@@ -827,18 +1219,21 @@ fn activate_rejects_a_certificate_signed_by_the_incoming_set() {
 #[test]
 fn activate_rejects_a_locally_derived_activation_set_that_differs_from_the_certificate() {
     let store: MemoryDurableStateStore = memory_store();
-    let (_fixture, signers, entries) = install_lightweight(&store);
+    let (fixture, signers, entries) = install_lightweight(&store);
     let (_next_signers, next_entries) = four_next_validators();
     let (certificate, _, _) =
         propose_vote_and_certify(&store, &signers, &entries, next_entries.clone());
     let certificate_bytes = consensus::encode_epoch_transition_certificate(&certificate).unwrap();
 
     // Activate against a *different* `next_validators` set than the
-    // certificate actually certified.
+    // certificate actually certified. Bonded too, so this reaches the
+    // activation-digest mismatch this test targets rather than failing
+    // earlier on next-set eligibility.
     let (_other_signers, other_next_entries) = {
         let (signers, entries) = validator_pair(221, 222);
         (signers, entries)
     };
+    install_bond_policy_and_bonds(&store, &fixture, &other_next_entries);
     let result = activate(
         &store,
         &pe_context(),
@@ -1436,10 +1831,57 @@ pub(crate) fn build_genesis_fixture(validators: Vec<FastPathValidatorEntry>) -> 
     let coin_auth: ObjectAuthority = ObjectAuthority {
         object_id: coin_id,
         instance_context: context.clone(),
-        instance: target,
+        instance: target.clone(),
         code: code_ref.clone(),
-        ty: coin_tag,
+        ty: coin_tag.clone(),
     };
+
+    // DR-0136 (revised): every genesis validator has exactly one genesis
+    // bond record, so this shared fixture -- reused across every validator
+    // set in this module -- must install one `BondCollateral` custody object
+    // per validator, not merely the plain address-owned objects above.
+    let mut objects: Vec<GenesisObjectEntry> = vec![
+        GenesisObjectEntry {
+            object: def_obj,
+            authority: def_auth,
+        },
+        GenesisObjectEntry {
+            object: coin_obj.clone(),
+            authority: coin_auth,
+        },
+    ];
+    for validator in &validators {
+        let mut bond_object_id_bytes: [u8; 32] = *validator.id.as_bytes();
+        bond_object_id_bytes[0] = 0x50;
+        let bond_object_id: ObjectId = ObjectId::new(bond_object_id_bytes);
+        let scope: ProtocolCustodyScope = ProtocolCustodyScope {
+            purpose: ProtocolCustodyPurpose::BondCollateral,
+            chain_id: chain(),
+            subject: *validator.id.as_bytes(),
+            resource,
+        };
+        objects.push(GenesisObjectEntry {
+            object: Object {
+                id: bond_object_id,
+                version: 1,
+                owner: Owner::ProtocolCustody(scope),
+                type_hash: coin_type_hash,
+                schema_version: public_standard_asset::SCHEMA_VERSION,
+                data: encode_call_value(
+                    &public_standard_asset::coin_body_layout(),
+                    &CallValue::U64(1_000_000),
+                )
+                .unwrap(),
+            },
+            authority: ObjectAuthority {
+                object_id: bond_object_id,
+                instance_context: context.clone(),
+                instance: target.clone(),
+                code: code_ref.clone(),
+                ty: coin_tag.clone(),
+            },
+        });
+    }
 
     let mut manifest: GenesisManifest = GenesisManifest {
         genesis_authority: genesis_authority(),
@@ -1447,16 +1889,7 @@ pub(crate) fn build_genesis_fixture(validators: Vec<FastPathValidatorEntry>) -> 
         initialization: signed_init,
         fee_policy: fee_policy.clone(),
         economics_policy,
-        objects: vec![
-            GenesisObjectEntry {
-                object: def_obj,
-                authority: def_auth,
-            },
-            GenesisObjectEntry {
-                object: coin_obj.clone(),
-                authority: coin_auth,
-            },
-        ],
+        objects,
         validator_set: FastPathValidatorSetRecord {
             context,
             validators,
@@ -1647,6 +2080,7 @@ fn four_validator_sqlite_epoch_transition_activates_and_certified_execution_cont
             outcome,
             GenesisInstallOutcome::FreshInstall { .. }
         ));
+        install_additional_bonds(&store, &context(1), domain(), &fixture, &next_entries);
     }
 
     // 2. A full DR-0130 prepare/apply cycle at `e` (baseline).
@@ -2066,6 +2500,95 @@ fn activate_one_transition<S: StructuredDurableDomainStateStore>(
     }
 }
 
+/// Installs one committed, eligible `Active` bond for each of `validators`
+/// against `fixture`'s own already-genesis-installed economics policy and
+/// resource -- for a "next" validator set introduced mid-chain that was
+/// never part of the original genesis validator set and therefore was never
+/// bonded by the genesis manifest itself. DR-0137 unit 3's pre-vote
+/// eligibility gate in `propose_and_vote` requires this for every next-set
+/// validator; idempotent across repeated calls.
+pub(crate) fn install_additional_bonds<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    op_context: &DurableOperationContext,
+    op_domain: AtomicityDomainId,
+    fixture: &GenesisFixture,
+    validators: &[FastPathValidatorEntry],
+) {
+    let resource_policy = &fixture.manifest.economics_policy.resources[0];
+    let resource_domain: u16 = resource_policy.resource_id.domain();
+    let resource: [u8; 32] = *resource_policy.resource_id.value();
+    let bond_context: PublicationContext = resource_policy.context.clone();
+    for validator in validators {
+        let bond_key: Vec<u8> =
+            local_instance_state::fastpath_bond_record_key(bond_context.chain_id(), &validator.id)
+                .unwrap();
+        let observed: VersionedStateValue = store
+            .get_versioned_durable(op_context, op_domain, &bond_key)
+            .unwrap();
+        if observed.value().is_some() {
+            continue;
+        }
+        let mut object_id_bytes: [u8; 32] = *validator.id.as_bytes();
+        object_id_bytes[0] = 0x70;
+        let object_id: ObjectId = ObjectId::new(object_id_bytes);
+        let authorization_key: [u8; 32] = validator
+            .public_key
+            .as_slice()
+            .try_into()
+            .expect("fixture validator key length");
+        let bond: FastPathBondRecord = FastPathBondRecord {
+            context: bond_context.clone(),
+            validator_id: validator.id,
+            resource_domain,
+            resource,
+            custody_object: ObjectRef {
+                id: object_id,
+                version: 1,
+                digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x71; 32]),
+            },
+            custody_object_epoch: bond_context.epoch(),
+            authority: ObjectAuthority {
+                object_id,
+                instance_context: bond_context.clone(),
+                instance: resource_policy.instance.clone(),
+                code: resource_policy.code.clone(),
+                ty: resource_policy.ty.clone(),
+            },
+            amount: 1_000_000,
+            committed_at_checkpoint: 0,
+            generation: 1,
+            lifecycle_epoch: bond_context.epoch(),
+            // Installed directly as a genesis-equivalent generation-1 bond:
+            // immediately liable, like a real genesis bond.
+            slashable_from_epoch: bond_context.epoch(),
+            required_minimum: 1,
+            state: FastPathBondState::Active,
+            authorization_scheme: validator.signature_scheme,
+            authorization_key,
+        };
+        let transaction = AtomicStateTransaction::new(
+            op_domain,
+            AtomicStateReadSet::new(vec![
+                StateReadAssertion::new(bond_key.clone(), observed.revision()).unwrap(),
+            ])
+            .unwrap(),
+            AtomicStateMutationSet::new(vec![
+                StateMutationEntry::new(
+                    bond_key,
+                    StateMutation::Put(encode_fastpath_bond_record(&bond).unwrap()),
+                )
+                .unwrap(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.commit_durable(op_context, transaction),
+            DurableCommitOutcome::Committed
+        );
+    }
+}
+
 /// A real genesis install immediately followed by one fully certified and
 /// activated `0 -> 1` transition, all on `store` -- the common starting
 /// point for every single-step restart-verify tamper test below.
@@ -2080,6 +2603,7 @@ fn install_and_activate_one_transition<S: StructuredDurableDomainStateStore>(
         outcome,
         GenesisInstallOutcome::FreshInstall { .. }
     ));
+    install_additional_bonds(store, &context(1), domain(), &fixture, &next_entries);
     let record = activate_one_transition(store, Epoch::new(0), &signers, &entries, next_entries);
     (fixture, record)
 }
@@ -2121,6 +2645,8 @@ fn build_two_step_transition_chain<S: StructuredDurableDomainStateStore>(
         outcome,
         GenesisInstallOutcome::FreshInstall { .. }
     ));
+    install_additional_bonds(store, &context(1), domain(), &fixture, &entries_1);
+    install_additional_bonds(store, &context(1), domain(), &fixture, &entries_2);
 
     let first = activate_one_transition(
         store,
@@ -2250,6 +2776,7 @@ fn restart_verify_rejects_a_stored_certificate_whose_payload_disagrees_with_its_
         outcome,
         GenesisInstallOutcome::FreshInstall { .. }
     ));
+    install_additional_bonds(&store, &context(1), domain(), &fixture, &next_entries);
     let record = activate_one_transition(&store, Epoch::new(0), &signers, &entries, next_entries);
 
     // A real, independently valid certificate for the same outgoing epoch
@@ -2261,6 +2788,7 @@ fn restart_verify_rejects_a_stored_certificate_whose_payload_disagrees_with_its_
         let (e, f) = validator(243);
         (vec![a, c, e], vec![b, d, f])
     };
+    install_additional_bonds(&store, &context(1), domain(), &fixture, &alternate_entries);
     let derived = derive_activation_set(
         &store,
         &context(1),
