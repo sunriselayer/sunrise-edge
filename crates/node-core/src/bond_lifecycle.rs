@@ -1201,9 +1201,21 @@ where
         snapshot,
         &admitted.effects,
     )?;
+    if !bond_cfg.enabled {
+        return Err(BondLifecycleError::Invalid(
+            "bond deposit resource is disabled",
+        ));
+    }
     if amount < bond_cfg.min_bond.get() {
         return Err(BondLifecycleError::Invalid(
             "bond deposit amount below the committed minimum",
+        ));
+    }
+    if let Some(max_validator_exposure) = bond_cfg.max_validator_exposure
+        && amount > max_validator_exposure.get()
+    {
+        return Err(BondLifecycleError::Invalid(
+            "bond deposit amount exceeds the committed max validator exposure",
         ));
     }
     let (mutation_entry, digest) = effects::build_mutation_entry(
@@ -1429,9 +1441,21 @@ where
         deposit_snapshot,
         &admitted_deposit.effects,
     )?;
+    if !bond_cfg.enabled {
+        return Err(BondLifecycleError::Invalid(
+            "bond replace resource is disabled",
+        ));
+    }
     if amount < bond_cfg.min_bond.get() {
         return Err(BondLifecycleError::Invalid(
             "bond replace amount below the committed minimum",
+        ));
+    }
+    if let Some(max_validator_exposure) = bond_cfg.max_validator_exposure
+        && amount > max_validator_exposure.get()
+    {
+        return Err(BondLifecycleError::Invalid(
+            "bond replace amount exceeds the committed max validator exposure",
         ));
     }
     let release_owner_before: Owner = Owner::ProtocolCustody(release_scope);
