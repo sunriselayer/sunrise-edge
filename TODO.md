@@ -3193,6 +3193,13 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
       - [ ] historical-validator-signed zero/partial/final claims through the
         policy-pinned public `split`/`transfer` ABI, duplicate-claim CAS race,
         SQLite close/reopen and indeterminate-commit evidence;
+      - [ ] outstanding `FeeEscrow` claims across a protocol-version activation:
+        current local-execution admission rejects cross-version code, so the
+        version transition must either preserve an executable claim path or
+        fail activation while any claimable escrow remains; prove the chosen
+        rule across restart instead of silently stranding historical shares;
+      - [ ] bound or measure worst-case mutable claim-row rewrite cost at the
+        admitted validator-set size before claiming testnet capacity;
       - [ ] Phase 3 review gate.
 
   **Remaining Phase 3 completion:** execute and atomically finalize the

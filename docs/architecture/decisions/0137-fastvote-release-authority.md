@@ -369,6 +369,15 @@ positive shares determine the remaining custodial value. After the final
 positive transfer, the row retains the exact recipient-owned output ref as
 audit evidence; any remaining zero-share claims only advance the row.
 
+The current typed local-execution admission rejects an invocation that crosses
+the pinned code's protocol-version boundary. Until that boundary gains a
+verified historical execution/migration rule, outstanding fee shares must not
+be described as claimable after a protocol-version activation. The Phase 3
+completion gate in `TODO.md` requires an explicit, restart-tested resolution;
+an epoch transition without a protocol-version change does not have this
+problem. The bounded row also entails a full rewrite per claim, so its
+worst-case validator-count cost needs an explicit capacity decision.
+
 ### Implementation order
 
 1. make bond policy resource-generic; add strict economics policy and lifecycle
