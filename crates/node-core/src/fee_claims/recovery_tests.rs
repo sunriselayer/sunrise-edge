@@ -14,7 +14,8 @@ use runtime::{
 };
 use runtime_sqlite::{SqliteDurableStore, SqliteNamespace};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 struct ZeroClaimFixture {
     row_key: Vec<u8>,
@@ -173,9 +174,35 @@ fn submit_zero<S: StructuredDurableDomainStateStore>(
 }
 
 enum InterceptMode {
-    Barrier(Arc<Barrier>),
+    CommitGate(Arc<CommitGate>),
     PersistThenAmbiguous(AtomicBool),
     RejectAmbiguously(AtomicBool),
+}
+
+/// Rendezvous after both requests have read generation 1. Timeout converts
+/// pre-commit regressions into test failures instead of hanging CI forever.
+struct CommitGate {
+    arrived: Mutex<u8>,
+    ready: Condvar,
+}
+
+impl CommitGate {
+    fn wait_for_both(&self) {
+        let mut arrived: std::sync::MutexGuard<'_, u8> = self.arrived.lock().unwrap();
+        *arrived += 1;
+        if *arrived == 2 {
+            self.ready.notify_all();
+            return;
+        }
+        let (_arrived, wait): (std::sync::MutexGuard<'_, u8>, std::sync::WaitTimeoutResult) = self
+            .ready
+            .wait_timeout_while(arrived, Duration::from_secs(10), |count| *count < 2)
+            .unwrap();
+        assert!(
+            !wait.timed_out(),
+            "second claim never reached the commit boundary"
+        );
+    }
 }
 
 struct InterceptStore<S> {
@@ -238,8 +265,8 @@ impl<S: StructuredDurableDomainStateStore> StructuredDurableDomainStateStore for
         transaction: DurableInvocationTransaction,
     ) -> DurableCommitOutcome {
         match &self.mode {
-            InterceptMode::Barrier(barrier) => {
-                barrier.wait();
+            InterceptMode::CommitGate(gate) => {
+                gate.wait_for_both();
                 self.inner.commit_invocation(context, transaction)
             }
             InterceptMode::PersistThenAmbiguous(armed) if armed.swap(false, Ordering::SeqCst) => {
@@ -336,25 +363,40 @@ fn file_backed_sqlite_competing_claim_writers_commit_one_generation_once() {
             SqliteDurableStore::open(&db_path, namespace.clone(), fence).unwrap();
         zero_claim_fixture(&setup)
     };
-    let barrier: Arc<Barrier> = Arc::new(Barrier::new(2));
+    let gate: Arc<CommitGate> = Arc::new(CommitGate {
+        arrived: Mutex::new(0),
+        ready: Condvar::new(),
+    });
     let writer_a: InterceptStore<SqliteDurableStore> = InterceptStore {
         inner: SqliteDurableStore::open(&db_path, namespace.clone(), fence).unwrap(),
-        mode: InterceptMode::Barrier(Arc::clone(&barrier)),
+        mode: InterceptMode::CommitGate(Arc::clone(&gate)),
     };
     let writer_b: InterceptStore<SqliteDurableStore> = InterceptStore {
         inner: SqliteDurableStore::open(&db_path, namespace.clone(), fence).unwrap(),
-        mode: InterceptMode::Barrier(barrier),
+        mode: InterceptMode::CommitGate(gate),
     };
     let signed_a: Vec<u8> = fixture.signed_a.clone();
     let signed_b: Vec<u8> = fixture.signed_b.clone();
-    let (result_a, result_b): (bool, bool) = std::thread::scope(|scope| {
-        let a = scope.spawn(move || submit_zero(&writer_a, &signed_a).is_ok());
-        let b = scope.spawn(move || submit_zero(&writer_b, &signed_b).is_ok());
+    // SQLite is normally single-writer; two handles deliberately exercise
+    // the durable CAS collision, not an operational HA/failover path.
+    let (result_a, result_b): (
+        Result<NodeOutput, FeeClaimError>,
+        Result<NodeOutput, FeeClaimError>,
+    ) = std::thread::scope(|scope| {
+        let a = scope.spawn(move || submit_zero(&writer_a, &signed_a));
+        let b = scope.spawn(move || submit_zero(&writer_b, &signed_b));
         (a.join().unwrap(), b.join().unwrap())
     });
-    assert_ne!(
-        result_a, result_b,
-        "exactly one generation-1 claim must win"
+    let a_won: bool = result_a.is_ok();
+    let b_won: bool = result_b.is_ok();
+    assert_ne!(a_won, b_won, "exactly one generation-1 claim must win");
+    let loser: &Result<NodeOutput, FeeClaimError> = if a_won { &result_b } else { &result_a };
+    assert!(
+        matches!(
+            loser,
+            Err(FeeClaimError::Node(NodeCoreError::StateConflict))
+        ),
+        "the losing commit must reject its stale generation CAS assertion: {loser:?}"
     );
 
     let reopened: SqliteDurableStore =
@@ -364,7 +406,7 @@ fn file_backed_sqlite_competing_claim_writers_commit_one_generation_once() {
         .unwrap();
     assert_eq!(row.value(), Some(fixture.next_row_bytes.as_slice()));
     assert_eq!(row.revision(), StateRevision::new(2));
-    let winning_bytes: &[u8] = if result_a {
+    let winning_bytes: &[u8] = if a_won {
         &fixture.signed_a
     } else {
         &fixture.signed_b
@@ -390,7 +432,7 @@ fn file_backed_sqlite_competing_claim_writers_commit_one_generation_once() {
             DurableRequestId::new(fixture.request_b).unwrap(),
         )
         .unwrap();
-    assert_eq!(receipt_a.is_some(), result_a);
-    assert_eq!(receipt_b.is_some(), result_b);
+    assert_eq!(receipt_a.is_some(), a_won);
+    assert_eq!(receipt_b.is_some(), b_won);
     std::fs::remove_dir_all(&directory).unwrap();
 }

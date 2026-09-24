@@ -151,6 +151,44 @@ fn accepted(
 }
 
 #[test]
+fn escrow_value_must_equal_the_settlement_rows_unclaimed_positive_total() {
+    let f: Fixture = fixture();
+    let baseline: ExecutionEffects = final_effect(&f);
+    let mut row_derived: ExpectedFeeClaim<'_> = expected(&f, 1_000_000);
+    row_derived.unclaimed_before = 999_999;
+    assert!(matches!(
+        validate(
+            &f.interface,
+            &[],
+            &row_derived,
+            4,
+            &f.snapshot,
+            &baseline,
+            true,
+        ),
+        Err(FeeClaimError::Invalid(
+            "fee claim escrow value does not equal the unclaimed positive share total"
+        ))
+    ));
+    let (split, authorities): (ExecutionEffects, Vec<CreatedObjectAuthority>) = split_effect(&f);
+    row_derived.claim_amount = 400_000;
+    assert!(matches!(
+        validate(
+            &f.interface,
+            &authorities,
+            &row_derived,
+            4,
+            &f.snapshot,
+            &split,
+            false,
+        ),
+        Err(FeeClaimError::Invalid(
+            "fee claim escrow value does not equal the unclaimed positive share total"
+        ))
+    ));
+}
+
+#[test]
 fn final_effect_rejects_adversarial_shapes() {
     let f: Fixture = fixture();
     let baseline: ExecutionEffects = final_effect(&f);
