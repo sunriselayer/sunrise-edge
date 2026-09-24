@@ -185,6 +185,23 @@ pub fn fastpath_settlement_key(
     Ok(key)
 }
 
+/// Permanent signed fee-claim envelope for one escrow row generation. The
+/// escrow request id scopes the chain; the post-claim generation gives each
+/// successful claim its own never-overwritten audit key.
+pub fn fastpath_fee_claim_key(
+    chain: &ChainId,
+    escrow_request_id: &[u8; 32],
+    generation: u64,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"fee-claim/");
+    key.extend(encode_chain_id(chain)?);
+    key.extend_from_slice(escrow_request_id);
+    key.extend_from_slice(&generation.to_be_bytes());
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
 /// One DR-0136 typed bond commitment for a validator. The chain and
 /// validator identify the single active bond row; the row itself binds the
 /// resource and exact custody object. A second genesis custody object for the
@@ -807,5 +824,16 @@ mod tests {
         assert_ne!(key, paid_fee_policy_key(&context).unwrap());
         assert_ne!(key, fastpath_validator_set_key(&context).unwrap());
         assert!(is_reserved(&key));
+    }
+
+    #[test]
+    fn fee_claim_audit_key_is_reserved_and_generation_scoped() {
+        let chain: ChainId = ChainId::new("fee-claim-audit").unwrap();
+        let request: [u8; 32] = [0x71; 32];
+        let key: Vec<u8> = fastpath_fee_claim_key(&chain, &request, 2).unwrap();
+        assert!(is_reserved(&key));
+        assert_ne!(key, fastpath_fee_claim_key(&chain, &request, 3).unwrap());
+        assert_ne!(key, fastpath_fee_claim_key(&chain, &[0x72; 32], 2).unwrap());
+        assert_ne!(key, fastpath_settlement_key(&chain, &request).unwrap());
     }
 }
