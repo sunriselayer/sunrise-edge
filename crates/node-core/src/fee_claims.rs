@@ -843,7 +843,7 @@ fn commit<S: StructuredDurableDomainStateStore>(
     )?;
     let claim_observed: VersionedStateValue =
         store.get_versioned_durable(context, domain, &claim_key)?;
-    if claim_observed.value().is_some() {
+    if claim_observed.revision() != StateRevision::INITIAL || claim_observed.value().is_some() {
         return Err(FeeClaimError::Invalid(
             "fee claim generation already recorded",
         ));
