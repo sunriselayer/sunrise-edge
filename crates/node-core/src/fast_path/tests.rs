@@ -1244,6 +1244,22 @@ fn four_validator_sqlite_restart_e2e_derives_identical_votes_and_replays_prepare
         assert_eq!(history_report.final_generation, 1);
         assert_eq!(history_report.verified_claims, 0);
         assert_eq!(history_report.verified_positive_claims, 0);
+        let inventory: crate::fee_claims::FeeEscrowInventoryPage =
+            crate::fee_claims::verify_fee_escrow_inventory_page(
+                &store,
+                &blob_store,
+                &context(),
+                domain(),
+                &resolver(),
+                &[],
+                protocol().chain_id(),
+                None,
+                std::num::NonZeroUsize::new(1).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(inventory.verified_rows, 1);
+        assert_eq!(inventory.verified_claims, 0);
+        assert_eq!(inventory.continuation_cursor, None);
         let replay_engine: CountingEngine = CountingEngine::new();
         let replayed_output: NodeOutput = apply(
             &store,
@@ -1289,6 +1305,20 @@ fn four_validator_sqlite_restart_e2e_derives_identical_votes_and_replays_prepare
                 &[],
                 protocol().chain_id(),
                 &request_id,
+            )
+            .is_err()
+        );
+        assert!(
+            crate::fee_claims::verify_fee_escrow_inventory_page(
+                &store,
+                &blob_store,
+                &context(),
+                domain(),
+                &resolver(),
+                &[],
+                protocol().chain_id(),
+                None,
+                std::num::NonZeroUsize::new(1).unwrap(),
             )
             .is_err()
         );

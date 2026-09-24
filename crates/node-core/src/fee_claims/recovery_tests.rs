@@ -727,7 +727,10 @@ fn positive_claim_fixture<S: StructuredDurableDomainStateStore>(store: &S) -> Po
             .unwrap(),
             share_amount,
             recipient,
-            operation: FeeClaimOperation::Split { leg },
+            operation: FeeClaimOperation::Split {
+                leg,
+                expected_payout: Some(object_ref(&payout)),
+            },
         };
         let digest: Digest32 = fee_claim_intent_digest(&resolver, &intent).unwrap();
         let frame: Vec<u8> = fee_claim_signing_frame(&intent.context, digest).unwrap();
@@ -778,6 +781,72 @@ fn positive_claim_fixture<S: StructuredDurableDomainStateStore>(store: &S) -> Po
         payout_id_b,
         payout_bytes_a,
         payout_bytes_b,
+    }
+}
+
+#[test]
+fn signed_split_payout_mismatch_and_legacy_split_leave_state_unchanged() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let fixture: PositiveClaimFixture = positive_claim_fixture(&store);
+    let original_row: VersionedStateValue = store
+        .get_versioned_durable(&context(1), domain(), &fixture.row_key)
+        .unwrap();
+    let original_head: DurableObjectHead = store
+        .get_object_head(&context(1), domain(), fixture.coin_id)
+        .unwrap();
+
+    for legacy in [false, true] {
+        let mut signed: SignedFeeClaimIntent =
+            codec::decode_signed_fee_claim_intent(&fixture.signed_a).unwrap();
+        let FeeClaimOperation::Split {
+            expected_payout, ..
+        } = &mut signed.intent.operation
+        else {
+            panic!("split fixture");
+        };
+        if legacy {
+            *expected_payout = None;
+        } else {
+            expected_payout.as_mut().unwrap().digest =
+                Digest32::new(HashAlgorithmId::Sha2_256, [0x44; 32]);
+        }
+        let digest: Digest32 = fee_claim_intent_digest(&resolver(), &signed.intent).unwrap();
+        let frame: Vec<u8> = fee_claim_signing_frame(&signed.intent.context, digest).unwrap();
+        signed.signature = key().sign(&frame).into();
+        let bytes: Vec<u8> = codec::encode_signed_fee_claim_intent(&signed).unwrap();
+        let expected_message: &'static str = if legacy {
+            "legacy split payout is not signed"
+        } else {
+            "signed payout ref mismatch"
+        };
+        assert!(matches!(
+            submit_claim(&store, &bytes),
+            Err(FeeClaimError::Invalid(message)) if message == expected_message
+        ));
+        assert_eq!(
+            store
+                .get_versioned_durable(&context(1), domain(), &fixture.row_key)
+                .unwrap(),
+            original_row
+        );
+        assert_eq!(
+            store
+                .get_object_head(&context(1), domain(), fixture.coin_id)
+                .unwrap(),
+            original_head
+        );
+        assert_object_absent(&store, fixture.payout_id_a);
+        assert!(
+            store
+                .get_request_receipt(
+                    &context(1),
+                    domain(),
+                    DurableRequestId::new(fixture.request_a).unwrap(),
+                )
+                .unwrap()
+                .is_none()
+        );
     }
 }
 
@@ -970,17 +1039,77 @@ fn file_backed_sqlite_positive_claim_competing_writers_commit_one_generation_onc
             .expect("committed economics policy"),
     )
     .unwrap();
-    verify_retained_claim_legs(
+    let resource: &FastPathEconomicsResourcePolicy = &economics.resources[0];
+    let instance: execution::local_execution::InstanceRecord =
+        local_execution::query_local_instance(
+            &reopened,
+            &context(1),
+            domain(),
+            &resolver(),
+            &[],
+            &chain(),
+            resource.instance.creator,
+            resource.instance.seed,
+        )
+        .unwrap()
+        .unwrap();
+    let loaded: publication::VerifiedDurablePublication = publication::load_verified_publication(
         &reopened,
         &context(1),
         domain(),
         &resolver(),
-        &economics.resources[0],
-        &protocol(),
-        &winning_claim.intent.escrow_request_id,
-        2,
+        &[],
+        resource.code.origin(),
+    )
+    .unwrap()
+    .unwrap();
+    let verify_payout = || -> Result<u64, FeeClaimError> {
+        verify_retained_claim_legs(
+            &reopened,
+            &MemoryBlobStore::default(),
+            &context(1),
+            domain(),
+            &resolver(),
+            &[],
+            resource,
+            &instance,
+            &loaded.interface,
+            &protocol(),
+            &winning_claim.intent.escrow_request_id,
+            2,
+        )
+    };
+    let verified_payouts: u64 = verify_payout().unwrap();
+    assert_eq!(verified_payouts, 1);
+    let payout_authority_key: Vec<u8> =
+        local_instance_state::object_authority_key(winning_payout_id);
+    let payout_authority: VersionedStateValue = reopened
+        .get_versioned_durable(&context(1), domain(), &payout_authority_key)
+        .unwrap();
+    assert!(payout_authority.value().is_some());
+    let delete_authority: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(payout_authority_key.clone(), payout_authority.revision())
+                .unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(payout_authority_key, StateMutation::Delete).unwrap(),
+        ])
+        .unwrap(),
     )
     .unwrap();
+    assert_eq!(
+        reopened.commit_durable(&context(1), delete_authority),
+        DurableCommitOutcome::Committed
+    );
+    assert!(matches!(
+        verify_payout(),
+        Err(FeeClaimError::Invalid(
+            "fee claim object authority tombstoned"
+        ))
+    ));
     std::fs::remove_dir_all(&directory).unwrap();
 }
 

@@ -6,9 +6,20 @@ use crate::fast_path::records::encode_fastpath_settlement_record;
 use crate::fee_claims::codec::{self, FeeClaimIntent, FeeClaimOperation, SignedFeeClaimIntent};
 use crate::fee_claims::{fee_claim_intent_digest, fee_claim_signing_frame, handle_fee_claim};
 use crate::local_instance_state::fastpath_fee_claim_key;
+use abi::AccessManifest;
+use abi::call_values::{CallValue, encode_call_value};
 use execution::LocalWasmExecutionEngine;
+use execution::call::CallIntent;
+use execution::local_execution::{
+    LocalExecutionIntent, LocalExecutionMode, ObjectAuthority, SignedLocalExecutionIntent,
+    derive_local_created_object_id, encode_signed_local_execution, instance_target,
+    local_execution_event_digest, local_execution_signing_frame,
+};
 use protocol_types::{HashAlgorithmId, ValidatorId};
-use runtime::{DurableDomainStateStore, MemoryBlobStore, WriterFenceGeneration};
+use runtime::{
+    DurableDomainStateStore, DurableObjectProvenance, DurableObjectRoutingProjection,
+    MemoryBlobStore, WriterFenceGeneration,
+};
 use runtime_sqlite::{SqliteDurableStore, SqliteNamespace};
 use std::time::{Duration, Instant};
 use validator_set::ValidatorInfo;
@@ -415,6 +426,695 @@ fn file_backed_sqlite_concurrent_zero_share_claims_measure_retained_bytes_and_re
 
     eprintln!(
         "fee-claim capacity: escrows={ESCROWS}, writers={WRITERS}, concurrent_commit_latency={concurrent_elapsed:?}, reopen_and_read_latency={reopen_elapsed:?}, measured_retained_claim_envelope_bytes={measured_claim_bytes}, measured_retained_settlement_row_bytes={measured_row_bytes}"
+    );
+
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// One synthetic escrow row backing a real object-mutating positive claim
+/// (`Split` or `FinalTransfer`), durably set up in a real file-backed
+/// [`SqliteDurableStore`]. Unlike [`CapacityEscrow`] (zero-share, no object
+/// or nonce I/O), each of these routes through the real Standard Asset WASM
+/// `split`/`transfer` entrypoints via [`handle_fee_claim`], so every escrow
+/// carries its own distinct escrow coin object and its own distinct claim
+/// sender/nonce identity -- reusing one shared sender across escrows would
+/// serialize them on that sender's nonce sequence instead of exercising
+/// genuinely independent concurrent writers.
+struct PositiveCapacityEscrow {
+    row_key: Vec<u8>,
+    claim_key: Vec<u8>,
+    claim_request_id: [u8; 32],
+    signed: Vec<u8>,
+    next_row_bytes: Vec<u8>,
+    escrow_id: ObjectId,
+    escrow_expected_version: u64,
+    escrow_expected_bytes: Vec<u8>,
+    /// `Some` only for a `Split` escrow: the newly created recipient-owned
+    /// payout object distinct from the retained escrow. A `FinalTransfer`
+    /// escrow instead turns the escrow object itself into the payout (same
+    /// id, next version, owner now the recipient), so it has none.
+    payout: Option<(ObjectId, Vec<u8>)>,
+}
+
+struct ExpectedPositiveObjects {
+    escrow_bytes: Vec<u8>,
+    escrow_version: u64,
+    payout: Option<(ObjectId, Vec<u8>)>,
+}
+
+/// Duplicated from `fee_claims::recovery_tests::object_ref` rather than
+/// shared across module boundaries, mirroring this file's existing,
+/// deliberate duplication of `fee_claim_row_digest`'s two-line hash above.
+fn positive_capacity_object_ref(object: &Object) -> ObjectRef {
+    let bytes: Vec<u8> = objects::encode_object(object).unwrap();
+    ObjectRef {
+        id: object.id,
+        version: object.version,
+        digest: crate::genesis::tests::resolver()
+            .hash_for_purpose(
+                crate::genesis::tests::protocol().epoch(),
+                HashPurpose::Object,
+                &bytes,
+            )
+            .unwrap(),
+    }
+}
+
+/// Moves genesis coin object `coin_id` (already installed, `Address`-owned,
+/// version 1, value `total_amount`) into `FeeEscrow` custody keyed on its
+/// own distinct `escrow_request_id`, records its generation-1 settlement
+/// row, then builds and signs the generation-2 positive claim envelope
+/// (`Split` when `is_final` is false, `FinalTransfer` when true) that a
+/// later real [`handle_fee_claim`] call finalizes. Mirrors
+/// `fee_claims::recovery_tests::positive_claim_fixture`'s single-escrow
+/// construction, generalized to one of several independent escrows.
+#[allow(clippy::too_many_arguments)]
+fn build_positive_capacity_escrow<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    def_id: ObjectId,
+    instance: &execution::local_execution::InstanceRecord,
+    coin_template: &GenesisObjectEntry,
+    coin_id: ObjectId,
+    resource_id: BondResourceId,
+    validator_a: ValidatorId,
+    validator_a_key: &ed25519_zebra::SigningKey,
+    second_validator: ValidatorId,
+    index: u32,
+    is_final: bool,
+) -> PositiveCapacityEscrow {
+    let resolver: HashSuiteResolver = crate::genesis::tests::resolver();
+    let chain_id: ChainId = crate::genesis::tests::chain();
+    let op_context: DurableOperationContext = crate::genesis::tests::context(1);
+    let atomic_domain: AtomicityDomainId = crate::genesis::tests::domain();
+    let publication: PublicationContext = crate::genesis::tests::protocol();
+    let policy: LocalExecutionPolicy =
+        LocalExecutionPolicy::generic_object_results(publication.clone());
+    let total_amount: u64 = 1_000_000;
+
+    let mut escrow_request_id: [u8; 32] = [0xe2; 32];
+    escrow_request_id[28..].copy_from_slice(&index.to_be_bytes());
+
+    let scope: objects::ProtocolCustodyScope = objects::ProtocolCustodyScope {
+        purpose: objects::ProtocolCustodyPurpose::FeeEscrow,
+        chain_id: chain_id.clone(),
+        subject: escrow_request_id,
+        resource: *resource_id.value(),
+    };
+    let escrow: Object = Object {
+        id: coin_id,
+        version: 2,
+        owner: Owner::ProtocolCustody(scope),
+        type_hash: coin_template.object.type_hash,
+        schema_version: coin_template.object.schema_version,
+        data: encode_call_value(
+            &public_standard_asset::coin_body_layout(),
+            &CallValue::U64(total_amount),
+        )
+        .unwrap(),
+    };
+    let escrow_ref: ObjectRef = positive_capacity_object_ref(&escrow);
+    let version: DurableObjectVersionRecord = DurableObjectVersionRecord::from_inline_object(
+        escrow.clone(),
+        escrow_ref.digest,
+        DurableObjectProvenance::new(chain_id.clone(), publication.protocol_version()),
+        11,
+    )
+    .unwrap();
+    let changes: DurableObjectChanges = DurableObjectChanges::new(
+        vec![DurableObjectHeadRead::new(
+            coin_id,
+            store
+                .get_object_head(&op_context, atomic_domain, coin_id)
+                .unwrap(),
+        )],
+        vec![DurableObjectMutationEntry::new(
+            coin_id,
+            DurableObjectMutation::Update {
+                version,
+                owner_projection: DurableObjectOwnerProjection::from_owner(escrow.owner.clone())
+                    .unwrap(),
+                routing_projection: DurableObjectRoutingProjection::default(),
+            },
+        )],
+    )
+    .unwrap();
+    let mut setup_request_id: [u8; 32] = [0xe4; 32];
+    setup_request_id[28..].copy_from_slice(&index.to_be_bytes());
+    let setup_receipt: DurableRequestReceipt = DurableRequestReceipt::new(
+        DurableRequestId::new(setup_request_id).unwrap(),
+        Digest32::new(HashAlgorithmId::Sha2_256, setup_request_id),
+        vec![0xe4],
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_invocation(
+            &op_context,
+            DurableInvocationTransaction::new(atomic_domain, None, changes, setup_receipt, None)
+                .unwrap(),
+        ),
+        DurableCommitOutcome::Committed
+    );
+
+    let share_a: u64 = if is_final { total_amount } else { 300_000 };
+    let mut shares: Vec<FastPathFeeShare> = vec![FastPathFeeShare {
+        validator_id: validator_a,
+        amount: share_a,
+        claimed: false,
+    }];
+    if !is_final {
+        shares.push(FastPathFeeShare {
+            validator_id: second_validator,
+            amount: total_amount - share_a,
+            claimed: false,
+        });
+    }
+    shares.sort_by_key(|share| share.validator_id);
+    let row: FastPathSettlementRecord = FastPathSettlementRecord {
+        context: publication.clone(),
+        request_id: escrow_request_id,
+        generation: 1,
+        resource_id: Some(resource_id),
+        fee_output: Some(escrow_ref.clone()),
+        fee_output_epoch: Some(publication.epoch()),
+        total_amount: Some(total_amount),
+        shares,
+    };
+    let row_key: Vec<u8> = fastpath_settlement_key(&chain_id, &escrow_request_id).unwrap();
+    let row_bytes: Vec<u8> = encode_fastpath_settlement_record(&row).unwrap();
+    let setup_row: AtomicStateTransaction = AtomicStateTransaction::new(
+        atomic_domain,
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(row_key.clone(), StateRevision::INITIAL).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(row_key.clone(), StateMutation::Put(row_bytes.clone()))
+                .unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&op_context, setup_row),
+        DurableCommitOutcome::Committed
+    );
+
+    let mut recipient_seed: [u8; 32] = [0xe6; 32];
+    recipient_seed[28..].copy_from_slice(&index.to_be_bytes());
+    let recipient: Address = Address::new(
+        ed25519_zebra::VerificationKey::from(&ed25519_zebra::SigningKey::from(recipient_seed))
+            .into(),
+    );
+
+    let mut call_sender_seed: [u8; 32] = [0xe5; 32];
+    call_sender_seed[28..].copy_from_slice(&index.to_be_bytes());
+    let call_sender_key: ed25519_zebra::SigningKey =
+        ed25519_zebra::SigningKey::from(call_sender_seed);
+    let call_sender: [u8; 32] = ed25519_zebra::VerificationKey::from(&call_sender_key).into();
+
+    let mut claim_request_id: [u8; 32] = [0xe3; 32];
+    claim_request_id[28..].copy_from_slice(&index.to_be_bytes());
+
+    let entrypoint: &str = if is_final { "transfer" } else { "split" };
+    let arguments: Vec<u8> = if is_final {
+        public_standard_asset::transfer_arguments(recipient.as_bytes()).unwrap()
+    } else {
+        public_standard_asset::split_arguments(share_a, recipient.as_bytes()).unwrap()
+    };
+    let instance_target: execution::call::InstanceTarget =
+        instance_target(&resolver, instance).unwrap();
+    let call: CallIntent = CallIntent {
+        context: publication.clone(),
+        request_id: claim_request_id,
+        sender: call_sender,
+        nonce: 0,
+        code: instance.code.clone(),
+        instance: instance_target.clone(),
+        entrypoint: entrypoint.to_owned(),
+        type_arguments: vec![public_standard_asset::asset_type_argument(&def_id)],
+        access: AccessManifest {
+            entries: vec![AccessEntry {
+                object_ref: escrow_ref.clone(),
+                mode: AccessMode::Write,
+            }],
+        },
+        arguments,
+        gas_limit: 500_000,
+    };
+    let leg_intent: LocalExecutionIntent = LocalExecutionIntent {
+        mode: LocalExecutionMode::Call,
+        policy_digest: policy.digest(&resolver).unwrap(),
+        call,
+        authorizations: Vec::new(),
+    };
+    let leg_frame: Vec<u8> = local_execution_signing_frame(&publication, &leg_intent).unwrap();
+    let signed_leg: SignedLocalExecutionIntent = SignedLocalExecutionIntent {
+        signature: call_sender_key.sign(&leg_frame).into(),
+        intent: leg_intent,
+    };
+    let leg: Vec<u8> = encode_signed_local_execution(&signed_leg).unwrap();
+
+    let mut next_row: FastPathSettlementRecord = row.clone();
+    next_row.generation = 2;
+    next_row
+        .shares
+        .iter_mut()
+        .find(|share| share.validator_id == validator_a)
+        .unwrap()
+        .claimed = true;
+
+    let expected_objects: ExpectedPositiveObjects = if is_final {
+        let mut transferred: Object = escrow.clone();
+        transferred.version += 1;
+        transferred.owner = Owner::Address(recipient);
+        next_row.fee_output = Some(positive_capacity_object_ref(&transferred));
+        ExpectedPositiveObjects {
+            escrow_bytes: objects::encode_object(&transferred).unwrap(),
+            escrow_version: transferred.version,
+            payout: None,
+        }
+    } else {
+        let mut retained: Object = escrow.clone();
+        retained.version += 1;
+        retained.data = encode_call_value(
+            &public_standard_asset::coin_body_layout(),
+            &CallValue::U64(total_amount - share_a),
+        )
+        .unwrap();
+        next_row.fee_output = Some(positive_capacity_object_ref(&retained));
+
+        let leg_digest: Digest32 = local_execution_event_digest(&resolver, &signed_leg).unwrap();
+        let payout_id: ObjectId = derive_local_created_object_id(
+            &resolver,
+            &publication,
+            &instance.context,
+            &instance_target,
+            &instance.code,
+            leg_digest,
+            0,
+        )
+        .unwrap();
+        let payout: Object = Object {
+            id: payout_id,
+            version: 1,
+            owner: Owner::Address(recipient),
+            type_hash: escrow.type_hash,
+            schema_version: escrow.schema_version,
+            data: encode_call_value(
+                &public_standard_asset::coin_body_layout(),
+                &CallValue::U64(share_a),
+            )
+            .unwrap(),
+        };
+        ExpectedPositiveObjects {
+            escrow_bytes: objects::encode_object(&retained).unwrap(),
+            escrow_version: retained.version,
+            payout: Some((payout_id, objects::encode_object(&payout).unwrap())),
+        }
+    };
+    let next_row_bytes: Vec<u8> = encode_fastpath_settlement_record(&next_row).unwrap();
+
+    let previous_digest: Digest32 = resolver
+        .hash_for_purpose(
+            publication.epoch(),
+            HashPurpose::ExecutionEffects,
+            &row_bytes,
+        )
+        .unwrap();
+    let next_digest: Digest32 = resolver
+        .hash_for_purpose(
+            publication.epoch(),
+            HashPurpose::ExecutionEffects,
+            &next_row_bytes,
+        )
+        .unwrap();
+
+    let operation: FeeClaimOperation = if is_final {
+        FeeClaimOperation::FinalTransfer { leg }
+    } else {
+        let (payout_id, payout_bytes): &(ObjectId, Vec<u8>) = expected_objects
+            .payout
+            .as_ref()
+            .expect("split payout fixture");
+        FeeClaimOperation::Split {
+            leg,
+            expected_payout: Some(ObjectRef {
+                id: *payout_id,
+                version: 1,
+                digest: resolver
+                    .hash_for_purpose(publication.epoch(), HashPurpose::Object, payout_bytes)
+                    .unwrap(),
+            }),
+        }
+    };
+    let intent: FeeClaimIntent = FeeClaimIntent {
+        context: publication.clone(),
+        request_id: claim_request_id,
+        escrow_request_id,
+        certificate_epoch: publication.epoch(),
+        validator_id: validator_a,
+        resource_id,
+        expected_generation: 1,
+        expected_fee_output: escrow_ref,
+        expected_previous_row_digest: previous_digest,
+        expected_next_row_digest: next_digest,
+        share_amount: share_a,
+        recipient,
+        operation,
+    };
+    let digest: Digest32 = fee_claim_intent_digest(&resolver, &intent).unwrap();
+    let frame: Vec<u8> = fee_claim_signing_frame(&intent.context, digest).unwrap();
+    let signed: Vec<u8> = codec::encode_signed_fee_claim_intent(&SignedFeeClaimIntent {
+        signature: validator_a_key.sign(&frame).into(),
+        intent,
+    })
+    .unwrap();
+
+    PositiveCapacityEscrow {
+        row_key,
+        claim_key: fastpath_fee_claim_key(&chain_id, &escrow_request_id, 2).unwrap(),
+        claim_request_id,
+        signed,
+        next_row_bytes,
+        escrow_id: coin_id,
+        escrow_expected_version: expected_objects.escrow_version,
+        escrow_expected_bytes: expected_objects.escrow_bytes,
+        payout: expected_objects.payout,
+    }
+}
+
+/// DR-0138 capacity evidence for the *positive* (object-mutating) fee-claim
+/// path, complementing the zero-share capacity test above: several distinct
+/// escrows, half finalized through `split` and half through `transfer`,
+/// each a real Standard Asset WASM call driven through the real
+/// `handle_fee_claim` pipeline by several concurrent writer connections
+/// against one real file-backed SQLite database, then a real close/reopen
+/// that reads every settlement row, claim envelope, escrow/payout object
+/// and outer receipt back. Rows and escrow objects are set up directly
+/// (mutating genesis-installed objects, not through certificate apply); the
+/// measured logical byte counts are retained value payloads, while the
+/// physical SQLite/WAL byte counts are the actual on-disk file sizes at
+/// each phase. This remains one process on one disk in one run: a bounded
+/// local diagnostic harness, not a network throughput or durability
+/// certification.
+#[test]
+fn file_backed_sqlite_concurrent_positive_claims_measure_retained_bytes_and_physical_footprint() {
+    const ESCROWS: u32 = 12;
+    const WRITERS: usize = 3;
+    assert_eq!(
+        ESCROWS as usize % WRITERS,
+        0,
+        "evenly shardable escrow count"
+    );
+
+    let unique: u128 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory: std::path::PathBuf = std::env::temp_dir().join(format!(
+        "fee-claim-positive-capacity-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let db_path: std::path::PathBuf = directory.join("state.sqlite");
+    let namespace: SqliteNamespace = SqliteNamespace::new(
+        crate::genesis::tests::chain(),
+        ValidatorId::new([0xe9; 32]),
+        crate::genesis::tests::domain(),
+    );
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+    let file_bytes = |suffix: &str| -> u64 {
+        std::fs::metadata(format!("{}{suffix}", db_path.display()))
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
+    };
+
+    let (_base_manifest, _origin, instance, def_id, _coin_id) =
+        crate::genesis::tests::build_fixture();
+    let mut manifest: GenesisManifest =
+        crate::genesis::tests::manifest_with_custody(ObjectId::new([0xe1; 32]));
+    let second_key: ed25519_zebra::SigningKey = ed25519_zebra::SigningKey::from([0xe7; 32]);
+    let second_public: [u8; 32] = ed25519_zebra::VerificationKey::from(&second_key).into();
+    let second_validator: ValidatorId = ValidatorId::new(second_public);
+    let mut second_bond: GenesisObjectEntry = crate::genesis::tests::custody_object_entry(
+        &manifest,
+        ObjectId::new([0xe8; 32]),
+        crate::genesis::tests::chain(),
+    );
+    let Owner::ProtocolCustody(second_scope) = &mut second_bond.object.owner else {
+        panic!("second bond custody owner");
+    };
+    second_scope.subject = second_public;
+    manifest.objects.push(second_bond);
+    manifest
+        .validator_set
+        .validators
+        .push(FastPathValidatorEntry {
+            id: second_validator,
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: second_public.to_vec(),
+        });
+    manifest
+        .validator_set
+        .validators
+        .sort_by_key(|entry| entry.id);
+
+    let coin_template: GenesisObjectEntry = manifest.objects[1].clone();
+    let mut coin_ids: Vec<ObjectId> = Vec::with_capacity(ESCROWS as usize);
+    for index in 0..ESCROWS {
+        let mut coin_id_bytes: [u8; 32] = [0xe0; 32];
+        coin_id_bytes[28..].copy_from_slice(&index.to_be_bytes());
+        let coin_id: ObjectId = ObjectId::new(coin_id_bytes);
+        coin_ids.push(coin_id);
+        manifest.objects.push(GenesisObjectEntry {
+            object: Object {
+                id: coin_id,
+                version: 1,
+                owner: Owner::Address(Address::new(crate::genesis::tests::sender())),
+                type_hash: coin_template.object.type_hash,
+                schema_version: coin_template.object.schema_version,
+                data: encode_call_value(
+                    &public_standard_asset::coin_body_layout(),
+                    &CallValue::U64(1_000_000),
+                )
+                .unwrap(),
+            },
+            authority: ObjectAuthority {
+                object_id: coin_id,
+                instance_context: coin_template.authority.instance_context.clone(),
+                instance: coin_template.authority.instance.clone(),
+                code: coin_template.authority.code.clone(),
+                ty: coin_template.authority.ty.clone(),
+            },
+        });
+    }
+    crate::genesis::tests::resign_manifest(&mut manifest);
+
+    let resource_id: BondResourceId = manifest.economics_policy.resources[0].resource_id;
+    let validator_a: ValidatorId = ValidatorId::new(crate::genesis::tests::sender());
+    let validator_a_key: ed25519_zebra::SigningKey = crate::genesis::tests::key();
+
+    let escrows: Vec<PositiveCapacityEscrow> = {
+        let setup: SqliteDurableStore =
+            SqliteDurableStore::open(&db_path, namespace.clone(), fence).unwrap();
+        install_genesis(
+            &setup,
+            &crate::genesis::tests::context(1),
+            crate::genesis::tests::domain(),
+            &crate::genesis::tests::resolver(),
+            &manifest,
+            10,
+        )
+        .unwrap();
+        (0..ESCROWS)
+            .map(|index| {
+                build_positive_capacity_escrow(
+                    &setup,
+                    def_id,
+                    &instance,
+                    &coin_template,
+                    coin_ids[index as usize],
+                    resource_id,
+                    validator_a,
+                    &validator_a_key,
+                    second_validator,
+                    index,
+                    index % 2 == 1,
+                )
+            })
+            .collect()
+    };
+    let setup_db_bytes: u64 = file_bytes("");
+    let setup_wal_bytes: u64 = file_bytes("-wal");
+
+    let shard_size: usize = ESCROWS as usize / WRITERS;
+    let writer_stores: Vec<SqliteDurableStore> = (0..WRITERS)
+        .map(|_| SqliteDurableStore::open(&db_path, namespace.clone(), fence).unwrap())
+        .collect();
+    let concurrent_start: Instant = Instant::now();
+    std::thread::scope(|scope| {
+        for (writer, shard) in writer_stores.into_iter().zip(escrows.chunks(shard_size)) {
+            scope.spawn(move || {
+                for escrow in shard {
+                    handle_fee_claim(
+                        &writer,
+                        &MemoryBlobStore::default(),
+                        &crate::genesis::tests::context(1),
+                        crate::genesis::tests::domain(),
+                        &crate::genesis::tests::resolver(),
+                        &[],
+                        &crate::genesis::tests::protocol(),
+                        &LocalExecutionPolicy::generic_object_results(
+                            crate::genesis::tests::protocol(),
+                        ),
+                        &LocalWasmExecutionEngine::new(),
+                        &escrow.signed,
+                        12,
+                    )
+                    .unwrap();
+                }
+            });
+        }
+    });
+    let concurrent_elapsed: Duration = concurrent_start.elapsed();
+    let committed_db_bytes: u64 = file_bytes("");
+    let committed_wal_bytes: u64 = file_bytes("-wal");
+
+    let measured_claim_bytes: u64 = escrows
+        .iter()
+        .map(|escrow| escrow.signed.len() as u64)
+        .sum();
+    let measured_row_bytes: u64 = escrows
+        .iter()
+        .map(|escrow| escrow.next_row_bytes.len() as u64)
+        .sum();
+    let measured_escrow_bytes: u64 = escrows
+        .iter()
+        .map(|escrow| escrow.escrow_expected_bytes.len() as u64)
+        .sum();
+    let measured_payout_bytes: u64 = escrows
+        .iter()
+        .filter_map(|escrow| escrow.payout.as_ref())
+        .map(|(_, bytes)| bytes.len() as u64)
+        .sum();
+
+    let reopen_start: Instant = Instant::now();
+    let reopened: SqliteDurableStore =
+        SqliteDurableStore::open(&db_path, namespace, fence).unwrap();
+    for escrow in &escrows {
+        let row: VersionedStateValue = reopened
+            .get_versioned_durable(
+                &crate::genesis::tests::context(1),
+                crate::genesis::tests::domain(),
+                &escrow.row_key,
+            )
+            .unwrap();
+        assert_eq!(row.value(), Some(escrow.next_row_bytes.as_slice()));
+        assert_eq!(row.revision(), StateRevision::new(2));
+
+        let claim: VersionedStateValue = reopened
+            .get_versioned_durable(
+                &crate::genesis::tests::context(1),
+                crate::genesis::tests::domain(),
+                &escrow.claim_key,
+            )
+            .unwrap();
+        assert_eq!(claim.value(), Some(escrow.signed.as_slice()));
+
+        let head: DurableObjectHead = reopened
+            .get_object_head(
+                &crate::genesis::tests::context(1),
+                crate::genesis::tests::domain(),
+                escrow.escrow_id,
+            )
+            .unwrap();
+        let DurableObjectHead::Current {
+            object_version,
+            digest,
+            ..
+        } = head
+        else {
+            panic!("positive capacity escrow must retain a current object");
+        };
+        assert_eq!(object_version.get(), escrow.escrow_expected_version);
+        let record: DurableObjectVersionRecord = reopened
+            .get_object_version(
+                &crate::genesis::tests::context(1),
+                crate::genesis::tests::domain(),
+                escrow.escrow_id,
+                object_version,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.digest(), digest);
+        let runtime::DurableObjectPayload::Inline(inline) = record.payload() else {
+            panic!("positive capacity escrow must keep the object inline");
+        };
+        assert_eq!(
+            inline.canonical_bytes(),
+            escrow.escrow_expected_bytes.as_slice()
+        );
+
+        if let Some((payout_id, payout_bytes)) = &escrow.payout {
+            let payout_head: DurableObjectHead = reopened
+                .get_object_head(
+                    &crate::genesis::tests::context(1),
+                    crate::genesis::tests::domain(),
+                    *payout_id,
+                )
+                .unwrap();
+            let DurableObjectHead::Current {
+                object_version: payout_version,
+                digest: payout_digest,
+                ..
+            } = payout_head
+            else {
+                panic!("positive capacity split claim must create a payout object");
+            };
+            assert_eq!(payout_version.get(), 1);
+            let payout_record: DurableObjectVersionRecord = reopened
+                .get_object_version(
+                    &crate::genesis::tests::context(1),
+                    crate::genesis::tests::domain(),
+                    *payout_id,
+                    payout_version,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(payout_record.digest(), payout_digest);
+            let runtime::DurableObjectPayload::Inline(payout_inline) = payout_record.payload()
+            else {
+                panic!("positive capacity payout object must be inline");
+            };
+            assert_eq!(payout_inline.canonical_bytes(), payout_bytes.as_slice());
+        }
+
+        let receipt: Option<DurableRequestReceipt> = reopened
+            .get_request_receipt(
+                &crate::genesis::tests::context(1),
+                crate::genesis::tests::domain(),
+                DurableRequestId::new(escrow.claim_request_id).unwrap(),
+            )
+            .unwrap();
+        assert!(
+            receipt.is_some(),
+            "positive capacity claim must retain its outer receipt"
+        );
+    }
+    let reopen_elapsed: Duration = reopen_start.elapsed();
+    let reopened_db_bytes: u64 = file_bytes("");
+    let reopened_wal_bytes: u64 = file_bytes("-wal");
+
+    // A generous ceiling that only catches a catastrophic regression, not a
+    // performance certification: one process, one disk, one run.
+    assert!(
+        reopen_elapsed < Duration::from_secs(30),
+        "close/reopen + full read of {ESCROWS} positive escrows took {reopen_elapsed:?}"
+    );
+
+    eprintln!(
+        "fee-claim capacity (positive): escrows={ESCROWS}, writers={WRITERS}, concurrent_commit_latency={concurrent_elapsed:?}, reopen_and_read_latency={reopen_elapsed:?}, measured_retained_claim_envelope_bytes={measured_claim_bytes}, measured_retained_settlement_row_bytes={measured_row_bytes}, measured_retained_escrow_object_bytes={measured_escrow_bytes}, measured_retained_payout_object_bytes={measured_payout_bytes}, physical_sqlite_db_bytes[setup={setup_db_bytes},committed={committed_db_bytes},reopened={reopened_db_bytes}], physical_sqlite_wal_bytes[setup={setup_wal_bytes},committed={committed_wal_bytes},reopened={reopened_wal_bytes}]"
     );
 
     std::fs::remove_dir_all(&directory).unwrap();

@@ -32,7 +32,7 @@
 //! or live fault-injected evidence. It is not suitable for multi-writer or
 //! production deployments.
 
-use crate::{decode_u64, encode_u64};
+use crate::{decode_u64, encode_u64, prefix_upper_bound};
 use protocol_types::{ChainId, Digest32, HashAlgorithmId, ProtocolVersion, ValidatorId};
 use runtime::{
     AtomicStateTransaction, AtomicityDomainId, DURABLE_OBJECT_CANONICAL_RECORD_TYPE_ID,
@@ -44,8 +44,9 @@ use runtime::{
     DurableOutboxAcknowledgement, DurableOutboxAcknowledgementOutcome,
     DurableOutboxAcknowledgementRejection, DurableOutboxClaim, DurableOutboxClaimOutcome,
     DurableOutboxClaimRejection, DurableOutboxLeaseId, DurableReadError, DurableRequestId,
-    DurableRequestReceipt, IndeterminateCommitReason, IndexedOutboxRepository, ObjectHeadRevision,
-    ObjectId, OutboxRequestId, RequestOutboxClaimRequest, RuntimeError, StateMutation,
+    DurableRequestReceipt, DurableStateKeyScanner, IndeterminateCommitReason,
+    IndexedOutboxRepository, ObjectHeadRevision, ObjectId, OutboxRequestId,
+    RequestOutboxClaimRequest, RuntimeError, StateKeyPage, StateKeyScan, StateMutation,
     StateMutationEntry, StateReadAssertion, StateRevision, StructuredDurableDomainStateStore,
     VersionedStateValue, WriterFenceGeneration,
 };
@@ -857,6 +858,46 @@ fn load_state_value(
         return Err(SqlitePreCommitFailure::InvalidPersistedState);
     }
     VersionedStateValue::from_persisted_parts(revision, value)
+        .map_err(|_| SqlitePreCommitFailure::InvalidPersistedState)
+}
+
+/// Loads at most `scan.limit() + 1` ordered candidate keys strictly after the
+/// cursor and within the prefix, using the `durable_state` primary-key index.
+/// Tombstoned keys (`value IS NULL`) are not filtered: the caller must see
+/// them to fail closed instead of treating a deletion as absent.
+fn load_state_key_page(
+    connection: &Connection,
+    scan: &StateKeyScan,
+) -> Result<StateKeyPage, SqlitePreCommitFailure> {
+    let upper_bound = prefix_upper_bound(scan.prefix());
+    let candidate_limit = i64::try_from(scan.limit().get() + 1)
+        .map_err(|_| SqlitePreCommitFailure::InvalidPersistedState)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT key FROM durable_state
+             WHERE key >= ?1
+               AND (?2 IS NULL OR key > ?2)
+               AND (?3 IS NULL OR key < ?3)
+             ORDER BY key
+             LIMIT ?4",
+        )
+        .map_err(database_unavailable)?;
+    let rows = statement
+        .query_map(
+            params![
+                scan.prefix(),
+                scan.after(),
+                upper_bound.as_deref(),
+                candidate_limit
+            ],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .map_err(database_unavailable)?;
+    let mut keys = Vec::new();
+    for row in rows {
+        keys.push(row.map_err(database_unavailable)?);
+    }
+    StateKeyPage::from_ordered_candidates(scan, keys)
         .map_err(|_| SqlitePreCommitFailure::InvalidPersistedState)
 }
 
@@ -2089,6 +2130,29 @@ impl StructuredDurableDomainStateStore for SqliteDurableStore {
     }
 }
 
+impl DurableStateKeyScanner for SqliteDurableStore {
+    fn scan_durable_keys(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        scan: &StateKeyScan,
+    ) -> Result<StateKeyPage, DurableReadError> {
+        if !self.domain_is_bound(domain) {
+            return Err(DurableReadError::InvalidRequest(
+                RuntimeError::AtomicityDomainMismatch,
+            ));
+        }
+        check_deadline(context).map_err(SqlitePreCommitFailure::into_read_error)?;
+        let mut connection = self
+            .connection()
+            .map_err(|_| DurableReadError::Unavailable)?;
+        read_in_snapshot(&mut connection, &self.namespace, context, |transaction| {
+            load_state_key_page(transaction, scan)
+        })
+        .map_err(SqlitePreCommitFailure::into_read_error)
+    }
+}
+
 impl IndexedOutboxRepository for SqliteDurableStore {
     fn claim_request_outbox(
         &self,
@@ -2440,5 +2504,242 @@ impl IndexedOutboxRepository for SqliteDurableStore {
             );
         }
         finalize_outbox_acknowledgement(transaction)
+    }
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+    use runtime::{
+        AtomicStateMutationSet, AtomicStateReadSet, StorageCorrelationId, StorageDeadline,
+    };
+    use std::{
+        fs,
+        num::NonZeroUsize,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+
+    struct TestDatabase {
+        path: PathBuf,
+    }
+
+    impl TestDatabase {
+        fn new() -> Self {
+            let nonce = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "sunrise-edge-sqlite-structured-scan-{}-{nanos}-{nonce}.db",
+                std::process::id()
+            ));
+            Self { path }
+        }
+    }
+
+    impl Drop for TestDatabase {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let mut path = self.path.as_os_str().to_owned();
+                path.push(suffix);
+                let path = PathBuf::from(path);
+                if path.exists() {
+                    fs::remove_file(path).unwrap();
+                }
+            }
+        }
+    }
+
+    fn scan_test_namespace(domain_byte: u8) -> SqliteNamespace {
+        SqliteNamespace::new(
+            ChainId::new("sunrise-edge-durable-scan-test").unwrap(),
+            ValidatorId::new([0x10; 32]),
+            AtomicityDomainId::new([domain_byte; 32]).unwrap(),
+        )
+    }
+
+    fn live_context(fence: u64, correlation: u8) -> DurableOperationContext {
+        let now: u64 = u64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap();
+        DurableOperationContext::new(
+            WriterFenceGeneration::new(fence).unwrap(),
+            StorageDeadline::new(now + 60_000).unwrap(),
+            StorageCorrelationId::new([correlation; 16]).unwrap(),
+        )
+    }
+
+    fn expired_context(fence: u64, correlation: u8) -> DurableOperationContext {
+        DurableOperationContext::new(
+            WriterFenceGeneration::new(fence).unwrap(),
+            StorageDeadline::new(1).unwrap(),
+            StorageCorrelationId::new([correlation; 16]).unwrap(),
+        )
+    }
+
+    fn put_state(
+        store: &SqliteDurableStore,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        key: &[u8],
+        value: u8,
+    ) {
+        let transaction = AtomicStateTransaction::new(
+            domain,
+            AtomicStateReadSet::new(vec![
+                StateReadAssertion::new(key.to_vec(), StateRevision::INITIAL).unwrap(),
+            ])
+            .unwrap(),
+            AtomicStateMutationSet::new(vec![
+                StateMutationEntry::new(key.to_vec(), StateMutation::Put(vec![value])).unwrap(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.commit_durable(context, transaction),
+            DurableCommitOutcome::Committed
+        );
+    }
+
+    #[test]
+    fn scan_is_prefix_bounded_ordered_and_paginated_across_reopen() {
+        let database = TestDatabase::new();
+        let domain = AtomicityDomainId::new([3; 32]).unwrap();
+        let store = SqliteDurableStore::open(
+            &database.path,
+            scan_test_namespace(3),
+            WriterFenceGeneration::new(1).unwrap(),
+        )
+        .unwrap();
+        let context = live_context(1, 0x41);
+        for (key, value) in [
+            (b"outbox/c".as_slice(), 3u8),
+            (b"other/a", 9),
+            (b"outbox/a", 1),
+            (b"outbox/b", 2),
+        ] {
+            put_state(&store, &context, domain, key, value);
+        }
+
+        let first_scan =
+            StateKeyScan::new(b"outbox/".to_vec(), None, NonZeroUsize::new(2).unwrap()).unwrap();
+        let first = store
+            .scan_durable_keys(&context, domain, &first_scan)
+            .unwrap();
+        assert_eq!(first.keys(), &[b"outbox/a".to_vec(), b"outbox/b".to_vec()]);
+        assert_eq!(first.continuation_cursor(), Some(b"outbox/b".as_slice()));
+        drop(store);
+
+        let reopened = SqliteDurableStore::open(
+            &database.path,
+            scan_test_namespace(3),
+            WriterFenceGeneration::new(1).unwrap(),
+        )
+        .unwrap();
+        let second_scan = StateKeyScan::new(
+            b"outbox/".to_vec(),
+            first.continuation_cursor().map(<[u8]>::to_vec),
+            NonZeroUsize::new(2).unwrap(),
+        )
+        .unwrap();
+        let second = reopened
+            .scan_durable_keys(&context, domain, &second_scan)
+            .unwrap();
+        assert_eq!(second.keys(), &[b"outbox/c".to_vec()]);
+        assert_eq!(second.continuation_cursor(), None);
+    }
+
+    #[test]
+    fn scan_includes_tombstones_and_reports_empty_pages() {
+        let database = TestDatabase::new();
+        let domain = AtomicityDomainId::new([4; 32]).unwrap();
+        let store = SqliteDurableStore::open(
+            &database.path,
+            scan_test_namespace(4),
+            WriterFenceGeneration::new(1).unwrap(),
+        )
+        .unwrap();
+        let context = live_context(1, 0x42);
+        put_state(&store, &context, domain, b"key/a", 1);
+        let delete = AtomicStateTransaction::new(
+            domain,
+            AtomicStateReadSet::new(vec![
+                StateReadAssertion::new(b"key/a".to_vec(), StateRevision::new(1)).unwrap(),
+            ])
+            .unwrap(),
+            AtomicStateMutationSet::new(vec![
+                StateMutationEntry::new(b"key/a".to_vec(), StateMutation::Delete).unwrap(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.commit_durable(&context, delete),
+            DurableCommitOutcome::Committed
+        );
+
+        let scan =
+            StateKeyScan::new(b"key/".to_vec(), None, NonZeroUsize::new(4).unwrap()).unwrap();
+        let page = store.scan_durable_keys(&context, domain, &scan).unwrap();
+        assert_eq!(page.keys(), &[b"key/a".to_vec()]);
+        assert_eq!(
+            store
+                .get_versioned_durable(&context, domain, b"key/a")
+                .unwrap()
+                .value(),
+            None
+        );
+
+        let empty_scan =
+            StateKeyScan::new(b"missing/".to_vec(), None, NonZeroUsize::new(4).unwrap()).unwrap();
+        let empty_page = store
+            .scan_durable_keys(&context, domain, &empty_scan)
+            .unwrap();
+        assert!(empty_page.keys().is_empty());
+        assert_eq!(empty_page.continuation_cursor(), None);
+    }
+
+    #[test]
+    fn scan_fails_closed_on_domain_fence_and_deadline() {
+        let database = TestDatabase::new();
+        let bound_domain = AtomicityDomainId::new([5; 32]).unwrap();
+        let store = SqliteDurableStore::open(
+            &database.path,
+            scan_test_namespace(5),
+            WriterFenceGeneration::new(4).unwrap(),
+        )
+        .unwrap();
+        let scan =
+            StateKeyScan::new(b"key/".to_vec(), None, NonZeroUsize::new(4).unwrap()).unwrap();
+
+        let wrong_domain = AtomicityDomainId::new([6; 32]).unwrap();
+        assert_eq!(
+            store.scan_durable_keys(&live_context(4, 0x43), wrong_domain, &scan),
+            Err(DurableReadError::InvalidRequest(
+                RuntimeError::AtomicityDomainMismatch
+            ))
+        );
+
+        assert_eq!(
+            store.scan_durable_keys(&live_context(3, 0x44), bound_domain, &scan),
+            Err(DurableReadError::WriterFenced {
+                active_generation: WriterFenceGeneration::new(4).unwrap(),
+            })
+        );
+
+        assert_eq!(
+            store.scan_durable_keys(&expired_context(4, 0x45), bound_domain, &scan),
+            Err(DurableReadError::DeadlineExceeded)
+        );
     }
 }

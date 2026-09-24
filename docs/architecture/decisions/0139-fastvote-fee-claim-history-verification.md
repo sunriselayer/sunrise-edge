@@ -3,8 +3,9 @@
 ## Status
 
 Accepted, 2026-09-24. The commitment witness and explicit per-escrow,
-escrow-side verifier are implemented with focused tests. Split payout-object
-verification, an all-escrow restart inventory, and network capacity evidence
+escrow-side verifier are implemented with focused tests. DR-0140 subsequently
+adds the signed split-payout reference and paged inventory; complete
+certified all-escrow restart evidence and network capacity certification
 remain open. This decision does not close FastVote Phase 3 or establish
 network readiness.
 
@@ -51,13 +52,14 @@ and nominal-value conservation through the signed executable ABI. Zero-share
 claims must not imply an object transition. A missing, reordered, forged,
 orphaned, or coordinated rewritten row/envelope chain fails closed.
 
-This API verifies one explicit escrow request id. It is not a startup-wide
-inventory: the post-genesis escrow IDs are not in the genesis manifest, and
-the structured durable-store interface has no typed escrow enumeration.
-The current claim envelope also does not retain the split payout ObjectRef.
-Escrow-side value conservation alone does not independently authenticate
-the payout object. Those two gaps must remain explicit in Phase 3 TODO until
-there is a bounded inventory and a complete payout transition proof. A
+This original API verifies one explicit escrow request id. It is not a
+startup-wide inventory: the post-genesis escrow IDs are not in the genesis
+manifest, and the structured durable-store interface had no typed escrow
+enumeration. The v1 claim envelope also did not retain the split payout
+ObjectRef. Escrow-side value conservation alone does not independently
+authenticate the payout object. DR-0140 addresses both gaps through an
+explicitly versioned claim and read-only inventory; Phase 3 TODO retains the
+remaining complete-sweep evidence. A
 whole-store rollback still requires a separately anchored checkpoint or
 state root; a local database alone cannot detect its own complete rollback.
 

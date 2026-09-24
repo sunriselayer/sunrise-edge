@@ -51,7 +51,7 @@ pub(super) struct ExpectedFeeClaim<'a> {
 /// remainder for a partial claim, or the fully transferred (now
 /// recipient-owned) object for the final claim.
 pub(super) enum ValidatedFeeClaim {
-    Split { retained: Object },
+    Split { retained: Object, released: Object },
     Final { transferred: Object },
 }
 
@@ -278,6 +278,7 @@ pub(super) fn validate(
         }
         Ok(ValidatedFeeClaim::Split {
             retained: retained.clone(),
+            released: created_object.clone(),
         })
     }
 }

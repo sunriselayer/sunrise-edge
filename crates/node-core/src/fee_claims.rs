@@ -78,7 +78,10 @@ use validator_set::ValidatorSet;
 
 pub mod codec;
 mod effects;
+mod inventory;
 mod verify;
+
+pub use inventory::{FeeEscrowInventoryPage, verify_fee_escrow_inventory_page};
 
 #[cfg(test)]
 mod recovery_tests;
@@ -369,15 +372,15 @@ pub struct FeeClaimVerificationReport {
     pub final_generation: u64,
     pub verified_claims: u64,
     pub verified_positive_claims: u64,
+    /// Split payout objects verified against the claimant-signed exact ref.
+    pub verified_payouts: u64,
 }
 
 /// Reconstructs the initial settlement from a quorum-certified commitment
 /// witness, then independently verifies the retained signed claim chain and
-/// its historical escrow-object versions after a store reopen. This has no
-/// mutation and deliberately takes an explicit escrow request id: there is
-/// not yet a typed global escrow inventory or startup-wide verification gate.
-/// The split payout object is not independently proved by this function;
-/// see DR-0139 and [`verify`] for that remaining Phase 3 requirement.
+/// its historical escrow-object versions and signed split payout refs after
+/// a store reopen. This has no mutation and takes an explicit escrow request
+/// id; use the separate typed inventory page to enumerate escrows.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_fee_claim_history<S: StructuredDurableDomainStateStore>(
     store: &S,
@@ -525,6 +528,7 @@ pub fn verify_fee_claim_history<S: StructuredDurableDomainStateStore>(
             final_generation: 0,
             verified_claims: 0,
             verified_positive_claims: 0,
+            verified_payouts: 0,
         });
     };
 
@@ -575,6 +579,39 @@ pub fn verify_fee_claim_history<S: StructuredDurableDomainStateStore>(
     if !local_execution::reference_matches(&resource.code, &loaded.interface) {
         return Err(FeeClaimError::Invalid("fee claim code reference"));
     }
+    let instance: execution::local_execution::InstanceRecord =
+        local_execution::query_local_instance(
+            store,
+            context,
+            domain,
+            trusted_resolver,
+            history,
+            chain,
+            resource.instance.creator,
+            resource.instance.seed,
+        )?
+        .ok_or(FeeClaimError::Invalid(
+            "fee claim resource instance missing",
+        ))?;
+    if instance.context != resource.context
+        || instance.code != resource.code
+        || execution::local_execution::instance_target(
+            local_execution::original_resolver(trusted_resolver, history, &instance.context)?,
+            &instance,
+        )? != resource.instance
+    {
+        return Err(FeeClaimError::Invalid(
+            "fee claim resource instance mismatch",
+        ));
+    }
+    verify::verify_escrow_authority(
+        store,
+        context,
+        domain,
+        resource,
+        &instance,
+        charged.fee_output.id,
+    )?;
     let resource_abi: verify::FeeEscrowResourceAbi = verify::FeeEscrowResourceAbi {
         ty: resource.ty.clone(),
         schema_version: resource.schema,
@@ -592,12 +629,16 @@ pub fn verify_fee_claim_history<S: StructuredDurableDomainStateStore>(
         &initial,
         &initial_bytes,
     )?;
-    verify_retained_claim_legs(
+    let verified_payouts: u64 = verify_retained_claim_legs(
         store,
+        blob_store,
         context,
         domain,
         trusted_resolver,
+        history,
         resource,
+        &instance,
+        &loaded.interface,
         &certificate_context,
         escrow_request_id,
         result.final_generation,
@@ -606,6 +647,7 @@ pub fn verify_fee_claim_history<S: StructuredDurableDomainStateStore>(
         final_generation: result.final_generation,
         verified_claims: result.verified_claims,
         verified_positive_claims: result.verified_positive_claims,
+        verified_payouts,
     })
 }
 
@@ -616,14 +658,19 @@ pub fn verify_fee_claim_history<S: StructuredDurableDomainStateStore>(
 #[allow(clippy::too_many_arguments)]
 fn verify_retained_claim_legs<S: StructuredDurableDomainStateStore>(
     store: &S,
+    blob_store: &dyn BlobStore,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
     resource: &FastPathEconomicsResourcePolicy,
+    instance: &execution::local_execution::InstanceRecord,
+    interface: &execution::publication::VerifiedPublicationInterface,
     certificate_context: &PublicationContext,
     escrow_request_id: &[u8; 32],
     final_generation: u64,
-) -> Result<(), FeeClaimError> {
+) -> Result<u64, FeeClaimError> {
+    let mut verified_payouts: u64 = 0;
     for generation in 2..=final_generation {
         let key: Vec<u8> = local_instance_state::fastpath_fee_claim_key(
             certificate_context.chain_id(),
@@ -638,7 +685,7 @@ fn verify_retained_claim_legs<S: StructuredDurableDomainStateStore>(
         )?;
         let (leg_bytes, entrypoint): (&[u8], &str) = match &signed.intent.operation {
             FeeClaimOperation::ZeroShare => continue,
-            FeeClaimOperation::Split { leg } => (leg, &resource.split_entrypoint),
+            FeeClaimOperation::Split { leg, .. } => (leg, &resource.split_entrypoint),
             FeeClaimOperation::FinalTransfer { leg } => (leg, &resource.transfer_entrypoint),
         };
         let decoded: execution::local_execution::SignedLocalExecutionIntent =
@@ -680,7 +727,7 @@ fn verify_retained_claim_legs<S: StructuredDurableDomainStateStore>(
             *escrow_request_id,
             signed.intent.resource_id,
         );
-        let _: (ProtocolCustodyCapability, Digest32) = fee_claim_capability(
+        let (_, event_digest): (ProtocolCustodyCapability, Digest32) = fee_claim_capability(
             resolver,
             &signed.intent.context,
             resource,
@@ -690,8 +737,24 @@ fn verify_retained_claim_legs<S: StructuredDurableDomainStateStore>(
             entrypoint,
             &leg,
         )?;
+        let payouts: u64 = verify::verify_signed_payout(
+            store,
+            blob_store,
+            context,
+            domain,
+            resolver,
+            history,
+            resource,
+            instance,
+            interface,
+            &signed.intent,
+            event_digest,
+        )?;
+        verified_payouts = verified_payouts
+            .checked_add(payouts)
+            .ok_or(FeeClaimError::Invalid("fee claim payout count overflow"))?;
     }
-    Ok(())
+    Ok(verified_payouts)
 }
 
 fn fee_escrow_scope(
@@ -793,7 +856,7 @@ where
     // `ExecuteLocalContract` domain, before any storage read.
     let leg: Option<AuthenticatedLocalExecutionIntent> = match &signed.intent.operation {
         FeeClaimOperation::ZeroShare => None,
-        FeeClaimOperation::Split { leg } | FeeClaimOperation::FinalTransfer { leg } => {
+        FeeClaimOperation::Split { leg, .. } | FeeClaimOperation::FinalTransfer { leg } => {
             Some(authenticate_local_execution(resolver, leg_policy, leg)?)
         }
     };
@@ -831,6 +894,15 @@ where
         receipt_digest,
     )? {
         return Ok(output);
+    }
+    if matches!(
+        signed.intent.operation,
+        FeeClaimOperation::Split {
+            expected_payout: None,
+            ..
+        }
+    ) {
+        return Err(FeeClaimError::Invalid("legacy split payout is not signed"));
     }
 
     // 6. current epoch fence.
@@ -1084,7 +1156,31 @@ where
         is_final,
     )?;
     let resulting_object: Object = match validated {
-        effects::ValidatedFeeClaim::Split { retained } => retained,
+        effects::ValidatedFeeClaim::Split { retained, released } => {
+            let expected_payout: &ObjectRef = match &signed.intent.operation {
+                FeeClaimOperation::Split {
+                    expected_payout: Some(expected_payout),
+                    ..
+                } => expected_payout,
+                _ => return Err(FeeClaimError::Invalid("split payout ref missing")),
+            };
+            let released_bytes: Vec<u8> = objects::encode_object(&released)
+                .map_err(|_| FeeClaimError::Invalid("invalid fee claim payout encoding"))?;
+            let released_digest: Digest32 = resolver.hash_for_purpose(
+                signed.intent.context.epoch(),
+                HashPurpose::Object,
+                &released_bytes,
+            )?;
+            let actual_payout: ObjectRef = ObjectRef {
+                id: released.id,
+                version: released.version,
+                digest: released_digest,
+            };
+            if &actual_payout != expected_payout {
+                return Err(FeeClaimError::Invalid("signed payout ref mismatch"));
+            }
+            retained
+        }
         effects::ValidatedFeeClaim::Final { transferred } => transferred,
     };
     let canonical: Vec<u8> = objects::encode_object(&resulting_object)

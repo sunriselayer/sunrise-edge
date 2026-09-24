@@ -1074,6 +1074,138 @@ fn memory_durable_store_preserves_read_only_revision_and_fails_closed_on_authori
     );
 }
 
+fn put_durable(
+    store: &MemoryDurableStateStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    name: &str,
+    value: u8,
+) {
+    let write = AtomicStateTransaction::new(
+        domain,
+        AtomicStateReadSet::new(vec![read(name, StateRevision::INITIAL)]).unwrap(),
+        AtomicStateMutationSet::new(vec![mutation(name, StateMutation::Put(vec![value]))]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(context, write),
+        DurableCommitOutcome::Committed
+    );
+}
+
+#[test]
+fn memory_durable_state_scan_is_prefix_bounded_ordered_and_paginated() {
+    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let context = durable_context(1, 1_000, 8);
+    let selected_domain = domain(10);
+    for (name, value) in [
+        ("outbox/c", 3u8),
+        ("other/a", 9),
+        ("outbox/a", 1),
+        ("outbox/b", 2),
+    ] {
+        put_durable(&store, &context, selected_domain, name, value);
+    }
+
+    let first_scan =
+        StateKeyScan::new(key("outbox/"), None, NonZeroUsize::new(2).unwrap()).unwrap();
+    let first = store
+        .scan_durable_keys(&context, selected_domain, &first_scan)
+        .unwrap();
+    assert_eq!(first.keys(), &[key("outbox/a"), key("outbox/b")]);
+    assert_eq!(first.continuation_cursor(), Some(b"outbox/b".as_slice()));
+
+    let second_scan = StateKeyScan::new(
+        key("outbox/"),
+        first.continuation_cursor().map(<[u8]>::to_vec),
+        NonZeroUsize::new(2).unwrap(),
+    )
+    .unwrap();
+    let second = store
+        .scan_durable_keys(&context, selected_domain, &second_scan)
+        .unwrap();
+    assert_eq!(second.keys(), &[key("outbox/c")]);
+    assert_eq!(second.continuation_cursor(), None);
+
+    // A different bound domain never observes another domain's keys.
+    let other_domain_scan =
+        StateKeyScan::new(key("outbox/"), None, NonZeroUsize::new(4).unwrap()).unwrap();
+    let other_domain_page = store
+        .scan_durable_keys(&context, domain(11), &other_domain_scan)
+        .unwrap();
+    assert!(other_domain_page.keys().is_empty());
+}
+
+#[test]
+fn memory_durable_state_scan_includes_tombstones_and_reports_empty_pages() {
+    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let context = durable_context(1, 1_000, 9);
+    let selected_domain = domain(12);
+    put_durable(&store, &context, selected_domain, "key/a", 1);
+    let delete = AtomicStateTransaction::new(
+        selected_domain,
+        AtomicStateReadSet::new(vec![read("key/a", StateRevision::new(1))]).unwrap(),
+        AtomicStateMutationSet::new(vec![mutation("key/a", StateMutation::Delete)]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&context, delete),
+        DurableCommitOutcome::Committed
+    );
+
+    let scan = StateKeyScan::new(key("key/"), None, NonZeroUsize::new(4).unwrap()).unwrap();
+    let page = store
+        .scan_durable_keys(&context, selected_domain, &scan)
+        .unwrap();
+    assert_eq!(page.keys(), &[key("key/a")]);
+    assert_eq!(
+        store
+            .get_versioned_durable(&context, selected_domain, b"key/a")
+            .unwrap()
+            .value(),
+        None
+    );
+
+    let empty_scan =
+        StateKeyScan::new(key("missing/"), None, NonZeroUsize::new(4).unwrap()).unwrap();
+    let empty_page = store
+        .scan_durable_keys(&context, selected_domain, &empty_scan)
+        .unwrap();
+    assert!(empty_page.keys().is_empty());
+    assert_eq!(empty_page.continuation_cursor(), None);
+}
+
+#[test]
+fn memory_durable_state_scan_fails_closed_on_domain_fence_and_deadline() {
+    let selected_domain = domain(13);
+    let store =
+        MemoryDurableStateStore::new_bound(selected_domain, WriterFenceGeneration::new(4).unwrap());
+    store.set_time(50);
+    let context = durable_context(4, 1_000, 10);
+    let scan = StateKeyScan::new(key("key/"), None, NonZeroUsize::new(4).unwrap()).unwrap();
+
+    assert_eq!(
+        store.scan_durable_keys(&context, domain(14), &scan),
+        Err(DurableReadError::InvalidRequest(
+            RuntimeError::AtomicityDomainMismatch
+        ))
+    );
+
+    store.set_active_writer_fence(WriterFenceGeneration::new(5).unwrap());
+    assert_eq!(
+        store.scan_durable_keys(&context, selected_domain, &scan),
+        Err(DurableReadError::WriterFenced {
+            active_generation: WriterFenceGeneration::new(5).unwrap(),
+        })
+    );
+
+    let expired_context = durable_context(5, 10, 11);
+    assert_eq!(
+        store.scan_durable_keys(&expired_context, selected_domain, &scan),
+        Err(DurableReadError::DeadlineExceeded)
+    );
+}
+
 #[test]
 fn memory_indexed_outbox_claims_stable_order_and_reconciles_same_lease() {
     let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());

@@ -3094,6 +3094,31 @@ pub trait StateKeyScanner: StateStore {
     fn scan_keys(&self, scan: &StateKeyScan) -> Result<StateKeyPage, RuntimeError>;
 }
 
+/// Optional bounded key discovery for structured production durable adapters.
+///
+/// This mirrors [`StateKeyScanner`] for [`StructuredDurableDomainStateStore`]
+/// implementations. It is deliberately a separate trait rather than a method
+/// on that trait: canonical protocol transitions never construct a
+/// [`StateKeyScan`] and so can never reach it, and an adapter that cannot
+/// support ordered scans need not pretend otherwise. Implementations must
+/// enforce the same namespace/domain binding, writer fence, and deadline
+/// authority as their point reads, and must expose tombstoned keys exactly
+/// like present ones so a fail-closed caller can distinguish "never written"
+/// from "deleted" instead of silently treating a tombstone as absent. As with
+/// `StateKeyScanner`, a page is individually ordered but is not a multi-page
+/// snapshot: a caller must periodically restart at the prefix to discover
+/// keys inserted before a previous cursor. This trait performs no state
+/// mutation.
+pub trait DurableStateKeyScanner: StructuredDurableDomainStateStore {
+    /// Returns one canonical page of durable state keys for a validated scan.
+    fn scan_durable_keys(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        scan: &StateKeyScan,
+    ) -> Result<StateKeyPage, DurableReadError>;
+}
+
 /// Content-addressed blob storage interface.
 ///
 /// `put_blob` is atomic insert-if-absent, not a blind overwrite: a digest
@@ -3989,6 +4014,34 @@ impl StructuredDurableDomainStateStore for MemoryDurableStateStore {
             data.deliveries.insert(request_key, delivery);
         }
         DurableCommitOutcome::Committed
+    }
+}
+
+impl DurableStateKeyScanner for MemoryDurableStateStore {
+    fn scan_durable_keys(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        scan: &StateKeyScan,
+    ) -> Result<StateKeyPage, DurableReadError> {
+        let data = self
+            .inner
+            .read()
+            .expect("durable state store lock poisoned");
+        validate_memory_durable_read_domain(&data, domain)?;
+        validate_memory_durable_read_authority(&data, context)?;
+        let candidates: Vec<Vec<u8>> = data
+            .state_domains
+            .get(domain.as_bytes())
+            .into_iter()
+            .flat_map(BTreeMap::keys)
+            .filter(|key| key.starts_with(scan.prefix()))
+            .filter(|key| scan.after().is_none_or(|after| key.as_slice() > after))
+            .take(scan.limit().get() + 1)
+            .cloned()
+            .collect();
+        StateKeyPage::from_ordered_candidates(scan, candidates)
+            .map_err(|_| DurableReadError::InvalidPersistedState)
     }
 }
 

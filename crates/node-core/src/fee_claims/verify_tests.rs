@@ -284,7 +284,10 @@ fn build_chain(tamper: Tamper) -> ChainFixture {
         .unwrap(),
         share_amount: 500_000,
         recipient: recipient1,
-        operation: FeeClaimOperation::Split { leg: vec![0xAB] },
+        operation: FeeClaimOperation::Split {
+            leg: vec![0xAB],
+            expected_payout: None,
+        },
     };
     let digest1: Digest32 = fee_claim_intent_digest(&resolver(), &intent1).unwrap();
     let frame1: Vec<u8> = fee_claim_signing_frame(&intent1.context, digest1).unwrap();
