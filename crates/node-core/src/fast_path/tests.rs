@@ -3025,13 +3025,13 @@ fn fastpath_settlement_record_charged_frame_0x641e_is_stable() {
 
     // Extract and pin the nested `0x6436` fee-share-list frame (field 8).
     let outer = decode_canonical_frame(&bytes).unwrap();
-    let id_list_bytes: &[u8] = outer.required_field(8).unwrap();
+    let fee_share_list_bytes: &[u8] = outer.required_field(8).unwrap();
     assert_eq!(
-        hex(id_list_bytes),
+        hex(fee_share_list_bytes),
         "534e524536640100030001000400000002000000020046000000534e5245356401000300010020000000050505050505050505050505050505050505050505050505050505050505050502000800000001000000000000000300020000000000030046000000534e5245356401000300010020000000060606060606060606060606060606060606060606060606060606060606060602000800000000000000000000000300020000000000"
     );
 
-    let share_list = decode_canonical_frame(id_list_bytes).unwrap();
+    let share_list = decode_canonical_frame(fee_share_list_bytes).unwrap();
     assert_eq!(
         hex(share_list.required_field(2).unwrap()),
         "534e5245356401000300010020000000050505050505050505050505050505050505050505050505050505050505050502000800000001000000000000000300020000000000"

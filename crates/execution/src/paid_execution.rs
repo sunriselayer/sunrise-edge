@@ -768,6 +768,16 @@ pub fn authenticate_paid_intent(
 /// shared by reserve/settle, fixed to this profile's stated limits. Fields
 /// 23/24 bind positive Publish artifact-byte and closure-node
 /// execution-unit prices.
+///
+/// `asset_type`'s own type arguments are unconstrained here: the ordinary
+/// direct paid path (`validate_paid_fee_policy`) places no requirement on
+/// their number or shape. FastVote fee escrow is strictly narrower --
+/// `node_core::fast_path::fee_resource_id` additionally requires
+/// `asset_type` to carry exactly one opaque type argument, since the
+/// escrow custody scope is keyed by a single `(domain, value)`
+/// `BondResourceId` pair -- so an existing direct-paid policy whose
+/// `asset_type` carries a different number of arguments stays valid for
+/// direct paid execution and is simply never eligible for FastVote.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PaidFeePolicy {
     pub context: PublicationContext,

@@ -358,6 +358,16 @@ For a charged row, `generation == claimed_share_count + 1`; this makes every
 claimed-bit transition part of the same monotonic CAS fence.
 Partial positive claims use the policy-pinned `split`; the final positive
 claim uses `transfer`. A zero share is finalized without an object mutation.
+The row's `context` remains the certificate context throughout claims, while
+`fee_output` and `fee_output_epoch` track the exact current object version
+and the epoch that minted that version. A later partial split or final
+transfer can therefore make `fee_output_epoch` newer than `context.epoch()`;
+equality is required only at initial certified apply, not for every later
+row generation. The original `total_amount` and assigned shares remain
+immutable so their sum continues to prove conservation; the unclaimed
+positive shares determine the remaining custodial value. After the final
+positive transfer, the row retains the exact recipient-owned output ref as
+audit evidence; any remaining zero-share claims only advance the row.
 
 ### Implementation order
 
