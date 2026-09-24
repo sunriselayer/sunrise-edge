@@ -25,6 +25,9 @@ use execution::ObjectEffect;
 use execution::local_execution::{CreatedObjectAuthority, ObjectAuthority};
 use execution::publication::VerifiedPublicationInterface;
 
+#[cfg(test)]
+mod tests;
+
 /// One exact fee-claim transfer a leg's effects must match.
 pub(super) struct ExpectedFeeClaim<'a> {
     /// Exact current `FeeEscrow` object the settlement row carries.

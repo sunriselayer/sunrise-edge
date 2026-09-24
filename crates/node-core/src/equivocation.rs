@@ -500,7 +500,6 @@ fn load_historical_validator_set_with_revisions<S: StructuredDurableDomainStateS
 /// Loads the chain-anchored historical validator set without carrying CAS
 /// assertions into a later mutation. Evidence-only callers do not write the
 /// loaded rows; fee claims use [`load_historical_validator_set_fenced`].
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn load_historical_validator_set<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,

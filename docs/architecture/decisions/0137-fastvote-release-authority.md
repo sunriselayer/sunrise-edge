@@ -380,18 +380,24 @@ positive claims through the public ABI, independently checks result shape and
 conservation, and atomically writes object/nonce/row/receipt plus an immutable
 signed envelope keyed by the resulting generation. Same-process and real
 file-backed SQLite reopen/replay tests cover zero, split and final claims.
-This does not yet establish adversarial-effect coverage, a competing-writer
-race, indeterminate-commit behavior or independent restart verification of
-the retained claim chain; those remain explicit Phase 3 gates in `TODO.md`.
+Direct split/final effect-validation tests inject malformed output shapes,
+owners, identities, schemas, amounts and authorities. A real SQLite
+same-generation race of two distinct signed zero-share claims commits one
+row/audit/receipt, and both persisted and uncommitted indeterminate zero-share
+outcomes reconcile by exact replay. Positive object-mutating claims still need
+their own competing-writer and indeterminate-commit coverage, and the retained
+signed-claim chain still needs independent restart/history verification; these
+remain Phase 3 gates in `TODO.md`.
 
-The current typed local-execution admission rejects an invocation that crosses
-the pinned code's protocol-version boundary. Until that boundary gains a
-verified historical execution/migration rule, outstanding fee shares must not
-be described as claimable after a protocol-version activation. The Phase 3
-completion gate in `TODO.md` requires an explicit, restart-tested resolution;
-an epoch transition without a protocol-version change does not have this
-problem. The bounded row also entails a full rewrite per claim, so its
-worst-case validator-count cost needs an explicit capacity decision.
+The current claim-row identity check rejects a new protocol version even for
+zero shares; positive claims additionally hit typed local-execution's
+cross-version code restriction. Until both boundaries gain a verified
+historical claim/migration rule, outstanding fee shares must not be described
+as claimable after a protocol-version activation. The Phase 3 completion gate
+in `TODO.md` requires an explicit, restart-tested resolution; an epoch
+transition without a protocol-version change does not have this problem. The
+bounded row entails a full rewrite per claim and a permanent signed-envelope
+record per claim, so both costs need an explicit capacity decision.
 
 ### Implementation order
 

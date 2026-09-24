@@ -80,6 +80,8 @@ pub mod codec;
 mod effects;
 
 #[cfg(test)]
+mod recovery_tests;
+#[cfg(test)]
 mod tests;
 
 use codec::{
@@ -651,15 +653,6 @@ where
             "fee resource is not fee-escrow enabled by the committed economics policy",
         ));
     }
-    // Cross-version claims are not yet supported: fail closed explicitly
-    // rather than executing the leg under a resource pinned to a different
-    // protocol version than the current claim's own context.
-    if resource.context.protocol_version() != signed.intent.context.protocol_version() {
-        return Err(FeeClaimError::Invalid(
-            "fee claim resource protocol version mismatch",
-        ));
-    }
-
     let scope: ProtocolCustodyScope =
         fee_escrow_scope(&settlement.context, settlement.request_id, resource_id);
     let entrypoint: &str = if is_final {
@@ -778,7 +771,11 @@ where
         shares: new_shares,
         ..settlement
     };
-    reads.insert(nonce.key.clone(), nonce.read_revision);
+    if let Some(previous) = reads.insert(nonce.key.clone(), nonce.read_revision)
+        && previous != nonce.read_revision
+    {
+        return Err(NodeCoreError::StateConflict.into());
+    }
     state_mutations.push(StateMutationEntry::new(
         nonce.key,
         StateMutation::Put(nonce.record.encode()?),
