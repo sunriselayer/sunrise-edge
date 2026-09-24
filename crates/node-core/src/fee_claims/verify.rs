@@ -508,6 +508,15 @@ pub(super) fn verify_fee_claim_chain<S: StructuredDurableDomainStateStore>(
     let mut previous_bytes: Vec<u8> = genesis_row_bytes.to_vec();
     let mut escrow_object: Object = genesis_object.object;
     let mut escrow_value: u64 = genesis_value;
+    // Once a `FinalTransfer` moves the whole remaining balance to its
+    // recipient, the escrow object leaves custody for good: `escrow_value`
+    // stops tracking anything meaningful, and every remaining generation can
+    // only be a `ZeroShare` claim (the live handler's `derive_claim_kind`
+    // only permits `FinalTransfer` when no other positive share remains
+    // unclaimed). Comparing `unclaimed_positive_total` against a stale
+    // `escrow_value` after that point would reject a valid certified
+    // history.
+    let mut escrow_finalized: bool = false;
     let mut verified_positive_claims: u64 = 0;
 
     let mut generation: u64 = 1;
@@ -567,7 +576,7 @@ pub(super) fn verify_fee_claim_chain<S: StructuredDurableDomainStateStore>(
         // signed operation shape the previous row permits.
         let (share_index, unclaimed_positive_total, is_final): (usize, u64, bool) =
             derive_claim_kind(&previous_row, &signed.intent)?;
-        if unclaimed_positive_total != escrow_value {
+        if !escrow_finalized && unclaimed_positive_total != escrow_value {
             return Err(FeeClaimError::Invalid(
                 "fee claim chain escrow value does not equal unclaimed shares",
             ));
@@ -658,6 +667,9 @@ pub(super) fn verify_fee_claim_chain<S: StructuredDurableDomainStateStore>(
             }
             escrow_object = loaded.object;
             escrow_value = after;
+            if is_final {
+                escrow_finalized = true;
+            }
             verified_positive_claims =
                 verified_positive_claims
                     .checked_add(1)
