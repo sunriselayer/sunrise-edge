@@ -788,6 +788,7 @@ impl Harness {
             admission,
             pricer,
             fee_recipient: treasury(),
+            fee_escrow_creation: None,
             refund_recipient: refund_account(),
         }
     }

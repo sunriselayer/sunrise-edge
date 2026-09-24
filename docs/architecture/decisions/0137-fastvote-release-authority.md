@@ -51,7 +51,16 @@ genesis snapshot is, by construction, indistinguishable from a legitimate
 fresh install unless a separately anchored checkpoint/state-root publication
 detects it, which remains out of this decision's scope. Partial
 (non-whole-object) release remains deferred to unit 4's fee-claims work,
-unchanged from unit 1. Deposit and Replace now each have dedicated
+unchanged from unit 1. Unit 4's certification half is now implemented and
+locally validated: FastPath prepare/apply install a settle-phase-only creation
+capability that promotes only the ABI-returned fee result slot to exactly one
+request-scoped `FeeEscrow` owner before the effects commitment is computed;
+ordinary paid/application execution receives no such authority; apply derives
+ascending unique active-validator entitlements by the quotient/remainder rule and stores
+them with the exact escrow object, resource, creation epoch, total and initial
+generation in the same atomic certificate commit. The mutable claim state
+machine, claim races/restart evidence and Phase 3 review gate remain
+incomplete. Deposit and Replace now each have dedicated
 real-WASM success-path integration tests (Replace proving same-sender
 consecutive nonces, both owner transitions, and one atomic commit) alongside
 Withdraw's real-WASM, real-storage end-to-end coverage including genesis
@@ -77,7 +86,7 @@ Phase 3 still needs four related value-moving operations:
 1. bond deposit, replacement, unbond and withdrawal;
 2. evidence-driven forfeiture, jail and reactivation;
 3. conversion of certified fee outputs into escrow; and
-4. deterministic signer entitlements and claims.
+4. deterministic active-validator entitlements and claims.
 
 These operations cannot use ordinary sender ownership, a node-local policy, or
 direct object-body rewriting. They must be authorized by committed protocol
@@ -313,18 +322,40 @@ penalties require a later policy.
 
 ### Certified fee escrow and claims
 
-The paid-execution fee output is converted to `FeeEscrow` before the prepared
-effects commitment is computed. A certificate therefore covers the exact
-custody object later applied. Apply derives one bounded escrow row from the
-verified certificate and settlement data in the same commit.
+The paid-execution fee output is promoted to `FeeEscrow` before the prepared
+effects commitment is computed. The execution host replaces the owner of the
+fresh object returned in settlement result slot 0; node-core does not rewrite
+the body or owner. A settle-phase-only capability binds the policy-pinned fee recipient,
+exact type/schema/instance/code/entrypoint and exact request-scoped custody
+owner, then promotes only the fee slot returned by the pinned settlement ABI.
+The refund slot remains address-owned even when both recipients are the same.
+The host trusts the pinned settlement contract's declared result-slot meaning
+and audited arithmetic; it does not decode coin amounts. This differs from
+bond custody's owner-token transfer because the pinned paid settlement ABI
+already returns a newly created fee object and cannot accept a custody token.
+A certificate therefore covers the exact custody object later applied. Apply
+derives one bounded escrow row from the verified certificate and settlement
+data in the same commit.
 
-Signer ids are sorted and must be unique. For total `T` and signer count `N`,
-each signer receives `T / N`; the first `T % N` ids in ascending byte order
-receive one additional unit. The shares must sum exactly to `T`.
+The final certificate can contain any valid quorum subset. Paying that subset
+would let certificate delivery order select payees and diverge across honest
+nodes, because the fee-share row is not part of the prepared commitment.
+Instead the committed active validator set at the certificate epoch determines
+entitlements, independent of which valid quorum subset is presented. For
+total `T` and active-validator count `N`, each validator receives `T / N`;
+the first `T % N` ids in ascending byte order receive one additional unit.
+The shares must sum exactly to `T`, including when `T < N` and some shares
+are zero. This equal-share rule is a Phase 3 policy decision; missed-vote
+penalties are not inferred from the subset delivered with a certificate, and
+voting power does not weight the shares. The fee resource is the exact opaque
+domain/value and nominal type pinned by the committed fee policy; no asset
+package or native coin receives a node-core shortcut.
 
 One escrow row carries all bounded shares and their claimed state to avoid a
 state write per signer. A claim is signed by the historical validator key and
 binds the certificate epoch, escrow id, generation, exact share and recipient.
+For a charged row, `generation == claimed_share_count + 1`; this makes every
+claimed-bit transition part of the same monotonic CAS fence.
 Partial positive claims use the policy-pinned `split`; the final positive
 claim uses `transfer`. A zero share is finalized without an object mutation.
 

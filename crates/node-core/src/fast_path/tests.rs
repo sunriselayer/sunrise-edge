@@ -601,7 +601,7 @@ fn independent_validators_derive_byte_identical_commitment_and_a_quorum_certific
     )
     .unwrap();
     let cert: consensus::FastPathCertifier = certifier(validator_set);
-    let votes: Vec<FastVote> = vec![vote_a.clone(), vote_b, vote_c, vote_d];
+    let votes: Vec<FastVote> = vec![vote_a.clone(), vote_b.clone(), vote_c, vote_d.clone()];
     // Three of four is already quorum; the fourth vote is not required.
     let certificate: FastCertificate = cert
         .try_form_certificate(
@@ -615,6 +615,20 @@ fn independent_validators_derive_byte_identical_commitment_and_a_quorum_certific
         .unwrap();
     assert!(certificate.votes.len() >= 3);
     let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+    let alternate_votes: Vec<FastVote> = vec![vote_a.clone(), vote_b.clone(), vote_d.clone()];
+    let alternate_certificate: FastCertificate = cert
+        .try_form_certificate(
+            vote_a.tx_hash,
+            vote_a.execution_effects_hash,
+            vote_a.locked_objects_digest,
+            &alternate_votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .unwrap();
+    assert_ne!(alternate_certificate.votes, certificate.votes);
+    let alternate_certificate_bytes: Vec<u8> =
+        consensus::encode_fast_certificate(&alternate_certificate).unwrap();
 
     let output: NodeOutput = apply_transfer(
         &store_a,
@@ -627,6 +641,105 @@ fn independent_validators_derive_byte_identical_commitment_and_a_quorum_certific
     let result = receipt(&output);
     assert_eq!(result.status, PaidExecutionStatus::Success);
     assert_eq!(next_nonce(&store_a), FIRST_PAID_NONCE + 1);
+
+    let alternate_output: NodeOutput = apply_transfer(
+        &store_b,
+        &fixture_b,
+        24,
+        FIRST_PAID_NONCE,
+        &alternate_certificate_bytes,
+    )
+    .unwrap();
+    assert_eq!(
+        receipt(&alternate_output).status,
+        PaidExecutionStatus::Success
+    );
+
+    let settlement_bytes: Vec<u8> = store_a
+        .get_versioned_durable(
+            &context(),
+            domain(),
+            &fastpath_settlement_key(protocol().chain_id(), &[24; 32]).unwrap(),
+        )
+        .unwrap()
+        .value()
+        .expect("certificate apply must commit its escrow row")
+        .to_vec();
+    let settlement: FastPathSettlementRecord =
+        records::decode_fastpath_settlement_record(&settlement_bytes).unwrap();
+    let alternate_settlement_bytes: Vec<u8> = store_b
+        .get_versioned_durable(
+            &context(),
+            domain(),
+            &fastpath_settlement_key(protocol().chain_id(), &[24; 32]).unwrap(),
+        )
+        .unwrap()
+        .value()
+        .unwrap()
+        .to_vec();
+    assert_eq!(alternate_settlement_bytes, settlement_bytes);
+    let charged = result.charged.expect("successful paid call is charged");
+    assert_eq!(settlement.context, protocol());
+    assert_eq!(settlement.generation, 1);
+    assert_eq!(settlement.fee_output.as_ref(), Some(&charged.fee_output));
+    assert_eq!(settlement.fee_output_epoch, Some(protocol().epoch()));
+    assert_eq!(settlement.total_amount, Some(charged.actual.get()));
+    assert_eq!(settlement.shares.len(), entries.len());
+    assert_eq!(
+        settlement
+            .shares
+            .iter()
+            .map(|share| share.validator_id)
+            .collect::<Vec<ValidatorId>>(),
+        cert.validator_set()
+            .validators()
+            .iter()
+            .map(|validator| validator.id)
+            .collect::<Vec<ValidatorId>>()
+    );
+    assert!(settlement.shares.iter().all(|share| !share.claimed));
+    assert!(
+        settlement
+            .shares
+            .windows(2)
+            .all(|pair| pair[0].validator_id < pair[1].validator_id)
+    );
+    assert_eq!(
+        settlement
+            .shares
+            .iter()
+            .map(|share| share.amount)
+            .sum::<u64>(),
+        charged.actual.get()
+    );
+    let quotient: u64 = charged.actual.get() / settlement.shares.len() as u64;
+    let remainder: usize = (charged.actual.get() % settlement.shares.len() as u64) as usize;
+    for (index, share) in settlement.shares.iter().enumerate() {
+        assert_eq!(share.amount, quotient + u64::from(index < remainder));
+    }
+
+    let fee_head: DurableObjectHead = store_a
+        .get_object_head(&context(), domain(), charged.fee_output.id)
+        .unwrap();
+    let DurableObjectHead::Current { object_version, .. } = fee_head else {
+        panic!("fee escrow output must remain current after apply");
+    };
+    let fee_version: DurableObjectVersionRecord = store_a
+        .get_object_version(&context(), domain(), charged.fee_output.id, object_version)
+        .unwrap()
+        .expect("fee escrow object version");
+    let runtime::DurableObjectPayload::Inline(inline) = fee_version.payload() else {
+        panic!("fee escrow output must be inline in the test fixture");
+    };
+    assert_eq!(
+        inline.object().owner,
+        Owner::ProtocolCustody(objects::ProtocolCustodyScope {
+            purpose: objects::ProtocolCustodyPurpose::FeeEscrow,
+            chain_id: protocol().chain_id().clone(),
+            subject: [24; 32],
+            resource: *settlement.resource_id.expect("charged resource").value(),
+        })
+    );
 }
 
 /// Regression coverage for the durably bound `created_checkpoint`: `prepare`
@@ -2842,41 +2955,137 @@ fn fastpath_certificate_record_frame_0x641d_is_stable() {
 }
 
 #[test]
+fn validator_fee_rounding_assigns_zero_shares() {
+    let (_signers, entries) = four_validators();
+    let validator_set: ValidatorSet = ValidatorSet::new(
+        protocol().epoch(),
+        entries
+            .iter()
+            .map(|entry| ValidatorInfo {
+                id: entry.id,
+                voting_power: entry.voting_power,
+                signature_scheme: entry.signature_scheme,
+                public_key: entry.public_key.clone(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    let shares: Vec<FastPathFeeShare> = validator_fee_shares(&validator_set, 2).unwrap();
+    assert_eq!(shares.len(), 4);
+    assert_eq!(
+        shares
+            .iter()
+            .map(|share| share.amount)
+            .collect::<Vec<u64>>(),
+        vec![1, 1, 0, 0]
+    );
+    assert_eq!(
+        shares
+            .iter()
+            .map(|share| share.validator_id)
+            .collect::<Vec<ValidatorId>>(),
+        validator_set
+            .validators()
+            .iter()
+            .map(|validator| validator.id)
+            .collect::<Vec<ValidatorId>>()
+    );
+    assert!(shares.iter().all(|share| !share.claimed));
+    assert!(validator_fee_shares(&validator_set, 0).is_err());
+}
+
+#[test]
 fn fastpath_settlement_record_charged_frame_0x641e_is_stable() {
     let record: FastPathSettlementRecord = FastPathSettlementRecord {
+        context: vector_context(),
         request_id: [0x01; 32],
+        generation: 1,
+        resource_id: Some(BondResourceId::new(9, [0x09; 32]).unwrap()),
         fee_output: Some(vector_object_ref(0x02, 3, 0x04)),
-        actual_amount: Some(1000),
-        signer_ids: vec![ValidatorId::new([0x05; 32]), ValidatorId::new([0x06; 32])],
+        fee_output_epoch: Some(Epoch::new(3)),
+        total_amount: Some(1),
+        shares: vec![
+            FastPathFeeShare {
+                validator_id: ValidatorId::new([0x05; 32]),
+                amount: 1,
+                claimed: false,
+            },
+            FastPathFeeShare {
+                validator_id: ValidatorId::new([0x06; 32]),
+                amount: 0,
+                claimed: false,
+            },
+        ],
     };
     let bytes: Vec<u8> = records::encode_fastpath_settlement_record(&record).unwrap();
     assert_eq!(
         hex(&bytes),
-        "534e52451e6401000400010020000000010101010101010101010101010101010101010101010101010101010101010102008c000000534e5245044001000300010030000000534e524501400100010001002000000002020202020202020202020202020202020202020202020202020202020202020200080000000300000000000000030038000000534e524503010100020001000200000001000200200000000404040404040404040404040404040404040404040404040404040404040404030008000000e803000000000000040060000000534e52452164010003000100040000000200000002002000000005050505050505050505050505050505050505050505050505050505050505050300200000000606060606060606060606060606060606060606060606060606060606060606"
+        "534e52451e640100080001003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f727302000400000003000000030008000000090000000000000002002000000001010101010101010101010101010101010101010101010101010101010101010300080000000100000000000000040038000000534e52450880010002000100020000000900020020000000090909090909090909090909090909090909090909090909090909090909090905008c000000534e5245044001000300010030000000534e524501400100010001002000000002020202020202020202020202020202020202020202020202020202020202020200080000000300000000000000030038000000534e524503010100020001000200000001000200200000000404040404040404040404040404040404040404040404040404040404040404060008000000030000000000000007000800000001000000000000000800ac000000534e524536640100030001000400000002000000020046000000534e5245356401000300010020000000050505050505050505050505050505050505050505050505050505050505050502000800000001000000000000000300020000000000030046000000534e5245356401000300010020000000060606060606060606060606060606060606060606060606060606060606060602000800000000000000000000000300020000000000"
     );
 
-    // Extract and pin the nested `0x6421` validator-id-list frame (field 4).
+    // Extract and pin the nested `0x6436` fee-share-list frame (field 8).
     let outer = decode_canonical_frame(&bytes).unwrap();
-    let id_list_bytes: &[u8] = outer.required_field(4).unwrap();
+    let id_list_bytes: &[u8] = outer.required_field(8).unwrap();
     assert_eq!(
         hex(id_list_bytes),
-        "534e52452164010003000100040000000200000002002000000005050505050505050505050505050505050505050505050505050505050505050300200000000606060606060606060606060606060606060606060606060606060606060606"
+        "534e524536640100030001000400000002000000020046000000534e5245356401000300010020000000050505050505050505050505050505050505050505050505050505050505050502000800000001000000000000000300020000000000030046000000534e5245356401000300010020000000060606060606060606060606060606060606060606060606060606060606060602000800000000000000000000000300020000000000"
     );
+
+    let share_list = decode_canonical_frame(id_list_bytes).unwrap();
+    assert_eq!(
+        hex(share_list.required_field(2).unwrap()),
+        "534e5245356401000300010020000000050505050505050505050505050505050505050505050505050505050505050502000800000001000000000000000300020000000000"
+    );
+
+    let mut inconsistent: FastPathSettlementRecord = record.clone();
+    inconsistent.shares[0].claimed = true;
+    assert!(records::encode_fastpath_settlement_record(&inconsistent).is_err());
+    inconsistent.generation = 2;
+    let claimed_bytes: Vec<u8> = records::encode_fastpath_settlement_record(&inconsistent).unwrap();
+    assert_eq!(
+        records::decode_fastpath_settlement_record(&claimed_bytes).unwrap(),
+        inconsistent
+    );
+    let mut duplicate: FastPathSettlementRecord = record.clone();
+    duplicate.shares[1].validator_id = duplicate.shares[0].validator_id;
+    assert!(records::encode_fastpath_settlement_record(&duplicate).is_err());
+    let mut reordered: FastPathSettlementRecord = record.clone();
+    reordered.shares.swap(0, 1);
+    assert!(records::encode_fastpath_settlement_record(&reordered).is_err());
+    let mut inflated: FastPathSettlementRecord = record.clone();
+    inflated.shares[0].amount = 2;
+    assert!(records::encode_fastpath_settlement_record(&inflated).is_err());
+    let mut missing_resource: FastPathSettlementRecord = record.clone();
+    missing_resource.resource_id = None;
+    assert!(records::encode_fastpath_settlement_record(&missing_resource).is_err());
+    let mut zero_total: FastPathSettlementRecord = record.clone();
+    zero_total.total_amount = Some(0);
+    assert!(records::encode_fastpath_settlement_record(&zero_total).is_err());
+    let mut no_shares: FastPathSettlementRecord = record.clone();
+    no_shares.shares.clear();
+    assert!(records::encode_fastpath_settlement_record(&no_shares).is_err());
 }
 
 #[test]
 fn fastpath_settlement_record_uncharged_frame_0x641e_is_stable() {
     let record: FastPathSettlementRecord = FastPathSettlementRecord {
+        context: vector_context(),
         request_id: [0x07; 32],
+        generation: 0,
+        resource_id: None,
         fee_output: None,
-        actual_amount: None,
-        signer_ids: vec![ValidatorId::new([0x08; 32])],
+        fee_output_epoch: None,
+        total_amount: None,
+        shares: Vec::new(),
     };
     let bytes: Vec<u8> = records::encode_fastpath_settlement_record(&record).unwrap();
     assert_eq!(
         hex(&bytes),
-        "534e52451e6401000200010020000000070707070707070707070707070707070707070707070707070707070707070704003a000000534e5245216401000200010004000000010000000200200000000808080808080808080808080808080808080808080808080808080808080808"
+        "534e52451e640100030001003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f727302000400000003000000030008000000090000000000000002002000000007070707070707070707070707070707070707070707070707070707070707070300080000000000000000000000"
     );
+    let mut partial_charge: FastPathSettlementRecord = record;
+    partial_charge.resource_id = Some(BondResourceId::new(9, [0x09; 32]).unwrap());
+    assert!(records::encode_fastpath_settlement_record(&partial_charge).is_err());
 }
 
 #[test]

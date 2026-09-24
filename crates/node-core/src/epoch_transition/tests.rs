@@ -2147,7 +2147,7 @@ fn four_validator_sqlite_epoch_transition_activates_and_certified_execution_cont
         consensus::encode_fast_certificate(&baseline_certificate).unwrap();
     for file in &files {
         let (store, blob_store) = file.open();
-        fast_path::apply(
+        let output: NodeOutput = fast_path::apply(
             &store,
             &blob_store,
             &context(1),
@@ -2162,6 +2162,40 @@ fn four_validator_sqlite_epoch_transition_activates_and_certified_execution_cont
             &baseline_certificate_bytes,
         )
         .unwrap();
+        let applied = receipt(&output);
+        assert_eq!(applied.status, PaidExecutionStatus::Success);
+        let charged = applied.charged.expect("baseline fee settlement");
+        assert_eq!(fixture.fee_policy.fee_recipient, genesis_authority());
+        let load_coin = |id: ObjectId| -> Object {
+            match query_object(&store, &context(1), domain(), &chain(), id).unwrap() {
+                ObjectQueryResult::CurrentInline {
+                    canonical_object_bytes,
+                    ..
+                } => objects::decode_object(&canonical_object_bytes).unwrap(),
+                other => panic!("expected a current inline settlement coin, got {other:?}"),
+            }
+        };
+        let fee: Object = load_coin(charged.fee_output.id);
+        let refund: Object = load_coin(charged.refund_output.expect("baseline refund output").id);
+        assert!(matches!(
+            fee.owner,
+            Owner::ProtocolCustody(ProtocolCustodyScope {
+                purpose: ProtocolCustodyPurpose::FeeEscrow,
+                ..
+            })
+        ));
+        assert_eq!(
+            refund.owner,
+            Owner::Address(Address::new(genesis_authority()))
+        );
+        assert_eq!(
+            public_standard_asset::coin_amount(&fee.data).unwrap(),
+            charged.actual.get()
+        );
+        assert_eq!(
+            public_standard_asset::coin_amount(&refund.data).unwrap(),
+            charged.refund.get()
+        );
     }
 
     // 3-4. Four independent transition votes and a 3-of-4 certificate,

@@ -12,6 +12,7 @@
 //! fast-path-only module.
 use super::*;
 use abi::package_types::ScopedTypeArg;
+use bonds::{BondResourceId, decode_bond_resource_id, encode_bond_resource_id};
 use execution::local_execution::{
     ObjectAuthority, decode_object_authority, encode_object_authority,
 };
@@ -21,19 +22,20 @@ const FASTPATH_CERTIFICATE_RECORD_TYPE: u16 = 0x641D;
 const FASTPATH_SETTLEMENT_RECORD_TYPE: u16 = 0x641E;
 const FASTPATH_VALIDATOR_SET_RECORD_TYPE: u16 = 0x641F;
 const FASTPATH_OBJECT_REF_LIST_TYPE: u16 = 0x6420;
-const FASTPATH_ID_LIST_TYPE: u16 = 0x6421;
 const FASTPATH_VALIDATOR_ENTRY_LIST_TYPE: u16 = 0x6422;
 const FASTPATH_VALIDATOR_ENTRY_TYPE: u16 = 0x6423;
 const FASTPATH_BOND_RECORD_TYPE: u16 = 0x642A;
 const FASTPATH_BOND_STATE_TYPE: u16 = 0x642D;
 const FASTPATH_BOND_TRANSITION_RECORD_TYPE: u16 = 0x6431;
 const FASTPATH_BOND_TRANSITION_AUTHORIZATION_TYPE: u16 = 0x6433;
+const FASTPATH_FEE_SHARE_TYPE: u16 = 0x6435;
+const FASTPATH_FEE_SHARE_LIST_TYPE: u16 = 0x6436;
 const ENCODING_VERSION: u16 = 1;
 
 /// Bounds every nested fast-path record list. Locked-object and
-/// certificate-signer lists are bounded by the same per-request execution
-/// scope/object ceilings the rest of paid admission already enforces;
-/// `MAX_VALIDATORS` bounds the durable validator set itself.
+/// certificate-signer lists are bounded by `MAX_FASTPATH_SIGNERS`; locked
+/// objects are bounded by the per-request execution scope/object ceilings.
+/// `MAX_FASTPATH_VALIDATORS` bounds the durable validator set itself.
 const MAX_FASTPATH_LOCKED_OBJECTS: usize = 256;
 /// Mirrors `validator_set::ValidatorSet`'s own private `MAX_VALIDATORS`
 /// bound (10_000); [`validator_set::ValidatorSet::new`] independently
@@ -248,20 +250,41 @@ pub fn decode_fastpath_certificate_record(
     Ok(record)
 }
 
-/// Frame `0x641E/v1`: settlement metadata a successful apply commits
-/// alongside the final receipt, for later (not-yet-implemented) Phase 3 fee
-/// distribution to certificate signers. Fields 2/3 are present exactly when
-/// the applied outcome charged a fee (`Success` or `ApplicationFailed`).
+/// One deterministic active-validator entitlement carried inside the
+/// bounded settlement row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FastPathFeeShare {
+    /// Ascending, unique active-validator identity.
+    pub validator_id: ValidatorId,
+    /// Exact share assigned by the quotient/remainder rule.
+    pub amount: u64,
+    /// Whether this share has already been finalized by a claim.
+    pub claimed: bool,
+}
+
+/// Frame `0x641E/v1`: the authoritative bounded fee-escrow row committed by
+/// successful certificate apply. This repository is unreleased, so the old
+/// metadata-only shape was replaced in place rather than retaining a dead
+/// compatibility decoder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FastPathSettlementRecord {
+    /// Exact certificate publication context.
+    pub context: PublicationContext,
     /// Original signed intent's request id.
     pub request_id: [u8; 32],
-    /// Exact fresh fee output the charge minted, when charged.
+    /// Escrow generation. Zero exactly for an uncharged outcome; one at the
+    /// initial charged apply and advanced by each later claim.
+    pub generation: u64,
+    /// Exact generic resource identity, when charged.
+    pub resource_id: Option<BondResourceId>,
+    /// Exact fresh `FeeEscrow` output the charge minted, when charged.
     pub fee_output: Option<ObjectRef>,
-    /// Exact actual amount charged, when charged.
-    pub actual_amount: Option<u64>,
-    /// Canonical ascending-`ValidatorId` order of the certificate's signers.
-    pub signer_ids: Vec<ValidatorId>,
+    /// Epoch under whose object hash suite `fee_output` was minted.
+    pub fee_output_epoch: Option<Epoch>,
+    /// Exact total amount charged, when charged.
+    pub total_amount: Option<u64>,
+    /// Canonical ascending active-validator entitlements. Empty when uncharged.
+    pub shares: Vec<FastPathFeeShare>,
 }
 
 /// Frame `0x642D/v1`: exact lifecycle state of one validator bond generation.
@@ -986,34 +1009,164 @@ pub fn decode_fastpath_bond_transition_record(
     Ok(record)
 }
 
-/// Encodes Frame `0x641E/v1`.
-pub fn encode_fastpath_settlement_record(
+fn encode_fastpath_fee_share(share: &FastPathFeeShare) -> Result<Vec<u8>, NodeCoreError> {
+    let mut frame: CanonicalStruct = CanonicalStruct::new(FASTPATH_FEE_SHARE_TYPE, 1);
+    frame.field_bytes(1, share.validator_id.as_bytes().to_vec())?;
+    frame.field_u64(2, share.amount)?;
+    frame.field_u16(3, u16::from(share.claimed))?;
+    Ok(frame.finish()?)
+}
+
+fn decode_fastpath_fee_share(bytes: &[u8]) -> Result<FastPathFeeShare, NodeCoreError> {
+    let frame = decode_canonical_frame(bytes)?;
+    frame.require_type(FASTPATH_FEE_SHARE_TYPE)?;
+    frame.require_version(1)?;
+    frame.require_only_fields(&[1, 2, 3])?;
+    let validator: [u8; 32] = frame
+        .required_field(1)?
+        .try_into()
+        .map_err(|_| NodeCoreError::PersistenceInvariant("fee share validator length"))?;
+    let claimed: bool = match frame.required_u16(3)? {
+        0 => false,
+        1 => true,
+        _ => {
+            return Err(NodeCoreError::PersistenceInvariant(
+                "fee share claimed flag",
+            ));
+        }
+    };
+    let share: FastPathFeeShare = FastPathFeeShare {
+        validator_id: ValidatorId::new(validator),
+        amount: frame.required_u64(2)?,
+        claimed,
+    };
+    if encode_fastpath_fee_share(&share)? != bytes {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "noncanonical fast-path fee share",
+        ));
+    }
+    Ok(share)
+}
+
+fn validate_fastpath_settlement_record(
     record: &FastPathSettlementRecord,
-) -> Result<Vec<u8>, NodeCoreError> {
-    if record.fee_output.is_some() != record.actual_amount.is_some() {
+) -> Result<(), NodeCoreError> {
+    let charged: bool = record.fee_output.is_some();
+    if record.resource_id.is_some() != charged
+        || record.fee_output_epoch.is_some() != charged
+        || record.total_amount.is_some() != charged
+    {
         return Err(NodeCoreError::PersistenceInvariant(
             "fast-path settlement charge fields presence mismatch",
         ));
     }
-    let signer_items: Vec<Vec<u8>> = record
-        .signer_ids
-        .iter()
-        .map(|id| id.as_bytes().to_vec())
-        .collect();
-    let signers_bytes: Vec<u8> =
-        encode_item_list(FASTPATH_ID_LIST_TYPE, &signer_items, MAX_FASTPATH_SIGNERS)?;
+    if !charged {
+        if record.generation != 0 || !record.shares.is_empty() {
+            return Err(NodeCoreError::PersistenceInvariant(
+                "uncharged fast-path settlement state",
+            ));
+        }
+        return Ok(());
+    }
+    if record.generation == 0 || record.shares.is_empty() {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "charged fast-path settlement state",
+        ));
+    }
+    let total_amount: u64 = record
+        .total_amount
+        .ok_or(NodeCoreError::PersistenceInvariant(
+            "settlement total absent",
+        ))?;
+    if total_amount == 0 {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "charged fast-path settlement zero total",
+        ));
+    }
+    let mut previous: Option<ValidatorId> = None;
+    let mut sum: u64 = 0;
+    let mut claimed_count: u64 = 0;
+    for share in &record.shares {
+        if previous.is_some_and(|id: ValidatorId| id >= share.validator_id) {
+            return Err(NodeCoreError::PersistenceInvariant(
+                "fee shares must be strictly ordered",
+            ));
+        }
+        previous = Some(share.validator_id);
+        sum = sum
+            .checked_add(share.amount)
+            .ok_or(NodeCoreError::PersistenceInvariant(
+                "fee share sum overflow",
+            ))?;
+        claimed_count = claimed_count.checked_add(u64::from(share.claimed)).ok_or(
+            NodeCoreError::PersistenceInvariant("fee share claimed count overflow"),
+        )?;
+    }
+    if sum != total_amount {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "fee shares do not conserve settlement total",
+        ));
+    }
+    let expected_generation: u64 =
+        claimed_count
+            .checked_add(1)
+            .ok_or(NodeCoreError::PersistenceInvariant(
+                "fee share generation overflow",
+            ))?;
+    if record.generation != expected_generation {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "fee share generation mismatch",
+        ));
+    }
+    Ok(())
+}
+
+/// Encodes Frame `0x641E/v1`.
+pub fn encode_fastpath_settlement_record(
+    record: &FastPathSettlementRecord,
+) -> Result<Vec<u8>, NodeCoreError> {
+    validate_fastpath_settlement_record(record)?;
     let mut frame: CanonicalStruct = CanonicalStruct::new(FASTPATH_SETTLEMENT_RECORD_TYPE, 1);
-    frame.field_bytes(1, record.request_id.to_vec())?;
-    if let (Some(fee_output), Some(actual_amount)) = (&record.fee_output, record.actual_amount) {
+    frame.field_bytes(
+        1,
+        encode_publication_context(&record.context)
+            .map_err(|_| NodeCoreError::PersistenceInvariant("invalid settlement context"))?,
+    )?;
+    frame.field_bytes(2, record.request_id.to_vec())?;
+    frame.field_u64(3, record.generation)?;
+    if let (Some(resource_id), Some(fee_output), Some(fee_output_epoch), Some(total_amount)) = (
+        record.resource_id,
+        &record.fee_output,
+        record.fee_output_epoch,
+        record.total_amount,
+    ) {
         frame.field_bytes(
-            2,
+            4,
+            encode_bond_resource_id(resource_id)
+                .map_err(|_| NodeCoreError::PersistenceInvariant("invalid fee resource id"))?,
+        )?;
+        frame.field_bytes(
+            5,
             objects::encode_object_ref(fee_output).map_err(|_| {
                 NodeCoreError::PersistenceInvariant("invalid settlement fee output")
             })?,
         )?;
-        frame.field_u64(3, actual_amount)?;
+        frame.field_u64(6, fee_output_epoch.get())?;
+        frame.field_u64(7, total_amount)?;
+        let share_items: Vec<Vec<u8>> = record
+            .shares
+            .iter()
+            .map(encode_fastpath_fee_share)
+            .collect::<Result<_, _>>()?;
+        frame.field_bytes(
+            8,
+            encode_item_list(
+                FASTPATH_FEE_SHARE_LIST_TYPE,
+                &share_items,
+                MAX_FASTPATH_SIGNERS,
+            )?,
+        )?;
     }
-    frame.field_bytes(4, signers_bytes)?;
     Ok(frame.finish()?)
 }
 
@@ -1024,49 +1177,55 @@ pub fn decode_fastpath_settlement_record(
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(FASTPATH_SETTLEMENT_RECORD_TYPE)?;
     frame.require_version(1)?;
+    let context: PublicationContext = decode_publication_context(frame.required_field(1)?)
+        .map_err(|_| NodeCoreError::PersistenceInvariant("invalid settlement context"))?;
     let request_id: [u8; 32] = frame
-        .required_field(1)?
+        .required_field(2)?
         .try_into()
         .map_err(|_| NodeCoreError::PersistenceInvariant("settlement record request id"))?;
-    let (fee_output, actual_amount) = match (frame.field(2), frame.field(3)) {
-        (Some(fee_output_bytes), Some(_)) => {
-            frame.require_only_fields(&[1, 2, 3, 4])?;
+    let generation: u64 = frame.required_u64(3)?;
+    let (resource_id, fee_output, fee_output_epoch, total_amount, shares) =
+        if frame.field(4).is_some() {
+            frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8])?;
+            let share_items: Vec<Vec<u8>> = decode_item_list(
+                FASTPATH_FEE_SHARE_LIST_TYPE,
+                frame.required_field(8)?,
+                MAX_FASTPATH_SIGNERS,
+            )?;
+            let shares: Vec<FastPathFeeShare> = share_items
+                .iter()
+                .map(|item| decode_fastpath_fee_share(item))
+                .collect::<Result<_, _>>()?;
             (
-                Some(objects::decode_object_ref(fee_output_bytes).map_err(|_| {
-                    NodeCoreError::PersistenceInvariant("invalid settlement fee output")
-                })?),
-                Some(frame.required_u64(3)?),
+                Some(
+                    decode_bond_resource_id(frame.required_field(4)?).map_err(|_| {
+                        NodeCoreError::PersistenceInvariant("invalid fee resource id")
+                    })?,
+                ),
+                Some(
+                    objects::decode_object_ref(frame.required_field(5)?).map_err(|_| {
+                        NodeCoreError::PersistenceInvariant("invalid settlement fee output")
+                    })?,
+                ),
+                Some(Epoch::new(frame.required_u64(6)?)),
+                Some(frame.required_u64(7)?),
+                shares,
             )
-        }
-        (None, None) => {
-            frame.require_only_fields(&[1, 4])?;
-            (None, None)
-        }
-        _ => {
-            return Err(NodeCoreError::PersistenceInvariant(
-                "fast-path settlement charge fields presence mismatch",
-            ));
-        }
-    };
-    let signer_items: Vec<Vec<u8>> = decode_item_list(
-        FASTPATH_ID_LIST_TYPE,
-        frame.required_field(4)?,
-        MAX_FASTPATH_SIGNERS,
-    )?;
-    let mut signer_ids: Vec<ValidatorId> = Vec::with_capacity(signer_items.len());
-    for item in &signer_items {
-        let bytes32: [u8; 32] = item
-            .as_slice()
-            .try_into()
-            .map_err(|_| NodeCoreError::PersistenceInvariant("settlement signer id length"))?;
-        signer_ids.push(ValidatorId::new(bytes32));
-    }
+        } else {
+            frame.require_only_fields(&[1, 2, 3])?;
+            (None, None, None, None, Vec::new())
+        };
     let record: FastPathSettlementRecord = FastPathSettlementRecord {
+        context,
         request_id,
+        generation,
+        resource_id,
         fee_output,
-        actual_amount,
-        signer_ids,
+        fee_output_epoch,
+        total_amount,
+        shares,
     };
+    validate_fastpath_settlement_record(&record)?;
     if encode_fastpath_settlement_record(&record)? != bytes {
         return Err(NodeCoreError::PersistenceInvariant(
             "noncanonical fast-path settlement record",

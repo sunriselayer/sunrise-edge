@@ -389,6 +389,7 @@ fn run_transfer_call(asset: &Asset, request_id: [u8; 32], nonce: u64) -> PaidExe
         resolver: &resolver(),
         base_policy: &base_policy,
         fee_policy: &policy,
+        fee_escrow_creation: None,
         scopes: &scopes,
         source: coin_source.clone(),
         application: PaidApplicationScopes::Call {

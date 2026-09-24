@@ -72,6 +72,9 @@ pub struct PaidExecutionRequest<'a> {
     pub resolver: &'a HashSuiteResolver,
     pub base_policy: &'a LocalExecutionPolicy,
     pub fee_policy: &'a PaidFeePolicy,
+    /// Optional FastVote-only authority that creates the policy-pinned fee
+    /// output directly under protocol custody during settlement.
+    pub fee_escrow_creation: Option<&'a crate::protocol_custody::FeeEscrowCreationCapability>,
     /// Bounded admitted scopes; index selection is validated below.
     pub scopes: &'a [ResolvedExecutionScope],
     /// The resolved fee source, checked against the signed consent's

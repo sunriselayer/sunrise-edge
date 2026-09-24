@@ -696,6 +696,7 @@ pub(crate) fn admit_and_execute_leg<
                 context: &call.context,
                 effects: &outcome.effects,
                 created_authorities: &outcome.created_authorities,
+                allowed_protocol_custody_output: None,
             },
             created_checkpoint,
             &inputs,

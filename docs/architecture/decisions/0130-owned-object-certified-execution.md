@@ -39,10 +39,11 @@ roadmap and is delivered across four phases, tracked there and in
   transitions, retired/wrong-epoch rejection, relay/event-family
   authorization, explicit equivocation evidence, multi-validator
   fault/restart tests.
-* **Phase 3 (not yet designed).** Economics/security completion: bond-linked
-  slashing execution and deterministic transaction-fee escrow distribution to
-  the final certificate signer set, including a canonical rounding-remainder
-  rule and vectors.
+* **Phase 3 (subsequently designed in DR-0137).** Economics/security completion:
+  bond-linked slashing execution and deterministic transaction-fee escrow
+  distribution to the committed active validator set, including a canonical
+  rounding-remainder rule and vectors. DR-0137 corrects this decision's earlier
+  signer-subset proposal because valid certificates can carry different quorums.
 
 **FastVote is complete only after Phase 3.** A testnet may launch on top of
 Phase 1 — a static signed genesis validator set with a frozen epoch is
@@ -153,7 +154,7 @@ single governance-pinned recipient used by DR-0126/DR-0127) becomes the
 protocol escrow for certified execution's fee settlement at this phase
 boundary. Certificate apply debits the fee into that same existing recipient;
 it does not introduce a new balance authority. Distributing fee revenue to
-the individual validators in the final certificate signer set is explicitly
+the individual validators in the committed active set is explicitly
 Phase 3 work (deterministic distribution with a canonical rounding-remainder
 rule and vectors) and is not implemented by this DR — escrowed funds are not
 distributed by Phase 1.
@@ -232,14 +233,16 @@ The implementation assigns these canonical frame IDs, all at version 1:
 | `0x641B` | exact object lock |
 | `0x641C` | prepared intent/vote |
 | `0x641D` | applied certificate |
-| `0x641E` | settlement metadata |
+| `0x641E` | authoritative fee-escrow settlement row (extended in place by DR-0137) |
 | `0x641F` | signed-genesis validator set |
 | `0x6420` | prepared object-reference list |
-| `0x6421` | settlement signer-ID list |
+| `0x6421` | retired by DR-0137 (former settlement signer-ID list) |
 | `0x6422` | validator-entry list |
 | `0x6423` | validator entry |
 | `0x6424` | staged-commit commitment envelope |
 | `0x6425` | sender/epoch nonce lock |
+| `0x6435` | DR-0137 fee-share entry |
+| `0x6436` | DR-0137 bounded fee-share list |
 
 Their literal Rust bytes and the independently reconstructed JavaScript bytes
 are pinned by `crates/node-core/src/fast_path/tests.rs` and
@@ -273,7 +276,7 @@ namespaces (see `docs/operations/persistence.md`):
   commitment. Phase 1 has no separately committed "verified but unapplied"
   state.
 - **Settlement metadata record.** The fee output, actual charged amount, and
-  canonical certificate signer IDs attributed to this certified execution.
+  canonical active-validator IDs attributed to this certified execution.
   Recording the inputs for later distribution is not distribution itself;
   balance mutations and the deterministic rounding/remainder rule remain
   Phase 3.
@@ -366,8 +369,8 @@ form used by DR-0121-DR-0129:
 - Validator-set changes, epoch/view rotation, equivocation evidence, and
   multi-validator fault/restart tests beyond what Phase 1's own test
   evidence requires remain Phase 2, undesigned by this DR.
-- Bond-linked slashing and fee/reward distribution to the final certificate
-  signer set remain Phase 3, undesigned by this DR. Phase 1's "protocol
+- Bond-linked slashing and fee/reward distribution to the committed active
+  validator set remain Phase 3, later designed by DR-0137. Phase 1's "protocol
   escrow" fee boundary is explicitly not a distribution mechanism.
 - This DR does not modify DR-0129's `crates/consensus` types, wire IDs, or
   signature domain. Any new canonical frame this phase needs (in particular

@@ -75,7 +75,7 @@ pub use result::{
     MAX_PAID_EXECUTION_RESULT_BYTES, PaidChargedOutcome, PaidExecutionResult, PaidExecutionStatus,
     PaidResultKind, PaidResultTarget, decode_paid_execution_result, encode_paid_execution_result,
 };
-pub use verify::verify_paid_execution_result;
+pub use verify::{verify_paid_execution_result, verify_paid_execution_result_with_fee_owner};
 
 /// Canonical frame type of an encoded [`SignedPaidIntent`]. Authoritative for
 /// any dispatch that must distinguish a stored DR-0124 paid Publish row from

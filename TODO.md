@@ -48,8 +48,9 @@ commitments derived through authenticated generic executable ABI metadata,
 DR-0137 unit 2 implements the closed post-genesis whole-object bond
 lifecycle (Deposit/Replace/Unbond/Withdraw), and DR-0137 unit 3 implements
 one-time evidence-driven forfeiture, jail/reactivation and next-set
-eligibility coupling. Certified signer entitlements, fee escrow
-distribution, and payout remain unauthorized (unit 4). **FastVote is
+eligibility coupling. Unit 4 now commits the certified fee object into
+request-scoped escrow and persists deterministic active-validator entitlements; signed
+claim execution, distribution and payout remain unauthorized. **FastVote is
 complete only after phase 3.** A testnet may launch after phase 1, but that
 is not FastVote completion.
 
@@ -59,7 +60,7 @@ is not FastVote completion.
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Implemented and validated (DR-0128); focused Codex Security scan found 0 reportable findings and fresh Opus review approved |
-| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated** (DR-0129 through DR-0134). Phase 2 includes the seven-operation authorization matrix, committed-epoch native surfaces, and closed external ingress. **Phase 3 is open.** DR-0135 implements non-signable protocol custody, DR-0136 implements typed genesis bond commitments, DR-0137 unit 2 implements the closed post-genesis whole-object bond lifecycle (Deposit/Replace/Unbond/Withdraw), and DR-0137 unit 3 implements one-time evidence-driven forfeiture, jail/reactivation and next-set eligibility coupling, all without a Standard Asset exception. Certified signer entitlements, fee escrow distribution, and payout remain incomplete (unit 4). FastVote overall is incomplete. |
+| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated** (DR-0129 through DR-0134). Phase 2 includes the seven-operation authorization matrix, committed-epoch native surfaces, and closed external ingress. **Phase 3 is open.** DR-0135 implements non-signable protocol custody, DR-0136 implements typed genesis bond commitments, DR-0137 unit 2 implements the closed post-genesis whole-object bond lifecycle (Deposit/Replace/Unbond/Withdraw), and DR-0137 unit 3 implements one-time evidence-driven forfeiture, jail/reactivation and next-set eligibility coupling, all without a Standard Asset exception. Unit 4's certified fee escrow and deterministic active-validator entitlement persistence are implemented; signed claim execution, distribution and payout remain incomplete. FastVote overall is incomplete. |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
 Asset creation was the final focused delta before FastVote/multi-validator
@@ -1143,11 +1144,11 @@ transaction fee:
 
 Transaction Fee
     ↓
-Certificate Signers
+Committed Active Validator Set
     ↓
 stablecoin distribution
 
-certificate signer setからdeterministically計算。
+certificateの有効なquorum subsetには依存せず、確定したactive validator setからdeterministically計算。
 
 
 # 41. Fee Settlement Separation
@@ -1161,7 +1162,7 @@ Certificate
 Phase C:
 FeeSettlementEffects
 
-最終signer set確定後にfee distributionを計算する。
+確定したactive validator setからfee distributionを計算する。
 
 rounding remainderのrecipientもcanonicalに決定する。
 
@@ -2476,8 +2477,9 @@ Unique Asset v1、builder/public-testnet asset surfaceはまだ有効ではな�
 7. **部分実装。** protocol-v4 devnetはStandard Asset v1 fee coinをordinary objectとして扱い、
    same ownership/exact-version/checked-arithmetic/atomic-effect ruleを使う。native coinやprivileged
    balanceは追加していない。一方、現在のsingle treasury coinはlocal-devnet限定のhot spotであり、
-   production fast pathへは持ち込まない。fee output/aggregation/certificate-signer distributionは
-   別のbounded deterministic decisionとして未実装。
+   production fast pathへは持ち込まない。certified fee outputのcustody化と
+   active-validator配分はDR-0137で実装済みだが、signed claim/payoutとその
+   race/restart検証はPhase 3の残作業（下記参照）。
 8. **whole-coin transfer activation sliceは実装・検証済み。**
    canonical/stable/adversarial/replay/fee-compositionとreal file-backed SQLite
    restart testを実装し、commit `891152fc098e080b5d61a2242bc997e861553cc6`でcomplete
@@ -2607,7 +2609,7 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
      releasing the lock.
 
   The current paid fee recipient becomes protocol escrow for this phase
-  boundary; distribution to the final certificate signer set is phase 3, not
+  boundary; distribution to the committed active validator set is phase 3, not
   implemented here. Durable prepared/lock/certificate/settlement records use
   the reserved fast-path namespace and canonical frame IDs `0x641B`-`0x6425`.
   The gate includes 25 `node-core` fast-path tests, four independent
@@ -3179,12 +3181,24 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
       (now with `previous_object`/`resulting_object`)/`0x6434` new, plus the
       `Reactivate` `0x642F`/`0x6430` shape and `0x642A`'s two new fields);
       and
-    - [ ] pre-certification fee escrow, deterministic signer entitlements,
-      claims, race/restart evidence and the Phase 3 review gate.
+    - [ ] certified fee escrow and claims:
+      - [x] settle-phase-only creation authority promotes only the pinned
+        settlement ABI's exact returned fee slot into request-scoped
+        `FeeEscrow` before the prepared commitment (the refund remains
+        address-owned even for equal recipients); apply atomically stores the
+        exact resource/object/epoch/total plus sorted unique active-validator shares
+        using `T/N` and ascending-id remainder assignment in the bounded
+        `0x641E/v1` row; Rust and independent JavaScript vectors cover
+        `0x641E`, `0x6435` and `0x6436`;
+      - [ ] historical-validator-signed zero/partial/final claims through the
+        policy-pinned public `split`/`transfer` ABI, duplicate-claim CAS race,
+        SQLite close/reopen and indeterminate-commit evidence;
+      - [ ] Phase 3 review gate.
 
-  **Remaining Phase 3 completion:** deterministic transaction-fee escrow
-  distribution to the final certificate signer set, including a canonical
-  rounding-remainder rule and vectors, plus the Phase 3 review gate.
+  **Remaining Phase 3 completion:** execute and atomically finalize the
+  already-derived deterministic active-validator shares through signed claims, prove
+  duplicate/race/restart/indeterminate behavior, then pass the Phase 3 review
+  gate.
   FastVote is not complete until this phase closes.
 
 ## CLI-First Node Production Gate

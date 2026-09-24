@@ -895,8 +895,8 @@ tech-lead review.
   epoch, differing target tuple). DR-0134 specifies Slice 4's authorization
   boundary; its companion code and reviews remain the Phase 2 closure gate.
 - Bond-linked slashing execution and deterministic transaction-fee escrow
-  distribution to the final certificate signer set remain Phase 3,
-  unaffected by this DR.
+  distribution remain Phase 3, unaffected by this DR. DR-0137 supersedes the
+  historical signer-set proposal with committed active-validator shares.
 - This DR does not change DR-0129's `crates/consensus` types, wire IDs, or
   signature domain, and does not change DR-0130's or DR-0131's Phase 1/
   Slice 1 invariants; it only adds the new frame families and node-core

@@ -513,7 +513,6 @@ dependencies = [
  "canonical-encoding",
  "objects",
  "protocol-types",
- "runtime",
  "standard-assets",
 ]
 

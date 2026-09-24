@@ -88,6 +88,7 @@ fn run_publish(
             resolver: &resolver(),
             base_policy: &base_policy,
             fee_policy: &policy,
+            fee_escrow_creation: None,
             scopes: &scopes,
             source: coin_source,
             application: PaidApplicationScopes::Publish {
@@ -406,6 +407,7 @@ fn paid_publish_rejects_an_overlimit_dependency_closure_before_authenticating_it
             resolver: &resolver(),
             base_policy: &base_policy,
             fee_policy: &policy,
+            fee_escrow_creation: None,
             scopes: std::slice::from_ref(&asset.scope),
             source: coin_source,
             application: PaidApplicationScopes::Publish { dependencies },

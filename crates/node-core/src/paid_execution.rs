@@ -65,7 +65,7 @@ use execution::paid_execution::{
     authenticate_paid_intent, authenticate_paid_publication_candidate,
     encode_paid_execution_result, encode_paid_fee_policy, encode_signed_paid_intent,
     paid_invocation_digest, quote_paid_intent, validate_fee_interface_admission,
-    verify_paid_execution_result,
+    verify_paid_execution_result_with_fee_owner,
 };
 use execution::publication::{
     AuthenticatedPublicationCandidate, BoundObjectSignature, PublicationContext,
@@ -580,6 +580,7 @@ pub(crate) fn build_paid_admission<
     history: &[HashSuiteResolver],
     base_policy: &LocalExecutionPolicy,
     fee_policy: &PaidFeePolicy,
+    fee_escrow_creation: Option<&execution::protocol_custody::FeeEscrowCreationCapability>,
     engine: &E,
     authenticated: AuthenticatedPaidIntent,
     event_digest: Digest32,
@@ -1120,11 +1121,16 @@ pub(crate) fn build_paid_admission<
         resolver,
         base_policy,
         fee_policy,
+        fee_escrow_creation,
         scopes: &admitted,
         source,
         application: application_scopes,
     })?;
-    verify_paid_execution_result(
+    let expected_fee_owner: objects::Owner = match fee_escrow_creation {
+        Some(capability) => objects::Owner::ProtocolCustody(capability.scope().clone()),
+        None => objects::Owner::Address(objects::Address::new(fee_policy.fee_recipient)),
+    };
+    verify_paid_execution_result_with_fee_owner(
         &outcome,
         &authenticated,
         resolver,
@@ -1132,6 +1138,7 @@ pub(crate) fn build_paid_admission<
         fee_policy,
         &fee_instance,
         &application.dependencies,
+        &expected_fee_owner,
     )?;
     let result_bytes: Vec<u8> = encode_paid_execution_result(&outcome.result)?;
     let success: bool = outcome.result.status == PaidExecutionStatus::Success;
@@ -1168,6 +1175,8 @@ pub(crate) fn build_paid_admission<
                     context: &intent.context,
                     effects: &outcome.result.effects,
                     created_authorities: &outcome.created_authorities,
+                    allowed_protocol_custody_output: fee_escrow_creation
+                        .map(|capability| (charged.fee_output.id, capability.scope())),
                 },
                 created_checkpoint,
                 &inputs,
@@ -1318,6 +1327,7 @@ pub fn handle_preflighted_paid_execution<
         history,
         base_policy,
         fee_policy,
+        None,
         engine,
         authenticated,
         event_digest,

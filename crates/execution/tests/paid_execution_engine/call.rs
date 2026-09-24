@@ -60,6 +60,7 @@ fn paid_contract_engine_rejects_a_forged_fee_source_digest() {
         resolver: &resolver(),
         base_policy: &base_policy,
         fee_policy: &policy,
+        fee_escrow_creation: None,
         scopes: &scopes,
         source: coin_source,
         application: PaidApplicationScopes::Call {
@@ -130,6 +131,7 @@ fn a_post_execution_version_overflow_is_a_real_host_rejected_receipt() {
             resolver: &resolver(),
             base_policy: &base_policy,
             fee_policy: &policy,
+            fee_escrow_creation: None,
             scopes: &scopes,
             source: coin_source.clone(),
             application: PaidApplicationScopes::Call {
@@ -266,6 +268,7 @@ fn paid_contract_engine_runs_a_real_mint_call_that_traps_and_still_settles_the_f
         resolver: &resolver(),
         base_policy: &base_policy,
         fee_policy: &policy,
+        fee_escrow_creation: None,
         scopes: &scopes,
         source: coin_source,
         application: PaidApplicationScopes::Call {
@@ -374,6 +377,7 @@ fn paid_contract_engine_treats_an_application_created_reservation_survivor_as_ap
             resolver: &resolver(),
             base_policy: &base_policy,
             fee_policy: &policy,
+            fee_escrow_creation: None,
             scopes: &scopes,
             source: coin_source,
             application: PaidApplicationScopes::Call {
@@ -580,6 +584,7 @@ fn paid_contract_engine_rejects_a_genuine_preexisting_reservation_application_in
             resolver: &resolver(),
             base_policy: &base_policy,
             fee_policy: &policy,
+            fee_escrow_creation: None,
             scopes: &scopes,
             source: coin_source,
             application: PaidApplicationScopes::Call {
@@ -734,6 +739,7 @@ fn paid_contract_engine_runs_a_real_instantiate_and_settles_the_fee() {
             resolver: &resolver(),
             base_policy: &base_policy,
             fee_policy: &policy,
+            fee_escrow_creation: None,
             scopes: &scopes,
             source: coin_source,
             application: PaidApplicationScopes::Instantiate { scope: 0 },
@@ -830,6 +836,7 @@ fn transfer_attempt(
         resolver: &resolver(),
         base_policy: &base_policy,
         fee_policy: &policy,
+        fee_escrow_creation: None,
         scopes,
         source: coin_source,
         application: PaidApplicationScopes::Call {
@@ -997,6 +1004,7 @@ fn paid_contract_engine_rejects_a_malformed_application_input_reference() {
             resolver: &resolver(),
             base_policy: &base_policy,
             fee_policy: &policy,
+            fee_escrow_creation: None,
             scopes: &scopes,
             source: coin_source,
             application: PaidApplicationScopes::Call {
@@ -1076,6 +1084,7 @@ fn paid_contract_engine_rejects_a_fee_source_reference_mismatch() {
         resolver: &resolver(),
         base_policy: &base_policy,
         fee_policy: &policy,
+        fee_escrow_creation: None,
         scopes: &scopes,
         source: coin_source,
         application: PaidApplicationScopes::Call {

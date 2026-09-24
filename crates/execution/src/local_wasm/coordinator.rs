@@ -246,6 +246,9 @@ pub(super) struct PhasePlan<'a> {
     pub pricer: ReservationPricer,
     /// Pinned fee recipient.
     pub fee_recipient: [u8; 32],
+    /// Optional protocol authority that promotes only the settle phase's
+    /// exact returned fee slot to one exact `FeeEscrow` owner.
+    pub fee_escrow_creation: Option<&'a crate::protocol_custody::FeeEscrowCreationCapability>,
     /// Signed refund recipient.
     pub refund_recipient: [u8; 32],
 }
@@ -938,7 +941,7 @@ fn validated_settlement(
         .scopes
         .get(plan.target.scope)
         .ok_or_else(|| invalid("fee scope"))?;
-    let check = |grant: Grant, recipient: &[u8; 32]| -> Result<ObjectId, LocalExecutionError> {
+    let check = |grant: Grant, expected_owner: &Owner| -> Result<ObjectId, LocalExecutionError> {
         let item: &ArenaObject = state
             .arena
             .get(grant.index)
@@ -948,7 +951,7 @@ fn validated_settlement(
             || item.ordinal.is_none()
             || item.consumed
             || item.transferred
-            || item.object.owner != Owner::Address(Address::new(*recipient))
+            || &item.object.owner != expected_owner
             || item.object.schema_version != plan.target.schema
             || item.authority.ty != plan.target.asset_type
             || item.authority.code != plan.target.code
@@ -959,13 +962,20 @@ fn validated_settlement(
         }
         Ok(item.object.id)
     };
-    let fee_id: ObjectId = check(fee, &plan.fee_recipient)?;
+    let fee_owner: Owner = match plan.fee_escrow_creation {
+        Some(capability) => Owner::ProtocolCustody(capability.scope().clone()),
+        None => Owner::Address(Address::new(plan.fee_recipient)),
+    };
+    let fee_id: ObjectId = check(fee, &fee_owner)?;
     let refund_id: Option<ObjectId> = match refund_slot {
         Some(grant) => {
             if grant.index == fee.index {
                 return Err(invalid("aliased settlement outputs"));
             }
-            Some(check(*grant, &plan.refund_recipient)?)
+            Some(check(
+                *grant,
+                &Owner::Address(Address::new(plan.refund_recipient)),
+            )?)
         }
         None => None,
     };
@@ -1350,6 +1360,28 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
         Ok(bytes) => bytes,
         Err(_) => return Ok(host_rejected(plan, gas, bound)),
     };
+    let fee_escrow_creation = match plan.fee_escrow_creation {
+        Some(capability) => {
+            let scope: &ResolvedExecutionScope = match plan.scopes.get(plan.target.scope) {
+                Some(scope) => scope,
+                None => return Ok(host_rejected(plan, gas, bound)),
+            };
+            match capability.bind(
+                &plan.context,
+                &scope.target,
+                &plan.target.code,
+                &plan.target.asset_type,
+                plan.target.schema,
+                &plan.target.settle_entrypoint,
+                &plan.sender,
+                plan.event_digest,
+            ) {
+                Ok(bound) => Some(bound),
+                Err(_) => return Ok(host_rejected(plan, gas, bound)),
+            }
+        }
+        None => None,
+    };
     let settle: PhaseRun = match run_phase(
         &mut store,
         &linker,
@@ -1372,7 +1404,39 @@ pub(super) fn run(plan: &PhasePlan<'_>) -> Result<PhaseOutcome, LocalExecutionEr
         }
     };
     gas.settle = settle.gas;
-    let outputs: Option<(ObjectId, Option<ObjectId>)> = if settle.failed {
+    let fee_escrow_promoted: bool = if settle.failed {
+        false
+    } else {
+        match fee_escrow_creation.as_ref() {
+            None => true,
+            Some(capability) => match settle.returned.as_slice() {
+                [Some(fee), _] if fee.mode == ObjectMode::Read => {
+                    let authority = store.data().arena.get(fee.index).map(|item| {
+                        (
+                            item.object.owner.clone(),
+                            item.authority.ty.clone(),
+                            item.object.schema_version,
+                        )
+                    });
+                    match authority {
+                        Some((current_owner, ty, schema)) => capability
+                            .fee_output_owner(&current_owner, &ty, schema)
+                            .and_then(|new_owner| {
+                                store.data_mut().promote_created_owner(
+                                    fee.index,
+                                    &current_owner,
+                                    new_owner,
+                                )
+                            })
+                            .is_ok(),
+                        None => false,
+                    }
+                }
+                _ => false,
+            },
+        }
+    };
+    let outputs: Option<(ObjectId, Option<ObjectId>)> = if settle.failed || !fee_escrow_promoted {
         None
     } else {
         match store.data().arena.get(reservation_index) {
