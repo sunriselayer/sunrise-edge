@@ -1614,6 +1614,51 @@ fn equivocation_evidence_survives_close_reopen_and_reverifies() {
             epoch_0,
         )
         .unwrap();
+        let mut claim_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+        let fenced_set: ValidatorSet = load_historical_validator_set_fenced(
+            &reopened_store,
+            &context(),
+            domain(),
+            &resolver(),
+            &chain(),
+            protocol_version(),
+            epoch_0,
+            &mut claim_reads,
+        )
+        .unwrap();
+        assert_eq!(fenced_set.validators(), hist_val_set.validators());
+        assert!(
+            claim_reads
+                .contains_key(&local_instance_state::fastpath_epoch_record_key(&chain()).unwrap())
+        );
+        assert!(
+            claim_reads.contains_key(
+                &local_instance_state::fastpath_validator_set_key(
+                    &PublicationContext::new(chain(), protocol_version(), epoch_0).unwrap()
+                )
+                .unwrap()
+            )
+        );
+        let mut inconsistent_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+        inconsistent_reads.insert(
+            local_instance_state::fastpath_epoch_record_key(&chain()).unwrap(),
+            StateRevision::INITIAL,
+        );
+        assert!(matches!(
+            load_historical_validator_set_fenced(
+                &reopened_store,
+                &context(),
+                domain(),
+                &resolver(),
+                &chain(),
+                protocol_version(),
+                epoch_0,
+                &mut inconsistent_reads,
+            ),
+            Err(EquivocationEvidenceError::Node(
+                NodeCoreError::StateConflict
+            ))
+        ));
         verify_fast_vote_equivocation_evidence(&ev, hist_val_set, &FastPathEd25519Verifier)
             .unwrap();
     }
