@@ -4,10 +4,10 @@
 
 Accepted, 2026-09-24. The commitment witness and explicit per-escrow,
 escrow-side verifier are implemented with focused tests. DR-0140 subsequently
-adds the signed split-payout reference and paged inventory; complete
-certified all-escrow restart evidence and network capacity certification
-remain open. This decision does not close FastVote Phase 3 or establish
-network readiness.
+adds the signed split-payout reference and paged inventory. A certified
+two-escrow, five-claim SQLite close/reopen sweep covers the retained chains
+and payouts; network capacity certification remains open. This decision does
+not close FastVote Phase 3 or establish network readiness.
 
 ## Context
 
@@ -58,16 +58,19 @@ manifest, and the structured durable-store interface had no typed escrow
 enumeration. The v1 claim envelope also did not retain the split payout
 ObjectRef. Escrow-side value conservation alone does not independently
 authenticate the payout object. DR-0140 addresses both gaps through an
-explicitly versioned claim and read-only inventory; Phase 3 TODO retains the
-remaining complete-sweep evidence. A
-whole-store rollback still requires a separately anchored checkpoint or
+explicitly versioned claim and read-only inventory. A whole-store rollback
+still requires a separately anchored checkpoint or
 state root; a local database alone cannot detect its own complete rollback.
 
 The implementation verifies an explicit charged escrow's certified initial
 row after a real file-backed SQLite close/reopen, plus independent positive
-split/final chain fixtures and tamper cases. The local capacity regression of
-DR-0138 uses directly set-up zero-share rows, not certified apply. Neither
-test family alone proves the still-open end-to-end all-escrow/payout gate.
+split/final chain fixtures and tamper cases. A further file-backed test uses
+quorum-certified prepare/apply for two distinct escrows, then performs five
+signed split/final/zero-share claims, closes/reopens and verifies every
+present escrow through two inventory pages, including two signed payout
+objects and fail-closed tamper detection. The local capacity regressions of
+DR-0138 use directly set-up rows; the new two-escrow test is not a network
+claim-rate or recovery-time capacity certification.
 
 ## Evidence required before Phase 3 closes
 
