@@ -2,73 +2,13 @@
 
 ## Status
 
-Accepted, 2026-09-23. Implementation unit 1 (resource-generic policy, signed
-economics/lifecycle codecs and genesis persistence/restart verification) is
-implemented and locally validated. Unit 2 is now implemented and locally
-validated: the invocation-local protocol-custody execution capability; a
-generic, contract-agnostic whole-object custody-effect validator
-(`bond_lifecycle::effects`) that independently rejects any leg reporting a
-created object regardless of engine output; the closed
-`BondLifecycleIntent 0x642F/v1` envelope (signed as `0x6430/v1`), which pins
-the exact `BondResourceId`, expected pre-transition generation, expected
-previous-row digest and expected next-row digest the validator committed to
-ahead of execution, verified against the committed bond row's own
-authorization key both at submission (against the row actually read) and at
-commit (against the deterministically built resulting row, byte-exact,
-before any state is written) -- making the transition chain
-cryptographically non-forgeable rather than merely digest-summarized; a
-receipt/dedup digest kept distinct from the signing digest, hashing the
-exact signed envelope bytes so a resubmission under a different signature
-over an identical intent conflicts instead of replaying; the complete closed
-Deposit/Replace/Unbond/Withdraw state machine (Withdraw authorized by the
-committed validator plus an exact release-submitter signature, not any
-source/deposit authority; Unbond/Withdraw preserving the current row's
-`required_minimum` exactly so a later policy minimum raise cannot strand an
-already-eligible exit; Unbond independently validating a canonical
-prime-order Ed25519 recipient address; every leg's own `request_id` pinned
-to the outer intent's), each committing through one atomic
-`DurableInvocationTransaction`; a canonical, safe
-`FastPathBondRecord::live_collateral()` accessor that returns `None` once
-`Exited`/`Jailed` -- a discipline the type invites for any code that sums or
-reports bonded stake, not one Rust's field visibility mechanically enforces,
-since `custody_object`/`amount` remain public fields a caller can still read
-directly; the permanent `FastPathBondTransitionRecord 0x6431/v1` audit
-chain, now retaining the exact signed envelope and exact resulting row
-bytes (not a digest/signature summary) for independent re-verification, and
-now also cross-checking its own redundant `committed_at_checkpoint` copy
-against the decoded resulting row's; and genesis restart re-verification
-that walks that chain (`genesis::verify_fastpath_bond_chain`), independently
-re-decoding and re-verifying every stored envelope's signature and every
-stored row's identity/closed-transition from first principles, so a
-post-genesis transition no longer makes restart fail closed on the
-now-expected byte difference, while a deleted transition, swapped
-generation, lifted signature, tampered envelope, tampered stored row, a
-tampered `committed_at_checkpoint` summary, or a coordinated rewrite of a
-transition and the final row together all still fail restart -- while the
-advanced singleton itself, or the transition chain leading to it, remains
-present under this store; a full durable-store rollback to exactly the
-genesis snapshot is, by construction, indistinguishable from a legitimate
-fresh install unless a separately anchored checkpoint/state-root publication
-detects it, which remains out of this decision's scope. Partial
-(non-whole-object) release remains deferred to unit 4's fee-claims work,
-unchanged from unit 1. Unit 4's certification half is now implemented and
-locally validated: FastPath prepare/apply install a settle-phase-only creation
-capability that promotes only the ABI-returned fee result slot to exactly one
-request-scoped `FeeEscrow` owner before the effects commitment is computed;
-ordinary paid/application execution receives no such authority; apply derives
-ascending unique active-validator entitlements by the quotient/remainder rule and stores
-them with the exact escrow object, resource, creation epoch, total and initial
-generation in the same atomic certificate commit. The mutable claim state
-machine, claim races/restart evidence and Phase 3 review gate remain
-incomplete. Deposit and Replace now each have dedicated
-real-WASM success-path integration tests (Replace proving same-sender
-consecutive nonces, both owner transitions, and one atomic commit) alongside
-Withdraw's real-WASM, real-storage end-to-end coverage including genesis
-restart chain-walk re-verification; a real file-backed SQLite test spans
-Deposit, Unbond and Withdraw across three independent close/reopen cycles
-plus writer-fence rejection and two competing writer attempts proving
-exactly one commit with no partial state. Units 3 and 4 and the Phase 3
-review gate remain incomplete.
+Accepted, 2026-09-23. Resource-generic economics policy, bonded-custody
+lifecycle and its restart-verified transition chain, certified fee-escrow
+creation, and bounded signed zero/partial/final fee claims are implemented.
+SQLite competition and ambiguous-commit recovery tests cover zero and positive
+claims. Independent fee-claim history verification, capacity certification,
+and the Phase 3 review gate remain open; DR-0138 and DR-0139 track those
+boundaries. FastVote and network readiness are not yet complete.
 
 ## Context
 

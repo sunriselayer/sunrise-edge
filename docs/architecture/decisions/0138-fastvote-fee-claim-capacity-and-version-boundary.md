@@ -2,9 +2,10 @@
 
 ## Status
 
-Accepted, 2026-09-24. The validator admission cap and deterministic byte-size
-regressions are implemented; network throughput, disk-life and recovery-time
-capacity certification are not.
+Accepted, 2026-09-24. The validator admission cap, deterministic byte-size
+regressions, and a bounded local concurrent SQLite claim/reopen regression
+are implemented. Network throughput, positive-claim load, disk-life and
+recovery-time capacity certification are not.
 
 ## Context
 
@@ -48,6 +49,15 @@ representation. Before a network capacity claim, load/soak work must still
 establish acceptable concurrent escrows, claim rate, storage retention and
 restart time. A later increase in the cap requires that evidence and a
 reviewed admission change.
+
+The local regression runs 48 directly set-up escrow rows through the real
+zero-share claim handler using six concurrent connections to one file-backed
+SQLite database, then closes/reopens it and reads every resulting row and
+signed envelope. It reports elapsed time and exact logical retained-value
+bytes for that run. The rows are synthetic rather than certificate-applied;
+the test does not exercise WASM/object-mutating positive claims, report
+physical SQLite/WAL disk usage, or establish sustained/multi-node capacity.
+Its timing is diagnostic, not a network admission threshold.
 
 The current epoch transition always carries the same supplied protocol
 version into the next context; there is no durable, atomic protocol-version

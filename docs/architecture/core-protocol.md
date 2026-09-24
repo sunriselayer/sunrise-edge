@@ -560,19 +560,15 @@ signed economics policy pins the public-contract resource/type/instance/
 schema and release entrypoints; bond lifecycle, verified-evidence forfeiture,
 certified fee escrow and signer claims all use the same generic custody-effect
 validation and CAS-fenced durable boundary. It explicitly forbids direct body
-rewrites and Standard Asset knowledge in node core. Its first implementation
-unit is complete locally: resource-generic bond policy, signed economics
-resource/policy frames (`0x642B`/`0x642C`), authoritative bond lifecycle state
-(`0x642A` plus `0x642D`), reserved durable policy storage, clean-v1 genesis
-signature coverage and byte-exact restart verification. Unit 2's execution
-prerequisite is also complete locally: one invocation-local capability lets
-the defining typed-WASM contract produce a provisional owner effect for one
-exact deposit or release, without a generic Owner ABI, ambient authority,
-storage authority or Standard Asset special case. Node-core lifecycle
-admission, generic effect validation, atomic custody commit, bond mutations,
-slashing and fee claims remain closed. FastVote overall remains incomplete
-until the remaining work and its review gate pass.
-See DR-0129 through DR-0137 and `TODO.md` for exact evidence and remaining
+rewrites and Standard Asset knowledge in node core. The resource-generic
+policy, bond lifecycle and restart-verified bond history, evidence-based
+forfeiture, certified fee escrow, and bounded signed zero/partial/final fee
+claims are implemented. DR-0138 bounds active-validator admission to 256
+for the current whole-row escrow representation; it does not certify network
+capacity. DR-0139 specifies independent claim-history verification, whose
+coverage and remaining gaps must be kept distinct from ordinary replay.
+FastVote remains incomplete until the Phase 3 evidence and review gate pass.
+See DR-0129 through DR-0139 and `TODO.md` for exact evidence and remaining
 activation gates.
 
 ## 12. Certificate lifecycle

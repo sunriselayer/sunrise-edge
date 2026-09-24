@@ -957,6 +957,30 @@ fn file_backed_sqlite_positive_claim_competing_writers_commit_one_generation_onc
         next_nonce, 1,
         "exactly one leg must have advanced the shared sender nonce"
     );
+    let winning_claim: SignedFeeClaimIntent =
+        decode_signed_fee_claim_intent(winning_signed_bytes).unwrap();
+    let economics_key: Vec<u8> =
+        local_instance_state::fastpath_economics_policy_key(&protocol()).unwrap();
+    let economics_observed: VersionedStateValue = reopened
+        .get_versioned_durable(&context(1), domain(), &economics_key)
+        .unwrap();
+    let economics: FastPathEconomicsPolicy = decode_fastpath_economics_policy(
+        economics_observed
+            .value()
+            .expect("committed economics policy"),
+    )
+    .unwrap();
+    verify_retained_claim_legs(
+        &reopened,
+        &context(1),
+        domain(),
+        &resolver(),
+        &economics.resources[0],
+        &protocol(),
+        &winning_claim.intent.escrow_request_id,
+        2,
+    )
+    .unwrap();
     std::fs::remove_dir_all(&directory).unwrap();
 }
 

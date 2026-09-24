@@ -571,6 +571,30 @@ pub fn fastpath_equivocation_evidence_key(
     Ok(key)
 }
 
+/// Permanent, request-scoped witness of the exact `0x6424/v1` fast-path
+/// commitment envelope bytes a successful [`crate::fast_path::apply`]
+/// independently re-derives, verifies against the certificate, and commits
+/// atomically alongside [`fastpath_certificate_key`] and
+/// [`fastpath_settlement_key`]. A [`consensus::FastCertificate`] signs only
+/// that envelope's digest (`execution_effects_hash`) and never retains its
+/// preimage, so without this row a later verifier could never recover the
+/// certified [`execution::paid_execution::PaidExecutionResult`] -- in
+/// particular the charged outcome that fixed the initial settlement total
+/// and fee output -- from the certificate alone. Never overwritten: exactly
+/// one row is written per original request id, under the same INITIAL CAS
+/// discipline as the certificate and settlement rows it accompanies.
+pub fn fastpath_commitment_witness_key(
+    chain: &ChainId,
+    request_id: &[u8; 32],
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"commitment-witness/");
+    key.extend(encode_chain_id(chain)?);
+    key.extend_from_slice(request_id);
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
 /// Permanent, append-only key for one DR-0137 unit 3
 /// [`crate::bond_lifecycle::slash::EvidenceConsumptionRecord`] (`0x6432`):
 /// keyed exactly like [`fastpath_equivocation_evidence_key`]'s own selector
@@ -835,5 +859,25 @@ mod tests {
         assert_ne!(key, fastpath_fee_claim_key(&chain, &request, 3).unwrap());
         assert_ne!(key, fastpath_fee_claim_key(&chain, &[0x72; 32], 2).unwrap());
         assert_ne!(key, fastpath_settlement_key(&chain, &request).unwrap());
+    }
+
+    #[test]
+    fn commitment_witness_key_is_reserved_request_scoped_and_distinct_from_sibling_keys() {
+        let chain: ChainId = ChainId::new("commitment-witness").unwrap();
+        let request: [u8; 32] = [0x81; 32];
+        let key: Vec<u8> = fastpath_commitment_witness_key(&chain, &request).unwrap();
+        assert!(is_reserved(&key));
+        assert_ne!(
+            key,
+            fastpath_commitment_witness_key(&chain, &[0x82; 32]).unwrap()
+        );
+        assert_ne!(
+            key,
+            fastpath_commitment_witness_key(&ChainId::new("other-chain").unwrap(), &request)
+                .unwrap()
+        );
+        assert_ne!(key, fastpath_certificate_key(&chain, &request).unwrap());
+        assert_ne!(key, fastpath_settlement_key(&chain, &request).unwrap());
+        assert_ne!(key, fastpath_prepared_record_key(&chain, &request).unwrap());
     }
 }

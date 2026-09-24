@@ -3211,9 +3211,25 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         nonce and receipt, while the losing payout is absent; persisted and
         uncommitted indeterminate outcomes reconcile on close/reopen and
         exact replay without a second transition;
+      - [x] certificate apply now atomically retains the exact `0x6424/v1`
+        staged-commit preimage under a request-scoped reserved key. A real
+        four-validator SQLite close/reopen test re-hashes the retained bytes
+        to the quorum certificate and recovers the paid result, charged total
+        and initial fee output without changing existing canonical frames;
+      - [x] a read-only, explicit-escrow verifier reconstructs the certified
+        generation-1 row from that witness and the historical validator set,
+        then checks retained claim and embedded-leg signatures, pinned targets,
+        exact row digests and the immutable escrow-side object/value
+        transition chain. A file-backed
+        SQLite reopen test covers the unclaimed initial row; focused tests
+        cover split/final history and missing/tampered links. This is not a
+        startup-wide scan and does not independently verify split payouts;
       - [ ] independently restart-verify the retained signed-claim chain and
-        each object transition from authenticated prior bytes; ordinary
-        SQLite reopen/replay and direct effect validation do not prove this;
+        **every** object transition from authenticated prior bytes, including
+        each split payout, and provide a bounded all-escrow restart inventory
+        or equivalent operational gate. The current per-escrow escrow-side
+        verifier is partial (DR-0139); ordinary SQLite replay and direct
+        effect validation do not close the remaining gap;
       - [x] bound admission to 256 active validators at genesis, epoch
         next-set derivation, prepare, apply and fee-share construction,
         retaining the 10,000 decode ceiling for historical bytes. At the
@@ -3225,7 +3241,10 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         throughput/disk-life certification;
       - [ ] capacity/load/soak certification for concurrent escrows, claim
         rate, retained envelopes and restart time before claiming network
-        capacity;
+        capacity. The 48-escrow/six-writer synthetic zero-share SQLite
+        regression measures logical retained bytes and local reopen latency,
+        not positive-claim load, physical disk use or sustained network
+        capacity (DR-0138);
       - [ ] future protocol-version activation gate: there is currently no
         durable version-switch operation, and the claim handler intentionally
         rejects a different version, including zero shares. Before adding a
@@ -3235,9 +3254,9 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         config changes as an authorized protocol migration;
       - [ ] Phase 3 review gate.
 
-  **Remaining Phase 3 completion:** independently restart-verify retained
-  signed-claim history and object transitions, establish network capacity for
-  claims, then pass the Phase 3 review gate. Protocol-version activation is
+  **Remaining Phase 3 completion:** close the split-payout and all-escrow
+  restart-verification gaps, establish network capacity for claims, then pass
+  the Phase 3 review gate. Protocol-version activation is
   a separately blocked future gate; there is no live version-switch path to
   exercise in this phase. Revisit it before implementing that path.
   FastVote is not complete until this phase closes.
