@@ -46,6 +46,7 @@
 - [DR-0137: FastVote release authority and economics state machine](0137-fastvote-release-authority.md)
 - [DR-0138: FastVote fee-claim admission capacity and version boundary](0138-fastvote-fee-claim-capacity-and-version-boundary.md)
 - [DR-0139: FastVote fee-claim history verification](0139-fastvote-fee-claim-history-verification.md)
+- [DR-0140: signed FastVote payout reference and escrow inventory](0140-fastvote-payout-proof-and-escrow-inventory.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).

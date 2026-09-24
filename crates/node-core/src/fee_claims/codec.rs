@@ -29,7 +29,13 @@ use crate::NodeCoreError;
 
 const FEE_CLAIM_INTENT_TYPE: u16 = 0x6437;
 const SIGNED_FEE_CLAIM_INTENT_TYPE: u16 = 0x6438;
-const ENCODING_VERSION: u16 = 1;
+/// Legacy encoding: [`FeeClaimOperation::ZeroShare`] and
+/// [`FeeClaimOperation::FinalTransfer`] always use it; a
+/// [`FeeClaimOperation::Split`] with `expected_payout: None` uses it too.
+const ENCODING_VERSION_V1: u16 = 1;
+/// A [`FeeClaimOperation::Split`] with `expected_payout: Some(_)` (field 15)
+/// uses it; no other operation may.
+const ENCODING_VERSION_V2: u16 = 2;
 
 /// Bounds the complete signed envelope, which embeds at most one leg.
 pub const MAX_FEE_CLAIM_INTENT_BYTES: usize = MAX_LOCAL_EXECUTION_INTENT_BYTES + 4_096;
@@ -90,6 +96,10 @@ pub enum FeeClaimOperation {
     Split {
         /// The claim's signed local-execution leg (raw canonical bytes).
         leg: Vec<u8>,
+        /// The exact signed expected post-split payout object ref (field
+        /// 15, `v2` only). `None` decodes and re-encodes as the historical
+        /// `v1` layout, which carries no payout ref.
+        expected_payout: Option<ObjectRef>,
     },
     /// The final positive claim through the policy-pinned `transfer`
     /// entrypoint.
@@ -105,6 +115,19 @@ impl FeeClaimOperation {
             Self::ZeroShare => OPERATION_TAG_ZERO_SHARE,
             Self::Split { .. } => OPERATION_TAG_SPLIT,
             Self::FinalTransfer { .. } => OPERATION_TAG_FINAL_TRANSFER,
+        }
+    }
+
+    /// The exact `0x6437`/`0x6438` encoding version this operation requires.
+    const fn encoding_version(&self) -> u16 {
+        match self {
+            Self::Split {
+                expected_payout: Some(_),
+                ..
+            } => ENCODING_VERSION_V2,
+            Self::ZeroShare | Self::Split { .. } | Self::FinalTransfer { .. } => {
+                ENCODING_VERSION_V1
+            }
         }
     }
 }
@@ -158,9 +181,12 @@ pub struct SignedFeeClaimIntent {
     pub signature: [u8; 64],
 }
 
-/// Encodes fee-claim intent `0x6437/v1`.
+/// Encodes fee-claim intent `0x6437`, at `v2` exactly when `intent.operation`
+/// is a [`FeeClaimOperation::Split`] carrying `expected_payout: Some(_)`,
+/// and at the historical `v1` otherwise.
 pub fn encode_fee_claim_intent(intent: &FeeClaimIntent) -> Result<Vec<u8>, FeeClaimCodecError> {
-    let mut frame: CanonicalStruct = CanonicalStruct::new(FEE_CLAIM_INTENT_TYPE, ENCODING_VERSION);
+    let mut frame: CanonicalStruct =
+        CanonicalStruct::new(FEE_CLAIM_INTENT_TYPE, intent.operation.encoding_version());
     frame.field_bytes(
         1,
         encode_publication_context(&intent.context)
@@ -188,7 +214,25 @@ pub fn encode_fee_claim_intent(intent: &FeeClaimIntent) -> Result<Vec<u8>, FeeCl
     frame.field_u16(13, intent.operation.tag())?;
     match &intent.operation {
         FeeClaimOperation::ZeroShare => {}
-        FeeClaimOperation::Split { leg } | FeeClaimOperation::FinalTransfer { leg } => {
+        FeeClaimOperation::Split {
+            leg,
+            expected_payout,
+        } => {
+            if leg.is_empty() {
+                return Err(FeeClaimCodecError::Invalid(
+                    "fee claim leg must be nonempty",
+                ));
+            }
+            frame.field_bytes(14, leg.clone())?;
+            if let Some(payout) = expected_payout {
+                frame.field_bytes(
+                    15,
+                    encode_object_ref(payout)
+                        .map_err(|_| FeeClaimCodecError::Invalid("fee claim expected payout"))?,
+                )?;
+            }
+        }
+        FeeClaimOperation::FinalTransfer { leg } => {
             if leg.is_empty() {
                 return Err(FeeClaimCodecError::Invalid(
                     "fee claim leg must be nonempty",
@@ -204,14 +248,16 @@ pub fn encode_fee_claim_intent(intent: &FeeClaimIntent) -> Result<Vec<u8>, FeeCl
     Ok(bytes)
 }
 
-/// Strictly decodes fee-claim intent `0x6437/v1`.
+/// Strictly decodes fee-claim intent `0x6437`. Accepts exactly `v1` for
+/// [`FeeClaimOperation::ZeroShare`] and [`FeeClaimOperation::FinalTransfer`],
+/// and either `v1` (legacy, `expected_payout: None`) or `v2` (field 15
+/// present, `expected_payout: Some(_)`) for [`FeeClaimOperation::Split`].
 pub fn decode_fee_claim_intent(bytes: &[u8]) -> Result<FeeClaimIntent, FeeClaimCodecError> {
     if bytes.len() > MAX_FEE_CLAIM_INTENT_BYTES {
         return Err(FeeClaimCodecError::Invalid("fee claim intent bytes"));
     }
     let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
     frame.require_type(FEE_CLAIM_INTENT_TYPE)?;
-    frame.require_version(ENCODING_VERSION)?;
     let context: PublicationContext = decode_publication_context(frame.required_field(1)?)
         .map_err(|_| FeeClaimCodecError::Invalid("invalid fee claim context"))?;
     let request_id: [u8; 32] = frame
@@ -245,20 +291,47 @@ pub fn decode_fee_claim_intent(bytes: &[u8]) -> Result<FeeClaimIntent, FeeClaimC
     let fixed_fields: &[u16] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
     let operation: FeeClaimOperation = match tag {
         OPERATION_TAG_ZERO_SHARE => {
+            frame.require_version(ENCODING_VERSION_V1)?;
             frame.require_only_fields(fixed_fields)?;
             FeeClaimOperation::ZeroShare
         }
-        OPERATION_TAG_SPLIT => {
-            frame.require_only_fields(&[fixed_fields, &[14]].concat())?;
-            let leg: Vec<u8> = frame.required_field(14)?.to_vec();
-            if leg.is_empty() {
+        OPERATION_TAG_SPLIT => match frame.version() {
+            ENCODING_VERSION_V1 => {
+                frame.require_only_fields(&[fixed_fields, &[14]].concat())?;
+                let leg: Vec<u8> = frame.required_field(14)?.to_vec();
+                if leg.is_empty() {
+                    return Err(FeeClaimCodecError::Invalid(
+                        "fee claim leg must be nonempty",
+                    ));
+                }
+                FeeClaimOperation::Split {
+                    leg,
+                    expected_payout: None,
+                }
+            }
+            ENCODING_VERSION_V2 => {
+                frame.require_only_fields(&[fixed_fields, &[14, 15]].concat())?;
+                let leg: Vec<u8> = frame.required_field(14)?.to_vec();
+                if leg.is_empty() {
+                    return Err(FeeClaimCodecError::Invalid(
+                        "fee claim leg must be nonempty",
+                    ));
+                }
+                let expected_payout: ObjectRef = decode_object_ref(frame.required_field(15)?)
+                    .map_err(|_| FeeClaimCodecError::Invalid("fee claim expected payout"))?;
+                FeeClaimOperation::Split {
+                    leg,
+                    expected_payout: Some(expected_payout),
+                }
+            }
+            _ => {
                 return Err(FeeClaimCodecError::Invalid(
-                    "fee claim leg must be nonempty",
+                    "unsupported fee claim split version",
                 ));
             }
-            FeeClaimOperation::Split { leg }
-        }
+        },
         OPERATION_TAG_FINAL_TRANSFER => {
+            frame.require_version(ENCODING_VERSION_V1)?;
             frame.require_only_fields(&[fixed_fields, &[14]].concat())?;
             let leg: Vec<u8> = frame.required_field(14)?.to_vec();
             if leg.is_empty() {
@@ -293,12 +366,15 @@ pub fn decode_fee_claim_intent(bytes: &[u8]) -> Result<FeeClaimIntent, FeeClaimC
     Ok(intent)
 }
 
-/// Encodes signed fee-claim intent `0x6438/v1`.
+/// Encodes signed fee-claim intent `0x6438`, at the exact same version as
+/// its embedded `intent` (`v2` matches `v2`, `v1` matches `v1`).
 pub fn encode_signed_fee_claim_intent(
     signed: &SignedFeeClaimIntent,
 ) -> Result<Vec<u8>, FeeClaimCodecError> {
-    let mut frame: CanonicalStruct =
-        CanonicalStruct::new(SIGNED_FEE_CLAIM_INTENT_TYPE, ENCODING_VERSION);
+    let mut frame: CanonicalStruct = CanonicalStruct::new(
+        SIGNED_FEE_CLAIM_INTENT_TYPE,
+        signed.intent.operation.encoding_version(),
+    );
     frame.field_bytes(1, encode_fee_claim_intent(&signed.intent)?)?;
     frame.field_bytes(2, signed.signature.to_vec())?;
     let bytes: Vec<u8> = frame.finish()?;
@@ -308,8 +384,9 @@ pub fn encode_signed_fee_claim_intent(
     Ok(bytes)
 }
 
-/// Strictly decodes signed fee-claim intent `0x6438/v1`. Performs no
-/// signature verification: node core verifies it only after reading the
+/// Strictly decodes signed fee-claim intent `0x6438`. Requires the envelope
+/// version to exactly match the embedded `intent`'s own version. Performs
+/// no signature verification: node core verifies it only after reading the
 /// committed escrow row's own historical validator authorization key.
 pub fn decode_signed_fee_claim_intent(
     bytes: &[u8],
@@ -319,10 +396,11 @@ pub fn decode_signed_fee_claim_intent(
     }
     let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
     frame.require_type(SIGNED_FEE_CLAIM_INTENT_TYPE)?;
-    frame.require_version(ENCODING_VERSION)?;
     frame.require_only_fields(&[1, 2])?;
+    let intent: FeeClaimIntent = decode_fee_claim_intent(frame.required_field(1)?)?;
+    frame.require_version(intent.operation.encoding_version())?;
     let signed: SignedFeeClaimIntent = SignedFeeClaimIntent {
-        intent: decode_fee_claim_intent(frame.required_field(1)?)?,
+        intent,
         signature: frame
             .required_field(2)?
             .try_into()

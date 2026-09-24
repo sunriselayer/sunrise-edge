@@ -11,7 +11,8 @@ use execution::LocalWasmExecutionEngine;
 use execution::call::CallIntent;
 use execution::local_execution::{
     LocalExecutionIntent, LocalExecutionMode, SignedLocalExecutionIntent,
-    encode_signed_local_execution, local_execution_signing_frame,
+    derive_local_created_object_id, encode_signed_local_execution, local_execution_event_digest,
+    local_execution_signing_frame,
 };
 use objects::{Address, ObjectId, ProtocolCustodyScope};
 use protocol_types::{HashAlgorithmId, SignatureSchemeId, ValidatorId};
@@ -234,11 +235,34 @@ fn exercise_split_then_final<S: StructuredDurableDomainStateStore>(store: &S) ->
     };
     let leg_frame: Vec<u8> =
         local_execution_signing_frame(&genesis::tests::protocol(), &leg_intent).unwrap();
-    let leg: Vec<u8> = encode_signed_local_execution(&SignedLocalExecutionIntent {
+    let signed_leg: SignedLocalExecutionIntent = SignedLocalExecutionIntent {
         signature: genesis::tests::key().sign(&leg_frame).into(),
         intent: leg_intent,
-    })
+    };
+    let leg: Vec<u8> = encode_signed_local_execution(&signed_leg).unwrap();
+    let payout_id: ObjectId = derive_local_created_object_id(
+        &genesis::tests::resolver(),
+        &genesis::tests::protocol(),
+        &instance.context,
+        &execution::local_execution::instance_target(&genesis::tests::resolver(), &instance)
+            .unwrap(),
+        &instance.code,
+        local_execution_event_digest(&genesis::tests::resolver(), &signed_leg).unwrap(),
+        0,
+    )
     .unwrap();
+    let payout: Object = Object {
+        id: payout_id,
+        version: 1,
+        owner: Owner::Address(recipient),
+        type_hash: escrow.type_hash,
+        schema_version: escrow.schema_version,
+        data: encode_call_value(
+            &public_standard_asset::coin_body_layout(),
+            &CallValue::U64(share_amount),
+        )
+        .unwrap(),
+    };
     let mut retained: Object = escrow.clone();
     retained.version += 1;
     retained.data = encode_call_value(
@@ -280,7 +304,10 @@ fn exercise_split_then_final<S: StructuredDurableDomainStateStore>(store: &S) ->
         .unwrap(),
         share_amount,
         recipient,
-        operation: FeeClaimOperation::Split { leg },
+        operation: FeeClaimOperation::Split {
+            leg,
+            expected_payout: Some(object_ref(&payout)),
+        },
     };
     let intent_digest: Digest32 = fee_claim_intent_digest(&resolver, &intent).unwrap();
     let frame: Vec<u8> = fee_claim_signing_frame(&intent.context, intent_digest).unwrap();

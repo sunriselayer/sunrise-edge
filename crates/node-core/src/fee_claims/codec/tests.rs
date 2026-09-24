@@ -27,6 +27,14 @@ fn vector_fee_output() -> ObjectRef {
     }
 }
 
+fn vector_expected_payout() -> ObjectRef {
+    ObjectRef {
+        id: ObjectId::new([0xcc; 32]),
+        version: 3,
+        digest: Digest32::new(HashAlgorithmId::Sha2_256, [0xdd; 32]),
+    }
+}
+
 fn zero_share_intent() -> FeeClaimIntent {
     FeeClaimIntent {
         context: vector_context(),
@@ -61,19 +69,42 @@ fn split_intent() -> FeeClaimIntent {
         recipient: Address::new([0xa8; 32]),
         operation: FeeClaimOperation::Split {
             leg: vec![0x01, 0x02, 0x03],
+            expected_payout: None,
         },
     }
 }
 
+/// Same fields as [`split_intent`], but encoded at `v2`: a signed exact
+/// expected payout ref in field 15.
+fn split_intent_v2() -> FeeClaimIntent {
+    FeeClaimIntent {
+        operation: FeeClaimOperation::Split {
+            leg: vec![0x01, 0x02, 0x03],
+            expected_payout: Some(vector_expected_payout()),
+        },
+        ..split_intent()
+    }
+}
+
 /// Builds a raw `0x6437` frame directly, bypassing [`FeeClaimOperation`]'s
-/// own tag/shape invariants, so adversarial tag/field-shape cases can be
-/// constructed without going through [`encode_fee_claim_intent`].
+/// own tag/shape invariants, so adversarial tag/field-shape/version cases
+/// can be constructed without going through [`encode_fee_claim_intent`].
 fn raw_frame_with_tag_and_extra(
     intent: &FeeClaimIntent,
     tag: u16,
-    extra: Option<(u16, Vec<u8>)>,
+    extra: &[(u16, Vec<u8>)],
 ) -> Vec<u8> {
-    let mut frame: CanonicalStruct = CanonicalStruct::new(FEE_CLAIM_INTENT_TYPE, ENCODING_VERSION);
+    raw_frame_with_tag_version_and_extra(intent, tag, ENCODING_VERSION_V1, extra)
+}
+
+/// As [`raw_frame_with_tag_and_extra`], with an explicit encoding version.
+fn raw_frame_with_tag_version_and_extra(
+    intent: &FeeClaimIntent,
+    tag: u16,
+    version: u16,
+    extra: &[(u16, Vec<u8>)],
+) -> Vec<u8> {
+    let mut frame: CanonicalStruct = CanonicalStruct::new(FEE_CLAIM_INTENT_TYPE, version);
     frame
         .field_bytes(1, encode_publication_context(&intent.context).unwrap())
         .unwrap();
@@ -109,8 +140,8 @@ fn raw_frame_with_tag_and_extra(
         .field_bytes(12, intent.recipient.as_bytes().to_vec())
         .unwrap();
     frame.field_u16(13, tag).unwrap();
-    if let Some((field_id, bytes)) = extra {
-        frame.field_bytes(field_id, bytes).unwrap();
+    for (field_id, bytes) in extra {
+        frame.field_bytes(*field_id, bytes.clone()).unwrap();
     }
     frame.finish().unwrap()
 }
@@ -169,6 +200,221 @@ fn fee_claim_split_intent_frame_0x6437_and_signed_0x6438_round_trip_and_are_stab
 }
 
 #[test]
+fn fee_claim_split_v2_intent_frame_0x6437_and_signed_0x6438_round_trip_and_are_stable() {
+    let intent = split_intent_v2();
+    let bytes = encode_fee_claim_intent(&intent).unwrap();
+    assert_eq!(decode_fee_claim_intent(&bytes).unwrap(), intent);
+    // Exact bytes, not merely a round trip: cross-checked against the
+    // independent JavaScript vector (`feeClaimSplitIntentV2_0x6437` in
+    // `scripts/fast-path-vectors.mjs`).
+    assert_eq!(
+        hex(&bytes),
+        "534e5245376402000f0001003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f7273020004000000030000000300080000000900000000000000020020000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1030020000000a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a20400080000000900000000000000050020000000a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3060038000000534e524508800100020001000200000007000200200000007979797979797979797979797979797979797979797979797979797979797979070008000000020000000000000008008c000000534e5245044001000300010030000000534e5245014001000100010020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0200080000000100000000000000030038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb090038000000534e5245030101000200010002000000010002002000000081818181818181818181818181818181818181818181818181818181818181810a0038000000534e5245030101000200010002000000010002002000000082828282828282828282828282828282828282828282828282828282828282820b00080000002a000000000000000c0020000000a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a80d000200000002000e00030000000102030f008c000000534e5245044001000300010030000000534e5245014001000100010020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0200080000000300000000000000030038000000534e52450301010002000100020000000100020020000000dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    );
+
+    let signed = SignedFeeClaimIntent {
+        intent,
+        signature: [0x42; 64],
+    };
+    let signed_bytes = encode_signed_fee_claim_intent(&signed).unwrap();
+    assert_eq!(
+        decode_signed_fee_claim_intent(&signed_bytes).unwrap(),
+        signed
+    );
+    // Exact bytes, not merely a round trip: cross-checked against the
+    // independent JavaScript vector (`signedFeeClaimSplitIntentV2_0x6438` in
+    // `scripts/fast-path-vectors.mjs`).
+    assert_eq!(
+        hex(&signed_bytes),
+        "534e5245386402000200010000030000534e5245376402000f0001003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f7273020004000000030000000300080000000900000000000000020020000000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1030020000000a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a20400080000000900000000000000050020000000a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3060038000000534e524508800100020001000200000007000200200000007979797979797979797979797979797979797979797979797979797979797979070008000000020000000000000008008c000000534e5245044001000300010030000000534e5245014001000100010020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0200080000000100000000000000030038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb090038000000534e5245030101000200010002000000010002002000000081818181818181818181818181818181818181818181818181818181818181810a0038000000534e5245030101000200010002000000010002002000000082828282828282828282828282828282828282828282828282828282828282820b00080000002a000000000000000c0020000000a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a80d000200000002000e00030000000102030f008c000000534e5245044001000300010030000000534e5245014001000100010020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0200080000000300000000000000030038000000534e52450301010002000100020000000100020020000000dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd02004000000042424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242"
+    );
+}
+
+#[test]
+fn fee_claim_split_v1_bytes_remain_decodable_and_are_distinguished_by_payout_option() {
+    let v1_bytes = encode_fee_claim_intent(&split_intent()).unwrap();
+    let decoded_v1 = decode_fee_claim_intent(&v1_bytes).unwrap();
+    assert_eq!(decoded_v1.operation, split_intent().operation);
+    assert!(matches!(
+        decoded_v1.operation,
+        FeeClaimOperation::Split {
+            expected_payout: None,
+            ..
+        }
+    ));
+    // Re-encoding the decoded v1 intent reproduces the same v1 bytes.
+    assert_eq!(encode_fee_claim_intent(&decoded_v1).unwrap(), v1_bytes);
+
+    let v2_bytes = encode_fee_claim_intent(&split_intent_v2()).unwrap();
+    let decoded_v2 = decode_fee_claim_intent(&v2_bytes).unwrap();
+    assert!(matches!(
+        decoded_v2.operation,
+        FeeClaimOperation::Split {
+            expected_payout: Some(_),
+            ..
+        }
+    ));
+    assert_ne!(v1_bytes, v2_bytes);
+}
+
+#[test]
+fn fee_claim_split_v2_rejects_missing_expected_payout() {
+    let bytes = raw_frame_with_tag_version_and_extra(
+        &split_intent(),
+        OPERATION_TAG_SPLIT,
+        ENCODING_VERSION_V2,
+        &[(14, vec![0x01, 0x02, 0x03])],
+    );
+    assert!(matches!(
+        decode_fee_claim_intent(&bytes),
+        Err(FeeClaimCodecError::Decoding(
+            CanonicalDecodingError::MissingField(15)
+        ))
+    ));
+}
+
+#[test]
+fn fee_claim_split_v1_rejects_a_forbidden_payout_field() {
+    let bytes = raw_frame_with_tag_version_and_extra(
+        &split_intent(),
+        OPERATION_TAG_SPLIT,
+        ENCODING_VERSION_V1,
+        &[
+            (14, vec![0x01, 0x02, 0x03]),
+            (15, encode_object_ref(&vector_expected_payout()).unwrap()),
+        ],
+    );
+    assert!(matches!(
+        decode_fee_claim_intent(&bytes),
+        Err(FeeClaimCodecError::Decoding(
+            CanonicalDecodingError::UnexpectedField(15)
+        ))
+    ));
+}
+
+#[test]
+fn fee_claim_zero_share_and_final_transfer_reject_a_forbidden_payout_field() {
+    let zero_share_bytes = raw_frame_with_tag_version_and_extra(
+        &zero_share_intent(),
+        OPERATION_TAG_ZERO_SHARE,
+        ENCODING_VERSION_V1,
+        &[(15, encode_object_ref(&vector_expected_payout()).unwrap())],
+    );
+    assert!(matches!(
+        decode_fee_claim_intent(&zero_share_bytes),
+        Err(FeeClaimCodecError::Decoding(
+            CanonicalDecodingError::UnexpectedField(15)
+        ))
+    ));
+
+    let final_transfer_bytes = raw_frame_with_tag_version_and_extra(
+        &split_intent(),
+        OPERATION_TAG_FINAL_TRANSFER,
+        ENCODING_VERSION_V1,
+        &[
+            (14, vec![0x0a, 0x0b]),
+            (15, encode_object_ref(&vector_expected_payout()).unwrap()),
+        ],
+    );
+    assert!(matches!(
+        decode_fee_claim_intent(&final_transfer_bytes),
+        Err(FeeClaimCodecError::Decoding(
+            CanonicalDecodingError::UnexpectedField(15)
+        ))
+    ));
+}
+
+#[test]
+fn fee_claim_split_rejects_an_unsupported_version() {
+    let bytes = raw_frame_with_tag_version_and_extra(
+        &split_intent(),
+        OPERATION_TAG_SPLIT,
+        3,
+        &[(14, vec![0x01, 0x02, 0x03])],
+    );
+    assert!(matches!(
+        decode_fee_claim_intent(&bytes),
+        Err(FeeClaimCodecError::Invalid(
+            "unsupported fee claim split version"
+        ))
+    ));
+}
+
+#[test]
+fn fee_claim_zero_share_and_final_transfer_reject_v2_encoding() {
+    let zero_share_bytes = raw_frame_with_tag_version_and_extra(
+        &zero_share_intent(),
+        OPERATION_TAG_ZERO_SHARE,
+        ENCODING_VERSION_V2,
+        &[],
+    );
+    assert!(matches!(
+        decode_fee_claim_intent(&zero_share_bytes),
+        Err(FeeClaimCodecError::Decoding(
+            CanonicalDecodingError::UnexpectedVersion {
+                expected: ENCODING_VERSION_V1,
+                ..
+            }
+        ))
+    ));
+
+    let final_transfer_bytes = raw_frame_with_tag_version_and_extra(
+        &split_intent(),
+        OPERATION_TAG_FINAL_TRANSFER,
+        ENCODING_VERSION_V2,
+        &[(14, vec![0x0a, 0x0b])],
+    );
+    assert!(matches!(
+        decode_fee_claim_intent(&final_transfer_bytes),
+        Err(FeeClaimCodecError::Decoding(
+            CanonicalDecodingError::UnexpectedVersion {
+                expected: ENCODING_VERSION_V1,
+                ..
+            }
+        ))
+    ));
+}
+
+#[test]
+fn signed_fee_claim_intent_rejects_envelope_version_mismatched_with_inner_intent() {
+    let signed_v2 = SignedFeeClaimIntent {
+        intent: split_intent_v2(),
+        signature: [0x42; 64],
+    };
+    let v2_bytes = encode_signed_fee_claim_intent(&signed_v2).unwrap();
+    // Flip the envelope's own version field (offset 6) from 2 down to 1,
+    // without touching the embedded v2 intent frame.
+    let mut mismatched = v2_bytes.clone();
+    mismatched[6] = 1;
+    assert!(matches!(
+        decode_signed_fee_claim_intent(&mismatched),
+        Err(FeeClaimCodecError::Decoding(
+            CanonicalDecodingError::UnexpectedVersion {
+                expected: ENCODING_VERSION_V2,
+                ..
+            }
+        ))
+    ));
+
+    let signed_v1 = SignedFeeClaimIntent {
+        intent: split_intent(),
+        signature: [0x42; 64],
+    };
+    let v1_bytes = encode_signed_fee_claim_intent(&signed_v1).unwrap();
+    let mut upgraded = v1_bytes;
+    upgraded[6] = 2;
+    assert!(matches!(
+        decode_signed_fee_claim_intent(&upgraded),
+        Err(FeeClaimCodecError::Decoding(
+            CanonicalDecodingError::UnexpectedVersion {
+                expected: ENCODING_VERSION_V1,
+                ..
+            }
+        ))
+    ));
+}
+
+#[test]
 fn fee_claim_final_transfer_operation_round_trips() {
     let intent = FeeClaimIntent {
         operation: FeeClaimOperation::FinalTransfer {
@@ -205,7 +451,7 @@ fn fee_claim_intent_rejects_wrong_version() {
         decode_fee_claim_intent(&tampered),
         Err(FeeClaimCodecError::Decoding(
             CanonicalDecodingError::UnexpectedVersion {
-                expected: ENCODING_VERSION,
+                expected: ENCODING_VERSION_V1,
                 ..
             }
         ))
@@ -214,7 +460,7 @@ fn fee_claim_intent_rejects_wrong_version() {
 
 #[test]
 fn fee_claim_intent_rejects_unknown_operation_tag() {
-    let bytes = raw_frame_with_tag_and_extra(&zero_share_intent(), 99, None);
+    let bytes = raw_frame_with_tag_and_extra(&zero_share_intent(), 99, &[]);
     assert!(matches!(
         decode_fee_claim_intent(&bytes),
         Err(FeeClaimCodecError::Invalid("unknown fee claim operation"))
@@ -223,7 +469,7 @@ fn fee_claim_intent_rejects_unknown_operation_tag() {
 
 #[test]
 fn fee_claim_intent_rejects_an_extra_field_on_zero_share() {
-    let bytes = raw_frame_with_tag_and_extra(&zero_share_intent(), 1, Some((14, vec![0x01])));
+    let bytes = raw_frame_with_tag_and_extra(&zero_share_intent(), 1, &[(14, vec![0x01])]);
     assert!(matches!(
         decode_fee_claim_intent(&bytes),
         Err(FeeClaimCodecError::Decoding(
@@ -247,7 +493,8 @@ fn fee_claim_intent_rejects_truncated_bytes() {
 #[test]
 fn fee_claim_intent_rejects_a_missing_field() {
     let intent = zero_share_intent();
-    let mut frame: CanonicalStruct = CanonicalStruct::new(FEE_CLAIM_INTENT_TYPE, ENCODING_VERSION);
+    let mut frame: CanonicalStruct =
+        CanonicalStruct::new(FEE_CLAIM_INTENT_TYPE, ENCODING_VERSION_V1);
     frame
         .field_bytes(1, encode_publication_context(&intent.context).unwrap())
         .unwrap();
@@ -293,7 +540,10 @@ fn fee_claim_intent_rejects_a_missing_field() {
 #[test]
 fn fee_claim_operation_rejects_empty_leg_on_encode_and_decode() {
     let empty_leg_intent = FeeClaimIntent {
-        operation: FeeClaimOperation::Split { leg: vec![] },
+        operation: FeeClaimOperation::Split {
+            leg: vec![],
+            expected_payout: None,
+        },
         ..split_intent()
     };
     assert!(matches!(
@@ -303,11 +553,8 @@ fn fee_claim_operation_rejects_empty_leg_on_encode_and_decode() {
         ))
     ));
 
-    let bytes = raw_frame_with_tag_and_extra(
-        &zero_share_intent(),
-        OPERATION_TAG_SPLIT,
-        Some((14, vec![])),
-    );
+    let bytes =
+        raw_frame_with_tag_and_extra(&zero_share_intent(), OPERATION_TAG_SPLIT, &[(14, vec![])]);
     assert!(matches!(
         decode_fee_claim_intent(&bytes),
         Err(FeeClaimCodecError::Invalid(
@@ -321,6 +568,7 @@ fn fee_claim_intent_rejects_bytes_over_the_bound() {
     let oversized = FeeClaimIntent {
         operation: FeeClaimOperation::Split {
             leg: vec![0u8; MAX_FEE_CLAIM_INTENT_BYTES],
+            expected_payout: None,
         },
         ..split_intent()
     };

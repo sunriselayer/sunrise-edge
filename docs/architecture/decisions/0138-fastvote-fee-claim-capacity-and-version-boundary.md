@@ -3,9 +3,9 @@
 ## Status
 
 Accepted, 2026-09-24. The validator admission cap, deterministic byte-size
-regressions, and a bounded local concurrent SQLite claim/reopen regression
-are implemented. Network throughput, positive-claim load, disk-life and
-recovery-time capacity certification are not.
+regressions, and bounded local concurrent SQLite zero/positive-claim reopen
+regressions are implemented. Network throughput, sustained positive-claim
+load, disk-life and recovery-time capacity certification are not.
 
 ## Context
 
@@ -58,6 +58,17 @@ bytes for that run. The rows are synthetic rather than certificate-applied;
 the test does not exercise WASM/object-mutating positive claims, report
 physical SQLite/WAL disk usage, or establish sustained/multi-node capacity.
 Its timing is diagnostic, not a network admission threshold.
+
+A companion regression runs 12 distinct, directly set-up escrow rows through
+real Standard Asset WASM `split` or `transfer` claims on three concurrent
+SQLite writer connections. Six splits persist distinct payout objects and six
+final transfers move the escrow object; every resulting row, signed claim,
+object and outer receipt is checked after close/reopen. It reports logical
+retained payload bytes, physical SQLite database/WAL file sizes and elapsed
+times. The rows were not created by certificate apply, one process and disk
+are used, and SQLite may checkpoint the WAL before measurement (including a
+zero-byte WAL result). This is local regression evidence, not a certified
+claim-rate, disk-life, multi-node or recovery-time bound.
 
 The current epoch transition always carries the same supplied protocol
 version into the next context; there is no durable, atomic protocol-version

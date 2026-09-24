@@ -29,10 +29,11 @@ use runtime::{
     DurableOutboxAcknowledgement, DurableOutboxAcknowledgementOutcome,
     DurableOutboxAcknowledgementRejection, DurableOutboxClaim, DurableOutboxClaimOutcome,
     DurableOutboxClaimRejection, DurableOutboxLeaseId, DurableReadError, DurableRequestId,
-    DurableRequestReceipt, IndeterminateCommitReason, IndexedOutboxRepository,
-    MAX_DURABLE_INLINE_OBJECT_BYTES, ObjectHeadRevision, ObjectId, OutboxRequestId,
-    RequestOutboxClaimRequest, StateMutation, StateMutationEntry, StateReadAssertion,
-    StateRevision, StructuredDurableDomainStateStore, VersionedStateValue, WriterFenceGeneration,
+    DurableRequestReceipt, DurableStateKeyScanner, IndeterminateCommitReason,
+    IndexedOutboxRepository, MAX_DURABLE_INLINE_OBJECT_BYTES, ObjectHeadRevision, ObjectId,
+    OutboxRequestId, RequestOutboxClaimRequest, StateKeyPage, StateKeyScan, StateMutation,
+    StateMutationEntry, StateReadAssertion, StateRevision, StructuredDurableDomainStateStore,
+    VersionedStateValue, WriterFenceGeneration,
 };
 use std::{
     error::Error,
@@ -939,6 +940,129 @@ fn load_state_value(
         return Err(PreCommitFailure::InvalidPersistedState);
     }
     VersionedStateValue::from_persisted_parts(revision, value)
+        .map_err(|_| PreCommitFailure::InvalidPersistedState)
+}
+
+/// Computes the exclusive upper bound of a `BYTEA` prefix range, or `None`
+/// when the prefix is all `0xFF` bytes and so has no finite successor.
+fn bytea_prefix_upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut upper = prefix.to_vec();
+    let index = upper.iter().rposition(|byte| *byte != u8::MAX)?;
+    upper[index] += 1;
+    upper.truncate(index + 1);
+    Some(upper)
+}
+
+/// Loads at most `scan.limit() + 1` ordered candidate keys strictly after the
+/// cursor and within the prefix, using the `state_records` primary-key index
+/// (`chain_id_bytes, validator_id, atomicity_domain_id, record_kind_id,
+/// state_key`). Tombstoned rows (`tombstone = TRUE`) are not filtered: the
+/// caller must see them to fail closed instead of treating a deletion as
+/// absent.
+///
+/// The `state_key` range is expressed as a single start bound (`> after` when
+/// a cursor is present, otherwise `>= prefix`) and an optional single stop
+/// bound (`< upper_bound`), each chosen as one of four static query texts
+/// rather than combined with `OR`. An `OR` between the cursor and prefix
+/// bounds prevents the planner from using the primary-key index's start key,
+/// forcing a scan of every row in the prefix from its beginning on every
+/// page — a cost that grows with the page offset instead of the page size.
+fn load_state_key_page(
+    transaction: &mut postgres::Transaction<'_>,
+    namespace: &PostgresNamespace,
+    scan: &StateKeyScan,
+) -> Result<StateKeyPage, PreCommitFailure> {
+    let upper_bound = bytea_prefix_upper_bound(scan.prefix());
+    let candidate_limit = i64::try_from(scan.limit().get() + 1)
+        .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
+    let start_key: &[u8] = scan.after().unwrap_or_else(|| scan.prefix());
+    let rows = match (scan.after().is_some(), upper_bound.as_deref()) {
+        (true, Some(upper)) => transaction.query(
+            "SELECT state_key FROM sunrise_edge.state_records
+             WHERE chain_id_bytes = $1
+               AND validator_id = $2
+               AND atomicity_domain_id = $3
+               AND record_kind_id = $4
+               AND state_key > $5
+               AND state_key < $6
+             ORDER BY state_key
+             LIMIT $7",
+            &[
+                &namespace.chain_id_bytes(),
+                &&namespace.validator_id().as_bytes()[..],
+                &&namespace.domain().as_bytes()[..],
+                &STATE_RECORD_KIND_APPLICATION,
+                &start_key,
+                &upper,
+                &candidate_limit,
+            ],
+        ),
+        (true, None) => transaction.query(
+            "SELECT state_key FROM sunrise_edge.state_records
+             WHERE chain_id_bytes = $1
+               AND validator_id = $2
+               AND atomicity_domain_id = $3
+               AND record_kind_id = $4
+               AND state_key > $5
+             ORDER BY state_key
+             LIMIT $6",
+            &[
+                &namespace.chain_id_bytes(),
+                &&namespace.validator_id().as_bytes()[..],
+                &&namespace.domain().as_bytes()[..],
+                &STATE_RECORD_KIND_APPLICATION,
+                &start_key,
+                &candidate_limit,
+            ],
+        ),
+        (false, Some(upper)) => transaction.query(
+            "SELECT state_key FROM sunrise_edge.state_records
+             WHERE chain_id_bytes = $1
+               AND validator_id = $2
+               AND atomicity_domain_id = $3
+               AND record_kind_id = $4
+               AND state_key >= $5
+               AND state_key < $6
+             ORDER BY state_key
+             LIMIT $7",
+            &[
+                &namespace.chain_id_bytes(),
+                &&namespace.validator_id().as_bytes()[..],
+                &&namespace.domain().as_bytes()[..],
+                &STATE_RECORD_KIND_APPLICATION,
+                &start_key,
+                &upper,
+                &candidate_limit,
+            ],
+        ),
+        (false, None) => transaction.query(
+            "SELECT state_key FROM sunrise_edge.state_records
+             WHERE chain_id_bytes = $1
+               AND validator_id = $2
+               AND atomicity_domain_id = $3
+               AND record_kind_id = $4
+               AND state_key >= $5
+             ORDER BY state_key
+             LIMIT $6",
+            &[
+                &namespace.chain_id_bytes(),
+                &&namespace.validator_id().as_bytes()[..],
+                &&namespace.domain().as_bytes()[..],
+                &STATE_RECORD_KIND_APPLICATION,
+                &start_key,
+                &candidate_limit,
+            ],
+        ),
+    }
+    .map_err(|error| PreCommitFailure::from_database(&error))?;
+    let mut keys: Vec<Vec<u8>> = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let key: Vec<u8> = row
+            .try_get(0)
+            .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
+        keys.push(key);
+    }
+    StateKeyPage::from_ordered_candidates(scan, keys)
         .map_err(|_| PreCommitFailure::InvalidPersistedState)
 }
 
@@ -2952,6 +3076,46 @@ where
             }
             finalize_commit(transaction)
         })
+    }
+}
+
+impl<M> DurableStateKeyScanner for PostgresDurableStore<M>
+where
+    M: ManageConnection<Connection = Client, Error = postgres::Error> + 'static,
+{
+    fn scan_durable_keys(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        scan: &StateKeyScan,
+    ) -> Result<StateKeyPage, DurableReadError> {
+        if !self.domain_is_bound(domain) {
+            return Err(DurableReadError::InvalidRequest(
+                runtime::RuntimeError::AtomicityDomainMismatch,
+            ));
+        }
+        let mut client = self
+            .acquire(context)
+            .map_err(PreCommitFailure::into_read_error)?;
+        let mut transaction = client
+            .build_transaction()
+            .isolation_level(IsolationLevel::Serializable)
+            .read_only(true)
+            .start()
+            .map_err(|error| PreCommitFailure::from_database(&error).into_read_error())?;
+        set_local_timeouts(&mut transaction, context).map_err(PreCommitFailure::into_read_error)?;
+        let metadata =
+            load_namespace_metadata(&mut transaction, &self.namespace, MetadataLockMode::None)
+                .map_err(PreCommitFailure::into_read_error)?;
+        validate_operation_authority(metadata, context)
+            .map_err(PreCommitFailure::into_read_error)?;
+        let page = load_state_key_page(&mut transaction, &self.namespace, scan)
+            .map_err(PreCommitFailure::into_read_error)?;
+        transaction
+            .rollback()
+            .map_err(|error| PreCommitFailure::from_database(&error).into_read_error())?;
+        remaining_deadline(context).map_err(PreCommitFailure::into_read_error)?;
+        Ok(page)
     }
 }
 

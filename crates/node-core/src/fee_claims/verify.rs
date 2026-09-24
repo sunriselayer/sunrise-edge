@@ -96,6 +96,10 @@
 use super::*;
 use crate::fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS;
 use abi::package_types::{ScopedTypeTag, verify_scoped_type_id};
+use execution::local_execution::{
+    InstanceRecord, MAX_LOCAL_CREATED_OBJECTS, ObjectAuthority, decode_object_authority,
+    derive_local_created_object_id,
+};
 use execution::publication::{VerifiedPublicationInterface, observe_nominal_value};
 use runtime::DurableObjectProvenance;
 
@@ -140,6 +144,188 @@ struct HistoricalObjectVersion {
     object: Object,
     digest: Digest32,
     provenance: DurableObjectProvenance,
+}
+
+/// An authority sidecar is written exactly once alongside a newly created
+/// object. A tombstone or rewritten revision is never an authentic absence.
+fn exact_authority_exists<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    expected: &ObjectAuthority,
+) -> Result<bool, FeeClaimError> {
+    let key: Vec<u8> = local_instance_state::object_authority_key(expected.object_id);
+    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let Some(bytes) = observed.value() else {
+        if observed.revision() != StateRevision::INITIAL {
+            return Err(FeeClaimError::Invalid(
+                "fee claim object authority tombstoned",
+            ));
+        }
+        return Ok(false);
+    };
+    if observed.revision() != StateRevision::new(1) || decode_object_authority(bytes)? != *expected
+    {
+        return Err(FeeClaimError::Invalid(
+            "fee claim object authority mismatch",
+        ));
+    }
+    Ok(true)
+}
+
+/// Checks the original escrow's immutable authority sidecar against the
+/// genesis-pinned fee resource. The same id is retained through all escrow
+/// versions; there is no mutable per-version authority row.
+pub(super) fn verify_escrow_authority<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resource: &FastPathEconomicsResourcePolicy,
+    instance: &InstanceRecord,
+    escrow_id: ObjectId,
+) -> Result<(), FeeClaimError> {
+    let expected: ObjectAuthority = ObjectAuthority {
+        object_id: escrow_id,
+        instance_context: instance.context.clone(),
+        instance: resource.instance.clone(),
+        code: resource.code.clone(),
+        ty: resource.ty.clone(),
+    };
+    if !exact_authority_exists(store, context, domain, &expected)? {
+        return Err(FeeClaimError::Invalid("fee claim escrow authority missing"));
+    }
+    Ok(())
+}
+
+/// Verifies the exact payout ref signed by the claimant. A creation-ordinal
+/// search only checks that this *signed id* could have arisen from the
+/// authenticated leg; it never selects a substitute payout from storage.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn verify_signed_payout<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    resource: &FastPathEconomicsResourcePolicy,
+    instance: &InstanceRecord,
+    interface: &VerifiedPublicationInterface,
+    intent: &FeeClaimIntent,
+    leg_event_digest: Digest32,
+) -> Result<u64, FeeClaimError> {
+    let expected_ref: &ObjectRef = match &intent.operation {
+        FeeClaimOperation::Split {
+            expected_payout: Some(expected_ref),
+            ..
+        } => expected_ref,
+        FeeClaimOperation::Split { .. } => {
+            return Err(FeeClaimError::Invalid("legacy split payout is not signed"));
+        }
+        FeeClaimOperation::FinalTransfer { .. } => return Ok(0),
+        FeeClaimOperation::ZeroShare => {
+            return Err(FeeClaimError::Invalid("zero claim has no positive leg"));
+        }
+    };
+    if expected_ref.version != 1 {
+        return Err(FeeClaimError::Invalid("fee claim payout version"));
+    }
+    let claim_resolver: &HashSuiteResolver =
+        local_execution::original_resolver(resolver, history, &intent.context)?;
+    let version_one: DurableObjectVersion =
+        DurableObjectVersion::new(1).ok_or(FeeClaimError::Invalid("fee claim payout version"))?;
+    let mut derived: bool = false;
+    for ordinal in 0..MAX_LOCAL_CREATED_OBJECTS {
+        let candidate: ObjectId = derive_local_created_object_id(
+            claim_resolver,
+            &intent.context,
+            &instance.context,
+            &resource.instance,
+            &resource.code,
+            leg_event_digest,
+            ordinal,
+        )?;
+        if candidate == expected_ref.id {
+            derived = true;
+            continue;
+        }
+        let extra_authority: ObjectAuthority = ObjectAuthority {
+            object_id: candidate,
+            instance_context: instance.context.clone(),
+            instance: resource.instance.clone(),
+            code: resource.code.clone(),
+            ty: resource.ty.clone(),
+        };
+        if exact_authority_exists(store, context, domain, &extra_authority)?
+            || store
+                .get_object_version(context, domain, candidate, version_one)?
+                .is_some()
+        {
+            return Err(FeeClaimError::Invalid(
+                "split fee claim has an unsigned extra creation",
+            ));
+        }
+    }
+    if !derived {
+        return Err(FeeClaimError::Invalid(
+            "signed payout id is not leg-derived",
+        ));
+    }
+    let expected_authority: ObjectAuthority = ObjectAuthority {
+        object_id: expected_ref.id,
+        instance_context: instance.context.clone(),
+        instance: resource.instance.clone(),
+        code: resource.code.clone(),
+        ty: resource.ty.clone(),
+    };
+    if !exact_authority_exists(store, context, domain, &expected_authority)? {
+        return Err(FeeClaimError::Invalid("signed payout authority missing"));
+    }
+    let payout: HistoricalObjectVersion = load_historical_object_version(
+        store,
+        blob_store,
+        context,
+        domain,
+        claim_resolver,
+        intent.context.epoch(),
+        intent.context.chain_id(),
+        expected_ref.id,
+        1,
+    )?;
+    if payout.digest != expected_ref.digest
+        || payout.object.owner != Owner::Address(intent.recipient)
+        || payout.object.schema_version != resource.schema
+    {
+        return Err(FeeClaimError::Invalid(
+            "signed payout digest, owner or schema mismatch",
+        ));
+    }
+    let type_resolver: &HashSuiteResolver = object_snapshots::historical_resolver_for_provenance(
+        resolver,
+        history,
+        expected_ref.id,
+        &payout.provenance,
+    )?;
+    if !verify_scoped_type_id(
+        type_resolver,
+        &payout.object.type_hash,
+        intent.context.epoch(),
+        &resource.ty,
+    )
+    .map_err(|_| FeeClaimError::Invalid("fee claim payout type identity"))?
+    {
+        return Err(FeeClaimError::Invalid("fee claim payout type identity"));
+    }
+    let amount: u64 = observe_u64(
+        interface,
+        &resource.ty,
+        payout.object.schema_version,
+        &payout.object.data,
+    )?;
+    if amount != intent.share_amount {
+        return Err(FeeClaimError::Invalid("fee claim payout amount mismatch"));
+    }
+    Ok(1)
 }
 
 #[allow(clippy::too_many_arguments)]
