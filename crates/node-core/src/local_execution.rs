@@ -283,6 +283,7 @@ pub fn handle_local_execution<
         &authenticated,
         event_digest,
         None,
+        CustodyEffectMode::CallerValidated,
         created_checkpoint,
         &mut reads,
         &mut head_reads,
@@ -356,13 +357,28 @@ pub(crate) struct AdmittedLeg {
     /// [`Self::object_mutations`] is not populated for that path, so nothing
     /// else would otherwise check this list.
     pub(crate) created_authorities: Vec<CreatedObjectAuthority>,
-    /// Populated only for the ordinary (`protocol_custody: None`) path.
-    /// A protocol-custody leg's caller runs its own generic custody-effect
-    /// validator on [`Self::effects`]/[`Self::snapshots`] instead.
+    /// Populated for ordinary execution and for custody legs explicitly
+    /// opting into the generic effect translator. Bond lifecycle legs keep
+    /// caller-validated effects and leave this empty.
     pub(crate) object_mutations: Vec<DurableObjectMutationEntry>,
     pub(crate) snapshots: BTreeMap<ObjectId, object_snapshots::ObjectSnapshot>,
     pub(crate) inputs: Vec<ScopedResolvedObject>,
     pub(crate) interface: VerifiedPublicationInterface,
+}
+
+/// Whether a protocol-custody leg delegates object persistence to its caller
+/// or opts into the ordinary generic effect translator. The latter is required
+/// for fee-claim split outputs: it checks absence and persists the created
+/// object's authority row in the same transaction.
+pub(crate) enum CustodyEffectMode<'a> {
+    /// Bond lifecycle validates its exact whole-object shape and writes it.
+    CallerValidated,
+    /// Translate the complete effects after the caller's own fee-claim value
+    /// and operation-shape validation. An exact custody-owned remainder may
+    /// be admitted; all other outputs must be address-owned.
+    Translate {
+        allowed_protocol_custody_output: Option<(ObjectId, &'a objects::ProtocolCustodyScope)>,
+    },
 }
 
 /// Authenticates-adjacent admission shared by ordinary zero-fee local
@@ -395,11 +411,24 @@ pub(crate) fn admit_and_execute_leg<
     authenticated: &AuthenticatedLocalExecutionIntent,
     event_digest: Digest32,
     protocol_custody: Option<&execution::protocol_custody::ProtocolCustodyCapability>,
+    custody_effect_mode: CustodyEffectMode<'_>,
     created_checkpoint: u64,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
     head_reads: &mut Vec<DurableObjectHeadRead>,
     state_mutations: &mut Vec<StateMutationEntry>,
 ) -> AdmissionResult<AdmittedLeg> {
+    if protocol_custody.is_none()
+        && matches!(
+            &custody_effect_mode,
+            CustodyEffectMode::Translate {
+                allowed_protocol_custody_output: Some(_),
+            }
+        )
+    {
+        return Err(LocalExecutionAdmissionError::Invalid(
+            "custody output requires a custody capability",
+        ));
+    }
     let intent: &LocalExecutionIntent = authenticated.intent();
     let call = &intent.call;
     local_instance_state::reject_reserved_request_id(&call.request_id)
@@ -683,9 +712,16 @@ pub(crate) fn admit_and_execute_leg<
             "trapped creation authority",
         ));
     }
-    let object_mutations: Vec<DurableObjectMutationEntry> = if protocol_custody.is_some() {
-        Vec::new()
-    } else {
+    let (should_translate, allowed_protocol_custody_output): (
+        bool,
+        Option<(ObjectId, &objects::ProtocolCustodyScope)>,
+    ) = match custody_effect_mode {
+        CustodyEffectMode::CallerValidated => (protocol_custody.is_none(), None),
+        CustodyEffectMode::Translate {
+            allowed_protocol_custody_output,
+        } => (true, allowed_protocol_custody_output),
+    };
+    let object_mutations: Vec<DurableObjectMutationEntry> = if should_translate {
         effects::translate(
             store,
             context,
@@ -696,7 +732,7 @@ pub(crate) fn admit_and_execute_leg<
                 context: &call.context,
                 effects: &outcome.effects,
                 created_authorities: &outcome.created_authorities,
-                allowed_protocol_custody_output: None,
+                allowed_protocol_custody_output,
             },
             created_checkpoint,
             &inputs,
@@ -705,6 +741,8 @@ pub(crate) fn admit_and_execute_leg<
             head_reads,
             state_mutations,
         )?
+    } else {
+        Vec::new()
     };
     Ok(AdmittedLeg {
         instance,

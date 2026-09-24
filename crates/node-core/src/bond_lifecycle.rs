@@ -57,7 +57,9 @@ use crate::fast_path::records::{
     FastPathBondState, FastPathBondTransitionRecord, decode_fastpath_bond_record,
     encode_fastpath_bond_record, encode_fastpath_bond_transition_record,
 };
-use crate::local_execution::{AdmittedLeg, LocalExecutionAdmissionError, admit_and_execute_leg};
+use crate::local_execution::{
+    AdmittedLeg, CustodyEffectMode, LocalExecutionAdmissionError, admit_and_execute_leg,
+};
 use bonds::{BondError, BondResourceConfig, BondResourceId, decode_bond_resource_id};
 use canonical_encoding::{decode_digest32, encode_digest32};
 use crypto::{Ed25519Verifier, SignatureDomain, SignatureMessageType, SignatureVerifier};
@@ -1338,6 +1340,7 @@ where
         &leg,
         leg_event_digest,
         Some(&capability),
+        CustodyEffectMode::CallerValidated,
         preamble.created_checkpoint,
         &mut preamble.reads,
         &mut head_reads,
@@ -1562,6 +1565,7 @@ where
         &deposit_leg,
         deposit_event_digest,
         Some(&deposit_capability),
+        CustodyEffectMode::CallerValidated,
         preamble.created_checkpoint,
         &mut preamble.reads,
         &mut head_reads,
@@ -1589,6 +1593,7 @@ where
         &release_leg,
         release_event_digest,
         Some(&release_capability),
+        CustodyEffectMode::CallerValidated,
         preamble.created_checkpoint,
         &mut preamble.reads,
         &mut head_reads,
@@ -1927,6 +1932,7 @@ where
         &leg,
         leg_event_digest,
         Some(&capability),
+        CustodyEffectMode::CallerValidated,
         preamble.created_checkpoint,
         &mut preamble.reads,
         &mut head_reads,
