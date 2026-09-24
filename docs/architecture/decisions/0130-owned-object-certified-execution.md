@@ -277,9 +277,12 @@ namespaces (see `docs/operations/persistence.md`):
   state.
 - **Settlement metadata record.** The fee output, actual charged amount, and
   canonical active-validator IDs attributed to this certified execution.
-  Recording the inputs for later distribution is not distribution itself;
-  balance mutations and the deterministic rounding/remainder rule remain
-  Phase 3.
+  Recording the inputs for later distribution is not distribution itself.
+  DR-0137 supersedes this bullet's original framing: it specifies and
+  implements the canonical `T/N` ascending-id-remainder rounding rule,
+  computed and recorded in this same row at apply time; only the
+  balance-mutating claim of an already-recorded share remains open, tracked
+  by `TODO.md`.
 - **Receipt.** The ordinary receipt record, reused as-is, now attributable to
   a certificate apply rather than direct execution.
 

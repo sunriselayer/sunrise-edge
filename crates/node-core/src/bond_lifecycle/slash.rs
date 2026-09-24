@@ -620,6 +620,7 @@ where
         &leg,
         leg_event_digest,
         Some(&capability),
+        CustodyEffectMode::CallerValidated,
         created_checkpoint,
         &mut reads,
         &mut head_reads,

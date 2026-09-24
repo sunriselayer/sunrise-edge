@@ -358,6 +358,40 @@ For a charged row, `generation == claimed_share_count + 1`; this makes every
 claimed-bit transition part of the same monotonic CAS fence.
 Partial positive claims use the policy-pinned `split`; the final positive
 claim uses `transfer`. A zero share is finalized without an object mutation.
+The row's `context` remains the certificate context throughout claims, while
+`fee_output` and `fee_output_epoch` track the exact current object version
+and the epoch that minted that version. A later partial split or final
+transfer can therefore make `fee_output_epoch` newer than `context.epoch()`;
+equality is required only at initial certified apply, not for every later
+row generation. The original `total_amount` and assigned shares remain
+immutable so their sum continues to prove conservation; the unclaimed
+positive shares determine the remaining custodial value. After the final
+positive transfer, the row retains the exact recipient-owned output ref as
+audit evidence; any remaining zero-share claims only advance the row.
+
+As-Is claim wiring uses canonical `0x6437/v1` intents and `0x6438/v1`
+validator-signed envelopes. The signed envelope binds the exact previous and
+next settlement-row digests, generation, fee output ref, recipient, amount and
+operation. The certificate-epoch paid fee policy identifies the defining code
+context; the signed economics policy is loaded at that pinned context, so an
+ordinary epoch advance does not make claims lose their genesis-installed
+resource policy. The handler verifies the historical validator key, executes
+positive claims through the public ABI, independently checks result shape and
+conservation, and atomically writes object/nonce/row/receipt plus an immutable
+signed envelope keyed by the resulting generation. Same-process and real
+file-backed SQLite reopen/replay tests cover zero, split and final claims.
+This does not yet establish adversarial-effect coverage, a competing-writer
+race, indeterminate-commit behavior or independent restart verification of
+the retained claim chain; those remain explicit Phase 3 gates in `TODO.md`.
+
+The current typed local-execution admission rejects an invocation that crosses
+the pinned code's protocol-version boundary. Until that boundary gains a
+verified historical execution/migration rule, outstanding fee shares must not
+be described as claimable after a protocol-version activation. The Phase 3
+completion gate in `TODO.md` requires an explicit, restart-tested resolution;
+an epoch transition without a protocol-version change does not have this
+problem. The bounded row also entails a full rewrite per claim, so its
+worst-case validator-count cost needs an explicit capacity decision.
 
 ### Implementation order
 

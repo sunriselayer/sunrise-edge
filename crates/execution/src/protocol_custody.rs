@@ -86,6 +86,17 @@ pub enum ProtocolCustodyDirection {
         /// Exact address permitted as the release target.
         recipient: Address,
     },
+    /// Write one exact `FeeEscrow` object for a signed validator claim. A
+    /// partial split retains this owner; a final transfer may move the
+    /// object only to the pinned recipient. Neither form may consume it.
+    FeeClaim {
+        /// Exact escrow object.
+        custody: ObjectId,
+        /// Exact current fee-escrow scope.
+        scope: ProtocolCustodyScope,
+        /// Exact claimant-authorized recipient.
+        recipient: Address,
+    },
     /// Move one exact custody object from one `BondCollateral` scope to the
     /// matching `ForfeitedCollateral` scope -- custody to custody, never an
     /// address. `source_scope`/`target_scope` must share the identical
@@ -293,6 +304,21 @@ impl ProtocolCustodyCapability {
                         scope.purpose == ProtocolCustodyPurpose::BondCollateral,
                     )
                 }
+                ProtocolCustodyDirection::FeeClaim {
+                    custody,
+                    scope,
+                    recipient,
+                } => {
+                    validate_ed25519_owner_address(
+                        recipient.as_bytes(),
+                        Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
+                    )?;
+                    (
+                        *custody,
+                        scope,
+                        scope.purpose == ProtocolCustodyPurpose::FeeEscrow,
+                    )
+                }
                 ProtocolCustodyDirection::Forfeit {
                     custody,
                     source_scope,
@@ -332,13 +358,14 @@ impl ProtocolCustodyCapability {
                     owner: Owner::ProtocolCustody(scope.clone()),
                 })
             }
-            ProtocolCustodyDirection::Release { .. } | ProtocolCustodyDirection::Forfeit { .. } => {
-                None
-            }
+            ProtocolCustodyDirection::Release { .. }
+            | ProtocolCustodyDirection::FeeClaim { .. }
+            | ProtocolCustodyDirection::Forfeit { .. } => None,
         };
         let custody_target: Option<PinnedCustodyTarget> = match &direction {
             ProtocolCustodyDirection::Deposit { .. } => None,
-            ProtocolCustodyDirection::Release { recipient, .. } => Some(PinnedCustodyTarget {
+            ProtocolCustodyDirection::Release { recipient, .. }
+            | ProtocolCustodyDirection::FeeClaim { recipient, .. } => Some(PinnedCustodyTarget {
                 operand: *recipient.as_bytes(),
                 resulting_owner: Owner::Address(*recipient),
             }),
@@ -386,7 +413,8 @@ impl ProtocolCustodyCapability {
     pub fn admits_custody_input(&self, object_id: ObjectId, owner: &Owner) -> bool {
         match &self.direction {
             ProtocolCustodyDirection::Deposit { .. } => false,
-            ProtocolCustodyDirection::Release { custody, scope, .. } => {
+            ProtocolCustodyDirection::Release { custody, scope, .. }
+            | ProtocolCustodyDirection::FeeClaim { custody, scope, .. } => {
                 *custody == object_id && owner == &Owner::ProtocolCustody(scope.clone())
             }
             ProtocolCustodyDirection::Forfeit {
@@ -416,7 +444,8 @@ impl ProtocolCustodyCapability {
         }
         let (object_id, scope): (ObjectId, &ProtocolCustodyScope) = match &self.direction {
             ProtocolCustodyDirection::Deposit { source, scope } => (*source, scope),
-            ProtocolCustodyDirection::Release { custody, scope, .. } => (*custody, scope),
+            ProtocolCustodyDirection::Release { custody, scope, .. }
+            | ProtocolCustodyDirection::FeeClaim { custody, scope, .. } => (*custody, scope),
             ProtocolCustodyDirection::Forfeit {
                 custody,
                 source_scope,
@@ -455,6 +484,7 @@ impl ProtocolCustodyCapability {
                 }
                 (
                     ProtocolCustodyDirection::Release { .. }
+                    | ProtocolCustodyDirection::FeeClaim { .. }
                     | ProtocolCustodyDirection::Forfeit { .. },
                     Owner::ProtocolCustody(owner_scope),
                 ) if owner_scope == scope => {
@@ -1067,6 +1097,70 @@ mod tests {
                 ty: fixture.target.ty.clone(),
             },
         }
+    }
+
+    #[test]
+    fn fee_claim_capability_is_exactly_scoped_and_never_consumes() {
+        let fixture: CapabilityFixture = capability_fixture();
+        let mut fee_scope: ProtocolCustodyScope = fixture.scope.clone();
+        fee_scope.purpose = ProtocolCustodyPurpose::FeeEscrow;
+        let recipient_bytes: [u8; 32] = VerificationKey::from(&SigningKey::from([0x52; 32])).into();
+        let recipient: Address = Address::new(recipient_bytes);
+        let make_direction = |scope: ProtocolCustodyScope| ProtocolCustodyDirection::FeeClaim {
+            custody: fixture.source,
+            scope,
+            recipient,
+        };
+        assert!(
+            ProtocolCustodyCapability::new(
+                &fixture.resolver,
+                fixture.context.clone(),
+                fixture.target.clone(),
+                make_direction(fixture.scope.clone()),
+                fixture.sender,
+                fixture.event,
+            )
+            .is_err()
+        );
+        let capability: ProtocolCustodyCapability = ProtocolCustodyCapability::new(
+            &fixture.resolver,
+            fixture.context.clone(),
+            fixture.target.clone(),
+            make_direction(fee_scope.clone()),
+            fixture.sender,
+            fixture.event,
+        )
+        .expect("fee claim capability");
+        let input: ScopedResolvedObject = custody_owned_input(&fixture, fee_scope.clone());
+        assert!(capability.admits_custody_input(fixture.source, &input.resolved.object.owner));
+        assert!(
+            !capability
+                .admits_custody_input(ObjectId::new([0x53; 32]), &input.resolved.object.owner)
+        );
+        assert!(!capability.admits_custody_input(
+            fixture.source,
+            &Owner::ProtocolCustody(fixture.scope.clone())
+        ));
+        let call: CallIntent = fixture_call(&fixture);
+        let bound: BoundProtocolCustodyCapability = capability
+            .bind(&call, std::slice::from_ref(&input), fixture.event)
+            .expect("bound fee claim");
+        assert!(bound.admits_custody_write(0, false));
+        assert!(!bound.admits_custody_write(0, true));
+        assert_eq!(
+            bound
+                .transfer_owner(0, recipient.as_bytes())
+                .expect("owner"),
+            Some(Owner::Address(recipient))
+        );
+        assert!(bound.transfer_owner(0, &[0x54; 32]).is_err());
+        let mut wrong_call: CallIntent = call;
+        wrong_call.entrypoint = "split".to_owned();
+        assert!(
+            capability
+                .bind(&wrong_call, &[input], fixture.event)
+                .is_err()
+        );
     }
 
     #[test]

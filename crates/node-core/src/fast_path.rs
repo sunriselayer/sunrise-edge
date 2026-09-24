@@ -88,6 +88,17 @@ pub use records::{
     FastPathSettlementRecord, FastPathValidatorEntry, FastPathValidatorSetRecord,
 };
 
+/// FastVote-only: derives the [`BondResourceId`] the fee-escrow custody
+/// scope is keyed on from `fee_policy.asset_type`'s own type arguments. This
+/// requires `asset_type` to carry *exactly one* [`ScopedTypeArg::Opaque`]
+/// argument, since `BondResourceId` is a single `(domain, value)` pair with
+/// no room to fold in a second or later argument. This is strictly narrower
+/// than [`PaidFeePolicy`]'s own general validation
+/// (`validate_paid_fee_policy`, shared by the ordinary direct paid path),
+/// which places no constraint on the number or shape of `asset_type`'s
+/// arguments: an existing direct-paid policy whose `asset_type` carries
+/// zero, two or more type arguments remains valid there and is simply never
+/// eligible for FastVote fee escrow.
 fn fee_resource_id(fee_policy: &PaidFeePolicy) -> FastPathResult<BondResourceId> {
     match fee_policy.asset_type.args() {
         [ScopedTypeArg::Opaque { domain, value }] => BondResourceId::new(*domain, *value)

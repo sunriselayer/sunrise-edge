@@ -279,7 +279,9 @@ pub struct FastPathSettlementRecord {
     pub resource_id: Option<BondResourceId>,
     /// Exact fresh `FeeEscrow` output the charge minted, when charged.
     pub fee_output: Option<ObjectRef>,
-    /// Epoch under whose object hash suite `fee_output` was minted.
+    /// Epoch under whose object hash suite the current `fee_output` ref was
+    /// minted. Initially the certificate epoch; later claims may update the
+    /// escrow object under a newer epoch.
     pub fee_output_epoch: Option<Epoch>,
     /// Exact total amount charged, when charged.
     pub total_amount: Option<u64>,

@@ -430,7 +430,7 @@ fn commit_new_evidence<S: StructuredDurableDomainStateStore>(
 /// of its own and must not silently assume a caller threading a resolver
 /// through without also passing the value it addresses
 /// `PublicationContext::new` with.
-pub(crate) fn load_historical_validator_set<S: StructuredDurableDomainStateStore>(
+fn load_historical_validator_set_with_revisions<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -438,10 +438,12 @@ pub(crate) fn load_historical_validator_set<S: StructuredDurableDomainStateStore
     chain: &ChainId,
     protocol_version: ProtocolVersion,
     evidence_epoch: Epoch,
-) -> EqResult<ValidatorSet> {
+) -> EqResult<(ValidatorSet, BTreeMap<Vec<u8>, StateRevision>)> {
+    let mut revisions: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     let epoch_key: Vec<u8> = local_instance_state::fastpath_epoch_record_key(chain)?;
     let epoch_observed: VersionedStateValue =
         store.get_versioned_durable(context, domain, &epoch_key)?;
+    revisions.insert(epoch_key, epoch_observed.revision());
     let live: local_instance_state::FastPathEpochRecord =
         local_instance_state::decode_fastpath_epoch_record(epoch_observed.value().ok_or(
             EquivocationEvidenceError::Invalid("fast-path epoch record not installed"),
@@ -457,6 +459,7 @@ pub(crate) fn load_historical_validator_set<S: StructuredDurableDomainStateStore
             local_instance_state::fastpath_epoch_transition_key(chain, next_epoch)?;
         let transition_observed: VersionedStateValue =
             store.get_versioned_durable(context, domain, &transition_key)?;
+        revisions.insert(transition_key, transition_observed.revision());
         let record: epoch_transition::FastPathEpochTransitionRecord =
             epoch_transition::decode_fastpath_epoch_transition_record(
                 transition_observed
@@ -477,6 +480,7 @@ pub(crate) fn load_historical_validator_set<S: StructuredDurableDomainStateStore
         PublicationContext::new(chain.clone(), protocol_version, evidence_epoch)?;
     let key: Vec<u8> = local_instance_state::fastpath_validator_set_key(&validator_context)?;
     let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    revisions.insert(key, observed.revision());
     let bytes: &[u8] = observed.value().ok_or(EquivocationEvidenceError::Invalid(
         "no committed validator set for the evidence epoch",
     ))?;
@@ -490,7 +494,68 @@ pub(crate) fn load_historical_validator_set<S: StructuredDurableDomainStateStore
             "historical validator set does not match the restart-verified transition chain",
         );
     }
-    Ok(validator_set)
+    Ok((validator_set, revisions))
+}
+
+/// Loads the chain-anchored historical validator set without carrying CAS
+/// assertions into a later mutation. Evidence-only callers do not write the
+/// loaded rows; fee claims use [`load_historical_validator_set_fenced`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn load_historical_validator_set<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    chain: &ChainId,
+    protocol_version: ProtocolVersion,
+    evidence_epoch: Epoch,
+) -> EqResult<ValidatorSet> {
+    Ok(load_historical_validator_set_with_revisions(
+        store,
+        context,
+        domain,
+        resolver,
+        chain,
+        protocol_version,
+        evidence_epoch,
+    )?
+    .0)
+}
+
+/// Loads the same historical set while fencing every epoch/transition/set
+/// revision that established its chain-anchored digest. A fee claim must
+/// include these assertions in the same CAS as its escrow payout.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn load_historical_validator_set_fenced<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    chain: &ChainId,
+    protocol_version: ProtocolVersion,
+    evidence_epoch: Epoch,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> EqResult<ValidatorSet> {
+    let (set, revisions): (ValidatorSet, BTreeMap<Vec<u8>, StateRevision>) =
+        load_historical_validator_set_with_revisions(
+            store,
+            context,
+            domain,
+            resolver,
+            chain,
+            protocol_version,
+            evidence_epoch,
+        )?;
+    for (key, revision) in revisions {
+        if let Some(previous) = reads.insert(key, revision)
+            && previous != revision
+        {
+            return Err(EquivocationEvidenceError::Node(
+                NodeCoreError::StateConflict,
+            ));
+        }
+    }
+    Ok(set)
 }
 
 /// Class (a): the same validator signed two [`FastVote`]s for the identical

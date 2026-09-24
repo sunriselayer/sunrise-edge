@@ -48,6 +48,7 @@ pub mod economics;
 pub mod epoch_transition;
 pub mod equivocation;
 pub mod fast_path;
+pub mod fee_claims;
 pub mod fee_effects;
 pub mod genesis;
 pub mod local_execution;

@@ -2995,6 +2995,152 @@ fn validator_fee_rounding_assigns_zero_shares() {
 }
 
 #[test]
+fn signed_zero_fee_claim_commits_once_and_conflicting_replay_changes_nothing() {
+    use crate::fee_claims::codec::{
+        FeeClaimIntent, FeeClaimOperation, SignedFeeClaimIntent, encode_signed_fee_claim_intent,
+    };
+    use crate::fee_claims::{fee_claim_intent_digest, fee_claim_signing_frame, handle_fee_claim};
+
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let (signers, entries) = install_four_validators(&store);
+    let mut shares: Vec<FastPathFeeShare> = entries
+        .iter()
+        .map(|entry| FastPathFeeShare {
+            validator_id: entry.id,
+            amount: u64::from(entry.id == signers[0].validator_id),
+            claimed: false,
+        })
+        .collect();
+    shares.sort_by_key(|share| share.validator_id);
+    let fee_output: ObjectRef = object_reference(&fixture.coin);
+    let resource_id: BondResourceId = BondResourceId::new(1, [0x71; 32]).unwrap();
+    let escrow_request_id: [u8; 32] = [0xc1; 32];
+    let row: FastPathSettlementRecord = FastPathSettlementRecord {
+        context: protocol(),
+        request_id: escrow_request_id,
+        generation: 1,
+        resource_id: Some(resource_id),
+        fee_output: Some(fee_output.clone()),
+        fee_output_epoch: Some(protocol().epoch()),
+        total_amount: Some(1),
+        shares,
+    };
+    let row_key: Vec<u8> =
+        fastpath_settlement_key(protocol().chain_id(), &escrow_request_id).unwrap();
+    let row_bytes: Vec<u8> = records::encode_fastpath_settlement_record(&row).unwrap();
+    let setup: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(row_key.clone(), StateRevision::INITIAL).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(row_key.clone(), StateMutation::Put(row_bytes.clone()))
+                .unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&context(), setup),
+        DurableCommitOutcome::Committed
+    );
+
+    let zero_signer: &TestSigner = &signers[1];
+    let mut next_row: FastPathSettlementRecord = row.clone();
+    next_row.generation += 1;
+    next_row
+        .shares
+        .iter_mut()
+        .find(|share| share.validator_id == zero_signer.validator_id)
+        .unwrap()
+        .claimed = true;
+    let next_bytes: Vec<u8> = records::encode_fastpath_settlement_record(&next_row).unwrap();
+    let previous_digest: Digest32 = resolver()
+        .hash_for_purpose(
+            protocol().epoch(),
+            HashPurpose::ExecutionEffects,
+            &row_bytes,
+        )
+        .unwrap();
+    let next_digest: Digest32 = resolver()
+        .hash_for_purpose(
+            protocol().epoch(),
+            HashPurpose::ExecutionEffects,
+            &next_bytes,
+        )
+        .unwrap();
+    let intent: FeeClaimIntent = FeeClaimIntent {
+        context: protocol(),
+        request_id: [0xc2; 32],
+        escrow_request_id,
+        certificate_epoch: protocol().epoch(),
+        validator_id: zero_signer.validator_id,
+        resource_id,
+        expected_generation: 1,
+        expected_fee_output: fee_output,
+        expected_previous_row_digest: previous_digest,
+        expected_next_row_digest: next_digest,
+        share_amount: 0,
+        recipient: objects::Address::new([0xc3; 32]),
+        operation: FeeClaimOperation::ZeroShare,
+    };
+    let digest: Digest32 = fee_claim_intent_digest(&resolver(), &intent).unwrap();
+    let frame: Vec<u8> = fee_claim_signing_frame(&intent.context, digest).unwrap();
+    let signed: SignedFeeClaimIntent = SignedFeeClaimIntent {
+        signature: zero_signer.signing_key.sign(&frame).into(),
+        intent,
+    };
+    let signed_bytes: Vec<u8> = encode_signed_fee_claim_intent(&signed).unwrap();
+    let run = |bytes: &[u8]| {
+        handle_fee_claim(
+            &store,
+            &MemoryBlobStore::default(),
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &base_policy(),
+            &execution::LocalWasmExecutionEngine::new(),
+            bytes,
+            10,
+        )
+    };
+    let first: NodeOutput = run(&signed_bytes).unwrap();
+    assert_eq!(run(&signed_bytes).unwrap(), first);
+    let after: Vec<u8> = store
+        .get_versioned_durable(&context(), domain(), &row_key)
+        .unwrap()
+        .value()
+        .unwrap()
+        .to_vec();
+    assert_eq!(after, next_bytes);
+    let claim_key: Vec<u8> =
+        local_instance_state::fastpath_fee_claim_key(protocol().chain_id(), &escrow_request_id, 2)
+            .unwrap();
+    assert_eq!(
+        store
+            .get_versioned_durable(&context(), domain(), &claim_key)
+            .unwrap()
+            .value(),
+        Some(signed_bytes.as_slice())
+    );
+    let mut conflicting: SignedFeeClaimIntent = signed;
+    conflicting.signature[0] ^= 1;
+    let conflicting_bytes: Vec<u8> = encode_signed_fee_claim_intent(&conflicting).unwrap();
+    assert!(run(&conflicting_bytes).is_err());
+    assert_eq!(
+        store
+            .get_versioned_durable(&context(), domain(), &row_key)
+            .unwrap()
+            .value(),
+        Some(after.as_slice())
+    );
+}
+
+#[test]
 fn fastpath_settlement_record_charged_frame_0x641e_is_stable() {
     let record: FastPathSettlementRecord = FastPathSettlementRecord {
         context: vector_context(),
@@ -3025,13 +3171,13 @@ fn fastpath_settlement_record_charged_frame_0x641e_is_stable() {
 
     // Extract and pin the nested `0x6436` fee-share-list frame (field 8).
     let outer = decode_canonical_frame(&bytes).unwrap();
-    let id_list_bytes: &[u8] = outer.required_field(8).unwrap();
+    let fee_share_list_bytes: &[u8] = outer.required_field(8).unwrap();
     assert_eq!(
-        hex(id_list_bytes),
+        hex(fee_share_list_bytes),
         "534e524536640100030001000400000002000000020046000000534e5245356401000300010020000000050505050505050505050505050505050505050505050505050505050505050502000800000001000000000000000300020000000000030046000000534e5245356401000300010020000000060606060606060606060606060606060606060606060606060606060606060602000800000000000000000000000300020000000000"
     );
 
-    let share_list = decode_canonical_frame(id_list_bytes).unwrap();
+    let share_list = decode_canonical_frame(fee_share_list_bytes).unwrap();
     assert_eq!(
         hex(share_list.required_field(2).unwrap()),
         "534e5245356401000300010020000000050505050505050505050505050505050505050505050505050505050505050502000800000001000000000000000300020000000000"
