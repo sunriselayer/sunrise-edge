@@ -81,6 +81,8 @@ mod commitment;
 pub mod records;
 
 #[cfg(test)]
+mod capacity_tests;
+#[cfg(test)]
 mod tests;
 
 pub use records::{
@@ -146,6 +148,9 @@ fn validator_fee_shares(
 ) -> FastPathResult<Vec<FastPathFeeShare>> {
     if total == 0 {
         return invalid("fast-path charged fee total must be positive");
+    }
+    if validator_set.validators().len() > records::MAX_FASTPATH_ACTIVE_VALIDATORS {
+        return invalid("fast-path active validator set exceeds the fee-claim capacity bound");
     }
     let validator_ids: Vec<ValidatorId> = validator_set
         .validators()

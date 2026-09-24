@@ -3205,28 +3205,38 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         request ids commit exactly one row/audit/receipt; persisted and
         uncommitted indeterminate zero-share commits reconcile by exact
         replay without a second transition;
-      - [ ] extend the competing-writer and indeterminate-commit cases to a
-        positive object-mutating claim, and independently restart-verify the
-        retained signed-claim chain and object transitions. Direct effect
-        validation and ordinary SQLite reopen/replay do not prove these;
-      - [ ] outstanding `FeeEscrow` claims across a protocol-version activation:
-        the current claim-row identity check rejects a different protocol
-        version even for zero shares, and positive claims also encounter
-        local-execution's cross-version code restriction. A version
-        transition must either preserve an authenticated historical claim
-        path (including zero shares) or fail activation while any claimable
-        escrow remains; prove the chosen rule across restart instead of
-        silently stranding historical shares;
-      - [ ] bound or measure worst-case mutable claim-row rewrite cost and
-        permanent per-claim signed-envelope retention at the admitted
-        validator-set size and transaction rate before claiming testnet
+      - [x] real file-backed SQLite positive object-mutating split claims:
+        distinct signed competing writers on the same generation commit one
+        retained object, row, audit, nonce and receipt; persisted and
+        uncommitted indeterminate outcomes reconcile on close/reopen and
+        exact replay without a second transition;
+      - [ ] independently restart-verify the retained signed-claim chain and
+        each object transition from authenticated prior bytes; ordinary
+        SQLite reopen/replay and direct effect validation do not prove this;
+      - [x] bound admission to 256 active validators at genesis, epoch
+        next-set derivation and fee-share construction, retaining the 10,000
+        decode ceiling for historical bytes. Deterministic worst-case
+        per-escrow byte counts at 256 are 19,838 B per settlement row,
+        5,078,528 B in whole-row rewrites across 256 claims and 51,642,368 B
+        in maximally sized retained signed envelopes (DR-0138); these are
+        bounds, not a throughput or disk-life certification;
+      - [ ] capacity/load/soak certification for concurrent escrows, claim
+        rate, retained envelopes and restart time before claiming network
         capacity;
+      - [ ] future protocol-version activation gate: there is currently no
+        durable version-switch operation, and the claim handler intentionally
+        rejects a different version, including zero shares. Before adding a
+        version switch, either preserve authenticated historical claims or
+        fail activation while any claimable `FeeEscrow` remains, and prove
+        that choice across restart (DR-0138). Do not represent operator
+        config changes as an authorized protocol migration;
       - [ ] Phase 3 review gate.
 
-  **Remaining Phase 3 completion:** prove positive object-mutating claims under
-  competing writers and indeterminate commits, independently restart-verify
-  retained claim history, resolve cross-version outstanding escrow and
-  worst-case row/envelope capacity; then pass the Phase 3 review gate.
+  **Remaining Phase 3 completion:** independently restart-verify retained
+  signed-claim history and object transitions, establish network capacity for
+  claims, then pass the Phase 3 review gate. Protocol-version activation is
+  a separately blocked future gate; there is no live version-switch path to
+  exercise in this phase. Revisit it before implementing that path.
   FastVote is not complete until this phase closes.
 
 ## CLI-First Node Production Gate

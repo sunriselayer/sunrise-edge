@@ -449,6 +449,9 @@ pub(crate) fn derive_activation_set<S: StructuredDurableDomainStateStore>(
     next_epoch: Epoch,
     next_validators: &[FastPathValidatorEntry],
 ) -> EtResult<DerivedActivation> {
+    if next_validators.len() > fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS {
+        return invalid("fast-path next validator set exceeds the fee-claim capacity bound");
+    }
     let next_context: PublicationContext =
         PublicationContext::new(chain.clone(), protocol_version, next_epoch)?;
 

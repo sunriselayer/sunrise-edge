@@ -484,6 +484,8 @@ struct PositiveClaimFixture {
     signed_b: Vec<u8>,
     next_bytes_a: Vec<u8>,
     next_bytes_b: Vec<u8>,
+    escrow_bytes_a: Vec<u8>,
+    escrow_bytes_b: Vec<u8>,
 }
 
 fn positive_claim_fixture<S: StructuredDurableDomainStateStore>(store: &S) -> PositiveClaimFixture {
@@ -620,7 +622,7 @@ fn positive_claim_fixture<S: StructuredDurableDomainStateStore>(store: &S) -> Po
                        share_amount: u64,
                        recipient: Address,
                        request_id: [u8; 32]|
-     -> (Vec<u8>, Vec<u8>) {
+     -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         let call: CallIntent = CallIntent {
             context: protocol(),
             request_id,
@@ -671,6 +673,7 @@ fn positive_claim_fixture<S: StructuredDurableDomainStateStore>(store: &S) -> Po
             .unwrap()
             .claimed = true;
         let next_bytes: Vec<u8> = encode_fastpath_settlement_record(&next_row).unwrap();
+        let escrow_bytes: Vec<u8> = objects::encode_object(&retained).unwrap();
 
         let intent: FeeClaimIntent = FeeClaimIntent {
             context: protocol(),
@@ -706,6 +709,7 @@ fn positive_claim_fixture<S: StructuredDurableDomainStateStore>(store: &S) -> Po
         (
             codec::encode_signed_fee_claim_intent(&signed).unwrap(),
             next_bytes,
+            escrow_bytes,
         )
     };
 
@@ -715,9 +719,9 @@ fn positive_claim_fixture<S: StructuredDurableDomainStateStore>(store: &S) -> Po
         Address::new(ed25519_zebra::VerificationKey::from(&SigningKey::from([0xca; 32])).into());
     let recipient_b: Address =
         Address::new(ed25519_zebra::VerificationKey::from(&SigningKey::from([0xcb; 32])).into());
-    let (signed_a, next_bytes_a) =
+    let (signed_a, next_bytes_a, escrow_bytes_a) =
         build_claim(validator_a, &key(), share_a, recipient_a, request_a);
-    let (signed_b, next_bytes_b) = build_claim(
+    let (signed_b, next_bytes_b, escrow_bytes_b) = build_claim(
         second_validator,
         &second_key,
         share_b,
@@ -737,7 +741,37 @@ fn positive_claim_fixture<S: StructuredDurableDomainStateStore>(store: &S) -> Po
         signed_b,
         next_bytes_a,
         next_bytes_b,
+        escrow_bytes_a,
+        escrow_bytes_b,
     }
+}
+
+fn assert_retained_escrow_bytes<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    coin_id: ObjectId,
+    expected: &[u8],
+) {
+    let head: DurableObjectHead = store
+        .get_object_head(&context(1), domain(), coin_id)
+        .unwrap();
+    let DurableObjectHead::Current {
+        object_version,
+        digest,
+        ..
+    } = head
+    else {
+        panic!("positive claim must retain a current escrow object");
+    };
+    assert_eq!(object_version.get(), 3);
+    let record: DurableObjectVersionRecord = store
+        .get_object_version(&context(1), domain(), coin_id, object_version)
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.digest(), digest);
+    let runtime::DurableObjectPayload::Inline(inline) = record.payload() else {
+        panic!("positive claim fixture must keep the escrow inline");
+    };
+    assert_eq!(inline.canonical_bytes(), expected);
 }
 
 /// Races two distinct valid signed positive claims (asymmetric splits of the
@@ -841,13 +875,12 @@ fn file_backed_sqlite_positive_claim_competing_writers_commit_one_generation_onc
         .unwrap();
     assert_eq!(receipt_a.is_some(), a_won);
     assert_eq!(receipt_b.is_some(), b_won);
-    let head: DurableObjectHead = reopened
-        .get_object_head(&context(1), domain(), fixture.coin_id)
-        .unwrap();
-    assert!(
-        matches!(head, DurableObjectHead::Current { object_version, .. } if object_version.get() == 3),
-        "exactly one leg must have advanced the shared escrow object"
-    );
+    let winning_escrow_bytes: &[u8] = if a_won {
+        &fixture.escrow_bytes_a
+    } else {
+        &fixture.escrow_bytes_b
+    };
+    assert_retained_escrow_bytes(&reopened, fixture.coin_id, winning_escrow_bytes);
     let next_nonce: u64 = query_sender_next_nonce(
         &reopened,
         &context(1),
@@ -952,13 +985,7 @@ fn file_backed_sqlite_positive_claim_ambiguous_commit_reconciles_and_reopens_wit
             Some(fixture.signed_a.as_slice())
         );
         assert_eq!(submit_claim(&reopened, &fixture.signed_a).unwrap(), replay);
-        let head: DurableObjectHead = reopened
-            .get_object_head(&context(1), domain(), fixture.coin_id)
-            .unwrap();
-        assert!(
-            matches!(head, DurableObjectHead::Current { object_version, .. } if object_version.get() == 3),
-            "replaying the reconciled receipt must not mutate the escrow object a second time"
-        );
+        assert_retained_escrow_bytes(&reopened, fixture.coin_id, &fixture.escrow_bytes_a);
         let next_nonce: u64 = query_sender_next_nonce(
             &reopened,
             &context(1),
@@ -989,12 +1016,7 @@ fn file_backed_sqlite_positive_claim_ambiguous_commit_reconciles_and_reopens_wit
             Some(fixture.next_bytes_a.as_slice())
         );
         assert_eq!(submit_claim(&restarted, &fixture.signed_a).unwrap(), replay);
-        let head_after_restart: DurableObjectHead = restarted
-            .get_object_head(&context(1), domain(), fixture.coin_id)
-            .unwrap();
-        assert!(
-            matches!(head_after_restart, DurableObjectHead::Current { object_version, .. } if object_version.get() == 3)
-        );
+        assert_retained_escrow_bytes(&restarted, fixture.coin_id, &fixture.escrow_bytes_a);
         std::fs::remove_dir_all(&directory).unwrap();
     }
 }
