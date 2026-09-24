@@ -122,6 +122,7 @@ fn coin_data(amount: u64) -> Vec<u8> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tamper {
     None,
+    TrailingZero,
     MissingEnvelope,
     BadSignature,
     BadEscrowValue,
@@ -162,26 +163,34 @@ fn build_chain(tamper: Tamper) -> ChainFixture {
     let validator2_key: SigningKey = SigningKey::from([0x52; 32]);
     let validator1_public: [u8; 32] = VerificationKey::from(&validator1_key).into();
     let validator2_public: [u8; 32] = VerificationKey::from(&validator2_key).into();
+    let validator3_key: SigningKey = SigningKey::from([0x53; 32]);
+    let validator3_public: [u8; 32] = VerificationKey::from(&validator3_key).into();
     let validator1: ValidatorId = ValidatorId::new(validator1_public);
     let validator2: ValidatorId = ValidatorId::new(validator2_public);
-    let validator_set: ValidatorSet = ValidatorSet::new(
-        protocol().epoch(),
-        vec![
-            ValidatorInfo {
-                id: validator1,
-                voting_power: 1,
-                signature_scheme: SignatureSchemeId::Ed25519,
-                public_key: validator1_public.to_vec(),
-            },
-            ValidatorInfo {
-                id: validator2,
-                voting_power: 1,
-                signature_scheme: SignatureSchemeId::Ed25519,
-                public_key: validator2_public.to_vec(),
-            },
-        ],
-    )
-    .unwrap();
+    let validator3: ValidatorId = ValidatorId::new(validator3_public);
+    let mut validators: Vec<ValidatorInfo> = vec![
+        ValidatorInfo {
+            id: validator1,
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: validator1_public.to_vec(),
+        },
+        ValidatorInfo {
+            id: validator2,
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: validator2_public.to_vec(),
+        },
+    ];
+    if tamper == Tamper::TrailingZero {
+        validators.push(ValidatorInfo {
+            id: validator3,
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: validator3_public.to_vec(),
+        });
+    }
+    let validator_set: ValidatorSet = ValidatorSet::new(protocol().epoch(), validators).unwrap();
 
     let escrow_request_id: [u8; 32] = [0x61; 32];
     let scope: ProtocolCustodyScope = fee_escrow_scope(&protocol(), escrow_request_id, resource_id);
@@ -203,6 +212,13 @@ fn build_chain(tamper: Tamper) -> ChainFixture {
             claimed: false,
         },
     ];
+    if tamper == Tamper::TrailingZero {
+        shares.push(FastPathFeeShare {
+            validator_id: validator3,
+            amount: 0,
+            claimed: false,
+        });
+    }
     shares.sort_by_key(|share| share.validator_id);
 
     let genesis_row: FastPathSettlementRecord = FastPathSettlementRecord {
@@ -354,8 +370,62 @@ fn build_chain(tamper: Tamper) -> ChainFixture {
     put_state(
         &store,
         local_instance_state::fastpath_settlement_key(&chain(), &escrow_request_id).unwrap(),
-        final_row_bytes,
+        final_row_bytes.clone(),
     );
+
+    if tamper == Tamper::TrailingZero {
+        let mut zero_row: FastPathSettlementRecord = final_row.clone();
+        zero_row.generation = 4;
+        zero_row
+            .shares
+            .iter_mut()
+            .find(|share| share.validator_id == validator3)
+            .unwrap()
+            .claimed = true;
+        let zero_row_bytes: Vec<u8> = encode_fastpath_settlement_record(&zero_row).unwrap();
+        let zero_intent: FeeClaimIntent = FeeClaimIntent {
+            context: protocol(),
+            request_id: [0xA3; 32],
+            escrow_request_id,
+            certificate_epoch: protocol().epoch(),
+            validator_id: validator3,
+            resource_id,
+            expected_generation: 3,
+            expected_fee_output: escrow_v3_ref,
+            expected_previous_row_digest: fee_claim_row_digest(
+                &resolver(),
+                protocol().epoch(),
+                &final_row_bytes,
+            )
+            .unwrap(),
+            expected_next_row_digest: fee_claim_row_digest(
+                &resolver(),
+                protocol().epoch(),
+                &zero_row_bytes,
+            )
+            .unwrap(),
+            share_amount: 0,
+            recipient: Address::new([0x73; 32]),
+            operation: FeeClaimOperation::ZeroShare,
+        };
+        let zero_digest: Digest32 = fee_claim_intent_digest(&resolver(), &zero_intent).unwrap();
+        let zero_frame: Vec<u8> =
+            fee_claim_signing_frame(&zero_intent.context, zero_digest).unwrap();
+        let zero_signed: SignedFeeClaimIntent = SignedFeeClaimIntent {
+            intent: zero_intent,
+            signature: validator3_key.sign(&zero_frame).into(),
+        };
+        put_state(
+            &store,
+            local_instance_state::fastpath_fee_claim_key(&chain(), &escrow_request_id, 4).unwrap(),
+            codec::encode_signed_fee_claim_intent(&zero_signed).unwrap(),
+        );
+        put_state(
+            &store,
+            local_instance_state::fastpath_settlement_key(&chain(), &escrow_request_id).unwrap(),
+            zero_row_bytes,
+        );
+    }
 
     ChainFixture {
         store,
@@ -395,6 +465,15 @@ fn verifies_a_consistent_split_then_final_chain() {
             verified_positive_claims: 2,
         }
     );
+}
+
+#[test]
+fn verifies_zero_share_claim_after_final_transfer() {
+    let fixture: ChainFixture = build_chain(Tamper::TrailingZero);
+    let report: FeeClaimChainReport = run(&fixture).unwrap();
+    assert_eq!(report.final_generation, 4);
+    assert_eq!(report.verified_claims, 3);
+    assert_eq!(report.verified_positive_claims, 2);
 }
 
 #[test]
