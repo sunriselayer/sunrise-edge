@@ -3233,11 +3233,13 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         checks it and all other leg-derived creation candidates after restart,
         and supplies a read-only chain-scoped durable-key page scanner for
         memory/SQLite/PostgreSQL. Local v2 vectors, positive SQLite replay,
-        tamper rejection and one certified initial-escrow inventory page pass.
-        A certified split/final/zero multi-escrow close/reopen sweep and live
-        PostgreSQL query execution are still missing; a page is not a
-        multi-page snapshot, and whole-store rollback still needs an external
-        anchor (DR-0139/0140);
+        file-backed post-restart payout/authority/instance tamper rejection
+        and one certified initial-escrow inventory page pass. A live
+        PostgreSQL scanner case is wired into the existing CI database
+        harness; the complete certified split/final/zero multi-escrow
+        close/reopen sweep and recovery-time evidence are still missing. A
+        page is not a multi-page snapshot, and whole-store rollback still
+        needs an external anchor (DR-0139/0140);
       - [x] bound admission to 256 active validators at genesis, epoch
         next-set derivation, prepare, apply and fee-share construction,
         retaining the 10,000 decode ceiling for historical bytes. At the

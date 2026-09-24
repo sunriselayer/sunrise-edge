@@ -865,6 +865,14 @@ fn load_state_value(
 /// cursor and within the prefix, using the `durable_state` primary-key index.
 /// Tombstoned keys (`value IS NULL`) are not filtered: the caller must see
 /// them to fail closed instead of treating a deletion as absent.
+///
+/// The `key` range is expressed as a single start bound (`> after` when a
+/// cursor is present, otherwise `>= prefix`) and an optional single stop
+/// bound (`< upper_bound`), each chosen as one of four static query texts
+/// rather than combined with `OR`. An `OR` between the cursor and prefix
+/// bounds prevents the planner from using the primary-key index's start key,
+/// forcing a scan of every row in the prefix from its beginning on every
+/// page — a cost that grows with the page offset instead of the page size.
 fn load_state_key_page(
     connection: &Connection,
     scan: &StateKeyScan,
@@ -872,30 +880,42 @@ fn load_state_key_page(
     let upper_bound = prefix_upper_bound(scan.prefix());
     let candidate_limit = i64::try_from(scan.limit().get() + 1)
         .map_err(|_| SqlitePreCommitFailure::InvalidPersistedState)?;
-    let mut statement = connection
-        .prepare(
+    let start_key: &[u8] = scan.after().unwrap_or_else(|| scan.prefix());
+    let sql: &str = match (scan.after().is_some(), upper_bound.is_some()) {
+        (true, true) => {
+            "SELECT key FROM durable_state
+             WHERE key > ?1 AND key < ?2
+             ORDER BY key
+             LIMIT ?3"
+        }
+        (true, false) => {
+            "SELECT key FROM durable_state
+             WHERE key > ?1
+             ORDER BY key
+             LIMIT ?2"
+        }
+        (false, true) => {
+            "SELECT key FROM durable_state
+             WHERE key >= ?1 AND key < ?2
+             ORDER BY key
+             LIMIT ?3"
+        }
+        (false, false) => {
             "SELECT key FROM durable_state
              WHERE key >= ?1
-               AND (?2 IS NULL OR key > ?2)
-               AND (?3 IS NULL OR key < ?3)
              ORDER BY key
-             LIMIT ?4",
-        )
-        .map_err(database_unavailable)?;
-    let rows = statement
-        .query_map(
-            params![
-                scan.prefix(),
-                scan.after(),
-                upper_bound.as_deref(),
-                candidate_limit
-            ],
-            |row| row.get::<_, Vec<u8>>(0),
-        )
-        .map_err(database_unavailable)?;
+             LIMIT ?2"
+        }
+    };
+    let mut statement = connection.prepare(sql).map_err(database_unavailable)?;
+    let mut rows = match upper_bound.as_deref() {
+        Some(upper) => statement.query(params![start_key, upper, candidate_limit]),
+        None => statement.query(params![start_key, candidate_limit]),
+    }
+    .map_err(database_unavailable)?;
     let mut keys = Vec::new();
-    for row in rows {
-        keys.push(row.map_err(database_unavailable)?);
+    while let Some(row) = rows.next().map_err(database_unavailable)? {
+        keys.push(row.get::<_, Vec<u8>>(0).map_err(database_unavailable)?);
     }
     StateKeyPage::from_ordered_candidates(scan, keys)
         .map_err(|_| SqlitePreCommitFailure::InvalidPersistedState)

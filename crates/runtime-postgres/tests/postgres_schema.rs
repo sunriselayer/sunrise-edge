@@ -21,9 +21,10 @@ use runtime::{
     DurableOutboxAcknowledgementOutcome, DurableOutboxAcknowledgementRejection, DurableOutboxBatch,
     DurableOutboxClaimOutcome, DurableOutboxClaimRejection, DurableOutboxLeaseId,
     DurableOutboxMessage, DurableReadError, DurableRequestId, DurableRequestReceipt,
-    DurableStateTransaction, IndexedOutboxRepository, ObjectId, RequestOutboxClaimRequest,
-    StateMutation, StateMutationEntry, StateReadAssertion, StateRevision, StorageCorrelationId,
-    StorageDeadline, StructuredDurableDomainStateStore, WriterFenceGeneration,
+    DurableStateKeyScanner, DurableStateTransaction, IndexedOutboxRepository, ObjectId,
+    RequestOutboxClaimRequest, RuntimeError, StateKeyScan, StateMutation, StateMutationEntry,
+    StateReadAssertion, StateRevision, StorageCorrelationId, StorageDeadline,
+    StructuredDurableDomainStateStore, WriterFenceGeneration,
     conformance::{
         CommitFaultPoint, CommitLossFixture, ConformanceFailure, ConformanceResult,
         DurableStoreFixture, SchemaSkewFixture, run_commit_loss_conformance,
@@ -39,7 +40,7 @@ use runtime_postgres::{
 use std::{
     io::{self, Read, Write},
     net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
-    num::NonZeroU32,
+    num::{NonZeroU32, NonZeroUsize},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -1403,6 +1404,171 @@ fn postgres_schema_and_durable_store_conformance() {
     );
     assert!(matches!(
         store.get_request_receipt(&expired_context, namespace.domain(), durable_request_id),
+        Err(DurableReadError::DeadlineExceeded)
+    ));
+
+    // --- Live scan_durable_keys coverage -----------------------------------
+    //
+    // Reuses this test's already-bootstrapped namespace, store, and pool
+    // instead of a second destructive schema reset. Covers prefix ordering,
+    // exclusive cursor pagination across the single indexed start bound,
+    // an absent `after` parameter, a binary 0xFF prefix with no finite
+    // upper bound, tombstone visibility, and domain/fence/deadline refusal.
+    let ordering_keys: [&[u8]; 5] = [
+        b"scan/ordering/charlie",
+        b"scan/ordering/alpha",
+        b"scan/ordering/echo",
+        b"scan/ordering/bravo",
+        b"scan/ordering/delta",
+    ];
+    let ordering_reads = AtomicStateReadSet::new(
+        ordering_keys
+            .iter()
+            .map(|key| StateReadAssertion::new(key.to_vec(), StateRevision::INITIAL).unwrap())
+            .collect(),
+    )
+    .unwrap();
+    let ordering_mutations = AtomicStateMutationSet::new(
+        ordering_keys
+            .iter()
+            .map(|key| {
+                StateMutationEntry::new(key.to_vec(), StateMutation::Put(b"v".to_vec())).unwrap()
+            })
+            .collect(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(
+            &context,
+            AtomicStateTransaction::new(namespace.domain(), ordering_reads, ordering_mutations)
+                .unwrap(),
+        ),
+        DurableCommitOutcome::Committed
+    );
+    let mut expected_ordering: Vec<Vec<u8>> =
+        ordering_keys.iter().map(|key| key.to_vec()).collect();
+    expected_ordering.sort();
+
+    let ordering_scan = StateKeyScan::new(
+        b"scan/ordering/".to_vec(),
+        None,
+        NonZeroUsize::new(ordering_keys.len()).unwrap(),
+    )
+    .unwrap();
+    let ordering_page = store
+        .scan_durable_keys(&context, namespace.domain(), &ordering_scan)
+        .unwrap();
+    assert_eq!(ordering_page.keys(), expected_ordering.as_slice());
+    assert_eq!(ordering_page.continuation_cursor(), None);
+
+    // Exclusive cursor pagination: a limit smaller than the key count must
+    // walk the full ordered set, in order, without gaps or duplicates, and
+    // every returned key on every page must be strictly greater than the
+    // cursor that produced that page.
+    let mut paginated: Vec<Vec<u8>> = Vec::new();
+    let mut after: Option<Vec<u8>> = None;
+    loop {
+        let page_scan = StateKeyScan::new(
+            b"scan/ordering/".to_vec(),
+            after.clone(),
+            NonZeroUsize::new(2).unwrap(),
+        )
+        .unwrap();
+        let page = store
+            .scan_durable_keys(&context, namespace.domain(), &page_scan)
+            .unwrap();
+        assert!(page.keys().len() <= 2);
+        for key in page.keys() {
+            if let Some(previous) = after.as_deref() {
+                assert!(key.as_slice() > previous);
+            }
+            paginated.push(key.clone());
+        }
+        match page.continuation_cursor() {
+            Some(cursor) => after = Some(cursor.to_vec()),
+            None => break,
+        }
+    }
+    assert_eq!(paginated, expected_ordering);
+
+    // Tombstones remain visible to the scanner rather than being filtered,
+    // so recovery callers can distinguish a deletion from an absent key.
+    let tombstone_key = ordering_keys[0].to_vec();
+    let tombstone_delete = AtomicStateTransaction::new(
+        namespace.domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(tombstone_key.clone(), StateRevision::new(1)).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(tombstone_key.clone(), StateMutation::Delete).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&context, tombstone_delete),
+        DurableCommitOutcome::Committed
+    );
+    let post_tombstone_page = store
+        .scan_durable_keys(&context, namespace.domain(), &ordering_scan)
+        .unwrap();
+    assert_eq!(post_tombstone_page.keys(), expected_ordering.as_slice());
+
+    // A binary prefix consisting entirely of `0xFF` bytes has no finite
+    // exclusive successor, exercising the scanner's optional stop bound.
+    let max_prefix_keys: [&[u8]; 2] = [&[0xFF, 0x01], &[0xFF, 0x02]];
+    let max_prefix_reads = AtomicStateReadSet::new(
+        max_prefix_keys
+            .iter()
+            .map(|key| StateReadAssertion::new(key.to_vec(), StateRevision::INITIAL).unwrap())
+            .collect(),
+    )
+    .unwrap();
+    let max_prefix_mutations = AtomicStateMutationSet::new(
+        max_prefix_keys
+            .iter()
+            .map(|key| {
+                StateMutationEntry::new(key.to_vec(), StateMutation::Put(b"ff".to_vec())).unwrap()
+            })
+            .collect(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(
+            &context,
+            AtomicStateTransaction::new(namespace.domain(), max_prefix_reads, max_prefix_mutations)
+                .unwrap(),
+        ),
+        DurableCommitOutcome::Committed
+    );
+    let max_prefix_scan =
+        StateKeyScan::new(vec![0xFF], None, NonZeroUsize::new(8).unwrap()).unwrap();
+    let max_prefix_page = store
+        .scan_durable_keys(&context, namespace.domain(), &max_prefix_scan)
+        .unwrap();
+    assert_eq!(
+        max_prefix_page.keys(),
+        vec![max_prefix_keys[0].to_vec(), max_prefix_keys[1].to_vec()].as_slice()
+    );
+    assert_eq!(max_prefix_page.continuation_cursor(), None);
+
+    // Domain, writer-fence, and deadline refusal must be enforced before any
+    // scan executes.
+    let foreign_domain = AtomicityDomainId::new([0x99; 32]).unwrap();
+    assert!(matches!(
+        store.scan_durable_keys(&context, foreign_domain, &ordering_scan),
+        Err(DurableReadError::InvalidRequest(
+            RuntimeError::AtomicityDomainMismatch
+        ))
+    ));
+    assert!(matches!(
+        store.scan_durable_keys(&stale_context, namespace.domain(), &ordering_scan),
+        Err(DurableReadError::WriterFenced { active_generation })
+            if active_generation == initial_fence
+    ));
+    assert!(matches!(
+        store.scan_durable_keys(&expired_context, namespace.domain(), &ordering_scan),
         Err(DurableReadError::DeadlineExceeded)
     ));
 

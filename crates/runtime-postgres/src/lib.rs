@@ -959,6 +959,14 @@ fn bytea_prefix_upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
 /// state_key`). Tombstoned rows (`tombstone = TRUE`) are not filtered: the
 /// caller must see them to fail closed instead of treating a deletion as
 /// absent.
+///
+/// The `state_key` range is expressed as a single start bound (`> after` when
+/// a cursor is present, otherwise `>= prefix`) and an optional single stop
+/// bound (`< upper_bound`), each chosen as one of four static query texts
+/// rather than combined with `OR`. An `OR` between the cursor and prefix
+/// bounds prevents the planner from using the primary-key index's start key,
+/// forcing a scan of every row in the prefix from its beginning on every
+/// page — a cost that grows with the page offset instead of the page size.
 fn load_state_key_page(
     transaction: &mut postgres::Transaction<'_>,
     namespace: &PostgresNamespace,
@@ -967,30 +975,86 @@ fn load_state_key_page(
     let upper_bound = bytea_prefix_upper_bound(scan.prefix());
     let candidate_limit = i64::try_from(scan.limit().get() + 1)
         .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
-    let rows = transaction
-        .query(
+    let start_key: &[u8] = scan.after().unwrap_or_else(|| scan.prefix());
+    let rows = match (scan.after().is_some(), upper_bound.as_deref()) {
+        (true, Some(upper)) => transaction.query(
+            "SELECT state_key FROM sunrise_edge.state_records
+             WHERE chain_id_bytes = $1
+               AND validator_id = $2
+               AND atomicity_domain_id = $3
+               AND record_kind_id = $4
+               AND state_key > $5
+               AND state_key < $6
+             ORDER BY state_key
+             LIMIT $7",
+            &[
+                &namespace.chain_id_bytes(),
+                &&namespace.validator_id().as_bytes()[..],
+                &&namespace.domain().as_bytes()[..],
+                &STATE_RECORD_KIND_APPLICATION,
+                &start_key,
+                &upper,
+                &candidate_limit,
+            ],
+        ),
+        (true, None) => transaction.query(
+            "SELECT state_key FROM sunrise_edge.state_records
+             WHERE chain_id_bytes = $1
+               AND validator_id = $2
+               AND atomicity_domain_id = $3
+               AND record_kind_id = $4
+               AND state_key > $5
+             ORDER BY state_key
+             LIMIT $6",
+            &[
+                &namespace.chain_id_bytes(),
+                &&namespace.validator_id().as_bytes()[..],
+                &&namespace.domain().as_bytes()[..],
+                &STATE_RECORD_KIND_APPLICATION,
+                &start_key,
+                &candidate_limit,
+            ],
+        ),
+        (false, Some(upper)) => transaction.query(
             "SELECT state_key FROM sunrise_edge.state_records
              WHERE chain_id_bytes = $1
                AND validator_id = $2
                AND atomicity_domain_id = $3
                AND record_kind_id = $4
                AND state_key >= $5
-               AND ($6::bytea IS NULL OR state_key > $6)
-               AND ($7::bytea IS NULL OR state_key < $7)
+               AND state_key < $6
              ORDER BY state_key
-             LIMIT $8",
+             LIMIT $7",
             &[
                 &namespace.chain_id_bytes(),
                 &&namespace.validator_id().as_bytes()[..],
                 &&namespace.domain().as_bytes()[..],
                 &STATE_RECORD_KIND_APPLICATION,
-                &scan.prefix(),
-                &scan.after(),
-                &upper_bound,
+                &start_key,
+                &upper,
                 &candidate_limit,
             ],
-        )
-        .map_err(|error| PreCommitFailure::from_database(&error))?;
+        ),
+        (false, None) => transaction.query(
+            "SELECT state_key FROM sunrise_edge.state_records
+             WHERE chain_id_bytes = $1
+               AND validator_id = $2
+               AND atomicity_domain_id = $3
+               AND record_kind_id = $4
+               AND state_key >= $5
+             ORDER BY state_key
+             LIMIT $6",
+            &[
+                &namespace.chain_id_bytes(),
+                &&namespace.validator_id().as_bytes()[..],
+                &&namespace.domain().as_bytes()[..],
+                &STATE_RECORD_KIND_APPLICATION,
+                &start_key,
+                &candidate_limit,
+            ],
+        ),
+    }
+    .map_err(|error| PreCommitFailure::from_database(&error))?;
     let mut keys: Vec<Vec<u8>> = Vec::with_capacity(rows.len());
     for row in &rows {
         let key: Vec<u8> = row

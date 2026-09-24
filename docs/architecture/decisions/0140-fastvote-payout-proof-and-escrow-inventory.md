@@ -65,8 +65,8 @@ needed for that stronger history claim.
   across a real SQLite close/reopen. Final and zero-share claim paths must
   retain their existing semantics.
 - Verify scanner ordering, prefix, cursor, bounds, tombstones, domain/fence
-  and deadline checks. PostgreSQL query execution needs a real database
-  before claiming live operational evidence.
+  and deadline checks. The PostgreSQL live case uses the existing CI database
+  harness; a locally skipped case is not evidence of real query execution.
 - The inventory sweep must reject malformed or tombstoned settlement keys
   and report continuation honestly. One page is never described as a
   complete global verification.

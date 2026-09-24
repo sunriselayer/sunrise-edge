@@ -13,9 +13,10 @@ use ed25519_zebra::SigningKey;
 use execution::LocalWasmExecutionEngine;
 use execution::call::CallIntent;
 use execution::local_execution::{
-    LocalExecutionIntent, LocalExecutionMode, SignedLocalExecutionIntent,
-    derive_local_created_object_id, encode_signed_local_execution, instance_target,
-    local_execution_event_digest, local_execution_signing_frame,
+    LocalExecutionIntent, LocalExecutionMode, ObjectAuthority, SignedLocalExecutionIntent,
+    decode_signed_local_execution, derive_local_created_object_id, encode_object_authority,
+    encode_signed_local_execution, instance_target, local_execution_event_digest,
+    local_execution_signing_frame,
 };
 use objects::{Address, ObjectId, ProtocolCustodyScope};
 use protocol_types::{HashAlgorithmId, SignatureSchemeId, ValidatorId};
@@ -1250,4 +1251,562 @@ fn file_backed_sqlite_positive_claim_ambiguous_commit_reconciles_and_reopens_wit
         assert_object_absent(&restarted, fixture.payout_id_b);
         std::fs::remove_dir_all(&directory).unwrap();
     }
+}
+
+/// The same caller-trusted resource/instance/interface inputs
+/// [`verify_fee_claim_history`] loads before calling
+/// [`verify::verify_signed_payout`]/[`verify::verify_escrow_authority`],
+/// re-derived straight from durable storage so each restart-verifier case
+/// below can call those two functions directly against its own freshly
+/// reopened handle.
+struct ClaimVerificationInputs {
+    resource: FastPathEconomicsResourcePolicy,
+    instance: execution::local_execution::InstanceRecord,
+    interface: execution::publication::VerifiedPublicationInterface,
+}
+
+fn load_claim_verification_inputs<S: StructuredDurableDomainStateStore>(
+    store: &S,
+) -> ClaimVerificationInputs {
+    let resolver: HashSuiteResolver = resolver();
+    let economics_key: Vec<u8> =
+        local_instance_state::fastpath_economics_policy_key(&protocol()).unwrap();
+    let economics_observed: VersionedStateValue = store
+        .get_versioned_durable(&context(1), domain(), &economics_key)
+        .unwrap();
+    let economics: FastPathEconomicsPolicy = decode_fastpath_economics_policy(
+        economics_observed
+            .value()
+            .expect("committed economics policy"),
+    )
+    .unwrap();
+    let resource: FastPathEconomicsResourcePolicy = economics.resources[0].clone();
+    let instance: execution::local_execution::InstanceRecord =
+        local_execution::query_local_instance(
+            store,
+            &context(1),
+            domain(),
+            &resolver,
+            &[],
+            &chain(),
+            resource.instance.creator,
+            resource.instance.seed,
+        )
+        .unwrap()
+        .unwrap();
+    let loaded: publication::VerifiedDurablePublication = publication::load_verified_publication(
+        store,
+        &context(1),
+        domain(),
+        &resolver,
+        &[],
+        resource.code.origin(),
+    )
+    .unwrap()
+    .unwrap();
+    ClaimVerificationInputs {
+        resource,
+        instance,
+        interface: loaded.interface,
+    }
+}
+
+/// Opens a fresh, empty temp-directory-backed SQLite store for one isolated
+/// case: a durable mutation made in one case must never be observable by
+/// another.
+fn fresh_sqlite_store(
+    tag: &str,
+    salt: u8,
+) -> (
+    std::path::PathBuf,
+    std::path::PathBuf,
+    SqliteNamespace,
+    WriterFenceGeneration,
+) {
+    let unique: u128 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory: std::path::PathBuf = std::env::temp_dir().join(format!(
+        "fee-claim-payout-{tag}-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let db_path: std::path::PathBuf = directory.join("state.sqlite");
+    let namespace: SqliteNamespace =
+        SqliteNamespace::new(chain(), ValidatorId::new([salt; 32]), domain());
+    (
+        directory,
+        db_path,
+        namespace,
+        WriterFenceGeneration::new(1).unwrap(),
+    )
+}
+
+/// One knob each case flips relative to the real, file-backed, real-WASM
+/// split claim [`positive_claim_fixture`] produces -- covering
+/// [`verify::verify_signed_payout`]'s fail-closed branches that a real
+/// [`submit_claim`] alone can never exercise, since a committed claim's
+/// signed payout ref is always internally consistent with what actually
+/// executed. `None` is the control: the exact same untouched setup must
+/// still verify, proving every other case's failure is due to the one
+/// flipped knob and not some unrelated fixture defect.
+#[derive(Clone, Copy)]
+enum PayoutTamper {
+    None,
+    LegacyUnsigned,
+    WrongVersion,
+    ExtraCreation,
+    NotLegDerived,
+    MissingAuthority,
+    WrongDigest,
+    WrongOwner,
+    WrongSchema,
+    WrongValue,
+}
+
+#[test]
+fn file_backed_sqlite_positive_claim_payout_tampers_fail_closed_after_restart() {
+    let cases: [(PayoutTamper, &str, Option<&str>); 10] = [
+        (PayoutTamper::None, "none", None),
+        (
+            PayoutTamper::LegacyUnsigned,
+            "legacy",
+            Some("legacy split payout is not signed"),
+        ),
+        (
+            PayoutTamper::WrongVersion,
+            "version",
+            Some("fee claim payout version"),
+        ),
+        (
+            PayoutTamper::ExtraCreation,
+            "extra",
+            Some("split fee claim has an unsigned extra creation"),
+        ),
+        (
+            PayoutTamper::NotLegDerived,
+            "not-derived",
+            Some("signed payout id is not leg-derived"),
+        ),
+        (
+            PayoutTamper::MissingAuthority,
+            "missing-authority",
+            Some("signed payout authority missing"),
+        ),
+        (
+            PayoutTamper::WrongDigest,
+            "digest",
+            Some("signed payout digest, owner or schema mismatch"),
+        ),
+        (
+            PayoutTamper::WrongOwner,
+            "owner",
+            Some("signed payout digest, owner or schema mismatch"),
+        ),
+        (
+            PayoutTamper::WrongSchema,
+            "schema",
+            Some("signed payout digest, owner or schema mismatch"),
+        ),
+        (
+            PayoutTamper::WrongValue,
+            "value",
+            Some("fee claim payout amount mismatch"),
+        ),
+    ];
+    for (index, (tamper, tag, expected_message)) in cases.into_iter().enumerate() {
+        let (directory, db_path, namespace, fence): (
+            std::path::PathBuf,
+            std::path::PathBuf,
+            SqliteNamespace,
+            WriterFenceGeneration,
+        ) = fresh_sqlite_store(tag, 0xd0u8.wrapping_add(index as u8));
+        let fixture: PositiveClaimFixture = {
+            let setup: SqliteDurableStore =
+                SqliteDurableStore::open(&db_path, namespace.clone(), fence).unwrap();
+            let fixture: PositiveClaimFixture = positive_claim_fixture(&setup);
+            submit_claim(&setup, &fixture.signed_a).unwrap();
+            fixture
+        };
+        let reopened: SqliteDurableStore =
+            SqliteDurableStore::open(&db_path, namespace, fence).unwrap();
+        let claim_inputs: ClaimVerificationInputs = load_claim_verification_inputs(&reopened);
+        let resolver: HashSuiteResolver = resolver();
+
+        let mut intent: FeeClaimIntent = decode_signed_fee_claim_intent(&fixture.signed_a)
+            .unwrap()
+            .intent;
+        let mut resource: FastPathEconomicsResourcePolicy = claim_inputs.resource.clone();
+        let real_leg: SignedLocalExecutionIntent = {
+            let FeeClaimOperation::Split { leg, .. } = &intent.operation else {
+                panic!("positive claim fixture must sign a split");
+            };
+            decode_signed_local_execution(leg).unwrap()
+        };
+        let mut leg_event_digest: Digest32 =
+            local_execution_event_digest(&resolver, &real_leg).unwrap();
+
+        match tamper {
+            PayoutTamper::None => {}
+            PayoutTamper::LegacyUnsigned => {
+                let FeeClaimOperation::Split {
+                    expected_payout, ..
+                } = &mut intent.operation
+                else {
+                    unreachable!()
+                };
+                *expected_payout = None;
+            }
+            PayoutTamper::WrongVersion => {
+                let FeeClaimOperation::Split {
+                    expected_payout: Some(payout_ref),
+                    ..
+                } = &mut intent.operation
+                else {
+                    unreachable!()
+                };
+                payout_ref.version = 2;
+            }
+            PayoutTamper::ExtraCreation => {
+                // The real ordinal-0 payout remains exactly as signed.
+                // Corrupt the durable store by adding a second creation at
+                // ordinal 1 under the same leg and defining authority.
+                let extra_id: ObjectId = derive_local_created_object_id(
+                    &resolver,
+                    &intent.context,
+                    &claim_inputs.instance.context,
+                    &resource.instance,
+                    &resource.code,
+                    leg_event_digest,
+                    1,
+                )
+                .unwrap();
+                let mut extra: Object = objects::decode_object(&fixture.payout_bytes_a).unwrap();
+                extra.id = extra_id;
+                commit_created_object(&reopened, &extra);
+                let authority: ObjectAuthority = ObjectAuthority {
+                    object_id: extra_id,
+                    instance_context: claim_inputs.instance.context.clone(),
+                    instance: resource.instance.clone(),
+                    code: resource.code.clone(),
+                    ty: resource.ty.clone(),
+                };
+                let key: Vec<u8> = local_instance_state::object_authority_key(extra_id);
+                let write: AtomicStateTransaction = AtomicStateTransaction::new(
+                    domain(),
+                    AtomicStateReadSet::new(vec![
+                        StateReadAssertion::new(key.clone(), StateRevision::INITIAL).unwrap(),
+                    ])
+                    .unwrap(),
+                    AtomicStateMutationSet::new(vec![
+                        StateMutationEntry::new(
+                            key,
+                            StateMutation::Put(encode_object_authority(&authority).unwrap()),
+                        )
+                        .unwrap(),
+                    ])
+                    .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    reopened.commit_durable(&context(1), write),
+                    DurableCommitOutcome::Committed
+                );
+            }
+            PayoutTamper::NotLegDerived => {
+                // A leg digest that never actually executed: none of its
+                // 128 derivable ordinals were ever created, so a forged id
+                // matching none of them is neither derived nor an extra
+                // creation.
+                leg_event_digest = Digest32::new(HashAlgorithmId::Sha2_256, [0xef; 32]);
+                let FeeClaimOperation::Split {
+                    expected_payout: Some(payout_ref),
+                    ..
+                } = &mut intent.operation
+                else {
+                    unreachable!()
+                };
+                payout_ref.id = ObjectId::new([0xee; 32]);
+            }
+            PayoutTamper::MissingAuthority => {
+                // Same never-executed leg digest, but the signed id is set
+                // to exactly that digest's own ordinal-0 derivation: it is
+                // leg-derived, yet genuinely never written (not merely
+                // tombstoned).
+                leg_event_digest = Digest32::new(HashAlgorithmId::Sha2_256, [0xef; 32]);
+                let never_created_id: ObjectId = derive_local_created_object_id(
+                    &resolver,
+                    &intent.context,
+                    &claim_inputs.instance.context,
+                    &resource.instance,
+                    &resource.code,
+                    leg_event_digest,
+                    0,
+                )
+                .unwrap();
+                let FeeClaimOperation::Split {
+                    expected_payout: Some(payout_ref),
+                    ..
+                } = &mut intent.operation
+                else {
+                    unreachable!()
+                };
+                payout_ref.id = never_created_id;
+            }
+            PayoutTamper::WrongDigest => {
+                let FeeClaimOperation::Split {
+                    expected_payout: Some(payout_ref),
+                    ..
+                } = &mut intent.operation
+                else {
+                    unreachable!()
+                };
+                payout_ref.digest = Digest32::new(HashAlgorithmId::Sha2_256, [0x44; 32]);
+            }
+            PayoutTamper::WrongOwner => {
+                intent.recipient = Address::new([0x9b; 32]);
+            }
+            PayoutTamper::WrongSchema => {
+                resource.schema += 1;
+            }
+            PayoutTamper::WrongValue => {
+                intent.share_amount = intent.share_amount.checked_sub(1).unwrap();
+            }
+        }
+
+        let result: Result<u64, FeeClaimError> = verify::verify_signed_payout(
+            &reopened,
+            &MemoryBlobStore::default(),
+            &context(1),
+            domain(),
+            &resolver,
+            &[],
+            &resource,
+            &claim_inputs.instance,
+            &claim_inputs.interface,
+            &intent,
+            leg_event_digest,
+        );
+        match expected_message {
+            None => assert_eq!(result.unwrap(), 1, "case {tag}"),
+            Some(expected) => assert!(
+                matches!(&result, Err(FeeClaimError::Invalid(message)) if *message == expected),
+                "case {tag}: expected {expected:?}, got {result:?}"
+            ),
+        }
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+}
+
+/// Simulates one *never-actually-executed* leg's creation effects by hand --
+/// a version-1 object plus its authority sidecar, written through the same
+/// durable APIs [`crate::local_execution::effects`] itself uses -- so the
+/// object's own recorded `type_hash` can be independently wrong while the
+/// authority sidecar (which [`verify::verify_signed_payout`] checks first)
+/// is otherwise fully correct. This is the only way to isolate "fee claim
+/// payout type identity" from an authority mismatch using genuine store-API
+/// writes: a real submitted split's authority is written atomically with
+/// its object and always carries the resource's own, correct `ty`, so
+/// forging `resource.ty` against a real payout trips the authority check
+/// first instead.
+#[test]
+fn file_backed_sqlite_positive_claim_payout_type_identity_fails_closed_after_restart() {
+    let (directory, db_path, namespace, fence): (
+        std::path::PathBuf,
+        std::path::PathBuf,
+        SqliteNamespace,
+        WriterFenceGeneration,
+    ) = fresh_sqlite_store("type", 0xda);
+    let fixture: PositiveClaimFixture = {
+        let setup: SqliteDurableStore =
+            SqliteDurableStore::open(&db_path, namespace.clone(), fence).unwrap();
+        positive_claim_fixture(&setup)
+    };
+    let reopened: SqliteDurableStore =
+        SqliteDurableStore::open(&db_path, namespace, fence).unwrap();
+    let claim_inputs: ClaimVerificationInputs = load_claim_verification_inputs(&reopened);
+    let resolver: HashSuiteResolver = resolver();
+
+    let mut intent: FeeClaimIntent = decode_signed_fee_claim_intent(&fixture.signed_a)
+        .unwrap()
+        .intent;
+    let fake_leg_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0xf1; 32]);
+    let payout_id: ObjectId = derive_local_created_object_id(
+        &resolver,
+        &intent.context,
+        &claim_inputs.instance.context,
+        &claim_inputs.resource.instance,
+        &claim_inputs.resource.code,
+        fake_leg_digest,
+        0,
+    )
+    .unwrap();
+    let recipient: Address = Address::new([0x9c; 32]);
+    let payout_object: Object = Object {
+        id: payout_id,
+        version: 1,
+        owner: Owner::Address(recipient),
+        type_hash: Digest32::new(HashAlgorithmId::Sha2_256, [0x00; 32]),
+        schema_version: claim_inputs.resource.schema,
+        data: encode_call_value(
+            &public_standard_asset::coin_body_layout(),
+            &CallValue::U64(1),
+        )
+        .unwrap(),
+    };
+    let payout_ref: ObjectRef = commit_created_object(&reopened, &payout_object);
+    let authority: ObjectAuthority = ObjectAuthority {
+        object_id: payout_id,
+        instance_context: claim_inputs.instance.context.clone(),
+        instance: claim_inputs.resource.instance.clone(),
+        code: claim_inputs.resource.code.clone(),
+        ty: claim_inputs.resource.ty.clone(),
+    };
+    let auth_key: Vec<u8> = local_instance_state::object_authority_key(payout_id);
+    let auth_transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(auth_key.clone(), StateRevision::INITIAL).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(
+                auth_key,
+                StateMutation::Put(encode_object_authority(&authority).unwrap()),
+            )
+            .unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        reopened.commit_durable(&context(1), auth_transaction),
+        DurableCommitOutcome::Committed
+    );
+
+    intent.operation = FeeClaimOperation::Split {
+        leg: Vec::new(),
+        expected_payout: Some(payout_ref),
+    };
+    intent.recipient = recipient;
+    intent.share_amount = 1;
+
+    let error: FeeClaimError = verify::verify_signed_payout(
+        &reopened,
+        &MemoryBlobStore::default(),
+        &context(1),
+        domain(),
+        &resolver,
+        &[],
+        &claim_inputs.resource,
+        &claim_inputs.instance,
+        &claim_inputs.interface,
+        &intent,
+        fake_leg_digest,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            FeeClaimError::Invalid("fee claim payout type identity")
+        ),
+        "{error:?}"
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// Directly installs one version-1 object and its current head via
+/// `commit_invocation`, bypassing execution. Unlike a real leg's effects,
+/// this does *not* also write the object's authority sidecar -- the caller
+/// writes that separately, so it can deliberately disagree with the
+/// object's own recorded body.
+fn commit_created_object<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    object: &Object,
+) -> ObjectRef {
+    let reference: ObjectRef = object_ref(object);
+    let version: DurableObjectVersionRecord = DurableObjectVersionRecord::from_inline_object(
+        object.clone(),
+        reference.digest,
+        DurableObjectProvenance::new(chain(), protocol().protocol_version()),
+        20,
+    )
+    .unwrap();
+    let owner_projection: DurableObjectOwnerProjection =
+        DurableObjectOwnerProjection::from_owner(object.owner.clone()).unwrap();
+    let changes: DurableObjectChanges = DurableObjectChanges::new(
+        vec![DurableObjectHeadRead::new(
+            object.id,
+            store
+                .get_object_head(&context(1), domain(), object.id)
+                .unwrap(),
+        )],
+        vec![DurableObjectMutationEntry::new(
+            object.id,
+            DurableObjectMutation::Create {
+                version,
+                owner_projection,
+                routing_projection: DurableObjectRoutingProjection::default(),
+            },
+        )],
+    )
+    .unwrap();
+    let receipt: DurableRequestReceipt = DurableRequestReceipt::new(
+        DurableRequestId::new([0xf2; 32]).unwrap(),
+        Digest32::new(HashAlgorithmId::Sha2_256, [0xf2; 32]),
+        vec![0xf2],
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_invocation(
+            &context(1),
+            DurableInvocationTransaction::new(domain(), None, changes, receipt, None).unwrap(),
+        ),
+        DurableCommitOutcome::Committed
+    );
+    reference
+}
+
+/// [`verify::verify_escrow_authority`] checks the *original* escrow
+/// object's authority sidecar, never written for an id nothing ever
+/// created: a real, never-installed object id genuinely has no row at all
+/// (`StateRevision::INITIAL`, no value) -- distinct from a real escrow
+/// authority later deleted (`fee claim object authority tombstoned`,
+/// already covered above).
+#[test]
+fn file_backed_sqlite_positive_claim_missing_escrow_authority_fails_closed_after_restart() {
+    let (directory, db_path, namespace, fence): (
+        std::path::PathBuf,
+        std::path::PathBuf,
+        SqliteNamespace,
+        WriterFenceGeneration,
+    ) = fresh_sqlite_store("escrow-authority", 0xdb);
+    {
+        let setup: SqliteDurableStore =
+            SqliteDurableStore::open(&db_path, namespace.clone(), fence).unwrap();
+        positive_claim_fixture(&setup);
+    }
+    let reopened: SqliteDurableStore =
+        SqliteDurableStore::open(&db_path, namespace, fence).unwrap();
+    let claim_inputs: ClaimVerificationInputs = load_claim_verification_inputs(&reopened);
+    let never_installed_escrow_id: ObjectId = ObjectId::new([0xdc; 32]);
+
+    let error: FeeClaimError = verify::verify_escrow_authority(
+        &reopened,
+        &context(1),
+        domain(),
+        &claim_inputs.resource,
+        &claim_inputs.instance,
+        never_installed_escrow_id,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            FeeClaimError::Invalid("fee claim escrow authority missing")
+        ),
+        "{error:?}"
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
 }

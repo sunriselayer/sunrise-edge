@@ -1279,6 +1279,73 @@ fn four_validator_sqlite_restart_e2e_derives_identical_votes_and_replays_prepare
         assert_eq!(replayed_output, applied_output);
         assert_eq!(replay_engine.calls.get(), 0);
         assert_eq!(next_nonce(&store), FIRST_PAID_NONCE + 1);
+        // An otherwise well-formed replacement instance row with the same
+        // logical creator/seed but a different signed record digest cannot
+        // stand in for the fee resource's committed defining instance.
+        let original_instance: &execution::local_execution::InstanceRecord = &fixtures[0].instance;
+        let instance_key: Vec<u8> = crate::local_instance_state::instance_record_key(
+            protocol().chain_id(),
+            &original_instance.creator,
+            &original_instance.seed,
+        )
+        .unwrap();
+        let observed_instance: VersionedStateValue = store
+            .get_versioned_durable(&context(), domain(), &instance_key)
+            .unwrap();
+        let mut replaced_instance: execution::local_execution::InstanceRecord =
+            original_instance.clone();
+        replaced_instance.context = execution::publication::PublicationContext::new(
+            original_instance.context.chain_id().clone(),
+            original_instance.context.protocol_version(),
+            Epoch::new(original_instance.context.epoch().get() + 1),
+        )
+        .unwrap();
+        let replace_instance: AtomicStateTransaction = AtomicStateTransaction::new(
+            domain(),
+            AtomicStateReadSet::new(vec![
+                StateReadAssertion::new(instance_key.clone(), observed_instance.revision())
+                    .unwrap(),
+            ])
+            .unwrap(),
+            AtomicStateMutationSet::new(vec![
+                StateMutationEntry::new(
+                    instance_key,
+                    StateMutation::Put(
+                        execution::local_execution::encode_instance_record(&replaced_instance)
+                            .unwrap(),
+                    ),
+                )
+                .unwrap(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.commit_durable(&context(), replace_instance),
+            DurableCommitOutcome::Committed
+        );
+        let instance_result: Result<
+            crate::fee_claims::FeeClaimVerificationReport,
+            crate::fee_claims::FeeClaimError,
+        > = crate::fee_claims::verify_fee_claim_history(
+            &store,
+            &blob_store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            protocol().chain_id(),
+            &request_id,
+        );
+        assert!(
+            matches!(
+                &instance_result,
+                Err(crate::fee_claims::FeeClaimError::Invalid(
+                    "fee claim resource instance mismatch"
+                ))
+            ),
+            "{instance_result:?}"
+        );
         let delete_witness: AtomicStateTransaction = AtomicStateTransaction::new(
             domain(),
             AtomicStateReadSet::new(vec![

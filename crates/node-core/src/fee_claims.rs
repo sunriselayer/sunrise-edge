@@ -895,6 +895,9 @@ where
     )? {
         return Ok(output);
     }
+    // Keep this v1 Split refusal *after* reconciliation: an exact replay of
+    // a previously committed v1 claim must return its old receipt, while a
+    // fresh v1 Split can no longer create an unprovable payout.
     if matches!(
         signed.intent.operation,
         FeeClaimOperation::Split {
