@@ -81,9 +81,7 @@ fn raw_frame_with_tag_and_extra(
     frame
         .field_bytes(3, intent.escrow_request_id.to_vec())
         .unwrap();
-    frame
-        .field_u64(4, intent.certificate_epoch.get())
-        .unwrap();
+    frame.field_u64(4, intent.certificate_epoch.get()).unwrap();
     frame
         .field_bytes(5, intent.validator_id.as_bytes().to_vec())
         .unwrap();
@@ -255,9 +253,7 @@ fn fee_claim_intent_rejects_a_missing_field() {
         .unwrap();
     frame.field_bytes(2, intent.request_id.to_vec()).unwrap();
     // Field 3 (`escrow_request_id`) deliberately omitted.
-    frame
-        .field_u64(4, intent.certificate_epoch.get())
-        .unwrap();
+    frame.field_u64(4, intent.certificate_epoch.get()).unwrap();
     frame
         .field_bytes(5, intent.validator_id.as_bytes().to_vec())
         .unwrap();
@@ -307,8 +303,11 @@ fn fee_claim_operation_rejects_empty_leg_on_encode_and_decode() {
         ))
     ));
 
-    let bytes =
-        raw_frame_with_tag_and_extra(&zero_share_intent(), OPERATION_TAG_SPLIT, Some((14, vec![])));
+    let bytes = raw_frame_with_tag_and_extra(
+        &zero_share_intent(),
+        OPERATION_TAG_SPLIT,
+        Some((14, vec![])),
+    );
     assert!(matches!(
         decode_fee_claim_intent(&bytes),
         Err(FeeClaimCodecError::Invalid(
@@ -336,10 +335,8 @@ fn fee_claim_codec_error_converts_to_node_core_error() {
     let error: NodeCoreError = FeeClaimCodecError::Invalid("boom").into();
     assert!(matches!(error, NodeCoreError::PersistenceInvariant("boom")));
 
-    let decode_error: NodeCoreError = FeeClaimCodecError::Decoding(
-        CanonicalDecodingError::UnexpectedField(14),
-    )
-    .into();
+    let decode_error: NodeCoreError =
+        FeeClaimCodecError::Decoding(CanonicalDecodingError::UnexpectedField(14)).into();
     assert!(matches!(
         decode_error,
         NodeCoreError::CanonicalDecoding(CanonicalDecodingError::UnexpectedField(14))

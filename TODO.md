@@ -3190,9 +3190,18 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         using `T/N` and ascending-id remainder assignment in the bounded
         `0x641E/v1` row; Rust and independent JavaScript vectors cover
         `0x641E`, `0x6435` and `0x6436`;
-      - [ ] historical-validator-signed zero/partial/final claims through the
-        policy-pinned public `split`/`transfer` ABI, duplicate-claim CAS race,
-        SQLite close/reopen and indeterminate-commit evidence;
+      - [x] bounded `0x6437/0x6438` historical-validator-signed
+        zero/partial/final claim handler through the policy-pinned public
+        `split`/`transfer` ABI. The claim CAS-fences the settlement row,
+        historical set, epoch, paid/economics policy and touched object/
+        nonce, then atomically writes the result, receipt and immutable signed
+        claim envelope. Rust/independent JavaScript codec vectors, real-WASM
+        split then final transfer, zero-share no-object commit, exact/
+        conflicting replay and file-backed SQLite close/reopen replay pass;
+      - [ ] adversarial claim-effect matrix, duplicate-claim competing-writer
+        CAS race, indeterminate-commit reconciliation and independent
+        restart/history verification of retained claim envelopes and object
+        transitions. The file-backed replay test alone does not prove those;
       - [ ] outstanding `FeeEscrow` claims across a protocol-version activation:
         current local-execution admission rejects cross-version code, so the
         version transition must either preserve an executable claim path or
@@ -3202,10 +3211,10 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         admitted validator-set size before claiming testnet capacity;
       - [ ] Phase 3 review gate.
 
-  **Remaining Phase 3 completion:** execute and atomically finalize the
-  already-derived deterministic active-validator shares through signed claims, prove
-  duplicate/race/restart/indeterminate behavior, then pass the Phase 3 review
-  gate.
+  **Remaining Phase 3 completion:** extend signed-claim evidence to malicious
+  effects, competing writers, indeterminate commits and independent restart
+  verification; resolve cross-version outstanding escrow and worst-case row
+  rewrite capacity; then pass the Phase 3 review gate.
   FastVote is not complete until this phase closes.
 
 ## CLI-First Node Production Gate

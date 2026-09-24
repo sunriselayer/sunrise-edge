@@ -369,6 +369,21 @@ positive shares determine the remaining custodial value. After the final
 positive transfer, the row retains the exact recipient-owned output ref as
 audit evidence; any remaining zero-share claims only advance the row.
 
+As-Is claim wiring uses canonical `0x6437/v1` intents and `0x6438/v1`
+validator-signed envelopes. The signed envelope binds the exact previous and
+next settlement-row digests, generation, fee output ref, recipient, amount and
+operation. The certificate-epoch paid fee policy identifies the defining code
+context; the signed economics policy is loaded at that pinned context, so an
+ordinary epoch advance does not make claims lose their genesis-installed
+resource policy. The handler verifies the historical validator key, executes
+positive claims through the public ABI, independently checks result shape and
+conservation, and atomically writes object/nonce/row/receipt plus an immutable
+signed envelope keyed by the resulting generation. Same-process and real
+file-backed SQLite reopen/replay tests cover zero, split and final claims.
+This does not yet establish adversarial-effect coverage, a competing-writer
+race, indeterminate-commit behavior or independent restart verification of
+the retained claim chain; those remain explicit Phase 3 gates in `TODO.md`.
+
 The current typed local-execution admission rejects an invocation that crosses
 the pinned code's protocol-version boundary. Until that boundary gains a
 verified historical execution/migration rule, outstanding fee shares must not
