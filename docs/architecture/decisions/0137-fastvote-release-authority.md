@@ -384,20 +384,24 @@ Direct split/final effect-validation tests inject malformed output shapes,
 owners, identities, schemas, amounts and authorities. A real SQLite
 same-generation race of two distinct signed zero-share claims commits one
 row/audit/receipt, and both persisted and uncommitted indeterminate zero-share
-outcomes reconcile by exact replay. Positive object-mutating claims still need
-their own competing-writer and indeterminate-commit coverage, and the retained
-signed-claim chain still needs independent restart/history verification; these
-remain Phase 3 gates in `TODO.md`.
+outcomes reconcile by exact replay. Real SQLite positive-claim races and
+persisted/uncommitted indeterminate outcomes now also cover exact retained
+escrow and recipient-owned payout object bytes, loser payout absence, row,
+audit, nonce and receipt after close/reopen. The retained
+signed-claim chain still needs independent restart/history verification;
+ordinary replay is not that verification. This remains a Phase 3 gate in
+`TODO.md`.
 
 The current claim-row identity check rejects a new protocol version even for
 zero shares; positive claims additionally hit typed local-execution's
-cross-version code restriction. Until both boundaries gain a verified
-historical claim/migration rule, outstanding fee shares must not be described
-as claimable after a protocol-version activation. The Phase 3 completion gate
-in `TODO.md` requires an explicit, restart-tested resolution; an epoch
-transition without a protocol-version change does not have this problem. The
-bounded row entails a full rewrite per claim and a permanent signed-envelope
-record per claim, so both costs need an explicit capacity decision.
+cross-version code restriction. There is no durable protocol-version
+activation operation today: the epoch transition carries the same version.
+DR-0138 therefore keeps the current fail-closed checks and makes historical
+claim support or an outstanding-escrow activation veto a mandatory gate
+*before* a future version-switch path is enabled, with restart proof. It also
+sets a 256-validator admission cap and records fixture-specific per-escrow row
+rewrite sizes plus signed-envelope byte bounds. These figures are not operational
+capacity certification, which remains open in `TODO.md`.
 
 ### Implementation order
 

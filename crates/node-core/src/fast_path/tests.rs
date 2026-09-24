@@ -95,6 +95,63 @@ fn install_four_validators<S: StructuredDurableDomainStateStore>(
     (signers, entries)
 }
 
+#[test]
+fn oversized_legacy_validator_set_rejects_prepare_before_locking_objects() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let mut entries: Vec<FastPathValidatorEntry> = Vec::new();
+    let mut first_signer: Option<TestSigner> = None;
+    for index in 0..=records::MAX_FASTPATH_ACTIVE_VALIDATORS {
+        let mut seed: [u8; 32] = [0; 32];
+        seed[28..].copy_from_slice(&u32::try_from(index + 1).unwrap().to_be_bytes());
+        let key: SigningKey = SigningKey::from(seed);
+        let public_key: [u8; 32] = VerificationKey::from(&key).into();
+        let id: ValidatorId = ValidatorId::new(public_key);
+        if first_signer.is_none() {
+            first_signer = Some(TestSigner {
+                validator_id: id,
+                signing_key: key,
+            });
+        }
+        entries.push(FastPathValidatorEntry {
+            id,
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: public_key.to_vec(),
+        });
+    }
+    install_validator_set(
+        &store,
+        &context(),
+        domain(),
+        &resolver(),
+        protocol(),
+        entries,
+    )
+    .unwrap();
+    let signer: TestSigner = first_signer.unwrap();
+    let error: FastPathError =
+        prepare_transfer(&store, &fixture, &signer, 0xd1, FIRST_PAID_NONCE).unwrap_err();
+    assert!(
+        matches!(error, FastPathError::Invalid(message) if message == "fast-path active validator set exceeds the fee-claim capacity bound")
+    );
+    let object_lock_key: Vec<u8> =
+        fastpath_lock_key(protocol().chain_id(), fixture.coin.id).unwrap();
+    let nonce_lock_key: Vec<u8> =
+        fastpath_nonce_lock_key(protocol().chain_id(), &sender(), protocol().epoch()).unwrap();
+    let prepared_key: Vec<u8> =
+        fastpath_prepared_record_key(protocol().chain_id(), &[0xd1; 32]).unwrap();
+    for key in [object_lock_key, nonce_lock_key, prepared_key] {
+        assert!(
+            store
+                .get_versioned_durable(&context(), domain(), &key)
+                .unwrap()
+                .value()
+                .is_none()
+        );
+    }
+}
+
 fn certifier(validator_set: ValidatorSet) -> consensus::FastPathCertifier {
     consensus::FastPathCertifier::new(
         protocol().chain_id().clone(),

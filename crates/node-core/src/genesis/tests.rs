@@ -39,12 +39,50 @@ use sha2::{Digest, Sha256};
 use super::*;
 use crate::economics::{FastPathEconomicsPolicy, FastPathEconomicsResourcePolicy};
 use crate::fast_path::records::{
-    FastPathBondRecord, FastPathBondState, decode_fastpath_bond_record,
+    FastPathBondRecord, FastPathBondState, MAX_FASTPATH_ACTIVE_VALIDATORS,
+    decode_fastpath_bond_record,
 };
 use crate::fast_path::{FastPathValidatorEntry, FastPathValidatorSetRecord};
 use crate::local_instance_state::fastpath_bond_record_key;
 use bonds::{BondResourceConfig, BondResourceId};
 use fees::Amount;
+
+#[test]
+fn genesis_rejects_validator_set_above_fee_claim_capacity_before_writes() {
+    let (mut manifest, _, _, _, _) = build_fixture();
+    let mut validators: Vec<FastPathValidatorEntry> = Vec::new();
+    for index in 0..=MAX_FASTPATH_ACTIVE_VALIDATORS {
+        let mut seed: [u8; 32] = [0; 32];
+        seed[28..].copy_from_slice(&u32::try_from(index + 1).unwrap().to_be_bytes());
+        let key: SigningKey = SigningKey::from(seed);
+        let public_key: [u8; 32] = VerificationKey::from(&key).into();
+        validators.push(FastPathValidatorEntry {
+            id: ValidatorId::new(public_key),
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: public_key.to_vec(),
+        });
+    }
+    validators.sort_by_key(|validator| validator.id);
+    manifest.validator_set.validators = validators;
+    resign_manifest(&mut manifest);
+
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let error: GenesisError =
+        install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap_err();
+    assert!(
+        matches!(error, GenesisError::Invalid(message) if message == "genesis fast-path validator set exceeds the fee-claim capacity bound")
+    );
+    let marker_key: Vec<u8> = genesis_marker_key(&protocol()).unwrap();
+    assert!(
+        store
+            .get_versioned_durable(&context(1), domain(), &marker_key)
+            .unwrap()
+            .value()
+            .is_none()
+    );
+}
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()

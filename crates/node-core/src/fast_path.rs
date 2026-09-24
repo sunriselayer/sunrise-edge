@@ -81,6 +81,8 @@ mod commitment;
 pub mod records;
 
 #[cfg(test)]
+mod capacity_tests;
+#[cfg(test)]
 mod tests;
 
 pub use records::{
@@ -140,6 +142,13 @@ fn fee_escrow_creation_capability(
     .map_err(|_| FastPathError::Invalid("fast-path fee escrow capability"))
 }
 
+fn require_fee_claim_capacity(validator_set: &ValidatorSet) -> FastPathResult<()> {
+    if validator_set.validators().len() > records::MAX_FASTPATH_ACTIVE_VALIDATORS {
+        return invalid("fast-path active validator set exceeds the fee-claim capacity bound");
+    }
+    Ok(())
+}
+
 fn validator_fee_shares(
     validator_set: &ValidatorSet,
     total: u64,
@@ -147,6 +156,7 @@ fn validator_fee_shares(
     if total == 0 {
         return invalid("fast-path charged fee total must be positive");
     }
+    require_fee_claim_capacity(validator_set)?;
     let validator_ids: Vec<ValidatorId> = validator_set
         .validators()
         .iter()
@@ -617,6 +627,7 @@ where
                 &epoch_record,
                 &mut fence_reads,
             )?;
+            require_fee_claim_capacity(&validator_set)?;
             let certifier: consensus::FastPathCertifier = consensus::FastPathCertifier::new(
                 chain.clone(),
                 intent_context.protocol_version(),
@@ -648,6 +659,8 @@ where
         &epoch_record,
         &mut fence_reads,
     )?;
+    // Reject a legacy oversized set before an unexpiring prepare lock exists.
+    require_fee_claim_capacity(&validator_set)?;
     let certifier: consensus::FastPathCertifier = consensus::FastPathCertifier::new(
         chain.clone(),
         intent_context.protocol_version(),
@@ -917,6 +930,7 @@ where
         &epoch_record,
         &mut fence_reads,
     )?;
+    require_fee_claim_capacity(&validator_set)?;
     let certifier: consensus::FastPathCertifier = consensus::FastPathCertifier::new(
         chain.clone(),
         intent_context.protocol_version(),

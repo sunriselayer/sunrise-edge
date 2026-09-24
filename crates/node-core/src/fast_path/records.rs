@@ -42,6 +42,11 @@ const MAX_FASTPATH_LOCKED_OBJECTS: usize = 256;
 /// re-enforces it, so a looser bound here could not admit an oversized set.
 const MAX_FASTPATH_SIGNERS: usize = 10_000;
 const MAX_FASTPATH_VALIDATORS: usize = 10_000;
+/// Testnet FastVote economics admission bound. The broader 10,000-entry
+/// decode ceilings remain for historical readability, but one settlement
+/// row is rewritten for each claimant, so admitting 10,000 active payees
+/// would require gigabytes of serialized row writes per certificate.
+pub const MAX_FASTPATH_ACTIVE_VALIDATORS: usize = 256;
 
 fn encode_item_list(
     type_id: u16,

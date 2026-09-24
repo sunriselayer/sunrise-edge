@@ -464,6 +464,65 @@ fn derive_activation_set_is_invariant_to_next_validator_input_order() {
     assert_eq!(forward.activation_set, reversed.activation_set);
 }
 
+#[test]
+fn oversized_next_set_rejects_public_vote_before_transition_writes() {
+    let store: MemoryDurableStateStore = memory_store();
+    let (_fixture, signers, _entries) = install_lightweight(&store);
+    let mut oversized: Vec<FastPathValidatorEntry> = Vec::new();
+    for index in 0..=fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS {
+        let mut seed: [u8; 32] = [0; 32];
+        seed[28..].copy_from_slice(&u32::try_from(index + 1).unwrap().to_be_bytes());
+        let key: SigningKey = SigningKey::from(seed);
+        let public_key: [u8; 32] = VerificationKey::from(&key).into();
+        oversized.push(FastPathValidatorEntry {
+            id: ValidatorId::new(public_key),
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: public_key.to_vec(),
+        });
+    }
+    let next_epoch: Epoch = Epoch::new(pe_protocol().epoch().get() + 1);
+    let error: EpochTransitionError = derive_activation_set(
+        &store,
+        &pe_context(),
+        pe_domain(),
+        &pe_resolver(),
+        pe_protocol().chain_id(),
+        pe_protocol().protocol_version(),
+        pe_protocol().epoch(),
+        next_epoch,
+        &oversized,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, EpochTransitionError::Invalid(message) if message == "fast-path next validator set exceeds the fee-claim capacity bound")
+    );
+    let vote_error: EpochTransitionError = propose_and_vote(
+        &store,
+        &pe_context(),
+        pe_domain(),
+        &pe_resolver(),
+        pe_protocol().chain_id(),
+        pe_protocol().protocol_version(),
+        oversized,
+        &signers[0],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(vote_error, EpochTransitionError::Invalid(message) if message == "fast-path next validator set exceeds the fee-claim capacity bound")
+    );
+    let transition_key: Vec<u8> =
+        local_instance_state::fastpath_epoch_transition_key(pe_protocol().chain_id(), next_epoch)
+            .unwrap();
+    assert!(
+        store
+            .get_versioned_durable(&pe_context(), pe_domain(), &transition_key)
+            .unwrap()
+            .value()
+            .is_none()
+    );
+}
+
 /// DR-0137 unit 3's next-set eligibility coupling is gated exclusively by
 /// [`propose_and_vote`], strictly before a vote is cast -- never by
 /// [`derive_activation_set`]/[`activate`] (see `DerivedActivation`'s doc

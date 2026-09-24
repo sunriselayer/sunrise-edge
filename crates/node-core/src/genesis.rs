@@ -733,6 +733,12 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
     if &manifest.validator_set.context != manifest_context {
         return Err(GenesisError::ContextMismatch);
     }
+    if manifest.validator_set.validators.len() > fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS
+    {
+        return Err(GenesisError::Invalid(
+            "genesis fast-path validator set exceeds the fee-claim capacity bound",
+        ));
+    }
     let validator_info: Vec<ValidatorInfo> = manifest
         .validator_set
         .validators
