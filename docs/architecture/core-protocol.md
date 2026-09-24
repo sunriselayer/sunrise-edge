@@ -501,7 +501,7 @@ settlement records, and every lock deletion. Phase 3 now makes the certified
 fee output part of that commitment as an exact request-scoped `FeeEscrow`
 object: the execution layer promotes only the pinned settlement ABI's returned
 fee slot, leaving its refund slot address-owned even for equal recipients.
-Apply atomically records the final certificate signers' deterministic,
+Apply atomically records the committed active validator set's deterministic,
 value-conserving entitlement shares. Exact prepare/apply replay is
 durable and non-reapplying across SQLite close/reopen; a request already
 finalized through the direct paid path cannot be prepared afterward.

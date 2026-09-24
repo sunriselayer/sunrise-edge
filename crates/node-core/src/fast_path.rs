@@ -129,31 +129,30 @@ fn fee_escrow_creation_capability(
     .map_err(|_| FastPathError::Invalid("fast-path fee escrow capability"))
 }
 
-fn certificate_fee_shares(
-    certificate: &FastCertificate,
+fn validator_fee_shares(
+    validator_set: &ValidatorSet,
     total: u64,
 ) -> FastPathResult<Vec<FastPathFeeShare>> {
     if total == 0 {
         return invalid("fast-path charged fee total must be positive");
     }
-    let mut signer_ids: Vec<ValidatorId> = certificate
-        .votes
+    let validator_ids: Vec<ValidatorId> = validator_set
+        .validators()
         .iter()
-        .map(|vote| vote.validator)
+        .map(|validator| validator.id)
         .collect();
-    signer_ids.sort_unstable();
-    if signer_ids.is_empty()
-        || signer_ids
+    if validator_ids.is_empty()
+        || validator_ids
             .windows(2)
             .any(|pair: &[ValidatorId]| pair[0] == pair[1])
     {
-        return invalid("fast-path certificate signers must be unique");
+        return invalid("fast-path validator set must be unique");
     }
-    let count: u64 = u64::try_from(signer_ids.len())
-        .map_err(|_| FastPathError::Invalid("fast-path signer count"))?;
+    let count: u64 = u64::try_from(validator_ids.len())
+        .map_err(|_| FastPathError::Invalid("fast-path validator count"))?;
     let quotient: u64 = total / count;
     let remainder: u64 = total % count;
-    signer_ids
+    validator_ids
         .into_iter()
         .enumerate()
         .map(|(index, validator_id)| {
@@ -1067,7 +1066,7 @@ where
         fee_output_epoch: charged.map(|_| intent_context.epoch()),
         total_amount: charged.map(|charged| charged.actual.get()),
         shares: charged
-            .map(|charged| certificate_fee_shares(&certificate, charged.actual.get()))
+            .map(|charged| validator_fee_shares(certifier.validator_set(), charged.actual.get()))
             .transpose()?
             .unwrap_or_default(),
     };

@@ -151,7 +151,6 @@ pub struct FeeEscrowCreationCapability {
 
 impl FeeEscrowCreationCapability {
     /// Constructs a capability bound to the complete paid-settlement target.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         context: PublicationContext,
         target: ProtocolCustodyTarget,
@@ -227,7 +226,7 @@ impl FeeEscrowCreationCapability {
 }
 
 /// Arena-bound output authority for one exact settle phase.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct BoundFeeEscrowCreationCapability {
     owner_operand: [u8; 32],
     ty: ScopedTypeTag,
