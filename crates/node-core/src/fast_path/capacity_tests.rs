@@ -1,5 +1,6 @@
-//! Deterministic upper-bound inputs for the Phase 3 fee-claim capacity gate.
-//! These are byte counts, not throughput or durability benchmarks.
+//! Deterministic encoded-size inputs for the Phase 3 fee-claim capacity gate.
+//! The sample chain id is fixed; these are not universal bounds, throughput,
+//! or durability benchmarks.
 use super::*;
 use crate::fast_path::records::encode_fastpath_settlement_record;
 use protocol_types::{HashAlgorithmId, ValidatorId};
@@ -8,7 +9,7 @@ use validator_set::ValidatorInfo;
 #[test]
 fn maximum_admitted_fee_share_row_and_claim_retention_are_measurable() {
     for (count, expected_row, expected_rewrites, expected_envelopes) in [
-        (1usize, 458usize, 458usize, 201_728usize),
+        (1usize, 458u64, 458u64, 201_728u64),
         (128, 10_110, 1_294_080, 25_821_184),
         (256, 19_838, 5_078_528, 51_642_368),
         (10_000, 760_382, 7_603_820_000, 2_017_280_000),
@@ -38,16 +39,18 @@ fn maximum_admitted_fee_share_row_and_claim_retention_are_measurable() {
             shares,
         };
         let encoded: Vec<u8> = encode_fastpath_settlement_record(&row).unwrap();
-        let row_bytes: usize = encoded.len();
-        let worst_case_row_rewrites: usize = row_bytes.checked_mul(count).unwrap();
-        let worst_case_envelope_retention: usize =
-            crate::fee_claims::codec::MAX_FEE_CLAIM_INTENT_BYTES
-                .checked_mul(count)
+        let row_bytes: u64 = u64::try_from(encoded.len()).unwrap();
+        let count_u64: u64 = u64::try_from(count).unwrap();
+        let worst_case_row_rewrites: u64 = row_bytes.checked_mul(count_u64).unwrap();
+        let worst_case_envelope_retention: u64 =
+            u64::try_from(crate::fee_claims::codec::MAX_FEE_CLAIM_INTENT_BYTES)
+                .unwrap()
+                .checked_mul(count_u64)
                 .unwrap();
         assert_eq!(row_bytes, expected_row, "validator count {count}");
         assert_eq!(worst_case_row_rewrites, expected_rewrites);
         assert_eq!(worst_case_envelope_retention, expected_envelopes);
-        assert!(row_bytes < runtime::MAX_STATE_VALUE_BYTES);
+        assert!(row_bytes < u64::try_from(runtime::MAX_STATE_VALUE_BYTES).unwrap());
         eprintln!(
             "fee-claim capacity: validators={count}, row_bytes={row_bytes}, upper_row_rewrite_bytes={worst_case_row_rewrites}, upper_retained_envelope_bytes={worst_case_envelope_retention}"
         );
@@ -97,5 +100,10 @@ fn fee_share_admission_cap_is_stricter_than_historical_decode_ceiling() {
         records::MAX_FASTPATH_ACTIVE_VALIDATORS
     );
     let set: ValidatorSet = ValidatorSet::new(historical.context.epoch(), info).unwrap();
-    assert!(validator_fee_shares(&set, 257).is_err());
+    assert!(matches!(
+        validator_fee_shares(&set, 257),
+        Err(FastPathError::Invalid(
+            "fast-path active validator set exceeds the fee-claim capacity bound"
+        ))
+    ));
 }

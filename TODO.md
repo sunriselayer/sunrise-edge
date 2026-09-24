@@ -3207,19 +3207,22 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         replay without a second transition;
       - [x] real file-backed SQLite positive object-mutating split claims:
         distinct signed competing writers on the same generation commit one
-        retained object, row, audit, nonce and receipt; persisted and
+        retained escrow and one claimant-owned payout object, row, audit,
+        nonce and receipt, while the losing payout is absent; persisted and
         uncommitted indeterminate outcomes reconcile on close/reopen and
         exact replay without a second transition;
       - [ ] independently restart-verify the retained signed-claim chain and
         each object transition from authenticated prior bytes; ordinary
         SQLite reopen/replay and direct effect validation do not prove this;
       - [x] bound admission to 256 active validators at genesis, epoch
-        next-set derivation and fee-share construction, retaining the 10,000
-        decode ceiling for historical bytes. Deterministic worst-case
-        per-escrow byte counts at 256 are 19,838 B per settlement row,
+        next-set derivation, prepare, apply and fee-share construction,
+        retaining the 10,000 decode ceiling for historical bytes. At the
+        12-byte `genesis-test` chain id, deterministic per-escrow byte counts
+        at 256 are 19,838 B per settlement row,
         5,078,528 B in whole-row rewrites across 256 claims and 51,642,368 B
-        in maximally sized retained signed envelopes (DR-0138); these are
-        bounds, not a throughput or disk-life certification;
+        in maximally sized retained signed envelopes (DR-0138). Row size
+        depends on chain-id length; these are not universal bounds or a
+        throughput/disk-life certification;
       - [ ] capacity/load/soak certification for concurrent escrows, claim
         rate, retained envelopes and restart time before claiming network
         capacity;

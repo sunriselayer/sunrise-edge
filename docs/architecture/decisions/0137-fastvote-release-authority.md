@@ -385,8 +385,9 @@ owners, identities, schemas, amounts and authorities. A real SQLite
 same-generation race of two distinct signed zero-share claims commits one
 row/audit/receipt, and both persisted and uncommitted indeterminate zero-share
 outcomes reconcile by exact replay. Real SQLite positive-claim races and
-persisted/uncommitted indeterminate outcomes now also cover the retained
-object bytes, row, audit, nonce and receipt after close/reopen. The retained
+persisted/uncommitted indeterminate outcomes now also cover exact retained
+escrow and recipient-owned payout object bytes, loser payout absence, row,
+audit, nonce and receipt after close/reopen. The retained
 signed-claim chain still needs independent restart/history verification;
 ordinary replay is not that verification. This remains a Phase 3 gate in
 `TODO.md`.
@@ -398,8 +399,8 @@ activation operation today: the epoch transition carries the same version.
 DR-0138 therefore keeps the current fail-closed checks and makes historical
 claim support or an outstanding-escrow activation veto a mandatory gate
 *before* a future version-switch path is enabled, with restart proof. It also
-sets a 256-validator admission cap and records worst-case per-escrow row
-rewrite and signed-envelope byte bounds. These bounds are not operational
+sets a 256-validator admission cap and records fixture-specific per-escrow row
+rewrite sizes plus signed-envelope byte bounds. These figures are not operational
 capacity certification, which remains open in `TODO.md`.
 
 ### Implementation order
