@@ -178,7 +178,7 @@ impl Verifier<'_> {
         &self,
         creation: &Creation<'_>,
         expected: &ObjectRef,
-        recipient: &[u8; 32],
+        expected_owner: &Owner,
         errors: &OutputErrors,
     ) -> Result<(), PaidExecutionError> {
         let policy: &PaidFeePolicy = self.fee_policy;
@@ -208,7 +208,7 @@ impl Verifier<'_> {
         {
             return Err(invalid(errors.identity));
         }
-        if creation.object.owner != Owner::Address(Address::new(*recipient))
+        if &creation.object.owner != expected_owner
             || creation.object.schema_version != policy.schema
             || creation.authority.authority.ty != policy.asset_type
             || creation.authority.authority.code != policy.code
@@ -288,6 +288,7 @@ fn check_charged(
     authorities: &[CreatedObjectAuthority],
     admission: &Admission,
     signed: &SignedTerms<'_>,
+    expected_fee_owner: &Owner,
 ) -> Result<(), PaidExecutionError> {
     let fee_policy: &PaidFeePolicy = verifier.fee_policy;
     // The metered application gas the charge is based on can never exceed
@@ -323,7 +324,7 @@ fn check_charged(
     verifier.check_output(
         &fee,
         &charged.fee_output,
-        &fee_policy.fee_recipient,
+        expected_fee_owner,
         &OutputErrors {
             reference: "paid result fee output reference",
             identity: "paid result fee output identity",
@@ -351,7 +352,7 @@ fn check_charged(
             verifier.check_output(
                 &refund,
                 refund_ref,
-                &signed.refund_recipient,
+                &Owner::Address(Address::new(signed.refund_recipient)),
                 &OutputErrors {
                     reference: "paid result refund output reference",
                     identity: "paid result refund output identity",
@@ -553,6 +554,32 @@ pub fn verify_paid_execution_result(
     // recompute.
     publish_dependencies: &[AuthenticatedPublicationCandidate],
 ) -> Result<(), PaidExecutionError> {
+    verify_paid_execution_result_with_fee_owner(
+        outcome,
+        authenticated,
+        resolver,
+        base_policy,
+        fee_policy,
+        fee_instance,
+        publish_dependencies,
+        &Owner::Address(Address::new(fee_policy.fee_recipient)),
+    )
+}
+
+/// Independently verifies a paid receipt while pinning the fee output to an
+/// explicit trusted owner. FastVote uses this only with the exact
+/// `FeeEscrow` scope bound into the settle-phase output capability.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_paid_execution_result_with_fee_owner(
+    outcome: &PaidExecutionOutcome,
+    authenticated: &AuthenticatedPaidIntent,
+    resolver: &HashSuiteResolver,
+    base_policy: &LocalExecutionPolicy,
+    fee_policy: &PaidFeePolicy,
+    fee_instance: &InstanceRecord,
+    publish_dependencies: &[AuthenticatedPublicationCandidate],
+    expected_fee_owner: &Owner,
+) -> Result<(), PaidExecutionError> {
     let result: &PaidExecutionResult = &outcome.result;
     // Canonical/self-consistency first; it is necessary but never sufficient.
     let _: Vec<u8> = encode_paid_execution_result(result)?;
@@ -608,6 +635,7 @@ pub fn verify_paid_execution_result(
                     source: &intent.consent.source,
                     access: intent.consent.access,
                 },
+                expected_fee_owner,
             )?;
             // Call/Instantiate's charged `A` is already pinned to the
             // recomputed quote above; Publish additionally requires `A`

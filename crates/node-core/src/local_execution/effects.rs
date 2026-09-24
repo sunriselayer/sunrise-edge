@@ -18,6 +18,10 @@ pub(crate) struct CheckedEffects<'a> {
     pub effects: &'a ExecutionEffects,
     /// The surviving creation authority reported alongside those effects.
     pub created_authorities: &'a [CreatedObjectAuthority],
+    /// One exact protocol-custody output admitted by a separately verified
+    /// invocation-local capability. Ordinary execution always supplies
+    /// `None`; FastVote paid settlement supplies only its exact fee output.
+    pub allowed_protocol_custody_output: Option<(ObjectId, &'a objects::ProtocolCustodyScope)>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -165,17 +169,25 @@ pub(crate) fn translate<S: StructuredDurableDomainStateStore>(
                 ))?
                 .authority
         };
-        let Owner::Address(owner) = &object.owner else {
-            return Err(LocalExecutionAdmissionError::Invalid(
-                "non-address output owner",
-            ));
-        };
         let scope: &ResolvedExecutionScope = scopes::for_authority(scopes, authority)?;
-        validate_ed25519_owner_address(
-            owner.as_bytes(),
-            Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
-        )
-        .map_err(|_| LocalExecutionAdmissionError::Invalid("invalid output owner"))?;
+        match &object.owner {
+            Owner::Address(owner) => {
+                validate_ed25519_owner_address(
+                    owner.as_bytes(),
+                    Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
+                )
+                .map_err(|_| LocalExecutionAdmissionError::Invalid("invalid output owner"))?;
+            }
+            Owner::ProtocolCustody(custody)
+                if view
+                    .allowed_protocol_custody_output
+                    .is_some_and(|(id, allowed)| id == object.id && allowed == custody) => {}
+            _ => {
+                return Err(LocalExecutionAdmissionError::Invalid(
+                    "non-address output owner",
+                ));
+            }
+        }
         execution::publication::validate_nominal_body(
             &scope.interface,
             &authority.ty,

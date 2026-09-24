@@ -171,8 +171,8 @@ pub fn fastpath_certificate_key(
     Ok(key)
 }
 
-/// Charged-amount/fee-output/signer-set settlement metadata for later
-/// (Phase 3, not implemented here) fee distribution to certificate signers.
+/// Authoritative bounded fee-escrow row for one applied certificate,
+/// including its exact output and deterministic signer entitlements.
 pub fn fastpath_settlement_key(
     chain: &ChainId,
     request_id: &[u8; 32],

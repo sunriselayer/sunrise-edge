@@ -53,11 +53,14 @@
 //! (`crates/node-core/tests/local_inventory.rs`).
 #![allow(clippy::result_large_err)]
 use super::*;
+use abi::package_types::ScopedTypeArg;
+use bonds::BondResourceId;
 use canonical_encoding::{decode_digest32, encode_digest32};
 use consensus::{ConsensusError, ConsensusSigner, ConsensusVerifier, FastCertificate, FastVote};
 use crypto::{Ed25519Verifier, SignatureVerifier};
 use execution::local_execution::{CreatedObjectAuthority, LocalExecutionPolicy};
 use execution::paid_execution::{PaidApplication, PaidContractEngine, PaidFeePolicy};
+use execution::protocol_custody::{FeeEscrowCreationCapability, ProtocolCustodyTarget};
 use execution::publication::{
     PublicationContext, decode_publication_context, encode_publication_context,
 };
@@ -81,9 +84,89 @@ pub mod records;
 mod tests;
 
 pub use records::{
-    FastPathBondRecord, FastPathCertificateRecord, FastPathPreparedRecord,
+    FastPathBondRecord, FastPathCertificateRecord, FastPathFeeShare, FastPathPreparedRecord,
     FastPathSettlementRecord, FastPathValidatorEntry, FastPathValidatorSetRecord,
 };
+
+fn fee_resource_id(fee_policy: &PaidFeePolicy) -> FastPathResult<BondResourceId> {
+    match fee_policy.asset_type.args() {
+        [ScopedTypeArg::Opaque { domain, value }] => BondResourceId::new(*domain, *value)
+            .map_err(|_| FastPathError::Invalid("fast-path fee type resource")),
+        _ => invalid("fast-path fee type resource"),
+    }
+}
+
+fn fee_escrow_creation_capability(
+    context: &PublicationContext,
+    fee_policy: &PaidFeePolicy,
+    sender: [u8; 32],
+    request_id: [u8; 32],
+    event_digest: Digest32,
+) -> FastPathResult<FeeEscrowCreationCapability> {
+    let resource_id: BondResourceId = fee_resource_id(fee_policy)?;
+    let target: ProtocolCustodyTarget = ProtocolCustodyTarget::new(
+        fee_policy.instance.clone(),
+        fee_policy.code.clone(),
+        fee_policy.asset_type.clone(),
+        fee_policy.schema,
+        fee_policy.settle_entrypoint.clone(),
+    )
+    .map_err(|_| FastPathError::Invalid("fast-path fee escrow target"))?;
+    let scope: objects::ProtocolCustodyScope = objects::ProtocolCustodyScope {
+        purpose: objects::ProtocolCustodyPurpose::FeeEscrow,
+        chain_id: context.chain_id().clone(),
+        subject: request_id,
+        resource: *resource_id.value(),
+    };
+    FeeEscrowCreationCapability::new(
+        context.clone(),
+        target,
+        sender,
+        event_digest,
+        fee_policy.fee_recipient,
+        scope,
+    )
+    .map_err(|_| FastPathError::Invalid("fast-path fee escrow capability"))
+}
+
+fn certificate_fee_shares(
+    certificate: &FastCertificate,
+    total: u64,
+) -> FastPathResult<Vec<FastPathFeeShare>> {
+    if total == 0 {
+        return invalid("fast-path charged fee total must be positive");
+    }
+    let mut signer_ids: Vec<ValidatorId> = certificate
+        .votes
+        .iter()
+        .map(|vote| vote.validator)
+        .collect();
+    signer_ids.sort_unstable();
+    if signer_ids.is_empty()
+        || signer_ids
+            .windows(2)
+            .any(|pair: &[ValidatorId]| pair[0] == pair[1])
+    {
+        return invalid("fast-path certificate signers must be unique");
+    }
+    let count: u64 = u64::try_from(signer_ids.len())
+        .map_err(|_| FastPathError::Invalid("fast-path signer count"))?;
+    let quotient: u64 = total / count;
+    let remainder: u64 = total % count;
+    signer_ids
+        .into_iter()
+        .enumerate()
+        .map(|(index, validator_id)| {
+            let index: u64 = u64::try_from(index)
+                .map_err(|_| FastPathError::Invalid("fast-path signer index"))?;
+            Ok(FastPathFeeShare {
+                validator_id,
+                amount: quotient + u64::from(index < remainder),
+                claimed: false,
+            })
+        })
+        .collect()
+}
 
 /// Fail-closed DR-0130 fast-path errors.
 #[derive(Debug)]
@@ -447,6 +530,13 @@ where
     let original_request_id: [u8; 32] = authenticated.intent().request_id;
     let sender: [u8; 32] = authenticated.intent().sender;
     let pending_nonce: u64 = authenticated.intent().nonce;
+    let fee_escrow_creation: FeeEscrowCreationCapability = fee_escrow_creation_capability(
+        &intent_context,
+        fee_policy,
+        sender,
+        original_request_id,
+        event_digest,
+    )?;
 
     // DR-0131: CAS-fence the committed epoch record and the active per-epoch
     // validator set, and reject a request bound to a non-current epoch,
@@ -564,6 +654,7 @@ where
         history,
         base_policy,
         fee_policy,
+        Some(&fee_escrow_creation),
         engine,
         authenticated,
         event_digest,
@@ -764,6 +855,13 @@ where
     let original_request_id: [u8; 32] = authenticated.intent().request_id;
     let intent_sender: [u8; 32] = authenticated.intent().sender;
     let intent_nonce: u64 = authenticated.intent().nonce;
+    let fee_escrow_creation: FeeEscrowCreationCapability = fee_escrow_creation_capability(
+        &intent_context,
+        fee_policy,
+        intent_sender,
+        original_request_id,
+        event_digest,
+    )?;
 
     // DR-0131 key transition safety proof, leg 3 of 3: `prepared epoch ==
     // certificate epoch == current committed epoch`. The first two legs are
@@ -834,6 +932,7 @@ where
         history,
         base_policy,
         fee_policy,
+        Some(&fee_escrow_creation),
         engine,
         authenticated,
         event_digest,
@@ -958,23 +1057,19 @@ where
         return invalid("fast-path settlement record already exists");
     }
     reads.insert(settlement_key.clone(), observed_settlement.revision());
+    let charged = outcome.result.charged.as_ref();
     let settlement_record: FastPathSettlementRecord = FastPathSettlementRecord {
+        context: intent_context.clone(),
         request_id: original_request_id,
-        fee_output: outcome
-            .result
-            .charged
-            .as_ref()
-            .map(|charged| charged.fee_output.clone()),
-        actual_amount: outcome
-            .result
-            .charged
-            .as_ref()
-            .map(|charged| charged.actual.get()),
-        signer_ids: certificate
-            .votes
-            .iter()
-            .map(|vote| vote.validator)
-            .collect(),
+        generation: u64::from(charged.is_some()),
+        resource_id: charged.map(|_| fee_resource_id(fee_policy)).transpose()?,
+        fee_output: charged.map(|charged| charged.fee_output.clone()),
+        fee_output_epoch: charged.map(|_| intent_context.epoch()),
+        total_amount: charged.map(|charged| charged.actual.get()),
+        shares: charged
+            .map(|charged| certificate_fee_shares(&certificate, charged.actual.get()))
+            .transpose()?
+            .unwrap_or_default(),
     };
     mutations.push(StateMutationEntry::new(
         settlement_key,

@@ -132,6 +132,126 @@ pub struct ProtocolCustodyCapability {
     custody_target: Option<PinnedCustodyTarget>,
 }
 
+/// Invocation-local authority for the paid settlement phase to promote its
+/// exact returned fee object into one exact `FeeEscrow` scope.
+///
+/// This is deliberately separate from [`ProtocolCustodyCapability`]: it has
+/// no input authority, binds only to the policy-pinned settle entrypoint and
+/// is consumed only against that entrypoint's returned fee slot. The ordinary
+/// application phase and every zero-fee call execute without it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FeeEscrowCreationCapability {
+    context: PublicationContext,
+    target: ProtocolCustodyTarget,
+    sender: [u8; 32],
+    expected_event_digest: Digest32,
+    owner_operand: [u8; 32],
+    scope: ProtocolCustodyScope,
+}
+
+impl FeeEscrowCreationCapability {
+    /// Constructs a capability bound to the complete paid-settlement target.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        context: PublicationContext,
+        target: ProtocolCustodyTarget,
+        sender: [u8; 32],
+        expected_event_digest: Digest32,
+        owner_operand: [u8; 32],
+        scope: ProtocolCustodyScope,
+    ) -> Result<Self, LocalExecutionError> {
+        validate_ed25519_owner_address(&sender, Ed25519OwnerAddressPolicy::CanonicalPrimeOrder)?;
+        validate_ed25519_owner_address(
+            &owner_operand,
+            Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
+        )?;
+        if target.code.origin().chain_id() != context.chain_id()
+            || target.code.context().protocol_version() != context.protocol_version()
+            || scope.purpose != ProtocolCustodyPurpose::FeeEscrow
+            || scope.chain_id != *context.chain_id()
+            || !matches!(
+                target.ty.args(),
+                [ScopedTypeArg::Opaque { value, .. }] if value == &scope.resource
+            )
+        {
+            return Err(LocalExecutionError::Invalid(
+                "fee escrow creation capability",
+            ));
+        }
+        Ok(Self {
+            context,
+            target,
+            sender,
+            expected_event_digest,
+            owner_operand,
+            scope,
+        })
+    }
+
+    /// Returns the exact custody scope assigned to the returned fee slot.
+    #[must_use]
+    pub fn scope(&self) -> &ProtocolCustodyScope {
+        &self.scope
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn bind(
+        &self,
+        context: &PublicationContext,
+        instance: &InstanceTarget,
+        code: &UnverifiedDependencyRef,
+        ty: &ScopedTypeTag,
+        schema: u32,
+        entrypoint: &str,
+        sender: &[u8; 32],
+        event_digest: Digest32,
+    ) -> Result<BoundFeeEscrowCreationCapability, LocalExecutionError> {
+        if context != &self.context
+            || instance != &self.target.instance
+            || code != &self.target.code
+            || ty != &self.target.ty
+            || schema != self.target.schema
+            || entrypoint != self.target.entrypoint
+            || sender != &self.sender
+            || event_digest != self.expected_event_digest
+        {
+            return Err(LocalExecutionError::Invalid("fee escrow settlement target"));
+        }
+        Ok(BoundFeeEscrowCreationCapability {
+            owner_operand: self.owner_operand,
+            ty: self.target.ty.clone(),
+            schema: self.target.schema,
+            owner: Owner::ProtocolCustody(self.scope.clone()),
+        })
+    }
+}
+
+/// Arena-bound output authority for one exact settle phase.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BoundFeeEscrowCreationCapability {
+    owner_operand: [u8; 32],
+    ty: ScopedTypeTag,
+    schema: u32,
+    owner: Owner,
+}
+
+impl BoundFeeEscrowCreationCapability {
+    pub(crate) fn fee_output_owner(
+        &self,
+        current_owner: &Owner,
+        ty: &ScopedTypeTag,
+        schema: u32,
+    ) -> Result<Owner, LocalExecutionError> {
+        if current_owner != &Owner::Address(Address::new(self.owner_operand))
+            || ty != &self.ty
+            || schema != self.schema
+        {
+            return Err(LocalExecutionError::Invalid("fee escrow output authority"));
+        }
+        Ok(self.owner.clone())
+    }
+}
+
 impl ProtocolCustodyCapability {
     /// Constructs one invocation-local capability from trusted protocol policy.
     pub fn new(
@@ -1179,6 +1299,81 @@ mod tests {
                 Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn fee_escrow_creation_capability_is_exact_and_non_ambient() {
+        let fixture: CapabilityFixture = capability_fixture();
+        let scope: ProtocolCustodyScope = ProtocolCustodyScope {
+            purpose: ProtocolCustodyPurpose::FeeEscrow,
+            chain_id: fixture.context.chain_id().clone(),
+            subject: [0x61; 32],
+            resource: fixture.scope.resource,
+        };
+        let operand: [u8; 32] = fixture.sender;
+        let capability: FeeEscrowCreationCapability = FeeEscrowCreationCapability::new(
+            fixture.context.clone(),
+            fixture.target.clone(),
+            fixture.sender,
+            fixture.event,
+            operand,
+            scope.clone(),
+        )
+        .expect("exact fee escrow creation capability");
+        let bound: BoundFeeEscrowCreationCapability = capability
+            .bind(
+                &fixture.context,
+                &fixture.target.instance,
+                &fixture.target.code,
+                &fixture.target.ty,
+                fixture.target.schema,
+                &fixture.target.entrypoint,
+                &fixture.sender,
+                fixture.event,
+            )
+            .expect("exact settlement target binds");
+        assert_eq!(
+            bound
+                .fee_output_owner(
+                    &Owner::Address(Address::new(operand)),
+                    &fixture.target.ty,
+                    fixture.target.schema,
+                )
+                .unwrap(),
+            Owner::ProtocolCustody(scope)
+        );
+        assert!(
+            bound
+                .fee_output_owner(
+                    &Owner::Address(Address::new([0x62; 32])),
+                    &fixture.target.ty,
+                    fixture.target.schema,
+                )
+                .is_err()
+        );
+        assert!(
+            bound
+                .fee_output_owner(
+                    &Owner::Address(Address::new(operand)),
+                    &fixture.target.ty,
+                    fixture.target.schema + 1,
+                )
+                .is_err()
+        );
+        assert!(
+            capability
+                .bind(
+                    &fixture.context,
+                    &fixture.target.instance,
+                    &fixture.target.code,
+                    &fixture.target.ty,
+                    fixture.target.schema,
+                    "wrong-entrypoint",
+                    &fixture.sender,
+                    fixture.event,
+                )
+                .is_err()
         );
     }
 }

@@ -2147,7 +2147,7 @@ fn four_validator_sqlite_epoch_transition_activates_and_certified_execution_cont
         consensus::encode_fast_certificate(&baseline_certificate).unwrap();
     for file in &files {
         let (store, blob_store) = file.open();
-        fast_path::apply(
+        let output: NodeOutput = fast_path::apply(
             &store,
             &blob_store,
             &context(1),
@@ -2162,6 +2162,8 @@ fn four_validator_sqlite_epoch_transition_activates_and_certified_execution_cont
             &baseline_certificate_bytes,
         )
         .unwrap();
+        let applied = receipt(&output);
+        assert_eq!(applied.status, PaidExecutionStatus::Success);
     }
 
     // 3-4. Four independent transition votes and a 3-of-4 certificate,

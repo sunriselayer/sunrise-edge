@@ -497,15 +497,20 @@ vote. Apply requires that local prepared state, verifies a quorum certificate
 against the static validator set bound into the signed genesis manifest,
 re-runs the same deterministic admission, and atomically commits application
 and fee effects, one nonce advance, the ordinary receipt, certificate and
-settlement records, and every lock deletion. Exact prepare/apply replay is
+settlement records, and every lock deletion. Phase 3 now makes the certified
+fee output part of that commitment as an exact request-scoped `FeeEscrow`
+object: the execution layer promotes only the pinned settlement ABI's returned
+fee slot, leaving its refund slot address-owned even for equal recipients.
+Apply atomically records the final certificate signers' deterministic,
+value-conserving entitlement shares. Exact prepare/apply replay is
 durable and non-reapplying across SQLite close/reopen; a request already
 finalized through the direct paid path cannot be prepared afterward.
 
 Phase 1 deliberately exposes only this local Rust boundary. It adds no public
 HTTP/CLI event family and no timeout/clock-based lock recovery. Validator-set
-transitions/equivocation handling remain phase 2; bond-linked slashing and
-deterministic fee/reward distribution remain phase 3. FastVote is complete
-only after phase 3.
+transitions/equivocation handling are phase 2; bond-linked slashing is
+implemented in phase 3, while signed escrow claims and their review gate remain
+open. FastVote is complete only after phase 3.
 
 DR-0131 fixes phase 2's architecture and implements slice 1: a committed
 `FastPathEpochRecord` (current epoch, active validator-set digest, no

@@ -95,6 +95,7 @@ impl PaidContractEngine for LocalWasmExecutionEngine {
             admission: validated.admission.clone(),
             pricer: validated.pricer.clone(),
             fee_recipient: request.fee_policy.fee_recipient,
+            fee_escrow_creation: request.fee_escrow_creation,
             refund_recipient: intent.consent.refund_recipient,
         };
 

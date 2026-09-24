@@ -627,6 +627,69 @@ fn independent_validators_derive_byte_identical_commitment_and_a_quorum_certific
     let result = receipt(&output);
     assert_eq!(result.status, PaidExecutionStatus::Success);
     assert_eq!(next_nonce(&store_a), FIRST_PAID_NONCE + 1);
+
+    let settlement_bytes: Vec<u8> = store_a
+        .get_versioned_durable(
+            &context(),
+            domain(),
+            &fastpath_settlement_key(protocol().chain_id(), &[24; 32]).unwrap(),
+        )
+        .unwrap()
+        .value()
+        .expect("certificate apply must commit its escrow row")
+        .to_vec();
+    let settlement: FastPathSettlementRecord =
+        records::decode_fastpath_settlement_record(&settlement_bytes).unwrap();
+    let charged = result.charged.expect("successful paid call is charged");
+    assert_eq!(settlement.context, protocol());
+    assert_eq!(settlement.generation, 1);
+    assert_eq!(settlement.fee_output.as_ref(), Some(&charged.fee_output));
+    assert_eq!(settlement.fee_output_epoch, Some(protocol().epoch()));
+    assert_eq!(settlement.total_amount, Some(charged.actual.get()));
+    assert_eq!(settlement.shares.len(), certificate.votes.len());
+    assert!(settlement.shares.iter().all(|share| !share.claimed));
+    assert!(
+        settlement
+            .shares
+            .windows(2)
+            .all(|pair| pair[0].validator_id < pair[1].validator_id)
+    );
+    assert_eq!(
+        settlement
+            .shares
+            .iter()
+            .map(|share| share.amount)
+            .sum::<u64>(),
+        charged.actual.get()
+    );
+    let quotient: u64 = charged.actual.get() / settlement.shares.len() as u64;
+    let remainder: usize = (charged.actual.get() % settlement.shares.len() as u64) as usize;
+    for (index, share) in settlement.shares.iter().enumerate() {
+        assert_eq!(share.amount, quotient + u64::from(index < remainder));
+    }
+
+    let fee_head: DurableObjectHead = store_a
+        .get_object_head(&context(), domain(), charged.fee_output.id)
+        .unwrap();
+    let DurableObjectHead::Current { object_version, .. } = fee_head else {
+        panic!("fee escrow output must remain current after apply");
+    };
+    let fee_version: DurableObjectVersionRecord = store_a
+        .get_object_version(&context(), domain(), charged.fee_output.id, object_version)
+        .unwrap()
+        .expect("fee escrow object version");
+    let runtime::DurableObjectPayload::Inline(inline) = fee_version.payload() else {
+        panic!("fee escrow output must be inline in the test fixture");
+    };
+    assert_eq!(
+        inline.object().owner,
+        Owner::ProtocolCustody(objects::ProtocolCustodyScope {
+            purpose: objects::ProtocolCustodyPurpose::FeeEscrow,
+            chain_id: protocol().chain_id().clone(),
+            subject: [24; 32],
+            resource: *settlement.resource_id.expect("charged resource").value(),
+        })
+    );
 }
 
 /// Regression coverage for the durably bound `created_checkpoint`: `prepare`
@@ -2844,38 +2907,67 @@ fn fastpath_certificate_record_frame_0x641d_is_stable() {
 #[test]
 fn fastpath_settlement_record_charged_frame_0x641e_is_stable() {
     let record: FastPathSettlementRecord = FastPathSettlementRecord {
+        context: vector_context(),
         request_id: [0x01; 32],
+        generation: 1,
+        resource_id: Some(BondResourceId::new(9, [0x09; 32]).unwrap()),
         fee_output: Some(vector_object_ref(0x02, 3, 0x04)),
-        actual_amount: Some(1000),
-        signer_ids: vec![ValidatorId::new([0x05; 32]), ValidatorId::new([0x06; 32])],
+        fee_output_epoch: Some(Epoch::new(3)),
+        total_amount: Some(1000),
+        shares: vec![
+            FastPathFeeShare {
+                validator_id: ValidatorId::new([0x05; 32]),
+                amount: 500,
+                claimed: false,
+            },
+            FastPathFeeShare {
+                validator_id: ValidatorId::new([0x06; 32]),
+                amount: 500,
+                claimed: false,
+            },
+        ],
     };
     let bytes: Vec<u8> = records::encode_fastpath_settlement_record(&record).unwrap();
     assert_eq!(
         hex(&bytes),
-        "534e52451e6401000400010020000000010101010101010101010101010101010101010101010101010101010101010102008c000000534e5245044001000300010030000000534e524501400100010001002000000002020202020202020202020202020202020202020202020202020202020202020200080000000300000000000000030038000000534e524503010100020001000200000001000200200000000404040404040404040404040404040404040404040404040404040404040404030008000000e803000000000000040060000000534e52452164010003000100040000000200000002002000000005050505050505050505050505050505050505050505050505050505050505050300200000000606060606060606060606060606060606060606060606060606060606060606"
+        "534e52451e640100080001003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f727302000400000003000000030008000000090000000000000002002000000001010101010101010101010101010101010101010101010101010101010101010300080000000100000000000000040038000000534e52450880010002000100020000000900020020000000090909090909090909090909090909090909090909090909090909090909090905008c000000534e5245044001000300010030000000534e524501400100010001002000000002020202020202020202020202020202020202020202020202020202020202020200080000000300000000000000030038000000534e5245030101000200010002000000010002002000000004040404040404040404040404040404040404040404040404040404040404040600080000000300000000000000070008000000e8030000000000000800ac000000534e524536640100030001000400000002000000020046000000534e52453564010003000100200000000505050505050505050505050505050505050505050505050505050505050505020008000000f4010000000000000300020000000000030046000000534e52453564010003000100200000000606060606060606060606060606060606060606060606060606060606060606020008000000f4010000000000000300020000000000"
     );
 
-    // Extract and pin the nested `0x6421` validator-id-list frame (field 4).
+    // Extract and pin the nested `0x6436` fee-share-list frame (field 8).
     let outer = decode_canonical_frame(&bytes).unwrap();
-    let id_list_bytes: &[u8] = outer.required_field(4).unwrap();
+    let id_list_bytes: &[u8] = outer.required_field(8).unwrap();
     assert_eq!(
         hex(id_list_bytes),
-        "534e52452164010003000100040000000200000002002000000005050505050505050505050505050505050505050505050505050505050505050300200000000606060606060606060606060606060606060606060606060606060606060606"
+        "534e524536640100030001000400000002000000020046000000534e52453564010003000100200000000505050505050505050505050505050505050505050505050505050505050505020008000000f4010000000000000300020000000000030046000000534e52453564010003000100200000000606060606060606060606060606060606060606060606060606060606060606020008000000f4010000000000000300020000000000"
+    );
+
+    let mut inconsistent: FastPathSettlementRecord = record.clone();
+    inconsistent.shares[0].claimed = true;
+    assert!(records::encode_fastpath_settlement_record(&inconsistent).is_err());
+    inconsistent.generation = 2;
+    let claimed_bytes: Vec<u8> = records::encode_fastpath_settlement_record(&inconsistent).unwrap();
+    assert_eq!(
+        records::decode_fastpath_settlement_record(&claimed_bytes).unwrap(),
+        inconsistent
     );
 }
 
 #[test]
 fn fastpath_settlement_record_uncharged_frame_0x641e_is_stable() {
     let record: FastPathSettlementRecord = FastPathSettlementRecord {
+        context: vector_context(),
         request_id: [0x07; 32],
+        generation: 0,
+        resource_id: None,
         fee_output: None,
-        actual_amount: None,
-        signer_ids: vec![ValidatorId::new([0x08; 32])],
+        fee_output_epoch: None,
+        total_amount: None,
+        shares: Vec::new(),
     };
     let bytes: Vec<u8> = records::encode_fastpath_settlement_record(&record).unwrap();
     assert_eq!(
         hex(&bytes),
-        "534e52451e6401000200010020000000070707070707070707070707070707070707070707070707070707070707070704003a000000534e5245216401000200010004000000010000000200200000000808080808080808080808080808080808080808080808080808080808080808"
+        "534e52451e640100030001003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f727302000400000003000000030008000000090000000000000002002000000007070707070707070707070707070707070707070707070707070707070707070300080000000000000000000000"
     );
 }
 

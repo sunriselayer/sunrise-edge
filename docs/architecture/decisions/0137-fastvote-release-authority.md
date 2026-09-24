@@ -51,7 +51,16 @@ genesis snapshot is, by construction, indistinguishable from a legitimate
 fresh install unless a separately anchored checkpoint/state-root publication
 detects it, which remains out of this decision's scope. Partial
 (non-whole-object) release remains deferred to unit 4's fee-claims work,
-unchanged from unit 1. Deposit and Replace now each have dedicated
+unchanged from unit 1. Unit 4's certification half is now implemented and
+locally validated: FastPath prepare/apply install a settle-phase-only creation
+capability that promotes only the ABI-returned fee result slot to exactly one
+request-scoped `FeeEscrow` owner before the effects commitment is computed;
+ordinary paid/application execution receives no such authority; apply derives
+ascending unique signer entitlements by the quotient/remainder rule and stores
+them with the exact escrow object, resource, creation epoch, total and initial
+generation in the same atomic certificate commit. The mutable claim state
+machine, claim races/restart evidence and Phase 3 review gate remain
+incomplete. Deposit and Replace now each have dedicated
 real-WASM success-path integration tests (Replace proving same-sender
 consecutive nonces, both owner transitions, and one atomic commit) alongside
 Withdraw's real-WASM, real-storage end-to-end coverage including genesis
@@ -313,10 +322,15 @@ penalties require a later policy.
 
 ### Certified fee escrow and claims
 
-The paid-execution fee output is converted to `FeeEscrow` before the prepared
-effects commitment is computed. A certificate therefore covers the exact
-custody object later applied. Apply derives one bounded escrow row from the
-verified certificate and settlement data in the same commit.
+The paid-execution fee output is promoted to `FeeEscrow` before the prepared
+effects commitment is computed. This is not a node-core body/owner rewrite: a
+settle-phase-only execution capability binds the policy-pinned fee recipient,
+exact type/schema/instance/code/entrypoint and exact request-scoped custody
+owner, then promotes only the fee slot returned by the pinned settlement ABI.
+The refund slot remains address-owned even when both recipients are the same.
+A certificate therefore covers the exact custody object later applied. Apply
+derives one bounded escrow row from the verified certificate and settlement
+data in the same commit.
 
 Signer ids are sorted and must be unique. For total `T` and signer count `N`,
 each signer receives `T / N`; the first `T % N` ids in ascending byte order
@@ -325,6 +339,8 @@ receive one additional unit. The shares must sum exactly to `T`.
 One escrow row carries all bounded shares and their claimed state to avoid a
 state write per signer. A claim is signed by the historical validator key and
 binds the certificate epoch, escrow id, generation, exact share and recipient.
+For a charged row, `generation == claimed_share_count + 1`; this makes every
+claimed-bit transition part of the same monotonic CAS fence.
 Partial positive claims use the policy-pinned `split`; the final positive
 claim uses `transfer`. A zero share is finalized without an object mutation.
 

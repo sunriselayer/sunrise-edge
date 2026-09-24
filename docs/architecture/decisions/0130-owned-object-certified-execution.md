@@ -232,14 +232,15 @@ The implementation assigns these canonical frame IDs, all at version 1:
 | `0x641B` | exact object lock |
 | `0x641C` | prepared intent/vote |
 | `0x641D` | applied certificate |
-| `0x641E` | settlement metadata |
+| `0x641E` | authoritative fee-escrow settlement row (extended in place by DR-0137) |
 | `0x641F` | signed-genesis validator set |
 | `0x6420` | prepared object-reference list |
-| `0x6421` | settlement signer-ID list |
 | `0x6422` | validator-entry list |
 | `0x6423` | validator entry |
 | `0x6424` | staged-commit commitment envelope |
 | `0x6425` | sender/epoch nonce lock |
+| `0x6435` | DR-0137 fee-share entry |
+| `0x6436` | DR-0137 bounded fee-share list |
 
 Their literal Rust bytes and the independently reconstructed JavaScript bytes
 are pinned by `crates/node-core/src/fast_path/tests.rs` and

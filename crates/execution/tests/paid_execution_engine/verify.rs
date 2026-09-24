@@ -120,6 +120,7 @@ fn later_transfer_attempt(
         resolver: &rotating_resolver(),
         base_policy: &base_policy,
         fee_policy: &policy,
+        fee_escrow_creation: None,
         scopes: &scopes,
         source: coin_source.clone(),
         application: PaidApplicationScopes::Call {

@@ -194,6 +194,41 @@ impl OutputAccount {
 }
 
 impl HostState {
+    /// Replaces the address owner of one freshly returned settlement object
+    /// with its exact protocol-custody owner while charging the additional
+    /// canonical owner bytes before mutation.
+    pub(super) fn promote_created_owner(
+        &mut self,
+        index: usize,
+        expected_owner: &Owner,
+        new_owner: Owner,
+    ) -> Result<(), LocalExecutionError> {
+        let item: &ArenaObject = self
+            .arena
+            .get(index)
+            .ok_or(LocalExecutionError::Invalid("fee escrow output"))?;
+        if item.original.is_some()
+            || item.ordinal.is_none()
+            || item.consumed
+            || item.transferred
+            || &item.object.owner != expected_owner
+        {
+            return Err(LocalExecutionError::Invalid("fee escrow output"));
+        }
+        let old_charge: usize = object_output_charge(item.object.data.len(), expected_owner)
+            .map_err(|_| LocalExecutionError::Invalid("fee escrow output charge"))?;
+        let new_charge: usize = object_output_charge(item.object.data.len(), &new_owner)
+            .map_err(|_| LocalExecutionError::Invalid("fee escrow output charge"))?;
+        let additional: usize = new_charge
+            .checked_sub(old_charge)
+            .ok_or(LocalExecutionError::Invalid("fee escrow output charge"))?;
+        self.output
+            .charge(additional)
+            .map_err(|_| LocalExecutionError::Invalid("fee escrow output charge"))?;
+        self.arena[index].object.owner = new_owner;
+        Ok(())
+    }
+
     /// Global and phase frame-entry admission, checked before entry.
     fn admit_calls(&self, additional: u32) -> Result<(), wasmi::Error> {
         if self
