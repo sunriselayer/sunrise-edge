@@ -78,6 +78,7 @@ use validator_set::ValidatorSet;
 
 pub mod codec;
 mod effects;
+mod verify;
 
 #[cfg(test)]
 mod recovery_tests;
@@ -247,12 +248,59 @@ pub(crate) fn fee_claim_signing_frame(
 /// own (fixed, certificate) context epoch -- never the current claim's
 /// epoch -- so it is independently re-derivable from stored bytes alone,
 /// exactly like [`crate::bond_lifecycle::bond_row_digest`].
-fn fee_claim_row_digest(
+pub(crate) fn fee_claim_row_digest(
     resolver: &HashSuiteResolver,
     epoch: Epoch,
     bytes: &[u8],
 ) -> Result<Digest32, NodeCoreError> {
     Ok(resolver.hash_for_purpose(epoch, HashPurpose::ExecutionEffects, bytes)?)
+}
+
+/// Derives the only permitted claim shape from the previously committed row.
+/// The signed operation tag is an assertion, never the source of authority.
+fn derive_claim_kind(
+    settlement: &FastPathSettlementRecord,
+    intent: &FeeClaimIntent,
+) -> Result<(usize, u64, bool), FeeClaimError> {
+    let share_index: usize = settlement
+        .shares
+        .iter()
+        .position(|share: &FastPathFeeShare| share.validator_id == intent.validator_id)
+        .ok_or(FeeClaimError::Invalid(
+            "fee claim validator has no assigned share",
+        ))?;
+    let share: &FastPathFeeShare = &settlement.shares[share_index];
+    if share.amount != intent.share_amount {
+        return Err(FeeClaimError::Invalid("fee claim share amount mismatch"));
+    }
+    if share.claimed {
+        return Err(FeeClaimError::Invalid("fee claim share already claimed"));
+    }
+    let mut unclaimed_positive_total: u64 = 0;
+    let mut other_unclaimed_positive_remains: bool = false;
+    for (index, other) in settlement.shares.iter().enumerate() {
+        if other.claimed || other.amount == 0 {
+            continue;
+        }
+        unclaimed_positive_total = unclaimed_positive_total
+            .checked_add(other.amount)
+            .ok_or(FeeClaimError::Invalid("fee claim unclaimed total overflow"))?;
+        if index != share_index {
+            other_unclaimed_positive_remains = true;
+        }
+    }
+    let is_zero: bool = intent.share_amount == 0;
+    let is_final: bool = match (&intent.operation, is_zero, other_unclaimed_positive_remains) {
+        (FeeClaimOperation::ZeroShare, true, _) => false,
+        (FeeClaimOperation::Split { .. }, false, true) => false,
+        (FeeClaimOperation::FinalTransfer { .. }, false, false) => true,
+        _ => {
+            return Err(FeeClaimError::Invalid(
+                "fee claim operation does not match the settlement row's derived kind",
+            ));
+        }
+    };
+    Ok((share_index, unclaimed_positive_total, is_final))
 }
 
 fn resource_policy(
@@ -312,6 +360,338 @@ fn read_economics_policy<S: StructuredDurableDomainStateStore>(
         return Err(FeeClaimError::Invalid("fee economics policy context"));
     }
     Ok((fee_policy, economics))
+}
+
+/// Result of a read-only verification for one explicitly identified
+/// certified fee escrow. This is not a scan of all escrows on a node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FeeClaimVerificationReport {
+    pub final_generation: u64,
+    pub verified_claims: u64,
+    pub verified_positive_claims: u64,
+}
+
+/// Reconstructs the initial settlement from a quorum-certified commitment
+/// witness, then independently verifies the retained signed claim chain and
+/// its historical escrow-object versions after a store reopen. This has no
+/// mutation and deliberately takes an explicit escrow request id: there is
+/// not yet a typed global escrow inventory or startup-wide verification gate.
+/// The split payout object is not independently proved by this function;
+/// see DR-0139 and [`verify`] for that remaining Phase 3 requirement.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_fee_claim_history<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    chain: &ChainId,
+    escrow_request_id: &[u8; 32],
+) -> Result<FeeClaimVerificationReport, FeeClaimError> {
+    if history.len() > publication::MAX_PUBLICATION_HISTORY {
+        return Err(FeeClaimError::Invalid("resolver history bound"));
+    }
+    let settlement_key: Vec<u8> =
+        local_instance_state::fastpath_settlement_key(chain, escrow_request_id)?;
+    let installed: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &settlement_key)?;
+    let installed_bytes: &[u8] = installed
+        .value()
+        .ok_or(FeeClaimError::Invalid("fee claim settlement missing"))?;
+    let installed_row: FastPathSettlementRecord =
+        decode_fastpath_settlement_record(installed_bytes)?;
+    if installed_row.request_id != *escrow_request_id || installed_row.context.chain_id() != chain {
+        return Err(FeeClaimError::Invalid("fee claim settlement identity"));
+    }
+    let trusted_resolver: &HashSuiteResolver = std::iter::once(resolver)
+        .chain(history)
+        .find(|candidate: &&HashSuiteResolver| {
+            candidate.chain_id() == chain
+                && candidate.protocol_version() == installed_row.context.protocol_version()
+        })
+        .ok_or(FeeClaimError::Invalid(
+            "fee claim historical resolver unavailable",
+        ))?;
+
+    let certificate_key: Vec<u8> =
+        local_instance_state::fastpath_certificate_key(chain, escrow_request_id)?;
+    let certificate_observed: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &certificate_key)?;
+    let certificate_record: crate::fast_path::records::FastPathCertificateRecord =
+        crate::fast_path::records::decode_fastpath_certificate_record(
+            certificate_observed
+                .value()
+                .ok_or(FeeClaimError::Invalid("fee claim certificate missing"))?,
+        )?;
+    if certificate_record.request_id != *escrow_request_id {
+        return Err(FeeClaimError::Invalid("fee claim certificate request id"));
+    }
+    let certificate: consensus::FastCertificate =
+        consensus::decode_fast_certificate(&certificate_record.certificate)
+            .map_err(|_| FeeClaimError::Invalid("fee claim certificate encoding"))?;
+    if certificate.chain_id != *chain
+        || certificate.protocol_version != installed_row.context.protocol_version()
+        || certificate.epoch != installed_row.context.epoch()
+    {
+        return Err(FeeClaimError::Invalid("fee claim certificate context"));
+    }
+    let certificate_context: PublicationContext = PublicationContext::new(
+        certificate.chain_id.clone(),
+        certificate.protocol_version,
+        certificate.epoch,
+    )
+    .map_err(|_| FeeClaimError::Invalid("fee claim certificate context"))?;
+    let validator_set: ValidatorSet = equivocation::load_historical_validator_set(
+        store,
+        context,
+        domain,
+        trusted_resolver,
+        chain,
+        certificate.protocol_version,
+        certificate.epoch,
+    )?;
+    let certifier: consensus::FastPathCertifier = consensus::FastPathCertifier::new(
+        chain.clone(),
+        certificate.protocol_version,
+        certificate.epoch,
+        validator_set.clone(),
+    )
+    .map_err(|_| FeeClaimError::Invalid("fee claim certificate validator set"))?;
+    certifier
+        .verify_certificate(&certificate, &crate::fast_path::FastPathEd25519Verifier)
+        .map_err(|_| FeeClaimError::Invalid("fee claim certificate quorum signature"))?;
+
+    let witness_key: Vec<u8> =
+        local_instance_state::fastpath_commitment_witness_key(chain, escrow_request_id)?;
+    let witness_observed: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &witness_key)?;
+    let witness_bytes: &[u8] = witness_observed.value().ok_or(FeeClaimError::Invalid(
+        "fee claim commitment witness missing",
+    ))?;
+    let witness: crate::fast_path::commitment::DecodedCommitmentWitness =
+        crate::fast_path::commitment::decode_witness(witness_bytes)?;
+    let witness_digest: Digest32 = crate::fast_path::commitment::hash_witness_bytes(
+        trusted_resolver,
+        certificate.epoch,
+        witness_bytes,
+    )?;
+    if witness_digest != certificate.execution_effects_hash
+        || witness.event_digest != certificate.tx_hash
+        || witness.paid_execution_result.request_id != *escrow_request_id
+    {
+        return Err(FeeClaimError::Invalid(
+            "fee claim certified witness mismatch",
+        ));
+    }
+
+    let charged: Option<&execution::paid_execution::PaidChargedOutcome> =
+        witness.paid_execution_result.charged.as_ref();
+    let Some(charged) = charged else {
+        let empty_row: FastPathSettlementRecord = FastPathSettlementRecord {
+            context: certificate_context,
+            request_id: *escrow_request_id,
+            generation: 0,
+            resource_id: None,
+            fee_output: None,
+            fee_output_epoch: None,
+            total_amount: None,
+            shares: Vec::new(),
+        };
+        if encode_fastpath_settlement_record(&empty_row)? != installed_bytes {
+            return Err(FeeClaimError::Invalid(
+                "fee claim uncharged settlement mismatch",
+            ));
+        }
+        let max_claim_generation: u64 =
+            u64::try_from(crate::fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS)
+                .map_err(|_| FeeClaimError::Invalid("fee claim generation bound"))?
+                .checked_add(2)
+                .ok_or(FeeClaimError::Invalid("fee claim generation bound"))?;
+        for generation in 2..=max_claim_generation {
+            let impossible_claim_key: Vec<u8> =
+                local_instance_state::fastpath_fee_claim_key(chain, escrow_request_id, generation)?;
+            let impossible_claim: VersionedStateValue =
+                store.get_versioned_durable(context, domain, &impossible_claim_key)?;
+            if impossible_claim.revision() != StateRevision::INITIAL
+                || impossible_claim.value().is_some()
+            {
+                return Err(FeeClaimError::Invalid(
+                    "uncharged settlement has a claim record",
+                ));
+            }
+        }
+        return Ok(FeeClaimVerificationReport {
+            final_generation: 0,
+            verified_claims: 0,
+            verified_positive_claims: 0,
+        });
+    };
+
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let (fee_policy, economics): (PaidFeePolicy, FastPathEconomicsPolicy) =
+        read_economics_policy(store, context, domain, &certificate_context, &mut reads)?;
+    let resource_id: BondResourceId = crate::fast_path::fee_resource_id(&fee_policy)
+        .map_err(|_| FeeClaimError::Invalid("fee claim certified fee resource"))?;
+    let resource: &FastPathEconomicsResourcePolicy = resource_policy(&economics, resource_id)?;
+    if !resource.fee_escrow
+        || resource.context != *fee_policy.code.context()
+        || resource.code != fee_policy.code
+        || resource.instance != fee_policy.instance
+        || resource.ty != fee_policy.asset_type
+        || resource.schema != fee_policy.schema
+    {
+        return Err(FeeClaimError::Invalid(
+            "fee claim economics resource mismatch",
+        ));
+    }
+    let initial_shares: Vec<FastPathFeeShare> =
+        crate::fast_path::validator_fee_shares(&validator_set, charged.actual.get())
+            .map_err(|_| FeeClaimError::Invalid("fee claim initial share distribution"))?;
+    let initial: FastPathSettlementRecord = FastPathSettlementRecord {
+        context: certificate_context.clone(),
+        request_id: *escrow_request_id,
+        generation: 1,
+        resource_id: Some(resource_id),
+        fee_output: Some(charged.fee_output.clone()),
+        fee_output_epoch: Some(certificate.epoch),
+        total_amount: Some(charged.actual.get()),
+        shares: initial_shares,
+    };
+    let initial_bytes: Vec<u8> = encode_fastpath_settlement_record(&initial)?;
+
+    let loaded: publication::VerifiedDurablePublication = publication::load_verified_publication(
+        store,
+        context,
+        domain,
+        trusted_resolver,
+        history,
+        resource.code.origin(),
+    )
+    .map_err(|_| FeeClaimError::Invalid("fee claim code publication"))?
+    .ok_or(FeeClaimError::Invalid("fee claim code publication missing"))?;
+    local_execution::validate_closure(trusted_resolver, history, &loaded.interface)
+        .map_err(|_| FeeClaimError::Invalid("fee claim code closure"))?;
+    if !local_execution::reference_matches(&resource.code, &loaded.interface) {
+        return Err(FeeClaimError::Invalid("fee claim code reference"));
+    }
+    let resource_abi: verify::FeeEscrowResourceAbi = verify::FeeEscrowResourceAbi {
+        ty: resource.ty.clone(),
+        schema_version: resource.schema,
+    };
+    let result: verify::FeeClaimChainReport = verify::verify_fee_claim_chain(
+        store,
+        blob_store,
+        context,
+        domain,
+        trusted_resolver,
+        history,
+        &validator_set,
+        &resource_abi,
+        &loaded.interface,
+        &initial,
+        &initial_bytes,
+    )?;
+    verify_retained_claim_legs(
+        store,
+        context,
+        domain,
+        trusted_resolver,
+        resource,
+        &certificate_context,
+        escrow_request_id,
+        result.final_generation,
+    )?;
+    Ok(FeeClaimVerificationReport {
+        final_generation: result.final_generation,
+        verified_claims: result.verified_claims,
+        verified_positive_claims: result.verified_positive_claims,
+    })
+}
+
+/// Re-authenticates each positive embedded leg and rechecks its exact
+/// policy-pinned target. The row/object walk above proves effects on the
+/// retained escrow, while this pass proves the signed leg was one the live
+/// handler could have admitted at its recorded claim context.
+#[allow(clippy::too_many_arguments)]
+fn verify_retained_claim_legs<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    resource: &FastPathEconomicsResourcePolicy,
+    certificate_context: &PublicationContext,
+    escrow_request_id: &[u8; 32],
+    final_generation: u64,
+) -> Result<(), FeeClaimError> {
+    for generation in 2..=final_generation {
+        let key: Vec<u8> = local_instance_state::fastpath_fee_claim_key(
+            certificate_context.chain_id(),
+            escrow_request_id,
+            generation,
+        )?;
+        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        let signed: SignedFeeClaimIntent = decode_signed_fee_claim_intent(
+            observed
+                .value()
+                .ok_or(FeeClaimError::Invalid("fee claim leg envelope missing"))?,
+        )?;
+        let (leg_bytes, entrypoint): (&[u8], &str) = match &signed.intent.operation {
+            FeeClaimOperation::ZeroShare => continue,
+            FeeClaimOperation::Split { leg } => (leg, &resource.split_entrypoint),
+            FeeClaimOperation::FinalTransfer { leg } => (leg, &resource.transfer_entrypoint),
+        };
+        let decoded: execution::local_execution::SignedLocalExecutionIntent =
+            execution::local_execution::decode_signed_local_execution(leg_bytes)?;
+        let claim_context: PublicationContext = signed.intent.context.clone();
+        let candidates: [LocalExecutionPolicy; 3] = [
+            LocalExecutionPolicy::new(claim_context.clone()),
+            LocalExecutionPolicy::general(claim_context.clone()),
+            LocalExecutionPolicy::generic_object_results(claim_context),
+        ];
+        let mut matching_policy: Option<LocalExecutionPolicy> = None;
+        for candidate in candidates {
+            if candidate.digest(resolver)? == decoded.intent.policy_digest {
+                matching_policy = Some(candidate);
+                break;
+            }
+        }
+        let policy: LocalExecutionPolicy = matching_policy.ok_or(FeeClaimError::Invalid(
+            "fee claim historical leg policy digest",
+        ))?;
+        let policy_key: Vec<u8> = local_instance_state::execution_policy_key_for_profile(
+            policy.context(),
+            policy.profile(),
+        )?;
+        let policy_observed: VersionedStateValue =
+            store.get_versioned_durable(context, domain, &policy_key)?;
+        if policy_observed.value() != Some(policy.encode()?.as_slice()) {
+            return Err(FeeClaimError::Invalid(
+                "fee claim historical leg policy absent or different",
+            ));
+        }
+        let leg: AuthenticatedLocalExecutionIntent =
+            authenticate_local_execution(resolver, &policy, leg_bytes)?;
+        if leg.intent().call.request_id != signed.intent.request_id {
+            return Err(FeeClaimError::Invalid("fee claim leg request id mismatch"));
+        }
+        let scope: ProtocolCustodyScope = fee_escrow_scope(
+            certificate_context,
+            *escrow_request_id,
+            signed.intent.resource_id,
+        );
+        let _: (ProtocolCustodyCapability, Digest32) = fee_claim_capability(
+            resolver,
+            &signed.intent.context,
+            resource,
+            scope,
+            &signed.intent.expected_fee_output,
+            signed.intent.recipient,
+            entrypoint,
+            &leg,
+        )?;
+    }
+    Ok(())
 }
 
 fn fee_escrow_scope(
@@ -529,48 +909,9 @@ where
 
     // 9. exact share lookup, unclaimed positive total and the derived
     // operation kind -- never trusting the signed envelope's own tag.
-    let share_index: usize = settlement
-        .shares
-        .iter()
-        .position(|share| share.validator_id == signed.intent.validator_id)
-        .ok_or(FeeClaimError::Invalid(
-            "fee claim validator has no assigned share",
-        ))?;
-    let share: &FastPathFeeShare = &settlement.shares[share_index];
-    if share.amount != signed.intent.share_amount {
-        return Err(FeeClaimError::Invalid("fee claim share amount mismatch"));
-    }
-    if share.claimed {
-        return Err(FeeClaimError::Invalid("fee claim share already claimed"));
-    }
-    let mut unclaimed_positive_total: u64 = 0;
-    let mut other_unclaimed_positive_remains: bool = false;
-    for (index, other) in settlement.shares.iter().enumerate() {
-        if other.claimed || other.amount == 0 {
-            continue;
-        }
-        unclaimed_positive_total = unclaimed_positive_total
-            .checked_add(other.amount)
-            .ok_or(FeeClaimError::Invalid("fee claim unclaimed total overflow"))?;
-        if index != share_index {
-            other_unclaimed_positive_remains = true;
-        }
-    }
+    let (share_index, unclaimed_positive_total, is_final): (usize, u64, bool) =
+        derive_claim_kind(&settlement, &signed.intent)?;
     let is_zero: bool = signed.intent.share_amount == 0;
-    let is_final: bool = match (
-        &signed.intent.operation,
-        is_zero,
-        other_unclaimed_positive_remains,
-    ) {
-        (FeeClaimOperation::ZeroShare, true, _) => false,
-        (FeeClaimOperation::Split { .. }, false, true) => false,
-        (FeeClaimOperation::FinalTransfer { .. }, false, false) => true,
-        _ => {
-            return Err(FeeClaimError::Invalid(
-                "fee claim operation does not match the settlement row's derived kind",
-            ));
-        }
-    };
 
     // 10. chain-anchored historical validator set at the signed certificate
     // epoch, fenced into this same commit -- never current membership or

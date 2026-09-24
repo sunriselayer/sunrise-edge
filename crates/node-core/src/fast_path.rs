@@ -66,9 +66,9 @@ use execution::publication::{
 };
 use local_instance_state::{
     FastPathLockRecord, FastPathNonceLockRecord, encode_fastpath_lock_record,
-    encode_fastpath_nonce_lock_record, fastpath_certificate_key, fastpath_lock_key,
-    fastpath_nonce_lock_key, fastpath_prepared_record_key, fastpath_settlement_key,
-    fastpath_synthetic_prepare_request_id, fastpath_validator_set_key,
+    encode_fastpath_nonce_lock_record, fastpath_certificate_key, fastpath_commitment_witness_key,
+    fastpath_lock_key, fastpath_nonce_lock_key, fastpath_prepared_record_key,
+    fastpath_settlement_key, fastpath_synthetic_prepare_request_id, fastpath_validator_set_key,
 };
 use paid_execution::{
     NonceMode, PaidAdmissionOutput, PaidExecutionAdmissionError, authenticate_and_identify,
@@ -77,11 +77,13 @@ use paid_execution::{
 use protocol_types::{SignatureSchemeId, ValidatorId};
 use validator_set::{ValidatorInfo, ValidatorSet, ValidatorSetError};
 
-mod commitment;
+pub(crate) mod commitment;
 pub mod records;
 
 #[cfg(test)]
 mod capacity_tests;
+#[cfg(test)]
+mod commitment_witness_tests;
 #[cfg(test)]
 mod tests;
 
@@ -101,7 +103,7 @@ pub use records::{
 /// arguments: an existing direct-paid policy whose `asset_type` carries
 /// zero, two or more type arguments remains valid there and is simply never
 /// eligible for FastVote fee escrow.
-fn fee_resource_id(fee_policy: &PaidFeePolicy) -> FastPathResult<BondResourceId> {
+pub(crate) fn fee_resource_id(fee_policy: &PaidFeePolicy) -> FastPathResult<BondResourceId> {
     match fee_policy.asset_type.args() {
         [ScopedTypeArg::Opaque { domain, value }] => BondResourceId::new(*domain, *value)
             .map_err(|_| FastPathError::Invalid("fast-path fee type resource")),
@@ -149,7 +151,7 @@ fn require_fee_claim_capacity(validator_set: &ValidatorSet) -> FastPathResult<()
     Ok(())
 }
 
-fn validator_fee_shares(
+pub(crate) fn validator_fee_shares(
     validator_set: &ValidatorSet,
     total: u64,
 ) -> FastPathResult<Vec<FastPathFeeShare>> {
@@ -982,20 +984,29 @@ where
                 "fast-path apply must advance the prepared nonce",
             ))?;
     let pending_nonce_bytes: Vec<u8> = pending_nonce_write.record.encode()?;
-    let fresh_commitment: Digest32 = commitment::compute(
-        resolver,
-        intent_context.epoch(),
-        admission.event_digest,
-        &admission.result_bytes,
-        &admission.outcome.created_authorities,
-        &admission.head_reads,
-        &admission.object_mutations,
-        &admission.reads,
-        &admission.state_mutations,
-        &pending_nonce_write.key,
-        pending_nonce_write.read_revision,
-        &pending_nonce_bytes,
-    )?;
+    // DR-0130 retains only `certificate.execution_effects_hash` (this
+    // envelope's digest), never its preimage: without durably persisting the
+    // exact envelope bytes alongside the certificate and settlement below, a
+    // later verifier could never recover the certified
+    // `PaidExecutionResult` (in particular its charged total and fee
+    // output) from the certificate alone. `commitment_witness_bytes` is
+    // committed at `fastpath_commitment_witness_key` further down, in the
+    // same atomic transaction.
+    let (commitment_witness_bytes, fresh_commitment): (Vec<u8>, Digest32) =
+        commitment::compute_with_envelope(
+            resolver,
+            intent_context.epoch(),
+            admission.event_digest,
+            &admission.result_bytes,
+            &admission.outcome.created_authorities,
+            &admission.head_reads,
+            &admission.object_mutations,
+            &admission.reads,
+            &admission.state_mutations,
+            &pending_nonce_write.key,
+            pending_nonce_write.read_revision,
+            &pending_nonce_bytes,
+        )?;
     if fresh_commitment != prepared.commitment {
         return invalid("fast-path re-derived commitment no longer matches the certificate");
     }
@@ -1100,6 +1111,29 @@ where
         StateMutation::Put(records::encode_fastpath_settlement_record(
             &settlement_record,
         )?),
+    )?);
+
+    // The exact `0x6424/v1` commitment envelope this apply independently
+    // re-derived and just proved equals both `prepared.commitment` and
+    // `certificate.execution_effects_hash` above, durably retained at a
+    // permanent, request-scoped, never-overwritten key alongside the
+    // certificate and settlement rows committed in this same transaction.
+    let commitment_witness_key: Vec<u8> =
+        fastpath_commitment_witness_key(&chain, &original_request_id)?;
+    let observed_commitment_witness: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &commitment_witness_key)?;
+    if observed_commitment_witness.revision() != StateRevision::INITIAL
+        || observed_commitment_witness.value().is_some()
+    {
+        return invalid("fast-path commitment witness already exists");
+    }
+    reads.insert(
+        commitment_witness_key.clone(),
+        observed_commitment_witness.revision(),
+    );
+    mutations.push(StateMutationEntry::new(
+        commitment_witness_key,
+        StateMutation::Put(commitment_witness_bytes),
     )?);
 
     let assertions: Vec<StateReadAssertion> = reads

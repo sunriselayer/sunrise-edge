@@ -281,6 +281,50 @@ pub(super) fn compute(
     nonce_revision: StateRevision,
     nonce_value: &[u8],
 ) -> Result<Digest32, NodeCoreError> {
+    let (_, digest): (Vec<u8>, Digest32) = compute_with_envelope(
+        resolver,
+        epoch,
+        event_digest,
+        result_bytes,
+        created_authorities,
+        head_reads,
+        object_mutations,
+        reads,
+        state_mutations,
+        nonce_key,
+        nonce_revision,
+        nonce_value,
+    )?;
+    Ok(digest)
+}
+
+/// Identical to [`compute`], but also returns the exact canonical `0x6424/v1`
+/// envelope bytes the digest was computed over. [`crate::fast_path::apply`]
+/// uses this (instead of [`compute`]) so it can durably persist those exact
+/// bytes as a request-scoped commitment witness: a [`consensus::FastCertificate`]
+/// signs only `execution_effects_hash` (this envelope's digest, DR-0130) and
+/// never retains the preimage, so without a durably persisted copy of these
+/// bytes a later verifier could never recover the committed
+/// [`execution::paid_execution::PaidExecutionResult`] (field 2) -- in
+/// particular the charged outcome that fixed the initial settlement total
+/// and fee output -- from the certificate alone. See [`decode_witness`] and
+/// [`hash_witness_bytes`], the paired verifier-facing helpers over a
+/// persisted copy of these bytes.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn compute_with_envelope(
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    event_digest: Digest32,
+    result_bytes: &[u8],
+    created_authorities: &[CreatedObjectAuthority],
+    head_reads: &[DurableObjectHeadRead],
+    object_mutations: &[DurableObjectMutationEntry],
+    reads: &BTreeMap<Vec<u8>, StateRevision>,
+    state_mutations: &[StateMutationEntry],
+    nonce_key: &[u8],
+    nonce_revision: StateRevision,
+    nonce_value: &[u8],
+) -> Result<(Vec<u8>, Digest32), NodeCoreError> {
     let bytes: Vec<u8> = encode_envelope(
         event_digest,
         result_bytes,
@@ -293,7 +337,115 @@ pub(super) fn compute(
         nonce_revision,
         nonce_value,
     )?;
-    resolver
+    let digest: Digest32 = resolver
         .hash_for_purpose(epoch, HashPurpose::ExecutionEffects, &bytes)
+        .map_err(NodeCoreError::Hashing)?;
+    Ok((bytes, digest))
+}
+
+/// The two facts a persisted commitment witness exists to recover, since
+/// neither is retained anywhere else once a [`consensus::FastCertificate`]
+/// has been formed and applied: the exact signed-intent digest the
+/// certificate's own `tx_hash` attests to, and the canonical
+/// [`execution::paid_execution::PaidExecutionResult`] whose `charged` field
+/// (when present) fixed the initial settlement total and fee output.
+///
+/// The per-escrow fee-claim verifier consumes this decoded witness after a
+/// durable-store reopen to reconstruct the certificate's initial fee row.
+pub(crate) struct DecodedCommitmentWitness {
+    pub(crate) event_digest: Digest32,
+    pub(crate) paid_execution_result: execution::paid_execution::PaidExecutionResult,
+}
+
+/// Strictly and boundedly decodes a persisted commitment-witness row: the
+/// exact canonical `0x6424/v1` envelope [`compute_with_envelope`] produced at
+/// a successful [`crate::fast_path::apply`]. Unlike [`compute`]/
+/// [`compute_with_envelope`] (which build this frame from live
+/// [`crate::paid_execution::PaidAdmissionOutput`] components), this is the
+/// verifier-facing direction: decode ONLY, never re-derive.
+///
+/// Requires the frame to be exactly type `0x6424` version `1` and to carry
+/// exactly fields `1..=10` (no fewer, no more) -- the same closed field set
+/// [`encode_envelope`] always writes. Fields 3..8 and 10 (the created
+/// authorities, durable head reads/mutations, state reads/mutations and
+/// nonce key/value lists) are bounded and extracted only as their own raw
+/// bytes: this witness's sole job is field 1 (event digest) and field 2
+/// (`PaidExecutionResult`), so those other fields are never semantically
+/// decoded, only proven to round-trip byte-for-byte through a fresh
+/// [`CanonicalStruct`] rebuilt from their extracted raw values -- the same
+/// canonical re-encoding discipline `decode_paid_execution_result` and every
+/// `decode_fastpath_*` record in [`crate::local_instance_state`] already
+/// apply to their own frames. A truncated, reordered, padded, duplicated or
+/// otherwise non-canonical witness is rejected here rather than silently
+/// accepted.
+///
+/// The per-escrow fee-claim verifier uses this strict decode in production.
+pub(crate) fn decode_witness(bytes: &[u8]) -> Result<DecodedCommitmentWitness, NodeCoreError> {
+    let frame = canonical_encoding::decode_canonical_frame(bytes)?;
+    frame.require_type(COMMITMENT_ENVELOPE_TYPE)?;
+    frame.require_version(ENCODING_VERSION)?;
+    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10])?;
+
+    let field1: &[u8] = frame.required_field(1)?;
+    let field2: &[u8] = frame.required_field(2)?;
+    let field3: &[u8] = frame.required_field(3)?;
+    let field4: &[u8] = frame.required_field(4)?;
+    let field5: &[u8] = frame.required_field(5)?;
+    let field6: &[u8] = frame.required_field(6)?;
+    let field7: &[u8] = frame.required_field(7)?;
+    let field8: &[u8] = frame.required_field(8)?;
+    let field9: u64 = frame.required_u64(9)?;
+    let field10: &[u8] = frame.required_field(10)?;
+
+    let mut rebuilt: CanonicalStruct =
+        CanonicalStruct::new(COMMITMENT_ENVELOPE_TYPE, ENCODING_VERSION);
+    rebuilt.field_bytes(1, field1.to_vec())?;
+    rebuilt.field_bytes(2, field2.to_vec())?;
+    rebuilt.field_bytes(3, field3.to_vec())?;
+    rebuilt.field_bytes(4, field4.to_vec())?;
+    rebuilt.field_bytes(5, field5.to_vec())?;
+    rebuilt.field_bytes(6, field6.to_vec())?;
+    rebuilt.field_bytes(7, field7.to_vec())?;
+    rebuilt.field_bytes(8, field8.to_vec())?;
+    rebuilt.field_u64(9, field9)?;
+    rebuilt.field_bytes(10, field10.to_vec())?;
+    if rebuilt.finish()? != bytes {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "noncanonical fast-path commitment witness",
+        ));
+    }
+
+    let event_digest: Digest32 = canonical_encoding::decode_digest32(field1)?;
+    let paid_execution_result: execution::paid_execution::PaidExecutionResult =
+        execution::paid_execution::decode_paid_execution_result(field2).map_err(|_| {
+            NodeCoreError::PersistenceInvariant(
+                "fast-path commitment witness paid execution result",
+            )
+        })?;
+    Ok(DecodedCommitmentWitness {
+        event_digest,
+        paid_execution_result,
+    })
+}
+
+/// Hashes already-persisted (or otherwise already-encoded) exact `0x6424/v1`
+/// envelope bytes under `HashPurpose::ExecutionEffects` at `epoch` -- the
+/// identical purpose and preimage [`compute`]/[`compute_with_envelope`] use,
+/// exposed separately so a later verifier holding only a persisted
+/// [`decode_witness`]-shaped row (never a live
+/// [`crate::paid_execution::PaidAdmissionOutput`]) can re-derive the same
+/// digest a [`consensus::FastCertificate::execution_effects_hash`] commits
+/// to, and so confirm the persisted bytes are exactly what that certificate
+/// certified, without re-deriving the envelope from its components.
+///
+/// The per-escrow fee-claim verifier uses this hash after a durable-store
+/// reopen to bind the witness to the verified certificate.
+pub(crate) fn hash_witness_bytes(
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    bytes: &[u8],
+) -> Result<Digest32, NodeCoreError> {
+    resolver
+        .hash_for_purpose(epoch, HashPurpose::ExecutionEffects, bytes)
         .map_err(NodeCoreError::Hashing)
 }

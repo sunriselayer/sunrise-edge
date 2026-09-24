@@ -3,6 +3,9 @@
 //! public Standard Asset WASM through the production execution engine and a
 //! real durable store, exactly like the direct-commit regressions.
 use super::*;
+use crate::economics::{
+    FastPathEconomicsPolicy, FastPathEconomicsResourcePolicy, encode_fastpath_economics_policy,
+};
 use crate::fast_path::records::FastPathBondState;
 use crate::paid_execution::tests::{
     CountingEngine, FIRST_PAID_NONCE, Fixture, PaidCall, base_policy, context, domain, entry,
@@ -93,6 +96,47 @@ fn install_four_validators<S: StructuredDurableDomainStateStore>(
     )
     .unwrap();
     (signers, entries)
+}
+
+fn install_fee_escrow_economics<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    fee_policy: &PaidFeePolicy,
+) {
+    let resource_id: BondResourceId = fee_resource_id(fee_policy).unwrap();
+    let policy: FastPathEconomicsPolicy = FastPathEconomicsPolicy {
+        context: fee_policy.code.context().clone(),
+        resources: vec![FastPathEconomicsResourcePolicy {
+            resource_id,
+            context: fee_policy.code.context().clone(),
+            instance: fee_policy.instance.clone(),
+            code: fee_policy.code.clone(),
+            ty: fee_policy.asset_type.clone(),
+            schema: fee_policy.schema,
+            split_entrypoint: "split".to_owned(),
+            transfer_entrypoint: "transfer".to_owned(),
+            bond: None,
+            fee_escrow: true,
+        }],
+    };
+    let key: Vec<u8> =
+        local_instance_state::fastpath_economics_policy_key(&policy.context).unwrap();
+    let bytes: Vec<u8> = encode_fastpath_economics_policy(&policy).unwrap();
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(key.clone(), StateRevision::INITIAL).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(key, StateMutation::Put(bytes)).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&context(), transaction),
+        DurableCommitOutcome::Committed
+    );
 }
 
 #[test]
@@ -1030,6 +1074,7 @@ fn four_validator_sqlite_restart_e2e_derives_identical_votes_and_replays_prepare
             entries.clone(),
         )
         .unwrap();
+        install_fee_escrow_economics(&store, &fixture.policy);
         let bytes: Vec<u8> = paid_call_with_access(
             PaidCall {
                 fixture: &fixture,
@@ -1169,6 +1214,36 @@ fn four_validator_sqlite_restart_e2e_derives_identical_votes_and_replays_prepare
     // nonce a second time.
     {
         let (store, blob_store) = files[0].open();
+        let request_id: [u8; 32] = receipt(&applied_output).request_id;
+        let witness_key: Vec<u8> =
+            fastpath_commitment_witness_key(protocol().chain_id(), &request_id).unwrap();
+        let witness_observed: VersionedStateValue = store
+            .get_versioned_durable(&context(), domain(), &witness_key)
+            .unwrap();
+        let witness_bytes: &[u8] = witness_observed.value().expect("reopened witness");
+        let witnessed: commitment::DecodedCommitmentWitness =
+            commitment::decode_witness(witness_bytes).unwrap();
+        assert_eq!(witnessed.event_digest, certificate.tx_hash);
+        assert_eq!(witnessed.paid_execution_result, receipt(&applied_output));
+        assert_eq!(
+            commitment::hash_witness_bytes(&resolver(), protocol().epoch(), witness_bytes).unwrap(),
+            certificate.execution_effects_hash
+        );
+        let history_report: crate::fee_claims::FeeClaimVerificationReport =
+            crate::fee_claims::verify_fee_claim_history(
+                &store,
+                &blob_store,
+                &context(),
+                domain(),
+                &resolver(),
+                &[],
+                protocol().chain_id(),
+                &request_id,
+            )
+            .unwrap();
+        assert_eq!(history_report.final_generation, 1);
+        assert_eq!(history_report.verified_claims, 0);
+        assert_eq!(history_report.verified_positive_claims, 0);
         let replay_engine: CountingEngine = CountingEngine::new();
         let replayed_output: NodeOutput = apply(
             &store,
@@ -1188,6 +1263,35 @@ fn four_validator_sqlite_restart_e2e_derives_identical_votes_and_replays_prepare
         assert_eq!(replayed_output, applied_output);
         assert_eq!(replay_engine.calls.get(), 0);
         assert_eq!(next_nonce(&store), FIRST_PAID_NONCE + 1);
+        let delete_witness: AtomicStateTransaction = AtomicStateTransaction::new(
+            domain(),
+            AtomicStateReadSet::new(vec![
+                StateReadAssertion::new(witness_key.clone(), witness_observed.revision()).unwrap(),
+            ])
+            .unwrap(),
+            AtomicStateMutationSet::new(vec![
+                StateMutationEntry::new(witness_key, StateMutation::Delete).unwrap(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.commit_durable(&context(), delete_witness),
+            DurableCommitOutcome::Committed
+        );
+        assert!(
+            crate::fee_claims::verify_fee_claim_history(
+                &store,
+                &blob_store,
+                &context(),
+                domain(),
+                &resolver(),
+                &[],
+                protocol().chain_id(),
+                &request_id,
+            )
+            .is_err()
+        );
     }
 
     std::fs::remove_dir_all(directory).unwrap();
