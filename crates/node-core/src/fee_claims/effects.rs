@@ -25,6 +25,9 @@ use execution::ObjectEffect;
 use execution::local_execution::{CreatedObjectAuthority, ObjectAuthority};
 use execution::publication::VerifiedPublicationInterface;
 
+#[cfg(test)]
+mod tests;
+
 /// One exact fee-claim transfer a leg's effects must match.
 pub(super) struct ExpectedFeeClaim<'a> {
     /// Exact current `FeeEscrow` object the settlement row carries.
@@ -87,10 +90,11 @@ fn check_mutation_shape(
         .ok_or(FeeClaimError::Invalid("fee claim object version overflow"))?;
     if new_object.version != next_version
         || new_object.type_hash != snapshot.object.type_hash
+        || new_object.schema_version != snapshot.object.schema_version
         || checkpoint < snapshot.created_checkpoint
     {
         return Err(FeeClaimError::Invalid(
-            "fee claim mutation identity, version or type changed",
+            "fee claim mutation identity, version, type or schema changed",
         ));
     }
     Ok(())

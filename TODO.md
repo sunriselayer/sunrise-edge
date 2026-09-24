@@ -3198,23 +3198,35 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         claim envelope. Rust/independent JavaScript codec vectors, real-WASM
         split then final transfer, zero-share no-object commit, exact/
         conflicting replay and file-backed SQLite close/reopen replay pass;
-      - [ ] adversarial claim-effect matrix, duplicate-claim competing-writer
-        CAS race, indeterminate-commit reconciliation and independent
-        restart/history verification of retained claim envelopes and object
-        transitions. The file-backed replay test alone does not prove those;
+      - [x] direct adversarial split/final claim-effect validation matrix
+        (trap, events, effect count/shape, owner, identity, schema, amount,
+        conservation and created authority); real file-backed SQLite
+        same-generation competing zero-share writers with distinct signed
+        request ids commit exactly one row/audit/receipt; persisted and
+        uncommitted indeterminate zero-share commits reconcile by exact
+        replay without a second transition;
+      - [ ] extend the competing-writer and indeterminate-commit cases to a
+        positive object-mutating claim, and independently restart-verify the
+        retained signed-claim chain and object transitions. Direct effect
+        validation and ordinary SQLite reopen/replay do not prove these;
       - [ ] outstanding `FeeEscrow` claims across a protocol-version activation:
-        current local-execution admission rejects cross-version code, so the
-        version transition must either preserve an executable claim path or
-        fail activation while any claimable escrow remains; prove the chosen
-        rule across restart instead of silently stranding historical shares;
-      - [ ] bound or measure worst-case mutable claim-row rewrite cost at the
-        admitted validator-set size before claiming testnet capacity;
+        the current claim-row identity check rejects a different protocol
+        version even for zero shares, and positive claims also encounter
+        local-execution's cross-version code restriction. A version
+        transition must either preserve an authenticated historical claim
+        path (including zero shares) or fail activation while any claimable
+        escrow remains; prove the chosen rule across restart instead of
+        silently stranding historical shares;
+      - [ ] bound or measure worst-case mutable claim-row rewrite cost and
+        permanent per-claim signed-envelope retention at the admitted
+        validator-set size and transaction rate before claiming testnet
+        capacity;
       - [ ] Phase 3 review gate.
 
-  **Remaining Phase 3 completion:** extend signed-claim evidence to malicious
-  effects, competing writers, indeterminate commits and independent restart
-  verification; resolve cross-version outstanding escrow and worst-case row
-  rewrite capacity; then pass the Phase 3 review gate.
+  **Remaining Phase 3 completion:** prove positive object-mutating claims under
+  competing writers and indeterminate commits, independently restart-verify
+  retained claim history, resolve cross-version outstanding escrow and
+  worst-case row/envelope capacity; then pass the Phase 3 review gate.
   FastVote is not complete until this phase closes.
 
 ## CLI-First Node Production Gate
