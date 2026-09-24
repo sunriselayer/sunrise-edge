@@ -657,7 +657,11 @@ pub(super) fn verify_fee_claim_chain<S: StructuredDurableDomainStateStore>(
                 ));
             }
             escrow_object = loaded.object;
-            escrow_value = after;
+            // FinalTransfer changes custody, not the object's nominal value.
+            // No positive entitlement remains, however: a later zero-share
+            // claim is still legal and must compare against zero unclaimed
+            // value rather than the transferred object's retained amount.
+            escrow_value = if is_final { 0 } else { after };
             verified_positive_claims =
                 verified_positive_claims
                     .checked_add(1)

@@ -350,10 +350,8 @@ pub(super) fn compute_with_envelope(
 /// [`execution::paid_execution::PaidExecutionResult`] whose `charged` field
 /// (when present) fixed the initial settlement total and fee output.
 ///
-/// `#[allow(dead_code)]`: this bounded unit persists the witness row and
-/// proves it decodes correctly in its own tests; the fee-claim verifier that
-/// will read it in production is separate, not-yet-wired follow-up work.
-#[allow(dead_code)]
+/// The per-escrow fee-claim verifier consumes this decoded witness after a
+/// durable-store reopen to reconstruct the certificate's initial fee row.
 pub(crate) struct DecodedCommitmentWitness {
     pub(crate) event_digest: Digest32,
     pub(crate) paid_execution_result: execution::paid_execution::PaidExecutionResult,
@@ -381,9 +379,7 @@ pub(crate) struct DecodedCommitmentWitness {
 /// otherwise non-canonical witness is rejected here rather than silently
 /// accepted.
 ///
-/// `#[allow(dead_code)]`: exercised today by this module's own tests; the
-/// production fee-claim verifier consumer is separate follow-up work.
-#[allow(dead_code)]
+/// The per-escrow fee-claim verifier uses this strict decode in production.
 pub(crate) fn decode_witness(bytes: &[u8]) -> Result<DecodedCommitmentWitness, NodeCoreError> {
     let frame = canonical_encoding::decode_canonical_frame(bytes)?;
     frame.require_type(COMMITMENT_ENVELOPE_TYPE)?;
@@ -442,9 +438,8 @@ pub(crate) fn decode_witness(bytes: &[u8]) -> Result<DecodedCommitmentWitness, N
 /// to, and so confirm the persisted bytes are exactly what that certificate
 /// certified, without re-deriving the envelope from its components.
 ///
-/// `#[allow(dead_code)]`: exercised today by this module's own tests; the
-/// production fee-claim verifier consumer is separate follow-up work.
-#[allow(dead_code)]
+/// The per-escrow fee-claim verifier uses this hash after a durable-store
+/// reopen to bind the witness to the verified certificate.
 pub(crate) fn hash_witness_bytes(
     resolver: &HashSuiteResolver,
     epoch: Epoch,
