@@ -25,12 +25,12 @@ codec. Public contracts already commit their constructor body layouts and
 nominal types in `ExecutableAbi`. The correct boundary is a generic value
 observation over that authenticated metadata.
 
-Fee distribution is related but not identical. A successful certified paid
-transaction already commits a `FastPathSettlementRecord` containing the exact
-fee output, charged amount and final certificate signer set. Moving that fee
-output into protocol custody and releasing deterministic shares are mutating
-operations. They belong with the closed release-authority design, not with
-this read-only observation slice.
+Fee distribution is related but not identical. This slice's settlement record
+was metadata-only. DR-0137 supersedes the historical certificate-signer payout
+proposal: certified apply now commits the exact escrow output, charged amount,
+and deterministic committed active-validator shares. Custody creation and
+share release belong with the closed release-authority design, not this
+read-only observation slice.
 
 ## Decision
 
@@ -133,7 +133,8 @@ decision:
 - unbond scheduling, withdrawal and validator exit;
 - evidence-driven forfeiture, jailing and reactivation;
 - fee-output conversion to protocol custody;
-- final-certificate signer entitlement calculation;
+- committed active-validator entitlement calculation (DR-0137 supersedes the
+  historical certificate-signer proposal);
 - deterministic rounding/remainder assignment; and
 - payout through the defining public contract.
 

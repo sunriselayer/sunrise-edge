@@ -172,7 +172,7 @@ pub fn fastpath_certificate_key(
 }
 
 /// Authoritative bounded fee-escrow row for one applied certificate,
-/// including its exact output and deterministic signer entitlements.
+/// including its exact output and deterministic active-validator entitlements.
 pub fn fastpath_settlement_key(
     chain: &ChainId,
     request_id: &[u8; 32],

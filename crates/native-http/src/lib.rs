@@ -3871,10 +3871,7 @@ fn node_error_response(error: &NodeCoreError) -> Response {
             fees::FeeError::StandardAsset(_)
             | fees::FeeError::ZeroFeeUnitsPerAssetUnit
             | fees::FeeError::RegistryTooLarge(_)
-            | fees::FeeError::TooManySigners(_)
             | fees::FeeError::DuplicateAsset(_)
-            | fees::FeeError::EmptySignerSet
-            | fees::FeeError::DuplicateSigner(_)
             | fees::FeeError::CanonicalEncoding(_)
             | fees::FeeError::CanonicalDecoding(_)
             | fees::FeeError::Object(_),

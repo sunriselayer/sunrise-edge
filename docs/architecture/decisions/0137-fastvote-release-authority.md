@@ -346,7 +346,10 @@ total `T` and active-validator count `N`, each validator receives `T / N`;
 the first `T % N` ids in ascending byte order receive one additional unit.
 The shares must sum exactly to `T`, including when `T < N` and some shares
 are zero. This equal-share rule is a Phase 3 policy decision; missed-vote
-penalties are not inferred from the subset delivered with a certificate.
+penalties are not inferred from the subset delivered with a certificate, and
+voting power does not weight the shares. The fee resource is the exact opaque
+domain/value and nominal type pinned by the committed fee policy; no asset
+package or native coin receives a node-core shortcut.
 
 One escrow row carries all bounded shares and their claimed state to avoid a
 state write per signer. A claim is signed by the historical validator key and

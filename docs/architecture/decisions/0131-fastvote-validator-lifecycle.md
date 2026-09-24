@@ -404,8 +404,8 @@ real transition ([DR-0132](0132-fastvote-epoch-transition.md), implemented).
   identically through the same committed `FastPathEpochRecord` and per-epoch
   `ValidatorSet` row.
 - Bond-linked slashing execution and deterministic transaction-fee escrow
-  distribution to the final certificate signer set remain Phase 3,
-  unaffected by this DR.
+  distribution remain Phase 3, unaffected by this DR. DR-0137 supersedes the
+  historical signer-set proposal with committed active-validator shares.
 - This DR does not change DR-0129's `crates/consensus` types, wire IDs, or
   signature domain, and does not change DR-0130's Phase 1 invariants except
   by adding the fencing/epoch-stamp layer described above.

@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Stablecoin-denominated fee assets, deterministic fee calculation, and
-//! validator fee distribution.
+//! Stablecoin-denominated fee assets and deterministic fee calculation.
 
 pub mod reservation;
 
@@ -11,7 +10,6 @@ use canonical_encoding::{
 };
 use core::fmt;
 use objects::{ObjectRef, decode_object_ref, encode_object_ref};
-use runtime::ValidatorId;
 use standard_assets::{AssetId, StandardAssetError, decode_asset_id, encode_asset_id};
 use std::error::Error;
 
@@ -20,11 +18,8 @@ const FEE_ASSET_TYPE_ID: u16 = 0x7003;
 const FEE_ASSET_REGISTRY_TYPE_ID: u16 = 0x7004;
 const GAS_SCHEDULE_TYPE_ID: u16 = 0x7005;
 const FEE_USAGE_TYPE_ID: u16 = 0x7006;
-const VALIDATOR_FEE_SHARE_TYPE_ID: u16 = 0x7007;
-const FEE_DISTRIBUTION_TYPE_ID: u16 = 0x7008;
 const ENCODING_VERSION: u16 = 1;
 const MAX_REGISTRY_ASSETS: usize = u16::MAX as usize - 1;
-const MAX_SIGNERS: usize = u16::MAX as usize - 3;
 /// Maximum bytes of one encoded canonical [`GasSchedule`]: the 10-byte
 /// canonical frame header plus six fixed `u64` fields, each 14 bytes
 /// (2-byte field id, 4-byte length, 8-byte value).
@@ -39,18 +34,12 @@ pub enum FeeError {
     ZeroFeeUnitsPerAssetUnit,
     /// The fee-asset registry contains more items than can be canonically encoded.
     RegistryTooLarge(usize),
-    /// The signer set contains more items than can be canonically encoded.
-    TooManySigners(usize),
     /// The fee-asset registry already contains the asset.
     DuplicateAsset(AssetId),
     /// The fee-asset registry does not contain the asset.
     UnknownAsset(AssetId),
     /// The selected fee asset is disabled.
     AssetDisabled(AssetId),
-    /// The signer set is empty.
-    EmptySignerSet,
-    /// The signer set contains duplicates.
-    DuplicateSigner(ValidatorId),
     /// The fee payment's max fee is lower than the required charge.
     MaxFeeExceeded { required: Amount, max_fee: Amount },
     /// Checked arithmetic overflowed.
@@ -76,19 +65,9 @@ impl fmt::Display for FeeError {
                 f,
                 "fee-asset registry has {count} entries, exceeds canonical limit"
             ),
-            Self::TooManySigners(count) => {
-                write!(
-                    f,
-                    "fee distribution has {count} signers, exceeds canonical limit"
-                )
-            }
             Self::DuplicateAsset(asset_id) => write!(f, "duplicate fee asset: {asset_id}"),
             Self::UnknownAsset(asset_id) => write!(f, "unknown fee asset: {asset_id}"),
             Self::AssetDisabled(asset_id) => write!(f, "fee asset is disabled: {asset_id}"),
-            Self::EmptySignerSet => write!(f, "signer set must not be empty"),
-            Self::DuplicateSigner(validator_id) => {
-                write!(f, "duplicate validator in signer set: {validator_id}")
-            }
             Self::MaxFeeExceeded { required, max_fee } => {
                 write!(f, "required fee {required} exceeds max fee {max_fee}")
             }
@@ -327,26 +306,6 @@ pub struct FeeUsage {
     pub system_module_units: u64,
 }
 
-/// One validator's deterministic fee share.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ValidatorFeeShare {
-    /// Validator receiving the share.
-    pub validator_id: ValidatorId,
-    /// Amount of the shared fee.
-    pub amount: Amount,
-}
-
-/// Canonical fee distribution for one certified transaction.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FeeDistribution {
-    /// Asset in which the fee is paid.
-    pub asset_id: AssetId,
-    /// Total fee amount charged to the sender.
-    pub total_amount: Amount,
-    /// Deterministic signer payouts in canonical validator order.
-    pub shares: Vec<ValidatorFeeShare>,
-}
-
 /// Encodes a fee payment.
 pub fn encode_fee_payment(payment: &FeePayment) -> Result<Vec<u8>, FeeError> {
     let mut canonical = CanonicalStruct::new(FEE_PAYMENT_TYPE_ID, ENCODING_VERSION);
@@ -436,32 +395,6 @@ pub fn encode_fee_usage(usage: &FeeUsage) -> Result<Vec<u8>, FeeError> {
     Ok(canonical.finish()?)
 }
 
-/// Encodes one validator fee share.
-pub fn encode_validator_fee_share(share: &ValidatorFeeShare) -> Result<Vec<u8>, FeeError> {
-    let mut canonical = CanonicalStruct::new(VALIDATOR_FEE_SHARE_TYPE_ID, ENCODING_VERSION);
-    canonical.field_bytes(1, share.validator_id.as_bytes())?;
-    canonical.field_u64(2, share.amount.get())?;
-    Ok(canonical.finish()?)
-}
-
-/// Encodes a full fee distribution.
-pub fn encode_fee_distribution(distribution: &FeeDistribution) -> Result<Vec<u8>, FeeError> {
-    if distribution.shares.len() > MAX_SIGNERS {
-        return Err(FeeError::TooManySigners(distribution.shares.len()));
-    }
-
-    let mut canonical = CanonicalStruct::new(FEE_DISTRIBUTION_TYPE_ID, ENCODING_VERSION);
-    canonical.field_bytes(1, encode_asset_id(&distribution.asset_id)?)?;
-    canonical.field_u64(2, distribution.total_amount.get())?;
-    canonical.field_u32(3, distribution.shares.len() as u32)?;
-    for (index, share) in distribution.shares.iter().enumerate() {
-        let field_id = u16::try_from(index + 4)
-            .map_err(|_| FeeError::TooManySigners(distribution.shares.len()))?;
-        canonical.field_bytes(field_id, encode_validator_fee_share(share)?)?;
-    }
-    Ok(canonical.finish()?)
-}
-
 /// Calculates the canonical fee in internal fee units.
 pub fn calculate_fee(usage: &FeeUsage, schedule: &GasSchedule) -> Result<Amount, FeeError> {
     let execution = usage
@@ -530,47 +463,6 @@ pub fn settle_fee_payment(
     Ok(required)
 }
 
-/// Distributes a settled fee deterministically across certificate signers.
-pub fn distribute_fee(
-    asset_id: AssetId,
-    total_amount: Amount,
-    signers: &[ValidatorId],
-) -> Result<FeeDistribution, FeeError> {
-    if signers.is_empty() {
-        return Err(FeeError::EmptySignerSet);
-    }
-    if signers.len() > MAX_SIGNERS {
-        return Err(FeeError::TooManySigners(signers.len()));
-    }
-
-    let mut ordered = signers.to_vec();
-    ordered.sort_unstable_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
-    for pair in ordered.windows(2) {
-        if pair[0] == pair[1] {
-            return Err(FeeError::DuplicateSigner(pair[0]));
-        }
-    }
-
-    let divisor = ordered.len() as u64;
-    let base_share = total_amount.get() / divisor;
-    let remainder = total_amount.get() % divisor;
-
-    let shares = ordered
-        .into_iter()
-        .enumerate()
-        .map(|(index, validator_id)| ValidatorFeeShare {
-            validator_id,
-            amount: Amount::new(base_share + u64::from((index as u64) < remainder)),
-        })
-        .collect();
-
-    Ok(FeeDistribution {
-        asset_id,
-        total_amount,
-        shares,
-    })
-}
-
 fn ceil_div(numerator: u64, denominator: u64) -> Result<u64, FeeError> {
     if denominator == 0 {
         return Err(FeeError::ArithmeticOverflow);
@@ -602,10 +494,6 @@ mod tests {
     #[test]
     fn large_fee_conversion_does_not_overflow() {
         assert_eq!(ceil_div(u64::MAX, 2).unwrap(), 1u64 << 63);
-    }
-
-    fn sample_validator_id(byte: u8) -> ValidatorId {
-        ValidatorId::new([byte; 32])
     }
 
     #[test]
@@ -802,49 +690,6 @@ mod tests {
                 required: Amount::new(5),
                 max_fee: Amount::new(4),
             })
-        );
-    }
-
-    #[test]
-    fn validator_fee_distribution_is_sorted_and_remainder_is_canonical() {
-        let distribution = distribute_fee(
-            sample_asset_id(0x77),
-            Amount::new(10),
-            &[
-                sample_validator_id(0xCC),
-                sample_validator_id(0xAA),
-                sample_validator_id(0xBB),
-            ],
-        )
-        .unwrap();
-
-        assert_eq!(distribution.shares.len(), 3);
-        assert_eq!(
-            distribution.shares[0].validator_id,
-            sample_validator_id(0xAA)
-        );
-        assert_eq!(
-            distribution.shares[1].validator_id,
-            sample_validator_id(0xBB)
-        );
-        assert_eq!(
-            distribution.shares[2].validator_id,
-            sample_validator_id(0xCC)
-        );
-        assert_eq!(distribution.shares[0].amount, Amount::new(4));
-        assert_eq!(distribution.shares[1].amount, Amount::new(3));
-        assert_eq!(distribution.shares[2].amount, Amount::new(3));
-    }
-
-    #[test]
-    fn duplicate_signers_are_rejected() {
-        assert_eq!(
-            distribute_fee(
-                sample_asset_id(0x88),
-                Amount::new(1),
-                &[sample_validator_id(0x11), sample_validator_id(0x11)],
-            ),
-            Err(FeeError::DuplicateSigner(sample_validator_id(0x11)))
         );
     }
 

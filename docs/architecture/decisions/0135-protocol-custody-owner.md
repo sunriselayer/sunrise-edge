@@ -23,8 +23,9 @@ Phase 3 must eventually do two value-moving jobs:
 
 1. hold validator collateral so proven equivocation can forfeit value after
    the offense, rather than merely record an operator-declared number; and
-2. hold a certified transaction's fee until the final certificate signer set
-   is known, then release deterministic shares.
+2. hold a certified transaction's fee until protocol-authorized claims release
+   deterministic shares. DR-0137 supersedes the historical certificate-signer
+   payout proposal with committed active-validator shares.
 
 An address-owned object cannot provide that boundary. Any address has a
 signature-shaped authorization path, so an address-based "escrow" either has

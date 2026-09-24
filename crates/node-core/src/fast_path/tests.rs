@@ -2955,7 +2955,7 @@ fn fastpath_certificate_record_frame_0x641d_is_stable() {
 }
 
 #[test]
-fn validator_fee_rounding_is_subset_independent_and_assigns_zero_shares() {
+fn validator_fee_rounding_assigns_zero_shares() {
     let (_signers, entries) = four_validators();
     let validator_set: ValidatorSet = ValidatorSet::new(
         protocol().epoch(),
@@ -3083,6 +3083,9 @@ fn fastpath_settlement_record_uncharged_frame_0x641e_is_stable() {
         hex(&bytes),
         "534e52451e640100030001003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f727302000400000003000000030008000000090000000000000002002000000007070707070707070707070707070707070707070707070707070707070707070300080000000000000000000000"
     );
+    let mut partial_charge: FastPathSettlementRecord = record;
+    partial_charge.resource_id = Some(BondResourceId::new(9, [0x09; 32]).unwrap());
+    assert!(records::encode_fastpath_settlement_record(&partial_charge).is_err());
 }
 
 #[test]

@@ -2477,8 +2477,9 @@ Unique Asset v1、builder/public-testnet asset surfaceはまだ有効ではな�
 7. **部分実装。** protocol-v4 devnetはStandard Asset v1 fee coinをordinary objectとして扱い、
    same ownership/exact-version/checked-arithmetic/atomic-effect ruleを使う。native coinやprivileged
    balanceは追加していない。一方、現在のsingle treasury coinはlocal-devnet限定のhot spotであり、
-   production fast pathへは持ち込まない。fee output/aggregation/certificate-signer distributionは
-   別のbounded deterministic decisionとして未実装。
+   production fast pathへは持ち込まない。certified fee outputのcustody化と
+   active-validator配分はDR-0137で実装済みだが、signed claim/payoutとその
+   race/restart検証はPhase 3の残作業（下記参照）。
 8. **whole-coin transfer activation sliceは実装・検証済み。**
    canonical/stable/adversarial/replay/fee-compositionとreal file-backed SQLite
    restart testを実装し、commit `891152fc098e080b5d61a2242bc997e861553cc6`でcomplete

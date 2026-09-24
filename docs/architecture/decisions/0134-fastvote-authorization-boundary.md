@@ -8,7 +8,8 @@ review landed in PR #180. Slice 4 closes FastVote Phase 2 while preserving the
 closed external boundary.
 
 FastVote remains incomplete until Phase 3 implements bond-linked slashing and
-deterministic fee-escrow distribution to the final certificate signer set.
+deterministic fee-escrow distribution. DR-0137 supersedes the historical
+certificate-signer payout proposal with committed active-validator shares.
 Nothing here authorizes testnet or production activation of a new ingress.
 
 ## Context

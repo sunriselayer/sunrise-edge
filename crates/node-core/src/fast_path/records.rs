@@ -33,9 +33,9 @@ const FASTPATH_FEE_SHARE_LIST_TYPE: u16 = 0x6436;
 const ENCODING_VERSION: u16 = 1;
 
 /// Bounds every nested fast-path record list. Locked-object and
-/// certificate-signer lists are bounded by the same per-request execution
-/// scope/object ceilings the rest of paid admission already enforces;
-/// `MAX_VALIDATORS` bounds the durable validator set itself.
+/// certificate-signer lists are bounded by `MAX_FASTPATH_SIGNERS`; locked
+/// objects are bounded by the per-request execution scope/object ceilings.
+/// `MAX_FASTPATH_VALIDATORS` bounds the durable validator set itself.
 const MAX_FASTPATH_LOCKED_OBJECTS: usize = 256;
 /// Mirrors `validator_set::ValidatorSet`'s own private `MAX_VALIDATORS`
 /// bound (10_000); [`validator_set::ValidatorSet::new`] independently
@@ -250,11 +250,11 @@ pub fn decode_fastpath_certificate_record(
     Ok(record)
 }
 
-/// One deterministic certificate-signer entitlement carried inside the
+/// One deterministic active-validator entitlement carried inside the
 /// bounded settlement row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FastPathFeeShare {
-    /// Ascending, unique certificate signer identity.
+    /// Ascending, unique active-validator identity.
     pub validator_id: ValidatorId,
     /// Exact share assigned by the quotient/remainder rule.
     pub amount: u64,
@@ -283,7 +283,7 @@ pub struct FastPathSettlementRecord {
     pub fee_output_epoch: Option<Epoch>,
     /// Exact total amount charged, when charged.
     pub total_amount: Option<u64>,
-    /// Canonical ascending signer entitlements. Empty exactly when uncharged.
+    /// Canonical ascending active-validator entitlements. Empty when uncharged.
     pub shares: Vec<FastPathFeeShare>,
 }
 
@@ -1052,10 +1052,9 @@ fn validate_fastpath_settlement_record(
     record: &FastPathSettlementRecord,
 ) -> Result<(), NodeCoreError> {
     let charged: bool = record.fee_output.is_some();
-    if charged
-        != (record.resource_id.is_some()
-            && record.fee_output_epoch.is_some()
-            && record.total_amount.is_some())
+    if record.resource_id.is_some() != charged
+        || record.fee_output_epoch.is_some() != charged
+        || record.total_amount.is_some() != charged
     {
         return Err(NodeCoreError::PersistenceInvariant(
             "fast-path settlement charge fields presence mismatch",

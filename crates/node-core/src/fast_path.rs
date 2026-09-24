@@ -144,7 +144,7 @@ fn validator_fee_shares(
     if validator_ids.is_empty()
         || validator_ids
             .windows(2)
-            .any(|pair: &[ValidatorId]| pair[0] == pair[1])
+            .any(|pair: &[ValidatorId]| pair[0] >= pair[1])
     {
         return invalid("fast-path validator set must be unique");
     }
