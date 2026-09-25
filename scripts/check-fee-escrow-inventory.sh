@@ -13,7 +13,9 @@ cleanup() {
 trap cleanup EXIT
 
 SUNRISE_EDGE_ESCROW_FIXTURE_DIR="$fixture_dir" \
-  cargo test --quiet -p node-core --lib export_certified_operator_fixture -- --ignored
+  cargo test --quiet -p node-core --lib \
+  "fee_claims::tests::certified_multi_escrow_inventory::export_certified_operator_fixture" \
+  -- --ignored --exact
 
 validator_id="$(<"$fixture_dir/validator_id.hex")"
 if [[ ! "$validator_id" =~ ^[0-9a-f]{64}$ ]]; then

@@ -46,9 +46,26 @@ zero-row result as a proof of a complete certified fee history.
 
 Before calling this a network-start gate, test the actual command against a
 nonempty quorum-certified escrow fixture on real PostgreSQL, including
-blob-backed object reads, close/reopen, multiple pages, and a stale-writer
-or concurrent-fence negative. Load/soak, capacity, recovery-time and the
-independent Phase 3 review remain separate evidence requirements.
+positive signed claims and payout verification, close/reopen, multiple pages,
+and a stale-writer or concurrent-fence negative. Load/soak, capacity,
+recovery-time and the independent Phase 3 review remain separate evidence
+requirements.
+
+### Validation clarification (2026-09-25)
+
+The original gate also required a blob-backed fee-escrow object read in that
+fixture. That requirement is removed from the **current Standard Asset fee
+profile**, not silently counted as passed: its `Coin` body is a single `u64`,
+and its canonical object is below the 64 KiB inline threshold. A genuine
+certified Standard Asset escrow therefore cannot exercise the historical
+object loader's `BlobReference` arm. Creating a different, large-bodied fee
+contract solely to satisfy a test would change the first network's fee asset
+and prove the wrong deployment. The namespace-bound PostgreSQL blob store
+retains its own live conformance and authenticated generic large-object
+checks remain separate. If a future fee-resource contract can produce
+blob-backed escrow or payout objects, that resource must gain a certified
+PostgreSQL claim/inventory blob-read E2E **before activation**. This
+clarification does not certify blob-backed fee history today.
 
 ## Limits
 

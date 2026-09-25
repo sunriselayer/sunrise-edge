@@ -196,6 +196,14 @@ This DR is phase 0 of a four-phase FastVote delivery plan tracked in
 FastVote is complete only after phase 3. A testnet may launch after phase 1,
 but that launch is not itself FastVote completion.
 
+**2026-09-25 clarification:** the preceding phase-0 planning sentence is not
+authority to activate protocol v3 on an externally reachable multi-validator
+network. The later hard activation constraints in `TODO.md` and
+`docs/architecture/core-protocol.md` still apply. Phase 1 alone supports a
+closed local developer rehearsal; an earlier limited multi-validator testnet
+would require an explicit, independently reviewed non-production activation
+profile.
+
 ## Verification
 
 Run in this session, on the code in this revision:

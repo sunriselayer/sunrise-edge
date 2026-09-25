@@ -596,9 +596,18 @@ mod certified_multi_escrow_inventory {
     use execution::paid_execution::{PaidExecutionStatus, ReservationAccessKind};
     use fees::{Amount, GasSchedule};
     use protocol_types::{HashSuite, HashSuiteId, HashSuiteSchedule};
-    use runtime::DurableStateKeyScanner;
-    use std::num::NonZeroUsize;
+    use runtime::{BlobStore, DurableStateKeyScanner};
+    use std::num::{NonZeroU32, NonZeroUsize};
     use validator_set::ValidatorInfo;
+
+    // ── DR-0143: real, live PostgreSQL certified-escrow operator evidence ──
+    use postgres::{Client, NoTls};
+    use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
+    use runtime_postgres::{
+        POSTGRES_SCHEMA_GENERATION, PostgresBlobStore, PostgresDurableStore, PostgresNamespace,
+        PostgresPoolConfig, PostgresTransactionPolicy, apply_initial_schema, bootstrap_namespace,
+        build_postgres_pool,
+    };
 
     /// One real independent Ed25519 validator: its own signing key plus the
     /// installable [`FastPathValidatorEntry`] every store's validator set
@@ -621,8 +630,8 @@ mod certified_multi_escrow_inventory {
         }
     }
 
-    fn voter(seed: u8) -> Voter {
-        let signing_key: SigningKey = SigningKey::from([seed; 32]);
+    fn voter_from_seed(seed: [u8; 32]) -> Voter {
+        let signing_key: SigningKey = SigningKey::from(seed);
         let public: [u8; 32] = VerificationKey::from(&signing_key).into();
         Voter {
             entry: FastPathValidatorEntry {
@@ -633,6 +642,10 @@ mod certified_multi_escrow_inventory {
             },
             signing_key,
         }
+    }
+
+    fn voter(seed: u8) -> Voter {
+        voter_from_seed([seed; 32])
     }
 
     /// Four validators sorted by [`ValidatorId`], the exact order
@@ -786,6 +799,65 @@ mod certified_multi_escrow_inventory {
         fast_path::apply(
             store,
             &MemoryBlobStore::default(),
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &base_policy(),
+            policy,
+            &LocalWasmExecutionEngine::new(),
+            signed_bytes,
+            certificate_bytes,
+        )
+        .unwrap()
+    }
+
+    /// Identical to [`prepare_vote`], but threads a caller-supplied blob
+    /// store instead of a hardcoded [`MemoryBlobStore`]: used only for the
+    /// real-PostgreSQL fixture, so the escrow's object reads are wired
+    /// end-to-end through a genuine namespace-bound [`PostgresBlobStore`]
+    /// rather than an in-memory stand-in, even though (see
+    /// [`export_certified_operator_fixture_postgres`]) no certified escrow
+    /// object can actually cross the inline-body threshold under this
+    /// fixture's asset type.
+    fn prepare_vote_with_blob<S: StructuredDurableDomainStateStore>(
+        store: &S,
+        blob_store: &dyn BlobStore,
+        policy: &PaidFeePolicy,
+        voter: &Voter,
+        signed_bytes: &[u8],
+    ) -> FastVote {
+        fast_path::prepare(
+            store,
+            blob_store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &base_policy(),
+            policy,
+            &LocalWasmExecutionEngine::new(),
+            voter,
+            signed_bytes,
+            10,
+        )
+        .unwrap()
+    }
+
+    /// Identical to [`apply_escrow`], but threads a caller-supplied blob
+    /// store; see [`prepare_vote_with_blob`].
+    fn apply_escrow_with_blob<S: StructuredDurableDomainStateStore>(
+        store: &S,
+        blob_store: &dyn BlobStore,
+        policy: &PaidFeePolicy,
+        signed_bytes: &[u8],
+        certificate_bytes: &[u8],
+    ) -> NodeOutput {
+        fast_path::apply(
+            store,
+            blob_store,
             &context(),
             domain(),
             &resolver(),
@@ -1132,9 +1204,17 @@ mod certified_multi_escrow_inventory {
         store: &S,
         signed_bytes: &[u8],
     ) -> NodeOutput {
+        submit_claim_with_blob(store, &MemoryBlobStore::default(), signed_bytes)
+    }
+
+    fn submit_claim_with_blob<S: StructuredDurableDomainStateStore>(
+        store: &S,
+        blob_store: &dyn BlobStore,
+        signed_bytes: &[u8],
+    ) -> NodeOutput {
         handle_fee_claim(
             store,
-            &MemoryBlobStore::default(),
+            blob_store,
             &context(),
             domain(),
             &resolver(),
@@ -1257,6 +1337,340 @@ mod certified_multi_escrow_inventory {
         std::fs::write(
             directory.join("validator_id.hex"),
             entries[0].id.to_string(),
+        )
+        .unwrap();
+    }
+
+    /// Cross-process file lock serializing this fixture export against
+    /// `runtime-postgres`'s own live-database test family: it deliberately
+    /// shares that crate's exact lock file path (see its
+    /// `tests/support/mod.rs`), since `cargo test` may run each crate's live
+    /// PostgreSQL tests as independent concurrent processes against the same
+    /// shared `sunrise_edge_test` database. `Drop` only removes the file if
+    /// it still records this exact acquisition, mirroring that module's
+    /// abandoned-lock rationale.
+    struct PostgresLiveLock {
+        path: std::path::PathBuf,
+        owner: String,
+    }
+
+    impl PostgresLiveLock {
+        fn acquire() -> Self {
+            let path: std::path::PathBuf =
+                std::env::temp_dir().join("sunrise-edge-runtime-postgres-live-test.lock");
+            let owner: String = format!(
+                "{}:{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+            );
+            let deadline: std::time::Instant =
+                std::time::Instant::now() + std::time::Duration::from_secs(600);
+            loop {
+                let created = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path);
+                match created {
+                    Ok(mut file) => {
+                        use std::io::Write;
+                        file.write_all(owner.as_bytes()).unwrap();
+                        file.sync_all().unwrap();
+                        return Self { path, owner };
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        if std::time::Instant::now() >= deadline {
+                            panic!(
+                                "timed out waiting for the exclusive live PostgreSQL test lock \
+                                 at {}; if no other live test is actually running, delete this \
+                                 file",
+                                path.display()
+                            );
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    Err(error) => panic!(
+                        "failed to create live PostgreSQL test lock at {}: {error}",
+                        path.display()
+                    ),
+                }
+            }
+        }
+    }
+
+    impl Drop for PostgresLiveLock {
+        fn drop(&mut self) {
+            if std::fs::read_to_string(&self.path).ok().as_deref() == Some(self.owner.as_str()) {
+                let _ = std::fs::remove_file(&self.path);
+            }
+        }
+    }
+
+    type LiveTestPostgresManager = PostgresConnectionManager<NoTls>;
+
+    fn live_test_postgres_pool(url: &str) -> Pool<LiveTestPostgresManager> {
+        let config: postgres::Config = url.parse().unwrap();
+        build_postgres_pool(
+            config,
+            NoTls,
+            PostgresPoolConfig::new(
+                NonZeroU32::new(4).unwrap(),
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(30),
+                std::time::Duration::from_secs(300),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// Each live PostgreSQL run uses four fresh real signing identities. The
+    /// primary namespace then belongs to the exact validator that signs its
+    /// own vote, while repeated runs cannot collide with an earlier run's
+    /// retained rows or already-advanced writer fence in the shared test DB.
+    fn fresh_postgres_voters() -> Vec<Voter> {
+        let nanos: u128 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut voters: Vec<Voter> = (0_u8..4)
+            .map(|index: u8| {
+                let mut seed: [u8; 32] = [0xA5; 32];
+                seed[..16].copy_from_slice(&nanos.to_be_bytes());
+                seed[16..20].copy_from_slice(&std::process::id().to_be_bytes());
+                seed[20] = index;
+                voter_from_seed(seed)
+            })
+            .collect();
+        voters.sort_by_key(|voter: &Voter| voter.entry.id);
+        voters
+    }
+
+    /// Builds the genuine two-escrow certified fixture directly against a
+    /// real, namespace-bound PostgreSQL structured store and blob store
+    /// (never SQLite or memory for the primary role), closes and reopens a
+    /// fresh pool, and proves a caller-driven multi-page all-present-key
+    /// sweep over real PostgreSQL rows: DR-0143's "nonempty quorum-certified
+    /// escrow fixture" gate. Deliberately ignored during ordinary
+    /// `cargo test`: driven only by
+    /// `scripts/check-fee-escrow-inventory-pg.sh`, which afterwards also runs
+    /// the actual `fee_escrow_inventory_pg` operator binary against the exact
+    /// namespace this test commits, including a competing-fence/stale-writer
+    /// negative once that binary has itself advanced the writer fence.
+    ///
+    /// Precise blocker for a genuinely blob-backed certified object: like
+    /// every other certified fixture in this module, this escrows a Standard
+    /// Asset `Coin`, whose entire body is one checked `u64` amount
+    /// (`contracts/standard-asset/src/types.rs::coin_body_layout`).
+    /// `verify_fee_claim_history`'s object reads (via
+    /// `load_historical_object_version`) therefore always take the
+    /// `DurableObjectPayload::Inline` branch, never `BlobReference`:
+    /// `MAX_INLINE_OBJECT_BODY_BYTES` (64 KiB) can never be exceeded by a
+    /// coin body under this canonical asset type, so no genuinely certified
+    /// fee-escrow object can ever be blob-backed without a new, larger-bodied
+    /// WASM asset contract -- production code out of scope for a test fixture.
+    /// This test still threads a real, schema-validated, namespace-bound
+    /// `PostgresBlobStore` through every call on the primary store (see
+    /// `prepare_vote_with_blob`/`apply_escrow_with_blob` and the direct
+    /// `verify_fee_escrow_inventory_all` call below), so the only untested
+    /// step is the unreachable `BlobReference` arm itself, not the plumbing
+    /// leading to it.
+    #[test]
+    #[ignore = "run through scripts/check-fee-escrow-inventory-pg.sh"]
+    fn export_certified_operator_fixture_postgres() {
+        let directory: std::path::PathBuf = std::env::var_os("SUNRISE_EDGE_ESCROW_FIXTURE_DIR")
+            .map(std::path::PathBuf::from)
+            .expect("fixture export directory must be supplied by the operator E2E script");
+        assert!(directory.is_dir());
+        let database_url: String = std::env::var("SUNRISE_EDGE_TEST_POSTGRES_URL")
+            .expect("live PostgreSQL fixture export requires SUNRISE_EDGE_TEST_POSTGRES_URL");
+        let _lock: PostgresLiveLock = PostgresLiveLock::acquire();
+
+        let mut admin: Client = Client::connect(&database_url, NoTls).unwrap();
+        let current_database: String = admin
+            .query_one("SELECT current_database()", &[])
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            current_database, "sunrise_edge_test",
+            "refusing to run the certified PostgreSQL fixture against a non-test database"
+        );
+        apply_initial_schema(&mut admin).unwrap();
+
+        let voters: Vec<Voter> = fresh_postgres_voters();
+        let entries: Vec<FastPathValidatorEntry> =
+            voters.iter().map(|voter| voter.entry.clone()).collect();
+        let validator_set: ValidatorSet = build_validator_set(&entries);
+
+        let storage_validator_id: ValidatorId = entries[0].id;
+        let namespace: PostgresNamespace =
+            PostgresNamespace::new(protocol().chain_id(), storage_validator_id, domain()).unwrap();
+        bootstrap_namespace(
+            &mut admin,
+            &namespace,
+            POSTGRES_SCHEMA_GENERATION,
+            WriterFenceGeneration::new(1).unwrap(),
+        )
+        .unwrap();
+
+        let pool: Pool<LiveTestPostgresManager> = live_test_postgres_pool(&database_url);
+        let transaction_policy: PostgresTransactionPolicy =
+            PostgresTransactionPolicy::new(NonZeroU32::new(3).unwrap()).unwrap();
+        let primary: PostgresDurableStore<LiveTestPostgresManager> =
+            PostgresDurableStore::new(pool.clone(), namespace.clone(), transaction_policy);
+        let blobs: PostgresBlobStore<LiveTestPostgresManager> =
+            PostgresBlobStore::new(pool.clone(), namespace.clone()).unwrap();
+        let (fixture, policy): (Fixture, PaidFeePolicy) = install_all(&primary, &entries);
+        let voter_store_1: MemoryDurableStateStore = memory_store();
+        install_all(&voter_store_1, &entries);
+        let voter_store_2: MemoryDurableStateStore = memory_store();
+        install_all(&voter_store_2, &entries);
+
+        for (request, nonce, source) in [
+            (0xB1, FIRST_PAID_NONCE, &fixture.coin),
+            (0xB2, FIRST_PAID_NONCE + 1, &fixture.small),
+        ] {
+            let signed_bytes: Vec<u8> = paid_call_with_access(
+                PaidCall {
+                    fixture: &fixture,
+                    policy: &policy,
+                    request,
+                    nonce,
+                    source,
+                    entrypoint: "transfer",
+                    arguments: public_standard_asset::transfer_arguments(&refund_account())
+                        .unwrap(),
+                    access: vec![entry(source, AccessMode::Write)],
+                },
+                ReservationAccessKind::Write,
+            );
+            let votes: Vec<FastVote> = vec![
+                prepare_vote_with_blob(&primary, &blobs, &policy, &voters[0], &signed_bytes),
+                prepare_vote(&voter_store_1, &policy, &voters[1], &signed_bytes),
+                prepare_vote(&voter_store_2, &policy, &voters[2], &signed_bytes),
+            ];
+            let certificate: Vec<u8> = certify(&validator_set, &votes);
+            let applied: NodeOutput =
+                apply_escrow_with_blob(&primary, &blobs, &policy, &signed_bytes, &certificate);
+            assert_eq!(receipt(&applied).status, PaidExecutionStatus::Success);
+            assert_eq!(receipt(&applied).charged.unwrap().actual.get(), 2);
+            assert_eq!(
+                apply_escrow(&voter_store_1, &policy, &signed_bytes, &certificate),
+                applied,
+            );
+            assert_eq!(
+                apply_escrow(&voter_store_2, &policy, &signed_bytes, &certificate),
+                applied,
+            );
+        }
+        let resource_id: BondResourceId = fast_path::fee_resource_id(&policy).unwrap();
+        let escrow1_request_id: [u8; 32] = [0xB1; 32];
+        let escrow2_request_id: [u8; 32] = [0xB2; 32];
+
+        // Exercise the actual PostgreSQL claim path before the offline
+        // inventory: one escrow is fully drained and the other remains open.
+        let split1: SplitClaim = build_split_claim(
+            &primary,
+            &fixture,
+            &voters[0],
+            resource_id,
+            escrow1_request_id,
+            [0xD1; 32],
+            next_nonce(&primary),
+            0xE1,
+        );
+        let split1_output: NodeOutput =
+            submit_claim_with_blob(&primary, &blobs, &split1.signed_bytes);
+        assert_eq!(
+            split1_output.responses()[0].status(),
+            NodeResponseStatus::Accepted
+        );
+        let row_before_replay: Vec<u8> = current_row(&primary, escrow1_request_id).0;
+        let nonce_before_replay: u64 = next_nonce(&primary);
+        assert_eq!(
+            submit_claim_with_blob(&primary, &blobs, &split1.signed_bytes),
+            split1_output,
+        );
+        assert_eq!(
+            current_row(&primary, escrow1_request_id).0,
+            row_before_replay
+        );
+        assert_eq!(next_nonce(&primary), nonce_before_replay);
+
+        let final1_bytes: Vec<u8> = build_final_claim(
+            &primary,
+            &fixture,
+            &voters[1],
+            resource_id,
+            escrow1_request_id,
+            [0xD2; 32],
+            next_nonce(&primary),
+            0xE2,
+        );
+        assert_eq!(
+            submit_claim_with_blob(&primary, &blobs, &final1_bytes).responses()[0].status(),
+            NodeResponseStatus::Accepted,
+        );
+        for (voter_index, claim_request_id) in [(2, [0xD3; 32]), (3, [0xD4; 32])] {
+            let signed: Vec<u8> = build_zero_claim(
+                &primary,
+                &voters[voter_index],
+                resource_id,
+                escrow1_request_id,
+                claim_request_id,
+            );
+            assert_eq!(
+                submit_claim_with_blob(&primary, &blobs, &signed).responses()[0].status(),
+                NodeResponseStatus::Accepted,
+            );
+        }
+        let split2: SplitClaim = build_split_claim(
+            &primary,
+            &fixture,
+            &voters[0],
+            resource_id,
+            escrow2_request_id,
+            [0xD5; 32],
+            next_nonce(&primary),
+            0xE3,
+        );
+        assert_eq!(
+            submit_claim_with_blob(&primary, &blobs, &split2.signed_bytes).responses()[0].status(),
+            NodeResponseStatus::Accepted,
+        );
+        assert_eq!(current_row(&primary, escrow1_request_id).1.generation, 5);
+        assert_eq!(current_row(&primary, escrow2_request_id).1.generation, 2);
+        drop(primary);
+        drop(blobs);
+        drop(pool);
+
+        let reopened_pool: Pool<LiveTestPostgresManager> = live_test_postgres_pool(&database_url);
+        let reopened: PostgresDurableStore<LiveTestPostgresManager> =
+            PostgresDurableStore::new(reopened_pool.clone(), namespace.clone(), transaction_policy);
+        let reopened_blobs: PostgresBlobStore<LiveTestPostgresManager> =
+            PostgresBlobStore::new(reopened_pool, namespace).unwrap();
+        let verified: FeeEscrowInventorySweep = verify_fee_escrow_inventory_all(
+            &reopened,
+            &reopened_blobs,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            protocol().chain_id(),
+            NonZeroUsize::new(1).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(verified.verified_rows, 2);
+        assert_eq!(verified.pages, 2);
+        assert_eq!(verified.verified_claims, 5);
+        assert_eq!(verified.verified_payouts, 2);
+        drop(reopened);
+
+        std::fs::write(
+            directory.join("validator_id.hex"),
+            storage_validator_id.to_string(),
         )
         .unwrap();
     }

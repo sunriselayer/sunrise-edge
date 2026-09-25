@@ -48,11 +48,12 @@ commitments derived through authenticated generic executable ABI metadata,
 DR-0137 unit 2 implements the closed post-genesis whole-object bond
 lifecycle (Deposit/Replace/Unbond/Withdraw), and DR-0137 unit 3 implements
 one-time evidence-driven forfeiture, jail/reactivation and next-set
-eligibility coupling. Unit 4 now commits the certified fee object into
-request-scoped escrow and persists deterministic active-validator entitlements; signed
-claim execution, distribution and payout remain unauthorized. **FastVote is
-complete only after phase 3.** A testnet may launch after phase 1, but that
-is not FastVote completion.
+eligibility coupling. Unit 4 commits the certified fee object into
+request-scoped escrow and persists deterministic active-validator entitlements.
+DR-0137–DR-0140 also implement signed claim execution, distribution and
+payout verification. **FastVote is complete only after phase 3.** Phase 1
+permits a closed local developer rehearsal, not multi-validator protocol-v3
+live activation; the hard activation constraints below still apply.
 
 | Order | Deliverable | Completion evidence | Status |
 | --- | --- | --- | --- |
@@ -60,7 +61,7 @@ is not FastVote completion.
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Implemented and validated (DR-0128); focused Codex Security scan found 0 reportable findings and fresh Opus review approved |
-| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated** (DR-0129 through DR-0134). **Phase 3 is open.** DR-0135/0136/0137 implement custody, typed genesis bonds, post-genesis bond lifecycle, forfeiture and certified fee claims without a Standard Asset exception. DR-0139/0140 provide certified claim-history and split-payout verification; DR-0142 adds an offline local-SQLite operator sweep. A two-escrow certified multi-claim SQLite close/reopen sweep is locally validated. DR-0143 selects PostgreSQL for the first multi-validator persistence profile; its namespace-bound blob store and fenced TLS operator command are implemented, but a certified nonempty PostgreSQL operator E2E with blob reads, claim/recovery-time capacity certification and the Phase 3 review gate remain open. FastVote overall is incomplete. |
+| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated; Phase 3 remains open.** DR-0135–DR-0140 implement custody, bonds, forfeiture, signed fee claims and payout verification. DR-0142 adds the offline SQLite sweep. DR-0143 selects PostgreSQL for the first multi-validator persistence profile; its namespace-bound blob store and fenced TLS operator now have a nonempty certified PostgreSQL E2E with five claims, two signed payouts, client pool close/reopen, two pages and stale-writer rejection. Representative claim/recovery capacity, the Phase 3 review gate and external validator ingress remain open. FastVote overall is incomplete. |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
 Asset creation was the final focused delta before FastVote/multi-validator
@@ -2564,11 +2565,15 @@ certificate publication, and every other externally accepted event family's
 authenticated/authorized ingress are implemented, atomically composed, and
 S4/S5 plus independent security/release gates are complete.
 
-**FastVote is complete only after phase 3.** A testnet may launch after
-phase 1 on the static signed genesis validator set phase 1 defines, but that
-launch is a deployment decision, not a claim that FastVote itself is
-finished. Validator-set changes, slashing, and fee/reward distribution are
-FastVote completion criteria in this plan, not vague "production" deferrals.
+**FastVote is complete only after phase 3.** Phase 1's static signed genesis
+set permits a closed local developer rehearsal, not an externally reachable
+multi-validator protocol-v3 activation. The previously broad "testnet after
+phase 1" wording did not override the independent authenticated-ingress,
+certificate-publication, S4/S5 and security/release hard constraints in this
+document. An earlier limited multi-validator testnet would require an
+explicitly reviewed non-production activation profile; none exists yet.
+Validator-set changes, slashing, and fee/reward distribution are FastVote
+completion criteria in this plan, not vague "production" deferrals.
 
 - [x] **Phase 0 — canonical types/codec/signature/quorum library
   ([DR-0129](docs/architecture/decisions/0129-fastvote-fastcertificate-fast-path.md)).**
@@ -2807,7 +2812,7 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
   explicit slices. Custody, typed genesis bonds, bond lifecycle, certified
   fee claims, a certified multi-escrow SQLite restart sweep and cross-epoch
   historical claim evidence and a local-SQLite operator sweep are implemented;
-  PostgreSQL operator code now exists, but its certified nonempty E2E,
+  the PostgreSQL operator and its certified nonempty E2E now exist, but
   capacity certification and the review gate remain open:
   - [x] **Slice 0 — non-signable protocol custody prerequisite
     ([DR-0135](docs/architecture/decisions/0135-protocol-custody-owner.md),
@@ -3294,13 +3299,21 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         live blob-store conformance covers idempotence, conflicting concurrent
         insertion, namespace isolation, byte bounds and reopen when a live
         PostgreSQL is configured (as in repository CI). The operator
-        has parser/TLS-host tests but not a real-PostgreSQL certified escrow
-        invocation yet (DR-0143);
-      - [ ] prove the PostgreSQL operator on a nonempty quorum-certified
-        escrow fixture with actual PostgreSQL blob-backed object reads,
-        close/reopen, multiple pages and a competing fence/stale-writer
-        negative before network start. SQLite command evidence and the
-        PostgreSQL blob-store test are not substitutes for this gate;
+        has parser/TLS-host tests and a real-PostgreSQL certified escrow
+        invocation (DR-0143);
+      - [x] prove the actual TLS PostgreSQL operator on two nonempty,
+        quorum-certified escrows with five signed claims (split, final and
+        zero-share), two verified split payouts, close/reopen, two pages and
+        a stale-writer-fence negative. The executable test uses the selected
+        PostgreSQL structured and blob stores, advances the persisted fence
+        twice, and runs in repository CI. It does not claim representative
+        throughput, recovery time or production PostgreSQL-server TLS. The
+        original requirement for a blob-backed *Standard Asset fee object*
+        read was impossible under that coin's fixed `u64` body and the 64 KiB
+        inline threshold; DR-0143's dated clarification removes it from this
+        first-network fee profile without claiming the blob-read branch was
+        exercised. Any future large-bodied fee resource requires its own
+        certified PostgreSQL blob-history E2E before activation;
       - [x] verify certificate-epoch validator membership and historical
         hash-suite selection across a real vote/certificate/activation epoch
         transition that drops a validator and rotates SHA-2 to SHA-3. Separate
@@ -3320,10 +3333,9 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         config changes as an authorized protocol migration;
       - [ ] Phase 3 review gate.
 
-  **Remaining Phase 3 completion:** make the verified sweep operable on the
-  selected network store, establish claim and restart-sweep capacity with representative load/soak
-  evidence, then pass the Phase 3
-  review gate. Protocol-version activation is
+  **Remaining Phase 3 completion:** establish claim and restart-sweep capacity
+  on the selected PostgreSQL network store with representative load/soak
+  evidence, then pass the Phase 3 review gate. Protocol-version activation is
   a separately blocked future gate; there is no live version-switch path to
   exercise in this phase. Revisit it before implementing that path.
   FastVote is not complete until this phase closes.

@@ -88,9 +88,25 @@ The command supplies no historical protocol-version resolver: a claim that
 requires one fails closed. Hash-suite changes within the configured protocol
 version are supported by the ordered `--suite` entries.
 
-The PostgreSQL operator path does not yet have a nonempty certified escrow
-and blob-read executable E2E or representative load/soak/restart-capacity
-evidence. It is therefore not the network-start or Phase 3 completion gate
-yet. See [DR-0142](../architecture/decisions/0142-fastvote-operator-escrow-inventory.md),
+`scripts/check-fee-escrow-inventory-pg.sh` runs an executable live-PostgreSQL
+regression when `SUNRISE_EDGE_TEST_POSTGRES_URL` names the isolated test
+database. It creates two genuine quorum-certified escrows and executes five
+signed claims, including positive split/final and zero-share claims, with two
+verified payout objects. It closes and reopens the PostgreSQL pool, then
+launches this exact operator binary over a certificate-validated test TLS
+relay. A page size of one verifies two rows over two pages; two operator runs
+advance the persisted writer fence from generation one to three, and a stale
+generation-two read fails closed. The relay authenticates only the client-to-
+relay leg; it does not certify production PostgreSQL-server TLS or PKI.
+
+The current Standard Asset `Coin` body is a fixed `u64`, so this genuine fee
+fixture cannot create a blob-backed escrow object. The test passes the real
+namespace-bound `PostgresBlobStore` through preparation, application, claims
+and inventory, but does **not** execute a blob-reference object-history read.
+DR-0143 records why that unreachable case is no longer a first-network gate
+for this fee profile and why a future large-bodied fee resource would need
+its own E2E. Representative claim rate, load/soak, restart-sweep capacity,
+the Phase 3 review gate, external validator ingress and network activation
+remain open. See [DR-0142](../architecture/decisions/0142-fastvote-operator-escrow-inventory.md),
 [DR-0143](../architecture/decisions/0143-postgres-first-network-escrow-operations.md)
 and [`TODO.md`](../../TODO.md).
