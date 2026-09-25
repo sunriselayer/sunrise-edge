@@ -590,10 +590,12 @@ mod certified_multi_escrow_inventory {
         install, key, memory_store, next_nonce, object_reference, paid_call_with_access, protocol,
         receipt, refund_account, resolver, sender, set_state,
     };
+    use bonds::BondResourceConfig;
     use consensus::{ConsensusSigner, FastCertificate, FastVote};
     use ed25519_zebra::VerificationKey;
     use execution::paid_execution::{PaidExecutionStatus, ReservationAccessKind};
-    use fees::GasSchedule;
+    use fees::{Amount, GasSchedule};
+    use protocol_types::{HashSuite, HashSuiteId, HashSuiteSchedule};
     use runtime::DurableStateKeyScanner;
     use std::num::NonZeroUsize;
     use validator_set::ValidatorInfo;
@@ -1161,6 +1163,19 @@ mod certified_multi_escrow_inventory {
         store: &S,
         page_size: usize,
     ) -> Result<SweepTotals, FeeClaimError> {
+        sweep_all_with_resolver(store, &resolver(), page_size)
+    }
+
+    /// Same as [`sweep_all`], but against a caller-supplied resolver: used by
+    /// [`certified_claim_by_a_dropped_validator_survives_a_real_epoch_transition_and_hash_suite_rotation`]
+    /// so the sweep resolves both the pre-transition and post-transition
+    /// `HashSuite` from the same schedule-aware resolver object, exactly
+    /// like a real node would.
+    fn sweep_all_with_resolver<S: DurableStateKeyScanner>(
+        store: &S,
+        resolver: &HashSuiteResolver,
+        page_size: usize,
+    ) -> Result<SweepTotals, FeeClaimError> {
         let mut after: Option<Vec<u8>> = None;
         let mut totals: SweepTotals = SweepTotals::default();
         loop {
@@ -1169,7 +1184,7 @@ mod certified_multi_escrow_inventory {
                 &MemoryBlobStore::default(),
                 &context(),
                 domain(),
-                &resolver(),
+                resolver,
                 &[],
                 protocol().chain_id(),
                 after,
@@ -1557,6 +1572,943 @@ mod certified_multi_escrow_inventory {
         // succeeded earlier never becomes a "complete inventory" claim on
         // its own.
         assert!(sweep_all(&reopened, 1).is_err());
+
+        drop(reopened);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    // ── DR-0139/DR-0140 cross-epoch evidence: a claim by a validator the
+    // *current* validator set has already dropped ──────────────────────────
+
+    /// A minimal, structurally valid Active [`fast_path::records::FastPathBondRecord`]
+    /// for one voter, set directly into durable state exactly like this
+    /// module already seeds the fee policy and validator-set rows above --
+    /// never through a real deposit leg or `genesis::install_genesis`. Only
+    /// [`epoch_transition::derive_eligibility_reads`] (private to that
+    /// module) ever reads this row, and only for its own structural/
+    /// liability-floor fields; the synthetic `custody_object`/`authority` are
+    /// never independently re-verified against real durable object state by
+    /// any code this test exercises.
+    fn synthetic_bond_record(
+        fixture: &Fixture,
+        policy: &PaidFeePolicy,
+        resolver: &HashSuiteResolver,
+        resource_id: BondResourceId,
+        validator: &Voter,
+        seed: u8,
+    ) -> fast_path::records::FastPathBondRecord {
+        let custody_object_id: ObjectId = ObjectId::new([seed; 32]);
+        let digest: Digest32 = resolver
+            .hash_for_purpose(protocol().epoch(), HashPurpose::Object, &[seed])
+            .unwrap();
+        let authorization_key: [u8; 32] = validator
+            .entry
+            .public_key
+            .clone()
+            .try_into()
+            .expect("ed25519 validator public key is 32 bytes");
+        fast_path::records::FastPathBondRecord {
+            context: protocol(),
+            validator_id: validator.entry.id,
+            resource_domain: resource_id.domain(),
+            resource: *resource_id.value(),
+            custody_object: ObjectRef {
+                id: custody_object_id,
+                version: 1,
+                digest,
+            },
+            custody_object_epoch: protocol().epoch(),
+            authority: execution::local_execution::ObjectAuthority {
+                object_id: custody_object_id,
+                instance_context: protocol(),
+                instance: execution::local_execution::instance_target(resolver, &fixture.instance)
+                    .unwrap(),
+                code: fixture.code.clone(),
+                ty: policy.asset_type.clone(),
+            },
+            amount: 1_000,
+            committed_at_checkpoint: 10,
+            generation: 1,
+            lifecycle_epoch: protocol().epoch(),
+            slashable_from_epoch: protocol().epoch(),
+            required_minimum: 100,
+            state: fast_path::records::FastPathBondState::Active,
+            authorization_scheme: SignatureSchemeId::Ed25519,
+            authorization_key,
+        }
+    }
+
+    /// Enables a bond config on the fixture's one economics resource (reusing
+    /// its existing fee-escrow resource id for bonds too) and seeds a
+    /// synthetic Active bond for each given validator: the exact prerequisite
+    /// [`epoch_transition::propose_and_vote`]'s `derive_eligibility_reads`
+    /// gate requires before it will cast a vote naming that validator in an
+    /// incoming set.
+    fn install_bonded_validators<S: StructuredDurableDomainStateStore>(
+        store: &S,
+        fixture: &Fixture,
+        policy: &PaidFeePolicy,
+        resolver: &HashSuiteResolver,
+        resource_id: BondResourceId,
+        validators: &[&Voter],
+    ) {
+        let economics_key: Vec<u8> =
+            local_instance_state::fastpath_economics_policy_key(&protocol()).unwrap();
+        let economics_bytes: Vec<u8> = store
+            .get_versioned_durable(&context(), domain(), &economics_key)
+            .unwrap()
+            .value()
+            .unwrap()
+            .to_vec();
+        let mut economics: FastPathEconomicsPolicy =
+            crate::economics::decode_fastpath_economics_policy(&economics_bytes).unwrap();
+        economics.resources[0].bond = Some(BondResourceConfig {
+            resource_id,
+            min_bond: Amount::new(100),
+            enabled: true,
+            unbonding_epochs: 7,
+            max_validator_exposure: None,
+        });
+        set_state(
+            store,
+            economics_key,
+            StateMutation::Put(
+                crate::economics::encode_fastpath_economics_policy(&economics).unwrap(),
+            ),
+        );
+
+        for (index, validator) in validators.iter().enumerate() {
+            let seed: u8 = 0xF0_u8.wrapping_add(u8::try_from(index).unwrap());
+            let record: fast_path::records::FastPathBondRecord =
+                synthetic_bond_record(fixture, policy, resolver, resource_id, validator, seed);
+            let record_bytes: Vec<u8> =
+                fast_path::records::encode_fastpath_bond_record(&record).unwrap();
+            set_state(
+                store,
+                local_instance_state::fastpath_bond_record_key(
+                    protocol().chain_id(),
+                    &validator.entry.id,
+                )
+                .unwrap(),
+                StateMutation::Put(record_bytes),
+            );
+        }
+    }
+
+    /// A real DR-0132 `e -> e+1` transition: every given voter independently
+    /// derives and casts an outgoing-set vote over the same `next_validators`
+    /// (which may be a strict subset of the outgoing set -- dropping a
+    /// validator is exactly what
+    /// [`certified_claim_by_a_dropped_validator_survives_a_real_epoch_transition_and_hash_suite_rotation`]
+    /// exercises), a real quorum certificate is formed and verified, and
+    /// [`epoch_transition::activate`] atomically installs it. Returns the new
+    /// current epoch's [`PublicationContext`].
+    fn advance_epoch<S: StructuredDurableDomainStateStore>(
+        store: &S,
+        resolver: &HashSuiteResolver,
+        outgoing_validator_set: &ValidatorSet,
+        voters: &[&Voter],
+        next_validators: Vec<FastPathValidatorEntry>,
+        checkpoint: u64,
+    ) -> PublicationContext {
+        let chain_id: ChainId = protocol().chain_id().clone();
+        let votes: Vec<consensus::EpochTransitionVote> = voters
+            .iter()
+            .map(|voter| {
+                epoch_transition::propose_and_vote(
+                    store,
+                    &context(),
+                    domain(),
+                    resolver,
+                    &chain_id,
+                    protocol().protocol_version(),
+                    next_validators.clone(),
+                    *voter,
+                )
+                .unwrap()
+            })
+            .collect();
+        let certifier: consensus::EpochTransitionCertifier =
+            consensus::EpochTransitionCertifier::new(
+                chain_id.clone(),
+                protocol().protocol_version(),
+                protocol().epoch(),
+                outgoing_validator_set.clone(),
+            )
+            .unwrap();
+        let certificate: consensus::EpochTransitionCertificate = certifier
+            .try_form_certificate(
+                votes[0].next_epoch,
+                votes[0].current_validator_set_digest,
+                votes[0].next_validator_set_digest,
+                votes[0].activation_digest,
+                &votes,
+                &FastPathEd25519Verifier,
+            )
+            .unwrap()
+            .expect("three of four outgoing validators exceed epoch-transition quorum");
+        let certificate_bytes: Vec<u8> =
+            consensus::encode_epoch_transition_certificate(&certificate).unwrap();
+        let outcome: epoch_transition::EpochActivationOutcome = epoch_transition::activate(
+            store,
+            &context(),
+            domain(),
+            resolver,
+            &chain_id,
+            protocol().protocol_version(),
+            next_validators,
+            &certificate_bytes,
+            checkpoint,
+        )
+        .unwrap();
+        let record: epoch_transition::FastPathEpochTransitionRecord = match outcome {
+            epoch_transition::EpochActivationOutcome::Activated(record)
+            | epoch_transition::EpochActivationOutcome::AlreadyActivated(record) => record,
+        };
+        PublicationContext::new(chain_id, protocol().protocol_version(), record.to_epoch).unwrap()
+    }
+
+    /// Like [`build_zero_claim`], but the outer envelope's own `context` is
+    /// the caller-supplied `claim_context` (the *current* committed epoch)
+    /// while `certificate_epoch` still names the escrow row's own original
+    /// certification epoch: exactly the shape a validator the live set has
+    /// already dropped must use to claim under DR-0139/DR-0140's historical
+    /// framing.
+    fn build_zero_claim_at<S: StructuredDurableDomainStateStore>(
+        store: &S,
+        resolver: &HashSuiteResolver,
+        claim_context: &PublicationContext,
+        validator: &Voter,
+        resource_id: BondResourceId,
+        escrow_request_id: [u8; 32],
+        claim_request_id: [u8; 32],
+    ) -> Vec<u8> {
+        let (row_bytes, row) = current_row(store, escrow_request_id);
+        let escrow_ref: ObjectRef = row.fee_output.clone().unwrap();
+        let mut next_row: FastPathSettlementRecord = row.clone();
+        next_row.generation += 1;
+        next_row
+            .shares
+            .iter_mut()
+            .find(|share| share.validator_id == validator.entry.id)
+            .unwrap()
+            .claimed = true;
+        let next_bytes: Vec<u8> = encode_fastpath_settlement_record(&next_row).unwrap();
+        let recipient: Address = Address::new(VerificationKey::from(&validator.signing_key).into());
+        let intent: FeeClaimIntent = FeeClaimIntent {
+            context: claim_context.clone(),
+            request_id: claim_request_id,
+            escrow_request_id,
+            certificate_epoch: row.context.epoch(),
+            validator_id: validator.entry.id,
+            resource_id,
+            expected_generation: row.generation,
+            expected_fee_output: escrow_ref,
+            expected_previous_row_digest: fee_claim_row_digest(
+                resolver,
+                row.context.epoch(),
+                &row_bytes,
+            )
+            .unwrap(),
+            expected_next_row_digest: fee_claim_row_digest(
+                resolver,
+                row.context.epoch(),
+                &next_bytes,
+            )
+            .unwrap(),
+            share_amount: 0,
+            recipient,
+            operation: FeeClaimOperation::ZeroShare,
+        };
+        let digest: Digest32 = fee_claim_intent_digest(resolver, &intent).unwrap();
+        let frame: Vec<u8> = fee_claim_signing_frame(&intent.context, digest).unwrap();
+        let signed: SignedFeeClaimIntent = SignedFeeClaimIntent {
+            signature: validator.signing_key.sign(&frame).into(),
+            intent,
+        };
+        codec::encode_signed_fee_claim_intent(&signed).unwrap()
+    }
+
+    fn object_reference_at(
+        resolver: &HashSuiteResolver,
+        epoch: Epoch,
+        object: &Object,
+    ) -> ObjectRef {
+        let bytes: Vec<u8> = objects::encode_object(object).unwrap();
+        ObjectRef {
+            id: object.id,
+            version: object.version,
+            digest: resolver
+                .hash_for_purpose(epoch, HashPurpose::Object, &bytes)
+                .unwrap(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_split_claim_at<S: StructuredDurableDomainStateStore>(
+        store: &S,
+        resolver: &HashSuiteResolver,
+        claim_context: &PublicationContext,
+        fixture: &Fixture,
+        validator: &Voter,
+        resource_id: BondResourceId,
+        escrow_request_id: [u8; 32],
+        claim_request_id: [u8; 32],
+        recipient_seed: u8,
+    ) -> SplitClaim {
+        let (row_bytes, row): (Vec<u8>, FastPathSettlementRecord) =
+            current_row(store, escrow_request_id);
+        let share_amount: u64 = row
+            .shares
+            .iter()
+            .find(|share| share.validator_id == validator.entry.id)
+            .unwrap()
+            .amount;
+        assert!(share_amount > 0);
+        let escrow_ref: ObjectRef = row.fee_output.clone().unwrap();
+        let escrow_object: Object = read_current_escrow(store, escrow_ref.id);
+        let recipient_key: SigningKey = SigningKey::from([recipient_seed; 32]);
+        let recipient: Address = Address::new(VerificationKey::from(&recipient_key).into());
+        // A newly created payout gets the current suite's type identity;
+        // the already-existing escrow keeps its original type hash on update.
+        let claim_epoch_type_hash: Digest32 = abi::package_types::derive_scoped_type_id(
+            resolver,
+            claim_context.epoch(),
+            &fixture.policy.asset_type,
+        )
+        .unwrap();
+        assert_ne!(escrow_object.type_hash, claim_epoch_type_hash);
+        let instance: execution::call::InstanceTarget =
+            execution::local_execution::instance_target(resolver, &fixture.instance).unwrap();
+        let leg_nonce: u64 = crate::query_sender_next_nonce(
+            store,
+            &context(),
+            domain(),
+            claim_context.chain_id().clone(),
+            claim_context.protocol_version(),
+            claim_context.epoch(),
+            sender(),
+        )
+        .unwrap();
+        let call: CallIntent = CallIntent {
+            context: claim_context.clone(),
+            request_id: claim_request_id,
+            sender: sender(),
+            nonce: leg_nonce,
+            code: fixture.code.clone(),
+            instance: instance.clone(),
+            entrypoint: "split".to_owned(),
+            type_arguments: vec![public_standard_asset::asset_type_argument(&fixture.asset)],
+            access: AccessManifest {
+                entries: vec![entry(&escrow_object, AccessMode::Write)],
+            },
+            arguments: public_standard_asset::split_arguments(share_amount, recipient.as_bytes())
+                .unwrap(),
+            gas_limit: 500_000,
+        };
+        let policy: LocalExecutionPolicy =
+            LocalExecutionPolicy::generic_object_results(claim_context.clone());
+        let leg_intent: LocalExecutionIntent = LocalExecutionIntent {
+            mode: LocalExecutionMode::Call,
+            policy_digest: policy.digest(resolver).unwrap(),
+            call,
+            authorizations: Vec::new(),
+        };
+        let leg_frame: Vec<u8> = local_execution_signing_frame(claim_context, &leg_intent).unwrap();
+        let signed_leg: SignedLocalExecutionIntent = SignedLocalExecutionIntent {
+            signature: key().sign(&leg_frame).into(),
+            intent: leg_intent,
+        };
+        let leg_bytes: Vec<u8> = encode_signed_local_execution(&signed_leg).unwrap();
+        let payout_id: ObjectId = derive_local_created_object_id(
+            resolver,
+            claim_context,
+            &fixture.instance.context,
+            &instance,
+            &fixture.instance.code,
+            local_execution_event_digest(resolver, &signed_leg).unwrap(),
+            0,
+        )
+        .unwrap();
+        let payout: Object = Object {
+            id: payout_id,
+            version: 1,
+            owner: Owner::Address(recipient),
+            type_hash: claim_epoch_type_hash,
+            schema_version: escrow_object.schema_version,
+            data: encode_call_value(
+                &public_standard_asset::coin_body_layout(),
+                &CallValue::U64(share_amount),
+            )
+            .unwrap(),
+        };
+        let unclaimed_before: u64 = row
+            .shares
+            .iter()
+            .filter(|share| !share.claimed && share.amount > 0)
+            .map(|share| share.amount)
+            .sum();
+        let mut retained: Object = escrow_object.clone();
+        retained.version += 1;
+        retained.data = encode_call_value(
+            &public_standard_asset::coin_body_layout(),
+            &CallValue::U64(unclaimed_before - share_amount),
+        )
+        .unwrap();
+        let mut next_row: FastPathSettlementRecord = row.clone();
+        next_row.generation += 1;
+        next_row.fee_output = Some(object_reference_at(
+            resolver,
+            claim_context.epoch(),
+            &retained,
+        ));
+        next_row.fee_output_epoch = Some(claim_context.epoch());
+        next_row
+            .shares
+            .iter_mut()
+            .find(|share| share.validator_id == validator.entry.id)
+            .unwrap()
+            .claimed = true;
+        let next_bytes: Vec<u8> = encode_fastpath_settlement_record(&next_row).unwrap();
+        let intent: FeeClaimIntent = FeeClaimIntent {
+            context: claim_context.clone(),
+            request_id: claim_request_id,
+            escrow_request_id,
+            certificate_epoch: row.context.epoch(),
+            validator_id: validator.entry.id,
+            resource_id,
+            expected_generation: row.generation,
+            expected_fee_output: escrow_ref,
+            expected_previous_row_digest: fee_claim_row_digest(
+                resolver,
+                row.context.epoch(),
+                &row_bytes,
+            )
+            .unwrap(),
+            expected_next_row_digest: fee_claim_row_digest(
+                resolver,
+                row.context.epoch(),
+                &next_bytes,
+            )
+            .unwrap(),
+            share_amount,
+            recipient,
+            operation: FeeClaimOperation::Split {
+                leg: leg_bytes,
+                expected_payout: Some(object_reference_at(
+                    resolver,
+                    claim_context.epoch(),
+                    &payout,
+                )),
+            },
+        };
+        let digest: Digest32 = fee_claim_intent_digest(resolver, &intent).unwrap();
+        let frame: Vec<u8> = fee_claim_signing_frame(&intent.context, digest).unwrap();
+        let signed: SignedFeeClaimIntent = SignedFeeClaimIntent {
+            signature: validator.signing_key.sign(&frame).into(),
+            intent,
+        };
+        SplitClaim {
+            signed_bytes: codec::encode_signed_fee_claim_intent(&signed).unwrap(),
+            payout,
+        }
+    }
+
+    /// Like [`submit_claim`], but against a caller-supplied resolver and
+    /// `expected` context, so a claim can legitimately be submitted "at" a
+    /// context later than the one its escrow was certified under.
+    fn submit_claim_at<S: StructuredDurableDomainStateStore>(
+        store: &S,
+        resolver: &HashSuiteResolver,
+        expected: &PublicationContext,
+        signed_bytes: &[u8],
+    ) -> NodeOutput {
+        handle_fee_claim(
+            store,
+            &MemoryBlobStore::default(),
+            &context(),
+            domain(),
+            resolver,
+            &[],
+            expected,
+            &LocalExecutionPolicy::generic_object_results(expected.clone()),
+            &LocalWasmExecutionEngine::new(),
+            signed_bytes,
+            12,
+        )
+        .unwrap()
+    }
+
+    /// DR-0139/DR-0140 cross-epoch evidence: certifies one escrow at epoch
+    /// `E` with a real 3-of-4 quorum, then performs a genuine DR-0132
+    /// `propose_and_vote`/`activate` transition to `E + 1` that both drops
+    /// one of the four certificate-epoch validators from the incoming set
+    /// and rotates the active `HashSuite`. The dropped validator then
+    /// submits a real signed zero-share claim whose outer envelope names the
+    /// *current* `E + 1` context (fenced against the live epoch record)
+    /// while its `certificate_epoch` still names `E`. After a real
+    /// file-backed SQLite close/reopen, `verify_fee_claim_history` and a
+    /// caller-driven inventory sweep both still accept it -- proving they
+    /// resolve the claimant's signature and the row's own digest against the
+    /// certificate-epoch validator set and hash suite, never the live epoch
+    /// 1 set, which no longer contains this validator at all.
+    #[test]
+    fn certified_claim_by_a_dropped_validator_survives_a_real_epoch_transition_and_hash_suite_rotation()
+     {
+        let voters: Vec<Voter> = four_sorted_voters();
+        let entries: Vec<FastPathValidatorEntry> =
+            voters.iter().map(|voter| voter.entry.clone()).collect();
+        let genesis_validator_set: ValidatorSet = build_validator_set(&entries);
+        let rotation_epoch: u64 = protocol().epoch().get() + 1;
+        let resolver: HashSuiteResolver = HashSuiteResolver::new(
+            protocol().chain_id().clone(),
+            protocol().protocol_version(),
+            vec![
+                HashSuiteSchedule {
+                    activation_epoch: Epoch::new(0),
+                    suite: HashSuite::genesis(),
+                },
+                HashSuiteSchedule {
+                    activation_epoch: Epoch::new(rotation_epoch),
+                    suite: HashSuite::uniform(HashSuiteId::new(2), HashAlgorithmId::Sha3_256),
+                },
+            ],
+        )
+        .unwrap();
+
+        let unique: u128 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory: std::path::PathBuf = std::env::temp_dir().join(format!(
+            "fee-claims-dropped-validator-sqlite-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let db_path: std::path::PathBuf = directory.join("state.sqlite");
+        let namespace: SqliteNamespace =
+            SqliteNamespace::new(protocol().chain_id().clone(), entries[0].id, domain());
+        let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+
+        let primary: SqliteDurableStore =
+            SqliteDurableStore::open(&db_path, namespace.clone(), fence).unwrap();
+        let (fixture, policy): (Fixture, PaidFeePolicy) = install_all(&primary, &entries);
+        let voter_store_1: MemoryDurableStateStore = memory_store();
+        install_all(&voter_store_1, &entries);
+        let voter_store_2: MemoryDurableStateStore = memory_store();
+        install_all(&voter_store_2, &entries);
+        let resource_id: BondResourceId = fast_path::fee_resource_id(&policy).unwrap();
+
+        // ---- the escrow: certified at epoch 0 with a real 3-of-4 quorum ----
+        let escrow_request_id: [u8; 32] = [0xC1; 32];
+        let escrow_bytes: Vec<u8> = paid_call_with_access(
+            PaidCall {
+                fixture: &fixture,
+                policy: &policy,
+                request: 0xC1,
+                nonce: FIRST_PAID_NONCE,
+                source: &fixture.coin,
+                entrypoint: "transfer",
+                arguments: public_standard_asset::transfer_arguments(&refund_account()).unwrap(),
+                access: vec![entry(&fixture.coin, AccessMode::Write)],
+            },
+            ReservationAccessKind::Write,
+        );
+        let votes: Vec<FastVote> = vec![
+            prepare_vote(&primary, &policy, &voters[0], &escrow_bytes),
+            prepare_vote(&voter_store_1, &policy, &voters[1], &escrow_bytes),
+            prepare_vote(&voter_store_2, &policy, &voters[2], &escrow_bytes),
+        ];
+        let certificate_bytes: Vec<u8> = certify(&genesis_validator_set, &votes);
+        let apply_output: NodeOutput =
+            apply_escrow(&primary, &policy, &escrow_bytes, &certificate_bytes);
+        assert_eq!(receipt(&apply_output).status, PaidExecutionStatus::Success);
+        assert_eq!(receipt(&apply_output).charged.unwrap().actual.get(), 2);
+
+        // ---- a real DR-0132 epoch transition 0 -> 1: drops voters[3] from
+        // the incoming set and rotates the active HashSuite ----
+        let retained: Vec<&Voter> = vec![&voters[0], &voters[1], &voters[2]];
+        install_bonded_validators(
+            &primary,
+            &fixture,
+            &policy,
+            &resolver,
+            resource_id,
+            &retained,
+        );
+        let next_validators: Vec<FastPathValidatorEntry> =
+            retained.iter().map(|voter| voter.entry.clone()).collect();
+        let next_context: PublicationContext = advance_epoch(
+            &primary,
+            &resolver,
+            &genesis_validator_set,
+            &retained,
+            next_validators,
+            20,
+        );
+        assert_eq!(next_context.epoch().get(), rotation_epoch);
+
+        // Sanity: voters[3] really is absent from the live epoch-1 set, and
+        // still present in the retained epoch-0 (certificate-epoch) set.
+        let epoch1_set: ValidatorSet = equivocation::load_historical_validator_set(
+            &primary,
+            &context(),
+            domain(),
+            &resolver,
+            protocol().chain_id(),
+            protocol().protocol_version(),
+            next_context.epoch(),
+        )
+        .unwrap();
+        assert!(epoch1_set.get(voters[3].entry.id).is_none());
+        let epoch0_set: ValidatorSet = equivocation::load_historical_validator_set(
+            &primary,
+            &context(),
+            domain(),
+            &resolver,
+            protocol().chain_id(),
+            protocol().protocol_version(),
+            protocol().epoch(),
+        )
+        .unwrap();
+        assert!(epoch0_set.get(voters[3].entry.id).is_some());
+
+        // ---- the dropped validator (voters[3]) submits a real signed claim
+        // under the *current* epoch-1 context, naming the original epoch-0
+        // certificate ----
+        let claim_request_id: [u8; 32] = [0xC2; 32];
+        let claim_bytes: Vec<u8> = build_zero_claim_at(
+            &primary,
+            &resolver,
+            &next_context,
+            &voters[3],
+            resource_id,
+            escrow_request_id,
+            claim_request_id,
+        );
+        let claim_output: NodeOutput =
+            submit_claim_at(&primary, &resolver, &next_context, &claim_bytes);
+        assert_eq!(
+            claim_output.responses()[0].status(),
+            NodeResponseStatus::Accepted
+        );
+        let (_, claimed_row): (Vec<u8>, FastPathSettlementRecord) =
+            current_row(&primary, escrow_request_id);
+        assert_eq!(claimed_row.generation, 2);
+        assert!(
+            claimed_row
+                .shares
+                .iter()
+                .find(|share| share.validator_id == voters[3].entry.id)
+                .unwrap()
+                .claimed
+        );
+
+        drop(primary);
+        drop(voter_store_1);
+        drop(voter_store_2);
+
+        // ---- restart, then independently re-verify the whole chain and
+        // inventory using the same schedule-aware resolver ----
+        let reopened: SqliteDurableStore =
+            SqliteDurableStore::open(&db_path, namespace, fence).unwrap();
+
+        let report: FeeClaimVerificationReport = verify_fee_claim_history(
+            &reopened,
+            &MemoryBlobStore::default(),
+            &context(),
+            domain(),
+            &resolver,
+            &[],
+            protocol().chain_id(),
+            &escrow_request_id,
+        )
+        .unwrap();
+        assert_eq!(report.final_generation, 2);
+        assert_eq!(report.verified_claims, 1);
+        assert_eq!(report.verified_positive_claims, 0);
+        assert_eq!(report.verified_payouts, 0);
+
+        let totals: SweepTotals = sweep_all_with_resolver(&reopened, &resolver, 1).unwrap();
+        assert_eq!(totals.rows, 1);
+        assert_eq!(totals.claims, 1);
+        assert_eq!(totals.payouts, 0);
+
+        // ---- replay non-reapplication across the restart ----
+        let (row_before_replay, _): (Vec<u8>, FastPathSettlementRecord) =
+            current_row(&reopened, escrow_request_id);
+        let replay_engine: CountingEngine = CountingEngine::new();
+        let replayed: NodeOutput = fast_path::apply(
+            &reopened,
+            &MemoryBlobStore::default(),
+            &context(),
+            domain(),
+            &resolver,
+            &[],
+            &protocol(),
+            &base_policy(),
+            &policy,
+            &replay_engine,
+            &escrow_bytes,
+            &certificate_bytes,
+        )
+        .unwrap();
+        assert_eq!(replayed, apply_output);
+        assert_eq!(replay_engine.calls.get(), 0);
+        assert_eq!(
+            submit_claim_at(&reopened, &resolver, &next_context, &claim_bytes),
+            claim_output
+        );
+        assert_eq!(
+            current_row(&reopened, escrow_request_id).0,
+            row_before_replay
+        );
+
+        drop(reopened);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn certified_positive_claim_by_a_dropped_validator_survives_epoch_rotation_and_restart() {
+        let voters: Vec<Voter> = four_sorted_voters();
+        let entries: Vec<FastPathValidatorEntry> =
+            voters.iter().map(|voter| voter.entry.clone()).collect();
+        let genesis_validator_set: ValidatorSet = build_validator_set(&entries);
+        let rotation_epoch: u64 = protocol().epoch().get() + 1;
+        let resolver: HashSuiteResolver = HashSuiteResolver::new(
+            protocol().chain_id().clone(),
+            protocol().protocol_version(),
+            vec![
+                HashSuiteSchedule {
+                    activation_epoch: Epoch::new(0),
+                    suite: HashSuite::genesis(),
+                },
+                HashSuiteSchedule {
+                    activation_epoch: Epoch::new(rotation_epoch),
+                    suite: HashSuite::uniform(HashSuiteId::new(2), HashAlgorithmId::Sha3_256),
+                },
+            ],
+        )
+        .unwrap();
+
+        let unique: u128 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory: std::path::PathBuf = std::env::temp_dir().join(format!(
+            "fee-claims-positive-cross-epoch-sqlite-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let db_path: std::path::PathBuf = directory.join("state.sqlite");
+        let namespace: SqliteNamespace =
+            SqliteNamespace::new(protocol().chain_id().clone(), entries[0].id, domain());
+        let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+
+        let primary: SqliteDurableStore =
+            SqliteDurableStore::open(&db_path, namespace.clone(), fence).unwrap();
+        let (fixture, policy): (Fixture, PaidFeePolicy) = install_all(&primary, &entries);
+        let voter_store_1: MemoryDurableStateStore = memory_store();
+        install_all(&voter_store_1, &entries);
+        let voter_store_2: MemoryDurableStateStore = memory_store();
+        install_all(&voter_store_2, &entries);
+        let resource_id: BondResourceId = fast_path::fee_resource_id(&policy).unwrap();
+
+        // The certified fee of two is allocated [1, 1, 0, 0]. Voter 1
+        // signs the certificate, owns a positive share, and is then removed
+        // from the active set before claiming that share.
+        let escrow_request_id: [u8; 32] = [0xC3; 32];
+        let escrow_bytes: Vec<u8> = paid_call_with_access(
+            PaidCall {
+                fixture: &fixture,
+                policy: &policy,
+                request: 0xC3,
+                nonce: FIRST_PAID_NONCE,
+                source: &fixture.coin,
+                entrypoint: "transfer",
+                arguments: public_standard_asset::transfer_arguments(&refund_account()).unwrap(),
+                access: vec![entry(&fixture.coin, AccessMode::Write)],
+            },
+            ReservationAccessKind::Write,
+        );
+        let votes: Vec<FastVote> = vec![
+            prepare_vote(&primary, &policy, &voters[0], &escrow_bytes),
+            prepare_vote(&voter_store_1, &policy, &voters[1], &escrow_bytes),
+            prepare_vote(&voter_store_2, &policy, &voters[2], &escrow_bytes),
+        ];
+        let certificate_bytes: Vec<u8> = certify(&genesis_validator_set, &votes);
+        let apply_output: NodeOutput =
+            apply_escrow(&primary, &policy, &escrow_bytes, &certificate_bytes);
+        assert_eq!(receipt(&apply_output).status, PaidExecutionStatus::Success);
+        assert_eq!(receipt(&apply_output).charged.unwrap().actual.get(), 2);
+        let (_, certified_row): (Vec<u8>, FastPathSettlementRecord) =
+            current_row(&primary, escrow_request_id);
+        assert_eq!(certified_row.shares[1].validator_id, voters[1].entry.id);
+        assert_eq!(certified_row.shares[1].amount, 1);
+
+        // The transition is the real vote/certificate/activation path. Its
+        // bond eligibility rows are synthetic fixture prerequisites, not
+        // evidence of real bond deposits or production network capacity.
+        let retained: Vec<&Voter> = vec![&voters[0], &voters[2], &voters[3]];
+        install_bonded_validators(
+            &primary,
+            &fixture,
+            &policy,
+            &resolver,
+            resource_id,
+            &retained,
+        );
+        let next_validators: Vec<FastPathValidatorEntry> =
+            retained.iter().map(|voter| voter.entry.clone()).collect();
+        let next_context: PublicationContext = advance_epoch(
+            &primary,
+            &resolver,
+            &genesis_validator_set,
+            &retained,
+            next_validators,
+            20,
+        );
+        assert_eq!(next_context.epoch().get(), rotation_epoch);
+        let epoch1_set: ValidatorSet = equivocation::load_historical_validator_set(
+            &primary,
+            &context(),
+            domain(),
+            &resolver,
+            protocol().chain_id(),
+            protocol().protocol_version(),
+            next_context.epoch(),
+        )
+        .unwrap();
+        assert!(epoch1_set.get(voters[1].entry.id).is_none());
+
+        let claim_request_id: [u8; 32] = [0xC4; 32];
+        let split: SplitClaim = build_split_claim_at(
+            &primary,
+            &resolver,
+            &next_context,
+            &fixture,
+            &voters[1],
+            resource_id,
+            escrow_request_id,
+            claim_request_id,
+            0xE4,
+        );
+        let claim_output: NodeOutput =
+            submit_claim_at(&primary, &resolver, &next_context, &split.signed_bytes);
+        assert_eq!(
+            claim_output.responses()[0].status(),
+            NodeResponseStatus::Accepted
+        );
+        let (_, claimed_row): (Vec<u8>, FastPathSettlementRecord) =
+            current_row(&primary, escrow_request_id);
+        assert_eq!(claimed_row.generation, 2);
+        assert_eq!(claimed_row.fee_output_epoch, Some(next_context.epoch()));
+        assert_eq!(read_current_escrow(&primary, split.payout.id), split.payout);
+
+        drop(primary);
+        drop(voter_store_1);
+        drop(voter_store_2);
+
+        let reopened: SqliteDurableStore =
+            SqliteDurableStore::open(&db_path, namespace, fence).unwrap();
+        let report: FeeClaimVerificationReport = verify_fee_claim_history(
+            &reopened,
+            &MemoryBlobStore::default(),
+            &context(),
+            domain(),
+            &resolver,
+            &[],
+            protocol().chain_id(),
+            &escrow_request_id,
+        )
+        .unwrap();
+        assert_eq!(report.final_generation, 2);
+        assert_eq!(report.verified_claims, 1);
+        assert_eq!(report.verified_positive_claims, 1);
+        assert_eq!(report.verified_payouts, 1);
+        let totals: SweepTotals = sweep_all_with_resolver(&reopened, &resolver, 1).unwrap();
+        assert_eq!(totals.rows, 1);
+        assert_eq!(totals.claims, 1);
+        assert_eq!(totals.payouts, 1);
+
+        let row_before_replay: Vec<u8> = current_row(&reopened, escrow_request_id).0;
+        let payout_head_before_replay: DurableObjectHead = reopened
+            .get_object_head(&context(), domain(), split.payout.id)
+            .unwrap();
+        let payout_version_before_replay: Option<DurableObjectVersionRecord> = reopened
+            .get_object_version(
+                &context(),
+                domain(),
+                split.payout.id,
+                DurableObjectVersion::new(split.payout.version).unwrap(),
+            )
+            .unwrap();
+        let next_nonce_before_replay: u64 = crate::query_sender_next_nonce(
+            &reopened,
+            &context(),
+            domain(),
+            next_context.chain_id().clone(),
+            next_context.protocol_version(),
+            next_context.epoch(),
+            sender(),
+        )
+        .unwrap();
+        let replay_engine: CountingEngine = CountingEngine::new();
+        let replayed: NodeOutput = fast_path::apply(
+            &reopened,
+            &MemoryBlobStore::default(),
+            &context(),
+            domain(),
+            &resolver,
+            &[],
+            &protocol(),
+            &base_policy(),
+            &policy,
+            &replay_engine,
+            &escrow_bytes,
+            &certificate_bytes,
+        )
+        .unwrap();
+        assert_eq!(replayed, apply_output);
+        assert_eq!(replay_engine.calls.get(), 0);
+        assert_eq!(
+            submit_claim_at(&reopened, &resolver, &next_context, &split.signed_bytes),
+            claim_output
+        );
+        assert_eq!(
+            current_row(&reopened, escrow_request_id).0,
+            row_before_replay
+        );
+        assert_eq!(
+            reopened
+                .get_object_head(&context(), domain(), split.payout.id)
+                .unwrap(),
+            payout_head_before_replay
+        );
+        assert_eq!(
+            reopened
+                .get_object_version(
+                    &context(),
+                    domain(),
+                    split.payout.id,
+                    DurableObjectVersion::new(split.payout.version).unwrap(),
+                )
+                .unwrap(),
+            payout_version_before_replay
+        );
+        assert_eq!(
+            crate::query_sender_next_nonce(
+                &reopened,
+                &context(),
+                domain(),
+                next_context.chain_id().clone(),
+                next_context.protocol_version(),
+                next_context.epoch(),
+                sender(),
+            )
+            .unwrap(),
+            next_nonce_before_replay
+        );
 
         drop(reopened);
         std::fs::remove_dir_all(&directory).unwrap();
