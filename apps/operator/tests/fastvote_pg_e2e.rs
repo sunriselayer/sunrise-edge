@@ -270,8 +270,6 @@ fn assemble_certificate(
         &context.digest_hex,
         "--certificate-output",
         certificate_output.to_str().unwrap(),
-        "--timeout-seconds",
-        TIMEOUT_SECONDS,
     ]);
     for vote_path in vote_paths {
         command.arg("--vote").arg(vote_path);

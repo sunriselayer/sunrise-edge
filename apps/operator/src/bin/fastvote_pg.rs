@@ -25,12 +25,11 @@
 //! `genesis_manifest_commitment` under the operator-supplied resolver
 //! matches that expected digest exactly, its authority signature verifies,
 //! and its embedded context equals the operator-supplied expected context;
-//! these checks
-//! fail closed on any mismatch, before any signature is produced or any
-//! durable state is touched. `prepare-vote` additionally derives the local
-//! signing key's public key and requires it to equal both the
-//! operator-configured `--validator-id` and a matching entry in the
-//! currently committed durable validator set, before ever calling
+//! these checks fail closed on any mismatch, before any signature is
+//! produced or durable state is touched. `prepare-vote` additionally derives
+//! the local signing key's public key and requires it to match the committed
+//! registration looked up by the operator-configured `--validator-id`,
+//! before ever calling
 //! `consensus::FastPathCertifier::cast_vote`.
 //!
 //! Phase 1 scope: genesis-epoch-only, exactly like
@@ -1132,15 +1131,6 @@ fn run_assemble_certificate(
         return Err(format!("too many --vote inputs (maximum {MAX_VOTE_INPUTS})").into());
     }
     let certificate_output: PathBuf = PathBuf::from(flags.one("--certificate-output")?);
-    let timeout_seconds: u64 = parse_u64_bounded(
-        &flags
-            .optional_one("--timeout-seconds")?
-            .unwrap_or_else(|| "60".to_string()),
-        "--timeout-seconds",
-        1,
-        3600,
-    )?;
-
     let resolver: HashSuiteResolver = build_resolver(&chain, protocol_version, schedule)?;
     let expected_context: PublicationContext =
         build_expected_context(chain.clone(), protocol_version, epoch)?;
@@ -1166,6 +1156,14 @@ fn run_assemble_certificate(
             let ca_der: PathBuf = PathBuf::from(flags.one("--tls-root-der")?);
             let validator: ValidatorId = parse_validator(&flags.one("--validator-id")?)?;
             let domain: AtomicityDomainId = parse_domain(&flags.one("--domain")?)?;
+            let timeout_seconds: u64 = parse_u64_bounded(
+                &flags
+                    .optional_one("--timeout-seconds")?
+                    .unwrap_or_else(|| "60".to_string()),
+                "--timeout-seconds",
+                1,
+                3600,
+            )?;
             flags.finish()?;
             if !confirmed {
                 return Err(
@@ -1650,6 +1648,51 @@ mod tests {
 
         let correct_key: [u8; 32] = entry.public_key.clone().try_into().unwrap();
         assert!(require_registered_signer(&record, entry.id, &correct_key).is_ok());
+    }
+
+    #[test]
+    fn registered_signer_accepts_an_id_distinct_from_its_public_key() {
+        let (_, mut entry) = signer_entry(3);
+        let public_key: [u8; 32] = entry.public_key.clone().try_into().unwrap();
+        let distinct_id: ValidatorId = ValidatorId::new([0xa5; 32]);
+        assert_ne!(distinct_id, ValidatorId::new(public_key));
+        entry.id = distinct_id;
+        let record: FastPathValidatorSetRecord = FastPathValidatorSetRecord {
+            context: dummy_context(),
+            validators: vec![entry],
+        };
+        assert!(require_registered_signer(&record, distinct_id, &public_key).is_ok());
+    }
+
+    #[test]
+    fn offline_certificate_assembly_rejects_unused_timeout_before_file_io() {
+        let tokens: Vec<OsString> = [
+            "--validator-set-source",
+            "genesis-manifest",
+            "--chain-id",
+            "fastvote-pg-test",
+            "--protocol-version",
+            "1",
+            "--epoch",
+            "0",
+            "--suite",
+            "0:1:1:1:1:1:1:1",
+            "--vote",
+            "/nonexistent/vote.bin",
+            "--certificate-output",
+            "/nonexistent/certificate.bin",
+            "--genesis-manifest",
+            "/nonexistent/manifest.bin",
+            "--expected-genesis-digest",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "--timeout-seconds",
+            "60",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        let error: Box<dyn Error> = run_assemble_certificate(tokens).unwrap_err();
+        assert!(error.to_string().contains("--timeout-seconds was supplied"));
     }
 
     #[test]
