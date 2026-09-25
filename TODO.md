@@ -3340,6 +3340,40 @@ completion criteria in this plan, not vague "production" deferrals.
   exercise in this phase. Revisit it before implementing that path.
   FastVote is not complete until this phase closes.
 
+## Closed PostgreSQL multi-validator operator rehearsal
+
+[DR-0144](docs/architecture/decisions/0144-closed-postgres-fastvote-operator.md)
+defines the next integrated implementation slice. This is a usable,
+operator-invoked **genesis-epoch rehearsal**, not public validator ingress or
+testnet activation. Keep it in one coherent PR rather than dividing schema,
+CLI framing and vote/certificate handling into helper-only changes.
+
+- [ ] An operator can explicitly initialize each validator's own PostgreSQL
+  namespace, install the **same** independently pinned, single-genesis-
+  authority-signed manifest containing the complete validator set and one
+  valid bond per validator, and restart-verify the exact manifest digest.
+- [ ] Separate CLI invocations with separately held Ed25519 validator keys
+  can prepare the same sender-signed paid intent, exchange canonical votes as
+  untrusted files, form a deterministic committed-set quorum certificate and
+  independently apply it to each namespace. The key-derived public identity,
+  locally expected chain/protocol/epoch/hash suite and manifest digest are
+  checked before signing. PostgreSQL TLS and a new writer fence are required
+  for each mutation; no fixed devnet key, public FastVote route, `NodeEventKind`
+  or background relay is introduced.
+- [ ] A real PostgreSQL, multi-process E2E proves identical committed
+  receipt/object results across at least a three-of-four quorum, process
+  restart and exact replay without reapplication. It also rejects inadequate
+  quorum, forged/foreign/wrong-epoch votes, mismatched genesis/context/key,
+  request-id conflict and stale writer generation without partial effects.
+  A shared disposable database in this test does not prove separate validator
+  administrative control; the first network requires independent PostgreSQL
+  authorities and credentials.
+- [ ] Document an executable operator walkthrough and pass the full repository
+  gate plus focused security and fresh tech-lead reviews. Phase 3 PostgreSQL
+  capacity/soak and its review gate remain open until separately evidenced;
+  external authenticated validator ingress and any public network launch need
+  a separate design and audit.
+
 ## CLI-First Node Production Gate
 
 CLI Developer MVP Gate（criteria 1-6・10・11）を通過した後、本物のnode自体を

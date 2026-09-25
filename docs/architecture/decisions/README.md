@@ -50,6 +50,7 @@
 - [DR-0141: bounded FastVote fee-claim inventory read cost](0141-fastvote-fee-claim-inventory-read-cost.md)
 - [DR-0142: operator-driven FastVote escrow inventory](0142-fastvote-operator-escrow-inventory.md)
 - [DR-0143: PostgreSQL first-network escrow operations](0143-postgres-first-network-escrow-operations.md)
+- [DR-0144: closed PostgreSQL FastVote operator rehearsal](0144-closed-postgres-fastvote-operator.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).
