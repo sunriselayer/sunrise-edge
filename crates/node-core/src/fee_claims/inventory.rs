@@ -27,7 +27,7 @@ pub struct FeeEscrowInventoryPage {
 /// re-verified by [`verify_fee_claim_history_scanned`] -- the same checks as
 /// `super::verify_fee_claim_history`, but proving the absence of an orphaned
 /// claim envelope with one bounded scanner page per escrow instead of up to
-/// [`crate::fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS`] plus one point reads
+/// 257 point reads (the active-validator bound plus one sentinel read)
 /// expected to observe absence. A missing/tombstoned or malformed key fails
 /// closed. This is a maintenance operation, never a consensus transition.
 #[allow(clippy::too_many_arguments)]
@@ -98,7 +98,7 @@ pub fn verify_fee_escrow_inventory_page<S: DurableStateKeyScanner>(
 /// entry points share one implementation,
 /// [`super::verify_fee_claim_history_shared`]. The only place this sibling's
 /// behavior actually differs is wherever the plain function would need up to
-/// [`crate::fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS`] plus one point
+/// 257 point
 /// reads expected to observe absence (to prove no claim record exists for
 /// an uncharged row, or that no envelope was orphaned beyond the installed
 /// generation of a charged one): this version proves the same fact from one

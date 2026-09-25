@@ -920,7 +920,7 @@ fn verify_fee_claim_chain_walk<S: StructuredDurableDomainStateStore>(
 
 /// Proves no signed envelope exists at any generation beyond
 /// `target_generation`, up to [`fee_claim_chain_max_generation`], using up
-/// to [`MAX_FASTPATH_ACTIVE_VALIDATORS`] plus one point reads that are each expected
+/// to 257 point reads (the active-validator bound plus one sentinel), each expected
 /// to observe absence. This is the historical strategy, kept exactly as it
 /// behaved before this module gained a scanner-backed alternative; it is
 /// the only strategy available to a caller that has nothing but a plain
@@ -1047,7 +1047,7 @@ pub(super) fn verify_claim_key_range_scanned<S: DurableStateKeyScanner>(
 /// Independently re-verifies every signed fee-claim envelope retained for
 /// one escrow row, exactly like [`verify_fee_claim_chain_walk`], then proves
 /// no orphaned envelope exists beyond the installed generation using up to
-/// [`MAX_FASTPATH_ACTIVE_VALIDATORS`] plus one absent point reads. This is the
+/// 257 absent point reads. This is the
 /// original, unchanged public entry point: it requires only a plain
 /// [`StructuredDurableDomainStateStore`] and remains available for any
 /// caller (such as a protocol transition) that must not depend on the

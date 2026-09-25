@@ -437,7 +437,7 @@ pub fn verify_fee_claim_history<S: StructuredDurableDomainStateStore>(
 
 /// Proves no fee-claim envelope was ever recorded for an uncharged
 /// settlement row, using up to
-/// [`crate::fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS`] plus one point reads
+/// 257 point reads (the active-validator bound plus one sentinel read)
 /// each expected to observe absence. Mirrors
 /// [`verify::verify_no_orphan_claims_by_point_read`]'s strategy (an uncharged
 /// row is the `target_generation == 0` case) without depending on that
