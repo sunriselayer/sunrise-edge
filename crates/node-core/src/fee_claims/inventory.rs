@@ -23,8 +23,12 @@ pub struct FeeEscrowInventoryPage {
 }
 
 /// Verifies one bounded page of every settlement key in the requested chain.
-/// The scanner exposes tombstones, and every exact key is point-read by
-/// `verify_fee_claim_history`; a missing/tombstoned or malformed key fails
+/// The scanner exposes tombstones, and every exact key is independently
+/// re-verified by [`verify_fee_claim_history_scanned`] -- the same checks as
+/// `super::verify_fee_claim_history`, but proving the absence of an orphaned
+/// claim envelope with one bounded scanner page per escrow instead of up to
+/// [`crate::fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS`] plus one point reads
+/// expected to observe absence. A missing/tombstoned or malformed key fails
 /// closed. This is a maintenance operation, never a consensus transition.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_fee_escrow_inventory_page<S: DurableStateKeyScanner>(
@@ -61,7 +65,7 @@ pub fn verify_fee_escrow_inventory_page<S: DurableStateKeyScanner>(
         if key != &exact_key {
             return Err(FeeClaimError::Invalid("fee escrow inventory key mismatch"));
         }
-        let verified: FeeClaimVerificationReport = verify_fee_claim_history(
+        let verified: FeeClaimVerificationReport = verify_fee_claim_history_scanned(
             store,
             blob_store,
             context,
@@ -85,6 +89,68 @@ pub fn verify_fee_escrow_inventory_page<S: DurableStateKeyScanner>(
             .ok_or(FeeClaimError::Invalid("fee escrow inventory payout count"))?;
     }
     Ok(result)
+}
+
+/// Scanner-backed sibling of [`super::verify_fee_claim_history`], used only
+/// by [`verify_fee_escrow_inventory_page`]. Every check it performs is
+/// identical -- same certificate/witness/economics/leg/payout
+/// verification, same [`FeeClaimVerificationReport`] shape -- because both
+/// entry points share one implementation,
+/// [`super::verify_fee_claim_history_shared`]. The only place this sibling's
+/// behavior actually differs is wherever the plain function would need up to
+/// [`crate::fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS`] plus one point
+/// reads expected to observe absence (to prove no claim record exists for
+/// an uncharged row, or that no envelope was orphaned beyond the installed
+/// generation of a charged one): this version proves the same fact from one
+/// bounded scanner page instead
+/// (`verify::verify_claim_key_range_scanned`/`verify::verify_fee_claim_chain_scanned`).
+/// See `docs/architecture/decisions/0140-fastvote-payout-proof-and-escrow-inventory.md`.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_fee_claim_history_scanned<S: DurableStateKeyScanner>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    chain: &ChainId,
+    escrow_request_id: &[u8; 32],
+) -> Result<FeeClaimVerificationReport, FeeClaimError> {
+    super::verify_fee_claim_history_shared(
+        store,
+        blob_store,
+        context,
+        domain,
+        resolver,
+        history,
+        chain,
+        escrow_request_id,
+        || {
+            verify::verify_claim_key_range_scanned(
+                store,
+                context,
+                domain,
+                chain,
+                *escrow_request_id,
+                0,
+            )
+        },
+        |trusted_resolver, validator_set, resource_abi, interface, initial, initial_bytes| {
+            verify::verify_fee_claim_chain_scanned(
+                store,
+                blob_store,
+                context,
+                domain,
+                trusted_resolver,
+                history,
+                validator_set,
+                resource_abi,
+                interface,
+                initial,
+                initial_bytes,
+            )
+        },
+    )
 }
 
 #[cfg(test)]

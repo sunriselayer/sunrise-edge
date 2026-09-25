@@ -381,6 +381,13 @@ pub struct FeeClaimVerificationReport {
 /// its historical escrow-object versions and signed split payout refs after
 /// a store reopen. This has no mutation and takes an explicit escrow request
 /// id; use the separate typed inventory page to enumerate escrows.
+///
+/// Thin wrapper over [`verify_fee_claim_history_shared`], supplying the
+/// point-read strategy for both the uncharged-row orphan check and the
+/// retained claim chain walk; see [`inventory::verify_fee_claim_history_scanned`]
+/// for the scanner-backed sibling that supplies the bounded-scan strategy
+/// instead. Every other check -- certificate/witness/economics/origin -- is
+/// the exact same shared code in both cases.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_fee_claim_history<S: StructuredDurableDomainStateStore>(
     store: &S,
@@ -392,6 +399,112 @@ pub fn verify_fee_claim_history<S: StructuredDurableDomainStateStore>(
     chain: &ChainId,
     escrow_request_id: &[u8; 32],
 ) -> Result<FeeClaimVerificationReport, FeeClaimError> {
+    verify_fee_claim_history_shared(
+        store,
+        blob_store,
+        context,
+        domain,
+        resolver,
+        history,
+        chain,
+        escrow_request_id,
+        || {
+            verify_uncharged_claim_absence_by_point_read(
+                store,
+                context,
+                domain,
+                chain,
+                escrow_request_id,
+            )
+        },
+        |trusted_resolver, validator_set, resource_abi, interface, initial, initial_bytes| {
+            verify::verify_fee_claim_chain(
+                store,
+                blob_store,
+                context,
+                domain,
+                trusted_resolver,
+                history,
+                validator_set,
+                resource_abi,
+                interface,
+                initial,
+                initial_bytes,
+            )
+        },
+    )
+}
+
+/// Proves no fee-claim envelope was ever recorded for an uncharged
+/// settlement row, using up to
+/// [`crate::fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS`] plus one point reads
+/// each expected to observe absence. Mirrors
+/// [`verify::verify_no_orphan_claims_by_point_read`]'s strategy (an uncharged
+/// row is the `target_generation == 0` case) without depending on that
+/// function's private visibility.
+fn verify_uncharged_claim_absence_by_point_read<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain: &ChainId,
+    escrow_request_id: &[u8; 32],
+) -> Result<(), FeeClaimError> {
+    let max_claim_generation: u64 =
+        u64::try_from(crate::fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS)
+            .map_err(|_| FeeClaimError::Invalid("fee claim generation bound"))?
+            .checked_add(2)
+            .ok_or(FeeClaimError::Invalid("fee claim generation bound"))?;
+    for generation in 2..=max_claim_generation {
+        let impossible_claim_key: Vec<u8> =
+            local_instance_state::fastpath_fee_claim_key(chain, escrow_request_id, generation)?;
+        let impossible_claim: VersionedStateValue =
+            store.get_versioned_durable(context, domain, &impossible_claim_key)?;
+        if impossible_claim.revision() != StateRevision::INITIAL
+            || impossible_claim.value().is_some()
+        {
+            return Err(FeeClaimError::Invalid(
+                "uncharged settlement has a claim record",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Shared implementation behind [`verify_fee_claim_history`] and
+/// [`inventory::verify_fee_claim_history_scanned`]: every certificate,
+/// commitment-witness, economics-policy, code-origin, instance and escrow
+/// authority check the two entry points perform is this one function's own
+/// code, executed exactly once. The only two places their behavior actually
+/// differs -- proving an uncharged row retains no claim record, and walking
+/// plus verifying the retained claim chain -- are the two caller-supplied
+/// hooks, each of which is either a point-read (the original strategy, used
+/// by every non-inventory caller including a protocol transition) or a
+/// single bounded scanner page (used only by the read-only inventory sweep).
+#[allow(clippy::too_many_arguments)]
+fn verify_fee_claim_history_shared<S, UnchargedCheck, ChainVerify>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    chain: &ChainId,
+    escrow_request_id: &[u8; 32],
+    verify_uncharged_claim_keys: UnchargedCheck,
+    verify_claim_chain: ChainVerify,
+) -> Result<FeeClaimVerificationReport, FeeClaimError>
+where
+    S: StructuredDurableDomainStateStore,
+    UnchargedCheck: FnOnce() -> Result<(), FeeClaimError>,
+    ChainVerify: FnOnce(
+        &HashSuiteResolver,
+        &ValidatorSet,
+        &verify::FeeEscrowResourceAbi,
+        &execution::publication::VerifiedPublicationInterface,
+        &FastPathSettlementRecord,
+        &[u8],
+    ) -> Result<verify::FeeClaimChainReport, FeeClaimError>,
+{
     if history.len() > publication::MAX_PUBLICATION_HISTORY {
         return Err(FeeClaimError::Invalid("resolver history bound"));
     }
@@ -506,24 +619,7 @@ pub fn verify_fee_claim_history<S: StructuredDurableDomainStateStore>(
                 "fee claim uncharged settlement mismatch",
             ));
         }
-        let max_claim_generation: u64 =
-            u64::try_from(crate::fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS)
-                .map_err(|_| FeeClaimError::Invalid("fee claim generation bound"))?
-                .checked_add(2)
-                .ok_or(FeeClaimError::Invalid("fee claim generation bound"))?;
-        for generation in 2..=max_claim_generation {
-            let impossible_claim_key: Vec<u8> =
-                local_instance_state::fastpath_fee_claim_key(chain, escrow_request_id, generation)?;
-            let impossible_claim: VersionedStateValue =
-                store.get_versioned_durable(context, domain, &impossible_claim_key)?;
-            if impossible_claim.revision() != StateRevision::INITIAL
-                || impossible_claim.value().is_some()
-            {
-                return Err(FeeClaimError::Invalid(
-                    "uncharged settlement has a claim record",
-                ));
-            }
-        }
+        verify_uncharged_claim_keys()?;
         return Ok(FeeClaimVerificationReport {
             final_generation: 0,
             verified_claims: 0,
@@ -616,13 +712,8 @@ pub fn verify_fee_claim_history<S: StructuredDurableDomainStateStore>(
         ty: resource.ty.clone(),
         schema_version: resource.schema,
     };
-    let result: verify::FeeClaimChainReport = verify::verify_fee_claim_chain(
-        store,
-        blob_store,
-        context,
-        domain,
+    let result: verify::FeeClaimChainReport = verify_claim_chain(
         trusted_resolver,
-        history,
         &validator_set,
         &resource_abi,
         &loaded.interface,
@@ -1331,4 +1422,104 @@ fn commit<S: StructuredDurableDomainStateStore>(
         store.commit_invocation(context, transaction),
         output,
     )?)
+}
+
+/// Focused coverage for [`verify_uncharged_claim_absence_by_point_read`] in
+/// isolation -- the hook [`verify_fee_claim_history`] supplies to
+/// [`verify_fee_claim_history_shared`] for an uncharged (generation-0) row --
+/// without needing a full certified escrow fixture. The scanner-backed
+/// sibling of this same check ([`verify::verify_claim_key_range_scanned`]
+/// with `target_generation == 0`) has its own equivalent coverage in
+/// `verify_tests.rs`.
+#[cfg(test)]
+mod uncharged_claim_absence_tests {
+    use super::*;
+    use crate::genesis::tests::{chain, context, domain};
+    use runtime::{
+        AtomicStateMutationSet, AtomicStateReadSet, AtomicStateTransaction, DurableCommitOutcome,
+        DurableDomainStateStore, MemoryDurableStateStore, StateMutation, StateMutationEntry,
+        StateReadAssertion, WriterFenceGeneration,
+    };
+
+    fn store() -> MemoryDurableStateStore {
+        MemoryDurableStateStore::new_bound(domain(), WriterFenceGeneration::new(1).unwrap())
+    }
+
+    fn write_key(store: &MemoryDurableStateStore, key: Vec<u8>, mutation: StateMutation) {
+        let observed = store
+            .get_versioned_durable(&context(1), domain(), &key)
+            .unwrap();
+        let transaction = AtomicStateTransaction::new(
+            domain(),
+            AtomicStateReadSet::new(vec![
+                StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
+            ])
+            .unwrap(),
+            AtomicStateMutationSet::new(vec![StateMutationEntry::new(key, mutation).unwrap()])
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.commit_durable(&context(1), transaction),
+            DurableCommitOutcome::Committed
+        );
+    }
+
+    #[test]
+    fn accepts_a_fully_absent_claim_key_range() {
+        let store: MemoryDurableStateStore = store();
+        verify_uncharged_claim_absence_by_point_read(
+            &store,
+            &context(1),
+            domain(),
+            &chain(),
+            &[0x11; 32],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn rejects_an_orphan_claim_key_at_generation_two() {
+        let store: MemoryDurableStateStore = store();
+        let request_id: [u8; 32] = [0x12; 32];
+        let key: Vec<u8> =
+            local_instance_state::fastpath_fee_claim_key(&chain(), &request_id, 2).unwrap();
+        write_key(&store, key, StateMutation::Put(vec![0xFF]));
+        let error: FeeClaimError = verify_uncharged_claim_absence_by_point_read(
+            &store,
+            &context(1),
+            domain(),
+            &chain(),
+            &request_id,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            FeeClaimError::Invalid("uncharged settlement has a claim record")
+        ));
+    }
+
+    #[test]
+    fn rejects_an_orphan_claim_key_at_the_far_bound() {
+        let store: MemoryDurableStateStore = store();
+        let request_id: [u8; 32] = [0x13; 32];
+        let far_generation: u64 =
+            u64::try_from(crate::fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS).unwrap() + 2;
+        let key: Vec<u8> =
+            local_instance_state::fastpath_fee_claim_key(&chain(), &request_id, far_generation)
+                .unwrap();
+        write_key(&store, key, StateMutation::Put(vec![0xFF]));
+        let error: FeeClaimError = verify_uncharged_claim_absence_by_point_read(
+            &store,
+            &context(1),
+            domain(),
+            &chain(),
+            &request_id,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            FeeClaimError::Invalid("uncharged settlement has a claim record")
+        ));
+    }
 }
