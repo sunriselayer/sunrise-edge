@@ -60,7 +60,7 @@ is not FastVote completion.
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Implemented and validated (DR-0128); focused Codex Security scan found 0 reportable findings and fresh Opus review approved |
-| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated** (DR-0129 through DR-0134). **Phase 3 is open.** DR-0135/0136/0137 implement custody, typed genesis bonds, post-genesis bond lifecycle, forfeiture and certified fee claims without a Standard Asset exception. DR-0139/0140 provide certified claim-history and split-payout verification with a caller-driven paged inventory; a two-escrow certified multi-claim SQLite close/reopen sweep is locally validated. Network claim/recovery-time capacity certification and the Phase 3 review gate remain open; FastVote overall is incomplete. |
+| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated** (DR-0129 through DR-0134). **Phase 3 is open.** DR-0135/0136/0137 implement custody, typed genesis bonds, post-genesis bond lifecycle, forfeiture and certified fee claims without a Standard Asset exception. DR-0139/0140 provide certified claim-history and split-payout verification; DR-0142 adds an offline local-SQLite operator sweep. A two-escrow certified multi-claim SQLite close/reopen sweep is locally validated. Network-store operator sweep, claim/recovery-time capacity certification and the Phase 3 review gate remain open; FastVote overall is incomplete. |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
 Asset creation was the final focused delta before FastVote/multi-validator
@@ -2806,8 +2806,9 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
 - [ ] **Phase 3 — economics/security completion.** Architecture is split into
   explicit slices. Custody, typed genesis bonds, bond lifecycle, certified
   fee claims, a certified multi-escrow SQLite restart sweep and cross-epoch
-  historical claim evidence are implemented; an operator-invocable sweep,
-  network capacity certification and the review gate remain open:
+  historical claim evidence and a local-SQLite operator sweep are implemented;
+  network-store operator sweep, capacity certification and the review gate
+  remain open:
   - [x] **Slice 0 — non-signable protocol custody prerequisite
     ([DR-0135](docs/architecture/decisions/0135-protocol-custody-owner.md),
     implemented and locally validated 2026-09-22).** Adds canonical owner tag
@@ -3271,10 +3272,20 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         measures local positive-claim latency, object/receipt persistence and
         SQLite/WAL file sizes. Neither directly set-up fixture certifies
         sustained network throughput, disk life or recovery time (DR-0138);
-      - [ ] expose the bounded, read-only all-escrow verifier to an operator
-        on a quiescent fenced store before network start. The current complete
-        sweep driver exists only in tests; one page is not a global snapshot,
-        and a running writer invalidates a multi-page completeness claim;
+      - [x] expose the bounded all-page verifier to a local SQLite operator
+        ([DR-0142](docs/architecture/decisions/0142-fastvote-operator-escrow-inventory.md)).
+        The command opens only existing namespace-bound files, requires
+        explicit offline confirmation, claims a new persisted writer fence,
+        checks it after the final page and prints totals only on complete
+        success. The certified two-escrow/tamper restart fixture now calls
+        that public driver; an executable file-backed empty-namespace test
+        checks no bootstrap, confirmation, fence advance, stale-reader
+        rejection and corrupt-row failure without a complete result. This is
+        not a multi-page snapshot or network proof;
+      - [ ] make a corresponding quiescent, fenced sweep operable for the
+        selected network persistence profile (notably PostgreSQL if chosen),
+        and prove it on a nonempty certified escrow fixture before network
+        start. The SQLite command must not be mistaken for that gate;
       - [x] verify certificate-epoch validator membership and historical
         hash-suite selection across a real vote/certificate/activation epoch
         transition that drops a validator and rotates SHA-2 to SHA-3. Separate
@@ -3294,8 +3305,8 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         config changes as an authorized protocol migration;
       - [ ] Phase 3 review gate.
 
-  **Remaining Phase 3 completion:** make the verified sweep operable, establish
-  network claim and restart-sweep capacity with representative load/soak
+  **Remaining Phase 3 completion:** make the verified sweep operable on the
+  selected network store, establish claim and restart-sweep capacity with representative load/soak
   evidence, then pass the Phase 3
   review gate. Protocol-version activation is
   a separately blocked future gate; there is no live version-switch path to

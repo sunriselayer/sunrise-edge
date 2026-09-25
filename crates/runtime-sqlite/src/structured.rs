@@ -50,7 +50,9 @@ use runtime::{
     StateMutationEntry, StateReadAssertion, StateRevision, StructuredDurableDomainStateStore,
     VersionedStateValue, WriterFenceGeneration,
 };
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 use std::{
     error::Error,
     fmt,
@@ -266,6 +268,44 @@ pub struct SqliteDurableStore {
 }
 
 impl SqliteDurableStore {
+    /// Opens an already initialized database for an operator operation.
+    /// Unlike `open`, this never creates a file or bootstraps a schema.
+    pub fn open_existing(
+        path: impl AsRef<Path>,
+        namespace: SqliteNamespace,
+    ) -> Result<Self, SqliteDurableStoreError> {
+        let connection: Connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        connection.busy_timeout(STRUCTURED_BUSY_TIMEOUT)?;
+        connection.pragma_update(None, "foreign_keys", "ON")?;
+        connection.pragma_update(None, "trusted_schema", "OFF")?;
+        let application_id: i64 =
+            connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
+        if application_id != STRUCTURED_APPLICATION_ID {
+            return Err(SqliteDurableStoreError::ApplicationId(application_id));
+        }
+        let schema_version: i64 =
+            connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if schema_version != STRUCTURED_SCHEMA_VERSION {
+            return Err(SqliteDurableStoreError::SchemaVersion(schema_version));
+        }
+        let journal_mode: String =
+            connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        if !journal_mode.eq_ignore_ascii_case("wal") {
+            return Err(SqliteDurableStoreError::UnsupportedJournalMode(
+                journal_mode,
+            ));
+        }
+        verify_namespace(&connection, &namespace)?;
+        read_writer_fence(&connection)?;
+        Ok(Self {
+            connection: Mutex::new(connection),
+            namespace,
+        })
+    }
+
     /// Opens or bootstraps a local structured durable database.
     ///
     /// `initial_writer_fence` is used only the first time this namespace is

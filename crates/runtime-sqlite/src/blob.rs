@@ -21,7 +21,7 @@
 
 use protocol_types::Digest32;
 use runtime::{BlobStore, RuntimeError};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use std::{
     error::Error,
     fmt,
@@ -120,6 +120,30 @@ pub struct SqliteBlobStore {
 }
 
 impl SqliteBlobStore {
+    /// Opens an already initialized blob file without creating or seeding it.
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, SqliteBlobStoreError> {
+        let connection: Connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        connection.busy_timeout(BLOB_BUSY_TIMEOUT)?;
+        connection.pragma_update(None, "trusted_schema", "OFF")?;
+        let application_id: i64 =
+            connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
+        if application_id != BLOB_APPLICATION_ID {
+            return Err(SqliteBlobStoreError::ApplicationId(application_id));
+        }
+        let schema_version: i64 =
+            connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if schema_version != BLOB_SCHEMA_VERSION {
+            return Err(SqliteBlobStoreError::SchemaVersion(schema_version));
+        }
+        verify_schema_identity(&connection)?;
+        Ok(Self {
+            connection: Mutex::new(connection),
+        })
+    }
+
     /// Opens or bootstraps a local content-addressed blob database.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SqliteBlobStoreError> {
         let mut connection = Connection::open(path)?;
