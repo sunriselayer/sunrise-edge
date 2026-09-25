@@ -14,3 +14,7 @@ r2d2_postgres.workspace = true
 runtime.workspace = true
 runtime-postgres.workspace = true
 rustls.workspace = true
+
+[dev-dependencies]
+rcgen.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }

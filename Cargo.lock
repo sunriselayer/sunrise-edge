@@ -954,10 +954,13 @@ dependencies = [
  "fees",
  "hashing",
  "objects",
+ "postgres",
  "protocol-config",
  "protocol-types",
  "public-standard-asset",
+ "r2d2_postgres",
  "runtime",
+ "runtime-postgres",
  "runtime-sqlite",
  "sha2 0.11.0",
  "standard-assets",
@@ -1740,9 +1743,11 @@ dependencies = [
  "postgres_rustls",
  "protocol-types",
  "r2d2_postgres",
+ "rcgen",
  "runtime",
  "runtime-postgres",
  "rustls",
+ "tokio",
 ]
 
 [[package]]
