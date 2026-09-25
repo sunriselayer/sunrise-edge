@@ -66,6 +66,13 @@ pub enum RuntimeError {
         /// Maximum accepted byte length.
         maximum: usize,
     },
+    /// A content-addressed blob exceeded the durable adapter's byte bound.
+    BlobTooLarge {
+        /// Actual byte length.
+        length: usize,
+        /// Maximum supported byte length.
+        maximum: usize,
+    },
     /// An atomic state transaction contained the same key more than once.
     DuplicateStateWriteKey,
     /// A domain transaction contained the same read key more than once.
@@ -135,6 +142,9 @@ impl fmt::Display for RuntimeError {
             }
             Self::StateValueTooLarge { length, maximum } => {
                 write!(f, "state value is {length} bytes, maximum is {maximum}")
+            }
+            Self::BlobTooLarge { length, maximum } => {
+                write!(f, "blob is {length} bytes, maximum is {maximum}")
             }
             Self::DuplicateStateWriteKey => {
                 write!(f, "atomic state write set contains a duplicate key")

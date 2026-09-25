@@ -3626,6 +3626,11 @@ mod tests {
         assert_eq!(POSTGRES_SCHEMA_GENERATION.get(), 1);
         assert!(INITIAL_MIGRATION_SQL.contains("CREATE TABLE sunrise_edge.state_records"));
         assert!(INITIAL_MIGRATION_SQL.contains("CREATE TABLE sunrise_edge.blobs"));
+        assert_eq!(runtime::MAX_STATE_VALUE_BYTES, 33_554_432);
+        assert!(INITIAL_MIGRATION_SQL.contains(&format!(
+            "octet_length(blob_bytes) <= {}",
+            runtime::MAX_STATE_VALUE_BYTES
+        )));
         assert!(INITIAL_MIGRATION_SQL.contains("CREATE INDEX outbox_delivery_due"));
         assert!(INITIAL_MIGRATION_SQL.contains("created_chain_id_bytes BYTEA NOT NULL"));
         assert!(INITIAL_MIGRATION_SQL.contains("created_protocol_version BIGINT NOT NULL"));

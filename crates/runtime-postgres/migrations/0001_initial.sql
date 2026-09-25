@@ -52,7 +52,7 @@ CREATE TABLE sunrise_edge.blobs (
     FOREIGN KEY (chain_id_bytes, validator_id, atomicity_domain_id)
         REFERENCES sunrise_edge.storage_metadata
         (chain_id_bytes, validator_id, atomicity_domain_id)
-        ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
+        ON DELETE RESTRICT NOT DEFERRABLE
 );
 
 CREATE TABLE sunrise_edge.state_records (

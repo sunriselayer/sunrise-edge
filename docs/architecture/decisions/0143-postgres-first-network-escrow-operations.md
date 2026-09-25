@@ -27,6 +27,11 @@ The blob interface has no operation context or writer generation, so it may
 not authorize state transitions or claim to fence a live writer. The
 structured store remains the sole authority for object heads, versions,
 settlements, receipts and the writer fence.
+Publication must durably commit the blob before a structured object version
+can reference it. The selected PostgreSQL durability policy must acknowledge
+that ordering (including `synchronous_commit` and underlying storage or
+replication settings); a failed later structured commit may leave an orphan
+blob, but the reverse order would create an unreadable authoritative object.
 
 The PostgreSQL inventory command must be operator-only and require an
 independently trusted chain/validator/domain, protocol version and complete

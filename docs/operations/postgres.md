@@ -102,6 +102,12 @@ bytes or a `blob_digest` column pair) already accepts either representation
 unconditionally, unchanged by [DR-0096](../architecture/decisions/0094-0098-blobs-audit-and-documentation.md). The `v3` schema also provides a namespace-bound
 `PostgresBlobStore`: its insert-if-absent bytes are durable in the same
 database but are not in the structured object transition's transaction.
+Composition must commit the blob before committing a structured object
+version that references it, and must use a PostgreSQL durability policy
+(`synchronous_commit` and the underlying storage/replication settings) that
+actually persists that first commit before acknowledging it. A failed later
+structured commit may leave an unreachable immutable blob; the reverse
+ordering could leave an unreadable authoritative object and is forbidden.
 The blob API has no writer context, so it cannot fence live blob writes;
 the structured metadata/object version remains authoritative and a missing
 or incorrect blob fails authenticated reads. This is a storage building block,

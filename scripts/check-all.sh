@@ -4,6 +4,13 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
 
+# CI must exercise the live PostgreSQL conformance; local checks may run
+# without a disposable database and report those tests as skipped.
+if [[ "${GITHUB_ACTIONS:-}" == "true" && -z "${SUNRISE_EDGE_TEST_POSTGRES_URL:-}" ]]; then
+  echo "CI requires SUNRISE_EDGE_TEST_POSTGRES_URL for live PostgreSQL tests" >&2
+  exit 1
+fi
+
 cargo fmt --all -- --check
 rustfmt --edition 2024 --check \
   crates/node-core/src/tests/core_and_nonce.rs \

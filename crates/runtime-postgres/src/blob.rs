@@ -79,9 +79,9 @@ where
     /// The applied schema identity and the namespace's already-bootstrapped
     /// metadata row are verified now, at construction, exactly once; request
     /// handling (`put_blob`/`get_blob`) never re-runs this bootstrap check.
-    /// Every write still goes through the `blobs` table's foreign key to
-    /// `storage_metadata`, so a namespace whose metadata row somehow stopped
-    /// existing after construction still fails closed on the next write.
+    /// Every write still goes through the `blobs` table's immediate foreign
+    /// key to `storage_metadata`, so a namespace whose metadata row somehow
+    /// stopped existing after construction fails closed on the next write.
     pub fn new(
         pool: Pool<M>,
         namespace: PostgresNamespace,
@@ -130,7 +130,7 @@ where
 {
     fn put_blob(&self, digest: Digest32, bytes: Vec<u8>) -> Result<(), RuntimeError> {
         if bytes.len() > MAX_STATE_VALUE_BYTES {
-            return Err(RuntimeError::StateValueTooLarge {
+            return Err(RuntimeError::BlobTooLarge {
                 length: bytes.len(),
                 maximum: MAX_STATE_VALUE_BYTES,
             });
@@ -188,11 +188,10 @@ where
             )
             .map_err(|_| RuntimeError::DurableStoreUnavailable)?;
         let Some(row) = row else {
-            // The insert above unconditionally targets this exact row, so a
-            // read-committed select of the same key inside the same
-            // transaction finding nothing means the namespace's foreign key
-            // rejected the insert or something else left persisted state
-            // inconsistent with what this transaction just wrote.
+            // The insert above unconditionally targets this exact row. Its
+            // immediate FK and other constraints would already have failed;
+            // finding nothing here means persisted state or our query
+            // assumptions are inconsistent, never a successful put.
             return Err(RuntimeError::DurableStoreUnavailable);
         };
         let stored_bytes: Vec<u8> = row

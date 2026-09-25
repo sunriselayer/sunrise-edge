@@ -12,13 +12,38 @@ use runtime_postgres::{
     PostgresBlobStoreError, PostgresNamespace, PostgresPoolConfig, PostgresSchemaError,
     apply_initial_schema, bootstrap_namespace, build_postgres_pool,
 };
-use std::{num::NonZeroU32, sync::Arc, thread, time::Duration};
+use std::{
+    num::NonZeroU32,
+    sync::{Arc, Barrier},
+    thread,
+    time::Duration,
+};
 
 mod support;
 
 const TEST_DATABASE: &str = "sunrise_edge_test";
 
 type TestPostgresManager = PostgresConnectionManager<NoTls>;
+type BlobRaceResult = (Vec<u8>, Result<(), RuntimeError>);
+
+/// A failing assertion must not leave the shared live-test database with a
+/// forged migration identity or missing table. Declared after the shared
+/// cross-process lock so this runs before that lock is released on unwind.
+struct RestoreTestSchemaOnDrop {
+    url: String,
+}
+
+impl Drop for RestoreTestSchemaOnDrop {
+    fn drop(&mut self) {
+        if let Ok(mut client) = Client::connect(&self.url, NoTls)
+            && client
+                .batch_execute("DROP SCHEMA IF EXISTS sunrise_edge CASCADE")
+                .is_ok()
+        {
+            let _ = apply_initial_schema(&mut client);
+        }
+    }
+}
 
 fn test_pool(url: &str) -> Pool<TestPostgresManager> {
     let config: Config = url.parse().unwrap();
@@ -61,6 +86,7 @@ fn postgres_blob_store_conformance() {
         database, TEST_DATABASE,
         "refusing to reset a non-test database"
     );
+    let _restore_schema: RestoreTestSchemaOnDrop = RestoreTestSchemaOnDrop { url: url.clone() };
     admin
         .batch_execute("DROP SCHEMA IF EXISTS sunrise_edge CASCADE")
         .unwrap();
@@ -118,6 +144,43 @@ fn postgres_blob_store_conformance() {
     let store_b: PostgresBlobStore<TestPostgresManager> =
         PostgresBlobStore::new(pool.clone(), namespace_b.clone()).unwrap();
 
+    // The store was constructed while namespace C still existed. Its next
+    // put must fail immediately if that exact metadata row disappears.
+    let namespace_c: PostgresNamespace = PostgresNamespace::new(
+        &ChainId::new("blob-conformance-c").unwrap(),
+        ValidatorId::new([0xC1; 32]),
+        AtomicityDomainId::new([0xC2; 32]).unwrap(),
+    )
+    .unwrap();
+    bootstrap_namespace(
+        &mut admin,
+        &namespace_c,
+        POSTGRES_SCHEMA_GENERATION,
+        WriterFenceGeneration::new(1).unwrap(),
+    )
+    .unwrap();
+    let store_c: PostgresBlobStore<TestPostgresManager> =
+        PostgresBlobStore::new(pool.clone(), namespace_c.clone()).unwrap();
+    assert_eq!(
+        admin
+            .execute(
+                "DELETE FROM sunrise_edge.storage_metadata
+         WHERE chain_id_bytes = $1 AND validator_id = $2 AND atomicity_domain_id = $3",
+                &[
+                    &namespace_c.chain_id_bytes(),
+                    &&namespace_c.validator_id().as_bytes()[..],
+                    &&namespace_c.domain().as_bytes()[..]
+                ],
+            )
+            .unwrap(),
+        1
+    );
+    let orphan_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0xC3; 32]);
+    assert!(matches!(
+        store_c.put_blob(orphan_digest, b"orphan".to_vec()),
+        Err(RuntimeError::DurableStoreUnavailable)
+    ));
+
     // --- put/get roundtrip ---------------------------------------------------
     let digest = Digest32::new(HashAlgorithmId::Sha2_256, [0x10; 32]);
     let bytes: Vec<u8> = b"blob-payload-one".to_vec();
@@ -152,34 +215,65 @@ fn postgres_blob_store_conformance() {
     );
     assert_eq!(store_a.get_blob(&digest).unwrap(), Some(bytes.clone()));
 
+    // --- the SQL and Rust byte bounds agree at the exact live boundary -----
+    let boundary_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x31; 32]);
+    let boundary: Vec<u8> = vec![0x5A_u8; MAX_STATE_VALUE_BYTES];
+    store_a.put_blob(boundary_digest, boundary.clone()).unwrap();
+    assert_eq!(store_a.get_blob(&boundary_digest).unwrap(), Some(boundary));
+
     // --- oversized blob rejected before ever reaching the database ----------
     let oversized: Vec<u8> = vec![0_u8; MAX_STATE_VALUE_BYTES + 1];
     let oversized_digest = Digest32::new(HashAlgorithmId::Sha2_256, [0x30; 32]);
     assert!(matches!(
         store_a.put_blob(oversized_digest, oversized),
-        Err(RuntimeError::StateValueTooLarge { length, maximum })
+        Err(RuntimeError::BlobTooLarge { length, maximum })
             if length == MAX_STATE_VALUE_BYTES + 1 && maximum == MAX_STATE_VALUE_BYTES
     ));
     assert_eq!(store_a.get_blob(&oversized_digest).unwrap(), None);
 
-    // --- concurrent insert race: every thread races the same digest ---------
+    // --- concurrent conflicting inserts: exactly one byte value wins ------
     let race_digest = Digest32::new(HashAlgorithmId::Blake3_256, [0x40; 32]);
-    let race_bytes: Vec<u8> = b"race-payload".to_vec();
+    let first_race_bytes: Vec<u8> = b"race-content-A".to_vec();
+    let second_race_bytes: Vec<u8> = b"race-content-B".to_vec();
     let race_store: Arc<PostgresBlobStore<TestPostgresManager>> =
         Arc::new(PostgresBlobStore::new(pool.clone(), namespace_a.clone()).unwrap());
-    let handles: Vec<thread::JoinHandle<Result<(), RuntimeError>>> = (0..8)
-        .map(|_| {
-            let store = Arc::clone(&race_store);
-            let bytes = race_bytes.clone();
-            thread::spawn(move || store.put_blob(race_digest, bytes))
+    let start: Arc<Barrier> = Arc::new(Barrier::new(8));
+    let handles: Vec<thread::JoinHandle<BlobRaceResult>> = (0..8)
+        .map(|index: usize| {
+            let store: Arc<PostgresBlobStore<TestPostgresManager>> = Arc::clone(&race_store);
+            let barrier: Arc<Barrier> = Arc::clone(&start);
+            let bytes: Vec<u8> = if index < 4 {
+                first_race_bytes.clone()
+            } else {
+                second_race_bytes.clone()
+            };
+            thread::spawn(move || {
+                barrier.wait();
+                let outcome: Result<(), RuntimeError> = store.put_blob(race_digest, bytes.clone());
+                (bytes, outcome)
+            })
         })
         .collect();
+    let mut successes: Vec<Vec<u8>> = Vec::new();
+    let mut conflicts: usize = 0;
     for handle in handles {
-        handle.join().unwrap().unwrap();
+        let (bytes, outcome): (Vec<u8>, Result<(), RuntimeError>) = handle.join().unwrap();
+        match outcome {
+            Ok(()) => successes.push(bytes),
+            Err(RuntimeError::BlobDigestConflict { digest }) if digest == race_digest => {
+                conflicts += 1;
+            }
+            other => panic!("unexpected concurrent blob outcome: {other:?}"),
+        }
     }
-    assert_eq!(
-        store_a.get_blob(&race_digest).unwrap(),
-        Some(race_bytes.clone())
+    assert!(!successes.is_empty());
+    assert!(conflicts > 0);
+    let persisted_race_bytes: Vec<u8> = store_a.get_blob(&race_digest).unwrap().unwrap();
+    assert!(persisted_race_bytes == first_race_bytes || persisted_race_bytes == second_race_bytes);
+    assert!(
+        successes
+            .iter()
+            .all(|bytes: &Vec<u8>| *bytes == persisted_race_bytes)
     );
 
     // --- schema rejection: an installed identity other than the exact
@@ -217,7 +311,7 @@ fn postgres_blob_store_conformance() {
     assert_eq!(reopened_store.get_blob(&digest).unwrap(), Some(bytes));
     assert_eq!(
         reopened_store.get_blob(&race_digest).unwrap(),
-        Some(race_bytes)
+        Some(persisted_race_bytes)
     );
     assert_eq!(reopened_store.namespace(), &namespace_a);
 
@@ -232,10 +326,5 @@ fn postgres_blob_store_conformance() {
             PostgresSchemaError::Database(_)
         ))
     ));
-    // Do not leave the shared live-test database with a deliberately missing
-    // table for the next independent test binary.
-    admin
-        .batch_execute("DROP SCHEMA sunrise_edge CASCADE")
-        .unwrap();
-    apply_initial_schema(&mut admin).unwrap();
+    // The scope guard restores the shared test schema on success and unwind.
 }

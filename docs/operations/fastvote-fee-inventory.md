@@ -84,6 +84,9 @@ under that generation, rechecks it and the deadline, and prints
 `complete=true backend=postgres` only on full success. A failure after the
 fence advance is still disruptive: restart the stopped validator under its
 new generation. An empty result verifies only an empty *present* prefix.
+The command supplies no historical protocol-version resolver: a claim that
+requires one fails closed. Hash-suite changes within the configured protocol
+version are supported by the ordered `--suite` entries.
 
 The PostgreSQL operator path does not yet have a nonempty certified escrow
 and blob-read executable E2E or representative load/soak/restart-capacity

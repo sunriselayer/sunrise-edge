@@ -3282,16 +3282,18 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         checks no bootstrap, confirmation, fence advance, stale-reader
         rejection and corrupt-row failure without a complete result. A second
         executable E2E creates two genuine quorum-certified escrows in a
-        file-backed SQLite store, closes both files and checks the command's
-        two-page, two-row success and fence advance. Neither fixture proves
-        a multi-page snapshot, blob-backed reads or PostgreSQL network use;
+        file-backed SQLite store, closes both files and uses page size 1 to
+        force two verified rows over two pages plus a fence advance. Pages
+        remain independent transactions, not snapshot-consistency evidence;
+        neither fixture proves blob-backed reads or PostgreSQL network use;
       - [x] add a namespace-bound PostgreSQL content-addressed blob store
         (schema identity v3, pre-release bootstrap-only) and an offline,
         certificate-validating TLS operator command that checks existing
         schema/namespace, advances the PostgreSQL writer fence, scans every
         page and rechecks the fence/deadline before reporting success. The
-        live blob-store conformance covers idempotence, collision rejection,
-        namespace isolation, concurrent insertion and reopen. The operator
+        live blob-store conformance covers idempotence, conflicting concurrent
+        insertion, namespace isolation, byte bounds and reopen when a live
+        PostgreSQL is configured (as in repository CI). The operator
         has parser/TLS-host tests but not a real-PostgreSQL certified escrow
         invocation yet (DR-0143);
       - [ ] prove the PostgreSQL operator on a nonempty quorum-certified

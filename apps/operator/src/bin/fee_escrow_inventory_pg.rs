@@ -216,12 +216,17 @@ fn run() -> Result<(), Box<dyn Error>> {
     roots
         .add(CertificateDer::from(certificate))
         .map_err(|_| "invalid DER TLS root certificate")?;
-    let tls_config: ClientConfig = ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    let tls_config: ClientConfig =
+        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .map_err(|_| "unsupported TLS protocol versions")?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
     let tls: MakeTlsConnector = MakeTlsConnector::new(TlsConnector::from(Arc::new(tls_config)));
     let pool_config: PostgresPoolConfig = PostgresPoolConfig::new(
-        NonZeroU32::new(2).ok_or("zero pool size")?,
+        // One structured scan and one blob read may overlap; leave room for
+        // the final metadata check without waiting on a two-slot pool.
+        NonZeroU32::new(4).ok_or("zero pool size")?,
         Duration::from_secs(10),
         Duration::from_secs(30),
         Duration::from_secs(300),
@@ -267,13 +272,17 @@ fn run() -> Result<(), Box<dyn Error>> {
         StorageDeadline::new(deadline).ok_or("invalid deadline")?,
         StorageCorrelationId::new(correlation).ok_or("invalid correlation id")?,
     );
+    // There is no authorized protocol-version activation path yet. The
+    // command has no trusted historical-version resolver and must fail
+    // closed rather than guessing one from retained database bytes.
+    let historical_protocol_resolvers: [HashSuiteResolver; 0] = [];
     let result: FeeEscrowInventorySweep = verify_fee_escrow_inventory_all(
         &store,
         &blobs,
         &context,
         args.domain,
         &resolver,
-        &[],
+        &historical_protocol_resolvers,
         &args.chain,
         args.page_size,
     )?;
