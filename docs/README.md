@@ -26,6 +26,7 @@ detailed design, operator guides, and specialist references live here.
 - [Production persistence requirements](operations/persistence.md)
 - [PostgreSQL reference design](operations/postgres.md)
 - [Offline FastVote fee-escrow inventory](operations/fastvote-fee-inventory.md)
+- [Closed PostgreSQL FastVote operator rehearsal](operations/fastvote-pg-rehearsal.md)
 - [Hardware signing](signing/hardware-signing.md)
 
 ## Security

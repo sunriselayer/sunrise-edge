@@ -1737,17 +1737,27 @@ dependencies = [
 name = "sunrise-edge-operator"
 version = "0.1.0"
 dependencies = [
+ "abi",
+ "consensus",
+ "crypto",
+ "ed25519-zebra",
+ "execution",
+ "fees",
  "hashing",
  "node-core",
+ "objects",
  "postgres",
  "postgres_rustls",
  "protocol-types",
+ "public-standard-asset",
  "r2d2_postgres",
  "rcgen",
  "runtime",
  "runtime-postgres",
  "rustls",
+ "sunrise-edge-devnet",
  "tokio",
+ "validator-set",
 ]
 
 [[package]]

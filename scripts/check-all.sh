@@ -30,6 +30,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
 bash scripts/check-fee-escrow-inventory.sh
 bash scripts/check-fee-escrow-inventory-pg.sh
+bash scripts/check-fastvote-pg.sh
 
 node scripts/call-value-vectors.mjs
 node scripts/call-intent-vectors.mjs
