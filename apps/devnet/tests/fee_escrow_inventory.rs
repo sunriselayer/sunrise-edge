@@ -107,6 +107,9 @@ fn offline_sweep_does_not_bootstrap_or_claim_without_confirmation() {
     assert!(stdout.contains("complete=true"));
     assert!(stdout.contains("verified_rows=0"));
     assert!(stdout.contains("writer_generation=2"));
+    assert!(stdout.contains(&format!("data_dir={}", directory.0.display())));
+    assert!(stdout.contains(&format!("validator_id={}", "11".repeat(32))));
+    assert!(stdout.contains(&format!("domain={}", "22".repeat(32))));
     let old_context: DurableOperationContext = DurableOperationContext::new(
         WriterFenceGeneration::new(1).unwrap(),
         StorageDeadline::new(u64::MAX).unwrap(),

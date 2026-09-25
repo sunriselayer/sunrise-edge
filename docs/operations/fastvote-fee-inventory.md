@@ -30,8 +30,12 @@ cargo run --release -p sunrise-edge-devnet --bin fee_escrow_inventory -- \
 The confirmation flag acknowledges a **persistent writer-fence advance**.
 It invalidates the stopped process's prior generation; restart that process
 normally after the check. If another process starts while the sweep runs,
-the command fails and its partial count must be discarded. Success prints
-`complete=true`, claimed generation, page count, verified rows, claims and
+the command fails and its partial count must be discarded **if that process
+uses the supported boot path that advances the fence**. A direct SQLite writer
+that bypasses boot and adopts the sweep's generation is outside this proof;
+keep the database offline and under operator control. Success prints
+`complete=true`, namespace/data-directory identity, claimed generation, page
+count, verified rows, claims and
 signed split payouts. Any error exits nonzero without a complete result.
 Keep the command output with the independently recorded stop/start and
 configuration evidence. Zero rows means only that this namespace contains

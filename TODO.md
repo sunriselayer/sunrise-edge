@@ -3281,7 +3281,9 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         that public driver; an executable file-backed empty-namespace test
         checks no bootstrap, confirmation, fence advance, stale-reader
         rejection and corrupt-row failure without a complete result. This is
-        not a multi-page snapshot or network proof;
+        not a multi-page snapshot or network proof. A successful nonempty
+        *executable* invocation with actual certified escrows and blob reads
+        remains to be added for the selected network profile;
       - [ ] make a corresponding quiescent, fenced sweep operable for the
         selected network persistence profile (notably PostgreSQL if chosen),
         and prove it on a nonempty certified escrow fixture before network

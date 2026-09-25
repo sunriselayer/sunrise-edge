@@ -384,6 +384,26 @@ mod tests {
     }
 
     #[test]
+    fn existing_read_only_open_reads_blob_with_wal_writer_still_open() {
+        let database: TestDatabase = TestDatabase::new();
+        assert!(SqliteBlobStore::open_existing(&database.path).is_err());
+        assert!(!database.path.exists());
+        let writer: SqliteBlobStore = SqliteBlobStore::open(&database.path).unwrap();
+        let content_digest: Digest32 = digest(0x52);
+        writer.put_blob(content_digest, vec![0xA1, 0xB2]).unwrap();
+        let reader: SqliteBlobStore = SqliteBlobStore::open_existing(&database.path).unwrap();
+        assert_eq!(
+            reader.get_blob(&content_digest).unwrap(),
+            Some(vec![0xA1, 0xB2]),
+        );
+        assert!(matches!(
+            reader.put_blob(digest(0x53), vec![0xC3]),
+            Err(RuntimeError::DurableStoreUnavailable),
+        ));
+        assert_eq!(writer.get_blob(&digest(0x53)).unwrap(), None);
+    }
+
+    #[test]
     fn get_missing_digest_is_none() {
         let database = TestDatabase::new();
         let store = SqliteBlobStore::open(&database.path).unwrap();

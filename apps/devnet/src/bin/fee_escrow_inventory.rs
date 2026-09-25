@@ -39,7 +39,7 @@ fn set_once(slot: &mut Option<String>, flag: &str, value: String) -> Result<(), 
 }
 
 fn parse_hex_32(value: &str, flag: &str) -> Result<[u8; 32], String> {
-    if value.len() != 64 {
+    if value.len() != 64 || !value.bytes().all(|byte: u8| byte.is_ascii_hexdigit()) {
         return Err(format!("{flag} must be 64 hex digits"));
     }
     let mut bytes: [u8; 32] = [0; 32];
@@ -183,8 +183,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         SqliteDurableStore::open_existing(args.data_dir.join(DEVNET_DATABASE_FILE), namespace)?;
     let blobs: SqliteBlobStore =
         SqliteBlobStore::open_existing(args.data_dir.join(DEVNET_BLOB_DATABASE_FILE))?;
-    let deadline: u64 = SystemClock
-        .now_unix_millis()?
+    let now: u64 = SystemClock.now_unix_millis()?;
+    let deadline: u64 = now
         .checked_add(
             args.timeout_seconds
                 .checked_mul(1000)
@@ -195,10 +195,13 @@ fn run() -> Result<(), Box<dyn Error>> {
     let generation: WriterFenceGeneration =
         previous.checked_next().ok_or("writer fence exhausted")?;
     store.advance_writer_fence(previous, generation)?;
+    let mut correlation: [u8; 16] = [0; 16];
+    correlation[..8].copy_from_slice(&generation.get().to_be_bytes());
+    correlation[8..].copy_from_slice(&now.to_be_bytes());
     let context: DurableOperationContext = DurableOperationContext::new(
         generation,
         StorageDeadline::new(deadline).ok_or("invalid deadline")?,
-        StorageCorrelationId::new([0x49; 16]).ok_or("invalid correlation id")?,
+        StorageCorrelationId::new(correlation).ok_or("invalid correlation id")?,
     );
     let result: FeeEscrowInventorySweep = verify_fee_escrow_inventory_all(
         &store,
@@ -218,8 +221,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Err("inventory deadline expired before completion".into());
     }
     println!(
-        "complete=true chain_id={} writer_generation={} pages={} verified_rows={} verified_claims={} verified_payouts={}",
+        "complete=true data_dir={} chain_id={} validator_id={} domain={} protocol_version={} writer_generation={} pages={} verified_rows={} verified_claims={} verified_payouts={}",
+        args.data_dir.display(),
         args.chain,
+        args.validator,
+        args.domain,
+        args.protocol_version.get(),
         generation.get(),
         result.pages,
         result.verified_rows,
@@ -234,6 +241,11 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("fee-escrow-inventory failed (no complete result): {error}");
+            let mut source: Option<&(dyn Error + 'static)> = error.source();
+            while let Some(cause) = source {
+                eprintln!("  caused by: {cause}");
+                source = cause.source();
+            }
             ExitCode::FAILURE
         }
     }
@@ -284,6 +296,13 @@ mod tests {
             .position(|value| value == "0:1:1:1:1:1:1:1")
             .unwrap();
         values[position] = OsString::from("0:1:3:1:1:1:1:1");
+        assert!(parse_args(values).is_err());
+        let mut values: Vec<OsString> = args();
+        let position: usize = values
+            .iter()
+            .position(|value| value == &OsString::from("11".repeat(32)))
+            .unwrap();
+        values[position] = OsString::from("+1".repeat(32));
         assert!(parse_args(values).is_err());
         let mut values: Vec<OsString> = args();
         let position: usize = values.iter().position(|value| value == "2").unwrap();
