@@ -22,6 +22,66 @@ pub struct FeeEscrowInventoryPage {
     pub continuation_cursor: Option<Vec<u8>>,
 }
 
+/// Complete result of a caller-controlled, quiescent all-present-key sweep.
+/// A caller must fence old writers before entry and check the fence again
+/// after return; individual pages are not a shared database snapshot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FeeEscrowInventorySweep {
+    /// Exact settlement rows checked across all pages.
+    pub verified_rows: u64,
+    /// Retained signed claims checked across all rows.
+    pub verified_claims: u64,
+    /// Signed split payout objects checked across all rows.
+    pub verified_payouts: u64,
+    /// Number of bounded pages read, including the final empty page if any.
+    pub pages: u64,
+}
+
+/// Exhausts the chain-scoped inventory, returning totals only after the final
+/// page. The same fence-bearing context is used throughout: a restarted
+/// writer that advances the persisted fence makes a subsequent page fail.
+/// The caller must also re-observe that fence before reporting success, to
+/// cover an advance after the final page read.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_fee_escrow_inventory_all<S: DurableStateKeyScanner>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    chain: &ChainId,
+    limit: NonZeroUsize,
+) -> Result<FeeEscrowInventorySweep, FeeClaimError> {
+    let mut after: Option<Vec<u8>> = None;
+    let mut total: FeeEscrowInventorySweep = FeeEscrowInventorySweep::default();
+    loop {
+        let page: FeeEscrowInventoryPage = verify_fee_escrow_inventory_page(
+            store, blob_store, context, domain, resolver, history, chain, after, limit,
+        )?;
+        total.pages = total
+            .pages
+            .checked_add(1)
+            .ok_or(FeeClaimError::Invalid("fee escrow inventory page count"))?;
+        total.verified_rows = total
+            .verified_rows
+            .checked_add(page.verified_rows)
+            .ok_or(FeeClaimError::Invalid("fee escrow inventory row count"))?;
+        total.verified_claims = total
+            .verified_claims
+            .checked_add(page.verified_claims)
+            .ok_or(FeeClaimError::Invalid("fee escrow inventory claim count"))?;
+        total.verified_payouts = total
+            .verified_payouts
+            .checked_add(page.verified_payouts)
+            .ok_or(FeeClaimError::Invalid("fee escrow inventory payout count"))?;
+        match page.continuation_cursor {
+            Some(cursor) => after = Some(cursor),
+            None => return Ok(total),
+        }
+    }
+}
+
 /// Verifies one bounded page of every settlement key in the requested chain.
 /// The scanner exposes tombstones, and every exact key is independently
 /// re-verified by [`verify_fee_claim_history_scanned`] -- the same checks as

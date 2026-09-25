@@ -48,6 +48,7 @@
 - [DR-0139: FastVote fee-claim history verification](0139-fastvote-fee-claim-history-verification.md)
 - [DR-0140: signed FastVote payout reference and escrow inventory](0140-fastvote-payout-proof-and-escrow-inventory.md)
 - [DR-0141: bounded FastVote fee-claim inventory read cost](0141-fastvote-fee-claim-inventory-read-cost.md)
+- [DR-0142: operator-driven FastVote escrow inventory](0142-fastvote-operator-escrow-inventory.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).

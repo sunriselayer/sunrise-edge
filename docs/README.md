@@ -25,6 +25,7 @@ detailed design, operator guides, and specialist references live here.
 - [Local contract validation](guides/contracts.md)
 - [Production persistence requirements](operations/persistence.md)
 - [PostgreSQL reference design](operations/postgres.md)
+- [Offline FastVote fee-escrow inventory](operations/fastvote-fee-inventory.md)
 - [Hardware signing](signing/hardware-signing.md)
 
 ## Security

@@ -81,7 +81,10 @@ mod effects;
 mod inventory;
 mod verify;
 
-pub use inventory::{FeeEscrowInventoryPage, verify_fee_escrow_inventory_page};
+pub use inventory::{
+    FeeEscrowInventoryPage, FeeEscrowInventorySweep, verify_fee_escrow_inventory_all,
+    verify_fee_escrow_inventory_page,
+};
 
 #[cfg(test)]
 mod recovery_tests;

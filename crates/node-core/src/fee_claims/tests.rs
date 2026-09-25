@@ -1148,21 +1148,11 @@ mod certified_multi_escrow_inventory {
         .unwrap()
     }
 
-    #[derive(Default)]
-    struct SweepTotals {
-        rows: u64,
-        claims: u64,
-        payouts: u64,
-    }
-
-    /// Pages through the complete settlement-key prefix under one quiescent
-    /// fenced store, accumulating exact counts. Mirrors what an operator's
-    /// "complete sweep" driver must do: stop and report `Err` the moment any
-    /// page fails, never silently treat a partial prefix as the whole store.
+    /// Exercises the public all-page driver against a quiescent test store.
     fn sweep_all<S: DurableStateKeyScanner>(
         store: &S,
         page_size: usize,
-    ) -> Result<SweepTotals, FeeClaimError> {
+    ) -> Result<FeeEscrowInventorySweep, FeeClaimError> {
         sweep_all_with_resolver(store, &resolver(), page_size)
     }
 
@@ -1175,29 +1165,17 @@ mod certified_multi_escrow_inventory {
         store: &S,
         resolver: &HashSuiteResolver,
         page_size: usize,
-    ) -> Result<SweepTotals, FeeClaimError> {
-        let mut after: Option<Vec<u8>> = None;
-        let mut totals: SweepTotals = SweepTotals::default();
-        loop {
-            let page: FeeEscrowInventoryPage = verify_fee_escrow_inventory_page(
-                store,
-                &MemoryBlobStore::default(),
-                &context(),
-                domain(),
-                resolver,
-                &[],
-                protocol().chain_id(),
-                after,
-                NonZeroUsize::new(page_size).unwrap(),
-            )?;
-            totals.rows += page.verified_rows;
-            totals.claims += page.verified_claims;
-            totals.payouts += page.verified_payouts;
-            match page.continuation_cursor {
-                Some(cursor) => after = Some(cursor),
-                None => return Ok(totals),
-            }
-        }
+    ) -> Result<FeeEscrowInventorySweep, FeeClaimError> {
+        verify_fee_escrow_inventory_all(
+            store,
+            &MemoryBlobStore::default(),
+            &context(),
+            domain(),
+            resolver,
+            &[],
+            protocol().chain_id(),
+            NonZeroUsize::new(page_size).unwrap(),
+        )
     }
 
     #[test]
@@ -1429,10 +1407,11 @@ mod certified_multi_escrow_inventory {
         // Caller-driven multi-page sweep under a quiescent store (page size
         // 1, forcing one page per settlement row): proves coverage of every
         // retained escrow, not just the two explicit request ids above.
-        let totals: SweepTotals = sweep_all(&reopened, 1).unwrap();
-        assert_eq!(totals.rows, 2);
-        assert_eq!(totals.claims, 5);
-        assert_eq!(totals.payouts, 2);
+        let totals: FeeEscrowInventorySweep = sweep_all(&reopened, 1).unwrap();
+        assert_eq!(totals.verified_rows, 2);
+        assert_eq!(totals.verified_claims, 5);
+        assert_eq!(totals.verified_payouts, 2);
+        assert_eq!(totals.pages, 2);
 
         // Exact payout `ObjectRef`s: the signed split payout the verifier
         // proved is exactly the object this test itself derived and
@@ -2228,10 +2207,11 @@ mod certified_multi_escrow_inventory {
         assert_eq!(report.verified_positive_claims, 0);
         assert_eq!(report.verified_payouts, 0);
 
-        let totals: SweepTotals = sweep_all_with_resolver(&reopened, &resolver, 1).unwrap();
-        assert_eq!(totals.rows, 1);
-        assert_eq!(totals.claims, 1);
-        assert_eq!(totals.payouts, 0);
+        let totals: FeeEscrowInventorySweep =
+            sweep_all_with_resolver(&reopened, &resolver, 1).unwrap();
+        assert_eq!(totals.verified_rows, 1);
+        assert_eq!(totals.verified_claims, 1);
+        assert_eq!(totals.verified_payouts, 0);
 
         // ---- replay non-reapplication across the restart ----
         let (row_before_replay, _): (Vec<u8>, FastPathSettlementRecord) =
@@ -2425,10 +2405,11 @@ mod certified_multi_escrow_inventory {
         assert_eq!(report.verified_claims, 1);
         assert_eq!(report.verified_positive_claims, 1);
         assert_eq!(report.verified_payouts, 1);
-        let totals: SweepTotals = sweep_all_with_resolver(&reopened, &resolver, 1).unwrap();
-        assert_eq!(totals.rows, 1);
-        assert_eq!(totals.claims, 1);
-        assert_eq!(totals.payouts, 1);
+        let totals: FeeEscrowInventorySweep =
+            sweep_all_with_resolver(&reopened, &resolver, 1).unwrap();
+        assert_eq!(totals.verified_rows, 1);
+        assert_eq!(totals.verified_claims, 1);
+        assert_eq!(totals.verified_payouts, 1);
 
         let row_before_replay: Vec<u8> = current_row(&reopened, escrow_request_id).0;
         let payout_head_before_replay: DurableObjectHead = reopened
