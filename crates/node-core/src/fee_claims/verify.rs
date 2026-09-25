@@ -101,7 +101,8 @@ use execution::local_execution::{
     derive_local_created_object_id,
 };
 use execution::publication::{VerifiedPublicationInterface, observe_nominal_value};
-use runtime::DurableObjectProvenance;
+use runtime::{DurableObjectProvenance, DurableStateKeyScanner, StateKeyPage, StateKeyScan};
+use std::num::NonZeroUsize;
 
 #[cfg(test)]
 #[path = "verify_tests.rs"]
@@ -533,13 +534,27 @@ fn check_escrow_transition(
     )
 }
 
+/// The highest generation any settlement row can legally reach:
+/// generation 1 (the certified charge) plus at most
+/// [`MAX_FASTPATH_ACTIVE_VALIDATORS`] individual claims.
+fn fee_claim_chain_max_generation() -> Result<u64, FeeClaimError> {
+    (MAX_FASTPATH_ACTIVE_VALIDATORS as u64)
+        .checked_add(1)
+        .ok_or(FeeClaimError::Invalid("fee claim chain generation bound"))
+}
+
 /// Independently re-verifies every signed fee-claim envelope retained for
 /// one escrow row, from the caller-authenticated generation-1
 /// [`FastPathSettlementRecord`] up to whatever generation is currently
 /// installed. See the module documentation for exactly what this proves and
 /// the one payout-object gap it does not close.
+///
+/// This walk alone does not prove that no *orphaned* envelope exists beyond
+/// the installed generation: [`verify_fee_claim_chain`] and
+/// [`verify_fee_claim_chain_scanned`] each add that proof afterward, by two
+/// different means, and are the only callers this function should have.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn verify_fee_claim_chain<S: StructuredDurableDomainStateStore>(
+fn verify_fee_claim_chain_walk<S: StructuredDurableDomainStateStore>(
     store: &S,
     blob_store: &dyn BlobStore,
     context: &DurableOperationContext,
@@ -622,9 +637,7 @@ pub(super) fn verify_fee_claim_chain<S: StructuredDurableDomainStateStore>(
         ));
     }
     let target_generation: u64 = installed_row.generation;
-    let max_generation: u64 = (MAX_FASTPATH_ACTIVE_VALIDATORS as u64)
-        .checked_add(1)
-        .ok_or(FeeClaimError::Invalid("fee claim chain generation bound"))?;
+    let max_generation: u64 = fee_claim_chain_max_generation()?;
     if target_generation > max_generation {
         return Err(FeeClaimError::Invalid(
             "fee claim chain generation exceeds the active bound",
@@ -896,6 +909,30 @@ pub(super) fn verify_fee_claim_chain<S: StructuredDurableDomainStateStore>(
             "fee claim chain final row does not match the installed row",
         ));
     }
+
+    Ok(FeeClaimChainReport {
+        final_generation: target_generation,
+        verified_claims: target_generation.saturating_sub(genesis_row.generation),
+        verified_positive_claims,
+    })
+}
+
+/// Proves no signed envelope exists at any generation beyond
+/// `target_generation`, up to [`fee_claim_chain_max_generation`], using up
+/// to 257 point reads (the active-validator bound plus one sentinel), each expected
+/// to observe absence. This is the historical strategy, kept exactly as it
+/// behaved before this module gained a scanner-backed alternative; it is
+/// the only strategy available to a caller that has nothing but a plain
+/// [`StructuredDurableDomainStateStore`].
+fn verify_no_orphan_claims_by_point_read<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain_id: &ChainId,
+    request_id: [u8; 32],
+    target_generation: u64,
+    max_generation: u64,
+) -> Result<(), FeeClaimError> {
     let first_orphan_generation: u64 =
         target_generation
             .checked_add(1)
@@ -906,21 +943,194 @@ pub(super) fn verify_fee_claim_chain<S: StructuredDurableDomainStateStore>(
         FeeClaimError::Invalid("fee claim chain generation overflow"),
     )?;
     for orphan_generation in first_orphan_generation..=first_impossible_generation {
-        let orphan_key: Vec<u8> = local_instance_state::fastpath_fee_claim_key(
-            &chain_id,
-            &genesis_row.request_id,
-            orphan_generation,
-        )?;
+        let orphan_key: Vec<u8> =
+            local_instance_state::fastpath_fee_claim_key(chain_id, &request_id, orphan_generation)?;
         let orphan: VersionedStateValue =
             store.get_versioned_durable(context, domain, &orphan_key)?;
         if orphan.revision() != StateRevision::INITIAL || orphan.value().is_some() {
             return Err(FeeClaimError::Invalid("fee claim chain orphan envelope"));
         }
     }
+    Ok(())
+}
 
-    Ok(FeeClaimChainReport {
-        final_generation: target_generation,
-        verified_claims: target_generation.saturating_sub(genesis_row.generation),
-        verified_positive_claims,
-    })
+/// Proves, from one bounded scanner page over this chain+escrow's exact
+/// fee-claim key prefix (`local_instance_state::fastpath_fee_claim_key`
+/// without its generation suffix), that the retained envelope keys are
+/// exactly generations `2..=target_generation` and nothing else: no
+/// missing, malformed, extra or orphan key at *any* generation -- including
+/// generations the point-read strategy above never even inspects because
+/// they fall beyond its own fixed [`fee_claim_chain_max_generation`] bound.
+/// `target_generation` may be `0` (an uncharged row, which retains no claim
+/// keys at all).
+///
+/// A key returned by the scan can still be a tombstone: this function only
+/// proves which keys exist, not their content. [`verify_fee_claim_chain_walk`]'s
+/// own point read of each present generation between `2` and
+/// `target_generation` is what independently rejects a tombstoned or
+/// undecodable envelope; this function only has to additionally rule out a
+/// tombstone or live value *above* `target_generation`, which it does by
+/// treating any key outside the exact expected set as a failure.
+///
+/// The scan requests at most [`MAX_FASTPATH_ACTIVE_VALIDATORS`] keys -- the
+/// maximum any chain can legally retain -- plus the store's own built-in
+/// one-key lookahead sentinel; a continuation cursor on the result proves
+/// more keys exist than are legal and fails closed rather than paging
+/// further, because this proof is only valid over one bounded, single-page,
+/// quiescent read (see the module-level scanner documentation in
+/// `runtime::DurableStateKeyScanner`).
+pub(super) fn verify_claim_key_range_scanned<S: DurableStateKeyScanner>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain_id: &ChainId,
+    request_id: [u8; 32],
+    target_generation: u64,
+) -> Result<(), FeeClaimError> {
+    let prefix: Vec<u8> =
+        local_instance_state::fastpath_fee_claim_key_prefix(chain_id, &request_id)?;
+    let limit: NonZeroUsize = NonZeroUsize::new(MAX_FASTPATH_ACTIVE_VALIDATORS)
+        .ok_or(FeeClaimError::Invalid("fee claim chain scan limit"))?;
+    let scan: StateKeyScan = StateKeyScan::new(prefix.clone(), None, limit)
+        .map_err(|_| FeeClaimError::Invalid("fee claim chain scan request"))?;
+    let page: StateKeyPage = store.scan_durable_keys(context, domain, &scan)?;
+    if page.continuation_cursor().is_some() {
+        return Err(FeeClaimError::Invalid(
+            "fee claim chain scanned claim keys continuation",
+        ));
+    }
+    // Decode every returned key's generation before checking the range so a
+    // malformed key is diagnosed as such even when it happens to keep the
+    // total count matching what a legitimate range would return.
+    let mut generations: Vec<u64> = Vec::with_capacity(page.keys().len());
+    for key in page.keys() {
+        let suffix: &[u8] = key
+            .strip_prefix(prefix.as_slice())
+            .ok_or(FeeClaimError::Invalid(
+                "fee claim chain scanned claim key prefix",
+            ))?;
+        let generation_bytes: [u8; 8] = suffix
+            .try_into()
+            .map_err(|_| FeeClaimError::Invalid("fee claim chain scanned claim key shape"))?;
+        generations.push(u64::from_be_bytes(generation_bytes));
+    }
+    let expected_count: usize = usize::try_from(target_generation.saturating_sub(1))
+        .map_err(|_| FeeClaimError::Invalid("fee claim chain scanned claim key count"))?;
+    if generations.len() != expected_count {
+        return Err(FeeClaimError::Invalid(
+            "fee claim chain scanned claim key count",
+        ));
+    }
+    for (offset, (generation, key)) in generations.iter().zip(page.keys()).enumerate() {
+        let offset: u64 = u64::try_from(offset)
+            .map_err(|_| FeeClaimError::Invalid("fee claim chain generation overflow"))?;
+        let expected_generation: u64 = 2u64.checked_add(offset).ok_or(FeeClaimError::Invalid(
+            "fee claim chain generation overflow",
+        ))?;
+        let exact_key: Vec<u8> = local_instance_state::fastpath_fee_claim_key(
+            chain_id,
+            &request_id,
+            expected_generation,
+        )?;
+        if *generation != expected_generation || key != &exact_key {
+            return Err(FeeClaimError::Invalid(
+                "fee claim chain scanned claim key mismatch",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Independently re-verifies every signed fee-claim envelope retained for
+/// one escrow row, exactly like [`verify_fee_claim_chain_walk`], then proves
+/// no orphaned envelope exists beyond the installed generation using up to
+/// 257 absent point reads. This is the
+/// original, unchanged public entry point: it requires only a plain
+/// [`StructuredDurableDomainStateStore`] and remains available for any
+/// caller (such as a protocol transition) that must not depend on the
+/// optional scanner trait. See [`verify_fee_claim_chain_scanned`] for the
+/// bounded, single-scan alternative used by the inventory sweep.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn verify_fee_claim_chain<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    validator_set: &ValidatorSet,
+    escrow_resource: &FeeEscrowResourceAbi,
+    interface: &VerifiedPublicationInterface,
+    genesis_row: &FastPathSettlementRecord,
+    genesis_row_bytes: &[u8],
+) -> Result<FeeClaimChainReport, FeeClaimError> {
+    let report: FeeClaimChainReport = verify_fee_claim_chain_walk(
+        store,
+        blob_store,
+        context,
+        domain,
+        resolver,
+        history,
+        validator_set,
+        escrow_resource,
+        interface,
+        genesis_row,
+        genesis_row_bytes,
+    )?;
+    let max_generation: u64 = fee_claim_chain_max_generation()?;
+    verify_no_orphan_claims_by_point_read(
+        store,
+        context,
+        domain,
+        genesis_row.context.chain_id(),
+        genesis_row.request_id,
+        report.final_generation,
+        max_generation,
+    )?;
+    Ok(report)
+}
+
+/// Identical to [`verify_fee_claim_chain`] except it proves the absence of
+/// any orphaned envelope with one bounded scanner page
+/// ([`verify_claim_key_range_scanned`]) instead of up to
+/// [`MAX_FASTPATH_ACTIVE_VALIDATORS`] absent point reads. Intended for the
+/// read-only inventory sweep (`super::inventory`), whose backing stores are
+/// already required to implement [`DurableStateKeyScanner`]; never for a
+/// protocol transition.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn verify_fee_claim_chain_scanned<S: DurableStateKeyScanner>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    validator_set: &ValidatorSet,
+    escrow_resource: &FeeEscrowResourceAbi,
+    interface: &VerifiedPublicationInterface,
+    genesis_row: &FastPathSettlementRecord,
+    genesis_row_bytes: &[u8],
+) -> Result<FeeClaimChainReport, FeeClaimError> {
+    let report: FeeClaimChainReport = verify_fee_claim_chain_walk(
+        store,
+        blob_store,
+        context,
+        domain,
+        resolver,
+        history,
+        validator_set,
+        escrow_resource,
+        interface,
+        genesis_row,
+        genesis_row_bytes,
+    )?;
+    verify_claim_key_range_scanned(
+        store,
+        context,
+        domain,
+        genesis_row.context.chain_id(),
+        genesis_row.request_id,
+        report.final_generation,
+    )?;
+    Ok(report)
 }

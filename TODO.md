@@ -2804,8 +2804,9 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
     mutation-time CAS fence. Companion code, tests, complete gate, Bugbot, and
     fresh security/tech-lead reviews landed in PR #180, closing Phase 2.
 - [ ] **Phase 3 — economics/security completion.** Architecture is split into
-  explicit slices. Custody, typed genesis bonds, bond lifecycle and certified
-  fee claims and a certified multi-escrow SQLite restart sweep are implemented;
+  explicit slices. Custody, typed genesis bonds, bond lifecycle, certified
+  fee claims, a certified multi-escrow SQLite restart sweep and cross-epoch
+  historical claim evidence are implemented; an operator-invocable sweep,
   network capacity certification and the review gate remain open:
   - [x] **Slice 0 — non-signable protocol custody prerequisite
     ([DR-0135](docs/architecture/decisions/0135-protocol-custody-owner.md),
@@ -3255,6 +3256,13 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         in maximally sized retained signed envelopes (DR-0138). Row size
         depends on chain-id length; these are not universal bounds or a
         throughput/disk-life certification;
+      - [x] bound all-present-key inventory's per-escrow orphan check to one
+        exact chain-and-escrow claim-key scan (DR-0141), while retaining the
+        plain per-escrow verifier's point-read path. A counting-store test
+        observes one scan and zero absent point reads for a low-generation
+        escrow versus 257 absent point reads previously; malformed, missing,
+        tombstoned, extra and continued key sets fail closed. This is a local
+        logical read-count result, not measured network recovery time;
       - [ ] capacity/load/soak certification for concurrent escrows, claim
         rate, retained envelopes and restart time before claiming network
         capacity. The 48-escrow/six-writer synthetic zero-share SQLite
@@ -3263,6 +3271,20 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         measures local positive-claim latency, object/receipt persistence and
         SQLite/WAL file sizes. Neither directly set-up fixture certifies
         sustained network throughput, disk life or recovery time (DR-0138);
+      - [ ] expose the bounded, read-only all-escrow verifier to an operator
+        on a quiescent fenced store before network start. The current complete
+        sweep driver exists only in tests; one page is not a global snapshot,
+        and a running writer invalidates a multi-page completeness claim;
+      - [x] verify certificate-epoch validator membership and historical
+        hash-suite selection across a real vote/certificate/activation epoch
+        transition that drops a validator and rotates SHA-2 to SHA-3. Separate
+        certified SQLite fixtures submit dropped-validator zero-share and
+        positive split claims at E+1 against an E escrow; the positive case
+        executes a real WASM payout, retains the old escrow type hash while
+        deriving the new payout type under E+1, and verifies the signed payout,
+        retained chain, all-present-key sweep and exact replay after close/reopen.
+        Bond eligibility rows are synthetic prerequisites in these fixtures;
+        they do not prove real bond-deposit operations or network capacity;
       - [ ] future protocol-version activation gate: there is currently no
         durable version-switch operation, and the claim handler intentionally
         rejects a different version, including zero shares. Before adding a
@@ -3272,8 +3294,9 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         config changes as an authorized protocol migration;
       - [ ] Phase 3 review gate.
 
-  **Remaining Phase 3 completion:** establish network claim and restart-sweep
-  capacity with representative load/soak evidence, then pass the Phase 3
+  **Remaining Phase 3 completion:** make the verified sweep operable, establish
+  network claim and restart-sweep capacity with representative load/soak
+  evidence, then pass the Phase 3
   review gate. Protocol-version activation is
   a separately blocked future gate; there is no live version-switch path to
   exercise in this phase. Revisit it before implementing that path.

@@ -9,10 +9,12 @@ use execution::publication::VerifiedPublicationInterface;
 use objects::{Address, Object, Owner, encode_object};
 use protocol_types::{HashAlgorithmId, ValidatorId};
 use runtime::{
-    DurableObjectMutation, DurableObjectOwnerProjection, DurableObjectProvenance,
-    DurableObjectRoutingProjection, DurableObjectVersionRecord, DurableRequestId,
-    DurableRequestReceipt, MemoryBlobStore, MemoryDurableStateStore, WriterFenceGeneration,
+    DurableDomainStateStore, DurableObjectMutation, DurableObjectOwnerProjection,
+    DurableObjectProvenance, DurableObjectRoutingProjection, DurableObjectVersionRecord,
+    DurableRequestId, DurableRequestReceipt, DurableStateKeyScanner, MemoryBlobStore,
+    MemoryDurableStateStore, StateKeyPage, StateKeyScan, WriterFenceGeneration,
 };
+use std::cell::Cell;
 use validator_set::{ValidatorInfo, ValidatorSet};
 
 fn object_ref(object: &Object) -> ObjectRef {
@@ -106,6 +108,124 @@ fn put_state<S: StructuredDurableDomainStateStore>(store: &S, key: Vec<u8>, valu
         store.commit_durable(&context(1), transaction),
         DurableCommitOutcome::Committed
     );
+}
+
+/// Tombstones one previously written key, fencing on whatever revision is
+/// currently observed. A durable delete never removes the key from a
+/// scanner's keyspace, only its value.
+fn delete_state<S: StructuredDurableDomainStateStore>(store: &S, key: Vec<u8>) {
+    let revision: StateRevision = store
+        .get_versioned_durable(&context(1), domain(), &key)
+        .unwrap()
+        .revision();
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(key.clone(), revision).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(key, StateMutation::Delete).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&context(1), transaction),
+        DurableCommitOutcome::Committed
+    );
+}
+
+/// Wraps a [`MemoryDurableStateStore`] to count exact point reads
+/// ([`DurableDomainStateStore::get_versioned_durable`]) and scanner pages
+/// ([`DurableStateKeyScanner::scan_durable_keys`]) separately, so a test can
+/// assert on the *number of underlying storage operations* an orphan-check
+/// strategy performs, not just its result.
+struct ReadCountingStore<'a> {
+    inner: &'a MemoryDurableStateStore,
+    point_reads: Cell<usize>,
+    scans: Cell<usize>,
+}
+
+impl<'a> ReadCountingStore<'a> {
+    fn new(inner: &'a MemoryDurableStateStore) -> Self {
+        Self {
+            inner,
+            point_reads: Cell::new(0),
+            scans: Cell::new(0),
+        }
+    }
+}
+
+impl DurableDomainStateStore for ReadCountingStore<'_> {
+    fn get_versioned_durable(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        key: &[u8],
+    ) -> Result<VersionedStateValue, DurableReadError> {
+        self.point_reads.set(self.point_reads.get() + 1);
+        self.inner.get_versioned_durable(context, domain, key)
+    }
+
+    fn commit_durable(
+        &self,
+        context: &DurableOperationContext,
+        transaction: AtomicStateTransaction,
+    ) -> DurableCommitOutcome {
+        self.inner.commit_durable(context, transaction)
+    }
+}
+
+impl StructuredDurableDomainStateStore for ReadCountingStore<'_> {
+    fn get_object_head(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+    ) -> Result<DurableObjectHead, DurableReadError> {
+        self.inner.get_object_head(context, domain, object_id)
+    }
+
+    fn get_object_version(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+        object_version: DurableObjectVersion,
+    ) -> Result<Option<DurableObjectVersionRecord>, DurableReadError> {
+        self.inner
+            .get_object_version(context, domain, object_id, object_version)
+    }
+
+    fn get_request_receipt(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        request_id: DurableRequestId,
+    ) -> Result<Option<DurableRequestReceipt>, DurableReadError> {
+        self.inner.get_request_receipt(context, domain, request_id)
+    }
+
+    fn commit_invocation(
+        &self,
+        context: &DurableOperationContext,
+        transaction: DurableInvocationTransaction,
+    ) -> DurableCommitOutcome {
+        self.inner.commit_invocation(context, transaction)
+    }
+}
+
+impl DurableStateKeyScanner for ReadCountingStore<'_> {
+    fn scan_durable_keys(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        scan: &StateKeyScan,
+    ) -> Result<StateKeyPage, DurableReadError> {
+        self.scans.set(self.scans.get() + 1);
+        self.inner.scan_durable_keys(context, domain, scan)
+    }
 }
 
 fn coin_data(amount: u64) -> Vec<u8> {
@@ -456,6 +576,25 @@ fn run(fixture: &ChainFixture) -> Result<FeeClaimChainReport, FeeClaimError> {
     )
 }
 
+/// Same walk as [`run`], but through the scanner-backed orphan-detection
+/// strategy ([`verify_fee_claim_chain_scanned`]) instead of the point-read
+/// one.
+fn run_scanned(fixture: &ChainFixture) -> Result<FeeClaimChainReport, FeeClaimError> {
+    verify_fee_claim_chain_scanned(
+        &fixture.store,
+        &MemoryBlobStore::default(),
+        &context(1),
+        domain(),
+        &resolver(),
+        &[],
+        &fixture.validator_set,
+        &fixture.escrow_resource,
+        &fixture.interface,
+        &fixture.genesis_row,
+        &fixture.genesis_row_bytes,
+    )
+}
+
 #[test]
 fn verifies_a_consistent_split_then_final_chain() {
     let fixture: ChainFixture = build_chain(Tamper::None);
@@ -550,4 +689,285 @@ fn rejects_a_genesis_anchor_that_is_not_generation_one() {
         error,
         FeeClaimError::Invalid("fee claim chain genesis generation")
     ));
+}
+
+// -- Scanner-backed orphan-detection strategy -------------------------------
+//
+// `verify_fee_claim_chain_scanned` shares `verify_fee_claim_chain_walk` with
+// the point-read entry point above; it only swaps how the absence of an
+// orphaned envelope is proved. The following tests establish that swap is
+// (a) behavior-preserving on every already-covered case, (b) strictly more
+// thorough than the point-read strategy for a case the old fixed bound never
+// even inspected, and (c) bounded to one scanner page instead of hundreds of
+// absent point reads for a low-generation escrow.
+
+#[test]
+fn scanned_chain_matches_the_point_read_chain_on_a_consistent_split_then_final() {
+    let fixture: ChainFixture = build_chain(Tamper::None);
+    assert_eq!(run(&fixture).unwrap(), run_scanned(&fixture).unwrap());
+}
+
+#[test]
+fn scanned_rejects_a_missing_intermediate_envelope() {
+    let fixture: ChainFixture = build_chain(Tamper::MissingEnvelope);
+    let error: FeeClaimError = run_scanned(&fixture).unwrap_err();
+    assert!(matches!(
+        error,
+        FeeClaimError::Invalid("fee claim chain missing or orphaned envelope")
+    ));
+}
+
+#[test]
+fn scanned_rejects_a_tampered_validator_signature() {
+    let fixture: ChainFixture = build_chain(Tamper::BadSignature);
+    let error: FeeClaimError = run_scanned(&fixture).unwrap_err();
+    assert!(matches!(
+        error,
+        FeeClaimError::Invalid("fee claim chain envelope signature")
+    ));
+}
+
+#[test]
+fn scanned_rejects_an_orphan_envelope_far_beyond_the_old_point_read_bound() {
+    let fixture: ChainFixture = build_chain(Tamper::None);
+    // Chosen far past `fee_claim_chain_max_generation() + 1`, the old
+    // strategy's own fixed upper bound: the point-read loop never reads
+    // this generation at all, so it stays blind to this orphan.
+    let far_orphan_generation: u64 = fee_claim_chain_max_generation().unwrap() + 1_000;
+    put_state(
+        &fixture.store,
+        local_instance_state::fastpath_fee_claim_key(
+            &chain(),
+            &fixture.genesis_row.request_id,
+            far_orphan_generation,
+        )
+        .unwrap(),
+        vec![0xFF],
+    );
+
+    let unaffected: FeeClaimChainReport = run(&fixture).unwrap();
+    assert_eq!(unaffected.final_generation, 3);
+
+    let error: FeeClaimError = run_scanned(&fixture).unwrap_err();
+    assert!(matches!(
+        error,
+        FeeClaimError::Invalid("fee claim chain scanned claim key count")
+    ));
+}
+
+#[test]
+fn scanned_rejects_a_tombstoned_orphan_claim_key() {
+    let fixture: ChainFixture = build_chain(Tamper::None);
+    let orphan_key: Vec<u8> =
+        local_instance_state::fastpath_fee_claim_key(&chain(), &fixture.genesis_row.request_id, 4)
+            .unwrap();
+    put_state(&fixture.store, orphan_key.clone(), vec![0xFF]);
+    delete_state(&fixture.store, orphan_key);
+
+    // The point-read strategy already rejects this (generation 4 is within
+    // its fixed bound), by observing the tombstone's advanced revision.
+    let old_error: FeeClaimError = run(&fixture).unwrap_err();
+    assert!(matches!(
+        old_error,
+        FeeClaimError::Invalid("fee claim chain orphan envelope")
+    ));
+
+    // The scanner strategy rejects it too, because a tombstoned key is still
+    // enumerated by the scan: it inflates the observed key count past what
+    // the installed generation permits.
+    let new_error: FeeClaimError = run_scanned(&fixture).unwrap_err();
+    assert!(matches!(
+        new_error,
+        FeeClaimError::Invalid("fee claim chain scanned claim key count")
+    ));
+}
+
+#[test]
+fn claim_key_range_scan_accepts_an_empty_range_for_an_uncharged_row() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    verify_claim_key_range_scanned(&store, &context(1), domain(), &chain(), [0x96; 32], 0).unwrap();
+}
+
+/// The scanner-backed sibling of
+/// [`crate::fee_claims::verify_uncharged_claim_absence_by_point_read`]'s own
+/// orphan-rejection coverage, exercised the same way an uncharged row's own
+/// generation-0 hook would call this function.
+#[test]
+fn claim_key_range_scan_rejects_an_orphan_claim_key_for_an_uncharged_row() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let request_id: [u8; 32] = [0x98; 32];
+    put_state(
+        &store,
+        local_instance_state::fastpath_fee_claim_key(&chain(), &request_id, 2).unwrap(),
+        vec![0xFF],
+    );
+    let error: FeeClaimError =
+        verify_claim_key_range_scanned(&store, &context(1), domain(), &chain(), request_id, 0)
+            .unwrap_err();
+    assert!(matches!(
+        error,
+        FeeClaimError::Invalid("fee claim chain scanned claim key count")
+    ));
+}
+
+#[test]
+fn claim_key_range_scan_rejects_a_malformed_key_shape() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let request_id: [u8; 32] = [0x99; 32];
+    let mut malformed_key: Vec<u8> =
+        local_instance_state::fastpath_fee_claim_key(&chain(), &request_id, 2).unwrap();
+    // One byte longer than the fixed 8-byte big-endian generation suffix.
+    malformed_key.push(0xFF);
+    put_state(&store, malformed_key, vec![0x01]);
+    let error: FeeClaimError =
+        verify_claim_key_range_scanned(&store, &context(1), domain(), &chain(), request_id, 2)
+            .unwrap_err();
+    assert!(matches!(
+        error,
+        FeeClaimError::Invalid("fee claim chain scanned claim key shape")
+    ));
+}
+
+#[test]
+fn claim_key_range_scan_rejects_a_missing_generation() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let request_id: [u8; 32] = [0x9A; 32];
+    put_state(
+        &store,
+        local_instance_state::fastpath_fee_claim_key(&chain(), &request_id, 2).unwrap(),
+        vec![0x01],
+    );
+    let error: FeeClaimError =
+        verify_claim_key_range_scanned(&store, &context(1), domain(), &chain(), request_id, 3)
+            .unwrap_err();
+    assert!(matches!(
+        error,
+        FeeClaimError::Invalid("fee claim chain scanned claim key count")
+    ));
+}
+
+#[test]
+fn claim_key_range_scan_rejects_a_count_preserving_gap_and_extra_key() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let request_id: [u8; 32] = [0x9B; 32];
+    for generation in [2, 4] {
+        put_state(
+            &store,
+            local_instance_state::fastpath_fee_claim_key(&chain(), &request_id, generation)
+                .unwrap(),
+            vec![0x01],
+        );
+    }
+    let error: FeeClaimError =
+        verify_claim_key_range_scanned(&store, &context(1), domain(), &chain(), request_id, 3)
+            .unwrap_err();
+    assert!(matches!(
+        error,
+        FeeClaimError::Invalid("fee claim chain scanned claim key mismatch")
+    ));
+}
+
+#[test]
+fn claim_key_range_scan_accepts_the_exact_active_validator_bound() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let request_id: [u8; 32] = [0x9C; 32];
+    let last_generation: u64 = u64::try_from(MAX_FASTPATH_ACTIVE_VALIDATORS).unwrap() + 1;
+    for generation in 2..=last_generation {
+        put_state(
+            &store,
+            local_instance_state::fastpath_fee_claim_key(&chain(), &request_id, generation)
+                .unwrap(),
+            vec![0x01],
+        );
+    }
+    verify_claim_key_range_scanned(
+        &store,
+        &context(1),
+        domain(),
+        &chain(),
+        request_id,
+        last_generation,
+    )
+    .unwrap();
+}
+
+#[test]
+fn claim_key_range_scan_rejects_continuation_when_more_keys_exist_than_the_bound() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let request_id: [u8; 32] = [0x95; 32];
+    // `MAX_FASTPATH_ACTIVE_VALIDATORS + 1` keys: one more than any legal
+    // chain can retain, and exactly the scan's built-in lookahead sentinel.
+    let last_generation: u64 = MAX_FASTPATH_ACTIVE_VALIDATORS as u64 + 2;
+    for generation in 2..=last_generation {
+        put_state(
+            &store,
+            local_instance_state::fastpath_fee_claim_key(&chain(), &request_id, generation)
+                .unwrap(),
+            vec![0x01],
+        );
+    }
+    let error: FeeClaimError = verify_claim_key_range_scanned(
+        &store,
+        &context(1),
+        domain(),
+        &chain(),
+        request_id,
+        last_generation,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        FeeClaimError::Invalid("fee claim chain scanned claim keys continuation")
+    ));
+}
+
+/// The optimization this module exists for: proves the scanner-backed
+/// strategy needs zero point reads and one scan to rule out an orphaned
+/// envelope for a low-generation (here, genesis-only, zero-claim) escrow,
+/// while the point-read strategy it replaces in the inventory sweep needs
+/// 257 point reads that are all expected to observe absence.
+#[test]
+fn low_generation_orphan_check_uses_one_scan_instead_of_hundreds_of_absent_point_reads() {
+    let inner: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let request_id: [u8; 32] = [0x97; 32];
+    let max_generation: u64 = fee_claim_chain_max_generation().unwrap();
+    let genesis_only_generation: u64 = 1;
+
+    let point_read_store: ReadCountingStore<'_> = ReadCountingStore::new(&inner);
+    verify_no_orphan_claims_by_point_read(
+        &point_read_store,
+        &context(1),
+        domain(),
+        &chain(),
+        request_id,
+        genesis_only_generation,
+        max_generation,
+    )
+    .unwrap();
+    assert_eq!(
+        point_read_store.point_reads.get(),
+        usize::try_from(max_generation).unwrap(),
+    );
+    assert_eq!(point_read_store.scans.get(), 0);
+
+    let scanned_store: ReadCountingStore<'_> = ReadCountingStore::new(&inner);
+    verify_claim_key_range_scanned(
+        &scanned_store,
+        &context(1),
+        domain(),
+        &chain(),
+        request_id,
+        genesis_only_generation,
+    )
+    .unwrap();
+    assert_eq!(scanned_store.point_reads.get(), 0);
+    assert_eq!(scanned_store.scans.get(), 1);
 }
