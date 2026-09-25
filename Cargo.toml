@@ -28,6 +28,7 @@ members = [
     "crates/native-http",
     "crates/signing-view",
     "apps/devnet",
+    "apps/operator",
     "apps/cli",
     "clients/rust",
     "clients/ledger",

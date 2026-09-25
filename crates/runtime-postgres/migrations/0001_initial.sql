@@ -38,6 +38,23 @@ CREATE TABLE sunrise_edge.storage_metadata (
     CHECK (schema_generation <= compatibility_max_generation)
 );
 
+CREATE TABLE sunrise_edge.blobs (
+    chain_id_bytes BYTEA NOT NULL,
+    validator_id BYTEA NOT NULL,
+    atomicity_domain_id BYTEA NOT NULL,
+    digest_algorithm_id INTEGER NOT NULL CHECK (digest_algorithm_id BETWEEN 0 AND 65535),
+    digest_bytes BYTEA NOT NULL CHECK (octet_length(digest_bytes) = 32),
+    blob_bytes BYTEA NOT NULL CHECK (octet_length(blob_bytes) <= 33554432),
+    PRIMARY KEY (
+        chain_id_bytes, validator_id, atomicity_domain_id,
+        digest_algorithm_id, digest_bytes
+    ),
+    FOREIGN KEY (chain_id_bytes, validator_id, atomicity_domain_id)
+        REFERENCES sunrise_edge.storage_metadata
+        (chain_id_bytes, validator_id, atomicity_domain_id)
+        ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
+);
+
 CREATE TABLE sunrise_edge.state_records (
     chain_id_bytes BYTEA NOT NULL,
     validator_id BYTEA NOT NULL,

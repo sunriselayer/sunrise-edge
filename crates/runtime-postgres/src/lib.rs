@@ -5,8 +5,13 @@
 //! Request handling never calls the migration or namespace-bootstrap APIs in
 //! this crate. Operators apply migrations and bind one logical namespace
 //! before a durable adapter is admitted. The schema stores state, receipts,
-//! outbox data, objects, checkpoints, and migration jobs in separate relations;
-//! it never classifies opaque [`runtime::PersistenceLayout`] keys.
+//! outbox data, objects, checkpoints, migration jobs, and namespace-scoped
+//! content-addressed blobs (see [`blob`]) in separate relations; it never
+//! classifies opaque [`runtime::PersistenceLayout`] keys.
+
+mod blob;
+
+pub use blob::{PostgresBlobStore, PostgresBlobStoreError};
 
 use postgres::{
     Client, Config, GenericClient, IsolationLevel, Socket,
@@ -47,11 +52,14 @@ pub const INITIAL_MIGRATION_SQL: &str = include_str!("../migrations/0001_initial
 
 /// Stable identity of the normalized PostgreSQL schema generation one.
 ///
-/// This is `v2`: generation one is redefined in place (not advanced) to add
-/// object-version provenance columns, an authorized pre-production bootstrap-
-/// only change (see `docs/architecture/decisions/0058-0075-postgres-conformance.md` DR-0068). An existing `v1` database
-/// fails closed with `SchemaMismatch` rather than being silently accepted.
-pub const POSTGRES_SCHEMA_IDENTITY: [u8; 32] = *b"sunrise-edge/postgres/schema/v2\0";
+/// This is `v3`: generation one is redefined in place (not advanced) to add
+/// the namespace-scoped [`blob`] table, an authorized pre-production
+/// bootstrap-only change (following the same `v1`->`v2` precedent, see
+/// `docs/architecture/decisions/0058-0075-postgres-conformance.md` DR-0068).
+/// This crate ships no migration from `v2` to `v3`: an existing `v2` (or
+/// `v1`) database fails closed with `SchemaMismatch` rather than being
+/// silently accepted, exactly as `v1` failed closed under `v2`.
+pub const POSTGRES_SCHEMA_IDENTITY: [u8; 32] = *b"sunrise-edge/postgres/schema/v3\0";
 
 /// First supported schema generation.
 pub const POSTGRES_SCHEMA_GENERATION: SchemaGeneration = SchemaGeneration(NonZeroU64::MIN);
@@ -3612,11 +3620,12 @@ mod tests {
     fn schema_identity_is_exact_and_generation_is_non_zero() {
         assert_eq!(
             POSTGRES_SCHEMA_IDENTITY,
-            *b"sunrise-edge/postgres/schema/v2\0"
+            *b"sunrise-edge/postgres/schema/v3\0"
         );
         assert_eq!(POSTGRES_SCHEMA_IDENTITY.len(), 32);
         assert_eq!(POSTGRES_SCHEMA_GENERATION.get(), 1);
         assert!(INITIAL_MIGRATION_SQL.contains("CREATE TABLE sunrise_edge.state_records"));
+        assert!(INITIAL_MIGRATION_SQL.contains("CREATE TABLE sunrise_edge.blobs"));
         assert!(INITIAL_MIGRATION_SQL.contains("CREATE INDEX outbox_delivery_due"));
         assert!(INITIAL_MIGRATION_SQL.contains("created_chain_id_bytes BYTEA NOT NULL"));
         assert!(INITIAL_MIGRATION_SQL.contains("created_protocol_version BIGINT NOT NULL"));

@@ -1731,6 +1731,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sunrise-edge-operator"
+version = "0.1.0"
+dependencies = [
+ "hashing",
+ "node-core",
+ "postgres",
+ "postgres_rustls",
+ "protocol-types",
+ "r2d2_postgres",
+ "runtime",
+ "runtime-postgres",
+ "rustls",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"

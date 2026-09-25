@@ -49,6 +49,7 @@
 - [DR-0140: signed FastVote payout reference and escrow inventory](0140-fastvote-payout-proof-and-escrow-inventory.md)
 - [DR-0141: bounded FastVote fee-claim inventory read cost](0141-fastvote-fee-claim-inventory-read-cost.md)
 - [DR-0142: operator-driven FastVote escrow inventory](0142-fastvote-operator-escrow-inventory.md)
+- [DR-0143: PostgreSQL first-network escrow operations](0143-postgres-first-network-escrow-operations.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).

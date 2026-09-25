@@ -21,6 +21,7 @@ rustfmt --edition 2024 --check \
   crates/execution/tests/paid_execution_engine/codec.rs
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
+bash scripts/check-fee-escrow-inventory.sh
 
 node scripts/call-value-vectors.mjs
 node scripts/call-intent-vectors.mjs

@@ -1044,6 +1044,7 @@ fn postgres_schema_and_durable_store_conformance() {
     assert_eq!(
         tables,
         vec![
+            "blobs",
             "checkpoints",
             "migration_jobs",
             "object_heads",
