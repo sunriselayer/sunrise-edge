@@ -185,18 +185,28 @@ pub fn fastpath_settlement_key(
     Ok(key)
 }
 
-/// Permanent signed fee-claim envelope for one escrow row generation. The
-/// escrow request id scopes the chain; the post-claim generation gives each
-/// successful claim its own never-overwritten audit key.
-pub fn fastpath_fee_claim_key(
+/// Shared exact chain-and-escrow prefix for retained signed fee-claim keys.
+pub(crate) fn fastpath_fee_claim_key_prefix(
     chain: &ChainId,
     escrow_request_id: &[u8; 32],
-    generation: u64,
 ) -> Result<Vec<u8>, NodeCoreError> {
     let mut key: Vec<u8> = FASTPATH_STATE_PREFIX.to_vec();
     key.extend_from_slice(b"fee-claim/");
     key.extend(encode_chain_id(chain)?);
     key.extend_from_slice(escrow_request_id);
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+/// Permanent signed fee-claim envelope for one escrow row generation. The
+/// fixed-width post-claim generation gives each successful claim its own
+/// never-overwritten audit key.
+pub fn fastpath_fee_claim_key(
+    chain: &ChainId,
+    escrow_request_id: &[u8; 32],
+    generation: u64,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = fastpath_fee_claim_key_prefix(chain, escrow_request_id)?;
     key.extend_from_slice(&generation.to_be_bytes());
     validate_transactional_state_key(&key)?;
     Ok(key)

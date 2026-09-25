@@ -98,15 +98,14 @@ pub fn verify_fee_escrow_inventory_page<S: DurableStateKeyScanner>(
 /// entry points share one implementation,
 /// [`super::verify_fee_claim_history_shared`]. The only place this sibling's
 /// behavior actually differs is wherever the plain function would need up to
-/// 257 point
-/// reads expected to observe absence (to prove no claim record exists for
-/// an uncharged row, or that no envelope was orphaned beyond the installed
-/// generation of a charged one): this version proves the same fact from one
-/// bounded scanner page instead
+/// 257 point reads expected to observe absence (to prove no claim record
+/// exists for an uncharged row, or that no envelope was orphaned beyond the
+/// installed generation of a charged one): this version proves the same fact
+/// from one bounded scanner page instead
 /// (`verify::verify_claim_key_range_scanned`/`verify::verify_fee_claim_chain_scanned`).
 /// See `docs/architecture/decisions/0140-fastvote-payout-proof-and-escrow-inventory.md`.
 #[allow(clippy::too_many_arguments)]
-pub fn verify_fee_claim_history_scanned<S: DurableStateKeyScanner>(
+pub(super) fn verify_fee_claim_history_scanned<S: DurableStateKeyScanner>(
     store: &S,
     blob_store: &dyn BlobStore,
     context: &DurableOperationContext,

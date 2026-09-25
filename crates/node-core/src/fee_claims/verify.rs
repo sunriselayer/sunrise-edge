@@ -96,7 +96,6 @@
 use super::*;
 use crate::fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS;
 use abi::package_types::{ScopedTypeTag, verify_scoped_type_id};
-use canonical_encoding::encode_chain_id;
 use execution::local_execution::{
     InstanceRecord, MAX_LOCAL_CREATED_OBJECTS, ObjectAuthority, decode_object_authority,
     derive_local_created_object_id,
@@ -988,10 +987,8 @@ pub(super) fn verify_claim_key_range_scanned<S: DurableStateKeyScanner>(
     request_id: [u8; 32],
     target_generation: u64,
 ) -> Result<(), FeeClaimError> {
-    let mut prefix: Vec<u8> = local_instance_state::FASTPATH_STATE_PREFIX.to_vec();
-    prefix.extend_from_slice(b"fee-claim/");
-    prefix.extend(encode_chain_id(chain_id)?);
-    prefix.extend_from_slice(&request_id);
+    let prefix: Vec<u8> =
+        local_instance_state::fastpath_fee_claim_key_prefix(chain_id, &request_id)?;
     let limit: NonZeroUsize = NonZeroUsize::new(MAX_FASTPATH_ACTIVE_VALIDATORS)
         .ok_or(FeeClaimError::Invalid("fee claim chain scan limit"))?;
     let scan: StateKeyScan = StateKeyScan::new(prefix.clone(), None, limit)
@@ -1025,11 +1022,11 @@ pub(super) fn verify_claim_key_range_scanned<S: DurableStateKeyScanner>(
         ));
     }
     for (offset, (generation, key)) in generations.iter().zip(page.keys()).enumerate() {
-        let expected_generation: u64 =
-            2u64.checked_add(offset as u64)
-                .ok_or(FeeClaimError::Invalid(
-                    "fee claim chain generation overflow",
-                ))?;
+        let offset: u64 = u64::try_from(offset)
+            .map_err(|_| FeeClaimError::Invalid("fee claim chain generation overflow"))?;
+        let expected_generation: u64 = 2u64.checked_add(offset).ok_or(FeeClaimError::Invalid(
+            "fee claim chain generation overflow",
+        ))?;
         let exact_key: Vec<u8> = local_instance_state::fastpath_fee_claim_key(
             chain_id,
             &request_id,

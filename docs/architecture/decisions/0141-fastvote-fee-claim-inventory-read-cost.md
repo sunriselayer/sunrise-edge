@@ -40,8 +40,10 @@ still requires an external anchor to detect.
 
 - Targeted tests must cover exact key-set acceptance, missing generations,
   malformed or out-of-range keys, tombstones, and continuation at the bound.
-- A read-counting store must demonstrate the reduction in negative point
-  reads while preserving all positive claim, escrow, and payout reads.
+- A read-counting store demonstrates the negative-read reduction for the
+  isolated orphan-key check. Certified inventory tests separately establish
+  successful positive-claim and payout verification, but do not count those
+  reads end-to-end.
 - Timing and physical-storage observations are diagnostic only. Sustained
   claim throughput, disk life, and an acceptable network recovery-time bound
   still need a specified testnet topology, load profile, and SLO.

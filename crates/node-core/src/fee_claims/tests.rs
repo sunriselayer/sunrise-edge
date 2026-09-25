@@ -1696,12 +1696,11 @@ mod certified_multi_escrow_inventory {
     }
 
     /// A real DR-0132 `e -> e+1` transition: every given voter independently
-    /// derives and casts an outgoing-set vote over the same `next_validators`
-    /// (which may be a strict subset of the outgoing set -- dropping a
-    /// validator is exactly what
-    /// [`certified_claim_by_a_dropped_validator_survives_a_real_epoch_transition_and_hash_suite_rotation`]
-    /// exercises), a real quorum certificate is formed and verified, and
-    /// [`epoch_transition::activate`] atomically installs it. Returns the new
+    /// signs an outgoing-set vote from one shared primary-store state view.
+    /// `next_validators` may be a strict subset of the outgoing set, as both
+    /// dropped-validator tests exercise. A real quorum certificate is formed
+    /// and verified, then [`epoch_transition::activate`] atomically installs
+    /// it. Returns the new
     /// current epoch's [`PublicationContext`].
     fn advance_epoch<S: StructuredDurableDomainStateStore>(
         store: &S,

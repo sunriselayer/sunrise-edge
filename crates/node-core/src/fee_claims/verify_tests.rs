@@ -832,6 +832,72 @@ fn claim_key_range_scan_rejects_a_malformed_key_shape() {
 }
 
 #[test]
+fn claim_key_range_scan_rejects_a_missing_generation() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let request_id: [u8; 32] = [0x9A; 32];
+    put_state(
+        &store,
+        local_instance_state::fastpath_fee_claim_key(&chain(), &request_id, 2).unwrap(),
+        vec![0x01],
+    );
+    let error: FeeClaimError =
+        verify_claim_key_range_scanned(&store, &context(1), domain(), &chain(), request_id, 3)
+            .unwrap_err();
+    assert!(matches!(
+        error,
+        FeeClaimError::Invalid("fee claim chain scanned claim key count")
+    ));
+}
+
+#[test]
+fn claim_key_range_scan_rejects_a_count_preserving_gap_and_extra_key() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let request_id: [u8; 32] = [0x9B; 32];
+    for generation in [2, 4] {
+        put_state(
+            &store,
+            local_instance_state::fastpath_fee_claim_key(&chain(), &request_id, generation)
+                .unwrap(),
+            vec![0x01],
+        );
+    }
+    let error: FeeClaimError =
+        verify_claim_key_range_scanned(&store, &context(1), domain(), &chain(), request_id, 3)
+            .unwrap_err();
+    assert!(matches!(
+        error,
+        FeeClaimError::Invalid("fee claim chain scanned claim key mismatch")
+    ));
+}
+
+#[test]
+fn claim_key_range_scan_accepts_the_exact_active_validator_bound() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let request_id: [u8; 32] = [0x9C; 32];
+    let last_generation: u64 = u64::try_from(MAX_FASTPATH_ACTIVE_VALIDATORS).unwrap() + 1;
+    for generation in 2..=last_generation {
+        put_state(
+            &store,
+            local_instance_state::fastpath_fee_claim_key(&chain(), &request_id, generation)
+                .unwrap(),
+            vec![0x01],
+        );
+    }
+    verify_claim_key_range_scanned(
+        &store,
+        &context(1),
+        domain(),
+        &chain(),
+        request_id,
+        last_generation,
+    )
+    .unwrap();
+}
+
+#[test]
 fn claim_key_range_scan_rejects_continuation_when_more_keys_exist_than_the_bound() {
     let store: MemoryDurableStateStore =
         MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
@@ -866,9 +932,7 @@ fn claim_key_range_scan_rejects_continuation_when_more_keys_exist_than_the_bound
 /// strategy needs zero point reads and one scan to rule out an orphaned
 /// envelope for a low-generation (here, genesis-only, zero-claim) escrow,
 /// while the point-read strategy it replaces in the inventory sweep needs
-/// [`MAX_FASTPATH_ACTIVE_VALIDATORS`] point reads that are all expected to
-/// observe absence -- comfortably over the 250 DR-0140 flags as
-/// disqualifying for a bounded, low-cost inventory sweep.
+/// 257 point reads that are all expected to observe absence.
 #[test]
 fn low_generation_orphan_check_uses_one_scan_instead_of_hundreds_of_absent_point_reads() {
     let inner: MemoryDurableStateStore =
@@ -892,7 +956,6 @@ fn low_generation_orphan_check_uses_one_scan_instead_of_hundreds_of_absent_point
         point_read_store.point_reads.get(),
         usize::try_from(max_generation).unwrap(),
     );
-    assert!(point_read_store.point_reads.get() >= 250);
     assert_eq!(point_read_store.scans.get(), 0);
 
     let scanned_store: ReadCountingStore<'_> = ReadCountingStore::new(&inner);
