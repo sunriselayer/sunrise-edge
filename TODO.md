@@ -3348,23 +3348,27 @@ operator-invoked **genesis-epoch rehearsal**, not public validator ingress or
 testnet activation. Keep it in one coherent PR rather than dividing schema,
 CLI framing and vote/certificate handling into helper-only changes.
 
-- [ ] An operator can explicitly initialize each validator's own PostgreSQL
+- [x] An operator can explicitly initialize each validator's own PostgreSQL
   namespace, install the **same** independently pinned, single-genesis-
   authority-signed manifest containing the complete validator set and one
   valid bond per validator, and restart-verify the exact manifest digest.
-- [ ] Separate CLI invocations with separately held Ed25519 validator keys
+- [x] Separate CLI invocations with separately held Ed25519 validator keys
   can prepare the same sender-signed paid intent, exchange canonical votes as
-  untrusted files, form a deterministic committed-set quorum certificate and
-  independently apply it to each namespace. The key-derived public identity,
+  untrusted files, form a deterministic signed-genesis-set quorum certificate and
+  independently apply it to each namespace. The key-derived public key's
+  committed registration under the configured validator ID,
   locally expected chain/protocol/epoch/hash suite and manifest digest are
   checked before signing. PostgreSQL TLS and a new writer fence are required
   for each mutation; no fixed devnet key, public FastVote route, `NodeEventKind`
   or background relay is introduced.
-- [ ] A real PostgreSQL, multi-process E2E proves identical committed
-  receipt/object results across at least a three-of-four quorum, process
+- [x] A real PostgreSQL, multi-process E2E proves identical canonical
+  responses and committed certificate/object/nonce results across at least
+  a three-of-four quorum, process
   restart and exact replay without reapplication. It also rejects inadequate
   quorum, forged/foreign/wrong-epoch votes, mismatched genesis/context/key,
-  request-id conflict and stale writer generation without partial effects.
+  request-id conflict without altered business state, and rejects stale
+  writer-generation reads. A rejected operation may still advance its
+  explicitly claimed fence; that is not application-state mutation.
   A shared disposable database in this test does not prove separate validator
   administrative control; the first network requires independent PostgreSQL
   authorities and credentials.

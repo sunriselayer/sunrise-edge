@@ -334,9 +334,13 @@ fn read_bounded_file(
 
 fn write_output_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
-    let mut file: fs::File = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut options: fs::OpenOptions = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file: fs::File = options
         .open(path)
         .map_err(|error| format!("failed to create new {}: {error}", path.display()))?;
     file.write_all(bytes)

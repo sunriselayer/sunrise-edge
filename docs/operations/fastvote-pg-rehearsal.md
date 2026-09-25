@@ -22,7 +22,7 @@ Prepare these inputs independently of the database under examination:
 - For each validator, a different raw 32-byte Ed25519 seed file held only on
   that validator's operator machine. On Unix it must be a regular file with
   no group or other access bits (normally mode `0600`). Its derived public
-  key must be the configured validator ID and match the committed set.
+  key must match the committed registration for the configured validator ID.
 - A separately controlled PostgreSQL authority for each validator. The DSN
   comes from the protected `SUNRISE_EDGE_OPERATOR_POSTGRES_DSN` environment,
   never argv or a checked-in file. It must name one TCP host whose certificate
@@ -81,7 +81,7 @@ cargo run --release -p sunrise-edge-operator --bin fastvote_pg -- prepare-vote \
   --expected-genesis-digest YOUR_64_HEX_DIGIT_MANIFEST_DIGEST \
   --signing-key-file /secure/validator-seed.bin \
   --paid-intent /secure/signed-paid-intent.bin \
-  --created-checkpoint 10 --vote-output /secure/vote.bin \
+  --created-checkpoint 1 --vote-output /secure/vote.bin \
   --timeout-seconds 60 --confirm-offline-fence-advance
 ```
 
@@ -113,8 +113,15 @@ cargo run --release -p sunrise-edge-operator --bin fastvote_pg -- apply-certific
   --expected-genesis-digest YOUR_64_HEX_DIGIT_MANIFEST_DIGEST \
   --paid-intent /secure/signed-paid-intent.bin \
   --certificate /secure/fast-certificate.bin \
+  --response-output /secure/response.bin \
   --timeout-seconds 60 --confirm-offline-fence-advance
 ```
+
+`--response-output` is optional; when used, it writes the one canonical
+`NodeResponse` for byte-for-byte comparison across validators. Vote,
+certificate and response outputs require fresh paths: the CLI refuses to
+overwrite an existing file or follow an existing symlink. Use a new output
+path for an exact replay and compare it with the previous output.
 
 Every mutating invocation advances the namespace's persistent writer
 generation. Stop other writers first and do not reuse their old generation.

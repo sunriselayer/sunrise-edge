@@ -30,8 +30,9 @@ not inferred from its bond amount.
 The operator explicitly bootstraps a namespace, installs an externally
 supplied signed manifest, prepares one sender-signed paid intent using that
 validator's own local Ed25519 key, collects canonical `FastVote` files,
-forms a deterministic `FastCertificate` only with the committed genesis
-validator set, and applies that certificate independently in each namespace.
+forms a deterministic `FastCertificate` from the genesis-authority-signed
+validator set (or a validator's matching committed copy), and applies that
+certificate independently in each namespace.
 File transfer is untrusted delivery: duplicate, reordered, forged, foreign-
 context and insufficient-quorum votes cannot authorize application. The
 existing `node-core::fast_path::prepare`/`apply`, certifier, canonical codecs,
@@ -44,10 +45,13 @@ the command line. A single TCP host and certificate-validating TLS connection
 are mandatory. The operator independently configures its expected chain,
 protocol version, genesis epoch, complete hash-suite schedule, atomicity
 domain and genesis manifest digest; neither database rows nor client input
-may silently supply those expectations. Before signing a vote, the CLI
-compares the exact locally derived Ed25519 public key with its configured
-validator identity and the committed current validator set. It reads the key
-from a local, owner-only file; neither the key nor the DSN is printed.
+may silently supply those expectations. The CLI verifies the manifest's
+authority signature as well as its pinned digest, then requires its exact
+digest, genesis authority and fee policy to match committed local state
+before preparing or applying. Before signing a vote, it compares the local
+key's derived Ed25519 public key with the committed registration for the
+configured validator ID; the ID itself need not equal the public-key bytes.
+It reads the key from a local, owner-only file; neither key nor DSN is printed.
 
 Each mutating CLI command is an independent invocation. After checking the
 existing schema, namespace and trusted inputs, it explicitly claims a new

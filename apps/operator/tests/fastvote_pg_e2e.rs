@@ -12,13 +12,17 @@
 
 mod support;
 
+use consensus::{FastVote, decode_fast_vote, encode_fast_vote};
 use ed25519_zebra::{SigningKey, VerificationKey};
-use node_core::{ObjectQueryResult, query_object, query_sender_next_nonce};
+use node_core::{
+    GenesisManifest, ObjectQueryResult, decode_genesis_manifest, encode_genesis_manifest,
+    genesis_manifest_commitment, query_object, query_sender_next_nonce,
+};
 use postgres::{
     Config,
     config::{Host, SslMode},
 };
-use protocol_types::ValidatorId;
+use protocol_types::{ChainId, Epoch, ValidatorId};
 use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
 use runtime::{
     DurableDomainStateStore, DurableOperationContext, StorageCorrelationId, StorageDeadline,
@@ -281,6 +285,7 @@ fn apply_certificate(
     domain_hex: &str,
     intent_path: &Path,
     certificate_path: &Path,
+    response_output: &Path,
     expect_success: bool,
 ) -> Output {
     let mut command = base_command(context);
@@ -308,6 +313,8 @@ fn apply_certificate(
         intent_path.to_str().unwrap(),
         "--certificate",
         certificate_path.to_str().unwrap(),
+        "--response-output",
+        response_output.to_str().unwrap(),
         "--timeout-seconds",
         TIMEOUT_SECONDS,
         "--confirm-offline-fence-advance",
@@ -567,18 +574,27 @@ fn fastvote_pg_operator_multivalidator_e2e() {
     let _certificate_guard = TempFileGuard(certificate_path.clone());
 
     // ---- apply the 3-of-4 certificate independently on all four namespaces ----
-    for validator_id_hex in &validator_hex {
+    let mut first_responses: Vec<Vec<u8>> = Vec::with_capacity(4);
+    let mut response_guards: Vec<TempFileGuard> = Vec::with_capacity(4);
+    for (index, validator_id_hex) in validator_hex.iter().enumerate() {
+        let response_path: PathBuf = temp_path(&format!("response-{index}"));
         let applied: Output = apply_certificate(
             &cli,
             validator_id_hex,
             &domain_hex,
             &paid_intent_path,
             &certificate_path,
+            &response_path,
             true,
         );
         for field in ["complete=true", "writer_generation=4"] {
             assert_stdout_contains(&applied, field);
         }
+        first_responses.push(fs::read(&response_path).unwrap());
+        response_guards.push(TempFileGuard(response_path));
+    }
+    for response in &first_responses[1..] {
+        assert_eq!(response, &first_responses[0]);
     }
 
     // ---- independently re-verify durable state, then repeat apply after a
@@ -612,17 +628,24 @@ fn fastvote_pg_operator_multivalidator_e2e() {
         );
     }
 
-    for validator_id_hex in &validator_hex {
+    for (index, validator_id_hex) in validator_hex.iter().enumerate() {
+        let replay_response_path: PathBuf = temp_path(&format!("replay-response-{index}"));
         let applied_again: Output = apply_certificate(
             &cli,
             validator_id_hex,
             &domain_hex,
             &paid_intent_path,
             &certificate_path,
+            &replay_response_path,
             true,
         );
         assert_stdout_contains(&applied_again, "complete=true");
         assert_stdout_contains(&applied_again, "writer_generation=5");
+        assert_eq!(
+            fs::read(&replay_response_path).unwrap(),
+            first_responses[index]
+        );
+        let _replay_response_guard: TempFileGuard = TempFileGuard(replay_response_path);
     }
     let second_snapshots: Vec<DurableSnapshot> = namespaces
         .iter()
@@ -650,6 +673,41 @@ fn fastvote_pg_operator_multivalidator_e2e() {
         "no certificate file may be written on insufficient quorum"
     );
 
+    // A forged signature, foreign chain or wrong epoch cannot supply the
+    // third vote needed to turn two authentic votes into a certificate.
+    let third_vote_bytes: Vec<u8> = fs::read(&vote_paths[2]).unwrap();
+    let third_vote: FastVote = decode_fast_vote(&third_vote_bytes).unwrap();
+    for (label, changed_vote) in [
+        ("forged", {
+            let mut vote: FastVote = third_vote.clone();
+            vote.signature[0] ^= 1;
+            vote
+        }),
+        ("foreign-chain", {
+            let mut vote: FastVote = third_vote.clone();
+            vote.chain_id = ChainId::new("foreign-fastvote-chain").unwrap();
+            vote
+        }),
+        ("wrong-epoch", {
+            let mut vote: FastVote = third_vote.clone();
+            vote.epoch = Epoch::new(1);
+            vote
+        }),
+    ] {
+        let changed_bytes: Vec<u8> = encode_fast_vote(&changed_vote).unwrap();
+        let (changed_path, _changed_guard) = bounded_temp_file(label, &changed_bytes);
+        let rejected_certificate: PathBuf = temp_path(&format!("{label}-certificate"));
+        let inputs: Vec<PathBuf> = vec![vote_paths[0].clone(), vote_paths[1].clone(), changed_path];
+        let result: Output = assemble_certificate(&cli, &inputs, &rejected_certificate);
+        assert!(
+            !result.status.success(),
+            "{label} vote must not complete quorum: stdout={} stderr={}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(!rejected_certificate.exists());
+    }
+
     // ---- one scratch validator/namespace for DB-touching negatives ----
     let scratch_seed: [u8; 32] = [0xB0; 32];
     let scratch_key: SigningKey = SigningKey::from(scratch_seed);
@@ -662,6 +720,35 @@ fn fastvote_pg_operator_multivalidator_e2e() {
     let fence_before_negatives: WriterFenceGeneration =
         current_fence(&admin_pool, &scratch_namespace);
     assert_eq!(fence_before_negatives.get(), 1);
+
+    // A matching digest supplied alongside a tampered manifest is still
+    // insufficient authority: the genesis signature must verify first.
+    let mut tampered_manifest: GenesisManifest =
+        decode_genesis_manifest(&fixture.manifest_bytes).unwrap();
+    tampered_manifest.signature[0] ^= 1;
+    let tampered_bytes: Vec<u8> = encode_genesis_manifest(&tampered_manifest).unwrap();
+    let tampered_digest: String = to_hex(
+        &genesis_manifest_commitment(&fixture.resolver, &tampered_manifest)
+            .unwrap()
+            .bytes(),
+    );
+    let (tampered_path, _tampered_guard) = bounded_temp_file("tampered-genesis", &tampered_bytes);
+    let tampered_cli: CliContext<'_> = CliContext {
+        ca_path: &ca_path,
+        dsn: &dsn,
+        chain_id: cli.chain_id.clone(),
+        manifest_path: &tampered_path,
+        digest_hex: tampered_digest,
+    };
+    let rejected_manifest: Output =
+        install_genesis(&tampered_cli, &scratch_hex, &domain_hex, false);
+    assert!(!rejected_manifest.status.success());
+    assert!(rejected_manifest.stdout.is_empty());
+    assert_eq!(
+        current_fence(&admin_pool, &scratch_namespace),
+        fence_before_negatives,
+        "invalid genesis signature must fail before the namespace writer fence"
+    );
 
     // ---- wrong genesis digest: rejected before any durable mutation ----
     let mut wrong_digest: String = digest_hex.clone();
@@ -828,6 +915,17 @@ fn fastvote_pg_operator_multivalidator_e2e() {
         Err(runtime::DurableReadError::WriterFenced { active_generation })
             if active_generation.get() == current_fence(&admin_pool, &namespaces[0]).get()
     ));
+
+    // Reopening the operator against each already-installed namespace must
+    // verify the exact signed genesis commitment, never install a second
+    // genesis or rewrite the application result.
+    for (index, validator_id_hex) in validator_hex.iter().enumerate() {
+        let before: DurableSnapshot = snapshot(&admin_pool, &namespaces[index], &fixture);
+        let verified: Output = install_genesis(&cli, validator_id_hex, &domain_hex, true);
+        assert_stdout_contains(&verified, "outcome=verified_existing");
+        assert_stdout_contains(&verified, &format!("manifest_digest={digest_hex}"));
+        assert_eq!(snapshot(&admin_pool, &namespaces[index], &fixture), before);
+    }
 
     drop(proxy);
 }
