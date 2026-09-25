@@ -24,7 +24,7 @@ use runtime::{
     DurableRequestReceipt, MemoryBlobStore, MemoryDurableStateStore, StateReadAssertion,
     WriterFenceGeneration,
 };
-use runtime_sqlite::{SqliteDurableStore, SqliteNamespace};
+use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore, SqliteNamespace};
 
 fn object_ref(object: &Object) -> ObjectRef {
     let bytes: Vec<u8> = objects::encode_object(object).unwrap();
@@ -1176,6 +1176,89 @@ mod certified_multi_escrow_inventory {
             protocol().chain_id(),
             NonZeroUsize::new(page_size).unwrap(),
         )
+    }
+
+    /// Deliberately ignored during ordinary cargo test: the operator E2E
+    /// script supplies an isolated directory, then executes the actual CLI
+    /// after this test has closed both file-backed databases. Settlement
+    /// records come only from genuine quorum-certified prepare/apply.
+    #[test]
+    #[ignore = "run through scripts/check-fee-escrow-inventory.sh"]
+    fn export_certified_operator_fixture() {
+        let directory: std::path::PathBuf = std::env::var_os("SUNRISE_EDGE_ESCROW_FIXTURE_DIR")
+            .map(std::path::PathBuf::from)
+            .expect("fixture export directory must be supplied by the operator E2E script");
+        assert!(directory.is_dir());
+        let voters: Vec<Voter> = four_sorted_voters();
+        let entries: Vec<FastPathValidatorEntry> =
+            voters.iter().map(|voter| voter.entry.clone()).collect();
+        let validator_set: ValidatorSet = build_validator_set(&entries);
+        let namespace: SqliteNamespace =
+            SqliteNamespace::new(protocol().chain_id().clone(), entries[0].id, domain());
+        let primary: SqliteDurableStore = SqliteDurableStore::open(
+            directory.join("structured.sqlite3"),
+            namespace.clone(),
+            WriterFenceGeneration::new(1).unwrap(),
+        )
+        .unwrap();
+        let blobs: SqliteBlobStore =
+            SqliteBlobStore::open(directory.join("blobs.sqlite3")).unwrap();
+        let (fixture, policy): (Fixture, PaidFeePolicy) = install_all(&primary, &entries);
+        let voter_store_1: MemoryDurableStateStore = memory_store();
+        install_all(&voter_store_1, &entries);
+        let voter_store_2: MemoryDurableStateStore = memory_store();
+        install_all(&voter_store_2, &entries);
+
+        for (request, nonce, source) in [
+            (0xB1, FIRST_PAID_NONCE, &fixture.coin),
+            (0xB2, FIRST_PAID_NONCE + 1, &fixture.small),
+        ] {
+            let signed_bytes: Vec<u8> = paid_call_with_access(
+                PaidCall {
+                    fixture: &fixture,
+                    policy: &policy,
+                    request,
+                    nonce,
+                    source,
+                    entrypoint: "transfer",
+                    arguments: public_standard_asset::transfer_arguments(&refund_account())
+                        .unwrap(),
+                    access: vec![entry(source, AccessMode::Write)],
+                },
+                ReservationAccessKind::Write,
+            );
+            let votes: Vec<FastVote> = vec![
+                prepare_vote(&primary, &policy, &voters[0], &signed_bytes),
+                prepare_vote(&voter_store_1, &policy, &voters[1], &signed_bytes),
+                prepare_vote(&voter_store_2, &policy, &voters[2], &signed_bytes),
+            ];
+            let certificate: Vec<u8> = certify(&validator_set, &votes);
+            let applied: NodeOutput = apply_escrow(&primary, &policy, &signed_bytes, &certificate);
+            assert_eq!(receipt(&applied).status, PaidExecutionStatus::Success);
+            assert_eq!(receipt(&applied).charged.unwrap().actual.get(), 2);
+            assert_eq!(
+                apply_escrow(&voter_store_1, &policy, &signed_bytes, &certificate),
+                applied,
+            );
+            assert_eq!(
+                apply_escrow(&voter_store_2, &policy, &signed_bytes, &certificate),
+                applied,
+            );
+        }
+        drop(primary);
+        drop(blobs);
+        let reopened: SqliteDurableStore =
+            SqliteDurableStore::open_existing(directory.join("structured.sqlite3"), namespace)
+                .unwrap();
+        let verified: FeeEscrowInventorySweep = sweep_all(&reopened, 1).unwrap();
+        assert_eq!(verified.verified_rows, 2);
+        assert_eq!(verified.pages, 2);
+        drop(reopened);
+        std::fs::write(
+            directory.join("validator_id.hex"),
+            entries[0].id.to_string(),
+        )
+        .unwrap();
     }
 
     #[test]

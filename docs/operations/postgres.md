@@ -3,12 +3,11 @@
 Status: accepted implementation design. The runtime structured envelope,
 node-core/native wiring, and explicit generation-one schema migration/bootstrap
 exist As-Is. Generation-one schema identity was redefined in place to `v2`
-([DR-0068](../architecture/decisions/0058-0075-postgres-conformance.md)) to add `object_versions` provenance columns (`created_chain_id_bytes`,
-`created_protocol_version`); this was an authorized pre-production in-place
-redefinition, applied by bootstrap only, not a migration precedent — no
-migration/backfill/verify/activate operation was added, and an existing `v1`
-database fails closed with `SchemaMismatch` rather than being silently
-accepted. A bounded synchronous pool now implements fenced state/object/
+([DR-0068](../architecture/decisions/0058-0075-postgres-conformance.md)) to add `object_versions` provenance columns and then to `v3`
+([DR-0143](../architecture/decisions/0143-postgres-first-network-escrow-operations.md)) to add a namespace-bound content-addressed blob table. These are pre-production
+bootstrap-only changes, not migrations: no migration/backfill/verify/activate
+operation was added, and an existing `v1` or `v2` database fails closed with
+`SchemaMismatch`. A bounded synchronous pool now implements fenced state/object/
 receipt reads and serializable structured state/object/receipt/outbox commit with transaction-
 local deadlines, bounded unchanged-envelope serialization retry, and typed
 outcomes. Indexed exact-request/due outbox claim and acknowledgement now use
@@ -100,12 +99,20 @@ exceed a fixed deterministic 64 KiB threshold
 at or under the threshold, including every ordinary small object body,
 stays inline exactly as before. This `object_versions` write path (inline
 bytes or a `blob_digest` column pair) already accepts either representation
-unconditionally, unchanged by [DR-0096](../architecture/decisions/0094-0098-blobs-audit-and-documentation.md); PostgreSQL itself still has no durable
-`BlobStore` implementation, so a PostgreSQL-composed node needs some other
-`BlobStore` (currently `runtime::MemoryBlobStore` or the local
-`runtime-sqlite::SqliteBlobStore`) to publish into. The former is process-local;
-the latter persists in a separate local SQLite file, not atomically with this
-adapter and not as a production PostgreSQL-integrated composition. An object version stores
+unconditionally, unchanged by [DR-0096](../architecture/decisions/0094-0098-blobs-audit-and-documentation.md). The `v3` schema also provides a namespace-bound
+`PostgresBlobStore`: its insert-if-absent bytes are durable in the same
+database but are not in the structured object transition's transaction.
+Composition must commit the blob before committing a structured object
+version that references it, and must use a PostgreSQL durability policy
+(`synchronous_commit` and the underlying storage/replication settings) that
+actually persists that first commit before acknowledging it. A failed later
+structured commit may leave an unreachable immutable blob; the reverse
+ordering could leave an unreadable authoritative object and is forbidden.
+The blob API has no writer context, so it cannot fence live blob writes;
+the structured metadata/object version remains authoritative and a missing
+or incorrect blob fails authenticated reads. This is a storage building block,
+not a complete PostgreSQL node composition or load/restore certification
+([DR-0143](../architecture/decisions/0143-postgres-first-network-escrow-operations.md)). An object version stores
 exactly one existing canonical `objects::Object` encoding or one
 self-describing blob digest. The SQL `type_id` is the stable canonical Object
 record identifier, not `Object::type_hash`, which remains inside the

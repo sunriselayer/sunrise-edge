@@ -60,7 +60,7 @@ is not FastVote completion.
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Implemented and validated (DR-0128); focused Codex Security scan found 0 reportable findings and fresh Opus review approved |
-| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated** (DR-0129 through DR-0134). **Phase 3 is open.** DR-0135/0136/0137 implement custody, typed genesis bonds, post-genesis bond lifecycle, forfeiture and certified fee claims without a Standard Asset exception. DR-0139/0140 provide certified claim-history and split-payout verification; DR-0142 adds an offline local-SQLite operator sweep. A two-escrow certified multi-claim SQLite close/reopen sweep is locally validated. Network-store operator sweep, claim/recovery-time capacity certification and the Phase 3 review gate remain open; FastVote overall is incomplete. |
+| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated** (DR-0129 through DR-0134). **Phase 3 is open.** DR-0135/0136/0137 implement custody, typed genesis bonds, post-genesis bond lifecycle, forfeiture and certified fee claims without a Standard Asset exception. DR-0139/0140 provide certified claim-history and split-payout verification; DR-0142 adds an offline local-SQLite operator sweep. A two-escrow certified multi-claim SQLite close/reopen sweep is locally validated. DR-0143 selects PostgreSQL for the first multi-validator persistence profile; its namespace-bound blob store and fenced TLS operator command are implemented, but a certified nonempty PostgreSQL operator E2E with blob reads, claim/recovery-time capacity certification and the Phase 3 review gate remain open. FastVote overall is incomplete. |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
 Asset creation was the final focused delta before FastVote/multi-validator
@@ -2807,8 +2807,8 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
   explicit slices. Custody, typed genesis bonds, bond lifecycle, certified
   fee claims, a certified multi-escrow SQLite restart sweep and cross-epoch
   historical claim evidence and a local-SQLite operator sweep are implemented;
-  network-store operator sweep, capacity certification and the review gate
-  remain open:
+  PostgreSQL operator code now exists, but its certified nonempty E2E,
+  capacity certification and the review gate remain open:
   - [x] **Slice 0 — non-signable protocol custody prerequisite
     ([DR-0135](docs/architecture/decisions/0135-protocol-custody-owner.md),
     implemented and locally validated 2026-09-22).** Adds canonical owner tag
@@ -3280,14 +3280,27 @@ FastVote completion criteria in this plan, not vague "production" deferrals.
         success. The certified two-escrow/tamper restart fixture now calls
         that public driver; an executable file-backed empty-namespace test
         checks no bootstrap, confirmation, fence advance, stale-reader
-        rejection and corrupt-row failure without a complete result. This is
-        not a multi-page snapshot or network proof. A successful nonempty
-        *executable* invocation with actual certified escrows and blob reads
-        remains to be added for the selected network profile;
-      - [ ] make a corresponding quiescent, fenced sweep operable for the
-        selected network persistence profile (notably PostgreSQL if chosen),
-        and prove it on a nonempty certified escrow fixture before network
-        start. The SQLite command must not be mistaken for that gate;
+        rejection and corrupt-row failure without a complete result. A second
+        executable E2E creates two genuine quorum-certified escrows in a
+        file-backed SQLite store, closes both files and uses page size 1 to
+        force two verified rows over two pages plus a fence advance. Pages
+        remain independent transactions, not snapshot-consistency evidence;
+        neither fixture proves blob-backed reads or PostgreSQL network use;
+      - [x] add a namespace-bound PostgreSQL content-addressed blob store
+        (schema identity v3, pre-release bootstrap-only) and an offline,
+        certificate-validating TLS operator command that checks existing
+        schema/namespace, advances the PostgreSQL writer fence, scans every
+        page and rechecks the fence/deadline before reporting success. The
+        live blob-store conformance covers idempotence, conflicting concurrent
+        insertion, namespace isolation, byte bounds and reopen when a live
+        PostgreSQL is configured (as in repository CI). The operator
+        has parser/TLS-host tests but not a real-PostgreSQL certified escrow
+        invocation yet (DR-0143);
+      - [ ] prove the PostgreSQL operator on a nonempty quorum-certified
+        escrow fixture with actual PostgreSQL blob-backed object reads,
+        close/reopen, multiple pages and a competing fence/stale-writer
+        negative before network start. SQLite command evidence and the
+        PostgreSQL blob-store test are not substitutes for this gate;
       - [x] verify certificate-epoch validator membership and historical
         hash-suite selection across a real vote/certificate/activation epoch
         transition that drops a validator and rotates SHA-2 to SHA-3. Separate
@@ -3918,10 +3931,12 @@ Phase 15 As-Is scope:
   hashing前に`MAX_AUTHENTICATED_OBJECT_BODY_BYTES`（1MiB/object）と
   `MAX_AUTHENTICATED_OBJECT_TOTAL_BODY_BYTES`（8MiB/invocation）でbound済みである
   （pre-activation admission budgetであり測定済みcapacity limitではない）。
-  PostgreSQLはgeneration oneをschema identity v2へin-place redefinitionし
-  （bootstrap-only、`POSTGRES_SCHEMA_GENERATION`は1のまま）、`object_versions`に
+  PostgreSQLはgeneration oneをschema identity v2へin-place redefinitionし、
+  さらにnamespace-bound blob tableを含むv3へ再定義した
+  （いずれもpre-release bootstrap-only、`POSTGRES_SCHEMA_GENERATION`は1のまま）。
+  v2では`object_versions`に
   `created_chain_id_bytes`/`created_protocol_version`と
-  `CHECK (created_chain_id_bytes = chain_id_bytes)`を追加した。既存のv1 schemaは
+  `CHECK (created_chain_id_bytes = chain_id_bytes)`を追加した。既存のv1/v2 schemaは
   bootstrap/inspection/request-path metadata readのすべてでfail closed
   （`SchemaMismatch`）する（object digest provenance/recomputation implemented As-Is;
   DR-0067の該当pending itemを解消した）。

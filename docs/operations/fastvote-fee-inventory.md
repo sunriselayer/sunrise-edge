@@ -1,8 +1,12 @@
-# Local FastVote fee-escrow inventory
+# FastVote fee-escrow inventory
 
-The `fee_escrow_inventory` executable verifies every **present** certified
-fee-escrow settlement key for one existing SQLite validator namespace. It is
-an offline maintenance check, not a network-capacity or rollback proof.
+The operator executables verify every **present** certified fee-escrow
+settlement key for one existing validator namespace. They are offline
+maintenance checks, not network-capacity or rollback proofs.
+
+## Local SQLite
+
+`fee_escrow_inventory` targets one stopped local SQLite validator.
 
 1. Stop the validator and keep its data directory on the same local
    filesystem. Do not run this against a live node or a mutable copy.
@@ -41,7 +45,52 @@ Keep the command output with the independently recorded stop/start and
 configuration evidence. Zero rows means only that this namespace contains
 no present settlement keys; it is not evidence of no earlier deleted rows.
 
-The current binary covers local SQLite only. It does not make a PostgreSQL
-deployment operable or certify sustained network load/soak/restart capacity;
-see [DR-0142](../architecture/decisions/0142-fastvote-operator-escrow-inventory.md)
-and `TODO.md`.
+The certified nonempty two-escrow executable regression is run by
+`scripts/check-fee-escrow-inventory.sh`. It uses genuine quorum-certified
+prepare/apply and a closed/reopened file-backed store, then asserts two
+verified rows over two pages and the advanced writer fence. That fixture
+does not exercise a blob-backed object or a PostgreSQL deployment.
+
+## PostgreSQL first-network profile
+
+`fee_escrow_inventory_pg` uses the same verifier with an existing
+PostgreSQL structured namespace and namespace-bound `PostgresBlobStore`.
+Stop the validator first and deny other writers access for the entire run.
+The PostgreSQL DSN must be supplied through the protected operator
+environment as `SUNRISE_EDGE_OPERATOR_POSTGRES_DSN`; do not put credentials
+in shell history, command arguments or captured logs. It must name exactly
+one TCP host. The CLI forces TLS and authenticates its certificate against
+the supplied DER-encoded root CA (convert a PEM CA to DER offline if needed).
+The hostname in the DSN must match the server certificate. A local TLS
+terminator proves only that client leg, not provider/server TLS policy.
+
+```sh
+cargo run --release -p sunrise-edge-operator --bin fee_escrow_inventory_pg -- \
+  --tls-root-der /secure/path/to/trusted-root.der \
+  --chain-id YOUR_CHAIN_ID \
+  --validator-id YOUR_64_HEX_DIGIT_VALIDATOR_ID \
+  --domain YOUR_64_HEX_DIGIT_DOMAIN_ID \
+  --protocol-version YOUR_VERSION \
+  --suite 0:1:1:1:1:1:1:1 \
+  --page-size 32 --timeout-seconds 3600 \
+  --confirm-offline-fence-advance
+```
+
+Supply the expected namespace, protocol version and complete hash-suite
+schedule from independent trusted configuration, not the database under
+inspection. The command validates the existing blob schema and namespace
+before claiming the next persistent PostgreSQL writer generation, scans
+under that generation, rechecks it and the deadline, and prints
+`complete=true backend=postgres` only on full success. A failure after the
+fence advance is still disruptive: restart the stopped validator under its
+new generation. An empty result verifies only an empty *present* prefix.
+The command supplies no historical protocol-version resolver: a claim that
+requires one fails closed. Hash-suite changes within the configured protocol
+version are supported by the ordered `--suite` entries.
+
+The PostgreSQL operator path does not yet have a nonempty certified escrow
+and blob-read executable E2E or representative load/soak/restart-capacity
+evidence. It is therefore not the network-start or Phase 3 completion gate
+yet. See [DR-0142](../architecture/decisions/0142-fastvote-operator-escrow-inventory.md),
+[DR-0143](../architecture/decisions/0143-postgres-first-network-escrow-operations.md)
+and [`TODO.md`](../../TODO.md).
