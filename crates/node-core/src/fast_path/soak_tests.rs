@@ -11,9 +11,11 @@
 //!
 //! This core driver performs exactly one writer-generation transition
 //! (fence `1` -> `2`) and never prints `kind=totals complete=true`: an
-//! ordered operator script owns repeating this driver across
-//! `RECOVERY_CYCLES` and owns the single authoritative complete-run
-//! declaration, so this module never claims that authority on its own.
+//! ordered operator script runs this core driver exactly once and then owns
+//! separately invoking the real `fee_escrow_inventory_pg` operator
+//! executable for `RECOVERY_CYCLES` repeated inventories against the
+//! resulting database state, plus the single authoritative complete-run
+//! declaration; this module never claims that authority on its own.
 //!
 //! Out of scope here, by construction: the real TLS `fee_escrow_inventory_pg`
 //! operator executable and any operator/script/docs surface. This module's
@@ -73,8 +75,11 @@ const MAX_RECOVERY_CYCLES: u32 = 32;
 /// Every bounded live-run knob, `SUNRISE_EDGE_SOAK_`-prefixed per DR-0146.
 /// `recovery_cycles` is parsed and bounded here (so a malformed value still
 /// fails config validation) but this core driver itself never loops on it:
-/// repeating the whole driver `recovery_cycles` times is the ordered
-/// operator script's job, not this in-process test's.
+/// this driver runs its own single fence `1 -> 2` transition exactly once;
+/// invoking the real `fee_escrow_inventory_pg` operator executable for
+/// `recovery_cycles` repeated inventories against that one resulting
+/// database state is the ordered operator script's job, not this in-process
+/// test's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SoakConfig {
     directory: PathBuf,
@@ -281,11 +286,14 @@ impl fmt::Display for DisposableDatabaseUrlError {
 }
 
 /// Enforces, from the connection string alone and before any socket is
-/// opened, that this run can only ever reach a single disposable loopback
-/// PostgreSQL service named `sunrise_edge_test`: exactly one TCP host, every
-/// address that host resolves to a loopback address, and the exact
-/// configured database name. This is defense in depth alongside (not a
-/// replacement for) the real post-connect `SELECT current_database()` check.
+/// opened or any DNS resolution happens, that this run can only ever reach
+/// a single disposable loopback PostgreSQL service named
+/// `sunrise_edge_test`: exactly one TCP host, and that host must be either
+/// a literal loopback IP address or the exact literal `localhost` -- never
+/// resolved to check, since some other hostname string that merely happens
+/// to resolve to a loopback address today is still rejected. This is
+/// defense in depth alongside (not a replacement for) the real post-connect
+/// `SELECT current_database()` check.
 fn validate_disposable_test_database_url(url: &str) -> Result<(), DisposableDatabaseUrlError> {
     let config: postgres::Config = url
         .parse()
@@ -294,17 +302,11 @@ fn validate_disposable_test_database_url(url: &str) -> Result<(), DisposableData
     let [postgres::config::Host::Tcp(host_name)] = hosts else {
         return Err(DisposableDatabaseUrlError::NotExactlyOneTcpHost);
     };
-    let resolved: Vec<std::net::IpAddr> = if let Ok(ip) = host_name.parse::<std::net::IpAddr>() {
-        vec![ip]
-    } else {
-        use std::net::ToSocketAddrs;
-        (host_name.as_str(), 0_u16)
-            .to_socket_addrs()
-            .map_err(|_| DisposableDatabaseUrlError::HostNotLoopback)?
-            .map(|address| address.ip())
-            .collect()
+    let is_literal_loopback: bool = match host_name.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.is_loopback(),
+        Err(_) => host_name == "localhost",
     };
-    if resolved.is_empty() || !resolved.iter().all(std::net::IpAddr::is_loopback) {
+    if !is_literal_loopback {
         return Err(DisposableDatabaseUrlError::HostNotLoopback);
     }
     if config.get_dbname() != Some("sunrise_edge_test") {
@@ -317,8 +319,9 @@ fn validate_disposable_test_database_url(url: &str) -> Result<(), DisposableData
 
 /// The exact twelve keys DR-0146 requires, in the order it documents them.
 /// `writer_generation` is always `2` from this core driver (one fence
-/// `1 -> 2` transition); an operator script that repeats this driver across
-/// several writer generations owns interpreting/aggregating that sequence.
+/// `1 -> 2` transition); an operator script that separately runs the real
+/// operator inventory tool across several recovery cycles against this one
+/// resulting generation owns interpreting/aggregating that sequence.
 struct HandoffFields {
     validator_id: String,
     chain_id: String,
@@ -636,6 +639,20 @@ mod config_and_handoff_tests {
     }
 
     #[test]
+    fn rejects_a_loopback_alias_hostname_without_resolving_it() {
+        // `localhost.localdomain` commonly resolves to a loopback address,
+        // but this guard must reject anything other than the exact literal
+        // `localhost` (or a literal loopback IP) without ever consulting
+        // DNS to find that out.
+        assert_eq!(
+            validate_disposable_test_database_url(
+                "host=localhost.localdomain dbname=sunrise_edge_test"
+            ),
+            Err(DisposableDatabaseUrlError::HostNotLoopback),
+        );
+    }
+
+    #[test]
     fn rejects_a_non_loopback_host() {
         assert_eq!(
             validate_disposable_test_database_url("host=8.8.8.8 dbname=sunrise_edge_test"),
@@ -783,11 +800,10 @@ fn live_postgres_certified_load_exports_recovery_handoff() {
 
 mod live_postgres {
     use super::*;
-    use crate::query::query_sender_next_nonce;
     use runtime::{
         DurableDomainStateStore, DurableObjectHead, DurableObjectPayload, DurableOperationContext,
-        DurableReadError, DurableRequestId, StorageCorrelationId, StorageDeadline,
-        WriterFenceGeneration,
+        DurableReadError, DurableRequestId, ObjectHeadRevision, PersistenceLayout,
+        StorageCorrelationId, StorageDeadline, WriterFenceGeneration,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -958,11 +974,39 @@ mod live_postgres {
         );
     }
 
+    /// Sleeps for exactly `duration`, first asserting the wake time does
+    /// not fall past either deadline (a proposed sleep that would cross a
+    /// deadline fails immediately rather than sleeping past it), then
+    /// rechecking both deadlines again after waking.
+    fn sleep_within_deadlines(
+        duration: Duration,
+        wall_deadline: Instant,
+        workload_deadline: Instant,
+        label: &str,
+    ) {
+        let target: Instant = Instant::now() + duration;
+        assert!(
+            target < wall_deadline,
+            "{label}: proposed sleep would exceed the wall deadline",
+        );
+        assert!(
+            target < workload_deadline,
+            "{label}: proposed sleep would exceed the workload duration deadline",
+        );
+        std::thread::sleep(duration);
+        assert_before_deadline(wall_deadline, label);
+        assert_before_deadline(workload_deadline, label);
+    }
+
     /// A non-bursting ("no catch-up") pacer: each call is spaced at least
     /// `1/rate` seconds after the previous one, measured from the previous
-    /// call's own scheduled slot (never from a fixed run-start reference).
-    /// A caller that falls behind schedule never gets to "catch up" with a
-    /// burst; it simply gets the very next slot.
+    /// call's own actual wake time (never from a fixed run-start
+    /// reference). `wait` holds the single shared pacing lock for its
+    /// entire sleep, so a caller that falls behind schedule can never let a
+    /// later caller's slot slide earlier to "help" it catch up: only one
+    /// caller waits at a time, and the shared clock only advances from that
+    /// caller's own real wake time, immediately before it releases the lock
+    /// to make its attempt.
     struct ClaimPacer {
         interval: Duration,
         next_allowed: Mutex<Instant>,
@@ -976,16 +1020,14 @@ mod live_postgres {
             }
         }
 
-        /// Blocks until this caller's paced slot, first asserting that slot
-        /// does not fall past either deadline: a proposed sleep that would
-        /// cross a deadline fails immediately rather than sleeping past it.
+        /// Blocks until this caller's paced slot, holding the shared pacing
+        /// lock the whole time. Asserts the computed slot does not fall
+        /// past either deadline before sleeping, and rechecks both
+        /// deadlines again against the actual wake time before advancing
+        /// the shared clock and releasing the lock.
         fn wait(&self, wall_deadline: Instant, workload_deadline: Instant) {
-            let target: Instant = {
-                let mut guard = self.next_allowed.lock().unwrap();
-                let target: Instant = (*guard).max(Instant::now());
-                *guard = target + self.interval;
-                target
-            };
+            let mut guard = self.next_allowed.lock().unwrap();
+            let target: Instant = (*guard).max(Instant::now());
             assert!(
                 target < wall_deadline,
                 "the next paced claim slot would exceed the wall deadline",
@@ -998,6 +1040,71 @@ mod live_postgres {
             if target > now {
                 std::thread::sleep(target - now);
             }
+            let woke_at: Instant = Instant::now();
+            assert_before_deadline(wall_deadline, "claim pacing sleep");
+            assert_before_deadline(workload_deadline, "claim pacing sleep");
+            *guard = woke_at + self.interval;
+        }
+    }
+
+    #[cfg(test)]
+    mod pacing_tests {
+        use super::*;
+
+        #[test]
+        fn claim_pacer_spaces_calls_by_the_configured_interval() {
+            let start: Instant = Instant::now();
+            let generous: Instant = start + Duration::from_secs(60);
+            // A 10ms interval (rate 100/sec), asserting only a 5ms lower
+            // bound: this proves pacing actually delayed the second call
+            // without depending on sub-millisecond scheduler precision,
+            // which real thread-sleep timing cannot reliably guarantee.
+            let pacer: ClaimPacer = ClaimPacer::new(100, start);
+            pacer.wait(generous, generous);
+            let first: Instant = Instant::now();
+            pacer.wait(generous, generous);
+            let second: Instant = Instant::now();
+            assert!(second.duration_since(first) >= Duration::from_millis(5));
+        }
+
+        #[test]
+        fn claim_pacer_fails_fast_instead_of_sleeping_past_a_deadline() {
+            let start: Instant = Instant::now();
+            let generous: Instant = start + Duration::from_secs(60);
+            let tight: Instant = start;
+            let pacer: ClaimPacer = ClaimPacer::new(1, start);
+            pacer.wait(generous, generous);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                pacer.wait(tight, generous);
+            }));
+            assert!(
+                result.is_err(),
+                "a paced slot past the deadline must fail fast, not sleep past it",
+            );
+        }
+
+        #[test]
+        fn sleep_within_deadlines_fails_fast_instead_of_sleeping_past_a_deadline() {
+            let now: Instant = Instant::now();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                sleep_within_deadlines(
+                    Duration::from_secs(60),
+                    now,
+                    now + Duration::from_secs(600),
+                    "test",
+                );
+            }));
+            assert!(
+                result.is_err(),
+                "a proposed sleep past the deadline must fail fast, not sleep past it",
+            );
+        }
+
+        #[test]
+        fn sleep_within_deadlines_sleeps_within_generous_deadlines() {
+            let now: Instant = Instant::now();
+            let generous: Instant = now + Duration::from_secs(60);
+            sleep_within_deadlines(Duration::from_millis(1), generous, generous, "test");
         }
     }
 
@@ -1086,8 +1193,12 @@ mod live_postgres {
 
     /// Byte-exact durable state DR-0146 requires surviving close/reopen for
     /// one fully drained escrow: the final (generation-5) settlement row,
-    /// all four retained claim envelopes, the final escrow object, the split
-    /// payout object, and all four outer request receipts.
+    /// all four retained claim envelopes (with their own revisions), the
+    /// final escrow object and split payout object (with their own
+    /// object-head revisions and digests), all four outer request receipts,
+    /// and both positive claim legs' sender-nonce records (with their own
+    /// revisions). This is also the exact state a replay-idempotency proof
+    /// compares before and after a repeated claim submission.
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct EscrowSnapshot {
         escrow_object_id: ObjectId,
@@ -1095,32 +1206,56 @@ mod live_postgres {
         row_bytes: Vec<u8>,
         row_revision: StateRevision,
         claim_bytes: [Vec<u8>; 4],
+        claim_revisions: [StateRevision; 4],
+        escrow_head_revision: ObjectHeadRevision,
         escrow_object_version: u64,
+        escrow_object_digest: Digest32,
         escrow_object_bytes: Vec<u8>,
+        payout_head_revision: ObjectHeadRevision,
         payout_object_version: u64,
+        payout_object_digest: Digest32,
         payout_object_bytes: Vec<u8>,
         receipts: [DurableRequestReceipt; 4],
+        split_leg_nonce_bytes: Option<Vec<u8>>,
+        split_leg_nonce_revision: StateRevision,
+        final_leg_nonce_bytes: Option<Vec<u8>>,
+        final_leg_nonce_revision: StateRevision,
     }
 
     impl EscrowSnapshot {
+        /// The exact retained logical payload basis: the settlement row,
+        /// all four claim envelopes, the latest escrow object, the payout
+        /// object, and all four outer canonical receipt response bytes.
+        /// Deliberately excludes storage keys, headers, and superseded
+        /// history (earlier settlement-row generations, earlier object
+        /// versions): this is retained *payload*, not physical footprint.
         fn retained_bytes(&self) -> u64 {
             let claims: u64 = self
                 .claim_bytes
                 .iter()
                 .map(|bytes| u64::try_from(bytes.len()).unwrap())
                 .sum();
+            let receipts: u64 = self
+                .receipts
+                .iter()
+                .map(|receipt| u64::try_from(receipt.canonical_bytes().len()).unwrap())
+                .sum();
             u64::try_from(self.row_bytes.len()).unwrap()
                 + claims
                 + u64::try_from(self.escrow_object_bytes.len()).unwrap()
                 + u64::try_from(self.payout_object_bytes.len()).unwrap()
+                + receipts
         }
     }
 
     /// Reads back exactly the durable bytes [`EscrowSnapshot`] documents,
     /// for one escrow, under the given context. Called once right after the
-    /// escrow's four claims commit (the "before close" reading) and again
-    /// after reopen under the advanced writer generation (the "after
-    /// reopen" reading); DR-0146 requires both to be byte-exact.
+    /// escrow's four claims commit (the "before replay"/"before close"
+    /// reading), again immediately after a same-boot replay of the split
+    /// claim (the "after replay" reading, which must equal the "before
+    /// replay" one byte-for-byte), and again after reopen under the
+    /// advanced writer generation (the "after reopen" reading); DR-0146
+    /// requires all of these to be byte-exact.
     fn capture_escrow_state<S: StructuredDurableDomainStateStore>(
         store: &S,
         context: &DurableOperationContext,
@@ -1146,7 +1281,7 @@ mod live_postgres {
             "escrow {index} must be fully drained (generation 5) before this snapshot",
         );
 
-        let claim_bytes: [Vec<u8>; 4] = [2_u64, 3, 4, 5].map(|generation| {
+        let claim_values: [VersionedStateValue; 4] = [2_u64, 3, 4, 5].map(|generation| {
             let key: Vec<u8> = crate::local_instance_state::fastpath_fee_claim_key(
                 &chain,
                 &escrow_request_id(index),
@@ -1156,16 +1291,20 @@ mod live_postgres {
             store
                 .get_versioned_durable(context, domain(), &key)
                 .unwrap()
-                .value()
-                .expect("retained claim envelope")
-                .to_vec()
         });
+        let claim_bytes: [Vec<u8>; 4] = claim_values
+            .each_ref()
+            .map(|value| value.value().expect("retained claim envelope").to_vec());
+        let claim_revisions: [StateRevision; 4] =
+            claim_values.each_ref().map(VersionedStateValue::revision);
 
         let escrow_head: DurableObjectHead = store
             .get_object_head(context, domain(), escrow_object_id)
             .unwrap();
         let DurableObjectHead::Current {
+            head_revision: escrow_head_revision,
             object_version: escrow_version,
+            digest: escrow_object_digest,
             ..
         } = escrow_head
         else {
@@ -1184,7 +1323,9 @@ mod live_postgres {
             .get_object_head(context, domain(), payout_object_id)
             .unwrap();
         let DurableObjectHead::Current {
+            head_revision: payout_head_revision,
             object_version: payout_version,
+            digest: payout_object_digest,
             ..
         } = payout_head
         else {
@@ -1216,17 +1357,40 @@ mod live_postgres {
                 .expect("escrow claim outer receipt must be retained")
         });
 
+        let layout: PersistenceLayout =
+            PersistenceLayout::new(chain.clone(), protocol().protocol_version());
+        let read_nonce_record = |sender: [u8; 32]| -> (Option<Vec<u8>>, StateRevision) {
+            let key: Vec<u8> = layout.sender_nonce_key(sender, protocol().epoch());
+            let observed: VersionedStateValue = store
+                .get_versioned_durable(context, domain(), &key)
+                .unwrap();
+            (observed.value().map(<[u8]>::to_vec), observed.revision())
+        };
+        let (split_leg_nonce_bytes, split_leg_nonce_revision) =
+            read_nonce_record(leg_sender(&split_leg_signer(index)));
+        let (final_leg_nonce_bytes, final_leg_nonce_revision) =
+            read_nonce_record(leg_sender(&final_leg_signer(index)));
+
         EscrowSnapshot {
             escrow_object_id,
             payout_object_id,
             row_bytes,
             row_revision,
             claim_bytes,
+            claim_revisions,
+            escrow_head_revision,
             escrow_object_version: escrow_version.get(),
+            escrow_object_digest,
             escrow_object_bytes,
+            payout_head_revision,
             payout_object_version: payout_version.get(),
+            payout_object_digest,
             payout_object_bytes,
             receipts,
+            split_leg_nonce_bytes,
+            split_leg_nonce_revision,
+            final_leg_nonce_bytes,
+            final_leg_nonce_revision,
         }
     }
 
@@ -1256,6 +1420,8 @@ mod live_postgres {
             assert_before_deadline(wall_deadline, "claim submission");
             assert_before_deadline(workload_deadline, "claim submission");
             pacer.wait(wall_deadline, workload_deadline);
+            assert_before_deadline(wall_deadline, "claim submission");
+            assert_before_deadline(workload_deadline, "claim submission");
             attempted.fetch_add(1, Ordering::Relaxed);
             let result: Result<NodeOutput, FeeClaimError> = handle_fee_claim(
                 writer,
@@ -1286,7 +1452,12 @@ mod live_postgres {
                     DurableCommitRejection::SerializationFailure,
                 ))) if attempt < MAX_ATTEMPTS => {
                     retries.fetch_add(1, Ordering::Relaxed);
-                    std::thread::sleep(Duration::from_millis(attempt.min(10) + slot_delay_ms));
+                    sleep_within_deadlines(
+                        Duration::from_millis(attempt.min(10) + slot_delay_ms),
+                        wall_deadline,
+                        workload_deadline,
+                        "claim retry backoff",
+                    );
                 }
                 Err(error) => panic!("fee claim failed after {attempt} attempts: {error}"),
             }
@@ -1406,7 +1577,6 @@ mod live_postgres {
             );
             voter2_cap = new_voter2_cap;
             installer_nonce += 1;
-            escrow_object_ids.push(primary_coin.id);
 
             let signed_bytes: Vec<u8> = lane_paid_transfer(LanePaidTransfer {
                 fixture: &fixture,
@@ -1434,6 +1604,21 @@ mod live_postgres {
                 apply_escrow(&voter_store_2, &policy, &signed_bytes, &certificate),
                 applied,
             );
+            // The settlement row's own `fee_output` is the authoritative
+            // escrow object identity: `fast_path::apply` derives the
+            // certified custody object independently of the paid source
+            // coin's own id, so this must be read back from the committed
+            // row, never assumed equal to `primary_coin.id`.
+            let fee_output_id: ObjectId =
+                crate::fee_claims::tests::certified_multi_escrow_inventory::current_row(
+                    &primary,
+                    escrow_request_id(index),
+                )
+                .1
+                .fee_output
+                .expect("a freshly certified escrow row must carry its fee output reference")
+                .id;
+            escrow_object_ids.push(fee_output_id);
             assert_before_deadline(wall_deadline, "escrow creation");
             assert_before_deadline(workload_deadline, "escrow creation");
         }
@@ -1482,67 +1667,6 @@ mod live_postgres {
             &completed,
             &retries,
             0,
-        );
-
-        assert_before_deadline(wall_deadline, "same-boot replay validation");
-        let representative_row_before_replay: Vec<u8> =
-            crate::fee_claims::tests::certified_multi_escrow_inventory::current_row(
-                &primary,
-                escrow_request_id(0),
-            )
-            .0;
-        let representative_nonce_before_replay: u64 = query_sender_next_nonce(
-            &primary,
-            &context_at(1),
-            domain(),
-            protocol().chain_id().clone(),
-            protocol().protocol_version(),
-            protocol().epoch(),
-            leg_sender(&split_leg_signer(0)),
-        )
-        .unwrap();
-        // Deliberately not `submit_claim_paced`: a same-boot replay of an
-        // already-applied claim is validation, not new workload.
-        assert_eq!(
-            handle_fee_claim(
-                &primary,
-                &blobs,
-                &context(),
-                domain(),
-                &resolver(),
-                &[],
-                &protocol(),
-                &base_policy(),
-                &LocalWasmExecutionEngine::new(),
-                &split0.signed_bytes,
-                12,
-            )
-            .unwrap(),
-            split0_output,
-            "same-boot replay of an already-applied claim must be a byte-exact no-op",
-        );
-        assert_eq!(
-            crate::fee_claims::tests::certified_multi_escrow_inventory::current_row(
-                &primary,
-                escrow_request_id(0),
-            )
-            .0,
-            representative_row_before_replay,
-            "same-boot replay must leave the settlement row byte-exact",
-        );
-        assert_eq!(
-            query_sender_next_nonce(
-                &primary,
-                &context_at(1),
-                domain(),
-                protocol().chain_id().clone(),
-                protocol().protocol_version(),
-                protocol().epoch(),
-                leg_sender(&split_leg_signer(0)),
-            )
-            .unwrap(),
-            representative_nonce_before_replay,
-            "same-boot replay must leave the leg sender's nonce unchanged",
         );
 
         let final_bytes_0: Vec<u8> = build_final_claim_for_lane(
@@ -1606,6 +1730,53 @@ mod live_postgres {
             &completed,
             &retries,
             0,
+        );
+
+        // Only after all four of escrow 0's claims have committed (so the
+        // row is fully drained at generation 5) does the same-boot
+        // replay-idempotency proof run: capture the complete durable state,
+        // replay the split claim, capture it again, and require the two
+        // captures to be byte-for-byte identical -- not merely that the
+        // replayed call happens to return the same response.
+        assert_before_deadline(wall_deadline, "same-boot replay validation");
+        let representative_before_replay: EscrowSnapshot = capture_escrow_state(
+            &primary,
+            &context_at(1),
+            0,
+            escrow_object_ids[0],
+            split0.payout.id,
+        );
+        // Deliberately not `submit_claim_paced`: a same-boot replay of an
+        // already-applied claim is validation, not new workload.
+        assert_eq!(
+            handle_fee_claim(
+                &primary,
+                &blobs,
+                &context(),
+                domain(),
+                &resolver(),
+                &[],
+                &protocol(),
+                &base_policy(),
+                &LocalWasmExecutionEngine::new(),
+                &split0.signed_bytes,
+                12,
+            )
+            .unwrap(),
+            split0_output,
+            "same-boot replay of an already-applied claim must be a byte-exact no-op",
+        );
+        let representative_after_replay: EscrowSnapshot = capture_escrow_state(
+            &primary,
+            &context_at(1),
+            0,
+            escrow_object_ids[0],
+            split0.payout.id,
+        );
+        assert_eq!(
+            representative_after_replay, representative_before_replay,
+            "same-boot replay must leave every relevant row/object/payout/receipt/nonce byte \
+             and revision unchanged",
         );
         *snapshots[0].lock().unwrap() = Some(capture_escrow_state(
             &primary,
@@ -1789,8 +1960,10 @@ mod live_postgres {
         // ── exactly one recovery transition: close/reopen under an
         //    advanced writer generation (fence 1 -> 2), verifying every
         //    escrow's exact retained bytes and rejecting the stale
-        //    generation. Repeating this across several generations is the
-        //    ordered operator script's job, not this core driver's. ──
+        //    generation. This core driver never repeats this transition;
+        //    invoking the real operator inventory executable
+        //    `RECOVERY_CYCLES` times against this one resulting database
+        //    state is the ordered operator script's separate job. ──
         assert_before_deadline(wall_deadline, "recovery");
         let recovery_start: Instant = Instant::now();
         let advanced_fence: WriterFenceGeneration = WriterFenceGeneration::new(2).unwrap();
@@ -1825,16 +1998,13 @@ mod live_postgres {
         );
 
         assert_before_deadline(wall_deadline, "post-reopen replay validation");
-        let representative_nonce_before_reopen_replay: u64 = query_sender_next_nonce(
+        let representative_before_reopen_replay: EscrowSnapshot = capture_escrow_state(
             &reopened,
             &fresh_context,
-            domain(),
-            protocol().chain_id().clone(),
-            protocol().protocol_version(),
-            protocol().epoch(),
-            leg_sender(&split_leg_signer(0)),
-        )
-        .unwrap();
+            0,
+            escrow_object_ids[0],
+            split0.payout.id,
+        );
         // Deliberately not `submit_claim_paced`: a post-reopen replay of an
         // already-applied claim is validation, not new workload.
         assert_eq!(
@@ -1855,19 +2025,17 @@ mod live_postgres {
             split0_output,
             "post-reopen replay of an already-applied claim must be a byte-exact no-op",
         );
+        let representative_after_reopen_replay: EscrowSnapshot = capture_escrow_state(
+            &reopened,
+            &fresh_context,
+            0,
+            escrow_object_ids[0],
+            split0.payout.id,
+        );
         assert_eq!(
-            query_sender_next_nonce(
-                &reopened,
-                &fresh_context,
-                domain(),
-                protocol().chain_id().clone(),
-                protocol().protocol_version(),
-                protocol().epoch(),
-                leg_sender(&split_leg_signer(0)),
-            )
-            .unwrap(),
-            representative_nonce_before_reopen_replay,
-            "post-reopen replay must leave the leg sender's nonce unchanged",
+            representative_after_reopen_replay, representative_before_reopen_replay,
+            "post-reopen replay must leave every relevant row/object/payout/receipt/nonce byte \
+             and revision unchanged",
         );
 
         for index in 0..config.escrows {
@@ -1912,7 +2080,8 @@ mod live_postgres {
         eprintln!(
             "sunrise_edge_soak_v1 kind=recovery writer_generation=2 verified_rows={} \
              verified_claims={} verified_payouts={} verified_pages={} recovery_elapsed_ms={recovery_elapsed_ms} \
-             physical_state_records_relation_bytes_whole_shared_table[baseline={baseline_state_records_bytes},final={final_state_records_bytes}]",
+             physical_state_records_relation_bytes_baseline_whole_shared_table={baseline_state_records_bytes} \
+             physical_state_records_relation_bytes_final_whole_shared_table={final_state_records_bytes}",
             verified.verified_rows,
             verified.verified_claims,
             verified.verified_payouts,
