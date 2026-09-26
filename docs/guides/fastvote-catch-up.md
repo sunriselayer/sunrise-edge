@@ -38,7 +38,9 @@ Create a text file containing one saved signed-intent/certificate pair per
 line, in dependency order. Relative paths are relative to this manifest's
 directory. Paths containing whitespace are not supported. Each request id
 must appear only once. At most 16 pairs and 16 MiB of combined input artifact
-bytes are admitted; these are resource bounds, not throughput targets.
+bytes are admitted. The manifest itself is limited to 64 KiB and each line to
+4096 bytes; existing tighter intent/certificate limits still apply. These are
+resource bounds, not throughput targets.
 
 ```text
 call-1.signed.bin call-1.certificate.bin
