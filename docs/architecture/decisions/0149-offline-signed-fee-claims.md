@@ -39,12 +39,20 @@ against a malicious writer or a whole-store rollback proof.
 
 Add a read-only core preparation facility instead of copying fixture-specific
 Coin decoders or predicting Standard Asset bodies. Derive the operation from
-the verified settlement, authenticate the historical claimant authority,
+the verified settlement, verify the historical entitlement and claimant
+public-key binding (not proof of private-key possession during preview),
 build/authenticate any embedded execution leg, run the same policy-pinned
 public WASM admission and custody-effect validation used by claim apply,
 and derive the exact next row digest and split payout reference from those
 effects. The final signed envelope uses the existing `0x6437`/`0x6438` forms;
 no canonical frame, historical vector or asset-specific privilege changes.
+
+All new offline inspection/preparation APIs require the optional durable-key
+scanner and apply DR-0141's exact bounded claim-key-set proof, including far
+orphan keys and tombstones. The legacy explicit verifier and mutation handler
+retain their existing structured-store API; no protocol transition depends on
+the scanner. Reads still require caller-enforced offline quiescence, not a
+multi-read database snapshot.
 
 Preparation commits nothing: no object, row, nonce, receipt or audit envelope,
 and no writer-generation change within core. Its output is a proposal for one
