@@ -51,6 +51,9 @@ validator identity. Local escrow-generation CAS is not cross-validator claim
 ordering: concurrent online application through this tool is outside its
 authority model. Exact retained claim artifacts, not new nonces/signatures,
 are the authority for ambiguous-commit replay.
+Restarting under a new writer generation after a local claim does not certify
+replica convergence or authorize live cohort re-entry; settlement/state
+handoff and catch-up remain independent requirements.
 
 Devnet query routes are unauthenticated public reads. They expose context,
 objects, receipts, and sender next-nonce values and must not be treated as an

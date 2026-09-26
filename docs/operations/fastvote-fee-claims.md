@@ -13,6 +13,11 @@ sequence. Every command requires `--confirm-offline-fence-advance` and
 advances the persistent writer generation. Restart the stopped validator
 normally afterward; its old generation is no longer valid. A fence alone
 does not stop a writer deliberately bypassing this supported boot path.
+After **claim application**, restart only for offline verification/recovery.
+Do not rejoin a live validator cohort merely because the writer fence is
+current: this tool did not order or replicate that settlement to peers.
+Reviewed settlement/state handoff and catch-up are prerequisites for live
+re-entry. An inspection-only command does not mutate that value state.
 
 Supply independently trusted chain, protocol, epoch, hash schedule, namespace,
 genesis manifest and manifest commitment. Do not learn expected values from

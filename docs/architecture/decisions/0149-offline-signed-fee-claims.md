@@ -34,6 +34,10 @@ The validator must be stopped and other writers excluded for the whole
 operation. Each invocation claims a new persistent writer generation; the
 stopped host must restart normally afterward. Advancing a fence is not a lock
 against a malicious writer or a whole-store rollback proof.
+Restoring a valid writer generation is also not permission to rejoin a live
+cohort after claims changed only this replica. Keep it offline until the
+separate ordered settlement/state handoff and catch-up gate is verified.
+Inspection-only fencing does not have that value-state replication effect.
 
 ### Generic claim preparation
 
