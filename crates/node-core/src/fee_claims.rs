@@ -89,7 +89,7 @@ pub use inventory::{
 #[cfg(test)]
 mod recovery_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use codec::{
     FeeClaimIntent, FeeClaimOperation, SignedFeeClaimIntent, decode_signed_fee_claim_intent,
