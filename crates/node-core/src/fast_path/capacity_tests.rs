@@ -152,6 +152,7 @@ fn build_capacity_escrow<S: StructuredDurableDomainStateStore>(
     zero_id: ValidatorId,
     positive_id: ValidatorId,
     index: u32,
+    additional_zero_ids: &[ValidatorId],
 ) -> CapacityEscrow {
     let chain_id: ChainId = crate::genesis::tests::chain();
     let op_context: DurableOperationContext = crate::genesis::tests::context(1);
@@ -183,6 +184,16 @@ fn build_capacity_escrow<S: StructuredDurableDomainStateStore>(
             claimed: false,
         },
     ];
+    shares.extend(
+        additional_zero_ids
+            .iter()
+            .copied()
+            .map(|validator_id| FastPathFeeShare {
+                validator_id,
+                amount: 0,
+                claimed: false,
+            }),
+    );
     shares.sort_by_key(|share| share.validator_id);
     let row: FastPathSettlementRecord = FastPathSettlementRecord {
         context: publication.clone(),
@@ -343,7 +354,7 @@ fn file_backed_sqlite_concurrent_zero_share_claims_measure_retained_bytes_and_re
         )
         .unwrap();
         (0..ESCROWS)
-            .map(|index| build_capacity_escrow(&setup, &zero_key, zero_id, positive_id, index))
+            .map(|index| build_capacity_escrow(&setup, &zero_key, zero_id, positive_id, index, &[]))
             .collect()
     };
 
@@ -1118,4 +1129,787 @@ fn file_backed_sqlite_concurrent_positive_claims_measure_retained_bytes_and_phys
     );
 
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// Bounded, opt-in live-PostgreSQL Phase 3 fee-claim capacity/recovery
+/// evidence, exercising the same real `handle_fee_claim` pipeline as the
+/// file-backed SQLite tests above against a genuine `PostgresDurableStore`/
+/// `PostgresBlobStore` pair instead of SQLite/`MemoryBlobStore`. Both tests
+/// are deliberately `#[ignore]`d and gated on `SUNRISE_EDGE_TEST_POSTGRES_URL`
+/// (never run by ordinary `cargo test`), and serialize against every other
+/// live-PostgreSQL test family in this repo through the same cross-process
+/// lock file used by `fee_claims::tests::certified_multi_escrow_inventory`.
+/// Each run bootstraps one fresh, time-and-process-derived storage namespace
+/// so repeated runs against the shared `sunrise_edge_test` database never
+/// collide with a prior run's rows or already-advanced writer fence.
+mod live_postgres {
+    use super::*;
+    use crate::fee_claims::FeeClaimError;
+    use postgres::{Client, NoTls};
+    use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
+    use runtime_postgres::{
+        POSTGRES_SCHEMA_GENERATION, PostgresBlobStore, PostgresDurableStore, PostgresNamespace,
+        PostgresPoolConfig, PostgresTransactionPolicy, advance_writer_fence, apply_initial_schema,
+        bootstrap_namespace, build_postgres_pool,
+    };
+    use std::{
+        num::NonZeroU32,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    /// Cross-process file lock shared with every other live-PostgreSQL test
+    /// family in this repo (see the identically named lock in
+    /// `crate::fee_claims::tests::certified_multi_escrow_inventory`):
+    /// `cargo test` may run each crate's live-database tests as independent
+    /// concurrent processes against the same shared database, so they must
+    /// all serialize on the same file. `Drop` only removes the file if it
+    /// still records this exact acquisition, mirroring that module's
+    /// abandoned-lock rationale.
+    struct PostgresLiveLock {
+        path: std::path::PathBuf,
+        owner: String,
+    }
+
+    impl PostgresLiveLock {
+        fn acquire() -> Self {
+            let path: std::path::PathBuf =
+                std::env::temp_dir().join("sunrise-edge-runtime-postgres-live-test.lock");
+            let owner: String = format!(
+                "{}:{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+            );
+            let deadline: std::time::Instant =
+                std::time::Instant::now() + std::time::Duration::from_secs(600);
+            loop {
+                let created = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path);
+                match created {
+                    Ok(mut file) => {
+                        use std::io::Write;
+                        file.write_all(owner.as_bytes()).unwrap();
+                        file.sync_all().unwrap();
+                        return Self { path, owner };
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        if std::time::Instant::now() >= deadline {
+                            panic!(
+                                "timed out waiting for the exclusive live PostgreSQL test lock \
+                                 at {}; if no other live test is actually running, delete this \
+                                 file",
+                                path.display()
+                            );
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    Err(error) => panic!(
+                        "failed to create live PostgreSQL test lock at {}: {error}",
+                        path.display()
+                    ),
+                }
+            }
+        }
+    }
+
+    impl Drop for PostgresLiveLock {
+        fn drop(&mut self) {
+            if std::fs::read_to_string(&self.path).ok().as_deref() == Some(self.owner.as_str()) {
+                let _ = std::fs::remove_file(&self.path);
+            }
+        }
+    }
+
+    type LiveTestPostgresManager = PostgresConnectionManager<NoTls>;
+
+    fn live_test_postgres_pool(url: &str) -> Pool<LiveTestPostgresManager> {
+        let config: postgres::Config = url.parse().unwrap();
+        build_postgres_pool(
+            config,
+            NoTls,
+            PostgresPoolConfig::new(
+                NonZeroU32::new(12).unwrap(),
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(30),
+                std::time::Duration::from_secs(300),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn transaction_policy() -> PostgresTransactionPolicy {
+        PostgresTransactionPolicy::new(NonZeroU32::new(3).unwrap()).unwrap()
+    }
+
+    /// A fresh, time-and-process-derived storage identity: not a real signing
+    /// key, only the opaque partition key selecting this run's namespace, so
+    /// repeated runs against the shared test database never reuse another
+    /// run's rows or writer fence.
+    fn fresh_storage_validator_id(tag: u8) -> ValidatorId {
+        let nanos: u128 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut id: [u8; 32] = [0; 32];
+        id[..16].copy_from_slice(&nanos.to_be_bytes());
+        id[16..20].copy_from_slice(&std::process::id().to_be_bytes());
+        id[20] = tag;
+        ValidatorId::new(id)
+    }
+
+    /// Whole-relation physical size in bytes, including indexes and TOAST.
+    ///
+    /// Every namespace in `sunrise_edge_test` shares these tables, so this is
+    /// never an isolated per-namespace measurement: it is only meaningful as
+    /// a before/after delta around this exact test's own writes, and even
+    /// that delta can include any other live-PostgreSQL activity in the
+    /// shared database that is not excluded by [`PostgresLiveLock`].
+    fn relation_bytes(admin: &mut Client, qualified_table: &str) -> i64 {
+        admin
+            .query_one(
+                "SELECT pg_total_relation_size(to_regclass($1))",
+                &[&qualified_table],
+            )
+            .unwrap()
+            .get(0)
+    }
+
+    /// Connects the admin client, refuses to run against anything but the
+    /// dedicated test database, applies the schema, and bootstraps one fresh
+    /// namespace at writer fence 1.
+    fn open_fresh_namespace(database_url: &str, tag: u8) -> (Client, PostgresNamespace) {
+        let mut admin: Client = Client::connect(database_url, NoTls).unwrap();
+        let current_database: String = admin
+            .query_one("SELECT current_database()", &[])
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            current_database, "sunrise_edge_test",
+            "refusing to run the live PostgreSQL capacity test against a non-test database"
+        );
+        apply_initial_schema(&mut admin).unwrap();
+        let namespace: PostgresNamespace = PostgresNamespace::new(
+            &crate::genesis::tests::chain(),
+            fresh_storage_validator_id(tag),
+            crate::genesis::tests::domain(),
+        )
+        .unwrap();
+        bootstrap_namespace(
+            &mut admin,
+            &namespace,
+            POSTGRES_SCHEMA_GENERATION,
+            WriterFenceGeneration::new(1).unwrap(),
+        )
+        .unwrap();
+        (admin, namespace)
+    }
+
+    /// DR-0138/DR-0143 live-PostgreSQL capacity evidence for the zero-share
+    /// claim path: 48 distinct maximum-admitted 256-share escrows, six
+    /// concurrent real PostgreSQL writers with bounded caller retries for
+    /// definite serialization rejection, then a real close/reopen under a
+    /// newer writer fence that reads every settlement row and claim envelope,
+    /// plus a physical `pg_total_relation_size` snapshot around the
+    /// concurrent commit phase (see [`relation_bytes`] for its shared-table
+    /// caveat). This remains one process against one shared live database in
+    /// one run: bounded evidence, not a throughput or capacity certification,
+    /// and it says nothing about CI hardware or a production target.
+    #[test]
+    #[ignore = "requires SUNRISE_EDGE_TEST_POSTGRES_URL against a live PostgreSQL sunrise_edge_test database"]
+    fn live_postgres_concurrent_zero_share_claims_measure_retained_bytes_and_reopen_latency() {
+        const ESCROWS: u32 = 48;
+        const WRITERS: usize = 6;
+        assert_eq!(
+            ESCROWS as usize % WRITERS,
+            0,
+            "evenly shardable escrow count"
+        );
+
+        let database_url: String = std::env::var("SUNRISE_EDGE_TEST_POSTGRES_URL")
+            .expect("live PostgreSQL capacity evidence requires SUNRISE_EDGE_TEST_POSTGRES_URL");
+        let _lock: PostgresLiveLock = PostgresLiveLock::acquire();
+        let (mut admin, namespace): (Client, PostgresNamespace) =
+            open_fresh_namespace(&database_url, 0x01);
+        let policy: PostgresTransactionPolicy = transaction_policy();
+
+        let zero_key: ed25519_zebra::SigningKey = ed25519_zebra::SigningKey::from([0xd1; 32]);
+        let zero_public: [u8; 32] = ed25519_zebra::VerificationKey::from(&zero_key).into();
+        let zero_id: ValidatorId = ValidatorId::new(zero_public);
+        let positive_key: ed25519_zebra::SigningKey = ed25519_zebra::SigningKey::from([0xd4; 32]);
+        let positive_public: [u8; 32] = ed25519_zebra::VerificationKey::from(&positive_key).into();
+        let positive_id: ValidatorId = ValidatorId::new(positive_public);
+
+        // Exercise a real 256-share settlement row on PostgreSQL, not just
+        // the two-member row used by the local SQLite concurrency regression.
+        // Only one zero-share claimant signs; the other 254 retained shares
+        // make this the maximum admitted row shape without manufacturing
+        // 256 separate claims per escrow.
+        let mut additional_zero_ids: Vec<ValidatorId> = Vec::with_capacity(254);
+        let mut additional_entries: Vec<FastPathValidatorEntry> = Vec::with_capacity(254);
+        for index in 0_u32..254 {
+            let mut seed: [u8; 32] = [0x55; 32];
+            seed[28..].copy_from_slice(&index.to_be_bytes());
+            let key: ed25519_zebra::SigningKey = ed25519_zebra::SigningKey::from(seed);
+            let public_key: [u8; 32] = ed25519_zebra::VerificationKey::from(&key).into();
+            let id: ValidatorId = ValidatorId::new(public_key);
+            additional_zero_ids.push(id);
+            additional_entries.push(FastPathValidatorEntry {
+                id,
+                voting_power: 1,
+                signature_scheme: SignatureSchemeId::Ed25519,
+                public_key: public_key.to_vec(),
+            });
+        }
+
+        let pool: Pool<LiveTestPostgresManager> = live_test_postgres_pool(&database_url);
+        let escrows: Vec<CapacityEscrow> = {
+            let setup: PostgresDurableStore<LiveTestPostgresManager> =
+                PostgresDurableStore::new(pool.clone(), namespace.clone(), policy);
+            let mut validators: Vec<FastPathValidatorEntry> = vec![
+                FastPathValidatorEntry {
+                    id: zero_id,
+                    voting_power: 1,
+                    signature_scheme: SignatureSchemeId::Ed25519,
+                    public_key: zero_public.to_vec(),
+                },
+                FastPathValidatorEntry {
+                    id: positive_id,
+                    voting_power: 1,
+                    signature_scheme: SignatureSchemeId::Ed25519,
+                    public_key: positive_public.to_vec(),
+                },
+            ];
+            validators.extend(additional_entries);
+            validators.sort_by_key(|entry| entry.id);
+            assert_eq!(validators.len(), records::MAX_FASTPATH_ACTIVE_VALIDATORS);
+            install_validator_set(
+                &setup,
+                &crate::genesis::tests::context(1),
+                crate::genesis::tests::domain(),
+                &crate::genesis::tests::resolver(),
+                crate::genesis::tests::protocol(),
+                validators,
+            )
+            .unwrap();
+            (0..ESCROWS)
+                .map(|index| {
+                    build_capacity_escrow(
+                        &setup,
+                        &zero_key,
+                        zero_id,
+                        positive_id,
+                        index,
+                        &additional_zero_ids,
+                    )
+                })
+                .collect()
+        };
+        let setup_state_records_bytes: i64 =
+            relation_bytes(&mut admin, "sunrise_edge.state_records");
+
+        let shard_size: usize = ESCROWS as usize / WRITERS;
+        let concurrent_start: Instant = Instant::now();
+        let serialization_retries: AtomicU64 = AtomicU64::new(0);
+        std::thread::scope(|scope| {
+            for shard in escrows.chunks(shard_size) {
+                let writer_pool: Pool<LiveTestPostgresManager> = pool.clone();
+                let writer_namespace: PostgresNamespace = namespace.clone();
+                let retry_counter: &AtomicU64 = &serialization_retries;
+                scope.spawn(move || {
+                    let writer: PostgresDurableStore<LiveTestPostgresManager> =
+                        PostgresDurableStore::new(
+                            writer_pool.clone(),
+                            writer_namespace.clone(),
+                            policy,
+                        );
+                    let blobs: PostgresBlobStore<LiveTestPostgresManager> =
+                        PostgresBlobStore::new(writer_pool, writer_namespace).unwrap();
+                    for escrow in shard {
+                        for attempt in 1_u64..=16 {
+                            let result: Result<NodeOutput, FeeClaimError> = handle_fee_claim(
+                                &writer,
+                                &blobs,
+                                &crate::genesis::tests::context(1),
+                                crate::genesis::tests::domain(),
+                                &crate::genesis::tests::resolver(),
+                                &[],
+                                &crate::genesis::tests::protocol(),
+                                &LocalExecutionPolicy::generic_object_results(
+                                    crate::genesis::tests::protocol(),
+                                ),
+                                &LocalWasmExecutionEngine::new(),
+                                &escrow.signed,
+                                12,
+                            );
+                            match result {
+                                Ok(_) => break,
+                                Err(FeeClaimError::Node(NodeCoreError::DurableCommitRejected(
+                                    DurableCommitRejection::SerializationFailure,
+                                ))) if attempt < 16 => {
+                                    retry_counter.fetch_add(1, Ordering::Relaxed);
+                                    std::thread::sleep(Duration::from_millis(attempt.min(10)));
+                                }
+                                Err(error) => {
+                                    panic!("fee claim failed after {attempt} attempts: {error}")
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        let concurrent_elapsed: Duration = concurrent_start.elapsed();
+        let committed_state_records_bytes: i64 =
+            relation_bytes(&mut admin, "sunrise_edge.state_records");
+
+        let measured_claim_bytes: u64 = escrows
+            .iter()
+            .map(|escrow| escrow.signed.len() as u64)
+            .sum();
+        let measured_row_bytes: u64 = escrows
+            .iter()
+            .map(|escrow| escrow.next_row_bytes.len() as u64)
+            .sum();
+
+        drop(pool);
+
+        let stale_context: DurableOperationContext = crate::genesis::tests::context(1);
+        let advanced_fence: WriterFenceGeneration = WriterFenceGeneration::new(2).unwrap();
+        advance_writer_fence(
+            &mut admin,
+            &namespace,
+            WriterFenceGeneration::new(1).unwrap(),
+            advanced_fence,
+        )
+        .unwrap();
+
+        let reopen_start: Instant = Instant::now();
+        let reopened_pool: Pool<LiveTestPostgresManager> = live_test_postgres_pool(&database_url);
+        let reopened: PostgresDurableStore<LiveTestPostgresManager> =
+            PostgresDurableStore::new(reopened_pool, namespace, policy);
+        let fresh_context: DurableOperationContext = crate::genesis::tests::context(2);
+        let mut read_claim_bytes: u64 = 0;
+        let mut read_row_bytes: u64 = 0;
+        for escrow in &escrows {
+            let row: VersionedStateValue = reopened
+                .get_versioned_durable(
+                    &fresh_context,
+                    crate::genesis::tests::domain(),
+                    &escrow.row_key,
+                )
+                .unwrap();
+            assert_eq!(row.value(), Some(escrow.next_row_bytes.as_slice()));
+            assert_eq!(row.revision(), StateRevision::new(2));
+            let claim: VersionedStateValue = reopened
+                .get_versioned_durable(
+                    &fresh_context,
+                    crate::genesis::tests::domain(),
+                    &escrow.claim_key,
+                )
+                .unwrap();
+            assert_eq!(claim.value(), Some(escrow.signed.as_slice()));
+            read_row_bytes += u64::try_from(row.value().unwrap().len()).unwrap();
+            read_claim_bytes += u64::try_from(claim.value().unwrap().len()).unwrap();
+        }
+        let reopen_elapsed: Duration = reopen_start.elapsed();
+        let reopened_state_records_bytes: i64 =
+            relation_bytes(&mut admin, "sunrise_edge.state_records");
+
+        assert_eq!(read_claim_bytes, measured_claim_bytes);
+        assert_eq!(read_row_bytes, measured_row_bytes);
+        assert_eq!(
+            reopened
+                .get_versioned_durable(
+                    &stale_context,
+                    crate::genesis::tests::domain(),
+                    &escrows[0].row_key,
+                )
+                .unwrap_err(),
+            DurableReadError::WriterFenced {
+                active_generation: advanced_fence,
+            }
+        );
+        // A generous ceiling over a real network round trip that only catches
+        // a catastrophic regression, not a performance certification.
+        assert!(
+            reopen_elapsed < Duration::from_secs(60),
+            "close/reopen + full read of {ESCROWS} live PostgreSQL rows took {reopen_elapsed:?}"
+        );
+
+        eprintln!(
+            "fee-claim capacity (live PostgreSQL, zero-share): escrows={ESCROWS}, writers={WRITERS}, caller_serialization_retries={}, concurrent_commit_latency={concurrent_elapsed:?}, reopen_under_newer_writer_fence_and_read_latency={reopen_elapsed:?}, measured_retained_claim_envelope_bytes={measured_claim_bytes}, measured_retained_settlement_row_bytes={measured_row_bytes}, physical_state_records_relation_bytes_whole_shared_table[setup={setup_state_records_bytes},committed={committed_state_records_bytes},reopened={reopened_state_records_bytes}]",
+            serialization_retries.load(Ordering::Relaxed)
+        );
+
+        drop(reopened);
+        let _ = admin;
+    }
+
+    /// DR-0138/DR-0143 live-PostgreSQL capacity evidence for the *positive*
+    /// (object-mutating) fee-claim path: several distinct escrows, half
+    /// finalized through `split` and half through `transfer`, driven through
+    /// the real `handle_fee_claim` pipeline by concurrent PostgreSQL writer
+    /// connections, then a real close/reopen under a **strictly newer**
+    /// writer fence generation (an operator-style failover, not merely a
+    /// plain reconnect) that reads every settlement row, claim envelope,
+    /// escrow/payout object and outer receipt back, followed by a direct
+    /// stale-generation read proving `DurableReadError::WriterFenced` against
+    /// the real, already-advanced fence. See [`relation_bytes`] for the
+    /// physical-measurement shared-table caveat. This remains one process
+    /// against one shared live database in one run: bounded evidence, not a
+    /// throughput or capacity certification.
+    #[test]
+    #[ignore = "requires SUNRISE_EDGE_TEST_POSTGRES_URL against a live PostgreSQL sunrise_edge_test database"]
+    fn live_postgres_concurrent_positive_claims_measure_retained_bytes_and_writer_fence_recovery() {
+        const ESCROWS: u32 = 12;
+        const WRITERS: usize = 3;
+        assert_eq!(
+            ESCROWS as usize % WRITERS,
+            0,
+            "evenly shardable escrow count"
+        );
+
+        let database_url: String = std::env::var("SUNRISE_EDGE_TEST_POSTGRES_URL")
+            .expect("live PostgreSQL capacity evidence requires SUNRISE_EDGE_TEST_POSTGRES_URL");
+        let _lock: PostgresLiveLock = PostgresLiveLock::acquire();
+        let (mut admin, namespace): (Client, PostgresNamespace) =
+            open_fresh_namespace(&database_url, 0x02);
+        let policy: PostgresTransactionPolicy = transaction_policy();
+
+        let (_base_manifest, _origin, instance, def_id, _coin_id) =
+            crate::genesis::tests::build_fixture();
+        let mut manifest: GenesisManifest =
+            crate::genesis::tests::manifest_with_custody(ObjectId::new([0xe1; 32]));
+        let second_key: ed25519_zebra::SigningKey = ed25519_zebra::SigningKey::from([0xe7; 32]);
+        let second_public: [u8; 32] = ed25519_zebra::VerificationKey::from(&second_key).into();
+        let second_validator: ValidatorId = ValidatorId::new(second_public);
+        let mut second_bond: GenesisObjectEntry = crate::genesis::tests::custody_object_entry(
+            &manifest,
+            ObjectId::new([0xe8; 32]),
+            crate::genesis::tests::chain(),
+        );
+        let Owner::ProtocolCustody(second_scope) = &mut second_bond.object.owner else {
+            panic!("second bond custody owner");
+        };
+        second_scope.subject = second_public;
+        manifest.objects.push(second_bond);
+        manifest
+            .validator_set
+            .validators
+            .push(FastPathValidatorEntry {
+                id: second_validator,
+                voting_power: 1,
+                signature_scheme: SignatureSchemeId::Ed25519,
+                public_key: second_public.to_vec(),
+            });
+        manifest
+            .validator_set
+            .validators
+            .sort_by_key(|entry| entry.id);
+
+        let coin_template: GenesisObjectEntry = manifest.objects[1].clone();
+        let mut coin_ids: Vec<ObjectId> = Vec::with_capacity(ESCROWS as usize);
+        for index in 0..ESCROWS {
+            let mut coin_id_bytes: [u8; 32] = [0xe0; 32];
+            coin_id_bytes[28..].copy_from_slice(&index.to_be_bytes());
+            let coin_id: ObjectId = ObjectId::new(coin_id_bytes);
+            coin_ids.push(coin_id);
+            manifest.objects.push(GenesisObjectEntry {
+                object: Object {
+                    id: coin_id,
+                    version: 1,
+                    owner: Owner::Address(Address::new(crate::genesis::tests::sender())),
+                    type_hash: coin_template.object.type_hash,
+                    schema_version: coin_template.object.schema_version,
+                    data: encode_call_value(
+                        &public_standard_asset::coin_body_layout(),
+                        &CallValue::U64(1_000_000),
+                    )
+                    .unwrap(),
+                },
+                authority: ObjectAuthority {
+                    object_id: coin_id,
+                    instance_context: coin_template.authority.instance_context.clone(),
+                    instance: coin_template.authority.instance.clone(),
+                    code: coin_template.authority.code.clone(),
+                    ty: coin_template.authority.ty.clone(),
+                },
+            });
+        }
+        crate::genesis::tests::resign_manifest(&mut manifest);
+
+        let resource_id: BondResourceId = manifest.economics_policy.resources[0].resource_id;
+        let validator_a: ValidatorId = ValidatorId::new(crate::genesis::tests::sender());
+        let validator_a_key: ed25519_zebra::SigningKey = crate::genesis::tests::key();
+
+        let pool: Pool<LiveTestPostgresManager> = live_test_postgres_pool(&database_url);
+        let escrows: Vec<PositiveCapacityEscrow> = {
+            let setup: PostgresDurableStore<LiveTestPostgresManager> =
+                PostgresDurableStore::new(pool.clone(), namespace.clone(), policy);
+            install_genesis(
+                &setup,
+                &crate::genesis::tests::context(1),
+                crate::genesis::tests::domain(),
+                &crate::genesis::tests::resolver(),
+                &manifest,
+                10,
+            )
+            .unwrap();
+            (0..ESCROWS)
+                .map(|index| {
+                    build_positive_capacity_escrow(
+                        &setup,
+                        def_id,
+                        &instance,
+                        &coin_template,
+                        coin_ids[index as usize],
+                        resource_id,
+                        validator_a,
+                        &validator_a_key,
+                        second_validator,
+                        index,
+                        index % 2 == 1,
+                    )
+                })
+                .collect()
+        };
+        let setup_state_records_bytes: i64 =
+            relation_bytes(&mut admin, "sunrise_edge.state_records");
+        let setup_object_versions_bytes: i64 =
+            relation_bytes(&mut admin, "sunrise_edge.object_versions");
+
+        let shard_size: usize = ESCROWS as usize / WRITERS;
+        let concurrent_start: Instant = Instant::now();
+        let serialization_retries: AtomicU64 = AtomicU64::new(0);
+        std::thread::scope(|scope| {
+            for shard in escrows.chunks(shard_size) {
+                let writer_pool: Pool<LiveTestPostgresManager> = pool.clone();
+                let writer_namespace: PostgresNamespace = namespace.clone();
+                let retry_counter: &AtomicU64 = &serialization_retries;
+                scope.spawn(move || {
+                    let writer: PostgresDurableStore<LiveTestPostgresManager> =
+                        PostgresDurableStore::new(
+                            writer_pool.clone(),
+                            writer_namespace.clone(),
+                            policy,
+                        );
+                    let blobs: PostgresBlobStore<LiveTestPostgresManager> =
+                        PostgresBlobStore::new(writer_pool, writer_namespace).unwrap();
+                    for escrow in shard {
+                        for attempt in 1_u64..=16 {
+                            let result: Result<NodeOutput, FeeClaimError> = handle_fee_claim(
+                                &writer,
+                                &blobs,
+                                &crate::genesis::tests::context(1),
+                                crate::genesis::tests::domain(),
+                                &crate::genesis::tests::resolver(),
+                                &[],
+                                &crate::genesis::tests::protocol(),
+                                &LocalExecutionPolicy::generic_object_results(
+                                    crate::genesis::tests::protocol(),
+                                ),
+                                &LocalWasmExecutionEngine::new(),
+                                &escrow.signed,
+                                12,
+                            );
+                            match result {
+                                Ok(_) => break,
+                                Err(FeeClaimError::Node(NodeCoreError::DurableCommitRejected(
+                                    DurableCommitRejection::SerializationFailure,
+                                ))) if attempt < 16 => {
+                                    retry_counter.fetch_add(1, Ordering::Relaxed);
+                                    std::thread::sleep(Duration::from_millis(attempt.min(10)));
+                                }
+                                Err(error) => {
+                                    panic!("fee claim failed after {attempt} attempts: {error}")
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        let concurrent_elapsed: Duration = concurrent_start.elapsed();
+        let committed_state_records_bytes: i64 =
+            relation_bytes(&mut admin, "sunrise_edge.state_records");
+        let committed_object_versions_bytes: i64 =
+            relation_bytes(&mut admin, "sunrise_edge.object_versions");
+
+        let measured_claim_bytes: u64 = escrows
+            .iter()
+            .map(|escrow| escrow.signed.len() as u64)
+            .sum();
+        let measured_row_bytes: u64 = escrows
+            .iter()
+            .map(|escrow| escrow.next_row_bytes.len() as u64)
+            .sum();
+        let measured_escrow_bytes: u64 = escrows
+            .iter()
+            .map(|escrow| escrow.escrow_expected_bytes.len() as u64)
+            .sum();
+        let measured_payout_bytes: u64 = escrows
+            .iter()
+            .filter_map(|escrow| escrow.payout.as_ref())
+            .map(|(_, bytes)| bytes.len() as u64)
+            .sum();
+
+        drop(pool);
+
+        // Real operator-style failover: advance the writer fence on the exact
+        // namespace this test just wrote to, then reopen under a fresh pool
+        // and a strictly newer generation.
+        let stale_context: DurableOperationContext = crate::genesis::tests::context(1);
+        let advanced_fence: WriterFenceGeneration = WriterFenceGeneration::new(2).unwrap();
+        advance_writer_fence(
+            &mut admin,
+            &namespace,
+            WriterFenceGeneration::new(1).unwrap(),
+            advanced_fence,
+        )
+        .unwrap();
+
+        let reopen_start: Instant = Instant::now();
+        let reopened_pool: Pool<LiveTestPostgresManager> = live_test_postgres_pool(&database_url);
+        let reopened: PostgresDurableStore<LiveTestPostgresManager> =
+            PostgresDurableStore::new(reopened_pool, namespace.clone(), policy);
+        let fresh_context: DurableOperationContext = crate::genesis::tests::context(2);
+        for escrow in &escrows {
+            let row: VersionedStateValue = reopened
+                .get_versioned_durable(
+                    &fresh_context,
+                    crate::genesis::tests::domain(),
+                    &escrow.row_key,
+                )
+                .unwrap();
+            assert_eq!(row.value(), Some(escrow.next_row_bytes.as_slice()));
+            assert_eq!(row.revision(), StateRevision::new(2));
+
+            let claim: VersionedStateValue = reopened
+                .get_versioned_durable(
+                    &fresh_context,
+                    crate::genesis::tests::domain(),
+                    &escrow.claim_key,
+                )
+                .unwrap();
+            assert_eq!(claim.value(), Some(escrow.signed.as_slice()));
+
+            let head: DurableObjectHead = reopened
+                .get_object_head(
+                    &fresh_context,
+                    crate::genesis::tests::domain(),
+                    escrow.escrow_id,
+                )
+                .unwrap();
+            let DurableObjectHead::Current {
+                object_version,
+                digest,
+                ..
+            } = head
+            else {
+                panic!("live PostgreSQL positive capacity escrow must retain a current object");
+            };
+            assert_eq!(object_version.get(), escrow.escrow_expected_version);
+            let record: DurableObjectVersionRecord = reopened
+                .get_object_version(
+                    &fresh_context,
+                    crate::genesis::tests::domain(),
+                    escrow.escrow_id,
+                    object_version,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(record.digest(), digest);
+            let runtime::DurableObjectPayload::Inline(inline) = record.payload() else {
+                panic!("live PostgreSQL positive capacity escrow must keep the object inline");
+            };
+            assert_eq!(
+                inline.canonical_bytes(),
+                escrow.escrow_expected_bytes.as_slice()
+            );
+
+            if let Some((payout_id, payout_bytes)) = &escrow.payout {
+                let payout_head: DurableObjectHead = reopened
+                    .get_object_head(&fresh_context, crate::genesis::tests::domain(), *payout_id)
+                    .unwrap();
+                let DurableObjectHead::Current {
+                    object_version: payout_version,
+                    digest: payout_digest,
+                    ..
+                } = payout_head
+                else {
+                    panic!("live PostgreSQL positive split claim must create a payout object");
+                };
+                assert_eq!(payout_version.get(), 1);
+                let payout_record: DurableObjectVersionRecord = reopened
+                    .get_object_version(
+                        &fresh_context,
+                        crate::genesis::tests::domain(),
+                        *payout_id,
+                        payout_version,
+                    )
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(payout_record.digest(), payout_digest);
+                let runtime::DurableObjectPayload::Inline(payout_inline) = payout_record.payload()
+                else {
+                    panic!("live PostgreSQL positive payout object must be inline");
+                };
+                assert_eq!(payout_inline.canonical_bytes(), payout_bytes.as_slice());
+            }
+
+            let receipt: Option<DurableRequestReceipt> = reopened
+                .get_request_receipt(
+                    &fresh_context,
+                    crate::genesis::tests::domain(),
+                    DurableRequestId::new(escrow.claim_request_id).unwrap(),
+                )
+                .unwrap();
+            assert!(
+                receipt.is_some(),
+                "live PostgreSQL positive capacity claim must retain its outer receipt"
+            );
+        }
+        let reopen_elapsed: Duration = reopen_start.elapsed();
+        let reopened_state_records_bytes: i64 =
+            relation_bytes(&mut admin, "sunrise_edge.state_records");
+        let reopened_object_versions_bytes: i64 =
+            relation_bytes(&mut admin, "sunrise_edge.object_versions");
+
+        // The stale generation must fail closed against the real,
+        // already-advanced fence, not silently succeed or read stale data.
+        let stale_error: DurableReadError = reopened
+            .get_versioned_durable(
+                &stale_context,
+                crate::genesis::tests::domain(),
+                &escrows[0].row_key,
+            )
+            .unwrap_err();
+        assert_eq!(
+            stale_error,
+            DurableReadError::WriterFenced {
+                active_generation: advanced_fence
+            }
+        );
+
+        // A generous ceiling over a real network round trip that only catches
+        // a catastrophic regression, not a performance certification.
+        assert!(
+            reopen_elapsed < Duration::from_secs(60),
+            "close/reopen under a newer writer fence + full read of {ESCROWS} live PostgreSQL \
+             positive escrows took {reopen_elapsed:?}"
+        );
+
+        eprintln!(
+            "fee-claim capacity (live PostgreSQL, positive): escrows={ESCROWS}, writers={WRITERS}, caller_serialization_retries={}, concurrent_commit_latency={concurrent_elapsed:?}, reopen_under_newer_writer_fence_and_read_latency={reopen_elapsed:?}, measured_retained_claim_envelope_bytes={measured_claim_bytes}, measured_retained_settlement_row_bytes={measured_row_bytes}, measured_retained_escrow_object_bytes={measured_escrow_bytes}, measured_retained_payout_object_bytes={measured_payout_bytes}, physical_state_records_relation_bytes_whole_shared_table[setup={setup_state_records_bytes},committed={committed_state_records_bytes},reopened={reopened_state_records_bytes}], physical_object_versions_relation_bytes_whole_shared_table[setup={setup_object_versions_bytes},committed={committed_object_versions_bytes},reopened={reopened_object_versions_bytes}]",
+            serialization_retries.load(Ordering::Relaxed)
+        );
+
+        drop(reopened);
+        let _ = admin;
+    }
 }
