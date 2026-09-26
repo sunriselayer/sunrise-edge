@@ -39,6 +39,9 @@ roadmap describes a later target state.
 - [Offline signed fee claims](decisions/0149-offline-signed-fee-claims.md):
   generic claim preparation and explicitly stopped/fenced single-namespace
   operator execution; distinct from online shared-escrow ordering.
+- [Certified-call catch-up](decisions/0150-certified-call-catch-up.md):
+  signerless recovery of declared, same-epoch certified calls on a replica
+  that missed prepare, without claiming complete state handoff or activation.
 - [Decision records](decisions/README.md): accepted and compatibility-relevant
   decisions grouped into bounded ranges.
 

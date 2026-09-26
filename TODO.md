@@ -179,6 +179,14 @@ post-launch hardening. The active order is:
   tests alone do not establish cross-validator state convergence. Keep the
   initial host fixed to one configured epoch/set until this gate is reviewed
   and verified; do not expose a live activation route in DR-0148.
+  - Current slice: [DR-0150](docs/architecture/decisions/0150-certified-call-catch-up.md)
+    defines certificate-first, signerless recovery for a same-epoch replica
+    that missed prepare, plus a bounded ordered saved-artifact CLI workflow
+    and real four-process PostgreSQL missed-validator/restart evidence.
+    Implementation and validation are pending. This only covers declared
+    certified Calls with exact local prerequisites; full history/state
+    completeness, definition import, shared settlement ordering and activation-
+    bound handoff remain open.
 - [ ] bounded independent-validator functional start/restart/replay/
   authorization evidence, a documented deployment/configuration walkthrough,
   and a focused security review, before exposing this ingress.
