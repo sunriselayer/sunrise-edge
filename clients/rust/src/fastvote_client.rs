@@ -1619,14 +1619,15 @@ mod tests {
         let PaidApplication::Call(call) = &mut signed.intent.application else {
             panic!("call fixture");
         };
-        let record = execution::local_execution::InstanceRecord {
-            context: call.context.clone(),
-            creator: call.sender,
-            seed: [0x46; 32],
-            code: call.code.clone(),
-            revision: 1,
-            initializer: "init".to_owned(),
-        };
+        let record: execution::local_execution::InstanceRecord =
+            execution::local_execution::InstanceRecord {
+                context: call.context.clone(),
+                creator: call.sender,
+                seed: [0x46; 32],
+                code: call.code.clone(),
+                revision: 1,
+                initializer: "init".to_owned(),
+            };
         call.instance = instance_target(&resolver(), &record).unwrap();
         let signer: LocalSigner = LocalSigner::from_seed([11; 32]);
         signed.signature = signer
@@ -1652,7 +1653,7 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        let result = PaidExecutionResult {
+        let result: PaidExecutionResult = PaidExecutionResult {
             request_id: signed.intent.request_id,
             kind: PaidResultKind::Call,
             target: PaidResultTarget::Instance(record),
@@ -1685,7 +1686,7 @@ mod tests {
 
     fn apply_ack_client(result: &PaidExecutionResult) -> Client<ScriptedTransport> {
         let request_id: RequestId = RequestId::new(result.request_id).unwrap();
-        let response = node_core::NodeResponse::new(
+        let response: node_core::NodeResponse = node_core::NodeResponse::new(
             request_id,
             if result.status == PaidExecutionStatus::Success {
                 node_core::NodeResponseStatus::Accepted
