@@ -11,6 +11,7 @@ detailed design, operator guides, and specialist references live here.
 - [Runtime and ingress](architecture/runtime-and-ingress.md)
 - [Persistence architecture](architecture/persistence.md)
 - [Developer product surfaces](architecture/product-surfaces.md)
+- [FastVote HTTP network](architecture/fastvote-network.md)
 - [Architecture decision records](architecture/decisions/README.md)
 
 ## Smart contracts
@@ -27,6 +28,7 @@ detailed design, operator guides, and specialist references live here.
 - [PostgreSQL reference design](operations/postgres.md)
 - [Offline FastVote fee-escrow inventory](operations/fastvote-fee-inventory.md)
 - [Closed PostgreSQL FastVote operator rehearsal](operations/fastvote-pg-rehearsal.md)
+- [Certified-only FastVote HTTP network and CLI quorum client](guides/fastvote-network.md)
 - [Certified PostgreSQL load and recovery measurements](operations/postgres-certified-load.md)
 - [Hardware signing](signing/hardware-signing.md)
 

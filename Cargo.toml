@@ -68,6 +68,7 @@ node-wire = { path = "crates/node-wire" }
 native-http = { path = "crates/native-http" }
 signing-view = { path = "crates/signing-view" }
 sunrise-edge-client = { path = "clients/rust" }
+sunrise-edge-cli = { path = "apps/cli" }
 sunrise-edge-ledger = { path = "clients/ledger" }
 sunrise-edge-devnet = { path = "apps/devnet" }
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }

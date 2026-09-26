@@ -40,7 +40,9 @@ use public_standard_asset::{
     asset_type_argument, coin_amount, coin_body_layout, transfer_arguments,
     treasury_cap_body_layout, treasury_supply,
 };
-use sunrise_edge_devnet::{DEVNET_PAID_GENESIS_SEED, DevOwner, build_paid_genesis_manifest};
+use sunrise_edge_devnet::{
+    DEVNET_PAID_GENESIS_SEED, DevOwner, build_paid_genesis_manifest, paid_genesis_authority,
+};
 
 /// One test-only FastVote validator: a real, freshly generated Ed25519
 /// identity, never used outside this fixture.
@@ -123,6 +125,55 @@ impl FastVoteGenesisFixture {
         let signature: [u8; 64] = self.sender_key.sign(&frame).into();
         encode_signed_paid_intent(&SignedPaidIntent { intent, signature }).unwrap()
     }
+
+    /// The public Standard Asset definition object id, needed to build the
+    /// `asset_type_argument` a real CLI-built `transfer` call's
+    /// `--type-args` must supply.
+    #[must_use]
+    pub const fn definition_id(&self) -> ObjectId {
+        self.definition_id
+    }
+
+    /// The exact `UnverifiedDependencyRef` a real CLI-built call's
+    /// `--code-ref`/`--instance-ref` resolution needs to match this
+    /// fixture's installed code.
+    #[must_use]
+    pub fn code(&self) -> UnverifiedDependencyRef {
+        self.code.clone()
+    }
+
+    /// The exact fee-coin `ObjectRef` (including its live digest) a real
+    /// CLI-built call's `--access`/`--fee-source` must reference.
+    #[must_use]
+    pub fn fee_coin_ref(&self) -> ObjectRef {
+        self.fee_coin_ref.clone()
+    }
+
+    /// Reconstructs the exact `InstanceRecord`
+    /// `sunrise_edge_devnet::build_paid_genesis_manifest` installed for the
+    /// public Standard Asset instance this fixture's fee coin belongs to --
+    /// the same shape `contract paid-call --instance-ref` needs, so a real
+    /// CLI invocation can independently build and sign a call against it
+    /// instead of only ever replaying [`Self::paid_intent_bytes`].
+    #[must_use]
+    pub fn instance_record(&self) -> execution::local_execution::InstanceRecord {
+        execution::local_execution::InstanceRecord {
+            context: self.context.clone(),
+            creator: paid_genesis_authority(),
+            seed: self
+                .resolver
+                .hash_for_purpose(
+                    self.epoch,
+                    HashPurpose::ProtocolConfig,
+                    b"sunrise.devnet.public-standard-asset.instance.v1",
+                )
+                .unwrap()
+                .bytes(),
+            code: self.code.clone(),
+            revision: 1,
+            initializer: public_standard_asset::INITIALIZER.to_owned(),
+        }
+    }
 }
 
 /// The fixed hash-suite string every `fastvote_pg` `--suite` flag must carry
@@ -141,7 +192,10 @@ fn genesis_signing_key() -> SigningKey {
 #[must_use]
 pub fn build_fixture(unique: &str) -> FastVoteGenesisFixture {
     let chain_id: ChainId = ChainId::new(format!("fastvote-pg-e2e-{unique}")).unwrap();
-    let protocol_version: ProtocolVersion = ProtocolVersion::new(1);
+    // Must be >= protocol_config::resolve_transaction_auth_profile's activation
+    // floor (3): the ordinary CLI paid-call path queries `/v1/context`, which
+    // resolves the transaction-auth profile and fails closed below that floor.
+    let protocol_version: ProtocolVersion = ProtocolVersion::new(3);
     let epoch: Epoch = Epoch::new(0);
     let resolver: HashSuiteResolver = HashSuiteResolver::new(
         chain_id.clone(),

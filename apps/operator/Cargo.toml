@@ -10,26 +10,29 @@ crypto.workspace = true
 ed25519-zebra.workspace = true
 execution.workspace = true
 hashing.workspace = true
+native-http.workspace = true
 node-core.workspace = true
+node-wire.workspace = true
 postgres.workspace = true
 postgres_rustls.workspace = true
+protocol-config.workspace = true
 protocol-types.workspace = true
 r2d2_postgres.workspace = true
 runtime.workspace = true
 runtime-postgres.workspace = true
 rustls.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal"] }
 validator-set.workspace = true
 
 [dev-dependencies]
 abi.workspace = true
 fees.workspace = true
-native-http.workspace = true
-node-wire.workspace = true
 objects.workspace = true
 protocol-config.workspace = true
 public-standard-asset = { path = "../../contracts/standard-asset" }
 rcgen.workspace = true
 runtime-sqlite.workspace = true
 sunrise-edge-client.workspace = true
+sunrise-edge-cli.workspace = true
 sunrise-edge-devnet.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }

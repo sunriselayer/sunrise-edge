@@ -399,7 +399,7 @@ fn fastvote_pg_operator_multivalidator_e2e() {
         "--domain",
         &domain_hex,
         "--protocol-version",
-        "1",
+        "3",
         "--epoch",
         "1",
         "--suite",

@@ -10,6 +10,7 @@
 
 use super::genesis_fixture::FastVoteGenesisFixture;
 use node_core::{ObjectQueryResult, query_object, query_sender_next_nonce};
+use objects::ObjectRef;
 use postgres::{
     Config,
     config::{Host, SslMode},
@@ -199,7 +200,7 @@ pub fn install_genesis(
         "--domain",
         domain_hex,
         "--protocol-version",
-        "1",
+        "3",
         "--epoch",
         "0",
         "--suite",
@@ -242,7 +243,7 @@ pub fn prepare_vote(
         "--domain",
         domain_hex,
         "--protocol-version",
-        "1",
+        "3",
         "--epoch",
         "0",
         "--suite",
@@ -283,7 +284,7 @@ pub fn assemble_certificate(
         "--chain-id",
         context.chain_id.as_str(),
         "--protocol-version",
-        "1",
+        "3",
         "--epoch",
         "0",
         "--suite",
@@ -322,7 +323,7 @@ pub fn apply_certificate(
         "--domain",
         domain_hex,
         "--protocol-version",
-        "1",
+        "3",
         "--epoch",
         "0",
         "--suite",
@@ -453,5 +454,45 @@ pub fn snapshot(
         certificate_record,
         object,
         next_nonce,
+    }
+}
+
+/// The fee coin's exact current `ObjectRef` (id, live version, live digest),
+/// independently re-queried out of band. A CLI-built call's `--access`/
+/// `--fee-source` must reference this, not the object's original genesis
+/// version, once any prior call (successful or a charged trap) has mutated
+/// it: an owned object's version/digest advances on every settlement,
+/// including a discarded-effects `ApplicationFailed` charge.
+pub fn current_fee_coin_ref(
+    pool: &Pool<PostgresConnectionManager<postgres::NoTls>>,
+    namespace: &PostgresNamespace,
+    fixture: &FastVoteGenesisFixture,
+) -> ObjectRef {
+    let store = runtime_postgres::PostgresDurableStore::new(
+        pool.clone(),
+        namespace.clone(),
+        runtime_postgres::PostgresTransactionPolicy::new(NonZeroU32::new(1).unwrap()).unwrap(),
+    );
+    let context: DurableOperationContext = read_context(pool, namespace);
+    match query_object(
+        &store,
+        &context,
+        fixture.domain,
+        &fixture.chain_id,
+        fixture.fee_coin,
+    )
+    .unwrap()
+    {
+        ObjectQueryResult::CurrentInline {
+            object_id,
+            object_version,
+            digest,
+            ..
+        } => ObjectRef {
+            id: object_id,
+            version: object_version.get(),
+            digest,
+        },
+        other => panic!("expected the fee coin to be a current inline object, got {other:?}"),
     }
 }

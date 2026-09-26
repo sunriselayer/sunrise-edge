@@ -1764,6 +1764,7 @@ dependencies = [
  "runtime-postgres",
  "runtime-sqlite",
  "rustls",
+ "sunrise-edge-cli",
  "sunrise-edge-client",
  "sunrise-edge-devnet",
  "tokio",

@@ -96,20 +96,34 @@ FastVote as a usable network is prioritized ahead of load testing; peak TPS,
 concurrent-user and recovery targets remain undecided and are deferred to
 post-launch hardening. The active order is:
 
-- [ ] authenticated, request/event-driven external validator access for
+- [x] authenticated, request/event-driven external validator access for
   FastVote prepare/certificate/apply, plus a CLI end-to-end quorum submission
   path;
   - 2026-09-26 status: [DR-0148](docs/architecture/decisions/0148-certified-fastvote-network.md)
     implements the certified-only HTTP router (`native_http::fastvote::certified_fastvote_router`,
     structurally excludes every direct/legacy mutating route), the two
     dedicated prepare/certificate routes, a fixed fresh-vote core
-    verification gap, and a network client
-    (`clients/rust::fastvote_client`) with local-genesis-pinned,
-    Byzantine/unavailable-peer-tolerant quorum collection, proven by a real
+    verification gap, a network client (`clients/rust::fastvote_client`)
+    with local-genesis-pinned, Byzantine/unavailable-peer-tolerant quorum
+    collection, a long-running PostgreSQL-backed hosting binary
+    (`apps/operator/src/bin/fastvote_host_pg`, loopback-only, never installs
+    genesis, claims its namespace's writer fence exactly once at startup),
+    and the `contract paid-call --fastvote-network`/`contract fastvote-replay`
+    CLI surface (per-peer TLS, mandatory pre-POST signed-intent/certificate
+    artifact persistence, exact-bytes replay). Proven by a real
     four-validator SQLite-backed HTTP E2E
-    (`apps/operator/tests/fastvote_network_e2e.rs`). Still open: a
-    PostgreSQL-backed hosting operator binary (SQLite only so far) and the
-    `apps/cli` `--fastvote-network` CLI argument surface itself.
+    (`apps/operator/tests/fastvote_network_e2e.rs`, including focused
+    malformed/oversized/wrong-context HTTP instrumentation tests) and a real
+    four-process live-PostgreSQL E2E driven entirely through the compiled
+    CLI (`apps/operator/tests/fastvote_host_pg_cli_e2e.rs`, gated behind
+    `SUNRISE_EDGE_TEST_POSTGRES_URL`, wired into
+    `scripts/check-fastvote-pg.sh`), covering a charged trap, a successful
+    transfer, exact replay of both, a rejected request-id-reuse conflict
+    with independently re-verified unchanged durable state, a
+    stale-writer-fence rejection, and a real close/reopen of a validator's
+    host process. This is a development implementation on an
+    independently-reviewed but not independently security-audited surface;
+    see the gate below.
 - [ ] expose the already-implemented bond/epoch/equivocation/reward/claim
   lifecycle through explicit authenticated operator/network surfaces where
   needed;

@@ -75,8 +75,9 @@ pub use execution::paid_execution::{
     MIN_EXECUTION_PRICE, MIN_RESERVE_ALLOWANCE, MIN_SETTLE_ALLOWANCE, PaidApplication,
     PaidChargedOutcome, PaidExecutionResult, PaidExecutionStatus, PaidFeePolicy, PaidIntent,
     PaidResultKind, PaidResultTarget, ReservationAccessKind, SignedPaidIntent,
-    decode_paid_execution_result, decode_paid_fee_policy, encode_paid_execution_result,
-    encode_paid_fee_policy, encode_signed_paid_intent, paid_fee_policy_digest,
+    decode_paid_execution_result, decode_paid_fee_policy, decode_signed_paid_intent,
+    encode_paid_execution_result, encode_paid_fee_policy, encode_signed_paid_intent,
+    paid_fee_policy_digest,
 };
 pub use execution::publication::{
     ArtifactParts, CodeArtifact, PublicationContext, PublicationSubmission,
@@ -84,9 +85,10 @@ pub use execution::publication::{
 };
 pub use execution::{call, call_authorization, local_execution};
 pub use fastvote_client::{
-    FastVoteApplyAttempt, FastVoteAttempt, FastVoteEndpoint, FastVoteGenesisTrustError,
-    FastVoteQuorumError, FastVoteQuorumFailure, apply_fastvote_to_all,
-    collect_fastvote_certificate, load_trusted_fastvote_genesis,
+    FastVoteApplyAttempt, FastVoteAttempt, FastVoteEndpoint, FastVoteEndpointConfigError,
+    FastVoteGenesisTrustError, FastVoteNetworkError, FastVoteQuorumError, FastVoteQuorumFailure,
+    MAX_FASTVOTE_NETWORK_ENDPOINTS, apply_fastvote_to_all, collect_fastvote_certificate,
+    load_trusted_fastvote_genesis, validate_fastvote_endpoints,
 };
 pub use hashing::HashSuiteResolver;
 pub use key::LocalSigner;
@@ -138,10 +140,10 @@ pub use node_core::{NodeCoreError, NodeResponse, NodeResponseStatus, RequestId};
 pub use node_wire::{
     FASTVOTE_CERTIFICATES_PATH, FASTVOTE_PREPARE_PATH, FastVoteApplyRequest,
     FastVoteApplyRequestError, HttpContextQueryResult, HttpNextNonceQueryResult, HttpNodeResult,
-    HttpObjectQueryResult, HttpReceiptQueryResult, NEXT_NONCE_QUERY_RESULT_TYPE_ID,
-    NODE_RESULT_MEDIA_TYPE, ObjectQueryStatus, QUERY_CONTEXT_PATH, QUERY_NEXT_NONCE_PATH,
-    QUERY_OBJECT_PATH, QUERY_RECEIPT_PATH, QUERY_RESULT_MEDIA_TYPE, QueryResultError,
-    ReceiptQueryStatus,
+    HttpObjectQueryResult, HttpReceiptQueryResult, MAX_FASTVOTE_CERTIFICATE_BYTES,
+    NEXT_NONCE_QUERY_RESULT_TYPE_ID, NODE_RESULT_MEDIA_TYPE, ObjectQueryStatus, QUERY_CONTEXT_PATH,
+    QUERY_NEXT_NONCE_PATH, QUERY_OBJECT_PATH, QUERY_RECEIPT_PATH, QUERY_RESULT_MEDIA_TYPE,
+    QueryResultError, ReceiptQueryStatus,
 };
 pub use objects::{
     AccessMode, Address, Object, ObjectError, ObjectId, ObjectRef, Owner, decode_object,
@@ -162,7 +164,7 @@ pub use canonical_encoding::{CanonicalEncodingError, CanonicalStruct};
 pub use fees::{Amount, FeePayment};
 pub use protocol_types::{
     AtomicityDomainId, ChainId, Digest32, Epoch, HashAlgorithmId, HashSuiteId, ProtocolVersion,
-    SignatureSchemeId, TypeError,
+    SignatureSchemeId, TypeError, ValidatorId,
 };
 pub use standard_assets::{
     AssetId, StandardAssetCoinV1, StandardAssetError, StandardAssetTransferArgsV1,

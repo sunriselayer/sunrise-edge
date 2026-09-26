@@ -128,6 +128,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     ];
     specs.extend(tls_flag_specs());
     specs.extend(signer_flag_specs());
+    specs.extend(super::fastvote_network::network_flag_specs());
     match action {
         "paid-publish" => specs.extend([
             scalar("--wasm"),
@@ -157,6 +158,11 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     if action != "paid-call" && parsed.get("--authorizations").is_some() {
         return Err(invalid("--authorizations is supported only for paid-call"));
     }
+    if action != "paid-call" && parsed.get("--fastvote-network").is_some() {
+        return Err(invalid(
+            "--fastvote-network is supported only for paid-call; paid-publish/paid-instantiate remain direct-only",
+        ));
+    }
     // Ledger clear signing is a separate deferred contract. Reject before
     // device access, file reads, policy queries, or submission.
     let signer: LocalSigner = match parse_signer_selection(&parsed)? {
@@ -175,6 +181,19 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         expected.epoch(),
     )
     .map_err(failure)?;
+    // Endpoint-to-validator mapping is verified against the local genesis
+    // pin *before* any fee/nonce query or signing, exactly like the local
+    // expected-context check above.
+    let network: Option<(
+        Vec<FastVoteEndpoint<crate::net::CliTransport>>,
+        FastPathCertifier,
+    )> = if parsed.get("--fastvote-network").is_some() {
+        Some(super::fastvote_network::load_endpoints_and_certifier(
+            &parsed, &resolver, &context,
+        )?)
+    } else {
+        None
+    };
     let client = connect_paid_execution(parsed.require("--endpoint")?, &parsed)?;
     let fee_policy = client.query_paid_fee_policy(&resolver, &expected)?;
     let fee_source_id: ObjectId = ObjectId::new(decode_hex_32(
@@ -275,20 +294,26 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
             ),
             PaidApplication::Call(_) => (None, None),
         };
-    let result: PaidExecutionResult = submit_with_outputs(
-        parsed.get("--result-out"),
-        parsed.get("--submission-out"),
-        derived_path,
-        &signed_bytes,
-        derived_bytes.as_deref(),
-        request_id,
-        nonce,
-        || {
-            client
-                .submit_paid_execution(&signed, &resolver)
-                .map_err(CliError::from)
-        },
-    )?;
+    let result: PaidExecutionResult = if let Some((endpoints, certifier)) = &network {
+        super::fastvote_network::run_network_submit(
+            &parsed, endpoints, certifier, &resolver, &signed,
+        )?
+    } else {
+        submit_with_outputs(
+            parsed.get("--result-out"),
+            parsed.get("--submission-out"),
+            derived_path,
+            &signed_bytes,
+            derived_bytes.as_deref(),
+            request_id,
+            nonce,
+            || {
+                client
+                    .submit_paid_execution(&signed, &resolver)
+                    .map_err(CliError::from)
+            },
+        )?
+    };
     println!("paid_status={:?}", result.status);
     println!("gas_used={}", result.effects.gas_used);
     if let Some(charged) = &result.charged {

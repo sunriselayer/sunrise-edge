@@ -203,8 +203,10 @@ async fn fastvote_network_prepares_certifies_and_applies_a_real_transfer_over_re
     let endpoints: Vec<FastVoteEndpoint<LoopbackHttpTransport>> = addrs
         .iter()
         .zip(&fixture.validators)
-        .map(|(addr, validator)| FastVoteEndpoint {
+        .enumerate()
+        .map(|(index, (addr, validator))| FastVoteEndpoint {
             validator_id: validator.validator_id,
+            endpoint_label: format!("127.0.0.1:{index}"),
             client: Client::new(
                 LoopbackHttpTransport::new(
                     *addr,
@@ -234,8 +236,16 @@ async fn fastvote_network_prepares_certifies_and_applies_a_real_transfer_over_re
 
     let signed: SignedPaidIntent = decode_signed_paid_intent(&fixture.paid_intent_bytes).unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
-    let (certificate, attempts) =
-        collect_fastvote_certificate(&endpoints, &certifier, &signed, deadline).unwrap();
+    let per_request_cap = Duration::from_secs(10);
+    let (certificate, attempts) = collect_fastvote_certificate(
+        &endpoints,
+        &certifier,
+        &fixture.resolver,
+        &signed,
+        deadline,
+        per_request_cap,
+    )
+    .unwrap();
     assert_eq!(attempts.len(), 4);
     assert!(attempts.iter().all(|attempt| attempt.result.is_ok()));
     // `try_form_certificate` is minimal: it stops accumulating as soon as
@@ -245,11 +255,14 @@ async fn fastvote_network_prepares_certifies_and_applies_a_real_transfer_over_re
 
     let apply_attempts = apply_fastvote_to_all(
         &endpoints,
+        &certifier,
         &signed,
         &fixture.resolver,
         &certificate,
         deadline,
-    );
+        per_request_cap,
+    )
+    .unwrap();
     assert_eq!(apply_attempts.len(), 4);
     for attempt in &apply_attempts {
         let result = attempt.result.as_ref().unwrap_or_else(|error| {
@@ -264,11 +277,14 @@ async fn fastvote_network_prepares_certifies_and_applies_a_real_transfer_over_re
     // than re-executing or rejecting as a fresh request.
     let replay_attempts = apply_fastvote_to_all(
         &endpoints,
+        &certifier,
         &signed,
         &fixture.resolver,
         &certificate,
         deadline,
-    );
+        per_request_cap,
+    )
+    .unwrap();
     assert_eq!(replay_attempts.len(), 4);
     for (first, replay) in apply_attempts.iter().zip(&replay_attempts) {
         let first_result = first.result.as_ref().unwrap();
@@ -322,4 +338,151 @@ impl Drop for FileGuard {
 }
 fn scopeguard(path: PathBuf) -> FileGuard {
     FileGuard(path)
+}
+
+/// Focused HTTP instrumentation coverage for the certified FastVote routes:
+/// malformed/unsigned/wrong-context/wrong-media-type/oversized requests must
+/// all be rejected before any identity, clock, or storage access, and each
+/// with the specific status/diagnostic the router documents.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fastvote_prepare_rejects_malformed_unsigned_wrong_context_and_oversized_requests() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let fixture = genesis_fixture::build_fixture(&unique);
+    let manifest: GenesisManifest = decode_genesis_manifest(&fixture.manifest_bytes).unwrap();
+    let data_dir = std::env::temp_dir().join(format!("sunrise-fastvote-net-neg-{unique}"));
+    fs::create_dir(&data_dir).unwrap();
+    let _owned = TempDir(data_dir.clone());
+
+    let validator = &fixture.validators[0];
+    let (addr, stop) = spawn_validator_host(
+        &fixture,
+        &manifest,
+        &fixture.resolver,
+        validator.validator_id,
+        validator.signing_key,
+        &data_dir,
+    )
+    .await;
+    let transport = LoopbackHttpTransport::new(
+        addr,
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        NonZeroUsize::new(64 * 1024).unwrap(),
+        NonZeroUsize::new(4 * 1024 * 1024).unwrap(),
+    )
+    .unwrap();
+
+    let send = |content_type: Option<&'static str>, body: Vec<u8>| {
+        transport.send(&sunrise_edge_client::WireRequest {
+            method: sunrise_edge_client::Method::Post,
+            path: node_wire::FASTVOTE_PREPARE_PATH.to_owned(),
+            content_type,
+            body,
+            deadline: None,
+        })
+    };
+
+    // Wrong media type: rejected before any body parsing at all.
+    let response = send(Some("text/plain"), vec![0xAA]).unwrap();
+    assert_eq!(response.status, 415);
+
+    // Oversized body: rejected on size alone, before decoding it as a
+    // signed intent at all.
+    let oversized = vec![0u8; sunrise_edge_client::MAX_SIGNED_PAID_INTENT_BYTES + 1];
+    let response = send(Some(node_wire::NODE_EVENT_MEDIA_TYPE), oversized).unwrap();
+    assert_eq!(response.status, 413);
+
+    // Malformed (not a valid canonical signed-intent frame): rejected before
+    // any identity/clock/storage access.
+    let response = send(Some(node_wire::NODE_EVENT_MEDIA_TYPE), vec![0xAA; 64]).unwrap();
+    assert_eq!(response.status, 400);
+    assert_eq!(
+        String::from_utf8_lossy(&response.body),
+        "invalid-fastvote-signed-intent"
+    );
+
+    // Wrong context: a structurally valid, validly self-signed intent from a
+    // completely different fixture (different chain id) submitted to this
+    // router. `declared_paid_context` builds its context from *this*
+    // router's own configured chain id, so authentication must reject the
+    // mismatch before touching storage -- never silently accept a foreign
+    // chain's intent.
+    let other_fixture = genesis_fixture::build_fixture(&format!("{unique}-other"));
+    let response = send(
+        Some(node_wire::NODE_EVENT_MEDIA_TYPE),
+        other_fixture.paid_intent_bytes.clone(),
+    )
+    .unwrap();
+    assert_eq!(response.status, 400);
+    assert_eq!(
+        String::from_utf8_lossy(&response.body),
+        "paid-execution-rejected"
+    );
+
+    let _ = stop.send(());
+}
+
+/// The apply route (`/v1/fastvote/certificates`) enforces the same
+/// media-type and size bounds as prepare, independently.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fastvote_apply_rejects_wrong_media_type_and_oversized_requests() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let fixture = genesis_fixture::build_fixture(&unique);
+    let manifest: GenesisManifest = decode_genesis_manifest(&fixture.manifest_bytes).unwrap();
+    let data_dir = std::env::temp_dir().join(format!("sunrise-fastvote-net-neg-apply-{unique}"));
+    fs::create_dir(&data_dir).unwrap();
+    let _owned = TempDir(data_dir.clone());
+
+    let validator = &fixture.validators[0];
+    let (addr, stop) = spawn_validator_host(
+        &fixture,
+        &manifest,
+        &fixture.resolver,
+        validator.validator_id,
+        validator.signing_key,
+        &data_dir,
+    )
+    .await;
+    let transport = LoopbackHttpTransport::new(
+        addr,
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        NonZeroUsize::new(64 * 1024).unwrap(),
+        NonZeroUsize::new(4 * 1024 * 1024).unwrap(),
+    )
+    .unwrap();
+    let send = |content_type: Option<&'static str>, body: Vec<u8>| {
+        transport.send(&sunrise_edge_client::WireRequest {
+            method: sunrise_edge_client::Method::Post,
+            path: node_wire::FASTVOTE_CERTIFICATES_PATH.to_owned(),
+            content_type,
+            body,
+            deadline: None,
+        })
+    };
+
+    let response = send(Some("text/plain"), vec![0xAA]).unwrap();
+    assert_eq!(response.status, 415);
+
+    let oversized = vec![0u8; node_wire::MAX_FASTVOTE_APPLY_REQUEST_BYTES + 1];
+    let response = send(Some(node_wire::NODE_EVENT_MEDIA_TYPE), oversized).unwrap();
+    assert_eq!(response.status, 413);
+
+    let _ = stop.send(());
 }

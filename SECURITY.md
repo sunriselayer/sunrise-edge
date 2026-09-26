@@ -32,6 +32,15 @@ The implemented native external mutation surface accepts only authenticated
 before identity allocation, clock access, storage I/O, state-machine
 transition, outbox work, or transport delivery.
 
+A separate, opt-in, operator-composed native surface
+([DR-0148](docs/architecture/decisions/0148-certified-fastvote-network.md))
+serves only the two FastVote prepare/certificate routes plus bounded reads; it
+never mounts `SubmitTransaction` or any other mutating route, regardless of
+configuration, and does not weaken or replace the `SubmitTransaction`
+invariants above. It is a development implementation, not independently
+security-audited, and is not authorized for live exposure or custody of real
+assets.
+
 Devnet query routes are unauthenticated public reads. They expose context,
 objects, receipts, and sender next-nonce values and must not be treated as an
 authorization mechanism.
@@ -108,6 +117,15 @@ certification.
   bounded.
 - Unknown algorithms, versions, event kinds, modules, encodings, and policies
   must fail closed without downgrade or fallback.
+- The opt-in FastVote HTTP surface's prepare/apply routes must authenticate
+  the caller's exact signed bytes against its own declared chain/protocol/
+  epoch before identity allocation, clock access, or storage I/O; only after
+  that does `fast_path::apply` reconcile a request already covered by a
+  committed receipt for exact historical replay ahead of a current-epoch
+  check, so a request whose epoch has since advanced can still replay its own
+  already-applied outcome without silently re-executing or accepting a fresh,
+  stale-epoch mutation. This does not change `SubmitTransaction`'s own
+  authenticate-then-reconcile ordering above.
 - FastVote mutation paths must fence a non-current epoch, a validator absent
   from the one committed active validator set, and a conflicting object or
   sender/epoch nonce lock before any lock, execution, or mutation. Validator
@@ -179,7 +197,15 @@ The following are deferred from the first audit engagement:
   Phase 3 slashing/reward distribution remains incomplete; DR-0135 accepts
   its non-signable protocol-custody prerequisite and DR-0136 adds read-only,
   typed genesis bond commitments without a Standard Asset exception — see
-  `TODO.md`'s FastVote Certified Execution Gate);
+  `TODO.md`'s FastVote Certified Execution Gate. Function-first network
+  delivery, ahead of Phase 3 economics/security closure, adds a genuine but
+  still opt-in, operator-composed HTTP ingress and CLI quorum client under
+  [DR-0148](docs/architecture/decisions/0148-certified-fastvote-network.md):
+  a certified-only router, a PostgreSQL-backed hosting binary, and CLI
+  network submission/replay. This is a development implementation on its own
+  separate design/security review gate per DR-0147, not an independent
+  security audit, and does not authorize live exposure, deployment, or
+  custody of real assets);
 - externally accepted non-`SubmitTransaction` event families;
 - production multi-validator consensus activation;
 - checkpoint/state-root publication and verified restore;

@@ -169,7 +169,7 @@ fn connect_with_limit(
     Ok(Client::new(transport))
 }
 
-fn build_transport(
+pub(crate) fn build_transport(
     endpoint: &str,
     server_name: Option<&str>,
     ca_cert_der_file: Option<&str>,

@@ -33,6 +33,9 @@ roadmap describes a later target state.
   local execution/replay; distinct from public-network admission.
 - [Unified contract calls](decisions/0123-unified-contract-calls.md): one signed
   target/delegated-handle model, scope validation and atomic outcome for every call.
+- [FastVote HTTP network](fastvote-network.md): the certified-only,
+  opt-in HTTP surface for DR-0130/DR-0129's fast-path prepare/apply and
+  quorum certification, its trust/pinning model, and known Phase 1 limits.
 - [Decision records](decisions/README.md): accepted and compatibility-relevant
   decisions grouped into bounded ranges.
 

@@ -30,6 +30,9 @@ where
     if matches!(action, "paid-publish" | "paid-instantiate" | "paid-call") {
         return super::paid_execution::run(action, args);
     }
+    if action == "fastvote-replay" {
+        return super::fastvote_network::run_replay(args);
+    }
     if action != "validate" {
         return Err(CliError::UnknownContractAction(action.to_owned()));
     }
