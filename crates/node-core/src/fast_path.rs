@@ -721,6 +721,18 @@ where
     )?;
     let vote: FastVote =
         certifier.cast_vote(event_digest, commitment, locked_objects_digest, signer)?;
+    // Defense-in-depth against a misconfigured or rotated local signing key:
+    // `cast_vote` only checks that `signer`'s (validator_id, scheme) pair is
+    // registered in the committed set (`ensure_registered_scheme`); it never
+    // verifies the produced signature actually verifies under that
+    // validator's committed public key. Without this check, a wrong local
+    // key would still commit a durable prepared record and unexpiring
+    // per-object locks (phase 1 has no rollback or expiry) for a vote that
+    // can never be certified, permanently wedging every input object. The
+    // exact-replay branch above already re-verifies its stored vote on every
+    // call; this makes the fresh branch verify exactly once, before it, so
+    // neither branch can ever durably commit an unverifiable vote.
+    certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
     let vote_bytes: Vec<u8> = consensus::encode_fast_vote(&vote)?;
 
     let nonce: PendingSenderNonceWrite = admission.nonce_write.ok_or(FastPathError::Invalid(

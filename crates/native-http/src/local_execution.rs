@@ -7,7 +7,9 @@ use execution::local_execution::{
 pub(super) const EXECUTION_PATH: &str = "/v1/contracts/executions";
 const INSTANCE_PATH: &str = "/v1/contracts/instances/{creator}/{seed}";
 
-pub(super) fn routes<S, B, M, T, C, I>(
+/// The one direct/legacy mutating local-execution route. A certified-only
+/// FastVote router (DR-0148, see [`crate::fastvote`]) never calls this.
+pub(super) fn mutation_routes<S, B, M, T, C, I>(
     enabled: bool,
 ) -> Router<SharedPreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I>>
 where
@@ -23,8 +25,28 @@ where
     }
     Router::new()
         .route(EXECUTION_PATH, post(submit::<S, B, M, T, C, I>))
-        .route(INSTANCE_PATH, get(query::<S, B, M, T, C, I>))
         .layer(DefaultBodyLimit::max(MAX_LOCAL_EXECUTION_INTENT_BYTES))
+}
+
+/// The bounded, unsigned instance-by-selector query. Safe to expose from a
+/// certified-only FastVote router: it never checks or requires any mutating
+/// capability and never writes, and a paid-call caller needs it to look up
+/// an existing instance before signing a call against it.
+pub(super) fn read_routes<S, B, M, T, C, I>(
+    enabled: bool,
+) -> Router<SharedPreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I>>
+where
+    S: IndexedOutboxRepository + Send + Sync + 'static,
+    B: BlobStore + Send + Sync + 'static,
+    M: TransactionalNodeStateMachine + Send + Sync + 'static,
+    T: Transport + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    I: IndexedOutboxIdentitySource + Send + Sync + 'static,
+{
+    if !enabled {
+        return Router::new();
+    }
+    Router::new().route(INSTANCE_PATH, get(query::<S, B, M, T, C, I>))
 }
 
 async fn submit<S, B, M, T, C, I>(

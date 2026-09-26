@@ -99,6 +99,17 @@ post-launch hardening. The active order is:
 - [ ] authenticated, request/event-driven external validator access for
   FastVote prepare/certificate/apply, plus a CLI end-to-end quorum submission
   path;
+  - 2026-09-26 status: [DR-0148](docs/architecture/decisions/0148-certified-fastvote-network.md)
+    implements the certified-only HTTP router (`native_http::fastvote::certified_fastvote_router`,
+    structurally excludes every direct/legacy mutating route), the two
+    dedicated prepare/certificate routes, a fixed fresh-vote core
+    verification gap, and a network client
+    (`clients/rust::fastvote_client`) with local-genesis-pinned,
+    Byzantine/unavailable-peer-tolerant quorum collection, proven by a real
+    four-validator SQLite-backed HTTP E2E
+    (`apps/operator/tests/fastvote_network_e2e.rs`). Still open: a
+    PostgreSQL-backed hosting operator binary (SQLite only so far) and the
+    `apps/cli` `--fastvote-network` CLI argument surface itself.
 - [ ] expose the already-implemented bond/epoch/equivocation/reward/claim
   lifecycle through explicit authenticated operator/network surfaces where
   needed;

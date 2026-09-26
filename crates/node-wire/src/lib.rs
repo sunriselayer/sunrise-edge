@@ -20,6 +20,8 @@ use canonical_encoding::{
     decode_canonical_frame,
 };
 use core::fmt;
+use execution::paid_execution::MAX_SIGNED_PAID_INTENT_BYTES;
+use node_core::fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS;
 use node_core::{
     MAX_AUTHENTICATED_OBJECT_BODY_BYTES, MAX_CHAIN_ID_BYTES, MAX_NODE_OUTPUT_ITEMS, NodeCoreError,
     NodeDedupRecord, NodeResponse, ObjectQueryResult as NodeObjectQueryResult,
@@ -66,6 +68,28 @@ pub const NODE_RESULT_MEDIA_TYPE: &str = "application/vnd.sunrise-edge.node-resu
 pub const NODE_EVENT_PATH: &str = "/v1/events";
 /// Liveness route. It intentionally performs no storage or protocol checks.
 pub const LIVENESS_PATH: &str = "/health/live";
+
+/// Canonical type identifier for [`FastVoteApplyRequest`] (DR-0148).
+pub const FASTVOTE_APPLY_REQUEST_TYPE_ID: u16 = 0x6439;
+const FASTVOTE_APPLY_REQUEST_ENCODING_VERSION: u16 = 1;
+/// Dedicated certified-only FastVote prepare route (DR-0148). Never mounted
+/// on the same router as a direct/legacy mutating route.
+pub const FASTVOTE_PREPARE_PATH: &str = "/v1/fastvote/prepare";
+/// Dedicated certified-only FastVote certificate-apply route (DR-0148).
+pub const FASTVOTE_CERTIFICATES_PATH: &str = "/v1/fastvote/certificates";
+/// Generous bound on one encoded `consensus::FastVote`: canonical framing
+/// plus an ordinary chain id, several 32-byte digests and a 64-byte
+/// signature comfortably fits in low hundreds of bytes (matches the bound
+/// the `fastvote_pg` operator CLI already uses for one vote file).
+pub const MAX_FASTVOTE_VOTE_BYTES: usize = 4096;
+/// Bound on one encoded `consensus::FastCertificate`: at most
+/// [`MAX_FASTPATH_ACTIVE_VALIDATORS`] votes, each individually bounded by
+/// [`MAX_FASTVOTE_VOTE_BYTES`], plus header overhead.
+pub const MAX_FASTVOTE_CERTIFICATE_BYTES: usize =
+    MAX_FASTPATH_ACTIVE_VALIDATORS * MAX_FASTVOTE_VOTE_BYTES;
+/// Bound on one complete encoded [`FastVoteApplyRequest`].
+pub const MAX_FASTVOTE_APPLY_REQUEST_BYTES: usize =
+    MAX_SIGNED_PAID_INTENT_BYTES + MAX_FASTVOTE_CERTIFICATE_BYTES + 1024;
 
 /// Errors from encoding or decoding the bounded HTTP invocation result.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1332,6 +1356,135 @@ fn take_list_bytes<'a>(
     Ok(value)
 }
 
+/// Errors from encoding or decoding a [`FastVoteApplyRequest`] (DR-0148).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FastVoteApplyRequestError {
+    /// Canonical encoding failed.
+    CanonicalEncoding(CanonicalEncodingError),
+    /// Canonical decoding failed.
+    CanonicalDecoding(CanonicalDecodingError),
+    /// `signed_paid_intent` exceeded [`MAX_SIGNED_PAID_INTENT_BYTES`].
+    SignedPaidIntentTooLarge(usize),
+    /// `certificate` exceeded [`MAX_FASTVOTE_CERTIFICATE_BYTES`].
+    CertificateTooLarge(usize),
+    /// The decoded value's own re-encoding did not match the input bytes.
+    NonCanonicalEncoding,
+    /// The complete encoded request exceeded [`MAX_FASTVOTE_APPLY_REQUEST_BYTES`].
+    RequestTooLarge(usize),
+}
+
+impl fmt::Display for FastVoteApplyRequestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CanonicalEncoding(error) => write!(f, "canonical encoding failed: {error}"),
+            Self::CanonicalDecoding(error) => write!(f, "canonical decoding failed: {error}"),
+            Self::SignedPaidIntentTooLarge(length) => write!(
+                f,
+                "FastVote apply request signed paid intent is {length} bytes, maximum is {MAX_SIGNED_PAID_INTENT_BYTES}"
+            ),
+            Self::CertificateTooLarge(length) => write!(
+                f,
+                "FastVote apply request certificate is {length} bytes, maximum is {MAX_FASTVOTE_CERTIFICATE_BYTES}"
+            ),
+            Self::NonCanonicalEncoding => {
+                f.write_str("FastVote apply request bytes are not the canonical encoding")
+            }
+            Self::RequestTooLarge(length) => write!(
+                f,
+                "FastVote apply request is {length} bytes, maximum is {MAX_FASTVOTE_APPLY_REQUEST_BYTES}"
+            ),
+        }
+    }
+}
+
+impl Error for FastVoteApplyRequestError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::CanonicalEncoding(error) => Some(error),
+            Self::CanonicalDecoding(error) => Some(error),
+            Self::SignedPaidIntentTooLarge(_)
+            | Self::CertificateTooLarge(_)
+            | Self::NonCanonicalEncoding
+            | Self::RequestTooLarge(_) => None,
+        }
+    }
+}
+
+impl From<CanonicalEncodingError> for FastVoteApplyRequestError {
+    fn from(value: CanonicalEncodingError) -> Self {
+        Self::CanonicalEncoding(value)
+    }
+}
+
+impl From<CanonicalDecodingError> for FastVoteApplyRequestError {
+    fn from(value: CanonicalDecodingError) -> Self {
+        Self::CanonicalDecoding(value)
+    }
+}
+
+/// Canonical DR-0148 HTTP transport pairing for `POST
+/// /v1/fastvote/certificates`: the exact original signed `SignedPaidIntent`
+/// bytes [`node_core::fast_path::apply`] re-authenticates, plus the exact
+/// canonical `consensus::FastCertificate` bytes it verifies. Neither field is
+/// reinterpreted or re-derived here; this type only frames the two existing
+/// canonical byte strings together for one HTTP request body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FastVoteApplyRequest {
+    /// Exact canonical `SignedPaidIntent` bytes.
+    pub signed_paid_intent: Vec<u8>,
+    /// Exact canonical `FastCertificate` bytes.
+    pub certificate: Vec<u8>,
+}
+
+impl FastVoteApplyRequest {
+    fn check_bounds(&self) -> Result<(), FastVoteApplyRequestError> {
+        if self.signed_paid_intent.len() > MAX_SIGNED_PAID_INTENT_BYTES {
+            return Err(FastVoteApplyRequestError::SignedPaidIntentTooLarge(
+                self.signed_paid_intent.len(),
+            ));
+        }
+        if self.certificate.len() > MAX_FASTVOTE_CERTIFICATE_BYTES {
+            return Err(FastVoteApplyRequestError::CertificateTooLarge(
+                self.certificate.len(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Encodes canonical frame `0x6439/v1`.
+    pub fn encode(&self) -> Result<Vec<u8>, FastVoteApplyRequestError> {
+        self.check_bounds()?;
+        let mut frame = CanonicalStruct::new(
+            FASTVOTE_APPLY_REQUEST_TYPE_ID,
+            FASTVOTE_APPLY_REQUEST_ENCODING_VERSION,
+        );
+        frame.field_bytes(1, self.signed_paid_intent.clone())?;
+        frame.field_bytes(2, self.certificate.clone())?;
+        Ok(frame.finish()?)
+    }
+
+    /// Strictly decodes canonical frame `0x6439/v1`, rejecting an oversized
+    /// input before decoding and re-checking both bounds again after.
+    pub fn decode(bytes: &[u8]) -> Result<Self, FastVoteApplyRequestError> {
+        if bytes.len() > MAX_FASTVOTE_APPLY_REQUEST_BYTES {
+            return Err(FastVoteApplyRequestError::RequestTooLarge(bytes.len()));
+        }
+        let frame = decode_canonical_frame(bytes)?;
+        frame.require_type(FASTVOTE_APPLY_REQUEST_TYPE_ID)?;
+        frame.require_version(FASTVOTE_APPLY_REQUEST_ENCODING_VERSION)?;
+        frame.require_only_fields(&[1, 2])?;
+        let request = Self {
+            signed_paid_intent: frame.required_field(1)?.to_vec(),
+            certificate: frame.required_field(2)?.to_vec(),
+        };
+        request.check_bounds()?;
+        if request.encode()?.as_slice() != bytes {
+            return Err(FastVoteApplyRequestError::NonCanonicalEncoding);
+        }
+        Ok(request)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1364,5 +1517,143 @@ mod tests {
         assert_eq!(result.epoch().get(), 7);
         assert_eq!(result.protocol_config_bytes(), [0xAA, 0xBB, 0xCC]);
         assert_eq!(result.encode().unwrap(), bytes);
+    }
+}
+
+#[cfg(test)]
+mod fastvote_apply_request_tests {
+    use super::*;
+
+    fn sample() -> FastVoteApplyRequest {
+        FastVoteApplyRequest {
+            signed_paid_intent: vec![0xAB; 40],
+            certificate: vec![0xCD; 96],
+        }
+    }
+
+    #[test]
+    fn round_trips() {
+        let request = sample();
+        let bytes = request.encode().unwrap();
+        assert_eq!(FastVoteApplyRequest::decode(&bytes).unwrap(), request);
+    }
+
+    #[test]
+    fn encode_rejects_an_oversized_signed_paid_intent() {
+        let mut request = sample();
+        request.signed_paid_intent = vec![0; MAX_SIGNED_PAID_INTENT_BYTES + 1];
+        assert!(matches!(
+            request.encode(),
+            Err(FastVoteApplyRequestError::SignedPaidIntentTooLarge(length))
+                if length == MAX_SIGNED_PAID_INTENT_BYTES + 1
+        ));
+    }
+
+    #[test]
+    fn encode_rejects_an_oversized_certificate() {
+        let mut request = sample();
+        request.certificate = vec![0; MAX_FASTVOTE_CERTIFICATE_BYTES + 1];
+        assert!(matches!(
+            request.encode(),
+            Err(FastVoteApplyRequestError::CertificateTooLarge(length))
+                if length == MAX_FASTVOTE_CERTIFICATE_BYTES + 1
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_bytes_over_the_whole_request_bound() {
+        let oversized = vec![0_u8; MAX_FASTVOTE_APPLY_REQUEST_BYTES + 1];
+        assert!(matches!(
+            FastVoteApplyRequest::decode(&oversized),
+            Err(FastVoteApplyRequestError::RequestTooLarge(length))
+                if length == MAX_FASTVOTE_APPLY_REQUEST_BYTES + 1
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_wrong_type_id() {
+        let mut bytes = sample().encode().unwrap();
+        bytes[4] ^= 0xFF;
+        assert!(matches!(
+            FastVoteApplyRequest::decode(&bytes),
+            Err(FastVoteApplyRequestError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedTypeId {
+                    expected: FASTVOTE_APPLY_REQUEST_TYPE_ID,
+                    ..
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_wrong_version() {
+        let mut bytes = sample().encode().unwrap();
+        bytes[6] ^= 0xFF;
+        assert!(matches!(
+            FastVoteApplyRequest::decode(&bytes),
+            Err(FastVoteApplyRequestError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedVersion {
+                    expected: FASTVOTE_APPLY_REQUEST_ENCODING_VERSION,
+                    ..
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_an_unknown_field() {
+        let request = sample();
+        let mut frame = CanonicalStruct::new(
+            FASTVOTE_APPLY_REQUEST_TYPE_ID,
+            FASTVOTE_APPLY_REQUEST_ENCODING_VERSION,
+        );
+        frame
+            .field_bytes(1, request.signed_paid_intent.clone())
+            .unwrap();
+        frame.field_bytes(2, request.certificate.clone()).unwrap();
+        frame.field_bytes(3, vec![0u8]).unwrap();
+        let bytes = frame.finish().unwrap();
+        assert_eq!(
+            FastVoteApplyRequest::decode(&bytes),
+            Err(FastVoteApplyRequestError::CanonicalDecoding(
+                CanonicalDecodingError::UnexpectedField(3)
+            ))
+        );
+    }
+
+    #[test]
+    fn decode_rejects_a_missing_field() {
+        let request = sample();
+        let mut frame = CanonicalStruct::new(
+            FASTVOTE_APPLY_REQUEST_TYPE_ID,
+            FASTVOTE_APPLY_REQUEST_ENCODING_VERSION,
+        );
+        frame
+            .field_bytes(1, request.signed_paid_intent.clone())
+            .unwrap();
+        let bytes = frame.finish().unwrap();
+        assert_eq!(
+            FastVoteApplyRequest::decode(&bytes),
+            Err(FastVoteApplyRequestError::CanonicalDecoding(
+                CanonicalDecodingError::MissingField(2)
+            ))
+        );
+    }
+
+    // Pinned literal vector for `0x6439`, independently reconstructed
+    // byte-for-byte by `scripts/fastvote-apply-request-vectors.mjs` without
+    // invoking this Rust encoder.
+    #[test]
+    fn fastvote_apply_request_encoding_vector_0x6439_is_stable() {
+        let request = FastVoteApplyRequest {
+            signed_paid_intent: vec![0x11; 8],
+            certificate: vec![0x22; 8],
+        };
+        let bytes = request.encode().unwrap();
+        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(
+            hex,
+            "534e524539640100020001000800000011111111111111110200080000002222222222222222"
+        );
     }
 }

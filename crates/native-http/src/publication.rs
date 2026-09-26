@@ -7,7 +7,9 @@ use execution::publication::{MAX_PUBLICATION_SUBMISSION_BYTES, decode_publicatio
 pub(super) const PUBLICATION_PATH: &str = "/v1/contracts/publications";
 const QUERY_PATH: &str = "/v1/contracts/publications/{publisher}/{origin_seed}";
 
-pub(super) fn routes<S, B, M, T, C, I>(
+/// The one direct/legacy mutating publication route. A certified-only
+/// FastVote router (DR-0148, see [`crate::fastvote`]) never calls this.
+pub(super) fn mutation_routes<S, B, M, T, C, I>(
     enabled: bool,
 ) -> Router<SharedPreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I>>
 where
@@ -23,8 +25,27 @@ where
     }
     Router::new()
         .route(PUBLICATION_PATH, post(submit::<S, B, M, T, C, I>))
-        .route(QUERY_PATH, get(query::<S, B, M, T, C, I>))
         .layer(DefaultBodyLimit::max(MAX_PUBLICATION_SUBMISSION_BYTES))
+}
+
+/// The bounded, unsigned publication-by-origin query. Safe to expose from a
+/// certified-only FastVote router: it never checks or requires any mutating
+/// capability and never writes.
+pub(super) fn read_routes<S, B, M, T, C, I>(
+    enabled: bool,
+) -> Router<SharedPreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I>>
+where
+    S: IndexedOutboxRepository + Send + Sync + 'static,
+    B: BlobStore + Send + Sync + 'static,
+    M: TransactionalNodeStateMachine + Send + Sync + 'static,
+    T: Transport + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    I: IndexedOutboxIdentitySource + Send + Sync + 'static,
+{
+    if !enabled {
+        return Router::new();
+    }
+    Router::new().route(QUERY_PATH, get(query::<S, B, M, T, C, I>))
 }
 
 pub(super) async fn admitted<F>(

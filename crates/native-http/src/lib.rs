@@ -13,7 +13,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use consensus::ConsensusSigner;
 use core::fmt;
+mod fastvote;
 mod local_execution;
 mod paid_execution;
 mod publication;
@@ -72,13 +74,17 @@ use tower::ServiceExt;
 // live in `node-wire` (DR-0083) and are re-exported below so existing
 // callers keep their original `native-http` import paths and byte-identical
 // wire behavior.
+pub use fastvote::{certified_fastvote_router, certified_fastvote_router_with_executor};
 pub use node_wire::{
-    CONTEXT_QUERY_RESULT_TYPE_ID, HttpContextQueryResult, HttpContractError,
-    HttpNextNonceQueryResult, HttpNodeResult, HttpObjectQueryResult, HttpReceiptQueryResult,
-    LIVENESS_PATH, NEXT_NONCE_QUERY_RESULT_TYPE_ID, NODE_EVENT_MEDIA_TYPE, NODE_EVENT_PATH,
-    NODE_RESULT_MEDIA_TYPE, OBJECT_QUERY_RESULT_TYPE_ID, ObjectQueryStatus, QUERY_CONTEXT_PATH,
-    QUERY_NEXT_NONCE_PATH, QUERY_OBJECT_PATH, QUERY_RECEIPT_PATH, QUERY_RESULT_MEDIA_TYPE,
-    QueryResultError, RECEIPT_QUERY_RESULT_TYPE_ID, ReceiptQueryStatus, http_receipt_query_result,
+    CONTEXT_QUERY_RESULT_TYPE_ID, FASTVOTE_APPLY_REQUEST_TYPE_ID, FASTVOTE_CERTIFICATES_PATH,
+    FASTVOTE_PREPARE_PATH, FastVoteApplyRequest, FastVoteApplyRequestError, HttpContextQueryResult,
+    HttpContractError, HttpNextNonceQueryResult, HttpNodeResult, HttpObjectQueryResult,
+    HttpReceiptQueryResult, LIVENESS_PATH, MAX_FASTVOTE_APPLY_REQUEST_BYTES,
+    MAX_FASTVOTE_CERTIFICATE_BYTES, MAX_FASTVOTE_VOTE_BYTES, NEXT_NONCE_QUERY_RESULT_TYPE_ID,
+    NODE_EVENT_MEDIA_TYPE, NODE_EVENT_PATH, NODE_RESULT_MEDIA_TYPE, OBJECT_QUERY_RESULT_TYPE_ID,
+    ObjectQueryStatus, QUERY_CONTEXT_PATH, QUERY_NEXT_NONCE_PATH, QUERY_OBJECT_PATH,
+    QUERY_RECEIPT_PATH, QUERY_RESULT_MEDIA_TYPE, QueryResultError, RECEIPT_QUERY_RESULT_TYPE_ID,
+    ReceiptQueryStatus, http_receipt_query_result,
 };
 
 /// Maximum HTTP body size. The allowance above the inner payload covers framing.
@@ -312,6 +318,10 @@ pub enum StructuredDurableRouterError {
     MissingDomainPlacement,
     /// An opted-in publication policy disagreed with the native context or fixed profile.
     PublicationContextAuthorityMismatch,
+    /// [`FastVoteComposition`]'s own base policy/fee policy disagreed with
+    /// the native ingress chain/protocol/epoch (DR-0148), checked once at
+    /// [`fastvote::certified_fastvote_router`] construction time.
+    FastVotePolicyContextMismatch,
 }
 
 impl fmt::Display for StructuredDurableRouterError {
@@ -331,6 +341,9 @@ impl fmt::Display for StructuredDurableRouterError {
             }
             Self::PublicationContextAuthorityMismatch => f.write_str(
                 "local publication policy differs from native ingress context or fixed profile",
+            ),
+            Self::FastVotePolicyContextMismatch => f.write_str(
+                "certified-only FastVote base policy or fee policy differs from native ingress context",
             ),
         }
     }
@@ -452,6 +465,7 @@ pub struct PreinstalledWasmComposition {
     publication: Option<node_core::publication::LocalPublicationPolicy>,
     local_execution: Option<LocalExecutionComposition>,
     paid_execution: Option<PaidExecutionComposition>,
+    fastvote: Option<FastVoteComposition>,
 }
 
 /// Explicit trusted profile-four and fee-policy pair for the public paid
@@ -476,6 +490,52 @@ impl PaidExecutionComposition {
             base_policy,
             fee_policy,
             engine: execution::LocalWasmExecutionEngine::new(),
+        }
+    }
+}
+
+/// Explicit trusted DR-0148 certified-only FastVote composition: the exact
+/// same installed profile-four base policy/fee policy this deployment's
+/// paid-execution surface would use, plus the local validator's own
+/// consensus signer. Constructing this capability never proves the signer
+/// matches the committed validator set; that check is the embedding host's
+/// own startup responsibility (see `apps/operator`'s `fastvote_host_pg`),
+/// exactly like `node_core::fast_path::prepare`'s own defense-in-depth is
+/// limited to what the committed durable validator set structurally allows.
+#[derive(Clone)]
+pub struct FastVoteComposition {
+    execution: PaidExecutionComposition,
+    signer: Arc<dyn ConsensusSigner + Send + Sync>,
+    created_checkpoint: u64,
+}
+
+impl fmt::Debug for FastVoteComposition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FastVoteComposition")
+            .field("execution", &self.execution)
+            .field("signer_validator_id", &self.signer.validator_id())
+            .finish()
+    }
+}
+
+impl FastVoteComposition {
+    /// Creates a certified-only FastVote composition from an already-trusted
+    /// paid-execution policy pair and a local consensus signer.
+    ///
+    /// `created_checkpoint` has the exact same trust origin and restart
+    /// requirement as [`PreinstalledWasmComposition::new`]'s own parameter:
+    /// the caller's already-validated, durably advancing chain progress,
+    /// never wall-clock time or an HTTP request.
+    #[must_use]
+    pub fn new(
+        execution: PaidExecutionComposition,
+        signer: Arc<dyn ConsensusSigner + Send + Sync>,
+        created_checkpoint: u64,
+    ) -> Self {
+        Self {
+            execution,
+            signer,
+            created_checkpoint,
         }
     }
 }
@@ -545,6 +605,7 @@ impl PreinstalledWasmComposition {
             publication: None,
             local_execution: None,
             paid_execution: None,
+            fastvote: None,
         }
     }
 
@@ -579,6 +640,21 @@ impl PreinstalledWasmComposition {
     #[must_use]
     pub fn with_paid_execution(mut self, composition: PaidExecutionComposition) -> Self {
         self.paid_execution = Some(composition);
+        self
+    }
+
+    /// Enables the DR-0148 certified-only FastVote surface. This is
+    /// crate-private: the only caller is
+    /// `fastvote::certified_fastvote_router_with_executor`, which builds its
+    /// own minimal internal composition and never merges a direct/legacy
+    /// mutating route family into the router it returns. External callers
+    /// cannot reach this method, so a [`PreinstalledWasmComposition`] passed
+    /// to [`preinstalled_wasm_structured_durable_router`] can never carry a
+    /// FastVote capability, and that router therefore always mounts
+    /// `NODE_EVENT_PATH` and every enabled mutation route exactly as before.
+    #[must_use]
+    pub(crate) fn with_fastvote(mut self, composition: FastVoteComposition) -> Self {
+        self.fastvote = Some(composition);
         self
     }
 }
@@ -1253,16 +1329,28 @@ where
             get(get_preinstalled_wasm_structured_durable_next_nonce::<S, B, M, T, C, I>),
         )
         .layer(DefaultBodyLimit::max(MAX_HTTP_EVENT_BODY_BYTES))
-        .merge(publication::routes(
+        .merge(publication::read_routes(
             state.preinstalled_wasm.publication.is_some()
                 || state.preinstalled_wasm.local_execution.is_some()
                 || state.preinstalled_wasm.paid_execution.is_some(),
         ))
-        .merge(local_execution::routes(
+        .merge(publication::mutation_routes(
+            state.preinstalled_wasm.publication.is_some()
+                || state.preinstalled_wasm.local_execution.is_some()
+                || state.preinstalled_wasm.paid_execution.is_some(),
+        ))
+        .merge(local_execution::read_routes(
             state.preinstalled_wasm.local_execution.is_some()
                 || state.preinstalled_wasm.paid_execution.is_some(),
         ))
-        .merge(paid_execution::routes(
+        .merge(local_execution::mutation_routes(
+            state.preinstalled_wasm.local_execution.is_some()
+                || state.preinstalled_wasm.paid_execution.is_some(),
+        ))
+        .merge(paid_execution::read_routes(
+            state.preinstalled_wasm.paid_execution.is_some(),
+        ))
+        .merge(paid_execution::mutation_routes(
             state.preinstalled_wasm.paid_execution.is_some(),
         ))
         .with_state(state))
