@@ -250,3 +250,12 @@ a successful transfer, exact replay of both, a rejected request-id-reuse
 conflict with independently re-verified unchanged durable state, a
 stale-writer-fence rejection, and a real close/reopen of a validator's host
 process with exact replay surviving the restart.
+
+DR-0151 adds `contract_lifecycle_pg_e2e` and
+`contract_lifecycle_catch_up_pg_e2e`. These execute the separately compiled
+CLI binary against independent validator namespaces: user-selected paid
+Publish → Instantiate → Call and the ordinary top-level asset verbs use the
+same certified path. The returning validator starts without the user
+publication or instance and imports them only by applying the declared
+certified lifecycle. These are bounded functional tests, not complete state
+handoff, production-provider certification, or authorization to expose ingress.
