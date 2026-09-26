@@ -61,7 +61,7 @@ live activation; the hard activation constraints below still apply.
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Implemented and validated (DR-0128); focused Codex Security scan found 0 reportable findings and fresh Opus review approved |
-| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated; Phase 3 remains open.** DR-0135–DR-0140 implement custody, bonds, forfeiture, signed fee claims and payout verification. DR-0142/0143 add offline SQLite and PostgreSQL certified inventory. DR-0144/0145 exercise four CLI validators, separate test databases and bounded PostgreSQL claim/reopen regressions. Prior-main economics passed Opus tech-lead review; the independent Phase 3 security gate remains open. Authenticated external validator ingress, a CLI end-to-end quorum submission path and exposing the bond/epoch/equivocation/reward/claim lifecycle through authenticated operator/network surfaces have separate design/authentication/security gates. DR-0148's integrated network candidate is under implementation and review, not accepted or authorized for live activation. Per [DR-0147](docs/architecture/decisions/0147-function-first-network-delivery.md), representative sustained load/soak/capacity certification and adopted throughput/recovery SLOs are post-launch hardening, not a Phase 3 prerequisite. FastVote overall is incomplete. |
+| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated; Phase 3 remains open.** DR-0135–DR-0140 implement custody, bonds, forfeiture, signed fee claims and payout verification. DR-0142/0143 add offline SQLite and PostgreSQL certified inventory. DR-0144/0145 exercise four CLI validators, separate test databases and bounded PostgreSQL claim/reopen regressions. DR-0148's certified-only HTTP host and Rust CLI quorum/replay flow are implemented and validated; PR #223 merged as `12a08c6` after fresh exact-head Opus approval and passing CI. Authenticated lifecycle operator surfaces, owned-state/settlement handoff and activation-bound catch-up remain separate functional work. Independent Phase 3 and new-ingress security gates remain open; no live activation or deployment is authorized. Per [DR-0147](docs/architecture/decisions/0147-function-first-network-delivery.md), representative sustained load/soak/capacity certification and adopted throughput/recovery SLOs are post-launch hardening, not a Phase 3 prerequisite. FastVote overall is incomplete. |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
 Asset creation was the final focused delta before FastVote/multi-validator
@@ -90,7 +90,7 @@ Ledger, TypeScript, explorer, wallet, Unique Asset and multisig remain
 separate deferred gates below; none is deleted or silently treated as
 complete by this ordering.
 
-**Active network functional implementation (DR-0148), with separate release gates (DR-0147):**
+**Active network functional delivery, with separate release gates (DR-0147):**
 The completed economics core supports implementing and testing the opt-in
 network surface while independent reviews remain open; it does not authorize
 live exposure before those reviews pass. Functional work to make FastVote
@@ -98,7 +98,7 @@ usable is prioritized ahead of load testing; peak TPS,
 concurrent-user and recovery targets remain undecided and are deferred to
 post-launch hardening. The active order is:
 
-- [ ] authenticated, request/event-driven external validator access for
+- [x] authenticated, request/event-driven external validator access for
   FastVote prepare/certificate/apply, plus a CLI end-to-end quorum submission
   path;
   - 2026-09-26 status: [DR-0148](docs/architecture/decisions/0148-certified-fastvote-network.md)
@@ -112,8 +112,9 @@ post-launch hardening. The active order is:
     genesis, claims its namespace's writer fence exactly once at startup),
     and the `contract paid-call --fastvote-network`/`contract fastvote-replay`
     CLI surface (per-peer TLS, mandatory pre-POST signed-intent/certificate
-    artifact persistence, exact-bytes replay). The implementation is pending
-    final tech-lead review, not accepted network delivery. Exercised by a
+    artifact persistence, exact-bytes replay). PR #223 merged on 2026-09-26
+    as `12a08c6`, after fresh Opus **APPROVE** bound to final head `1c2f31e`
+    and passing required CI. Exercised by a
     real four-validator SQLite-backed HTTP E2E
     (`apps/operator/tests/fastvote_network_e2e.rs`, including both handlers'
     authentication-before-I/O counters, fixed/live-epoch refusals, genuine
@@ -127,7 +128,7 @@ post-launch hardening. The active order is:
     with independently re-verified unchanged durable state, a
     stale-writer-fence rejection, and a real close/reopen of a validator's
     host process. The earlier `00672f1` candidate passed the repository gate
-    but received Opus **BLOCK**. Corrections are integrated in `db09177`:
+    but received Opus **BLOCK**. The approved final head includes corrections:
     checked CLI preparation-through-apply budget using the selected cohort
     client's exact TLS policy; all-output reservation and retained file/
     directory synchronization; fail-closed explicit replay artifacts and
@@ -137,14 +138,13 @@ post-launch hardening. The active order is:
     method matrix. SDK checked caps/deadlines and sticky identity exhaustion
     remain covered. Parent source review, SQLite HTTP/startup tests and the
     updated four-process PostgreSQL CLI-library E2E passed after integration.
-    Test-only follow-up `831250d` pins shared operator commands to the exact
+    Test-only follow-up pins shared operator commands to the exact
     fixture protocol, preserving legacy v1 and explicit network v3. The parent
     passed `npm ci --prefix adapters/cloudflare-workers` and the complete
     `./scripts/check-all.sh` after these corrections, including required live
     PostgreSQL fault cases, the explicit host/CLI-library E2E, stable vectors
-    and adapter checks. Fresh exact-head Opus review and required CI still gate
-    merge; Codex implementation/cross-review does not replace that approval.
-    PR #223 remains Draft until those conditions pass. Independent
+    and adapter checks. Main matches origin/main and the approved tree.
+    Codex implementation/cross-review did not replace Opus approval. Independent
     Phase 3 and new-ingress security reviews remain open; this is not public-
     network, production, or custody authorization. Filesystem tests establish
     strict synchronization/error handling on Unix, not power-loss recovery
@@ -152,6 +152,13 @@ post-launch hardening. The active order is:
 - [ ] expose the already-implemented bond/epoch/equivocation/reward/claim
   lifecycle through explicit authenticated operator/network surfaces where
   needed;
+  - Current slice: [DR-0149](docs/architecture/decisions/0149-offline-signed-fee-claims.md)
+    specifies offline single-namespace PostgreSQL escrow inspection, generic
+    signed claim preparation, apply/exact replay and payout verification.
+    Implementation and verification are pending. Direct network claim mutation
+    is excluded: local generation CAS does not order shared-escrow claims
+    across validators. Online ordering/certification and the remaining
+    bond/epoch/equivocation surfaces stay open.
 - [ ] owned-state and settlement handoff correctness, activation-bound state
   verification, and validator catch-up before live epoch/set changes or
   validator replacement/activation. Local epoch CAS and lock-reclamation
