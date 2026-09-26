@@ -10,7 +10,10 @@
 #![allow(dead_code)]
 
 use abi::package_types::{PackageOrigin, ScopedTypeTag, verify_scoped_type_id};
-use abi::{AccessEntry, AccessManifest, encode_access_manifest, package_types::encode_scoped_type_arguments};
+use abi::{
+    AccessEntry, AccessManifest, encode_access_manifest,
+    package_types::encode_scoped_type_arguments,
+};
 use execution::{
     ObjectEffect,
     paid_execution::{PaidExecutionResult, decode_paid_execution_result},
@@ -24,7 +27,10 @@ use public_standard_asset::{
 };
 use runtime::{DurableOperationContext, StructuredDurableDomainStateStore};
 use std::{
-    collections::BTreeSet, ffi::OsString, fs, net::SocketAddr,
+    collections::BTreeSet,
+    ffi::OsString,
+    fs,
+    net::SocketAddr,
     path::{Path, PathBuf},
 };
 
@@ -297,7 +303,7 @@ pub fn run_asset_verb_expect_rejected(
     }
 }
 
-/// Runs a real `contract paid-publish` or `contract paid-instantiate` over
+/// Runs a successful `contract paid-publish`, `paid-instantiate` or `paid-call` over
 /// `--fastvote-network` through the compiled CLI binary, asserting success
 /// (both are only ever driven as the positive path in these E2Es; a
 /// negative/offline replay of their saved artifacts goes through

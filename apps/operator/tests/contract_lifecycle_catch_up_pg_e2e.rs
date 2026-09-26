@@ -37,7 +37,7 @@ use support::cli::{
     CliContext, admin_pool, edge_cli_command, install_genesis, namespace_init, proxied_dsn,
     read_context, single_tcp_backend_addr, to_hex, write_signing_key_file,
 };
-use support::durable_state::convergence_snapshot;
+use support::durable_state::{convergence_snapshot, protocol_convergence_snapshot};
 use support::genesis_fixture::{self, FastVoteGenesisFixture};
 use support::host::{
     HostProcess, TempDir, spawn_host, temp_file, write_network_config, write_new,
@@ -368,7 +368,7 @@ fn contract_lifecycle_catch_up_pg_missed_publish_instantiate_call_binary_cli_e2e
     requests.push(trap_request_id);
 
     let publications: Vec<PackageOrigin> = vec![origin.clone()];
-    let expected_state: String = convergence_snapshot(
+    let expected_state: String = protocol_convergence_snapshot(
         &store(&pool, &namespaces[0]),
         &read_context(&pool, &namespaces[0]),
         &fixture,
@@ -378,7 +378,7 @@ fn contract_lifecycle_catch_up_pg_missed_publish_instantiate_call_binary_cli_e2e
     );
     for namespace in &namespaces[1..3] {
         assert_eq!(
-            convergence_snapshot(
+            protocol_convergence_snapshot(
                 &store(&pool, namespace),
                 &read_context(&pool, namespace),
                 &fixture,
@@ -486,7 +486,7 @@ mint-published.intent mint-published.cert\ntrap.intent corrupt.cert\n"
         String::from_utf8_lossy(&recovery_output.stderr)
     );
     assert_eq!(
-        convergence_snapshot(
+        protocol_convergence_snapshot(
             &store(&pool, &namespaces[3]),
             &read_context(&pool, &namespaces[3]),
             &fixture,

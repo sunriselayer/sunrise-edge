@@ -33,7 +33,7 @@ use support::cli::{
     CliContext, admin_pool, install_genesis, namespace_init, proxied_dsn, read_context,
     single_tcp_backend_addr, to_hex, write_signing_key_file,
 };
-use support::durable_state::convergence_snapshot;
+use support::durable_state::{convergence_snapshot, protocol_convergence_snapshot};
 use support::genesis_fixture::{self, FastVoteGenesisFixture};
 use support::host::{
     HostProcess, TempDir, spawn_host, temp_file, write_network_config, write_new,
@@ -523,7 +523,7 @@ fn contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator
         "a rejected conflicting request-id reuse must leave every tracked object, receipt and nonce unchanged"
     );
 
-    let expected: String = convergence_snapshot(
+    let expected: String = protocol_convergence_snapshot(
         &store(&pool, &namespaces[0]),
         &read_context(&pool, &namespaces[0]),
         &fixture,
@@ -533,7 +533,7 @@ fn contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator
     );
     for namespace in &namespaces[1..3] {
         assert_eq!(
-            convergence_snapshot(
+            protocol_convergence_snapshot(
                 &store(&pool, namespace),
                 &read_context(&pool, namespace),
                 &fixture,
