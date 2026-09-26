@@ -61,7 +61,7 @@ live activation; the hard activation constraints below still apply.
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Implemented and validated (DR-0128); focused Codex Security scan found 0 reportable findings and fresh Opus review approved |
-| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated; Phase 3 remains open.** DR-0135–DR-0140 implement custody, bonds, forfeiture, signed fee claims and payout verification. DR-0142/0143 add offline SQLite and PostgreSQL certified inventory. DR-0144/0145 exercise four CLI validators, separate test databases and bounded PostgreSQL claim/reopen regressions. Representative sustained claim/recovery capacity, the Phase 3 review gate and external validator ingress remain open. FastVote overall is incomplete. |
+| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated; Phase 3 remains open.** DR-0135–DR-0140 implement custody, bonds, forfeiture, signed fee claims and payout verification. DR-0142/0143 add offline SQLite and PostgreSQL certified inventory. DR-0144/0145 exercise four CLI validators, separate test databases and bounded PostgreSQL claim/reopen regressions. The Phase 3 security/tech-lead review gate over this completed economics core remains open. Authenticated external validator ingress, a CLI end-to-end quorum submission path and exposing the bond/epoch/equivocation/reward/claim lifecycle through authenticated operator/network surfaces are the next integrated network functional delivery once Phase 3 closes, gated by their own separate design/authentication/security review. Per [DR-0147](docs/architecture/decisions/0147-function-first-network-delivery.md), representative sustained load/soak/capacity certification and adopted throughput/recovery SLOs are post-launch hardening, not a Phase 3 prerequisite. FastVote overall is incomplete. |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
 Asset creation was the final focused delta before FastVote/multi-validator
@@ -89,6 +89,28 @@ claiming that first flow. Production recovery/HA/provider certification,
 Ledger, TypeScript, explorer, wallet, Unique Asset and multisig remain
 separate deferred gates below; none is deleted or silently treated as
 complete by this ordering.
+
+**Network functional delivery order, next after Phase 3 closes (per [DR-0147](docs/architecture/decisions/0147-function-first-network-delivery.md)):**
+once the Phase 3 economics/security core closes, functional work to expose
+FastVote as a usable network is prioritized ahead of load testing; peak TPS,
+concurrent-user and recovery targets remain undecided and are deferred to
+post-launch hardening. The active order is:
+
+- [ ] authenticated, request/event-driven external validator access for
+  FastVote prepare/certificate/apply, plus a CLI end-to-end quorum submission
+  path;
+- [ ] expose the already-implemented bond/epoch/equivocation/reward/claim
+  lifecycle through explicit authenticated operator/network surfaces where
+  needed;
+- [ ] bounded independent-validator functional start/restart/replay/
+  authorization evidence, a documented deployment/configuration walkthrough,
+  and a focused security review, before exposing this ingress.
+
+This network functional delivery has its own separate design, authentication
+and security/audit gate; it does not fold into Phase 3 completion.
+Representative sustained load/soak/capacity certification and adopting
+throughput/recovery SLOs remain post-launch hardening, not a prerequisite
+for either. No target numbers are adopted.
 
 **Working rule:** internal tasks may be small, but a PR should deliver a usable
 operation or an independently testable safety boundary. Do not split a feature
@@ -3281,7 +3303,9 @@ completion criteria in this plan, not vague "production" deferrals.
         whole-shared-table physical size diagnostics and reopen under a newer
         writer fence. All resulting rows, payout objects and receipts are
         checked. These directly set-up fixtures still do not certify sustained
-        network throughput, disk life or recovery time (DR-0138/0145);
+        network throughput, disk life or recovery time (DR-0138/0145). Per
+        DR-0147 this certification is post-launch hardening, not a Phase 3
+        completion prerequisite; no target numbers are adopted;
       - [x] expose the bounded all-page verifier to a local SQLite operator
         ([DR-0142](docs/architecture/decisions/0142-fastvote-operator-escrow-inventory.md)).
         The command opens only existing namespace-bound files, requires
@@ -3338,14 +3362,27 @@ completion criteria in this plan, not vague "production" deferrals.
         config changes as an authorized protocol migration;
       - [ ] Phase 3 review gate.
 
-  **Remaining Phase 3 completion:** declare the initial network load/recovery
-  target, establish sustained claim and restart-sweep capacity on the selected
-  PostgreSQL network store with representative load/soak evidence, then pass
-  the Phase 3 review gate. The bounded DR-0145 regressions are prerequisites,
-  not that certification. Protocol-version activation is
-  a separately blocked future gate; there is no live version-switch path to
-  exercise in this phase. Revisit it before implementing that path.
-  FastVote is not complete until this phase closes.
+  **Remaining Phase 3 completion:** pass the Phase 3 security and
+  tech-lead review gate over the completed custody/bond/forfeiture/claim/
+  payout economics core above. Per
+  [DR-0147](docs/architecture/decisions/0147-function-first-network-delivery.md),
+  declaring an initial network load/recovery target and establishing
+  representative sustained claim/restart-sweep capacity move to post-launch
+  hardening; they are not a Phase 3 prerequisite, and no target numbers are
+  adopted yet. The bounded DR-0145/0146 regressions remain fixture-level
+  evidence, not that certification. Once Phase 3 closes, authenticated
+  external validator request/event-driven ingress for prepare/certificate/
+  apply, a CLI end-to-end quorum submission path, exposing the
+  bond/epoch/equivocation/reward/claim lifecycle through explicit
+  authenticated operator/network surfaces where needed, and bounded
+  independent-validator functional start/restart/replay/authorization
+  evidence with a documented deployment/configuration walkthrough become the
+  next integrated network functional delivery, gated by its own separate
+  design, authentication and security/audit review — not folded into this
+  phase. Protocol-version activation is a separately blocked future gate;
+  there is no live version-switch path to exercise in this phase. Revisit it
+  before implementing that path. FastVote is not complete until this phase
+  closes.
 
 ### Bounded PostgreSQL Phase 3 evidence and remaining gate
 
@@ -3376,9 +3413,13 @@ records one integrated PostgreSQL regression slice and the work still open:
   server still does not prove independent administrators or failure domains.
   The local 2026-09-26 test passed full 3-of-4 prepare/apply, exact replay,
   cross-role denial and unchanged foreign durable state.
-- [ ] Declare the initial network workload, sustained claim-rate and recovery
-  targets, run representative PostgreSQL load/soak and fault/recovery trials,
-  then pass the separate Phase 3 security and tech-lead review gate. Keep
+- [ ] Post-launch hardening (per
+  [DR-0147](docs/architecture/decisions/0147-function-first-network-delivery.md)):
+  declare the initial network workload, sustained claim-rate and recovery
+  targets, and run representative PostgreSQL load/soak and fault/recovery
+  trials. Not required for Phase 3 completion or initial network
+  startup; no target numbers are adopted yet.
+- [ ] Pass the separate Phase 3 security and tech-lead review gate. Keep
   external FastVote ingress and protocol-version activation behind their own
   decisions.
 
@@ -3418,10 +3459,13 @@ define this integrated instrument:
   sustained soak, four PostgreSQL hosts or an adopted throughput/SLO result.
   A deliberate one-second workload ceiling failed during escrow creation,
   exited nonzero and emitted no complete totals record.
-- [ ] Adopt initial-network workload/recovery targets and gather
-  representative sustained deployment measurements. A configurable
-  instrument and its smoke do not satisfy this acceptance item, independent
-  administration/host domains or the Phase 3 security/tech-lead gate.
+- [ ] Post-launch hardening (per
+  [DR-0147](docs/architecture/decisions/0147-function-first-network-delivery.md)):
+  adopt initial-network workload/recovery targets and gather representative
+  sustained deployment measurements. A configurable instrument and its smoke
+  do not satisfy this acceptance item or independent administration/host
+  domains. This item is not a Phase 3 completion prerequisite; the
+  separate Phase 3 security/tech-lead gate is tracked above.
 
 ## Closed PostgreSQL multi-validator operator rehearsal
 
@@ -3456,10 +3500,12 @@ CLI framing and vote/certificate handling into helper-only changes.
   administrative control; the first network requires independent PostgreSQL
   authorities and credentials.
 - [ ] Document an executable operator walkthrough and pass the full repository
-  gate plus focused security and fresh tech-lead reviews. Phase 3 PostgreSQL
-  capacity/soak and its review gate remain open until separately evidenced;
-  external authenticated validator ingress and any public network launch need
-  a separate design and audit.
+  gate plus focused security and fresh tech-lead reviews. The Phase 3
+  security/tech-lead review gate remains open until separately evidenced; per
+  [DR-0147](docs/architecture/decisions/0147-function-first-network-delivery.md),
+  PostgreSQL capacity/soak/load certification is post-launch hardening, not a
+  prerequisite for this gate. External authenticated validator ingress and any
+  public network launch need a separate design and audit.
 
 ## CLI-First Node Production Gate
 
