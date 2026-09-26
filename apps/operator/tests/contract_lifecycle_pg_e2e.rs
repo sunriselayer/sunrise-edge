@@ -41,7 +41,7 @@ use support::host::{
 };
 use support::paid_calls::{
     NetworkCall, identify_coin, identify_definition_and_cap, run_asset_verb,
-    run_asset_verb_expect_rejected, run_contract_paid, track,
+    run_asset_verb_expect_rejected, run_contract_paid, run_generic_mint, track,
 };
 
 type AdminPool = Pool<PostgresConnectionManager<postgres::NoTls>>;
@@ -262,25 +262,25 @@ fn contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator
         &origin,
     );
 
-    // Real top-level `mint` against the freshly published asset.
-    let mint_published_result = run_asset_verb(
+    // The independently published, user-selected package's real generic
+    // `contract paid-call` mint -- never a top-level asset verb, which
+    // intentionally only binds to the active locally trusted Standard Asset
+    // code (`standard_asset::validate_application_instance_pin`).
+    let (mint_published_result, _mint_published_signed, _mint_published_cert) = run_generic_mint(
         &call,
-        "mint",
-        &[
-            ("--treasury-cap", published_cap.to_string()),
-            ("--amount", "7".to_owned()),
-            ("--recipient", to_hex(&fixture.sender)),
-            ("--asset", published_definition.to_string()),
-            (
-                "--instance-ref",
-                instance_ref_out.to_str().unwrap().to_owned(),
-            ),
-        ],
+        &store(&pool, &namespaces[0]),
+        &read_context(&pool, &namespaces[0]),
+        fixture.domain,
+        &fixture.chain_id,
+        &instance_ref_out,
+        published_definition,
+        published_cap,
+        7,
+        &fixture.sender,
         &data_dir,
         [0xB3; 32],
         2,
         "mint-published",
-        true,
     );
     assert_eq!(mint_published_result.status, PaidExecutionStatus::Success);
     track(&mut ids, &mint_published_result);

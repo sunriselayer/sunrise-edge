@@ -46,7 +46,7 @@ use support::host::{
 use support::http_relay::HttpRelay;
 use support::paid_calls::{
     NetworkCall, identify_coin, identify_definition_and_cap, run_asset_verb, run_contract_paid,
-    track,
+    run_generic_mint, track,
 };
 
 type AdminPool = Pool<PostgresConnectionManager<postgres::NoTls>>;
@@ -328,24 +328,21 @@ fn contract_lifecycle_catch_up_pg_missed_publish_instantiate_call_binary_cli_e2e
     );
 
     let call_request_id: [u8; 32] = [0xC3; 32];
-    let call_result = run_asset_verb(
+    let (call_result, _call_signed, _call_cert) = run_generic_mint(
         &call,
-        "mint",
-        &[
-            ("--treasury-cap", published_cap.to_string()),
-            ("--amount", "9".to_owned()),
-            ("--recipient", to_hex(&fixture.sender)),
-            ("--asset", published_definition.to_string()),
-            (
-                "--instance-ref",
-                instance_ref_out.to_str().unwrap().to_owned(),
-            ),
-        ],
+        &store(&pool, &namespaces[0]),
+        &read_context(&pool, &namespaces[0]),
+        fixture.domain,
+        &fixture.chain_id,
+        &instance_ref_out,
+        published_definition,
+        published_cap,
+        9,
+        &fixture.sender,
         &data_dir,
         call_request_id,
         2,
         "mint-published",
-        true,
     );
     assert_eq!(call_result.status, PaidExecutionStatus::Success);
     track(&mut ids, &call_result);
@@ -677,24 +674,21 @@ mint-published.intent mint-published.cert\ntrap.intent corrupt.cert\n"
     );
 
     let prefix_mint_request_id: [u8; 32] = [0xC7; 32];
-    let prefix_mint_result = run_asset_verb(
+    let (prefix_mint_result, _prefix_mint_signed, _prefix_mint_cert) = run_generic_mint(
         &call,
-        "mint",
-        &[
-            ("--treasury-cap", published_cap.to_string()),
-            ("--amount", "3".to_owned()),
-            ("--recipient", to_hex(&fixture.sender)),
-            ("--asset", published_definition.to_string()),
-            (
-                "--instance-ref",
-                instance_ref_out.to_str().unwrap().to_owned(),
-            ),
-        ],
+        &store(&pool, &namespaces[0]),
+        &read_context(&pool, &namespaces[0]),
+        fixture.domain,
+        &fixture.chain_id,
+        &instance_ref_out,
+        published_definition,
+        published_cap,
+        3,
+        &fixture.sender,
         &data_dir,
         prefix_mint_request_id,
         6,
         "prefix-mint",
-        true,
     );
     assert_eq!(prefix_mint_result.status, PaidExecutionStatus::Success);
     let prefix_coin: ObjectId = identify_coin(

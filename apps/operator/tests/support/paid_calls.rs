@@ -10,15 +10,23 @@
 #![allow(dead_code)]
 
 use abi::package_types::{PackageOrigin, ScopedTypeTag, verify_scoped_type_id};
+use abi::{AccessEntry, AccessManifest, encode_access_manifest, package_types::encode_scoped_type_arguments};
 use execution::{
     ObjectEffect,
     paid_execution::{PaidExecutionResult, decode_paid_execution_result},
 };
 use hashing::HashSuiteResolver;
-use objects::{Object, ObjectId};
-use protocol_types::Epoch;
-use public_standard_asset::{coin_type_tag, definition_type_tag, treasury_cap_type_tag};
-use std::{collections::BTreeSet, ffi::OsString, fs, net::SocketAddr, path::Path};
+use node_core::{ObjectQueryResult, query_object};
+use objects::{AccessMode, Object, ObjectId, ObjectRef};
+use protocol_types::{AtomicityDomainId, ChainId, Epoch};
+use public_standard_asset::{
+    asset_type_argument, coin_type_tag, definition_type_tag, mint_arguments, treasury_cap_type_tag,
+};
+use runtime::{DurableOperationContext, StructuredDurableDomainStateStore};
+use std::{
+    collections::BTreeSet, ffi::OsString, fs, net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use super::host::temp_file;
 
@@ -332,4 +340,105 @@ pub fn run_contract_paid(
     );
     super::run_expect_success(super::cli::edge_cli_command(flags), label);
     (decode_result(&result_out), signed_out, cert_out)
+}
+
+/// Independently re-queries one object's exact current `ObjectRef` (id, live
+/// version, live digest) out of band, the same way [`super::cli::current_fee_coin_ref`]
+/// does for the genesis fee coin: an owned object's version/digest advances
+/// on every settlement, so a stale reference (e.g. from the moment a
+/// `TreasuryCap` was first created) only works for the very first call
+/// against it.
+pub fn current_object_ref<S>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain_id: &ChainId,
+    object_id: ObjectId,
+) -> ObjectRef
+where
+    S: StructuredDurableDomainStateStore,
+{
+    match query_object(store, context, domain, chain_id, object_id).unwrap() {
+        ObjectQueryResult::CurrentInline {
+            object_id,
+            object_version,
+            digest,
+            ..
+        } => ObjectRef {
+            id: object_id,
+            version: object_version.get(),
+            digest,
+        },
+        other => panic!("expected {object_id:?} to be a current inline object, got {other:?}"),
+    }
+}
+
+/// Mints against a genuinely independent-origin published package's
+/// `TreasuryCap` through the generic `contract paid-call` path -- never a
+/// top-level asset verb, which intentionally only binds to the active
+/// locally trusted Standard Asset code
+/// (`standard_asset::validate_application_instance_pin`). Builds the
+/// canonical `mint` arguments/type-arguments/access-manifest (a single
+/// `Write` entry on the cap's freshly re-queried `ObjectRef`) and returns
+/// the decoded result plus the intent/certificate paths a later catch-up
+/// manifest may reference by `label`.
+#[allow(clippy::too_many_arguments)]
+pub fn run_generic_mint<S>(
+    call: &NetworkCall<'_>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain_id: &ChainId,
+    instance_ref_path: &Path,
+    definition: ObjectId,
+    treasury_cap: ObjectId,
+    amount: u64,
+    recipient: &[u8; 32],
+    data_dir: &Path,
+    request_id: [u8; 32],
+    nonce: u64,
+    label: &str,
+) -> (PaidExecutionResult, PathBuf, PathBuf)
+where
+    S: StructuredDurableDomainStateStore,
+{
+    let cap_ref: ObjectRef = current_object_ref(store, context, domain, chain_id, treasury_cap);
+    let args_path: PathBuf = temp_file(data_dir, &format!("{label}.args"));
+    fs::write(&args_path, mint_arguments(amount, recipient).unwrap()).unwrap();
+    let type_args_path: PathBuf = temp_file(data_dir, &format!("{label}.type-args"));
+    fs::write(
+        &type_args_path,
+        encode_scoped_type_arguments(chain_id, &[asset_type_argument(&definition)]).unwrap(),
+    )
+    .unwrap();
+    let access_path: PathBuf = temp_file(data_dir, &format!("{label}.access"));
+    fs::write(
+        &access_path,
+        encode_access_manifest(&AccessManifest {
+            entries: vec![AccessEntry {
+                object_ref: cap_ref,
+                mode: AccessMode::Write,
+            }],
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    run_contract_paid(
+        call,
+        "paid-call",
+        &[
+            (
+                "--instance-ref",
+                instance_ref_path.to_str().unwrap().to_owned(),
+            ),
+            ("--entrypoint", "mint".to_owned()),
+            ("--access", access_path.to_str().unwrap().to_owned()),
+            ("--args", args_path.to_str().unwrap().to_owned()),
+            ("--type-args", type_args_path.to_str().unwrap().to_owned()),
+        ],
+        data_dir,
+        request_id,
+        nonce,
+        label,
+    )
 }
