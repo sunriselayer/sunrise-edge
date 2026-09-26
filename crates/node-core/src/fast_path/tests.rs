@@ -1774,6 +1774,58 @@ fn prepare_rejects_a_signer_absent_from_the_committed_validator_set() {
     ));
 }
 
+/// Regression for the fresh-prepare vote-verification gap identified in
+/// design review: `cast_vote` only checks that `signer`'s `(validator_id,
+/// scheme)` pair is a *registered* member (`ensure_registered_scheme`); it
+/// never verifies the produced signature actually verifies under that
+/// validator's *committed public key*. A locally misconfigured or rotated
+/// signing key -- one that claims a real, registered validator identity but
+/// signs with different key material -- must be rejected by `prepare`
+/// itself, before any prepared record, lock, or nonce reservation commits,
+/// exactly like the exact-replay branch already re-verifies its stored vote.
+/// Without this, the fresh branch would durably wedge every input object
+/// behind a vote that can never be certified (phase 1 has no rollback or
+/// expiry).
+#[test]
+fn prepare_rejects_a_fresh_vote_whose_signature_does_not_match_the_registered_public_key() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let (_signers, entries) = install_four_validators(&store);
+    // Claims the first committed validator's exact identity and scheme, but
+    // signs with an unrelated key -- a `ConsensusSigner` misconfiguration
+    // `ensure_registered_scheme` alone cannot detect.
+    let wrong_key_signer: TestSigner = TestSigner {
+        validator_id: entries[0].id,
+        signing_key: SigningKey::from([0xEE; 32]),
+    };
+    let result: FastPathResult<FastVote> =
+        prepare_transfer(&store, &fixture, &wrong_key_signer, 35, FIRST_PAID_NONCE);
+    assert!(matches!(
+        result,
+        Err(FastPathError::Consensus(ConsensusError::InvalidSignature(
+            id
+        ))) if id == entries[0].id
+    ));
+
+    // Exact-vector proof of "no commit/locks": every durable key this
+    // request could have written remains completely absent.
+    let object_lock_key: Vec<u8> =
+        fastpath_lock_key(protocol().chain_id(), fixture.coin.id).unwrap();
+    let nonce_lock_key: Vec<u8> =
+        fastpath_nonce_lock_key(protocol().chain_id(), &sender(), protocol().epoch()).unwrap();
+    let prepared_key: Vec<u8> =
+        fastpath_prepared_record_key(protocol().chain_id(), &[35; 32]).unwrap();
+    for key in [object_lock_key, nonce_lock_key, prepared_key] {
+        assert!(
+            store
+                .get_versioned_durable(&context(), domain(), &key)
+                .unwrap()
+                .value()
+                .is_none()
+        );
+    }
+}
+
 /// DR-0131 criterion 5: apply rejects a certificate whose votes are signed
 /// entirely by validators absent from the committed per-epoch `ValidatorSet`
 /// -- a rogue quorum that never actually authorizes anything against the

@@ -1,3 +1,4 @@
+mod fastvote_router;
 mod local_execution_http;
 use super::*;
 use abi::{AccessEntry, AccessManifest};

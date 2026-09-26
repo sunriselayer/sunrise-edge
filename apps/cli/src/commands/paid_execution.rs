@@ -4,7 +4,7 @@ use crate::{
     args::{ParsedArgs, parse_flags, scalar},
     error::CliError,
     hex::decode_hex_32,
-    net::{connect_paid_execution, tls_flag_specs},
+    net::{BudgetedTransport, OperationBudget, connect_paid_execution, tls_flag_specs},
     parse::parse_u64,
     seed::load_dev_seed,
     signer::{SignerSelection, parse_signer_selection, signer_flag_specs},
@@ -128,6 +128,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     ];
     specs.extend(tls_flag_specs());
     specs.extend(signer_flag_specs());
+    specs.extend(super::fastvote_network::network_flag_specs());
     match action {
         "paid-publish" => specs.extend([
             scalar("--wasm"),
@@ -154,18 +155,51 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         _ => return Err(invalid("unknown paid contract action")),
     }
     let parsed: ParsedArgs = parse_flags(args, &specs)?;
+    // Budget/unsupported combinations are local errors, even when a seed or
+    // other input is missing. The single instant starts before preparation.
+    let budget: Option<OperationBudget> = if parsed.get("--fastvote-network").is_some() {
+        let budget: OperationBudget = super::fastvote_network::parse_deadline(&parsed)?;
+        Some(budget)
+    } else {
+        if super::fastvote_network::network_flag_specs()
+            .iter()
+            .any(|flag| parsed.get(flag.name).is_some())
+        {
+            return Err(invalid("FastVote flags require --fastvote-network"));
+        }
+        None
+    };
     if action != "paid-call" && parsed.get("--authorizations").is_some() {
         return Err(invalid("--authorizations is supported only for paid-call"));
     }
-    // Ledger clear signing is a separate deferred contract. Reject before
-    // device access, file reads, policy queries, or submission.
-    let signer: LocalSigner = match parse_signer_selection(&parsed)? {
-        SignerSelection::Local { seed_file } => {
-            LocalSigner::from_seed(load_dev_seed(Path::new(&seed_file))?)
+    if action != "paid-call" && parsed.get("--fastvote-network").is_some() {
+        return Err(invalid(
+            "--fastvote-network is supported only for paid-call; paid-publish/paid-instantiate remain direct-only",
+        ));
+    }
+    if budget.is_some() {
+        super::fastvote_network::validate_paid_network_flags(&parsed)?;
+    }
+    let signer_selection: SignerSelection = parse_signer_selection(&parsed)?;
+    if matches!(signer_selection, SignerSelection::Ledger { .. }) {
+        return Err(invalid("Ledger paid contract signing is not supported"));
+    }
+    let load_signer = || -> Result<LocalSigner, CliError> {
+        match &signer_selection {
+            SignerSelection::Local { seed_file } => {
+                Ok(LocalSigner::from_seed(load_dev_seed(Path::new(seed_file))?))
+            }
+            SignerSelection::Ledger { .. } => {
+                Err(invalid("Ledger paid contract signing is not supported"))
+            }
         }
-        SignerSelection::Ledger { .. } => {
-            return Err(invalid("Ledger paid contract signing is not supported"));
-        }
+    };
+    // Keep direct mode's existing local-input order. Network mode validates
+    // the selected cohort peer before reading the signing seed.
+    let direct_signer: Option<LocalSigner> = if budget.is_none() {
+        Some(load_signer()?)
+    } else {
+        None
     };
     let expected: ExpectedProtocolContext = super::standard_asset::parse_expected_context(&parsed)?;
     let resolver: HashSuiteResolver = local_publication_resolver(&expected)?;
@@ -175,7 +209,48 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         expected.epoch(),
     )
     .map_err(failure)?;
-    let client = connect_paid_execution(parsed.require("--endpoint")?, &parsed)?;
+    // Endpoint-to-validator mapping is verified against the local genesis
+    // pin *before* any fee/nonce query or signing, exactly like the local
+    // expected-context check above.
+    let network: Option<(
+        Vec<FastVoteEndpoint<crate::net::CliTransport>>,
+        FastPathCertifier,
+    )> = if parsed.get("--fastvote-network").is_some() {
+        Some(super::fastvote_network::load_endpoints_and_certifier(
+            &parsed, &resolver, &context,
+        )?)
+    } else {
+        None
+    };
+    if let Some(budget) = budget {
+        budget.ensure_live()?;
+    }
+    let signer: LocalSigner = match direct_signer {
+        Some(signer) => signer,
+        None => load_signer()?,
+    };
+    let direct_client: Option<Client<crate::net::CliTransport>> = if network.is_none() {
+        Some(connect_paid_execution(
+            parsed.require("--endpoint")?,
+            &parsed,
+        )?)
+    } else {
+        None
+    };
+    let preparation_client: &Client<crate::net::CliTransport> =
+        if let Some((endpoints, _)) = &network {
+            let selected: &str = parsed.require("--endpoint")?;
+            super::fastvote_network::selected_preparation_client(endpoints, selected)?
+        } else {
+            direct_client
+                .as_ref()
+                .ok_or_else(|| invalid("direct client missing"))?
+        };
+    let client: Client<BudgetedTransport<'_, crate::net::CliTransport>> =
+        Client::new(BudgetedTransport {
+            inner: preparation_client.transport(),
+            budget,
+        });
     let fee_policy = client.query_paid_fee_policy(&resolver, &expected)?;
     let fee_source_id: ObjectId = ObjectId::new(decode_hex_32(
         "--fee-source",
@@ -234,6 +309,9 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         )?,
         _ => unreachable!(),
     };
+    if let Some(budget) = budget {
+        budget.ensure_live()?;
+    }
     let signed = build_signed_paid_execution(
         &signer,
         &resolver,
@@ -275,20 +353,31 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
             ),
             PaidApplication::Call(_) => (None, None),
         };
-    let result: PaidExecutionResult = submit_with_outputs(
-        parsed.get("--result-out"),
-        parsed.get("--submission-out"),
-        derived_path,
-        &signed_bytes,
-        derived_bytes.as_deref(),
-        request_id,
-        nonce,
-        || {
-            client
-                .submit_paid_execution(&signed, &resolver)
-                .map_err(CliError::from)
-        },
-    )?;
+    let result: PaidExecutionResult = if let Some((endpoints, certifier)) = &network {
+        super::fastvote_network::run_network_submit(
+            &parsed,
+            endpoints,
+            certifier,
+            &resolver,
+            &signed,
+            budget.ok_or_else(|| invalid("network operation budget missing"))?,
+        )?
+    } else {
+        submit_with_outputs(
+            parsed.get("--result-out"),
+            parsed.get("--submission-out"),
+            derived_path,
+            &signed_bytes,
+            derived_bytes.as_deref(),
+            request_id,
+            nonce,
+            || {
+                client
+                    .submit_paid_execution(&signed, &resolver)
+                    .map_err(CliError::from)
+            },
+        )?
+    };
     println!("paid_status={:?}", result.status);
     println!("gas_used={}", result.effects.gas_used);
     if let Some(charged) = &result.charged {

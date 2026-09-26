@@ -24,7 +24,7 @@ use std::fs::File;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sunrise_edge_client::{
     Client, LoopbackHttpTransport, MAX_CA_CERTIFICATE_DER_BYTES, RemoteTlsHttpTransport, Transport,
@@ -78,6 +78,55 @@ impl Transport for CliTransport {
             Self::Loopback(transport) => transport.send(request),
             Self::RemoteTls(transport) => transport.send(request),
         }
+    }
+}
+
+/// One monotonic budget shared by preparation, signing, prepare and apply.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct OperationBudget {
+    pub(crate) deadline: Instant,
+    pub(crate) per_request_cap: Duration,
+}
+
+impl OperationBudget {
+    pub(crate) fn ensure_live(self) -> Result<(), TransportError> {
+        if Instant::now() >= self.deadline {
+            return Err(TransportError::RequestDeadlineExceeded);
+        }
+        Ok(())
+    }
+}
+
+/// Attaches the same operation budget to every request emitted by the real
+/// client, including query methods whose own request has no deadline.
+pub(crate) struct BudgetedTransport<'a, T> {
+    pub(crate) inner: &'a T,
+    pub(crate) budget: Option<OperationBudget>,
+}
+
+impl<T: Transport> Transport for BudgetedTransport<'_, T> {
+    fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportError> {
+        let Some(budget) = self.budget else {
+            return self.inner.send(request);
+        };
+        budget.ensure_live()?;
+        let cap_deadline: Instant = Instant::now()
+            .checked_add(budget.per_request_cap)
+            .ok_or(TransportError::RequestDeadlineOverflow)?;
+        let mut bounded: WireRequest = request.clone();
+        let deadline: Instant = budget.deadline.min(cap_deadline);
+        bounded.deadline = Some(
+            request
+                .deadline
+                .map_or(deadline, |prior| prior.min(deadline)),
+        );
+        let response: WireResponse = self.inner.send(&bounded)?;
+        // A delayed/misbehaving transport cannot turn an expired read into
+        // permission to sign. Production transports enforce the exchange too.
+        if Instant::now() >= bounded.deadline.unwrap_or(budget.deadline) {
+            return Err(TransportError::RequestDeadlineExceeded);
+        }
+        Ok(response)
     }
 }
 
@@ -169,7 +218,7 @@ fn connect_with_limit(
     Ok(Client::new(transport))
 }
 
-fn build_transport(
+pub(crate) fn build_transport(
     endpoint: &str,
     server_name: Option<&str>,
     ca_cert_der_file: Option<&str>,

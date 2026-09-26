@@ -179,6 +179,36 @@ pub enum ClientError {
         /// The transaction's sender address.
         sender: Address,
     },
+    /// A DR-0148 FastVote apply-request transport frame failed to encode or
+    /// decode.
+    FastVoteApplyRequestWire(node_wire::FastVoteApplyRequestError),
+    /// A returned `FastVote`, `FastCertificate`, or certificate-formation
+    /// step failed `consensus` validation.
+    FastVoteConsensus(consensus::ConsensusError),
+    /// A FastVote endpoint returned a vote whose own `validator` field
+    /// disagreed with that endpoint's locally configured identity.
+    FastVoteEndpointIdentityMismatch {
+        /// Locally configured validator identity for this endpoint.
+        expected: protocol_types::ValidatorId,
+        /// Validator identity the returned vote actually claimed.
+        actual: protocol_types::ValidatorId,
+    },
+    /// The whole-operation FastVote deadline elapsed before this endpoint
+    /// could be contacted.
+    FastVoteOverallDeadlineExceeded,
+    /// A FastVote apply was attempted for a signed intent whose application
+    /// is not `PaidApplication::Call`, the only application DR-0130 fast-path
+    /// phase 1 supports.
+    FastVoteUnsupportedApplication,
+    /// A returned vote, or a certificate being independently re-verified
+    /// before apply, is bound to a different transaction than the exact
+    /// signed intent this call is submitting.
+    FastVoteUnexpectedTransaction {
+        /// The digest of the exact signed intent this call is submitting.
+        expected: protocol_types::Digest32,
+        /// The transaction digest the vote or certificate actually carried.
+        actual: protocol_types::Digest32,
+    },
 }
 
 impl fmt::Display for ClientError {
@@ -273,6 +303,24 @@ impl fmt::Display for ClientError {
                 f,
                 "signature does not verify against sender {sender} under the declared scheme"
             ),
+            Self::FastVoteApplyRequestWire(error) => {
+                write!(f, "FastVote apply-request codec error: {error}")
+            }
+            Self::FastVoteConsensus(error) => write!(f, "FastVote consensus error: {error}"),
+            Self::FastVoteEndpointIdentityMismatch { expected, actual } => write!(
+                f,
+                "FastVote endpoint returned validator {actual} but is configured for {expected}"
+            ),
+            Self::FastVoteOverallDeadlineExceeded => {
+                f.write_str("FastVote whole-operation deadline elapsed before this endpoint could be contacted")
+            }
+            Self::FastVoteUnsupportedApplication => f.write_str(
+                "FastVote apply requires a PaidApplication::Call signed intent",
+            ),
+            Self::FastVoteUnexpectedTransaction { expected, actual } => write!(
+                f,
+                "FastVote response is bound to transaction {actual}, expected the exact submitted intent's own digest {expected}"
+            ),
         }
     }
 }
@@ -315,6 +363,12 @@ impl Error for ClientError {
             | Self::ExternalSignerSchemeMismatch { .. }
             | Self::ExternalSignerAddressMismatch { .. }
             | Self::ExternalSignatureInvalid { .. } => None,
+            Self::FastVoteApplyRequestWire(error) => Some(error),
+            Self::FastVoteConsensus(error) => Some(error),
+            Self::FastVoteEndpointIdentityMismatch { .. }
+            | Self::FastVoteOverallDeadlineExceeded
+            | Self::FastVoteUnsupportedApplication
+            | Self::FastVoteUnexpectedTransaction { .. } => None,
         }
     }
 }
@@ -394,5 +448,17 @@ impl From<crypto::CryptoError> for ClientError {
 impl From<signing_view::SigningViewError> for ClientError {
     fn from(value: signing_view::SigningViewError) -> Self {
         Self::SigningView(value)
+    }
+}
+
+impl From<node_wire::FastVoteApplyRequestError> for ClientError {
+    fn from(value: node_wire::FastVoteApplyRequestError) -> Self {
+        Self::FastVoteApplyRequestWire(value)
+    }
+}
+
+impl From<consensus::ConsensusError> for ClientError {
+    fn from(value: consensus::ConsensusError) -> Self {
+        Self::FastVoteConsensus(value)
     }
 }

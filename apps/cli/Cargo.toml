@@ -25,6 +25,8 @@ usb-hid = ["sunrise-edge-ledger/usb-hid"]
 
 [dev-dependencies]
 abi.workspace = true
+consensus.workspace = true
+crypto.workspace = true
 execution.workspace = true
 fees.workspace = true
 hashing.workspace = true

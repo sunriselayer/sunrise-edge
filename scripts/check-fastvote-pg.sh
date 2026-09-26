@@ -34,6 +34,11 @@ require_exact_test fastvote_pg_operator_credential_isolated_multivalidator_e2e \
 cargo test --quiet -p sunrise-edge-operator --test fastvote_pg_credential_isolation_e2e \
   -- --ignored --exact fastvote_pg_operator_credential_isolated_multivalidator_e2e
 
+require_exact_test fastvote_host_pg_cli_multivalidator_e2e \
+  -p sunrise-edge-operator --test fastvote_host_pg_cli_e2e
+cargo test --quiet -p sunrise-edge-operator --test fastvote_host_pg_cli_e2e \
+  -- --ignored --exact fastvote_host_pg_cli_multivalidator_e2e
+
 require_exact_test fast_path::capacity_tests::live_postgres::live_postgres_concurrent_zero_share_claims_measure_retained_bytes_and_reopen_latency \
   -p node-core --lib
 cargo test --quiet -p node-core --lib \
@@ -45,4 +50,4 @@ cargo test --quiet -p node-core --lib \
   fast_path::capacity_tests::live_postgres::live_postgres_concurrent_positive_claims_measure_retained_bytes_and_writer_fence_recovery \
   -- --ignored --exact --nocapture
 
-echo "live PostgreSQL FastVote multi-validator, credential-isolation and bounded fee-claim capacity E2Es passed"
+echo "live PostgreSQL FastVote multi-validator, credential-isolation, real-CLI host-serving and bounded fee-claim capacity E2Es passed"

@@ -8,6 +8,7 @@ license.workspace = true
 abi.workspace = true
 axum.workspace = true
 canonical-encoding.workspace = true
+consensus.workspace = true
 execution.workspace = true
 fees.workspace = true
 hashing.workspace = true
@@ -22,6 +23,7 @@ protocol-types.workspace = true
 runtime.workspace = true
 tokio.workspace = true
 tower.workspace = true
+validator-set.workspace = true
 
 [dev-dependencies]
 abi.workspace = true

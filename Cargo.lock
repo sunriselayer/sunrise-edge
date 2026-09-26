@@ -906,6 +906,7 @@ dependencies = [
  "abi",
  "axum",
  "canonical-encoding",
+ "consensus",
  "crypto",
  "ed25519-zebra",
  "execution",
@@ -925,6 +926,7 @@ dependencies = [
  "system-modules",
  "tokio",
  "tower",
+ "validator-set",
  "wat",
 ]
 
@@ -974,6 +976,7 @@ name = "node-wire"
 version = "0.1.0"
 dependencies = [
  "canonical-encoding",
+ "execution",
  "node-core",
  "objects",
  "protocol-types",
@@ -1654,6 +1657,8 @@ name = "sunrise-edge-cli"
 version = "0.1.0"
 dependencies = [
  "abi",
+ "consensus",
+ "crypto",
  "execution",
  "fees",
  "hashing",
@@ -1678,6 +1683,7 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "canonical-encoding",
+ "consensus",
  "crypto",
  "ed25519-zebra",
  "execution",
@@ -1696,6 +1702,7 @@ dependencies = [
  "standard-assets",
  "sunrise-edge-devnet",
  "tokio",
+ "validator-set",
  "wat",
 ]
 
@@ -1744,17 +1751,23 @@ dependencies = [
  "execution",
  "fees",
  "hashing",
+ "native-http",
  "node-core",
+ "node-wire",
  "objects",
  "postgres",
  "postgres_rustls",
+ "protocol-config",
  "protocol-types",
  "public-standard-asset",
  "r2d2_postgres",
  "rcgen",
  "runtime",
  "runtime-postgres",
+ "runtime-sqlite",
  "rustls",
+ "sunrise-edge-cli",
+ "sunrise-edge-client",
  "sunrise-edge-devnet",
  "tokio",
  "validator-set",

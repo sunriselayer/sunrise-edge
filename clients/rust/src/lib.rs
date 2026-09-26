@@ -55,6 +55,7 @@
 pub mod client;
 pub mod context;
 pub mod error;
+pub mod fastvote_client;
 pub mod key;
 pub mod local_execution_client;
 pub mod paid_execution_client;
@@ -74,14 +75,21 @@ pub use execution::paid_execution::{
     MIN_EXECUTION_PRICE, MIN_RESERVE_ALLOWANCE, MIN_SETTLE_ALLOWANCE, PaidApplication,
     PaidChargedOutcome, PaidExecutionResult, PaidExecutionStatus, PaidFeePolicy, PaidIntent,
     PaidResultKind, PaidResultTarget, ReservationAccessKind, SignedPaidIntent,
-    decode_paid_execution_result, decode_paid_fee_policy, encode_paid_execution_result,
-    encode_paid_fee_policy, encode_signed_paid_intent, paid_fee_policy_digest,
+    decode_paid_execution_result, decode_paid_fee_policy, decode_signed_paid_intent,
+    encode_paid_execution_result, encode_paid_fee_policy, encode_signed_paid_intent,
+    paid_fee_policy_digest,
 };
 pub use execution::publication::{
     ArtifactParts, CodeArtifact, PublicationContext, PublicationSubmission,
     UnverifiedDependencyRef, decode_dependency_ref,
 };
 pub use execution::{call, call_authorization, local_execution};
+pub use fastvote_client::{
+    FastVoteApplyAttempt, FastVoteAttempt, FastVoteEndpoint, FastVoteEndpointConfigError,
+    FastVoteGenesisTrustError, FastVoteNetworkError, FastVoteQuorumError, FastVoteQuorumFailure,
+    MAX_FASTVOTE_NETWORK_ENDPOINTS, MAX_FASTVOTE_PER_REQUEST_CAP, apply_fastvote_to_all,
+    collect_fastvote_certificate, load_trusted_fastvote_genesis, validate_fastvote_endpoints,
+};
 pub use hashing::HashSuiteResolver;
 pub use key::LocalSigner;
 pub use local_execution_client::{build_signed_general_execution, build_signed_local_execution};
@@ -116,6 +124,10 @@ pub use transport::{
 // Re-exported for convenience: every `Client` query method returns one of
 // these node-wire types, and callers need `RequestId`/`ObjectId`/`Address`
 // to call them in the first place.
+pub use consensus::{
+    ConsensusError, FastCertificate, FastPathCertifier, FastVote, decode_fast_certificate,
+    decode_fast_vote, encode_fast_certificate, encode_fast_vote,
+};
 pub use execution::{
     CONTRACT_WASM_ADMISSION_PROFILE_VERSION, ContractWasmValidationError, EventRecord,
     ExecutionEffects, ExecutionStatus, MAX_CONTRACT_ENTRYPOINT_NAME_BYTES,
@@ -126,14 +138,17 @@ pub use execution::{
 pub use node_core::publication::local_publication_profile_semantics;
 pub use node_core::{NodeCoreError, NodeResponse, NodeResponseStatus, RequestId};
 pub use node_wire::{
-    HttpContextQueryResult, HttpNextNonceQueryResult, HttpNodeResult, HttpObjectQueryResult,
-    HttpReceiptQueryResult, NEXT_NONCE_QUERY_RESULT_TYPE_ID, NODE_RESULT_MEDIA_TYPE,
-    ObjectQueryStatus, QUERY_CONTEXT_PATH, QUERY_NEXT_NONCE_PATH, QUERY_OBJECT_PATH,
-    QUERY_RECEIPT_PATH, QUERY_RESULT_MEDIA_TYPE, QueryResultError, ReceiptQueryStatus,
+    FASTVOTE_CERTIFICATES_PATH, FASTVOTE_PREPARE_PATH, FastVoteApplyRequest,
+    FastVoteApplyRequestError, HttpContextQueryResult, HttpNextNonceQueryResult, HttpNodeResult,
+    HttpObjectQueryResult, HttpReceiptQueryResult, MAX_FASTVOTE_CERTIFICATE_BYTES,
+    NEXT_NONCE_QUERY_RESULT_TYPE_ID, NODE_RESULT_MEDIA_TYPE, ObjectQueryStatus, QUERY_CONTEXT_PATH,
+    QUERY_NEXT_NONCE_PATH, QUERY_OBJECT_PATH, QUERY_RECEIPT_PATH, QUERY_RESULT_MEDIA_TYPE,
+    QueryResultError, ReceiptQueryStatus,
 };
 pub use objects::{
     AccessMode, Address, Object, ObjectError, ObjectId, ObjectRef, Owner, decode_object,
 };
+pub use validator_set::{ValidatorInfo, ValidatorSet};
 
 // Re-exported so `apps/cli` (and other application-specific consumers) can
 // build a `TransactionRequest`'s access manifest and canonical argument
@@ -149,7 +164,7 @@ pub use canonical_encoding::{CanonicalEncodingError, CanonicalStruct};
 pub use fees::{Amount, FeePayment};
 pub use protocol_types::{
     AtomicityDomainId, ChainId, Digest32, Epoch, HashAlgorithmId, HashSuiteId, ProtocolVersion,
-    SignatureSchemeId, TypeError,
+    SignatureSchemeId, TypeError, ValidatorId,
 };
 pub use standard_assets::{
     AssetId, StandardAssetCoinV1, StandardAssetError, StandardAssetTransferArgsV1,

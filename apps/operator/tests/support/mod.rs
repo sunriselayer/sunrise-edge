@@ -9,8 +9,10 @@
 #![allow(dead_code)]
 
 pub mod cli;
+pub mod durable_state;
 pub mod genesis_fixture;
 pub mod isolated_databases;
+pub mod observed_io;
 pub mod soak;
 pub mod tls_relay;
 

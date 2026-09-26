@@ -9,7 +9,9 @@ use execution::paid_execution::{
 pub const PAID_EXECUTION_PATH: &str = "/v1/contracts/paid-executions";
 pub const PAID_FEE_POLICY_PATH: &str = "/v1/contracts/paid-fee-policy";
 
-pub(super) fn routes<S, B, M, T, C, I>(
+/// The one direct/legacy mutating paid-execution route. A certified-only
+/// FastVote router (DR-0148, see [`crate::fastvote`]) never calls this.
+pub(super) fn mutation_routes<S, B, M, T, C, I>(
     enabled: bool,
 ) -> Router<SharedPreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I>>
 where
@@ -25,8 +27,29 @@ where
     }
     Router::new()
         .route(PAID_EXECUTION_PATH, post(submit::<S, B, M, T, C, I>))
-        .route(PAID_FEE_POLICY_PATH, get(query_policy::<S, B, M, T, C, I>))
         .layer(DefaultBodyLimit::max(MAX_SIGNED_PAID_INTENT_BYTES))
+}
+
+/// The bounded, unsigned fee-policy query. Safe to expose from a
+/// certified-only FastVote router (DR-0148): a caller needs the exact
+/// installed policy to construct and sign a paid call, and this route never
+/// checks or requires the direct-submit capability, only that some paid
+/// policy (direct or FastVote) is installed at all.
+pub(super) fn read_routes<S, B, M, T, C, I>(
+    enabled: bool,
+) -> Router<SharedPreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I>>
+where
+    S: IndexedOutboxRepository + Send + Sync + 'static,
+    B: BlobStore + Send + Sync + 'static,
+    M: TransactionalNodeStateMachine + Send + Sync + 'static,
+    T: Transport + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    I: IndexedOutboxIdentitySource + Send + Sync + 'static,
+{
+    if !enabled {
+        return Router::new();
+    }
+    Router::new().route(PAID_FEE_POLICY_PATH, get(query_policy::<S, B, M, T, C, I>))
 }
 
 async fn submit<S, B, M, T, C, I>(
@@ -232,9 +255,15 @@ where
         state.components.is_cancelled(),
         state.blocking_executor.clone(),
         move || {
-            let Some(_paid) = state.preinstalled_wasm.paid_execution.as_ref() else {
+            // A certified-only FastVote deployment (DR-0148) has no
+            // `paid_execution` composition, but still needs this bounded,
+            // unsigned read to construct and sign a paid call, so this
+            // checks either capability rather than only the direct one.
+            let policy_installed: bool = state.preinstalled_wasm.paid_execution.is_some()
+                || state.preinstalled_wasm.fastvote.is_some();
+            if !policy_installed {
                 return error_response(StatusCode::NOT_FOUND, "paid-execution-disabled");
-            };
+            }
             let (domain, context, epoch_record) = match prepare_authoritative_epoch_storage_context(
                 &state.components,
                 &state.protocol_config,
@@ -306,7 +335,9 @@ where
     .await
 }
 
-fn admission_error(error: &node_core::paid_execution::PaidExecutionAdmissionError) -> Response {
+pub(super) fn admission_error(
+    error: &node_core::paid_execution::PaidExecutionAdmissionError,
+) -> Response {
     use node_core::paid_execution::PaidExecutionAdmissionError as E;
     match error {
         E::Node(error) => node_error_response(error),

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 canonical-encoding.workspace = true
+execution.workspace = true
 node-core.workspace = true
 objects.workspace = true
 protocol-types.workspace = true

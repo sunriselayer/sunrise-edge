@@ -10,10 +10,12 @@
 
 use super::genesis_fixture::FastVoteGenesisFixture;
 use node_core::{ObjectQueryResult, query_object, query_sender_next_nonce};
+use objects::ObjectRef;
 use postgres::{
     Config,
     config::{Host, SslMode},
 };
+use protocol_types::ProtocolVersion;
 use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
 use runtime::{
     DurableDomainStateStore, DurableOperationContext, StorageCorrelationId, StorageDeadline,
@@ -131,6 +133,7 @@ pub struct CliContext<'a> {
     pub ca_path: &'a Path,
     pub dsn: &'a str,
     pub chain_id: String,
+    pub protocol_version: ProtocolVersion,
     pub manifest_path: &'a Path,
     pub digest_hex: String,
 }
@@ -139,6 +142,69 @@ pub fn base_command(context: &CliContext<'_>) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_fastvote_pg"));
     command.env(DSN_ENV, context.dsn);
     command
+}
+
+/// Every protocol-sensitive operator command uses the fixture's exact pin.
+fn protocol_command(context: &CliContext<'_>, subcommand: &str) -> Command {
+    let mut command: Command = base_command(context);
+    command
+        .arg(subcommand)
+        .arg("--protocol-version")
+        .arg(context.protocol_version.get().to_string());
+    command
+}
+
+#[cfg(test)]
+mod protocol_pin_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_and_network_operator_commands_use_the_exact_fixture_protocol() {
+        let legacy: FastVoteGenesisFixture =
+            super::super::genesis_fixture::build_fixture("operator-protocol-v1");
+        let network: FastVoteGenesisFixture =
+            super::super::genesis_fixture::build_network_fixture("operator-protocol-v3");
+        assert_eq!(legacy.protocol_version, ProtocolVersion::new(1));
+        assert_eq!(network.protocol_version, ProtocolVersion::new(3));
+        for fixture in [legacy, network] {
+            let manifest: node_core::GenesisManifest =
+                node_core::decode_genesis_manifest(&fixture.manifest_bytes).unwrap();
+            assert_eq!(
+                manifest.context().protocol_version(),
+                fixture.protocol_version
+            );
+            let context: CliContext<'_> = CliContext {
+                ca_path: Path::new("unused-ca"),
+                dsn: "unused-dsn",
+                chain_id: fixture.chain_id.to_string(),
+                protocol_version: fixture.protocol_version,
+                manifest_path: Path::new("unused-manifest"),
+                digest_hex: to_hex(&fixture.manifest_digest),
+            };
+            for subcommand in [
+                "install-genesis",
+                "prepare-vote",
+                "assemble-certificate",
+                "apply-certificate",
+            ] {
+                // This is the actual command factory used by every helper
+                // above, without executing a subprocess or contacting PG.
+                let command: Command = protocol_command(&context, subcommand);
+                let arguments: Vec<std::ffi::OsString> = command
+                    .get_args()
+                    .map(std::ffi::OsStr::to_os_string)
+                    .collect();
+                assert_eq!(
+                    arguments,
+                    vec![
+                        std::ffi::OsString::from(subcommand),
+                        std::ffi::OsString::from("--protocol-version"),
+                        std::ffi::OsString::from(fixture.protocol_version.get().to_string()),
+                    ]
+                );
+            }
+        }
+    }
 }
 
 pub fn namespace_init(context: &CliContext<'_>, validator_hex: &str, domain_hex: &str) -> Output {
@@ -187,9 +253,8 @@ pub fn install_genesis(
     domain_hex: &str,
     expect_success: bool,
 ) -> Output {
-    let mut command = base_command(context);
+    let mut command = protocol_command(context, "install-genesis");
     command.args([
-        "install-genesis",
         "--tls-root-der",
         context.ca_path.to_str().unwrap(),
         "--chain-id",
@@ -198,8 +263,6 @@ pub fn install_genesis(
         validator_hex,
         "--domain",
         domain_hex,
-        "--protocol-version",
-        "1",
         "--epoch",
         "0",
         "--suite",
@@ -230,9 +293,8 @@ pub fn prepare_vote(
     vote_output: &Path,
     expect_success: bool,
 ) -> Output {
-    let mut command = base_command(context);
+    let mut command = protocol_command(context, "prepare-vote");
     command.args([
-        "prepare-vote",
         "--tls-root-der",
         context.ca_path.to_str().unwrap(),
         "--chain-id",
@@ -241,8 +303,6 @@ pub fn prepare_vote(
         validator_hex,
         "--domain",
         domain_hex,
-        "--protocol-version",
-        "1",
         "--epoch",
         "0",
         "--suite",
@@ -275,15 +335,12 @@ pub fn assemble_certificate(
     vote_paths: &[PathBuf],
     certificate_output: &Path,
 ) -> Output {
-    let mut command = base_command(context);
+    let mut command = protocol_command(context, "assemble-certificate");
     command.args([
-        "assemble-certificate",
         "--validator-set-source",
         "genesis-manifest",
         "--chain-id",
         context.chain_id.as_str(),
-        "--protocol-version",
-        "1",
         "--epoch",
         "0",
         "--suite",
@@ -310,9 +367,8 @@ pub fn apply_certificate(
     response_output: &Path,
     expect_success: bool,
 ) -> Output {
-    let mut command = base_command(context);
+    let mut command = protocol_command(context, "apply-certificate");
     command.args([
-        "apply-certificate",
         "--tls-root-der",
         context.ca_path.to_str().unwrap(),
         "--chain-id",
@@ -321,8 +377,6 @@ pub fn apply_certificate(
         validator_hex,
         "--domain",
         domain_hex,
-        "--protocol-version",
-        "1",
         "--epoch",
         "0",
         "--suite",
@@ -453,5 +507,45 @@ pub fn snapshot(
         certificate_record,
         object,
         next_nonce,
+    }
+}
+
+/// The fee coin's exact current `ObjectRef` (id, live version, live digest),
+/// independently re-queried out of band. A CLI-built call's `--access`/
+/// `--fee-source` must reference this, not the object's original genesis
+/// version, once any prior call (successful or a charged trap) has mutated
+/// it: an owned object's version/digest advances on every settlement,
+/// including a discarded-effects `ApplicationFailed` charge.
+pub fn current_fee_coin_ref(
+    pool: &Pool<PostgresConnectionManager<postgres::NoTls>>,
+    namespace: &PostgresNamespace,
+    fixture: &FastVoteGenesisFixture,
+) -> ObjectRef {
+    let store = runtime_postgres::PostgresDurableStore::new(
+        pool.clone(),
+        namespace.clone(),
+        runtime_postgres::PostgresTransactionPolicy::new(NonZeroU32::new(1).unwrap()).unwrap(),
+    );
+    let context: DurableOperationContext = read_context(pool, namespace);
+    match query_object(
+        &store,
+        &context,
+        fixture.domain,
+        &fixture.chain_id,
+        fixture.fee_coin,
+    )
+    .unwrap()
+    {
+        ObjectQueryResult::CurrentInline {
+            object_id,
+            object_version,
+            digest,
+            ..
+        } => ObjectRef {
+            id: object_id,
+            version: object_version.get(),
+            digest,
+        },
+        other => panic!("expected the fee coin to be a current inline object, got {other:?}"),
     }
 }
