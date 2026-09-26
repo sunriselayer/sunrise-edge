@@ -61,7 +61,7 @@ live activation; the hard activation constraints below still apply.
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Implemented and validated (DR-0128); focused Codex Security scan found 0 reportable findings and fresh Opus review approved |
-| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated; Phase 3 remains open.** DR-0135–DR-0140 implement custody, bonds, forfeiture, signed fee claims and payout verification. DR-0142 adds the offline SQLite sweep. DR-0143 selects PostgreSQL for the first multi-validator persistence profile; its namespace-bound blob store and fenced TLS operator now have a nonempty certified PostgreSQL E2E with five claims, two signed payouts, client pool close/reopen, two pages and stale-writer rejection. Representative claim/recovery capacity, the Phase 3 review gate and external validator ingress remain open. FastVote overall is incomplete. |
+| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated; Phase 3 remains open.** DR-0135–DR-0140 implement custody, bonds, forfeiture, signed fee claims and payout verification. DR-0142/0143 add offline SQLite and PostgreSQL certified inventory. DR-0144/0145 exercise four CLI validators, separate test databases and bounded PostgreSQL claim/reopen regressions. Representative sustained claim/recovery capacity, the Phase 3 review gate and external validator ingress remain open. FastVote overall is incomplete. |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
 Asset creation was the final focused delta before FastVote/multi-validator
@@ -3275,8 +3275,13 @@ completion criteria in this plan, not vague "production" deferrals.
         regression measures logical retained bytes and local reopen latency.
         A separate 12-escrow/three-writer real-WASM split/final regression
         measures local positive-claim latency, object/receipt persistence and
-        SQLite/WAL file sizes. Neither directly set-up fixture certifies
-        sustained network throughput, disk life or recovery time (DR-0138);
+        SQLite/WAL file sizes. DR-0145 now runs the same escrow counts on real
+        PostgreSQL, with 256 retained shares per zero-share row, caller retry
+        counts for definite serialization rejection, logical payload bytes,
+        whole-shared-table physical size diagnostics and reopen under a newer
+        writer fence. All resulting rows, payout objects and receipts are
+        checked. These directly set-up fixtures still do not certify sustained
+        network throughput, disk life or recovery time (DR-0138/0145);
       - [x] expose the bounded all-page verifier to a local SQLite operator
         ([DR-0142](docs/architecture/decisions/0142-fastvote-operator-escrow-inventory.md)).
         The command opens only existing namespace-bound files, requires
@@ -3333,17 +3338,54 @@ completion criteria in this plan, not vague "production" deferrals.
         config changes as an authorized protocol migration;
       - [ ] Phase 3 review gate.
 
-  **Remaining Phase 3 completion:** establish claim and restart-sweep capacity
-  on the selected PostgreSQL network store with representative load/soak
-  evidence, then pass the Phase 3 review gate. Protocol-version activation is
+  **Remaining Phase 3 completion:** declare the initial network load/recovery
+  target, establish sustained claim and restart-sweep capacity on the selected
+  PostgreSQL network store with representative load/soak evidence, then pass
+  the Phase 3 review gate. The bounded DR-0145 regressions are prerequisites,
+  not that certification. Protocol-version activation is
   a separately blocked future gate; there is no live version-switch path to
   exercise in this phase. Revisit it before implementing that path.
   FastVote is not complete until this phase closes.
 
+### Bounded PostgreSQL Phase 3 evidence and remaining gate
+
+[DR-0145](docs/architecture/decisions/0145-postgres-phase3-capacity-and-validator-authority.md)
+records one integrated PostgreSQL regression slice and the work still open:
+
+- [x] Run concurrent zero-share and real-WASM positive split/final claims on
+  the selected PostgreSQL store; close/reopen under a newer writer generation,
+  verify exact retained rows, payouts and receipts, and report diagnostic
+  elapsed time plus logical and physical storage measurements. Preserve the
+  independent 256/257 validator admission boundary. Locally validated
+  2026-09-26 on disposable PostgreSQL 18.6: 48 rows with 256 shares each and
+  six callers (one zero-share claim per row), plus 12 real-WASM positive rows
+  and three callers. The complete run retained 952,224 zero-share settlement
+  bytes, 33,024 zero-claim envelope bytes, 5,952 positive settlement bytes,
+  23,922 positive-claim envelope bytes, 3,576 escrow-object bytes and 1,596
+  payout-object bytes. Relation-size readings are for whole shared tables,
+  not isolated namespace storage; timings and caller retry counts vary by run.
+- [x] Time a complete, multi-page certified escrow inventory with the actual
+  PostgreSQL operator after restart, including the final fence recheck. A
+  small disposable fixture is a regression, not representative recovery
+  capacity or a long soak. The local 2026-09-26 run completed two pages/two
+  certified escrows/five claims/two payouts twice on a disposable PostgreSQL
+  18.6 container. The test emits per-run wall time; no target recovery budget
+  is inferred.
+- [x] Drive the four-validator CLI quorum with a distinct database and login
+  per validator and prove cross-database `CONNECT` denial. One disposable
+  server still does not prove independent administrators or failure domains.
+  The local 2026-09-26 test passed full 3-of-4 prepare/apply, exact replay,
+  cross-role denial and unchanged foreign durable state.
+- [ ] Declare the initial network workload, sustained claim-rate and recovery
+  targets, run representative PostgreSQL load/soak and fault/recovery trials,
+  then pass the separate Phase 3 security and tech-lead review gate. Keep
+  external FastVote ingress and protocol-version activation behind their own
+  decisions.
+
 ## Closed PostgreSQL multi-validator operator rehearsal
 
 [DR-0144](docs/architecture/decisions/0144-closed-postgres-fastvote-operator.md)
-defines the next integrated implementation slice. This is a usable,
+defined the initial integrated implementation slice. This is a usable,
 operator-invoked **genesis-epoch rehearsal**, not public validator ingress or
 testnet activation. Keep it in one coherent PR rather than dividing schema,
 CLI framing and vote/certificate handling into helper-only changes.

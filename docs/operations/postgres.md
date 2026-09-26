@@ -57,6 +57,40 @@ This document refines [the production persistence requirements](persistence.md) 
 production-oriented PostgreSQL backend. It deliberately does not map the
 current opaque SQLite table or `PersistenceLayout` key prefixes into SQL.
 
+## Validator database authority
+
+The first-network profile assigns each validator a separately administered
+PostgreSQL authority and credentials ([DR-0145](../architecture/decisions/0145-postgres-phase3-capacity-and-validator-authority.md)).
+The `(chain, validator, domain)` columns in the shared `sunrise_edge` schema
+are exact storage keys, **not** row-level authorization. Do not place two
+mutually distrusting validator logins in the same database and rely on the
+namespace columns to isolate them. Each validator must use its own database;
+the intended network also requires separate administrative control and
+failure domains. Four databases on one disposable server are only a
+credential-isolation rehearsal.
+
+A privileged database administrator can provision one fresh rehearsal
+database at a time with the equivalent of the following SQL, substituting
+separately chosen identifiers. Configure the role's login secret or client
+certificate through the operator's protected channel, not in a checked-in
+script or shell argument:
+
+```sql
+CREATE ROLE validator_a LOGIN;
+CREATE DATABASE validator_a OWNER validator_a;
+REVOKE ALL ON DATABASE validator_a FROM PUBLIC;
+GRANT CONNECT ON DATABASE validator_a TO validator_a;
+```
+
+Repeat with distinct names and credentials. Use `namespace-init` from only
+the matching validator login against its *empty* database; its explicit
+schema/bootstrap authority is not a request-path permission. Verify that a
+different validator login cannot connect to this database before accepting
+the setup. An administrator or superuser can still access every rehearsal
+database, so this test does not prove separate administration. Do not reuse
+an old database whose schema identity or namespace metadata fails inspection;
+the runtime fails closed rather than performing a silent migration.
+
 ## 1. Adapter boundary prerequisite
 
 The existing `AtomicStateTransaction` is not sufficient input for a normalized

@@ -8,7 +8,9 @@
 //! both crates' live PostgreSQL tests still serialize against each other.
 #![allow(dead_code)]
 
+pub mod cli;
 pub mod genesis_fixture;
+pub mod isolated_databases;
 pub mod tls_relay;
 
 use std::{
