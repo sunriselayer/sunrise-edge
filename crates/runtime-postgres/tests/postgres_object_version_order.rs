@@ -136,6 +136,16 @@ fn object_version_record(
     DurableObjectVersionRecord::from_inline_object(object, digest, provenance, version).unwrap()
 }
 
+/// Derives the exact [`DurableRequestId`] `commit_object_mutation` builds
+/// for one `request_index`, so callers can independently check receipt
+/// presence/absence for the same invocation without re-deriving the bytes.
+fn request_id_for(request_index: u16) -> DurableRequestId {
+    let [request_byte_high, request_byte_low]: [u8; 2] = request_index.to_be_bytes();
+    let mut request_id_bytes: [u8; 32] = [request_byte_low; 32];
+    request_id_bytes[0] = request_byte_high;
+    DurableRequestId::new(request_id_bytes).unwrap()
+}
+
 /// `request_index` uniquely identifies this invocation's receipt and outbox
 /// digests; each call site passes a distinct value.
 fn commit_object_mutation(
@@ -150,11 +160,10 @@ fn commit_object_mutation(
     request_index: u16,
 ) -> DurableCommitOutcome {
     let (domain, object_id, expected_head, mutation) = object_change;
-    let [request_byte_high, request_byte_low]: [u8; 2] = request_index.to_be_bytes();
-    let mut request_id_bytes: [u8; 32] = [request_byte_low; 32];
-    request_id_bytes[0] = request_byte_high;
+    let request_id: DurableRequestId = request_id_for(request_index);
+    let request_byte_low: u8 = request_index.to_be_bytes()[1];
     let receipt: DurableRequestReceipt = DurableRequestReceipt::new(
-        DurableRequestId::new(request_id_bytes).unwrap(),
+        request_id,
         Digest32::new(
             HashAlgorithmId::Sha2_256,
             [request_byte_low.wrapping_add(1); 32],
@@ -345,7 +354,7 @@ fn postgres_object_version_numeric_ordering_survives_double_and_triple_digit_rol
                AND v.validator_id = h.validator_id
                AND v.atomicity_domain_id = h.atomicity_domain_id
                AND v.object_id = h.object_id
-               AND v.object_version = $5",
+               AND v.object_version = CAST(CAST($5 AS TEXT) AS NUMERIC)",
             &[
                 &namespace.chain_id_bytes(),
                 &&namespace.validator_id().as_bytes()[..],
@@ -396,6 +405,18 @@ fn postgres_object_version_numeric_ordering_survives_double_and_triple_digit_rol
                 domain,
                 object_id,
                 DurableObjectVersion::new(HIGHEST_OBJECT_VERSION + 1).unwrap(),
+            )
+            .unwrap(),
+        None
+    );
+    // Nor did the rejected mutation's request receipt survive: an all-or-none
+    // commit must not retain a partial receipt for a rejected invocation.
+    assert_eq!(
+        reopened_store
+            .get_request_receipt(
+                &context,
+                domain,
+                request_id_for(u16::try_from(HIGHEST_OBJECT_VERSION + 1).unwrap()),
             )
             .unwrap(),
         None
