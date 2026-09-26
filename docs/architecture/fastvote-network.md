@@ -5,8 +5,8 @@
 `consensus::FastPathCertifier` reachable over authenticated HTTP, as one
 operator-composed, opt-in, experimental surface distinct from the generic
 `SubmitTransaction` event path. It does not close the Phase 3 independent
-security/tech-lead review gate and adopts no live-network, load, soak, or
-capacity target.
+security gate or establish acceptance of the added ingress, and adopts no
+live-network, load, soak, or capacity target.
 
 ## Components
 
@@ -47,6 +47,9 @@ capacity target.
   set and the submitted intent's digest before any apply POST, and reports
   each peer's outcome independently -- never an invented "all validators
   applied" or global-durability claim.
+  Deadline addition is checked, and zero or excessive per-request caps fail
+  before sending. The 300-second cap is a client resource ceiling, not an
+  adopted latency or throughput target.
 - **Host** (`apps/operator/src/bin/fastvote_host_pg`): a long-running,
   certified-only PostgreSQL-backed FastVote HTTP host, reusing
   `fastvote_pg`'s security-critical conventions (TOCTOU-safe signing-key
@@ -58,6 +61,9 @@ capacity target.
   (an explicit, mandatory offline confirmation, not an automatic
   background renewal); and it listens on loopback only, with explicit
   external-TLS-termination guidance -- it never terminates TLS itself.
+  Its per-generation identity sequence becomes permanently exhausted after
+  the last representable nonzero sequence, rather than wrapping and reusing
+  an identity under the same writer generation.
 - **CLI** (`apps/cli`): `contract paid-call --fastvote-network` builds and
   signs a real ordinary paid `Call` through the exact same generic
   construction path `paid-call` already uses directly, branching only at

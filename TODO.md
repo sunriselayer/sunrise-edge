@@ -61,7 +61,7 @@ live activation; the hard activation constraints below still apply.
 | 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
 | 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
 | 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Implemented and validated (DR-0128); focused Codex Security scan found 0 reportable findings and fresh Opus review approved |
-| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated; Phase 3 remains open.** DR-0135–DR-0140 implement custody, bonds, forfeiture, signed fee claims and payout verification. DR-0142/0143 add offline SQLite and PostgreSQL certified inventory. DR-0144/0145 exercise four CLI validators, separate test databases and bounded PostgreSQL claim/reopen regressions. The Phase 3 security/tech-lead review gate over this completed economics core remains open. Authenticated external validator ingress, a CLI end-to-end quorum submission path and exposing the bond/epoch/equivocation/reward/claim lifecycle through authenticated operator/network surfaces are the next integrated network functional delivery once Phase 3 closes, gated by their own separate design/authentication/security review. Per [DR-0147](docs/architecture/decisions/0147-function-first-network-delivery.md), representative sustained load/soak/capacity certification and adopted throughput/recovery SLOs are post-launch hardening, not a Phase 3 prerequisite. FastVote overall is incomplete. |
+| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated; Phase 3 remains open.** DR-0135–DR-0140 implement custody, bonds, forfeiture, signed fee claims and payout verification. DR-0142/0143 add offline SQLite and PostgreSQL certified inventory. DR-0144/0145 exercise four CLI validators, separate test databases and bounded PostgreSQL claim/reopen regressions. Prior-main economics passed Opus tech-lead review; the independent Phase 3 security gate remains open. Authenticated external validator ingress, a CLI end-to-end quorum submission path and exposing the bond/epoch/equivocation/reward/claim lifecycle through authenticated operator/network surfaces have separate design/authentication/security gates. DR-0148's integrated network candidate is under implementation and review, not accepted or authorized for live activation. Per [DR-0147](docs/architecture/decisions/0147-function-first-network-delivery.md), representative sustained load/soak/capacity certification and adopted throughput/recovery SLOs are post-launch hardening, not a Phase 3 prerequisite. FastVote overall is incomplete. |
 
 Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
 Asset creation was the final focused delta before FastVote/multi-validator
@@ -90,9 +90,11 @@ Ledger, TypeScript, explorer, wallet, Unique Asset and multisig remain
 separate deferred gates below; none is deleted or silently treated as
 complete by this ordering.
 
-**Network functional delivery order, next after Phase 3 closes (per [DR-0147](docs/architecture/decisions/0147-function-first-network-delivery.md)):**
-once the Phase 3 economics/security core closes, functional work to expose
-FastVote as a usable network is prioritized ahead of load testing; peak TPS,
+**Active network functional implementation (DR-0148), with separate release gates (DR-0147):**
+The completed economics core supports implementing and testing the opt-in
+network surface while independent reviews remain open; it does not authorize
+live exposure before those reviews pass. Functional work to make FastVote
+usable is prioritized ahead of load testing; peak TPS,
 concurrent-user and recovery targets remain undecided and are deferred to
 post-launch hardening. The active order is:
 
@@ -132,6 +134,12 @@ post-launch hardening. The active order is:
     evidence still need correction. Rerun the gate and fresh exact-head Opus
     review after fixes. Independent ingress security review remains open;
     this is not public-network, production, or custody authorization.
+    SDK checked deadline/cap rejection and sticky host identity exhaustion
+    are corrected in `23273fb38fd4485f33b11855fe815cda78487173`: the parent
+    verified the SDK, CLI network and host identity unit suites, selected
+    all-target/all-feature Clippy, and the four-process PostgreSQL CLI-library
+    E2E. Those checks do not resolve the remaining CLI/server review findings
+    or replace the final integrated repository gate and fresh Opus review.
 - [ ] expose the already-implemented bond/epoch/equivocation/reward/claim
   lifecycle through explicit authenticated operator/network surfaces where
   needed;
@@ -3413,8 +3421,10 @@ completion criteria in this plan, not vague "production" deferrals.
   representative sustained claim/restart-sweep capacity move to post-launch
   hardening; they are not a Phase 3 prerequisite, and no target numbers are
   adopted yet. The bounded DR-0145/0146 regressions remain fixture-level
-  evidence, not that certification. Once Phase 3 closes, authenticated
-  external validator request/event-driven ingress for prepare/certificate/
+  evidence, not that certification. DR-0148's opt-in experimental implementation
+  may proceed while the independent review remains open; live exposure is
+  still separately gated. Authenticated external validator request/event-driven
+  ingress for prepare/certificate/
   apply, a CLI end-to-end quorum submission path, exposing the
   bond/epoch/equivocation/reward/claim lifecycle through explicit
   authenticated operator/network surfaces where needed, and bounded
@@ -3509,7 +3519,8 @@ define this integrated instrument:
   sustained deployment measurements. A configurable instrument and its smoke
   do not satisfy this acceptance item or independent administration/host
   domains. This item is not a Phase 3 completion prerequisite; the
-  separate Phase 3 security/tech-lead gate is tracked above.
+  separate Phase 3 independent security gate is tracked above; prior-main
+  tech-lead review passed.
 
 ## Closed PostgreSQL multi-validator operator rehearsal
 
@@ -3544,8 +3555,8 @@ CLI framing and vote/certificate handling into helper-only changes.
   administrative control; the first network requires independent PostgreSQL
   authorities and credentials.
 - [ ] Document an executable operator walkthrough and pass the full repository
-  gate plus focused security and fresh tech-lead reviews. The Phase 3
-  security/tech-lead review gate remains open until separately evidenced; per
+  gate plus focused security and fresh tech-lead reviews. Prior-main Phase 3
+  tech-lead review passed, but its independent security gate remains open; per
   [DR-0147](docs/architecture/decisions/0147-function-first-network-delivery.md),
   PostgreSQL capacity/soak/load certification is post-launch hardening, not a
   prerequisite for this gate. External authenticated validator ingress and any

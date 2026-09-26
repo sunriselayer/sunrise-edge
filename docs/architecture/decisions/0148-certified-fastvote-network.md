@@ -5,7 +5,7 @@
 Accepted design, 2026-09-26. Implementation acceptance is tracked in
 `TODO.md`, not established by this decision. Independent Phase 3 and ingress
 security review gates remain open; this record does not
-close it, does not authorize live exposure, deployment, or custody of real
+close either, does not authorize live exposure, deployment, or custody of real
 assets, and adopts no load/soak/capacity target (DR-0147 defers all of that
 to post-launch hardening).
 
@@ -129,15 +129,17 @@ and a committed charged-trap result is reported as `Ok`, not a failure.
   FastVote route presence, and a construction-time policy-context-mismatch
   rejection. An exhaustive production-constant path×method matrix is required
   before acceptance; the existing native HTTP suite remains part of the gate.
-- `clients/rust/src/fastvote_client.rs` tests (14, all real Ed25519
-  signatures and the real `FastPathCertifier`): a same-header malicious
-  first responder with an invalid signature, one unreachable endpoint, an
+- `clients/rust/src/fastvote_client.rs` tests (real Ed25519
+  signatures and the real `FastPathCertifier` for quorum cases): a same-header
+  malicious first responder with an invalid signature, one unreachable endpoint, an
   insufficient-quorum negative, a fully valid quorum for an unrelated
   transaction, a spoofed-endpoint-identity rejection, a slow first peer
   bounded by the per-request cap while quorum still forms from the
   remaining honest peers, endpoint-config preflight (duplicate ids/labels,
   unknown validator, empty/oversized configuration), and apply-side
-  rejection of an unrelated or uncertifiable certificate before any POST.
+  rejection of an unrelated or uncertifiable certificate before any POST,
+  plus zero/excessive/elapsed budget rejection without a POST and checked
+  monotonic-clock addition.
 - `apps/operator/tests/fastvote_network_e2e.rs` (three network tests, excluding
   shared fixture tests): the original
   `fastvote_network_prepares_certifies_and_applies_a_real_transfer_over_real_http`
@@ -172,7 +174,7 @@ and a committed charged-trap result is reported as `Ok`, not a failure.
   against its already-populated namespace, never installing a second
   genesis) with exact replay of both the success and charged-trap
   certificates proving persistence survives the restart.
-- `apps/cli/src/commands/fastvote_network.rs` unit tests (11, new): network
+- `apps/cli/src/commands/fastvote_network.rs` unit tests: network
   config parsing (comments/blank lines, loopback and fully-configured
   remote-TLS lines, wrong field count, partially-configured TLS, invalid
   hex validator id, endpoint-count bound), a real-certificate mixed
