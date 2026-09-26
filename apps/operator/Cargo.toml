@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+abi.workspace = true
 consensus.workspace = true
 crypto.workspace = true
 ed25519-zebra.workspace = true
@@ -13,6 +14,7 @@ hashing.workspace = true
 native-http.workspace = true
 node-core.workspace = true
 node-wire.workspace = true
+objects.workspace = true
 postgres.workspace = true
 postgres_rustls.workspace = true
 protocol-config.workspace = true

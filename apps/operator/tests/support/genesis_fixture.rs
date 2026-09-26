@@ -222,6 +222,22 @@ pub fn build_fixture_with_protocol(
     protocol_version: ProtocolVersion,
     epoch: Epoch,
 ) -> FastVoteGenesisFixture {
+    build_fixture_with_fee(unique, protocol_version, epoch, false)
+}
+
+/// A two-unit certified fee gives two positive and two zero entitlements.
+/// This is a test-only fee policy, never an operator default.
+#[must_use]
+pub fn build_economics_fixture(unique: &str) -> FastVoteGenesisFixture {
+    build_fixture_with_fee(unique, ProtocolVersion::new(3), Epoch::new(0), true)
+}
+
+fn build_fixture_with_fee(
+    unique: &str,
+    protocol_version: ProtocolVersion,
+    epoch: Epoch,
+    cheap_fee: bool,
+) -> FastVoteGenesisFixture {
     let chain_id: ChainId = ChainId::new(format!("fastvote-pg-e2e-{unique}")).unwrap();
     let resolver: HashSuiteResolver = HashSuiteResolver::new(
         chain_id.clone(),
@@ -245,6 +261,17 @@ pub fn build_fixture_with_protocol(
 
     let (mut manifest, metadata) =
         build_paid_genesis_manifest(&resolver, &context, &[sender_owner], sender_owner).unwrap();
+    if cheap_fee {
+        manifest.fee_policy.gas_schedule = fees::GasSchedule {
+            base_fee: 100,
+            execution_price: 1,
+            read_price: 0,
+            write_price: 0,
+            storage_price: 0,
+            system_module_price: 0,
+        };
+        manifest.fee_policy.conversion_divisor = 40_000;
+    }
 
     let mut validators: Vec<FastVoteValidator> = Vec::with_capacity(4);
     for seed_byte in [0xA1u8, 0xA2, 0xA3, 0xA4] {
