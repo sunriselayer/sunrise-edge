@@ -33,8 +33,11 @@ prepared-only contract. Both use one internal implementation; an existing
 prepared record always selects the original prepared path and its durably
 stored checkpoint, never a caller replacement.
 
-The certified HTTP apply route and PostgreSQL operator apply use the new
-entrypoint with their existing trusted composition checkpoint. No new route,
+The certified HTTP apply route uses the new entrypoint with its existing
+trusted composition checkpoint. PostgreSQL operator `apply-certificate` opts
+into recovery only with an explicit `--created-checkpoint`; without that flag
+its prepared-only behavior is unchanged. No implicit zero/genesis checkpoint
+is inferred. No new route,
 wire frame, signature, certificate domain or commitment format is introduced.
 The route remains opt-in and certified-only; direct/legacy mutation routes
 remain structurally absent.
