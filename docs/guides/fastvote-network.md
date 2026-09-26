@@ -192,6 +192,11 @@ this guide's tooling nor the CLI's own output ever claims global durability,
 that every configured peer applied, or finality beyond what the printed,
 per-peer results actually show.
 
+For a same-epoch validator that missed prepare as well as application, use
+[certified-call catch-up](fastvote-catch-up.md). It reconstructs declared
+certified Calls against exact local prerequisites without a new prepare vote
+or speculative locks; it is not full-state handoff or epoch activation.
+
 ## Executable regression
 
 ```sh

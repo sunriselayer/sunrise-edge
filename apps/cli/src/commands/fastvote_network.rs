@@ -991,3 +991,6 @@ mod tests {
 #[cfg(test)]
 #[path = "fastvote_network_tests.rs"]
 mod boundary_tests;
+
+#[path = "fastvote_catch_up.rs"]
+pub(super) mod catch_up;

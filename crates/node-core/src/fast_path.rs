@@ -3,8 +3,8 @@
 //!
 //! This is the node-core wiring for `consensus::FastPathCertifier`
 //! (DR-0129's "phase 0" canonical vote/certificate library, which has no
-//! `node-core` dependency or durable persistence of its own). Two entry
-//! points, [`prepare`] and [`apply`], both call
+//! `node-core` dependency or durable persistence of its own). The entry
+//! points, [`prepare`], [`apply`] and [`apply_with_recovery`], all call
 //! [`paid_execution::build_paid_admission`] -- the exact same admission and
 //! execution pipeline [`paid_execution::handle_paid_execution`] (the
 //! ordinary direct commit path) uses -- so a fast-path request is admitted
@@ -35,6 +35,11 @@
 //!   [`records::FastPathSettlementRecord`], and every lock delete, in one
 //!   commit. A certificate/final record that already exists returns the
 //!   exact final receipt idempotently, without re-executing.
+//! * [`apply_with_recovery`] additionally permits a same-epoch replica that
+//!   missed prepare to execute the exact certified call without a signer.
+//!   The prepared key must be genuinely never-created, all lock values must
+//!   be absent, and the complete re-derived commitment must match before the
+//!   single atomic commit. Recovery never creates or reclaims a lock.
 //! * Locks have no expiry in phase 1: the only way to release one is a
 //!   successful [`apply`] of the same request. A prepared request whose
 //!   certificate can never be formed, or whose durably re-derived
@@ -877,6 +882,101 @@ where
     S: StructuredDurableDomainStateStore,
     E: PaidContractEngine + ?Sized,
 {
+    apply_internal(
+        store,
+        blob_store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        base_policy,
+        fee_policy,
+        engine,
+        signed_bytes,
+        certificate_bytes,
+        None,
+    )
+}
+
+/// Applies a certified call, permitting signerless recovery if the local
+/// preparation key was never created. Recovery executes against exact local
+/// prerequisites and atomically fences absent locks; it never prepares, votes,
+/// reclaims locks or imports definitions. The supplied creation checkpoint must
+/// reproduce the certified commitment. Existing preparation always retains its
+/// original stored checkpoint, regardless of this argument.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_with_recovery<S, E>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    base_policy: &LocalExecutionPolicy,
+    fee_policy: &PaidFeePolicy,
+    engine: &E,
+    signed_bytes: &[u8],
+    certificate_bytes: &[u8],
+    recovery_created_checkpoint: u64,
+) -> FastPathResult<NodeOutput>
+where
+    S: StructuredDurableDomainStateStore,
+    E: PaidContractEngine + ?Sized,
+{
+    apply_internal(
+        store,
+        blob_store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        base_policy,
+        fee_policy,
+        engine,
+        signed_bytes,
+        certificate_bytes,
+        Some(recovery_created_checkpoint),
+    )
+}
+
+/// Combining separate observations must not discard a conflicting revision.
+fn merge_apply_reads(
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+    additional: BTreeMap<Vec<u8>, StateRevision>,
+) -> FastPathResult<()> {
+    for (key, revision) in additional {
+        if let Some(previous) = reads.insert(key, revision)
+            && previous != revision
+        {
+            return Err(NodeCoreError::StateConflict.into());
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn apply_internal<S, E>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    base_policy: &LocalExecutionPolicy,
+    fee_policy: &PaidFeePolicy,
+    engine: &E,
+    signed_bytes: &[u8],
+    certificate_bytes: &[u8],
+    recovery_created_checkpoint: Option<u64>,
+) -> FastPathResult<NodeOutput>
+where
+    S: StructuredDurableDomainStateStore,
+    E: PaidContractEngine + ?Sized,
+{
     if history.len() > publication::MAX_PUBLICATION_HISTORY {
         return invalid("resolver history bound");
     }
@@ -932,20 +1032,33 @@ where
     let prepared_key: Vec<u8> = fastpath_prepared_record_key(&chain, &original_request_id)?;
     let observed_prepared: VersionedStateValue =
         store.get_versioned_durable(context, domain, &prepared_key)?;
-    let prepared: FastPathPreparedRecord = records::decode_fastpath_prepared_record(
-        observed_prepared
-            .value()
-            .ok_or(FastPathError::Invalid("no local fast-path prepared record"))?,
-    )?;
-    if prepared.signed_intent_digest != event_digest {
-        return invalid("fast-path prepared record does not match signed bytes");
-    }
-    if prepared.context != intent_context
-        || prepared.request_id != original_request_id
-        || prepared.pending_nonce != intent_nonce
-    {
-        return invalid("fast-path prepared record metadata mismatch");
-    }
+    let prepared: Option<FastPathPreparedRecord> = observed_prepared
+        .value()
+        .map(records::decode_fastpath_prepared_record)
+        .transpose()?;
+    let (created_checkpoint, nonce_mode): (u64, NonceMode) = match &prepared {
+        Some(prepared) => {
+            if prepared.signed_intent_digest != event_digest {
+                return invalid("fast-path prepared record does not match signed bytes");
+            }
+            if prepared.context != intent_context
+                || prepared.request_id != original_request_id
+                || prepared.pending_nonce != intent_nonce
+            {
+                return invalid("fast-path prepared record metadata mismatch");
+            }
+            (prepared.created_checkpoint, NonceMode::PreparedApply)
+        }
+        None => {
+            let checkpoint: u64 = recovery_created_checkpoint
+                .ok_or(FastPathError::Invalid("no local fast-path prepared record"))?;
+            if observed_prepared.revision() != StateRevision::INITIAL {
+                return invalid("certified recovery refuses a prepared-record tombstone");
+            }
+            (checkpoint, NonceMode::RecoveryApply)
+        }
+    };
+    fence_reads.insert(prepared_key.clone(), observed_prepared.revision());
 
     let certificate: FastCertificate = consensus::decode_fast_certificate(certificate_bytes)?;
     let validator_set: ValidatorSet = load_validator_set(
@@ -969,7 +1082,9 @@ where
         || certificate.protocol_version != intent_context.protocol_version()
         || certificate.epoch != intent_context.epoch()
         || certificate.tx_hash != event_digest
-        || certificate.execution_effects_hash != prepared.commitment
+        || prepared
+            .as_ref()
+            .is_some_and(|prepared| certificate.execution_effects_hash != prepared.commitment)
     {
         return invalid("fast-path certificate does not match the locally prepared commitment");
     }
@@ -987,10 +1102,13 @@ where
         engine,
         authenticated,
         event_digest,
-        prepared.created_checkpoint,
-        NonceMode::PreparedApply,
+        created_checkpoint,
+        nonce_mode,
     )?;
-    if admission.locked_objects != prepared.locked_objects {
+    if prepared
+        .as_ref()
+        .is_some_and(|prepared| admission.locked_objects != prepared.locked_objects)
+    {
         return invalid("fast-path prepared lock set mismatch");
     }
 
@@ -1032,7 +1150,7 @@ where
             pending_nonce_write.read_revision,
             &pending_nonce_bytes,
         )?;
-    if fresh_commitment != prepared.commitment {
+    if fresh_commitment != certificate.execution_effects_hash {
         return invalid("fast-path re-derived commitment no longer matches the certificate");
     }
     let fresh_locked_objects_digest: Digest32 = compute_locked_objects_digest(
@@ -1048,6 +1166,18 @@ where
         );
     }
 
+    // Defense in depth: recovery must not persist any staged lock mutation,
+    // including a stale-lock delete, even if admission is extended later.
+    if prepared.is_none()
+        && admission.state_mutations.iter().any(|mutation| {
+            mutation
+                .key()
+                .starts_with(local_instance_state::FASTPATH_STATE_PREFIX)
+        })
+    {
+        return invalid("certified recovery refuses staged fast-path mutations");
+    }
+
     let PaidAdmissionOutput {
         result_bytes,
         success,
@@ -1061,8 +1191,7 @@ where
     } = admission;
 
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = admission_reads;
-    reads.extend(fence_reads);
-    reads.insert(prepared_key, observed_prepared.revision());
+    merge_apply_reads(&mut reads, fence_reads)?;
 
     let nonce: PendingSenderNonceWrite = nonce_write.ok_or(FastPathError::Invalid(
         "fast-path apply must advance the prepared nonce",
@@ -1077,12 +1206,17 @@ where
     if !reads.contains_key(&nonce_lock_key) {
         return invalid("fast-path apply missing nonce-lock read");
     }
-    mutations.push(StateMutationEntry::new(
-        nonce_lock_key,
-        StateMutation::Delete,
-    )?);
+    if prepared.is_some() {
+        mutations.push(StateMutationEntry::new(
+            nonce_lock_key,
+            StateMutation::Delete,
+        )?);
+    }
 
-    for object in &prepared.locked_objects {
+    for object in prepared
+        .iter()
+        .flat_map(|prepared| &prepared.locked_objects)
+    {
         let lock_key: Vec<u8> = fastpath_lock_key(&chain, object.id)?;
         // Read already present from this admission's own lock-ownership
         // check; reused as the CAS precondition for the delete below.

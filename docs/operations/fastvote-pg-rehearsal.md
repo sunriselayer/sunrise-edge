@@ -127,6 +127,19 @@ certificate and response outputs require fresh paths: the CLI refuses to
 overwrite an existing file or follow an existing symlink. Use a new output
 path for an exact replay and compare it with the previous output.
 
+An existing validator that missed preparation can explicitly opt into
+signerless certified-call recovery by adding `--created-checkpoint` to
+`apply-certificate`. Supply the same trusted creation metadata used by the
+certifying validators; the command independently reproduces the complete
+certified commitment before applying anything. Without that flag, this
+command remains prepared-only. An existing preparation always uses its stored
+checkpoint, not a replacement argument. Recovery requires exact local
+definitions, nonce and object prerequisites, refuses every present lock and
+does not sign or create a preparation. See
+[DR-0150](../architecture/decisions/0150-certified-call-catch-up.md) and the
+[ordered HTTP/CLI recovery guide](../guides/fastvote-catch-up.md) for the
+separate bounded saved-artifact workflow and its request-scoped limits.
+
 Every mutating invocation advances the namespace's persistent writer
 generation. Stop other writers first and do not reuse their old generation.
 If a command fails after its fence advance or durable commit, its prior state

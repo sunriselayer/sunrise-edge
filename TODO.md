@@ -179,6 +179,39 @@ post-launch hardening. The active order is:
   tests alone do not establish cross-validator state convergence. Keep the
   initial host fixed to one configured epoch/set until this gate is reviewed
   and verified; do not expose a live activation route in DR-0148.
+  - [x] [DR-0150](docs/architecture/decisions/0150-certified-call-catch-up.md):
+    certificate-first, signerless recovery of declared same-epoch certified
+    Calls is implemented and locally validated. The new core entrypoint
+    requires a never-created preparation key, strictly absent lock values
+    with fenced revisions and the exact re-derived complete commitment;
+    it never prepares, votes or reclaims locks. Existing prepared application
+    keeps its stored checkpoint and the original prepared-only API remains.
+    The certified HTTP route uses trusted composition metadata; offline
+    `apply-certificate` opts in only with explicit `--created-checkpoint`.
+    `contract fastvote-catch-up` authenticates the entire bounded ordered
+    manifest before POST, retains exact synchronized inputs, reserves every
+    fresh result path and uses one deadline. Certified charged traps continue
+    the sequence; failed/divergent acknowledgements stop the dependent suffix.
+    Parent source review, 12 recovery tests and 119 HTTP tests passed. The real
+    four-process PostgreSQL E2E certifies success/trap/success through the SDK
+    and first three hosts while the fourth is absent; a separately executed
+    compiled CLI then recovers the fourth using one configured endpoint and
+    the full four-member trusted genesis authority. It compares declared
+    canonical receipts, object heads/all versions/authority, nonce,
+    certificate/witness/initial settlement and independently verifies fee
+    inventory. Same-boot and real process-restart replay leave all business
+    state unchanged; corrupt-last-artifact/noPOST, output-path and divergent
+    prerequisite negatives pass. A nullable fixture restoration defect found
+    by parent execution was corrected without production relaxation.
+    `npm ci --prefix adapters/cloudflare-workers` and the complete
+    `./scripts/check-all.sh` passed, including required live PostgreSQL fault
+    cases, exact compiled-CLI catch-up execution, stable vectors and all
+    adapters. Merge requires fresh exact-final-head Opus approval and required
+    CI. This covers only declared certified Calls with exact local prerequisites;
+    full history/state completeness, definition import, shared settlement
+    ordering and activation-bound handoff remain open. Independent Phase 3
+    and ingress security gates remain open; no public deployment, real custody
+    or production/mainnet readiness is claimed.
 - [ ] bounded independent-validator functional start/restart/replay/
   authorization evidence, a documented deployment/configuration walkthrough,
   and a focused security review, before exposing this ingress.

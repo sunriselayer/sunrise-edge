@@ -925,6 +925,7 @@ const APPLY_CERTIFICATE_VALUE_FLAGS: &[&str] = &[
     "--paid-intent",
     "--certificate",
     "--response-output",
+    "--created-checkpoint",
     "--timeout-seconds",
 ];
 const APPLY_CERTIFICATE_BOOL_FLAGS: &[&str] = &["--confirm-offline-fence-advance"];
@@ -953,6 +954,10 @@ fn run_apply_certificate(tokens: impl IntoIterator<Item = OsString>) -> Result<(
     let certificate_path: PathBuf = PathBuf::from(flags.one("--certificate")?);
     let response_output: Option<PathBuf> =
         flags.optional_one("--response-output")?.map(PathBuf::from);
+    let recovery_created_checkpoint: Option<u64> = flags
+        .optional_one("--created-checkpoint")?
+        .map(|value| parse_u64_bounded(&value, "--created-checkpoint", 0, u64::MAX))
+        .transpose()?;
     let timeout_seconds: u64 = parse_u64_bounded(
         &flags.one("--timeout-seconds")?,
         "--timeout-seconds",
@@ -1010,20 +1015,38 @@ fn run_apply_certificate(tokens: impl IntoIterator<Item = OsString>) -> Result<(
     )?;
     let engine = execution::LocalWasmExecutionEngine::new();
 
-    let output = fast_path::apply(
-        &store,
-        &blobs,
-        &context,
-        domain,
-        &resolver,
-        &[],
-        &expected_context,
-        &base_policy,
-        &fee_policy,
-        &engine,
-        &paid_intent_bytes,
-        &certificate_bytes,
-    )?;
+    let output = if let Some(checkpoint) = recovery_created_checkpoint {
+        fast_path::apply_with_recovery(
+            &store,
+            &blobs,
+            &context,
+            domain,
+            &resolver,
+            &[],
+            &expected_context,
+            &base_policy,
+            &fee_policy,
+            &engine,
+            &paid_intent_bytes,
+            &certificate_bytes,
+            checkpoint,
+        )?
+    } else {
+        fast_path::apply(
+            &store,
+            &blobs,
+            &context,
+            domain,
+            &resolver,
+            &[],
+            &expected_context,
+            &base_policy,
+            &fee_policy,
+            &engine,
+            &paid_intent_bytes,
+            &certificate_bytes,
+        )?
+    };
     reconcile_writer_fence(&pool, &namespace, &context)?;
 
     if let Some(path) = response_output.as_deref() {
@@ -1129,6 +1152,41 @@ mod tests {
 
         let tokens: Vec<OsString> = vec![OsString::from("--flag"), OsString::from("--flag")];
         assert!(FlagSet::parse(tokens, &[], &["--flag"]).is_err());
+    }
+
+    #[test]
+    fn apply_recovery_checkpoint_is_optional_and_duplicates_are_rejected() {
+        let mut legacy: FlagSet = FlagSet::parse(
+            Vec::<OsString>::new(),
+            APPLY_CERTIFICATE_VALUE_FLAGS,
+            APPLY_CERTIFICATE_BOOL_FLAGS,
+        )
+        .unwrap();
+        assert_eq!(legacy.optional_one("--created-checkpoint").unwrap(), None);
+        for checkpoint in ["0", "777", "18446744073709551615"] {
+            let mut flags: FlagSet = FlagSet::parse(
+                [
+                    OsString::from("--created-checkpoint"),
+                    OsString::from(checkpoint),
+                ],
+                APPLY_CERTIFICATE_VALUE_FLAGS,
+                APPLY_CERTIFICATE_BOOL_FLAGS,
+            )
+            .unwrap();
+            let value: String = flags.optional_one("--created-checkpoint").unwrap().unwrap();
+            assert_eq!(
+                parse_u64_bounded(&value, "--created-checkpoint", 0, u64::MAX).unwrap(),
+                checkpoint.parse::<u64>().unwrap()
+            );
+        }
+        let mut duplicates: FlagSet = FlagSet::parse(
+            ["--created-checkpoint", "7", "--created-checkpoint", "8"].map(OsString::from),
+            APPLY_CERTIFICATE_VALUE_FLAGS,
+            APPLY_CERTIFICATE_BOOL_FLAGS,
+        )
+        .unwrap();
+        assert!(duplicates.optional_one("--created-checkpoint").is_err());
+        assert!(parse_u64_bounded("invalid", "--created-checkpoint", 0, u64::MAX).is_err());
     }
 
     #[test]

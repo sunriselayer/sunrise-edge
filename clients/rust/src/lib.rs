@@ -75,9 +75,9 @@ pub use execution::paid_execution::{
     MIN_EXECUTION_PRICE, MIN_RESERVE_ALLOWANCE, MIN_SETTLE_ALLOWANCE, PaidApplication,
     PaidChargedOutcome, PaidExecutionResult, PaidExecutionStatus, PaidFeePolicy, PaidIntent,
     PaidResultKind, PaidResultTarget, ReservationAccessKind, SignedPaidIntent,
-    decode_paid_execution_result, decode_paid_fee_policy, decode_signed_paid_intent,
-    encode_paid_execution_result, encode_paid_fee_policy, encode_signed_paid_intent,
-    paid_fee_policy_digest,
+    authenticate_paid_intent, decode_paid_execution_result, decode_paid_fee_policy,
+    decode_signed_paid_intent, encode_paid_execution_result, encode_paid_fee_policy,
+    encode_signed_paid_intent, paid_fee_policy_digest, paid_invocation_digest,
 };
 pub use execution::publication::{
     ArtifactParts, CodeArtifact, PublicationContext, PublicationSubmission,
@@ -96,6 +96,9 @@ pub use local_execution_client::{build_signed_general_execution, build_signed_lo
 pub use node_core::publication::{
     decode_publication_query_result, encode_publication_query_result,
 };
+// Offline artifact consumers use the same certificate verifier as the network
+// client, without acquiring signing authority or depending on a transport.
+pub use node_core::fast_path::FastPathEd25519Verifier;
 pub use paid_execution_client::{
     PAID_EXECUTION_PATH, PAID_FEE_POLICY_PATH, build_signed_paid_execution,
 };

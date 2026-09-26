@@ -56,6 +56,7 @@
 - [DR-0147: function-first network delivery sequencing](0147-function-first-network-delivery.md)
 - [DR-0148: certified-only FastVote HTTP network and CLI quorum client](0148-certified-fastvote-network.md)
 - [DR-0149: offline signed fee-claim operator workflow](0149-offline-signed-fee-claims.md)
+- [DR-0150: same-epoch certified-call catch-up](0150-certified-call-catch-up.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).
