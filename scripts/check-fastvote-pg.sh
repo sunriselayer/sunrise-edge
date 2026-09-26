@@ -39,14 +39,37 @@ require_exact_test fastvote_host_pg_cli_multivalidator_e2e \
 cargo test --quiet -p sunrise-edge-operator --test fastvote_host_pg_cli_e2e \
   -- --ignored --exact fastvote_host_pg_cli_multivalidator_e2e
 
-# This separate catch-up test executes the actual CLI binary, not its library
-# entrypoint. Cargo puts it beside the test binary's deps directory even when
-# CARGO_TARGET_DIR is explicitly configured.
+# Both the lifecycle submission E2E and the catch-up E2E below execute the
+# actual separately compiled CLI binary as a subprocess, never its library
+# entrypoint. Cargo puts it beside the test binary's own deps directory even
+# when CARGO_TARGET_DIR is explicitly configured, so it must be built once,
+# before either of them runs.
 cargo build --quiet -p sunrise-edge-cli --bin sunrise-edge-cli
+
+# DR-0151 delivery 1: real user-selected paid-publish -> paid-instantiate ->
+# paid-call plus ordinary Standard Asset create/transfer/split/merge/mint/burn,
+# all over --fastvote-network, driven through the compiled sunrise-edge-cli
+# binary.
+require_exact_test contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator_e2e \
+  -p sunrise-edge-operator --test contract_lifecycle_pg_e2e
+cargo test --quiet -p sunrise-edge-operator --test contract_lifecycle_pg_e2e \
+  -- --ignored --exact contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator_e2e
+
 require_exact_test certified_catch_up_pg_missed_prepare_binary_cli_e2e \
   -p sunrise-edge-operator --test certified_catch_up_pg_e2e
 cargo test --quiet -p sunrise-edge-operator --test certified_catch_up_pg_e2e \
   -- --ignored --exact certified_catch_up_pg_missed_prepare_binary_cli_e2e
+
+# DR-0151 delivery 1: recovers a validator kept offline from before the first
+# publish through the full declared Publish -> Instantiate -> asset-verb ->
+# charged-trap lifecycle via the compiled CLI's signerless fastvote-catch-up,
+# also proving same-boot and real host-restart idempotent replay, prefix
+# commits on a wrong-dependency-order manifest, and pre-POST rejection of an
+# output collision or mismatched protocol pins.
+require_exact_test contract_lifecycle_catch_up_pg_missed_publish_instantiate_call_binary_cli_e2e \
+  -p sunrise-edge-operator --test contract_lifecycle_catch_up_pg_e2e
+cargo test --quiet -p sunrise-edge-operator --test contract_lifecycle_catch_up_pg_e2e \
+  -- --ignored --exact contract_lifecycle_catch_up_pg_missed_publish_instantiate_call_binary_cli_e2e
 
 require_exact_test economics_pg_offline_signed_claim_workflow_e2e \
   -p sunrise-edge-operator --test economics_pg_e2e

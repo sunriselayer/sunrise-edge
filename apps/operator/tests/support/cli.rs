@@ -549,3 +549,43 @@ pub fn current_fee_coin_ref(
         other => panic!("expected the fee coin to be a current inline object, got {other:?}"),
     }
 }
+
+/// Locates the separately compiled `sunrise-edge-cli` binary next to this
+/// test binary's own executable. `apps/cli` is a distinct package from
+/// `sunrise-edge-operator`, so cargo does not expose a `CARGO_BIN_EXE_*`
+/// variable for it here the way it does for `fastvote_pg`/`fastvote_host_pg`
+/// (both real `src/bin/` targets of this very crate): the caller's harness
+/// script must build it first
+/// (`scripts/check-fastvote-pg.sh` runs `cargo build -p sunrise-edge-cli
+/// --bin sunrise-edge-cli` before any test that calls this).
+pub fn edge_cli_binary() -> PathBuf {
+    let binary: PathBuf = env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("sunrise-edge-cli");
+    assert!(
+        binary.is_file(),
+        "build sunrise-edge-cli before running this test (scripts/check-fastvote-pg.sh does this): {}",
+        binary.display()
+    );
+    binary
+}
+
+/// A ready-to-run `Command` for the separately compiled `sunrise-edge-cli`
+/// binary with `args`. Every DR-0151 contract-lifecycle E2E drives the real
+/// compiled binary through this one helper (never `sunrise_edge_cli::run`
+/// in-process) so both the paid-publish/paid-instantiate/paid-call/asset-verb
+/// path and the signerless `fastvote-catch-up` path exercise identical
+/// process-boundary, argv-parsing and exit-status behavior.
+pub fn edge_cli_command<I, A>(args: I) -> Command
+where
+    I: IntoIterator<Item = A>,
+    A: AsRef<std::ffi::OsStr>,
+{
+    let mut command: Command = Command::new(edge_cli_binary());
+    command.args(args);
+    command
+}

@@ -15,6 +15,7 @@ pub mod host;
 pub mod http_relay;
 pub mod isolated_databases;
 pub mod observed_io;
+pub mod paid_calls;
 pub mod soak;
 pub mod tls_relay;
 
