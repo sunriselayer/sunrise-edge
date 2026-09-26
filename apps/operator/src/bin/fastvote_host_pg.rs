@@ -668,9 +668,16 @@ struct SequentialIdentitySource {
 }
 impl SequentialIdentitySource {
     const fn new(generation: WriterFenceGeneration) -> Self {
+        Self::with_initial_sequence(generation, 1)
+    }
+
+    const fn with_initial_sequence(
+        generation: WriterFenceGeneration,
+        initial_sequence: u64,
+    ) -> Self {
         Self {
             generation,
-            sequence: AtomicU64::new(1),
+            sequence: AtomicU64::new(initial_sequence),
         }
     }
 }
@@ -681,10 +688,16 @@ impl native_http::IndexedOutboxIdentitySource for SequentialIdentitySource {
         native_http::IndexedOutboxAttemptIdentity,
         native_http::IndexedOutboxIdentitySourceError,
     > {
-        let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
-        if sequence == 0 {
-            return Err(native_http::IndexedOutboxIdentitySourceError::Exhausted);
-        }
+        let sequence = self
+            .sequence
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                if current == 0 {
+                    None
+                } else {
+                    Some(current.checked_add(1).unwrap_or(0))
+                }
+            })
+            .map_err(|_| native_http::IndexedOutboxIdentitySourceError::Exhausted)?;
         let mut lease_bytes: [u8; 32] = [0; 32];
         lease_bytes[..8].copy_from_slice(&self.generation.get().to_be_bytes());
         lease_bytes[8..16].copy_from_slice(&sequence.to_be_bytes());
@@ -921,5 +934,46 @@ fn main() -> ExitCode {
             eprintln!("error: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use native_http::IndexedOutboxIdentitySource;
+
+    #[test]
+    fn sequential_identity_source_exhaustion_is_sticky_near_u64_max() {
+        let generation: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+        let source = SequentialIdentitySource::with_initial_sequence(generation, u64::MAX - 1);
+
+        let first = source
+            .next_attempt_identity()
+            .expect("sequence u64::MAX - 1 should succeed");
+        let second = source
+            .next_attempt_identity()
+            .expect("sequence u64::MAX should succeed");
+
+        assert_ne!(first, second, "consecutive identities must not repeat");
+
+        for _ in 0..10 {
+            assert!(
+                matches!(
+                    source.next_attempt_identity(),
+                    Err(native_http::IndexedOutboxIdentitySourceError::Exhausted)
+                ),
+                "identity source must remain exhausted"
+            );
+        }
+    }
+
+    #[test]
+    fn sequential_identity_source_zero_sequence_is_immediately_exhausted() {
+        let generation: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+        let source = SequentialIdentitySource::with_initial_sequence(generation, 0);
+        assert!(matches!(
+            source.next_attempt_identity(),
+            Err(native_http::IndexedOutboxIdentitySourceError::Exhausted)
+        ));
     }
 }

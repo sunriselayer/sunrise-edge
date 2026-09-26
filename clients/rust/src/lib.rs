@@ -87,8 +87,8 @@ pub use execution::{call, call_authorization, local_execution};
 pub use fastvote_client::{
     FastVoteApplyAttempt, FastVoteAttempt, FastVoteEndpoint, FastVoteEndpointConfigError,
     FastVoteGenesisTrustError, FastVoteNetworkError, FastVoteQuorumError, FastVoteQuorumFailure,
-    MAX_FASTVOTE_NETWORK_ENDPOINTS, apply_fastvote_to_all, collect_fastvote_certificate,
-    load_trusted_fastvote_genesis, validate_fastvote_endpoints,
+    MAX_FASTVOTE_NETWORK_ENDPOINTS, MAX_FASTVOTE_PER_REQUEST_CAP, apply_fastvote_to_all,
+    collect_fastvote_certificate, load_trusted_fastvote_genesis, validate_fastvote_endpoints,
 };
 pub use hashing::HashSuiteResolver;
 pub use key::LocalSigner;

@@ -387,6 +387,14 @@ fn describe_quorum_error(error: &FastVoteQuorumError) -> CliError {
         FastVoteQuorumError::Network(FastVoteNetworkError::Preflight(reason)) => invalid(format!(
             "fastvote preflight rejected before any endpoint was contacted: {reason}"
         )),
+        FastVoteQuorumError::Network(
+            FastVoteNetworkError::ZeroPerRequestCap
+            | FastVoteNetworkError::ExcessivePerRequestCap { .. }
+            | FastVoteNetworkError::OverallDeadlineElapsed
+            | FastVoteNetworkError::DeadlineOverflow,
+        ) => invalid(format!(
+            "fastvote deadline/cap rejected before any endpoint was contacted: {error:?}"
+        )),
         FastVoteQuorumError::InsufficientQuorum(failure) => {
             for attempt in &failure.attempts {
                 if let Err(reason) = &attempt.result {

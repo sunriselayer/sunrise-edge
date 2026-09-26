@@ -99,6 +99,13 @@ use node_wire::{HttpNodeResult, NODE_EVENT_MEDIA_TYPE};
 /// members; this crate simply never dials more than this many at once).
 pub const MAX_FASTVOTE_NETWORK_ENDPOINTS: usize = 32;
 
+/// Maximum accepted per-request timeout cap for FastVote endpoint calls.
+///
+/// This is a client operational resource bound, not a protocol latency target
+/// or evidence of network readiness. The caller's remaining whole-operation
+/// deadline can further shorten every request.
+pub const MAX_FASTVOTE_PER_REQUEST_CAP: Duration = Duration::from_secs(300);
+
 /// Failures constructing a locally trusted FastVote genesis pin.
 #[derive(Debug)]
 pub enum FastVoteGenesisTrustError {
@@ -367,6 +374,19 @@ pub fn validate_fastvote_endpoints<T>(
 pub enum FastVoteNetworkError {
     /// [`validate_fastvote_endpoints`] rejected the configured endpoint set.
     EndpointConfig(FastVoteEndpointConfigError),
+    /// The caller-supplied per-request timeout cap was zero.
+    ZeroPerRequestCap,
+    /// The caller-supplied per-request timeout cap exceeded [`MAX_FASTVOTE_PER_REQUEST_CAP`].
+    ExcessivePerRequestCap {
+        /// The configured cap.
+        configured: Duration,
+        /// The bounded maximum.
+        maximum: Duration,
+    },
+    /// The caller-supplied overall deadline has already elapsed before network operations began.
+    OverallDeadlineElapsed,
+    /// Computing the bounded request deadline overflowed.
+    DeadlineOverflow,
     /// Encoding, authenticating, or hashing the signed intent (or
     /// verifying a certificate) failed before any endpoint was contacted.
     Preflight(ClientError),
@@ -376,6 +396,22 @@ impl fmt::Display for FastVoteNetworkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EndpointConfig(error) => write!(f, "FastVote endpoint configuration: {error}"),
+            Self::ZeroPerRequestCap => {
+                f.write_str("FastVote per-request timeout cap cannot be zero")
+            }
+            Self::ExcessivePerRequestCap {
+                configured,
+                maximum,
+            } => write!(
+                f,
+                "FastVote per-request timeout cap {configured:?} exceeds maximum {maximum:?}"
+            ),
+            Self::OverallDeadlineElapsed => {
+                f.write_str("FastVote overall deadline has already elapsed")
+            }
+            Self::DeadlineOverflow => {
+                f.write_str("FastVote bounded deadline calculation overflowed")
+            }
             Self::Preflight(error) => write!(f, "FastVote preflight: {error}"),
         }
     }
@@ -386,6 +422,10 @@ impl Error for FastVoteNetworkError {
         match self {
             Self::EndpointConfig(error) => Some(error),
             Self::Preflight(error) => Some(error),
+            Self::ZeroPerRequestCap
+            | Self::ExcessivePerRequestCap { .. }
+            | Self::OverallDeadlineElapsed
+            | Self::DeadlineOverflow => None,
         }
     }
 }
@@ -456,8 +496,33 @@ impl From<FastVoteEndpointConfigError> for FastVoteQuorumError {
 /// budget *and* by an independently configured per-request ceiling, so one
 /// stalled peer can never consume more than `per_request_cap` of the shared
 /// budget before the next independent peer gets its turn.
-fn bounded_deadline(overall_deadline: Instant, per_request_cap: Duration) -> Instant {
-    overall_deadline.min(Instant::now() + per_request_cap)
+///
+/// Validates that `per_request_cap` is non-zero and within
+/// [`MAX_FASTVOTE_PER_REQUEST_CAP`], and that `overall_deadline` has not
+/// already elapsed.  Uses checked addition to prevent arithmetic overflow.
+// Keep the same typed preflight error as collection/apply for caller diagnostics.
+#[allow(clippy::result_large_err)]
+fn bounded_deadline(
+    overall_deadline: Instant,
+    per_request_cap: Duration,
+) -> Result<Instant, FastVoteNetworkError> {
+    if per_request_cap.is_zero() {
+        return Err(FastVoteNetworkError::ZeroPerRequestCap);
+    }
+    if per_request_cap > MAX_FASTVOTE_PER_REQUEST_CAP {
+        return Err(FastVoteNetworkError::ExcessivePerRequestCap {
+            configured: per_request_cap,
+            maximum: MAX_FASTVOTE_PER_REQUEST_CAP,
+        });
+    }
+    let now = Instant::now();
+    if now >= overall_deadline {
+        return Err(FastVoteNetworkError::OverallDeadlineElapsed);
+    }
+    let per_request_deadline = now
+        .checked_add(per_request_cap)
+        .ok_or(FastVoteNetworkError::DeadlineOverflow)?;
+    Ok(overall_deadline.min(per_request_deadline))
 }
 
 /// Sends `signed` to every configured endpoint's `POST
@@ -480,6 +545,7 @@ pub fn collect_fastvote_certificate<T: Transport>(
     per_request_cap: Duration,
 ) -> Result<(FastCertificate, Vec<FastVoteAttempt>), FastVoteQuorumError> {
     validate_fastvote_endpoints(endpoints, certifier)?;
+    bounded_deadline(overall_deadline, per_request_cap)?;
 
     let expected_context = PublicationContext::new(
         certifier.chain_id().clone(),
@@ -503,12 +569,9 @@ pub fn collect_fastvote_certificate<T: Transport>(
 
     let mut attempts: Vec<FastVoteAttempt> = Vec::with_capacity(endpoints.len());
     for endpoint in endpoints {
-        let now = Instant::now();
-        let result = if now >= overall_deadline {
-            Err(ClientError::FastVoteOverallDeadlineExceeded)
-        } else {
-            let deadline = bounded_deadline(overall_deadline, per_request_cap);
-            endpoint
+        let result = match bounded_deadline(overall_deadline, per_request_cap) {
+            Err(_) => Err(ClientError::FastVoteOverallDeadlineExceeded),
+            Ok(deadline) => endpoint
                 .client
                 .prepare_fastvote(&signed_bytes, Some(deadline))
                 .and_then(|vote| {
@@ -528,7 +591,7 @@ pub fn collect_fastvote_certificate<T: Transport>(
                         .verify_vote(&vote, &FastPathEd25519Verifier)
                         .map_err(ClientError::FastVoteConsensus)?;
                     Ok(vote)
-                })
+                }),
         };
         attempts.push(FastVoteAttempt {
             validator_id: endpoint.validator_id,
@@ -600,6 +663,7 @@ pub fn apply_fastvote_to_all<T: Transport>(
     per_request_cap: Duration,
 ) -> Result<Vec<FastVoteApplyAttempt>, FastVoteNetworkError> {
     validate_fastvote_endpoints(endpoints, certifier)?;
+    bounded_deadline(overall_deadline, per_request_cap)?;
     let expected_tx_hash: Digest32 =
         paid_invocation_digest(resolver, signed).map_err(ClientError::from)?;
     if certificate.tx_hash != expected_tx_hash {
@@ -615,24 +679,22 @@ pub fn apply_fastvote_to_all<T: Transport>(
         .map_err(ClientError::from)?;
     let certificate_bytes = encode_fast_certificate(certificate).map_err(ClientError::from)?;
 
-    Ok(endpoints
-        .iter()
-        .map(|endpoint| {
-            let now = Instant::now();
-            let result = if now >= overall_deadline {
-                Err(ClientError::FastVoteOverallDeadlineExceeded)
-            } else {
-                let deadline = bounded_deadline(overall_deadline, per_request_cap);
+    let mut attempts: Vec<FastVoteApplyAttempt> = Vec::with_capacity(endpoints.len());
+    for endpoint in endpoints {
+        let result = match bounded_deadline(overall_deadline, per_request_cap) {
+            Err(_) => Err(ClientError::FastVoteOverallDeadlineExceeded),
+            Ok(deadline) => {
                 endpoint
                     .client
                     .apply_fastvote(signed, resolver, &certificate_bytes, Some(deadline))
-            };
-            FastVoteApplyAttempt {
-                validator_id: endpoint.validator_id,
-                result,
             }
-        })
-        .collect())
+        };
+        attempts.push(FastVoteApplyAttempt {
+            validator_id: endpoint.validator_id,
+            result,
+        });
+    }
+    Ok(attempts)
 }
 
 impl<T: Transport> Client<T> {
@@ -1535,5 +1597,222 @@ mod tests {
             Err(ClientError::SubmitResponseRequestIdMismatch { .. })
         ));
         assert!(matches!(attempts[2].result, Err(ClientError::Transport(_))));
+    }
+
+    #[test]
+    fn bounded_deadline_rejects_zero_and_excessive_cap_and_duration_max_cannot_panic() {
+        let overall = Instant::now() + Duration::from_secs(10);
+
+        assert!(matches!(
+            bounded_deadline(overall, Duration::ZERO),
+            Err(FastVoteNetworkError::ZeroPerRequestCap)
+        ));
+
+        // Duration::MAX must not panic and must be rejected as excessive.
+        assert!(matches!(
+            bounded_deadline(overall, Duration::MAX),
+            Err(FastVoteNetworkError::ExcessivePerRequestCap {
+                configured,
+                maximum,
+            }) if configured == Duration::MAX && maximum == MAX_FASTVOTE_PER_REQUEST_CAP
+        ));
+
+        let excessive = MAX_FASTVOTE_PER_REQUEST_CAP + Duration::from_secs(1);
+        assert!(matches!(
+            bounded_deadline(overall, excessive),
+            Err(FastVoteNetworkError::ExcessivePerRequestCap {
+                configured,
+                maximum,
+            }) if configured == excessive && maximum == MAX_FASTVOTE_PER_REQUEST_CAP
+        ));
+
+        // Elapsed overall deadline must be rejected.
+        let elapsed = Instant::now() - Duration::from_secs(1);
+        assert!(matches!(
+            bounded_deadline(elapsed, Duration::from_secs(1)),
+            Err(FastVoteNetworkError::OverallDeadlineElapsed)
+        ));
+
+        // Valid cap and future deadline succeeds and never replenishes the caller deadline.
+        let valid_cap = Duration::from_secs(2);
+        let computed = bounded_deadline(overall, valid_cap).expect("valid deadline should succeed");
+        assert!(computed <= Instant::now() + valid_cap);
+
+        let tight_overall = Instant::now() + Duration::from_millis(100);
+        let clamped =
+            bounded_deadline(tight_overall, valid_cap).expect("tight deadline should succeed");
+        assert!(
+            clamped <= tight_overall,
+            "deadline must not be replenished beyond caller overall budget"
+        );
+    }
+
+    #[test]
+    fn collect_fastvote_certificate_rejects_invalid_or_elapsed_cap_and_budget_without_post() {
+        let (signers, infos) = four_validators();
+        let certifier = certifier(infos);
+        let signed = signed_transfer(12, [0xa0; 32]);
+
+        let make_endpoints = || -> Vec<FastVoteEndpoint<ScriptedTransport>> {
+            (0..4)
+                .map(|index| {
+                    endpoint(
+                        signers[index].id,
+                        &format!("peer-{index}"),
+                        ScriptedTransport::unreachable(),
+                    )
+                })
+                .collect()
+        };
+
+        // Zero per_request_cap causes no transport POST.
+        let endpoints = make_endpoints();
+        let error = collect_fastvote_certificate(
+            &endpoints,
+            &certifier,
+            &resolver(),
+            &signed,
+            deadline(),
+            Duration::ZERO,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            FastVoteQuorumError::Network(FastVoteNetworkError::ZeroPerRequestCap)
+        ));
+        for ep in &endpoints {
+            assert_eq!(ep.client.transport().calls.load(Ordering::Relaxed), 0);
+        }
+
+        // Duration::MAX per_request_cap causes no transport POST and does not panic.
+        let endpoints = make_endpoints();
+        let error = collect_fastvote_certificate(
+            &endpoints,
+            &certifier,
+            &resolver(),
+            &signed,
+            deadline(),
+            Duration::MAX,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            FastVoteQuorumError::Network(FastVoteNetworkError::ExcessivePerRequestCap { .. })
+        ));
+        for ep in &endpoints {
+            assert_eq!(ep.client.transport().calls.load(Ordering::Relaxed), 0);
+        }
+
+        // Elapsed overall deadline causes no transport POST.
+        let endpoints = make_endpoints();
+        let elapsed = Instant::now() - Duration::from_secs(1);
+        let error = collect_fastvote_certificate(
+            &endpoints,
+            &certifier,
+            &resolver(),
+            &signed,
+            elapsed,
+            CAP,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            FastVoteQuorumError::Network(FastVoteNetworkError::OverallDeadlineElapsed)
+        ));
+        for ep in &endpoints {
+            assert_eq!(ep.client.transport().calls.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn apply_fastvote_to_all_rejects_invalid_or_elapsed_cap_and_budget_without_post() {
+        let (signers, infos) = four_validators();
+        let certifier = certifier(infos);
+        let signed = signed_transfer(13, [0xb0; 32]);
+        let tx_hash = expected_tx_hash(&signed);
+        let votes: Vec<FastVote> = signers[..3]
+            .iter()
+            .map(|signer| cast_for(&certifier, signer, tx_hash, 0x10))
+            .collect();
+        let certificate = certifier
+            .try_form_certificate(
+                tx_hash,
+                digest(0x10),
+                digest(0x11),
+                &votes,
+                &node_core::fast_path::FastPathEd25519Verifier,
+            )
+            .unwrap()
+            .expect("3-of-4 quorum");
+
+        let make_endpoints = || -> Vec<FastVoteEndpoint<ScriptedTransport>> {
+            (0..4)
+                .map(|index| {
+                    endpoint(
+                        signers[index].id,
+                        &format!("peer-{index}"),
+                        ScriptedTransport::unreachable(),
+                    )
+                })
+                .collect()
+        };
+
+        // Zero per_request_cap causes no transport POST.
+        let endpoints = make_endpoints();
+        let error = apply_fastvote_to_all(
+            &endpoints,
+            &certifier,
+            &signed,
+            &resolver(),
+            &certificate,
+            deadline(),
+            Duration::ZERO,
+        )
+        .unwrap_err();
+        assert!(matches!(error, FastVoteNetworkError::ZeroPerRequestCap));
+        for ep in &endpoints {
+            assert_eq!(ep.client.transport().calls.load(Ordering::Relaxed), 0);
+        }
+
+        // Duration::MAX per_request_cap causes no transport POST and does not panic.
+        let endpoints = make_endpoints();
+        let error = apply_fastvote_to_all(
+            &endpoints,
+            &certifier,
+            &signed,
+            &resolver(),
+            &certificate,
+            deadline(),
+            Duration::MAX,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            FastVoteNetworkError::ExcessivePerRequestCap { .. }
+        ));
+        for ep in &endpoints {
+            assert_eq!(ep.client.transport().calls.load(Ordering::Relaxed), 0);
+        }
+
+        // Elapsed overall deadline causes no transport POST.
+        let endpoints = make_endpoints();
+        let elapsed = Instant::now() - Duration::from_secs(1);
+        let error = apply_fastvote_to_all(
+            &endpoints,
+            &certifier,
+            &signed,
+            &resolver(),
+            &certificate,
+            elapsed,
+            CAP,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            FastVoteNetworkError::OverallDeadlineElapsed
+        ));
+        for ep in &endpoints {
+            assert_eq!(ep.client.transport().calls.load(Ordering::Relaxed), 0);
+        }
     }
 }
