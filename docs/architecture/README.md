@@ -42,6 +42,10 @@ roadmap describes a later target state.
 - [Certified-call catch-up](decisions/0150-certified-call-catch-up.md):
   signerless recovery of declared, same-epoch certified calls on a replica
   that missed prepare, without claiming complete state handoff or activation.
+- [Integrated network delivery and lightweight stores](decisions/0151-integrated-network-delivery-and-lightweight-stores.md):
+  four usable functional outcomes, capability-based persistence profiles,
+  single-domain atomicity and the decision to implement the generic certified
+  contract lifecycle before the Cloudflare DO profile.
 - [Decision records](decisions/README.md): accepted and compatibility-relevant
   decisions grouped into bounded ranges.
 

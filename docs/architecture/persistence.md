@@ -1,5 +1,31 @@
 # Persistence architecture
 
+## Authoritative store profiles
+
+[DR-0151](decisions/0151-integrated-network-delivery-and-lightweight-stores.md)
+selects capabilities rather than a mandatory database product. PostgreSQL
+remains the existing multi-validator implementation profile, not a protocol
+requirement. Cloudflare SQLite-backed Durable Objects and a separately verified
+native SQLite host are accepted lightweight implementation targets; neither
+is made production-supported by that architectural decision.
+
+One invocation's complete read/version assertions and authoritative writes
+must stay in one logical atomicity domain and one atomic commit, including
+nonce, receipt and certified effects/settlement, plus outbox where required.
+Physical database/actor placement is trusted fenced deployment metadata, not
+an untrusted caller's choice or a replacement for the logical domain ID.
+Splitting by object, sender or contract does not provide cross-store atomicity;
+a FastCertificate alone does not solve that visibility/commit problem.
+
+The initial lightweight target is one independently controlled validator domain
+per transactional store/actor, not one global actor for the chain. A future
+cross-domain path needs an explicit protocol and acceptance evidence. All
+profiles retain ABA/tombstone protection, immutable versions, commit-time
+fencing, bounded operations, blob-before-reference durability, indeterminate
+outcome reconciliation and exact replay. Provider replication is not validator
+quorum. Runtime adapters and their verified deployment scopes are recorded in
+`TODO.md`; the profile choice does not authorize live ingress or real custody.
+
 This document defines how the runtime-neutral state machine maps onto explicit
 atomicity domains, transactional state, objects, receipts, and outbox delivery.
 
