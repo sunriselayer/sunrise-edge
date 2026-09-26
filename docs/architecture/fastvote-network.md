@@ -67,7 +67,7 @@ capacity target.
   remote peer gets its own independently configured TLS server name/CA
   (never one global pair reused, never mixed with a loopback peer in the
   same cohort, never a system trust store). The signed-intent and
-  certificate artifacts are reserved (`create_new`) and durably persisted
+  certificate artifacts are created with `create_new` and file-synchronized
   (`write_all`+`sync_all`) before their respective mutating POSTs, and
   never overwritten. `contract fastvote-replay` resubmits exactly those
   saved bytes -- never a fresh nonce, never a re-sign.
@@ -80,7 +80,7 @@ context, and separately, the FastVote genesis manifest and its expected
 commitment digest (`--fastvote-genesis-manifest`/
 `--fastvote-expected-genesis-digest`). Neither is ever replaced by a value
 read from a live endpoint's response. A configured epoch/validator set is
-fixed for the lifetime of one running host and one CLI invocation: a
+required to remain fixed for one running host and one CLI invocation: a
 changed live epoch is rejected for fresh work and requires an explicit,
 out-of-band operator re-pin, while an already-committed historical receipt
 remains exactly replayable regardless. See
@@ -94,14 +94,27 @@ passing today's fixed-epoch tests.
 ## Known Phase 1 limitations
 
 `fast_path::prepare`'s durable prepared record and per-object/per-sender
-locks are unpriced and have no expiry in this phase: the only way to
-release one is applying its certificate, or by the object's owner never
-completing that path. This means a caller's own subsequent unrelated
+locks are unpriced and have no expiry in this phase. Within a fixed epoch,
+applying the certificate completes the prepared path; abandoning the request
+does not release its locks. This means a caller's own subsequent unrelated
 operation against the same object or sender nonce fails closed -- effectively
 a self-inflicted wedge, not a bug -- until that first request's certificate
 is applied. `crates/node-core/src/fast_path/tests.rs::a_locked_object_blocks_a_direct_commit_and_leaves_its_tracked_state_untouched`
 is the executable regression for this documented limitation; there is no
 priced-admission or automatic-expiry claim for this development surface.
+
+## Required acceptance boundaries
+
+Before using this experimental host, implementation and negative tests must
+establish the fixed configured epoch/set pin at startup and on preparation,
+while preserving receipt-first historical exact apply replay. CLI preparatory
+reads must use a configured peer's TLS policy and the same checked deadline
+as prepare/apply. Recovery files require all-output preflight and both file
+and parent-directory synchronization before mutation. The pending acceptance
+and independent review gates are recorded in `TODO.md`; the happy-path E2E
+does not substitute for them. The host currently uses an empty hash-suite
+history, so cross-suite historical replay fails closed. Its created-checkpoint
+value is trusted operator input, not evidence of a committed checkpoint.
 
 ## Operating this network
 

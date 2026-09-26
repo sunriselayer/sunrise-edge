@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted, 2026-09-26. Development implementation. The Phase 3 independent
-security/tech-lead review gate (DR-0147) remains open; this record does not
+Accepted design, 2026-09-26. Implementation acceptance is tracked in
+`TODO.md`, not established by this decision. Independent Phase 3 and ingress
+security review gates remain open; this record does not
 close it, does not authorize live exposure, deployment, or custody of real
 assets, and adopts no load/soak/capacity target (DR-0147 defers all of that
 to post-launch hardening).
@@ -107,8 +108,9 @@ live server response. `FastVoteEndpoint` is a fixed, caller-configured
 `prepare` to every endpoint bounded by one whole-operation deadline (not
 `endpoints.len()` independent per-request timeouts), rejects a returned vote
 whose own `validator` field disagrees with its endpoint's configured
-identity, groups every remaining vote by its exact `(tx_hash,
-execution_effects_hash, locked_objects_digest)` header, and offers *every*
+identity, cryptographically verifies each vote and binds its transaction
+hash to the exact submitted intent before grouping the remaining votes by
+`(execution_effects_hash, locked_objects_digest)`, and offers *every*
 group — not only the first — to `FastPathCertifier::try_form_certificate`.
 One unreachable or actively Byzantine endpoint (wrong header, foreign
 validator, garbage bytes) can neither block a certificate the remaining
@@ -121,11 +123,12 @@ and a committed charged-trap result is reported as `Ok`, not a failure.
 ## Evidence
 
 - `crates/node-core/src/fast_path/tests.rs::prepare_rejects_a_fresh_vote_whose_signature_does_not_match_the_registered_public_key`
-  (new) plus the full existing 649-test `node-core` suite, unchanged.
-- `crates/native-http/src/tests/fastvote_router.rs` (new): exhaustive
-  path×method denial of every direct/legacy mutating route, liveness/read/
+  (new), plus the existing `node-core` regression suite.
+- `crates/native-http/src/tests/fastvote_router.rs` (new): POST denial of
+  four direct/legacy mutating paths, liveness/read/
   FastVote route presence, and a construction-time policy-context-mismatch
-  rejection. Full existing 119-test `native-http` suite, unchanged.
+  rejection. An exhaustive production-constant path×method matrix is required
+  before acceptance; the existing native HTTP suite remains part of the gate.
 - `clients/rust/src/fastvote_client.rs` tests (14, all real Ed25519
   signatures and the real `FastPathCertifier`): a same-header malicious
   first responder with an invalid signature, one unreachable endpoint, an
@@ -135,17 +138,19 @@ and a committed charged-trap result is reported as `Ok`, not a failure.
   remaining honest peers, endpoint-config preflight (duplicate ids/labels,
   unknown validator, empty/oversized configuration), and apply-side
   rejection of an unrelated or uncertifiable certificate before any POST.
-- `apps/operator/tests/fastvote_network_e2e.rs` (10 tests): the original
+- `apps/operator/tests/fastvote_network_e2e.rs` (three network tests, excluding
+  shared fixture tests): the original
   `fastvote_network_prepares_certifies_and_applies_a_real_transfer_over_real_http`
   (four real `certified_fastvote_router` HTTP servers, each with its own
   SQLite durable/blob store, served over real loopback TCP, installed from
   one real signed four-validator genesis manifest, driving a real signed
   Standard Asset `transfer` through real prepare → local quorum certificate
   formation → apply, plus exact replay and certified-only route-denial
-  checks) plus two new focused HTTP instrumentation tests exercising the
+  checks) plus two focused HTTP status tests exercising the
   same running router: wrong media type / oversized body / malformed body /
   wrong-context rejection ordering on `/v1/fastvote/prepare`, and the same
-  media-type/size bounds on `/v1/fastvote/certificates`.
+  media-type/size bounds on `/v1/fastvote/certificates`. These are not yet
+  identity/clock/store/blob/engine counter assertions; those remain required.
 - `apps/operator/tests/fastvote_host_pg_cli_e2e.rs::fastvote_host_pg_cli_multivalidator_e2e`
   (new, live PostgreSQL, gated behind `SUNRISE_EDGE_TEST_POSTGRES_URL`,
   wired into `scripts/check-fastvote-pg.sh`): four real `fastvote_host_pg`
@@ -176,21 +181,22 @@ and a committed charged-trap result is reported as `Ok`, not a failure.
   artifact persistence (`create_new` never overwriting, bounded file-size
   rejection).
 
-### Function-first delivery completed (2026-09-26)
+### Function-first implementation and acceptance boundary
 
-The three items originally listed as deferred here are now implemented,
-each independently exercised by a real, non-mocked, four-process live
-PostgreSQL E2E driven through the actual compiled CLI
+The three functional components have been implemented and exercised by a
+real, non-mocked, four-process live PostgreSQL E2E driven through the compiled
+CLI library entry point, not a separately executed CLI binary
 (`apps/operator/tests/fastvote_host_pg_cli_e2e.rs::fastvote_host_pg_cli_multivalidator_e2e`,
 gated behind `SUNRISE_EDGE_TEST_POSTGRES_URL` and wired into
 `scripts/check-fastvote-pg.sh`), plus the pure SQLite/in-process coverage
 below:
 
 - **PostgreSQL hosting binary** (`apps/operator/src/bin/fastvote_host_pg.rs`):
-  a long-running, certified-only FastVote HTTP host reusing `fastvote_pg`'s
+  a long-running, certified-only FastVote HTTP host following `fastvote_pg`'s
   security-critical conventions (TOCTOU-safe signing-key loading, TLS-only
-  DSN, trusted-genesis-manifest verification) rather than copying its
-  thousands of lines. It never installs or resets genesis (only reads an
+  DSN, trusted-genesis-manifest verification). The current helper copies
+  require extraction into one tested shared implementation before acceptance.
+  It never installs or resets genesis (only reads an
   already-committed manifest/fee-policy and verifies its local signing key
   against the committed registered validator), claims the namespace's
   writer fence exactly once at startup (`--confirm-offline-fence-advance`
@@ -205,7 +211,10 @@ below:
   Endpoint-to-validator mapping is verified against the local genesis pin
   *before* any fee-policy query or signing. The mandatory signed-intent and
   certificate artifacts are reserved (`create_new`) and `write_all`+
-  `sync_all`'d before their respective mutating POSTs, never overwritten. A
+  file `sync_all`'d before their respective mutating POSTs, never overwritten.
+  Acceptance additionally requires reserving every output before the first
+  mutation and synchronizing parent directories; file synchronization alone
+  does not establish crash-durable creation of a directory entry. A
   new `contract fastvote-replay` action reads back exactly those saved
   bytes -- never a fresh nonce, never a re-sign -- and handles both the
   "certificate not yet formed" and "certificate already saved" cases,
@@ -226,11 +235,14 @@ rejected as an error for that attempt, never silently grouped as valid),
 binds the expected `tx_hash` to the digest of the exact authenticated
 signed intent being submitted, and preflights endpoint count/distinct-id/
 distinct-label/membership bounds before any network mutation. The whole
-prepare→certify→apply workflow is bounded by one global deadline that
-covers every phase (not a budget replenished per phase), with each peer
+prepare→certify→apply workflow shares one deadline, with each peer
 request additionally bounded by an independently configured per-request
 cap, so one slow/unavailable first peer cannot consume the entire budget
 and starve the remaining honest peers. `apply_fastvote_to_all` and the CLI
 replay path both independently re-verify a supplied certificate against
 the pinned local validator set and the submitted intent's own digest
-*before* any apply POST.
+*before* any apply POST. Acceptance additionally requires a checked deadline
+created before CLI preparation, covering every preparatory query as well,
+and a primary query peer selected from that same locally configured TLS
+cohort. These are required design properties, not established by the
+happy-path PostgreSQL E2E. See `TODO.md` for outstanding review gates.

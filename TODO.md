@@ -96,7 +96,7 @@ FastVote as a usable network is prioritized ahead of load testing; peak TPS,
 concurrent-user and recovery targets remain undecided and are deferred to
 post-launch hardening. The active order is:
 
-- [x] authenticated, request/event-driven external validator access for
+- [ ] authenticated, request/event-driven external validator access for
   FastVote prepare/certificate/apply, plus a CLI end-to-end quorum submission
   path;
   - 2026-09-26 status: [DR-0148](docs/architecture/decisions/0148-certified-fastvote-network.md)
@@ -110,23 +110,37 @@ post-launch hardening. The active order is:
     genesis, claims its namespace's writer fence exactly once at startup),
     and the `contract paid-call --fastvote-network`/`contract fastvote-replay`
     CLI surface (per-peer TLS, mandatory pre-POST signed-intent/certificate
-    artifact persistence, exact-bytes replay). Proven by a real
+    artifact persistence, exact-bytes replay). The implementation is pending
+    review corrections, not accepted network delivery. Exercised by a real
     four-validator SQLite-backed HTTP E2E
-    (`apps/operator/tests/fastvote_network_e2e.rs`, including focused
-    malformed/oversized/wrong-context HTTP instrumentation tests) and a real
-    four-process live-PostgreSQL E2E driven entirely through the compiled
-    CLI (`apps/operator/tests/fastvote_host_pg_cli_e2e.rs`, gated behind
+    (`apps/operator/tests/fastvote_network_e2e.rs`, including HTTP status
+    checks; authentication-before-I/O counter assertions remain to be added)
+    and a real four-process live-PostgreSQL E2E driven through the compiled
+    CLI library's command entry point, not a separately executed CLI binary
+    (`apps/operator/tests/fastvote_host_pg_cli_e2e.rs`, gated behind
     `SUNRISE_EDGE_TEST_POSTGRES_URL`, wired into
     `scripts/check-fastvote-pg.sh`), covering a charged trap, a successful
     transfer, exact replay of both, a rejected request-id-reuse conflict
     with independently re-verified unchanged durable state, a
     stale-writer-fence rejection, and a real close/reopen of a validator's
-    host process. This is a development implementation on an
-    independently-reviewed but not independently security-audited surface;
-    see the gate below.
+    host process. Parent ran that PostgreSQL E2E and the complete repository
+    gate on candidate `00672f1b4f7923c00fd79e73f28405cff49b591b` using a
+    disposable fixed-port PostgreSQL service. Fresh Opus review of that
+    candidate returned **BLOCK**: whole-operation deadlines and cohort-bound
+    preparatory reads, durable recovery-artifact preflight, fixed-epoch host
+    pinning, shared operator helpers, and missing negative-test/documentation
+    evidence still need correction. Rerun the gate and fresh exact-head Opus
+    review after fixes. Independent ingress security review remains open;
+    this is not public-network, production, or custody authorization.
 - [ ] expose the already-implemented bond/epoch/equivocation/reward/claim
   lifecycle through explicit authenticated operator/network surfaces where
   needed;
+- [ ] owned-state and settlement handoff correctness, activation-bound state
+  verification, and validator catch-up before live epoch/set changes or
+  validator replacement/activation. Local epoch CAS and lock-reclamation
+  tests alone do not establish cross-validator state convergence. Keep the
+  initial host fixed to one configured epoch/set until this gate is reviewed
+  and verified; do not expose a live activation route in DR-0148.
 - [ ] bounded independent-validator functional start/restart/replay/
   authorization evidence, a documented deployment/configuration walkthrough,
   and a focused security review, before exposing this ingress.
@@ -3385,11 +3399,15 @@ completion criteria in this plan, not vague "production" deferrals.
         fail activation while any claimable `FeeEscrow` remains, and prove
         that choice across restart (DR-0138). Do not represent operator
         config changes as an authorized protocol migration;
-      - [ ] Phase 3 review gate.
+      - [ ] Phase 3 independent security review gate. The completed economics
+        core on prior main `72a5f9847673dc9345d3b918ce46957d343cd520` passed a
+        fresh Opus tech-lead review on 2026-09-26; that is not an independent
+        security audit or approval of the added network-ingress candidate.
 
-  **Remaining Phase 3 completion:** pass the Phase 3 security and
-  tech-lead review gate over the completed custody/bond/forfeiture/claim/
-  payout economics core above. Per
+  **Remaining Phase 3 completion:** pass the independent Phase 3 security
+  review over the completed custody/bond/forfeiture/claim/payout economics
+  core above. The prior-main tech-lead review passed; changed surfaces still
+  require fresh review, and the DR-0148 candidate remains blocked. Per
   [DR-0147](docs/architecture/decisions/0147-function-first-network-delivery.md),
   declaring an initial network load/recovery target and establishing
   representative sustained claim/restart-sweep capacity move to post-launch
@@ -3444,7 +3462,8 @@ records one integrated PostgreSQL regression slice and the work still open:
   targets, and run representative PostgreSQL load/soak and fault/recovery
   trials. Not required for Phase 3 completion or initial network
   startup; no target numbers are adopted yet.
-- [ ] Pass the separate Phase 3 security and tech-lead review gate. Keep
+- [ ] Pass the separate Phase 3 independent security review gate (prior-main
+  Opus tech-lead review passed as recorded above). Keep
   external FastVote ingress and protocol-version activation behind their own
   decisions.
 

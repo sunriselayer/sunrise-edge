@@ -4,7 +4,7 @@ This guide runs the DR-0148 opt-in FastVote network: one long-running,
 certified-only HTTP host per validator (`fastvote_host_pg`, PostgreSQL-backed)
 and the ordinary Rust CLI's `contract paid-call --fastvote-network`/
 `contract fastvote-replay` actions. It is a development implementation. The
-Phase 3 independent security/tech-lead review gate remains open; this guide
+independent Phase 3 and ingress security review gates remain open; this guide
 does not authorize live exposure, deployment, or custody of real assets, and
 `fastvote_host_pg` never terminates TLS itself (loopback listen only --
 front it with your own TLS-terminating proxy for anything beyond a single
@@ -73,10 +73,22 @@ across peers, and never a system trust store. A config mixing loopback and
 remote-TLS peers in one file is rejected before any peer is dialed. Blank
 lines and lines starting with `#` are ignored; at most 32 peers.
 
+For a same-host loopback-only cohort (replace the abbreviated IDs):
+
 ```
 a1a1...a1 127.0.0.1:8443 - -
-a2a2...a2 validator-2.internal:8443 validator-2.internal /secure/validator-2-ca.der
+a2a2...a2 127.0.0.1:8444 - -
 ```
+
+For a separate all-TLS cohort behind the operators' TLS proxies:
+
+```
+a1a1...a1 203.0.113.1:8443 validator-1.internal /secure/validator-1-ca.der
+a2a2...a2 203.0.113.2:8443 validator-2.internal /secure/validator-2-ca.der
+```
+
+Endpoints are IP socket addresses; the separate DNS name is the certificate
+verification name, not an endpoint resolved by this transport.
 
 ## Submit an ordinary paid call over the network
 
@@ -108,7 +120,10 @@ cargo run -p sunrise-edge-cli -- contract paid-call \
 `--endpoint` is only where the ordinary read queries (fee policy, instance,
 code interface) go; the network config governs prepare/apply fanout
 separately, and its own validator entries need not include that same
-endpoint. `--fastvote-deadline-seconds` bounds the *entire* prepare-through-
+endpoint in the current candidate. Acceptance requires selecting the read
+peer from the same configured cohort and reusing its TLS policy, as tracked
+in `TODO.md`; do not treat the candidate as satisfying that boundary yet.
+`--fastvote-deadline-seconds` bounds the prepare-through-
 apply workflow (not replenished per phase); `--fastvote-per-request-cap-seconds`
 additionally bounds each individual peer request, so one slow or
 unreachable peer cannot exhaust the whole budget and starve the honest
@@ -116,7 +131,10 @@ remainder. `--fastvote-signed-intent-out` and `--fastvote-certificate-out`
 are mandatory in network mode: the CLI reserves each path with `create_new`
 and `write_all`+`sync_all`s it before the corresponding mutating POST --
 before the first prepare and before the first apply, respectively -- and
-never overwrites an existing path. Preserve these exact files; recovery
+never overwrites an existing path. The current candidate synchronizes files,
+not their parent directory entries, and reserves them phase by phase.
+All-output preflight and directory synchronization are required before
+acceptance. Preserve these exact files; recovery
 after an interruption replays them, it never re-signs or reserves a fresh
 nonce.
 
@@ -175,7 +193,8 @@ bash scripts/check-fastvote-pg.sh
 
 This also runs `fastvote_host_pg_cli_multivalidator_e2e`: four real
 `fastvote_host_pg` processes against four independent PostgreSQL
-namespaces, driven entirely through the compiled CLI (`contract paid-call
+namespaces, driven through the compiled CLI library entry point, not a
+separately executed CLI binary (`contract paid-call
 --fastvote-network`, `contract fastvote-replay`), covering a charged trap,
 a successful transfer, exact replay of both, a rejected request-id-reuse
 conflict with independently re-verified unchanged durable state, a
