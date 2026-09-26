@@ -31,6 +31,38 @@ pub fn replace<S: DurableDomainStateStore>(
     );
 }
 
+/// Test-only deliberate corruption: atomically tombstones one already-present
+/// key, asserting the pre-delete revision it observed. Returns that observed
+/// (pre-delete) value so a caller can assert against the record it just
+/// destroyed. Never models a real protocol path -- only proves a later
+/// replay fails closed against genuinely lost durable state instead of
+/// silently reconstructing it.
+pub fn delete<S: DurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    key: Vec<u8>,
+) -> VersionedStateValue {
+    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key).unwrap();
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain,
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(key, StateMutation::Delete).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(context, transaction),
+        DurableCommitOutcome::Committed
+    );
+    observed
+}
+
 pub fn set_epoch(
     store: &SqliteDurableStore,
     context: &DurableOperationContext,

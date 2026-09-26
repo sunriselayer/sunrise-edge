@@ -1,43 +1,47 @@
 //! DR-0151 delivery 1: recovers a validator kept genuinely offline from
 //! strictly before the first publish through the complete declared
-//! dependency-ordered lifecycle (Publish -> Instantiate -> a real top-level
-//! asset verb -> a charged application trap), using the separately compiled
+//! dependency-ordered lifecycle (Publish -> Instantiate -> generic paid mint
+//! -> a charged application trap), using the separately compiled
 //! `sunrise-edge-cli` binary's signerless `contract fastvote-catch-up`, from
 //! the exact saved signed-intent and certificate artifacts three real
 //! `fastvote_host_pg` processes produced (also driven through the compiled
 //! binary, never `sunrise_edge_cli::run` in-process). Also proves: exact
 //! same-boot and real process-restart idempotent replay; prefix commits and
-//! fail-closed rejection of a wrong-dependency-order/missing-prerequisite
-//! manifest (never claiming whole-batch atomicity); a pre-existing
+//! fail-closed rejection of a nonce gap and a genuinely tombstoned prerequisite
+//! (never claiming whole-batch atomicity); stale-writer fencing; a pre-existing
 //! output/reference collision and mismatched protocol pins both reject
 //! before any POST.
 mod support;
 
 use abi::package_types::PackageOrigin;
-use execution::paid_execution::PaidExecutionStatus;
+use execution::paid_execution::{PaidExecutionStatus, SignedPaidIntent, decode_signed_paid_intent};
 use node_core::ObjectQueryResult;
-use objects::ObjectId;
+use objects::{ObjectId, ObjectRef};
 use postgres::Config;
 use public_standard_asset::StandardAssetPackage;
 use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
-use runtime_postgres::{PostgresDurableStore, PostgresNamespace, PostgresTransactionPolicy};
+use runtime_postgres::{
+    PostgresBlobStore, PostgresDurableStore, PostgresNamespace, PostgresTransactionPolicy,
+};
+use std::time::Duration;
 use std::{
     collections::BTreeSet,
     ffi::OsString,
     fs,
     net::SocketAddr,
-    num::NonZeroU32,
+    num::{NonZeroU32, NonZeroUsize},
     path::{Path, PathBuf},
     process::Output,
     str::FromStr,
     sync::atomic::Ordering,
     time::{SystemTime, UNIX_EPOCH},
 };
+use sunrise_edge_client::{Client, LoopbackHttpTransport};
 use support::cli::{
     CliContext, admin_pool, edge_cli_command, install_genesis, namespace_init, proxied_dsn,
     read_context, single_tcp_backend_addr, to_hex, write_signing_key_file,
 };
-use support::durable_state::{convergence_snapshot, protocol_convergence_snapshot};
+use support::durable_state::{convergence_snapshot, delete, protocol_convergence_snapshot};
 use support::genesis_fixture::{self, FastVoteGenesisFixture};
 use support::host::{
     HostProcess, TempDir, spawn_host, temp_file, write_network_config, write_new,
@@ -45,8 +49,8 @@ use support::host::{
 };
 use support::http_relay::HttpRelay;
 use support::paid_calls::{
-    NetworkCall, identify_coin, identify_definition_and_cap, run_asset_verb, run_contract_paid,
-    run_generic_mint, track,
+    NetworkCall, current_object_ref, identify_coin, identify_definition_and_cap, run_asset_verb,
+    run_contract_paid, run_generic_mint, track,
 };
 
 type AdminPool = Pool<PostgresConnectionManager<postgres::NoTls>>;
@@ -108,14 +112,6 @@ fn run_catch_up(
         .map(OsString::from),
     );
     edge_cli_command(flags).output().unwrap()
-}
-
-/// Flips the domain hex string's first hex digit, producing a
-/// well-formed-but-wrong 32-byte domain pin distinct from the real one.
-fn wrong_domain_hex(domain_hex: &str) -> String {
-    let mut chars: Vec<char> = domain_hex.chars().collect();
-    chars[0] = if chars[0] == 'a' { 'b' } else { 'a' };
-    chars.into_iter().collect()
 }
 
 #[test]
@@ -603,13 +599,39 @@ mint-published.intent mint-published.cert\ntrap.intent corrupt.cert\n"
          publication or object state"
     );
 
+    // Before the second, never-yet-recovered package is even created,
+    // independently re-verify the recovered validator's own fee escrow
+    // inventory: it must account for exactly the four requests it has
+    // actually applied so far, no more and no less.
+    {
+        let blobs = PostgresBlobStore::new(pool.clone(), namespaces[3].clone()).unwrap();
+        let verified = node_core::fee_claims::verify_fee_escrow_inventory_all(
+            &store(&pool, &namespaces[3]),
+            &blobs,
+            &read_context(&pool, &namespaces[3]),
+            fixture.domain,
+            &fixture.resolver,
+            &[],
+            &fixture.chain_id,
+            NonZeroUsize::new(4).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            usize::try_from(verified.verified_rows).unwrap(),
+            requests.len(),
+            "the recovered validator's own independently re-verified fee escrow inventory must \
+             account for every request it has actually applied before any further recovery"
+        );
+    }
+
     // A second, never-yet-recovered package, used only to prove (a) a
     // pre-existing output/reference collision and (b) mismatched protocol
-    // pins both reject before any POST, and (c) a wrong-dependency-order
-    // manifest commits its valid prefix but fails closed with no speculative
-    // state for the entry that depends on a not-yet-applied prerequisite --
-    // this does not establish whole-batch atomicity, only that the
-    // already-applied prefix is real and the unreached suffix is not.
+    // pins both reject before any POST, (c) an order/nonce-gap manifest
+    // commits its valid prefix but fails closed on the entry that actually
+    // breaks nonce order -- never claiming whole-batch atomicity -- and (d)
+    // a deliberately corrupted (tombstoned) prerequisite publication makes a
+    // later replay of an already-certified dependent certificate fail closed
+    // rather than reconstruct anything.
     let origin2: PackageOrigin = PackageOrigin::unverified(
         fixture.chain_id.clone(),
         fixture.sender,
@@ -623,7 +645,7 @@ mint-published.intent mint-published.cert\ntrap.intent corrupt.cert\n"
     write_new(&abi2_path, &package2.encoded_abi);
     let publish2_request_id: [u8; 32] = [0xC5; 32];
     let dependency2_ref_out = temp_file(&data_dir, "publish2.code-ref");
-    let (publish2_result, _publish2_signed, _publish2_cert) = run_contract_paid(
+    let (publish2_result, publish2_signed_path, publish2_cert_path) = run_contract_paid(
         &call,
         "paid-publish",
         &[
@@ -642,10 +664,127 @@ mint-published.intent mint-published.cert\ntrap.intent corrupt.cert\n"
         "publish2",
     );
     assert_eq!(publish2_result.status, PaidExecutionStatus::Success);
+    track(&mut ids, &publish2_result);
+    requests.push(publish2_request_id);
+
+    // Writer-fence proof, performed BEFORE validator four ever recovers this
+    // publish: decode the exact saved signed intent and prove its nonce and
+    // declared fee source match what the not-yet-recovered validator (still
+    // at nonce four) currently sees, then prove a rival process claiming a
+    // fresh writer generation over the exact same namespace fences the
+    // still-running `fourth2` out -- it must reject this authentic,
+    // well-formed prepare and certified apply rather than serve or mutate
+    // anything.
+    let publish2_signed_bytes: Vec<u8> = fs::read(&publish2_signed_path).unwrap();
+    let publish2_signed: SignedPaidIntent =
+        decode_signed_paid_intent(&publish2_signed_bytes).unwrap();
+    assert_eq!(publish2_signed.intent.nonce, 4);
+    let returning_nonce: u64 = node_core::query_sender_next_nonce(
+        &store(&pool, &namespaces[3]),
+        &read_context(&pool, &namespaces[3]),
+        fixture.domain,
+        fixture.chain_id.clone(),
+        fixture.protocol_version,
+        fixture.epoch,
+        fixture.sender,
+    )
+    .unwrap();
+    assert_eq!(returning_nonce, publish2_signed.intent.nonce);
+    let current_fee_ref: ObjectRef = current_object_ref(
+        &store(&pool, &namespaces[3]),
+        &read_context(&pool, &namespaces[3]),
+        fixture.domain,
+        &fixture.chain_id,
+        fixture.fee_coin,
+    );
+    assert_eq!(publish2_signed.intent.consent.source, current_fee_ref);
+
+    let publish2_cert_bytes: Vec<u8> = fs::read(&publish2_cert_path).unwrap();
+    let stale_fourth2_addr: SocketAddr = fourth2.addr;
+    let rival: HostProcess = spawn_host(
+        &ca_path,
+        &dsn,
+        &chain_id,
+        &validator_hex[3],
+        &domain_hex,
+        &manifest_path,
+        &digest_hex,
+        &key_path_3,
+        "127.0.0.1:0",
+    );
+    assert_ne!(
+        rival.addr, stale_fourth2_addr,
+        "the rival must be a genuinely separate live process, not the original"
+    );
+    let stale_client: Client<LoopbackHttpTransport> = Client::new(
+        LoopbackHttpTransport::new(
+            stale_fourth2_addr,
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            NonZeroUsize::new(64 * 1024).unwrap(),
+            NonZeroUsize::new(4 * 1024 * 1024).unwrap(),
+        )
+        .unwrap(),
+    );
+    let before_fence_probe: String = convergence_snapshot(
+        &store(&pool, &namespaces[3]),
+        &read_context(&pool, &namespaces[3]),
+        &fixture,
+        &ids,
+        &requests,
+        &publications,
+    );
+    let stale_prepare_result = stale_client.prepare_fastvote(&publish2_signed_bytes, None);
+    assert!(
+        stale_prepare_result.is_err(),
+        "a prepare request against a fenced-out stale host must fail closed, not succeed: \
+         {stale_prepare_result:?}"
+    );
+    let stale_apply_result = stale_client.apply_fastvote(
+        &publish2_signed,
+        &fixture.resolver,
+        &publish2_cert_bytes,
+        None,
+    );
+    assert!(
+        stale_apply_result.is_err(),
+        "a certified apply against a fenced-out stale host must fail closed, not succeed: \
+         {stale_apply_result:?}"
+    );
+    assert_eq!(
+        convergence_snapshot(
+            &store(&pool, &namespaces[3]),
+            &read_context(&pool, &namespaces[3]),
+            &fixture,
+            &ids,
+            &requests,
+            &publications,
+        ),
+        before_fence_probe,
+        "a fenced-out stale host must never mutate state while rejecting"
+    );
+
+    // The rival is now the current writer generation for validator four's
+    // namespace: drop the stale process and build a fresh relay/network
+    // config pointing only at the live rival, so no later negative in this
+    // test ever addresses a dead address.
+    drop(fourth2);
+    let fourth2: HostProcess = rival;
+    let relay2: HttpRelay = HttpRelay::new(fourth2.addr);
+    let live_network: PathBuf = temp_file(&data_dir, "live-network.conf");
+    write_new(
+        &live_network,
+        format!(
+            "{} {} - -\n",
+            fixture.validators[3].validator_id, relay2.addr
+        )
+        .as_bytes(),
+    );
 
     let instantiate2_request_id: [u8; 32] = [0xC6; 32];
     let instance2_ref_out = temp_file(&data_dir, "instance2.ref");
-    let (instantiate2_result, _instantiate2_signed, _instantiate2_cert) = run_contract_paid(
+    let (instantiate2_result, instantiate2_signed_path, _instantiate2_cert) = run_contract_paid(
         &call,
         "paid-instantiate",
         &[
@@ -666,6 +805,8 @@ mint-published.intent mint-published.cert\ntrap.intent corrupt.cert\n"
         "instantiate2",
     );
     assert_eq!(instantiate2_result.status, PaidExecutionStatus::Success);
+    track(&mut ids, &instantiate2_result);
+    requests.push(instantiate2_request_id);
     let (definition2, _cap2): (ObjectId, ObjectId) = identify_definition_and_cap(
         &instantiate2_result,
         &fixture.resolver,
@@ -691,6 +832,8 @@ mint-published.intent mint-published.cert\ntrap.intent corrupt.cert\n"
         "prefix-mint",
     );
     assert_eq!(prefix_mint_result.status, PaidExecutionStatus::Success);
+    track(&mut ids, &prefix_mint_result);
+    requests.push(prefix_mint_request_id);
     let prefix_coin: ObjectId = identify_coin(
         &prefix_mint_result,
         &fixture.resolver,
@@ -701,9 +844,9 @@ mint-published.intent mint-published.cert\ntrap.intent corrupt.cert\n"
 
     let publish_instantiate_lines: String =
         "publish2.intent publish2.cert\ninstantiate2.intent instantiate2.cert\n".to_owned();
-    let correct_order_manifest: PathBuf = temp_file(&data_dir, "second-package-batch");
+    let publish_then_instantiate_manifest: PathBuf = temp_file(&data_dir, "second-package-batch");
     write_new(
-        &correct_order_manifest,
+        &publish_then_instantiate_manifest,
         publish_instantiate_lines.as_bytes(),
     );
 
@@ -717,18 +860,24 @@ mint-published.intent mint-published.cert\ntrap.intent corrupt.cert\n"
         collision_dir.join(format!("entry-0001-validator-{}.result", validator_hex[3]));
     fs::hard_link(&ca_path, &colliding_result_path).unwrap();
     let original_collision_contents: Vec<u8> = fs::read(&colliding_result_path).unwrap();
+    let posts_before_collision: usize = relay2.posts.load(Ordering::SeqCst);
     let collision_output: Output = run_catch_up(
         &chain_id,
         &domain_hex,
-        &reopen_network,
+        &live_network,
         &manifest_path,
         &digest_hex,
-        &correct_order_manifest,
+        &publish_then_instantiate_manifest,
         &collision_dir,
     );
     assert!(
         !collision_output.status.success(),
         "a pre-existing output/reference collision must reject before any POST"
+    );
+    assert_eq!(
+        relay2.posts.load(Ordering::SeqCst),
+        posts_before_collision,
+        "a pre-existing output/reference collision must make zero additional POSTs"
     );
     assert_eq!(fs::read_dir(&collision_dir).unwrap().count(), 1);
     assert_eq!(
@@ -748,31 +897,131 @@ mint-published.intent mint-published.cert\ntrap.intent corrupt.cert\n"
         .is_none()
     );
 
-    // (b) Wrong dependency order / missing prerequisite: `instantiate2`
-    // precedes its own `publish2` in the manifest. The unrelated prefix
-    // entry (`prefix-mint`, no dependency on package two at all) must still
-    // commit for real; `instantiate2` must fail because its code is not yet
-    // durably published on validator four; `publish2` (never reached) must
-    // leave a reserved-but-empty report and remain fully unapplied.
-    let wrong_order_lines: String = "prefix-mint.intent prefix-mint.cert\n\
-instantiate2.intent instantiate2.cert\npublish2.intent publish2.cert\n"
+    // (b) Order/nonce-gap failure: `publish2` (nonce four) is the valid
+    // prefix that really commits (`instantiate2` genuinely depends on it);
+    // `prefix-mint` (nonce six, no dependency on package two at all) is the
+    // gap entry -- nonce five was never applied on validator four, so it
+    // must reject on nonce order, not on a missing definition; the
+    // never-reached `instantiate2` (nonce five) must leave a
+    // reserved-but-empty report and result. This is an order/nonce-gap
+    // failure, never whole-batch atomicity.
+    let nonce_gap_lines: String = "publish2.intent publish2.cert\n\
+prefix-mint.intent prefix-mint.cert\ninstantiate2.intent instantiate2.cert\n"
         .to_owned();
-    let wrong_order_manifest: PathBuf = temp_file(&data_dir, "wrong-order-batch");
-    write_new(&wrong_order_manifest, wrong_order_lines.as_bytes());
-    let wrong_order_dir: PathBuf = temp_file(&data_dir, "wrong-order-results");
-    fs::create_dir(&wrong_order_dir).unwrap();
-    let wrong_order_output: Output = run_catch_up(
+    let nonce_gap_manifest: PathBuf = temp_file(&data_dir, "nonce-gap-batch");
+    write_new(&nonce_gap_manifest, nonce_gap_lines.as_bytes());
+    let nonce_gap_dir: PathBuf = temp_file(&data_dir, "nonce-gap-results");
+    fs::create_dir(&nonce_gap_dir).unwrap();
+    let posts_before_gap: usize = relay2.posts.load(Ordering::SeqCst);
+    let nonce_gap_output: Output = run_catch_up(
         &chain_id,
         &domain_hex,
-        &reopen_network,
+        &live_network,
         &manifest_path,
         &digest_hex,
-        &wrong_order_manifest,
-        &wrong_order_dir,
+        &nonce_gap_manifest,
+        &nonce_gap_dir,
     );
     assert!(
-        !wrong_order_output.status.success(),
-        "a wrong-dependency-order manifest must fail closed, not silently reorder or skip"
+        !nonce_gap_output.status.success(),
+        "an order/nonce-gap manifest must fail closed, not silently reorder or skip"
+    );
+    assert!(
+        relay2.posts.load(Ordering::SeqCst) > posts_before_gap,
+        "the valid publish2 prefix must have actually been POSTed before the gap entry rejected"
+    );
+    let publish2_publication_live: Option<node_core::publication::PublicationQueryResult> =
+        node_core::publication::query_publication(
+            &store(&pool, &namespaces[0]),
+            &read_context(&pool, &namespaces[0]),
+            fixture.domain,
+            &fixture.resolver,
+            &origin2,
+        )
+        .unwrap();
+    let publish2_publication_recovered: Option<node_core::publication::PublicationQueryResult> =
+        node_core::publication::query_publication(
+            &store(&pool, &namespaces[3]),
+            &read_context(&pool, &namespaces[3]),
+            fixture.domain,
+            &fixture.resolver,
+            &origin2,
+        )
+        .unwrap();
+    assert!(
+        publish2_publication_recovered.is_some(),
+        "publish2 is the valid prefix entry and must have actually committed on the recovered \
+         validator"
+    );
+    assert_eq!(
+        publish2_publication_recovered, publish2_publication_live,
+        "the recovered validator's committed publish2 prefix must match the original canonical \
+         publication record exactly"
+    );
+    let publish2_receipt_live = node_core::query_request_receipt(
+        &store(&pool, &namespaces[0]),
+        &read_context(&pool, &namespaces[0]),
+        fixture.domain,
+        node_core::RequestId::new(publish2_request_id).unwrap(),
+    )
+    .unwrap();
+    let publish2_receipt_recovered = node_core::query_request_receipt(
+        &store(&pool, &namespaces[3]),
+        &read_context(&pool, &namespaces[3]),
+        fixture.domain,
+        node_core::RequestId::new(publish2_request_id).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        publish2_receipt_recovered, publish2_receipt_live,
+        "the recovered validator's own canonical receipt for the committed publish2 prefix must \
+         match every already-certified peer"
+    );
+    let nonce_after_gap: u64 = node_core::query_sender_next_nonce(
+        &store(&pool, &namespaces[3]),
+        &read_context(&pool, &namespaces[3]),
+        fixture.domain,
+        fixture.chain_id.clone(),
+        fixture.protocol_version,
+        fixture.epoch,
+        fixture.sender,
+    )
+    .unwrap();
+    assert_eq!(
+        nonce_after_gap, 5,
+        "only publish2 (nonce four) may have actually advanced the recovered validator's nonce; \
+         the gap entry and the unreached entry must not"
+    );
+    assert!(
+        fs::read(nonce_gap_dir.join("entry-0002.report"))
+            .unwrap()
+            .starts_with(b"entry=2"),
+        "the nonce-gap entry's own report must record its failure"
+    );
+    assert!(
+        fs::read(nonce_gap_dir.join(format!("entry-0003-validator-{}.result", validator_hex[3])))
+            .unwrap()
+            .is_empty(),
+        "an entry stopped before its own turn must have a reserved but empty result"
+    );
+    assert!(
+        fs::read(nonce_gap_dir.join("entry-0003.report"))
+            .unwrap()
+            .is_empty(),
+        "an entry never reached must have a reserved but empty report; this is a prefix commit, \
+         not whole-batch atomicity"
+    );
+    let definition2_query: ObjectQueryResult = node_core::query_object(
+        &store(&pool, &namespaces[3]),
+        &read_context(&pool, &namespaces[3]),
+        fixture.domain,
+        &fixture.chain_id,
+        definition2,
+    )
+    .unwrap();
+    assert!(
+        matches!(definition2_query, ObjectQueryResult::Absent { .. }),
+        "instantiate2 was never reached and must not exist: {definition2_query:?}"
     );
     let prefix_query: ObjectQueryResult = node_core::query_object(
         &store(&pool, &namespaces[3]),
@@ -783,27 +1032,53 @@ instantiate2.intent instantiate2.cert\npublish2.intent publish2.cert\n"
     )
     .unwrap();
     assert!(
-        matches!(prefix_query, ObjectQueryResult::CurrentInline { .. }),
-        "the unrelated valid prefix entry must have actually committed: {prefix_query:?}"
+        matches!(prefix_query, ObjectQueryResult::Absent { .. }),
+        "the nonce-gap entry must reject without committing, even though it has no dependency on \
+         package two: {prefix_query:?}"
+    );
+
+    // (c) Divergent-publication proof: prove Inst2's own saved signed intent
+    // still agrees with the recovered validator's current nonce/fee
+    // reference (nonce five, now that publish2 has actually committed),
+    // then deliberately tombstone the just-committed publish2 publication
+    // record directly against validator four's own store (never through a
+    // real protocol path) and require that replaying the already-certified
+    // Inst2 alone, as a one-entry signerless catch-up batch, rejects closed
+    // and leaves the corrupted snapshot exactly unchanged -- no speculative
+    // Definition/instance/fee/nonce/receipt state, publish2's own retained
+    // receipt undisturbed, and the tombstone itself retained. The original,
+    // already-certified peers already accepted this exact Inst2 certificate
+    // for real above, a positive control proving the certificate itself was
+    // always valid.
+    let instantiate2_signed_bytes: Vec<u8> = fs::read(&instantiate2_signed_path).unwrap();
+    let instantiate2_signed: SignedPaidIntent =
+        decode_signed_paid_intent(&instantiate2_signed_bytes).unwrap();
+    assert_eq!(instantiate2_signed.intent.nonce, 5);
+    assert_eq!(instantiate2_signed.intent.nonce, nonce_after_gap);
+    let fee_ref_before_corruption: ObjectRef = current_object_ref(
+        &store(&pool, &namespaces[3]),
+        &read_context(&pool, &namespaces[3]),
+        fixture.domain,
+        &fixture.chain_id,
+        fixture.fee_coin,
+    );
+    assert_eq!(
+        instantiate2_signed.intent.consent.source,
+        fee_ref_before_corruption
+    );
+
+    let publication_key: Vec<u8> =
+        node_core::publication::publication_record_key(&origin2).unwrap();
+    let tombstoned: runtime::VersionedStateValue = delete(
+        &store(&pool, &namespaces[3]),
+        &read_context(&pool, &namespaces[3]),
+        fixture.domain,
+        publication_key,
     );
     assert!(
-        fs::read(wrong_order_dir.join("entry-0002.report"))
-            .unwrap()
-            .starts_with(b"entry=2"),
-        "the wrong-order entry's own report must record its failure"
-    );
-    assert!(
-        fs::read(wrong_order_dir.join(format!("entry-0003-validator-{}.result", validator_hex[3])))
-            .unwrap()
-            .is_empty(),
-        "an entry stopped before its own turn must have a reserved but empty result"
-    );
-    assert!(
-        fs::read(wrong_order_dir.join("entry-0003.report"))
-            .unwrap()
-            .is_empty(),
-        "an entry never reached must have a reserved but empty report; this is a prefix commit, \
-         not whole-batch atomicity"
+        tombstoned.value().is_some(),
+        "the deliberately corrupted publication record must have actually been present before \
+         deletion"
     );
     assert!(
         node_core::publication::query_publication(
@@ -811,12 +1086,56 @@ instantiate2.intent instantiate2.cert\npublish2.intent publish2.cert\n"
             &read_context(&pool, &namespaces[3]),
             fixture.domain,
             &fixture.resolver,
-            &origin2,
+            &origin,
         )
         .unwrap()
-        .is_none()
+        .is_some(),
+        "the healthy first-origin publication must remain queryable after an unrelated origin's \
+         deliberate corruption"
     );
-    let definition2_query: ObjectQueryResult = node_core::query_object(
+    let corrupted_snapshot: String = convergence_snapshot(
+        &store(&pool, &namespaces[3]),
+        &read_context(&pool, &namespaces[3]),
+        &fixture,
+        &ids,
+        &requests,
+        &publications,
+    );
+
+    let inst2_only_lines: String = "instantiate2.intent instantiate2.cert\n".to_owned();
+    let inst2_only_manifest: PathBuf = temp_file(&data_dir, "inst2-only-batch");
+    write_new(&inst2_only_manifest, inst2_only_lines.as_bytes());
+    let inst2_only_dir: PathBuf = temp_file(&data_dir, "inst2-only-results");
+    fs::create_dir(&inst2_only_dir).unwrap();
+    let inst2_only_output: Output = run_catch_up(
+        &chain_id,
+        &domain_hex,
+        &live_network,
+        &manifest_path,
+        &digest_hex,
+        &inst2_only_manifest,
+        &inst2_only_dir,
+    );
+    assert!(
+        !inst2_only_output.status.success(),
+        "replaying an already-certified Inst2 alone must reject once its own prerequisite \
+         publication has been deliberately tombstoned, never reconstructing it"
+    );
+    assert_eq!(
+        convergence_snapshot(
+            &store(&pool, &namespaces[3]),
+            &read_context(&pool, &namespaces[3]),
+            &fixture,
+            &ids,
+            &requests,
+            &publications,
+        ),
+        corrupted_snapshot,
+        "a rejected replay against deliberately corrupted durable state must never mutate \
+         anything, speculative or otherwise, and must never re-tombstone or heal the corrupted \
+         record"
+    );
+    let definition2_after_corruption: ObjectQueryResult = node_core::query_object(
         &store(&pool, &namespaces[3]),
         &read_context(&pool, &namespaces[3]),
         fixture.domain,
@@ -825,39 +1144,63 @@ instantiate2.intent instantiate2.cert\npublish2.intent publish2.cert\n"
     )
     .unwrap();
     assert!(matches!(
-        definition2_query,
+        definition2_after_corruption,
         ObjectQueryResult::Absent { .. }
     ));
+    let publish2_receipt_after_corruption = node_core::query_request_receipt(
+        &store(&pool, &namespaces[3]),
+        &read_context(&pool, &namespaces[3]),
+        fixture.domain,
+        node_core::RequestId::new(publish2_request_id).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        publish2_receipt_after_corruption, publish2_receipt_recovered,
+        "publish2's own retained canonical receipt must survive an unrelated deliberate \
+         corruption of the publication record it produced"
+    );
 
-    // (c) Mismatched protocol pins (a wrong `--expected-domain`) reject
-    // before `load_batch` even reaches authentication, so zero result/report
-    // files are ever reserved.
+    // (d) A well-formed, wrong signed protocol-context chain pin must reject
+    // before any POST or result reservation, including an otherwise valid
+    // historical replay. Atomicity domain is a separate local store scope,
+    // not a member of the signed publication/genesis protocol context.
     let pins_dir: PathBuf = temp_file(&data_dir, "wrong-pins-results");
     fs::create_dir(&pins_dir).unwrap();
+    let before_pins: String = convergence_snapshot(
+        &store(&pool, &namespaces[3]),
+        &read_context(&pool, &namespaces[3]),
+        &fixture,
+        &ids,
+        &requests,
+        &publications,
+    );
+    let posts_before_pins: usize = relay2.posts.load(Ordering::SeqCst);
     let pins_output: Output = run_catch_up(
-        &chain_id,
-        &wrong_domain_hex(&domain_hex),
-        &reopen_network,
+        "sunrise-edge-wrong-network",
+        &domain_hex,
+        &live_network,
         &manifest_path,
         &digest_hex,
-        &correct_order_manifest,
+        &publish_then_instantiate_manifest,
         &pins_dir,
     );
     assert!(
         !pins_output.status.success(),
-        "a mismatched protocol pin must reject before any POST"
+        "a mismatched signed protocol-context pin must reject before any POST"
     );
+    assert_eq!(relay2.posts.load(Ordering::SeqCst), posts_before_pins);
     assert_eq!(fs::read_dir(&pins_dir).unwrap().count(), 0);
-    assert!(
-        node_core::publication::query_publication(
+    assert_eq!(
+        convergence_snapshot(
             &store(&pool, &namespaces[3]),
             &read_context(&pool, &namespaces[3]),
-            fixture.domain,
-            &fixture.resolver,
-            &origin2,
-        )
-        .unwrap()
-        .is_none()
+            &fixture,
+            &ids,
+            &requests,
+            &publications,
+        ),
+        before_pins,
+        "a mismatched signed protocol-context pin must never mutate durable state"
     );
 
     drop(fourth2);
