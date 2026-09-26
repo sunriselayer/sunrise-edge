@@ -49,6 +49,9 @@ live-network, load, soak, or capacity target.
   set and the submitted intent's digest before any apply POST, and reports
   each peer's outcome independently -- never an invented "all validators
   applied" or global-durability claim.
+  Each apply acknowledgement also binds its effects transaction hash to both
+  the exact signed paid intent and the submitted certificate. These unsigned
+  acknowledgements still do not establish durable or network-wide finality.
   Deadline addition is checked, and zero or excessive per-request caps fail
   before sending. The 300-second cap is a client resource ceiling, not an
   adopted latency or throughput target.
