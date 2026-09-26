@@ -61,11 +61,12 @@ cargo test --quiet -p sunrise-edge-operator --test certified_catch_up_pg_e2e \
   -- --ignored --exact certified_catch_up_pg_missed_prepare_binary_cli_e2e
 
 # DR-0151 delivery 1: recovers a validator kept offline from before the first
-# publish through the full declared Publish -> Instantiate -> asset-verb ->
+# publish through the full declared Publish -> Instantiate -> generic mint ->
 # charged-trap lifecycle via the compiled CLI's signerless fastvote-catch-up,
 # also proving same-boot and real host-restart idempotent replay, prefix
-# commits on a wrong-dependency-order manifest, and pre-POST rejection of an
-# output collision or mismatched protocol pins.
+# commits before an order/nonce gap, stale-writer fencing and divergent
+# publication rejection, and pre-POST rejection of an output collision or
+# mismatched protocol pins.
 require_exact_test contract_lifecycle_catch_up_pg_missed_publish_instantiate_call_binary_cli_e2e \
   -p sunrise-edge-operator --test contract_lifecycle_catch_up_pg_e2e
 cargo test --quiet -p sunrise-edge-operator --test contract_lifecycle_catch_up_pg_e2e \
