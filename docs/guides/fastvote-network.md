@@ -167,6 +167,13 @@ identity and local expected-context checks still apply; no special validator
 authority is created for these commands. An arbitrary Standard Asset requires
 its published code and instance, not a new native balance type.
 
+These semantic asset convenience commands retain their locally trusted active
+Standard Asset code pin. A separately user-published package, including a copy
+of the public Standard Asset template under another origin, is invoked with
+`contract paid-call` and its explicit instance/access/argument references.
+Supporting generic network execution does not silently authorize different
+code through a trusted asset convenience command.
+
 A committed **charged trap** (the application was rejected but a real fee
 was still reserved and settled) is reported with the actual fee/nonce and
 the CLI exits non-zero -- this is a valid final committed result, not a
