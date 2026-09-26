@@ -140,6 +140,13 @@ post-launch hardening. The active order is:
     all-target/all-feature Clippy, and the four-process PostgreSQL CLI-library
     E2E. Those checks do not resolve the remaining CLI/server review findings
     or replace the final integrated repository gate and fresh Opus review.
+    The parent then passed `npm ci --prefix adapters/cloudflare-workers`
+    and `./scripts/check-all.sh` on code/documentation head
+    `8acbf45ec0f703b904a297f64d8fc2cb00eafcd8`, including required live
+    PostgreSQL fault scenarios, the explicit four-process host/CLI-library
+    E2E, stable vectors and all adapter checks. This validates the partial
+    corrections only: PR #223 remains Draft with the unresolved Opus BLOCK,
+    not approved for merge or activation.
 - [ ] expose the already-implemented bond/epoch/equivocation/reward/claim
   lifecycle through explicit authenticated operator/network surfaces where
   needed;
