@@ -9,17 +9,21 @@ use crate::economics::{
 use crate::fast_path::records::FastPathBondState;
 use crate::paid_execution::tests::{
     CountingEngine, FIRST_PAID_NONCE, Fixture, PaidCall, base_policy, context, domain, entry,
-    install, memory_store, next_nonce, object_reference, paid_call_with_access, protocol, receipt,
-    refund_account, resolver, sender, sign_paid, trapping_mint_call,
+    install, memory_store, next_nonce, object_reference, paid_call_with_access, paid_instantiate,
+    paid_publish, protocol, publish_artifact, publish_artifact_reference, receipt, refund_account,
+    resolver, sender, sign_paid, trapping_mint_call,
 };
 use abi::AccessManifest;
 use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::call::CallIntent;
-use execution::local_execution::instance_target;
+use execution::local_execution::{InstanceRecord, instance_target};
 use execution::paid_execution::{
-    FeeSourceConsent, PaidExecutionStatus, ReservationAccessKind, paid_fee_policy_digest,
+    FeeSourceConsent, PaidApplication, PaidExecutionResult, PaidExecutionStatus, PaidResultTarget,
+    ReservationAccessKind, paid_fee_policy_digest,
 };
 use fees::Amount;
+use publication::PublicationAdmissionError;
+use publication::publication_record_key;
 use runtime::{
     DurableCommitOutcome, DurableDomainStateStore, DurableInvocationTransaction,
     DurableObjectChanges, DurableObjectHeadRead, DurableObjectMutation, DurableObjectMutationEntry,
@@ -3019,19 +3023,26 @@ fn synthetic_prepare_request_id_is_deterministic_and_collision_resistant() {
     ));
 }
 
+/// DR-0151 delivery 1: a real paid `Instantiate` is admitted, prepared and
+/// applied through the same certified pipeline as `Call`.
 #[test]
-fn instantiate_and_publish_are_rejected_by_prepare_phase_1() {
+fn fast_path_prepare_and_apply_admit_a_real_paid_instantiate() {
+    const CHECKPOINT: u64 = 42;
     let store: MemoryDurableStateStore = memory_store();
     let fixture: Fixture = install(&store);
     let (signers, _entries) = install_four_validators(&store);
     let instantiate_bytes: Vec<u8> = {
+        let new_instance_record: InstanceRecord = InstanceRecord {
+            seed: [60; 32],
+            ..fixture.instance.clone()
+        };
         let application = execution::call::CallIntent {
             context: protocol(),
             request_id: [31; 32],
             sender: sender(),
             nonce: FIRST_PAID_NONCE,
             code: fixture.code.clone(),
-            instance: instance_target(&resolver(), &fixture.instance).unwrap(),
+            instance: instance_target(&resolver(), &new_instance_record).unwrap(),
             entrypoint: "init".into(),
             type_arguments: vec![],
             access: AccessManifest { entries: vec![] },
@@ -3068,14 +3079,460 @@ fn instantiate_and_publish_are_rejected_by_prepare_phase_1() {
         &CountingEngine::new(),
         &signers[0],
         &instantiate_bytes,
-        10,
+        CHECKPOINT,
     );
+    result.unwrap();
+    // Pre-apply: preparation only authenticates, admits, locks and stages a
+    // synthetic receipt. Neither the new instance record, the final receipt
+    // keyed by the original request id, the sender nonce, nor the fee-source
+    // object may already reflect application.
+    assert!(
+        local_execution::query_local_instance(
+            &store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            protocol().chain_id(),
+            sender(),
+            [60; 32],
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!(
+        crate::query::query_request_receipt(
+            &store,
+            &context(),
+            domain(),
+            RequestId::new([31; 32]).unwrap(),
+        )
+        .unwrap(),
+        crate::query::ReceiptQueryResult::Absent {
+            request_id: RequestId::new([31; 32]).unwrap()
+        }
+    );
+    assert_eq!(next_nonce(&store), FIRST_PAID_NONCE);
+    match crate::query::query_object(
+        &store,
+        &context(),
+        domain(),
+        protocol().chain_id(),
+        fixture.coin.id,
+    )
+    .unwrap()
+    {
+        crate::query::ObjectQueryResult::CurrentInline {
+            canonical_object_bytes,
+            ..
+        } => assert_eq!(
+            canonical_object_bytes,
+            objects::encode_object(&fixture.coin).unwrap()
+        ),
+        _ => unreachable!("fee coin must be a current inline object"),
+    }
+    let certificate: Vec<u8> = recovery::certificate_for(&instantiate_bytes, CHECKPOINT);
+    let engine: CountingEngine = CountingEngine::new();
+    let output: NodeOutput = apply(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &engine,
+        &instantiate_bytes,
+        &certificate,
+    )
+    .unwrap();
+    assert_eq!(engine.calls.get(), 1);
+    let result: PaidExecutionResult = receipt(&output);
+    assert_eq!(result.status, PaidExecutionStatus::Success);
+    let record = if let PaidResultTarget::Instance(record) = &result.target {
+        record
+    } else {
+        unreachable!()
+    };
+    assert_eq!(
+        local_execution::query_local_instance(
+            &store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            protocol().chain_id(),
+            sender(),
+            [60; 32],
+        )
+        .unwrap()
+        .as_ref(),
+        Some(record)
+    );
+    assert_eq!(next_nonce(&store), FIRST_PAID_NONCE + 1);
+    let replay: NodeOutput = apply(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &engine,
+        &instantiate_bytes,
+        &certificate,
+    )
+    .unwrap();
+    assert_eq!(replay, output);
+    assert_eq!(engine.calls.get(), 1);
+}
+
+/// DR-0151 delivery 1: a real paid `Publish` is admitted, prepared and
+/// applied through the same certified pipeline as `Call`/`Instantiate`.
+#[test]
+fn fast_path_prepare_and_apply_admit_a_real_paid_publish() {
+    const CHECKPOINT: u64 = 42;
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let (signers, _entries) = install_four_validators(&store);
+    let artifact = publish_artifact(70);
+    let origin = artifact.origin().clone();
+    let publish_bytes: Vec<u8> = paid_publish(
+        &fixture,
+        70,
+        FIRST_PAID_NONCE,
+        artifact,
+        &fixture.coin,
+        100_000,
+    );
+    prepare(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &CountingEngine::new(),
+        &signers[0],
+        &publish_bytes,
+        CHECKPOINT,
+    )
+    .unwrap();
+    // Pre-apply: preparation only authenticates, admits, locks and stages a
+    // synthetic receipt. Neither the publication record, the final receipt
+    // keyed by the original request id, the sender nonce, nor the fee-source
+    // object may already reflect application.
+    assert!(
+        store
+            .get_versioned_durable(
+                &context(),
+                domain(),
+                &publication_record_key(&origin).unwrap()
+            )
+            .unwrap()
+            .value()
+            .is_none()
+    );
+    assert_eq!(
+        crate::query::query_request_receipt(
+            &store,
+            &context(),
+            domain(),
+            RequestId::new([70; 32]).unwrap(),
+        )
+        .unwrap(),
+        crate::query::ReceiptQueryResult::Absent {
+            request_id: RequestId::new([70; 32]).unwrap()
+        }
+    );
+    assert_eq!(next_nonce(&store), FIRST_PAID_NONCE);
+    match crate::query::query_object(
+        &store,
+        &context(),
+        domain(),
+        protocol().chain_id(),
+        fixture.coin.id,
+    )
+    .unwrap()
+    {
+        crate::query::ObjectQueryResult::CurrentInline {
+            canonical_object_bytes,
+            ..
+        } => assert_eq!(
+            canonical_object_bytes,
+            objects::encode_object(&fixture.coin).unwrap()
+        ),
+        _ => unreachable!("fee coin must be a current inline object"),
+    }
+    let certificate: Vec<u8> = recovery::certificate_for(&publish_bytes, CHECKPOINT);
+    let engine: CountingEngine = CountingEngine::new();
+    let output: NodeOutput = apply(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &engine,
+        &publish_bytes,
+        &certificate,
+    )
+    .unwrap();
+    assert_eq!(engine.calls.get(), 1);
+    let result: PaidExecutionResult = receipt(&output);
+    assert_eq!(result.status, PaidExecutionStatus::Success);
+    assert_eq!(result.target, PaidResultTarget::Package(origin.clone()));
+    assert_eq!(
+        store
+            .get_versioned_durable(
+                &context(),
+                domain(),
+                &publication_record_key(&origin).unwrap()
+            )
+            .unwrap()
+            .value(),
+        Some(publish_bytes.as_slice())
+    );
+    let replay: NodeOutput = apply(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &engine,
+        &publish_bytes,
+        &certificate,
+    )
+    .unwrap();
+    assert_eq!(replay, output);
+    assert_eq!(engine.calls.get(), 1);
+}
+
+/// A fresh `Instantiate` prepare colliding with an already fast-path-applied
+/// instance seed fails closed before any lock or prepared record is written.
+#[test]
+fn fast_path_prepare_rejects_a_colliding_instantiate_seed() {
+    const CHECKPOINT: u64 = 42;
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let (signers, _entries) = install_four_validators(&store);
+    let bytes: Vec<u8> = paid_instantiate(&fixture, 61, FIRST_PAID_NONCE, 61, &fixture.coin);
+    prepare(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &CountingEngine::new(),
+        &signers[0],
+        &bytes,
+        CHECKPOINT,
+    )
+    .unwrap();
+    let certificate: Vec<u8> = recovery::certificate_for(&bytes, CHECKPOINT);
+    apply(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &CountingEngine::new(),
+        &bytes,
+        &certificate,
+    )
+    .unwrap();
+    let colliding: Vec<u8> =
+        paid_instantiate(&fixture, 62, FIRST_PAID_NONCE + 1, 61, &fixture.coin);
+    let engine: CountingEngine = CountingEngine::new();
     assert!(matches!(
-        result,
-        Err(FastPathError::Invalid(
-            "fast path phase 1 supports only PaidApplication::Call"
+        prepare(
+            &store,
+            &MemoryBlobStore::default(),
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &base_policy(),
+            &fixture.policy,
+            &engine,
+            &signers[1],
+            &colliding,
+            CHECKPOINT,
+        ),
+        Err(FastPathError::Admission(
+            PaidExecutionAdmissionError::Invalid("instance already reserved")
         ))
     ));
+    assert_eq!(next_nonce(&store), FIRST_PAID_NONCE + 1);
+    let prepared_key: Vec<u8> =
+        fastpath_prepared_record_key(protocol().chain_id(), &[62; 32]).unwrap();
+    assert!(
+        store
+            .get_versioned_durable(&context(), domain(), &prepared_key)
+            .unwrap()
+            .value()
+            .is_none()
+    );
+}
+
+/// A fresh `Publish` prepare colliding with an already fast-path-applied
+/// origin fails closed before any lock or prepared record is written.
+#[test]
+fn fast_path_prepare_rejects_a_duplicate_publish_origin() {
+    const CHECKPOINT: u64 = 42;
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let (signers, _entries) = install_four_validators(&store);
+    let artifact = publish_artifact(80);
+    let bytes: Vec<u8> = paid_publish(
+        &fixture,
+        80,
+        FIRST_PAID_NONCE,
+        artifact,
+        &fixture.coin,
+        100_000,
+    );
+    prepare(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &CountingEngine::new(),
+        &signers[0],
+        &bytes,
+        CHECKPOINT,
+    )
+    .unwrap();
+    let certificate: Vec<u8> = recovery::certificate_for(&bytes, CHECKPOINT);
+    apply(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &CountingEngine::new(),
+        &bytes,
+        &certificate,
+    )
+    .unwrap();
+    let duplicate_artifact = publish_artifact(80);
+    let duplicate_bytes: Vec<u8> = paid_publish(
+        &fixture,
+        81,
+        FIRST_PAID_NONCE + 1,
+        duplicate_artifact,
+        &fixture.coin,
+        100_000,
+    );
+    assert!(matches!(
+        prepare(
+            &store,
+            &MemoryBlobStore::default(),
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &base_policy(),
+            &fixture.policy,
+            &CountingEngine::new(),
+            &signers[1],
+            &duplicate_bytes,
+            CHECKPOINT,
+        ),
+        Err(FastPathError::Admission(
+            PaidExecutionAdmissionError::Invalid("publication origin already exists")
+        ))
+    ));
+    assert_eq!(next_nonce(&store), FIRST_PAID_NONCE + 1);
+}
+
+/// A `Publish` declaring a never-published dependency fails closed at
+/// prepare, before any lock or prepared record is written.
+#[test]
+fn fast_path_prepare_rejects_a_publish_with_a_missing_dependency() {
+    const CHECKPOINT: u64 = 42;
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    let (signers, _entries) = install_four_validators(&store);
+    let bogus_dependency = execution::publication::UnverifiedDependencyRef::new(
+        abi::package_types::PackageOrigin::unverified(
+            protocol().chain_id().clone(),
+            sender(),
+            [200; 32],
+        )
+        .unwrap(),
+        1,
+        protocol(),
+        Digest32::new(HashAlgorithmId::Sha2_256, [0x99; 32]),
+    )
+    .unwrap();
+    let artifact = crate::paid_execution::tests::publish_artifact_with_dependencies(
+        82,
+        vec![bogus_dependency],
+    );
+    let bytes: Vec<u8> = paid_publish(
+        &fixture,
+        82,
+        FIRST_PAID_NONCE,
+        artifact,
+        &fixture.coin,
+        100_000,
+    );
+    let engine: CountingEngine = CountingEngine::new();
+    assert!(matches!(
+        prepare(
+            &store,
+            &MemoryBlobStore::default(),
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &base_policy(),
+            &fixture.policy,
+            &engine,
+            &signers[0],
+            &bytes,
+            CHECKPOINT,
+        ),
+        Err(FastPathError::Admission(
+            PaidExecutionAdmissionError::Publication(PublicationAdmissionError::MissingDependency)
+        ))
+    ));
+    assert_eq!(next_nonce(&store), FIRST_PAID_NONCE);
 }
 
 #[test]
