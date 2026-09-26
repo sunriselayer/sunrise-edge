@@ -428,6 +428,22 @@ fn preparation_rejects_wrong_key_context_recipient_nonce_leg_and_authority_witho
     let public_key: [u8; 32] = voters[0].entry.public_key.as_slice().try_into().unwrap();
     assert!(prepare([0xA5; 32], signed.intent.recipient, &protocol(), Some(leg)).is_err());
     assert!(prepare(public_key, Address::new([0; 32]), &protocol(), Some(leg)).is_err());
+    let different_valid_recipient: Address =
+        Address::new(voters[3].entry.public_key.as_slice().try_into().unwrap());
+    assert_ne!(different_valid_recipient, signed.intent.recipient);
+    let nonce_before: u64 = next_nonce(&store);
+    assert!(
+        prepare(
+            public_key,
+            different_valid_recipient,
+            &protocol(),
+            Some(leg)
+        )
+        .is_err()
+    );
+    assert_eq!(state_snapshot(&store), before);
+    assert_eq!(next_nonce(&store), nonce_before);
+    assert!(request_receipt(&store, signed.intent.request_id).is_none());
     let future: PublicationContext = PublicationContext::new(
         protocol().chain_id().clone(),
         protocol().protocol_version(),
@@ -556,4 +572,228 @@ fn independent_apply_rejects_stale_prepared_generation_and_changed_payout_commit
     assert!(apply(&store, &sign_claim(&voters[1].signing_key, rival.intent)).is_err());
     assert_eq!(state_snapshot(&store), retained);
     assert!(request_receipt(&store, [0xD2; 32]).is_none());
+}
+
+#[test]
+fn discovery_checks_empty_page_context_and_rejects_tombstones_and_foreign_cursor() {
+    let store: MemoryDurableStateStore = memory_store();
+    let voters: Vec<Voter> = four_sorted_voters();
+    let entries: Vec<crate::fast_path::FastPathValidatorEntry> =
+        voters.iter().map(|voter| voter.entry.clone()).collect();
+    install_all(&store, &entries);
+    let page = |expected: &PublicationContext, after: Option<Vec<u8>>| {
+        discover_fee_escrows_page(
+            &store,
+            &MemoryBlobStore::default(),
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            expected,
+            after,
+            NonZeroUsize::new(1).unwrap(),
+        )
+    };
+    assert!(page(&protocol(), None).unwrap().escrows.is_empty());
+    let future: PublicationContext = PublicationContext::new(
+        protocol().chain_id().clone(),
+        protocol().protocol_version(),
+        Epoch::new(protocol().epoch().get() + 1),
+    )
+    .unwrap();
+    assert!(page(&future, None).is_err());
+    assert!(page(&protocol(), Some(b"se/foreign/cursor".to_vec())).is_err());
+    let key: Vec<u8> =
+        local_instance_state::fastpath_settlement_key(protocol().chain_id(), &ESCROW).unwrap();
+    crate::paid_execution::tests::set_state(&store, key, StateMutation::Delete);
+    assert!(page(&protocol(), None).is_err());
+    let malformed_store: MemoryDurableStateStore = memory_store();
+    install_all(&malformed_store, &entries);
+    let mut malformed: Vec<u8> =
+        local_instance_state::fastpath_settlement_key(protocol().chain_id(), &ESCROW).unwrap();
+    malformed.pop();
+    crate::paid_execution::tests::set_state(
+        &malformed_store,
+        malformed,
+        StateMutation::Put(vec![0]),
+    );
+    assert!(
+        discover_fee_escrows_page(
+            &malformed_store,
+            &MemoryBlobStore::default(),
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            None,
+            NonZeroUsize::new(1).unwrap()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn discovery_uses_scanned_proof_and_rejects_a_far_orphan_claim_even_when_tombstoned() {
+    for mutation in [StateMutation::Put(vec![0]), StateMutation::Delete] {
+        let store: MemoryDurableStateStore = memory_store();
+        install_certified(&store);
+        let orphan_key: Vec<u8> =
+            local_instance_state::fastpath_fee_claim_key(protocol().chain_id(), &ESCROW, 300)
+                .unwrap();
+        crate::paid_execution::tests::set_state(&store, orphan_key, mutation);
+        let before: Vec<StateEntry> = state_snapshot(&store);
+        assert!(
+            discover_fee_escrows_page(
+                &store,
+                &MemoryBlobStore::default(),
+                &context(),
+                domain(),
+                &resolver(),
+                &[],
+                &protocol(),
+                None,
+                NonZeroUsize::new(1).unwrap()
+            )
+            .is_err()
+        );
+        assert_eq!(state_snapshot(&store), before);
+    }
+}
+
+#[test]
+fn discovery_pages_two_genuine_certified_rows_in_exact_key_order() {
+    let store: MemoryDurableStateStore = memory_store();
+    let co1: MemoryDurableStateStore = memory_store();
+    let co2: MemoryDurableStateStore = memory_store();
+    let voters: Vec<Voter> = four_sorted_voters();
+    let entries: Vec<crate::fast_path::FastPathValidatorEntry> =
+        voters.iter().map(|voter| voter.entry.clone()).collect();
+    let (fixture, policy): (Fixture, PaidFeePolicy) = install_all(&store, &entries);
+    install_all(&co1, &entries);
+    install_all(&co2, &entries);
+    for (request, nonce, source) in [
+        (0xB1, FIRST_PAID_NONCE, &fixture.coin),
+        (0xB2, FIRST_PAID_NONCE + 1, &fixture.small),
+    ] {
+        let signed: Vec<u8> = paid_call_with_access(
+            PaidCall {
+                fixture: &fixture,
+                policy: &policy,
+                request,
+                nonce,
+                source,
+                entrypoint: "transfer",
+                arguments: public_standard_asset::transfer_arguments(&refund_account()).unwrap(),
+                access: vec![entry(source, AccessMode::Write)],
+            },
+            ReservationAccessKind::Write,
+        );
+        let votes: Vec<consensus::FastVote> = vec![
+            prepare_vote(&store, &policy, &voters[0], &signed),
+            prepare_vote(&co1, &policy, &voters[1], &signed),
+            prepare_vote(&co2, &policy, &voters[2], &signed),
+        ];
+        let certificate: Vec<u8> = certify(&build_validator_set(&entries), &votes);
+        let output: NodeOutput = apply_escrow(&store, &policy, &signed, &certificate);
+        assert_eq!(apply_escrow(&co1, &policy, &signed, &certificate), output);
+        assert_eq!(apply_escrow(&co2, &policy, &signed, &certificate), output);
+    }
+    let before: Vec<StateEntry> = state_snapshot(&store);
+    let first: FeeEscrowDiscoveryPage = discover_fee_escrows_page(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        None,
+        NonZeroUsize::new(1).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first.escrows.len(), 1);
+    assert_eq!(first.escrows[0].settlement.request_id, [0xB1; 32]);
+    assert_eq!(first.escrows[0].verification.final_generation, 1);
+    let cursor: Vec<u8> = first.continuation_cursor.unwrap();
+    assert_eq!(
+        cursor,
+        local_instance_state::fastpath_settlement_key(protocol().chain_id(), &[0xB1; 32]).unwrap()
+    );
+    let second: FeeEscrowDiscoveryPage = discover_fee_escrows_page(
+        &store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        Some(cursor),
+        NonZeroUsize::new(1).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(second.escrows.len(), 1);
+    assert_eq!(second.escrows[0].settlement.request_id, [0xB2; 32]);
+    assert!(second.continuation_cursor.is_none());
+    assert_eq!(state_snapshot(&store), before);
+}
+
+#[test]
+fn preparation_refuses_used_request_and_oversized_leg_before_any_pending_writes() {
+    let store: MemoryDurableStateStore = memory_store();
+    let (fixture, voters, resource): (Fixture, Vec<Voter>, BondResourceId) =
+        install_certified(&store);
+    let signed: SignedFeeClaimIntent = decode_signed_fee_claim_intent(
+        &build_split_claim(
+            &store,
+            &fixture,
+            &voters[0],
+            resource,
+            ESCROW,
+            [0xD1; 32],
+            next_nonce(&store),
+            0xE1,
+        )
+        .signed_bytes,
+    )
+    .unwrap();
+    let FeeClaimOperation::Split { leg, .. } = &signed.intent.operation else {
+        panic!("split");
+    };
+    let prepare = |request_id: [u8; 32], bytes: &[u8]| {
+        prepare_fee_claim(
+            &store,
+            &MemoryBlobStore::default(),
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &base_policy(),
+            &LocalWasmExecutionEngine::new(),
+            FeeClaimPreparationRequest {
+                escrow_request_id: ESCROW,
+                request_id,
+                validator_id: voters[0].entry.id,
+                claimant_public_key: voters[0].entry.public_key.as_slice().try_into().unwrap(),
+                recipient: signed.intent.recipient,
+                signed_leg: Some(bytes),
+            },
+            12,
+        )
+    };
+    let before: Vec<StateEntry> = state_snapshot(&store);
+    assert!(matches!(
+        prepare(ESCROW, leg),
+        Err(FeeClaimError::Invalid(
+            "fee preparation request id already used; replay original artifact"
+        ))
+    ));
+    let too_large: Vec<u8> =
+        vec![0; execution::local_execution::MAX_LOCAL_EXECUTION_INTENT_BYTES + 1];
+    assert!(matches!(
+        prepare([0xD1; 32], &too_large),
+        Err(FeeClaimError::Invalid("fee preparation leg byte bound"))
+    ));
+    assert_eq!(state_snapshot(&store), before);
 }

@@ -125,6 +125,8 @@ fn kind_for_share(row: &FastPathSettlementRecord, index: usize) -> Option<FeeCla
 
 /// Verifies the full certified history and returns its exact installed row.
 /// Requires a current, locally pinned context and an offline fenced store.
+/// The caller must ensure quiescence: these separate reads are not a shared
+/// database snapshot, and a writer fence alone does not exclude new writers.
 #[allow(clippy::too_many_arguments)]
 pub fn inspect_fee_escrow<S: StructuredDurableDomainStateStore>(
     store: &S,
@@ -136,6 +138,44 @@ pub fn inspect_fee_escrow<S: StructuredDurableDomainStateStore>(
     expected: &PublicationContext,
     escrow_request_id: [u8; 32],
 ) -> Result<FeeEscrowInspection, FeeClaimError> {
+    inspect_fee_escrow_with_verifier(
+        store,
+        operation,
+        domain,
+        resolver,
+        history,
+        expected,
+        escrow_request_id,
+        || {
+            verify_fee_claim_history(
+                store,
+                blob_store,
+                operation,
+                domain,
+                resolver,
+                history,
+                expected.chain_id(),
+                &escrow_request_id,
+            )
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn inspect_fee_escrow_with_verifier<S, Verify>(
+    store: &S,
+    operation: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    escrow_request_id: [u8; 32],
+    verify: Verify,
+) -> Result<FeeEscrowInspection, FeeClaimError>
+where
+    S: StructuredDurableDomainStateStore,
+    Verify: FnOnce() -> Result<FeeClaimVerificationReport, FeeClaimError>,
+{
     require_preparation_context(resolver, history, expected)?;
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     mutation_fence::fence_current_epoch(
@@ -161,16 +201,7 @@ pub fn inspect_fee_escrow<S: StructuredDurableDomainStateStore>(
     {
         return Err(FeeClaimError::Invalid("fee inspection settlement context"));
     }
-    let verification: FeeClaimVerificationReport = verify_fee_claim_history(
-        store,
-        blob_store,
-        operation,
-        domain,
-        resolver,
-        history,
-        expected.chain_id(),
-        &escrow_request_id,
-    )?;
+    let verification: FeeClaimVerificationReport = verify()?;
     let validator_set: ValidatorSet = equivocation::load_historical_validator_set(
         store,
         operation,
@@ -221,6 +252,8 @@ pub fn inspect_fee_escrow<S: StructuredDurableDomainStateStore>(
 
 /// Inspects one claimant and the public ABI inputs needed to sign a leg.
 /// `leg_sender` selects a nonce; it is not the historical claimant authority.
+/// As with escrow inspection, the caller must exclude concurrent writers;
+/// returned inputs are observations and reserve neither nonce nor generation.
 #[allow(clippy::too_many_arguments)]
 pub fn inspect_fee_claim<S: StructuredDurableDomainStateStore>(
     store: &S,
@@ -379,6 +412,15 @@ pub fn discover_fee_escrows_page<S: DurableStateKeyScanner>(
     limit: NonZeroUsize,
 ) -> Result<FeeEscrowDiscoveryPage, FeeClaimError> {
     require_preparation_context(resolver, history, expected)?;
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    mutation_fence::fence_current_epoch(
+        store,
+        operation,
+        domain,
+        expected.chain_id(),
+        expected.epoch(),
+        &mut reads,
+    )?;
     let mut prefix: Vec<u8> = local_instance_state::FASTPATH_STATE_PREFIX.to_vec();
     prefix.extend_from_slice(b"settlement/");
     prefix.extend(encode_chain_id(expected.chain_id())?);
@@ -395,8 +437,26 @@ pub fn discover_fee_escrows_page<S: DurableStateKeyScanner>(
         {
             return Err(FeeClaimError::Invalid("fee discovery key mismatch"));
         }
-        escrows.push(inspect_fee_escrow(
-            store, blob_store, operation, domain, resolver, history, expected, request_id,
+        escrows.push(inspect_fee_escrow_with_verifier(
+            store,
+            operation,
+            domain,
+            resolver,
+            history,
+            expected,
+            request_id,
+            || {
+                inventory::verify_fee_claim_history_scanned(
+                    store,
+                    blob_store,
+                    operation,
+                    domain,
+                    resolver,
+                    history,
+                    expected.chain_id(),
+                    &request_id,
+                )
+            },
         )?);
     }
     Ok(FeeEscrowDiscoveryPage {
