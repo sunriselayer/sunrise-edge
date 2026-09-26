@@ -39,12 +39,17 @@ pub fn write_new(path: &std::path::Path, bytes: &[u8]) {
 /// `fastvote_pg`'s signing-key-file loader requires (it rejects any
 /// group/other bit set).
 pub fn write_new_secure_mode(path: &std::path::Path, bytes: &[u8]) {
-    fs::write(path, bytes).unwrap();
+    use std::io::Write;
+
+    let mut options: fs::OpenOptions = fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
+    let mut file: fs::File = options.open(path).unwrap();
+    file.write_all(bytes).unwrap();
 }
 
 pub fn temp_file(dir: &std::path::Path, name: &str) -> PathBuf {
