@@ -24,30 +24,32 @@
 //!   independently configured TLS server name/CA -- never a system trust
 //!   store -- and this module rejects a network config that mixes loopback
 //!   and remote-TLS peers in one cohort.
-//! * The exact signed-intent artifact is reserved (`create_new`) and
-//!   written+synced before the first prepare POST; the exact certificate
-//!   artifact is reserved and written+synced before the first apply POST.
+//! * All requested output artifacts are reserved (`create_new`) before the
+//!   first mutation. Original file and parent-directory handles are retained.
+//!   The exact signed intent is written and file+directory synced before
+//!   prepare; the exact certificate is written and synced before apply.
 //!   Neither file is ever overwritten: an existing path fails closed with a
 //!   diagnostic that points at manual recovery, never silently regenerating
 //!   new bytes.
 //! * `run_replay` reads back the exact saved signed-intent bytes (and, if
-//!   present, the exact saved certificate bytes) from disk and resubmits
+//!   explicitly supplied, the exact saved certificate bytes) and resubmits
 //!   them unchanged -- it never queries a fresh nonce, never re-signs, and
 //!   never invents a new request id.
 
 use std::{
+    collections::BTreeSet,
     error::Error,
     ffi::OsString,
     fs::{File, OpenOptions},
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
 use sunrise_edge_client::{
     Client, FastCertificate, FastPathCertifier, FastVoteEndpoint, FastVoteNetworkError,
     FastVoteQuorumError, MAX_FASTVOTE_NETWORK_ENDPOINTS, PaidExecutionResult, PaidExecutionStatus,
-    SignedPaidIntent, ValidatorId, apply_fastvote_to_all, collect_fastvote_certificate,
+    SignedPaidIntent, Transport, ValidatorId, apply_fastvote_to_all, collect_fastvote_certificate,
     decode_fast_certificate, decode_signed_paid_intent, encode_fast_certificate,
     encode_signed_paid_intent, load_trusted_fastvote_genesis, local_publication_resolver,
     validate_fastvote_endpoints,
@@ -57,7 +59,7 @@ use crate::{
     args::{ParsedArgs, parse_flags, scalar},
     error::CliError,
     hex::{decode_hex_32, encode_hex},
-    net::{CliTransport, build_transport},
+    net::{CliTransport, OperationBudget, TLS_CA_CERT_DER_FILE, TLS_SERVER_NAME, build_transport},
     parse::parse_u64,
 };
 
@@ -105,23 +107,117 @@ fn read_bounded(path: &str, maximum: usize) -> Result<Vec<u8>, CliError> {
     Ok(bytes)
 }
 
-/// Writes `bytes` to a brand-new file at `path` (`create_new` -- an
-/// existing path is a hard, fail-closed error, never overwritten), then
-/// `write_all` and `sync_all` before returning: this is the mandatory
-/// durable persistence step required before the corresponding mutating
-/// POST, not merely a reservation.
-fn persist_new_artifact(path: &str, bytes: &[u8], kind: &'static str) -> Result<(), CliError> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|source| {
+/// A newly reserved output whose original file and parent-directory handles
+/// remain held until the workflow ends. Persistence never reopens its path.
+struct ReservedArtifact {
+    path: PathBuf,
+    file: File,
+    parent: File,
+    kind: &'static str,
+}
+
+fn artifact_path(path: &str) -> Result<PathBuf, CliError> {
+    let supplied: &Path = Path::new(path);
+    let filename = supplied
+        .file_name()
+        .ok_or_else(|| invalid("artifact path needs a filename"))?;
+    let parent: &Path = supplied
+        .parent()
+        .filter(|value| !value.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    Ok(parent.canonicalize().map_err(failure)?.join(filename))
+}
+
+/// Resolve all destinations before reserving any. Canonical parents catch
+/// relative and symlink-directory aliases; existing destinations (including
+/// symlinks and hard links to inputs) are always rejected by create_new.
+fn reserve_artifacts(
+    outputs: &[(&str, &'static str)],
+    inputs: &[&str],
+) -> Result<Vec<ReservedArtifact>, CliError> {
+    let mut paths: BTreeSet<PathBuf> = BTreeSet::new();
+    for input in inputs {
+        paths.insert(Path::new(input).canonicalize().map_err(failure)?);
+    }
+    let mut destinations: Vec<(PathBuf, &'static str)> = Vec::new();
+    for (path, kind) in outputs {
+        let destination: PathBuf = artifact_path(path)?;
+        if !paths.insert(destination.clone()) {
+            return Err(invalid(format!(
+                "artifact paths alias at {destination:?}; recover exact saved bytes, never a fresh nonce"
+            )));
+        }
+        destinations.push((destination, *kind));
+    }
+    let mut artifacts: Vec<ReservedArtifact> = Vec::new();
+    for (path, kind) in destinations {
+        let parent_path: &Path = path
+            .parent()
+            .ok_or_else(|| invalid("artifact parent missing"))?;
+        let parent: File = File::open(parent_path).map_err(failure)?;
+        // Refuse unsupported directory synchronization before any POST.
+        parent.sync_all().map_err(failure)?;
+        let file: File = OpenOptions::new().write(true).create_new(true).open(&path)
+            .map_err(|source| invalid(format!(
+                "failed to reserve {kind} artifact at {path:?} (an existing file is never overwritten; recover exact saved bytes rather than re-signing): {source}"
+            )))?;
+        parent.sync_all().map_err(failure)?;
+        artifacts.push(ReservedArtifact {
+            path,
+            file,
+            parent,
+            kind,
+        });
+    }
+    Ok(artifacts)
+}
+
+impl ReservedArtifact {
+    fn ensure_attached(&self) -> Result<(), CliError> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let actual: std::fs::Metadata =
+                std::fs::symlink_metadata(&self.path).map_err(failure)?;
+            let held: std::fs::Metadata = self.file.metadata().map_err(failure)?;
+            let parent_path = self
+                .path
+                .parent()
+                .ok_or_else(|| invalid("artifact parent missing"))?;
+            let actual_parent: std::fs::Metadata =
+                std::fs::metadata(parent_path).map_err(failure)?;
+            let held_parent: std::fs::Metadata = self.parent.metadata().map_err(failure)?;
+            if (actual.dev(), actual.ino()) != (held.dev(), held.ino())
+                || (actual_parent.dev(), actual_parent.ino())
+                    != (held_parent.dev(), held_parent.ino())
+            {
+                return Err(invalid(format!(
+                    "reserved {} artifact path was replaced at {:?}; recover exact saved bytes from the original file, never a fresh nonce",
+                    self.kind, self.path
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn persist(&mut self, bytes: &[u8]) -> Result<(), CliError> {
+        self.ensure_attached()?;
+        let recovery = |source: &dyn Error| {
             invalid(format!(
-                "failed to reserve {kind} artifact at {path:?} (an existing file is never overwritten; if this is a partial/interrupted run, recover the exact saved bytes rather than re-signing): {source}"
+                "failed to persist {} artifact at {:?}: {source}; retained recovery bytes may be partial; replay identical saved signed bytes with the same request ID and nonce, never a fresh nonce",
+                self.kind, self.path
             ))
-        })?;
-    file.write_all(bytes).map_err(failure)?;
-    file.sync_all().map_err(failure)?;
+        };
+        persist_handles(&mut self.file, &self.parent, bytes).map_err(|source| recovery(&source))?;
+        self.ensure_attached()?;
+        Ok(())
+    }
+}
+
+fn persist_handles(file: &mut File, parent: &File, bytes: &[u8]) -> std::io::Result<()> {
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    parent.sync_all()?;
     Ok(())
 }
 
@@ -230,6 +326,15 @@ pub(super) fn load_endpoints_and_certifier(
     resolver: &sunrise_edge_client::HashSuiteResolver,
     context: &sunrise_edge_client::PublicationContext,
 ) -> Result<(Vec<FastVoteEndpoint<CliTransport>>, FastPathCertifier), CliError> {
+    let peers = parse_network_config(parsed.require("--fastvote-network")?)?;
+    if let Some(endpoint) = parsed.get("--endpoint")
+        && !peers.iter().any(|peer| peer.endpoint == endpoint)
+    {
+        return Err(invalid(
+            "--endpoint must select an exact endpoint_label from --fastvote-network; preparation uses that peer's TLS configuration",
+        ));
+    }
+    let endpoints = build_endpoints(&peers)?;
     let manifest_path = parsed.require("--fastvote-genesis-manifest")?;
     let expected_digest = decode_hex_32(
         "--fastvote-expected-genesis-digest",
@@ -238,13 +343,11 @@ pub(super) fn load_endpoints_and_certifier(
     let certifier =
         load_trusted_fastvote_genesis(Path::new(manifest_path), resolver, expected_digest, context)
             .map_err(failure)?;
-    let peers = parse_network_config(parsed.require("--fastvote-network")?)?;
-    let endpoints = build_endpoints(&peers)?;
     validate_fastvote_endpoints(&endpoints, &certifier).map_err(failure)?;
     Ok((endpoints, certifier))
 }
 
-fn parse_deadline(parsed: &ParsedArgs) -> Result<(Instant, Duration), CliError> {
+pub(super) fn parse_deadline(parsed: &ParsedArgs) -> Result<OperationBudget, CliError> {
     let deadline_seconds = match parsed.get("--fastvote-deadline-seconds") {
         Some(value) => parse_u64("--fastvote-deadline-seconds", value)?,
         None => 60,
@@ -258,10 +361,50 @@ fn parse_deadline(parsed: &ParsedArgs) -> Result<(Instant, Duration), CliError> 
             "--fastvote-deadline-seconds and --fastvote-per-request-cap-seconds must be positive",
         ));
     }
-    Ok((
-        Instant::now() + Duration::from_secs(deadline_seconds),
-        Duration::from_secs(per_request_cap_seconds),
-    ))
+    // Resource ceilings, not latency targets. Match the SDK's request cap.
+    if deadline_seconds > 3600
+        || per_request_cap_seconds > 300
+        || per_request_cap_seconds > deadline_seconds
+    {
+        return Err(invalid(
+            "FastVote deadline must be at most 3600 seconds and per-request cap at most 300 seconds and no greater than the deadline",
+        ));
+    }
+    let deadline: Instant = Instant::now()
+        .checked_add(Duration::from_secs(deadline_seconds))
+        .ok_or_else(|| invalid("FastVote deadline overflows the monotonic clock"))?;
+    Ok(OperationBudget {
+        deadline,
+        per_request_cap: Duration::from_secs(per_request_cap_seconds),
+    })
+}
+
+pub(super) fn validate_paid_network_flags(parsed: &ParsedArgs) -> Result<(), CliError> {
+    if parsed.get(TLS_SERVER_NAME).is_some() || parsed.get(TLS_CA_CERT_DER_FILE).is_some() {
+        return Err(invalid(
+            "global TLS flags are unsupported with --fastvote-network; configure TLS independently for each cohort peer",
+        ));
+    }
+    if parsed.get("--submission-out").is_some() {
+        return Err(invalid(
+            "--submission-out is unsupported with --fastvote-network; use --fastvote-signed-intent-out",
+        ));
+    }
+    parsed.require("--endpoint")?;
+    parsed.require("--fastvote-signed-intent-out")?;
+    parsed.require("--fastvote-certificate-out")?;
+    Ok(())
+}
+
+pub(super) fn selected_preparation_client<'a, T: Transport>(
+    endpoints: &'a [FastVoteEndpoint<T>],
+    selected: &str,
+) -> Result<&'a Client<T>, CliError> {
+    endpoints
+        .iter()
+        .find(|peer| peer.endpoint_label == selected)
+        .map(|peer| &peer.client)
+        .ok_or_else(|| invalid("--endpoint must select a configured FastVote cohort peer"))
 }
 
 fn print_prepare_attempts(attempts: &[sunrise_edge_client::FastVoteAttempt]) {
@@ -275,6 +418,9 @@ fn print_prepare_attempts(attempts: &[sunrise_edge_client::FastVoteAttempt]) {
                 "prepare validator={} status=failed reason={error}",
                 attempt.validator_id
             ),
+        }
+        if let Err(error) = &attempt.result {
+            print_repin_diagnostic(error);
         }
     }
 }
@@ -295,26 +441,53 @@ fn print_apply_attempts(attempts: &[sunrise_edge_client::FastVoteApplyAttempt]) 
                 attempt.validator_id
             ),
         }
+        if let Err(error) = &attempt.result {
+            print_repin_diagnostic(error);
+        }
     }
     any_applied
+}
+
+fn print_repin_diagnostic(error: &impl std::fmt::Display) {
+    if error.to_string().contains("fastvote-epoch-repin-required") {
+        println!(
+            "FastVote epoch advanced or host pin differs: operator out-of-band re-pin required; do not automatically refresh genesis/context or re-sign; preserve exact replay artifacts"
+        );
+    }
 }
 
 /// Runs the network prepare/quorum/apply flow for an already-built, already
 /// signed ordinary paid `Call`. Persists the mandatory signed-intent and
 /// certificate artifacts before their respective mutating POSTs.
-pub(super) fn run_network_submit(
+pub(super) fn run_network_submit<T: Transport>(
     parsed: &ParsedArgs,
-    endpoints: &[FastVoteEndpoint<CliTransport>],
+    endpoints: &[FastVoteEndpoint<T>],
     certifier: &FastPathCertifier,
     resolver: &sunrise_edge_client::HashSuiteResolver,
     signed: &SignedPaidIntent,
+    budget: OperationBudget,
 ) -> Result<PaidExecutionResult, CliError> {
     let signed_intent_out = parsed.require("--fastvote-signed-intent-out")?;
     let certificate_out = parsed.require("--fastvote-certificate-out")?;
-    let (deadline, per_request_cap) = parse_deadline(parsed)?;
+    let OperationBudget {
+        deadline,
+        per_request_cap,
+    } = budget;
+    budget.ensure_live()?;
+    let mut outputs: Vec<(&str, &'static str)> = vec![
+        (signed_intent_out, "signed-intent"),
+        (certificate_out, "certificate"),
+    ];
+    if let Some(path) = parsed.get("--result-out") {
+        outputs.push((path, "result"));
+    }
+    let mut artifacts: Vec<ReservedArtifact> = reserve_artifacts(&outputs, &[])?;
 
     let signed_bytes = encode_signed_paid_intent(signed).map_err(failure)?;
-    persist_new_artifact(signed_intent_out, &signed_bytes, "signed-intent")?;
+    artifacts[0].persist(&signed_bytes)?;
+    for artifact in &artifacts {
+        artifact.ensure_attached()?;
+    }
     println!("fastvote_signed_intent_out={signed_intent_out}");
 
     let (certificate, attempts) = collect_fastvote_certificate(
@@ -334,10 +507,13 @@ pub(super) fn run_network_submit(
     );
 
     let certificate_bytes = encode_fast_certificate(&certificate).map_err(failure)?;
-    persist_new_artifact(certificate_out, &certificate_bytes, "certificate")?;
+    artifacts[1].persist(&certificate_bytes)?;
+    for artifact in &artifacts {
+        artifact.ensure_attached()?;
+    }
     println!("fastvote_certificate_out={certificate_out}");
 
-    apply_certificate_and_report(
+    let result: PaidExecutionResult = apply_certificate_and_report(
         endpoints,
         certifier,
         resolver,
@@ -345,11 +521,29 @@ pub(super) fn run_network_submit(
         &certificate,
         deadline,
         per_request_cap,
-    )
+    )?;
+    persist_result(artifacts.get_mut(2), &result, signed)?;
+    Ok(result)
 }
 
-fn apply_certificate_and_report(
-    endpoints: &[FastVoteEndpoint<CliTransport>],
+fn persist_result(
+    artifact: Option<&mut ReservedArtifact>,
+    result: &PaidExecutionResult,
+    signed: &SignedPaidIntent,
+) -> Result<(), CliError> {
+    if let Some(artifact) = artifact {
+        let bytes: Vec<u8> =
+            sunrise_edge_client::encode_paid_execution_result(result).map_err(failure)?;
+        artifact.persist(&bytes).map_err(|error| invalid(format!(
+            "validated paid outcome received but result output failed: {error}; request_id={} nonce={}; recover the exact result bytes by replaying identical signed-intent and certificate bytes; do not retry with a fresh nonce",
+            encode_hex(&signed.intent.request_id), signed.intent.nonce
+        )))?;
+    }
+    Ok(())
+}
+
+fn apply_certificate_and_report<T: Transport>(
+    endpoints: &[FastVoteEndpoint<T>],
     certifier: &FastPathCertifier,
     resolver: &sunrise_edge_client::HashSuiteResolver,
     signed: &SignedPaidIntent,
@@ -402,6 +596,7 @@ fn describe_quorum_error(error: &FastVoteQuorumError) -> CliError {
                         "prepare validator={} status=failed reason={reason}",
                         attempt.validator_id
                     );
+                    print_repin_diagnostic(reason);
                 }
             }
             invalid(
@@ -436,6 +631,36 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
     specs.extend(network_flag_specs());
     specs.extend(REPLAY_VALUE_FLAGS_EXTRA.iter().map(|name| scalar(name)));
     let parsed: ParsedArgs = parse_flags(args, &specs)?;
+    let budget: OperationBudget = parse_deadline(&parsed)?;
+    if parsed.get("--fastvote-signed-intent-out").is_some() {
+        return Err(invalid(
+            "--fastvote-signed-intent-out is unsupported for replay; --submission already supplies the exact signed intent",
+        ));
+    }
+    if parsed.get("--certificate").is_some() && parsed.get("--fastvote-certificate-out").is_some() {
+        return Err(invalid(
+            "--fastvote-certificate-out is unsupported when replay supplies --certificate",
+        ));
+    }
+
+    let submission_path = parsed.require("--submission")?;
+    let signed_bytes: Vec<u8> = read_bounded(
+        submission_path,
+        sunrise_edge_client::MAX_SIGNED_PAID_INTENT_BYTES,
+    )
+    .map_err(|error| artifact_read_error(submission_path, "signed-intent", &error))?;
+    let signed: SignedPaidIntent = decode_signed_paid_intent(&signed_bytes)
+        .map_err(|error| artifact_read_error(submission_path, "signed-intent", &error))?;
+    let certificate: Option<FastCertificate> = parsed
+        .get("--certificate")
+        .map(|path| {
+            let bytes: Vec<u8> =
+                read_bounded(path, sunrise_edge_client::MAX_FASTVOTE_CERTIFICATE_BYTES)
+                    .map_err(|error| artifact_read_error(path, "certificate", &error))?;
+            decode_fast_certificate(&bytes)
+                .map_err(|error| artifact_read_error(path, "certificate", &error))
+        })
+        .transpose()?;
 
     let expected = super::standard_asset::parse_expected_context(&parsed)?;
     let resolver = local_publication_resolver(&expected)?;
@@ -447,69 +672,20 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
     .map_err(failure)?;
     let (endpoints, certifier) = load_endpoints_and_certifier(&parsed, &resolver, &context)?;
 
-    let submission_path = parsed.require("--submission")?;
-    let signed_bytes = read_bounded(
-        submission_path,
-        sunrise_edge_client::MAX_SIGNED_PAID_INTENT_BYTES,
-    )?;
-    let signed: SignedPaidIntent = decode_signed_paid_intent(&signed_bytes).map_err(failure)?;
     println!("fastvote_replay_submission={submission_path}");
     println!("request_id={}", encode_hex(&signed.intent.request_id));
     println!("nonce={}", signed.intent.nonce);
 
-    let (deadline, per_request_cap) = parse_deadline(&parsed)?;
-
-    let certificate: Option<FastCertificate> = match parsed.get("--certificate") {
-        Some(path) if Path::new(path).exists() => {
-            let bytes = read_bounded(path, sunrise_edge_client::MAX_FASTVOTE_CERTIFICATE_BYTES)?;
-            Some(decode_fast_certificate(&bytes).map_err(failure)?)
-        }
-        _ => None,
-    };
-
-    let result = if let Some(certificate) = certificate {
-        println!("fastvote_replay_mode=saved_certificate");
-        apply_certificate_and_report(
-            &endpoints,
-            &certifier,
-            &resolver,
-            &signed,
-            &certificate,
-            deadline,
-            per_request_cap,
-        )?
-    } else {
-        println!("fastvote_replay_mode=prepare_from_saved_intent");
-        let certificate_out = parsed.require("--fastvote-certificate-out")?;
-        let (certificate, attempts) = collect_fastvote_certificate(
-            &endpoints,
-            &certifier,
-            &resolver,
-            &signed,
-            deadline,
-            per_request_cap,
-        )
-        .map_err(|error| describe_quorum_error(&error))?;
-        print_prepare_attempts(&attempts);
-        let certificate_bytes = encode_fast_certificate(&certificate).map_err(failure)?;
-        persist_new_artifact(certificate_out, &certificate_bytes, "certificate")?;
-        println!("fastvote_certificate_out={certificate_out}");
-        apply_certificate_and_report(
-            &endpoints,
-            &certifier,
-            &resolver,
-            &signed,
-            &certificate,
-            deadline,
-            per_request_cap,
-        )?
-    };
-
+    let result: PaidExecutionResult = replay_loaded(
+        &parsed,
+        &endpoints,
+        &certifier,
+        &resolver,
+        &signed,
+        certificate.as_ref(),
+        budget,
+    )?;
     println!("paid_status={:?}", result.status);
-    if let Some(path) = parsed.get("--result-out") {
-        let bytes = sunrise_edge_client::encode_paid_execution_result(&result).map_err(failure)?;
-        persist_new_artifact(path, &bytes, "result")?;
-    }
     if result.status != PaidExecutionStatus::Success {
         return Err(invalid(
             "fastvote apply committed a charged/rejected trap; this is a valid final result, not a fresh-retry condition",
@@ -518,10 +694,93 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
     Ok(())
 }
 
+fn artifact_read_error(path: &str, kind: &str, error: &dyn std::fmt::Display) -> CliError {
+    invalid(format!(
+        "cannot read exact saved {kind} artifact at {path:?}: {error}; recover the original signed-intent/certificate bytes; do not re-sign or retry with a fresh nonce"
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn replay_loaded<T: Transport>(
+    parsed: &ParsedArgs,
+    endpoints: &[FastVoteEndpoint<T>],
+    certifier: &FastPathCertifier,
+    resolver: &sunrise_edge_client::HashSuiteResolver,
+    signed: &SignedPaidIntent,
+    certificate: Option<&FastCertificate>,
+    budget: OperationBudget,
+) -> Result<PaidExecutionResult, CliError> {
+    let submission_path: &str = parsed.require("--submission")?;
+
+    let OperationBudget {
+        deadline,
+        per_request_cap,
+    } = budget;
+
+    budget.ensure_live()?;
+    let mut outputs: Vec<(&str, &'static str)> = Vec::new();
+    if certificate.is_none() {
+        outputs.push((parsed.require("--fastvote-certificate-out")?, "certificate"));
+    }
+    if let Some(path) = parsed.get("--result-out") {
+        outputs.push((path, "result"));
+    }
+    let mut inputs: Vec<&str> = vec![submission_path];
+    if let Some(path) = parsed.get("--certificate") {
+        inputs.push(path);
+    }
+    let mut artifacts: Vec<ReservedArtifact> = reserve_artifacts(&outputs, &inputs)?;
+    let result_index: usize = usize::from(certificate.is_none());
+
+    let result = if let Some(certificate) = certificate {
+        println!("fastvote_replay_mode=saved_certificate");
+        apply_certificate_and_report(
+            endpoints,
+            certifier,
+            resolver,
+            signed,
+            certificate,
+            deadline,
+            per_request_cap,
+        )?
+    } else {
+        println!("fastvote_replay_mode=prepare_from_saved_intent");
+        let certificate_out = parsed.require("--fastvote-certificate-out")?;
+        let (certificate, attempts) = collect_fastvote_certificate(
+            endpoints,
+            certifier,
+            resolver,
+            signed,
+            deadline,
+            per_request_cap,
+        )
+        .map_err(|error| describe_quorum_error(&error))?;
+        print_prepare_attempts(&attempts);
+        let certificate_bytes = encode_fast_certificate(&certificate).map_err(failure)?;
+        artifacts[0].persist(&certificate_bytes)?;
+        for artifact in &artifacts {
+            artifact.ensure_attached()?;
+        }
+        println!("fastvote_certificate_out={certificate_out}");
+        apply_certificate_and_report(
+            endpoints,
+            certifier,
+            resolver,
+            signed,
+            &certificate,
+            deadline,
+            per_request_cap,
+        )?
+    };
+
+    persist_result(artifacts.get_mut(result_index), &result, signed)?;
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn temp_path(name: &str) -> std::path::PathBuf {
+    pub(super) fn temp_path(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
             "sunrise-fastvote-network-unit-{}-{name}-{}",
             std::process::id(),
@@ -692,11 +951,15 @@ mod tests {
     #[test]
     fn persist_new_artifact_writes_exact_bytes_and_never_overwrites() {
         let path = temp_path("artifact");
-        persist_new_artifact(path.to_str().unwrap(), b"hello", "test").unwrap();
+        reserve_artifacts(&[(path.to_str().unwrap(), "test")], &[]).unwrap()[0]
+            .persist(b"hello")
+            .unwrap();
         let readback = std::fs::read(&path).unwrap();
         assert_eq!(readback, b"hello");
 
-        let error = persist_new_artifact(path.to_str().unwrap(), b"goodbye", "test").unwrap_err();
+        let error = reserve_artifacts(&[(path.to_str().unwrap(), "test")], &[])
+            .err()
+            .unwrap();
         assert!(format!("{error}").contains("an existing file is never overwritten"));
         let unchanged = std::fs::read(&path).unwrap();
         let _ = std::fs::remove_file(&path);
@@ -724,3 +987,7 @@ mod tests {
         assert_eq!(bytes.len(), 16);
     }
 }
+
+#[cfg(test)]
+#[path = "fastvote_network_tests.rs"]
+mod boundary_tests;

@@ -206,7 +206,7 @@ fn fastvote_host_pg_cli_multivalidator_e2e() {
             .unwrap()
             .as_nanos()
     );
-    let fixture: FastVoteGenesisFixture = genesis_fixture::build_fixture(&unique);
+    let fixture: FastVoteGenesisFixture = genesis_fixture::build_network_fixture(&unique);
 
     let data_dir = std::env::temp_dir().join(format!("sunrise-fastvote-host-cli-e2e-{unique}"));
     fs::create_dir(&data_dir).unwrap();
@@ -422,6 +422,7 @@ fn fastvote_host_pg_cli_multivalidator_e2e() {
     let trap_request_id: [u8; 32] = [0xD8; 32];
     let trap_signed_intent_out = temp_file(&data_dir, "signed-intent-trap");
     let trap_certificate_out = temp_file(&data_dir, "certificate-trap");
+    let trap_result_out = temp_file(&data_dir, "result-trap");
     let mut trap_flags = base_flags(
         &to_hex(&trap_request_id),
         Some(0),
@@ -432,6 +433,8 @@ fn fastvote_host_pg_cli_multivalidator_e2e() {
     trap_flags.push(OsString::from(trap_signed_intent_out.to_str().unwrap()));
     trap_flags.push(OsString::from("--fastvote-certificate-out"));
     trap_flags.push(OsString::from(trap_certificate_out.to_str().unwrap()));
+    trap_flags.push(OsString::from("--result-out"));
+    trap_flags.push(OsString::from(trap_result_out.to_str().unwrap()));
     let trap_outcome = sunrise_edge_cli::run(trap_flags);
     assert!(
         trap_outcome.is_err(),
@@ -446,6 +449,14 @@ fn fastvote_host_pg_cli_multivalidator_e2e() {
         trap_certificate_out.exists(),
         "the real quorum certificate must still be persisted for a charged trap"
     );
+    let trap_result_bytes: Vec<u8> = fs::read(&trap_result_out).unwrap();
+    let trap_result =
+        sunrise_edge_client::decode_paid_execution_result(&trap_result_bytes).unwrap();
+    assert_eq!(
+        trap_result.status,
+        sunrise_edge_client::PaidExecutionStatus::ApplicationFailed
+    );
+    assert!(trap_result.charged.is_some());
     let after_trap = snapshot(&admin, &namespace0, &fixture);
     assert_eq!(
         after_trap.next_nonce, 1,
@@ -461,6 +472,7 @@ fn fastvote_host_pg_cli_multivalidator_e2e() {
     // real four-host network ----
     let signed_intent_out = temp_file(&data_dir, "signed-intent-1");
     let certificate_out = temp_file(&data_dir, "certificate-1");
+    let result_out = temp_file(&data_dir, "result-1");
     let fresh_access_path_1 = write_access_path(
         "access-2",
         current_fee_coin_ref(&admin, &namespace0, &fixture),
@@ -475,6 +487,8 @@ fn fastvote_host_pg_cli_multivalidator_e2e() {
     flags.push(OsString::from(signed_intent_out.to_str().unwrap()));
     flags.push(OsString::from("--fastvote-certificate-out"));
     flags.push(OsString::from(certificate_out.to_str().unwrap()));
+    flags.push(OsString::from("--result-out"));
+    flags.push(OsString::from(result_out.to_str().unwrap()));
 
     let outcome = sunrise_edge_cli::run(flags);
     assert!(
@@ -489,10 +503,18 @@ fn fastvote_host_pg_cli_multivalidator_e2e() {
         certificate_out.exists(),
         "certificate artifact must be persisted"
     );
+    let result_bytes: Vec<u8> = fs::read(&result_out).unwrap();
+    assert_eq!(
+        sunrise_edge_client::decode_paid_execution_result(&result_bytes)
+            .unwrap()
+            .status,
+        sunrise_edge_client::PaidExecutionStatus::Success
+    );
 
     // ---- exact replay: fastvote-replay from the saved artifacts must
     // return the identical committed result, not re-execute or reject as a
     // fresh request ----
+    let replay_result_out = temp_file(&data_dir, "result-replay");
     let replay_flags: Vec<OsString> = [
         "contract",
         "fastvote-replay",
@@ -520,14 +542,8 @@ fn fastvote_host_pg_cli_multivalidator_e2e() {
         signed_intent_out.to_str().unwrap(),
         "--certificate",
         certificate_out.to_str().unwrap(),
-        "--fastvote-certificate-out",
-        temp_file(&data_dir, "certificate-replay-unused")
-            .to_str()
-            .unwrap(),
-        "--fastvote-signed-intent-out",
-        temp_file(&data_dir, "signed-intent-replay-unused")
-            .to_str()
-            .unwrap(),
+        "--result-out",
+        replay_result_out.to_str().unwrap(),
     ]
     .into_iter()
     .map(OsString::from)
@@ -537,6 +553,7 @@ fn fastvote_host_pg_cli_multivalidator_e2e() {
         replay_outcome.is_ok(),
         "expected exact replay from saved artifacts to succeed: {replay_outcome:?}"
     );
+    assert_eq!(fs::read(&replay_result_out).unwrap(), result_bytes);
 
     // ---- request-id reuse conflict: a second, different call reusing the
     // exact same request id must be rejected, and durable state must remain
@@ -579,6 +596,7 @@ fn fastvote_host_pg_cli_multivalidator_e2e() {
 
     // ---- trap replay: replaying the exact charged-trap certificate must
     // return the identical committed trap outcome, never re-execute ----
+    let trap_replay_result_out = temp_file(&data_dir, "result-trap-replay");
     let trap_replay_flags: Vec<OsString> = [
         "contract",
         "fastvote-replay",
@@ -606,14 +624,8 @@ fn fastvote_host_pg_cli_multivalidator_e2e() {
         trap_signed_intent_out.to_str().unwrap(),
         "--certificate",
         trap_certificate_out.to_str().unwrap(),
-        "--fastvote-certificate-out",
-        temp_file(&data_dir, "certificate-trap-replay-unused")
-            .to_str()
-            .unwrap(),
-        "--fastvote-signed-intent-out",
-        temp_file(&data_dir, "signed-intent-trap-replay-unused")
-            .to_str()
-            .unwrap(),
+        "--result-out",
+        trap_replay_result_out.to_str().unwrap(),
     ]
     .into_iter()
     .map(OsString::from)
@@ -624,6 +636,10 @@ fn fastvote_host_pg_cli_multivalidator_e2e() {
         trap_replay_outcome.is_err(),
         "replaying an exact charged-trap certificate must report the same committed rejection, \
          never a fresh retry"
+    );
+    assert_eq!(
+        fs::read(&trap_replay_result_out).unwrap(),
+        trap_result_bytes
     );
     assert_eq!(
         snapshot(&admin, &namespace0, &fixture),
@@ -725,14 +741,6 @@ fn fastvote_host_pg_cli_multivalidator_e2e() {
         signed_intent_out.to_str().unwrap(),
         "--certificate",
         certificate_out.to_str().unwrap(),
-        "--fastvote-certificate-out",
-        temp_file(&data_dir, "certificate-reopen-replay-unused")
-            .to_str()
-            .unwrap(),
-        "--fastvote-signed-intent-out",
-        temp_file(&data_dir, "signed-intent-reopen-replay-unused")
-            .to_str()
-            .unwrap(),
     ]
     .into_iter()
     .map(OsString::from)
@@ -777,14 +785,6 @@ fn fastvote_host_pg_cli_multivalidator_e2e() {
         trap_signed_intent_out.to_str().unwrap(),
         "--certificate",
         trap_certificate_out.to_str().unwrap(),
-        "--fastvote-certificate-out",
-        temp_file(&data_dir, "certificate-reopen-trap-replay-unused")
-            .to_str()
-            .unwrap(),
-        "--fastvote-signed-intent-out",
-        temp_file(&data_dir, "signed-intent-reopen-trap-replay-unused")
-            .to_str()
-            .unwrap(),
     ]
     .into_iter()
     .map(OsString::from)
