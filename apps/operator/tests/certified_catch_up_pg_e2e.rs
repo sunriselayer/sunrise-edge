@@ -734,8 +734,8 @@ fn certified_catch_up_pg_missed_prepare_binary_cli_e2e() {
     let version: String = head.get(0);
     let algorithm: i32 = head.get(1);
     let digest: Vec<u8> = head.get(2);
-    let owner_projection: Vec<u8> = head.get(3);
-    let routing_projection: Vec<u8> = head.get(4);
+    let owner_projection: Option<Vec<u8>> = head.get(3);
+    let routing_projection: Option<Vec<u8>> = head.get(4);
     let restore: [&(dyn postgres::types::ToSql + Sync); 9] = [
         selector[0],
         selector[1],
@@ -882,6 +882,36 @@ fn certified_catch_up_pg_missed_prepare_binary_cli_e2e() {
         assert_eq!(verified.verified_rows, 3);
         assert_eq!(verified.verified_claims, 0);
         assert_eq!(verified.verified_payouts, 0);
+    }
+    let before_same_boot_replay: Vec<String> = all_snapshots();
+    let same_boot_replayed: PathBuf = new_output("same-boot-replay");
+    let same_boot_replay: Output = catch_up(
+        &directory,
+        &fixture,
+        &network,
+        &manifest,
+        &same_boot_replayed,
+        &[],
+    );
+    assert!(
+        same_boot_replay.status.success(),
+        "same-boot exact catch-up replay failed: {}",
+        String::from_utf8_lossy(&same_boot_replay.stderr)
+    );
+    assert_eq!(
+        all_snapshots(),
+        before_same_boot_replay,
+        "same-boot whole-batch replay must not reapply nonce, fee, receipt, object or audit records"
+    );
+    for index in 1..=3 {
+        let name: String = format!(
+            "entry-{index:04}-validator-{}.result",
+            fixture.validators[3].validator_id
+        );
+        assert_eq!(
+            fs::read(same_boot_replayed.join(&name)).unwrap(),
+            fs::read(recovered.join(name)).unwrap()
+        );
     }
     let before_restart: Vec<String> = all_snapshots();
     fourth.child.kill().unwrap();
