@@ -210,6 +210,17 @@ an epoch change, since `fast_path::apply` is receipt-first. A non-current
 epoch for fresh work requires an explicit, out-of-band operator re-pin, not
 a silent retry.
 
+For saved Publish or Instantiate requests, replay may additionally write a
+fresh `--dependency-ref-out` or `--instance-ref-out`, respectively. This is
+how to recover an empty reference output after an uncertain original response.
+Use an unused path distinct from both saved inputs and every other output.
+The bytes derive from the original signed intent and are written only after
+a successful kind/target-bound acknowledgement; no new nonce or signature is
+created. These flags are mutually exclusive and invalid for saved Calls.
+Received successful peer results must agree canonically before result or
+reference output is populated; that comparison is not a whole-store or
+network-wide durability proof.
+
 A quorum certificate (the `--fastvote-certificate-out` bytes) is a
 cryptographically formed proof that a quorum of pinned validators voted for
 the identical outcome; each per-peer apply acknowledgement printed
