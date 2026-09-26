@@ -428,6 +428,9 @@ pub(crate) enum NonceMode {
     /// did not advance it, while the exact request must own every nonce/object
     /// lock. Apply commits the returned nonce write with all effects.
     PreparedApply,
+    /// Certified recovery has a fresh nonce and strictly absent lock values;
+    /// unlike ordinary fresh admission, it must never reclaim stale locks.
+    RecoveryApply,
 }
 
 /// The complete staged, uncommitted admission envelope [`build_paid_admission`]
@@ -441,7 +444,7 @@ pub(crate) struct PaidAdmissionOutput {
     pub(crate) success: bool,
     /// Every state key this admission observed, other than the sender-nonce
     /// row (the caller's own responsibility). Includes one fast-path lock
-    /// key read per locked input, in both [`NonceMode`] variants.
+    /// key read per locked input, in every [`NonceMode`] variant.
     pub(crate) reads: BTreeMap<Vec<u8>, StateRevision>,
     pub(crate) head_reads: Vec<DurableObjectHeadRead>,
     /// State mutations other than the sender-nonce write and any fast-path
@@ -449,7 +452,7 @@ pub(crate) struct PaidAdmissionOutput {
     /// object's authority row.
     pub(crate) state_mutations: Vec<StateMutationEntry>,
     pub(crate) object_mutations: Vec<DurableObjectMutationEntry>,
-    /// Present in both modes: prepare uses its read assertion without writing
+    /// Present in every mode: prepare uses its read assertion without writing
     /// the next nonce; direct commit and certificate apply commit the write.
     pub(crate) nonce_write: Option<PendingSenderNonceWrite>,
     /// The fee source plus every application input, in the exact versions
@@ -481,6 +484,7 @@ const fn lock_mode(nonce_mode: NonceMode) -> mutation_fence::LockMode {
     match nonce_mode {
         NonceMode::Fresh => mutation_fence::LockMode::Fresh,
         NonceMode::PreparedApply => mutation_fence::LockMode::OwnedByRequest,
+        NonceMode::RecoveryApply => mutation_fence::LockMode::Absent,
     }
 }
 

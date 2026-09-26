@@ -73,6 +73,9 @@ pub(crate) enum LockMode {
     /// lock stamped a strictly older epoch is stale (DR-0132 §3.D) and may
     /// be reclaimed.
     Fresh,
+    /// Signerless certified recovery: every lock value must be absent,
+    /// including older-epoch locks. This mode never permits reclamation.
+    Absent,
     /// Certificate apply: the exact original request must own every
     /// object/nonce lock it touches.
     OwnedByRequest,
@@ -118,6 +121,10 @@ pub(crate) fn fence_object_lock<S: StructuredDurableDomainStateStore>(
     let key: Vec<u8> = fastpath_lock_key(chain, object_ref.id)?;
     let observed: VersionedStateValue = read_and_fence(store, context, domain, key, reads)?;
     match (mode, observed.value()) {
+        (LockMode::Absent, None) => Ok(ObjectLockState::Absent),
+        (LockMode::Absent, Some(_)) => Err(NodeCoreError::PersistenceInvariant(
+            "certified recovery requires absent object locks",
+        )),
         (LockMode::Fresh, None) => Ok(ObjectLockState::Absent),
         (LockMode::Fresh, Some(bytes)) => {
             let lock: FastPathLockRecord = decode_fastpath_lock_record(bytes)?;
@@ -172,6 +179,10 @@ pub(crate) fn fence_sender_nonce_lock<S: StructuredDurableDomainStateStore>(
     let key: Vec<u8> = fastpath_nonce_lock_key(chain, sender, epoch)?;
     let observed: VersionedStateValue = read_and_fence(store, context, domain, key, reads)?;
     match (mode, observed.value()) {
+        (LockMode::Absent, None) => Ok(()),
+        (LockMode::Absent, Some(_)) => Err(NodeCoreError::PersistenceInvariant(
+            "certified recovery requires absent nonce lock",
+        )),
         (LockMode::Fresh, None) => Ok(()),
         (LockMode::Fresh, Some(_)) => Err(NodeCoreError::PersistenceInvariant(
             "sender nonce locked by a pending fast path",

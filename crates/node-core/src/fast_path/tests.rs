@@ -30,6 +30,8 @@ use runtime::{
 use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore, SqliteNamespace};
 use std::cell::Cell;
 
+mod recovery;
+
 /// A real (non-mocked) Ed25519 `ConsensusSigner`, mirroring
 /// `consensus::fast_vote`'s own private test signer.
 struct TestSigner {

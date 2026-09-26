@@ -298,7 +298,7 @@ where
             if state.components.is_cancelled() {
                 return cancelled_before_storage_response();
             }
-            let output = match fast_path::apply(
+            let output = match fast_path::apply_with_recovery(
                 state.components.store.as_ref(),
                 state.components.blob_store.as_ref(),
                 &context,
@@ -311,6 +311,7 @@ where
                 &fastvote.execution.engine,
                 &request.signed_paid_intent,
                 &request.certificate,
+                fastvote.created_checkpoint,
             ) {
                 Ok(value) => value,
                 Err(error) => return fastpath_error_response(&error),
