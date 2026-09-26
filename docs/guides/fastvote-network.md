@@ -114,29 +114,32 @@ cargo run -p sunrise-edge-cli -- contract paid-call \
   --fastvote-expected-genesis-digest YOUR_64_HEX_DIGIT_MANIFEST_DIGEST \
   --fastvote-deadline-seconds 30 --fastvote-per-request-cap-seconds 10 \
   --fastvote-signed-intent-out /secure/signed-intent.bin \
-  --fastvote-certificate-out /secure/certificate.bin
+  --fastvote-certificate-out /secure/certificate.bin \
+  --result-out /secure/result.bin
 ```
 
-`--endpoint` is only where the ordinary read queries (fee policy, instance,
-code interface) go; the network config governs prepare/apply fanout
-separately, and its own validator entries need not include that same
-endpoint in the current candidate. Acceptance requires selecting the read
-peer from the same configured cohort and reusing its TLS policy, as tracked
-in `TODO.md`; do not treat the candidate as satisfying that boundary yet.
-`--fastvote-deadline-seconds` bounds the prepare-through-
-apply workflow (not replenished per phase); `--fastvote-per-request-cap-seconds`
-additionally bounds each individual peer request, so one slow or
-unreachable peer cannot exhaust the whole budget and starve the honest
-remainder. `--fastvote-signed-intent-out` and `--fastvote-certificate-out`
-are mandatory in network mode: the CLI reserves each path with `create_new`
-and `write_all`+`sync_all`s it before the corresponding mutating POST --
-before the first prepare and before the first apply, respectively -- and
-never overwrites an existing path. The current candidate synchronizes files,
-not their parent directory entries, and reserves them phase by phase.
-All-output preflight and directory synchronization are required before
-acceptance. Preserve these exact files; recovery
-after an interruption replays them, it never re-signs or reserves a fresh
-nonce.
+`--endpoint` must exactly select an endpoint in the network configuration.
+Ordinary preparation reads (context, fee policy, objects, nonce, instance,
+publication and interface) reuse that peer's configured transport/TLS policy;
+prepare/apply fan out across the configured cohort. Global TLS flags and
+`--submission-out` are unsupported in network mode.
+`--fastvote-deadline-seconds` starts immediately after flag parsing and
+bounds preparation through apply, without renewal between phases.
+`--fastvote-per-request-cap-seconds` also bounds each read or peer request.
+Both must be positive; the whole budget is at most 3600 seconds, and the
+request cap is at most 300 seconds and no greater than the whole budget.
+These are resource ceilings, not network latency targets.
+
+`--fastvote-signed-intent-out` and `--fastvote-certificate-out` are mandatory;
+`--result-out` is optional. All requested outputs must be distinct, unused
+paths in writable existing directories. The CLI reserves them all with
+`create_new` before the first prepare POST, retains the original handles,
+and strictly synchronizes files and parent directories. The signed intent
+is durable before prepare; the certificate is durable before apply. Existing
+files are never overwritten. A failure can leave reserved empty or partial
+files: preserve them, and recover the exact original bytes rather than
+re-signing or reserving a fresh nonce. Unix path-identity checks are tested;
+other platforms have not been validated.
 
 A committed **charged trap** (the application was rejected but a real fee
 was still reserved and settled) is reported with the actual fee/nonce and
@@ -160,16 +163,21 @@ cargo run -p sunrise-edge-cli -- contract fastvote-replay \
   --fastvote-deadline-seconds 30 --fastvote-per-request-cap-seconds 10 \
   --submission /secure/signed-intent.bin \
   --certificate /secure/certificate.bin \
-  --fastvote-certificate-out /secure/certificate-replay-unused.bin \
-  --fastvote-signed-intent-out /secure/signed-intent-replay-unused.bin
+  --result-out /secure/result-replay.bin
 ```
 
-If `--certificate`'s path does not exist yet, replay independently
-re-verifies the saved signed intent and runs the same prepare/quorum/apply
-flow `paid-call` does, from that exact saved intent -- never a fresh one.
-If it does exist, replay independently re-verifies the saved certificate
-against the pinned local validator set and the saved intent's own digest
-before going straight to apply. Either way, the epoch pinned by
+An explicitly supplied `--certificate` must exist and contain a complete,
+valid canonical certificate; a missing, empty, truncated or corrupt file
+fails before any POST. Replay verifies it against the pinned validator set
+and the saved intent's digest before apply. If no certificate was formed,
+omit `--certificate` and provide `--fastvote-certificate-out` with a new,
+unused path: replay collects and saves a certificate from the exact saved
+intent, then applies it. `--fastvote-signed-intent-out` is unsupported in
+replay, and `--fastvote-certificate-out` is unsupported when supplying
+`--certificate`. Optional `--result-out` must also be an unused path distinct
+from all inputs and outputs, and saves exact success or charged-trap bytes.
+A result-output failure after acknowledgement requires exact replay, not
+fresh signing. Either way, the epoch pinned by
 `--expected-epoch` must still be the namespace's live epoch for *fresh*
 work; replaying an already-applied historical receipt remains usable after
 an epoch change, since `fast_path::apply` is receipt-first. A non-current

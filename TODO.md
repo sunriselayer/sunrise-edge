@@ -113,10 +113,11 @@ post-launch hardening. The active order is:
     and the `contract paid-call --fastvote-network`/`contract fastvote-replay`
     CLI surface (per-peer TLS, mandatory pre-POST signed-intent/certificate
     artifact persistence, exact-bytes replay). The implementation is pending
-    review corrections, not accepted network delivery. Exercised by a real
-    four-validator SQLite-backed HTTP E2E
-    (`apps/operator/tests/fastvote_network_e2e.rs`, including HTTP status
-    checks; authentication-before-I/O counter assertions remain to be added)
+    final tech-lead review, not accepted network delivery. Exercised by a
+    real four-validator SQLite-backed HTTP E2E
+    (`apps/operator/tests/fastvote_network_e2e.rs`, including both handlers'
+    authentication-before-I/O counters, fixed/live-epoch refusals, genuine
+    cached future-vote refusal and historical receipt-first replay)
     and a real four-process live-PostgreSQL E2E driven through the compiled
     CLI library's command entry point, not a separately executed CLI binary
     (`apps/operator/tests/fastvote_host_pg_cli_e2e.rs`, gated behind
@@ -125,28 +126,29 @@ post-launch hardening. The active order is:
     transfer, exact replay of both, a rejected request-id-reuse conflict
     with independently re-verified unchanged durable state, a
     stale-writer-fence rejection, and a real close/reopen of a validator's
-    host process. Parent ran that PostgreSQL E2E and the complete repository
-    gate on candidate `00672f1b4f7923c00fd79e73f28405cff49b591b` using a
-    disposable fixed-port PostgreSQL service. Fresh Opus review of that
-    candidate returned **BLOCK**: whole-operation deadlines and cohort-bound
-    preparatory reads, durable recovery-artifact preflight, fixed-epoch host
-    pinning, shared operator helpers, and missing negative-test/documentation
-    evidence still need correction. Rerun the gate and fresh exact-head Opus
-    review after fixes. Independent ingress security review remains open;
-    this is not public-network, production, or custody authorization.
-    SDK checked deadline/cap rejection and sticky host identity exhaustion
-    are corrected in `23273fb38fd4485f33b11855fe815cda78487173`: the parent
-    verified the SDK, CLI network and host identity unit suites, selected
-    all-target/all-feature Clippy, and the four-process PostgreSQL CLI-library
-    E2E. Those checks do not resolve the remaining CLI/server review findings
-    or replace the final integrated repository gate and fresh Opus review.
-    The parent then passed `npm ci --prefix adapters/cloudflare-workers`
-    and `./scripts/check-all.sh` on code/documentation head
-    `8acbf45ec0f703b904a297f64d8fc2cb00eafcd8`, including required live
-    PostgreSQL fault scenarios, the explicit four-process host/CLI-library
-    E2E, stable vectors and all adapter checks. This validates the partial
-    corrections only: PR #223 remains Draft with the unresolved Opus BLOCK,
-    not approved for merge or activation.
+    host process. The earlier `00672f1` candidate passed the repository gate
+    but received Opus **BLOCK**. Corrections are integrated in `db09177`:
+    checked CLI preparation-through-apply budget using the selected cohort
+    client's exact TLS policy; all-output reservation and retained file/
+    directory synchronization; fail-closed explicit replay artifacts and
+    exact success/charged-trap result output; tested shared operator input,
+    key, genesis and TLS helpers; live epoch/set startup pinning and clear
+    out-of-band re-pin refusal; real runtime counters and the production-path
+    method matrix. SDK checked caps/deadlines and sticky identity exhaustion
+    remain covered. Parent source review, SQLite HTTP/startup tests and the
+    updated four-process PostgreSQL CLI-library E2E passed after integration.
+    Test-only follow-up `831250d` pins shared operator commands to the exact
+    fixture protocol, preserving legacy v1 and explicit network v3. The parent
+    passed `npm ci --prefix adapters/cloudflare-workers` and the complete
+    `./scripts/check-all.sh` after these corrections, including required live
+    PostgreSQL fault cases, the explicit host/CLI-library E2E, stable vectors
+    and adapter checks. Fresh exact-head Opus review and required CI still gate
+    merge; Codex implementation/cross-review does not replace that approval.
+    PR #223 remains Draft until those conditions pass. Independent
+    Phase 3 and new-ingress security reviews remain open; this is not public-
+    network, production, or custody authorization. Filesystem tests establish
+    strict synchronization/error handling on Unix, not power-loss recovery
+    or validated support for other platforms.
 - [ ] expose the already-implemented bond/epoch/equivocation/reward/claim
   lifecycle through explicit authenticated operator/network surfaces where
   needed;

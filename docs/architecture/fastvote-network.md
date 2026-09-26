@@ -27,11 +27,13 @@ live-network, load, soak, or capacity target.
   the exact signed bytes against the caller's own declared chain/protocol/
   epoch *before* allocating identity, reading the clock, or resolving
   domain/context; `fast_path::prepare`/`apply` then re-authenticate
-  internally and only afterward CAS-fence against the durable current
-  epoch, so a stale-but-genuinely-signed intent fails closed just after
-  authentication rather than before it, and a request whose epoch has since
-  advanced can still be replayed against its own already-committed receipt
-  (receipt-first historical exact replay).
+  internally. Prepare additionally rejects a declared epoch different from
+  the fixed host pin before any runtime I/O, including the cached-vote path.
+  Fresh apply checks the trusted execution-policy pin after receipt
+  reconciliation, then CAS-fences against the durable current epoch. A
+  request whose epoch has since advanced can still return its own
+  already-committed receipt (receipt-first historical exact replay), without
+  fee or application reapplication.
 - **Client** (`clients/rust::fastvote_client`): `load_trusted_fastvote_genesis`
   reuses `node_core::genesis`'s exact production trust model to turn a local
   genesis manifest file into a `consensus::FastPathCertifier` -- the sole,
@@ -52,12 +54,14 @@ live-network, load, soak, or capacity target.
   adopted latency or throughput target.
 - **Host** (`apps/operator/src/bin/fastvote_host_pg`): a long-running,
   certified-only PostgreSQL-backed FastVote HTTP host, reusing
-  `fastvote_pg`'s security-critical conventions (TOCTOU-safe signing-key
-  loading, TLS-only DSN, trusted-genesis-manifest verification) rather than
-  duplicating its one-shot-subcommand design. It never installs or resets
+  `fastvote_pg`'s tested shared `apps/operator/src/common.rs` boundaries
+  (flag parsing, TOCTOU-safe signing-key loading, TLS-only DSN and trusted
+  genesis verification). It never installs or resets
   genesis, only reads an already-committed manifest/fee-policy and verifies
   its local signing key against the committed registered validator; it
-  claims the namespace's writer fence exactly once at startup
+  verifies the installed live epoch and exact validator-set digest before
+  advancing the writer fence, and rechecks the pin after that claim before
+  listening. It claims the namespace's writer fence exactly once at startup
   (an explicit, mandatory offline confirmation, not an automatic
   background renewal); and it listens on loopback only, with explicit
   external-TLS-termination guidance -- it never terminates TLS itself.
@@ -68,15 +72,24 @@ live-network, load, soak, or capacity target.
   signs a real ordinary paid `Call` through the exact same generic
   construction path `paid-call` already uses directly, branching only at
   final submission between one direct POST and the network prepare/quorum/
-  apply flow. Endpoint-to-validator mapping against the local genesis pin
-  is verified before any fee-policy query or signing. Every configured
+  apply flow. A checked operation deadline starts immediately after flag
+  parsing, before input reads or signing. Every preparatory query uses a
+  budgeted transport borrowing the selected configured peer's client, with
+  the same overall deadline and per-request cap used for prepare/apply.
+  Endpoint-to-validator mapping against the local genesis pin is verified
+  before any fee-policy query or signing. Every configured
   remote peer gets its own independently configured TLS server name/CA
   (never one global pair reused, never mixed with a loopback peer in the
-  same cohort, never a system trust store). The signed-intent and
-  certificate artifacts are created with `create_new` and file-synchronized
-  (`write_all`+`sync_all`) before their respective mutating POSTs, and
-  never overwritten. `contract fastvote-replay` resubmits exactly those
-  saved bytes -- never a fresh nonce, never a re-sign.
+  same cohort, never a system trust store). Global TLS flags and an endpoint
+  outside that cohort are local errors. All requested outputs are reserved
+  with `create_new` before the first mutating POST; retained file and parent
+  directory handles synchronize the signed intent before prepare and the
+  certificate before apply. Aliases and existing destinations fail closed.
+  Optional result output persists exact success or charged-trap bytes.
+  `contract fastvote-replay` resubmits exactly saved bytes -- never a fresh
+  nonce, never a re-sign. An explicitly supplied missing or corrupt
+  certificate fails; omitting that flag intentionally collects a certificate
+  from the saved intent instead.
 
 ## Trust and pinning model
 
@@ -111,14 +124,14 @@ priced-admission or automatic-expiry claim for this development surface.
 
 ## Required acceptance boundaries
 
-Before using this experimental host, implementation and negative tests must
-establish the fixed configured epoch/set pin at startup and on preparation,
-while preserving receipt-first historical exact apply replay. CLI preparatory
-reads must use a configured peer's TLS policy and the same checked deadline
-as prepare/apply. Recovery files require all-output preflight and both file
-and parent-directory synchronization before mutation. The pending acceptance
-and independent review gates are recorded in `TODO.md`; the happy-path E2E
-does not substitute for them. The host currently uses an empty hash-suite
+The implementation includes fixed epoch/set startup checks, receipt-first
+historical replay, cohort-bound budgeted preparatory reads, all-output
+preflight, and strict file/directory synchronization. Negative tests exercise
+these boundaries, not only the happy path. Final implementation acceptance
+and independent review gates remain recorded in `TODO.md`; passing an E2E
+does not substitute for those reviews. Path-identity comparisons are
+Unix-specific, and other platforms have not been validated. The host
+currently uses an empty hash-suite
 history, so cross-suite historical replay fails closed. Its created-checkpoint
 value is trusted operator input, not evidence of a committed checkpoint.
 
