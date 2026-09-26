@@ -30,6 +30,7 @@ detailed design, operator guides, and specialist references live here.
 - [Offline PostgreSQL fee claims](operations/fastvote-fee-claims.md)
 - [Closed PostgreSQL FastVote operator rehearsal](operations/fastvote-pg-rehearsal.md)
 - [Certified-only FastVote HTTP network and CLI quorum client](guides/fastvote-network.md)
+- [Recover missed certified calls](guides/fastvote-catch-up.md)
 - [Certified PostgreSQL load and recovery measurements](operations/postgres-certified-load.md)
 - [Hardware signing](signing/hardware-signing.md)
 
