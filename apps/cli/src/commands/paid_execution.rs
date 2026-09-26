@@ -172,11 +172,6 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     if action != "paid-call" && parsed.get("--authorizations").is_some() {
         return Err(invalid("--authorizations is supported only for paid-call"));
     }
-    if action != "paid-call" && parsed.get("--fastvote-network").is_some() {
-        return Err(invalid(
-            "--fastvote-network is supported only for paid-call; paid-publish/paid-instantiate remain direct-only",
-        ));
-    }
     if budget.is_some() {
         super::fastvote_network::validate_paid_network_flags(&parsed)?;
     }
@@ -325,33 +320,23 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         authorizations,
     )?;
     let signed_bytes: Vec<u8> = encode_signed_paid_intent(&signed).map_err(failure)?;
-    let (derived_path, derived_bytes): (Option<&str>, Option<Vec<u8>>) =
+    let (derived_path, derived_kind, derived_bytes): (Option<&str>, &'static str, Option<Vec<u8>>) =
         match &signed.intent.application {
-            PaidApplication::Publish(artifact) => {
-                let digest: Digest32 =
-                    publication::artifact_commitment(&resolver, &context, artifact)
-                        .map_err(failure)?;
-                let reference: UnverifiedDependencyRef = UnverifiedDependencyRef::new(
-                    artifact.origin().clone(),
-                    artifact.revision(),
-                    artifact.context().clone(),
-                    digest,
-                )
-                .map_err(failure)?;
-                (
-                    parsed.get("--dependency-ref-out"),
-                    Some(publication::encode_dependency_ref(&reference).map_err(failure)?),
-                )
-            }
+            PaidApplication::Publish(artifact) => (
+                parsed.get("--dependency-ref-out"),
+                "dependency-ref",
+                Some(dependency_reference_bytes(&resolver, &context, artifact)?),
+            ),
             PaidApplication::Instantiate(_) => (
                 parsed.get("--instance-ref-out"),
+                "instance-ref",
                 instance_output
                     .as_ref()
                     .map(encode_instance_record)
                     .transpose()
                     .map_err(failure)?,
             ),
-            PaidApplication::Call(_) => (None, None),
+            PaidApplication::Call(_) => (None, "unused", None),
         };
     let result: PaidExecutionResult = if let Some((endpoints, certifier)) = &network {
         super::fastvote_network::run_network_submit(
@@ -360,6 +345,9 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
             certifier,
             &resolver,
             &signed,
+            derived_path
+                .zip(derived_bytes.as_deref())
+                .map(|(path, bytes)| (path, derived_kind, bytes)),
             budget.ok_or_else(|| invalid("network operation budget missing"))?,
         )?
     } else {
@@ -391,6 +379,28 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         ));
     }
     Ok(())
+}
+
+/// Recomputes a `Publish` artifact's canonical dependency reference from
+/// its own commitment, so any caller with the exact artifact and a locally
+/// pinned context/resolver can derive the same bytes independently -- used
+/// by the direct/network build path above and by
+/// `fastvote_network::run_replay`'s offline reference recovery.
+pub(super) fn dependency_reference_bytes(
+    resolver: &HashSuiteResolver,
+    context: &PublicationContext,
+    artifact: &CodeArtifact,
+) -> Result<Vec<u8>, CliError> {
+    let digest: Digest32 =
+        publication::artifact_commitment(resolver, context, artifact).map_err(failure)?;
+    let reference: UnverifiedDependencyRef = UnverifiedDependencyRef::new(
+        artifact.origin().clone(),
+        artifact.revision(),
+        artifact.context().clone(),
+        digest,
+    )
+    .map_err(failure)?;
+    publication::encode_dependency_ref(&reference).map_err(failure)
 }
 
 fn build_artifact(

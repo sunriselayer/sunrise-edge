@@ -1,8 +1,10 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
-use execution::call::InstanceTarget;
-use execution::local_execution::{LOCAL_EXECUTION_TRAP_REASON, LocalExecutionPolicy};
+use execution::call::{CallIntent, InstanceTarget};
+use execution::local_execution::{
+    InstanceRecord, LOCAL_EXECUTION_TRAP_REASON, LocalExecutionPolicy, instance_target,
+};
 use execution::paid_execution::*;
 use execution::publication::{ArtifactParts, CodeArtifact, PublicationContext};
 use fees::{Amount, GasSchedule};
@@ -155,6 +157,61 @@ fn context_result() -> Vec<u8> {
     .unwrap()
 }
 
+fn instantiate_record() -> InstanceRecord {
+    InstanceRecord {
+        context: context(),
+        creator: *signer().address().as_bytes(),
+        seed: [0x62; 32],
+        code: code(),
+        revision: 1,
+        initializer: "init".to_owned(),
+    }
+}
+fn instantiate_call(request_id: [u8; 32], nonce: u64, gas_limit: u64) -> CallIntent {
+    CallIntent {
+        context: context(),
+        request_id,
+        sender: *signer().address().as_bytes(),
+        nonce,
+        code: code(),
+        instance: instance_target(&resolver(), &instantiate_record()).unwrap(),
+        entrypoint: "init".to_owned(),
+        type_arguments: vec![],
+        access: AccessManifest::new(),
+        arguments: vec![],
+        gas_limit,
+    }
+}
+/// Builds the exact wire bytes for one acknowledged [`PaidExecutionResult`],
+/// reused by every `submit_paid_execution` test so each only states the
+/// `PaidExecutionResult` it wants acknowledged, not the outer
+/// `NodeResponse`/`HttpNodeResult` wrapping boilerplate.
+fn ack_response_bytes(result: &PaidExecutionResult, ack_status: NodeResponseStatus) -> Vec<u8> {
+    let request_id: RequestId = RequestId::new(result.request_id).unwrap();
+    let ack = NodeResponse::new(
+        request_id,
+        ack_status,
+        Some(encode_paid_execution_result(result).unwrap()),
+    )
+    .unwrap();
+    HttpNodeResult::new(request_id, vec![ack])
+        .unwrap()
+        .encode()
+        .unwrap()
+}
+fn ack_client(
+    result: &PaidExecutionResult,
+    ack_status: NodeResponseStatus,
+) -> Client<FakeTransport> {
+    Client::new(FakeTransport {
+        responses: RefCell::new(VecDeque::from([response(
+            NODE_RESULT_MEDIA_TYPE,
+            ack_response_bytes(result, ack_status),
+        )])),
+        requests: RefCell::new(Vec::new()),
+    })
+}
+
 #[test]
 fn policy_query_checks_context_and_returns_exact_canonical_policy() {
     let policy: PaidFeePolicy = fee_policy();
@@ -240,23 +297,149 @@ fn submit_rejects_outer_status_or_target_mismatch() {
         },
         charged: None,
     };
-    let request_id: RequestId = RequestId::new(signed.intent.request_id).unwrap();
-    let ack = NodeResponse::new(
-        request_id,
-        NodeResponseStatus::Accepted,
-        Some(encode_paid_execution_result(&result).unwrap()),
-    )
-    .unwrap();
-    let outer: Vec<u8> = HttpNodeResult::new(request_id, vec![ack])
-        .unwrap()
-        .encode()
-        .unwrap();
-    let client = Client::new(FakeTransport {
-        responses: RefCell::new(VecDeque::from([response(NODE_RESULT_MEDIA_TYPE, outer)])),
-        requests: RefCell::new(Vec::new()),
-    });
+    let client: Client<FakeTransport> = ack_client(&result, NodeResponseStatus::Accepted);
     assert!(matches!(
         client.submit_paid_execution(&signed, &resolver()),
+        Err(ClientError::PaidExecutionAcknowledgementMismatch)
+    ));
+}
+
+#[test]
+fn submit_paid_execution_accepts_exact_publish_success_and_rejects_wrong_kind_or_origin() {
+    let signed: SignedPaidIntent = build_signed_paid_execution(
+        &signer(),
+        &resolver(),
+        &expected(),
+        &fee_policy(),
+        consent(),
+        PaidApplication::Publish(artifact()),
+        RequestId::new([6; 32]).unwrap(),
+        5,
+        100_000,
+        vec![],
+    )
+    .unwrap();
+    let success = PaidExecutionResult {
+        request_id: signed.intent.request_id,
+        kind: PaidResultKind::Publish,
+        target: PaidResultTarget::Package(artifact().origin().clone()),
+        status: PaidExecutionStatus::Success,
+        effects: ExecutionEffects {
+            tx_hash: digest(0x56),
+            status: ExecutionStatus::Success,
+            object_effects: vec![],
+            events: vec![],
+            gas_used: 5,
+        },
+        charged: Some(PaidChargedOutcome {
+            reserved: Amount::new(10),
+            actual: Amount::new(10),
+            refund: Amount::new(0),
+            fee_output: consent().source.clone(),
+            refund_output: None,
+            reservation: ObjectId::new([0x40; 32]),
+            application_gas_units: 5,
+        }),
+    };
+    assert_eq!(
+        ack_client(&success, NodeResponseStatus::Accepted)
+            .submit_paid_execution(&signed, &resolver())
+            .unwrap(),
+        success
+    );
+
+    // Wrong kind: an otherwise wire-valid Instantiate/Instance
+    // acknowledgement returned for a signed Publish intent.
+    let mut wrong_kind: PaidExecutionResult = success.clone();
+    wrong_kind.kind = PaidResultKind::Instantiate;
+    wrong_kind.target = PaidResultTarget::Instance(instantiate_record());
+    assert!(matches!(
+        ack_client(&wrong_kind, NodeResponseStatus::Accepted)
+            .submit_paid_execution(&signed, &resolver()),
+        Err(ClientError::PaidExecutionAcknowledgementMismatch)
+    ));
+
+    // Wrong origin: a Publish acknowledgement naming a different package
+    // than the exact artifact this intent signed.
+    let mut wrong_origin: PaidExecutionResult = success.clone();
+    wrong_origin.target = PaidResultTarget::Package(
+        PackageOrigin::unverified(
+            expected().chain_id().clone(),
+            *signer().address().as_bytes(),
+            [77; 32],
+        )
+        .unwrap(),
+    );
+    assert!(matches!(
+        ack_client(&wrong_origin, NodeResponseStatus::Accepted)
+            .submit_paid_execution(&signed, &resolver()),
+        Err(ClientError::PaidExecutionAcknowledgementMismatch)
+    ));
+}
+
+#[test]
+fn submit_paid_execution_accepts_exact_instantiate_success_and_rejects_wrong_kind_or_instance() {
+    let signed: SignedPaidIntent = build_signed_paid_execution(
+        &signer(),
+        &resolver(),
+        &expected(),
+        &fee_policy(),
+        consent(),
+        PaidApplication::Instantiate(instantiate_call([7; 32], 6, 100_000)),
+        RequestId::new([7; 32]).unwrap(),
+        6,
+        100_000,
+        vec![],
+    )
+    .unwrap();
+    let success = PaidExecutionResult {
+        request_id: signed.intent.request_id,
+        kind: PaidResultKind::Instantiate,
+        target: PaidResultTarget::Instance(instantiate_record()),
+        status: PaidExecutionStatus::Success,
+        effects: ExecutionEffects {
+            tx_hash: digest(0x57),
+            status: ExecutionStatus::Success,
+            object_effects: vec![],
+            events: vec![],
+            gas_used: 5,
+        },
+        charged: Some(PaidChargedOutcome {
+            reserved: Amount::new(10),
+            actual: Amount::new(10),
+            refund: Amount::new(0),
+            fee_output: consent().source.clone(),
+            refund_output: None,
+            reservation: ObjectId::new([0x41; 32]),
+            application_gas_units: 5,
+        }),
+    };
+    assert_eq!(
+        ack_client(&success, NodeResponseStatus::Accepted)
+            .submit_paid_execution(&signed, &resolver())
+            .unwrap(),
+        success
+    );
+
+    // Wrong kind: a Call-shaped acknowledgement (still validly paired with
+    // an Instance target) returned for a signed Instantiate intent.
+    let mut wrong_kind: PaidExecutionResult = success.clone();
+    wrong_kind.kind = PaidResultKind::Call;
+    assert!(matches!(
+        ack_client(&wrong_kind, NodeResponseStatus::Accepted)
+            .submit_paid_execution(&signed, &resolver()),
+        Err(ClientError::PaidExecutionAcknowledgementMismatch)
+    ));
+
+    // Wrong instance: the acknowledged instance record derives a different
+    // InstanceTarget than the exact call this intent signed.
+    let mut wrong_instance: PaidExecutionResult = success.clone();
+    let mut record: InstanceRecord = instantiate_record();
+    record.seed = [0x99; 32];
+    wrong_instance.target = PaidResultTarget::Instance(record);
+    assert!(matches!(
+        ack_client(&wrong_instance, NodeResponseStatus::Accepted)
+            .submit_paid_execution(&signed, &resolver()),
         Err(ClientError::PaidExecutionAcknowledgementMismatch)
     ));
 }

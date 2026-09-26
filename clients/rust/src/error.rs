@@ -196,10 +196,6 @@ pub enum ClientError {
     /// The whole-operation FastVote deadline elapsed before this endpoint
     /// could be contacted.
     FastVoteOverallDeadlineExceeded,
-    /// A FastVote apply was attempted for a signed intent whose application
-    /// is not `PaidApplication::Call`, the only application DR-0130 fast-path
-    /// phase 1 supports.
-    FastVoteUnsupportedApplication,
     /// A returned vote, or a certificate being independently re-verified
     /// before apply, is bound to a different transaction than the exact
     /// signed intent this call is submitting.
@@ -314,9 +310,6 @@ impl fmt::Display for ClientError {
             Self::FastVoteOverallDeadlineExceeded => {
                 f.write_str("FastVote whole-operation deadline elapsed before this endpoint could be contacted")
             }
-            Self::FastVoteUnsupportedApplication => f.write_str(
-                "FastVote apply requires a PaidApplication::Call signed intent",
-            ),
             Self::FastVoteUnexpectedTransaction { expected, actual } => write!(
                 f,
                 "FastVote response is bound to transaction {actual}, expected the exact submitted intent's own digest {expected}"
@@ -367,7 +360,6 @@ impl Error for ClientError {
             Self::FastVoteConsensus(error) => Some(error),
             Self::FastVoteEndpointIdentityMismatch { .. }
             | Self::FastVoteOverallDeadlineExceeded
-            | Self::FastVoteUnsupportedApplication
             | Self::FastVoteUnexpectedTransaction { .. } => None,
         }
     }
