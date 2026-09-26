@@ -152,13 +152,27 @@ post-launch hardening. The active order is:
 - [ ] expose the already-implemented bond/epoch/equivocation/reward/claim
   lifecycle through explicit authenticated operator/network surfaces where
   needed;
-  - Current slice: [DR-0149](docs/architecture/decisions/0149-offline-signed-fee-claims.md)
-    specifies offline single-namespace PostgreSQL escrow inspection, generic
-    signed claim preparation, apply/exact replay and payout verification.
-    Implementation and verification are pending. Direct network claim mutation
-    is excluded: local generation CAS does not order shared-escrow claims
-    across validators. Online ordering/certification and the remaining
-    bond/epoch/equivocation surfaces stay open.
+  - [x] [DR-0149](docs/architecture/decisions/0149-offline-signed-fee-claims.md):
+    offline single-namespace PostgreSQL escrow listing/inspection, generic
+    signed claim preparation, apply/exact replay and independent persisted
+    receipt/history/payout verification are implemented and locally validated.
+    The compiled `economics_pg` E2E covers zero/split/final claims, read-only
+    preparation, stale proposals/writers, key/signature/context/artifact and
+    output-path refusal, valid changed-recipient request-id conflict, and
+    close/reopen exact replay of an older receipt after later claims, with
+    unchanged business state, nonce and payout. All new core inspection/
+    preparation APIs use bounded exact scanned claim-key verification.
+    Parent integration review, SDK transaction-bound acknowledgement tests,
+    `npm ci --prefix adapters/cloudflare-workers` and the complete repository
+    gate passed, including required live PostgreSQL fault cases, existing
+    multi-validator host/CLI and new compiled claim E2Es, stable vectors and
+    adapter checks. Merge requires fresh exact-head Opus approval and required
+    CI; implementation agents do not replace that review. Direct network
+    claim mutation is excluded: local generation CAS does not order shared-
+    escrow claims across validators, and fence recovery alone does not
+    authorize live re-entry after local claim mutations. Online ordering/
+    certification, settlement/state handoff, independent security gates and
+    the remaining bond/epoch/equivocation surfaces stay open.
 - [ ] owned-state and settlement handoff correctness, activation-bound state
   verification, and validator catch-up before live epoch/set changes or
   validator replacement/activation. Local epoch CAS and lock-reclamation
