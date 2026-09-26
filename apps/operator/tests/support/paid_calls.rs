@@ -280,10 +280,7 @@ pub fn run_asset_verb_expect_rejected(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    for (path, artifact) in [
-        (&result_out, "result"),
-        (&cert_out, "certificate"),
-    ] {
+    for (path, artifact) in [(&result_out, "result"), (&cert_out, "certificate")] {
         let bytes: Vec<u8> = fs::read(path).unwrap_or_default();
         assert!(
             bytes.is_empty(),
