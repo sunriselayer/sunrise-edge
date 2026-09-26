@@ -3426,27 +3426,28 @@ completion criteria in this plan, not vague "production" deferrals.
       - [ ] Phase 3 independent security review gate. The completed economics
         core on prior main `72a5f9847673dc9345d3b918ce46957d343cd520` passed a
         fresh Opus tech-lead review on 2026-09-26; that is not an independent
-        security audit or approval of the added network-ingress candidate.
+        security audit. DR-0148 separately passed fresh exact-head Opus review
+        and CI before PR #223 merged as `12a08c6`; its independent ingress
+        security gate remains open.
 
   **Remaining Phase 3 completion:** pass the independent Phase 3 security
   review over the completed custody/bond/forfeiture/claim/payout economics
   core above. The prior-main tech-lead review passed; changed surfaces still
-  require fresh review, and the DR-0148 candidate remains blocked. Per
+  require fresh review. DR-0148's implementation review and CI passed; the
+  independent new-ingress security gate remains open. Per
   [DR-0147](docs/architecture/decisions/0147-function-first-network-delivery.md),
   declaring an initial network load/recovery target and establishing
   representative sustained claim/restart-sweep capacity move to post-launch
   hardening; they are not a Phase 3 prerequisite, and no target numbers are
   adopted yet. The bounded DR-0145/0146 regressions remain fixture-level
-  evidence, not that certification. DR-0148's opt-in experimental implementation
-  may proceed while the independent review remains open; live exposure is
-  still separately gated. Authenticated external validator request/event-driven
-  ingress for prepare/certificate/
-  apply, a CLI end-to-end quorum submission path, exposing the
+  evidence, not that certification. DR-0148's opt-in experimental certified
+  prepare/apply HTTP host and CLI quorum/replay path are implemented and
+  validated, but live exposure is still separately gated. Exposing the
   bond/epoch/equivocation/reward/claim lifecycle through explicit
   authenticated operator/network surfaces where needed, and bounded
   independent-validator functional start/restart/replay/authorization
   evidence with a documented deployment/configuration walkthrough become the
-  next integrated network functional delivery, gated by its own separate
+  remaining integrated network functional delivery, gated by its own separate
   design, authentication and security/audit review — not folded into this
   phase. Protocol-version activation is a separately blocked future gate;
   there is no live version-switch path to exercise in this phase. Revisit it
