@@ -102,7 +102,7 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 
 | Order | Integrated outcome | Remaining acceptance |
 | --- | --- | --- |
-| 1 | Generic certified network contract lifecycle | Publish → Instantiate → Call, arbitrary Standard Asset create and existing verbs, fees, exact replay, dependency-ordered missed-prepare catch-up; actual CLI/multi-validator E2E and fresh review in one coherent PR |
+| 1 | Generic certified network contract lifecycle | Implemented and bounded CLI/multi-validator regressions locally validated (DR-0151): Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Full repository validation, exact-head review and CI remain mandatory merge gates; independent ingress/security gates are separate. |
 | 2 | Network economics and validator operations | Explicit shared ordering/certification for rewards/claims, bonds and equivocation/slashing; authenticated usable surfaces and identical results across validators |
 | 3 | Validator membership and epoch handoff | Verified required definitions/state/settlement history, completeness and activation-bound catch-up; real add/replace/recover/epoch operations with ineligible/divergent replicas rejected |
 | 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
@@ -119,13 +119,28 @@ conformance do not waive any current safety or independent security gate.
 
 The detailed existing evidence and remaining criteria follow:
 
-- [ ] **Delivery 1: certified Publish/Instantiate/Call and asset CLI integration**
+- [x] **Delivery 1 implementation: certified Publish/Instantiate/Call and asset CLI integration**
   ([DR-0151](docs/architecture/decisions/0151-integrated-network-delivery-and-lightweight-stores.md)).
-  Extend the shared paid staged-commit pipeline and all-kind SDK/CLI result
-  binding; keep prepare effect-free, certified apply atomic and recovery
-  signerless with exact local prerequisites. Retain synchronized original
-  artifacts and output preflight; prove a real four-host lifecycle from user
-  publication through dependent calls/assets and ordered recovery/restart.
+  The shared paid staged-commit pipeline and all-kind SDK/CLI result binding
+  now support all three kinds; prepare remains effect-free, certified apply
+  atomic and recovery signerless with exact local prerequisites. Original
+  artifacts are synchronized and outputs reserved before mutation.
+  Parent-run real compiled-CLI PostgreSQL E2Es cover user publication,
+  dependent instantiate/generic calls, the active-code-pinned top-level
+  `create-asset`/mint/merge/split/transfer/burn commands, success/charged traps,
+  request-ID conflicts, exact cross-peer protocol convergence and each peer's
+  independently verified fee inventory. A fourth validator offline before
+  Publish recovers the declared lifecycle; same-boot and real process-restart
+  replay leave full local state unchanged. Authentic new-Publish stale-writer
+  fencing, real prefix commit before a nonce gap, genuine publication-record
+  tombstoning, malformed-batch zero-POST rejection, and output/context preflight
+  are exercised separately, without masking failures behind a wrong nonce or
+  a dead endpoint. See `contract_lifecycle_pg_e2e.rs` and
+  `contract_lifecycle_catch_up_pg_e2e.rs` in `apps/operator/tests`.
+  The implementation checkbox records this bounded functional evidence, not
+  permission to merge or deploy: the full repository gate, fresh exact-final-head
+  Opus approval and required CI must pass before merge; independent security
+  and activation gates remain open.
   No Standard Asset core privilege, opaque definition import, direct-mutation
   fallback, complete state handoff or live activation is authorized.
 
