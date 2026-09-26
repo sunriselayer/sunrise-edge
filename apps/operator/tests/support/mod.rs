@@ -11,6 +11,7 @@
 pub mod cli;
 pub mod genesis_fixture;
 pub mod isolated_databases;
+pub mod soak;
 pub mod tls_relay;
 
 use std::{

@@ -1339,23 +1339,23 @@ fn load_last_object_version_metadata(
     lock: bool,
 ) -> Result<Option<PersistedObjectVersionMetadata>, PreCommitFailure> {
     let sql: &str = if lock {
-        "SELECT object_version::TEXT
-         FROM sunrise_edge.object_versions
-         WHERE chain_id_bytes = $1
-           AND validator_id = $2
-           AND atomicity_domain_id = $3
-           AND object_id = $4
-         ORDER BY object_version DESC
+        "SELECT v.object_version::TEXT
+         FROM sunrise_edge.object_versions AS v
+         WHERE v.chain_id_bytes = $1
+           AND v.validator_id = $2
+           AND v.atomicity_domain_id = $3
+           AND v.object_id = $4
+         ORDER BY v.object_version DESC
          LIMIT 1
          FOR UPDATE"
     } else {
-        "SELECT object_version::TEXT
-         FROM sunrise_edge.object_versions
-         WHERE chain_id_bytes = $1
-           AND validator_id = $2
-           AND atomicity_domain_id = $3
-           AND object_id = $4
-         ORDER BY object_version DESC
+        "SELECT v.object_version::TEXT
+         FROM sunrise_edge.object_versions AS v
+         WHERE v.chain_id_bytes = $1
+           AND v.validator_id = $2
+           AND v.atomicity_domain_id = $3
+           AND v.object_id = $4
+         ORDER BY v.object_version DESC
          LIMIT 1"
     };
     let latest_version: Option<DurableObjectVersion> = transaction

@@ -3382,6 +3382,47 @@ records one integrated PostgreSQL regression slice and the work still open:
   external FastVote ingress and protocol-version activation behind their own
   decisions.
 
+### Certified PostgreSQL workload and recovery instrument
+
+[DR-0146](docs/architecture/decisions/0146-postgres-certified-load-and-recovery-harness.md)
+and the [measurement runbook](docs/operations/postgres-certified-load.md)
+define this integrated instrument:
+
+- [x] Build a finite explicitly sized workload that creates genuine
+  quorum-certified paid escrows on a PostgreSQL primary with independent
+  memory co-voters, claims each through positive split/final and zero-share
+  paths, checks exact replay and retained state after a newer-fence reopen,
+  and drives repeated complete inventories through the real TLS operator.
+  Validate count/rate/deadline bounds and fail without a complete totals
+  record on partial work. Wire only a fixed small smoke into repository CI;
+  long runs require explicit configuration and disposable-test confirmation.
+  The 2026-09-26 local smoke completed 8 escrows, 32 claims and 8 payouts,
+  byte/revision-exact same-boot and post-reopen replay checks, and two
+  complete TLS operator inventories (two pages each; final writer fence 4).
+  This uncovered and fixed a production adapter lookup that sorted selected
+  `object_version::TEXT` instead of the numeric base column. The real
+  PostgreSQL regression updates through version 101, reopens, and proves
+  both reads and locked mutation still reject head/history disagreement.
+  A finite manual run on code commit `fa7517d` completed 64 escrows, 256
+  claims and 64 payouts with 4 senders/4 claim writers, an offered-call cap
+  of 8/s, a 600-second workload ceiling, a 900-second wall ceiling and
+  three complete 16-page TLS inventories (final writer fence 5). There were
+  279 claim attempts and 23 definite serialization retries of unchanged
+  signed bytes. Creation took 120928 ms, claims 35018 ms, the core reopen
+  verification 35940 ms, and inventories 39073/42665/42990 ms. Retained
+  logical payload was 641856 bytes on the runbook's limited payload basis.
+  Environment: PostgreSQL 18.6 with fsync/synchronous_commit/full_page_writes
+  on; one shared Intel i7-12700F/20-logical-CPU, 31857-MiB-RAM host, NVMe
+  storage with about 91 GiB free, no container CPU/RAM caps and other host
+  work running. The roughly 318-second finite run is not a 600-second
+  sustained soak, four PostgreSQL hosts or an adopted throughput/SLO result.
+  A deliberate one-second workload ceiling failed during escrow creation,
+  exited nonzero and emitted no complete totals record.
+- [ ] Adopt initial-network workload/recovery targets and gather
+  representative sustained deployment measurements. A configurable
+  instrument and its smoke do not satisfy this acceptance item, independent
+  administration/host domains or the Phase 3 security/tech-lead gate.
+
 ## Closed PostgreSQL multi-validator operator rehearsal
 
 [DR-0144](docs/architecture/decisions/0144-closed-postgres-fastvote-operator.md)

@@ -580,7 +580,7 @@ fn file_backed_sqlite_fee_claims_reopen_and_replay_without_reapplication() {
 /// `ObjectRef`s and replay non-reapplication. A final tamper of one retained
 /// claim envelope proves the whole multi-page sweep fails closed, not just
 /// the tampered escrow.
-mod certified_multi_escrow_inventory {
+pub(crate) mod certified_multi_escrow_inventory {
     use super::*;
     use crate::fast_path::{
         self, FastPathEd25519Verifier, FastPathValidatorEntry, install_validator_set,
@@ -613,9 +613,9 @@ mod certified_multi_escrow_inventory {
     /// installable [`FastPathValidatorEntry`] every store's validator set
     /// carries. Distinct from `crate::fast_path::tests::TestSigner`, which is
     /// private to that sibling test module.
-    struct Voter {
-        entry: FastPathValidatorEntry,
-        signing_key: SigningKey,
+    pub(crate) struct Voter {
+        pub(crate) entry: FastPathValidatorEntry,
+        pub(crate) signing_key: SigningKey,
     }
     impl ConsensusSigner for Voter {
         fn validator_id(&self) -> ValidatorId {
@@ -659,7 +659,7 @@ mod certified_multi_escrow_inventory {
         voters
     }
 
-    fn build_validator_set(entries: &[FastPathValidatorEntry]) -> ValidatorSet {
+    pub(crate) fn build_validator_set(entries: &[FastPathValidatorEntry]) -> ValidatorSet {
         ValidatorSet::new(
             protocol().epoch(),
             entries
@@ -680,7 +680,7 @@ mod certified_multi_escrow_inventory {
     /// fixture. The test asserts that amount for both source objects, so a
     /// future fuel-cost change fails visibly instead of silently losing the
     /// intended `[1, 1, 0, 0]` split/final/zero-share coverage.
-    fn cheap_policy(base: &PaidFeePolicy) -> PaidFeePolicy {
+    pub(crate) fn cheap_policy(base: &PaidFeePolicy) -> PaidFeePolicy {
         let mut policy: PaidFeePolicy = base.clone();
         policy.gas_schedule = GasSchedule {
             base_fee: 100,
@@ -699,7 +699,7 @@ mod certified_multi_escrow_inventory {
     /// test -- the SQLite primary and every memory-backed voter -- calls
     /// this identically, exactly like `fast_path::tests`' own multi-store
     /// patterns: independent stores derive byte-identical fixture state.
-    fn install_all<S: StructuredDurableDomainStateStore>(
+    pub(crate) fn install_all<S: StructuredDurableDomainStateStore>(
         store: &S,
         entries: &[FastPathValidatorEntry],
     ) -> (Fixture, PaidFeePolicy) {
@@ -744,7 +744,7 @@ mod certified_multi_escrow_inventory {
         (fixture, policy)
     }
 
-    fn prepare_vote<S: StructuredDurableDomainStateStore>(
+    pub(crate) fn prepare_vote<S: StructuredDurableDomainStateStore>(
         store: &S,
         policy: &PaidFeePolicy,
         voter: &Voter,
@@ -768,7 +768,7 @@ mod certified_multi_escrow_inventory {
         .unwrap()
     }
 
-    fn certify(validator_set: &ValidatorSet, votes: &[FastVote]) -> Vec<u8> {
+    pub(crate) fn certify(validator_set: &ValidatorSet, votes: &[FastVote]) -> Vec<u8> {
         let certifier: consensus::FastPathCertifier = consensus::FastPathCertifier::new(
             protocol().chain_id().clone(),
             protocol().protocol_version(),
@@ -790,7 +790,7 @@ mod certified_multi_escrow_inventory {
         consensus::encode_fast_certificate(&certificate).unwrap()
     }
 
-    fn apply_escrow<S: StructuredDurableDomainStateStore>(
+    pub(crate) fn apply_escrow<S: StructuredDurableDomainStateStore>(
         store: &S,
         policy: &PaidFeePolicy,
         signed_bytes: &[u8],
@@ -821,7 +821,7 @@ mod certified_multi_escrow_inventory {
     /// [`export_certified_operator_fixture_postgres`]) no certified escrow
     /// object can actually cross the inline-body threshold under this
     /// fixture's asset type.
-    fn prepare_vote_with_blob<S: StructuredDurableDomainStateStore>(
+    pub(crate) fn prepare_vote_with_blob<S: StructuredDurableDomainStateStore>(
         store: &S,
         blob_store: &dyn BlobStore,
         policy: &PaidFeePolicy,
@@ -848,7 +848,7 @@ mod certified_multi_escrow_inventory {
 
     /// Identical to [`apply_escrow`], but threads a caller-supplied blob
     /// store; see [`prepare_vote_with_blob`].
-    fn apply_escrow_with_blob<S: StructuredDurableDomainStateStore>(
+    pub(crate) fn apply_escrow_with_blob<S: StructuredDurableDomainStateStore>(
         store: &S,
         blob_store: &dyn BlobStore,
         policy: &PaidFeePolicy,
@@ -872,7 +872,7 @@ mod certified_multi_escrow_inventory {
         .unwrap()
     }
 
-    fn read_current_escrow<S: StructuredDurableDomainStateStore>(
+    pub(crate) fn read_current_escrow<S: StructuredDurableDomainStateStore>(
         store: &S,
         id: ObjectId,
     ) -> Object {
@@ -890,7 +890,7 @@ mod certified_multi_escrow_inventory {
         inline.object().clone()
     }
 
-    fn current_row<S: StructuredDurableDomainStateStore>(
+    pub(crate) fn current_row<S: StructuredDurableDomainStateStore>(
         store: &S,
         escrow_request_id: [u8; 32],
     ) -> (Vec<u8>, FastPathSettlementRecord) {
@@ -909,7 +909,7 @@ mod certified_multi_escrow_inventory {
         (bytes, row)
     }
 
-    fn sign_claim(signing_key: &SigningKey, intent: FeeClaimIntent) -> Vec<u8> {
+    pub(crate) fn sign_claim(signing_key: &SigningKey, intent: FeeClaimIntent) -> Vec<u8> {
         let digest: Digest32 = fee_claim_intent_digest(&resolver(), &intent).unwrap();
         let frame: Vec<u8> = fee_claim_signing_frame(&intent.context, digest).unwrap();
         let signed: SignedFeeClaimIntent = SignedFeeClaimIntent {
@@ -925,16 +925,23 @@ mod certified_multi_escrow_inventory {
     /// whose paid intent created the escrow, exactly like
     /// `exercise_split_then_final` above.
     fn sign_leg(intent: LocalExecutionIntent) -> SignedLocalExecutionIntent {
+        sign_leg_with_key(intent, &key())
+    }
+
+    pub(crate) fn sign_leg_with_key(
+        intent: LocalExecutionIntent,
+        signing_key: &SigningKey,
+    ) -> SignedLocalExecutionIntent {
         let frame: Vec<u8> = local_execution_signing_frame(&protocol(), &intent).unwrap();
         SignedLocalExecutionIntent {
-            signature: key().sign(&frame).into(),
+            signature: signing_key.sign(&frame).into(),
             intent,
         }
     }
 
-    struct SplitClaim {
-        signed_bytes: Vec<u8>,
-        payout: Object,
+    pub(crate) struct SplitClaim {
+        pub(crate) signed_bytes: Vec<u8>,
+        pub(crate) payout: Object,
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1153,7 +1160,239 @@ mod certified_multi_escrow_inventory {
         sign_claim(&validator.signing_key, intent)
     }
 
-    fn build_zero_claim<S: StructuredDurableDomainStateStore>(
+    /// Same as [`build_split_claim`], but the leg's authorizing `sender`/
+    /// signing key is an explicit lane identity instead of the fixture's
+    /// shared `sender()`/`key()`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build_split_claim_for_lane<S: StructuredDurableDomainStateStore>(
+        store: &S,
+        fixture: &Fixture,
+        validator: &Voter,
+        resource_id: BondResourceId,
+        escrow_request_id: [u8; 32],
+        claim_request_id: [u8; 32],
+        leg_sender: [u8; 32],
+        leg_signing_key: &SigningKey,
+        leg_nonce: u64,
+        recipient_seed: u8,
+    ) -> SplitClaim {
+        let (row_bytes, row) = current_row(store, escrow_request_id);
+        let share_amount: u64 = row
+            .shares
+            .iter()
+            .find(|share| share.validator_id == validator.entry.id)
+            .unwrap()
+            .amount;
+        let escrow_ref: ObjectRef = row.fee_output.clone().unwrap();
+        let escrow_object: Object = read_current_escrow(store, escrow_ref.id);
+        let recipient_key: SigningKey = SigningKey::from([recipient_seed; 32]);
+        let recipient: Address = Address::new(VerificationKey::from(&recipient_key).into());
+        let call: CallIntent = CallIntent {
+            context: protocol(),
+            request_id: claim_request_id,
+            sender: leg_sender,
+            nonce: leg_nonce,
+            code: fixture.code.clone(),
+            instance: execution::local_execution::instance_target(&resolver(), &fixture.instance)
+                .unwrap(),
+            entrypoint: "split".to_owned(),
+            type_arguments: vec![public_standard_asset::asset_type_argument(&fixture.asset)],
+            access: AccessManifest {
+                entries: vec![entry(&escrow_object, AccessMode::Write)],
+            },
+            arguments: public_standard_asset::split_arguments(share_amount, recipient.as_bytes())
+                .unwrap(),
+            gas_limit: 500_000,
+        };
+        let signed_leg: SignedLocalExecutionIntent = sign_leg_with_key(
+            LocalExecutionIntent {
+                mode: LocalExecutionMode::Call,
+                policy_digest: base_policy().digest(&resolver()).unwrap(),
+                call,
+                authorizations: Vec::new(),
+            },
+            leg_signing_key,
+        );
+        let leg_bytes: Vec<u8> = encode_signed_local_execution(&signed_leg).unwrap();
+        let payout_id: ObjectId = derive_local_created_object_id(
+            &resolver(),
+            &protocol(),
+            &fixture.instance.context,
+            &execution::local_execution::instance_target(&resolver(), &fixture.instance).unwrap(),
+            &fixture.instance.code,
+            local_execution_event_digest(&resolver(), &signed_leg).unwrap(),
+            0,
+        )
+        .unwrap();
+        let payout: Object = Object {
+            id: payout_id,
+            version: 1,
+            owner: Owner::Address(recipient),
+            type_hash: escrow_object.type_hash,
+            schema_version: escrow_object.schema_version,
+            data: encode_call_value(
+                &public_standard_asset::coin_body_layout(),
+                &CallValue::U64(share_amount),
+            )
+            .unwrap(),
+        };
+        let unclaimed_before: u64 = row
+            .shares
+            .iter()
+            .filter(|share| !share.claimed && share.amount > 0)
+            .map(|share| share.amount)
+            .sum();
+        let mut retained: Object = escrow_object.clone();
+        retained.version += 1;
+        retained.data = encode_call_value(
+            &public_standard_asset::coin_body_layout(),
+            &CallValue::U64(unclaimed_before - share_amount),
+        )
+        .unwrap();
+        let mut next_row: FastPathSettlementRecord = row.clone();
+        next_row.generation += 1;
+        next_row.fee_output = Some(object_reference(&retained));
+        next_row
+            .shares
+            .iter_mut()
+            .find(|share| share.validator_id == validator.entry.id)
+            .unwrap()
+            .claimed = true;
+        let next_bytes: Vec<u8> = encode_fastpath_settlement_record(&next_row).unwrap();
+        let intent: FeeClaimIntent = FeeClaimIntent {
+            context: protocol(),
+            request_id: claim_request_id,
+            escrow_request_id,
+            certificate_epoch: protocol().epoch(),
+            validator_id: validator.entry.id,
+            resource_id,
+            expected_generation: row.generation,
+            expected_fee_output: escrow_ref,
+            expected_previous_row_digest: fee_claim_row_digest(
+                &resolver(),
+                protocol().epoch(),
+                &row_bytes,
+            )
+            .unwrap(),
+            expected_next_row_digest: fee_claim_row_digest(
+                &resolver(),
+                protocol().epoch(),
+                &next_bytes,
+            )
+            .unwrap(),
+            share_amount,
+            recipient,
+            operation: FeeClaimOperation::Split {
+                leg: leg_bytes,
+                expected_payout: Some(object_reference(&payout)),
+            },
+        };
+        SplitClaim {
+            signed_bytes: sign_claim(&validator.signing_key, intent),
+            payout,
+        }
+    }
+
+    /// Same as [`build_final_claim`], but the leg's authorizing `sender`/
+    /// signing key is an explicit lane identity instead of the fixture's
+    /// shared `sender()`/`key()`; see [`build_split_claim_for_lane`].
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build_final_claim_for_lane<S: StructuredDurableDomainStateStore>(
+        store: &S,
+        fixture: &Fixture,
+        validator: &Voter,
+        resource_id: BondResourceId,
+        escrow_request_id: [u8; 32],
+        claim_request_id: [u8; 32],
+        leg_sender: [u8; 32],
+        leg_signing_key: &SigningKey,
+        leg_nonce: u64,
+        recipient_seed: u8,
+    ) -> Vec<u8> {
+        let (row_bytes, row) = current_row(store, escrow_request_id);
+        let share_amount: u64 = row
+            .shares
+            .iter()
+            .find(|share| share.validator_id == validator.entry.id)
+            .unwrap()
+            .amount;
+        let escrow_ref: ObjectRef = row.fee_output.clone().unwrap();
+        let escrow_object: Object = read_current_escrow(store, escrow_ref.id);
+        let recipient_key: SigningKey = SigningKey::from([recipient_seed; 32]);
+        let recipient: Address = Address::new(VerificationKey::from(&recipient_key).into());
+        let call: CallIntent = CallIntent {
+            context: protocol(),
+            request_id: claim_request_id,
+            sender: leg_sender,
+            nonce: leg_nonce,
+            code: fixture.code.clone(),
+            instance: execution::local_execution::instance_target(&resolver(), &fixture.instance)
+                .unwrap(),
+            entrypoint: "transfer".to_owned(),
+            type_arguments: vec![public_standard_asset::asset_type_argument(&fixture.asset)],
+            access: AccessManifest {
+                entries: vec![entry(&escrow_object, AccessMode::Write)],
+            },
+            arguments: public_standard_asset::transfer_arguments(recipient.as_bytes()).unwrap(),
+            gas_limit: 500_000,
+        };
+        let signed_leg: SignedLocalExecutionIntent = sign_leg_with_key(
+            LocalExecutionIntent {
+                mode: LocalExecutionMode::Call,
+                policy_digest: base_policy().digest(&resolver()).unwrap(),
+                call,
+                authorizations: Vec::new(),
+            },
+            leg_signing_key,
+        );
+        let leg_bytes: Vec<u8> = encode_signed_local_execution(&signed_leg).unwrap();
+        let mut transferred: Object = escrow_object.clone();
+        transferred.version += 1;
+        transferred.owner = Owner::Address(recipient);
+        transferred.data = encode_call_value(
+            &public_standard_asset::coin_body_layout(),
+            &CallValue::U64(share_amount),
+        )
+        .unwrap();
+        let mut next_row: FastPathSettlementRecord = row.clone();
+        next_row.generation += 1;
+        next_row.fee_output = Some(object_reference(&transferred));
+        next_row
+            .shares
+            .iter_mut()
+            .find(|share| share.validator_id == validator.entry.id)
+            .unwrap()
+            .claimed = true;
+        let next_bytes: Vec<u8> = encode_fastpath_settlement_record(&next_row).unwrap();
+        let intent: FeeClaimIntent = FeeClaimIntent {
+            context: protocol(),
+            request_id: claim_request_id,
+            escrow_request_id,
+            certificate_epoch: protocol().epoch(),
+            validator_id: validator.entry.id,
+            resource_id,
+            expected_generation: row.generation,
+            expected_fee_output: escrow_ref,
+            expected_previous_row_digest: fee_claim_row_digest(
+                &resolver(),
+                protocol().epoch(),
+                &row_bytes,
+            )
+            .unwrap(),
+            expected_next_row_digest: fee_claim_row_digest(
+                &resolver(),
+                protocol().epoch(),
+                &next_bytes,
+            )
+            .unwrap(),
+            share_amount,
+            recipient,
+            operation: FeeClaimOperation::FinalTransfer { leg: leg_bytes },
+        };
+        sign_claim(&validator.signing_key, intent)
+    }
+
+    pub(crate) fn build_zero_claim<S: StructuredDurableDomainStateStore>(
         store: &S,
         validator: &Voter,
         resource_id: BondResourceId,
@@ -1207,7 +1446,7 @@ mod certified_multi_escrow_inventory {
         submit_claim_with_blob(store, &MemoryBlobStore::default(), signed_bytes)
     }
 
-    fn submit_claim_with_blob<S: StructuredDurableDomainStateStore>(
+    pub(crate) fn submit_claim_with_blob<S: StructuredDurableDomainStateStore>(
         store: &S,
         blob_store: &dyn BlobStore,
         signed_bytes: &[u8],

@@ -259,9 +259,37 @@ fn install_call<S: StructuredDurableDomainStateStore>(
     arguments: Vec<u8>,
     access: Vec<AccessEntry>,
 ) -> Vec<Object> {
+    install_call_with_id(
+        store,
+        record,
+        [request; 32],
+        nonce,
+        entrypoint,
+        type_arguments,
+        arguments,
+        access,
+    )
+}
+
+/// Same as [`install_call`], but with an explicit full 32-byte request id
+/// instead of a `u8`-broadcast one: a bounded multi-lane harness that mints
+/// more than 256 distinct genesis-time coins needs genuinely distinct
+/// request ids, since this crate's request-receipt idempotency is keyed on
+/// the full id, not just its lowest byte.
+#[allow(clippy::too_many_arguments)]
+fn install_call_with_id<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    record: &InstanceRecord,
+    request_id: [u8; 32],
+    nonce: u64,
+    entrypoint: &str,
+    type_arguments: Vec<abi::package_types::ScopedTypeArg>,
+    arguments: Vec<u8>,
+    access: Vec<AccessEntry>,
+) -> Vec<Object> {
     let call: CallIntent = CallIntent {
         context: protocol(),
-        request_id: [request; 32],
+        request_id,
         sender: sender(),
         nonce,
         code: record.code.clone(),
@@ -472,13 +500,52 @@ pub(crate) fn install<S: StructuredDurableDomainStateStore>(store: &S) -> Fixtur
     }
 }
 
+/// Mints one additional coin of the fixture's asset, owned by an arbitrary
+/// `owner` address instead of the fixture's own `sender()`, using the
+/// fixture's already-installed `TreasuryCap`. `request_id` must be a fresh,
+/// genuinely unique id (see [`install_call_with_id`]) and `nonce` must
+/// continue the fixture installer's own zero-fee nonce chain (which
+/// [`install`] leaves at [`FIRST_PAID_NONCE`]). Returns the new coin and the
+/// cap's next state, which the caller must thread into the next call.
+pub(crate) fn install_extra_coin<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    fixture: &Fixture,
+    cap: &Object,
+    request_id: [u8; 32],
+    nonce: u64,
+    owner: [u8; 32],
+    amount: u64,
+) -> (Object, Object) {
+    let minted: Vec<Object> = install_call_with_id(
+        store,
+        &fixture.instance,
+        request_id,
+        nonce,
+        "mint",
+        vec![public_standard_asset::asset_type_argument(&fixture.asset)],
+        public_standard_asset::mint_arguments(amount, &owner).unwrap(),
+        vec![entry(cap, AccessMode::Write)],
+    );
+    let coin_tag = public_standard_asset::coin_type_tag(&fixture.origin, &fixture.asset).unwrap();
+    let cap_tag =
+        public_standard_asset::treasury_cap_type_tag(&fixture.origin, &fixture.asset).unwrap();
+    (pick(&minted, &coin_tag), pick(&minted, &cap_tag))
+}
+
 // ── paid request builders ───────────────────────────────────────────────
 
 pub(crate) fn sign_paid(intent: PaidIntent) -> Vec<u8> {
+    sign_paid_as(intent, &key())
+}
+
+/// Same as [`sign_paid`], but with an explicit signing key instead of the
+/// fixture's shared `key()`: lets a caller drive a genuinely independent
+/// paid-sender identity (its own nonce chain, distinct from `sender()`'s).
+pub(crate) fn sign_paid_as(intent: PaidIntent, signing_key: &SigningKey) -> Vec<u8> {
     let frame: Vec<u8> = paid_intent_signing_frame(&protocol(), &intent).unwrap();
     encode_signed_paid_intent(&SignedPaidIntent {
         intent,
-        signature: key().sign(&frame).into(),
+        signature: signing_key.sign(&frame).into(),
     })
     .unwrap()
 }
@@ -539,6 +606,62 @@ pub(crate) fn paid_call_with_access(
         gas_limit: 100_000,
         authorizations: vec![],
     })
+}
+
+/// One escrow-creating `transfer` paid call, generalized beyond
+/// [`paid_call_with_access`] in two ways a bounded multi-lane harness needs:
+/// an explicit full 32-byte `request_id` (a `u8`-broadcast id can only name
+/// 256 distinct requests) and an explicit lane `sender`/`signing_key`
+/// instead of the fixture's shared `sender()`/`key()`, so independent lanes
+/// carry independent nonce chains. Always reserves and spends the whole
+/// `source` coin, exactly like [`transfer_call`].
+pub(crate) struct LanePaidTransfer<'a> {
+    pub(crate) fixture: &'a Fixture,
+    pub(crate) policy: &'a PaidFeePolicy,
+    pub(crate) request_id: [u8; 32],
+    pub(crate) nonce: u64,
+    pub(crate) source: &'a Object,
+    pub(crate) sender: [u8; 32],
+    pub(crate) signing_key: &'a SigningKey,
+}
+
+pub(crate) fn lane_paid_transfer(call: LanePaidTransfer<'_>) -> Vec<u8> {
+    let application: CallIntent = CallIntent {
+        context: protocol(),
+        request_id: call.request_id,
+        sender: call.sender,
+        nonce: call.nonce,
+        code: call.fixture.code.clone(),
+        instance: instance_target(&resolver(), &call.fixture.instance).unwrap(),
+        entrypoint: "transfer".into(),
+        type_arguments: vec![public_standard_asset::asset_type_argument(
+            &call.fixture.asset,
+        )],
+        access: abi::AccessManifest {
+            entries: vec![entry(call.source, AccessMode::Write)],
+        },
+        arguments: public_standard_asset::transfer_arguments(&refund_account()).unwrap(),
+        gas_limit: 100_000,
+    };
+    sign_paid_as(
+        PaidIntent {
+            context: protocol(),
+            request_id: call.request_id,
+            sender: call.sender,
+            nonce: call.nonce,
+            fee_policy_digest: paid_fee_policy_digest(&resolver(), call.policy).unwrap(),
+            consent: FeeSourceConsent {
+                source: object_reference(call.source),
+                access: ReservationAccessKind::Write,
+                max_fee: Amount::new(1_000_000),
+                refund_recipient: refund_account(),
+            },
+            application: PaidApplication::Call(application),
+            gas_limit: 100_000,
+            authorizations: vec![],
+        },
+        call.signing_key,
+    )
 }
 
 /// The canonical successful path: one Coin funds both the fee reservation and
