@@ -49,11 +49,7 @@ fn os_random_hex<const N: usize>() -> String {
     random_source
         .read_exact(&mut bytes)
         .expect("failed to read disposable PostgreSQL role randomness");
-    let mut encoded: String = String::with_capacity(N * 2);
-    for byte in bytes {
-        encoded.push_str(&format!("{byte:02x}"));
-    }
-    encoded
+    super::cli::to_hex(&bytes)
 }
 
 fn admin_client(admin: &Config) -> postgres::Client {

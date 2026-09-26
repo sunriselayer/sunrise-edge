@@ -34,7 +34,10 @@ Keep CI workloads bounded and diagnostic. A deployment-capacity report must
 record the exact hardware/service, PostgreSQL version and storage settings
 alongside its timings. CI service timings are regressions, not throughput
 service-level objectives; synthetic escrows are not certificate-applied
-traffic, and a short run is not a soak.
+traffic, and a short run is not a soak. Physical relation sizes cover whole
+shared test tables; repeated local runs retain prior test namespaces and
+inflate the baseline, so their deltas are diagnostic rather than isolated
+per-validator storage costs.
 Longer operator-initiated capacity runs need explicit size and duration
 controls; they must never silently promote CI timing to a production admission
 threshold. A first-network capacity target, sustained

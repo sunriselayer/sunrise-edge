@@ -161,8 +161,10 @@ bash scripts/check-fastvote-pg.sh
 
 It runs the shared-namespace adversarial E2E, the distinct-database/role
 quorum and denial E2E, and the bounded PostgreSQL fee-claim/reopen checks.
-It requires a database administrator login for the test-only role/database
-provisioning and must not point at a persistent production server.
+It requires a superuser login to a disposable PostgreSQL server reachable
+through one loopback TCP host (`127.0.0.1`, `localhost` or `::1`) for test-only
+role/database provisioning. It refuses other database names and must not
+point at a persistent production server.
 
 For a stopped validator, the fee-escrow inventory command is the finite
 restart-sweep check. Its `--page-size` and `--timeout-seconds` bound each run;

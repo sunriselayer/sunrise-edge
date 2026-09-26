@@ -20,8 +20,8 @@
 //!    across four separate databases, with the same quorum/consistency
 //!    assertions as the shared-database E2E.
 //! 2. **Negative**: validator B's credentials cannot even open a PostgreSQL
-//!    connection to validator A's database (a real, live authentication
-//!    failure, not a permission check inside a shared schema), and a real
+//!    connection to validator A's database (a real, live database-level
+//!    authorization failure, not a permission check inside a shared schema), and a real
 //!    `fastvote_pg` subprocess attempting to claim A's validator identity
 //!    while authenticated as B never touches A's actual durable state --
 //!    A's real writer fence and durable snapshot are byte-for-byte
@@ -305,7 +305,7 @@ fn fastvote_pg_operator_credential_isolated_multivalidator_e2e() {
 
     // ==================== negative: credential isolation ====================
 
-    // ---- (1) B's role/password cannot even authenticate against A's database ----
+    // ---- (1) B's role/password cannot CONNECT to A's database ----
     // A plain, direct (no TLS relay) connection attempt using validator[1]'s
     // real role and password but validator[0]'s dbname: `PUBLIC` was revoked
     // on every database at provisioning time and validator[1]'s role was
@@ -470,7 +470,9 @@ fn fastvote_pg_operator_credential_isolated_multivalidator_e2e() {
     drop(admin_pools);
     drop(proxy);
     drop(cluster);
-    let mut cleanup_admin: postgres::Client = admin_config.connect(NoTls).unwrap();
+    let mut cleanup_admin_config: Config = admin_config.clone();
+    cleanup_admin_config.ssl_mode(SslMode::Disable);
+    let mut cleanup_admin: postgres::Client = cleanup_admin_config.connect(NoTls).unwrap();
     for role in created_roles {
         let exists: bool = cleanup_admin
             .query_one(
