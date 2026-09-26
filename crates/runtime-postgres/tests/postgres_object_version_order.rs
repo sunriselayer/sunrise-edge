@@ -19,12 +19,13 @@ use protocol_types::{
 };
 use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
 use runtime::{
-    DurableCommitOutcome, DurableInvocationTransaction, DurableObjectChanges, DurableObjectHead,
-    DurableObjectHeadRead, DurableObjectMutation, DurableObjectMutationEntry,
-    DurableObjectOwnerProjection, DurableObjectProvenance, DurableObjectRoutingProjection,
-    DurableObjectVersion, DurableObjectVersionRecord, DurableOperationContext, DurableReadError,
-    DurableRequestId, DurableRequestReceipt, ObjectId, StorageCorrelationId, StorageDeadline,
-    StructuredDurableDomainStateStore, WriterFenceGeneration,
+    DurableCommitOutcome, DurableCommitRejection, DurableInvocationTransaction,
+    DurableObjectChanges, DurableObjectHead, DurableObjectHeadRead, DurableObjectMutation,
+    DurableObjectMutationEntry, DurableObjectOwnerProjection, DurableObjectProvenance,
+    DurableObjectRoutingProjection, DurableObjectVersion, DurableObjectVersionRecord,
+    DurableOperationContext, DurableReadError, DurableRequestId, DurableRequestReceipt, ObjectId,
+    StorageCorrelationId, StorageDeadline, StructuredDurableDomainStateStore,
+    WriterFenceGeneration,
 };
 use runtime_postgres::{
     POSTGRES_SCHEMA_GENERATION, PostgresDurableStore, PostgresNamespace, PostgresPoolConfig,
@@ -38,9 +39,15 @@ use std::{
 mod support;
 
 const TEST_DATABASE: &str = "sunrise_edge_test";
-/// Exercises the double-digit rollover (9->10) and continues past the
-/// triple-digit rollover (99->100) without an unbounded loop.
-const HIGHEST_OBJECT_VERSION: u64 = 100;
+/// Exercises the double-digit rollover (9->10) and continues one commit past
+/// the triple-digit rollover (99->100->101), so the locked pre-commit path
+/// also observes a triple-digit `object_version` crossover, without an
+/// unbounded loop.
+const HIGHEST_OBJECT_VERSION: u64 = 101;
+/// A historical version below [`HIGHEST_OBJECT_VERSION`] that a corrupted
+/// head is forged to reference; must remain far enough below the highest
+/// version that the two can never coincide.
+const STALE_FORGED_HEAD_VERSION: u64 = 99;
 
 type TestPostgresManager = PostgresConnectionManager<NoTls>;
 
@@ -309,23 +316,88 @@ fn postgres_object_version_numeric_ordering_survives_double_and_triple_digit_rol
         reopened_head.object_version(),
         Some(DurableObjectVersion::new(HIGHEST_OBJECT_VERSION).unwrap())
     );
+    // Captured before corruption: the exact authentic head a well-behaved
+    // caller would still be holding when the row underneath it is corrupted.
+    let authentic_head: DurableObjectHead = reopened_head;
 
     // --- fail-closed: a genuine head/history disagreement is still
-    // rejected, not silently accepted by the corrected ordering ----------
+    // rejected, not silently accepted by the corrected ordering.
+    //
+    // The forged `current_version` must reference a row that still exists in
+    // `object_versions` with a matching digest, or the deferred foreign key
+    // from `object_heads` to `object_versions` rejects the corruption itself
+    // before either read path is ever exercised. Pointing the head back at
+    // `STALE_FORGED_HEAD_VERSION` (an earlier, real, digest-matched version)
+    // keeps the row foreign-key-valid while disagreeing with the true latest
+    // persisted history at `HIGHEST_OBJECT_VERSION`.
     let corrupted: u64 = admin
         .execute(
-            "UPDATE sunrise_edge.object_heads SET current_version = current_version + 1
-             WHERE chain_id_bytes = $1 AND validator_id = $2 AND atomicity_domain_id = $3
-               AND object_id = $4",
+            "UPDATE sunrise_edge.object_heads AS h
+             SET current_version = v.object_version,
+                 digest_algorithm_id = v.digest_algorithm_id,
+                 digest_bytes = v.digest_bytes
+             FROM sunrise_edge.object_versions AS v
+             WHERE h.chain_id_bytes = $1
+               AND h.validator_id = $2
+               AND h.atomicity_domain_id = $3
+               AND h.object_id = $4
+               AND v.chain_id_bytes = h.chain_id_bytes
+               AND v.validator_id = h.validator_id
+               AND v.atomicity_domain_id = h.atomicity_domain_id
+               AND v.object_id = h.object_id
+               AND v.object_version = $5",
             &[
                 &namespace.chain_id_bytes(),
                 &&namespace.validator_id().as_bytes()[..],
                 &&namespace.domain().as_bytes()[..],
                 &&object_id.as_bytes()[..],
+                &STALE_FORGED_HEAD_VERSION.to_string(),
             ],
         )
         .unwrap();
     assert_eq!(corrupted, 1);
+
+    // Unlocked read path (`get_object_head`, `lock = false`): the correctly
+    // ordered latest history (`HIGHEST_OBJECT_VERSION`) no longer matches the
+    // forged head (`STALE_FORGED_HEAD_VERSION`).
     let corrupted_read = reopened_store.get_object_head(&context, domain, object_id);
     assert_eq!(corrupted_read, Err(DurableReadError::InvalidPersistedState));
+
+    // Locked mutation path (`validate_object_reads`, `lock = true`, invoked
+    // from `commit_invocation`): a caller still holding the last authentic
+    // head it observed must be rejected, not allowed to commit a new version
+    // on top of a corrupted, disagreeing head.
+    let next_version: DurableObjectVersionRecord =
+        object_version_record(&chain_id, object_id, HIGHEST_OBJECT_VERSION + 1, 0x11);
+    let corrupted_commit: DurableCommitOutcome = commit_object_mutation(
+        &reopened_store,
+        &context,
+        (
+            domain,
+            object_id,
+            authentic_head,
+            DurableObjectMutation::Update {
+                version: next_version,
+                owner_projection: owner_projection.clone(),
+                routing_projection: routing_projection.clone(),
+            },
+        ),
+        u16::try_from(HIGHEST_OBJECT_VERSION + 1).unwrap(),
+    );
+    assert_eq!(
+        corrupted_commit,
+        DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState)
+    );
+    // No new version was actually committed alongside the rejection.
+    assert_eq!(
+        reopened_store
+            .get_object_version(
+                &context,
+                domain,
+                object_id,
+                DurableObjectVersion::new(HIGHEST_OBJECT_VERSION + 1).unwrap(),
+            )
+            .unwrap(),
+        None
+    );
 }
