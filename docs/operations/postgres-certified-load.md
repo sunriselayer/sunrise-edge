@@ -50,6 +50,11 @@ network targets**. The script overrides long-run sizing variables in smoke
 mode. Repository validation runs only this bounded mode; it never starts a
 long soak implicitly. Local smoke without a configured PostgreSQL service
 reports a skip; CI treats the missing service as failure.
+Argument-validation regressions can also run without a database:
+
+```sh
+bash scripts/check-postgres-soak.sh --self-test-cli
+```
 
 ## Explicit manual measurements
 
@@ -83,9 +88,15 @@ workload and resource budget.
 The driver serializes against the shared live-PostgreSQL test lock. Do not
 run it concurrently with repository PostgreSQL tests on the same service.
 Its top-level timeout bounds the whole run, including setup, lock wait,
-workload and recovery. A killed test can retain disposable namespace rows;
-do not remove unrelated namespaces to recover space. Prefer recreating the
+workload and recovery. Each inventory executable also has a 120-second
+per-invocation timeout; valid sizing alone does not guarantee that a run
+finishes within either budget. A killed test can retain disposable namespace
+rows; do not remove unrelated namespaces to recover space. Prefer recreating the
 dedicated disposable service after preserving the nonsecret measurements.
+Forced termination may also leave the shared live-test lock file. Read its
+recorded owner and confirm that the owning test process has exited before
+removing that exact abandoned lock; never remove another live test's lock.
+Recreating the database alone does not release a host-side lock.
 
 ## Interpreting results
 
@@ -95,6 +106,14 @@ the output. Integers in `sunrise_edge_soak_v1` measurement lines record
 counts, elapsed milliseconds, retries and retained payload sizes. Whole
 shared-table physical sizes include earlier local namespaces; they are not
 isolated per-validator storage accounting.
+
+`retained_logical_bytes` sums each final settlement row, its four retained
+claim envelopes, the latest fee-escrow and split-payout object payloads, and
+the four outer receipt response payloads. It excludes storage keys, record
+headers, nonce records and superseded row/object history; it is neither a
+complete database footprint nor per-transaction disk consumption. Setup
+and escrow creation are serial in this instrument; only the independent
+claim lanes exercise the configured writer concurrency.
 
 Only `kind=totals complete=true` from the ordered driver means the requested
 workload, restart checks and every complete inventory cycle passed. A phase

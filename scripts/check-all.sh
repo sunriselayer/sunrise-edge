@@ -31,6 +31,7 @@ cargo test --workspace --all-targets --all-features
 bash scripts/check-fee-escrow-inventory.sh
 bash scripts/check-fee-escrow-inventory-pg.sh
 bash scripts/check-fastvote-pg.sh
+bash scripts/check-postgres-soak.sh --self-test-cli
 bash scripts/check-postgres-soak.sh --smoke
 
 node scripts/call-value-vectors.mjs

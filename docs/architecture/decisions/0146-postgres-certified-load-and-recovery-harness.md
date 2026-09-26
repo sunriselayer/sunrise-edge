@@ -111,3 +111,19 @@ load, server-side TLS deployment, PITR/HA, external FastVote ingress,
 protocol-version activation and the Phase 3 review gate remain separate
 obligations. A six-hour execution ceiling is a safety bound on this
 instrument, not a decision that six hours is sufficient for certification.
+
+## Store correctness uncovered by the workload
+
+The initial real-database run reached a TreasuryCap at object version 10 and
+failed the next mint with `InvalidPersistedState`. PostgreSQL resolves
+`ORDER BY object_version` against the selected `object_version::TEXT` output
+name in the latest-version lookup; that selects `9` ahead of `10` rather than
+ordering the underlying numeric column. On the same retained history, the
+original query returned 9 and a base-column-qualified query returned 10.
+
+Qualify the numeric base column in both locked and unlocked latest-version
+queries. Do not skip head/history reconciliation or cap the workload below the
+boundary. Live adapter regressions must exercise decimal-width transitions,
+read and mutation paths, reopen, and continued fail-closed handling of
+head/history disagreement. This corrects store lookup behavior without
+changing schema, canonical bytes, object-version rules or protocol authority.
