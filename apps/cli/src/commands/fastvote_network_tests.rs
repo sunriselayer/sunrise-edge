@@ -6,19 +6,19 @@ use crypto::SignatureSigner;
 use std::cell::RefCell;
 use sunrise_edge_client::*;
 
-struct Fixture {
-    directory: PathBuf,
-    expected: ExpectedProtocolContext,
-    resolver: HashSuiteResolver,
+pub(super) struct Fixture {
+    pub(super) directory: PathBuf,
+    pub(super) expected: ExpectedProtocolContext,
+    pub(super) resolver: HashSuiteResolver,
     manifest: node_core::genesis::GenesisManifest,
     signer: LocalSigner,
-    signed: SignedPaidIntent,
-    certifier: FastPathCertifier,
+    pub(super) signed: SignedPaidIntent,
+    pub(super) certifier: FastPathCertifier,
     record: local_execution::InstanceRecord,
 }
 
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let directory: PathBuf = super::tests::temp_path("boundaries");
         std::fs::create_dir(&directory).unwrap();
         let expected: ExpectedProtocolContext = ExpectedProtocolContext::new(
@@ -122,7 +122,7 @@ impl Fixture {
             record,
         }
     }
-    fn path(&self, name: &str) -> String {
+    pub(super) fn path(&self, name: &str) -> String {
         self.directory.join(name).to_str().unwrap().to_owned()
     }
     fn parsed(&self, extra: &[(&'static str, &str)]) -> ParsedArgs {
@@ -154,7 +154,7 @@ impl Fixture {
         .encode()
         .unwrap()
     }
-    fn result(&self, status: PaidExecutionStatus) -> PaidExecutionResult {
+    pub(super) fn result(&self, status: PaidExecutionStatus) -> PaidExecutionResult {
         PaidExecutionResult {
             request_id: self.signed.intent.request_id,
             kind: PaidResultKind::Call,

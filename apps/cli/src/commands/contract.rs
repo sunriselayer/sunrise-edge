@@ -33,6 +33,9 @@ where
     if action == "fastvote-replay" {
         return super::fastvote_network::run_replay(args);
     }
+    if action == "fastvote-catch-up" {
+        return super::fastvote_network::catch_up::run(args);
+    }
     if action != "validate" {
         return Err(CliError::UnknownContractAction(action.to_owned()));
     }

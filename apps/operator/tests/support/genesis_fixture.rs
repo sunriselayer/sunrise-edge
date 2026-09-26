@@ -209,6 +209,55 @@ pub fn build_network_fixture(unique: &str) -> FastVoteGenesisFixture {
     build_network_fixture_at_epoch(unique, Epoch::new(0))
 }
 
+/// Adds two ordinary sender-owned application Coins distinct from the fee
+/// source. The catch-up sequence transfers the first, traps on the second,
+/// then transfers the second, while every call advances the same fee Coin.
+pub fn build_catch_up_network_fixture(unique: &str) -> (FastVoteGenesisFixture, [ObjectId; 2]) {
+    let mut fixture: FastVoteGenesisFixture = build_network_fixture(unique);
+    let mut manifest: node_core::GenesisManifest =
+        node_core::decode_genesis_manifest(&fixture.manifest_bytes).unwrap();
+    let template: GenesisObjectEntry = manifest
+        .objects
+        .iter()
+        .find(|entry| entry.object.id == fixture.fee_coin)
+        .unwrap()
+        .clone();
+    let amount: u64 = coin_amount(&template.object.data).unwrap();
+    let mut ids: [ObjectId; 2] = [fixture.fee_coin; 2];
+    for (index, id) in ids.iter_mut().enumerate() {
+        *id = ObjectId::new(
+            fixture
+                .resolver
+                .hash_for_purpose(
+                    fixture.epoch,
+                    HashPurpose::Object,
+                    format!("catch-up-application-coin-{index}").as_bytes(),
+                )
+                .unwrap()
+                .bytes(),
+        );
+        let mut coin: GenesisObjectEntry = template.clone();
+        coin.object.id = *id;
+        coin.authority.object_id = *id;
+        manifest.objects.push(coin);
+    }
+    let treasury: &mut GenesisObjectEntry = &mut manifest.objects[1];
+    let supply: u64 = treasury_supply(&treasury.object.data)
+        .unwrap()
+        .checked_add(amount.checked_mul(2).unwrap())
+        .unwrap();
+    treasury.object.data =
+        encode_call_value(&treasury_cap_body_layout(), &CallValue::U64(supply)).unwrap();
+    manifest.signature = genesis_signing_key()
+        .sign(&genesis_manifest_signing_frame(&manifest).unwrap())
+        .into();
+    fixture.manifest_digest = genesis_manifest_commitment(&fixture.resolver, &manifest)
+        .unwrap()
+        .bytes();
+    fixture.manifest_bytes = encode_genesis_manifest(&manifest).unwrap();
+    (fixture, ids)
+}
+
 /// Controlled fixture for fixed-pin and live-epoch HTTP regressions.
 #[must_use]
 pub fn build_network_fixture_at_epoch(unique: &str, epoch: Epoch) -> FastVoteGenesisFixture {

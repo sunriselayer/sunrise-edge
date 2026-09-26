@@ -39,6 +39,15 @@ require_exact_test fastvote_host_pg_cli_multivalidator_e2e \
 cargo test --quiet -p sunrise-edge-operator --test fastvote_host_pg_cli_e2e \
   -- --ignored --exact fastvote_host_pg_cli_multivalidator_e2e
 
+# This separate catch-up test executes the actual CLI binary, not its library
+# entrypoint. Cargo puts it beside the test binary's deps directory even when
+# CARGO_TARGET_DIR is explicitly configured.
+cargo build --quiet -p sunrise-edge-cli --bin sunrise-edge-cli
+require_exact_test certified_catch_up_pg_missed_prepare_binary_cli_e2e \
+  -p sunrise-edge-operator --test certified_catch_up_pg_e2e
+cargo test --quiet -p sunrise-edge-operator --test certified_catch_up_pg_e2e \
+  -- --ignored --exact certified_catch_up_pg_missed_prepare_binary_cli_e2e
+
 require_exact_test economics_pg_offline_signed_claim_workflow_e2e \
   -p sunrise-edge-operator --test economics_pg_e2e
 cargo test --quiet -p sunrise-edge-operator --test economics_pg_e2e \
