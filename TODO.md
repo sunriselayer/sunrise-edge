@@ -3382,6 +3382,25 @@ records one integrated PostgreSQL regression slice and the work still open:
   external FastVote ingress and protocol-version activation behind their own
   decisions.
 
+### Certified PostgreSQL workload and recovery instrument
+
+[DR-0146](docs/architecture/decisions/0146-postgres-certified-load-and-recovery-harness.md)
+and the [measurement runbook](docs/operations/postgres-certified-load.md)
+define the next integrated slice:
+
+- [ ] Build a finite explicitly sized workload that creates genuine
+  quorum-certified paid escrows on a PostgreSQL primary with independent
+  memory co-voters, claims each through positive split/final and zero-share
+  paths, checks exact replay and retained state after a newer-fence reopen,
+  and drives repeated complete inventories through the real TLS operator.
+  Validate count/rate/deadline bounds and fail without a complete totals
+  record on partial work. Wire only a fixed small smoke into repository CI;
+  long runs require explicit configuration and disposable-test confirmation.
+- [ ] Adopt initial-network workload/recovery targets and gather
+  representative sustained deployment measurements. A configurable
+  instrument and its smoke do not satisfy this acceptance item, independent
+  administration/host domains or the Phase 3 security/tech-lead gate.
+
 ## Closed PostgreSQL multi-validator operator rehearsal
 
 [DR-0144](docs/architecture/decisions/0144-closed-postgres-fastvote-operator.md)

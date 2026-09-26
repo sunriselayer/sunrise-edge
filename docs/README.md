@@ -27,6 +27,7 @@ detailed design, operator guides, and specialist references live here.
 - [PostgreSQL reference design](operations/postgres.md)
 - [Offline FastVote fee-escrow inventory](operations/fastvote-fee-inventory.md)
 - [Closed PostgreSQL FastVote operator rehearsal](operations/fastvote-pg-rehearsal.md)
+- [Certified PostgreSQL load and recovery measurements](operations/postgres-certified-load.md)
 - [Hardware signing](signing/hardware-signing.md)
 
 ## Security
