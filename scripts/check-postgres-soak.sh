@@ -9,17 +9,81 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
 
-# Mirrors check-all.sh's own top-of-file rule: CI must exercise this against
-# the live PostgreSQL service; local checks may run without one and skip.
-if [[ -z "${SUNRISE_EDGE_TEST_POSTGRES_URL:-}" ]]; then
-  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-    echo "CI requires SUNRISE_EDGE_TEST_POSTGRES_URL for the PostgreSQL certified load/recovery harness" >&2
+# ---- --self-test-cli: fast, DB-free regression check of this script's own
+# argument/bounds validation. Never touches PostgreSQL or cargo. Kept first
+# and independent of everything else below. ----
+self_test_failures=0
+
+self_test_case() {
+  local description="$1" expected="$2"
+  shift 2
+  local -a envs=()
+  while [[ "$1" != "--" ]]; do
+    envs+=("$1")
+    shift
+  done
+  shift
+  local actual=0
+  env -u SUNRISE_EDGE_TEST_POSTGRES_URL -u SUNRISE_EDGE_SOAK_ESCROWS -u SUNRISE_EDGE_SOAK_SENDERS \
+    -u SUNRISE_EDGE_SOAK_CLAIM_WRITERS -u SUNRISE_EDGE_SOAK_MAX_CLAIM_RATE_PER_SEC \
+    -u SUNRISE_EDGE_SOAK_DURATION_SECONDS -u SUNRISE_EDGE_SOAK_WALL_DEADLINE_SECONDS \
+    -u SUNRISE_EDGE_SOAK_RECOVERY_CYCLES -u SUNRISE_EDGE_SOAK_CONFIRM_DISPOSABLE \
+    "${envs[@]}" bash "$0" "$@" >/dev/null 2>&1 || actual=$?
+  if [[ "$actual" -eq "$expected" ]]; then
+    echo "self-test ok: $description"
+  else
+    echo "self-test FAILED: $description (expected exit $expected, got $actual)" >&2
+    self_test_failures=$((self_test_failures + 1))
+  fi
+}
+
+run_cli_self_tests() {
+  self_test_case "no arguments is a usage error" 1 --
+  self_test_case "unknown flag is rejected" 1 -- --bogus
+  self_test_case "both --smoke and --run is rejected" 1 -- --smoke --run
+  self_test_case "--run missing vars is rejected without a PG URL configured" 1 -- --run
+  self_test_case "--run senders exceeding escrows is rejected" 1 \
+    SUNRISE_EDGE_SOAK_ESCROWS=4 SUNRISE_EDGE_SOAK_SENDERS=8 SUNRISE_EDGE_SOAK_CLAIM_WRITERS=2 \
+    SUNRISE_EDGE_SOAK_MAX_CLAIM_RATE_PER_SEC=8 SUNRISE_EDGE_SOAK_DURATION_SECONDS=10 \
+    SUNRISE_EDGE_SOAK_WALL_DEADLINE_SECONDS=20 SUNRISE_EDGE_SOAK_RECOVERY_CYCLES=1 \
+    SUNRISE_EDGE_SOAK_CONFIRM_DISPOSABLE=1 -- --run
+  self_test_case "--run without disposable confirmation is rejected" 1 \
+    SUNRISE_EDGE_SOAK_ESCROWS=4 SUNRISE_EDGE_SOAK_SENDERS=2 SUNRISE_EDGE_SOAK_CLAIM_WRITERS=2 \
+    SUNRISE_EDGE_SOAK_MAX_CLAIM_RATE_PER_SEC=8 SUNRISE_EDGE_SOAK_DURATION_SECONDS=10 \
+    SUNRISE_EDGE_SOAK_WALL_DEADLINE_SECONDS=20 SUNRISE_EDGE_SOAK_RECOVERY_CYCLES=1 -- --run
+  self_test_case "--run leading-zero escrows count is rejected" 1 \
+    SUNRISE_EDGE_SOAK_ESCROWS=04 SUNRISE_EDGE_SOAK_SENDERS=2 SUNRISE_EDGE_SOAK_CLAIM_WRITERS=2 \
+    SUNRISE_EDGE_SOAK_MAX_CLAIM_RATE_PER_SEC=8 SUNRISE_EDGE_SOAK_DURATION_SECONDS=10 \
+    SUNRISE_EDGE_SOAK_WALL_DEADLINE_SECONDS=20 SUNRISE_EDGE_SOAK_RECOVERY_CYCLES=1 \
+    SUNRISE_EDGE_SOAK_CONFIRM_DISPOSABLE=1 -- --run
+  self_test_case "--run overlong escrows digit string is rejected before arithmetic" 1 \
+    SUNRISE_EDGE_SOAK_ESCROWS=99999999999999999999 SUNRISE_EDGE_SOAK_SENDERS=2 \
+    SUNRISE_EDGE_SOAK_CLAIM_WRITERS=2 SUNRISE_EDGE_SOAK_MAX_CLAIM_RATE_PER_SEC=8 \
+    SUNRISE_EDGE_SOAK_DURATION_SECONDS=10 SUNRISE_EDGE_SOAK_WALL_DEADLINE_SECONDS=20 \
+    SUNRISE_EDGE_SOAK_RECOVERY_CYCLES=1 SUNRISE_EDGE_SOAK_CONFIRM_DISPOSABLE=1 -- --run
+  self_test_case "--smoke with no PG URL configured cleanly skips" 0 -- --smoke
+  self_test_case "--run with valid bounded vars and no PG URL configured cleanly skips" 0 \
+    SUNRISE_EDGE_SOAK_ESCROWS=4 SUNRISE_EDGE_SOAK_SENDERS=2 SUNRISE_EDGE_SOAK_CLAIM_WRITERS=2 \
+    SUNRISE_EDGE_SOAK_MAX_CLAIM_RATE_PER_SEC=8 SUNRISE_EDGE_SOAK_DURATION_SECONDS=10 \
+    SUNRISE_EDGE_SOAK_WALL_DEADLINE_SECONDS=20 SUNRISE_EDGE_SOAK_RECOVERY_CYCLES=1 \
+    SUNRISE_EDGE_SOAK_CONFIRM_DISPOSABLE=1 -- --run
+
+  if [[ "$self_test_failures" -ne 0 ]]; then
+    echo "$self_test_failures CLI self-test case(s) failed" >&2
     exit 1
   fi
-  echo "skipping PostgreSQL certified load/recovery harness: SUNRISE_EDGE_TEST_POSTGRES_URL is unset"
+  echo "all CLI self-test cases passed"
+}
+
+if [[ "${1:-}" == "--self-test-cli" ]]; then
+  run_cli_self_tests
   exit 0
 fi
 
+# ---- argument and (for --run) bounds/confirmation validation happens
+# before the PG-URL gate below: an invalid invocation must fail closed
+# regardless of whether a live PostgreSQL service happens to be configured,
+# never silently "succeed" via the unset-PG-URL skip path. ----
 mode=""
 for arg in "$@"; do
   case "$arg" in
@@ -43,8 +107,13 @@ fi
 
 require_bounded_int() {
   local name="$1" value="$2" min="$3" max="$4"
-  if ! [[ "$value" =~ ^[0-9]+$ ]]; then
-    echo "invalid $name: ${value:-<unset>}" >&2
+  # Bound the canonical decimal length (at most 10 digits, no leading zero
+  # unless the value is exactly "0") BEFORE any Bash arithmetic: an
+  # arbitrarily long digit string could overflow Bash's 64-bit `(( ))`
+  # arithmetic and wrap to a value that wrongly passes the bounds check
+  # below, and a leading-zero form is never treated as an implicit bypass.
+  if ! [[ "$value" =~ ^(0|[1-9][0-9]{0,9})$ ]]; then
+    echo "invalid $name: ${value:-<unset>} (must be a canonical decimal integer, no leading zero, at most 10 digits)" >&2
     exit 1
   fi
   if (( 10#$value < min || 10#$value > max )); then
@@ -53,19 +122,7 @@ require_bounded_int() {
   fi
 }
 
-if [[ "$mode" == "smoke" ]]; then
-  # Fixed, bounded CI/quick-check profile. Deliberately overrides any
-  # long-run sizing already present in the caller's shell: CI must never
-  # silently inherit operator long-run vars.
-  export SUNRISE_EDGE_SOAK_ESCROWS=8
-  export SUNRISE_EDGE_SOAK_SENDERS=2
-  export SUNRISE_EDGE_SOAK_CLAIM_WRITERS=2
-  export SUNRISE_EDGE_SOAK_MAX_CLAIM_RATE_PER_SEC=32
-  export SUNRISE_EDGE_SOAK_DURATION_SECONDS=90
-  export SUNRISE_EDGE_SOAK_WALL_DEADLINE_SECONDS=180
-  export SUNRISE_EDGE_SOAK_RECOVERY_CYCLES=2
-  export SUNRISE_EDGE_SOAK_CONFIRM_DISPOSABLE=1
-else
+if [[ "$mode" == "run" ]]; then
   for name in ESCROWS SENDERS CLAIM_WRITERS MAX_CLAIM_RATE_PER_SEC DURATION_SECONDS \
     WALL_DEADLINE_SECONDS RECOVERY_CYCLES; do
     var="SUNRISE_EDGE_SOAK_${name}"
@@ -93,6 +150,32 @@ else
     exit 1
   fi
   require_bounded_int SUNRISE_EDGE_SOAK_RECOVERY_CYCLES "$SUNRISE_EDGE_SOAK_RECOVERY_CYCLES" 1 32
+fi
+
+# Mirrors check-all.sh's own top-of-file rule: CI must exercise this against
+# the live PostgreSQL service; local checks may run without one and skip.
+# Reached only once the invocation itself is already known to be valid.
+if [[ -z "${SUNRISE_EDGE_TEST_POSTGRES_URL:-}" ]]; then
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    echo "CI requires SUNRISE_EDGE_TEST_POSTGRES_URL for the PostgreSQL certified load/recovery harness" >&2
+    exit 1
+  fi
+  echo "skipping PostgreSQL certified load/recovery harness: SUNRISE_EDGE_TEST_POSTGRES_URL is unset"
+  exit 0
+fi
+
+if [[ "$mode" == "smoke" ]]; then
+  # Fixed, bounded CI/quick-check profile. Deliberately overrides any
+  # long-run sizing already present in the caller's shell: CI must never
+  # silently inherit operator long-run vars.
+  export SUNRISE_EDGE_SOAK_ESCROWS=8
+  export SUNRISE_EDGE_SOAK_SENDERS=2
+  export SUNRISE_EDGE_SOAK_CLAIM_WRITERS=2
+  export SUNRISE_EDGE_SOAK_MAX_CLAIM_RATE_PER_SEC=32
+  export SUNRISE_EDGE_SOAK_DURATION_SECONDS=90
+  export SUNRISE_EDGE_SOAK_WALL_DEADLINE_SECONDS=180
+  export SUNRISE_EDGE_SOAK_RECOVERY_CYCLES=2
+  export SUNRISE_EDGE_SOAK_CONFIRM_DISPOSABLE=1
 fi
 
 soak_dir="$(mktemp -d "${TMPDIR:-/tmp}/sunrise-edge-soak-pg.XXXXXXXX")"
@@ -136,8 +219,8 @@ run_phases() {
 export -f run_phases
 
 # One whole-run deadline over both phases and their exact-test checks: the
-# harness must finish every planned unit before success, never "succeed"
-# on a partial, deadline-truncated run.
+# harness must finish every planned unit before success, never "succeed" on
+# a partial, deadline-truncated run.
 if ! timeout --kill-after=30 "${SUNRISE_EDGE_SOAK_WALL_DEADLINE_SECONDS}s" bash -c run_phases; then
   echo "PostgreSQL certified load/recovery harness failed or exceeded its wall deadline" >&2
   exit 1

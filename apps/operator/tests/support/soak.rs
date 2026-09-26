@@ -318,3 +318,102 @@ pub fn read_and_validate_handoff(dir: &Path) -> Result<Handoff, String> {
     validate_against_fixture(&handoff)?;
     Ok(handoff)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    /// Deletes its temp directory recursively on drop, best-effort.
+    struct TempDirGuard(PathBuf);
+
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fresh_dir(label: &str) -> TempDirGuard {
+        let path: PathBuf = std::env::temp_dir().join(format!(
+            "sunrise-edge-soak-handoff-file-test-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        fs::create_dir_all(&path).unwrap();
+        TempDirGuard(path)
+    }
+
+    fn valid_handoff_bytes() -> Vec<u8> {
+        format!(
+            "schema_version=1\n\
+             validator_id={}\n\
+             chain_id={FIXTURE_CHAIN_ID}\n\
+             domain={FIXTURE_DOMAIN_HEX}\n\
+             protocol_version={FIXTURE_PROTOCOL_VERSION}\n\
+             epoch={FIXTURE_EPOCH}\n\
+             suite={FIXTURE_SUITE}\n\
+             expected_rows=8\n\
+             expected_claims=32\n\
+             expected_payouts=8\n\
+             writer_generation=2\n\
+             workload_elapsed_ms=1\n",
+            "11".repeat(32),
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn valid_handoff_file_reads_successfully() {
+        let dir: TempDirGuard = fresh_dir("valid");
+        fs::write(dir.0.join(HANDOFF_FILE_NAME), valid_handoff_bytes()).unwrap();
+        assert!(read_and_validate_handoff(&dir.0).is_ok());
+    }
+
+    #[test]
+    fn missing_handoff_file_is_rejected() {
+        let dir: TempDirGuard = fresh_dir("missing");
+        assert!(read_and_validate_handoff(&dir.0).is_err());
+    }
+
+    #[test]
+    fn empty_handoff_file_is_rejected() {
+        let dir: TempDirGuard = fresh_dir("empty");
+        fs::write(dir.0.join(HANDOFF_FILE_NAME), b"").unwrap();
+        assert!(read_and_validate_handoff(&dir.0).is_err());
+    }
+
+    #[test]
+    fn oversized_handoff_file_is_rejected() {
+        let dir: TempDirGuard = fresh_dir("oversized");
+        let oversized: Vec<u8> = vec![b'a'; usize::try_from(MAX_HANDOFF_BYTES).unwrap() + 1];
+        fs::write(dir.0.join(HANDOFF_FILE_NAME), oversized).unwrap();
+        assert!(read_and_validate_handoff(&dir.0).is_err());
+    }
+
+    #[test]
+    fn nonregular_handoff_path_is_rejected() {
+        let dir: TempDirGuard = fresh_dir("nonregular");
+        fs::create_dir(dir.0.join(HANDOFF_FILE_NAME)).unwrap();
+        assert!(read_and_validate_handoff(&dir.0).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_handoff_path_is_never_followed() {
+        let dir: TempDirGuard = fresh_dir("symlink");
+        let real_target: PathBuf = dir.0.join("real-handoff.kv");
+        fs::write(&real_target, valid_handoff_bytes()).unwrap();
+        let link_path: PathBuf = dir.0.join(HANDOFF_FILE_NAME);
+        std::os::unix::fs::symlink(&real_target, &link_path).unwrap();
+        assert!(
+            read_and_validate_handoff(&dir.0).is_err(),
+            "a symlink at handoff.kv must never be followed, even to an otherwise-valid target"
+        );
+    }
+}

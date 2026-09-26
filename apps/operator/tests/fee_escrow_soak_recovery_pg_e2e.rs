@@ -38,7 +38,9 @@ use runtime_postgres::{
     build_postgres_pool, inspect_namespace,
 };
 use std::{
+    collections::BTreeMap,
     env, fs,
+    io::Write,
     net::{SocketAddr, ToSocketAddrs},
     num::NonZeroU32,
     path::{Path, PathBuf},
@@ -47,6 +49,32 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use support::soak;
+
+/// Deliberately small relative to the smoke profile's 8 planned rows, so
+/// even the fixed CI profile genuinely exercises multi-page pagination
+/// (`ceil(8 / 4) == 2` pages) instead of fitting everything on one page.
+const PAGE_SIZE: u32 = 4;
+
+/// The exact, ordered set of `key=value` tokens the real
+/// `fee_escrow_inventory_pg` binary's single success line prints. Any
+/// missing, extra, duplicated or unknown key is a malformed record.
+const OPERATOR_RECORD_KEYS: [&str; 11] = [
+    "complete",
+    "backend",
+    "chain_id",
+    "validator_id",
+    "domain",
+    "protocol_version",
+    "writer_generation",
+    "pages",
+    "verified_rows",
+    "verified_claims",
+    "verified_payouts",
+];
+
+fn expected_pages(rows: u32) -> u32 {
+    rows.div_ceil(PAGE_SIZE)
+}
 
 /// Deletes its temp file on drop, best-effort, regardless of test outcome.
 struct TempFileGuard(PathBuf);
@@ -112,19 +140,92 @@ fn operator_command(ca_path: &Path, validator_id_hex: &str, dsn: &str) -> Comman
             "--suite",
             soak::FIXTURE_SUITE,
             "--page-size",
-            "16",
+            "4",
             "--timeout-seconds",
             "120",
         ]);
     command
 }
 
-fn assert_stdout_contains(output: &Output, field: &str) {
-    let stdout = String::from_utf8_lossy(&output.stdout);
+/// Parses the operator binary's stdout as an exact, single-line, bounded
+/// `key=value` record: newline-terminated with no trailing partial line, no
+/// duplicate/unknown/missing keys, no empty tokens from a repeated space,
+/// no more than one line of output. Never accepts a value that merely
+/// starts with an expected prefix (e.g. `verified_rows=80` must never be
+/// mistaken for `verified_rows=8`): callers compare the returned map's
+/// values for exact string equality, never substring containment.
+fn parse_operator_record(stdout: &[u8]) -> Result<BTreeMap<String, String>, String> {
+    let text: String = String::from_utf8(stdout.to_vec())
+        .map_err(|error| format!("stdout is not UTF-8: {error}"))?;
+    let mut lines: Vec<&str> = text.split('\n').collect();
+    let trailer: &str = lines.pop().unwrap_or("");
+    if !trailer.is_empty() {
+        return Err(format!(
+            "stdout must be newline-terminated with no trailing partial line: {text:?}"
+        ));
+    }
+    if lines.len() != 1 {
+        return Err(format!(
+            "stdout must be exactly one record line, found {}: {text:?}",
+            lines.len()
+        ));
+    }
+    let line: &str = lines[0];
+    let mut fields: BTreeMap<String, String> = BTreeMap::new();
+    for token in line.split(' ') {
+        if token.is_empty() {
+            return Err(format!(
+                "stdout has an empty token (repeated space): {line:?}"
+            ));
+        }
+        let Some((key, value)) = token.split_once('=') else {
+            return Err(format!("stdout token is missing '=': {token:?}"));
+        };
+        if key.is_empty() || value.is_empty() {
+            return Err(format!("stdout token has an empty key or value: {token:?}"));
+        }
+        if fields.insert(key.to_owned(), value.to_owned()).is_some() {
+            return Err(format!("stdout has a duplicate key {key:?}: {line:?}"));
+        }
+    }
+    if fields.len() != OPERATOR_RECORD_KEYS.len() {
+        return Err(format!(
+            "stdout must have exactly {} keys, found {}: {line:?}",
+            OPERATOR_RECORD_KEYS.len(),
+            fields.len()
+        ));
+    }
+    for key in OPERATOR_RECORD_KEYS {
+        if !fields.contains_key(key) {
+            return Err(format!("stdout is missing key {key:?}: {line:?}"));
+        }
+    }
+    Ok(fields)
+}
+
+fn field_eq(fields: &BTreeMap<String, String>, key: &str, expected: &str) -> bool {
+    fields.get(key).map(String::as_str) == Some(expected)
+}
+
+fn assert_field_eq(fields: &BTreeMap<String, String>, key: &str, expected: &str) {
+    let actual: Option<&str> = fields.get(key).map(String::as_str);
     assert!(
-        stdout.contains(field),
-        "operator stdout lacks {field:?}: {stdout}"
+        field_eq(fields, key, expected),
+        "operator stdout field {key:?} mismatch: got {actual:?}, want {expected:?}"
     );
+}
+
+/// Independently reads the live, currently persisted namespace writer fence
+/// out of band, never trusting the operator binary's own stdout claim.
+fn current_generation(
+    pool: &Pool<PostgresConnectionManager<postgres::NoTls>>,
+    namespace: &PostgresNamespace,
+) -> WriterFenceGeneration {
+    let mut connection = pool.get().unwrap();
+    inspect_namespace(&mut *connection, namespace)
+        .unwrap()
+        .unwrap_or_else(|| panic!("PostgreSQL namespace missing"))
+        .writer_fence()
 }
 
 fn soak_dir() -> PathBuf {
@@ -223,13 +324,7 @@ fn fee_escrow_soak_recovery_pg_operator_e2e() {
     // The handoff is not authority: independently re-read the live,
     // currently persisted writer fence and require it to equal exactly what
     // the workload's own restart check left behind.
-    let persisted: WriterFenceGeneration = {
-        let mut connection = admin_pool.get().unwrap();
-        inspect_namespace(&mut *connection, &namespace)
-            .unwrap()
-            .unwrap_or_else(|| panic!("PostgreSQL namespace not bootstrapped"))
-            .writer_fence()
-    };
+    let persisted: WriterFenceGeneration = current_generation(&admin_pool, &namespace);
     assert_eq!(
         persisted.get(),
         handoff.writer_generation,
@@ -238,15 +333,32 @@ fn fee_escrow_soak_recovery_pg_operator_e2e() {
 
     let (proxy, _client_connector, ca_der) =
         support::tls_relay::TlsPassthroughProxy::spawn(backend_addr);
-    let ca_path: PathBuf = env::temp_dir().join(format!(
-        "sunrise-edge-soak-recovery-e2e-ca-{}-{}.der",
+    // Placed inside the driver's own fresh, exclusively-owned soak
+    // directory (never the shared, world-writable system temp directory),
+    // and opened with `create_new` so an existing file or symlink at this
+    // path is refused rather than overwritten or followed.
+    let ca_path: PathBuf = dir.join(format!(
+        "recovery-ca-{}-{}.der",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos(),
     ));
-    fs::write(&ca_path, &ca_der).unwrap();
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&ca_path)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "failed to create fresh CA file at {}: {error}",
+                    ca_path.display()
+                )
+            });
+        file.write_all(&ca_der).unwrap();
+        file.sync_all().unwrap();
+    }
     let _ca_guard = TempFileGuard(ca_path.clone());
     let dsn: String = proxied_dsn(&original_config, proxy.local_addr().port());
 
@@ -260,21 +372,49 @@ fn fee_escrow_soak_recovery_pg_operator_e2e() {
             command,
             &format!("fee_escrow_inventory_pg (recovery cycle {cycle})"),
         );
-        let expected_generation: u64 = handoff.writer_generation + u64::from(cycle);
-        for field in [
-            "complete=true".to_owned(),
-            "backend=postgres".to_owned(),
-            format!("chain_id={}", soak::FIXTURE_CHAIN_ID),
-            format!("validator_id={}", handoff.validator_id),
-            format!("domain={}", handoff.domain),
-            "protocol_version=3".to_owned(),
-            format!("writer_generation={expected_generation}"),
-            format!("verified_rows={}", handoff.expected_rows),
-            format!("verified_claims={}", handoff.expected_claims),
-            format!("verified_payouts={}", handoff.expected_payouts),
-        ] {
-            assert_stdout_contains(&output, &field);
-        }
+        let expected_generation: u64 = handoff
+            .writer_generation
+            .checked_add(u64::from(cycle))
+            .unwrap_or_else(|| panic!("handoff writer_generation + cycle {cycle} overflowed"));
+        let fields: BTreeMap<String, String> = parse_operator_record(&output.stdout)
+            .unwrap_or_else(|error| panic!("malformed operator stdout record: {error}"));
+        assert_field_eq(&fields, "complete", "true");
+        assert_field_eq(&fields, "backend", "postgres");
+        assert_field_eq(&fields, "chain_id", soak::FIXTURE_CHAIN_ID);
+        assert_field_eq(&fields, "validator_id", &handoff.validator_id);
+        assert_field_eq(&fields, "domain", &handoff.domain);
+        assert_field_eq(&fields, "protocol_version", "3");
+        assert_field_eq(
+            &fields,
+            "writer_generation",
+            &expected_generation.to_string(),
+        );
+        assert_field_eq(
+            &fields,
+            "pages",
+            &expected_pages(handoff.expected_rows).to_string(),
+        );
+        assert_field_eq(&fields, "verified_rows", &handoff.expected_rows.to_string());
+        assert_field_eq(
+            &fields,
+            "verified_claims",
+            &handoff.expected_claims.to_string(),
+        );
+        assert_field_eq(
+            &fields,
+            "verified_payouts",
+            &handoff.expected_payouts.to_string(),
+        );
+
+        // Never trust the binary's own stdout claim about the fence it
+        // says it advanced to: independently re-read the real, currently
+        // persisted namespace generation after every single cycle.
+        let observed: WriterFenceGeneration = current_generation(&admin_pool, &namespace);
+        assert_eq!(
+            observed.get(),
+            expected_generation,
+            "persisted PostgreSQL writer fence after cycle {cycle} does not match the expected advance"
+        );
         let elapsed_ms: u128 = started.elapsed().as_millis();
         eprintln!(
             "sunrise_edge_soak_v1 kind=recovery cycle={cycle} writer_generation={expected_generation} \
@@ -282,7 +422,10 @@ fn fee_escrow_soak_recovery_pg_operator_e2e() {
             handoff.expected_rows, handoff.expected_claims, handoff.expected_payouts,
         );
     }
-    let final_generation: u64 = handoff.writer_generation + u64::from(cycles);
+    let final_generation: u64 = handoff
+        .writer_generation
+        .checked_add(u64::from(cycles))
+        .unwrap_or_else(|| panic!("handoff writer_generation + cycles {cycles} overflowed"));
 
     // ---- negative: missing offline confirmation never advances the fence
     // or emits any partial complete result ----
@@ -296,6 +439,12 @@ fn fee_escrow_soak_recovery_pg_operator_e2e() {
     assert!(
         unconfirmed.stdout.is_empty(),
         "no partial complete totals are permitted on the confirmation failure path"
+    );
+    let after_unconfirmed: WriterFenceGeneration = current_generation(&admin_pool, &namespace);
+    assert_eq!(
+        after_unconfirmed.get(),
+        final_generation,
+        "the writer fence must not advance when the operator refuses to run without confirmation"
     );
 
     drop(proxy);
@@ -487,5 +636,93 @@ mod parser_tests {
 
         let suite: String = valid_text().replace(FIXTURE_SUITE, "0:2:1:1:1:1:1:1");
         assert!(validate_against_fixture(&parse_ok(&suite)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod record_tests {
+    use super::{field_eq, parse_operator_record};
+    use std::collections::BTreeMap;
+
+    fn valid_record() -> String {
+        "complete=true backend=postgres chain_id=paid-durable \
+         validator_id=1111111111111111111111111111111111111111111111111111111111111111 \
+         domain=0808080808080808080808080808080808080808080808080808080808080808 \
+         protocol_version=3 writer_generation=3 pages=2 verified_rows=8 \
+         verified_claims=32 verified_payouts=8\n"
+            .to_owned()
+    }
+
+    #[test]
+    fn valid_record_parses_with_exact_fields() {
+        let fields: BTreeMap<String, String> = parse_operator_record(valid_record().as_bytes())
+            .expect("a well-formed single-line record must parse");
+        assert!(field_eq(&fields, "verified_rows", "8"));
+        assert!(!field_eq(&fields, "verified_rows", "80"));
+        assert!(!field_eq(&fields, "verified_rows", ""));
+    }
+
+    #[test]
+    fn prefix_collision_value_is_never_accepted_as_a_match() {
+        let text: String = valid_record().replace("verified_rows=8", "verified_rows=80");
+        let fields: BTreeMap<String, String> = parse_operator_record(text.as_bytes()).unwrap();
+        assert!(
+            !field_eq(&fields, "verified_rows", "8"),
+            "verified_rows=80 must never satisfy an expected value of 8"
+        );
+        assert!(field_eq(&fields, "verified_rows", "80"));
+    }
+
+    #[test]
+    fn non_newline_terminated_record_is_rejected() {
+        let text: String = valid_record().trim_end().to_owned();
+        assert!(parse_operator_record(text.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn extra_line_is_rejected() {
+        let mut text: String = valid_record();
+        text.push_str("complete=true backend=postgres chain_id=paid-durable\n");
+        assert!(parse_operator_record(text.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn duplicate_key_is_rejected() {
+        let text: String = valid_record().replace(
+            "verified_payouts=8",
+            "verified_payouts=8 verified_payouts=8",
+        );
+        assert!(parse_operator_record(text.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn missing_key_is_rejected() {
+        let text: String = valid_record().replace("pages=2 ", "");
+        assert!(parse_operator_record(text.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn unknown_key_is_rejected() {
+        let mut text: String = valid_record();
+        text.truncate(text.len() - 1);
+        text.push_str(" unknown_field=1\n");
+        assert!(parse_operator_record(text.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn repeated_space_empty_token_is_rejected() {
+        let text: String = valid_record().replace(' ', "  ");
+        assert!(parse_operator_record(text.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn non_utf8_stdout_is_rejected() {
+        let bytes: Vec<u8> = vec![0xFF, 0xFE, 0xFD];
+        assert!(parse_operator_record(&bytes).is_err());
+    }
+
+    #[test]
+    fn empty_stdout_is_rejected() {
+        assert!(parse_operator_record(b"").is_err());
     }
 }
