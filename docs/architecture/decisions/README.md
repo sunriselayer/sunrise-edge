@@ -53,6 +53,7 @@
 - [DR-0144: closed PostgreSQL FastVote operator rehearsal](0144-closed-postgres-fastvote-operator.md)
 - [DR-0145: PostgreSQL Phase 3 capacity and validator authority](0145-postgres-phase3-capacity-and-validator-authority.md)
 - [DR-0146: bounded certified PostgreSQL load and recovery harness](0146-postgres-certified-load-and-recovery-harness.md)
+- [DR-0147: function-first network delivery sequencing](0147-function-first-network-delivery.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).
