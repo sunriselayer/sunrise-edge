@@ -27,7 +27,7 @@ self_test_case() {
   env -u SUNRISE_EDGE_TEST_POSTGRES_URL -u SUNRISE_EDGE_SOAK_ESCROWS -u SUNRISE_EDGE_SOAK_SENDERS \
     -u SUNRISE_EDGE_SOAK_CLAIM_WRITERS -u SUNRISE_EDGE_SOAK_MAX_CLAIM_RATE_PER_SEC \
     -u SUNRISE_EDGE_SOAK_DURATION_SECONDS -u SUNRISE_EDGE_SOAK_WALL_DEADLINE_SECONDS \
-    -u SUNRISE_EDGE_SOAK_RECOVERY_CYCLES -u SUNRISE_EDGE_SOAK_CONFIRM_DISPOSABLE \
+    -u SUNRISE_EDGE_SOAK_RECOVERY_CYCLES -u SUNRISE_EDGE_SOAK_CONFIRM_DISPOSABLE -u GITHUB_ACTIONS \
     "${envs[@]}" bash "$0" "$@" >/dev/null 2>&1 || actual=$?
   if [[ "$actual" -eq "$expected" ]]; then
     echo "self-test ok: $description"
@@ -38,6 +38,7 @@ self_test_case() {
 }
 
 run_cli_self_tests() {
+  self_test_case "extra arguments after --self-test-cli are rejected" 1 -- --self-test-cli --smoke
   self_test_case "no arguments is a usage error" 1 --
   self_test_case "unknown flag is rejected" 1 -- --bogus
   self_test_case "both --smoke and --run is rejected" 1 -- --smoke --run
@@ -62,7 +63,9 @@ run_cli_self_tests() {
     SUNRISE_EDGE_SOAK_DURATION_SECONDS=10 SUNRISE_EDGE_SOAK_WALL_DEADLINE_SECONDS=20 \
     SUNRISE_EDGE_SOAK_RECOVERY_CYCLES=1 SUNRISE_EDGE_SOAK_CONFIRM_DISPOSABLE=1 -- --run
   self_test_case "--smoke with no PG URL configured cleanly skips" 0 -- --smoke
-  self_test_case "--run with valid bounded vars and no PG URL configured cleanly skips" 0 \
+  self_test_case "--smoke with no PG URL configured errors under GITHUB_ACTIONS" 1 \
+    GITHUB_ACTIONS=true -- --smoke
+  self_test_case "--run with valid bounded vars and no PG URL configured errors, never skips" 1 \
     SUNRISE_EDGE_SOAK_ESCROWS=4 SUNRISE_EDGE_SOAK_SENDERS=2 SUNRISE_EDGE_SOAK_CLAIM_WRITERS=2 \
     SUNRISE_EDGE_SOAK_MAX_CLAIM_RATE_PER_SEC=8 SUNRISE_EDGE_SOAK_DURATION_SECONDS=10 \
     SUNRISE_EDGE_SOAK_WALL_DEADLINE_SECONDS=20 SUNRISE_EDGE_SOAK_RECOVERY_CYCLES=1 \
@@ -76,6 +79,10 @@ run_cli_self_tests() {
 }
 
 if [[ "${1:-}" == "--self-test-cli" ]]; then
+  if [[ "$#" -ne 1 ]]; then
+    echo "--self-test-cli accepts no additional arguments" >&2
+    exit 1
+  fi
   run_cli_self_tests
   exit 0
 fi
@@ -154,8 +161,14 @@ fi
 
 # Mirrors check-all.sh's own top-of-file rule: CI must exercise this against
 # the live PostgreSQL service; local checks may run without one and skip.
-# Reached only once the invocation itself is already known to be valid.
+# Reached only once the invocation itself is already known to be valid. Only
+# `--smoke` may skip locally: a manual `--run` is a deliberate, explicit
+# long-run invocation and an unconfigured target is always a hard error.
 if [[ -z "${SUNRISE_EDGE_TEST_POSTGRES_URL:-}" ]]; then
+  if [[ "$mode" == "run" ]]; then
+    echo "--run requires SUNRISE_EDGE_TEST_POSTGRES_URL to be set to a disposable loopback PostgreSQL service" >&2
+    exit 1
+  fi
   if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
     echo "CI requires SUNRISE_EDGE_TEST_POSTGRES_URL for the PostgreSQL certified load/recovery harness" >&2
     exit 1

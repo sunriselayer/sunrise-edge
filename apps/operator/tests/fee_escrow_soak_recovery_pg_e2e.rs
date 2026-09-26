@@ -95,19 +95,53 @@ fn parse_hex_32(value: &str) -> [u8; 32] {
     bytes
 }
 
-fn single_tcp_backend_addr(config: &Config) -> SocketAddr {
+/// The only database name this harness is ever allowed to target, matching
+/// DR-0146's "disposable loopback `sunrise_edge_test`" requirement.
+const REQUIRED_TEST_DBNAME: &str = "sunrise_edge_test";
+
+/// Refuses any DSN whose target is not a bounded, disposable-test loopback
+/// PostgreSQL service, before any pool, TLS or network connection is ever
+/// built from it: exactly one TCP host that is a recognized loopback
+/// literal (`localhost`, or an IP literal that parses as loopback), every
+/// address that literal actually resolves to must itself be loopback, and
+/// the configured database name must be exactly [`REQUIRED_TEST_DBNAME`].
+/// A Unix-domain-socket host or more than one host is rejected outright.
+/// Never panics and never includes the DSN, user or password in its error
+/// text (only the bare host string and database name, neither secret).
+fn require_loopback_test_backend(config: &Config) -> Result<SocketAddr, String> {
     let [Host::Tcp(host)] = config.get_hosts() else {
-        panic!(
-            "{} must resolve to exactly one TCP host",
-            support::LIVE_POSTGRES_URL_ENV
-        );
+        return Err("PostgreSQL host must resolve to exactly one TCP host".to_owned());
     };
+    let is_recognized_loopback_literal = host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    if !is_recognized_loopback_literal {
+        return Err(format!(
+            "PostgreSQL host {host:?} is not a recognized loopback literal (localhost or a loopback IP)"
+        ));
+    }
+    let dbname: &str = config.get_dbname().unwrap_or_default();
+    if dbname != REQUIRED_TEST_DBNAME {
+        return Err(format!(
+            "PostgreSQL database must be exactly {REQUIRED_TEST_DBNAME:?}"
+        ));
+    }
     let port: u16 = config.get_ports().first().copied().unwrap_or(5432);
-    format!("{host}:{port}")
+    let resolved: Vec<SocketAddr> = format!("{host}:{port}")
         .to_socket_addrs()
-        .unwrap_or_else(|error| panic!("failed to resolve backend host {host}: {error}"))
-        .next()
-        .unwrap_or_else(|| panic!("no resolved address for backend host {host}"))
+        .map_err(|error| format!("failed to resolve PostgreSQL host: {error}"))?
+        .collect();
+    if resolved.is_empty() {
+        return Err("PostgreSQL host resolved to no addresses".to_owned());
+    }
+    if !resolved.iter().all(|addr| addr.ip().is_loopback()) {
+        return Err(
+            "PostgreSQL host resolved to a non-loopback address; refusing a non-loopback target"
+                .to_owned(),
+        );
+    }
+    Ok(resolved[0])
 }
 
 fn proxied_dsn(original: &Config, proxy_port: u16) -> String {
@@ -290,7 +324,13 @@ fn fee_escrow_soak_recovery_pg_operator_e2e() {
         .unwrap_or_else(|error| panic!("invalid or incomplete handoff.kv: {error}"));
 
     let original_config: Config = Config::from_str(&database_url).unwrap();
-    let backend_addr: SocketAddr = single_tcp_backend_addr(&original_config);
+    // Never touches the pool, TLS or network until the DSN itself is
+    // confirmed to name only a disposable loopback `sunrise_edge_test`
+    // service, per DR-0146's loopback-only promise.
+    let backend_addr: SocketAddr =
+        require_loopback_test_backend(&original_config).unwrap_or_else(|error| {
+            panic!("refusing non-loopback or non-test PostgreSQL target: {error}")
+        });
 
     let admin_pool_config: PostgresPoolConfig = PostgresPoolConfig::new(
         NonZeroU32::new(2).unwrap(),
@@ -724,5 +764,80 @@ mod record_tests {
     #[test]
     fn empty_stdout_is_rejected() {
         assert!(parse_operator_record(b"").is_err());
+    }
+}
+
+#[cfg(test)]
+mod backend_guard_tests {
+    use super::require_loopback_test_backend;
+    use postgres::Config;
+    use std::str::FromStr;
+
+    fn config(dsn: &str) -> Config {
+        Config::from_str(dsn).unwrap_or_else(|error| panic!("invalid test DSN {dsn:?}: {error}"))
+    }
+
+    #[test]
+    fn localhost_loopback_test_db_is_accepted() {
+        let result = require_loopback_test_backend(&config(
+            "host=localhost user=test dbname=sunrise_edge_test",
+        ));
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn loopback_ip_literal_test_db_is_accepted() {
+        for host in ["127.0.0.1", "::1"] {
+            let dsn = format!("host={host} user=test dbname=sunrise_edge_test");
+            let result = require_loopback_test_backend(&config(&dsn));
+            assert!(result.is_ok(), "{host}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn remote_hostname_is_rejected() {
+        let result = require_loopback_test_backend(&config(
+            "host=db.example.com user=test dbname=sunrise_edge_test",
+        ));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn remote_ip_literal_is_rejected() {
+        let result = require_loopback_test_backend(&config(
+            "host=8.8.8.8 user=test dbname=sunrise_edge_test",
+        ));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn non_test_database_name_is_rejected() {
+        let result =
+            require_loopback_test_backend(&config("host=localhost user=test dbname=postgres"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn unix_domain_socket_host_is_rejected() {
+        let result =
+            require_loopback_test_backend(&config("host=/tmp user=test dbname=sunrise_edge_test"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn multiple_hosts_are_rejected() {
+        let result = require_loopback_test_backend(&config(
+            "host=localhost,127.0.0.1 user=test dbname=sunrise_edge_test",
+        ));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn error_text_never_includes_password() {
+        let result = require_loopback_test_backend(&config(
+            "host=db.example.com user=test password=super-secret dbname=sunrise_edge_test",
+        ));
+        let error: String = result.unwrap_err();
+        assert!(!error.contains("super-secret"), "leaked password: {error}");
     }
 }
