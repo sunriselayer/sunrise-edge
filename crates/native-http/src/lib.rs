@@ -74,7 +74,10 @@ use tower::ServiceExt;
 // live in `node-wire` (DR-0083) and are re-exported below so existing
 // callers keep their original `native-http` import paths and byte-identical
 // wire behavior.
-pub use fastvote::{certified_fastvote_router, certified_fastvote_router_with_executor};
+pub use fastvote::{
+    CERTIFIED_FASTVOTE_EXCLUDED_MUTATION_PATHS, certified_fastvote_router,
+    certified_fastvote_router_with_executor,
+};
 pub use node_wire::{
     CONTEXT_QUERY_RESULT_TYPE_ID, FASTVOTE_APPLY_REQUEST_TYPE_ID, FASTVOTE_CERTIFICATES_PATH,
     FASTVOTE_PREPARE_PATH, FastVoteApplyRequest, FastVoteApplyRequestError, HttpContextQueryResult,

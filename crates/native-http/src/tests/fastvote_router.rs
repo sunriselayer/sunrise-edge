@@ -159,23 +159,20 @@ async fn dispatch(app: &Router, method: &str, path: &str, body: Vec<u8>) -> Stat
 /// router must never mount, checked exhaustively against a genuine 404
 /// (route not found), not an internally-gated 4xx/200 the handler itself
 /// could return if it were reachable.
-const DENIED_MUTATING_PATHS: &[&str] = &[
-    NODE_EVENT_PATH,
-    "/v1/contracts/publications",
-    "/v1/contracts/executions",
-    "/v1/contracts/paid-executions",
-];
+const DENIED_MUTATING_PATHS: &[&str] = crate::fastvote::CERTIFIED_FASTVOTE_EXCLUDED_MUTATION_PATHS;
 
 #[tokio::test]
 async fn certified_router_omits_every_direct_or_legacy_mutating_route() {
     let app = certified_router();
     for path in DENIED_MUTATING_PATHS {
-        let status = dispatch(&app, "POST", path, vec![0xAA]).await;
-        assert_eq!(
-            status,
-            StatusCode::NOT_FOUND,
-            "expected {path} to be completely unmounted, got {status}"
-        );
+        for method in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
+            let status = dispatch(&app, method, path, vec![0xAA]).await;
+            assert_eq!(
+                status,
+                StatusCode::NOT_FOUND,
+                "expected {method} {path} to be completely unmounted, got {status}"
+            );
+        }
     }
 }
 

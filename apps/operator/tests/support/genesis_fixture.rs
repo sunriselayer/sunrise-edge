@@ -126,6 +126,15 @@ impl FastVoteGenesisFixture {
         encode_signed_paid_intent(&SignedPaidIntent { intent, signature }).unwrap()
     }
 
+    /// Signs the exact supplied intent under its declared context for HTTP
+    /// authentication/epoch regressions, without changing any live state.
+    #[must_use]
+    pub fn sign_intent(&self, intent: PaidIntent) -> Vec<u8> {
+        let frame: Vec<u8> = paid_intent_signing_frame(&intent.context, &intent).unwrap();
+        let signature: [u8; 64] = self.sender_key.sign(&frame).into();
+        encode_signed_paid_intent(&SignedPaidIntent { intent, signature }).unwrap()
+    }
+
     /// The public Standard Asset definition object id, needed to build the
     /// `asset_type_argument` a real CLI-built `transfer` call's
     /// `--type-args` must supply.
@@ -191,17 +200,34 @@ fn genesis_signing_key() -> SigningKey {
 /// state).
 #[must_use]
 pub fn build_fixture(unique: &str) -> FastVoteGenesisFixture {
+    build_fixture_with_protocol(unique, ProtocolVersion::new(1), Epoch::new(0))
+}
+
+/// Network CLI queries require the activated transaction-auth profile (v3).
+#[must_use]
+pub fn build_network_fixture(unique: &str) -> FastVoteGenesisFixture {
+    build_network_fixture_at_epoch(unique, Epoch::new(0))
+}
+
+/// Controlled fixture for fixed-pin and live-epoch HTTP regressions.
+#[must_use]
+pub fn build_network_fixture_at_epoch(unique: &str, epoch: Epoch) -> FastVoteGenesisFixture {
+    build_fixture_with_protocol(unique, ProtocolVersion::new(3), epoch)
+}
+
+/// Explicit context fixture for authentication mismatch tests.
+#[must_use]
+pub fn build_fixture_with_protocol(
+    unique: &str,
+    protocol_version: ProtocolVersion,
+    epoch: Epoch,
+) -> FastVoteGenesisFixture {
     let chain_id: ChainId = ChainId::new(format!("fastvote-pg-e2e-{unique}")).unwrap();
-    // Must be >= protocol_config::resolve_transaction_auth_profile's activation
-    // floor (3): the ordinary CLI paid-call path queries `/v1/context`, which
-    // resolves the transaction-auth profile and fails closed below that floor.
-    let protocol_version: ProtocolVersion = ProtocolVersion::new(3);
-    let epoch: Epoch = Epoch::new(0);
     let resolver: HashSuiteResolver = HashSuiteResolver::new(
         chain_id.clone(),
         protocol_version,
         vec![HashSuiteSchedule {
-            activation_epoch: epoch,
+            activation_epoch: Epoch::new(0),
             suite: HashSuite::genesis(),
         }],
     )

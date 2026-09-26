@@ -39,11 +39,17 @@
 //! disk I/O beyond reading the manifest file.
 #![forbid(unsafe_code)]
 
+use sunrise_edge_operator::common::{
+    FlagSet, connect_pool, load_signing_key_file, load_trusted_genesis_manifest, parse_hex_32,
+    read_bounded_file,
+};
+#[cfg(test)]
+use sunrise_edge_operator::common::{SigningKeyFileError, require_tls_tcp_host};
+
 use consensus::{
     ConsensusSigner, FastCertificate, FastPathCertifier, FastVote, decode_fast_certificate,
     decode_fast_vote, encode_fast_certificate, encode_fast_vote,
 };
-use crypto::{Ed25519Verifier, SignatureVerifier};
 use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::local_execution::LocalExecutionPolicy;
 use execution::paid_execution::{
@@ -55,21 +61,18 @@ use node_core::fast_path::records::{
     FastPathValidatorEntry, MAX_FASTPATH_ACTIVE_VALIDATORS, decode_fastpath_validator_set_record,
 };
 use node_core::fast_path::{self, FastPathEd25519Verifier, FastPathValidatorSetRecord};
-use node_core::genesis::genesis_manifest_signing_frame;
 use node_core::local_instance_state;
 use node_core::{
-    GenesisInstallOutcome, GenesisManifest, MAX_GENESIS_MANIFEST_BYTES,
-    decode_genesis_install_marker, decode_genesis_manifest, genesis_manifest_commitment,
-    genesis_marker_key, install_genesis_with_history,
+    GenesisInstallOutcome, GenesisManifest, decode_genesis_install_marker, genesis_marker_key,
+    install_genesis_with_history,
 };
-use postgres::{
-    Client, Config,
-    config::{Host, SslMode},
-};
-use postgres_rustls::{MakeTlsConnector, tokio_rustls::TlsConnector};
+use postgres::Client;
+#[cfg(test)]
+use postgres::{Config, config::SslMode};
+use postgres_rustls::MakeTlsConnector;
 use protocol_types::{
-    AtomicityDomainId, ChainId, Digest32, Epoch, HashAlgorithmId, HashSuite, HashSuiteId,
-    HashSuiteSchedule, ProtocolVersion, SignatureSchemeId, ValidatorId,
+    AtomicityDomainId, ChainId, Epoch, HashAlgorithmId, HashSuite, HashSuiteId, HashSuiteSchedule,
+    ProtocolVersion, SignatureSchemeId, ValidatorId,
 };
 use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
 use runtime::{
@@ -77,30 +80,21 @@ use runtime::{
     SystemClock, WriterFenceGeneration,
 };
 use runtime_postgres::{
-    PostgresBlobStore, PostgresDurableStore, PostgresNamespace, PostgresPoolConfig,
-    PostgresTransactionPolicy, advance_writer_fence, apply_initial_schema, bootstrap_namespace,
-    build_postgres_pool, inspect_namespace,
+    PostgresBlobStore, PostgresDurableStore, PostgresNamespace, PostgresTransactionPolicy,
+    advance_writer_fence, apply_initial_schema, bootstrap_namespace, inspect_namespace,
 };
-use rustls::{ClientConfig, RootCertStore, pki_types::CertificateDer};
+#[cfg(test)]
+use std::str::FromStr;
 use std::{
-    collections::{BTreeMap, BTreeSet},
     error::Error,
     ffi::OsString,
-    fmt, fs,
-    io::Read,
+    fs,
     num::NonZeroU32,
     path::{Path, PathBuf},
     process::ExitCode,
-    str::FromStr,
-    sync::Arc,
-    time::Duration,
 };
 use validator_set::{ValidatorInfo, ValidatorSet};
 
-/// Never accepted on argv; supplied through the operator environment.
-const POSTGRES_DSN_ENV: &str = "SUNRISE_EDGE_OPERATOR_POSTGRES_DSN";
-/// Exact raw Ed25519 seed length the local key file must contain.
-const SIGNING_KEY_FILE_BYTES: usize = 32;
 /// Generous bound on one encoded `FastVote` file (canonical frame overhead
 /// plus an ordinary chain id, several 32-byte digests and a 64-byte
 /// signature comfortably fits in low hundreds of bytes).
@@ -113,113 +107,8 @@ const MAX_CERTIFICATE_FILE_BYTES: usize = MAX_FASTPATH_ACTIVE_VALIDATORS * MAX_V
 const MAX_VOTE_INPUTS: usize = MAX_FASTPATH_ACTIVE_VALIDATORS;
 
 // ---------------------------------------------------------------------
-// Generic bounded flag parsing, shared by every subcommand.
-// ---------------------------------------------------------------------
-
-/// A bounded, exactly-once-or-repeatable flag parser over `--flag value`
-/// pairs plus zero-value boolean flags. Every subcommand declares its own
-/// exact set of known flags; an unknown flag fails closed immediately.
-struct FlagSet {
-    values: BTreeMap<String, Vec<String>>,
-    bools: BTreeSet<String>,
-}
-
-impl FlagSet {
-    fn parse(
-        tokens: impl IntoIterator<Item = OsString>,
-        value_flags: &[&'static str],
-        bool_flags: &[&'static str],
-    ) -> Result<Self, String> {
-        let mut values: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut bools: BTreeSet<String> = BTreeSet::new();
-        let mut iterator = tokens.into_iter();
-        while let Some(flag) = iterator.next() {
-            let flag: String = flag
-                .into_string()
-                .map_err(|_| "non-UTF8 flag".to_string())?;
-            if bool_flags.contains(&flag.as_str()) {
-                if !bools.insert(flag.clone()) {
-                    return Err(format!("duplicate {flag}"));
-                }
-                continue;
-            }
-            if !value_flags.contains(&flag.as_str()) {
-                return Err(format!("unknown flag {flag}"));
-            }
-            let value: String = iterator
-                .next()
-                .ok_or_else(|| format!("missing value for {flag}"))?
-                .into_string()
-                .map_err(|_| format!("non-UTF8 value for {flag}"))?;
-            values.entry(flag).or_default().push(value);
-        }
-        Ok(Self { values, bools })
-    }
-
-    /// Removes and returns exactly one value for `flag`.
-    fn one(&mut self, flag: &str) -> Result<String, String> {
-        let mut values: Vec<String> = self.values.remove(flag).unwrap_or_default();
-        match values.len() {
-            1 => Ok(values.remove(0)),
-            0 => Err(format!("missing required {flag}")),
-            _ => Err(format!("{flag} must be supplied exactly once")),
-        }
-    }
-
-    /// Removes and returns zero or one value for `flag`.
-    fn optional_one(&mut self, flag: &str) -> Result<Option<String>, String> {
-        let mut values: Vec<String> = self.values.remove(flag).unwrap_or_default();
-        match values.len() {
-            0 => Ok(None),
-            1 => Ok(Some(values.remove(0))),
-            _ => Err(format!("{flag} must be supplied at most once")),
-        }
-    }
-
-    /// Removes and returns every value for `flag`, in argument order.
-    fn many(&mut self, flag: &str) -> Vec<String> {
-        self.values.remove(flag).unwrap_or_default()
-    }
-
-    fn bool(&mut self, flag: &str) -> bool {
-        self.bools.remove(flag)
-    }
-
-    /// Fails closed if any supplied flag was never consumed by the caller
-    /// (for example a `--genesis-manifest` supplied alongside
-    /// `--validator-set-source committed`, which never reads it): a silently
-    /// ignored operator flag is exactly the kind of mistake this bounded
-    /// parser exists to catch.
-    fn finish(self) -> Result<(), String> {
-        if let Some(flag) = self.values.keys().next() {
-            return Err(format!(
-                "{flag} was supplied but is not used by this subcommand/mode"
-            ));
-        }
-        if let Some(flag) = self.bools.iter().next() {
-            return Err(format!(
-                "{flag} was supplied but is not used by this subcommand/mode"
-            ));
-        }
-        Ok(())
-    }
-}
-
-// ---------------------------------------------------------------------
 // Shared scalar parsing (mirrors `fee_escrow_inventory_pg`'s conventions).
 // ---------------------------------------------------------------------
-
-fn parse_hex_32(value: &str, field: &str) -> Result<[u8; 32], String> {
-    if value.len() != 64 || !value.bytes().all(|byte: u8| byte.is_ascii_hexdigit()) {
-        return Err(format!("{field} must be 64 hex digits"));
-    }
-    let mut bytes: [u8; 32] = [0; 32];
-    for (index, byte) in bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
-            .map_err(|_| format!("{field} contains invalid hex"))?;
-    }
-    Ok(bytes)
-}
 
 fn parse_chain(value: String) -> Result<ChainId, String> {
     ChainId::new(value).map_err(|_| "invalid --chain-id".to_string())
@@ -310,27 +199,6 @@ fn to_hex(bytes: &[u8]) -> String {
 // Bounded file I/O.
 // ---------------------------------------------------------------------
 
-fn read_bounded_file(
-    path: &Path,
-    max_bytes: usize,
-    field: &'static str,
-) -> Result<Vec<u8>, String> {
-    let mut file: fs::File =
-        fs::File::open(path).map_err(|error| format!("failed to open {field}: {error}"))?;
-    let limit: u64 = u64::try_from(max_bytes).unwrap_or(u64::MAX);
-    let mut buffer: Vec<u8> = Vec::new();
-    file.by_ref()
-        .take(limit.saturating_add(1))
-        .read_to_end(&mut buffer)
-        .map_err(|error| format!("failed to read {field}: {error}"))?;
-    if buffer.len() > max_bytes {
-        return Err(format!(
-            "{field} exceeds the maximum accepted size of {max_bytes} bytes"
-        ));
-    }
-    Ok(buffer)
-}
-
 fn write_output_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
     #[cfg(unix)]
@@ -353,132 +221,6 @@ fn write_output_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
 // seed, never argv/env. Mirrors `apps/cli/src/seed.rs`'s TOCTOU-closing
 // pattern, adapted for a raw binary key file instead of hex text.
 // ---------------------------------------------------------------------
-
-#[derive(Debug)]
-enum SigningKeyFileError {
-    Io(std::io::Error),
-    Symlink,
-    NotRegularFile,
-    #[cfg(not(unix))]
-    UnsupportedPlatform,
-    InsecurePermissions {
-        mode: u32,
-    },
-    PathReplacedDuringOpen,
-    WrongLength {
-        actual: usize,
-    },
-}
-
-impl fmt::Display for SigningKeyFileError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(error) => write!(f, "failed to read signing key file: {error}"),
-            Self::Symlink => f.write_str("signing key file must not be a symlink"),
-            Self::NotRegularFile => f.write_str("signing key file must be a regular file"),
-            #[cfg(not(unix))]
-            Self::UnsupportedPlatform => {
-                f.write_str("signing key file permissions cannot be verified on this platform")
-            }
-            Self::InsecurePermissions { mode } => write!(
-                f,
-                "signing key file must grant no group/other permission bits, got mode {mode:03o}"
-            ),
-            Self::PathReplacedDuringOpen => f.write_str(
-                "signing key file path was replaced between validation and opening; refusing to read it",
-            ),
-            Self::WrongLength { actual } => write!(
-                f,
-                "signing key file must contain exactly {SIGNING_KEY_FILE_BYTES} raw bytes, got {actual}"
-            ),
-        }
-    }
-}
-
-impl Error for SigningKeyFileError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Io(error) => Some(error),
-            _ => None,
-        }
-    }
-}
-
-#[cfg(unix)]
-fn check_unix_permissions(metadata: &fs::Metadata) -> Result<(), SigningKeyFileError> {
-    use std::os::unix::fs::PermissionsExt;
-    let mode: u32 = metadata.permissions().mode() & 0o777;
-    if mode & 0o077 != 0 {
-        return Err(SigningKeyFileError::InsecurePermissions { mode });
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-const fn check_unix_permissions(_metadata: &fs::Metadata) -> Result<(), SigningKeyFileError> {
-    Err(SigningKeyFileError::UnsupportedPlatform)
-}
-
-#[cfg(unix)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct FileIdentity {
-    device: u64,
-    inode: u64,
-}
-
-#[cfg(unix)]
-impl FileIdentity {
-    fn from_metadata(metadata: &fs::Metadata) -> Self {
-        use std::os::unix::fs::MetadataExt;
-        Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-        }
-    }
-}
-
-/// Loads and strictly validates a raw 32-byte Ed25519 seed from `path`.
-fn load_signing_key_file(path: &Path) -> Result<SigningKey, SigningKeyFileError> {
-    let pre_open_metadata: fs::Metadata =
-        fs::symlink_metadata(path).map_err(SigningKeyFileError::Io)?;
-    if pre_open_metadata.file_type().is_symlink() {
-        return Err(SigningKeyFileError::Symlink);
-    }
-    if !pre_open_metadata.is_file() {
-        return Err(SigningKeyFileError::NotRegularFile);
-    }
-    check_unix_permissions(&pre_open_metadata)?;
-    #[cfg(unix)]
-    let pre_open_identity: FileIdentity = FileIdentity::from_metadata(&pre_open_metadata);
-
-    let mut file: fs::File = fs::File::open(path).map_err(SigningKeyFileError::Io)?;
-    let opened_metadata: fs::Metadata = file.metadata().map_err(SigningKeyFileError::Io)?;
-    if !opened_metadata.is_file() {
-        return Err(SigningKeyFileError::NotRegularFile);
-    }
-    check_unix_permissions(&opened_metadata)?;
-    #[cfg(unix)]
-    {
-        let opened_identity: FileIdentity = FileIdentity::from_metadata(&opened_metadata);
-        if opened_identity != pre_open_identity {
-            return Err(SigningKeyFileError::PathReplacedDuringOpen);
-        }
-    }
-
-    let mut buffer: Vec<u8> = Vec::with_capacity(SIGNING_KEY_FILE_BYTES + 1);
-    file.by_ref()
-        .take(u64::try_from(SIGNING_KEY_FILE_BYTES + 1).unwrap_or(u64::MAX))
-        .read_to_end(&mut buffer)
-        .map_err(SigningKeyFileError::Io)?;
-    if buffer.len() != SIGNING_KEY_FILE_BYTES {
-        return Err(SigningKeyFileError::WrongLength {
-            actual: buffer.len(),
-        });
-    }
-    let mut seed: [u8; 32] = [0; 32];
-    seed.copy_from_slice(&buffer);
-    Ok(SigningKey::from(seed))
-}
 
 /// A real (non-mocked) `ConsensusSigner` backed by a locally loaded Ed25519
 /// signing key. Never logs or exposes the key material.
@@ -506,43 +248,6 @@ impl ConsensusSigner for FileEd25519Signer {
 // an independently supplied expected digest, and the manifest's embedded
 // context matches the operator's independently supplied expected context.
 // ---------------------------------------------------------------------
-
-fn load_trusted_genesis_manifest(
-    path: &Path,
-    resolver: &HashSuiteResolver,
-    expected_digest: [u8; 32],
-    expected_context: &PublicationContext,
-) -> Result<GenesisManifest, String> {
-    let bytes: Vec<u8> = read_bounded_file(path, MAX_GENESIS_MANIFEST_BYTES, "genesis manifest")?;
-    let manifest: GenesisManifest = decode_genesis_manifest(&bytes)
-        .map_err(|error| format!("invalid genesis manifest: {error}"))?;
-    let digest: Digest32 = genesis_manifest_commitment(resolver, &manifest)
-        .map_err(|error| format!("failed to compute genesis manifest commitment: {error}"))?;
-    if digest.bytes() != expected_digest {
-        return Err(
-            "genesis manifest commitment does not match the operator-trusted expected genesis digest"
-                .into(),
-        );
-    }
-    if manifest.context() != expected_context {
-        return Err(
-            "genesis manifest context does not match the operator-trusted expected chain/protocol/epoch"
-                .into(),
-        );
-    }
-    let verifier: Ed25519Verifier =
-        Ed25519Verifier::from_verifying_key_bytes(&manifest.genesis_authority)
-            .map_err(|error| format!("invalid genesis authority key: {error}"))?;
-    let signing_frame: Vec<u8> = genesis_manifest_signing_frame(&manifest)
-        .map_err(|error| format!("invalid genesis signing frame: {error}"))?;
-    if !verifier
-        .verify_framed(&signing_frame, &manifest.signature)
-        .map_err(|error| format!("invalid genesis signature: {error}"))?
-    {
-        return Err("invalid genesis authority signature".into());
-    }
-    Ok(manifest)
-}
 
 /// The local validator must have installed the exact signed manifest and its
 /// committed fee policy must still equal the policy proposed to FastVote.
@@ -638,46 +343,6 @@ fn require_registered_signer<'a>(
 // PostgreSQL connection wiring, shared by every DB-touching subcommand.
 // Mirrors `fee_escrow_inventory_pg`'s TLS-validated DSN pattern exactly.
 // ---------------------------------------------------------------------
-
-fn require_tls_tcp_host(config: &mut Config) -> Result<(), &'static str> {
-    if !matches!(config.get_hosts(), [Host::Tcp(_)]) {
-        return Err("PostgreSQL connection requires exactly one TCP host for TLS identity");
-    }
-    config.ssl_mode(SslMode::Require);
-    Ok(())
-}
-
-fn connect_pool(
-    ca_der: &Path,
-    max_connections: NonZeroU32,
-) -> Result<Pool<PostgresConnectionManager<MakeTlsConnector>>, Box<dyn Error>> {
-    let dsn: String = std::env::var(POSTGRES_DSN_ENV)
-        .map_err(|_| format!("{POSTGRES_DSN_ENV} must be set in the operator environment"))?;
-    let mut config: Config =
-        Config::from_str(&dsn).map_err(|_| "invalid PostgreSQL connection configuration")?;
-    require_tls_tcp_host(&mut config)?;
-
-    let certificate: Vec<u8> = fs::read(ca_der)?;
-    let mut roots: RootCertStore = RootCertStore::empty();
-    roots
-        .add(CertificateDer::from(certificate))
-        .map_err(|_| "invalid DER TLS root certificate")?;
-    let tls_config: ClientConfig =
-        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .map_err(|_| "unsupported TLS protocol versions")?
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-    let tls: MakeTlsConnector = MakeTlsConnector::new(TlsConnector::from(Arc::new(tls_config)));
-    let pool_config: PostgresPoolConfig = PostgresPoolConfig::new(
-        max_connections,
-        Duration::from_secs(10),
-        Duration::from_secs(30),
-        Duration::from_secs(300),
-    )?;
-    Ok(build_postgres_pool(config, tls, pool_config)
-        .map_err(|_| "PostgreSQL TLS connection or pool initialization failed")?)
-}
 
 /// Claims a fresh writer generation for one disruptive operator command,
 /// exactly like `fee_escrow_inventory_pg`: reads the current generation,

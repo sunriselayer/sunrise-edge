@@ -889,6 +889,17 @@ where
         return Ok(output);
     }
 
+    // Historical committed requests reconcile above. Fresh work must also
+    // match the trusted, fixed execution-policy epoch, even when the live
+    // epoch has moved forward beyond that composition.
+    if authenticated.intent().context.epoch() != base_policy.context().epoch() {
+        return Err(NodeCoreError::EpochMismatch {
+            expected: base_policy.context().epoch(),
+            actual: authenticated.intent().context.epoch(),
+        }
+        .into());
+    }
+
     let chain: ChainId = authenticated.intent().context.chain_id().clone();
     let intent_context: PublicationContext = authenticated.intent().context.clone();
     let original_request_id: [u8; 32] = authenticated.intent().request_id;

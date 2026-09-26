@@ -44,6 +44,15 @@ use node_core::fast_path::{self, FastPathError};
 use node_core::paid_execution::authenticate_paid_execution;
 use protocol_types::{SignatureSchemeId, ValidatorId};
 
+/// Production mutation-route inventory excluded by certified-only hosting.
+/// Derived from the actual handler constants so route renames remain covered.
+pub const CERTIFIED_FASTVOTE_EXCLUDED_MUTATION_PATHS: &[&str] = &[
+    NODE_EVENT_PATH,
+    publication::PUBLICATION_PATH,
+    local_execution::EXECUTION_PATH,
+    paid_execution::PAID_EXECUTION_PATH,
+];
+
 /// Adapts a boxed [`FastVoteComposition`] signer into a concrete, `Sized`
 /// [`ConsensusSigner`] implementation: `node_core::fast_path::prepare`'s own
 /// `C: ConsensusSigner` bound requires a `Sized` type, which `dyn
@@ -138,6 +147,11 @@ where
                 authenticate_paid_execution(&state.resolver, &declared_context, &body)
             {
                 return paid_execution::admission_error(&error);
+            }
+            // A cached prepared vote must not bypass this host's fixed pin.
+            // Authenticate first, then reject before identity/clock/state I/O.
+            if declared_context.epoch() != state.config.epoch() {
+                return error_response(StatusCode::CONFLICT, "fastvote-epoch-repin-required");
             }
             let (domain, context) = match prepare_storage_context(
                 &state.components,
@@ -343,6 +357,9 @@ where
 fn fastpath_error_response(error: &FastPathError) -> Response {
     match error {
         FastPathError::Admission(error) => paid_execution::admission_error(error),
+        FastPathError::Node(NodeCoreError::EpochMismatch { .. }) => {
+            error_response(StatusCode::CONFLICT, "fastvote-epoch-repin-required")
+        }
         FastPathError::Node(error) => node_error_response(error),
         FastPathError::Consensus(_) => {
             error_response(StatusCode::BAD_REQUEST, "fastvote-consensus-rejected")
