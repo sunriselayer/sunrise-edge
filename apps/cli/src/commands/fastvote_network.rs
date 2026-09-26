@@ -1,9 +1,10 @@
-//! `contract paid-call --fastvote-network` and `contract fastvote-replay`
-//! (DR-0148): the CLI half of the certified-only FastVote network.
+//! Paid Publish, Instantiate, and Call with `--fastvote-network`, plus
+//! `contract fastvote-replay`: the CLI half of the certified-only network
+//! (DR-0148 and DR-0151).
 //!
 //! `run_network_submit` is invoked only after the exact same generic paid
-//! `Call` construction/signing path `contract paid-call` already uses
-//! without `--fastvote-network` -- this module never builds or signs a call
+//! application construction/signing paths the paid contract and Standard
+//! Asset commands use without `--fastvote-network` -- this module never builds or signs an intent
 //! itself, only routes an already-signed one through prepare/quorum/apply
 //! instead of a single direct POST.
 //!
@@ -48,11 +49,13 @@ use std::{
 
 use sunrise_edge_client::{
     Client, FastCertificate, FastPathCertifier, FastVoteEndpoint, FastVoteNetworkError,
-    FastVoteQuorumError, MAX_FASTVOTE_NETWORK_ENDPOINTS, PaidExecutionResult, PaidExecutionStatus,
-    SignedPaidIntent, Transport, ValidatorId, apply_fastvote_to_all, collect_fastvote_certificate,
-    decode_fast_certificate, decode_signed_paid_intent, encode_fast_certificate,
-    encode_signed_paid_intent, load_trusted_fastvote_genesis, local_publication_resolver,
-    validate_fastvote_endpoints,
+    FastVoteQuorumError, MAX_FASTVOTE_NETWORK_ENDPOINTS, PaidApplication, PaidExecutionResult,
+    PaidExecutionStatus, SignedPaidIntent, Transport, ValidatorId, apply_fastvote_to_all,
+    call::CallIntent,
+    collect_fastvote_certificate, decode_fast_certificate, decode_signed_paid_intent,
+    encode_fast_certificate, encode_signed_paid_intent, load_trusted_fastvote_genesis,
+    local_execution::{encode_instance_record, instance_target},
+    local_publication_resolver, validate_fastvote_endpoints,
 };
 
 use crate::{
@@ -78,10 +81,14 @@ fn invalid(message: impl Into<String>) -> CliError {
 /// tls_server_name tls_ca_cert_der_file`.
 const MAX_NETWORK_CONFIG_BYTES: usize = 64 * 1024;
 
-/// The bounded, caller-facing flags this module adds to `paid-call`. Present
-/// (accepted) on every paid contract action so a caller combining
-/// `--fastvote-network` with `paid-publish`/`paid-instantiate` gets an
-/// explicit "unsupported for FastVote" diagnostic instead of "unknown flag".
+/// A recovered `dependency-ref`/`instance-ref` output: its destination
+/// path, its fixed artifact-kind label (see [`reserve_artifacts`]), and its
+/// exact recomputed canonical bytes.
+type DerivedReference<'a> = (&'a str, &'static str, Vec<u8>);
+
+/// The bounded network flags shared by every paid contract action and the
+/// top-level Standard Asset commands. Application construction remains in
+/// their ordinary generic paid-execution paths.
 pub(super) fn network_flag_specs() -> Vec<crate::args::FlagSpec> {
     vec![
         scalar("--fastvote-network"),
@@ -457,14 +464,22 @@ fn print_repin_diagnostic(error: &impl std::fmt::Display) {
 }
 
 /// Runs the network prepare/quorum/apply flow for an already-built, already
-/// signed ordinary paid `Call`. Persists the mandatory signed-intent and
-/// certificate artifacts before their respective mutating POSTs.
+/// signed ordinary paid `Publish`, `Instantiate` or `Call` (DR-0151 widens
+/// this beyond DR-0148's `Call`-only scope). Persists the mandatory
+/// signed-intent and certificate artifacts, plus any requested
+/// dependency-ref/instance-ref output, all reserved via `create_new` before
+/// the first mutating POST. The dependency-ref/instance-ref bytes are
+/// written only after a verified `Success` acknowledgement -- a charged
+/// `ApplicationFailed` (or any other non-`Success`) result keeps its exact
+/// `PaidExecutionResult` output but leaves the reserved reference file
+/// empty, since no usable published/instantiated reference exists yet.
 pub(super) fn run_network_submit<T: Transport>(
     parsed: &ParsedArgs,
     endpoints: &[FastVoteEndpoint<T>],
     certifier: &FastPathCertifier,
     resolver: &sunrise_edge_client::HashSuiteResolver,
     signed: &SignedPaidIntent,
+    derived: Option<(&str, &'static str, &[u8])>,
     budget: OperationBudget,
 ) -> Result<PaidExecutionResult, CliError> {
     let signed_intent_out = parsed.require("--fastvote-signed-intent-out")?;
@@ -478,9 +493,14 @@ pub(super) fn run_network_submit<T: Transport>(
         (signed_intent_out, "signed-intent"),
         (certificate_out, "certificate"),
     ];
-    if let Some(path) = parsed.get("--result-out") {
+    let result_index: Option<usize> = parsed.get("--result-out").map(|path| {
         outputs.push((path, "result"));
-    }
+        outputs.len() - 1
+    });
+    let derived_index: Option<usize> = derived.map(|(path, kind, _)| {
+        outputs.push((path, kind));
+        outputs.len() - 1
+    });
     let mut artifacts: Vec<ReservedArtifact> = reserve_artifacts(&outputs, &[])?;
 
     let signed_bytes = encode_signed_paid_intent(signed).map_err(failure)?;
@@ -522,7 +542,14 @@ pub(super) fn run_network_submit<T: Transport>(
         deadline,
         per_request_cap,
     )?;
-    persist_result(artifacts.get_mut(2), &result, signed)?;
+    if result.status == PaidExecutionStatus::Success
+        && let (Some(index), Some((_, _, bytes))) = (derived_index, derived)
+    {
+        artifacts[index].persist(bytes)?;
+    }
+    if let Some(index) = result_index {
+        persist_result(Some(&mut artifacts[index]), &result, signed)?;
+    }
     Ok(result)
 }
 
@@ -542,6 +569,16 @@ fn persist_result(
     Ok(())
 }
 
+/// Independently applies the certificate at every configured endpoint and
+/// reports each peer's own acknowledgement or failure -- partial-peer
+/// failure is expected and never manufactures an invented "all validators
+/// applied" or whole-store durability claim (see [`print_apply_attempts`]).
+/// However, every peer that *did* successfully acknowledge must agree on
+/// the exact canonical `PaidExecutionResult` bytes: this is a consistency
+/// check over the unsigned acknowledgements this call actually received,
+/// not a proof of complete replica state. A divergence is rejected before
+/// any reference/result output is derived from either candidate; the
+/// already-persisted certificate remains valid for an exact retry.
 fn apply_certificate_and_report<T: Transport>(
     endpoints: &[FastVoteEndpoint<T>],
     certifier: &FastPathCertifier,
@@ -562,15 +599,29 @@ fn apply_certificate_and_report<T: Transport>(
     )
     .map_err(|error| invalid(format!("fastvote apply preflight rejected: {error}")))?;
     let any_applied = print_apply_attempts(&attempts);
-    // Report only the acknowledgements this call actually received: never a
-    // manufactured "all validators applied" or global-durability claim.
-    let first_ok = attempts.into_iter().find_map(|attempt| attempt.result.ok());
     if !any_applied {
         return Err(invalid(
             "no configured FastVote endpoint acknowledged the apply; the certified certificate was formed and saved and can be replayed with fastvote-replay",
         ));
     }
-    first_ok.ok_or_else(|| invalid("unreachable: any_applied was true but no Ok attempt found"))
+    let mut oks = attempts
+        .into_iter()
+        .filter_map(|attempt| attempt.result.ok());
+    let first: PaidExecutionResult = oks
+        .next()
+        .ok_or_else(|| invalid("unreachable: any_applied was true but no Ok attempt found"))?;
+    let first_bytes: Vec<u8> =
+        sunrise_edge_client::encode_paid_execution_result(&first).map_err(failure)?;
+    for other in oks {
+        let other_bytes: Vec<u8> =
+            sunrise_edge_client::encode_paid_execution_result(&other).map_err(failure)?;
+        if other_bytes != first_bytes {
+            return Err(invalid(
+                "fastvote apply acknowledgements diverge across peers; the certified certificate was formed and saved and remains valid for an exact retry, but no reference or result was derived from a divergent acknowledgement",
+            ));
+        }
+    }
+    Ok(first)
 }
 
 fn describe_quorum_error(error: &FastVoteQuorumError) -> CliError {
@@ -610,7 +661,13 @@ fn describe_quorum_error(error: &FastVoteQuorumError) -> CliError {
 // fastvote-replay
 // ---------------------------------------------------------------------
 
-const REPLAY_VALUE_FLAGS_EXTRA: &[&str] = &["--submission", "--certificate", "--result-out"];
+const REPLAY_VALUE_FLAGS_EXTRA: &[&str] = &[
+    "--submission",
+    "--certificate",
+    "--result-out",
+    "--dependency-ref-out",
+    "--instance-ref-out",
+];
 
 /// `contract fastvote-replay`: reads back the exact saved signed-intent
 /// bytes (mandatory) and, if present, the exact saved certificate bytes,
@@ -620,6 +677,15 @@ const REPLAY_VALUE_FLAGS_EXTRA: &[&str] = &["--submission", "--certificate", "--
 /// `run_network_submit` does, from the exact saved intent; if a certificate
 /// was already saved, this independently re-verifies it (via
 /// `apply_fastvote_to_all`'s own preflight) and goes straight to apply.
+///
+/// `--dependency-ref-out`/`--instance-ref-out` recover the exact
+/// dependency-ref/instance-ref an original `paid-publish`/`paid-instantiate`
+/// (including `create-asset`) would have written, entirely from the saved
+/// signed intent -- never by signing, querying a fresh nonce or allocating
+/// a new identity. Supplying the flag that does not match the saved
+/// intent's own application kind, or supplying both flags together, is
+/// rejected locally before any artifact is reserved or any endpoint is
+/// contacted.
 pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
     let mut specs = vec![
         scalar("--expected-chain-id"),
@@ -640,6 +706,11 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
     if parsed.get("--certificate").is_some() && parsed.get("--fastvote-certificate-out").is_some() {
         return Err(invalid(
             "--fastvote-certificate-out is unsupported when replay supplies --certificate",
+        ));
+    }
+    if parsed.get("--dependency-ref-out").is_some() && parsed.get("--instance-ref-out").is_some() {
+        return Err(invalid(
+            "--dependency-ref-out and --instance-ref-out are mutually exclusive; a saved signed intent is exactly one application kind",
         ));
     }
 
@@ -670,6 +741,8 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
         expected.epoch(),
     )
     .map_err(failure)?;
+    let derived: Option<DerivedReference<'_>> =
+        recompute_derived_reference(&parsed, &resolver, &context, &signed.intent.application)?;
     let (endpoints, certifier) = load_endpoints_and_certifier(&parsed, &resolver, &context)?;
 
     println!("fastvote_replay_submission={submission_path}");
@@ -683,6 +756,7 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
         &resolver,
         &signed,
         certificate.as_ref(),
+        derived,
         budget,
     )?;
     println!("paid_status={:?}", result.status);
@@ -692,6 +766,71 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
         ));
     }
     Ok(())
+}
+
+/// Recomputes the exact dependency-ref/instance-ref bytes the saved signed
+/// intent's own application kind would produce, or rejects a flag that does
+/// not match that kind. For `Instantiate`, the candidate record is built
+/// entirely from fields already inside the saved, signed `CallIntent`
+/// (`context`, `sender`, `code`, and the `instance` target's own
+/// `seed`/`revision`; the initializer is this codebase's own convention of
+/// setting `entrypoint` to the initializer name for every Instantiate call),
+/// then checked against the call's own signed `instance` target before
+/// being trusted -- a mismatch means this saved intent was not built by
+/// this CLI's own conventions, and recovery is refused rather than writing
+/// an unverified reference.
+fn recompute_derived_reference<'a>(
+    parsed: &'a ParsedArgs,
+    resolver: &sunrise_edge_client::HashSuiteResolver,
+    context: &sunrise_edge_client::PublicationContext,
+    application: &PaidApplication,
+) -> Result<Option<DerivedReference<'a>>, CliError> {
+    match (
+        parsed.get("--dependency-ref-out"),
+        parsed.get("--instance-ref-out"),
+        application,
+    ) {
+        (Some(path), None, PaidApplication::Publish(artifact)) => Ok(Some((
+            path,
+            "dependency-ref",
+            super::paid_execution::dependency_reference_bytes(resolver, context, artifact)?,
+        ))),
+        (Some(_), None, _) => Err(invalid(
+            "--dependency-ref-out requires the saved signed intent to be a Publish application",
+        )),
+        (None, Some(path), PaidApplication::Instantiate(call)) => Ok(Some((
+            path,
+            "instance-ref",
+            instance_reference_bytes(resolver, call)?,
+        ))),
+        (None, Some(_), _) => Err(invalid(
+            "--instance-ref-out requires the saved signed intent to be an Instantiate application",
+        )),
+        (None, None, _) => Ok(None),
+        (Some(_), Some(_), _) => Err(invalid(
+            "--dependency-ref-out and --instance-ref-out are mutually exclusive",
+        )),
+    }
+}
+
+fn instance_reference_bytes(
+    resolver: &sunrise_edge_client::HashSuiteResolver,
+    call: &CallIntent,
+) -> Result<Vec<u8>, CliError> {
+    let record = sunrise_edge_client::local_execution::InstanceRecord {
+        context: call.context.clone(),
+        creator: call.instance.creator,
+        seed: call.instance.seed,
+        code: call.code.clone(),
+        revision: call.instance.revision,
+        initializer: call.entrypoint.clone(),
+    };
+    if instance_target(resolver, &record).map_err(failure)? != call.instance {
+        return Err(invalid(
+            "saved Instantiate intent's context/code/entrypoint do not reconstruct its own signed instance target; refusing to recover an unverified instance reference",
+        ));
+    }
+    encode_instance_record(&record).map_err(failure)
 }
 
 fn artifact_read_error(path: &str, kind: &str, error: &dyn std::fmt::Display) -> CliError {
@@ -708,6 +847,7 @@ fn replay_loaded<T: Transport>(
     resolver: &sunrise_edge_client::HashSuiteResolver,
     signed: &SignedPaidIntent,
     certificate: Option<&FastCertificate>,
+    derived: Option<DerivedReference<'_>>,
     budget: OperationBudget,
 ) -> Result<PaidExecutionResult, CliError> {
     let submission_path: &str = parsed.require("--submission")?;
@@ -719,18 +859,25 @@ fn replay_loaded<T: Transport>(
 
     budget.ensure_live()?;
     let mut outputs: Vec<(&str, &'static str)> = Vec::new();
-    if certificate.is_none() {
+    let certificate_index: Option<usize> = if certificate.is_none() {
         outputs.push((parsed.require("--fastvote-certificate-out")?, "certificate"));
-    }
-    if let Some(path) = parsed.get("--result-out") {
+        Some(outputs.len() - 1)
+    } else {
+        None
+    };
+    let result_index: Option<usize> = parsed.get("--result-out").map(|path| {
         outputs.push((path, "result"));
-    }
+        outputs.len() - 1
+    });
+    let derived_index: Option<usize> = derived.as_ref().map(|(path, kind, _)| {
+        outputs.push((path, kind));
+        outputs.len() - 1
+    });
     let mut inputs: Vec<&str> = vec![submission_path];
     if let Some(path) = parsed.get("--certificate") {
         inputs.push(path);
     }
     let mut artifacts: Vec<ReservedArtifact> = reserve_artifacts(&outputs, &inputs)?;
-    let result_index: usize = usize::from(certificate.is_none());
 
     let result = if let Some(certificate) = certificate {
         println!("fastvote_replay_mode=saved_certificate");
@@ -757,7 +904,9 @@ fn replay_loaded<T: Transport>(
         .map_err(|error| describe_quorum_error(&error))?;
         print_prepare_attempts(&attempts);
         let certificate_bytes = encode_fast_certificate(&certificate).map_err(failure)?;
-        artifacts[0].persist(&certificate_bytes)?;
+        let reserved_certificate_index: usize =
+            certificate_index.ok_or_else(|| invalid("missing reserved certificate output"))?;
+        artifacts[reserved_certificate_index].persist(&certificate_bytes)?;
         for artifact in &artifacts {
             artifact.ensure_attached()?;
         }
@@ -773,7 +922,14 @@ fn replay_loaded<T: Transport>(
         )?
     };
 
-    persist_result(artifacts.get_mut(result_index), &result, signed)?;
+    if result.status == PaidExecutionStatus::Success
+        && let (Some(index), Some((_, _, bytes))) = (derived_index, &derived)
+    {
+        artifacts[index].persist(bytes)?;
+    }
+    if let Some(index) = result_index {
+        persist_result(Some(&mut artifacts[index]), &result, signed)?;
+    }
     Ok(result)
 }
 

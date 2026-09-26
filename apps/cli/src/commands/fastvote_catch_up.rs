@@ -1,10 +1,15 @@
-//! Ordered, bounded exact-artifact replay (DR-0150). This does not establish
-//! complete state, global finality, or an atomic batch. Every pair authenticates
-//! before outputs are reserved, and every output reserves before any POST.
+//! Ordered, bounded exact-artifact replay (DR-0150, widened by DR-0151 to
+//! every `PaidApplication` kind, not only `Call`). This does not establish
+//! complete state, global finality, or an atomic batch. Every pair
+//! authenticates before outputs are reserved, and every output reserves
+//! before any POST. A manifest's Publish entries establish definitions only
+//! by applying the exact authenticated certified Publish itself, in the
+//! exact order the operator declares it in the manifest -- there is no
+//! opaque bulk-copy shortcut, no fresh signature, nonce or vote.
 use super::*;
 use sunrise_edge_client::{
-    FastPathEd25519Verifier, HashSuiteResolver, PaidApplication, PublicationContext,
-    authenticate_paid_intent, paid_invocation_digest,
+    FastPathEd25519Verifier, HashSuiteResolver, PublicationContext, authenticate_paid_intent,
+    paid_invocation_digest,
 };
 
 const MAX_ENTRIES: usize = 16;
@@ -21,6 +26,8 @@ const HELP: &str = "contract fastvote-catch-up --manifest FILE --result-dir EXIS
 Manifest: UTF-8, one signed-intent-path certificate-path pair per line, in dependency order.
 Blank lines and full-line # comments are ignored. Paths containing whitespace are unsupported.
 Relative paths resolve against the manifest's canonical parent directory. Certificates are mandatory.
+Entries may be signed Publish, Instantiate or Call intents (DR-0151); the operator declares them in
+the exact certified dependency order -- a Publish must precede any entry that depends on it.
 Limits: 16 pairs, 4096 bytes/line, 65536 manifest bytes, 16777216 combined artifact bytes.
 Results: entry-0001-validator-<validator-id>.result and entry-0001.report (one-based indices).
 All files must be fresh. A charged application trap is a committed outcome and allows the next entry.
@@ -235,9 +242,6 @@ fn load_batch(
         // Actual production authentication, independently pinned context, exact bytes.
         authenticate_paid_intent(resolver, context, &signed_bytes).map_err(failure)?;
         let signed: SignedPaidIntent = decode_signed_paid_intent(&signed_bytes).map_err(failure)?;
-        if !matches!(signed.intent.application, PaidApplication::Call(_)) {
-            return Err(invalid("catch-up supports only certified Call intents"));
-        }
         if !request_ids.insert(signed.intent.request_id) {
             return Err(invalid("catch-up manifest contains duplicate request ids"));
         }
@@ -859,8 +863,49 @@ mod tests {
         assert!(!Path::new(&fixture.path("entry-0001.report")).exists());
     }
 
+    fn publish_intent(
+        fixture: &Fixture,
+        seed: u8,
+        request_id: [u8; 32],
+        nonce: u64,
+    ) -> SignedPaidIntent {
+        let ctx: PublicationContext = context(fixture);
+        let sender: [u8; 32] = fixture.signed.intent.sender;
+        let artifact =
+            execution::publication::CodeArtifact::new(execution::publication::ArtifactParts {
+                context: ctx.clone(),
+                origin: package_types::PackageOrigin::unverified(
+                    ctx.chain_id().clone(),
+                    sender,
+                    [seed; 32],
+                )
+                .unwrap(),
+                revision: 1,
+                wasm_profile: 4,
+                semantics: Digest32::new(HashAlgorithmId::Sha2_256, [seed.wrapping_add(1); 32]),
+                wasm: vec![0, 97, 115, 109],
+                unverified_abi: vec![1, 2, 3],
+                exports: vec!["run".to_owned()],
+                unverified_dependencies: vec![],
+            })
+            .unwrap();
+        let mut intent = fixture.signed.intent.clone();
+        intent.request_id = request_id;
+        intent.nonce = nonce;
+        intent.application = PaidApplication::Publish(artifact);
+        let signature: [u8; 64] = LocalSigner::from_seed([0x21; 32])
+            .sign_framed(
+                &execution::paid_execution::paid_intent_signing_frame(&intent.context, &intent)
+                    .unwrap(),
+            )
+            .unwrap()
+            .try_into()
+            .unwrap();
+        SignedPaidIntent { intent, signature }
+    }
+
     #[test]
-    fn catch_up_authenticated_quorum_instantiate_is_rejected_offline() {
+    fn catch_up_authenticates_and_accepts_a_signed_instantiate_entry() {
         let fixture: Fixture = Fixture::new();
         let mut signed: SignedPaidIntent = fixture.signed.clone();
         let PaidApplication::Call(mut call) = signed.intent.application else {
@@ -880,11 +925,23 @@ mod tests {
             .try_into()
             .unwrap();
         let text: String = save(&fixture, "instantiate", &signed);
-        assert!(
-            load(&fixture, &text)
-                .unwrap_err_string()
-                .contains("only certified Call")
-        );
+        let batch: Batch = load(&fixture, &text).unwrap();
+        assert!(matches!(
+            batch.entries[0].signed.intent.application,
+            PaidApplication::Instantiate(_)
+        ));
+    }
+
+    #[test]
+    fn catch_up_authenticates_and_accepts_a_signed_publish_entry() {
+        let fixture: Fixture = Fixture::new();
+        let signed: SignedPaidIntent = publish_intent(&fixture, 0x70, [0x65; 32], 5);
+        let text: String = save(&fixture, "publish", &signed);
+        let batch: Batch = load(&fixture, &text).unwrap();
+        assert!(matches!(
+            batch.entries[0].signed.intent.application,
+            PaidApplication::Publish(_)
+        ));
     }
 
     #[test]

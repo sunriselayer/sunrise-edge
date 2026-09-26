@@ -131,6 +131,8 @@ impl Fixture {
             scalar("--submission"),
             scalar("--certificate"),
             scalar("--result-out"),
+            scalar("--dependency-ref-out"),
+            scalar("--instance-ref-out"),
         ]);
         let args: Vec<OsString> = extra
             .iter()
@@ -609,6 +611,7 @@ fn network_submission_persists_exact_success_and_charged_trap_results() {
                 &fixture.certifier,
                 &fixture.resolver,
                 &fixture.signed,
+                None,
                 shared
             )
             .unwrap(),
@@ -632,6 +635,123 @@ fn network_submission_persists_exact_success_and_charged_trap_results() {
         for request in requests {
             assert_eq!(request.deadline, Some(shared.deadline));
         }
+    }
+}
+
+#[test]
+fn network_apply_rejects_divergent_successful_acknowledgements_across_peers() {
+    let mut fixture: Fixture = Fixture::new();
+    let original: ValidatorInfo = fixture.certifier.validator_set().validators()[0].clone();
+    let second_signer: LocalSigner = LocalSigner::from_seed([0x77; 32]);
+    let second_id: ValidatorId = ValidatorId::new(*second_signer.address().as_bytes());
+    fixture.certifier = FastPathCertifier::new(
+        fixture.expected.chain_id().clone(),
+        fixture.expected.protocol_version(),
+        fixture.expected.epoch(),
+        ValidatorSet::new(
+            fixture.expected.epoch(),
+            vec![
+                original,
+                ValidatorInfo {
+                    id: second_id,
+                    voting_power: 1,
+                    signature_scheme: SignatureSchemeId::Ed25519,
+                    public_key: second_signer.address().as_bytes().to_vec(),
+                },
+            ],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let success: PaidExecutionResult = fixture.result(PaidExecutionStatus::Success);
+    let mut divergent: PaidExecutionResult = success.clone();
+    divergent.effects.gas_used += 1;
+
+    let first_peer: FastVoteEndpoint<FakeTransport> = fixture.endpoint(&success);
+    let second_peer: FastVoteEndpoint<FakeTransport> = endpoint_for(
+        &fixture,
+        second_signer,
+        second_id,
+        "second-peer",
+        fixture.signed.intent.request_id,
+        &divergent,
+    );
+    let endpoints = vec![first_peer, second_peer];
+
+    let intent = fixture.path("intent");
+    let certificate = fixture.path("certificate");
+    let parsed: ParsedArgs = fixture.parsed(&[
+        ("--fastvote-signed-intent-out", &intent),
+        ("--fastvote-certificate-out", &certificate),
+    ]);
+    let error = run_network_submit(
+        &parsed,
+        &endpoints,
+        &fixture.certifier,
+        &fixture.resolver,
+        &fixture.signed,
+        None,
+        budget(),
+    )
+    .unwrap_err();
+    assert!(format!("{error}").contains("diverge"));
+    // The already-persisted certificate remains valid for an exact retry.
+    assert!(!std::fs::read(&certificate).unwrap().is_empty());
+}
+
+/// Like [`Fixture::endpoint`] but for an arbitrary configured validator, so
+/// a divergent-acknowledgement test can script a second, independently
+/// identified peer rather than reusing the fixture's single genesis
+/// authority for both.
+fn endpoint_for(
+    fixture: &Fixture,
+    signer: LocalSigner,
+    validator_id: ValidatorId,
+    label: &str,
+    request_id: [u8; 32],
+    result: &PaidExecutionResult,
+) -> FastVoteEndpoint<FakeTransport> {
+    let validator = VoteSigner(signer);
+    let vote: FastVote = fixture
+        .certifier
+        .cast_vote(
+            result.effects.tx_hash,
+            digest(0x51),
+            digest(0x52),
+            &validator,
+        )
+        .unwrap();
+    let request_id: RequestId = RequestId::new(request_id).unwrap();
+    let ack: NodeResponse = NodeResponse::new(
+        request_id,
+        if result.status == PaidExecutionStatus::Success {
+            NodeResponseStatus::Accepted
+        } else {
+            NodeResponseStatus::Rejected
+        },
+        Some(encode_paid_execution_result(result).unwrap()),
+    )
+    .unwrap();
+    let responses = vec![
+        Ok(WireResponse {
+            status: 200,
+            content_type: Some(NODE_RESULT_MEDIA_TYPE.to_owned()),
+            body: encode_fast_vote(&vote).unwrap(),
+        }),
+        Ok(WireResponse {
+            status: 200,
+            content_type: Some(NODE_RESULT_MEDIA_TYPE.to_owned()),
+            body: HttpNodeResult::new(request_id, vec![ack])
+                .unwrap()
+                .encode()
+                .unwrap(),
+        }),
+    ];
+    FastVoteEndpoint {
+        validator_id,
+        endpoint_label: label.to_owned(),
+        client: Client::new(FakeTransport::new(responses)),
     }
 }
 
@@ -674,6 +794,7 @@ fn all_network_outputs_reserve_before_any_post_existing_unwritable_or_alias() {
                 &fixture.certifier,
                 &fixture.resolver,
                 &fixture.signed,
+                None,
                 budget()
             )
             .is_err()
@@ -740,6 +861,7 @@ fn replay_reserves_result_before_prepare_or_apply_and_detects_input_aliases() {
                     &fixture.resolver,
                     &fixture.signed,
                     supplied.then_some(&cert),
+                    None,
                     budget()
                 )
                 .is_err()
@@ -863,6 +985,7 @@ fn reservation_failure_keeps_prior_reserved_files_and_never_posts() {
             &fixture.certifier,
             &fixture.resolver,
             &fixture.signed,
+            None,
             budget()
         )
         .is_err()
@@ -1013,6 +1136,7 @@ fn unwritable_and_symlink_aliased_outputs_refuse_before_prepare() {
                 &fixture.certifier,
                 &fixture.resolver,
                 &fixture.signed,
+                None,
                 budget()
             )
             .is_err()
@@ -1053,6 +1177,7 @@ fn replay_collect_and_saved_certificate_modes_persist_success_and_trap_bytes() {
                 &fixture.resolver,
                 &fixture.signed,
                 None,
+                None,
                 budget()
             )
             .unwrap(),
@@ -1086,6 +1211,7 @@ fn replay_collect_and_saved_certificate_modes_persist_success_and_trap_bytes() {
                 &fixture.resolver,
                 &fixture.signed,
                 Some(&cert),
+                None,
                 budget()
             )
             .unwrap(),
@@ -1182,4 +1308,420 @@ fn remote_cohort_with_unrelated_loopback_read_peer_refuses_before_seed_read() {
     .unwrap_err()
     .to_string();
     assert!(error.contains("exact endpoint_label"), "{error}");
+}
+
+fn context_of(fixture: &Fixture) -> sunrise_edge_client::PublicationContext {
+    sunrise_edge_client::PublicationContext::new(
+        fixture.expected.chain_id().clone(),
+        fixture.expected.protocol_version(),
+        fixture.expected.epoch(),
+    )
+    .unwrap()
+}
+
+/// Builds a real, signed `Publish` intent sharing the fixture's own
+/// chain/context/sender, so replay reference-recovery tests can exercise a
+/// non-`Call` application without a second `Fixture`.
+fn signed_publish(fixture: &Fixture) -> (SignedPaidIntent, execution::publication::CodeArtifact) {
+    let ctx = context_of(fixture);
+    let sender = fixture.signed.intent.sender;
+    let artifact =
+        execution::publication::CodeArtifact::new(execution::publication::ArtifactParts {
+            context: ctx.clone(),
+            origin: package_types::PackageOrigin::unverified(
+                ctx.chain_id().clone(),
+                sender,
+                [0x80; 32],
+            )
+            .unwrap(),
+            revision: 1,
+            wasm_profile: 4,
+            semantics: digest(0x81),
+            wasm: vec![0, 97, 115, 109],
+            unverified_abi: vec![1, 2, 3],
+            exports: vec!["run".to_owned()],
+            unverified_dependencies: vec![],
+        })
+        .unwrap();
+    let mut intent = fixture.signed.intent.clone();
+    intent.request_id = [0x82; 32];
+    intent.nonce = 2;
+    intent.application = PaidApplication::Publish(artifact.clone());
+    let signature: [u8; 64] = LocalSigner::from_seed([0x21; 32])
+        .sign_framed(
+            &execution::paid_execution::paid_intent_signing_frame(&intent.context, &intent)
+                .unwrap(),
+        )
+        .unwrap()
+        .try_into()
+        .unwrap();
+    (SignedPaidIntent { intent, signature }, artifact)
+}
+
+/// The `Instantiate` counterpart to [`signed_publish`]: builds a real,
+/// signed `Instantiate` intent whose `entrypoint` equals its
+/// `InstanceRecord`'s own initializer, matching this CLI's own convention so
+/// [`recompute_derived_reference`]'s checked-target reconstruction succeeds.
+fn signed_instantiate(
+    fixture: &Fixture,
+) -> (
+    SignedPaidIntent,
+    sunrise_edge_client::local_execution::InstanceRecord,
+) {
+    let ctx = context_of(fixture);
+    let sender = fixture.signed.intent.sender;
+    let code = execution::publication::UnverifiedDependencyRef::new(
+        package_types::PackageOrigin::unverified(ctx.chain_id().clone(), sender, [0x90; 32])
+            .unwrap(),
+        1,
+        ctx.clone(),
+        digest(0x91),
+    )
+    .unwrap();
+    let record = sunrise_edge_client::local_execution::InstanceRecord {
+        context: ctx.clone(),
+        creator: sender,
+        seed: [0x92; 32],
+        code: code.clone(),
+        revision: 1,
+        initializer: "init".to_owned(),
+    };
+    let target = instance_target(&fixture.resolver, &record).unwrap();
+    let call: CallIntent = CallIntent {
+        context: ctx.clone(),
+        request_id: [0x93; 32],
+        sender,
+        nonce: 3,
+        code,
+        instance: target,
+        entrypoint: "init".to_owned(),
+        type_arguments: Vec::new(),
+        access: AccessManifest::new(),
+        arguments: Vec::new(),
+        gas_limit: 1,
+    };
+    let mut intent = fixture.signed.intent.clone();
+    intent.request_id = call.request_id;
+    intent.nonce = call.nonce;
+    intent.gas_limit = call.gas_limit;
+    intent.application = PaidApplication::Instantiate(call);
+    let signature: [u8; 64] = LocalSigner::from_seed([0x21; 32])
+        .sign_framed(
+            &execution::paid_execution::paid_intent_signing_frame(&intent.context, &intent)
+                .unwrap(),
+        )
+        .unwrap()
+        .try_into()
+        .unwrap();
+    (SignedPaidIntent { intent, signature }, record)
+}
+
+fn genesis_endpoint(
+    fixture: &Fixture,
+    request_id: [u8; 32],
+    result: &PaidExecutionResult,
+) -> FastVoteEndpoint<FakeTransport> {
+    let signer = LocalSigner::from_seed(sunrise_edge_devnet::DEVNET_PAID_GENESIS_SEED);
+    let id = ValidatorId::new(*signer.address().as_bytes());
+    endpoint_for(fixture, signer, id, "peer", request_id, result)
+}
+
+fn charged_outcome(signed: &SignedPaidIntent) -> PaidChargedOutcome {
+    PaidChargedOutcome {
+        reserved: Amount::new(1),
+        actual: Amount::new(1),
+        refund: Amount::new(0),
+        fee_output: signed.intent.consent.source.clone(),
+        refund_output: None,
+        reservation: ObjectId::new([0x49; 32]),
+        application_gas_units: 1,
+    }
+}
+
+#[test]
+fn replay_recovers_the_exact_dependency_reference_after_a_successful_publish_apply() {
+    let fixture: Fixture = Fixture::new();
+    let (signed, artifact) = signed_publish(&fixture);
+    let tx_hash =
+        execution::paid_execution::paid_invocation_digest(&fixture.resolver, &signed).unwrap();
+    let result = PaidExecutionResult {
+        request_id: signed.intent.request_id,
+        kind: PaidResultKind::Publish,
+        target: PaidResultTarget::Package(artifact.origin().clone()),
+        status: PaidExecutionStatus::Success,
+        effects: ExecutionEffects {
+            tx_hash,
+            status: ExecutionStatus::Success,
+            object_effects: Vec::new(),
+            events: Vec::new(),
+            gas_used: 1,
+        },
+        charged: Some(charged_outcome(&signed)),
+    };
+    let endpoints = vec![genesis_endpoint(
+        &fixture,
+        signed.intent.request_id,
+        &result,
+    )];
+    let submission = fixture.path("publish-submission");
+    std::fs::write(&submission, encode_signed_paid_intent(&signed).unwrap()).unwrap();
+    let certificate_out = fixture.path("publish-certificate");
+    let dependency_ref_out = fixture.path("publish-dependency-ref");
+    let parsed = fixture.parsed(&[
+        ("--submission", &submission),
+        ("--fastvote-certificate-out", &certificate_out),
+        ("--dependency-ref-out", &dependency_ref_out),
+    ]);
+    let context = context_of(&fixture);
+    let derived = recompute_derived_reference(
+        &parsed,
+        &fixture.resolver,
+        &context,
+        &signed.intent.application,
+    )
+    .unwrap();
+    let expected_bytes = derived.as_ref().unwrap().2.clone();
+    let output = replay_loaded(
+        &parsed,
+        &endpoints,
+        &fixture.certifier,
+        &fixture.resolver,
+        &signed,
+        None,
+        derived,
+        budget(),
+    )
+    .unwrap();
+    assert_eq!(output, result);
+    assert_eq!(std::fs::read(&dependency_ref_out).unwrap(), expected_bytes);
+}
+
+#[test]
+fn replay_recovers_the_exact_instance_reference_via_a_supplied_certificate() {
+    let fixture: Fixture = Fixture::new();
+    let (signed, record) = signed_instantiate(&fixture);
+    let tx_hash =
+        execution::paid_execution::paid_invocation_digest(&fixture.resolver, &signed).unwrap();
+    let result = PaidExecutionResult {
+        request_id: signed.intent.request_id,
+        kind: PaidResultKind::Instantiate,
+        target: PaidResultTarget::Instance(record.clone()),
+        status: PaidExecutionStatus::Success,
+        effects: ExecutionEffects {
+            tx_hash,
+            status: ExecutionStatus::Success,
+            object_effects: Vec::new(),
+            events: Vec::new(),
+            gas_used: 1,
+        },
+        charged: Some(charged_outcome(&signed)),
+    };
+    let endpoints = vec![genesis_endpoint(
+        &fixture,
+        signed.intent.request_id,
+        &result,
+    )];
+    let (cert, _) = collect_fastvote_certificate(
+        &endpoints,
+        &fixture.certifier,
+        &fixture.resolver,
+        &signed,
+        budget().deadline,
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    let submission = fixture.path("instantiate-submission");
+    std::fs::write(&submission, encode_signed_paid_intent(&signed).unwrap()).unwrap();
+    let certificate = fixture.path("instantiate-certificate");
+    std::fs::write(&certificate, encode_fast_certificate(&cert).unwrap()).unwrap();
+    let instance_ref_out = fixture.path("instance-ref");
+    let parsed = fixture.parsed(&[
+        ("--submission", &submission),
+        ("--certificate", &certificate),
+        ("--instance-ref-out", &instance_ref_out),
+    ]);
+    let context = context_of(&fixture);
+    let derived = recompute_derived_reference(
+        &parsed,
+        &fixture.resolver,
+        &context,
+        &signed.intent.application,
+    )
+    .unwrap();
+    let output = replay_loaded(
+        &parsed,
+        &endpoints,
+        &fixture.certifier,
+        &fixture.resolver,
+        &signed,
+        Some(&cert),
+        derived,
+        budget(),
+    )
+    .unwrap();
+    assert_eq!(output, result);
+    assert_eq!(
+        std::fs::read(&instance_ref_out).unwrap(),
+        encode_instance_record(&record).unwrap()
+    );
+}
+
+#[test]
+fn recompute_derived_reference_rejects_mismatched_kind_and_both_flags_together() {
+    let fixture: Fixture = Fixture::new();
+    let context = context_of(&fixture);
+    let dependency_flag = fixture.parsed(&[("--dependency-ref-out", "unused")]);
+    assert!(
+        recompute_derived_reference(
+            &dependency_flag,
+            &fixture.resolver,
+            &context,
+            &fixture.signed.intent.application,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("Publish application")
+    );
+    let instance_flag = fixture.parsed(&[("--instance-ref-out", "unused")]);
+    assert!(
+        recompute_derived_reference(
+            &instance_flag,
+            &fixture.resolver,
+            &context,
+            &fixture.signed.intent.application,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("Instantiate application")
+    );
+    let error = run_replay([
+        OsString::from("--dependency-ref-out"),
+        OsString::from("unused-a"),
+        OsString::from("--instance-ref-out"),
+        OsString::from("unused-b"),
+    ])
+    .unwrap_err();
+    assert!(format!("{error}").contains("mutually exclusive"));
+}
+
+#[test]
+fn replay_instance_reference_output_aliasing_the_submission_makes_zero_posts() {
+    let fixture: Fixture = Fixture::new();
+    let (signed, record) = signed_instantiate(&fixture);
+    let tx_hash =
+        execution::paid_execution::paid_invocation_digest(&fixture.resolver, &signed).unwrap();
+    let result = PaidExecutionResult {
+        request_id: signed.intent.request_id,
+        kind: PaidResultKind::Instantiate,
+        target: PaidResultTarget::Instance(record),
+        status: PaidExecutionStatus::Success,
+        effects: ExecutionEffects {
+            tx_hash,
+            status: ExecutionStatus::Success,
+            object_effects: Vec::new(),
+            events: Vec::new(),
+            gas_used: 1,
+        },
+        charged: Some(charged_outcome(&signed)),
+    };
+    let endpoints = vec![genesis_endpoint(
+        &fixture,
+        signed.intent.request_id,
+        &result,
+    )];
+    let submission = fixture.path("aliased-submission");
+    std::fs::write(&submission, encode_signed_paid_intent(&signed).unwrap()).unwrap();
+    let certificate_out = fixture.path("aliased-certificate");
+    let parsed = fixture.parsed(&[
+        ("--submission", &submission),
+        ("--fastvote-certificate-out", &certificate_out),
+        ("--instance-ref-out", &submission),
+    ]);
+    let context = context_of(&fixture);
+    let derived = recompute_derived_reference(
+        &parsed,
+        &fixture.resolver,
+        &context,
+        &signed.intent.application,
+    )
+    .unwrap();
+    assert!(
+        replay_loaded(
+            &parsed,
+            &endpoints,
+            &fixture.certifier,
+            &fixture.resolver,
+            &signed,
+            None,
+            derived,
+            budget(),
+        )
+        .is_err()
+    );
+    assert!(endpoints[0].client.transport().requests().is_empty());
+}
+
+#[test]
+fn replay_charged_failure_persists_the_result_but_leaves_the_reference_empty() {
+    let fixture: Fixture = Fixture::new();
+    let (signed, artifact) = signed_publish(&fixture);
+    let tx_hash =
+        execution::paid_execution::paid_invocation_digest(&fixture.resolver, &signed).unwrap();
+    let result = PaidExecutionResult {
+        request_id: signed.intent.request_id,
+        kind: PaidResultKind::Publish,
+        target: PaidResultTarget::Package(artifact.origin().clone()),
+        status: PaidExecutionStatus::HostRejected,
+        effects: ExecutionEffects {
+            tx_hash,
+            status: ExecutionStatus::Failure {
+                reason: local_execution::LOCAL_EXECUTION_TRAP_REASON.to_owned(),
+            },
+            object_effects: Vec::new(),
+            events: Vec::new(),
+            gas_used: 1,
+        },
+        charged: None,
+    };
+    let endpoints = vec![genesis_endpoint(
+        &fixture,
+        signed.intent.request_id,
+        &result,
+    )];
+    let submission = fixture.path("failed-publish-submission");
+    std::fs::write(&submission, encode_signed_paid_intent(&signed).unwrap()).unwrap();
+    let certificate_out = fixture.path("failed-publish-certificate");
+    let dependency_ref_out = fixture.path("failed-publish-dependency-ref");
+    let result_out = fixture.path("failed-publish-result");
+    let parsed = fixture.parsed(&[
+        ("--submission", &submission),
+        ("--fastvote-certificate-out", &certificate_out),
+        ("--dependency-ref-out", &dependency_ref_out),
+        ("--result-out", &result_out),
+    ]);
+    let context = context_of(&fixture);
+    let derived = recompute_derived_reference(
+        &parsed,
+        &fixture.resolver,
+        &context,
+        &signed.intent.application,
+    )
+    .unwrap();
+    let output = replay_loaded(
+        &parsed,
+        &endpoints,
+        &fixture.certifier,
+        &fixture.resolver,
+        &signed,
+        None,
+        derived,
+        budget(),
+    )
+    .unwrap();
+    assert_eq!(output.status, PaidExecutionStatus::HostRejected);
+    assert_eq!(
+        std::fs::read(&result_out).unwrap(),
+        encode_paid_execution_result(&result).unwrap()
+    );
+    assert_eq!(std::fs::read(&dependency_ref_out).unwrap(), b"");
 }

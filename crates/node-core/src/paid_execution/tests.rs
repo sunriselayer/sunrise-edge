@@ -737,7 +737,7 @@ pub(crate) fn trapping_mint_call(fixture: &Fixture, request: u8, nonce: u64) -> 
     })
 }
 
-fn paid_instantiate(
+pub(crate) fn paid_instantiate(
     fixture: &Fixture,
     request: u8,
     nonce: u64,
@@ -783,7 +783,17 @@ fn paid_instantiate(
     })
 }
 
-fn publish_artifact(seed: u8) -> CodeArtifact {
+pub(crate) fn publish_artifact(seed: u8) -> CodeArtifact {
+    publish_artifact_with_dependencies(seed, vec![])
+}
+
+/// Same as [`publish_artifact`], but declaring the given exact (unverified)
+/// dependency edges, exactly like [`publish_package_with_dependencies`] does
+/// for an already-durable zero-fee package.
+pub(crate) fn publish_artifact_with_dependencies(
+    seed: u8,
+    unverified_dependencies: Vec<UnverifiedDependencyRef>,
+) -> CodeArtifact {
     let origin: PackageOrigin =
         PackageOrigin::unverified(protocol().chain_id().clone(), sender(), [seed; 32]).unwrap();
     let package: StandardAssetPackage = build_package(&origin).unwrap();
@@ -796,12 +806,21 @@ fn publish_artifact(seed: u8) -> CodeArtifact {
         wasm: package.wasm,
         unverified_abi: package.encoded_abi,
         exports: package.exports,
-        unverified_dependencies: vec![],
+        unverified_dependencies,
     })
     .unwrap()
 }
 
-fn paid_publish(
+/// The [`UnverifiedDependencyRef`] a later paid `Instantiate`/`Publish` uses
+/// to declare a dependency on `artifact`, computed the exact same way
+/// [`publish_package_with_dependencies`] computes one for an already-durable
+/// zero-fee package: `(origin, revision 1, protocol, artifact_commitment)`.
+pub(crate) fn publish_artifact_reference(artifact: &CodeArtifact) -> UnverifiedDependencyRef {
+    let digest: Digest32 = artifact_commitment(&resolver(), &protocol(), artifact).unwrap();
+    UnverifiedDependencyRef::new(artifact.origin().clone(), 1, protocol(), digest).unwrap()
+}
+
+pub(crate) fn paid_publish(
     fixture: &Fixture,
     request: u8,
     nonce: u64,

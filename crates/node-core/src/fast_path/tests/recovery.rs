@@ -13,7 +13,11 @@ fn call_bytes(fixture: &Fixture, trap: bool) -> Vec<u8> {
     }
 }
 
-fn certificate_for(bytes: &[u8], checkpoint: u64) -> Vec<u8> {
+/// Shared by the sibling non-recovery apply tests in `super`: independently
+/// prepares `bytes` on three separate fresh validator stores and aggregates
+/// their votes into one certificate, without perturbing any caller's own
+/// store.
+pub(super) fn certificate_for(bytes: &[u8], checkpoint: u64) -> Vec<u8> {
     let (signers, entries) = four_validators();
     let mut votes: Vec<FastVote> = Vec::new();
     for signer in &signers[..3] {
@@ -964,4 +968,439 @@ fn recovery_never_falls_back_from_a_conflicting_well_formed_preparation() {
             .value(),
         Some(prepared_bytes.as_slice())
     );
+}
+
+/// DR-0151 delivery 1: a same-epoch replica that missed prepare recovers a
+/// certified paid `Publish`, atomically durably publishing its signed frame.
+#[test]
+fn signerless_recovery_applies_a_certified_paid_publish() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    install_four_validators(&store);
+    let artifact = publish_artifact(90);
+    let origin = artifact.origin().clone();
+    let bytes: Vec<u8> = paid_publish(
+        &fixture,
+        0x91,
+        FIRST_PAID_NONCE,
+        artifact,
+        &fixture.coin,
+        100_000,
+    );
+    let certificate: Vec<u8> = certificate_for(&bytes, CHECKPOINT);
+    let engine: CountingEngine = CountingEngine::new();
+    let output: NodeOutput =
+        recover(&store, &fixture, &engine, &bytes, &certificate, CHECKPOINT).unwrap();
+    assert_eq!(engine.calls.get(), 1);
+    assert_eq!(receipt(&output).status, PaidExecutionStatus::Success);
+    assert_eq!(
+        store
+            .get_versioned_durable(
+                &context(),
+                domain(),
+                &publication_record_key(&origin).unwrap()
+            )
+            .unwrap()
+            .value(),
+        Some(bytes.as_slice())
+    );
+}
+
+fn instantiate_bytes_for(
+    fixture: &Fixture,
+    reference: &execution::publication::UnverifiedDependencyRef,
+    seed: u8,
+    source: ObjectRef,
+) -> Vec<u8> {
+    let record = execution::local_execution::InstanceRecord {
+        seed: [seed; 32],
+        code: reference.clone(),
+        ..fixture.instance.clone()
+    };
+    let application = execution::call::CallIntent {
+        context: protocol(),
+        request_id: [0x93; 32],
+        sender: sender(),
+        nonce: FIRST_PAID_NONCE + 1,
+        code: reference.clone(),
+        instance: instance_target(&resolver(), &record).unwrap(),
+        entrypoint: "init".into(),
+        type_arguments: vec![],
+        access: abi::AccessManifest { entries: vec![] },
+        arguments: public_standard_asset::no_arguments().unwrap(),
+        gas_limit: 100_000,
+    };
+    sign_paid(execution::paid_execution::PaidIntent {
+        context: protocol(),
+        request_id: [0x93; 32],
+        sender: sender(),
+        nonce: FIRST_PAID_NONCE + 1,
+        fee_policy_digest: paid_fee_policy_digest(&resolver(), &fixture.policy).unwrap(),
+        consent: FeeSourceConsent {
+            source,
+            access: ReservationAccessKind::Write,
+            max_fee: Amount::new(1_000_000),
+            refund_recipient: refund_account(),
+        },
+        application: PaidApplication::Instantiate(application),
+        gas_limit: 100_000,
+        authorizations: vec![],
+    })
+}
+
+/// Like [`certificate_for`], but every certifying validator first recovers
+/// the already-certified `publish_bytes`/`publish_certificate` pair on its
+/// own store, so its nonce and durable code closure match a validator that
+/// honestly applied the dependency before preparing `bytes`.
+fn certificate_for_after_publish(
+    publish_bytes: &[u8],
+    publish_certificate: &[u8],
+    bytes: &[u8],
+    checkpoint: u64,
+) -> Vec<u8> {
+    let (signers, entries) = four_validators();
+    let mut votes: Vec<FastVote> = Vec::new();
+    for signer in &signers[..3] {
+        let store: MemoryDurableStateStore = memory_store();
+        let fixture: Fixture = install(&store);
+        install_four_validators(&store);
+        recover(
+            &store,
+            &fixture,
+            &CountingEngine::new(),
+            publish_bytes,
+            publish_certificate,
+            checkpoint,
+        )
+        .unwrap();
+        votes.push(
+            prepare(
+                &store,
+                &MemoryBlobStore::default(),
+                &context(),
+                domain(),
+                &resolver(),
+                &[],
+                &protocol(),
+                &base_policy(),
+                &fixture.policy,
+                &CountingEngine::new(),
+                signer,
+                bytes,
+                checkpoint,
+            )
+            .unwrap(),
+        );
+    }
+    let set: ValidatorSet = ValidatorSet::new(
+        protocol().epoch(),
+        entries
+            .iter()
+            .map(|entry| ValidatorInfo {
+                id: entry.id,
+                voting_power: entry.voting_power,
+                signature_scheme: entry.signature_scheme,
+                public_key: entry.public_key.clone(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    let certificate: FastCertificate = certifier(set)
+        .try_form_certificate(
+            votes[0].tx_hash,
+            votes[0].execution_effects_hash,
+            votes[0].locked_objects_digest,
+            &votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .unwrap();
+    consensus::encode_fast_certificate(&certificate).unwrap()
+}
+
+/// DR-0151 delivery 1: a same-epoch replica that missed both prepares
+/// recovers a certified `Publish` and a certified `Instantiate` depending on
+/// it, in their declared dependency order: the `Publish` is applied first,
+/// so the `Instantiate`'s own recovery can resolve its code closure locally.
+#[test]
+fn signerless_recovery_applies_certified_definitions_in_dependency_order() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    install_four_validators(&store);
+    let artifact = publish_artifact(94);
+    let reference = publish_artifact_reference(&artifact);
+    let publish_bytes: Vec<u8> = paid_publish(
+        &fixture,
+        0x94,
+        FIRST_PAID_NONCE,
+        artifact,
+        &fixture.coin,
+        100_000,
+    );
+    let publish_certificate: Vec<u8> = certificate_for(&publish_bytes, CHECKPOINT);
+    recover(
+        &store,
+        &fixture,
+        &CountingEngine::new(),
+        &publish_bytes,
+        &publish_certificate,
+        CHECKPOINT,
+    )
+    .unwrap();
+    let source: ObjectRef = current_object_ref(&store, protocol().chain_id(), fixture.coin.id);
+    let instantiate_bytes: Vec<u8> = instantiate_bytes_for(&fixture, &reference, 95, source);
+    let instantiate_certificate: Vec<u8> = certificate_for_after_publish(
+        &publish_bytes,
+        &publish_certificate,
+        &instantiate_bytes,
+        CHECKPOINT,
+    );
+    let engine: CountingEngine = CountingEngine::new();
+    let output: NodeOutput = recover(
+        &store,
+        &fixture,
+        &engine,
+        &instantiate_bytes,
+        &instantiate_certificate,
+        CHECKPOINT,
+    )
+    .unwrap();
+    assert_eq!(engine.calls.get(), 1);
+    assert_eq!(receipt(&output).status, PaidExecutionStatus::Success);
+}
+
+/// Recovering the `Instantiate` before its `Publish` dependency has itself
+/// been recovered fails closed here because both intents share `fixture`'s
+/// sender: the certificate's sender-nonce sequencing (asserted before any
+/// code-closure resolution) can never be satisfied out of declared order for
+/// same-sender dependencies. Nonce sequencing does not police dependency
+/// order in general -- a `Publish` from a different sender has an
+/// independent nonce, so this same generic admission check would not catch a
+/// missing cross-sender dependency; recovery order is a caller discipline
+/// enforced only incidentally here, not a distinct recovery code path.
+#[test]
+fn signerless_recovery_of_an_instantiate_before_its_publish_dependency_fails_closed() {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    install_four_validators(&store);
+    let artifact = publish_artifact(96);
+    let reference = publish_artifact_reference(&artifact);
+    let publish_bytes: Vec<u8> = paid_publish(
+        &fixture,
+        0x96,
+        FIRST_PAID_NONCE,
+        artifact,
+        &fixture.coin,
+        100_000,
+    );
+    let publish_certificate: Vec<u8> = certificate_for(&publish_bytes, CHECKPOINT);
+    let reference_store: MemoryDurableStateStore = memory_store();
+    let reference_fixture: Fixture = install(&reference_store);
+    install_four_validators(&reference_store);
+    recover(
+        &reference_store,
+        &reference_fixture,
+        &CountingEngine::new(),
+        &publish_bytes,
+        &publish_certificate,
+        CHECKPOINT,
+    )
+    .unwrap();
+    let source: ObjectRef =
+        current_object_ref(&reference_store, protocol().chain_id(), fixture.coin.id);
+    let instantiate_bytes: Vec<u8> = instantiate_bytes_for(&fixture, &reference, 97, source);
+    let certificate: Vec<u8> = certificate_for_after_publish(
+        &publish_bytes,
+        &publish_certificate,
+        &instantiate_bytes,
+        CHECKPOINT,
+    );
+    let engine: CountingEngine = CountingEngine::new();
+    assert!(matches!(
+        recover(
+            &store,
+            &fixture,
+            &engine,
+            &instantiate_bytes,
+            &certificate,
+            CHECKPOINT,
+        ),
+        Err(FastPathError::Admission(PaidExecutionAdmissionError::Node(
+            NodeCoreError::SenderNonceMismatch { .. }
+        )))
+    ));
+    assert_eq!(engine.calls.get(), 0);
+    assert_eq!(next_nonce(&store), FIRST_PAID_NONCE);
+}
+
+/// Deleting an already-recovered `Publish`'s durable publication record is a
+/// test-only divergent prerequisite fault injection -- a peer that actually
+/// applied the certificate can never lose the record it just durably wrote,
+/// so this never models a genuine catch-up or import path -- not a distinct
+/// recovery code path. It isolates the missing/broken-definition failure
+/// from the out-of-order nonce failure above: the `Instantiate` here is
+/// built with the exact nonce and fee-source prerequisites an honest
+/// dependency-order recovery would leave behind, so admission gets past
+/// nonce freshness and fails only when it tries to resolve the code closure.
+/// A tombstoned key is not the same durable state as one genuinely never
+/// written: the root-node publication load treats a revision-INITIAL
+/// absence as "never published" (the ordinary missing-definition case
+/// another test already covers), but a present-then-deleted key as
+/// `PublicationAdmissionError::CorruptRecord` -- exactly the distinction a
+/// real corrupted or rolled-back peer store would hit.
+#[test]
+fn signerless_recovery_of_an_instantiate_fails_closed_when_its_recovered_publish_definition_is_missing()
+ {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = install(&store);
+    install_four_validators(&store);
+    let artifact = publish_artifact(98);
+    let reference = publish_artifact_reference(&artifact);
+    let origin = artifact.origin().clone();
+    let publish_bytes: Vec<u8> = paid_publish(
+        &fixture,
+        98,
+        FIRST_PAID_NONCE,
+        artifact,
+        &fixture.coin,
+        100_000,
+    );
+    let publish_certificate: Vec<u8> = certificate_for(&publish_bytes, CHECKPOINT);
+    recover(
+        &store,
+        &fixture,
+        &CountingEngine::new(),
+        &publish_bytes,
+        &publish_certificate,
+        CHECKPOINT,
+    )
+    .unwrap();
+    let source: ObjectRef = current_object_ref(&store, protocol().chain_id(), fixture.coin.id);
+    let instantiate_bytes: Vec<u8> = instantiate_bytes_for(&fixture, &reference, 99, source);
+    let instantiate_certificate: Vec<u8> = certificate_for_after_publish(
+        &publish_bytes,
+        &publish_certificate,
+        &instantiate_bytes,
+        CHECKPOINT,
+    );
+    let nonce_before: u64 = next_nonce(&store);
+    let coin_bytes_before: Vec<u8> = match crate::query::query_object(
+        &store,
+        &context(),
+        domain(),
+        protocol().chain_id(),
+        fixture.coin.id,
+    )
+    .unwrap()
+    {
+        crate::query::ObjectQueryResult::CurrentInline {
+            canonical_object_bytes,
+            ..
+        } => canonical_object_bytes,
+        _ => unreachable!("fee coin must be a current inline object"),
+    };
+    let publication_key: Vec<u8> = publication_record_key(&origin).unwrap();
+    let observed: VersionedStateValue = store
+        .get_versioned_durable(&context(), domain(), &publication_key)
+        .unwrap();
+    assert!(observed.value().is_some());
+    let erase: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(publication_key.clone(), observed.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(publication_key.clone(), StateMutation::Delete).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&context(), erase),
+        DurableCommitOutcome::Committed
+    );
+    let engine: CountingEngine = CountingEngine::new();
+    assert!(matches!(
+        recover(
+            &store,
+            &fixture,
+            &engine,
+            &instantiate_bytes,
+            &instantiate_certificate,
+            CHECKPOINT,
+        ),
+        Err(FastPathError::Admission(
+            PaidExecutionAdmissionError::Publication(PublicationAdmissionError::CorruptRecord)
+        ))
+    ));
+    assert_eq!(engine.calls.get(), 0);
+    assert_eq!(next_nonce(&store), nonce_before);
+    assert!(
+        store
+            .get_versioned_durable(&context(), domain(), &publication_key)
+            .unwrap()
+            .value()
+            .is_none()
+    );
+    let coin_bytes_after: Vec<u8> = match crate::query::query_object(
+        &store,
+        &context(),
+        domain(),
+        protocol().chain_id(),
+        fixture.coin.id,
+    )
+    .unwrap()
+    {
+        crate::query::ObjectQueryResult::CurrentInline {
+            canonical_object_bytes,
+            ..
+        } => canonical_object_bytes,
+        _ => unreachable!("fee coin must be a current inline object"),
+    };
+    assert_eq!(coin_bytes_after, coin_bytes_before);
+    assert_eq!(
+        crate::query::query_request_receipt(
+            &store,
+            &context(),
+            domain(),
+            RequestId::new([0x93; 32]).unwrap(),
+        )
+        .unwrap(),
+        crate::query::ReceiptQueryResult::Absent {
+            request_id: RequestId::new([0x93; 32]).unwrap()
+        }
+    );
+    let prepared_key: Vec<u8> =
+        fastpath_prepared_record_key(protocol().chain_id(), &[0x93; 32]).unwrap();
+    assert!(
+        store
+            .get_versioned_durable(&context(), domain(), &prepared_key)
+            .unwrap()
+            .value()
+            .is_none()
+    );
+}
+
+/// The exact current [`ObjectRef`] for `id`, independently re-verified by
+/// [`crate::query::query_object`]: used to build a fresh fee-source consent
+/// against an object a prior certified request in the same chain already
+/// mutated (its version/digest no longer match the fixture's own snapshot).
+fn current_object_ref<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    chain_id: &ChainId,
+    id: ObjectId,
+) -> ObjectRef {
+    match crate::query::query_object(store, &context(), domain(), chain_id, id).unwrap() {
+        crate::query::ObjectQueryResult::CurrentInline {
+            object_version,
+            digest,
+            ..
+        } => ObjectRef {
+            id,
+            version: object_version.get(),
+            digest,
+        },
+        _ => unreachable!("fee-source coin must be a current inline object"),
+    }
 }

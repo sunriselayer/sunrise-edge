@@ -128,7 +128,7 @@ overwrite an existing file or follow an existing symlink. Use a new output
 path for an exact replay and compare it with the previous output.
 
 An existing validator that missed preparation can explicitly opt into
-signerless certified-call recovery by adding `--created-checkpoint` to
+signerless certified lifecycle recovery by adding `--created-checkpoint` to
 `apply-certificate`. Supply the same trusted creation metadata used by the
 certifying validators; the command independently reproduces the complete
 certified commitment before applying anything. Without that flag, this
@@ -136,7 +136,8 @@ command remains prepared-only. An existing preparation always uses its stored
 checkpoint, not a replacement argument. Recovery requires exact local
 definitions, nonce and object prerequisites, refuses every present lock and
 does not sign or create a preparation. See
-[DR-0150](../architecture/decisions/0150-certified-call-catch-up.md) and the
+[DR-0150](../architecture/decisions/0150-certified-call-catch-up.md), its
+[DR-0151 lifecycle extension](../architecture/decisions/0151-integrated-network-delivery-and-lightweight-stores.md), and the
 [ordered HTTP/CLI recovery guide](../guides/fastvote-catch-up.md) for the
 separate bounded saved-artifact workflow and its request-scoped limits.
 

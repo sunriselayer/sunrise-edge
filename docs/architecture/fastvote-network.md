@@ -7,6 +7,10 @@ operator-composed, opt-in, experimental surface distinct from the generic
 `SubmitTransaction` event path. It does not close the Phase 3 independent
 security gate or establish acceptance of the added ingress, and adopts no
 live-network, load, soak, or capacity target.
+[DR-0151](decisions/0151-integrated-network-delivery-and-lightweight-stores.md)
+extends the same composition to ordinary paid Publish and Instantiate as well
+as Call. PostgreSQL is this host's implementation profile, not a mandatory
+protocol database.
 
 ## Components
 
@@ -49,7 +53,8 @@ live-network, load, soak, or capacity target.
   set and the submitted intent's digest before any apply POST, and reports
   each peer's outcome independently -- never an invented "all validators
   applied" or global-durability claim.
-  Each apply acknowledgement also binds its effects transaction hash to both
+  Each apply acknowledgement binds its application kind and package origin or
+  instance target to the submitted intent, and its effects transaction hash to both
   the exact signed paid intent and the submitted certificate. These unsigned
   acknowledgements still do not establish durable or network-wide finality.
   Deadline addition is checked, and zero or excessive per-request caps fail
@@ -71,9 +76,9 @@ live-network, load, soak, or capacity target.
   Its per-generation identity sequence becomes permanently exhausted after
   the last representable nonzero sequence, rather than wrapping and reusing
   an identity under the same writer generation.
-- **CLI** (`apps/cli`): `contract paid-call --fastvote-network` builds and
-  signs a real ordinary paid `Call` through the exact same generic
-  construction path `paid-call` already uses directly, branching only at
+- **CLI** (`apps/cli`): `contract paid-publish`, `paid-instantiate` and
+  `paid-call --fastvote-network` build and sign ordinary paid intents through
+  the same generic construction used directly, branching only at
   final submission between one direct POST and the network prepare/quorum/
   apply flow. A checked operation deadline starts immediately after flag
   parsing, before input reads or signing. Every preparatory query uses a
@@ -93,6 +98,30 @@ live-network, load, soak, or capacity target.
   nonce, never a re-sign. An explicitly supplied missing or corrupt
   certificate fails; omitting that flag intentionally collects a certificate
   from the saved intent instead.
+
+## Certified lifecycle and recovery
+
+All application kinds use `build_paid_admission` and the complete `0x6424/v1`
+staged-effects commitment. Prepare persists only its preparation and locks;
+it does not install published definitions or instances, advance the sender
+nonce or publish final application objects/receipts. Certified apply rederives
+the staged outcome and atomically commits definitions/instances/authorities,
+object effects, fee escrow/settlement, nonce and receipt. No direct-mutation
+fallback or Standard Asset-specific core branch is used.
+
+The top-level `create-asset`, transfer, split, merge, mint and burn use this same
+network submission when the network flags are selected. Standard Asset is
+ordinary public code and ABI; the human-facing commands do not confer extra
+node authority.
+
+Missed-prepare recovery applies saved certified Publish → Instantiate → Call
+in declared dependency order, without signing or voting. Missing definitions
+are supplied only by their own authenticated Publish entry, never imported
+from an opaque snapshot. Each entry rederives its full commitment against exact
+local prerequisites; a batch may commit a prefix before a later entry fails.
+Strict absent-lock checks, tombstone protection, commit-time writer fencing
+and receipt-first exact replay remain unchanged. This is not complete history
+discovery, shared-operation ordering or activation-authorized state handoff.
 
 ## Trust and pinning model
 

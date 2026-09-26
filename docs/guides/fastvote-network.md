@@ -2,8 +2,9 @@
 
 This guide runs the DR-0148 opt-in FastVote network: one long-running,
 certified-only HTTP host per validator (`fastvote_host_pg`, PostgreSQL-backed)
-and the ordinary Rust CLI's `contract paid-call --fastvote-network`/
-`contract fastvote-replay` actions. It is a development implementation. The
+and the ordinary Rust CLI's paid Publish/Instantiate/Call, Standard Asset and
+`contract fastvote-replay` actions. DR-0151 extends DR-0148's original
+Call-only surface. It is a development implementation. The
 independent Phase 3 and ingress security review gates remain open; this guide
 does not authorize live exposure, deployment, or custody of real assets, and
 `fastvote_host_pg` never terminates TLS itself (loopback listen only --
@@ -90,11 +91,11 @@ a2a2...a2 203.0.113.2:8443 validator-2.internal /secure/validator-2-ca.der
 Endpoints are IP socket addresses; the separate DNS name is the certificate
 verification name, not an endpoint resolved by this transport.
 
-## Submit an ordinary paid call over the network
+## Submit an ordinary paid contract over the network
 
-`--fastvote-network` is accepted only on `contract paid-call`
-(`paid-publish`/`paid-instantiate` remain direct-only). It builds and signs
-the exact same ordinary paid `Call` the direct path builds, then routes
+`--fastvote-network` is accepted on `contract paid-publish`,
+`paid-instantiate` and `paid-call`. It builds and signs
+the same ordinary paid intent the direct path builds, then routes
 final submission through prepare/quorum/apply against every configured peer
 instead of one direct POST. Endpoint-to-validator mapping against the local
 genesis pin is verified before any fee-policy query or signing.
@@ -141,6 +142,38 @@ files: preserve them, and recover the exact original bytes rather than
 re-signing or reserving a fresh nonce. Unix path-identity checks are tested;
 other platforms have not been validated.
 
+### Publish, instantiate, then call
+
+Use the same expected-context, sender/fee, selected endpoint and network flags
+from the command above for every step, with a new request ID and unused saved
+intent/certificate/result paths each time:
+
+| Action | Application inputs | Derived output |
+| --- | --- | --- |
+| `contract paid-publish` | `--wasm`, `--abi`, exact comma-separated `--entrypoints`, `--origin-seed`, optional `--dependencies` | `--dependency-ref-out` |
+| `contract paid-instantiate` | `--code-ref` from publication, `--instance-seed`, `--args`, `--type-args` | `--instance-ref-out` |
+| `contract paid-call` | `--instance-ref`, `--entrypoint`, `--access`, `--args`, `--type-args`, optional `--authorizations` | canonical `--result-out` |
+
+Derived reference outputs are optional but, when requested, must be unused and
+distinct from all retained inputs/outputs. They are reserved before mutation
+and populated only for a verified successful result. A reserved empty file
+after a charged failure is not a usable reference. Preserve exact submitted
+bytes and inspect/replay the certified result before preparing the dependent
+step. Prepare alone does not publish a definition or install an instance.
+
+The top-level `create-asset`, `transfer`, `split`, `merge`, `mint` and `burn` accept the
+same network/genesis/artifact flags. Their ordinary ownership, amount, asset
+identity and local expected-context checks still apply; no special validator
+authority is created for these commands. An arbitrary Standard Asset requires
+its published code and instance, not a new native balance type.
+
+These semantic asset convenience commands retain their locally trusted active
+Standard Asset code pin. A separately user-published package, including a copy
+of the public Standard Asset template under another origin, is invoked with
+`contract paid-call` and its explicit instance/access/argument references.
+Supporting generic network execution does not silently authorize different
+code through a trusted asset convenience command.
+
 A committed **charged trap** (the application was rejected but a real fee
 was still reserved and settled) is reported with the actual fee/nonce and
 the CLI exits non-zero -- this is a valid final committed result, not a
@@ -151,7 +184,7 @@ network failure or a condition to retry with fresh signing.
 `contract fastvote-replay` reads back exactly the saved bytes and resubmits
 them unchanged -- it never queries a fresh nonce, never re-signs, and never
 invents a new request ID. It accepts the same `--expected-*` and
-`--fastvote-*` network/genesis flags as `paid-call`, plus:
+`--fastvote-*` network/genesis flags as the paid actions, plus:
 
 ```sh
 cargo run -p sunrise-edge-cli -- contract fastvote-replay \
@@ -184,6 +217,17 @@ an epoch change, since `fast_path::apply` is receipt-first. A non-current
 epoch for fresh work requires an explicit, out-of-band operator re-pin, not
 a silent retry.
 
+For saved Publish or Instantiate requests, replay may additionally write a
+fresh `--dependency-ref-out` or `--instance-ref-out`, respectively. This is
+how to recover an empty reference output after an uncertain original response.
+Use an unused path distinct from both saved inputs and every other output.
+The bytes derive from the original signed intent and are written only after
+a successful kind/target-bound acknowledgement; no new nonce or signature is
+created. These flags are mutually exclusive and invalid for saved Calls.
+Received successful peer results must agree canonically before result or
+reference output is populated; that comparison is not a whole-store or
+network-wide durability proof.
+
 A quorum certificate (the `--fastvote-certificate-out` bytes) is a
 cryptographically formed proof that a quorum of pinned validators voted for
 the identical outcome; each per-peer apply acknowledgement printed
@@ -193,8 +237,8 @@ that every configured peer applied, or finality beyond what the printed,
 per-peer results actually show.
 
 For a same-epoch validator that missed prepare as well as application, use
-[certified-call catch-up](fastvote-catch-up.md). It reconstructs declared
-certified Calls against exact local prerequisites without a new prepare vote
+[certified lifecycle catch-up](fastvote-catch-up.md). It reconstructs declared
+certified Publish/Instantiate/Call against exact local prerequisites without a new prepare vote
 or speculative locks; it is not full-state handoff or epoch activation.
 
 ## Executable regression
@@ -213,3 +257,12 @@ a successful transfer, exact replay of both, a rejected request-id-reuse
 conflict with independently re-verified unchanged durable state, a
 stale-writer-fence rejection, and a real close/reopen of a validator's host
 process with exact replay surviving the restart.
+
+DR-0151 adds `contract_lifecycle_pg_e2e` and
+`contract_lifecycle_catch_up_pg_e2e`. These execute the separately compiled
+CLI binary against independent validator namespaces: user-selected paid
+Publish → Instantiate → Call and the ordinary top-level asset verbs use the
+same certified path. The returning validator starts without the user
+publication or instance and imports them only by applying the declared
+certified lifecycle. These are bounded functional tests, not complete state
+handoff, production-provider certification, or authorization to expose ingress.

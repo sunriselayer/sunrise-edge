@@ -1,18 +1,22 @@
-# Recover missed certified calls
+# Recover a missed certified contract lifecycle
 
-This workflow repairs **declared same-epoch certified Calls** on an existing
+This workflow repairs **declared same-epoch certified Publish, Instantiate and
+Call requests** on an existing
 validator that missed preparation and application. It uses saved signed
 artifacts, not a database copy, fresh signature or automatic state reset.
 [DR-0150](../architecture/decisions/0150-certified-call-catch-up.md) defines
-the safety boundary; current readiness and independent review gates remain
+the original safety boundary; [DR-0151](../architecture/decisions/0151-integrated-network-delivery-and-lightweight-stores.md)
+extends it to the generic lifecycle. Current readiness and independent review gates remain
 in [`TODO.md`](../../TODO.md). Do not deploy this experimental network publicly
 or use real assets.
 
 ## Prerequisites
 
 The returning validator must have the same independently trusted signed
-genesis, live epoch/set, contract definitions, fee policy and exact predecessor
-object/nonce state as the requests need. Start its already-installed namespace
+genesis, live epoch/set, fee policy and exact predecessor object/nonce state
+as the requests need. Required user definitions may already exist exactly, or
+be established by an earlier certified Publish in the same manifest. Required
+instances similarly precede dependent Calls. Start its already-installed namespace
 using [the existing host walkthrough](fastvote-network.md), never reset or
 reinstall genesis as recovery. Its configured `--created-checkpoint` must
 reproduce the certified staged commitment for a never-prepared request. This
@@ -27,7 +31,8 @@ investigation; a newer signature or direct database overwrite is not a repair.
 
 Retain the original `--fastvote-signed-intent-out` and
 `--fastvote-certificate-out` files produced by
-[`contract paid-call --fastvote-network`](fastvote-network.md). A quorum
+[paid contract and asset commands with `--fastvote-network`](fastvote-network.md).
+A quorum
 certificate authenticates the exact staged outcome against the full pinned
 validator set. Copying the files over an untrusted channel does not authorize
 anything until this verification succeeds.
@@ -43,13 +48,14 @@ bytes are admitted. The manifest itself is limited to 64 KiB and each line to
 resource bounds, not throughput targets.
 
 ```text
-call-1.signed.bin call-1.certificate.bin
-call-2.signed.bin call-2.certificate.bin
-call-3.signed.bin call-3.certificate.bin
+publish.signed.bin publish.certificate.bin
+instantiate.signed.bin instantiate.certificate.bin
+call.signed.bin call.certificate.bin
 ```
 
-Do not order by arrival time or filename. A later call can require the nonce
-and objects from an earlier call. A committed charged trap also advances the
+Do not order by arrival time or filename. Publish dependencies precede their
+dependent Publish, Instantiate precedes its Calls, and each operation's
+predecessor nonce and objects must be present. A committed charged trap also advances the
 nonce and charges its certified fee; it is a valid predecessor, not a reason
 to re-sign or omit it.
 
@@ -114,7 +120,7 @@ source explicitly; the tool does not fill missing certificates or reorder work.
 ## What this does not prove
 
 A successful run covers only the manifest's declared requests. It does not
-prove that no requests were omitted, import arbitrary published definitions,
+prove that no requests were omitted, import uncertified or arbitrary database definitions,
 repair shared fee-claim or bond/evidence state, establish full replica/state
 convergence, detect whole-store rollback, or authorize new membership/epoch
 activation. Offline DR-0149 claim mutations still require separately reviewed

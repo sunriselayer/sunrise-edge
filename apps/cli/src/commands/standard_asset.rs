@@ -5,7 +5,9 @@ use crate::{
     args::{FlagSpec, ParsedArgs, parse_flags, scalar},
     error::CliError,
     hex::{decode_hex_32, encode_hex},
-    net::{CliTransport, connect_paid_execution, tls_flag_specs},
+    net::{
+        BudgetedTransport, CliTransport, OperationBudget, connect_paid_execution, tls_flag_specs,
+    },
     parse::{parse_u16, parse_u32, parse_u64},
     seed::load_dev_seed,
     signer::{SignerSelection, parse_signer_selection, signer_flag_specs},
@@ -20,10 +22,10 @@ use sunrise_edge_client::{
     AccessEntry, AccessManifest, AccessMode, Address, Amount, AtomicityDomainId, ChainId, Client,
     Digest32, ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_BINDING_ID,
     ED25519_CANONICAL_PRIME_ORDER_ADDRESS_IS_PUBLIC_KEY_PROFILE_ID, Epoch, ExpectedProtocolContext,
-    FeeSourceConsent, HashSuiteId, HashSuiteResolver, HttpObjectQueryResult, LocalSigner, Object,
-    ObjectEffect, ObjectId, ObjectRef, Owner, PaidApplication, PaidExecutionResult,
-    PaidExecutionStatus, ProtocolVersion, RequestId, ReservationAccessKind, SignatureSchemeId,
-    Transport,
+    FastPathCertifier, FastVoteEndpoint, FeeSourceConsent, HashSuiteId, HashSuiteResolver,
+    HttpObjectQueryResult, LocalSigner, Object, ObjectEffect, ObjectId, ObjectRef, Owner,
+    PaidApplication, PaidExecutionResult, PaidExecutionStatus, ProtocolVersion, RequestId,
+    ReservationAccessKind, SignatureSchemeId, Transport,
     call::{CallIntent, InstanceTarget},
     decode_object, encode_signed_paid_intent,
     local_execution::{
@@ -90,6 +92,7 @@ fn common_specs() -> Vec<FlagSpec> {
     ];
     specs.extend(tls_flag_specs());
     specs.extend(signer_flag_specs());
+    specs.extend(super::fastvote_network::network_flag_specs());
     specs
 }
 
@@ -374,8 +377,8 @@ fn select_application_target<T: Transport>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn owned_input(
-    client: &Client<CliTransport>,
+fn owned_input<T: Transport>(
+    client: &Client<T>,
     resolver: &HashSuiteResolver,
     expected: &ExpectedProtocolContext,
     owner: Address,
@@ -581,15 +584,44 @@ where
         _ => return Err(invalid("unknown Standard Asset operation")),
     }
     let parsed: ParsedArgs = parse_flags(args, &specs)?;
-    let signer: LocalSigner = match parse_signer_selection(&parsed)? {
-        SignerSelection::Local { seed_file } => {
-            LocalSigner::from_seed(load_dev_seed(Path::new(&seed_file))?)
+    // Budget/unsupported combinations are local errors, even when a seed or
+    // other input is missing. The single instant starts before preparation.
+    let budget: Option<OperationBudget> = if parsed.get("--fastvote-network").is_some() {
+        Some(super::fastvote_network::parse_deadline(&parsed)?)
+    } else {
+        if super::fastvote_network::network_flag_specs()
+            .iter()
+            .any(|flag| parsed.get(flag.name).is_some())
+        {
+            return Err(invalid("FastVote flags require --fastvote-network"));
         }
-        SignerSelection::Ledger { .. } => {
-            return Err(invalid(
+        None
+    };
+    if budget.is_some() {
+        super::fastvote_network::validate_paid_network_flags(&parsed)?;
+    }
+    let signer_selection: SignerSelection = parse_signer_selection(&parsed)?;
+    if matches!(signer_selection, SignerSelection::Ledger { .. }) {
+        return Err(invalid(
+            "Ledger paid Standard Asset signing is not supported",
+        ));
+    }
+    let load_signer = || -> Result<LocalSigner, CliError> {
+        match &signer_selection {
+            SignerSelection::Local { seed_file } => {
+                Ok(LocalSigner::from_seed(load_dev_seed(Path::new(seed_file))?))
+            }
+            SignerSelection::Ledger { .. } => Err(invalid(
                 "Ledger paid Standard Asset signing is not supported",
-            ));
+            )),
         }
+    };
+    // Keep direct mode's existing local-input order. Network mode validates
+    // the selected cohort peer before reading the signing seed.
+    let direct_signer: Option<LocalSigner> = if budget.is_none() {
+        Some(load_signer()?)
+    } else {
+        None
     };
     let create_asset_inputs: Option<([u8; 32], &str)> = if action == "create-asset" {
         Some((
@@ -601,7 +633,49 @@ where
     };
     let expected: ExpectedProtocolContext = parse_expected_context(&parsed)?;
     let resolver: HashSuiteResolver = local_publication_resolver(&expected)?;
-    let client: Client<CliTransport> = connect_paid_execution(parsed.require(ENDPOINT)?, &parsed)?;
+    let local_context: PublicationContext = PublicationContext::new(
+        expected.chain_id().clone(),
+        expected.protocol_version(),
+        expected.epoch(),
+    )
+    .map_err(failure)?;
+    // Endpoint-to-validator mapping is verified against the local genesis
+    // pin *before* any fee/nonce query or signing, exactly like the local
+    // expected-context check above.
+    let network: Option<(Vec<FastVoteEndpoint<CliTransport>>, FastPathCertifier)> =
+        if parsed.get("--fastvote-network").is_some() {
+            Some(super::fastvote_network::load_endpoints_and_certifier(
+                &parsed,
+                &resolver,
+                &local_context,
+            )?)
+        } else {
+            None
+        };
+    if let Some(budget) = budget {
+        budget.ensure_live()?;
+    }
+    let signer: LocalSigner = match direct_signer {
+        Some(signer) => signer,
+        None => load_signer()?,
+    };
+    let direct_client: Option<Client<CliTransport>> = if network.is_none() {
+        Some(connect_paid_execution(parsed.require(ENDPOINT)?, &parsed)?)
+    } else {
+        None
+    };
+    let preparation_client: &Client<CliTransport> = if let Some((endpoints, _)) = &network {
+        let selected: &str = parsed.require(ENDPOINT)?;
+        super::fastvote_network::selected_preparation_client(endpoints, selected)?
+    } else {
+        direct_client
+            .as_ref()
+            .ok_or_else(|| invalid("direct client missing"))?
+    };
+    let client: Client<BudgetedTransport<'_, CliTransport>> = Client::new(BudgetedTransport {
+        inner: preparation_client.transport(),
+        budget,
+    });
     let policy = client.query_paid_fee_policy(&resolver, &expected)?;
     let genesis_asset: ObjectId = policy_asset(&policy)?;
 
@@ -670,6 +744,9 @@ where
             arguments: no_arguments().map_err(failure)?,
             gas_limit,
         };
+        if let Some(budget) = budget {
+            budget.ensure_live()?;
+        }
         let signed = build_signed_paid_execution(
             &signer,
             &resolver,
@@ -684,20 +761,32 @@ where
         )?;
         let signed_bytes: Vec<u8> = encode_signed_paid_intent(&signed).map_err(failure)?;
         let record_bytes: Vec<u8> = encode_instance_record(&record).map_err(failure)?;
-        let result: PaidExecutionResult = super::paid_execution::submit_with_outputs(
-            parsed.get(RESULT_OUT),
-            parsed.get(SUBMISSION_OUT),
-            Some(instance_ref_out),
-            &signed_bytes,
-            Some(&record_bytes),
-            request_id,
-            nonce,
-            || {
-                client
-                    .submit_paid_execution(&signed, &resolver)
-                    .map_err(CliError::from)
-            },
-        )?;
+        let result: PaidExecutionResult = if let Some((endpoints, certifier)) = &network {
+            super::fastvote_network::run_network_submit(
+                &parsed,
+                endpoints,
+                certifier,
+                &resolver,
+                &signed,
+                Some((instance_ref_out, "instance-ref", record_bytes.as_slice())),
+                budget.ok_or_else(|| invalid("network operation budget missing"))?,
+            )?
+        } else {
+            super::paid_execution::submit_with_outputs(
+                parsed.get(RESULT_OUT),
+                parsed.get(SUBMISSION_OUT),
+                Some(instance_ref_out),
+                &signed_bytes,
+                Some(&record_bytes),
+                request_id,
+                nonce,
+                || {
+                    client
+                        .submit_paid_execution(&signed, &resolver)
+                        .map_err(CliError::from)
+                },
+            )?
+        };
         print_result(&result);
         if result.status != PaidExecutionStatus::Success {
             return Err(invalid(
@@ -775,6 +864,9 @@ where
         arguments: operation.arguments,
         gas_limit,
     };
+    if let Some(budget) = budget {
+        budget.ensure_live()?;
+    }
     let signed = build_signed_paid_execution(
         &signer,
         &resolver,
@@ -788,20 +880,32 @@ where
         Vec::new(),
     )?;
     let signed_bytes: Vec<u8> = encode_signed_paid_intent(&signed).map_err(failure)?;
-    let result: PaidExecutionResult = super::paid_execution::submit_with_outputs(
-        parsed.get(RESULT_OUT),
-        parsed.get(SUBMISSION_OUT),
-        None,
-        &signed_bytes,
-        None,
-        request_id,
-        nonce,
-        || {
-            client
-                .submit_paid_execution(&signed, &resolver)
-                .map_err(CliError::from)
-        },
-    )?;
+    let result: PaidExecutionResult = if let Some((endpoints, certifier)) = &network {
+        super::fastvote_network::run_network_submit(
+            &parsed,
+            endpoints,
+            certifier,
+            &resolver,
+            &signed,
+            None,
+            budget.ok_or_else(|| invalid("network operation budget missing"))?,
+        )?
+    } else {
+        super::paid_execution::submit_with_outputs(
+            parsed.get(RESULT_OUT),
+            parsed.get(SUBMISSION_OUT),
+            None,
+            &signed_bytes,
+            None,
+            request_id,
+            nonce,
+            || {
+                client
+                    .submit_paid_execution(&signed, &resolver)
+                    .map_err(CliError::from)
+            },
+        )?
+    };
     print_result(&result);
     if result.status != PaidExecutionStatus::Success {
         return Err(invalid(
@@ -1516,6 +1620,79 @@ mod tests {
             error
                 .to_string()
                 .contains("Ledger paid Standard Asset signing is not supported")
+        );
+    }
+
+    #[test]
+    fn fastvote_flags_without_fastvote_network_are_rejected_for_every_action() {
+        for action in ["create-asset", "transfer", "split", "merge", "mint", "burn"] {
+            let error = run(
+                action,
+                [
+                    OsString::from("--fastvote-genesis-manifest"),
+                    OsString::from("unused"),
+                ],
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("FastVote flags require --fastvote-network"),
+                "action {action} did not reject a stray FastVote flag: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn fastvote_network_action_validates_shared_flags_before_touching_the_config_file() {
+        for action in ["create-asset", "transfer"] {
+            let error = run(
+                action,
+                [
+                    OsString::from("--fastvote-network"),
+                    OsString::from("/definitely/does/not/exist"),
+                ],
+            )
+            .unwrap_err();
+            // validate_paid_network_flags requires --endpoint before the
+            // (missing) --fastvote-network config file is ever opened.
+            assert!(
+                error.to_string().contains("--endpoint"),
+                "action {action} did not run the shared network flag validation first: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn network_mode_ledger_selection_is_rejected_before_cohort_or_local_seed_access() {
+        // No --fastvote-genesis-manifest/--fastvote-expected-genesis-digest is
+        // supplied: if Ledger rejection did not happen first, this would fail
+        // with a *different* missing-flag or missing-file error instead.
+        let error = run(
+            "create-asset",
+            [
+                OsString::from("--fastvote-network"),
+                OsString::from("/definitely/does/not/exist"),
+                OsString::from("--endpoint"),
+                OsString::from("peer-a"),
+                OsString::from("--fastvote-signed-intent-out"),
+                OsString::from("/unused/intent"),
+                OsString::from("--fastvote-certificate-out"),
+                OsString::from("/unused/cert"),
+                OsString::from("--ledger-hid-path"),
+                OsString::from("/definitely/not/a/device"),
+                OsString::from("--ledger-account"),
+                OsString::from("0"),
+                OsString::from("--ledger-expected-firmware-version"),
+                OsString::from("1.0.0"),
+            ],
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Ledger paid Standard Asset signing is not supported"),
+            "{error}"
         );
     }
 }

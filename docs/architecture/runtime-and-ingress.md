@@ -33,6 +33,13 @@ contract, but it does not provide the normalized object, receipt, outbox,
 checkpoint, migration, retention, or operational indexes required by the
 accepted production persistence architecture.
 
+This describes the existing implementation, not a permanent PostgreSQL-only
+protocol requirement. [DR-0151](decisions/0151-integrated-network-delivery-and-lightweight-stores.md)
+accepts a separately verified native SQLite host and SQLite-backed Cloudflare
+DO as lightweight deployment targets. The current developer adapter and
+stateless provider relays do not yet establish either target's production
+support; the same runtime-neutral atomicity/fencing/replay contract remains.
+
 `runtime-sqlite` additionally exposes `SqliteDurableStore`
 ([DR-0079](decisions/0076-0080-developer-mvp-foundation.md)): an
 additive, local-only, non-production implementation of

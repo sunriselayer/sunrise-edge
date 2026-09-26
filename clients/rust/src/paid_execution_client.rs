@@ -313,24 +313,40 @@ impl<T: Transport> Client<T> {
         if ack.status() != expected_status {
             return Err(ClientError::PaidExecutionAcknowledgementMismatch);
         }
-        match (&signed.intent.application, &result.kind, &result.target) {
-            (
-                PaidApplication::Publish(artifact),
-                PaidResultKind::Publish,
-                PaidResultTarget::Package(origin),
-            ) if origin == artifact.origin() => {}
-            (
-                PaidApplication::Instantiate(call),
-                PaidResultKind::Instantiate,
-                PaidResultTarget::Instance(record),
-            ) if instance_target(resolver, record)? == call.instance => {}
-            (
-                PaidApplication::Call(call),
-                PaidResultKind::Call,
-                PaidResultTarget::Instance(record),
-            ) if instance_target(resolver, record)? == call.instance => {}
-            _ => return Err(ClientError::PaidExecutionAcknowledgementMismatch),
-        }
+        validate_paid_execution_target(&signed.intent.application, &result, resolver)?;
         Ok(result)
+    }
+}
+
+/// Binds a decoded [`PaidExecutionResult`]'s kind/target to the exact
+/// submitted application: a `Publish` result must name the exact artifact's
+/// own `PackageOrigin`, and an `Instantiate`/`Call` result must name the
+/// exact call's own `InstanceTarget`. Shared by the direct submission path
+/// ([`Client::submit_paid_execution`]) and the FastVote apply path
+/// (`fastvote_client::Client::apply_fastvote`) so both enforce identical
+/// acknowledgement binding for every [`PaidApplication`] kind, rather than
+/// two independently maintained checks that could silently diverge.
+pub(crate) fn validate_paid_execution_target(
+    application: &PaidApplication,
+    result: &PaidExecutionResult,
+    resolver: &HashSuiteResolver,
+) -> Result<(), ClientError> {
+    match (application, &result.kind, &result.target) {
+        (
+            PaidApplication::Publish(artifact),
+            PaidResultKind::Publish,
+            PaidResultTarget::Package(origin),
+        ) if origin == artifact.origin() => Ok(()),
+        (
+            PaidApplication::Instantiate(call),
+            PaidResultKind::Instantiate,
+            PaidResultTarget::Instance(record),
+        ) if instance_target(resolver, record)? == call.instance => Ok(()),
+        (PaidApplication::Call(call), PaidResultKind::Call, PaidResultTarget::Instance(record))
+            if instance_target(resolver, record)? == call.instance =>
+        {
+            Ok(())
+        }
+        _ => Err(ClientError::PaidExecutionAcknowledgementMismatch),
     }
 }

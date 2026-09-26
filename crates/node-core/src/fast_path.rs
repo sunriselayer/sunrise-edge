@@ -13,11 +13,15 @@
 //!
 //! Phase 1 scope, deliberately narrow:
 //!
-//! * Only [`execution::paid_execution::PaidApplication::Call`] over
-//!   sender-owned objects (already a structural invariant of
-//!   [`paid_execution::build_paid_admission`], not special-cased here) takes
-//!   the fast path. `Instantiate` and `Publish` fail closed in both
-//!   [`prepare`] and [`apply`].
+//! * Every [`execution::paid_execution::PaidApplication`] variant -- `Call`,
+//!   `Instantiate` and `Publish` -- over sender-owned objects (already a
+//!   structural invariant of [`paid_execution::build_paid_admission`], not
+//!   special-cased here) takes the fast path identically: neither
+//!   [`prepare`] nor [`apply`] branches on the application kind, since
+//!   [`paid_execution::build_paid_admission`] already stages the exact same
+//!   publication/instance record mutation, object/authority effects and
+//!   commitment-relevant state a certified `Call` stages, keyed off the
+//!   signed intent alone (DR-0151 delivery 1).
 //! * [`prepare`] authenticates, admits and executes exactly like a direct
 //!   commit, but only asserts the current sender nonce and commits a durable
 //!   sender/epoch nonce lock, one
@@ -33,13 +37,31 @@
 //!   atomically applies every object/application effect plus the final
 //!   receipt, a [`records::FastPathCertificateRecord`], a
 //!   [`records::FastPathSettlementRecord`], and every lock delete, in one
-//!   commit. A certificate/final record that already exists returns the
-//!   exact final receipt idempotently, without re-executing.
+//!   commit. For a successful `Instantiate` or `Publish` that same atomic
+//!   commit also carries the new instance/publication record: it is just
+//!   another entry in [`paid_execution::PaidAdmissionOutput`]'s staged state
+//!   mutations, already covered by the shared `0x6424` commitment envelope
+//!   ([`commitment::compute`]) like every other staged mutation, so a
+//!   certificate binds the exact staged publication/instance-record mutation
+//!   the same way it binds every other staged effect. That binding is only to
+//!   what was staged, not proof that any peer has durably applied it: each
+//!   replica's own atomic [`apply`] commit is the independent step that
+//!   actually makes the definition durably queryable there. A
+//!   certificate/final record that already exists returns the exact final
+//!   receipt idempotently, without re-executing.
 //! * [`apply_with_recovery`] additionally permits a same-epoch replica that
-//!   missed prepare to execute the exact certified call without a signer.
+//!   missed prepare to execute the exact certified paid intent without a
+//!   signer.
 //!   The prepared key must be genuinely never-created, all lock values must
 //!   be absent, and the complete re-derived commitment must match before the
-//!   single atomic commit. Recovery never creates or reclaims a lock.
+//!   single atomic commit. Recovery never creates or reclaims a lock. A
+//!   certified `Instantiate` whose target code was itself only a certified
+//!   `Publish` this replica missed cannot recover until that `Publish`'s own
+//!   certificate is separately recovered first: [`paid_execution::build_paid_admission`]
+//!   resolves an application's code closure only from what is already
+//!   durably published locally, so recovering definitions in their declared
+//!   dependency order is a caller discipline (mirroring DR-0150's bounded
+//!   manifest replay), not a distinct recovery code path here.
 //! * Locks have no expiry in phase 1: the only way to release one is a
 //!   successful [`apply`] of the same request. A prepared request whose
 //!   certificate can never be formed, or whose durably re-derived
@@ -64,7 +86,7 @@ use canonical_encoding::{decode_digest32, encode_digest32};
 use consensus::{ConsensusError, ConsensusSigner, ConsensusVerifier, FastCertificate, FastVote};
 use crypto::{Ed25519Verifier, SignatureVerifier};
 use execution::local_execution::{CreatedObjectAuthority, LocalExecutionPolicy};
-use execution::paid_execution::{PaidApplication, PaidContractEngine, PaidFeePolicy};
+use execution::paid_execution::{PaidContractEngine, PaidFeePolicy};
 use execution::protocol_custody::{FeeEscrowCreationCapability, ProtocolCustodyTarget};
 use execution::publication::{
     PublicationContext, decode_publication_context, encode_publication_context,
@@ -288,16 +310,6 @@ type FastPathResult<T> = Result<T, FastPathError>;
 
 fn invalid<T>(message: &'static str) -> FastPathResult<T> {
     Err(FastPathError::Invalid(message))
-}
-
-/// Phase 1 gate: only `Call` takes the fast path.
-fn require_call(application: &PaidApplication) -> FastPathResult<()> {
-    match application {
-        PaidApplication::Call(_) => Ok(()),
-        PaidApplication::Instantiate(_) | PaidApplication::Publish(_) => {
-            invalid("fast path phase 1 supports only PaidApplication::Call")
-        }
-    }
 }
 
 /// A [`ConsensusVerifier`] backed by the pinned Ed25519 verifier. Phase 1's
@@ -553,7 +565,6 @@ where
     }
     let (authenticated, event_digest, request_id) =
         authenticate_and_identify(resolver, expected, signed_bytes)?;
-    require_call(&authenticated.intent().application)?;
     let chain: ChainId = authenticated.intent().context.chain_id().clone();
     let intent_context: PublicationContext = authenticated.intent().context.clone();
     let original_request_id: [u8; 32] = authenticated.intent().request_id;
@@ -899,7 +910,7 @@ where
     )
 }
 
-/// Applies a certified call, permitting signerless recovery if the local
+/// Applies a certified paid intent, permitting signerless recovery if the local
 /// preparation key was never created. Recovery executes against exact local
 /// prerequisites and atomically fences absent locks; it never prepares, votes,
 /// reclaims locks or imports definitions. The supplied creation checkpoint must
@@ -982,7 +993,6 @@ where
     }
     let (authenticated, event_digest, request_id) =
         authenticate_and_identify(resolver, expected, signed_bytes)?;
-    require_call(&authenticated.intent().application)?;
     if let Some(output) =
         durable_reconciliation::reconcile_receipt(store, context, domain, request_id, event_digest)?
     {

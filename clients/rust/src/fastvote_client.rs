@@ -1,8 +1,9 @@
 //! Certified-only FastVote network client (DR-0148).
 //!
 //! This module is the client-side half of `native-http::fastvote`: it sends
-//! an already-built, already-signed ordinary paid `Call` to every configured
-//! validator's `POST /v1/fastvote/prepare`, forms a canonical
+//! an already-built, already-signed ordinary paid `Publish`, `Instantiate` or
+//! `Call` (DR-0151 widens DR-0130 fast-path phase 1's `Call`-only scope) to
+//! every configured validator's `POST /v1/fastvote/prepare`, forms a canonical
 //! `consensus::FastCertificate` locally from the returned votes using the
 //! LOCAL, offline-pinned genesis validator set (never a set fetched live
 //! from any server), and submits `POST /v1/fastvote/certificates`.
@@ -69,11 +70,9 @@ use consensus::{
     FastCertificate, FastPathCertifier, FastVote, decode_fast_certificate, decode_fast_vote,
     encode_fast_certificate,
 };
-use execution::local_execution::instance_target;
 use execution::paid_execution::{
-    PaidApplication, PaidExecutionResult, PaidExecutionStatus, PaidResultKind, PaidResultTarget,
-    SignedPaidIntent, authenticate_paid_intent, decode_paid_execution_result,
-    encode_signed_paid_intent, paid_invocation_digest,
+    PaidExecutionResult, PaidExecutionStatus, SignedPaidIntent, authenticate_paid_intent,
+    decode_paid_execution_result, encode_signed_paid_intent, paid_invocation_digest,
 };
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
@@ -721,8 +720,9 @@ impl<T: Transport> Client<T> {
     }
 
     /// `POST /v1/fastvote/certificates`: submits the exact signed intent
-    /// (which must carry [`PaidApplication::Call`] -- DR-0130 fast-path
-    /// phase 1's only supported application) and certificate bytes, and
+    /// (any [`PaidApplication`] kind -- DR-0151 extends the certified-only
+    /// FastVote surface from DR-0130 fast-path phase 1's `Call`-only scope
+    /// to `Publish`/`Instantiate` as well) and certificate bytes, and
     /// returns the bound [`PaidExecutionResult`] after the same
     /// acknowledgement-binding checks [`Client::submit_paid_execution`]
     /// performs for the direct path, additionally binding effects to the exact
@@ -735,9 +735,6 @@ impl<T: Transport> Client<T> {
         certificate_bytes: &[u8],
         deadline: Option<Instant>,
     ) -> Result<PaidExecutionResult, ClientError> {
-        let PaidApplication::Call(call) = &signed.intent.application else {
-            return Err(ClientError::FastVoteUnsupportedApplication);
-        };
         let expected_tx_hash: Digest32 = paid_invocation_digest(resolver, signed)?;
         let certificate: FastCertificate = decode_fast_certificate(certificate_bytes)?;
         if certificate.tx_hash != expected_tx_hash {
@@ -792,13 +789,11 @@ impl<T: Transport> Client<T> {
         if ack.status() != expected_status {
             return Err(ClientError::PaidExecutionAcknowledgementMismatch);
         }
-        match (&result.kind, &result.target) {
-            (PaidResultKind::Call, PaidResultTarget::Instance(record))
-                if instance_target(resolver, record)
-                    .map(|target| target == call.instance)
-                    .unwrap_or(false) => {}
-            _ => return Err(ClientError::PaidExecutionAcknowledgementMismatch),
-        }
+        crate::paid_execution_client::validate_paid_execution_target(
+            &signed.intent.application,
+            &result,
+            resolver,
+        )?;
         Ok(result)
     }
 }
@@ -813,8 +808,10 @@ mod tests {
     use crypto::SignatureSigner;
     use ed25519_zebra::{SigningKey, VerificationKey};
     use execution::call::InstanceTarget;
+    use execution::local_execution::instance_target;
     use execution::paid_execution::{
-        FeeSourceConsent, PaidIntent, ReservationAccessKind, paid_intent_signing_frame,
+        FeeSourceConsent, PaidApplication, PaidIntent, PaidResultKind, PaidResultTarget,
+        ReservationAccessKind, paid_intent_signing_frame,
     };
     use execution::publication::UnverifiedDependencyRef;
     use protocol_types::{ChainId, Epoch, HashAlgorithmId, HashSuite, HashSuiteSchedule};
@@ -1612,12 +1609,25 @@ mod tests {
         assert!(matches!(attempts[2].result, Err(ClientError::Transport(_))));
     }
 
-    fn apply_ack_fixture(
+    /// Builds a real, fully authenticatable, sender-signed `SignedPaidIntent`
+    /// / certificate / [`PaidExecutionResult`] triple for either a `Call` or
+    /// an `Instantiate` application (both wrap the same
+    /// [`execution::call::CallIntent`] shape) so `apply_fastvote`'s
+    /// DR-0151 kind-widened acknowledgement binding gets identical coverage
+    /// for every non-`Publish` [`PaidApplication`] kind, without duplicating
+    /// the whole fixture body per kind.
+    fn apply_ack_fixture_kind(
         status: PaidExecutionStatus,
+        kind: PaidResultKind,
     ) -> (SignedPaidIntent, FastCertificate, PaidExecutionResult) {
+        assert!(matches!(
+            kind,
+            PaidResultKind::Call | PaidResultKind::Instantiate
+        ));
         let mut signed: SignedPaidIntent = signed_transfer(11, [0x90; 32]);
-        let PaidApplication::Call(call) = &mut signed.intent.application else {
-            panic!("call fixture");
+        let mut call: execution::call::CallIntent = match &signed.intent.application {
+            PaidApplication::Call(call) => call.clone(),
+            _ => unreachable!("signed_transfer always builds a Call application"),
         };
         let record: execution::local_execution::InstanceRecord =
             execution::local_execution::InstanceRecord {
@@ -1629,6 +1639,11 @@ mod tests {
                 initializer: "init".to_owned(),
             };
         call.instance = instance_target(&resolver(), &record).unwrap();
+        signed.intent.application = if kind == PaidResultKind::Instantiate {
+            PaidApplication::Instantiate(call)
+        } else {
+            PaidApplication::Call(call)
+        };
         let signer: LocalSigner = LocalSigner::from_seed([11; 32]);
         signed.signature = signer
             .sign_framed(&paid_intent_signing_frame(&test_context(), &signed.intent).unwrap())
@@ -1655,8 +1670,87 @@ mod tests {
             .unwrap();
         let result: PaidExecutionResult = PaidExecutionResult {
             request_id: signed.intent.request_id,
-            kind: PaidResultKind::Call,
+            kind,
             target: PaidResultTarget::Instance(record),
+            status,
+            effects: execution::ExecutionEffects {
+                tx_hash,
+                status: if status == PaidExecutionStatus::Success {
+                    execution::ExecutionStatus::Success
+                } else {
+                    execution::ExecutionStatus::Failure {
+                        reason: execution::local_execution::LOCAL_EXECUTION_TRAP_REASON.to_owned(),
+                    }
+                },
+                object_effects: Vec::new(),
+                events: Vec::new(),
+                gas_used: 1,
+            },
+            charged: Some(execution::paid_execution::PaidChargedOutcome {
+                reserved: fees::Amount::new(1),
+                actual: fees::Amount::new(1),
+                refund: fees::Amount::new(0),
+                fee_output: signed.intent.consent.source.clone(),
+                refund_output: None,
+                reservation: objects::ObjectId::new([0x49; 32]),
+                application_gas_units: 1,
+            }),
+        };
+        (signed, certificate, result)
+    }
+
+    /// The `Publish` counterpart to [`apply_ack_fixture_kind`]: `Publish`
+    /// wraps a [`execution::publication::CodeArtifact`], not a
+    /// [`execution::call::CallIntent`], so its acknowledgement target is a
+    /// [`PaidResultTarget::Package`] bound to the artifact's own
+    /// `PackageOrigin` rather than an `InstanceTarget`.
+    fn apply_ack_fixture_publish(
+        status: PaidExecutionStatus,
+    ) -> (SignedPaidIntent, FastCertificate, PaidExecutionResult) {
+        let context: PublicationContext = test_context();
+        let signer: LocalSigner = LocalSigner::from_seed([15; 32]);
+        let sender: [u8; 32] = *signer.address().as_bytes();
+        let artifact: execution::publication::CodeArtifact =
+            execution::publication::CodeArtifact::new(execution::publication::ArtifactParts {
+                context: context.clone(),
+                origin: abi::package_types::PackageOrigin::unverified(
+                    context.chain_id().clone(),
+                    sender,
+                    [0x50; 32],
+                )
+                .unwrap(),
+                revision: 1,
+                wasm_profile: 4,
+                semantics: digest(0x51),
+                wasm: vec![0, 97, 115, 109],
+                unverified_abi: vec![1, 2, 3],
+                exports: vec!["run".to_owned()],
+                unverified_dependencies: vec![],
+            })
+            .unwrap();
+        let signed: SignedPaidIntent =
+            signed_with_application(15, [0x93; 32], PaidApplication::Publish(artifact.clone()));
+        let tx_hash: Digest32 = expected_tx_hash(&signed);
+        let (signers, infos) = four_validators();
+        let certifier: FastPathCertifier = certifier(infos);
+        let votes: Vec<FastVote> = signers[..3]
+            .iter()
+            .map(|signer| cast_for(&certifier, signer, tx_hash, 0x10))
+            .collect();
+        let certificate: FastCertificate = certifier
+            .try_form_certificate(
+                tx_hash,
+                digest(0x10),
+                digest(0x11),
+                &votes,
+                &FastPathEd25519Verifier,
+            )
+            .unwrap()
+            .unwrap();
+        let result: PaidExecutionResult = PaidExecutionResult {
+            request_id: signed.intent.request_id,
+            kind: PaidResultKind::Publish,
+            target: PaidResultTarget::Package(artifact.origin().clone()),
             status,
             effects: execution::ExecutionEffects {
                 tx_hash,
@@ -1703,13 +1797,52 @@ mod tests {
         ))
     }
 
+    /// Builds a real, fully authenticatable, sender-signed `SignedPaidIntent`
+    /// for an arbitrary [`PaidApplication`], reused by the `Publish` fixture
+    /// ([`apply_ack_fixture_publish`]) so it does not need its own
+    /// hand-built `PaidIntent`/signing-frame boilerplate.
+    fn signed_with_application(
+        sender_seed: u8,
+        request_id: [u8; 32],
+        application: PaidApplication,
+    ) -> SignedPaidIntent {
+        let signer = LocalSigner::from_seed([sender_seed; 32]);
+        let context = test_context();
+        let sender = *signer.address().as_bytes();
+        let intent = PaidIntent {
+            context: context.clone(),
+            request_id,
+            sender,
+            nonce: 1,
+            fee_policy_digest: digest(0x11),
+            consent: FeeSourceConsent {
+                source: objects::ObjectRef {
+                    id: objects::ObjectId::new([0x22; 32]),
+                    version: 1,
+                    digest: digest(0x33),
+                },
+                access: ReservationAccessKind::Write,
+                max_fee: fees::Amount::new(1),
+                refund_recipient: sender,
+            },
+            application,
+            gas_limit: 1,
+            authorizations: Vec::new(),
+        };
+        let frame = paid_intent_signing_frame(&context, &intent).unwrap();
+        let signature_bytes = signer.sign_framed(&frame).unwrap();
+        let signature: [u8; 64] = signature_bytes.as_slice().try_into().unwrap();
+        SignedPaidIntent { intent, signature }
+    }
+
     #[test]
     fn apply_fastvote_binds_success_and_charged_trap_effects_to_the_exact_transaction() {
         for status in [
             PaidExecutionStatus::Success,
             PaidExecutionStatus::ApplicationFailed,
         ] {
-            let (signed, certificate, result) = apply_ack_fixture(status);
+            let (signed, certificate, result) =
+                apply_ack_fixture_kind(status, PaidResultKind::Call);
             let certificate_bytes: Vec<u8> = encode_fast_certificate(&certificate).unwrap();
             let client: Client<ScriptedTransport> = apply_ack_client(&result);
             assert_eq!(
@@ -1730,8 +1863,139 @@ mod tests {
     }
 
     #[test]
+    fn apply_fastvote_binds_publish_success_and_rejects_wrong_kind_origin_or_hash() {
+        for status in [
+            PaidExecutionStatus::Success,
+            PaidExecutionStatus::ApplicationFailed,
+        ] {
+            let (signed, certificate, result) = apply_ack_fixture_publish(status);
+            let certificate_bytes: Vec<u8> = encode_fast_certificate(&certificate).unwrap();
+            let client: Client<ScriptedTransport> = apply_ack_client(&result);
+            assert_eq!(
+                client
+                    .apply_fastvote(&signed, &resolver(), &certificate_bytes, None)
+                    .unwrap(),
+                result
+            );
+
+            // Wrong kind: an otherwise wire-valid Instantiate/Instance
+            // acknowledgement (kind and target still pair validly with each
+            // other) returned for a signed Publish intent must not be
+            // accepted as if it named the published package.
+            let mut wrong_kind: PaidExecutionResult = result.clone();
+            wrong_kind.kind = PaidResultKind::Instantiate;
+            wrong_kind.target =
+                PaidResultTarget::Instance(execution::local_execution::InstanceRecord {
+                    context: test_context(),
+                    creator: signed.intent.sender,
+                    seed: [0x62; 32],
+                    code: execution::publication::UnverifiedDependencyRef::new(
+                        abi::package_types::PackageOrigin::unverified(
+                            test_context().chain_id().clone(),
+                            signed.intent.sender,
+                            [0x64; 32],
+                        )
+                        .unwrap(),
+                        1,
+                        test_context(),
+                        digest(0x65),
+                    )
+                    .unwrap(),
+                    revision: 1,
+                    initializer: "init".to_owned(),
+                });
+            let client: Client<ScriptedTransport> = apply_ack_client(&wrong_kind);
+            assert!(matches!(
+                client.apply_fastvote(&signed, &resolver(), &certificate_bytes, None),
+                Err(ClientError::PaidExecutionAcknowledgementMismatch)
+            ));
+
+            // Wrong origin: a Publish acknowledgement naming a different
+            // package than the exact artifact this intent signed.
+            let mut wrong_origin: PaidExecutionResult = result.clone();
+            wrong_origin.target = PaidResultTarget::Package(
+                abi::package_types::PackageOrigin::unverified(
+                    test_context().chain_id().clone(),
+                    signed.intent.sender,
+                    [0x99; 32],
+                )
+                .unwrap(),
+            );
+            let client: Client<ScriptedTransport> = apply_ack_client(&wrong_origin);
+            assert!(matches!(
+                client.apply_fastvote(&signed, &resolver(), &certificate_bytes, None),
+                Err(ClientError::PaidExecutionAcknowledgementMismatch)
+            ));
+
+            // Wrong hash: an otherwise well-formed acknowledgement bound to
+            // an unrelated transaction.
+            let mut wrong_hash: PaidExecutionResult = result.clone();
+            wrong_hash.effects.tx_hash = digest(0xFE);
+            let client: Client<ScriptedTransport> = apply_ack_client(&wrong_hash);
+            assert!(matches!(
+                client.apply_fastvote(&signed, &resolver(), &certificate_bytes, None),
+                Err(ClientError::PaidExecutionAcknowledgementMismatch)
+            ));
+        }
+    }
+
+    #[test]
+    fn apply_fastvote_binds_instantiate_success_and_rejects_wrong_kind_instance_or_hash() {
+        for status in [
+            PaidExecutionStatus::Success,
+            PaidExecutionStatus::ApplicationFailed,
+        ] {
+            let (signed, certificate, result) =
+                apply_ack_fixture_kind(status, PaidResultKind::Instantiate);
+            let certificate_bytes: Vec<u8> = encode_fast_certificate(&certificate).unwrap();
+            let client: Client<ScriptedTransport> = apply_ack_client(&result);
+            assert_eq!(
+                client
+                    .apply_fastvote(&signed, &resolver(), &certificate_bytes, None)
+                    .unwrap(),
+                result
+            );
+
+            // Wrong kind: a Call-shaped acknowledgement for a signed
+            // Instantiate intent.
+            let mut wrong_kind: PaidExecutionResult = result.clone();
+            wrong_kind.kind = PaidResultKind::Call;
+            let client: Client<ScriptedTransport> = apply_ack_client(&wrong_kind);
+            assert!(matches!(
+                client.apply_fastvote(&signed, &resolver(), &certificate_bytes, None),
+                Err(ClientError::PaidExecutionAcknowledgementMismatch)
+            ));
+
+            // Wrong instance: the acknowledged instance record derives a
+            // different InstanceTarget than the exact call this intent
+            // signed.
+            let mut wrong_instance: PaidExecutionResult = result.clone();
+            let PaidResultTarget::Instance(record) = &mut wrong_instance.target else {
+                panic!("instance target fixture");
+            };
+            record.seed = [0x99; 32];
+            let client: Client<ScriptedTransport> = apply_ack_client(&wrong_instance);
+            assert!(matches!(
+                client.apply_fastvote(&signed, &resolver(), &certificate_bytes, None),
+                Err(ClientError::PaidExecutionAcknowledgementMismatch)
+            ));
+
+            // Wrong hash: an otherwise well-formed acknowledgement bound to
+            // an unrelated transaction.
+            let mut wrong_hash: PaidExecutionResult = result.clone();
+            wrong_hash.effects.tx_hash = digest(0xFE);
+            let client: Client<ScriptedTransport> = apply_ack_client(&wrong_hash);
+            assert!(matches!(
+                client.apply_fastvote(&signed, &resolver(), &certificate_bytes, None),
+                Err(ClientError::PaidExecutionAcknowledgementMismatch)
+            ));
+        }
+    }
+
+    #[test]
     fn apply_fastvote_rejects_unrelated_certificate_before_any_post() {
-        let (signed, mut certificate, result) = apply_ack_fixture(PaidExecutionStatus::Success);
+        let (signed, mut certificate, result) =
+            apply_ack_fixture_kind(PaidExecutionStatus::Success, PaidResultKind::Call);
         certificate.tx_hash = digest(0xFE);
         let client: Client<ScriptedTransport> = apply_ack_client(&result);
         assert!(matches!(

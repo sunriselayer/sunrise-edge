@@ -90,13 +90,59 @@ Ledger, TypeScript, explorer, wallet, Unique Asset and multisig remain
 separate deferred gates below; none is deleted or silently treated as
 complete by this ordering.
 
-**Active network functional delivery, with separate release gates (DR-0147):**
+**Active network functional delivery, with separate release gates (DR-0147/0151):**
 The completed economics core supports implementing and testing the opt-in
 network surface while independent reviews remain open; it does not authorize
 live exposure before those reviews pass. Functional work to make FastVote
 usable is prioritized ahead of load testing; peak TPS,
 concurrent-user and recovery targets remain undecided and are deferred to
-post-launch hardening. The active order is:
+post-launch hardening. [DR-0151](docs/architecture/decisions/0151-integrated-network-delivery-and-lightweight-stores.md)
+groups the remaining work into usable integrated deliveries. The user selected
+delivery 1 before Cloudflare DO implementation on 2026-09-27:
+
+| Order | Integrated outcome | Remaining acceptance |
+| --- | --- | --- |
+| 1 | Generic certified network contract lifecycle | Implemented and bounded CLI/multi-validator regressions locally validated (DR-0151): Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Full repository validation, exact-head review and CI remain mandatory merge gates; independent ingress/security gates are separate. |
+| 2 | Network economics and validator operations | Explicit shared ordering/certification for rewards/claims, bonds and equivocation/slashing; authenticated usable surfaces and identical results across validators |
+| 3 | Validator membership and epoch handoff | Verified required definitions/state/settlement history, completeness and activation-bound catch-up; real add/replace/recover/epoch operations with ineligible/divergent replicas rejected |
+| 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
+
+PostgreSQL remains the existing tested profile for delivery 1, not a mandatory
+protocol database. Lightweight authoritative profiles (Cloudflare SQLite-backed
+DO and separately verified native SQLite) remain **unimplemented/unverified
+deployment targets**. After delivery 1, prioritize actual DO contract execution,
+restart and replay over more PostgreSQL-only operational work; do not count an
+ingress relay or unrelated counter as this evidence. Preserve one transactional
+validator domain initially; per-object/sender/contract databases require a
+separate cross-store commit/visibility design. Provider migration and profile
+conformance do not waive any current safety or independent security gate.
+
+The detailed existing evidence and remaining criteria follow:
+
+- [x] **Delivery 1 implementation: certified Publish/Instantiate/Call and asset CLI integration**
+  ([DR-0151](docs/architecture/decisions/0151-integrated-network-delivery-and-lightweight-stores.md)).
+  The shared paid staged-commit pipeline and all-kind SDK/CLI result binding
+  now support all three kinds; prepare remains effect-free, certified apply
+  atomic and recovery signerless with exact local prerequisites. Original
+  artifacts are synchronized and outputs reserved before mutation.
+  Parent-run real compiled-CLI PostgreSQL E2Es cover user publication,
+  dependent instantiate/generic calls, the active-code-pinned top-level
+  `create-asset`/mint/merge/split/transfer/burn commands, success/charged traps,
+  request-ID conflicts, exact cross-peer protocol convergence and each peer's
+  independently verified fee inventory. A fourth validator offline before
+  Publish recovers the declared lifecycle; same-boot and real process-restart
+  replay leave full local state unchanged. Authentic new-Publish stale-writer
+  fencing, real prefix commit before a nonce gap, genuine publication-record
+  tombstoning, malformed-batch zero-POST rejection, and output/context preflight
+  are exercised separately, without masking failures behind a wrong nonce or
+  a dead endpoint. See `contract_lifecycle_pg_e2e.rs` and
+  `contract_lifecycle_catch_up_pg_e2e.rs` in `apps/operator/tests`.
+  The implementation checkbox records this bounded functional evidence, not
+  permission to merge or deploy: the full repository gate, fresh exact-final-head
+  Opus approval and required CI must pass before merge; independent security
+  and activation gates remain open.
+  No Standard Asset core privilege, opaque definition import, direct-mutation
+  fallback, complete state handoff or live activation is authorized.
 
 - [x] authenticated, request/event-driven external validator access for
   FastVote prepare/certificate/apply, plus a CLI end-to-end quorum submission
