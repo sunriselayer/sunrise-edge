@@ -159,7 +159,7 @@ pub fn namespace_init(context: &CliContext<'_>, validator_hex: &str, domain_hex:
 }
 
 /// Same as [`namespace_init`], but never panics on a non-success exit --
-/// used by negatives that expect a connection/authentication failure.
+/// used by negatives that expect a connection/authorization failure.
 pub fn namespace_init_allow_failure(
     context: &CliContext<'_>,
     validator_hex: &str,

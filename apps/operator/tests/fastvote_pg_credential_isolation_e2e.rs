@@ -364,6 +364,12 @@ fn fastvote_pg_operator_credential_isolated_multivalidator_e2e() {
          validator[0]'s database, even when claiming validator[0]'s own validator-id/domain"
     );
     assert!(cross_attempt.stdout.is_empty());
+    let cross_stderr: String = String::from_utf8_lossy(&cross_attempt.stderr).into_owned();
+    assert!(
+        cross_stderr.contains("PostgreSQL TLS connection or pool initialization failed")
+            || cross_stderr.contains("PostgreSQL TLS connection unavailable"),
+        "cross-database CLI failure must be a PostgreSQL connection refusal: {cross_stderr}"
+    );
     assert_eq!(
         current_fence(&admin_pools[0], &namespaces[0]),
         fence_before_cross_attempt,

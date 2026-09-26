@@ -18,7 +18,7 @@ fi
 require_exact_test() {
   local test_name="$1"
   shift
-  if ! cargo test --quiet "$@" "$test_name" -- --list | grep -Fqx "$test_name: test"; then
+  if ! cargo test --quiet "$@" "$test_name" -- --ignored --list | grep -Fqx "$test_name: test"; then
     echo "missing expected PostgreSQL escrow inventory test: $test_name" >&2
     exit 1
   fi
