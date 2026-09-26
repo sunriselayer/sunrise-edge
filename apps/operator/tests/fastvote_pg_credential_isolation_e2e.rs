@@ -317,10 +317,14 @@ fn fastvote_pg_operator_credential_isolated_multivalidator_e2e() {
     cross_db_config.user(&cluster.databases[1].role);
     cross_db_config.password(&cluster.databases[1].password);
     cross_db_config.dbname(&cluster.databases[0].database);
-    let cross_db_connect = cross_db_config.connect(NoTls);
-    assert!(
-        cross_db_connect.is_err(),
-        "validator[1]'s credentials must never be able to CONNECT to validator[0]'s database"
+    let cross_db_error: postgres::Error = match cross_db_config.connect(NoTls) {
+        Ok(_) => panic!("validator[1]'s credentials must never CONNECT to validator[0]'s database"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        cross_db_error.code().map(|code| code.code()),
+        Some("42501"),
+        "cross-database refusal must be PostgreSQL's insufficient-privilege error"
     );
 
     // Sanity: the same role/password legitimately connects to its own
@@ -457,6 +461,27 @@ fn fastvote_pg_operator_credential_isolated_multivalidator_e2e() {
          its own database after every credential-isolation negative"
     );
 
+    let created_roles: Vec<String> = cluster
+        .databases
+        .iter()
+        .map(|entry| entry.role.clone())
+        .collect();
+    drop(store);
+    drop(admin_pools);
     drop(proxy);
     drop(cluster);
+    let mut cleanup_admin: postgres::Client = admin_config.connect(NoTls).unwrap();
+    for role in created_roles {
+        let exists: bool = cleanup_admin
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)",
+                &[&role],
+            )
+            .unwrap()
+            .get(0);
+        assert!(
+            !exists,
+            "test-created validator role must be removed: {role}"
+        );
+    }
 }

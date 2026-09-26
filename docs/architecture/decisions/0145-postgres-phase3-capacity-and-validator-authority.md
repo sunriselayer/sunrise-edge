@@ -23,9 +23,8 @@ bounded workloads. First, run distinct escrow claims concurrently through
 the real claim handler: zero-share fan-out and positive Standard Asset WASM
 split/final claims. Measure elapsed claim work, exact retained canonical
 claim/settlement/object payload sizes, and PostgreSQL physical relation size
-before and after the run; close the writer pool, advance its writer generation,
-reopen the selected namespace,
-advance its writer generation and verify every resulting row, object, payout,
+before and after the run. Close the writer pool, advance the namespace writer
+generation, reopen it, then verify every resulting row, object, payout,
 receipt and stale-writer rejection. Second, run the real stopped-validator
 inventory operator over a nonempty certified escrow history with multiple
 pages and record its complete-sweep wall time. A sweep is complete only after
@@ -34,11 +33,11 @@ its final fence recheck; a partial page or timeout is not a recovery result.
 Keep CI workloads bounded and diagnostic. A deployment-capacity report must
 record the exact hardware/service, PostgreSQL version and storage settings
 alongside its timings. CI service timings are regressions, not throughput
-service-level objectives; synthetic
-escrows are not certificate-applied traffic, and a short run is not a soak.
+service-level objectives; synthetic escrows are not certificate-applied
+traffic, and a short run is not a soak.
 Longer operator-initiated capacity runs need explicit size and duration
-controls; they must never silently promote CI timing to a
-production admission threshold. A first-network capacity target, sustained
+controls; they must never silently promote CI timing to a production admission
+threshold. A first-network capacity target, sustained
 positive-claim rate and recovery-time budget require a declared deployment
 profile and representative long-run measurements before certification.
 

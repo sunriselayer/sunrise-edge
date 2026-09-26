@@ -78,7 +78,7 @@ script or shell argument:
 ```sql
 CREATE ROLE validator_a LOGIN;
 CREATE DATABASE validator_a OWNER validator_a;
-REVOKE CONNECT ON DATABASE validator_a FROM PUBLIC;
+REVOKE ALL ON DATABASE validator_a FROM PUBLIC;
 GRANT CONNECT ON DATABASE validator_a TO validator_a;
 ```
 

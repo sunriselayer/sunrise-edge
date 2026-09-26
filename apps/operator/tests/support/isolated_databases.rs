@@ -13,8 +13,11 @@
 //! database level before any table in it is ever reachable.
 #![allow(dead_code)]
 
-use postgres::{Config, NoTls, config::SslMode};
-use std::time::{SystemTime, UNIX_EPOCH};
+use postgres::{
+    Config, NoTls,
+    config::{Host, SslMode},
+};
+use std::io::Read;
 
 /// One test-provisioned validator database: a freshly created PostgreSQL
 /// login role and a same-named database it exclusively owns, with `PUBLIC`
@@ -39,12 +42,18 @@ pub struct IsolatedDatabaseCluster {
     admin: Config,
 }
 
-fn unique_suffix() -> String {
-    let nanos: u128 = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("{:x}{:x}", std::process::id(), (nanos & 0xffff_ffff) as u32)
+fn os_random_hex<const N: usize>() -> String {
+    let mut bytes: [u8; N] = [0_u8; N];
+    let mut random_source: std::fs::File = std::fs::File::open("/dev/urandom")
+        .expect("disposable PostgreSQL role provisioning requires OS randomness");
+    random_source
+        .read_exact(&mut bytes)
+        .expect("failed to read disposable PostgreSQL role randomness");
+    let mut encoded: String = String::with_capacity(N * 2);
+    for byte in bytes {
+        encoded.push_str(&format!("{byte:02x}"));
+    }
+    encoded
 }
 
 fn admin_client(admin: &Config) -> postgres::Client {
@@ -62,7 +71,11 @@ impl IsolatedDatabaseCluster {
     /// password, with `PUBLIC` privileges revoked on each database.
     #[must_use]
     pub fn provision(admin: &Config, count: usize) -> Self {
-        let suffix: String = unique_suffix();
+        assert!(
+            matches!(admin.get_hosts(), [Host::Tcp(host)] if matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1")),
+            "isolated role provisioning requires a loopback-only disposable test server"
+        );
+        let suffix: String = os_random_hex::<8>();
         let mut client: postgres::Client = admin_client(admin);
         let current_database: String = client
             .query_one("SELECT current_database()", &[])
@@ -94,7 +107,10 @@ impl IsolatedDatabaseCluster {
         for index in 0..count {
             let role: String = format!("sre_fv_iso_{suffix}_v{index}");
             let database: String = role.clone();
-            let password: String = format!("pw{suffix}v{index}{}", unique_suffix());
+            // Hex-only OS randomness is safe to interpolate into this
+            // test-only SQL literal and into the proxied DSN URL. Never use
+            // a timestamp-derived password for a login role, even here.
+            let password: String = os_random_hex::<32>();
             // `CREATE ROLE`/`CREATE DATABASE`/`REVOKE` cannot share an
             // implicit multi-statement transaction block with each other in
             // PostgreSQL (`CREATE DATABASE` in particular must be the only
@@ -166,7 +182,10 @@ impl Drop for IsolatedDatabaseCluster {
                 &[],
             );
             let _ = client.execute(
-                &format!("DROP DATABASE IF EXISTS \"{}\"", entry.database),
+                &format!(
+                    "DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)",
+                    entry.database
+                ),
                 &[],
             );
             let _ = client.execute(&format!("DROP ROLE IF EXISTS \"{}\"", entry.role), &[]);

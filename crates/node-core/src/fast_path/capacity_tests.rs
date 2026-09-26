@@ -1246,6 +1246,30 @@ mod live_postgres {
         PostgresTransactionPolicy::new(NonZeroU32::new(3).unwrap()).unwrap()
     }
 
+    /// Retry only a definite serialization non-commit with unchanged signed
+    /// bytes. The caller bound and per-writer delay avoid retry storms.
+    fn claim_with_bounded_retry(
+        mut attempt_claim: impl FnMut() -> Result<NodeOutput, FeeClaimError>,
+        writer_slot: usize,
+        retry_counter: &AtomicU64,
+    ) {
+        const MAX_CALLER_ATTEMPTS: u64 = 32;
+        let slot_delay_ms: u64 = u64::try_from(writer_slot % 4).unwrap();
+        for attempt in 1_u64..=MAX_CALLER_ATTEMPTS {
+            match attempt_claim() {
+                Ok(_) => return,
+                Err(FeeClaimError::Node(NodeCoreError::DurableCommitRejected(
+                    DurableCommitRejection::SerializationFailure,
+                ))) if attempt < MAX_CALLER_ATTEMPTS => {
+                    retry_counter.fetch_add(1, Ordering::Relaxed);
+                    std::thread::sleep(Duration::from_millis(attempt.min(10) + slot_delay_ms));
+                }
+                Err(error) => panic!("fee claim failed after {attempt} attempts: {error}"),
+            }
+        }
+        unreachable!("the last attempt either succeeds or panics")
+    }
+
     /// A fresh, time-and-process-derived storage identity: not a real signing
     /// key, only the opaque partition key selecting this run's namespace, so
     /// repeated runs against the shared test database never reuse another
@@ -1416,7 +1440,7 @@ mod live_postgres {
         let concurrent_start: Instant = Instant::now();
         let serialization_retries: AtomicU64 = AtomicU64::new(0);
         std::thread::scope(|scope| {
-            for shard in escrows.chunks(shard_size) {
+            for (writer_slot, shard) in escrows.chunks(shard_size).enumerate() {
                 let writer_pool: Pool<LiveTestPostgresManager> = pool.clone();
                 let writer_namespace: PostgresNamespace = namespace.clone();
                 let retry_counter: &AtomicU64 = &serialization_retries;
@@ -1430,35 +1454,27 @@ mod live_postgres {
                     let blobs: PostgresBlobStore<LiveTestPostgresManager> =
                         PostgresBlobStore::new(writer_pool, writer_namespace).unwrap();
                     for escrow in shard {
-                        for attempt in 1_u64..=16 {
-                            let result: Result<NodeOutput, FeeClaimError> = handle_fee_claim(
-                                &writer,
-                                &blobs,
-                                &crate::genesis::tests::context(1),
-                                crate::genesis::tests::domain(),
-                                &crate::genesis::tests::resolver(),
-                                &[],
-                                &crate::genesis::tests::protocol(),
-                                &LocalExecutionPolicy::generic_object_results(
-                                    crate::genesis::tests::protocol(),
-                                ),
-                                &LocalWasmExecutionEngine::new(),
-                                &escrow.signed,
-                                12,
-                            );
-                            match result {
-                                Ok(_) => break,
-                                Err(FeeClaimError::Node(NodeCoreError::DurableCommitRejected(
-                                    DurableCommitRejection::SerializationFailure,
-                                ))) if attempt < 16 => {
-                                    retry_counter.fetch_add(1, Ordering::Relaxed);
-                                    std::thread::sleep(Duration::from_millis(attempt.min(10)));
-                                }
-                                Err(error) => {
-                                    panic!("fee claim failed after {attempt} attempts: {error}")
-                                }
-                            }
-                        }
+                        claim_with_bounded_retry(
+                            || {
+                                handle_fee_claim(
+                                    &writer,
+                                    &blobs,
+                                    &crate::genesis::tests::context(1),
+                                    crate::genesis::tests::domain(),
+                                    &crate::genesis::tests::resolver(),
+                                    &[],
+                                    &crate::genesis::tests::protocol(),
+                                    &LocalExecutionPolicy::generic_object_results(
+                                        crate::genesis::tests::protocol(),
+                                    ),
+                                    &LocalWasmExecutionEngine::new(),
+                                    &escrow.signed,
+                                    12,
+                                )
+                            },
+                            writer_slot,
+                            retry_counter,
+                        );
                     }
                 });
             }
@@ -1547,7 +1563,7 @@ mod live_postgres {
         );
 
         drop(reopened);
-        let _ = admin;
+        drop(admin);
     }
 
     /// DR-0138/DR-0143 live-PostgreSQL capacity evidence for the *positive*
@@ -1687,7 +1703,7 @@ mod live_postgres {
         let concurrent_start: Instant = Instant::now();
         let serialization_retries: AtomicU64 = AtomicU64::new(0);
         std::thread::scope(|scope| {
-            for shard in escrows.chunks(shard_size) {
+            for (writer_slot, shard) in escrows.chunks(shard_size).enumerate() {
                 let writer_pool: Pool<LiveTestPostgresManager> = pool.clone();
                 let writer_namespace: PostgresNamespace = namespace.clone();
                 let retry_counter: &AtomicU64 = &serialization_retries;
@@ -1701,35 +1717,27 @@ mod live_postgres {
                     let blobs: PostgresBlobStore<LiveTestPostgresManager> =
                         PostgresBlobStore::new(writer_pool, writer_namespace).unwrap();
                     for escrow in shard {
-                        for attempt in 1_u64..=16 {
-                            let result: Result<NodeOutput, FeeClaimError> = handle_fee_claim(
-                                &writer,
-                                &blobs,
-                                &crate::genesis::tests::context(1),
-                                crate::genesis::tests::domain(),
-                                &crate::genesis::tests::resolver(),
-                                &[],
-                                &crate::genesis::tests::protocol(),
-                                &LocalExecutionPolicy::generic_object_results(
-                                    crate::genesis::tests::protocol(),
-                                ),
-                                &LocalWasmExecutionEngine::new(),
-                                &escrow.signed,
-                                12,
-                            );
-                            match result {
-                                Ok(_) => break,
-                                Err(FeeClaimError::Node(NodeCoreError::DurableCommitRejected(
-                                    DurableCommitRejection::SerializationFailure,
-                                ))) if attempt < 16 => {
-                                    retry_counter.fetch_add(1, Ordering::Relaxed);
-                                    std::thread::sleep(Duration::from_millis(attempt.min(10)));
-                                }
-                                Err(error) => {
-                                    panic!("fee claim failed after {attempt} attempts: {error}")
-                                }
-                            }
-                        }
+                        claim_with_bounded_retry(
+                            || {
+                                handle_fee_claim(
+                                    &writer,
+                                    &blobs,
+                                    &crate::genesis::tests::context(1),
+                                    crate::genesis::tests::domain(),
+                                    &crate::genesis::tests::resolver(),
+                                    &[],
+                                    &crate::genesis::tests::protocol(),
+                                    &LocalExecutionPolicy::generic_object_results(
+                                        crate::genesis::tests::protocol(),
+                                    ),
+                                    &LocalWasmExecutionEngine::new(),
+                                    &escrow.signed,
+                                    12,
+                                )
+                            },
+                            writer_slot,
+                            retry_counter,
+                        );
                     }
                 });
             }
@@ -1910,6 +1918,6 @@ mod live_postgres {
         );
 
         drop(reopened);
-        let _ = admin;
+        drop(admin);
     }
 }
