@@ -66,7 +66,8 @@ use std::error::Error;
 use std::time::{Duration, Instant};
 
 use consensus::{
-    FastCertificate, FastPathCertifier, FastVote, decode_fast_vote, encode_fast_certificate,
+    FastCertificate, FastPathCertifier, FastVote, decode_fast_certificate, decode_fast_vote,
+    encode_fast_certificate,
 };
 use execution::local_execution::instance_target;
 use execution::paid_execution::{
@@ -724,7 +725,9 @@ impl<T: Transport> Client<T> {
     /// phase 1's only supported application) and certificate bytes, and
     /// returns the bound [`PaidExecutionResult`] after the same
     /// acknowledgement-binding checks [`Client::submit_paid_execution`]
-    /// performs for the direct path.
+    /// performs for the direct path, additionally binding effects to the exact
+    /// intent and certificate transaction hash. This low-level call does not
+    /// authenticate certificate quorum; use [`apply_fastvote_to_all`] for that.
     pub fn apply_fastvote(
         &self,
         signed: &SignedPaidIntent,
@@ -735,6 +738,14 @@ impl<T: Transport> Client<T> {
         let PaidApplication::Call(call) = &signed.intent.application else {
             return Err(ClientError::FastVoteUnsupportedApplication);
         };
+        let expected_tx_hash: Digest32 = paid_invocation_digest(resolver, signed)?;
+        let certificate: FastCertificate = decode_fast_certificate(certificate_bytes)?;
+        if certificate.tx_hash != expected_tx_hash {
+            return Err(ClientError::FastVoteUnexpectedTransaction {
+                expected: expected_tx_hash,
+                actual: certificate.tx_hash,
+            });
+        }
         let signed_bytes = encode_signed_paid_intent(signed)?;
         let apply_request = FastVoteApplyRequest {
             signed_paid_intent: signed_bytes,
@@ -767,7 +778,9 @@ impl<T: Transport> Client<T> {
             .payload()
             .ok_or(ClientError::PaidExecutionAcknowledgementMismatch)?;
         let result: PaidExecutionResult = decode_paid_execution_result(payload)?;
-        if ack.request_id() != expected_request_id || result.request_id != signed.intent.request_id
+        if ack.request_id() != expected_request_id
+            || result.request_id != signed.intent.request_id
+            || result.effects.tx_hash != expected_tx_hash
         {
             return Err(ClientError::PaidExecutionAcknowledgementMismatch);
         }
@@ -1597,6 +1610,140 @@ mod tests {
             Err(ClientError::SubmitResponseRequestIdMismatch { .. })
         ));
         assert!(matches!(attempts[2].result, Err(ClientError::Transport(_))));
+    }
+
+    fn apply_ack_fixture(
+        status: PaidExecutionStatus,
+    ) -> (SignedPaidIntent, FastCertificate, PaidExecutionResult) {
+        let mut signed: SignedPaidIntent = signed_transfer(11, [0x90; 32]);
+        let PaidApplication::Call(call) = &mut signed.intent.application else {
+            panic!("call fixture");
+        };
+        let record: execution::local_execution::InstanceRecord =
+            execution::local_execution::InstanceRecord {
+                context: call.context.clone(),
+                creator: call.sender,
+                seed: [0x46; 32],
+                code: call.code.clone(),
+                revision: 1,
+                initializer: "init".to_owned(),
+            };
+        call.instance = instance_target(&resolver(), &record).unwrap();
+        let signer: LocalSigner = LocalSigner::from_seed([11; 32]);
+        signed.signature = signer
+            .sign_framed(&paid_intent_signing_frame(&test_context(), &signed.intent).unwrap())
+            .unwrap()
+            .as_slice()
+            .try_into()
+            .unwrap();
+        let tx_hash: Digest32 = expected_tx_hash(&signed);
+        let (signers, infos) = four_validators();
+        let certifier: FastPathCertifier = certifier(infos);
+        let votes: Vec<FastVote> = signers[..3]
+            .iter()
+            .map(|signer| cast_for(&certifier, signer, tx_hash, 0x10))
+            .collect();
+        let certificate: FastCertificate = certifier
+            .try_form_certificate(
+                tx_hash,
+                digest(0x10),
+                digest(0x11),
+                &votes,
+                &FastPathEd25519Verifier,
+            )
+            .unwrap()
+            .unwrap();
+        let result: PaidExecutionResult = PaidExecutionResult {
+            request_id: signed.intent.request_id,
+            kind: PaidResultKind::Call,
+            target: PaidResultTarget::Instance(record),
+            status,
+            effects: execution::ExecutionEffects {
+                tx_hash,
+                status: if status == PaidExecutionStatus::Success {
+                    execution::ExecutionStatus::Success
+                } else {
+                    execution::ExecutionStatus::Failure {
+                        reason: execution::local_execution::LOCAL_EXECUTION_TRAP_REASON.to_owned(),
+                    }
+                },
+                object_effects: Vec::new(),
+                events: Vec::new(),
+                gas_used: 1,
+            },
+            charged: Some(execution::paid_execution::PaidChargedOutcome {
+                reserved: fees::Amount::new(1),
+                actual: fees::Amount::new(1),
+                refund: fees::Amount::new(0),
+                fee_output: signed.intent.consent.source.clone(),
+                refund_output: None,
+                reservation: objects::ObjectId::new([0x49; 32]),
+                application_gas_units: 1,
+            }),
+        };
+        (signed, certificate, result)
+    }
+
+    fn apply_ack_client(result: &PaidExecutionResult) -> Client<ScriptedTransport> {
+        let request_id: RequestId = RequestId::new(result.request_id).unwrap();
+        let response: node_core::NodeResponse = node_core::NodeResponse::new(
+            request_id,
+            if result.status == PaidExecutionStatus::Success {
+                node_core::NodeResponseStatus::Accepted
+            } else {
+                node_core::NodeResponseStatus::Rejected
+            },
+            Some(execution::paid_execution::encode_paid_execution_result(result).unwrap()),
+        )
+        .unwrap();
+        let outer: HttpNodeResult = HttpNodeResult::new(request_id, vec![response]).unwrap();
+        Client::new(ScriptedTransport::ok(
+            NODE_RESULT_MEDIA_TYPE,
+            outer.encode().unwrap(),
+        ))
+    }
+
+    #[test]
+    fn apply_fastvote_binds_success_and_charged_trap_effects_to_the_exact_transaction() {
+        for status in [
+            PaidExecutionStatus::Success,
+            PaidExecutionStatus::ApplicationFailed,
+        ] {
+            let (signed, certificate, result) = apply_ack_fixture(status);
+            let certificate_bytes: Vec<u8> = encode_fast_certificate(&certificate).unwrap();
+            let client: Client<ScriptedTransport> = apply_ack_client(&result);
+            assert_eq!(
+                client
+                    .apply_fastvote(&signed, &resolver(), &certificate_bytes, None)
+                    .unwrap(),
+                result
+            );
+            let mut unrelated_result: PaidExecutionResult = result.clone();
+            unrelated_result.effects.tx_hash = digest(0xFE);
+            let client: Client<ScriptedTransport> = apply_ack_client(&unrelated_result);
+            assert!(matches!(
+                client.apply_fastvote(&signed, &resolver(), &certificate_bytes, None),
+                Err(ClientError::PaidExecutionAcknowledgementMismatch)
+            ));
+            assert_eq!(client.transport().calls.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    #[test]
+    fn apply_fastvote_rejects_unrelated_certificate_before_any_post() {
+        let (signed, mut certificate, result) = apply_ack_fixture(PaidExecutionStatus::Success);
+        certificate.tx_hash = digest(0xFE);
+        let client: Client<ScriptedTransport> = apply_ack_client(&result);
+        assert!(matches!(
+            client.apply_fastvote(
+                &signed,
+                &resolver(),
+                &encode_fast_certificate(&certificate).unwrap(),
+                None,
+            ),
+            Err(ClientError::FastVoteUnexpectedTransaction { .. })
+        ));
+        assert_eq!(client.transport().calls.load(Ordering::Relaxed), 0);
     }
 
     #[test]

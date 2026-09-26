@@ -36,6 +36,9 @@ roadmap describes a later target state.
 - [FastVote HTTP network](fastvote-network.md): the certified-only,
   opt-in HTTP surface for DR-0130/DR-0129's fast-path prepare/apply and
   quorum certification, its trust/pinning model, and known Phase 1 limits.
+- [Offline signed fee claims](decisions/0149-offline-signed-fee-claims.md):
+  generic claim preparation and explicitly stopped/fenced single-namespace
+  operator execution; distinct from online shared-escrow ordering.
 - [Decision records](decisions/README.md): accepted and compatibility-relevant
   decisions grouped into bounded ranges.
 

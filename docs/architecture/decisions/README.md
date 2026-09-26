@@ -55,6 +55,7 @@
 - [DR-0146: bounded certified PostgreSQL load and recovery harness](0146-postgres-certified-load-and-recovery-harness.md)
 - [DR-0147: function-first network delivery sequencing](0147-function-first-network-delivery.md)
 - [DR-0148: certified-only FastVote HTTP network and CLI quorum client](0148-certified-fastvote-network.md)
+- [DR-0149: offline signed fee-claim operator workflow](0149-offline-signed-fee-claims.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).

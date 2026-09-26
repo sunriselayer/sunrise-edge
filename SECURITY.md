@@ -41,6 +41,20 @@ invariants above. It is a development implementation, not independently
 security-audited, and is not authorized for live exposure or custody of real
 assets.
 
+The separate [DR-0149 offline fee-claim operator](docs/architecture/decisions/0149-offline-signed-fee-claims.md)
+targets one explicitly stopped PostgreSQL namespace under independently pinned
+configuration and a fresh writer fence. It adds no HTTP mutation. Preparation
+must derive exact signed outputs through the defining public contract without
+committing business state; apply independently authenticates and atomically
+fences the claim. Historical claimant identity is distinct from the store's
+validator identity. Local escrow-generation CAS is not cross-validator claim
+ordering: concurrent online application through this tool is outside its
+authority model. Exact retained claim artifacts, not new nonces/signatures,
+are the authority for ambiguous-commit replay.
+Restarting under a new writer generation after a local claim does not certify
+replica convergence or authorize live cohort re-entry; settlement/state
+handoff and catch-up remain independent requirements.
+
 Devnet query routes are unauthenticated public reads. They expose context,
 objects, receipts, and sender next-nonce values and must not be treated as an
 authorization mechanism.

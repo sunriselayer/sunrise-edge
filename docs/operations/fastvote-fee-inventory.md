@@ -4,6 +4,11 @@ The operator executables verify every **present** certified fee-escrow
 settlement key for one existing validator namespace. They are offline
 maintenance checks, not network-capacity or rollback proofs.
 
+For bounded entitlement inspection and signed claim preparation/apply/exact
+replay, use [the offline fee-claim workflow](fastvote-fee-claims.md). The
+inventory sweep itself does not move value or establish cross-validator claim
+ordering.
+
 ## Local SQLite
 
 `fee_escrow_inventory` targets one stopped local SQLite validator.

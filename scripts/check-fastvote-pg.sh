@@ -39,6 +39,11 @@ require_exact_test fastvote_host_pg_cli_multivalidator_e2e \
 cargo test --quiet -p sunrise-edge-operator --test fastvote_host_pg_cli_e2e \
   -- --ignored --exact fastvote_host_pg_cli_multivalidator_e2e
 
+require_exact_test economics_pg_offline_signed_claim_workflow_e2e \
+  -p sunrise-edge-operator --test economics_pg_e2e
+cargo test --quiet -p sunrise-edge-operator --test economics_pg_e2e \
+  -- --ignored --exact economics_pg_offline_signed_claim_workflow_e2e
+
 require_exact_test fast_path::capacity_tests::live_postgres::live_postgres_concurrent_zero_share_claims_measure_retained_bytes_and_reopen_latency \
   -p node-core --lib
 cargo test --quiet -p node-core --lib \

@@ -653,7 +653,7 @@ pub(crate) mod certified_multi_escrow_inventory {
     /// in: with `charged.actual == 2` (see [`cheap_policy`]) entries `0`/`1`
     /// always receive the escrow's two positive shares and `2`/`3` always
     /// receive a zero share, regardless of preparation order.
-    fn four_sorted_voters() -> Vec<Voter> {
+    pub(crate) fn four_sorted_voters() -> Vec<Voter> {
         let mut voters: Vec<Voter> = vec![voter(0xC1), voter(0xC2), voter(0xC3), voter(0xC4)];
         voters.sort_by_key(|voter| voter.entry.id);
         voters
@@ -945,7 +945,7 @@ pub(crate) mod certified_multi_escrow_inventory {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn build_split_claim<S: StructuredDurableDomainStateStore>(
+    pub(crate) fn build_split_claim<S: StructuredDurableDomainStateStore>(
         store: &S,
         fixture: &Fixture,
         validator: &Voter,
@@ -1070,7 +1070,7 @@ pub(crate) mod certified_multi_escrow_inventory {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn build_final_claim<S: StructuredDurableDomainStateStore>(
+    pub(crate) fn build_final_claim<S: StructuredDurableDomainStateStore>(
         store: &S,
         fixture: &Fixture,
         validator: &Voter,

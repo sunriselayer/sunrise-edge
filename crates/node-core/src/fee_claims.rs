@@ -79,13 +79,22 @@ use validator_set::ValidatorSet;
 pub mod codec;
 mod effects;
 mod inventory;
+mod preparation;
 mod verify;
+
+pub use preparation::{
+    FeeClaimEntitlement, FeeClaimExecutionView, FeeClaimInspection, FeeClaimKind,
+    FeeClaimPreparationRequest, FeeEscrowDiscoveryPage, FeeEscrowInspection, PreparedFeeClaim,
+    discover_fee_escrows_page, inspect_fee_claim, inspect_fee_escrow, prepare_fee_claim,
+};
 
 pub use inventory::{
     FeeEscrowInventoryPage, FeeEscrowInventorySweep, verify_fee_escrow_inventory_all,
     verify_fee_escrow_inventory_page,
 };
 
+#[cfg(test)]
+mod preparation_tests;
 #[cfg(test)]
 mod recovery_tests;
 #[cfg(test)]
@@ -194,7 +203,7 @@ impl From<crypto::CryptoError> for FeeClaimError {
 /// Digest of the exact canonical (unsigned) intent bytes alone: the exact
 /// payload the claimant's signature covers ([`fee_claim_signing_frame`]).
 /// Never used for receipt/replay idempotency (see [`fee_claim_receipt_digest`]).
-pub(crate) fn fee_claim_intent_digest(
+pub fn fee_claim_intent_digest(
     resolver: &HashSuiteResolver,
     intent: &FeeClaimIntent,
 ) -> Result<Digest32, FeeClaimError> {
@@ -232,7 +241,7 @@ fn fee_claim_receipt_digest(
 /// every other FastVote signing domain (in particular
 /// [`crate::bond_lifecycle::bond_lifecycle_signing_frame`]'s
 /// `"FastPathBondLifecycle"`).
-pub(crate) fn fee_claim_signing_frame(
+pub fn fee_claim_signing_frame(
     context: &PublicationContext,
     intent_digest: Digest32,
 ) -> Result<Vec<u8>, FeeClaimError> {
@@ -254,7 +263,7 @@ pub(crate) fn fee_claim_signing_frame(
 /// own (fixed, certificate) context epoch -- never the current claim's
 /// epoch -- so it is independently re-derivable from stored bytes alone,
 /// exactly like [`crate::bond_lifecycle::bond_row_digest`].
-pub(crate) fn fee_claim_row_digest(
+pub fn fee_claim_row_digest(
     resolver: &HashSuiteResolver,
     epoch: Epoch,
     bytes: &[u8],
@@ -1118,16 +1127,8 @@ where
 
     // 12. only now: policy/object/execution work, and only for a positive claim.
     if is_zero {
-        let mut new_shares: Vec<FastPathFeeShare> = settlement.shares.clone();
-        new_shares[share_index].claimed = true;
-        let new_settlement: FastPathSettlementRecord = FastPathSettlementRecord {
-            generation: settlement
-                .generation
-                .checked_add(1)
-                .ok_or(FeeClaimError::Invalid("fee claim generation overflow"))?,
-            shares: new_shares,
-            ..settlement
-        };
+        let new_settlement: FastPathSettlementRecord =
+            preparation::advance_claim_row(&settlement, share_index, None)?;
         return commit(
             store,
             context,
@@ -1149,61 +1150,7 @@ where
 
     let leg: AuthenticatedLocalExecutionIntent =
         leg.ok_or(FeeClaimError::Invalid("positive fee claim requires a leg"))?;
-    let (fee_policy, policy): (PaidFeePolicy, FastPathEconomicsPolicy) =
-        read_economics_policy(store, context, domain, &settlement.context, &mut reads)?;
-    let resource: &FastPathEconomicsResourcePolicy = resource_policy(&policy, resource_id)?;
-    if !resource.fee_escrow
-        || resource.context != *fee_policy.code.context()
-        || resource.code != fee_policy.code
-        || resource.instance != fee_policy.instance
-        || resource.ty != fee_policy.asset_type
-        || resource.schema != fee_policy.schema
-    {
-        return Err(FeeClaimError::Invalid(
-            "fee resource is not fee-escrow enabled by the committed economics policy",
-        ));
-    }
-    let scope: ProtocolCustodyScope =
-        fee_escrow_scope(&settlement.context, settlement.request_id, resource_id);
-    let entrypoint: &str = if is_final {
-        &resource.transfer_entrypoint
-    } else {
-        &resource.split_entrypoint
-    };
-    let (capability, leg_event_digest) = fee_claim_capability(
-        resolver,
-        &signed.intent.context,
-        resource,
-        scope.clone(),
-        &fee_output,
-        signed.intent.recipient,
-        entrypoint,
-        &leg,
-    )?;
-    let call = leg.intent().call.clone();
-    let nonce: PendingSenderNonceWrite = durable_reconciliation::reserve_sender_nonce_range(
-        store,
-        context,
-        domain,
-        &PersistenceLayout::new(
-            signed.intent.context.chain_id().clone(),
-            signed.intent.context.protocol_version(),
-        ),
-        SenderNonceReservation {
-            sender: call.sender,
-            epoch: signed.intent.context.epoch(),
-            nonce: call.nonce,
-        },
-        1,
-    )?;
-    let mut head_reads: Vec<DurableObjectHeadRead> = Vec::new();
-    let mut state_mutations: Vec<StateMutationEntry> = Vec::new();
-    let allowed_output: Option<(ObjectId, &ProtocolCustodyScope)> = if is_final {
-        None
-    } else {
-        Some((fee_output.id, &scope))
-    };
-    let admitted: AdmittedLeg = admit_and_execute_leg(
+    let executed: preparation::ExecutedFeeClaim = preparation::execute_positive_claim(
         store,
         blob_store,
         context,
@@ -1212,109 +1159,22 @@ where
         history,
         leg_policy,
         engine,
+        &signed.intent,
+        &settlement,
         &leg,
-        leg_event_digest,
-        Some(&capability),
-        CustodyEffectMode::Translate {
-            allowed_protocol_custody_output: allowed_output,
-        },
+        share_index,
+        unclaimed_positive_total,
+        is_final,
         created_checkpoint,
         &mut reads,
-        &mut head_reads,
-        &mut state_mutations,
     )?;
-    if !admitted.success {
-        return Err(FeeClaimError::Invalid("fee claim leg trapped"));
-    }
-    let snapshot: &object_snapshots::ObjectSnapshot = admitted
-        .snapshots
-        .get(&fee_output.id)
-        .ok_or(FeeClaimError::Invalid("fee claim escrow snapshot missing"))?;
-    let input = admitted
-        .inputs
-        .iter()
-        .find(|input| input.resolved.object.id == fee_output.id)
-        .ok_or(FeeClaimError::Invalid("fee claim escrow input missing"))?;
-    let expected_transfer = effects::ExpectedFeeClaim {
-        escrow_id: fee_output.id,
-        escrow_scope: &scope,
-        resource_authority: &input.authority,
-        recipient: signed.intent.recipient,
-        unclaimed_before: unclaimed_positive_total,
-        claim_amount: signed.intent.share_amount,
-    };
-    let validated: effects::ValidatedFeeClaim = effects::validate(
-        &admitted.interface,
-        &admitted.created_authorities,
-        &expected_transfer,
-        created_checkpoint,
-        snapshot,
-        &admitted.effects,
-        is_final,
-    )?;
-    let resulting_object: Object = match validated {
-        effects::ValidatedFeeClaim::Split { retained, released } => {
-            let expected_payout: &ObjectRef = match &signed.intent.operation {
-                FeeClaimOperation::Split {
-                    expected_payout: Some(expected_payout),
-                    ..
-                } => expected_payout,
-                _ => return Err(FeeClaimError::Invalid("split payout ref missing")),
-            };
-            let released_bytes: Vec<u8> = objects::encode_object(&released)
-                .map_err(|_| FeeClaimError::Invalid("invalid fee claim payout encoding"))?;
-            let released_digest: Digest32 = resolver.hash_for_purpose(
-                signed.intent.context.epoch(),
-                HashPurpose::Object,
-                &released_bytes,
-            )?;
-            let actual_payout: ObjectRef = ObjectRef {
-                id: released.id,
-                version: released.version,
-                digest: released_digest,
-            };
-            if &actual_payout != expected_payout {
-                return Err(FeeClaimError::Invalid("signed payout ref mismatch"));
-            }
-            retained
-        }
-        effects::ValidatedFeeClaim::Final { transferred } => transferred,
-    };
-    let canonical: Vec<u8> = objects::encode_object(&resulting_object)
-        .map_err(|_| FeeClaimError::Invalid("invalid fee claim output encoding"))?;
-    let new_digest: Digest32 = resolver.hash_for_purpose(
-        signed.intent.context.epoch(),
-        HashPurpose::Object,
-        &canonical,
-    )?;
-    let new_fee_output: ObjectRef = ObjectRef {
-        id: resulting_object.id,
-        version: resulting_object.version,
-        digest: new_digest,
-    };
-
-    let mut new_shares: Vec<FastPathFeeShare> = settlement.shares.clone();
-    new_shares[share_index].claimed = true;
-    let new_settlement: FastPathSettlementRecord = FastPathSettlementRecord {
-        generation: settlement
-            .generation
-            .checked_add(1)
-            .ok_or(FeeClaimError::Invalid("fee claim generation overflow"))?,
-        fee_output: Some(new_fee_output),
-        fee_output_epoch: Some(signed.intent.context.epoch()),
-        shares: new_shares,
-        ..settlement
-    };
-    if let Some(previous) = reads.insert(nonce.key.clone(), nonce.read_revision)
-        && previous != nonce.read_revision
+    if let FeeClaimOperation::Split {
+        expected_payout, ..
+    } = &signed.intent.operation
+        && expected_payout.as_ref() != executed.payout.as_ref()
     {
-        return Err(NodeCoreError::StateConflict.into());
+        return Err(FeeClaimError::Invalid("signed payout ref mismatch"));
     }
-    state_mutations.push(StateMutationEntry::new(
-        nonce.key,
-        StateMutation::Put(nonce.record.encode()?),
-    )?);
-
     commit(
         store,
         context,
@@ -1325,12 +1185,12 @@ where
         settlement_key,
         settlement_row_revision,
         reads,
-        new_settlement,
+        executed.next_settlement,
         signed.intent.expected_next_row_digest,
         signed_bytes,
-        head_reads,
-        admitted.object_mutations,
-        state_mutations,
+        executed.head_reads,
+        executed.object_mutations,
+        executed.state_mutations,
     )
 }
 

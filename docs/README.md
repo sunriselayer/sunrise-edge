@@ -27,6 +27,7 @@ detailed design, operator guides, and specialist references live here.
 - [Production persistence requirements](operations/persistence.md)
 - [PostgreSQL reference design](operations/postgres.md)
 - [Offline FastVote fee-escrow inventory](operations/fastvote-fee-inventory.md)
+- [Offline PostgreSQL fee claims](operations/fastvote-fee-claims.md)
 - [Closed PostgreSQL FastVote operator rehearsal](operations/fastvote-pg-rehearsal.md)
 - [Certified-only FastVote HTTP network and CLI quorum client](guides/fastvote-network.md)
 - [Certified PostgreSQL load and recovery measurements](operations/postgres-certified-load.md)
