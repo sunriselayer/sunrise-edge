@@ -7,6 +7,10 @@ regressions, and bounded local concurrent SQLite zero/positive-claim reopen
 regressions are implemented. Network throughput, sustained positive-claim
 load, disk-life and recovery-time capacity certification are not.
 
+DR-0145 adds bounded live-PostgreSQL claim/reopen evidence. It does not
+change this decision's 256-member admission cap or complete its network
+capacity certification.
+
 ## Context
 
 The certified-fee settlement row contains one share per active validator and
@@ -69,6 +73,18 @@ times. The rows were not created by certificate apply, one process and disk
 are used, and SQLite may checkpoint the WAL before measurement (including a
 zero-byte WAL result). This is local regression evidence, not a certified
 claim-rate, disk-life, multi-node or recovery-time bound.
+
+The PostgreSQL companion runs 48 directly set-up 256-share rows through six
+zero-share callers and 12 separate real-WASM split/final rows through three
+positive callers, then reopens under a newer writer fence and verifies every
+retained row, claim, object and receipt. Definite serialization rejections
+under six-way contention are retried by the caller with exactly the same
+signed bytes and a finite bound; their observed count is reported, not
+hidden. The test also reports whole-shared-table physical relation sizes,
+which are not a per-namespace disk estimate. These short disposable-service
+runs exercise the selected backend and maximum *row shape*, but not 256
+claims on one escrow, certificate-applied workload, sustained rate, disk
+life, independent hosts or representative restart-sweep recovery capacity.
 
 The current epoch transition always carries the same supplied protocol
 version into the next context; there is no durable, atomic protocol-version

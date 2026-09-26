@@ -28,7 +28,11 @@ Prepare these inputs independently of the database under examination:
   never argv or a checked-in file. It must name one TCP host whose certificate
   validates against the DER root supplied by `--tls-root-der`. A shared test
   server with several namespaces demonstrates semantics only; it is not
-  validator administrative isolation.
+  validator administrative isolation. On a shared rehearsal server, use a
+  separate database **and** login per validator, revoke `PUBLIC` database
+  `CONNECT`, and test cross-database denial. Even this proves only credential
+  separation, not independent administrators, hosts, disks or backups
+  ([DR-0145](../architecture/decisions/0145-postgres-phase3-capacity-and-validator-authority.md)).
 
 The CLI consumes already signed canonical manifest and intent files; it does
 not author either signature. Do not replace them with unsigned JSON or copy a
@@ -136,3 +140,37 @@ reusing genesis policies after activation. The separate fee inventory command
 can verify present escrow history while the validator is stopped. Actual
 network ingress, validator admission and externally reachable testnet require
 a separate authenticated transport decision and review.
+
+## Rehearsal isolation and capacity checks
+
+Provision a fresh database and distinct role for **each** validator before
+`namespace-init`; [the PostgreSQL guide](postgres.md#validator-database-authority)
+gives the privilege boundary. Run each of the four CLI sequences with only
+that validator's DSN and signing-key file. Compare their response bytes after
+quorum application, stop all writers, restart each operator, and replay the
+same signed bytes. A second login must not be able to connect to the first
+validator's database, even if it knows the chain, validator and domain IDs.
+
+For a disposable database named `sunrise_edge_test`, the repository's
+executable regression is:
+
+```sh
+# Supply SUNRISE_EDGE_TEST_POSTGRES_URL through a protected environment first.
+bash scripts/check-fastvote-pg.sh
+```
+
+It runs the shared-namespace adversarial E2E, the distinct-database/role
+quorum and denial E2E, and the bounded PostgreSQL fee-claim/reopen checks.
+It requires a database administrator login for the test-only role/database
+provisioning and must not point at a persistent production server.
+
+For a stopped validator, the fee-escrow inventory command is the finite
+restart-sweep check. Its `--page-size` and `--timeout-seconds` bound each run;
+it advances the writer fence, so restart the validator under the newer
+generation. Record the exact row/claim/payout counts, elapsed wall time,
+PostgreSQL version and instance/storage profile, and whether every page and
+the final fence check completed. A partial run has no complete result.
+Repository CI uses a disposable service and small fixtures; its timing does
+not establish sustained claim throughput, disk life or a first-network
+recovery-time budget. Representative deployment and longer soak evidence
+remain separate before capacity certification.

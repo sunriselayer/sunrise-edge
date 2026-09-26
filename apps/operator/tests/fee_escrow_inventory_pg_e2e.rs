@@ -39,7 +39,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
     str::FromStr,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const CHAIN_ID: &str = "paid-durable";
@@ -170,6 +170,7 @@ fn fee_escrow_inventory_pg_operator_e2e() {
     let dsn: String = proxied_dsn(&original_config, proxy.local_addr().port());
 
     // ---- first real operator run: nonempty certified fixture, two pages ----
+    let first_started: Instant = Instant::now();
     let first: Output = support::run_expect_success(
         {
             let mut command = operator_command(&ca_path, &validator_id_hex, &dsn);
@@ -193,8 +194,10 @@ fn fee_escrow_inventory_pg_operator_e2e() {
     ] {
         assert_stdout_contains(&first, field);
     }
+    let first_elapsed: Duration = first_started.elapsed();
 
     // ---- second real operator run: fence keeps advancing, same evidence ----
+    let second_started: Instant = Instant::now();
     let second: Output = support::run_expect_success(
         {
             let mut command = operator_command(&ca_path, &validator_id_hex, &dsn);
@@ -213,6 +216,10 @@ fn fee_escrow_inventory_pg_operator_e2e() {
     ] {
         assert_stdout_contains(&second, field);
     }
+    let second_elapsed: Duration = second_started.elapsed();
+    eprintln!(
+        "certified PostgreSQL escrow inventory: rows=2 claims=5 payouts=2 pages=2 first_complete_sweep={first_elapsed:?} restarted_complete_sweep={second_elapsed:?}; disposable service, not representative recovery capacity"
+    );
 
     // ---- negative: missing offline confirmation never advances the fence ----
     let unconfirmed: Output = operator_command(&ca_path, &validator_id_hex, &dsn)

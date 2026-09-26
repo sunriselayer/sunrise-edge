@@ -40,6 +40,6 @@ fi
 
 SUNRISE_EDGE_ESCROW_FIXTURE_DIR="$fixture_dir" \
   cargo test --quiet -p sunrise-edge-operator --test fee_escrow_inventory_pg_e2e \
-  -- --ignored --exact fee_escrow_inventory_pg_operator_e2e
+  -- --ignored --exact --nocapture fee_escrow_inventory_pg_operator_e2e
 
 echo "certified nonempty PostgreSQL operator inventory E2E passed"
