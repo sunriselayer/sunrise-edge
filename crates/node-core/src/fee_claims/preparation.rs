@@ -127,8 +127,10 @@ fn kind_for_share(row: &FastPathSettlementRecord, index: usize) -> Option<FeeCla
 /// Requires a current, locally pinned context and an offline fenced store.
 /// The caller must ensure quiescence: these separate reads are not a shared
 /// database snapshot, and a writer fence alone does not exclude new writers.
+/// This offline profile scans the exact escrow's claim-key range to reject
+/// orphaned keys anywhere in that range, including retained tombstones.
 #[allow(clippy::too_many_arguments)]
-pub fn inspect_fee_escrow<S: StructuredDurableDomainStateStore>(
+pub fn inspect_fee_escrow<S: DurableStateKeyScanner>(
     store: &S,
     blob_store: &dyn BlobStore,
     operation: &DurableOperationContext,
@@ -147,7 +149,7 @@ pub fn inspect_fee_escrow<S: StructuredDurableDomainStateStore>(
         expected,
         escrow_request_id,
         || {
-            verify_fee_claim_history(
+            inventory::verify_fee_claim_history_scanned(
                 store,
                 blob_store,
                 operation,
@@ -255,7 +257,7 @@ where
 /// As with escrow inspection, the caller must exclude concurrent writers;
 /// returned inputs are observations and reserve neither nonce nor generation.
 #[allow(clippy::too_many_arguments)]
-pub fn inspect_fee_claim<S: StructuredDurableDomainStateStore>(
+pub fn inspect_fee_claim<S: DurableStateKeyScanner>(
     store: &S,
     blob_store: &dyn BlobStore,
     operation: &DurableOperationContext,
@@ -437,26 +439,8 @@ pub fn discover_fee_escrows_page<S: DurableStateKeyScanner>(
         {
             return Err(FeeClaimError::Invalid("fee discovery key mismatch"));
         }
-        escrows.push(inspect_fee_escrow_with_verifier(
-            store,
-            operation,
-            domain,
-            resolver,
-            history,
-            expected,
-            request_id,
-            || {
-                inventory::verify_fee_claim_history_scanned(
-                    store,
-                    blob_store,
-                    operation,
-                    domain,
-                    resolver,
-                    history,
-                    expected.chain_id(),
-                    &request_id,
-                )
-            },
+        escrows.push(inspect_fee_escrow(
+            store, blob_store, operation, domain, resolver, history, expected, request_id,
         )?);
     }
     Ok(FeeEscrowDiscoveryPage {
@@ -703,7 +687,7 @@ pub fn prepare_fee_claim<S, E>(
     created_checkpoint: u64,
 ) -> Result<PreparedFeeClaim, FeeClaimError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: DurableStateKeyScanner,
     E: LocalContractEngine + ?Sized,
 {
     require_preparation_context(resolver, history, expected)?;

@@ -103,7 +103,7 @@ fn request_receipt<S: StructuredDurableDomainStateStore>(
         .unwrap()
 }
 
-fn prepare_from_signed<S: StructuredDurableDomainStateStore>(
+fn prepare_from_signed<S: DurableStateKeyScanner>(
     store: &S,
     bytes: &[u8],
     voter: &Voter,
@@ -634,15 +634,75 @@ fn discovery_checks_empty_page_context_and_rejects_tombstones_and_foreign_cursor
 }
 
 #[test]
-fn discovery_uses_scanned_proof_and_rejects_a_far_orphan_claim_even_when_tombstoned() {
+fn all_offline_profiles_reject_a_far_orphan_claim_even_when_tombstoned() {
     for mutation in [StateMutation::Put(vec![0]), StateMutation::Delete] {
         let store: MemoryDurableStateStore = memory_store();
-        install_certified(&store);
+        let (fixture, voters, resource): (Fixture, Vec<Voter>, BondResourceId) =
+            install_certified(&store);
+        let split_bytes: Vec<u8> = build_split_claim(
+            &store,
+            &fixture,
+            &voters[0],
+            resource,
+            ESCROW,
+            [0xD1; 32],
+            next_nonce(&store),
+            0xE1,
+        )
+        .signed_bytes;
+        let zero_bytes: Vec<u8> =
+            build_zero_claim(&store, &voters[2], resource, ESCROW, [0xD3; 32]);
         let orphan_key: Vec<u8> =
             local_instance_state::fastpath_fee_claim_key(protocol().chain_id(), &ESCROW, 300)
                 .unwrap();
         crate::paid_execution::tests::set_state(&store, orphan_key, mutation);
         let before: Vec<StateEntry> = state_snapshot(&store);
+        // DR-0141's pre-existing point-read contract remains unchanged. The
+        // new offline profile proves the whole exact prefix instead.
+        assert!(
+            verify_fee_claim_history(
+                &store,
+                &MemoryBlobStore::default(),
+                &context(),
+                domain(),
+                &resolver(),
+                &[],
+                protocol().chain_id(),
+                &ESCROW
+            )
+            .is_ok()
+        );
+        assert!(
+            inspect_fee_escrow(
+                &store,
+                &MemoryBlobStore::default(),
+                &context(),
+                domain(),
+                &resolver(),
+                &[],
+                &protocol(),
+                ESCROW
+            )
+            .is_err()
+        );
+        assert!(
+            inspect_fee_claim(
+                &store,
+                &MemoryBlobStore::default(),
+                &context(),
+                domain(),
+                &resolver(),
+                &[],
+                &protocol(),
+                ESCROW,
+                voters[0].entry.id,
+                sender(),
+                &base_policy()
+            )
+            .is_err()
+        );
+        assert!(prepare_from_signed(&store, &split_bytes, &voters[0]).is_err());
+        assert!(prepare_from_signed(&store, &zero_bytes, &voters[2]).is_err());
         assert!(
             discover_fee_escrows_page(
                 &store,
