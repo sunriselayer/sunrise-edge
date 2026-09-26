@@ -107,6 +107,9 @@ operator invocation still advances its writer fence. It does not reserve the
 generation or nonce. This first operator profile uses the claimant key for
 the embedded positive execution leg as well; the core supports distinct
 authorities, but this command does not select a separate execution key.
+The command supports public argument layouts `(u64, bytes32)` for split and
+`(bytes32)` for transfer; other layouts fail explicitly. This is a bounded
+operator construction profile, not an asset-specific node-core privilege.
 Use the same trusted `--checkpoint` during apply. It is administrative
 creation metadata, not evidence of a published/committed checkpoint.
 
