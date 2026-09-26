@@ -137,6 +137,7 @@ fn fastvote_pg_operator_credential_isolated_multivalidator_e2e() {
     let clis: Vec<CliContext<'_>> = dsns
         .iter()
         .map(|dsn| CliContext {
+            protocol_version: fixture.protocol_version,
             ca_path: &ca_path,
             dsn,
             chain_id: chain_id.clone(),
@@ -350,6 +351,7 @@ fn fastvote_pg_operator_credential_isolated_multivalidator_e2e() {
         proxy_port,
     );
     let cross_cli: CliContext<'_> = CliContext {
+        protocol_version: fixture.protocol_version,
         ca_path: &ca_path,
         dsn: &cross_dsn,
         chain_id: chain_id.clone(),

@@ -221,6 +221,7 @@ fn fastvote_host_pg_cli_multivalidator_e2e() {
     let chain_id = format!("{}", fixture.chain_id);
 
     let cli_context = CliContext {
+        protocol_version: fixture.protocol_version,
         ca_path: &ca_path,
         dsn: &dsn,
         chain_id: chain_id.clone(),

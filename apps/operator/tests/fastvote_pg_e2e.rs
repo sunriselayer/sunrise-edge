@@ -82,6 +82,7 @@ fn fastvote_pg_operator_multivalidator_e2e() {
     let digest_hex: String = to_hex(&fixture.manifest_digest);
     let domain_hex: String = format!("{}", fixture.domain);
     let cli: CliContext<'_> = CliContext {
+        protocol_version: fixture.protocol_version,
         ca_path: &ca_path,
         dsn: &dsn,
         chain_id: format!("{}", fixture.chain_id),
@@ -344,6 +345,7 @@ fn fastvote_pg_operator_multivalidator_e2e() {
     );
     let (tampered_path, _tampered_guard) = bounded_temp_file("tampered-genesis", &tampered_bytes);
     let tampered_cli: CliContext<'_> = CliContext {
+        protocol_version: fixture.protocol_version,
         ca_path: &ca_path,
         dsn: &dsn,
         chain_id: cli.chain_id.clone(),
@@ -371,6 +373,7 @@ fn fastvote_pg_operator_multivalidator_e2e() {
         },
     );
     let cli_wrong_digest: CliContext<'_> = CliContext {
+        protocol_version: fixture.protocol_version,
         ca_path: &ca_path,
         dsn: &dsn,
         chain_id: cli.chain_id.clone(),
@@ -399,7 +402,7 @@ fn fastvote_pg_operator_multivalidator_e2e() {
         "--domain",
         &domain_hex,
         "--protocol-version",
-        "3",
+        &fixture.protocol_version.get().to_string(),
         "--epoch",
         "1",
         "--suite",
