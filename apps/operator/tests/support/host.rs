@@ -35,6 +35,18 @@ pub fn write_new(path: &std::path::Path, bytes: &[u8]) {
     fs::write(path, bytes).unwrap();
 }
 
+/// Writes a fresh file with `0600` permissions, exactly the shape
+/// `fastvote_pg`'s signing-key-file loader requires (it rejects any
+/// group/other bit set).
+pub fn write_new_secure_mode(path: &std::path::Path, bytes: &[u8]) {
+    fs::write(path, bytes).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
 pub fn temp_file(dir: &std::path::Path, name: &str) -> PathBuf {
     dir.join(name)
 }

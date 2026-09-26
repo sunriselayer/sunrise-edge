@@ -235,6 +235,63 @@ pub fn run_asset_verb(
     decode_result(&result_out)
 }
 
+/// Runs one real top-level Standard Asset verb exactly like
+/// [`run_asset_verb`], for a call expected to be rejected by admission
+/// before any result is ever committed (e.g. a conflicting request-id
+/// reuse): asserts the process exits unsuccessfully and that no result or
+/// certificate artifact was left behind, without attempting to decode
+/// either -- unlike a charged application trap, a rejected admission never
+/// writes `--result-out`/`--fastvote-certificate-out` at all.
+#[allow(clippy::too_many_arguments)]
+pub fn run_asset_verb_expect_rejected(
+    call: &NetworkCall<'_>,
+    action: &str,
+    extra: &[(&str, String)],
+    data_dir: &Path,
+    request_id: [u8; 32],
+    nonce: u64,
+    label: &str,
+) {
+    let signed_out = temp_file(data_dir, &format!("{label}.intent"));
+    let cert_out = temp_file(data_dir, &format!("{label}.cert"));
+    let result_out = temp_file(data_dir, &format!("{label}.result"));
+    let mut flags: Vec<OsString> = vec![OsString::from(action)];
+    flags.extend(call.preamble(request_id, nonce));
+    for (flag, value) in extra {
+        flags.push(OsString::from(*flag));
+        flags.push(OsString::from(value.as_str()));
+    }
+    flags.extend(
+        [
+            "--fastvote-signed-intent-out",
+            signed_out.to_str().unwrap(),
+            "--fastvote-certificate-out",
+            cert_out.to_str().unwrap(),
+            "--result-out",
+            result_out.to_str().unwrap(),
+        ]
+        .into_iter()
+        .map(OsString::from),
+    );
+    let output = super::cli::edge_cli_command(flags).output().unwrap();
+    assert!(
+        !output.status.success(),
+        "{label} ({action}) unexpectedly succeeded: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for (path, artifact) in [
+        (&result_out, "result"),
+        (&cert_out, "certificate"),
+    ] {
+        let bytes: Vec<u8> = fs::read(path).unwrap_or_default();
+        assert!(
+            bytes.is_empty(),
+            "{label} ({action}) left behind a non-empty {artifact} artifact despite rejection"
+        );
+    }
+}
+
 /// Runs a real `contract paid-publish` or `contract paid-instantiate` over
 /// `--fastvote-network` through the compiled CLI binary, asserting success
 /// (both are only ever driven as the positive path in these E2Es; a

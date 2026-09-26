@@ -35,10 +35,13 @@ use support::cli::{
 };
 use support::durable_state::convergence_snapshot;
 use support::genesis_fixture::{self, FastVoteGenesisFixture};
-use support::host::{HostProcess, TempDir, spawn_host, temp_file, write_network_config, write_new};
+use support::host::{
+    HostProcess, TempDir, spawn_host, temp_file, write_network_config, write_new,
+    write_new_secure_mode,
+};
 use support::paid_calls::{
-    NetworkCall, identify_coin, identify_definition_and_cap, run_asset_verb, run_contract_paid,
-    track,
+    NetworkCall, identify_coin, identify_definition_and_cap, run_asset_verb,
+    run_asset_verb_expect_rejected, run_contract_paid, track,
 };
 
 type AdminPool = Pool<PostgresConnectionManager<postgres::NoTls>>;
@@ -163,7 +166,7 @@ fn contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator
         .collect();
     let pool: AdminPool = admin_pool(&original_config);
     let seed_path = temp_file(&data_dir, "sender.seed");
-    write_new(&seed_path, "21".repeat(32).as_bytes());
+    write_new_secure_mode(&seed_path, "21".repeat(32).as_bytes());
     let genesis = node_core::decode_genesis_manifest(&fixture.manifest_bytes).unwrap();
     let mut ids: BTreeSet<ObjectId> = genesis
         .objects
@@ -495,7 +498,7 @@ fn contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator
     // Reusing an already-committed request id under a fresh nonce, with
     // different content, must be rejected -- and must leave every tracked
     // object, receipt and nonce exactly unchanged.
-    run_asset_verb(
+    run_asset_verb_expect_rejected(
         &call,
         "transfer",
         &[
@@ -506,7 +509,6 @@ fn contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator
         transfer_request_id,
         11,
         "conflict",
-        false,
     );
     assert_eq!(
         convergence_snapshot(

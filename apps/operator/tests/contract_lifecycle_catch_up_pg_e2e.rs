@@ -39,7 +39,10 @@ use support::cli::{
 };
 use support::durable_state::convergence_snapshot;
 use support::genesis_fixture::{self, FastVoteGenesisFixture};
-use support::host::{HostProcess, TempDir, spawn_host, temp_file, write_network_config, write_new};
+use support::host::{
+    HostProcess, TempDir, spawn_host, temp_file, write_network_config, write_new,
+    write_new_secure_mode,
+};
 use support::http_relay::HttpRelay;
 use support::paid_calls::{
     NetworkCall, identify_coin, identify_definition_and_cap, run_asset_verb, run_contract_paid,
@@ -230,7 +233,7 @@ fn contract_lifecycle_catch_up_pg_missed_publish_instantiate_call_binary_cli_e2e
         .collect();
     let pool: AdminPool = admin_pool(&original_config);
     let seed_path = temp_file(&data_dir, "sender.seed");
-    write_new(&seed_path, "21".repeat(32).as_bytes());
+    write_new_secure_mode(&seed_path, "21".repeat(32).as_bytes());
     let genesis = node_core::decode_genesis_manifest(&fixture.manifest_bytes).unwrap();
     let mut ids: BTreeSet<ObjectId> = genesis
         .objects
