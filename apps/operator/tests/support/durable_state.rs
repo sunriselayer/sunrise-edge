@@ -143,7 +143,7 @@ fn object_head_version_evidence<S: StructuredDurableDomainStateStore + DurableSt
     fixture: &super::genesis_fixture::FastVoteGenesisFixture,
     ids: &std::collections::BTreeSet<objects::ObjectId>,
 ) -> String {
-    let mut snapshot = String::new();
+    let mut snapshot: String = String::new();
     for id in ids {
         let head: DurableObjectHead = store.get_object_head(context, fixture.domain, *id).unwrap();
         let verified: node_core::ObjectQueryResult =
@@ -224,7 +224,7 @@ fn request_publication_nonce_evidence<
 /// re-verified head/version and canonical query bytes, every caller-selected
 /// request's canonical receipt, and every caller-selected package origin's
 /// independently re-verified canonical publication record. Used to prove
-/// exact convergence across replicas and exact no-op idempotent replay
+/// exact no-op idempotent replay on the same replica
 /// without hand-deriving each individual key -- a change here is caught the
 /// same way an unexpected new key or a bit flip in an existing one would be.
 ///
@@ -241,9 +241,10 @@ pub fn convergence_snapshot<S: StructuredDurableDomainStateStore + DurableStateK
     requests: &[[u8; 32]],
     publications: &[abi::package_types::PackageOrigin],
 ) -> String {
-    let values = scan_se_entries(store, context, fixture.domain, |_key: &[u8]| false);
-    let objects_evidence = object_head_version_evidence(store, context, fixture, ids);
-    let shared_evidence =
+    let values: Vec<(Vec<u8>, VersionedStateValue)> =
+        scan_se_entries(store, context, fixture.domain, |_key: &[u8]| false);
+    let objects_evidence: String = object_head_version_evidence(store, context, fixture, ids);
+    let shared_evidence: String =
         request_publication_nonce_evidence(store, context, fixture, requests, publications);
     format!("{values:?}\n{objects_evidence}{shared_evidence}")
 }
@@ -253,16 +254,14 @@ pub fn convergence_snapshot<S: StructuredDurableDomainStateStore + DurableStateK
 /// replay. It deliberately excludes three key prefixes that are legitimately
 /// replica-local and are never expected to converge:
 ///
-/// - `se/instances/v1/fastpath/prepared/...` -- the in-flight two-phase
-///   prepare marker only the replica that is actively driving a request
-///   holds. An online validator that never raced the prepare, or a replica
-///   that only observes the request via missed-prepare catch-up, legitimately
-///   never writes (or already pruned) this record even though it converges
-///   on the same final receipt.
-/// - `se/instances/v1/fastpath/lock/...` and `.../nonce-lock/...` -- purely
-///   local mutual-exclusion locks a process takes out on its own connection
-///   while it prepares/commits; they serialize local writers only and carry
-///   no cross-replica protocol meaning.
+/// - `se/instances/v1/fastpath/prepared/...` -- retained local prepare/vote
+///   bookkeeping differs by validator identity and is never synthesized by
+///   missed-prepare recovery, even when the final certified result matches.
+/// - `se/instances/v1/fastpath/lock/...` and `.../nonce-lock/...` -- durable
+///   per-validator admission locks protect against conflicting votes across
+///   restarts. Their acquisition/release tombstones legitimately differ on a
+///   missed-prepare replica. They are safety-critical, not connection-local
+///   database locks, and remain included in every same-store replay snapshot.
 ///
 /// Every other key -- publication, instance, authority, nonce, certificate,
 /// commitment-witness, settlement records, and any unexpected new key -- is
@@ -279,13 +278,14 @@ pub fn protocol_convergence_snapshot<
     requests: &[[u8; 32]],
     publications: &[abi::package_types::PackageOrigin],
 ) -> String {
-    let values = scan_se_entries(store, context, fixture.domain, |key: &[u8]| {
-        REPLICA_LOCAL_PREFIXES
-            .iter()
-            .any(|prefix: &&[u8]| key.starts_with(prefix))
-    });
-    let objects_evidence = object_head_version_evidence(store, context, fixture, ids);
-    let shared_evidence =
+    let values: Vec<(Vec<u8>, VersionedStateValue)> =
+        scan_se_entries(store, context, fixture.domain, |key: &[u8]| {
+            REPLICA_LOCAL_PREFIXES
+                .iter()
+                .any(|prefix: &&[u8]| key.starts_with(prefix))
+        });
+    let objects_evidence: String = object_head_version_evidence(store, context, fixture, ids);
+    let shared_evidence: String =
         request_publication_nonce_evidence(store, context, fixture, requests, publications);
     format!("{values:?}\n{objects_evidence}{shared_evidence}")
 }
