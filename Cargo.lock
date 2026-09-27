@@ -1373,6 +1373,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-sql-durable"
+version = "0.1.0"
+dependencies = [
+ "hashing",
+ "objects",
+ "protocol-types",
+ "runtime",
+]
+
+[[package]]
 name = "runtime-sqlite"
 version = "0.1.0"
 dependencies = [
@@ -1380,6 +1390,7 @@ dependencies = [
  "objects",
  "protocol-types",
  "runtime",
+ "runtime-sql-durable",
  "rusqlite",
 ]
 

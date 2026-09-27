@@ -11,6 +11,7 @@ members = [
     "crates/runtime",
     "crates/runtime-postgres",
     "crates/runtime-sqlite",
+    "crates/runtime-sql-durable",
     "crates/execution",
     "crates/standard-assets",
     "contracts/standard-asset",
@@ -52,6 +53,7 @@ protocol-config = { path = "crates/protocol-config" }
 runtime = { path = "crates/runtime" }
 runtime-postgres = { path = "crates/runtime-postgres" }
 runtime-sqlite = { path = "crates/runtime-sqlite" }
+runtime-sql-durable = { path = "crates/runtime-sql-durable" }
 execution = { path = "crates/execution" }
 standard-assets = { path = "crates/standard-assets" }
 fees = { path = "crates/fees" }

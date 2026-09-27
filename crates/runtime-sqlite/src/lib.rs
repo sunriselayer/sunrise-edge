@@ -15,6 +15,7 @@
 //! crate does not make network filesystems or serverless ephemeral disks durable.
 
 mod blob;
+mod rusqlite_backend;
 mod structured;
 
 pub use blob::{SQLITE_BLOB_SCHEMA_IDENTITY, SqliteBlobStore, SqliteBlobStoreError};
@@ -35,22 +36,6 @@ use std::{
     sync::{Mutex, MutexGuard},
     time::Duration,
 };
-
-/// Encodes a `u64` as an order-preserving 8-byte big-endian value.
-///
-/// Used by the structured store for its on-disk revision/generation
-/// encoding. The legacy opaque store inlines the same big-endian encoding
-/// directly rather than calling this helper, but both stay lexicographically
-/// ordered and mutually compatible.
-pub(crate) fn encode_u64(value: u64) -> [u8; 8] {
-    value.to_be_bytes()
-}
-
-/// Decodes an order-preserving 8-byte big-endian `u64`, if the length matches.
-pub(crate) fn decode_u64(bytes: &[u8]) -> Option<u64> {
-    let array: [u8; 8] = bytes.try_into().ok()?;
-    Some(u64::from_be_bytes(array))
-}
 
 const SCHEMA_VERSION: i64 = 1;
 const APPLICATION_ID: i64 = 0x5352_4544;

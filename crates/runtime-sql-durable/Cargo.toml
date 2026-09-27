@@ -1,13 +1,11 @@
 [package]
-name = "runtime-sqlite"
+name = "runtime-sql-durable"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 runtime.workspace = true
-runtime-sql-durable.workspace = true
-rusqlite.workspace = true
 protocol-types.workspace = true
 
 [dev-dependencies]
