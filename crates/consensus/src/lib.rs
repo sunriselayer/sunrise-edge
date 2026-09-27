@@ -1435,6 +1435,11 @@ pub fn encode_consensus_parameters(
 
 /// Encodes the leader-signable proposal payload without its signature.
 pub fn encode_proposal_payload(proposal: &ConsensusProposal) -> Result<Vec<u8>, ConsensusError> {
+    if proposal.transactions.len() > MAX_BLOCK_TRANSACTIONS_LIMIT as usize {
+        return Err(ConsensusError::TooManyTransactions(
+            proposal.transactions.len(),
+        ));
+    }
     let mut canonical = CanonicalStruct::new(PROPOSAL_TYPE_ID, ENCODING_VERSION);
     canonical.field_str(1, proposal.chain_id.as_str())?;
     canonical.field_u32(2, proposal.protocol_version.get())?;
@@ -1493,6 +1498,9 @@ pub fn encode_vote(vote: &ConsensusVote) -> Result<Vec<u8>, ConsensusError> {
 pub fn encode_quorum_certificate(
     certificate: &QuorumCertificate,
 ) -> Result<Vec<u8>, ConsensusError> {
+    if certificate.votes.len() > durable::MAX_CERTIFICATE_VOTES {
+        return Err(ConsensusError::NonCanonicalCertificateVotes);
+    }
     let mut canonical = CanonicalStruct::new(CERTIFICATE_TYPE_ID, ENCODING_VERSION);
     canonical.field_str(1, certificate.chain_id.as_str())?;
     canonical.field_u32(2, certificate.protocol_version.get())?;

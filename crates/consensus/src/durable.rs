@@ -36,7 +36,7 @@ const COMMITTED_LIST_TYPE_ID: u16 = 0xD016;
 /// `validator_set::MAX_VALIDATORS`; certificates here are not
 /// validator-set-bounded at decode time since decoders are free functions
 /// with no engine context).
-const MAX_CERTIFICATE_VOTES: usize = 10_000;
+pub(crate) const MAX_CERTIFICATE_VOTES: usize = 10_000;
 /// Bounds on the persisted [`ConsensusState`] canonical wire frame
 /// (`0xD010`-`0xD016`), chosen generously relative to what
 /// [`ChainedHotStuff::prune_state`] ever actually retains
@@ -72,6 +72,45 @@ const MAX_ENCODED_CONSENSUS_STATE_BYTES: usize = 16 * 1024 * 1024;
 /// redundant/duplicate submissions from independent observers while still
 /// rejecting an unbounded caller-supplied slice up front.
 const MAX_CERTIFICATE_FROM_VOTES_INPUT: usize = 2 * MAX_CERTIFICATE_VOTES;
+
+/// Mirrors `canonical_encoding`'s own private per-frame header cost (magic +
+/// type id + version + field count), duplicated here since it isn't
+/// exported. Charged once per [`CanonicalStruct`] we build, including every
+/// nested collection sub-frame.
+const CANONICAL_FRAME_HEADER_BYTES: usize = 10;
+/// Mirrors `canonical_encoding`'s own private per-field header cost (field
+/// id + length prefix), duplicated here since it isn't exported. Charged
+/// once per field inserted into any [`CanonicalStruct`].
+const CANONICAL_FIELD_HEADER_BYTES: usize = 6;
+
+/// Charges `amount` bytes against a running [`ConsensusState`] encode
+/// budget shared across the outer frame and every nested collection,
+/// failing closed the moment the *eventual* total would exceed
+/// [`MAX_ENCODED_CONSENSUS_STATE_BYTES`] -- before any further entry is
+/// encoded or retained, not only once the whole structure has already been
+/// built and handed to [`CanonicalStruct::finish`].
+fn charge_budget(
+    budget: &mut usize,
+    kind: &'static str,
+    amount: usize,
+) -> Result<(), ConsensusError> {
+    let next = budget.checked_add(amount).ok_or({
+        ConsensusError::EncodedFrameTooLarge {
+            kind,
+            actual: usize::MAX,
+            max: MAX_ENCODED_CONSENSUS_STATE_BYTES,
+        }
+    })?;
+    if next > MAX_ENCODED_CONSENSUS_STATE_BYTES {
+        return Err(ConsensusError::EncodedFrameTooLarge {
+            kind,
+            actual: next,
+            max: MAX_ENCODED_CONSENSUS_STATE_BYTES,
+        });
+    }
+    *budget = next;
+    Ok(())
+}
 
 fn ensure_encoded_bound(
     kind: &'static str,
@@ -303,6 +342,18 @@ pub fn decode_proposal(input: &[u8]) -> Result<ConsensusProposal, ConsensusError
 fn encode_known_proposals(
     map: &BTreeMap<Digest32, ConsensusProposal>,
 ) -> Result<Vec<u8>, ConsensusError> {
+    let mut budget = 0usize;
+    encode_known_proposals_budgeted(map, &mut budget)
+}
+
+/// Same as [`encode_known_proposals`], but charges every field it builds
+/// against a caller-supplied, shared [`ConsensusState`] encode budget
+/// (see [`charge_budget`]) as it goes, instead of only after the whole
+/// collection has already been assembled.
+fn encode_known_proposals_budgeted(
+    map: &BTreeMap<Digest32, ConsensusProposal>,
+    budget: &mut usize,
+) -> Result<Vec<u8>, ConsensusError> {
     if map.len() > MAX_STATE_KNOWN_PROPOSALS {
         return Err(ConsensusError::StateCollectionTooLarge {
             field: "known_proposals",
@@ -310,7 +361,9 @@ fn encode_known_proposals(
             max: MAX_STATE_KNOWN_PROPOSALS,
         });
     }
+    charge_budget(budget, "known_proposals", CANONICAL_FRAME_HEADER_BYTES)?;
     let mut canonical = CanonicalStruct::new(KNOWN_PROPOSALS_LIST_TYPE_ID, ENCODING_VERSION);
+    charge_budget(budget, "known_proposals", CANONICAL_FIELD_HEADER_BYTES + 4)?;
     canonical.field_u32(
         1,
         u32::try_from(map.len()).map_err(|_| ConsensusError::ArithmeticOverflow)?,
@@ -321,8 +374,20 @@ fn encode_known_proposals(
         let proposal_field = digest_field
             .checked_add(1)
             .ok_or(ConsensusError::ArithmeticOverflow)?;
-        canonical.field_bytes(digest_field, encode_digest32(digest)?)?;
-        canonical.field_bytes(proposal_field, encode_proposal(proposal)?)?;
+        let digest_bytes = encode_digest32(digest)?;
+        charge_budget(
+            budget,
+            "known_proposals",
+            CANONICAL_FIELD_HEADER_BYTES + digest_bytes.len(),
+        )?;
+        canonical.field_bytes(digest_field, digest_bytes)?;
+        let proposal_bytes = encode_proposal(proposal)?;
+        charge_budget(
+            budget,
+            "known_proposals",
+            CANONICAL_FIELD_HEADER_BYTES + proposal_bytes.len(),
+        )?;
+        canonical.field_bytes(proposal_field, proposal_bytes)?;
     }
     Ok(canonical.finish()?)
 }
@@ -385,6 +450,16 @@ fn decode_known_proposals(
 fn encode_certificates_map(
     map: &BTreeMap<Digest32, QuorumCertificate>,
 ) -> Result<Vec<u8>, ConsensusError> {
+    let mut budget = 0usize;
+    encode_certificates_map_budgeted(map, &mut budget)
+}
+
+/// Same as [`encode_certificates_map`], but charges against a shared
+/// [`ConsensusState`] encode budget as it goes (see [`charge_budget`]).
+fn encode_certificates_map_budgeted(
+    map: &BTreeMap<Digest32, QuorumCertificate>,
+    budget: &mut usize,
+) -> Result<Vec<u8>, ConsensusError> {
     if map.len() > MAX_STATE_CERTIFICATES {
         return Err(ConsensusError::StateCollectionTooLarge {
             field: "certificates",
@@ -392,7 +467,9 @@ fn encode_certificates_map(
             max: MAX_STATE_CERTIFICATES,
         });
     }
+    charge_budget(budget, "certificates", CANONICAL_FRAME_HEADER_BYTES)?;
     let mut canonical = CanonicalStruct::new(CERTIFICATES_LIST_TYPE_ID, ENCODING_VERSION);
+    charge_budget(budget, "certificates", CANONICAL_FIELD_HEADER_BYTES + 4)?;
     canonical.field_u32(
         1,
         u32::try_from(map.len()).map_err(|_| ConsensusError::ArithmeticOverflow)?,
@@ -403,8 +480,20 @@ fn encode_certificates_map(
         let certificate_field = digest_field
             .checked_add(1)
             .ok_or(ConsensusError::ArithmeticOverflow)?;
-        canonical.field_bytes(digest_field, encode_digest32(digest)?)?;
-        canonical.field_bytes(certificate_field, encode_quorum_certificate(certificate)?)?;
+        let digest_bytes = encode_digest32(digest)?;
+        charge_budget(
+            budget,
+            "certificates",
+            CANONICAL_FIELD_HEADER_BYTES + digest_bytes.len(),
+        )?;
+        canonical.field_bytes(digest_field, digest_bytes)?;
+        let certificate_bytes = encode_quorum_certificate(certificate)?;
+        charge_budget(
+            budget,
+            "certificates",
+            CANONICAL_FIELD_HEADER_BYTES + certificate_bytes.len(),
+        )?;
+        canonical.field_bytes(certificate_field, certificate_bytes)?;
     }
     Ok(canonical.finish()?)
 }
@@ -472,6 +561,16 @@ fn decode_certificates_map(
 fn encode_pending_vote_group(
     votes: &BTreeMap<ValidatorId, ConsensusVote>,
 ) -> Result<Vec<u8>, ConsensusError> {
+    let mut budget = 0usize;
+    encode_pending_vote_group_budgeted(votes, &mut budget)
+}
+
+/// Same as [`encode_pending_vote_group`], but charges against a shared
+/// [`ConsensusState`] encode budget as it goes (see [`charge_budget`]).
+fn encode_pending_vote_group_budgeted(
+    votes: &BTreeMap<ValidatorId, ConsensusVote>,
+    budget: &mut usize,
+) -> Result<Vec<u8>, ConsensusError> {
     if votes.len() > MAX_STATE_VOTES_PER_GROUP {
         return Err(ConsensusError::StateCollectionTooLarge {
             field: "pending_votes group",
@@ -479,14 +578,26 @@ fn encode_pending_vote_group(
             max: MAX_STATE_VOTES_PER_GROUP,
         });
     }
+    charge_budget(budget, "pending_votes group", CANONICAL_FRAME_HEADER_BYTES)?;
     let mut canonical = CanonicalStruct::new(PENDING_VOTE_GROUP_TYPE_ID, ENCODING_VERSION);
+    charge_budget(
+        budget,
+        "pending_votes group",
+        CANONICAL_FIELD_HEADER_BYTES + 4,
+    )?;
     canonical.field_u32(
         1,
         u32::try_from(votes.len()).map_err(|_| ConsensusError::ArithmeticOverflow)?,
     )?;
     for (index, vote) in votes.values().enumerate() {
         let field = u16::try_from(index + 2).map_err(|_| ConsensusError::ArithmeticOverflow)?;
-        canonical.field_bytes(field, encode_vote(vote)?)?;
+        let vote_bytes = encode_vote(vote)?;
+        charge_budget(
+            budget,
+            "pending_votes group",
+            CANONICAL_FIELD_HEADER_BYTES + vote_bytes.len(),
+        )?;
+        canonical.field_bytes(field, vote_bytes)?;
     }
     Ok(canonical.finish()?)
 }
@@ -543,6 +654,18 @@ fn decode_pending_vote_group(
 fn encode_pending_votes(
     map: &BTreeMap<Digest32, BTreeMap<ValidatorId, ConsensusVote>>,
 ) -> Result<Vec<u8>, ConsensusError> {
+    let mut budget = 0usize;
+    encode_pending_votes_budgeted(map, &mut budget)
+}
+
+/// Same as [`encode_pending_votes`], but charges against a shared
+/// [`ConsensusState`] encode budget as it goes (see [`charge_budget`]),
+/// threading the same budget down into each nested
+/// [`encode_pending_vote_group_budgeted`] call.
+fn encode_pending_votes_budgeted(
+    map: &BTreeMap<Digest32, BTreeMap<ValidatorId, ConsensusVote>>,
+    budget: &mut usize,
+) -> Result<Vec<u8>, ConsensusError> {
     if map.len() > MAX_STATE_PENDING_VOTE_GROUPS {
         return Err(ConsensusError::StateCollectionTooLarge {
             field: "pending_votes",
@@ -550,7 +673,9 @@ fn encode_pending_votes(
             max: MAX_STATE_PENDING_VOTE_GROUPS,
         });
     }
+    charge_budget(budget, "pending_votes", CANONICAL_FRAME_HEADER_BYTES)?;
     let mut canonical = CanonicalStruct::new(PENDING_VOTES_LIST_TYPE_ID, ENCODING_VERSION);
+    charge_budget(budget, "pending_votes", CANONICAL_FIELD_HEADER_BYTES + 4)?;
     canonical.field_u32(
         1,
         u32::try_from(map.len()).map_err(|_| ConsensusError::ArithmeticOverflow)?,
@@ -561,8 +686,16 @@ fn encode_pending_votes(
         let group_field = digest_field
             .checked_add(1)
             .ok_or(ConsensusError::ArithmeticOverflow)?;
-        canonical.field_bytes(digest_field, encode_digest32(digest)?)?;
-        canonical.field_bytes(group_field, encode_pending_vote_group(votes)?)?;
+        let digest_bytes = encode_digest32(digest)?;
+        charge_budget(
+            budget,
+            "pending_votes",
+            CANONICAL_FIELD_HEADER_BYTES + digest_bytes.len(),
+        )?;
+        canonical.field_bytes(digest_field, digest_bytes)?;
+        let group_bytes = encode_pending_vote_group_budgeted(votes, budget)?;
+        charge_budget(budget, "pending_votes", CANONICAL_FIELD_HEADER_BYTES)?;
+        canonical.field_bytes(group_field, group_bytes)?;
     }
     Ok(canonical.finish()?)
 }
@@ -632,6 +765,16 @@ fn decode_pending_votes(
 fn encode_observed_votes(
     map: &BTreeMap<(ValidatorId, u64), Digest32>,
 ) -> Result<Vec<u8>, ConsensusError> {
+    let mut budget = 0usize;
+    encode_observed_votes_budgeted(map, &mut budget)
+}
+
+/// Same as [`encode_observed_votes`], but charges against a shared
+/// [`ConsensusState`] encode budget as it goes (see [`charge_budget`]).
+fn encode_observed_votes_budgeted(
+    map: &BTreeMap<(ValidatorId, u64), Digest32>,
+    budget: &mut usize,
+) -> Result<Vec<u8>, ConsensusError> {
     if map.len() > MAX_STATE_OBSERVED_VOTES {
         return Err(ConsensusError::StateCollectionTooLarge {
             field: "observed_votes",
@@ -639,7 +782,9 @@ fn encode_observed_votes(
             max: MAX_STATE_OBSERVED_VOTES,
         });
     }
+    charge_budget(budget, "observed_votes", CANONICAL_FRAME_HEADER_BYTES)?;
     let mut canonical = CanonicalStruct::new(OBSERVED_VOTES_LIST_TYPE_ID, ENCODING_VERSION);
+    charge_budget(budget, "observed_votes", CANONICAL_FIELD_HEADER_BYTES + 4)?;
     canonical.field_u32(
         1,
         u32::try_from(map.len()).map_err(|_| ConsensusError::ArithmeticOverflow)?,
@@ -653,9 +798,17 @@ fn encode_observed_votes(
         let digest_field = validator_field
             .checked_add(2)
             .ok_or(ConsensusError::ArithmeticOverflow)?;
+        charge_budget(budget, "observed_votes", CANONICAL_FIELD_HEADER_BYTES + 32)?;
         canonical.field_bytes(validator_field, *validator.as_bytes())?;
+        charge_budget(budget, "observed_votes", CANONICAL_FIELD_HEADER_BYTES + 8)?;
         canonical.field_u64(view_field, *view)?;
-        canonical.field_bytes(digest_field, encode_digest32(digest)?)?;
+        let digest_bytes = encode_digest32(digest)?;
+        charge_budget(
+            budget,
+            "observed_votes",
+            CANONICAL_FIELD_HEADER_BYTES + digest_bytes.len(),
+        )?;
+        canonical.field_bytes(digest_field, digest_bytes)?;
     }
     Ok(canonical.finish()?)
 }
@@ -732,6 +885,16 @@ fn decode_observed_votes(
 }
 
 fn encode_committed(set: &BTreeSet<Digest32>) -> Result<Vec<u8>, ConsensusError> {
+    let mut budget = 0usize;
+    encode_committed_budgeted(set, &mut budget)
+}
+
+/// Same as [`encode_committed`], but charges against a shared
+/// [`ConsensusState`] encode budget as it goes (see [`charge_budget`]).
+fn encode_committed_budgeted(
+    set: &BTreeSet<Digest32>,
+    budget: &mut usize,
+) -> Result<Vec<u8>, ConsensusError> {
     if set.len() > MAX_STATE_COMMITTED {
         return Err(ConsensusError::StateCollectionTooLarge {
             field: "committed",
@@ -739,14 +902,22 @@ fn encode_committed(set: &BTreeSet<Digest32>) -> Result<Vec<u8>, ConsensusError>
             max: MAX_STATE_COMMITTED,
         });
     }
+    charge_budget(budget, "committed", CANONICAL_FRAME_HEADER_BYTES)?;
     let mut canonical = CanonicalStruct::new(COMMITTED_LIST_TYPE_ID, ENCODING_VERSION);
+    charge_budget(budget, "committed", CANONICAL_FIELD_HEADER_BYTES + 4)?;
     canonical.field_u32(
         1,
         u32::try_from(set.len()).map_err(|_| ConsensusError::ArithmeticOverflow)?,
     )?;
     for (index, digest) in set.iter().enumerate() {
         let field = u16::try_from(index + 2).map_err(|_| ConsensusError::ArithmeticOverflow)?;
-        canonical.field_bytes(field, encode_digest32(digest)?)?;
+        let digest_bytes = encode_digest32(digest)?;
+        charge_budget(
+            budget,
+            "committed",
+            CANONICAL_FIELD_HEADER_BYTES + digest_bytes.len(),
+        )?;
+        canonical.field_bytes(field, digest_bytes)?;
     }
     Ok(canonical.finish()?)
 }
@@ -801,28 +972,92 @@ fn decode_committed(input: &[u8]) -> Result<BTreeSet<Digest32>, ConsensusError> 
 /// Encodes the complete persisted [`ConsensusState`] (frame `0xD010/v1`,
 /// with nested collection frames `0xD011`-`0xD016`), preserving every
 /// private field and deterministic map/set order.
+/// Encodes the complete persisted [`ConsensusState`], charging every field
+/// and nested collection entry against a single running byte budget (see
+/// [`charge_budget`]) as it is built, so a caller-supplied state whose
+/// nested collections would eventually exceed
+/// [`MAX_ENCODED_CONSENSUS_STATE_BYTES`] fails as soon as that becomes
+/// certain -- while still accumulating the current collection's earlier
+/// entries -- rather than only after every collection has already been
+/// fully assembled and hashed to [`CanonicalStruct::finish`].
 pub fn encode_consensus_state(state: &ConsensusState) -> Result<Vec<u8>, ConsensusError> {
     if (state.last_voted_view == 0) != state.last_voted_digest.is_none() {
         return Err(ConsensusError::InconsistentPersistedState(
             "last_voted_view/last_voted_digest",
         ));
     }
+    let mut budget = 0usize;
+    charge_budget(&mut budget, "consensus_state", CANONICAL_FRAME_HEADER_BYTES)?;
     let mut canonical = CanonicalStruct::new(CONSENSUS_STATE_TYPE_ID, ENCODING_VERSION);
+    charge_budget(
+        &mut budget,
+        "consensus_state",
+        CANONICAL_FIELD_HEADER_BYTES + 8,
+    )?;
     canonical.field_u64(1, state.current_view)?;
+    charge_budget(
+        &mut budget,
+        "consensus_state",
+        CANONICAL_FIELD_HEADER_BYTES + 8,
+    )?;
     canonical.field_u64(2, state.view_deadline_unix_millis)?;
+    charge_budget(
+        &mut budget,
+        "consensus_state",
+        CANONICAL_FIELD_HEADER_BYTES + 8,
+    )?;
     canonical.field_u64(3, state.last_voted_view)?;
     if let Some(digest) = state.last_voted_digest {
-        canonical.field_bytes(4, encode_digest32(&digest)?)?;
+        let digest_bytes = encode_digest32(&digest)?;
+        charge_budget(
+            &mut budget,
+            "consensus_state",
+            CANONICAL_FIELD_HEADER_BYTES + digest_bytes.len(),
+        )?;
+        canonical.field_bytes(4, digest_bytes)?;
     }
-    canonical.field_bytes(5, encode_quorum_certificate(&state.high_qc)?)?;
-    canonical.field_bytes(6, encode_quorum_certificate(&state.locked_qc)?)?;
+    let high_qc_bytes = encode_quorum_certificate(&state.high_qc)?;
+    charge_budget(
+        &mut budget,
+        "consensus_state",
+        CANONICAL_FIELD_HEADER_BYTES + high_qc_bytes.len(),
+    )?;
+    canonical.field_bytes(5, high_qc_bytes)?;
+    let locked_qc_bytes = encode_quorum_certificate(&state.locked_qc)?;
+    charge_budget(
+        &mut budget,
+        "consensus_state",
+        CANONICAL_FIELD_HEADER_BYTES + locked_qc_bytes.len(),
+    )?;
+    canonical.field_bytes(6, locked_qc_bytes)?;
+    charge_budget(
+        &mut budget,
+        "consensus_state",
+        CANONICAL_FIELD_HEADER_BYTES + 8,
+    )?;
     canonical.field_u64(7, state.committed_height)?;
-    canonical.field_bytes(8, encode_known_proposals(&state.known_proposals)?)?;
-    canonical.field_bytes(9, encode_certificates_map(&state.certificates)?)?;
-    canonical.field_bytes(10, encode_pending_votes(&state.pending_votes)?)?;
-    canonical.field_bytes(11, encode_observed_votes(&state.observed_votes)?)?;
-    canonical.field_bytes(12, encode_committed(&state.committed)?)?;
+    let known_proposals_bytes =
+        encode_known_proposals_budgeted(&state.known_proposals, &mut budget)?;
+    charge_budget(&mut budget, "consensus_state", CANONICAL_FIELD_HEADER_BYTES)?;
+    canonical.field_bytes(8, known_proposals_bytes)?;
+    let certificates_bytes = encode_certificates_map_budgeted(&state.certificates, &mut budget)?;
+    charge_budget(&mut budget, "consensus_state", CANONICAL_FIELD_HEADER_BYTES)?;
+    canonical.field_bytes(9, certificates_bytes)?;
+    let pending_votes_bytes = encode_pending_votes_budgeted(&state.pending_votes, &mut budget)?;
+    charge_budget(&mut budget, "consensus_state", CANONICAL_FIELD_HEADER_BYTES)?;
+    canonical.field_bytes(10, pending_votes_bytes)?;
+    let observed_votes_bytes = encode_observed_votes_budgeted(&state.observed_votes, &mut budget)?;
+    charge_budget(&mut budget, "consensus_state", CANONICAL_FIELD_HEADER_BYTES)?;
+    canonical.field_bytes(11, observed_votes_bytes)?;
+    let committed_bytes = encode_committed_budgeted(&state.committed, &mut budget)?;
+    charge_budget(&mut budget, "consensus_state", CANONICAL_FIELD_HEADER_BYTES)?;
+    canonical.field_bytes(12, committed_bytes)?;
     let bytes = canonical.finish()?;
+    debug_assert_eq!(
+        budget,
+        bytes.len(),
+        "each nested frame is charged exactly once"
+    );
     ensure_encoded_bound(
         "consensus_state",
         bytes.len(),

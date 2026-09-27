@@ -102,6 +102,84 @@ fn decode_vote_rejects_an_oversized_input_before_parsing() {
 }
 
 #[test]
+fn encode_consensus_state_rejects_an_oversized_populated_state_before_finishing() {
+    // Each proposal is individually well under its own per-type cap
+    // (`MAX_ENCODED_PROPOSAL_BYTES`), but ~30 of them together exceed
+    // `MAX_ENCODED_CONSENSUS_STATE_BYTES`. This must fail while still
+    // inside `known_proposals` accumulation, well before the other four
+    // collections (certificates/pending_votes/observed_votes/committed)
+    // are ever built, and without allocating anywhere near the eventual
+    // (rejected) total.
+    let trivial_justify = QuorumCertificate {
+        chain_id: ChainId::new("durable-vectors").unwrap(),
+        protocol_version: ProtocolVersion::new(3),
+        epoch: Epoch::new(9),
+        view: 0,
+        height: 0,
+        proposal_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0; 32]),
+        votes: Vec::new(),
+    };
+    let big_transactions: Vec<Digest32> = std::iter::repeat_n(
+        Digest32::new(HashAlgorithmId::Sha2_256, [0xAB; 32]),
+        usize::try_from(MAX_BLOCK_TRANSACTIONS_LIMIT).unwrap(),
+    )
+    .collect();
+
+    let mut known_proposals = BTreeMap::new();
+    for index in 0..30u8 {
+        let proposal = ConsensusProposal {
+            chain_id: ChainId::new("durable-vectors").unwrap(),
+            protocol_version: ProtocolVersion::new(3),
+            epoch: Epoch::new(9),
+            view: 1,
+            height: 1,
+            leader: ValidatorId::new([index; 32]),
+            justify: trivial_justify.clone(),
+            transactions: big_transactions.clone(),
+            signature_scheme: SignatureSchemeId::Ed25519,
+            signature: vec![0x11; 64],
+        };
+        known_proposals.insert(
+            Digest32::new(HashAlgorithmId::Sha2_256, [index; 32]),
+            proposal,
+        );
+    }
+
+    let state = ConsensusState {
+        current_view: 2,
+        view_deadline_unix_millis: 0,
+        last_voted_view: 0,
+        last_voted_digest: None,
+        high_qc: trivial_justify.clone(),
+        locked_qc: trivial_justify,
+        committed_height: 0,
+        known_proposals,
+        certificates: BTreeMap::new(),
+        pending_votes: BTreeMap::new(),
+        observed_votes: BTreeMap::new(),
+        committed: BTreeSet::new(),
+    };
+
+    match encode_consensus_state(&state) {
+        Err(ConsensusError::EncodedFrameTooLarge { kind, actual, max }) => {
+            assert_eq!(kind, "known_proposals");
+            assert_eq!(max, MAX_ENCODED_CONSENSUS_STATE_BYTES);
+            assert!(actual > max);
+        }
+        other => panic!("expected EncodedFrameTooLarge, got {other:?}"),
+    }
+    // Nested frames must be charged once, not again when inserted into the
+    // outer frame. A valid state above half of the cap must still encode.
+    let mut below_limit: ConsensusState = state;
+    while below_limit.known_proposals.len() > 10 {
+        below_limit.known_proposals.pop_last();
+    }
+    let encoded: Vec<u8> = encode_consensus_state(&below_limit).unwrap();
+    assert!(encoded.len() > MAX_ENCODED_CONSENSUS_STATE_BYTES / 2);
+    assert_eq!(decode_consensus_state(&encoded).unwrap(), below_limit);
+}
+
+#[test]
 fn decode_consensus_state_rejects_last_voted_view_without_digest() {
     let (engine, cryptos) = setup();
     let state = engine.genesis_state(0);
