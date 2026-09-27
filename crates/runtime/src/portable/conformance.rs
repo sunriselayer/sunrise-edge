@@ -311,6 +311,25 @@ pub fn verify<S: DurablePortableRepository>(
     assert!(
         matches!(deleted.metadata(),DurableRecordMetadata::ObjectHead(DurableObjectHead::Tombstoned{last_object_version,..}) if last_object_version.get()==10)
     );
+    let current: DurableRecordDescriptor = store
+        .read_portable_descriptor(context, domain, &heads[1])
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.payload_length(), None);
+    assert!(matches!(
+        current.metadata(),
+        DurableRecordMetadata::ObjectHead(DurableObjectHead::Current {
+            head_revision,
+            object_version,
+            digest: stored,
+            owner_projection,
+            routing_projection,
+        }) if head_revision.get() == 1
+            && *object_version == DurableObjectVersion::FIRST
+            && *stored == digest(12)
+            && owner_projection.bytes().is_none()
+            && routing_projection.bytes().is_none()
+    ));
     let versions: Vec<DurableRecordKey> =
         keys(store, context, domain, DurableCollection::ObjectVersions);
     assert_eq!(versions.len(), 11);

@@ -35,6 +35,18 @@ fn scan(
 ) -> DurableRecordScan {
     DurableRecordScan::new(collection, after, NonZeroUsize::new(count).unwrap()).unwrap()
 }
+fn chunk_of(
+    store: &MemoryDurableStateStore,
+    request: &DurableRecordChunkRequest,
+) -> DurableRecordChunk {
+    let outcome: DurableRecordChunkOutcome = store
+        .read_portable_chunk(&context(), domain(), request)
+        .unwrap();
+    let DurableRecordChunkOutcome::Chunk(chunk) = outcome else {
+        panic!()
+    };
+    *chunk
+}
 
 #[test]
 fn portable_repository_shared_memory_conformance() {
@@ -78,6 +90,34 @@ fn pages_reject_foreign_duplicate_reordered_overlimit_and_cursor_keys() {
     );
     let resumed: DurableRecordScan = scan(DurableCollection::State, Some(key.clone()), 2);
     assert!(DurableRecordPage::from_ordered_candidates(&resumed, vec![key]).is_err());
+}
+
+#[test]
+fn internal_wrong_family_cursor_refuses_even_when_the_collection_is_empty() {
+    let store: MemoryDurableStateStore = store();
+    for collection in [
+        DurableCollection::State,
+        DurableCollection::Receipts,
+        DurableCollection::ObjectHeads,
+        DurableCollection::ObjectVersions,
+    ] {
+        let wrong: DurableRecordKey = if collection == DurableCollection::State {
+            DurableRecordKey::Receipt(DurableRequestId::new([1; 32]).unwrap())
+        } else {
+            DurableRecordKey::State(b"foreign".to_vec())
+        };
+        // Deliberately construct an impossible internal value. The public
+        // constructor still rejects it; no unchecked test-only API is exposed.
+        let scan: DurableRecordScan = DurableRecordScan {
+            collection,
+            after: Some(wrong),
+            limit: NonZeroUsize::new(1).unwrap(),
+        };
+        assert_eq!(
+            store.scan_portable_keys(&context(), domain(), &scan),
+            Err(DurableReadError::InvalidPersistedState)
+        );
+    }
 }
 
 #[test]
@@ -206,6 +246,47 @@ fn maximum_legal_value_downloads_in_strictly_bounded_chunks() {
         DurableRecordChunkRequest::new(descriptor, usize::MAX, NonZeroUsize::new(1).unwrap())
             .is_err()
     );
+}
+
+#[test]
+fn chunk_request_range_and_is_last_match_resolved_length_at_every_boundary() {
+    let store: MemoryDurableStateStore = store();
+    install(&store, b"ten", Some(vec![7; 10]), 1);
+    let descriptor: DurableRecordDescriptor = store
+        .read_portable_descriptor(
+            &context(),
+            domain(),
+            &DurableRecordKey::State(b"ten".to_vec()),
+        )
+        .unwrap()
+        .unwrap();
+    let first: DurableRecordChunkRequest =
+        DurableRecordChunkRequest::new(descriptor.clone(), 0, NonZeroUsize::new(4).unwrap())
+            .unwrap();
+    assert_eq!(first.range(), 0..4);
+    assert!(!chunk_of(&store, &first).is_last());
+    let middle: DurableRecordChunkRequest =
+        DurableRecordChunkRequest::new(descriptor.clone(), 6, NonZeroUsize::new(8).unwrap())
+            .unwrap();
+    assert_eq!(middle.range(), 6..10);
+    assert!(chunk_of(&store, &middle).is_last());
+    let last_byte: DurableRecordChunkRequest =
+        DurableRecordChunkRequest::new(descriptor, 9, NonZeroUsize::new(1).unwrap()).unwrap();
+    assert_eq!(last_byte.range(), 9..10);
+    assert!(chunk_of(&store, &last_byte).is_last());
+    install(&store, b"empty", Some(Vec::new()), 1);
+    let empty_descriptor: DurableRecordDescriptor = store
+        .read_portable_descriptor(
+            &context(),
+            domain(),
+            &DurableRecordKey::State(b"empty".to_vec()),
+        )
+        .unwrap()
+        .unwrap();
+    let empty_request: DurableRecordChunkRequest =
+        DurableRecordChunkRequest::new(empty_descriptor, 0, NonZeroUsize::new(1).unwrap()).unwrap();
+    assert_eq!(empty_request.range(), 0..0);
+    assert!(chunk_of(&store, &empty_request).is_last());
 }
 
 #[test]
