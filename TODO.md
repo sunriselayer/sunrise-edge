@@ -184,9 +184,11 @@ The detailed existing evidence and remaining criteria follow:
   `ExecutionGeneration` primitive and bounded availability identity/vote/
   certificate library are integrated; protocol/consensus tests and independent
   fixed-byte reconstruction pass. Opus approved the pure availability library,
-  not durable ACK retention or apply authority. The memory/SQLite/PostgreSQL
-  portable-read candidate passes shared storage tests, real file reopen/fresh
-  connection reads and authority refusals; its independent review is pending.
+  not durable ACK retention or apply authority. Bounded portable reads across
+  memory, SQLite/shared SQL and PostgreSQL are integrated after an independent
+  Opus prerequisite review, followed by Sonnet's invariant/test refinements and
+  parent verification. Shared storage tests, real file reopen/fresh connection
+  reads and authority refusals pass; these do not prove a complete cut.
   Logical provenance/commitment/profile call-site wiring is still unaccepted
   work in progress. Mandatory publication admission, Freeze/DrainSet/Seal,
   complete authenticated import, readiness/activation and the network E2E are
