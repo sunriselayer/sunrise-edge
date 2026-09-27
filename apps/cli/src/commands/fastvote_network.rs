@@ -101,7 +101,7 @@ pub(super) fn network_flag_specs() -> Vec<crate::args::FlagSpec> {
     ]
 }
 
-fn read_bounded(path: &str, maximum: usize) -> Result<Vec<u8>, CliError> {
+pub(super) fn read_bounded(path: &str, maximum: usize) -> Result<Vec<u8>, CliError> {
     let mut bytes: Vec<u8> = Vec::new();
     File::open(path)
         .map_err(failure)?
@@ -116,14 +116,14 @@ fn read_bounded(path: &str, maximum: usize) -> Result<Vec<u8>, CliError> {
 
 /// A newly reserved output whose original file and parent-directory handles
 /// remain held until the workflow ends. Persistence never reopens its path.
-struct ReservedArtifact {
+pub(super) struct ReservedArtifact {
     path: PathBuf,
     file: File,
     parent: File,
     kind: &'static str,
 }
 
-fn artifact_path(path: &str) -> Result<PathBuf, CliError> {
+pub(super) fn artifact_path(path: &str) -> Result<PathBuf, CliError> {
     let supplied: &Path = Path::new(path);
     let filename = supplied
         .file_name()
@@ -138,7 +138,7 @@ fn artifact_path(path: &str) -> Result<PathBuf, CliError> {
 /// Resolve all destinations before reserving any. Canonical parents catch
 /// relative and symlink-directory aliases; existing destinations (including
 /// symlinks and hard links to inputs) are always rejected by create_new.
-fn reserve_artifacts(
+pub(super) fn reserve_artifacts(
     outputs: &[(&str, &'static str)],
     inputs: &[&str],
 ) -> Result<Vec<ReservedArtifact>, CliError> {
@@ -180,6 +180,10 @@ fn reserve_artifacts(
 }
 
 impl ReservedArtifact {
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+
     fn ensure_attached(&self) -> Result<(), CliError> {
         #[cfg(unix)]
         {
@@ -207,7 +211,7 @@ impl ReservedArtifact {
         Ok(())
     }
 
-    fn persist(&mut self, bytes: &[u8]) -> Result<(), CliError> {
+    pub(super) fn persist(&mut self, bytes: &[u8]) -> Result<(), CliError> {
         self.ensure_attached()?;
         let recovery = |source: &dyn Error| {
             invalid(format!(
@@ -233,15 +237,15 @@ fn persist_handles(file: &mut File, parent: &File, bytes: &[u8]) -> std::io::Res
 /// `tls_ca_cert_der_file` are the literal `-` when this peer uses loopback
 /// plaintext. Blank lines and lines starting with `#` are ignored.
 #[derive(Debug)]
-struct PeerConfig {
-    validator_id: ValidatorId,
-    endpoint: String,
-    tls_server_name: Option<String>,
-    tls_ca_cert_der_file: Option<String>,
-    bearer_token_file: Option<String>,
+pub(super) struct PeerConfig {
+    pub(super) validator_id: ValidatorId,
+    pub(super) endpoint: String,
+    pub(super) tls_server_name: Option<String>,
+    pub(super) tls_ca_cert_der_file: Option<String>,
+    pub(super) bearer_token_file: Option<String>,
 }
 
-fn parse_network_config(path: &str) -> Result<Vec<PeerConfig>, CliError> {
+pub(super) fn parse_network_config(path: &str) -> Result<Vec<PeerConfig>, CliError> {
     let bytes = read_bounded(path, MAX_NETWORK_CONFIG_BYTES)?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| invalid("--fastvote-network config file must be UTF-8"))?;
@@ -297,6 +301,46 @@ fn parse_network_config(path: &str) -> Result<Vec<PeerConfig>, CliError> {
     Ok(peers)
 }
 
+/// Dials and configures one peer's transport (TLS/plaintext selection plus
+/// an optional bearer token), then updates the shared cohort-purity flags.
+/// Shared by every network cohort builder (FastVote and ordered economics)
+/// so the mixed-loopback/remote-TLS rejection and bearer-token handling
+/// can never subtly diverge between them.
+pub(super) fn configure_peer_transport(
+    peer: &PeerConfig,
+    saw_loopback: &mut bool,
+    saw_remote_tls: &mut bool,
+) -> Result<CliTransport, CliError> {
+    let mut transport: CliTransport = build_transport(
+        &peer.endpoint,
+        peer.tls_server_name.as_deref(),
+        peer.tls_ca_cert_der_file.as_deref(),
+    )?;
+    if let Some(path) = &peer.bearer_token_file {
+        // Read at most max+newline+1, using the same private regular-file
+        // and handle-identity checks as signing seeds. Never log content.
+        let bytes: Vec<u8> = crate::seed::read_private_file(Path::new(path), 1026)
+            .map_err(|_| invalid("bearer credential file is unavailable or not private"))?;
+        let trimmed: &[u8] = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
+        let value: String = std::str::from_utf8(trimmed)
+            .map_err(|_| invalid("bearer credential file must contain a bounded ASCII token"))?
+            .to_owned();
+        let token: sunrise_edge_client::BearerToken = sunrise_edge_client::BearerToken::new(value)
+            .map_err(|_| invalid("bearer credential file must contain a bounded ASCII token"))?;
+        transport = transport.with_bearer_token(token);
+    }
+    match &transport {
+        CliTransport::Loopback(_) => *saw_loopback = true,
+        CliTransport::RemoteTls(_) => *saw_remote_tls = true,
+    }
+    if *saw_loopback && *saw_remote_tls {
+        return Err(invalid(
+            "network config cannot mix loopback-plaintext and remote-TLS peers in one cohort",
+        ));
+    }
+    Ok(transport)
+}
+
 /// Builds one [`FastVoteEndpoint`] per configured peer and rejects a config
 /// that mixes loopback-plaintext and remote-TLS peers in one cohort, before
 /// any of them is dialed.
@@ -305,35 +349,7 @@ fn build_endpoints(peers: &[PeerConfig]) -> Result<Vec<FastVoteEndpoint<CliTrans
     let mut saw_loopback = false;
     let mut saw_remote_tls = false;
     for peer in peers {
-        let mut transport: CliTransport = build_transport(
-            &peer.endpoint,
-            peer.tls_server_name.as_deref(),
-            peer.tls_ca_cert_der_file.as_deref(),
-        )?;
-        if let Some(path) = &peer.bearer_token_file {
-            // Read at most max+newline+1, using the same private regular-file
-            // and handle-identity checks as signing seeds. Never log content.
-            let bytes: Vec<u8> = crate::seed::read_private_file(Path::new(path), 1026)
-                .map_err(|_| invalid("bearer credential file is unavailable or not private"))?;
-            let trimmed: &[u8] = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
-            let value: String = std::str::from_utf8(trimmed)
-                .map_err(|_| invalid("bearer credential file must contain a bounded ASCII token"))?
-                .to_owned();
-            let token: sunrise_edge_client::BearerToken =
-                sunrise_edge_client::BearerToken::new(value).map_err(|_| {
-                    invalid("bearer credential file must contain a bounded ASCII token")
-                })?;
-            transport = transport.with_bearer_token(token);
-        }
-        match &transport {
-            CliTransport::Loopback(_) => saw_loopback = true,
-            CliTransport::RemoteTls(_) => saw_remote_tls = true,
-        }
-        if saw_loopback && saw_remote_tls {
-            return Err(invalid(
-                "--fastvote-network cannot mix loopback-plaintext and remote-TLS peers in one cohort",
-            ));
-        }
+        let transport = configure_peer_transport(peer, &mut saw_loopback, &mut saw_remote_tls)?;
         endpoints.push(FastVoteEndpoint {
             validator_id: peer.validator_id,
             endpoint_label: peer.endpoint.clone(),

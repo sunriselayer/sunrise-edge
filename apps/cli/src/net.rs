@@ -82,6 +82,17 @@ impl Transport for CliTransport {
 }
 
 impl CliTransport {
+    pub(crate) fn with_max_response_body_bytes(self, maximum: NonZeroUsize) -> Self {
+        match self {
+            Self::Loopback(transport) => {
+                Self::Loopback(transport.with_max_response_body_bytes(maximum))
+            }
+            Self::RemoteTls(transport) => {
+                Self::RemoteTls(transport.with_max_response_body_bytes(maximum))
+            }
+        }
+    }
+
     pub(crate) fn with_bearer_token(self, token: sunrise_edge_client::BearerToken) -> Self {
         match self {
             Self::Loopback(transport) => Self::Loopback(transport.with_bearer_token(token)),

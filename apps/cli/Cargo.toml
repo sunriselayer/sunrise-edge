@@ -13,6 +13,7 @@ name = "sunrise-edge-cli"
 path = "src/main.rs"
 
 [dependencies]
+protocol-types.workspace = true
 sunrise-edge-client.workspace = true
 sunrise-edge-ledger.workspace = true
 public-standard-asset = { path = "../../contracts/standard-asset" }

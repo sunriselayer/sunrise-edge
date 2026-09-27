@@ -84,6 +84,7 @@ where
         "create-asset" | "transfer" | "split" | "merge" | "mint" | "burn" => {
             commands::standard_asset::run(command.as_str(), iterator)
         }
+        "economics" => commands::ordered_economics_network::run(iterator),
         other => Err(CliError::UnknownCommand(other.to_string())),
     }
 }
