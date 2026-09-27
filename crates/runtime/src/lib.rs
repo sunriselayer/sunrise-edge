@@ -5,6 +5,8 @@
 #[cfg(any(test, feature = "durable-conformance"))]
 pub mod conformance;
 
+pub mod portable;
+
 use core::{fmt, mem::size_of};
 pub use objects::ObjectId;
 use objects::{

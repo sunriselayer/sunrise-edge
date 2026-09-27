@@ -1,6 +1,9 @@
 //! Shared durable conformance evidence and restart-persistence tests for the
 //! local-only, non-production [`SqliteDurableStore`].
 
+#[path = "sqlite_structured/portable.rs"]
+mod portable;
+
 use hashing::{BuiltinHashFunction, HashFunction};
 use objects::{Address, Object, Owner};
 use protocol_types::{ChainId, ProtocolVersion, ValidatorId};

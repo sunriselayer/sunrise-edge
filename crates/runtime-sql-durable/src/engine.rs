@@ -8,6 +8,8 @@
 //! and rejection rules by construction, never two independently
 //! maintained copies.
 
+mod portable;
+
 use crate::backend::{
     SqlBackend, SqlBackendError, SqlSession, SqlSessionError, SqlValue, TransactionBudget,
     TransactionDecision,
