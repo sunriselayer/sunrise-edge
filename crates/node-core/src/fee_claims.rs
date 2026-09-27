@@ -945,6 +945,46 @@ where
     S: StructuredDurableDomainStateStore,
     E: LocalContractEngine + ?Sized,
 {
+    handle_fee_claim_ordered(
+        store,
+        blob_store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        leg_policy,
+        engine,
+        signed_bytes,
+        created_checkpoint,
+        None,
+    )
+}
+
+/// [`handle_fee_claim`] plus DR-0153's private admitted-candidate capability,
+/// which authorizes reuse of exactly the claimant leg's own already-reserved
+/// sender nonce. The public entry point delegates here with `None`, so this
+/// is the one implementation: the ordered path shares every existing
+/// entitlement, value-conservation and custody check unmodified.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn handle_fee_claim_ordered<S, E>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    leg_policy: &LocalExecutionPolicy,
+    engine: &E,
+    signed_bytes: &[u8],
+    created_checkpoint: u64,
+    ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
+) -> Result<NodeOutput, FeeClaimError>
+where
+    S: StructuredDurableDomainStateStore,
+    E: LocalContractEngine + ?Sized,
+{
     if history.len() > publication::MAX_PUBLICATION_HISTORY {
         return Err(FeeClaimError::Invalid("resolver history bound"));
     }
@@ -1167,6 +1207,7 @@ where
         is_final,
         created_checkpoint,
         &mut reads,
+        ordered,
     )?;
     if let FeeClaimOperation::Split {
         expected_payout, ..

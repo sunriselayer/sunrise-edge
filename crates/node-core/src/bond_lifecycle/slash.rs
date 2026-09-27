@@ -313,6 +313,45 @@ where
     S: StructuredDurableDomainStateStore,
     E: LocalContractEngine + ?Sized,
 {
+    handle_bond_slash_ordered(
+        store,
+        blob_store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        leg_policy,
+        engine,
+        intent_bytes,
+        created_checkpoint,
+        None,
+    )
+}
+
+/// [`handle_bond_slash`] plus DR-0153's private admitted-candidate
+/// capability, which authorizes reuse of exactly the forfeiture leg
+/// submitter's own already-reserved sender nonce. The public entry point
+/// delegates here with `None`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn handle_bond_slash_ordered<S, E>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    leg_policy: &LocalExecutionPolicy,
+    engine: &E,
+    intent_bytes: &[u8],
+    created_checkpoint: u64,
+    ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
+) -> Result<NodeOutput, BondLifecycleError>
+where
+    S: StructuredDurableDomainStateStore,
+    E: LocalContractEngine + ?Sized,
+{
     if history.len() > publication::MAX_PUBLICATION_HISTORY {
         return Err(BondLifecycleError::Invalid("resolver history bound"));
     }
@@ -625,6 +664,7 @@ where
         &mut reads,
         &mut head_reads,
         &mut state_mutations,
+        ordered,
     )?;
     if !admitted.success {
         return Err(BondLifecycleError::Invalid("bond forfeiture leg trapped"));

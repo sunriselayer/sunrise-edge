@@ -527,6 +527,7 @@ pub(super) fn execute_positive_claim<S, E>(
     is_final: bool,
     created_checkpoint: u64,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+    ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
 ) -> Result<ExecutedFeeClaim, FeeClaimError>
 where
     S: StructuredDurableDomainStateStore,
@@ -603,6 +604,7 @@ where
         reads,
         &mut head_reads,
         &mut state_mutations,
+        ordered,
     )?;
     if !admitted.success {
         return Err(FeeClaimError::Invalid("fee claim leg trapped"));
@@ -815,6 +817,8 @@ where
                 is_final,
                 created_checkpoint,
                 &mut reads,
+                // Offline read-only preparation reuses no reservation at all.
+                None,
             )?;
             (executed.next_settlement, executed.payout)
         };
