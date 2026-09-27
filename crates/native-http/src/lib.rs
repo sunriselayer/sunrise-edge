@@ -17,6 +17,7 @@ use consensus::ConsensusSigner;
 use core::fmt;
 mod fastvote;
 mod local_execution;
+pub mod ordered_economics;
 mod paid_execution;
 mod publication;
 use execution::{ExecutionError, WasmExecutionEngine};

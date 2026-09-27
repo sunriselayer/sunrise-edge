@@ -52,16 +52,18 @@ use execution::local_execution::LocalExecutionPolicy;
 use execution::paid_execution::{PaidFeePolicy, decode_paid_fee_policy};
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
+use native_http::ordered_economics::{OrderedEconomicsState, certified_ordered_economics_router};
 use native_http::{
-    FastVoteComposition, NativeBlockingPolicy, PaidExecutionComposition,
+    FastVoteComposition, NativeBlockingExecutor, NativeBlockingPolicy, PaidExecutionComposition,
     StructuredDurableNativeComponents, StructuredDurableRequestAuthority,
-    certified_fastvote_router,
+    certified_fastvote_router_with_executor,
 };
 use node_core::fast_path::FastPathValidatorSetRecord;
 use node_core::fast_path::records::{FastPathValidatorEntry, decode_fastpath_validator_set_record};
+use node_core::ordered_economics::OrderedEconomicsPolicy;
 use node_core::{
-    GenesisManifest, NodeConfig, decode_genesis_install_marker, genesis_marker_key,
-    local_instance_state,
+    GenesisManifest, NodeConfig, decode_genesis_install_marker, genesis_manifest_commitment,
+    genesis_marker_key, local_instance_state,
 };
 use postgres_rustls::MakeTlsConnector;
 use protocol_config::{DomainPlacementManifest, ProtocolConfig, TransactionAuthProfile};
@@ -89,7 +91,9 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
+use validator_set::{ValidatorInfo, ValidatorSet};
 
 fn parse_chain(value: String) -> Result<ChainId, String> {
     ChainId::new(value).map_err(|_| "invalid --chain-id".to_string())
@@ -181,6 +185,7 @@ fn to_hex(bytes: &[u8]) -> String {
 
 /// A real (non-mocked) `ConsensusSigner` backed by a locally loaded Ed25519
 /// signing key. Never logs or exposes the key material.
+#[derive(Clone)]
 struct FileEd25519Signer {
     validator_id: ValidatorId,
     signing_key: SigningKey,
@@ -260,6 +265,26 @@ fn require_registered_signer<'a>(
         );
     }
     Ok(entry)
+}
+
+/// Converts the already-loaded, already-pinned `FastPathValidatorSetRecord`
+/// into a `ValidatorSet` for [`OrderedEconomicsPolicy::new`] -- the DR-0153
+/// fixed-epoch profile reuses this host's existing genesis validator set
+/// unchanged, never a separately loaded one.
+fn ordered_validator_set_from_record(
+    record: &FastPathValidatorSetRecord,
+    epoch: Epoch,
+) -> Result<ValidatorSet, Box<dyn Error>> {
+    let mut info: Vec<ValidatorInfo> = Vec::with_capacity(record.validators.len());
+    for validator in &record.validators {
+        info.push(ValidatorInfo {
+            id: validator.id,
+            voting_power: validator.voting_power,
+            signature_scheme: validator.signature_scheme,
+            public_key: validator.public_key.clone(),
+        });
+    }
+    Ok(ValidatorSet::new(epoch, info)?)
 }
 
 // ---------------------------------------------------------------------
@@ -409,11 +434,17 @@ const VALUE_FLAGS: &[&str] = &[
     "--max-connections",
     "--max-concurrent",
 ];
-const BOOL_FLAGS: &[&str] = &["--confirm-offline-fence-advance"];
+const BOOL_FLAGS: &[&str] = &[
+    "--confirm-offline-fence-advance",
+    // DR-0153 opt-in only. Off by default: this binary otherwise serves
+    // exactly its existing certified FastVote surface, unchanged.
+    "--enable-ordered-economics",
+];
 
 fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>> {
     let mut flags: FlagSet = FlagSet::parse(tokens, VALUE_FLAGS, BOOL_FLAGS)?;
     let confirmed: bool = flags.bool("--confirm-offline-fence-advance");
+    let ordered_economics_enabled: bool = flags.bool("--enable-ordered-economics");
     let ca_der: PathBuf = PathBuf::from(flags.one("--tls-root-der")?);
     let chain: ChainId = parse_chain(flags.one("--chain-id")?)?;
     let validator: ValidatorId = parse_validator(&flags.one("--validator-id")?)?;
@@ -560,12 +591,15 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
 
     let base_policy: LocalExecutionPolicy =
         LocalExecutionPolicy::generic_object_results(expected_context.clone());
+    let ordered_leg_policy: LocalExecutionPolicy = base_policy.clone();
     let execution: PaidExecutionComposition =
         PaidExecutionComposition::new(base_policy, fee_policy);
-    let signer: Arc<dyn ConsensusSigner + Send + Sync> = Arc::new(FileEd25519Signer {
+    let file_signer: FileEd25519Signer = FileEd25519Signer {
         validator_id: validator,
         signing_key,
-    });
+    };
+    let ordered_signer: FileEd25519Signer = file_signer.clone();
+    let signer: Arc<dyn ConsensusSigner + Send + Sync> = Arc::new(file_signer);
     let fastvote: FastVoteComposition =
         FastVoteComposition::new(execution, signer, created_checkpoint);
 
@@ -597,14 +631,84 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
         lease_millis,
     )?;
 
-    let components = StructuredDurableNativeComponents::new(
-        Arc::new(store),
-        Arc::new(blob_store),
-        Arc::new(NoOutboundTransport),
-        Arc::new(SystemClock),
-        Arc::new(SequentialIdentitySource::new(generation)),
+    let store_arc = Arc::new(store);
+    let blob_arc = Arc::new(blob_store);
+    let clock_arc = Arc::new(SystemClock);
+    let identities_arc = Arc::new(SequentialIdentitySource::new(generation));
+    // One shared blocking-admission budget for both the certified FastVote
+    // router and the opt-in ordered-economics router: their synchronous
+    // store/core work draws from the same bounded concurrency pool, never
+    // two independent, uncoordinated limits.
+    let blocking_executor: NativeBlockingExecutor = NativeBlockingExecutor::new(
+        NativeBlockingPolicy::new(NonZeroUsize::new(max_concurrent).ok_or("zero concurrency")?),
     );
-    let router = certified_fastvote_router(
+    let components = StructuredDurableNativeComponents::new(
+        store_arc.clone(),
+        blob_arc.clone(),
+        Arc::new(NoOutboundTransport),
+        clock_arc.clone(),
+        identities_arc.clone(),
+    );
+    // DR-0153 opt-in composition: never mounted unless
+    // `--enable-ordered-economics` is explicitly set. Reuses this same
+    // process's already-verified genesis validator set, domain, resolver,
+    // store, blob store, clock, and identity source unchanged -- no second
+    // trust decision, no daemon-correctness guarantee beyond what
+    // `certified_fastvote_router` itself already provides.
+    let ordered_economics_router = if ordered_economics_enabled {
+        let ordered_validator_set =
+            ordered_validator_set_from_record(&record, expected_context.epoch())?;
+        let genesis_digest = genesis_manifest_commitment(&resolver, &manifest)
+            .map_err(|error| format!("failed to recompute genesis manifest digest: {error}"))?;
+        let ordered_policy = OrderedEconomicsPolicy::new(
+            expected_context.clone(),
+            domain,
+            genesis_digest,
+            ordered_validator_set,
+            resolver.clone(),
+        )
+        .map_err(|error| format!("failed to compose ordered economics policy: {error}"))?;
+        let genesis_engine = execution::LocalWasmExecutionEngine::new();
+        let ordered_env = node_core::ordered_economics::OrderedEconomicsEnvironment {
+            policy: &ordered_policy,
+            resolver: &resolver,
+            history: &[],
+            leg_policy: &ordered_leg_policy,
+            engine: &genesis_engine,
+            blobs: blob_arc.as_ref(),
+        };
+        // The production installer verifies retained state without rewriting
+        // it, and distinguishes never-written absence from a tombstone.
+        // Corruption/fencing/unavailability must abort startup, never reset.
+        node_core::ordered_economics::install_ordered_genesis(
+            store_arc.as_ref(),
+            &serving_context,
+            &ordered_env,
+            SystemClock.now_unix_millis()?,
+        )
+        .map_err(|error| format!("failed to install ordered economics genesis: {error}"))?;
+        let ordered_state = OrderedEconomicsState {
+            store: store_arc.clone(),
+            clock: clock_arc.clone(),
+            identities: identities_arc.clone(),
+            domain,
+            writer_fence: generation,
+            operation_timeout: Duration::from_secs(timeout_seconds),
+            policy: ordered_policy,
+            resolver: resolver.clone(),
+            history: Vec::new(),
+            leg_policy: ordered_leg_policy,
+            engine: Arc::new(execution::LocalWasmExecutionEngine::new()),
+            blobs: blob_arc.clone(),
+            signer: ordered_signer,
+            blocking_executor: blocking_executor.clone(),
+            cancellation: None,
+        };
+        Some(certified_ordered_economics_router(ordered_state))
+    } else {
+        None
+    };
+    let router = certified_fastvote_router_with_executor(
         components,
         fastvote,
         protocol_config,
@@ -612,9 +716,13 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
         node_config,
         resolver,
         Vec::new(),
-        NativeBlockingPolicy::new(NonZeroUsize::new(max_concurrent).ok_or("zero concurrency")?),
+        blocking_executor,
     )
     .map_err(|error| format!("failed to compose certified FastVote router: {error}"))?;
+    let router = match ordered_economics_router {
+        Some(ordered) => router.merge(ordered),
+        None => router,
+    };
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

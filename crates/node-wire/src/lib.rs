@@ -15,6 +15,8 @@
 //! produced and accepted here are unchanged from their prior `native-http`
 //! definitions.
 
+pub mod ordered_economics;
+
 use canonical_encoding::{
     CanonicalDecodingError, CanonicalEncodingError, CanonicalFrame, CanonicalStruct,
     decode_canonical_frame,
