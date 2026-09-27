@@ -3,20 +3,25 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
     "allowImportingTsExtensions": true,
     "strict": true,
     "noEmit": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "skipLibCheck": true,
-    "types": ["@cloudflare/workers-types"]
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"]
   },
   "include": [
     "worker-configuration.d.ts",
+    "validator-configuration.d.ts",
     "../shared/**/*.ts",
     "src/**/*.ts",
     "test/**/*.ts",
     "vitest.config.ts",
+    "vitest.sql.config.ts",
+    "vitest.contract.config.ts",
     "eslint.config.js"
-  ]
+  ],
+  "exclude": ["src/validator/generated"]
 }

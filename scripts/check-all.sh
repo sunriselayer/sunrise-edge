@@ -44,6 +44,7 @@ node scripts/fast-vote-vectors.mjs
 node scripts/fast-path-vectors.mjs
 node scripts/fastvote-apply-request-vectors.mjs
 
+bash scripts/build-cloudflare-validator.sh
 npm --prefix adapters/cloudflare-workers run check
 
 for adapter in deno vercel supabase-edge aws-lambda; do

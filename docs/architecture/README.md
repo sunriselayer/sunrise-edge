@@ -48,6 +48,9 @@ roadmap describes a later target state.
   contract lifecycle before the Cloudflare DO profile.
 - [Decision records](decisions/README.md): accepted and compatibility-relevant
   decisions grouped into bounded ranges.
+- [Embedded DO contract hosting](decisions/0152-durable-object-contract-host.md):
+  real Rust/Wasmi execution, shared synchronous SQL validation, confirmed-output
+  and single-domain authority boundaries for the experimental lightweight host.
 
 Production-oriented persistence requirements and the PostgreSQL mapping are
 separate operational references:

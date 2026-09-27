@@ -58,6 +58,7 @@
 - [DR-0149: offline signed fee-claim operator workflow](0149-offline-signed-fee-claims.md)
 - [DR-0150: same-epoch certified-call catch-up](0150-certified-call-catch-up.md)
 - [DR-0151: integrated network delivery and lightweight validator stores](0151-integrated-network-delivery-and-lightweight-stores.md)
+- [DR-0152: embedded Rust contract hosting in SQLite-backed DO](0152-durable-object-contract-host.md)
 
 These records describe accepted decisions and compatibility boundaries. Work
 status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).

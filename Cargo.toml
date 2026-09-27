@@ -33,6 +33,7 @@ members = [
     "apps/cli",
     "clients/rust",
     "clients/ledger",
+    "adapters/cloudflare-workers/rust",
 ]
 resolver = "3"
 

@@ -1,0 +1,15 @@
+{
+  "name": "sunrise-edge-closed-contract-test",
+  "main": "contract-worker.ts",
+  "compatibility_date": "2026-08-27",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": { "bindings": [
+    { "name": "VALIDATOR_ZERO", "class_name": "ValidatorZero" },
+    { "name": "VALIDATOR_ONE", "class_name": "ValidatorOne" },
+    { "name": "VALIDATOR_TWO", "class_name": "ValidatorTwo" },
+    { "name": "VALIDATOR_THREE", "class_name": "ValidatorThree" }
+  ] },
+  "migrations": [{ "tag": "test-v1", "new_sqlite_classes": [
+    "ValidatorZero", "ValidatorOne", "ValidatorTwo", "ValidatorThree"
+  ] }]
+}

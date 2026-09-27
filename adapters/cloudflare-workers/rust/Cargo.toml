@@ -1,0 +1,29 @@
+[package]
+name = "sunrise-edge-cloudflare-validator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "=0.2.127"
+js-sys = "=0.3.104"
+sha2.workspace = true
+protocol-types.workspace = true
+canonical-encoding.workspace = true
+hashing.workspace = true
+crypto.workspace = true
+objects.workspace = true
+abi.workspace = true
+protocol-config.workspace = true
+runtime.workspace = true
+runtime-sql-durable.workspace = true
+execution.workspace = true
+validator-set.workspace = true
+consensus.workspace = true
+node-core.workspace = true
+node-wire.workspace = true
+ed25519-zebra.workspace = true

@@ -176,6 +176,15 @@ pub struct SqliteDurableStore {
     engine: SqlDurableEngine<NativeSqlBackend>,
 }
 
+impl fmt::Debug for SqliteDurableStore {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SqliteDurableStore")
+            .field("namespace", self.engine.namespace())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Runs one operator-path transaction, mapping every backend failure to
 /// `SqliteDurableStoreError::Unavailable` and every schema/namespace
 /// failure through its own `From` conversion.

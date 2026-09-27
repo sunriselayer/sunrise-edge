@@ -63,7 +63,7 @@ shared database role across validators.
 `--fastvote-network` takes a small text config, one line per peer:
 
 ```
-VALIDATOR_ID_HEX ENDPOINT TLS_SERVER_NAME TLS_CA_CERT_DER_FILE
+VALIDATOR_ID_HEX ENDPOINT TLS_SERVER_NAME TLS_CA_CERT_DER_FILE [BEARER_TOKEN_FILE]
 ```
 
 Use `-` for both `TLS_SERVER_NAME` and `TLS_CA_CERT_DER_FILE` for a loopback
@@ -73,6 +73,13 @@ independently configured hostname and CA, never one global pair reused
 across peers, and never a system trust store. A config mixing loopback and
 remote-TLS peers in one file is rejected before any peer is dialed. Blank
 lines and lines starting with `#` are ignored; at most 32 peers.
+
+The optional fifth field is a private transport-credential file, not a literal
+token. Omit it or use `-` when not required. The
+[embedded Cloudflare profile](cloudflare-validator.md#cli-cohort-credentials)
+documents file permissions, token bounds and TLS-before-credential behavior.
+Transport access does not replace signed-intent authentication or local
+protocol/genesis pins.
 
 For a same-host loopback-only cohort (replace the abbreviated IDs):
 

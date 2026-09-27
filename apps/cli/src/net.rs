@@ -81,6 +81,15 @@ impl Transport for CliTransport {
     }
 }
 
+impl CliTransport {
+    pub(crate) fn with_bearer_token(self, token: sunrise_edge_client::BearerToken) -> Self {
+        match self {
+            Self::Loopback(transport) => Self::Loopback(transport.with_bearer_token(token)),
+            Self::RemoteTls(transport) => Self::RemoteTls(transport.with_bearer_token(token)),
+        }
+    }
+}
+
 /// One monotonic budget shared by preparation, signing, prepare and apply.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct OperationBudget {

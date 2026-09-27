@@ -191,6 +191,45 @@ fn get_request() -> WireRequest {
     }
 }
 
+#[test]
+fn bearer_credential_is_sent_only_after_the_pinned_tls_handshake() {
+    const TOKEN: &str = "public-development-fixture-token-0123456789";
+    let certificate: TestCertificate = issue_certificate("validator.test");
+    let (sender, receiver) = mpsc::channel();
+    let addr: SocketAddr = serve_tls_once(
+        certificate.server_config.clone(),
+        ok_response(b"ok"),
+        sender,
+    );
+    let transport: RemoteTlsHttpTransport =
+        remote_transport(addr, "validator.test", &certificate.ca_der)
+            .unwrap()
+            .with_bearer_token(sunrise_edge_client::BearerToken::new(TOKEN.to_owned()).unwrap());
+    assert!(!format!("{transport:?}").contains(TOKEN));
+    assert_eq!(transport.send(&get_request()).unwrap().body, b"ok");
+    let request: String =
+        String::from_utf8(receiver.recv_timeout(Duration::from_secs(3)).unwrap()).unwrap();
+    assert_eq!(request.matches("Authorization: Bearer ").count(), 1);
+    assert!(request.contains(&format!("Authorization: Bearer {TOKEN}\r\n")));
+
+    let (sender, receiver) = mpsc::channel();
+    let addr: SocketAddr = serve_tls_once(certificate.server_config, ok_response(b"ok"), sender);
+    let transport: RemoteTlsHttpTransport =
+        remote_transport(addr, "wrong-validator.test", &certificate.ca_der)
+            .unwrap()
+            .with_bearer_token(sunrise_edge_client::BearerToken::new(TOKEN.to_owned()).unwrap());
+    assert!(matches!(
+        transport.send(&get_request()),
+        Err(TransportError::TlsProtocol(_))
+    ));
+    assert!(
+        receiver
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .is_empty()
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn remote_transport(
     addr: SocketAddr,
