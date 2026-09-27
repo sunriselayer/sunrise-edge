@@ -20,6 +20,10 @@
 //! multi-writer or production deployments.
 
 use crate::rusqlite_backend::NativeSqlBackend;
+use runtime::portable::{
+    DurablePortableRepository, DurableRecordChunkOutcome, DurableRecordChunkRequest,
+    DurableRecordDescriptor, DurableRecordKey, DurableRecordPage, DurableRecordScan,
+};
 use runtime::{
     AtomicStateTransaction, AtomicityDomainId, DueOutboxClaimRequest, DurableCommitOutcome,
     DurableDomainStateStore, DurableInvocationTransaction, DurableObjectHead, DurableObjectVersion,
@@ -440,6 +444,33 @@ impl DurableStateKeyScanner for SqliteDurableStore {
         scan: &StateKeyScan,
     ) -> Result<StateKeyPage, DurableReadError> {
         self.engine.scan_durable_keys(context, domain, scan)
+    }
+}
+
+impl DurablePortableRepository for SqliteDurableStore {
+    fn scan_portable_keys(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        scan: &DurableRecordScan,
+    ) -> Result<DurableRecordPage, DurableReadError> {
+        self.engine.scan_portable_keys(context, domain, scan)
+    }
+    fn read_portable_descriptor(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        key: &DurableRecordKey,
+    ) -> Result<Option<DurableRecordDescriptor>, DurableReadError> {
+        self.engine.read_portable_descriptor(context, domain, key)
+    }
+    fn read_portable_chunk(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        request: &DurableRecordChunkRequest,
+    ) -> Result<DurableRecordChunkOutcome, DurableReadError> {
+        self.engine.read_portable_chunk(context, domain, request)
     }
 }
 
