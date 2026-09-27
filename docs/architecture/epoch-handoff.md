@@ -97,11 +97,11 @@ Commands occupy the existing operation-bearing slots and use the same normal
 leader, view, lock, QC and three-chain commit rules. Ticks affect liveness only.
 
 ```text
-Open -> Freeze committed -> Frontier fixed -> Drain completed -> Seal committed
+Open -> Freeze -> Fixed frontiers -> Quorum-retained DrainSet -> Drain
                                                                   |
-                                               local verified readiness
+                                Verified cut + conditional next-set readiness
                                                                   |
-                                                    Activate next epoch
+                                      Seal -> Transition certificate -> Activate
 ```
 
 ### 1. Freeze and fix authenticated frontiers
@@ -199,7 +199,9 @@ normal HotStuff ancestry, view and lock rules. Before exposing a new vote,
 account for any Freeze committed by processing the proposal's justification;
 admission must use the resulting control state, not a stale pre-event snapshot.
 After processing committed Freeze, an honest replica emits no fresh vote for
-a business-bearing proposal. Retained pre-freeze votes/QCs may still be replayed
+a proposal whose **own payload** carries business. Empty/control proposals
+extending a business-bearing inherited justification remain votable and are
+how that suffix reaches its closed-epoch refusal. Retained pre-freeze votes/QCs may still be replayed
 and inherited justifications processed; this rule does not erase them. No fresh
 business QC can form, so honest empty/control views can drain the finite
 inherited suffix and reach the business-free seal barrier.
@@ -227,7 +229,8 @@ authentication in the applied prefix before deriving the state to seal.
 
 Each outgoing voter independently derives the normalized final logical state,
 original receipt history and complete artifact manifest after drain. Choose a
-currently eligible next set through the existing policy, bond, key and power
+currently eligible next set, evaluated at the same post-drain frozen state,
+through the existing policy, bond, key and power
 rules; it may differ from Freeze's advisory proposal. The implementation must
 not assume that a dead proposal defines the only next-set choice.
 
@@ -238,7 +241,15 @@ conditional readiness for the exact cut/context/proposed set. Collect a
 next-set quorum's readiness **before committing Seal**; otherwise choose a
 different legally eligible ready set while the epoch remains frozen. Readiness
 binds the pre-Seal cut identity, not a future Seal block digest, and does not
-authorize active serving or consensus votes.
+authorize active serving or consensus votes. Conditional readiness is
+non-exclusive across cut/set candidates: exact retries return the retained
+signature, and a corrected candidate may obtain a new readiness signature.
+Only the post-Seal epoch-transition vote has the unique-target constraint.
+An incomplete or rejected import can continue from verified content, or its
+still-ineligible, unverified staging namespace can be quarantined and another
+fresh staging namespace prepared. Do not delete/reset an existing active or
+historically verified store, roll back authenticated applications, or copy a
+foreign writer token. This is not a legacy migration escape hatch.
 
 `Seal` commits the cut, the exact ready eligible set and verifying readiness
 evidence through the same old engine. After that decision its target cannot
@@ -291,15 +302,30 @@ fields from the transfer root does not make its signed witness replayable.
 The new profile needs a logical staged-commit encoding: bind exact original
 signed intent and result, read keys with authenticated content observations,
 pristine-versus-deleted tags, semantic generations, ObjectRefs, mutations,
-authorities, nonce value/precondition and the authenticated execution operand.
-Keep node-local `StateRevision`, head revision and writer generation solely in
-the local commit read set. **Do not remove read authority along with counters.**
-Historical v1 witnesses remain verifiable as their original bytes.
-Preserve imported creation checkpoints used by admission/provenance checks.
-Derive a common minimum future execution operand from the verified imported
-history, and initialize each host's trusted checkpoint source at or above it
-with checked arithmetic. Different local counters must not cause one new host
-to refuse an otherwise identical Write as moving creation time backwards.
+authorities, nonce value/precondition and an authenticated **semantic execution
+generation**. Define that generation deterministically as one plus the maximum
+of the predecessor cut's generation floor and authenticated input/prerequisite
+generations, using checked arithmetic. Genesis supplies the initial floor.
+The next cut derives its floor from verified history. This is a causal operand,
+not a globally incremented counter or proof of checkpoint publication; separate
+owned transactions can share a generation and need no global ordering.
+
+Persist that generation in versioned protocol provenance/authority metadata
+and the logical witness. Admission's non-regression checks compare these
+authenticated semantic generations, not a backend's creation timestamps. All
+replicas derive the same operand from the same logical prerequisites and reuse
+the exact certified operand at apply/recovery. It must not be chosen separately
+from each host's trusted physical checkpoint counter.
+
+Node-local `StateRevision`, head/nonce revision, writer generation and physical
+creation/admission/commit checkpoint counters stay solely in local persistence
+and commit-fencing inputs. They do not enter the signed preimage, protocol read
+observations or new-profile admission monotonicity. A differently initialized
+physical checkpoint source cannot make E alone reject a Write or change its
+commitment. **Do not remove semantic read/provenance authority along with local
+counters.** Historical v1 witnesses retain their original signed checkpoint
+operands and bytes for read-only verification; do not reinterpret those legacy
+fields as new semantic generation metadata.
 
 Define explicit runtime-neutral bounded repositories; the current key scanner
 does not enumerate the separate SQL receipt, object-head or object-version
@@ -334,6 +360,9 @@ as bounded authenticated chunks rather than become impossible to export.
 There is no arbitrary whole-history/cut-size ceiling. New exact frame/key IDs
 and constants require the repository namespace sweep and stable/adversarial
 vectors before implementation; no IDs are allocated by this design document.
+DrainSet pre-vote bulk retention uses this same bounded chunk/cursor contract.
+Key retained progress by verified operation/artifact identity, not by a leader's
+proposal, so view changes reuse completed downloads rather than restart them.
 Derivation/drain staging must also obey the runtime's existing transaction
 read/write/byte bounds, including extra cut-fence and conflict-resolution reads;
 never turn an over-limit step into partial business application.
@@ -379,6 +408,8 @@ local lock; uncertified claims that must not occupy global receipt IDs;
 inherited high/locked business branches; a sole full-certificate holder failing
 after DrainSet commit; fragmented certificate-proof subsets that must share
 one availability identity; a dead advisory next set replaced before Seal;
+conditional readiness corrected without resetting an active store;
+empty/control votes extending a business-bearing inherited justification;
 different physical revisions and checkpoint sources with
 identical logical state; all cut/page/history negatives; real stale writers;
 process restart at every boundary; exact successful/trapped/completed replay;
