@@ -298,6 +298,68 @@ fn validate_state_rejects_a_high_qc_not_retained_in_certificates() {
 // ---- ChainedHotStuff public verify/observe/aggregate API ----
 
 #[test]
+fn restarted_state_accepts_equivalent_quorum_subsets_in_parent_justification() {
+    let (engine, cryptos) = setup();
+    let mut states: Vec<ConsensusState> = vec![engine.genesis_state(0); 4];
+    let (parent, votes) = proposal_votes(&engine, &mut states, &cryptos, 31);
+    let (first, _) = certify(&engine, &mut states, &cryptos, &votes);
+    let alternate: QuorumCertificate = engine
+        .certificate_from_votes(&parent, &votes[1..], &cryptos[0])
+        .unwrap()
+        .unwrap();
+    assert_ne!(alternate.votes, first.votes);
+
+    // An honest next leader can have a different valid quorum subset.
+    let leader: ValidatorId = engine
+        .validator_set()
+        .leader(states[0].current_view)
+        .unwrap();
+    let leader_index: usize = cryptos
+        .iter()
+        .position(|crypto| crypto.validator == leader)
+        .unwrap();
+    let mut leader_state: ConsensusState = states[leader_index].clone();
+    leader_state.high_qc = alternate.clone();
+    leader_state
+        .certificates
+        .insert(alternate.proposal_digest, alternate);
+    let child: ConsensusProposal = engine
+        .propose(&leader_state, vec![], &cryptos[leader_index])
+        .unwrap();
+    let mut child_votes: Vec<ConsensusVote> = Vec::new();
+    for (state, crypto) in states.iter_mut().zip(&cryptos) {
+        let output = engine
+            .on_event(
+                state,
+                ConsensusEvent::Proposal(child.clone()),
+                crypto,
+                crypto,
+            )
+            .unwrap();
+        *state = output.state;
+        for message in output.outbound_messages {
+            if let ConsensusMessage::Vote(vote) = message {
+                child_votes.push(vote);
+            }
+        }
+    }
+    let child_qc = engine
+        .certificate_from_votes(&child, &child_votes, &cryptos[0])
+        .unwrap()
+        .unwrap();
+    let output = engine
+        .on_event(
+            &states[0],
+            ConsensusEvent::Certificate(child_qc),
+            &cryptos[0],
+            &cryptos[0],
+        )
+        .unwrap();
+    let reloaded = decode_consensus_state(&encode_consensus_state(&output.state).unwrap()).unwrap();
+    engine.validate_state(&reloaded, &cryptos[0]).unwrap();
+}
+
+#[test]
 fn certificate_from_votes_is_deterministic_and_minimal_independent_of_arrival_order() {
     let (engine, cryptos) = setup();
     let mut states = vec![engine.genesis_state(0); 4];

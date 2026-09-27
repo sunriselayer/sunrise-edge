@@ -1127,8 +1127,9 @@ impl ChainedHotStuff {
     /// where an entry for that `(validator, view)` is still retained), and
     /// that every observed-vote validator is a member of the active
     /// validator set. `high_qc`/`locked_qc` must either be the exact
-    /// genesis anchor or exactly match the retained entry in `certificates`
-    /// keyed by their own digest.
+    /// genesis anchor or identify the same view/height/block as the retained
+    /// independently verified certificate. Distinct valid quorum subsets
+    /// for the same block are equivalent, not persisted-state corruption.
     ///
     /// This is deliberately more expensive than `on_event`'s per-message
     /// verification and is meant to be run once, after loading state from
@@ -1182,14 +1183,25 @@ impl ChainedHotStuff {
         self.verify_certificate(&state.high_qc, verifier)?;
         self.verify_certificate(&state.locked_qc, verifier)?;
         if state.high_qc.view != 0
-            && state.certificates.get(&state.high_qc.proposal_digest) != Some(&state.high_qc)
+            && state
+                .certificates
+                .get(&state.high_qc.proposal_digest)
+                .is_none_or(|retained| {
+                    retained.view != state.high_qc.view || retained.height != state.high_qc.height
+                })
         {
             return Err(ConsensusError::InconsistentPersistedState(
                 "high_qc not retained in certificates",
             ));
         }
         if state.locked_qc.view != 0
-            && state.certificates.get(&state.locked_qc.proposal_digest) != Some(&state.locked_qc)
+            && state
+                .certificates
+                .get(&state.locked_qc.proposal_digest)
+                .is_none_or(|retained| {
+                    retained.view != state.locked_qc.view
+                        || retained.height != state.locked_qc.height
+                })
         {
             return Err(ConsensusError::InconsistentPersistedState(
                 "locked_qc not retained in certificates",
