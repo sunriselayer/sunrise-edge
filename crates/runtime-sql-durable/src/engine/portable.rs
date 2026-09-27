@@ -224,40 +224,6 @@ fn key_page(
         .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
     // All interpolated identifiers/operators below are closed literals, never
     // caller strings. Cursor data remains bound SQL parameters.
-    let (table, column, start): (&str, &str, Vec<u8>) = match scan.collection() {
-        DurableCollection::State => (
-            "durable_state",
-            "key",
-            match scan.after() {
-                Some(DurableRecordKey::State(key)) => key.clone(),
-                _ => Vec::new(),
-            },
-        ),
-        DurableCollection::Receipts => (
-            "durable_receipts",
-            "request_id",
-            match scan.after() {
-                Some(DurableRecordKey::Receipt(id)) => id.as_bytes().to_vec(),
-                _ => vec![0; 32],
-            },
-        ),
-        DurableCollection::ObjectHeads => (
-            "durable_object_heads",
-            "object_id",
-            match scan.after() {
-                Some(DurableRecordKey::ObjectHead(id)) => id.as_bytes().to_vec(),
-                _ => vec![0; 32],
-            },
-        ),
-        DurableCollection::ObjectVersions => (
-            "durable_object_versions",
-            "object_id",
-            match scan.after() {
-                Some(DurableRecordKey::ObjectVersion(id, _)) => id.as_bytes().to_vec(),
-                _ => vec![0; 32],
-            },
-        ),
-    };
     let (sql, params): (String, Vec<SqlValue>) = if scan.collection()
         == DurableCollection::ObjectVersions
     {
@@ -265,9 +231,42 @@ fn key_page(
             Some(DurableRecordKey::ObjectVersion(id,version)) => (
                 "SELECT substr(object_id,1,33),substr(object_version,1,9) FROM durable_object_versions WHERE (object_id,object_version) > (?1,?2) ORDER BY object_id,object_version LIMIT ?3".to_owned(),
                 vec![SqlValue::Blob(id.as_bytes().to_vec()),SqlValue::Blob(encode_u64(version.get()).to_vec()),SqlValue::Integer(count)]),
-            _ => ("SELECT substr(object_id,1,33),substr(object_version,1,9) FROM durable_object_versions ORDER BY object_id,object_version LIMIT ?1".to_owned(),vec![SqlValue::Integer(count)]),
+            None => ("SELECT substr(object_id,1,33),substr(object_version,1,9) FROM durable_object_versions ORDER BY object_id,object_version LIMIT ?1".to_owned(),vec![SqlValue::Integer(count)]),
+            Some(_) => return Err(PreCommitFailure::InvalidPersistedState),
         }
     } else {
+        let (table, column, start): (&str, &str, Vec<u8>) = match scan.collection() {
+            DurableCollection::State => (
+                "durable_state",
+                "key",
+                match scan.after() {
+                    Some(DurableRecordKey::State(key)) => key.clone(),
+                    None => Vec::new(),
+                    Some(_) => return Err(PreCommitFailure::InvalidPersistedState),
+                },
+            ),
+            DurableCollection::Receipts => (
+                "durable_receipts",
+                "request_id",
+                match scan.after() {
+                    Some(DurableRecordKey::Receipt(id)) => id.as_bytes().to_vec(),
+                    None => vec![0; 32],
+                    Some(_) => return Err(PreCommitFailure::InvalidPersistedState),
+                },
+            ),
+            DurableCollection::ObjectHeads => (
+                "durable_object_heads",
+                "object_id",
+                match scan.after() {
+                    Some(DurableRecordKey::ObjectHead(id)) => id.as_bytes().to_vec(),
+                    None => vec![0; 32],
+                    Some(_) => return Err(PreCommitFailure::InvalidPersistedState),
+                },
+            ),
+            DurableCollection::ObjectVersions => {
+                return Err(PreCommitFailure::InvalidPersistedState);
+            }
+        };
         // Bound even corrupt stored keys before copying them out of SQL. The
         // extra byte makes oversized keys fail validation, not truncate into
         // an apparently valid key. Order and cursor compare the original key.

@@ -168,6 +168,14 @@ fn key_page(
 ) -> Result<DurableRecordPage, PreCommitFailure> {
     let count: i64 = i64::try_from(scan.limit().get() + 1)
         .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
+    // A cursor from a different collection is a corrupt/forged continuation,
+    // never a fresh start: refuse before any query, don't restart the scan.
+    if scan
+        .after()
+        .is_some_and(|after| after.collection() != scan.collection())
+    {
+        return Err(PreCommitFailure::InvalidPersistedState);
+    }
     let prefix: &str = "chain_id_bytes = $1 AND validator_id = $2 AND atomicity_domain_id = $3";
     // Closed identifier interpolation only. Numeric ORDER BY refers to the
     // qualified table column, not the object_version::TEXT output alias.

@@ -315,6 +315,10 @@ pub struct DurableRecordChunkRequest {
     descriptor: DurableRecordDescriptor,
     offset: usize,
     limit: NonZeroUsize,
+    /// Resolved once from `descriptor.payload_length()` at construction. The
+    /// fields are private with no setters, so `range`/`is_last` always agree
+    /// with the descriptor this request was validated against.
+    length: usize,
 }
 
 impl DurableRecordChunkRequest {
@@ -336,6 +340,7 @@ impl DurableRecordChunkRequest {
             descriptor,
             offset,
             limit,
+            length,
         })
     }
     #[must_use]
@@ -349,8 +354,7 @@ impl DurableRecordChunkRequest {
     /// Constructor invariants prove the subtraction/addition cannot overflow.
     #[must_use]
     pub fn range(&self) -> Range<usize> {
-        let length: usize = self.descriptor.payload_length().unwrap_or(0);
-        self.offset..self.offset + self.limit.get().min(length - self.offset)
+        self.offset..self.offset + self.limit.get().min(self.length - self.offset)
     }
 }
 
@@ -377,7 +381,7 @@ impl DurableRecordChunk {
     }
     #[must_use]
     pub fn is_last(&self) -> bool {
-        Some(self.request.range().end) == self.request.descriptor.payload_length()
+        self.request.range().end == self.request.length
     }
 }
 
@@ -485,6 +489,12 @@ impl DurablePortableRepository for MemoryDurableStateStore {
         domain: AtomicityDomainId,
         scan: &DurableRecordScan,
     ) -> Result<DurableRecordPage, DurableReadError> {
+        if scan
+            .after()
+            .is_some_and(|after| after.collection() != scan.collection())
+        {
+            return Err(DurableReadError::InvalidPersistedState);
+        }
         let data = self
             .inner
             .read()
@@ -498,8 +508,9 @@ impl DurablePortableRepository for MemoryDurableStateStore {
                 None => Vec::new(),
                 Some(state) => {
                     let start: Bound<Vec<u8>> = match &scan.after {
+                        None => Bound::Unbounded,
                         Some(DurableRecordKey::State(key)) => Bound::Excluded(key.clone()),
-                        _ => Bound::Unbounded,
+                        Some(_) => return Err(DurableReadError::InvalidPersistedState),
                     };
                     state
                         .range((start, Bound::Unbounded))
@@ -509,11 +520,12 @@ impl DurablePortableRepository for MemoryDurableStateStore {
                 }
             },
             DurableCollection::Receipts => {
-                let start = match &scan.after {
+                let start: Bound<([u8; 32], [u8; 32])> = match &scan.after {
+                    None => Bound::Included((domain_bytes, [0; 32])),
                     Some(DurableRecordKey::Receipt(id)) => {
                         Bound::Excluded((domain_bytes, *id.as_bytes()))
                     }
-                    _ => Bound::Included((domain_bytes, [0; 32])),
+                    Some(_) => return Err(DurableReadError::InvalidPersistedState),
                 };
                 data.receipts
                     .range((start, Bound::Included((domain_bytes, [0xff; 32]))))
@@ -526,9 +538,10 @@ impl DurablePortableRepository for MemoryDurableStateStore {
                     .collect::<Result<Vec<DurableRecordKey>, DurableReadError>>()?
             }
             DurableCollection::ObjectHeads => {
-                let start = match &scan.after {
+                let start: Bound<([u8; 32], ObjectId)> = match &scan.after {
+                    None => Bound::Included((domain_bytes, ObjectId::new([0; 32]))),
                     Some(DurableRecordKey::ObjectHead(id)) => Bound::Excluded((domain_bytes, *id)),
-                    _ => Bound::Included((domain_bytes, ObjectId::new([0; 32]))),
+                    Some(_) => return Err(DurableReadError::InvalidPersistedState),
                 };
                 data.object_heads
                     .range((
@@ -540,15 +553,16 @@ impl DurablePortableRepository for MemoryDurableStateStore {
                     .collect()
             }
             DurableCollection::ObjectVersions => {
-                let start = match &scan.after {
-                    Some(DurableRecordKey::ObjectVersion(id, version)) => {
-                        Bound::Excluded((domain_bytes, *id, *version))
-                    }
-                    _ => Bound::Included((
+                let start: Bound<([u8; 32], ObjectId, DurableObjectVersion)> = match &scan.after {
+                    None => Bound::Included((
                         domain_bytes,
                         ObjectId::new([0; 32]),
                         DurableObjectVersion::FIRST,
                     )),
+                    Some(DurableRecordKey::ObjectVersion(id, version)) => {
+                        Bound::Excluded((domain_bytes, *id, *version))
+                    }
+                    Some(_) => return Err(DurableReadError::InvalidPersistedState),
                 };
                 data.object_versions
                     .range((
