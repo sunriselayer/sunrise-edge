@@ -160,6 +160,13 @@ pub enum AdapterError {
     InvalidSelector,
     /// A query path (empty-body GET-equivalent) received a non-empty body.
     NonEmptyQueryBody,
+    /// `fast_path::prepare`/`apply_with_recovery` already succeeded
+    /// (durably locking objects or committing a certified mutation) and
+    /// only the subsequent vote/result encoding or request-id framing
+    /// failed. Never mapped to a client-fault status: the caller cannot
+    /// tell from a 4xx whether the already-durable outcome took effect, so
+    /// this must surface as indeterminate (503), not a rejection.
+    CommittedResultEncoding,
 }
 
 impl AdapterError {
@@ -187,7 +194,8 @@ impl AdapterError {
             | Self::OperationContext(_)
             | Self::Genesis(_)
             | Self::Query(_)
-            | Self::FeePolicyNotInstalled => 503,
+            | Self::FeePolicyNotInstalled
+            | Self::CommittedResultEncoding => 503,
         }
     }
 
@@ -217,6 +225,7 @@ impl AdapterError {
             Self::Genesis(_) => "genesis-failed",
             Self::Query(_) => "query-failed",
             Self::FeePolicyNotInstalled => "fee-policy-not-installed",
+            Self::CommittedResultEncoding => "committed-result-encoding-failed",
         }
     }
 }
@@ -325,6 +334,15 @@ fn decode_two_hex64_segments(path: &str) -> Option<([u8; 32], [u8; 32])> {
 fn categorize_fast_path_error(error: &FastPathError) -> (u16, &'static str) {
     match error {
         FastPathError::Admission(admission) => categorize_admission_error(admission),
+        // Mirrors `fastpath_error_response`'s own special case exactly:
+        // an `EpochMismatch` surfacing directly from `fast_path::prepare`/
+        // `apply_with_recovery`'s internal CAS-fence against the durable
+        // current epoch is a repin signal, not the generic context
+        // conflict `categorize_node_core_error` reports for every other
+        // caller of that helper (e.g. admission-time checks).
+        FastPathError::Node(NodeCoreError::EpochMismatch { .. }) => {
+            (409, "fastvote-epoch-repin-required")
+        }
         FastPathError::Consensus(_) => (400, "fastvote-consensus-rejected"),
         FastPathError::Invalid(_) => (400, "fastvote-rejected"),
         FastPathError::Node(node_error) => categorize_node_core_error(node_error),
@@ -921,6 +939,13 @@ impl ValidatorHost {
             let (status, code) = categorize_admission_error(&error);
             return Err(AdapterError::FastPath(status, code).into());
         }
+        // A cached prepared vote must not bypass this host's fixed pin:
+        // authenticate first, then reject before any clock/storage I/O,
+        // matching `crates/native-http/src/fastvote.rs::submit_prepare`
+        // exactly.
+        if expected.epoch() != self.config.epoch() {
+            return Err(AdapterError::FastPath(409, "fastvote-epoch-repin-required").into());
+        }
         let base_policy = LocalExecutionPolicy::generic_object_results(expected.clone());
         let context = self.build_operation_context()?;
         let engine = LocalWasmExecutionEngine::new();
@@ -943,7 +968,11 @@ impl ValidatorHost {
             let (status, code) = categorize_fast_path_error(&error);
             AdapterError::FastPath(status, code)
         })?;
-        encode_fast_vote(&vote).map_err(|_| AdapterError::InvalidRequestBody.into())
+        // `fast_path::prepare` already succeeded (durably locking the
+        // referenced objects) by this point: an encoding failure here must
+        // not be reported as a client-fault rejection, since the caller
+        // cannot otherwise tell the durable lock was actually taken.
+        encode_fast_vote(&vote).map_err(|_| AdapterError::CommittedResultEncoding.into())
     }
 
     fn dispatch_fastvote_apply(&self, body: &[u8]) -> Result<Vec<u8>, JsValue> {
@@ -995,12 +1024,17 @@ impl ValidatorHost {
             let (status, code) = categorize_fast_path_error(&error);
             AdapterError::FastPath(status, code)
         })?;
+        // `fast_path::apply_with_recovery` already committed the certified
+        // mutation by this point: request-id framing and result-encoding
+        // failures below must not be reported as a client-fault rejection,
+        // since the caller cannot otherwise tell the mutation was actually
+        // committed.
         let request_id = RequestId::new(signed.intent.request_id)
-            .map_err(|_| AdapterError::InvalidRequestBody)?;
+            .map_err(|_| AdapterError::CommittedResultEncoding)?;
         let result = HttpNodeResult::new(request_id, output.responses().to_vec())
-            .map_err(|_| AdapterError::InvalidRequestBody)?;
+            .map_err(|_| AdapterError::CommittedResultEncoding)?;
         result
             .encode()
-            .map_err(|_| AdapterError::InvalidRequestBody.into())
+            .map_err(|_| AdapterError::CommittedResultEncoding.into())
     }
 }
