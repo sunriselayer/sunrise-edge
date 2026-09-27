@@ -71,6 +71,61 @@ pub fn spawn_host(
     signing_key_path: &std::path::Path,
     listen_addr: &str,
 ) -> HostProcess {
+    spawn_host_profile(
+        ca_path,
+        dsn,
+        chain_id,
+        validator_hex,
+        domain_hex,
+        manifest_path,
+        digest_hex,
+        signing_key_path,
+        listen_addr,
+        false,
+    )
+}
+
+/// Opts in to the ordered-economics surface without enabling legacy direct
+/// mutation routes. Ordinary FastVote E2Es keep the default closed profile.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_ordered_host(
+    ca_path: &std::path::Path,
+    dsn: &str,
+    chain_id: &str,
+    validator_hex: &str,
+    domain_hex: &str,
+    manifest_path: &std::path::Path,
+    digest_hex: &str,
+    signing_key_path: &std::path::Path,
+    listen_addr: &str,
+) -> HostProcess {
+    spawn_host_profile(
+        ca_path,
+        dsn,
+        chain_id,
+        validator_hex,
+        domain_hex,
+        manifest_path,
+        digest_hex,
+        signing_key_path,
+        listen_addr,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_host_profile(
+    ca_path: &std::path::Path,
+    dsn: &str,
+    chain_id: &str,
+    validator_hex: &str,
+    domain_hex: &str,
+    manifest_path: &std::path::Path,
+    digest_hex: &str,
+    signing_key_path: &std::path::Path,
+    listen_addr: &str,
+    ordered_economics: bool,
+) -> HostProcess {
     let mut command = Command::new(env!("CARGO_BIN_EXE_fastvote_host_pg"));
     command
         .env(DSN_ENV, dsn)
@@ -109,6 +164,9 @@ pub fn spawn_host(
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if ordered_economics {
+        command.arg("--enable-ordered-economics");
+    }
     let mut child = command.spawn().unwrap_or_else(|error| {
         panic!("failed to spawn fastvote_host_pg: {error}");
     });

@@ -314,6 +314,28 @@ pub(crate) fn normalized_identity_digest(
     Ok(resolver.hash_for_purpose(epoch, HashPurpose::NodeEvent, &identity_bytes)?)
 }
 
+/// Computes the existing normalized identity of a canonical evidence frame.
+/// This pure selector helper does not authenticate signatures or authorize
+/// slashing; submission and slash handlers independently verify the proof.
+pub fn evidence_identity_digest(
+    resolver: &HashSuiteResolver,
+    evidence_bytes: &[u8],
+) -> Result<Digest32, EquivocationEvidenceError> {
+    if evidence_bytes.len() > 4 * 1024 * 1024 {
+        return invalid("evidence selector byte bound");
+    }
+    let decoded: DecodedEquivocationEvidence = decode_dispatched(evidence_bytes)?;
+    let protocol = match &decoded {
+        DecodedEquivocationEvidence::FastVote(evidence) => evidence.protocol_version,
+        DecodedEquivocationEvidence::ObjectConflict(evidence) => evidence.protocol_version,
+        DecodedEquivocationEvidence::EpochTransition(evidence) => evidence.protocol_version,
+    };
+    if decoded.chain_id() != resolver.chain_id() || protocol != resolver.protocol_version() {
+        return invalid("evidence selector hash context mismatch");
+    }
+    normalized_identity_digest(resolver, &decoded)
+}
+
 /// Requires `resolver`'s bound chain/protocol context to match the caller's
 /// declared parameters, the same check `authenticated_object_effects.rs`,
 /// `object_snapshots.rs`, and `local_execution.rs` already make before

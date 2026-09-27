@@ -231,7 +231,7 @@ fn validator_set_from_record(
         .map_err(|error| FastVoteGenesisTrustError::InvalidValidatorSet(error.to_string()))
 }
 
-fn read_bounded(path: &std::path::Path, maximum: usize) -> std::io::Result<Vec<u8>> {
+pub(crate) fn read_bounded(path: &std::path::Path, maximum: usize) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
     let mut file = std::fs::File::open(path)?;
     let cap = u64::try_from(maximum).unwrap_or(u64::MAX);

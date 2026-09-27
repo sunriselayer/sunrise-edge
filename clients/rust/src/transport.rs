@@ -452,6 +452,15 @@ impl LoopbackHttpTransport {
         self.bearer_token = Some(token);
         self
     }
+
+    /// Selects an explicit response bound for a protocol-specific profile.
+    /// The default constructor's bound and all deadlines/authentication remain
+    /// unchanged unless a caller deliberately selects this limit.
+    #[must_use]
+    pub fn with_max_response_body_bytes(mut self, maximum: NonZeroUsize) -> Self {
+        self.max_response_body_bytes = maximum.get();
+        self
+    }
 }
 
 impl Transport for LoopbackHttpTransport {
@@ -646,6 +655,14 @@ impl RemoteTlsHttpTransport {
     #[must_use]
     pub fn with_bearer_token(mut self, token: BearerToken) -> Self {
         self.bearer_token = Some(token);
+        self
+    }
+
+    /// Selects an explicit protocol-specific response bound without changing
+    /// the pinned TLS target, credentials, framing rules or request deadlines.
+    #[must_use]
+    pub fn with_max_response_body_bytes(mut self, maximum: NonZeroUsize) -> Self {
+        self.max_response_body_bytes = maximum.get();
         self
     }
 }

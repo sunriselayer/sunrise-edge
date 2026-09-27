@@ -352,6 +352,13 @@ fn submit_fast_vote_equivocation_evidence_succeeds_and_queries() {
     let decoded: DecodedEquivocationEvidence = decode_dispatched(&record.evidence_bytes).unwrap();
     let conflict_digest: Digest32 = normalized_identity_digest(&resolver(), &decoded).unwrap();
 
+    assert_eq!(
+        evidence_identity_digest(&resolver(), &record.evidence_bytes).unwrap(),
+        conflict_digest
+    );
+    assert!(evidence_identity_digest(&resolver(), &[0; 8]).is_err());
+    assert!(evidence_identity_digest(&resolver(), &vec![0; 4 * 1024 * 1024 + 1]).is_err());
+
     let queried: Option<FastPathEquivocationEvidenceRecord> = query_fastpath_equivocation_evidence(
         &store,
         &context(),

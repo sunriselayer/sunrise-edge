@@ -103,7 +103,7 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 | Order | Integrated outcome | Remaining acceptance |
 | --- | --- | --- |
 | 1 | Generic certified network contract lifecycle | Merged as PR #228 on 2026-09-27 after the full repository gate, fresh exact-head Opus APPROVE and required CI: Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Independent ingress/security gates remain separate. |
-| 2 | Network economics and validator operations | Explicit shared ordering/certification for rewards/claims, bonds and equivocation/slashing; authenticated usable surfaces and identical results across validators |
+| 2 | Network economics and validator operations | DR-0153 fixed-epoch implementation and real four-namespace CLI evidence are present; full repository gate, fresh exact-head Opus approval and CI remain merge requirements. Membership-dependent Deposit/Withdraw positives join delivery 3; economics/ingress security audits remain separate. |
 | 3 | Validator membership and epoch handoff | Verified required definitions/state/settlement history, completeness and activation-bound catch-up; real add/replace/recover/epoch operations with ineligible/divergent replicas rejected |
 | 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
 
@@ -119,6 +119,36 @@ separate cross-store commit/visibility design. Provider migration and profile
 conformance do not waive any current safety or independent security gate.
 
 The detailed existing evidence and remaining criteria follow:
+
+- [x] **Delivery 2 implementation: fixed-epoch ordered network economics**
+  ([DR-0153](docs/architecture/decisions/0153-ordered-network-economics.md)).
+  Reuses shared HotStuff for fee claims, bond operations, the three evidence
+  families and evidence-driven slash; owned contract transactions stay on
+  FastVote. Durable leader/vote identities and address-owned object/nonce
+  reservations precede exposed signatures. Generic handlers, original
+  receipts, retained outcomes, consensus/order metadata and exact lock
+  release commit atomically; unknown prerequisites and ambiguity stop apply.
+  Parent-run real compiled-CLI/HTTP PostgreSQL E2E covers competing positive
+  claims, stale-generation rejection without value/nonce changes, final and
+  zero-share claims, Replace with consecutive nonces, Unbond, all three
+  evidence families, same evidence under a fresh request ID, slash and
+  Reactivate. It also exercises a genuinely unavailable selected leader,
+  interrupted proposal resume, no-quorum refusal, shared FastVote lock
+  conflicts with a valid unlocked positive control, signerless fourth-replica
+  recovery, same-boot and real process-restart replay, unchanged full-SQL
+  snapshots on exact completion/conflicting checkpoint reuse, forged/reordered
+  prefix zero-POST rejection, and a superseded live writer with a current
+  writer positive control. The four namespaces share a disposable test
+  database; they do not demonstrate independent operational control.
+  Actual HTTP counter tests verify authentication before identity/clock/I/O,
+  closed routes, bounded completion reads and shared blocking admission.
+  The checkbox records bounded implementation/evidence only: the full gate,
+  fresh exact-final-head Opus APPROVE and required CI must pass before merge.
+  Fixed-epoch membership does not manufacture an Exited validator or an elapsed
+  withdrawal epoch. Genuine network Deposit/Withdraw positives, activation and
+  complete verified state/settlement handoff remain delivery 3 acceptance.
+  Independent economics/ingress audits, provider conformance and deployment
+  remain open; no production or initial-network activation is claimed.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

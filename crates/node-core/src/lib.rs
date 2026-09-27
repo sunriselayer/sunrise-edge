@@ -55,6 +55,7 @@ pub mod local_execution;
 pub mod local_instance_state;
 mod mutation_fence;
 mod object_snapshots;
+pub mod ordered_economics;
 pub mod paid_execution;
 pub mod phase2_authorization;
 pub mod phase3_authorization;

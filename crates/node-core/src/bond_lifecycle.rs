@@ -478,7 +478,11 @@ pub fn decode_signed_bond_lifecycle_intent(
 /// signatures over an identical intent would otherwise hash identically and
 /// let an unauthenticated second signature silently "replay" against the
 /// first's receipt.
-pub(crate) fn bond_lifecycle_intent_digest(
+///
+/// Public because an offline claimant/bond artifact builder (SDK, CLI, E2E)
+/// must derive the exact bytes it is about to sign without reimplementing
+/// this domain separation. Pure: it reads no state and signs nothing.
+pub fn bond_lifecycle_intent_digest(
     resolver: &HashSuiteResolver,
     intent: &BondLifecycleIntent,
 ) -> Result<Digest32, BondLifecycleError> {
@@ -520,7 +524,11 @@ fn bond_lifecycle_receipt_digest(
 /// so the exact signed frame is independently re-derivable from nothing
 /// more than `(context, intent_digest)` -- see
 /// [`bond_lifecycle_intent_digest`].
-pub(crate) fn bond_lifecycle_signing_frame(
+///
+/// Public for the same reason as [`bond_lifecycle_intent_digest`]: it is the
+/// existing, already-audited framing an offline signer needs, and exposing it
+/// introduces no new cryptography.
+pub fn bond_lifecycle_signing_frame(
     context: &PublicationContext,
     intent_digest: Digest32,
 ) -> Result<Vec<u8>, BondLifecycleError> {
@@ -540,7 +548,7 @@ pub(crate) fn bond_lifecycle_signing_frame(
 
 /// Digest binding one exact [`FastPathBondRecord`] generation into the
 /// transition chain [`genesis::verify_fastpath_bond_chain`] later re-walks.
-pub(crate) fn bond_row_digest(
+pub fn bond_row_digest(
     resolver: &HashSuiteResolver,
     epoch: Epoch,
     bytes: &[u8],
@@ -792,6 +800,9 @@ struct Preamble<'a, S: StructuredDurableDomainStateStore, E: LocalContractEngine
     bond: FastPathBondRecord,
     validator_set: ValidatorSet,
     reads: BTreeMap<Vec<u8>, StateRevision>,
+    /// DR-0153 private admitted-candidate capability, threaded unchanged into
+    /// every embedded leg. `None` on every ordinary public path.
+    ordered: Option<&'a ordered_economics::OrderedLegAdmission<'a>>,
 }
 
 /// Authenticates then reconciles replay before any epoch, policy, object,
@@ -813,6 +824,45 @@ pub fn handle_bond_lifecycle<S, E>(
     engine: &E,
     signed_bytes: &[u8],
     created_checkpoint: u64,
+) -> Result<NodeOutput, BondLifecycleError>
+where
+    S: StructuredDurableDomainStateStore,
+    E: LocalContractEngine + ?Sized,
+{
+    handle_bond_lifecycle_ordered(
+        store,
+        blob_store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        leg_policy,
+        engine,
+        signed_bytes,
+        created_checkpoint,
+        None,
+    )
+}
+
+/// [`handle_bond_lifecycle`] plus DR-0153's private admitted-candidate
+/// capability. The public entry point delegates here with `None`, so this is
+/// the one implementation and the ordered path shares every existing
+/// arithmetic, custody, policy and signature check unmodified.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn handle_bond_lifecycle_ordered<S, E>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    leg_policy: &LocalExecutionPolicy,
+    engine: &E,
+    signed_bytes: &[u8],
+    created_checkpoint: u64,
+    ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
 ) -> Result<NodeOutput, BondLifecycleError>
 where
     S: StructuredDurableDomainStateStore,
@@ -998,6 +1048,7 @@ where
         bond,
         validator_set,
         reads,
+        ordered,
     };
     match legs {
         OperationLegs::Deposit { leg } => deposit(preamble, leg),
@@ -1345,6 +1396,7 @@ where
         &mut preamble.reads,
         &mut head_reads,
         &mut state_mutations,
+        preamble.ordered,
     )?;
     if !admitted.success {
         return Err(BondLifecycleError::Invalid("bond deposit leg trapped"));
@@ -1570,6 +1622,7 @@ where
         &mut preamble.reads,
         &mut head_reads,
         &mut state_mutations,
+        preamble.ordered,
     )?;
     if !admitted_deposit.success {
         return Err(BondLifecycleError::Invalid(
@@ -1598,6 +1651,7 @@ where
         &mut preamble.reads,
         &mut head_reads,
         &mut state_mutations,
+        preamble.ordered,
     )?;
     if !admitted_release.success {
         return Err(BondLifecycleError::Invalid(
@@ -1937,6 +1991,7 @@ where
         &mut preamble.reads,
         &mut head_reads,
         &mut state_mutations,
+        preamble.ordered,
     )?;
     if !admitted.success {
         return Err(BondLifecycleError::Invalid("bond withdraw leg trapped"));

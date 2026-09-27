@@ -288,6 +288,9 @@ pub fn handle_local_execution<
         &mut reads,
         &mut head_reads,
         &mut mutations,
+        // Ordinary public local execution never reuses another request's
+        // reservation: it always fences every lock as `Fresh`.
+        None,
     )?;
     if leg.success && leg.mode == LocalExecutionMode::Instantiate {
         mutations.push(StateMutationEntry::new(
@@ -395,6 +398,18 @@ pub(crate) enum CustodyEffectMode<'a> {
 /// and is threaded into typed-WASM execution; when `None`, every input must
 /// be owned by `call.sender`, exactly like every other local-execution
 /// caller.
+///
+/// `ordered` is DR-0153's private admitted-candidate capability. When it is
+/// `None` -- every ordinary public path -- each object and sender-nonce lock
+/// is fenced as [`mutation_fence::LockMode::Fresh`], exactly as before. When
+/// it is `Some`, a lock is fenced as
+/// [`mutation_fence::LockMode::OwnedByRequest`] **only** for the exact
+/// `ObjectRef`s and the exact consecutive sender-nonce range that capability
+/// records, and only when the authorizing leg's own signed `request_id`
+/// equals the admitted candidate's. It is not a blanket lock bypass: an
+/// unlisted object, a nonce outside the signed range, or a different request
+/// id all keep `Fresh` semantics and therefore still fail closed against a
+/// held lock.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn admit_and_execute_leg<
     S: StructuredDurableDomainStateStore,
@@ -416,6 +431,7 @@ pub(crate) fn admit_and_execute_leg<
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
     head_reads: &mut Vec<DurableObjectHeadRead>,
     state_mutations: &mut Vec<StateMutationEntry>,
+    ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
 ) -> AdmissionResult<AdmittedLeg> {
     if protocol_custody.is_none()
         && matches!(
@@ -445,6 +461,25 @@ pub(crate) fn admit_and_execute_leg<
     )?;
     // DR-0131: honor a sender/epoch nonce a pending fast-path prepare already
     // holds locked, before this direct path can advance the same sequence.
+    //
+    // DR-0153: when this leg belongs to an already-admitted ordered
+    // candidate, the lock it must honour is the one that candidate itself
+    // created, so it is fenced as `OwnedByRequest` against the exact recorded
+    // range start. A `Replace`'s second leg therefore authorizes at
+    // `first_nonce + 1` while the lock row still records `first_nonce`.
+    let owned_nonce_lock: Option<u64> = ordered.and_then(|admission| {
+        admission.owned_nonce_lock_value(
+            &call.request_id,
+            &call.sender,
+            call.context.epoch(),
+            call.nonce,
+        )
+    });
+    let (nonce_lock_mode, nonce_lock_value): (mutation_fence::LockMode, u64) =
+        match owned_nonce_lock {
+            Some(first_nonce) => (mutation_fence::LockMode::OwnedByRequest, first_nonce),
+            None => (mutation_fence::LockMode::Fresh, call.nonce),
+        };
     mutation_fence::fence_sender_nonce_lock(
         store,
         context,
@@ -453,8 +488,8 @@ pub(crate) fn admit_and_execute_leg<
         &call.sender,
         call.context.epoch(),
         &call.request_id,
-        call.nonce,
-        mutation_fence::LockMode::Fresh,
+        nonce_lock_value,
+        nonce_lock_mode,
         reads,
     )?;
     let observed: VersionedStateValue = read_state(
@@ -578,6 +613,16 @@ pub(crate) fn admit_and_execute_leg<
         // pending fast-path certificate blocks this direct mutation branch,
         // closing the gap DR-0130's own evidence did not cover.
         if entry.mode != AccessMode::Read {
+            // DR-0153: only the exact `ObjectRef`s this request already
+            // reserved are fenced as owned; everything else stays `Fresh`.
+            let owned: bool = ordered.is_some_and(|admission| {
+                admission.owns_object(&call.request_id, &entry.object_ref)
+            });
+            let lock_mode: mutation_fence::LockMode = if owned {
+                mutation_fence::LockMode::OwnedByRequest
+            } else {
+                mutation_fence::LockMode::Fresh
+            };
             let lock_state = mutation_fence::fence_object_lock(
                 store,
                 context,
@@ -586,7 +631,7 @@ pub(crate) fn admit_and_execute_leg<
                 &entry.object_ref,
                 &call.request_id,
                 call.context.epoch(),
-                mutation_fence::LockMode::Fresh,
+                lock_mode,
                 reads,
             )?;
             // DR-0132 §3.D: a stale (strictly older epoch) lock observed here
