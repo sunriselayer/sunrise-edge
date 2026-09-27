@@ -22,12 +22,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use validator_set::{ValidatorSet, ValidatorSetError};
 
+mod availability;
 mod durable;
 mod epoch_transition;
 mod equivocation;
 mod fast_vote;
 #[cfg(test)]
 mod test_support;
+pub use availability::{
+    AvailabilityCertificate, AvailabilityCertifier, AvailabilityIdentity, AvailabilityVote,
+    decode_availability_certificate, decode_availability_identity, decode_availability_vote,
+    encode_availability_certificate, encode_availability_identity, encode_availability_vote,
+};
 pub use durable::{
     decode_consensus_state, decode_proposal, decode_quorum_certificate, decode_vote,
     encode_consensus_state,
