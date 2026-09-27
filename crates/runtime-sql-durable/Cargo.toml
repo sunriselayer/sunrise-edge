@@ -1,0 +1,9 @@
+[package]
+name = "runtime-sql-durable"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+runtime.workspace = true
+protocol-types.workspace = true

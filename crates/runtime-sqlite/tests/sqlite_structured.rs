@@ -81,6 +81,40 @@ fn namespace(chain: &str, validator_byte: u8, domain_byte: u8) -> SqliteNamespac
     )
 }
 
+#[test]
+fn reopening_never_recreates_deleted_namespace_metadata() {
+    let database: TestDatabase = TestDatabase::new();
+    let pinned: SqliteNamespace = namespace("metadata-must-survive", 0x31, 0x32);
+    let generation: WriterFenceGeneration = WriterFenceGeneration::new(7).unwrap();
+    drop(SqliteDurableStore::open(&database.path, pinned.clone(), generation).unwrap());
+    let connection: Connection = Connection::open(&database.path).unwrap();
+    connection
+        .execute("DELETE FROM durable_metadata", [])
+        .unwrap();
+    assert!(matches!(
+        SqliteDurableStore::open(&database.path, pinned.clone(), generation),
+        Err(SqliteDurableStoreError::InvalidPersistedMetadata)
+    ));
+    let count: i64 = connection
+        .query_row("SELECT count(*) FROM durable_metadata", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+    connection
+        .execute("DROP TABLE durable_metadata", [])
+        .unwrap();
+    assert!(SqliteDurableStore::open(&database.path, pinned, generation).is_err());
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name = 'durable_metadata'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
 struct SqliteConformanceFixture {
     _database: TestDatabase,
     path: PathBuf,

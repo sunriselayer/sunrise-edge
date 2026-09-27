@@ -102,22 +102,45 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 
 | Order | Integrated outcome | Remaining acceptance |
 | --- | --- | --- |
-| 1 | Generic certified network contract lifecycle | Implemented and bounded CLI/multi-validator regressions locally validated (DR-0151): Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Full repository validation, exact-head review and CI remain mandatory merge gates; independent ingress/security gates are separate. |
+| 1 | Generic certified network contract lifecycle | Merged as PR #228 on 2026-09-27 after the full repository gate, fresh exact-head Opus APPROVE and required CI: Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Independent ingress/security gates remain separate. |
 | 2 | Network economics and validator operations | Explicit shared ordering/certification for rewards/claims, bonds and equivocation/slashing; authenticated usable surfaces and identical results across validators |
 | 3 | Validator membership and epoch handoff | Verified required definitions/state/settlement history, completeness and activation-bound catch-up; real add/replace/recover/epoch operations with ineligible/divergent replicas rejected |
 | 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
 
 PostgreSQL remains the existing tested profile for delivery 1, not a mandatory
 protocol database. Lightweight authoritative profiles (Cloudflare SQLite-backed
-DO and separately verified native SQLite) remain **unimplemented/unverified
-deployment targets**. After delivery 1, prioritize actual DO contract execution,
-restart and replay over more PostgreSQL-only operational work; do not count an
-ingress relay or unrelated counter as this evidence. Preserve one transactional
+DO and separately verified native SQLite) are not production-certified
+deployment targets. The embedded DO host now has actual local contract,
+restart and replay evidence, not merely relay or counter tests. Prioritize
+the remaining network functions over more PostgreSQL-only operational work.
+Preserve one transactional
 validator domain initially; per-object/sender/contract databases require a
 separate cross-store commit/visibility design. Provider migration and profile
 conformance do not waive any current safety or independent security gate.
 
 The detailed existing evidence and remaining criteria follow:
+
+- [x] **Embedded DO contract host: bounded local implementation**
+  ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).
+  The actual Rust/Wasmi paid lifecycle runs inside SQLite-backed DOs using
+  the same structured SQL engine as native SQLite. A native four-validator
+  oracle and real workerd E2E compare canonical votes, results/gas/fees,
+  objects, receipts, nonce, context, fee policy and publication/instance reads.
+  Three validators prepare; the fourth applies the real certificates through
+  recovery without preparing. Coverage includes fresh user Publish →
+  Instantiate/create-asset → mint/split/merge/transfer/burn, charged traps,
+  same-boot and actual eviction/recreation replay with full SQL/blob snapshots,
+  prepare/apply request-ID conflicts, nonce gaps, partial-write rollback,
+  deadline expiry after writes, confirmation-loss reconciliation, stale writers,
+  corrupt immutable versions/tombstones and missing/tombstoned metadata.
+  The ordinary Rust SDK/CLI supports private per-peer transport token files
+  without weakening pinned TLS or expected protocol context. CLI-to-DO live
+  deployment has not been exercised. Four local test actors do not prove
+  independent operational control. Shared SQL/native conformance, fresh
+  exact-head Opus approval and required CI remain merge gates.
+  This checkbox covers the bounded local/experimental host, not provider release.
+  Public deployment, production provider certification, shared economics ordering
+  and epoch activation are not authorized or claimed by this implementation.
 
 - [x] **Delivery 1 implementation: certified Publish/Instantiate/Call and asset CLI integration**
   ([DR-0151](docs/architecture/decisions/0151-integrated-network-delivery-and-lightweight-stores.md)).

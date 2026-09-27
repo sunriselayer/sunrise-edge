@@ -1,0 +1,146 @@
+# Embedded Cloudflare validator: local validation and configuration
+
+This guide covers the experimental local profile selected by
+[DR-0152](../architecture/decisions/0152-durable-object-contract-host.md).
+It is not authorization to deploy, expose an endpoint, activate a network or
+custody real assets. Outstanding implementation and release criteria are in
+[TODO](../../TODO.md).
+
+## Build and validate
+
+Use the repository's Rust toolchain and Node.js 22. Install the matching build
+tool explicitly; generated JavaScript/WASM is ignored and must be rebuilt:
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.127 --locked
+npm ci --prefix adapters/cloudflare-workers
+bash scripts/build-cloudflare-validator.sh
+npm --prefix adapters/cloudflare-workers run check
+```
+
+`./scripts/check-all.sh` includes the embedded build, shared native SQLite
+conformance, canonical vectors and workerd tests. Its existing PostgreSQL fault
+cases still require their separately configured disposable database. A skipped
+database test is not a passing fault test.
+
+`apps/operator/examples/cloudflare_contract_fixture.rs` generates a native
+four-validator oracle using public development seeds. The workerd contract
+suite runs those exact signed Publish/Instantiate/Call bytes in four separate
+SQLite-backed DO stores. Three validators prepare and the fourth uses real
+certificate recovery without preparing; votes, results, gas/fee fields and
+canonical queries are compared with native execution. The suite includes
+create-asset/mint/split/merge/transfer/burn and a charged Wasmi trap.
+
+Replay checks compare all shared SQL tables and immutable blobs, including
+after genuine DO eviction/recreation. Fault cases cover partial-write rollback,
+deadline expiry, lost storage confirmation, stale writers and corrupted or
+tombstoned records. The test harness explicitly resets its local bindings
+between cases; resetting is never used inside the restart/replay test and is
+not a production endpoint. Constructor-failure logs are expected in deliberate
+wrong-placement/corruption cases. This is real local workerd/SQLite evidence,
+not provider fault certification or a compiled-CLI-to-live-DO test.
+
+The adapter's `typescript-7` alias supplies TypeScript 7.0.2 for typechecking.
+The pinned TypeScript 6.x compiler API remains for typescript-eslint's supported
+peer range. Do not force dependency installation to bypass that range.
+
+## Separate relay and validator
+
+The relay retains its private `NODE_CORE` Service Binding. It does not execute
+or store contracts; its Service Binding tests are not validator evidence.
+Its target must remain private; do not replace the binding with a public URL.
+To check the relay bundle without deploying, run
+`npm exec -- wrangler deploy --dry-run --config wrangler.jsonc` from
+`adapters/cloudflare-workers` after dependency installation.
+
+The validator imports the compiled Rust core, including the same Wasmi guest
+interpreter and metering used by native hosts. Guest contracts are not compiled
+with Workers' JavaScript WebAssembly engine. One independently configured
+validator/domain owns one DO and one atomic SQL store. An HTTP selector cannot
+pick a namespace, actor, writer generation or signing identity.
+
+The closed mutation surface is `/v1/fastvote/prepare` and
+`/v1/fastvote/certificates`; direct events/publication/execution routes are not
+mounted. Every request except `/health/live` requires transport authorization.
+Liveness returns no claim of configured storage, network readiness or release
+approval. Rust independently authenticates the signed intent and certificate.
+
+The host confirms storage before releasing a successful vote/result. A 503
+confirmation failure must be treated as possibly committed: preserve the
+original signed-intent/certificate pair and reconcile by exact replay, never
+generate another request ID or signature just because the response was lost.
+
+## Trusted deployment configuration
+
+The checked-in validator configuration deliberately has no usable identity.
+For a separately approved deployment, independently review and provision:
+
+- `VALIDATOR_STATE`: the SQLite-backed DO namespace, not the relay Service Binding;
+- `VALIDATOR_ACTOR_NAME`: trusted fixed placement; `unconfigured` fails closed;
+- `VALIDATOR_GENESIS`: exact lower-case hex canonical signed genesis manifest;
+- `VALIDATOR_CONFIG`: **secret binding**, exact adapter configuration containing
+  local chain/protocol/epoch/hash-suite/domain, validator signing seed, writer
+  generation and genesis authority/commitment pins;
+- `VALIDATOR_BEARER_TOKEN`: **secret binding**, a distinct bounded transport
+  credential, not a chain signing key.
+
+Never put `VALIDATOR_CONFIG` in `vars`, source control, URLs, command-line
+arguments or logs. Secret provisioning must use a reviewed hidden/stdin channel.
+Public development seeds generated by local acceptance fixtures are test-only,
+not credentials for a deployment. Each validator must be independently
+controlled; four test actors in one workerd instance do not establish that
+operational independence.
+
+The pinned workerd package supports compatibility date `2026-08-27`; the profile
+uses that date rather than claiming to test a newer unsupported date. Provider
+runtime upgrades require their own verification.
+
+## CLI cohort credentials
+
+The ordinary [FastVote network flow](fastvote-network.md) keeps its locally
+configured TLS and protocol-context pins. A cohort line accepts an optional
+fifth field:
+
+```text
+validator_id endpoint tls_server_name tls_ca_cert_der_file [bearer_token_file]
+```
+
+Omit the fifth field or use `-` for hosts without this transport credential.
+Specify a path, never a literal token. The file must be regular, not a symlink,
+and on Unix have no group/other permission bits. It contains one ASCII token
+of 16–1024 bytes with an optional final LF, not CRLF. Tokens use letters,
+digits and `-._~+/` with optional trailing `=`. Errors and Debug output do not
+include the token. Configure separate files per peer rather than leaking one
+peer's credential to another.
+
+Remote peers still require an explicitly pinned TLS DNS name and CA. The
+credential is sent only after that handshake succeeds; there is no remote
+plaintext fallback, redirect following or automatic trust refresh. Loopback
+plaintext with a development token is permitted only for local tests. Context
+validation remains independent and takes place before signing.
+
+## Explicit host limits
+
+Requests are capped at 1,800,000 bytes. SQL statements are capped at 100,000
+UTF-8 bytes, at most 100 bindings and 1,025 materialized rows; represented
+binding data and individual blobs are capped at 1,900,000 bytes, below the
+provider's physical-row limit. Materialized results also have a 1,900,000-byte
+aggregate bound, so the row count cannot multiply the per-row limit into an
+unbounded in-memory result. Revisions, versions, nonces and writer
+generations use exact big-endian eight-byte BLOBs, not lossy JavaScript numbers.
+Oversized input fails closed; it is never truncated or split between actors.
+
+Operation contexts retain the shared deadline checks with fresh host-clock
+reads. Workers may keep wall-clock time fixed during synchronous computation;
+these checks are not a CPU-time watchdog. The unchanged interpreter fuel
+limits and provider CPU limits are separate bounds, not a production capacity
+claim. This initial profile pins one epoch/checkpoint and exposes no membership
+or epoch activation operation; it fails closed on incompatible committed state.
+
+This profile does not promise every protocol maximum fits the provider, nor
+certify production CPU/memory/fault limits. Cross-actor atomicity, economic
+ordering, validator/epoch activation, full state handoff and independent
+security review remain separate gates. See
+[provider limits](https://developers.cloudflare.com/durable-objects/platform/limits/)
+and [SQL transaction guarantees](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/).

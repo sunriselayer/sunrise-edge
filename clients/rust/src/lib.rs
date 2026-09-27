@@ -120,8 +120,8 @@ pub use transaction::{
     build_signed_transaction,
 };
 pub use transport::{
-    LoopbackHttpTransport, MAX_CA_CERTIFICATE_DER_BYTES, Method, RemoteTlsHttpTransport, Transport,
-    TransportError, WireRequest, WireResponse,
+    BearerToken, LoopbackHttpTransport, MAX_CA_CERTIFICATE_DER_BYTES, Method,
+    RemoteTlsHttpTransport, Transport, TransportError, WireRequest, WireResponse,
 };
 
 // Re-exported for convenience: every `Client` query method returns one of

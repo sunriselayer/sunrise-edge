@@ -229,7 +229,7 @@ fn persist_handles(file: &mut File, parent: &File, bytes: &[u8]) -> std::io::Res
 }
 
 /// One line of `--fastvote-network`: `validator_id endpoint tls_server_name
-/// tls_ca_cert_der_file`, whitespace-separated; `tls_server_name`/
+/// tls_ca_cert_der_file [bearer_token_file]`, whitespace-separated; `tls_server_name`/
 /// `tls_ca_cert_der_file` are the literal `-` when this peer uses loopback
 /// plaintext. Blank lines and lines starting with `#` are ignored.
 #[derive(Debug)]
@@ -238,6 +238,7 @@ struct PeerConfig {
     endpoint: String,
     tls_server_name: Option<String>,
     tls_ca_cert_der_file: Option<String>,
+    bearer_token_file: Option<String>,
 }
 
 fn parse_network_config(path: &str) -> Result<Vec<PeerConfig>, CliError> {
@@ -251,17 +252,19 @@ fn parse_network_config(path: &str) -> Result<Vec<PeerConfig>, CliError> {
             continue;
         }
         let fields: Vec<&str> = line.split_whitespace().collect();
-        let [
-            validator_id,
-            endpoint,
-            tls_server_name,
-            tls_ca_cert_der_file,
-        ] = fields.as_slice()
-        else {
-            return Err(invalid(format!(
-                "--fastvote-network config line must have exactly 4 fields (validator_id endpoint tls_server_name tls_ca_cert_der_file), got: {line:?}"
-            )));
-        };
+        if !(4..=5).contains(&fields.len()) {
+            return Err(invalid(
+                "--fastvote-network config line must have 4 fields or an optional fifth bearer_token_file",
+            ));
+        }
+        let validator_id: &str = fields[0];
+        let endpoint: &str = fields[1];
+        let tls_server_name: &str = fields[2];
+        let tls_ca_cert_der_file: &str = fields[3];
+        let bearer_token_file: Option<String> = fields
+            .get(4)
+            .filter(|path| **path != "-")
+            .map(|path| (*path).to_owned());
         if peers.len() >= MAX_FASTVOTE_NETWORK_ENDPOINTS {
             return Err(invalid(format!(
                 "--fastvote-network configures more than the maximum accepted {MAX_FASTVOTE_NETWORK_ENDPOINTS} endpoints"
@@ -271,10 +274,8 @@ fn parse_network_config(path: &str) -> Result<Vec<PeerConfig>, CliError> {
             "--fastvote-network validator_id",
             validator_id,
         )?);
-        let (tls_server_name, tls_ca_cert_der_file) = match (
-            *tls_server_name,
-            *tls_ca_cert_der_file,
-        ) {
+        let (tls_server_name, tls_ca_cert_der_file) = match (tls_server_name, tls_ca_cert_der_file)
+        {
             ("-", "-") => (None, None),
             (server_name, ca_file) if server_name != "-" && ca_file != "-" => {
                 (Some(server_name.to_string()), Some(ca_file.to_string()))
@@ -287,9 +288,10 @@ fn parse_network_config(path: &str) -> Result<Vec<PeerConfig>, CliError> {
         };
         peers.push(PeerConfig {
             validator_id,
-            endpoint: (*endpoint).to_string(),
+            endpoint: endpoint.to_string(),
             tls_server_name,
             tls_ca_cert_der_file,
+            bearer_token_file,
         });
     }
     Ok(peers)
@@ -303,11 +305,26 @@ fn build_endpoints(peers: &[PeerConfig]) -> Result<Vec<FastVoteEndpoint<CliTrans
     let mut saw_loopback = false;
     let mut saw_remote_tls = false;
     for peer in peers {
-        let transport = build_transport(
+        let mut transport: CliTransport = build_transport(
             &peer.endpoint,
             peer.tls_server_name.as_deref(),
             peer.tls_ca_cert_der_file.as_deref(),
         )?;
+        if let Some(path) = &peer.bearer_token_file {
+            // Read at most max+newline+1, using the same private regular-file
+            // and handle-identity checks as signing seeds. Never log content.
+            let bytes: Vec<u8> = crate::seed::read_private_file(Path::new(path), 1026)
+                .map_err(|_| invalid("bearer credential file is unavailable or not private"))?;
+            let trimmed: &[u8] = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
+            let value: String = std::str::from_utf8(trimmed)
+                .map_err(|_| invalid("bearer credential file must contain a bounded ASCII token"))?
+                .to_owned();
+            let token: sunrise_edge_client::BearerToken =
+                sunrise_edge_client::BearerToken::new(value).map_err(|_| {
+                    invalid("bearer credential file must contain a bounded ASCII token")
+                })?;
+            transport = transport.with_bearer_token(token);
+        }
         match &transport {
             CliTransport::Loopback(_) => saw_loopback = true,
             CliTransport::RemoteTls(_) => saw_remote_tls = true,
@@ -990,12 +1007,41 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn cohort_bearer_credentials_use_private_files_without_exposing_content() {
+        use std::os::unix::fs::PermissionsExt;
+        const TOKEN: &str = "public-development-fixture-token-0123456789";
+        let token_path: PathBuf = temp_path("bearer");
+        std::fs::write(&token_path, format!("{TOKEN}\n")).unwrap();
+        std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let config_path: PathBuf = write_config(&format!(
+            "{} 127.0.0.1:9001 - - {}\n",
+            validator_hex(0xA1),
+            token_path.display()
+        ));
+        let peers: Vec<PeerConfig> = parse_network_config(config_path.to_str().unwrap()).unwrap();
+        assert_eq!(peers[0].bearer_token_file.as_deref(), token_path.to_str());
+        assert!(build_endpoints(&peers).is_ok());
+        std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let error = match build_endpoints(&peers) {
+            Ok(_) => panic!("insecure credential accepted"),
+            Err(error) => error,
+        };
+        assert!(!error.to_string().contains(TOKEN));
+        std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::write(&token_path, format!("{TOKEN}\r\nInjected: yes")).unwrap();
+        assert!(build_endpoints(&peers).is_err());
+        std::fs::remove_file(token_path).unwrap();
+        std::fs::remove_file(config_path).unwrap();
+    }
+
     #[test]
     fn parse_network_config_rejects_a_line_with_the_wrong_field_count() {
         let path = write_config(&format!("{} 127.0.0.1:9001 -\n", validator_hex(0xA1)));
         let error = parse_network_config(path.to_str().unwrap()).unwrap_err();
         let _ = std::fs::remove_file(&path);
-        assert!(format!("{error}").contains("exactly 4 fields"));
+        assert!(format!("{error}").contains("4 fields or an optional fifth"));
     }
 
     #[test]
@@ -1049,12 +1095,14 @@ mod tests {
                 endpoint: "127.0.0.1:9001".to_string(),
                 tls_server_name: None,
                 tls_ca_cert_der_file: None,
+                bearer_token_file: None,
             },
             PeerConfig {
                 validator_id: ValidatorId::new([0xA2; 32]),
                 endpoint: "203.0.113.1:9443".to_string(),
                 tls_server_name: Some("example.test".to_string()),
                 tls_ca_cert_der_file: Some(ca_path.to_str().unwrap().to_string()),
+                bearer_token_file: None,
             },
         ];
         let error = match build_endpoints(&peers) {
@@ -1090,12 +1138,14 @@ mod tests {
                 endpoint: "203.0.113.1:9443".to_string(),
                 tls_server_name: Some("one.example.test".to_string()),
                 tls_ca_cert_der_file: Some(ca_path_1.to_str().unwrap().to_string()),
+                bearer_token_file: None,
             },
             PeerConfig {
                 validator_id: ValidatorId::new([0xA2; 32]),
                 endpoint: "203.0.113.2:9443".to_string(),
                 tls_server_name: Some("two.example.test".to_string()),
                 tls_ca_cert_der_file: Some(ca_path_2.to_str().unwrap().to_string()),
+                bearer_token_file: None,
             },
         ];
         let endpoints = build_endpoints(&peers).unwrap();

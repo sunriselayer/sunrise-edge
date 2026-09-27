@@ -11,6 +11,7 @@ members = [
     "crates/runtime",
     "crates/runtime-postgres",
     "crates/runtime-sqlite",
+    "crates/runtime-sql-durable",
     "crates/execution",
     "crates/standard-assets",
     "contracts/standard-asset",
@@ -32,6 +33,7 @@ members = [
     "apps/cli",
     "clients/rust",
     "clients/ledger",
+    "adapters/cloudflare-workers/rust",
 ]
 resolver = "3"
 
@@ -52,6 +54,7 @@ protocol-config = { path = "crates/protocol-config" }
 runtime = { path = "crates/runtime" }
 runtime-postgres = { path = "crates/runtime-postgres" }
 runtime-sqlite = { path = "crates/runtime-sqlite" }
+runtime-sql-durable = { path = "crates/runtime-sql-durable" }
 execution = { path = "crates/execution" }
 standard-assets = { path = "crates/standard-assets" }
 fees = { path = "crates/fees" }

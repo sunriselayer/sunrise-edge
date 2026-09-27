@@ -75,9 +75,38 @@ pub trait Transport {
     fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportError>;
 }
 
+/// Bounded transport credential, unrelated to transaction signing authority.
+/// Debug output never exposes its value; transports never follow redirects.
+#[derive(Clone)]
+pub struct BearerToken(String);
+
+impl BearerToken {
+    /// Accepts one RFC 6750 token without whitespace or HTTP control bytes.
+    pub fn new(value: String) -> Result<Self, TransportError> {
+        if !(16..=1024).contains(&value.len())
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-._~+/=".contains(&byte))
+            || value.trim_end_matches('=').contains('=')
+            || value.trim_end_matches('=').is_empty()
+        {
+            return Err(TransportError::InvalidBearerToken);
+        }
+        Ok(Self(value))
+    }
+}
+
+impl fmt::Debug for BearerToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("BearerToken(<redacted>)")
+    }
+}
+
 /// Errors from either bounded HTTP/1.1 transport this crate ships.
 #[derive(Debug)]
 pub enum TransportError {
+    /// The transport credential exceeded its bound or contained unsafe bytes.
+    InvalidBearerToken,
     /// The configured target address was not a loopback address.
     NonLoopbackAddress(SocketAddr),
     /// A configured timeout was zero.
@@ -177,6 +206,7 @@ pub enum TransportError {
 impl fmt::Display for TransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidBearerToken => f.write_str("invalid bounded bearer credential"),
             Self::NonLoopbackAddress(addr) => {
                 write!(f, "transport target {addr} is not a loopback address")
             }
@@ -371,6 +401,7 @@ impl BoundedTransportIo for TcpStream {
 #[derive(Clone, Debug)]
 pub struct LoopbackHttpTransport {
     addr: SocketAddr,
+    bearer_token: Option<BearerToken>,
     connect_timeout: Duration,
     read_timeout: Duration,
     write_timeout: Duration,
@@ -400,6 +431,7 @@ impl LoopbackHttpTransport {
         }
         Ok(Self {
             addr,
+            bearer_token: None,
             connect_timeout,
             read_timeout,
             write_timeout,
@@ -412,6 +444,13 @@ impl LoopbackHttpTransport {
     #[must_use]
     pub const fn addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    /// Configures a development-only loopback credential; never remote plaintext.
+    #[must_use]
+    pub fn with_bearer_token(mut self, token: BearerToken) -> Self {
+        self.bearer_token = Some(token);
+        self
     }
 }
 
@@ -439,6 +478,7 @@ impl Transport for LoopbackHttpTransport {
             &mut stream,
             request,
             &host,
+            self.bearer_token.as_ref(),
             deadline,
             self.write_timeout,
             self.read_timeout,
@@ -485,6 +525,7 @@ pub const MAX_CA_CERTIFICATE_DER_BYTES: usize = 16 * 1024;
 #[derive(Clone)]
 pub struct RemoteTlsHttpTransport {
     addr: SocketAddr,
+    bearer_token: Option<BearerToken>,
     server_name: ServerName<'static>,
     /// The validated DNS name plus the configured port, `"<dns-name>:<port>"`.
     /// This is the exact `Host` header value this transport sends; it is
@@ -508,6 +549,7 @@ impl fmt::Debug for RemoteTlsHttpTransport {
             .field("addr", &self.addr)
             .field("server_name", &self.server_name)
             .field("authority", &self.authority)
+            .field("bearer_token", &self.bearer_token)
             .field("connect_timeout", &self.connect_timeout)
             .field("handshake_read_timeout", &self.handshake_read_timeout)
             .field("handshake_write_timeout", &self.handshake_write_timeout)
@@ -581,6 +623,7 @@ impl RemoteTlsHttpTransport {
         Ok(Self {
             addr,
             server_name,
+            bearer_token: None,
             authority,
             tls_config: Arc::new(tls_config),
             connect_timeout,
@@ -597,6 +640,13 @@ impl RemoteTlsHttpTransport {
     #[must_use]
     pub const fn addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    /// Binds a credential to this exact TLS target; no redirects/fallback exist.
+    #[must_use]
+    pub fn with_bearer_token(mut self, token: BearerToken) -> Self {
+        self.bearer_token = Some(token);
+        self
     }
 }
 
@@ -634,6 +684,7 @@ impl Transport for RemoteTlsHttpTransport {
             &mut stream,
             request,
             &self.authority,
+            self.bearer_token.as_ref(),
             deadline,
             self.write_timeout,
             self.read_timeout,
@@ -862,6 +913,7 @@ fn send_request<S: BoundedTransportIo>(
     stream: &mut S,
     request: &WireRequest,
     host: &str,
+    bearer_token: Option<&BearerToken>,
     deadline: Instant,
     write_timeout: Duration,
     read_timeout: Duration,
@@ -874,6 +926,11 @@ fn send_request<S: BoundedTransportIo>(
         request.path,
         host,
     );
+    if let Some(token) = bearer_token {
+        head.push_str("Authorization: Bearer ");
+        head.push_str(&token.0);
+        head.push_str("\r\n");
+    }
     if let Some(content_type) = request.content_type {
         head.push_str("Content-Type: ");
         head.push_str(content_type);
@@ -1150,6 +1207,24 @@ fn is_peer_gone(error: &std::io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bearer_token_is_bounded_header_safe_and_redacted() {
+        for value in [
+            "short".to_owned(),
+            "x".repeat(1025),
+            "=".repeat(16),
+            "0123456789abcdef\r\nInjected: yes".to_owned(),
+            "0123456789abcdef suffix".to_owned(),
+            "abcd=efghijklmnop".to_owned(),
+        ] {
+            let error = BearerToken::new(value).unwrap_err();
+            assert!(matches!(error, TransportError::InvalidBearerToken));
+            assert_eq!(error.to_string(), "invalid bounded bearer credential");
+        }
+        let token: BearerToken =
+            BearerToken::new("development-token-0123456789==".to_owned()).unwrap();
+        assert_eq!(format!("{token:?}"), "BearerToken(<redacted>)");
+    }
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
 

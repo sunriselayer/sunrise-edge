@@ -106,6 +106,21 @@ impl std::error::Error for SeedFileError {
 ///
 /// The returned bytes must never be printed or logged by a caller.
 pub fn load_dev_seed(path: &Path) -> Result<[u8; 32], SeedFileError> {
+    let buffer: Vec<u8> = read_private_file(path, MAX_READ_LEN)?;
+    let text_bytes: &[u8] = match buffer.len() {
+        SEED_HEX_LEN => &buffer,
+        len if len == SEED_HEX_LEN + 1 && buffer[SEED_HEX_LEN] == b'\n' => &buffer[..SEED_HEX_LEN],
+        len if len > SEED_HEX_LEN + 1 => return Err(SeedFileError::TooLong),
+        len => return Err(SeedFileError::WrongLength { actual: len }),
+    };
+    let text = std::str::from_utf8(text_bytes)
+        .map_err(|_| SeedFileError::InvalidHex(HexError::InvalidDigit { field: "seed file" }))?;
+    decode_hex_32("seed file", text).map_err(SeedFileError::InvalidHex)
+}
+
+/// Reuses the seed loader's regular-file, private-mode and opened-identity
+/// checks for transport credentials. The caller supplies a bounded read cap.
+pub(crate) fn read_private_file(path: &Path, read_cap: usize) -> Result<Vec<u8>, SeedFileError> {
     let pre_open_metadata = fs::symlink_metadata(path).map_err(SeedFileError::Io)?;
     if pre_open_metadata.file_type().is_symlink() {
         return Err(SeedFileError::Symlink);
@@ -135,21 +150,13 @@ pub fn load_dev_seed(path: &Path) -> Result<[u8; 32], SeedFileError> {
         }
     }
 
-    let mut buffer = Vec::with_capacity(MAX_READ_LEN);
+    let mut buffer: Vec<u8> = Vec::with_capacity(read_cap);
     file.by_ref()
-        .take(u64::try_from(MAX_READ_LEN).unwrap_or(u64::MAX))
+        .take(u64::try_from(read_cap).unwrap_or(u64::MAX))
         .read_to_end(&mut buffer)
         .map_err(SeedFileError::Io)?;
 
-    let text_bytes: &[u8] = match buffer.len() {
-        SEED_HEX_LEN => &buffer,
-        len if len == SEED_HEX_LEN + 1 && buffer[SEED_HEX_LEN] == b'\n' => &buffer[..SEED_HEX_LEN],
-        len if len > SEED_HEX_LEN + 1 => return Err(SeedFileError::TooLong),
-        len => return Err(SeedFileError::WrongLength { actual: len }),
-    };
-    let text = std::str::from_utf8(text_bytes)
-        .map_err(|_| SeedFileError::InvalidHex(HexError::InvalidDigit { field: "seed file" }))?;
-    decode_hex_32("seed file", text).map_err(SeedFileError::InvalidHex)
+    Ok(buffer)
 }
 
 #[cfg(unix)]

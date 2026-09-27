@@ -6,3 +6,4 @@
 /adapters/vercel/.env*.local
 /adapters/supabase-edge/supabase/.temp
 /adapters/supabase-edge/supabase/.env*
+/adapters/cloudflare-workers/src/validator/generated/

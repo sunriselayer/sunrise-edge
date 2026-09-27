@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 runtime.workspace = true
+runtime-sql-durable.workspace = true
 rusqlite.workspace = true
 protocol-types.workspace = true
 
