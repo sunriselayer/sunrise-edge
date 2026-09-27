@@ -60,11 +60,11 @@ pub use engine::{
     decode_ordered_refusal_payload, decode_ordered_status, encode_ordered_event_output,
     encode_ordered_outcome, encode_ordered_proposal, encode_ordered_refusal_payload,
     encode_ordered_status, install_ordered_genesis, observe_proposal, process_certificate,
-    process_proposal, process_tick, propose, query_status,
+    process_proposal, process_tick, propose, query_ordered_outcome, query_status,
 };
 pub use evidence_submission::{
-    OrderedEvidenceSubmission, decode_ordered_evidence_submission,
-    encode_ordered_evidence_submission,
+    MAX_ORDERED_EVIDENCE_SUBMISSION_BYTES, OrderedEvidenceSubmission,
+    decode_ordered_evidence_submission, encode_ordered_evidence_submission,
 };
 pub use policy::{
     ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE, OrderedEconomicsEnvironment, OrderedEconomicsPolicy,
@@ -190,6 +190,15 @@ pub enum OrderedEconomicsError {
     /// undecodable, fenced or otherwise unknown. Stop: declared catch-up or
     /// recovery is required, and the applied prefix must not advance.
     Prerequisite(&'static str),
+    /// This request id already has a **completed** ordered outcome, retained
+    /// durably by the invocation that executed it.
+    ///
+    /// Neither a rejection nor a stop: it is the successful idempotent answer.
+    /// It carries the exact original [`OrderedOutcome`] so a caller returns
+    /// that instead of placing the candidate a second time, re-executing it,
+    /// or re-acquiring the reservations the original invocation already
+    /// released. A retained request *header* alone is never completion.
+    AlreadyCompleted(Box<OrderedOutcome>),
 }
 
 impl OrderedEconomicsError {
@@ -206,6 +215,17 @@ impl OrderedEconomicsError {
     pub const fn requires_reconciliation(&self) -> bool {
         matches!(self, Self::Node(_) | Self::Prerequisite(_))
     }
+
+    /// The exact retained outcome when this request already completed, else
+    /// `None`. The one accessor a network surface needs to turn an idempotent
+    /// resubmission into the original answer.
+    #[must_use]
+    pub fn completed_outcome(&self) -> Option<&OrderedOutcome> {
+        match self {
+            Self::AlreadyCompleted(outcome) => Some(outcome),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for OrderedEconomicsError {
@@ -219,6 +239,9 @@ impl fmt::Display for OrderedEconomicsError {
                 f.write_str("ordered candidate request id reused with a different header")
             }
             Self::Refused(refusal) => refusal.fmt(f),
+            Self::AlreadyCompleted(_) => {
+                f.write_str("ordered candidate request id already completed")
+            }
         }
     }
 }

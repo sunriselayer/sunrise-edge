@@ -1925,6 +1925,868 @@ fn a_real_zero_share_fee_claim_commits_through_the_ordered_path_on_every_replica
 
 // --- profile shape --------------------------------------------------------
 
+// --- follow-up 1: the rows that decided a refusal are CAS-asserted --------
+
+/// Wraps a real store and, exactly once, lands a foreign write on one named row
+/// inside `commit_invocation` immediately before forwarding it.
+///
+/// That is precisely the race the staged read assertions exist for: another
+/// writer moves the row whose healthy revision decided this invocation's answer
+/// after the decision was taken but before it commits.
+struct RaceStore<'a> {
+    inner: &'a MemoryDurableStateStore,
+    context: DurableOperationContext,
+    domain: AtomicityDomainId,
+    race_key: Vec<u8>,
+    race_value: Vec<u8>,
+    raced: std::cell::Cell<bool>,
+}
+
+impl RaceStore<'_> {
+    fn land_foreign_write(&self) {
+        let revision = self
+            .inner
+            .get_versioned_durable(&self.context, self.domain, &self.race_key)
+            .unwrap()
+            .revision();
+        let transaction = AtomicStateTransaction::new(
+            self.domain,
+            AtomicStateReadSet::new(vec![
+                StateReadAssertion::new(self.race_key.clone(), revision).unwrap(),
+            ])
+            .unwrap(),
+            AtomicStateMutationSet::new(vec![
+                StateMutationEntry::new(
+                    self.race_key.clone(),
+                    StateMutation::Put(self.race_value.clone()),
+                )
+                .unwrap(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            self.inner.commit_durable(&self.context, transaction),
+            DurableCommitOutcome::Committed
+        );
+    }
+}
+
+impl DurableDomainStateStore for RaceStore<'_> {
+    fn get_versioned_durable(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        key: &[u8],
+    ) -> Result<VersionedStateValue, DurableReadError> {
+        self.inner.get_versioned_durable(context, domain, key)
+    }
+
+    fn commit_durable(
+        &self,
+        context: &DurableOperationContext,
+        transaction: AtomicStateTransaction,
+    ) -> DurableCommitOutcome {
+        self.inner.commit_durable(context, transaction)
+    }
+}
+
+impl StructuredDurableDomainStateStore for RaceStore<'_> {
+    fn get_object_head(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+    ) -> Result<DurableObjectHead, DurableReadError> {
+        self.inner.get_object_head(context, domain, object_id)
+    }
+
+    fn get_object_version(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+        object_version: DurableObjectVersion,
+    ) -> Result<Option<DurableObjectVersionRecord>, DurableReadError> {
+        self.inner
+            .get_object_version(context, domain, object_id, object_version)
+    }
+
+    fn get_request_receipt(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        request_id: DurableRequestId,
+    ) -> Result<Option<DurableRequestReceipt>, DurableReadError> {
+        self.inner.get_request_receipt(context, domain, request_id)
+    }
+
+    fn commit_invocation(
+        &self,
+        context: &DurableOperationContext,
+        transaction: DurableInvocationTransaction,
+    ) -> DurableCommitOutcome {
+        if !self.raced.replace(true) {
+            self.land_foreign_write();
+        }
+        self.inner.commit_invocation(context, transaction)
+    }
+}
+
+#[test]
+fn a_refusal_asserts_the_row_that_decided_it_so_a_concurrent_change_rejects_the_commit() {
+    let network = setup();
+    network.install_ordered();
+
+    // Advance the committed bond row so the candidate below is genuinely stale.
+    let mut advanced = network.bond.clone();
+    advanced.generation = advanced.generation.checked_add(1).unwrap();
+    for replica in 0..REPLICAS {
+        network.put(
+            replica,
+            network.bond_key(),
+            StateMutation::Put(encode_fastpath_bond_record(&advanced).unwrap()),
+        );
+    }
+    let recipient = address_of(0x5d);
+    let next = predicted_unbond(&network.bond, 11, *recipient.as_bytes());
+    let request_id = [0x81; 32];
+    let candidate = unbond_candidate(&network, &network.bond, &next, request_id, recipient, 11);
+    network.round(1, Some(&candidate));
+    network.round(2, None);
+    let (certificate, _) = network.certify(3, None);
+
+    // A third generation lands on the bond row inside the refusing commit.
+    let mut raced_row = advanced.clone();
+    raced_row.generation = advanced.generation.checked_add(1).unwrap();
+    let victim = 0usize;
+    let race = RaceStore {
+        inner: &network.stores[victim],
+        context: network.context,
+        domain: network.domain(),
+        race_key: network.bond_key(),
+        race_value: encode_fastpath_bond_record(&raced_row).unwrap(),
+        raced: std::cell::Cell::new(false),
+    };
+    let chain = fixture::chain();
+    let outcome_key = engine::ordered_outcome_key_for_tests(&chain, &request_id);
+
+    // The bond row whose healthy revision decided `StaleGeneration` is a CAS
+    // assertion, so the whole invocation is rejected rather than retaining a
+    // refusal against state that no longer justifies it.
+    let result = process_certificate(&race, &network.context, &network.env(), &certificate);
+    assert!(
+        matches!(
+            result,
+            Err(OrderedEconomicsError::Node(
+                NodeCoreError::DurableCommitRejected(_)
+            ))
+        ),
+        "expected a rejected commit, got {result:?}"
+    );
+    // Nothing was retained: no receipt, no outcome row, no advanced prefix.
+    assert!(
+        network.stores[victim]
+            .get_request_receipt(
+                &network.context,
+                network.domain(),
+                DurableRequestId::new(request_id).unwrap()
+            )
+            .unwrap()
+            .is_none()
+    );
+    assert!(network.value(victim, &outcome_key).is_none());
+    assert!(
+        network
+            .value(
+                victim,
+                &engine::ordered_applied_height_key_for_tests(&chain)
+            )
+            .is_none()
+    );
+    assert_eq!(network.committed_bond(victim), raced_row);
+
+    // Retrying against the settled store re-decides from the row as it now
+    // stands and commits one refusal.
+    let retried = process_certificate(
+        &network.stores[victim],
+        &network.context,
+        &network.env(),
+        &certificate,
+    )
+    .unwrap();
+    assert_eq!(
+        refusal_of(&retried.committed[0]),
+        OrderedRefusal::StaleGeneration
+    );
+    assert!(network.value(victim, &outcome_key).is_some());
+    assert_eq!(network.committed_bond(victim), raced_row);
+}
+
+// --- follow-up 3: a completed candidate is never re-placed or re-executed --
+
+#[test]
+fn a_completed_candidate_is_answered_from_its_retained_outcome_and_never_re_placed() {
+    use consensus::{ConsensusEngine, ConsensusEvent};
+
+    let network = setup();
+    network.install_ordered();
+    let chain = fixture::chain();
+    let recipient = address_of(0x5e);
+    let next = predicted_unbond(&network.bond, 11, *recipient.as_bytes());
+    let request_id = [0xb1; 32];
+    let candidate = unbond_candidate(&network, &network.bond, &next, request_id, recipient, 11);
+    let digest = engine::ordered_candidate_digest_for_tests(&network.resolver, &candidate);
+
+    network.round(1, Some(&candidate));
+    network.round(2, None);
+    let (round3, _, _) = network.round(3, None);
+    let original: OrderedOutcome = round3[0].committed[0].clone();
+    assert_eq!(original.block_height, 1);
+    assert_eq!(
+        original.output.responses()[0].status(),
+        NodeResponseStatus::Accepted
+    );
+
+    // 1. The bounded read-only query returns the exact retained outcome on
+    //    every independent store.
+    for replica in 0..REPLICAS {
+        let queried = query_ordered_outcome(
+            &network.stores[replica],
+            &network.context,
+            &network.env(),
+            &request_id,
+        )
+        .unwrap()
+        .expect("a completed request retains its outcome");
+        assert_eq!(
+            encode_ordered_outcome(&queried).unwrap(),
+            encode_ordered_outcome(&original).unwrap(),
+            "replica {replica}"
+        );
+    }
+    // A request that never ran has no outcome, and absence is not completion.
+    assert!(
+        query_ordered_outcome(
+            &network.stores[0],
+            &network.context,
+            &network.env(),
+            &[0xb2; 32]
+        )
+        .unwrap()
+        .is_none()
+    );
+
+    // 2. A signing leader refuses to place it a second time, writes nothing,
+    //    and re-acquires no lock.
+    let leader4 = network.leader_index(4);
+    let before = network.snapshot(leader4, &[request_id], 4);
+    let nonce_lock_key =
+        fastpath_nonce_lock_key(&chain, &fixture::sender(), Epoch::new(0)).unwrap();
+    let result = propose(
+        &network.stores[leader4],
+        &network.context,
+        &network.env(),
+        Some(&candidate),
+        &network.signers[leader4],
+    );
+    match &result {
+        Err(error @ OrderedEconomicsError::AlreadyCompleted(_)) => {
+            let completed = error.completed_outcome().expect("typed completed outcome");
+            assert_eq!(
+                encode_ordered_outcome(completed).unwrap(),
+                encode_ordered_outcome(&original).unwrap()
+            );
+            assert!(!error.is_semantic_rejection());
+            assert!(!error.requires_reconciliation());
+        }
+        other => panic!("expected AlreadyCompleted, got {other:?}"),
+    }
+    assert_eq!(network.snapshot(leader4, &[request_id], 4), before);
+    assert!(network.value(leader4, &nonce_lock_key).is_none());
+
+    // 3. Same request id, changed signed bytes: still a boundary conflict,
+    //    never answered from the foreign completed outcome.
+    let mut other_next = next.clone();
+    other_next.committed_at_checkpoint = 12;
+    let changed = unbond_candidate(
+        &network,
+        &network.bond,
+        &other_next,
+        request_id,
+        recipient,
+        12,
+    );
+    assert!(matches!(
+        propose(
+            &network.stores[leader4],
+            &network.context,
+            &network.env(),
+            Some(&changed),
+            &network.signers[leader4],
+        ),
+        Err(OrderedEconomicsError::RequestHeaderConflict)
+    ));
+
+    // 4. A byzantine leader places the completed candidate again at the next
+    //    economic height, bypassing `propose` with the raw engine.
+    let leader_state = consensus::decode_consensus_state(
+        &network
+            .value(leader4, &engine::ordered_state_key_for_tests(&chain))
+            .unwrap(),
+    )
+    .unwrap();
+    let duplicate = network
+        .policy
+        .engine()
+        .propose(&leader_state, vec![digest], &network.signers[leader4])
+        .unwrap();
+    assert_eq!(duplicate.height, 4);
+    let duplicate_ordered = OrderedProposal {
+        proposal: duplicate.clone(),
+        candidate: Some(candidate.clone()),
+    };
+
+    // An honest voter refuses: it will not vote to place a finished operation.
+    let honest = network.non_leader(&[4]);
+    assert!(matches!(
+        process_proposal(
+            &network.stores[honest],
+            &network.context,
+            &network.env(),
+            &duplicate_ordered,
+            &network.signers[honest],
+        ),
+        Err(OrderedEconomicsError::AlreadyCompleted(_))
+    ));
+    assert!(
+        network
+            .value(
+                honest,
+                &engine::ordered_vote_record_key_for_tests(&chain, 4)
+            )
+            .is_none()
+    );
+
+    // Declared recovery may still record the authentic proposal so it can keep
+    // replaying artifacts in dependency order. It reserves nothing.
+    for replica in 0..REPLICAS {
+        observe_proposal(
+            &network.stores[replica],
+            &network.context,
+            &network.env(),
+            &duplicate_ordered,
+        )
+        .unwrap();
+        assert!(network.value(replica, &nonce_lock_key).is_none());
+        assert!(
+            network
+                .value(
+                    replica,
+                    &engine::ordered_reservation_key_for_tests(&chain, &request_id)
+                )
+                .is_none()
+        );
+    }
+
+    // A quorum of byzantine replicas certifies the duplicate placement.
+    let genesis_state = network.policy.engine().genesis_state(TRUSTED_NOW_MILLIS);
+    let votes: Vec<ConsensusVote> = network
+        .signers
+        .iter()
+        .map(|signer| {
+            let output = network
+                .policy
+                .engine()
+                .on_event(
+                    &genesis_state,
+                    ConsensusEvent::Proposal(duplicate.clone()),
+                    signer,
+                    &super::policy::Ed25519ConsensusVerifier,
+                )
+                .unwrap();
+            output
+                .outbound_messages
+                .iter()
+                .find_map(|message| match message {
+                    ConsensusMessage::Vote(vote) => Some(vote.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        })
+        .collect();
+    let duplicate_certificate = network
+        .policy
+        .engine()
+        .certificate_from_votes(&duplicate, &votes, &super::policy::Ed25519ConsensusVerifier)
+        .unwrap()
+        .unwrap();
+    for replica in 0..REPLICAS {
+        process_certificate(
+            &network.stores[replica],
+            &network.context,
+            &network.env(),
+            &duplicate_certificate,
+        )
+        .unwrap();
+    }
+
+    // 5. Two further certified heights commit the duplicate placement. Every
+    //    replica answers with the EXACT original outcome: nothing is
+    //    re-executed, the business row is untouched, and the receipt and
+    //    outcome rows keep their original revisions.
+    let bond_revision_before = network.revision(0, &network.bond_key());
+    let outcome_key = engine::ordered_outcome_key_for_tests(&chain, &request_id);
+    let outcome_revision_before = network.revision(0, &outcome_key);
+    network.round(5, None);
+    let (round6, _, _) = network.round(6, None);
+    for (replica, output) in round6.iter().enumerate() {
+        assert_eq!(output.committed.len(), 1, "replica {replica}");
+        assert_eq!(
+            encode_ordered_outcome(&output.committed[0]).unwrap(),
+            encode_ordered_outcome(&original).unwrap(),
+            "replica {replica} must answer with the exact original outcome"
+        );
+        // Still the one applied effect, at its original height.
+        assert_eq!(output.committed[0].block_height, 1);
+        assert_eq!(network.committed_bond(replica), next);
+    }
+    assert_eq!(
+        network.revision(0, &network.bond_key()),
+        bond_revision_before
+    );
+    assert_eq!(network.revision(0, &outcome_key), outcome_revision_before);
+    assert_eq!(
+        query_ordered_outcome(
+            &network.stores[0],
+            &network.context,
+            &network.env(),
+            &request_id
+        )
+        .unwrap()
+        .map(|outcome| encode_ordered_outcome(&outcome).unwrap()),
+        Some(encode_ordered_outcome(&original).unwrap())
+    );
+}
+
+#[test]
+fn a_completion_query_fails_closed_when_its_own_receipt_is_missing_or_disagrees() {
+    let network = setup();
+    network.install_ordered();
+    let chain = fixture::chain();
+    let recipient = address_of(0x5f);
+    let next = predicted_unbond(&network.bond, 11, *recipient.as_bytes());
+    let request_id = [0xc1; 32];
+    let candidate = unbond_candidate(&network, &network.bond, &next, request_id, recipient, 11);
+    network.round(1, Some(&candidate));
+    network.round(2, None);
+    let (round3, _, _) = network.round(3, None);
+    let original: OrderedOutcome = round3[0].committed[0].clone();
+
+    // Healthy: the retained outcome agrees with its own committed receipt.
+    assert!(
+        query_ordered_outcome(
+            &network.stores[0],
+            &network.context,
+            &network.env(),
+            &request_id
+        )
+        .unwrap()
+        .is_some()
+    );
+
+    // An outcome row with no committed receipt at all is persisted
+    // inconsistency, never an answer: the query must fail closed rather than
+    // fabricate a completion for a request that never produced one.
+    let orphan_id = [0xc2; 32];
+    let orphan = OrderedOutcome {
+        candidate_digest: original.candidate_digest,
+        request_id: orphan_id,
+        block_height: original.block_height,
+        block_digest: original.block_digest,
+        output: NodeOutput::new(
+            vec![
+                NodeResponse::new(
+                    RequestId::new(orphan_id).unwrap(),
+                    NodeResponseStatus::Accepted,
+                    None,
+                )
+                .unwrap(),
+            ],
+            Vec::new(),
+        )
+        .unwrap(),
+    };
+    network.put(
+        0,
+        engine::ordered_outcome_key_for_tests(&chain, &orphan_id),
+        StateMutation::Put(engine::encode_retained_outcome_for_tests(&orphan)),
+    );
+    let orphan_result = query_ordered_outcome(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &orphan_id,
+    );
+    assert!(
+        matches!(orphan_result, Err(OrderedEconomicsError::Prerequisite(_))),
+        "expected a fail-closed stop, got {orphan_result:?}"
+    );
+
+    // An outcome row that disagrees with the responses its own receipt retained
+    // also fails closed, on every path that consults it.
+    let tampered = OrderedOutcome {
+        output: NodeOutput::new(
+            vec![
+                NodeResponse::new(
+                    RequestId::new(request_id).unwrap(),
+                    NodeResponseStatus::Rejected,
+                    Some(encode_ordered_refusal_payload(OrderedRefusal::StaleGeneration).unwrap()),
+                )
+                .unwrap(),
+            ],
+            Vec::new(),
+        )
+        .unwrap(),
+        ..original.clone()
+    };
+    network.put(
+        0,
+        engine::ordered_outcome_key_for_tests(&chain, &request_id),
+        StateMutation::Put(engine::encode_retained_outcome_for_tests(&tampered)),
+    );
+    let tampered_result = query_ordered_outcome(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &request_id,
+    );
+    assert!(
+        matches!(tampered_result, Err(OrderedEconomicsError::Prerequisite(_))),
+        "expected a fail-closed stop, got {tampered_result:?}"
+    );
+
+    // The admission path must not answer AlreadyCompleted from an inconsistent
+    // row, and must not treat it as a fresh placement either.
+    let leader = network.leader_index(4);
+    let admission = propose(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        Some(&candidate),
+        &network.signers[leader],
+    );
+    assert!(
+        matches!(admission, Err(OrderedEconomicsError::Prerequisite(_))),
+        "expected a fail-closed stop, got {admission:?}"
+    );
+    assert!(
+        network
+            .value(0, &engine::ordered_leader_record_key_for_tests(&chain, 4))
+            .is_none()
+    );
+}
+
+// --- follow-up 2: already-recorded evidence under a fresh request id ------
+
+fn fast_vote_pair(network: &Network, signer_index: usize) -> (Vec<u8>, Vec<u8>) {
+    let certifier = consensus::FastPathCertifier::new(
+        fixture::chain(),
+        fixture::protocol().protocol_version(),
+        Epoch::new(0),
+        validator_set(&network.signers),
+    )
+    .unwrap();
+    let signer = &network.signers[signer_index];
+    // The same validator signing two different payloads for one tx_hash: the
+    // DR-0133 class (a) conflict, built with real keys and the real certifier.
+    let a = certifier
+        .cast_vote(digest32(0x01), digest32(0x02), digest32(0x03), signer)
+        .unwrap();
+    let b = certifier
+        .cast_vote(digest32(0x01), digest32(0x04), digest32(0x03), signer)
+        .unwrap();
+    (
+        consensus::encode_fast_vote(&a).unwrap(),
+        consensus::encode_fast_vote(&b).unwrap(),
+    )
+}
+
+fn digest32(byte: u8) -> Digest32 {
+    Digest32::new(HashAlgorithmId::Sha2_256, [byte; 32])
+}
+
+fn object_ref_at(id: u8, digest_byte: u8) -> objects::ObjectRef {
+    objects::ObjectRef {
+        id: ObjectId::new([id; 32]),
+        version: 1,
+        digest: digest32(digest_byte),
+    }
+}
+
+fn preimage_of(entries: Vec<objects::ObjectRef>) -> consensus::LockedObjectSetPreimage {
+    consensus::LockedObjectSetPreimage {
+        chain_id: fixture::chain(),
+        protocol_version: fixture::protocol().protocol_version(),
+        epoch: Epoch::new(0),
+        entries,
+    }
+}
+
+fn preimage_digest(preimage: &consensus::LockedObjectSetPreimage) -> Digest32 {
+    fixture::resolver()
+        .hash_for_purpose(
+            Epoch::new(0),
+            HashPurpose::ExecutionEffects,
+            &consensus::encode_locked_object_set_preimage(preimage).unwrap(),
+        )
+        .unwrap()
+}
+
+/// One submission per DR-0133 family, all with real signatures from a genesis
+/// validator, and all carrying `checkpoint`.
+fn evidence_submissions(network: &Network, checkpoint: u64) -> Vec<OrderedEvidenceSubmission> {
+    let (fast_a, fast_b) = fast_vote_pair(network, 1);
+
+    let certifier = consensus::FastPathCertifier::new(
+        fixture::chain(),
+        fixture::protocol().protocol_version(),
+        Epoch::new(0),
+        validator_set(&network.signers),
+    )
+    .unwrap();
+    let shared = object_ref_at(0x10, 0x20);
+    let low = preimage_of(vec![shared.clone(), object_ref_at(0x30, 0x40)]);
+    let high = preimage_of(vec![shared, object_ref_at(0x50, 0x60)]);
+    let conflict_a = certifier
+        .cast_vote(
+            digest32(0x71),
+            digest32(0x72),
+            preimage_digest(&low),
+            &network.signers[2],
+        )
+        .unwrap();
+    let conflict_b = certifier
+        .cast_vote(
+            digest32(0x73),
+            digest32(0x74),
+            preimage_digest(&high),
+            &network.signers[2],
+        )
+        .unwrap();
+
+    let epoch_certifier = consensus::EpochTransitionCertifier::new(
+        fixture::chain(),
+        fixture::protocol().protocol_version(),
+        Epoch::new(0),
+        validator_set(&network.signers),
+    )
+    .unwrap();
+    let transition_a = epoch_certifier
+        .cast_vote(
+            Epoch::new(1),
+            digest32(0x81),
+            digest32(0x82),
+            digest32(0x83),
+            &network.signers[3],
+        )
+        .unwrap();
+    let transition_b = epoch_certifier
+        .cast_vote(
+            Epoch::new(1),
+            digest32(0x81),
+            digest32(0x84),
+            digest32(0x83),
+            &network.signers[3],
+        )
+        .unwrap();
+
+    vec![
+        OrderedEvidenceSubmission::FastVote {
+            statement_a: fast_a,
+            statement_b: fast_b,
+            checkpoint,
+        },
+        OrderedEvidenceSubmission::ObjectConflict {
+            statement_a: consensus::encode_fast_vote(&conflict_a).unwrap(),
+            statement_b: consensus::encode_fast_vote(&conflict_b).unwrap(),
+            preimage_a: consensus::encode_locked_object_set_preimage(&low).unwrap(),
+            preimage_b: consensus::encode_locked_object_set_preimage(&high).unwrap(),
+            checkpoint,
+        },
+        OrderedEvidenceSubmission::EpochTransition {
+            statement_a: consensus::encode_epoch_transition_vote(&transition_a).unwrap(),
+            statement_b: consensus::encode_epoch_transition_vote(&transition_b).unwrap(),
+            checkpoint,
+        },
+    ]
+}
+
+fn evidence_candidate(
+    submission: &OrderedEvidenceSubmission,
+    request_id: [u8; 32],
+) -> OrderedCandidate {
+    OrderedCandidate {
+        context: fixture::protocol(),
+        request_id,
+        kind: OrderedOperationKind::Evidence,
+        intent: encode_ordered_evidence_submission(submission).unwrap(),
+        created_checkpoint: 11,
+    }
+}
+
+fn accepted_evidence_record(
+    outcome: &OrderedOutcome,
+) -> equivocation::FastPathEquivocationEvidenceRecord {
+    assert_eq!(
+        outcome.output.responses()[0].status(),
+        NodeResponseStatus::Accepted
+    );
+    equivocation::decode_fastpath_equivocation_evidence_record(
+        outcome.output.responses()[0].payload().unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn already_recorded_evidence_accepts_under_a_fresh_request_id_for_every_family() {
+    // One independent four-store network per DR-0133 family, so each family is
+    // exercised against a clean genesis rather than sharing a prefix.
+    for family in 0..3usize {
+        let network = setup();
+        network.install_ordered();
+        let first_submission = evidence_submissions(&network, 11).remove(family);
+        // Same statements, different envelope checkpoint: the normalized
+        // identity is unchanged, so the second placement must find the row
+        // already recorded rather than rewrite it.
+        let second_submission = evidence_submissions(&network, 21).remove(family);
+        assert_ne!(
+            encode_ordered_evidence_submission(&first_submission).unwrap(),
+            encode_ordered_evidence_submission(&second_submission).unwrap()
+        );
+
+        let first_id = [0x90 + family as u8; 32];
+        let second_id = [0xa0 + family as u8; 32];
+        let first = evidence_candidate(&first_submission, first_id);
+        let second = evidence_candidate(&second_submission, second_id);
+
+        // Placement one: records the permanent one-time row.
+        network.round(1, Some(&first));
+        network.round(2, None);
+        let (round3, _, _) = network.round(3, None);
+        let recorded = accepted_evidence_record(&round3[0].committed[0]);
+        assert_eq!(recorded.recorded_at_checkpoint, 11, "family {family}");
+
+        // Placement two, fresh request id, identical normalized evidence. This
+        // used to wedge the prefix: the handler accepts read-only and stages no
+        // transaction at all.
+        network.round(4, Some(&second));
+        network.round(5, None);
+        let (round6, certificate6, _) = network.round(6, None);
+        for (replica, output) in round6.iter().enumerate() {
+            assert_eq!(
+                output.committed.len(),
+                1,
+                "family {family} replica {replica}"
+            );
+            let outcome = &output.committed[0];
+            assert_eq!(outcome.request_id, second_id);
+            let replayed = accepted_evidence_record(outcome);
+            // The immutable one-time row was read, not rewritten: it still
+            // reports the FIRST placement checkpoint and identical bytes.
+            assert_eq!(replayed.recorded_at_checkpoint, 11);
+            assert_eq!(replayed.evidence_bytes, recorded.evidence_bytes);
+            // Both requests carry their own receipt and retained outcome.
+            for request_id in [first_id, second_id] {
+                assert!(
+                    network.stores[replica]
+                        .get_request_receipt(
+                            &network.context,
+                            network.domain(),
+                            DurableRequestId::new(request_id).unwrap()
+                        )
+                        .unwrap()
+                        .is_some()
+                );
+                assert!(
+                    query_ordered_outcome(
+                        &network.stores[replica],
+                        &network.context,
+                        &network.env(),
+                        &request_id
+                    )
+                    .unwrap()
+                    .is_some()
+                );
+            }
+        }
+
+        // Exact replay of the accepting certificate stays read-only.
+        for replica in 0..REPLICAS {
+            let before = network.snapshot(replica, &[first_id, second_id], 6);
+            let replay = process_certificate(
+                &network.stores[replica],
+                &network.context,
+                &network.env(),
+                &certificate6,
+            )
+            .unwrap();
+            assert!(replay.committed.is_empty(), "family {family}");
+            assert_eq!(network.snapshot(replica, &[first_id, second_id], 6), before);
+        }
+    }
+}
+
+// --- follow-up 4: bounded decode before large copies ---------------------
+
+#[test]
+fn oversized_candidate_and_evidence_frames_are_rejected_by_their_own_bound() {
+    // An oversized intent field is rejected without the decoder first being
+    // made to copy it.
+    let mut frame = CanonicalStruct::new(0x6440, 1);
+    frame
+        .field_bytes(
+            1,
+            execution::publication::encode_publication_context(&fixture::protocol()).unwrap(),
+        )
+        .unwrap();
+    frame.field_bytes(2, [9u8; 32].to_vec()).unwrap();
+    frame.field_u16(3, 1).unwrap();
+    frame
+        .field_bytes(4, vec![7u8; MAX_ORDERED_CANDIDATE_INTENT_BYTES + 1])
+        .unwrap();
+    frame.field_u64(5, 11).unwrap();
+    let oversized: Vec<u8> = frame.finish().unwrap();
+    assert!(decode_ordered_candidate(&oversized).is_err());
+
+    // An empty intent is still rejected by the same bound.
+    let mut empty = CanonicalStruct::new(0x6440, 1);
+    empty
+        .field_bytes(
+            1,
+            execution::publication::encode_publication_context(&fixture::protocol()).unwrap(),
+        )
+        .unwrap();
+    empty.field_bytes(2, [9u8; 32].to_vec()).unwrap();
+    empty.field_u16(3, 1).unwrap();
+    empty.field_bytes(4, Vec::new()).unwrap();
+    empty.field_u64(5, 11).unwrap();
+    assert!(decode_ordered_candidate(&empty.finish().unwrap()).is_err());
+
+    // The evidence envelope enforces the same closed-profile cap at its own
+    // decoder entry, before any statement is copied out.
+    let mut evidence = CanonicalStruct::new(0x6449, 1);
+    evidence.field_u16(1, 1).unwrap();
+    evidence
+        .field_bytes(2, vec![1u8; MAX_ORDERED_EVIDENCE_SUBMISSION_BYTES])
+        .unwrap();
+    evidence.field_bytes(3, vec![2u8; 16]).unwrap();
+    evidence.field_u64(4, 7).unwrap();
+    let oversized_evidence: Vec<u8> = evidence.finish().unwrap();
+    assert!(oversized_evidence.len() > MAX_ORDERED_EVIDENCE_SUBMISSION_BYTES);
+    assert!(evidence_submission::decode_ordered_evidence_submission(&oversized_evidence).is_err());
+}
+
 #[test]
 fn a_candidate_at_a_non_economic_height_is_rejected_and_shape_is_enforced_on_receipt() {
     let network = setup();

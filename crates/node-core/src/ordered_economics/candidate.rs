@@ -114,7 +114,14 @@ pub fn decode_ordered_candidate(bytes: &[u8]) -> Result<OrderedCandidate, NodeCo
     let request_id: [u8; 32] = request_id_bytes
         .try_into()
         .map_err(|_| invalid("ordered candidate request id length"))?;
-    let intent: Vec<u8> = frame.required_field(4)?.to_vec();
+    // Bound the borrowed field before it is copied: an untrusted frame must
+    // not be able to make this decoder allocate an oversized intent and only
+    // then be told it was too large.
+    let intent_bytes: &[u8] = frame.required_field(4)?;
+    if intent_bytes.is_empty() || intent_bytes.len() > MAX_ORDERED_CANDIDATE_INTENT_BYTES {
+        return Err(invalid("ordered candidate intent length"));
+    }
+    let intent: Vec<u8> = intent_bytes.to_vec();
     let candidate: OrderedCandidate = OrderedCandidate {
         context: decode_publication_context(frame.required_field(1)?)
             .map_err(|_| invalid("ordered candidate context"))?,
@@ -123,11 +130,7 @@ pub fn decode_ordered_candidate(bytes: &[u8]) -> Result<OrderedCandidate, NodeCo
         intent,
         created_checkpoint: frame.required_u64(5)?,
     };
-    if candidate.request_id == [0u8; 32]
-        || candidate.intent.is_empty()
-        || candidate.intent.len() > MAX_ORDERED_CANDIDATE_INTENT_BYTES
-        || encode_ordered_candidate(&candidate)? != bytes
-    {
+    if candidate.request_id == [0u8; 32] || encode_ordered_candidate(&candidate)? != bytes {
         return Err(invalid("noncanonical ordered candidate"));
     }
     Ok(candidate)

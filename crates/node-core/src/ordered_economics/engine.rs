@@ -51,6 +51,7 @@ const APPLIED_HEIGHT_RECORD_TYPE: u16 = 0x6446;
 const REQUEST_HEADER_RECORD_TYPE: u16 = 0x6447;
 const NODE_OUTPUT_RECORD_TYPE: u16 = 0x6448;
 const ORDERED_REFUSAL_PAYLOAD_TYPE: u16 = 0x644E;
+const ORDERED_OUTCOME_RECORD_TYPE: u16 = 0x644F;
 const ENCODING_VERSION: u16 = 1;
 
 /// One consensus message per outbound slot; bounded generously above anything
@@ -462,6 +463,140 @@ fn ordered_request_header_key(
     Ok(key)
 }
 
+/// Key of one retained, completed ordered outcome, in the same reserved
+/// namespace as every other row here.
+fn ordered_outcome_key(chain: &ChainId, request_id: &[u8; 32]) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = prefixed_key(b"outcome/", chain)?;
+    key.extend_from_slice(request_id);
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+/// Encodes frame `0x644F/v1`: the durable row identity wrapping one exact
+/// canonical [`OrderedOutcome`] frame.
+///
+/// The row frame is deliberately distinct from the `0x6444` transport frame it
+/// carries, so a stored row can never be mistaken for a message and a message
+/// can never be mistaken for proof of completion.
+fn encode_retained_outcome(outcome: &OrderedOutcome) -> Result<Vec<u8>, NodeCoreError> {
+    let mut frame = CanonicalStruct::new(ORDERED_OUTCOME_RECORD_TYPE, ENCODING_VERSION);
+    frame.field_bytes(1, encode_ordered_outcome(outcome)?)?;
+    Ok(frame.finish()?)
+}
+
+/// Strictly decodes frame `0x644F/v1`.
+fn decode_retained_outcome(bytes: &[u8]) -> Result<OrderedOutcome, NodeCoreError> {
+    let frame = decode_canonical_frame(bytes)?;
+    frame.require_type(ORDERED_OUTCOME_RECORD_TYPE)?;
+    frame.require_version(ENCODING_VERSION)?;
+    frame.require_only_fields(&[1])?;
+    let outcome = decode_ordered_outcome(frame.required_field(1)?)?;
+    if encode_retained_outcome(&outcome)? != bytes {
+        return Err(invalid("noncanonical retained ordered outcome"));
+    }
+    Ok(outcome)
+}
+
+/// One outcome-row observation: the retained outcome when this replica already
+/// completed the request, plus the key and CAS revision it was read at so the
+/// caller can assert either its exact content or its exact absence.
+struct OutcomeRow {
+    retained: Option<OrderedOutcome>,
+    key: Vec<u8>,
+    revision: StateRevision,
+}
+
+/// Cross-checks one retained outcome against the durable request receipt that
+/// the very same invocation committed alongside it.
+///
+/// The outcome row is only ever written in the same atomic invocation as a
+/// receipt for the same request id, so a retained outcome without a matching
+/// receipt -- or one whose responses disagree with it -- is persisted
+/// inconsistency, not an answer. It fails closed as a stop rather than being
+/// reported: a completion result is only ever the exact original responses that
+/// were actually committed, never a fabricated or partially recovered one.
+///
+/// The receipt's own event digest is deliberately *not* constrained here. An
+/// accepted handler keeps its original intent receipt digest while a refusal or
+/// a retained-evidence acceptance uses the candidate digest, and both are
+/// correct; what must agree is the request identity and the exact responses.
+fn require_consistent_receipt<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    request_id: &[u8; 32],
+    outcome: &OrderedOutcome,
+) -> Result<(), OrderedEconomicsError> {
+    if &outcome.request_id != request_id {
+        return Err(stop(
+            "retained ordered outcome is keyed by another request id",
+        ));
+    }
+    let durable_id: DurableRequestId = DurableRequestId::new(*request_id)
+        .map_err(|_| invalid("invalid durable request identity"))?;
+    let receipt: DurableRequestReceipt = store
+        .get_request_receipt(context, env.policy.domain(), durable_id)?
+        .ok_or(stop(
+            "retained ordered outcome has no committed request receipt",
+        ))?;
+    if receipt.request_id() != durable_id {
+        return Err(stop(
+            "durable receipt lookup returned another request for a retained outcome",
+        ));
+    }
+    let record: NodeDedupRecord = NodeDedupRecord::decode(receipt.canonical_bytes())
+        .map_err(|_| stop("retained ordered outcome receipt does not decode"))?;
+    if record.request_id().as_bytes() != request_id
+        || record.responses() != outcome.output.responses()
+    {
+        return Err(stop(
+            "retained ordered outcome disagrees with its own committed receipt",
+        ));
+    }
+    Ok(())
+}
+
+/// Reads the outcome row for `request_id`, cross-checked against its own
+/// committed receipt. Bounded point reads only; never writes.
+fn read_outcome_row<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    request_id: &[u8; 32],
+) -> Result<OutcomeRow, OrderedEconomicsError> {
+    let key: Vec<u8> = ordered_outcome_key(env.policy.context().chain_id(), request_id)?;
+    let observed: VersionedStateValue =
+        store.get_versioned_durable(context, env.policy.domain(), &key)?;
+    let retained = match observed.value() {
+        None => None,
+        Some(bytes) => {
+            let outcome: OrderedOutcome = decode_retained_outcome(bytes)?;
+            require_consistent_receipt(store, context, env, request_id, &outcome)?;
+            Some(outcome)
+        }
+    };
+    Ok(OutcomeRow {
+        retained,
+        key,
+        revision: observed.revision(),
+    })
+}
+
+/// Bounded read-only lookup of the exact outcome this replica retained for one
+/// request id, or `None` when it has not completed that request.
+///
+/// `None` is not proof of absence network-wide: this replica may simply be
+/// behind. It performs one point read, signs nothing, reserves nothing and
+/// writes nothing, so a network surface may expose it directly.
+pub fn query_ordered_outcome<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    request_id: &[u8; 32],
+) -> Result<Option<OrderedOutcome>, OrderedEconomicsError> {
+    Ok(read_outcome_row(store, context, env, request_id)?.retained)
+}
+
 fn encode_applied_height(height: u64) -> Result<Vec<u8>, NodeCoreError> {
     let mut frame = CanonicalStruct::new(APPLIED_HEIGHT_RECORD_TYPE, ENCODING_VERSION);
     frame.field_u64(1, height)?;
@@ -766,6 +901,18 @@ enum LegOutcome {
     /// The staged handler committed a business transaction, captured by
     /// [`StagingStore`] and not yet published.
     Accepted(NodeOutput),
+    /// One narrowly enumerated legitimate outcome in which the existing handler
+    /// accepts *without* staging any transaction: the normalized evidence
+    /// identity this candidate carries is already durably recorded, so the
+    /// permanent one-time row is correct as it stands and re-writing it would
+    /// be wrong.
+    ///
+    /// This is not a blanket licence for any handler that returns `Ok` with
+    /// nothing staged. It is produced only by
+    /// [`execute_evidence_candidate`] on
+    /// [`equivocation::EquivocationEvidenceOutcome::AlreadyRecorded`], and the
+    /// caller still requires the staging adapter to have captured nothing.
+    AcceptedRetainedEvidence(NodeOutput),
     /// A deterministic, retained refusal: no value or nonce movement.
     Refused(NodeOutput),
     /// Infrastructural failure or unknown prerequisite: local apply must stop
@@ -805,9 +952,14 @@ fn disposition(request_id: [u8; 32], error: OrderedEconomicsError) -> LegOutcome
 /// existing handler its `kind` already uses -- unmodified, except for the
 /// private admitted-candidate capability that authorizes exactly this
 /// request's own retained reservations.
+///
+/// Every storage read -- the preflight's included -- goes through `staging`, so
+/// the exact rows whose healthy revisions decided the answer are recorded and
+/// become CAS assertions in the one final commit. A refusal derived from a row
+/// that has since moved is then rejected atomically instead of being retained
+/// against state that no longer justifies it.
 fn execute_candidate<S: StructuredDurableDomainStateStore>(
     staging: &StagingStore<'_, S>,
-    store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
@@ -816,7 +968,7 @@ fn execute_candidate<S: StructuredDurableDomainStateStore>(
     if let Err(error) = authenticate_candidate(env, candidate) {
         return disposition(candidate.request_id, error);
     }
-    if let Err(error) = preflight::preflight(store, context, env, candidate) {
+    if let Err(error) = preflight::preflight(staging, context, env, candidate) {
         return disposition(candidate.request_id, error);
     }
     let domain = env.policy.domain();
@@ -960,9 +1112,11 @@ fn execute_evidence_candidate<S: StructuredDurableDomainStateStore>(
     };
     match outcome {
         Ok(recorded) => {
-            let record = match recorded {
-                equivocation::EquivocationEvidenceOutcome::Recorded(record)
-                | equivocation::EquivocationEvidenceOutcome::AlreadyRecorded(record) => record,
+            let (record, already_recorded) = match recorded {
+                equivocation::EquivocationEvidenceOutcome::Recorded(record) => (record, false),
+                equivocation::EquivocationEvidenceOutcome::AlreadyRecorded(record) => {
+                    (record, true)
+                }
             };
             let build = || -> Result<NodeOutput, NodeCoreError> {
                 let payload = equivocation::encode_fastpath_equivocation_evidence_record(&record)?;
@@ -974,6 +1128,13 @@ fn execute_evidence_candidate<S: StructuredDurableDomainStateStore>(
                 NodeOutput::new(vec![response], Vec::new())
             };
             match build() {
+                // A fresh request id resubmitting an identical, already
+                // recorded normalized evidence is a legitimate accepted
+                // outcome, not a wedge: the permanent one-time row already
+                // holds exactly the right bytes, so this invocation commits
+                // only its own new outer receipt and order rows, with the
+                // observed evidence row asserted by CAS.
+                Ok(output) if already_recorded => LegOutcome::AcceptedRetainedEvidence(output),
                 Ok(output) => LegOutcome::Accepted(output),
                 Err(error) => LegOutcome::Stop(OrderedEconomicsError::Node(error)),
             }
@@ -990,6 +1151,20 @@ struct AdmittedCandidate {
     writes: Vec<PendingWrite>,
 }
 
+/// What reconciling one candidate against retained order state concluded.
+enum Admission {
+    /// Not yet completed: place it, with these writes.
+    Fresh(AdmittedCandidate),
+    /// Already completed, carrying the exact retained outcome.
+    ///
+    /// A signing caller must not place it a second time. The signerless
+    /// observer may still record the consensus proposal that names it -- see
+    /// [`observe_proposal`] -- because declared recovery has to be able to
+    /// replay authentic artifacts in dependency order even when a later one
+    /// re-places an operation this replica already finished.
+    Completed(Box<OrderedOutcome>),
+}
+
 /// Reconciles one candidate a caller wants to newly place into the shared
 /// order: reads (never writes) the permanent request-header row, failing
 /// closed on any header-reuse conflict **before** the caller applies any
@@ -998,13 +1173,18 @@ struct AdmittedCandidate {
 ///
 /// `reserve` is `false` for the signerless observer path: declared recovery
 /// signs nothing and reserves nothing.
+///
+/// A request id that already carries a retained **completed** outcome short
+/// circuits here, before any reservation, preflight, module, object or nonce
+/// I/O: the candidate is answered from its retained outcome rather than placed
+/// a second time. A retained header alone is not completion.
 fn admit_candidate<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
     reserve: bool,
-) -> Result<AdmittedCandidate, OrderedEconomicsError> {
+) -> Result<Admission, OrderedEconomicsError> {
     let chain = env.policy.context().chain_id();
     let domain = env.policy.domain();
     let bytes = encode_ordered_candidate(candidate)?;
@@ -1038,7 +1218,23 @@ fn admit_candidate<S: StructuredDurableDomainStateStore>(
         }
     }
 
-    // 2. Exact candidate bytes, content-addressed and immutable.
+    // 2. Already completed? Answer from the retained outcome instead of
+    //    creating a duplicate placement or re-acquiring released locks. This
+    //    precedes every reservation and every business read below.
+    let outcome_row: OutcomeRow = read_outcome_row(store, context, env, &candidate.request_id)?;
+    if let Some(retained) = outcome_row.retained {
+        if retained.candidate_digest != digest {
+            // The header already rules this out; keep the boundary conflict
+            // authoritative rather than answering with a foreign outcome.
+            return Err(OrderedEconomicsError::RequestHeaderConflict);
+        }
+        // The outcome row is only ever written by the invocation that read the
+        // committed candidate bytes, so their row already exists and matches
+        // this digest; there is nothing left to place.
+        return Ok(Admission::Completed(Box::new(retained)));
+    }
+
+    // 3. Exact candidate bytes, content-addressed and immutable.
     let candidate_key = ordered_candidate_record_key(chain, digest)?;
     let observed_candidate = store.get_versioned_durable(context, domain, &candidate_key)?;
     match observed_candidate.value() {
@@ -1051,14 +1247,29 @@ fn admit_candidate<S: StructuredDurableDomainStateStore>(
         Some(_) => return Err(stop("ordered candidate digest collision")),
     }
 
-    // 3. Precisely this candidate's own address-owned reservations.
+    // 4. Precisely this candidate's own address-owned reservations.
     if reserve {
         let plan: OrderedReservationPlan = reservation::reservation_plan(env, candidate)?;
         writes.extend(reservation::acquire_reservations(
             store, context, env, candidate, &plan,
         )?);
     }
-    Ok(AdmittedCandidate { digest, writes })
+    Ok(Admission::Fresh(AdmittedCandidate { digest, writes }))
+}
+
+/// Reconciles one candidate for a **signing** caller: a completed request is
+/// answered with its exact retained outcome instead of being placed again,
+/// re-executed, or having its already-released reservations re-acquired.
+fn admit_candidate_for_signer<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+) -> Result<AdmittedCandidate, OrderedEconomicsError> {
+    match admit_candidate(store, context, env, candidate, true)? {
+        Admission::Fresh(admitted) => Ok(admitted),
+        Admission::Completed(outcome) => Err(OrderedEconomicsError::AlreadyCompleted(outcome)),
+    }
 }
 
 /// Builds one durable receipt (`NodeDedupRecord`-backed) keyed by
@@ -1200,6 +1411,41 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
         };
         writes.read(candidate_key, observed_candidate.revision())?;
         let candidate = decode_ordered_candidate(&candidate_bytes)?;
+        // An already-completed candidate can legitimately reappear in a later
+        // economic window (a replaying or byzantine leader places it again).
+        // Answer with its EXACT retained outcome: re-execute nothing, write no
+        // receipt, touch no lock, and rewrite no revision. Only the
+        // applied-height marker advances, because the block really did commit.
+        let outcome_row: OutcomeRow = read_outcome_row(store, context, env, &candidate.request_id)?;
+        if let Some(retained) = outcome_row.retained {
+            if retained.candidate_digest != digest {
+                return Err(stop(
+                    "retained ordered outcome disagrees with the committed candidate digest",
+                ));
+            }
+            writes.read(outcome_row.key, outcome_row.revision)?;
+            if block.height != applied_height {
+                writes.record_mutation(
+                    applied_height_key,
+                    StateMutation::Put(encode_applied_height(block.height)?),
+                )?;
+            }
+            let output = OrderedEventOutput {
+                messages: consensus_output.outbound_messages,
+                committed: vec![retained],
+            };
+            materialize_event_output(&output)?;
+            if !writes.is_unchanged() {
+                let transaction = writes.into_atomic_transaction(domain)?;
+                if let outcome @ (DurableCommitOutcome::Rejected(_)
+                | DurableCommitOutcome::Indeterminate(_)) =
+                    store.commit_durable(context, transaction)
+                {
+                    return Err(commit_outcome_error(outcome));
+                }
+            }
+            return Ok(output);
+        }
         // Only this exact request's own retained reservations may be reused.
         let retained = reservation::load_reservation(store, context, env, &candidate.request_id)?;
         let admission = retained.as_ref().map(|(plan, _, _)| OrderedLegAdmission {
@@ -1208,14 +1454,15 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
             nonce: plan.nonce,
         });
         let staging: StagingStore<'_, S> = StagingStore::new(store);
-        let outcome = execute_candidate(
-            &staging,
-            store,
-            context,
-            env,
-            &candidate,
-            admission.as_ref(),
-        );
+        let outcome = execute_candidate(&staging, context, env, &candidate, admission.as_ref());
+        // One durable invocation observes one stable snapshot, so two different
+        // revisions for one key can only be concurrent interference. Never
+        // retain a decision derived from two disagreeing views of a row.
+        if staging.had_inconsistent_read() {
+            return Err(stop(
+                "ordered candidate execution observed one row at two revisions",
+            ));
+        }
         // Both acceptance and refusal release exactly this candidate's own
         // reservations; a stop releases nothing.
         let release: Vec<PendingWrite> = match (&outcome, &retained) {
@@ -1229,6 +1476,15 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
                 *record_revision,
             )?,
         };
+        // Every row the preflight and the staged handler actually read becomes
+        // a CAS assertion in the one final commit -- including, on a refusal,
+        // the escrow/bond/nonce/authority rows whose healthy revisions decided
+        // it. Object heads, versions and provenance stay handler-owned.
+        if !matches!(outcome, LegOutcome::Stop(_)) {
+            for (key, revision) in staging.observed_reads() {
+                writes.read(key, revision)?;
+            }
+        }
         match outcome {
             LegOutcome::Stop(error) => return Err(error),
             LegOutcome::Accepted(output) => {
@@ -1270,6 +1526,33 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
                 });
                 business = Some(captured);
             }
+            LegOutcome::AcceptedRetainedEvidence(output) => {
+                // Narrowly enumerated read-only acceptance: the permanent
+                // one-time evidence row already holds exactly these bytes. The
+                // handler must genuinely have staged nothing -- anything else
+                // would mean it intended a write this branch would silently
+                // drop.
+                if staging.take_invocation().is_some() || staging.take_durable().is_some() {
+                    return Err(stop(
+                        "ordered evidence reported an already-recorded row yet staged a write",
+                    ));
+                }
+                let receipt = build_receipt(candidate.request_id, digest, &output)?;
+                business = Some(DurableInvocationTransaction::new(
+                    domain,
+                    None,
+                    DurableObjectChanges::empty(),
+                    receipt,
+                    None,
+                )?);
+                committed_outcome = Some(OrderedOutcome {
+                    candidate_digest: digest,
+                    request_id: candidate.request_id,
+                    block_height: block.height,
+                    block_digest: block.digest,
+                    output,
+                });
+            }
             LegOutcome::Refused(output) => {
                 let receipt = build_receipt(candidate.request_id, digest, &output)?;
                 business = Some(DurableInvocationTransaction::new(
@@ -1287,6 +1570,17 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
                     output,
                 });
             }
+        }
+        // Retain the exact completed outcome atomically with the original
+        // receipt and order rows, so an exact proposal/certificate replay or an
+        // interrupted client resume can be answered from it without re-placing
+        // or re-executing anything.
+        if let Some(outcome) = &committed_outcome {
+            writes.mutate(
+                outcome_row.key,
+                outcome_row.revision,
+                StateMutation::Put(encode_retained_outcome(outcome)?),
+            )?;
         }
         for write in release {
             writes.apply(write)?;
@@ -1309,7 +1603,13 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
         )?;
     }
 
-    let messages = consensus_output.outbound_messages;
+    let result = OrderedEventOutput {
+        messages: consensus_output.outbound_messages,
+        committed: committed_outcome.into_iter().collect(),
+    };
+    // Prove the answer is canonically representable while failing is still
+    // free: never commit state whose own committed response cannot be encoded.
+    materialize_event_output(&result)?;
     if let Some(business) = business {
         if let Some(handler_state) = business.state() {
             writes.merge_handler_state(handler_state)?;
@@ -1335,10 +1635,7 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
         }
     }
 
-    Ok(OrderedEventOutput {
-        messages,
-        committed: committed_outcome.into_iter().collect(),
-    })
+    Ok(result)
 }
 
 /// Height-`%3==1` windows may carry one candidate; every other height must
@@ -1467,7 +1764,7 @@ where
     // 2. Header conflict, before any other metadata, and the candidate's own
     //    reservations.
     let admitted = match candidate {
-        Some(candidate) => Some(admit_candidate(store, context, env, candidate, true)?),
+        Some(candidate) => Some(admit_candidate_for_signer(store, context, env, candidate)?),
         None => None,
     };
     let transactions = transactions_for(&loaded.state, admitted.as_ref().map(|a| a.digest))?;
@@ -1568,7 +1865,7 @@ where
     // 2. Header conflict before any consensus metadata, then reservations.
     let admitted = match &proposal.candidate {
         Some(candidate) => {
-            let admitted = admit_candidate(store, context, env, candidate, true)?;
+            let admitted = admit_candidate_for_signer(store, context, env, candidate)?;
             if !proposal.proposal.transactions.contains(&admitted.digest) {
                 return Err(OrderedEconomicsError::Unauthenticated(
                     "ordered proposal candidate does not match its own transaction digest",
@@ -1688,7 +1985,20 @@ pub fn observe_proposal<S: StructuredDurableDomainStateStore>(
         Some(candidate) => {
             // Declared recovery records the exact candidate bytes it was
             // given, and reserves nothing at all.
-            let admitted = admit_candidate(store, context, env, candidate, false)?;
+            //
+            // A request this replica already completed is *not* refused here:
+            // declared recovery must be able to replay authentic artifacts in
+            // dependency order even when a later proposal re-places an
+            // operation that already finished. Recovery signs nothing and
+            // reserves nothing, so recording the proposal creates no duplicate
+            // placement; the retained outcome still answers the execution.
+            let admitted = match admit_candidate(store, context, env, candidate, false)? {
+                Admission::Fresh(admitted) => admitted,
+                Admission::Completed(_) => AdmittedCandidate {
+                    digest: env.policy.candidate_digest(candidate)?,
+                    writes: Vec::new(),
+                },
+            };
             if !proposal.proposal.transactions.contains(&admitted.digest) {
                 return Err(OrderedEconomicsError::Unauthenticated(
                     "ordered proposal candidate does not match its own transaction digest",
@@ -1802,10 +2112,35 @@ pub(crate) fn ordered_reservation_key_for_tests(chain: &ChainId, request_id: &[u
 }
 
 #[cfg(test)]
+pub(crate) fn ordered_outcome_key_for_tests(chain: &ChainId, request_id: &[u8; 32]) -> Vec<u8> {
+    ordered_outcome_key(chain, request_id).unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn encode_retained_outcome_for_tests(outcome: &OrderedOutcome) -> Vec<u8> {
+    encode_retained_outcome(outcome).unwrap()
+}
+
+#[cfg(test)]
 pub(crate) fn ordered_candidate_digest_for_tests(
     resolver: &HashSuiteResolver,
     candidate: &OrderedCandidate,
 ) -> Digest32 {
     let bytes = encode_ordered_candidate(candidate).unwrap();
     candidate_digest(resolver, candidate.context.epoch(), &bytes).unwrap()
+}
+/// Materializes the canonical `0x6445` form of one event output **before** its
+/// invocation commits.
+///
+/// The closed profile caps (at most [`MAX_ORDERED_EVENT_MESSAGES`] messages, at
+/// most [`MAX_ORDERED_EVENT_COMMITTED`] committed outcomes, and every bound the
+/// nested response/outcome frames enforce) are therefore proven satisfiable
+/// while failing is still free. Discovering them afterwards would leave a
+/// committed business effect whose own result could not be encoded, and the
+/// only remaining options would be to lie about the outcome or to truncate it
+/// arbitrarily. Neither is acceptable, so the check happens first.
+fn materialize_event_output(output: &OrderedEventOutput) -> Result<(), OrderedEconomicsError> {
+    encode_ordered_event_output(output)
+        .map(|_| ())
+        .map_err(|_| stop("ordered event output exceeds the closed profile canonical bounds"))
 }

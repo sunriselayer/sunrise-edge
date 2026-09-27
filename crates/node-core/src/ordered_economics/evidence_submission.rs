@@ -22,6 +22,16 @@ const FAMILY_FAST_VOTE: u16 = 1;
 const FAMILY_OBJECT_CONFLICT: u16 = 2;
 const FAMILY_EPOCH_TRANSITION: u16 = 3;
 
+/// Maximum canonical bytes of one evidence submission envelope.
+///
+/// The envelope is only ever carried as an [`OrderedCandidate`] intent, so this
+/// is exactly that bound and can reject nothing a candidate could legitimately
+/// hold. Because every decoded part is a borrowed slice of the whole frame,
+/// enforcing it at the decoder entry bounds every subsequent copy -- the point
+/// being that an untrusted frame cannot make this decoder allocate megabytes of
+/// statements and only afterwards be told the envelope was oversized.
+pub const MAX_ORDERED_EVIDENCE_SUBMISSION_BYTES: usize = MAX_ORDERED_CANDIDATE_INTENT_BYTES;
+
 fn invalid(message: &'static str) -> NodeCoreError {
     NodeCoreError::PersistenceInvariant(message)
 }
@@ -103,13 +113,20 @@ pub fn encode_ordered_evidence_submission(
             frame.field_u64(4, *checkpoint)?;
         }
     }
-    Ok(frame.finish()?)
+    let bytes: Vec<u8> = frame.finish()?;
+    if bytes.len() > MAX_ORDERED_EVIDENCE_SUBMISSION_BYTES {
+        return Err(invalid("ordered evidence submission bytes"));
+    }
+    Ok(bytes)
 }
 
 /// Strictly decodes frame `0x6449/v1`.
 pub fn decode_ordered_evidence_submission(
     bytes: &[u8],
 ) -> Result<OrderedEvidenceSubmission, NodeCoreError> {
+    if bytes.len() > MAX_ORDERED_EVIDENCE_SUBMISSION_BYTES {
+        return Err(invalid("ordered evidence submission bytes"));
+    }
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(EVIDENCE_SUBMISSION_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;

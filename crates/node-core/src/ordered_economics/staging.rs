@@ -13,6 +13,15 @@
 //! forwarded unchanged to the wrapped store under the same
 //! [`DurableOperationContext`] and [`AtomicityDomainId`] the caller already
 //! holds. It masks no value already durable; it only defers one write.
+//!
+//! It also **records every state read it forwards**. The typed preflight and
+//! the staged handler both decide their answer from those rows, so the merged
+//! final commit must assert each one at exactly the revision that was
+//! observed. Without that, a deterministic refusal decided against a healthy
+//! row could still be retained after the row moved: the refusal would be
+//! recorded against state that no longer justifies it. Object heads, object
+//! versions and provenance stay handler-owned and are deliberately not
+//! recorded here.
 use super::*;
 use runtime::DurableDomainStateStore;
 use runtime::{
@@ -30,6 +39,8 @@ pub(crate) struct StagingStore<'a, S: StructuredDurableDomainStateStore> {
     inner: &'a S,
     captured_durable: RefCell<Option<AtomicStateTransaction>>,
     captured_invocation: RefCell<Option<DurableInvocationTransaction>>,
+    observed_reads: RefCell<BTreeMap<Vec<u8>, StateRevision>>,
+    inconsistent_read: RefCell<bool>,
 }
 
 impl<'a, S: StructuredDurableDomainStateStore> StagingStore<'a, S> {
@@ -38,6 +49,8 @@ impl<'a, S: StructuredDurableDomainStateStore> StagingStore<'a, S> {
             inner,
             captured_durable: RefCell::new(None),
             captured_invocation: RefCell::new(None),
+            observed_reads: RefCell::new(BTreeMap::new()),
+            inconsistent_read: RefCell::new(false),
         }
     }
 
@@ -53,6 +66,24 @@ impl<'a, S: StructuredDurableDomainStateStore> StagingStore<'a, S> {
     pub(crate) fn take_invocation(&self) -> Option<DurableInvocationTransaction> {
         self.captured_invocation.borrow_mut().take()
     }
+
+    /// Every state row this staged attempt read, at the revision it observed.
+    /// The caller merges these into the one final transaction as CAS read
+    /// assertions.
+    pub(crate) fn observed_reads(&self) -> BTreeMap<Vec<u8>, StateRevision> {
+        self.observed_reads.borrow().clone()
+    }
+
+    /// Whether the same key was read twice at two different revisions during
+    /// this one staged attempt.
+    ///
+    /// A durable invocation observes one stable snapshot, so this can only mean
+    /// concurrent interference. It is never a semantic outcome: the caller must
+    /// stop rather than retain a decision derived from two disagreeing views of
+    /// one row.
+    pub(crate) fn had_inconsistent_read(&self) -> bool {
+        *self.inconsistent_read.borrow()
+    }
 }
 
 impl<'a, S: StructuredDurableDomainStateStore> DurableDomainStateStore for StagingStore<'a, S> {
@@ -62,7 +93,17 @@ impl<'a, S: StructuredDurableDomainStateStore> DurableDomainStateStore for Stagi
         domain: AtomicityDomainId,
         key: &[u8],
     ) -> Result<VersionedStateValue, DurableReadError> {
-        self.inner.get_versioned_durable(context, domain, key)
+        let observed: VersionedStateValue =
+            self.inner.get_versioned_durable(context, domain, key)?;
+        if let Some(previous) = self
+            .observed_reads
+            .borrow_mut()
+            .insert(key.to_vec(), observed.revision())
+            && previous != observed.revision()
+        {
+            *self.inconsistent_read.borrow_mut() = true;
+        }
+        Ok(observed)
     }
 
     fn commit_durable(
