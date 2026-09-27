@@ -7,8 +7,3 @@ license.workspace = true
 [dependencies]
 runtime.workspace = true
 protocol-types.workspace = true
-
-[dev-dependencies]
-hashing.workspace = true
-objects.workspace = true
-runtime = { workspace = true, features = ["durable-conformance"] }

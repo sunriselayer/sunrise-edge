@@ -72,11 +72,11 @@ export class DurableSqlHost {
     if (!Number.isSafeInteger(rowsWritten) || rowsWritten < 0) {
       throw new Error("invalid SQL change count");
     }
-    // Billing rowsWritten may include index work. Engine CAS decisions use
-    // SQLite changes(), matching the native backend's affected-row count.
-    const rowsAffected: number = this.storage.sql.exec<{ count: number }>(
-      "SELECT changes() AS count",
-    ).one().count;
+    // Billing rowsWritten may include index work. Match the native backend:
+    // row-returning statements report zero, not a previous write's changes().
+    // For ordinary DML, engine CAS decisions use SQLite's affected-row count.
+    const rowsAffected: number = cursor.columnNames.length > 0 ? 0
+      : this.storage.sql.exec<{ count: number }>("SELECT changes() AS count").one().count;
     if (!Number.isSafeInteger(rowsAffected) || rowsAffected < 0) {
       throw new Error("invalid SQL affected-row count");
     }

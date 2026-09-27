@@ -229,6 +229,30 @@ describe("embedded paid Wasmi validator in real SQLite Durable Objects", () => {
     expect(await snapshot(stub)).toBe(before);
   });
 
+  it("rejects a genuinely valid but repinned-epoch prepare before reading the host clock or storage", async () => {
+    const stub = env.VALIDATOR_ZERO.getByName(TEST_ACTOR);
+    expect(await statusOf(await stub.fetch(query("/v1/context")))).toBe(200);
+    const before: string = await snapshot(stub);
+    await runInDurableObject(stub, async (instance) => {
+      const clock = DurableSqlHost.prototype.nowMillis;
+      const exec = DurableSqlHost.prototype.exec;
+      let calls: number = 0;
+      DurableSqlHost.prototype.nowMillis = function(): never { calls += 1; throw new Error("clock-before-epoch-pin"); };
+      DurableSqlHost.prototype.exec = function(): never { calls += 1; throw new Error("storage-before-epoch-pin"); };
+      try {
+        const response: Response = await instance.fetch(
+          mutation("/v1/fastvote/prepare", fixture.repin_signed_paid_intent_hex));
+        expect(response.status).toBe(409);
+        expect(await response.text()).toBe("validator-request-rejected");
+        expect(calls).toBe(0);
+      } finally {
+        DurableSqlHost.prototype.nowMillis = clock;
+        DurableSqlHost.prototype.exec = exec;
+      }
+    });
+    expect(await snapshot(stub)).toBe(before);
+  });
+
   it("does not let a caller choose another actor in the trusted validator namespace", async () => {
     const wrongActor = env.VALIDATOR_ZERO.getByName("attacker-selected-actor");
     await expect(wrongActor.fetch(query("/v1/context"))).rejects.toThrow("placement");

@@ -50,6 +50,9 @@ peer range. Do not force dependency installation to bypass that range.
 The relay retains its private `NODE_CORE` Service Binding. It does not execute
 or store contracts; its Service Binding tests are not validator evidence.
 Its target must remain private; do not replace the binding with a public URL.
+To check the relay bundle without deploying, run
+`npm exec -- wrangler deploy --dry-run --config wrangler.jsonc` from
+`adapters/cloudflare-workers` after dependency installation.
 
 The validator imports the compiled Rust core, including the same Wasmi guest
 interpreter and metering used by native hosts. Guest contracts are not compiled
