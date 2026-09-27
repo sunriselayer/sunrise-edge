@@ -104,7 +104,7 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 | --- | --- | --- |
 | 1 | Generic certified network contract lifecycle | Merged as PR #228 on 2026-09-27 after the full repository gate, fresh exact-head Opus APPROVE and required CI: Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Independent ingress/security gates remain separate. |
 | 2 | Network economics and validator operations | Merged as PR #232 on 2026-09-27 with normal merge commit `86711be`, after fresh exact-head Opus APPROVE and the passing complete repository CI. Fixed-epoch four-namespace CLI evidence is implemented. Membership-dependent Deposit/Withdraw positives join delivery 3; economics/ingress security audits remain separate. |
-| 3 | Validator membership and epoch handoff | Active design: [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md) records the complete-cut, preserved-history and post-transition execution requirements; its mechanism is not yet accepted or implemented. One integrated feature must cover real add/replace/recover/epoch operations, genuine Deposit/Withdraw, and rejection of incomplete/divergent replicas. |
+| 3 | Validator membership and epoch handoff | Active design: [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md) specify the publication-before-apply and ordered control candidate, pending independent design review; no runtime implementation is claimed. One integrated feature must cover real add/replace/recover/epoch operations, genuine Deposit/Withdraw, and rejection of incomplete/divergent replicas. |
 | 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
 
 PostgreSQL remains the existing tested profile for delivery 1, not a mandatory
@@ -158,11 +158,13 @@ The detailed existing evidence and remaining criteria follow:
   integrated feature PR, with the proposed constraints in
   [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md).
   Existing outgoing-set certificates, policy derivation, genesis restart
-  verification and bond operations are reused, not replaced. The design
-  must first resolve complete portable enumeration, pending/certified-but-
-  unapplied operations, cut/vote/freeze reconciliation, and artifact replay
-  in the correct epoch order. Minority-only application is not permission to
-  silently discard authenticated effects or redefine finality. Add durable
+  verification and bond operations are reused, not replaced. The proposed
+  [design](docs/architecture/epoch-handoff.md) adds execution-free quorum
+  publication before apply, closed full-certificate frontiers and ordered
+  Freeze/DrainSet/Seal controls. It also needs a logical commitment independent
+  of physical CAS counters, complete bounded portable enumeration and artifact
+  replay in the correct epoch order. Minority-only application is not permission
+  to silently discard authenticated effects or redefine finality. Add durable
   one-outgoing-epoch vote identity before exposing a signature, separate the
   genesis pin from verified serving epoch, and initialize shared consensus
   safely for the new set. Defining-code economics authority must not be
@@ -171,7 +173,8 @@ The detailed existing evidence and remaining criteria follow:
   contracts and fee claims, restart/exact replay, retired-signer rejection,
   missing/forged/divergent cut refusal and real stale-writer controls. No
   Delivery 3 runtime implementation, completeness proof, activation or
-  validation is claimed by the design investigation.
+  validation is claimed by the design investigation. Fresh-genesis enforcement
+  is required; existing pre-rule stores cannot silently receive this guarantee.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

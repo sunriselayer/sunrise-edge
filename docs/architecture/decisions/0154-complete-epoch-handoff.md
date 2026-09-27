@@ -6,7 +6,9 @@ Proposed, 2026-09-27. This record captures the design investigation for
 [DR-0151](0151-integrated-network-delivery-and-lightweight-stores.md)'s
 integrated membership/epoch delivery. Its mechanism is not accepted for
 implementation. No finality rule, canonical frame or type identifier is
-changed by this document. Implementation and validation status belong in
+changed by this document. The concrete candidate is now specified in
+[Complete epoch handoff](../epoch-handoff.md), pending independent design
+review. Implementation and validation status belong in
 [`TODO.md`](../../../TODO.md).
 
 ## Context and reusable boundaries
@@ -46,6 +48,60 @@ Source boundaries:
 - [PostgreSQL host composition](../../../apps/operator/src/bin/fastvote_host_pg.rs)
 
 ## Required design properties
+
+### Candidate direction and necessary semantic change
+
+The existing prepare/apply contract cannot guarantee a non-lossy handoff while
+replacing an absent replica. For A/B/C/D with Byzantine C, both partial votes
+A+C for X and B+C for conflicting Y are possible. The surviving A/B/C cannot
+tell whether absent D completed and applied X or Y. Byzantine C need not obey
+our storage locks. Unique full-certificate safety does not solve this
+surviving-observation ambiguity, and partial votes do not reconstruct the
+missing certificate or original signed intent.
+
+The concrete candidate adds one execution-free quorum publication round before
+any owned application. Retain the full verifying certificate, original signed
+intent and required replay artifacts before exposing an ACK. Then every
+possible application intersects an outgoing frozen quorum in an honest holder
+of its **full** artifacts. That holder need not know whether its ACK was
+aggregated into an availability certificate. Drain every verifying full
+certificate in the selected closed frontier, never merely partial prepares.
+
+This is an explicit apply-admission/latency change, not a new rule that
+discards minority applications, not an existing implemented guarantee and not
+global ordering of owned calls. Use a fresh handoff-capable genesis/profile;
+no unsafe bare-certificate fallback or automatic destructive legacy migration.
+
+Use the existing HotStuff chain for Freeze/DrainSet/Seal control, with immutable
+frontiers only after new retention ACKs close. Transition votes follow the
+committed Seal, avoiding an epoch-wide first-writer-wins proposal wedge.
+Preserve inherited consensus locks and resolve business-bearing suffixes
+before sealing. Complete full-certificate operations through narrow cut-bound
+reservation resolution, not arbitrary foreign-lock release or global receipts
+invented from uncertified pending claims. In the initial candidate, committed
+Freeze has no cancellation: resume the ordered protocol to activation; neither
+elapsed time nor absence of an activation row reopens admission.
+
+The candidate also separates signed logical read observations from physical
+CAS revisions. Current commitment v1 signs some state/head/nonce revisions;
+normalizing only the transfer root would not solve portable re-execution.
+Historical witness bytes remain verifiable; new admission must not silently
+reuse the physical-revision commitment under a different claimed guarantee.
+
+### Sui research and applicability
+
+The historical [Lutris v5 paper](https://arxiv.org/html/2310.18042v5),
+sections 2.3 and 4, distinguishes transaction certification, signed effects
+and checkpoint inclusion; its outgoing quorum closes only after sequencing
+obligations. Its rollback of nonfinal, non-checkpointed execution is **not**
+adopted here. These are historical design lessons, not proof of our current
+implementation or permission to redefine retained application finality.
+
+The [official Sui source inspected at commit d79a998](https://github.com/MystenLabs/sui/blob/d79a998f32bfedac63e7d3f1dbdc9e41c14adf38/crates/sui-core/src/epoch/reconfiguration.rs)
+explicitly describes certificate names as legacy after fast-path removal.
+Do not present the 2024 Lutris description as the current Sui implementation.
+The Sunrise candidate deliberately keeps owned transactions outside global
+ordering and chooses publication-before-apply rather than adopting rollback.
 
 ### Completeness comes from authenticated derivation
 
@@ -88,7 +144,8 @@ First establish the actual existing certificate/commit guarantees. Distinguish
 an abandoned prepare, an unknown certificate, a certificate-backed operation
 awaiting apply, and already retained authenticated application/history. The
 cut must reconcile the relevant facts without silently dropping them,
-manufacturing an abort, applying fees twice, or unlocking another request.
+manufacturing an abort, applying fees twice, or arbitrarily unlocking another
+request.
 Unresolved authenticated disagreement is a reason to refuse activation and
 recover, not to silently select a lossy history.
 
@@ -157,19 +214,20 @@ another cut, duplicate/reordered pages, contradictory outgoing votes, retired
 signers, old fresh execution, unresolved prepares/certificates, real stale
 writers, and restart after an interrupted freeze/transfer/activation.
 
-## Deliberately unresolved
+## Required before implementation acceptance
 
-- The actual authenticated complete-cut construction and portable collection
-  schema, including pending-operation reconciliation and safe unfreeze.
-- The outgoing authority and safety argument for resolving an abandoned
-  prepare or ending a voted freeze. No certified abort is approved here.
-  Cut-frontier participation must also preserve authenticated omitted facts
-  when an old member is unavailable. Requiring every old member would prevent
-  replacing an unavailable validator and is not a completed membership feature.
-- Per-invocation/page resource bounds and any explicit profile-wide capacity
-  restriction. Do not silently introduce an arbitrary whole-chain limit.
-- Exact versioned frame/key changes after sweeping existing namespaces;
-  original completed replay and historical verification must remain defined.
+- Independent review of the concrete candidate, including the full-certificate
+  retention intersection, freeze race, partial-lock resolution and inherited
+  shared branches. An architect's result alone is not acceptance.
+- Explicit portable collection schema/projections and runtime enumeration
+  interfaces. Preserve semantic deletion tags and signed execution operands,
+  not physical counters or synthetic admission receipts.
+- Exact per-page/chunk/invocation limits and resumable resource tests, including
+  large legal records. Do not silently introduce an arbitrary whole-chain cap.
+- Versioned frame/key allocation after the namespace sweep, stable/adversarial
+  vectors and explicit fresh-genesis profile enforcement. Original completed
+  replay and historical verification must remain defined without an unsafe
+  active legacy mutation bypass.
 
 No new IDs or versions are allocated here. The implementation must include
 the core, authenticated HTTP/SDK/CLI, genuine multi-validator E2E, stable and
