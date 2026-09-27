@@ -92,6 +92,14 @@ manufacturing an abort, applying fees twice, or unlocking another request.
 Unresolved authenticated disagreement is a reason to refuse activation and
 recover, not to silently select a lossy history.
 
+Existing `apply_with_recovery` treats a verified FastVote certificate as
+portable authorization to apply the exact intent at its own committed epoch;
+application then atomically retains the local effects/receipt/nonce. This
+does not define a new finality threshold. Authentication and verified
+artifacts, not replica count, distinguish a valid omitted operation from a
+forged or corrupt claim. Reconciliation must move valid missing operations
+forward while that epoch still permits them, then re-derive the cut.
+
 Also address liveness: simply requiring every local prepare row to disappear
 could let one abandoned request permanently prevent an epoch change. The
 resolution/drain/cancellation rule needs its own actual safety argument and
@@ -153,6 +161,11 @@ writers, and restart after an interrupted freeze/transfer/activation.
 
 - The actual authenticated complete-cut construction and portable collection
   schema, including pending-operation reconciliation and safe unfreeze.
+- The outgoing authority and safety argument for resolving an abandoned
+  prepare or ending a voted freeze. No certified abort is approved here.
+  Cut-frontier participation must also preserve authenticated omitted facts
+  when an old member is unavailable. Requiring every old member would prevent
+  replacing an unavailable validator and is not a completed membership feature.
 - Per-invocation/page resource bounds and any explicit profile-wide capacity
   restriction. Do not silently introduce an arbitrary whole-chain limit.
 - Exact versioned frame/key changes after sweeping existing namespaces;
