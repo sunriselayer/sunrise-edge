@@ -22,9 +22,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use validator_set::{ValidatorSet, ValidatorSetError};
 
+mod durable;
 mod epoch_transition;
 mod equivocation;
 mod fast_vote;
+#[cfg(test)]
+mod test_support;
+pub use durable::{
+    decode_consensus_state, decode_proposal, decode_quorum_certificate, decode_vote,
+    encode_consensus_state,
+};
 pub use epoch_transition::{
     EpochTransitionCertificate, EpochTransitionCertifier, EpochTransitionVote,
     decode_epoch_transition_certificate, decode_epoch_transition_vote,
@@ -47,16 +54,16 @@ pub use fast_vote::{
     encode_fast_certificate, encode_fast_vote, encode_fast_vote_payload,
 };
 
-const PROPOSAL_TYPE_ID: u16 = 0xD001;
-const VOTE_PAYLOAD_TYPE_ID: u16 = 0xD002;
-const VOTE_TYPE_ID: u16 = 0xD003;
-const CERTIFICATE_TYPE_ID: u16 = 0xD004;
+pub(crate) const PROPOSAL_TYPE_ID: u16 = 0xD001;
+pub(crate) const VOTE_PAYLOAD_TYPE_ID: u16 = 0xD002;
+pub(crate) const VOTE_TYPE_ID: u16 = 0xD003;
+pub(crate) const CERTIFICATE_TYPE_ID: u16 = 0xD004;
 const PARAMETERS_TYPE_ID: u16 = 0xD005;
-const ENCODING_VERSION: u16 = 1;
+pub(crate) const ENCODING_VERSION: u16 = 1;
 const PROPOSAL_MESSAGE_TYPE: &str = "shared-consensus-proposal-v1";
 const VOTE_MESSAGE_TYPE: &str = "shared-consensus-vote-v1";
 const MAX_SIGNATURE_BYTES: usize = 4096;
-const MAX_BLOCK_TRANSACTIONS_LIMIT: u32 = 16_384;
+pub(crate) const MAX_BLOCK_TRANSACTIONS_LIMIT: u32 = 16_384;
 const MAX_FUTURE_VIEW_GAP: u64 = 64;
 const RETAIN_COMMITTED_HEIGHTS: u64 = 2;
 
@@ -242,6 +249,37 @@ pub enum ConsensusError {
     /// smallest `(ObjectId, version)` pair the two preimages actually share
     /// (DR-0133 §5).
     ObjectConflictNotProvenByPreimages,
+    /// A canonical persisted-[`ConsensusState`] collection (known proposals,
+    /// certificates, pending vote groups, observed votes, or committed
+    /// digests) exceeded its explicit decode/encode bound.
+    StateCollectionTooLarge {
+        /// Name of the oversized collection.
+        field: &'static str,
+        /// Declared or actual entry count.
+        actual: usize,
+        /// Maximum permitted entry count.
+        max: usize,
+    },
+    /// A decoded persisted [`ConsensusState`] carried a zero, missing, or
+    /// mutually inconsistent field (e.g. a `last_voted_view` without a
+    /// matching digest, a `high_qc` not below `current_view`, or a
+    /// `committed` digest absent from `known_proposals`).
+    InconsistentPersistedState(&'static str),
+    /// An untrusted observer event stream delivered a [`ConsensusEvent::Tick`],
+    /// which carries no authenticated content and must never drive
+    /// [`ChainedHotStuff::on_observer_event`].
+    UntrustedObserverTick,
+    /// A canonical encoded frame for [`ConsensusVote`], [`ConsensusProposal`],
+    /// [`QuorumCertificate`], or [`ConsensusState`] exceeded its explicit
+    /// per-type byte bound before any parsing was attempted.
+    EncodedFrameTooLarge {
+        /// Name of the oversized frame kind.
+        kind: &'static str,
+        /// Actual input length in bytes.
+        actual: usize,
+        /// Maximum permitted length in bytes.
+        max: usize,
+    },
 }
 
 impl fmt::Display for ConsensusError {
@@ -370,6 +408,21 @@ impl fmt::Display for ConsensusError {
             Self::ObjectConflictNotProvenByPreimages => write!(
                 f,
                 "claimed conflicting object version is not proven by the attached preimages"
+            ),
+            Self::StateCollectionTooLarge { field, actual, max } => write!(
+                f,
+                "persisted-state collection {field} has {actual} entries, maximum is {max}"
+            ),
+            Self::InconsistentPersistedState(reason) => {
+                write!(f, "persisted consensus state is inconsistent: {reason}")
+            }
+            Self::UntrustedObserverTick => write!(
+                f,
+                "untrusted observer event stream cannot deliver an unauthenticated tick"
+            ),
+            Self::EncodedFrameTooLarge { kind, actual, max } => write!(
+                f,
+                "encoded {kind} frame is {actual} bytes, maximum is {max}"
             ),
         }
     }
@@ -582,11 +635,20 @@ pub struct ConsensusState {
     pub locked_qc: QuorumCertificate,
     /// Highest committed height.
     pub committed_height: u64,
-    known_proposals: BTreeMap<Digest32, ConsensusProposal>,
-    certificates: BTreeMap<Digest32, QuorumCertificate>,
-    pending_votes: BTreeMap<Digest32, BTreeMap<ValidatorId, ConsensusVote>>,
-    observed_votes: BTreeMap<(ValidatorId, u64), Digest32>,
-    committed: BTreeSet<Digest32>,
+    pub(crate) known_proposals: BTreeMap<Digest32, ConsensusProposal>,
+    pub(crate) certificates: BTreeMap<Digest32, QuorumCertificate>,
+    pub(crate) pending_votes: BTreeMap<Digest32, BTreeMap<ValidatorId, ConsensusVote>>,
+    pub(crate) observed_votes: BTreeMap<(ValidatorId, u64), Digest32>,
+    pub(crate) committed: BTreeSet<Digest32>,
+}
+
+impl ConsensusState {
+    /// Returns one known proposal by digest without exposing the full,
+    /// otherwise-private backing map.
+    #[must_use]
+    pub fn known_proposal(&self, digest: &Digest32) -> Option<&ConsensusProposal> {
+        self.known_proposals.get(digest)
+    }
 }
 
 /// Result of one deterministic consensus transition.
@@ -620,13 +682,13 @@ pub trait ConsensusEngine {
 /// Canonical event-driven chained-HotStuff implementation.
 #[derive(Clone, Debug)]
 pub struct ChainedHotStuff {
-    chain_id: ChainId,
-    protocol_version: ProtocolVersion,
-    epoch: Epoch,
-    validator_set: ValidatorSet,
+    pub(crate) chain_id: ChainId,
+    pub(crate) protocol_version: ProtocolVersion,
+    pub(crate) epoch: Epoch,
+    pub(crate) validator_set: ValidatorSet,
     parameters: ConsensusParameters,
-    resolver: HashSuiteResolver,
-    genesis_block: Digest32,
+    pub(crate) resolver: HashSuiteResolver,
+    pub(crate) genesis_block: Digest32,
 }
 
 impl ChainedHotStuff {
@@ -830,7 +892,7 @@ impl ChainedHotStuff {
         Ok(())
     }
 
-    fn process_vote<V: ConsensusVerifier>(
+    pub(crate) fn process_vote<V: ConsensusVerifier>(
         &self,
         state: &mut ConsensusState,
         vote: ConsensusVote,
@@ -867,7 +929,7 @@ impl ChainedHotStuff {
         Ok(())
     }
 
-    fn validate_proposal<V: ConsensusVerifier>(
+    pub(crate) fn validate_proposal<V: ConsensusVerifier>(
         &self,
         proposal: &ConsensusProposal,
         verifier: &V,
@@ -931,7 +993,7 @@ impl ChainedHotStuff {
         Ok(())
     }
 
-    fn validate_vote<V: ConsensusVerifier>(
+    pub(crate) fn validate_vote<V: ConsensusVerifier>(
         &self,
         vote: &ConsensusVote,
         verifier: &V,
@@ -966,7 +1028,9 @@ impl ChainedHotStuff {
         Ok(())
     }
 
-    fn verify_certificate<V: ConsensusVerifier>(
+    /// Verifies a quorum certificate's context, canonical vote order, and
+    /// aggregate voting power (or the configured genesis anchor).
+    pub fn verify_certificate<V: ConsensusVerifier>(
         &self,
         certificate: &QuorumCertificate,
         verifier: &V,
@@ -985,6 +1049,14 @@ impl ChainedHotStuff {
                 return Ok(());
             }
             return Err(ConsensusError::InvalidGenesisCertificate);
+        }
+        // Bound the vote list to the active validator-set size before any
+        // per-vote signature work: an in-memory `QuorumCertificate` handed
+        // to this method (e.g. via `on_observer_event`) need not have come
+        // through `decode_quorum_certificate`'s own bound, so this method
+        // cannot assume that bound was already enforced.
+        if certificate.votes.len() > self.validator_set.validators().len() {
+            return Err(ConsensusError::NonCanonicalCertificateVotes);
         }
         let mut previous = None;
         let mut power = 0u64;
@@ -1061,7 +1133,7 @@ impl ChainedHotStuff {
         }))
     }
 
-    fn apply_certificate<V: ConsensusVerifier>(
+    pub(crate) fn apply_certificate<V: ConsensusVerifier>(
         &self,
         state: &mut ConsensusState,
         certificate: QuorumCertificate,
@@ -1213,7 +1285,7 @@ impl ChainedHotStuff {
         Ok(())
     }
 
-    fn ensure_bounded_future_view(
+    pub(crate) fn ensure_bounded_future_view(
         &self,
         current: u64,
         received: u64,
@@ -1240,7 +1312,7 @@ impl ChainedHotStuff {
         Ok(())
     }
 
-    fn prune_state(&self, state: &mut ConsensusState) {
+    pub(crate) fn prune_state(&self, state: &mut ConsensusState) {
         let minimum_height = state
             .committed_height
             .saturating_sub(RETAIN_COMMITTED_HEIGHTS);
@@ -1444,181 +1516,8 @@ pub fn encode_quorum_certificate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use protocol_types::{HashAlgorithmId, HashSuite, HashSuiteSchedule};
-    use sha2::{Digest as _, Sha256};
-    use validator_set::ValidatorInfo;
-
-    #[derive(Clone)]
-    struct TestCrypto {
-        validator: ValidatorId,
-    }
-
-    impl TestCrypto {
-        fn signature(validator: ValidatorId, framed: &[u8]) -> Vec<u8> {
-            let mut hasher = Sha256::new();
-            hasher.update(validator.as_bytes());
-            hasher.update(framed);
-            hasher.finalize().to_vec()
-        }
-    }
-
-    impl ConsensusSigner for TestCrypto {
-        fn validator_id(&self) -> ValidatorId {
-            self.validator
-        }
-
-        fn signature_scheme(&self) -> SignatureSchemeId {
-            SignatureSchemeId::Ed25519
-        }
-
-        fn sign_framed(&self, framed: &[u8]) -> Result<Vec<u8>, String> {
-            Ok(Self::signature(self.validator, framed))
-        }
-    }
-
-    impl ConsensusVerifier for TestCrypto {
-        fn verify_framed(
-            &self,
-            validator: ValidatorId,
-            _scheme: SignatureSchemeId,
-            public_key: &[u8],
-            framed: &[u8],
-            signature: &[u8],
-        ) -> Result<bool, String> {
-            Ok(public_key == validator.as_bytes()
-                && signature == Self::signature(validator, framed))
-        }
-    }
-
-    fn validator(byte: u8) -> ValidatorInfo {
-        ValidatorInfo {
-            id: ValidatorId::new([byte; 32]),
-            voting_power: 1,
-            signature_scheme: SignatureSchemeId::Ed25519,
-            public_key: vec![byte; 32],
-        }
-    }
-
-    fn setup() -> (ChainedHotStuff, Vec<TestCrypto>) {
-        let chain = ChainId::new("sunrise-consensus-test").unwrap();
-        let version = ProtocolVersion::new(1);
-        let epoch = Epoch::new(8);
-        let validators = (1..=4).map(validator).collect::<Vec<_>>();
-        let set = ValidatorSet::new(epoch, validators).unwrap();
-        let resolver = HashSuiteResolver::new(
-            chain.clone(),
-            version,
-            vec![HashSuiteSchedule {
-                activation_epoch: Epoch::new(0),
-                suite: HashSuite::genesis(),
-            }],
-        )
-        .unwrap();
-        let engine = ChainedHotStuff::new(
-            chain,
-            version,
-            epoch,
-            set,
-            ConsensusParameters::genesis(),
-            resolver,
-            Digest32::new(HashAlgorithmId::Sha2_256, [0; 32]),
-        )
-        .unwrap();
-        let cryptos = (1..=4)
-            .map(|byte| TestCrypto {
-                validator: ValidatorId::new([byte; 32]),
-            })
-            .collect();
-        (engine, cryptos)
-    }
-
-    fn proposal_votes(
-        engine: &ChainedHotStuff,
-        states: &mut [ConsensusState],
-        cryptos: &[TestCrypto],
-        transaction_byte: u8,
-    ) -> (ConsensusProposal, Vec<ConsensusVote>) {
-        let view = states[0].current_view;
-        let leader = engine.validator_set().leader(view).unwrap();
-        let leader_index = cryptos
-            .iter()
-            .position(|crypto| crypto.validator == leader)
-            .unwrap();
-        let proposal = engine
-            .propose(
-                &states[leader_index],
-                vec![Digest32::new(
-                    HashAlgorithmId::Sha2_256,
-                    [transaction_byte; 32],
-                )],
-                &cryptos[leader_index],
-            )
-            .unwrap();
-        let mut votes = Vec::new();
-        for (index, crypto) in cryptos.iter().enumerate() {
-            let output = engine
-                .on_event(
-                    &states[index],
-                    ConsensusEvent::Proposal(proposal.clone()),
-                    crypto,
-                    crypto,
-                )
-                .unwrap();
-            states[index] = output.state;
-            let ConsensusMessage::Vote(vote) = output.outbound_messages[0].clone() else {
-                panic!("proposal must emit a vote")
-            };
-            votes.push(vote);
-        }
-        (proposal, votes)
-    }
-
-    fn certify(
-        engine: &ChainedHotStuff,
-        states: &mut [ConsensusState],
-        cryptos: &[TestCrypto],
-        votes: &[ConsensusVote],
-    ) -> (QuorumCertificate, Vec<CommittedBlock>) {
-        let mut aggregator = states[0].clone();
-        let mut certificate = None;
-        for vote in votes.iter().take(3).rev() {
-            let output = engine
-                .on_event(
-                    &aggregator,
-                    ConsensusEvent::Vote(vote.clone()),
-                    &cryptos[0],
-                    &cryptos[0],
-                )
-                .unwrap();
-            aggregator = output.state;
-            certificate = output
-                .outbound_messages
-                .into_iter()
-                .find_map(|message| {
-                    if let ConsensusMessage::Certificate(qc) = message {
-                        Some(qc)
-                    } else {
-                        None
-                    }
-                })
-                .or(certificate);
-        }
-        let certificate = certificate.expect("three of four votes must certify");
-        let mut committed = Vec::new();
-        for (index, crypto) in cryptos.iter().enumerate() {
-            let output = engine
-                .on_event(
-                    &states[index],
-                    ConsensusEvent::Certificate(certificate.clone()),
-                    crypto,
-                    crypto,
-                )
-                .unwrap();
-            states[index] = output.state;
-            committed.extend(output.committed_blocks);
-        }
-        (certificate, committed)
-    }
+    use crate::test_support::{certify, proposal_votes, setup};
+    use protocol_types::HashAlgorithmId;
 
     #[test]
     fn four_validators_commit_identical_order_after_three_chain() {
