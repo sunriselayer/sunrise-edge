@@ -27,6 +27,7 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sig
 validator-set.workspace = true
 
 [dev-dependencies]
+bonds.workspace = true
 canonical-encoding.workspace = true
 abi.workspace = true
 fees.workspace = true

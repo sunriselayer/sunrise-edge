@@ -271,7 +271,11 @@ impl ArtifactSink for CliArtifactSink {
         // artifact resolved path already ran at reservation preflight, in
         // `reserve_submission_artifacts`, before any network call -- this
         // handle could only exist if that check already passed.
-        let line: String = format!("{} {}\n", proposal_path.display(), certificate_path.display());
+        let line: String = format!(
+            "{} {}\n",
+            proposal_path.display(),
+            certificate_path.display()
+        );
         let projected = self
             .manifest_text
             .len()
@@ -354,6 +358,11 @@ fn phase_report(phase: &PeerPhaseOutcome) -> std::io::Result<String> {
             let bytes: Vec<u8> =
                 sunrise_edge_client::ordered_economics_core::encode_ordered_event_output(output)
                     .map_err(|error| std::io::Error::other(error.to_string()))?;
+            if bytes.len() > (MAX_RESULTS_BYTES / 2).saturating_sub(4096) {
+                return Err(std::io::Error::other(
+                    "replica acknowledgement report byte bound",
+                ));
+            }
             Ok(format!("acknowledged:{}", crate::hex::encode_hex(&bytes)))
         }
         PeerPhaseOutcome::Rejected(reason) => Ok(format!(
@@ -380,7 +389,10 @@ fn reject_ambiguous_resolved_path(path: &Path) -> Result<(), CliError> {
     let text = path
         .to_str()
         .ok_or_else(|| invalid("resolved artifact path is not valid UTF-8"))?;
-    if text.chars().any(|character| character.is_whitespace() || character.is_control()) {
+    if text
+        .chars()
+        .any(|character| character.is_whitespace() || character.is_control())
+    {
         return Err(invalid(
             "resolved artifact path contains whitespace or control characters",
         ));
@@ -427,7 +439,7 @@ fn reserve_submission_artifacts(out_prefix: &str) -> Result<CliArtifactSink, Cli
         .pop()
         .ok_or_else(|| invalid("missing reserved manifest handle"))?;
     let mut reserved = std::collections::BTreeMap::new();
-    for ((key, _path, _kind), artifact) in keys.into_iter().zip(reserved_list.into_iter()) {
+    for ((key, _path, _kind), artifact) in keys.into_iter().zip(reserved_list) {
         reserved.insert(key, artifact);
     }
     Ok(CliArtifactSink {
@@ -451,10 +463,9 @@ fn run_network_submit<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
     // committed outcome request id below -- `submit_candidate` decodes and
     // authenticates its own copy separately; this CLI layer never skips
     // that by trusting this decode as authentication.
-    let candidate = sunrise_edge_client::ordered_economics_core::decode_ordered_candidate(
-        &candidate_bytes,
-    )
-    .map_err(failure)?;
+    let candidate =
+        sunrise_edge_client::ordered_economics_core::decode_ordered_candidate(&candidate_bytes)
+            .map_err(failure)?;
     let loaded = load_policy_and_endpoints(&parsed)?;
 
     let resume_proposal = match parsed.get("--resume-proposal") {
@@ -480,7 +491,7 @@ fn run_network_submit<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
     // `submit_candidate` itself already fails closed with
     // `NoCommittedOutcome` rather than ever returning `Ok` with an
     // unconfirmed submission, so `committed_outcome` here is always the
-    // real, authenticated, request/block-bound network answer -- a raw
+    // unsigned replica acknowledgement bound to the certified prefix -- a raw
     // peer HTTP 200 across the three rounds is never reported as success by
     // itself. This CLI layer still independently re-verifies the binding
     // rather than trusting the SDK result blindly.
@@ -490,7 +501,7 @@ fn run_network_submit<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
         ));
     }
     println!(
-        "rounds={} confirmed_committed=true block_height={} manifest={out_prefix}.manifest results={out_prefix}.results",
+        "rounds={} committed_acknowledged=true block_height={} manifest={out_prefix}.manifest results={out_prefix}.results",
         submission.rounds.len(),
         submission.committed_outcome.block_height
     );

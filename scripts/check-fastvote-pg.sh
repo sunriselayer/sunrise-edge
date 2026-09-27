@@ -77,6 +77,14 @@ require_exact_test economics_pg_offline_signed_claim_workflow_e2e \
 cargo test --quiet -p sunrise-edge-operator --test economics_pg_e2e \
   -- --ignored --exact economics_pg_offline_signed_claim_workflow_e2e
 
+# DR-0151 delivery 2: execute actual shared ordering through the compiled
+# CLI and four independent PostgreSQL namespaces. The presence guard prevents
+# an absent/renamed ignored test from becoming a misleading zero-test pass.
+require_exact_test ordered_economics_network_four_namespace_competing_claims_e2e \
+  -p sunrise-edge-operator --test ordered_economics_network_pg_e2e
+cargo test --quiet -p sunrise-edge-operator --test ordered_economics_network_pg_e2e \
+  -- --ignored --exact ordered_economics_network_four_namespace_competing_claims_e2e
+
 require_exact_test fast_path::capacity_tests::live_postgres::live_postgres_concurrent_zero_share_claims_measure_retained_bytes_and_reopen_latency \
   -p node-core --lib
 cargo test --quiet -p node-core --lib \
@@ -88,4 +96,4 @@ cargo test --quiet -p node-core --lib \
   fast_path::capacity_tests::live_postgres::live_postgres_concurrent_positive_claims_measure_retained_bytes_and_writer_fence_recovery \
   -- --ignored --exact --nocapture
 
-echo "live PostgreSQL FastVote multi-validator, credential-isolation, real-CLI host-serving and bounded fee-claim capacity E2Es passed"
+echo "live PostgreSQL FastVote/shared-order multi-validator, credential-isolation, real-CLI host-serving and bounded fee-claim capacity E2Es passed"

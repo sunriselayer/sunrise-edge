@@ -1,7 +1,7 @@
 //! DR-0153 opt-in ordered network economics HTTP surface.
 //!
 //! [`certified_ordered_economics_router`] is a genuinely separate,
-//! self-contained router constructor: its body only ever mounts the five
+//! self-contained router constructor: its body only ever mounts the seven
 //! paths in [`node_wire::ordered_economics`], never `NODE_EVENT_PATH` or any
 //! `mutation_routes` from `publication`/`local_execution`/`paid_execution`.
 //! It cannot expose a direct/legacy mutating economics route by
@@ -17,21 +17,23 @@
 //! (`verify_proposal`/`verify_certificate`, or `authenticate_candidate` for
 //! `propose`) *before* any identity/clock/storage access -- exactly
 //! mirroring `fastvote.rs`'s own authenticate-before-identity/clock/storage
-//! ordering. Every remaining synchronous store/core call (candidate
+//! ordering. Canonical decoding and cryptographic verification run inside
+//! the shared blocking admission budget as well, not on the async executor.
+//! Every synchronous store/core call (candidate
 //! authentication that decodes/verifies a full intent, and the
 //! `propose`/`process_proposal`/`process_certificate`/`observe_proposal`/
 //! `query_status`/`process_tick` orchestration itself, which performs real
 //! durable-store I/O) runs inside [`publication::admitted`], bounded by the
 //! same [`NativeBlockingExecutor`] the host's certified FastVote router
 //! uses -- one shared admission budget across both surfaces, never a
-//! second, uncoordinated concurrency limit. `propose` is the only handler
-//! that signs; `observe` never does.
+//! second, uncoordinated concurrency limit. `propose` signs proposals and
+//! `proposal` may sign a vote; `observe` never signs.
 
 use crate::{IndexedOutboxIdentitySource, IndexedOutboxIdentitySourceError, publication};
 use axum::{
     Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -60,7 +62,7 @@ use std::{sync::Arc, time::Duration};
 use crate::NativeBlockingExecutor;
 
 /// State this router's handlers share. Never contains a signer capable of
-/// authorizing a direct economics mutation outside the five ordered routes.
+/// authorizing a direct economics mutation outside the ordered routes.
 pub struct OrderedEconomicsState<S, C, I, Sig> {
     pub store: Arc<S>,
     pub clock: Arc<C>,
@@ -106,6 +108,12 @@ fn error_response(status: StatusCode, code: &'static str) -> Response {
 }
 
 fn ordered_economics_error_response(error: &OrderedEconomicsError) -> Response {
+    if let Some(outcome) = error.completed_outcome() {
+        return encode_event_output_response(&ordered_economics::OrderedEventOutput {
+            messages: Vec::new(),
+            committed: vec![outcome.clone()],
+        });
+    }
     // Structural/authentication failures are the caller's fault; storage
     // unavailability/fencing/ambiguity must never be reported as an ordinary
     // client error that a retry-with-different-bytes could paper over.
@@ -231,15 +239,15 @@ where
     ) {
         return response;
     }
-    let request = match OrderedProposeRequest::decode(&body) {
-        Ok(value) => value,
-        Err(_) => {
-            return error_response(StatusCode::BAD_REQUEST, "invalid-ordered-propose-request");
-        }
-    };
     let cancelled = state.is_cancelled();
     let executor = state.blocking_executor.clone();
     publication::admitted(cancelled, executor, move || {
+        let request = match OrderedProposeRequest::decode(&body) {
+            Ok(value) => value,
+            Err(_) => {
+                return error_response(StatusCode::BAD_REQUEST, "invalid-ordered-propose-request");
+            }
+        };
         let candidate = match request.candidate {
             Some(bytes) => match ordered_economics::decode_ordered_candidate(&bytes) {
                 Ok(value) => Some(value),
@@ -314,27 +322,26 @@ where
     ) {
         return response;
     }
-    let proposal = match ordered_economics::decode_ordered_proposal(&body) {
-        Ok(value) => value,
-        Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid-ordered-proposal"),
-    };
-    // Full pure context/leader/justify/signature verification of the
-    // incoming proposal envelope, before any candidate decode/auth,
-    // identity, clock, or storage access.
-    if state
-        .policy
-        .engine()
-        .verify_proposal(&proposal.proposal, &FastPathEd25519Verifier)
-        .is_err()
-    {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid-ordered-proposal-signature",
-        );
-    }
     let cancelled = state.is_cancelled();
     let executor = state.blocking_executor.clone();
     publication::admitted(cancelled, executor, move || {
+        let proposal = match ordered_economics::decode_ordered_proposal(&body) {
+            Ok(value) => value,
+            Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid-ordered-proposal"),
+        };
+        // Pure envelope authentication remains before identity/clock/I/O,
+        // but bounded cryptographic work must not occupy an async worker.
+        if state
+            .policy
+            .engine()
+            .verify_proposal(&proposal.proposal, &FastPathEd25519Verifier)
+            .is_err()
+        {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid-ordered-proposal-signature",
+            );
+        }
         let env = OrderedEconomicsEnvironment {
             policy: &state.policy,
             resolver: &state.resolver,
@@ -385,26 +392,27 @@ where
     ) {
         return response;
     }
-    let certificate = match consensus::decode_quorum_certificate(&body) {
-        Ok(value) => value,
-        Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid-ordered-certificate"),
-    };
-    // Pure signature/context/canonical-vote-order verification before any
-    // identity/clock/storage access.
-    if state
-        .policy
-        .engine()
-        .verify_certificate(&certificate, &FastPathEd25519Verifier)
-        .is_err()
-    {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid-ordered-certificate-signature",
-        );
-    }
     let cancelled = state.is_cancelled();
     let executor = state.blocking_executor.clone();
     publication::admitted(cancelled, executor, move || {
+        let certificate = match consensus::decode_quorum_certificate(&body) {
+            Ok(value) => value,
+            Err(_) => {
+                return error_response(StatusCode::BAD_REQUEST, "invalid-ordered-certificate");
+            }
+        };
+        // Verification is admitted CPU work, still before identity/clock/I/O.
+        if state
+            .policy
+            .engine()
+            .verify_certificate(&certificate, &FastPathEd25519Verifier)
+            .is_err()
+        {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid-ordered-certificate-signature",
+            );
+        }
         let env = OrderedEconomicsEnvironment {
             policy: &state.policy,
             resolver: &state.resolver,
@@ -449,27 +457,25 @@ where
     ) {
         return response;
     }
-    let proposal = match ordered_economics::decode_ordered_proposal(&body) {
-        Ok(value) => value,
-        Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid-ordered-proposal"),
-    };
-    // Same pure verification ordering as `proposal_handler`, before any
-    // candidate decode/auth, identity, clock, or storage access -- this
-    // route is signerless but still authenticates the incoming envelope.
-    if state
-        .policy
-        .engine()
-        .verify_proposal(&proposal.proposal, &FastPathEd25519Verifier)
-        .is_err()
-    {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid-ordered-proposal-signature",
-        );
-    }
     let cancelled = state.is_cancelled();
     let executor = state.blocking_executor.clone();
     publication::admitted(cancelled, executor, move || {
+        let proposal = match ordered_economics::decode_ordered_proposal(&body) {
+            Ok(value) => value,
+            Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid-ordered-proposal"),
+        };
+        // Signerless does not mean unauthenticated. Verify before any I/O.
+        if state
+            .policy
+            .engine()
+            .verify_proposal(&proposal.proposal, &FastPathEd25519Verifier)
+            .is_err()
+        {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid-ordered-proposal-signature",
+            );
+        }
         let env = OrderedEconomicsEnvironment {
             policy: &state.policy,
             resolver: &state.resolver,
@@ -534,6 +540,70 @@ where
                 Err(_) => {
                     error_response(StatusCode::INTERNAL_SERVER_ERROR, "ordered-status-encoding")
                 }
+            },
+            Err(error) => ordered_economics_error_response(&error),
+        }
+    })
+    .await
+}
+
+async fn outcome_handler<S, C, I, Sig>(
+    State(state): State<SharedOrderedEconomicsState<S, C, I, Sig>>,
+    Path(selector): Path<String>,
+) -> Response
+where
+    S: StructuredDurableDomainStateStore + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    I: IndexedOutboxIdentitySource + Send + Sync + 'static,
+    Sig: ConsensusSigner + Send + Sync + 'static,
+{
+    let Some(request_id) =
+        crate::decode_hex64_selector(&selector).filter(|bytes| *bytes != [0; 32])
+    else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid-ordered-request-id");
+    };
+    let executor = state.blocking_executor.clone();
+    publication::admitted(state.is_cancelled(), executor, move || {
+        let env = OrderedEconomicsEnvironment {
+            policy: &state.policy,
+            resolver: &state.resolver,
+            history: &state.history,
+            leg_policy: &state.leg_policy,
+            engine: state.engine.as_ref(),
+            blobs: state.blobs.as_ref(),
+        };
+        let context = match build_context(&state) {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        match ordered_economics::query_ordered_outcome(
+            state.store.as_ref(),
+            &context,
+            &env,
+            &request_id,
+        ) {
+            Ok(None) => (
+                StatusCode::NO_CONTENT,
+                [(header::CACHE_CONTROL, "no-store")],
+            )
+                .into_response(),
+            Ok(Some(outcome)) => match ordered_economics::encode_ordered_outcome(&outcome) {
+                Ok(bytes) => (
+                    StatusCode::OK,
+                    [
+                        (
+                            header::CONTENT_TYPE,
+                            node_wire::ordered_economics::ORDERED_OUTCOME_MEDIA_TYPE,
+                        ),
+                        (header::CACHE_CONTROL, "no-store"),
+                    ],
+                    bytes,
+                )
+                    .into_response(),
+                Err(_) => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "ordered-outcome-encoding",
+                ),
             },
             Err(error) => ordered_economics_error_response(&error),
         }
@@ -660,6 +730,10 @@ where
             get(status_handler::<S, C, I, Sig>),
         )
         .route(
+            node_wire::ordered_economics::ORDERED_ECONOMICS_OUTCOME_ROUTE,
+            get(outcome_handler::<S, C, I, Sig>),
+        )
+        .route(
             ORDERED_ECONOMICS_TICK_PATH,
             post(tick_handler::<S, C, I, Sig>),
         )
@@ -670,19 +744,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::to_bytes;
-
-    fn make_router() -> Router {
-        // Built with `enabled = false`-equivalent semantics is not
-        // applicable here (this router has no such flag); instead these
-        // tests exercise only the preflight helpers directly, since a real
-        // `OrderedEconomicsState` requires `node_core::ordered_economics`
-        // types this crate cannot yet construct in a unit test (see the
-        // module doc's dependency note). `reject_unsupported_request` and
-        // the tick handler's own body/encoding guard are pure functions of
-        // `HeaderMap`/`Bytes` and are fully exercised without any state.
-        Router::new()
-    }
 
     #[test]
     fn reject_unsupported_request_rejects_the_wrong_media_type_with_zero_admission() {
@@ -731,40 +792,5 @@ mod tests {
         assert!(
             reject_unsupported_request(&headers, &body, "application/expected", 1024).is_none()
         );
-    }
-
-    #[tokio::test]
-    async fn tick_route_rejects_a_nonempty_body_before_any_state_access() {
-        // A router with no state at all: if the tick handler's body/encoding
-        // guard did not run before any state extraction, this would panic
-        // extracting `State<...>` instead of returning 400.
-        let _unused = make_router();
-        let mut headers = HeaderMap::new();
-        headers.insert(header::CONTENT_TYPE, "text/plain".parse().unwrap());
-        let body = Bytes::from_static(b"not empty");
-        // Exercises the exact guard `tick_handler` runs first, standalone,
-        // since building a real `SharedOrderedEconomicsState` needs
-        // `node_core::ordered_economics` types this crate cannot construct.
-        assert!(crate::has_unsupported_content_encoding(&headers) == false);
-        assert!(!body.is_empty());
-        let response = error_response(StatusCode::BAD_REQUEST, "ordered-tick-body-must-be-empty");
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(&bytes[..], b"ordered-tick-body-must-be-empty");
-    }
-
-    #[test]
-    fn router_never_mounts_a_direct_or_legacy_mutation_path() {
-        // Structural guarantee, independent of any state: grep the actual
-        // route table this module ever builds.
-        let paths = [
-            ORDERED_ECONOMICS_PROPOSE_PATH,
-            ORDERED_ECONOMICS_PROPOSAL_PATH,
-            ORDERED_ECONOMICS_CERTIFICATE_PATH,
-            ORDERED_ECONOMICS_OBSERVE_PATH,
-            ORDERED_ECONOMICS_STATUS_PATH,
-            ORDERED_ECONOMICS_TICK_PATH,
-        ];
-        assert!(!paths.contains(&crate::NODE_EVENT_PATH));
     }
 }

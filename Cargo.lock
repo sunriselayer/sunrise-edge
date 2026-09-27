@@ -1778,6 +1778,7 @@ name = "sunrise-edge-operator"
 version = "0.1.0"
 dependencies = [
  "abi",
+ "bonds",
  "canonical-encoding",
  "consensus",
  "crypto",

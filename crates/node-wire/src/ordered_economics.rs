@@ -29,7 +29,8 @@ pub const ORDERED_PROPOSE_REQUEST_TYPE_ID: u16 = 0x6460;
 const ORDERED_PROPOSE_REQUEST_ENCODING_VERSION: u16 = 1;
 
 /// Opt-in route: leader-only. Body is an [`OrderedProposeRequest`]; response
-/// is the raw canonical `OrderedProposal` bytes.
+/// is raw canonical `OrderedProposal` bytes, or `OrderedEventOutput` carrying
+/// the original retained outcome when this exact request already completed.
 pub const ORDERED_ECONOMICS_PROPOSE_PATH: &str = "/v1/ordered-economics/propose";
 /// Opt-in route: every validator. Body is the raw canonical `OrderedProposal`
 /// bytes; response is the raw canonical `OrderedEventOutput` bytes (may embed
@@ -45,6 +46,11 @@ pub const ORDERED_ECONOMICS_OBSERVE_PATH: &str = "/v1/ordered-economics/observe"
 /// Opt-in bounded read route. No body; response is the raw canonical
 /// `OrderedStatus` bytes.
 pub const ORDERED_ECONOMICS_STATUS_PATH: &str = "/v1/ordered-economics/status";
+/// Bounded replica-local completion read; append one 64-hex request id.
+/// A 204 means not completed on this replica, not absence network-wide.
+pub const ORDERED_ECONOMICS_OUTCOME_PATH_PREFIX: &str = "/v1/ordered-economics/outcome/";
+/// Router template for the replica-local completion query.
+pub const ORDERED_ECONOMICS_OUTCOME_ROUTE: &str = "/v1/ordered-economics/outcome/{request_id}";
 /// Opt-in, empty-body, trusted-local-clock-only pacemaker route. Never
 /// accepts a caller-supplied timestamp; the host's own `Clock` is the sole
 /// time authority. Wraps `node_core::ordered_economics::process_tick`.
@@ -60,13 +66,15 @@ pub const ORDERED_EVENT_OUTPUT_MEDIA_TYPE: &str =
     "application/vnd.sunrise-edge.ordered-event-output";
 /// Media type for a raw canonical `OrderedStatus`.
 pub const ORDERED_STATUS_MEDIA_TYPE: &str = "application/vnd.sunrise-edge.ordered-status";
+/// Media type for the exact original canonical `OrderedOutcome`.
+pub const ORDERED_OUTCOME_MEDIA_TYPE: &str = "application/vnd.sunrise-edge.ordered-outcome";
 /// Media type for [`OrderedProposeRequest`].
 pub const ORDERED_PROPOSE_REQUEST_MEDIA_TYPE: &str =
     "application/vnd.sunrise-edge.ordered-propose-request";
 
 /// Bound on one encoded `OrderedCandidate`: real core cap is
 /// `node_core::ordered_economics::MAX_ORDERED_CANDIDATE_INTENT_BYTES` (`512
-/// * 1024`, confirmed in `crates/node-core/src/ordered_economics/candidate.rs`)
+/// × 1024`, confirmed in `crates/node-core/src/ordered_economics/candidate.rs`)
 /// on `intent` alone, plus this frame's own context/kind/request-id/
 /// checkpoint overhead.
 pub const MAX_ORDERED_CANDIDATE_BYTES: usize = 512 * 1024 + 4096;
@@ -86,8 +94,7 @@ pub const MAX_ORDERED_CERTIFICATE_BYTES: usize = 8 * 1024 * 1024;
 /// `crates/node-core/src/ordered_economics/engine.rs`), each up to one full
 /// `ConsensusProposal`/`QuorumCertificate`, plus at most
 /// `MAX_ORDERED_EVENT_COMMITTED` (1) committed `OrderedOutcome`.
-pub const MAX_ORDERED_EVENT_OUTPUT_BYTES: usize =
-    8 * (10 * 1024 * 1024) + MAX_ORDERED_CANDIDATE_BYTES + 1024 * 1024;
+pub const MAX_ORDERED_EVENT_OUTPUT_BYTES: usize = canonical_encoding::MAX_CANONICAL_FRAME_BYTES;
 /// Bound on one encoded `OrderedStatus` (fixed-size view/height plus one QC).
 pub const MAX_ORDERED_STATUS_BYTES: usize = MAX_ORDERED_CERTIFICATE_BYTES + 256;
 

@@ -343,7 +343,7 @@ pub enum OrderedEconomicsNetworkError {
     /// current view; this call never substitutes another validator.
     LeaderEndpointMissing(ValidatorId),
     /// A transport/decoding/client failure.
-    Client(ClientError),
+    Client(Box<ClientError>),
     /// The core engine rejected a step (`OrderedEconomicsError`/`ConsensusError`).
     Rejected(String),
     /// A real quorum of votes could not be formed from reachable endpoints.
@@ -354,18 +354,22 @@ pub enum OrderedEconomicsNetworkError {
     /// certificate-apply phase failed: an unsigned HTTP acknowledgement
     /// never arrived from any configured peer for this round. Carries every
     /// peer own per-phase outcome. Never itself a durability proof -- see
-    /// SubmissionOutcome committed_outcome for the actual authenticated,
-    /// request-bound network answer.
+    /// SubmissionOutcome for the separate certified-prefix binding and
+    /// unsigned request-bound acknowledgement.
     NoReplicaAcknowledgement { peers: Vec<PeerResult> },
     /// Two peer responses reported different committed outcomes bound to the
     /// same candidate digest and request id during this call: a reordered or
     /// conflicting outcome, never silently resolved by picking either one.
     ConflictingCommittedOutcome,
-    /// No peer echoed an authenticated, request/digest/block-bound committed
+    /// No peer echoed a request/digest/block-bound committed
     /// outcome anywhere across this whole submission. Raw peer HTTP success
     /// is only an acknowledgement, never proof of three-chain commit: this
     /// call fails closed instead of returning an unconfirmed success.
     NoCommittedOutcome,
+    /// A replica reported this exact request already completed. This unsigned
+    /// hint is not accepted as fresh finality. Reconcile the original saved
+    /// proposal/certificate prefix instead of placing or signing a new request.
+    CompletedRequestRequiresReplay,
 }
 
 impl fmt::Display for OrderedEconomicsNetworkError {
@@ -389,8 +393,9 @@ impl fmt::Display for OrderedEconomicsNetworkError {
                 "peer responses disagree on the committed outcome for this candidate digest and request id",
             ),
             Self::NoCommittedOutcome => f.write_str(
-                "no peer echoed an authenticated committed outcome bound to this candidate during this submission",
+                "no peer acknowledged a committed outcome bound to this candidate's certified prefix",
             ),
+            Self::CompletedRequestRequiresReplay => f.write_str("replica reports this request already completed; replay the original saved proposal/certificate manifest, never a fresh request id or nonce"),
         }
     }
 }
@@ -405,7 +410,7 @@ impl From<OrderedEconomicsEndpointConfigError> for OrderedEconomicsNetworkError 
 
 impl From<ClientError> for OrderedEconomicsNetworkError {
     fn from(value: ClientError) -> Self {
-        Self::Client(value)
+        Self::Client(Box::new(value))
     }
 }
 
@@ -478,12 +483,13 @@ pub struct RoundOutcome {
 }
 
 /// Result of the whole submission. `rounds` records every HTTP exchange
-/// attempted; `committed_outcome` is the actual authenticated, request and
-/// block-bound network answer -- present only because `submit_candidate`
+/// attempted; `committed_outcome` is an unsigned replica acknowledgement bound
+/// to the authenticated candidate and certified three-chain, not a signature
+/// over the business result or proof of whole-store durability. It is present because `submit_candidate`
 /// itself already failed closed with `NoCommittedOutcome` otherwise, so a
 /// caller holding an `Ok(SubmissionOutcome)` never needs to separately
-/// distrust a raw peer HTTP 200 from the three rounds. A quorum certificate
-/// proves finality of one proposal, not by itself that the network
+/// test for a missing acknowledgement. A quorum certificate
+/// certifies one proposal, not by itself that the network
 /// committed this business operation; that distinction is exactly why
 /// `committed_outcome` is independently bound to the round-0 proposal
 /// height/digest before this function ever returns it.
@@ -510,10 +516,10 @@ fn request_deadline(
         .ok_or(OrderedEconomicsNetworkError::OverallDeadlineElapsed)
 }
 
-fn find_leader<'a, T>(
-    endpoints: &'a [OrderedEconomicsEndpoint<T>],
+fn find_leader<T>(
+    endpoints: &[OrderedEconomicsEndpoint<T>],
     leader: ValidatorId,
-) -> Result<&'a OrderedEconomicsEndpoint<T>, OrderedEconomicsNetworkError> {
+) -> Result<&OrderedEconomicsEndpoint<T>, OrderedEconomicsNetworkError> {
     endpoints
         .iter()
         .find(|endpoint| endpoint.validator_id == leader)
@@ -542,6 +548,79 @@ fn query_status<T: Transport>(
     )?;
     decode_ordered_status(&body)
         .map_err(|error| OrderedEconomicsNetworkError::Rejected(error.to_string()))
+}
+
+/// Bounded replica-local, unsigned completion acknowledgement. Authenticates
+/// the expected candidate locally before I/O and checks request/digest binding.
+/// `None` is replica-local only; this API supplies neither network absence nor
+/// finality proof. Verify/replay the original certified prefix separately.
+pub fn query_replica_outcome<T: Transport>(
+    endpoint: &OrderedEconomicsEndpoint<T>,
+    policy: &OrderedEconomicsPolicy,
+    candidate: &OrderedCandidate,
+    deadline: Instant,
+) -> Result<Option<OrderedOutcome>, OrderedEconomicsNetworkError> {
+    authenticate_ordered_candidate(policy, candidate)?;
+    validate_ordered_economics_endpoints(
+        std::slice::from_ref(endpoint),
+        policy.engine().validator_set(),
+    )?;
+    let outcome = query_retained_outcome(endpoint, candidate.request_id, deadline)?;
+    let Some(outcome) = outcome else {
+        return Ok(None);
+    };
+    let digest = policy
+        .candidate_digest(candidate)
+        .map_err(|error| OrderedEconomicsNetworkError::Rejected(error.to_string()))?;
+    if outcome.candidate_digest != digest {
+        return Err(OrderedEconomicsNetworkError::Rejected(
+            "replica outcome does not match the expected candidate".into(),
+        ));
+    }
+    Ok(Some(outcome))
+}
+
+// Called only after local candidate authentication and endpoint preflight.
+// Do not discard a conflicting digest: agreeing quorum hints must stop a
+// completed request-id reuse before routing/Tick changes any replica's view.
+fn query_retained_outcome<T: Transport>(
+    endpoint: &OrderedEconomicsEndpoint<T>,
+    request_id: [u8; 32],
+    deadline: Instant,
+) -> Result<Option<OrderedOutcome>, OrderedEconomicsNetworkError> {
+    let id: String = request_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let response = endpoint
+        .client
+        .transport()
+        .send(&WireRequest {
+            method: Method::Get,
+            path: format!(
+                "{}{id}",
+                node_wire::ordered_economics::ORDERED_ECONOMICS_OUTCOME_PATH_PREFIX
+            ),
+            content_type: None,
+            body: Vec::new(),
+            deadline: Some(deadline),
+        })
+        .map_err(ClientError::from)?;
+    if response.status == 204 && response.body.is_empty() {
+        return Ok(None);
+    }
+    let bytes = expect_success(
+        response,
+        node_wire::ordered_economics::ORDERED_OUTCOME_MEDIA_TYPE,
+    )?;
+    let outcome = node_core::ordered_economics::decode_ordered_outcome(&bytes)
+        .map_err(|error| OrderedEconomicsNetworkError::Rejected(error.to_string()))?;
+    if outcome.request_id != request_id {
+        return Err(OrderedEconomicsNetworkError::Rejected(
+            "replica outcome does not match the expected candidate".into(),
+        ));
+    }
+    Ok(Some(outcome))
 }
 
 /// Unsigned status is only a routing hint. Require a configured voting quorum
@@ -630,10 +709,42 @@ pub fn submit_candidate<T: Transport>(
         .persist("round-0.candidate", candidate_bytes)
         .map_err(OrderedEconomicsNetworkError::Artifact)?;
 
+    // Read-only reconciliation before routing/Tick/propose. A matching quorum
+    // of replica-local acknowledgements is a recovery hint, not a new proof.
+    // One Byzantine hint cannot suppress submission by itself.
+    let mut completed_hints: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+    for endpoint in endpoints {
+        let deadline = request_deadline(overall_deadline, per_request_cap)?;
+        if let Ok(Some(outcome)) = query_retained_outcome(endpoint, candidate.request_id, deadline)
+        {
+            let bytes = node_core::ordered_economics::encode_ordered_outcome(&outcome)
+                .map_err(|error| OrderedEconomicsNetworkError::Rejected(error.to_string()))?;
+            let power = policy
+                .engine()
+                .validator_set()
+                .get(endpoint.validator_id)
+                .ok_or(OrderedEconomicsNetworkError::QuorumNotFormed)?
+                .voting_power;
+            let tally = completed_hints.entry(bytes).or_default();
+            *tally = tally.checked_add(power).ok_or_else(|| {
+                OrderedEconomicsNetworkError::Rejected("completion hint power overflow".into())
+            })?;
+            if *tally >= policy.engine().validator_set().quorum_threshold() {
+                if outcome.candidate_digest != expected_digest {
+                    return Err(OrderedEconomicsNetworkError::Rejected(
+                        "request header conflict: a quorum acknowledges different original candidate bytes; use the original manifest".into(),
+                    ));
+                }
+                return Err(OrderedEconomicsNetworkError::CompletedRequestRequiresReplay);
+            }
+        }
+    }
+
     const EMPTY_DESCENDANT_ROUNDS: usize = 2;
     let mut rounds = Vec::with_capacity(1 + EMPTY_DESCENDANT_ROUNDS);
     let mut committed_outcome: Option<OrderedOutcome> = None;
     let mut round0_binding: Option<(u64, Digest32)> = None;
+    let mut expected_parent: Option<QuorumCertificate> = None;
     for round_index in 0..=EMPTY_DESCENDANT_ROUNDS {
         let candidate_for_round = if round_index == 0 {
             Some(candidate_bytes.to_vec())
@@ -653,12 +764,18 @@ pub fn submit_candidate<T: Transport>(
             overall_deadline,
             per_request_cap,
             artifacts,
+            expected_parent.as_ref(),
         )?;
+        expected_parent = Some(
+            consensus::decode_quorum_certificate(&outcome.certificate_bytes)
+                .map_err(|error| OrderedEconomicsNetworkError::Rejected(error.to_string()))?,
+        );
         if round_index == 0 {
             round0_binding = Some((outcome.height, outcome.proposal_digest));
         }
-        let (expected_block_height, expected_block_digest) = round0_binding
-            .ok_or_else(|| OrderedEconomicsNetworkError::Rejected("missing round-0 binding".into()))?;
+        let (expected_block_height, expected_block_digest) = round0_binding.ok_or_else(|| {
+            OrderedEconomicsNetworkError::Rejected("missing round-0 binding".into())
+        })?;
         for peer in &outcome.peers {
             for phase in [&peer.vote_phase, &peer.certificate_phase] {
                 if let PeerPhaseOutcome::Applied(output) = phase {
@@ -734,6 +851,7 @@ fn run_one_round<T: Transport>(
     overall_deadline: Instant,
     per_request_cap: Duration,
     artifacts: &mut dyn ArtifactSink,
+    expected_parent: Option<&QuorumCertificate>,
 ) -> Result<RoundOutcome, OrderedEconomicsNetworkError> {
     let verifier = FastPathEd25519Verifier;
     let (proposal_bytes, proposal) = if let Some(resume_bytes) = resume_proposal {
@@ -779,6 +897,17 @@ fn run_one_round<T: Transport>(
             };
             let sent = leader.client.transport().send(&request);
             let proposal_bytes = match sent {
+                Ok(response)
+                    if response.status == 200
+                        && response.content_type.as_deref()
+                            == Some(
+                                node_wire::ordered_economics::ORDERED_EVENT_OUTPUT_MEDIA_TYPE,
+                            ) =>
+                {
+                    // A completed-request hint cannot become new finality: no
+                    // vote/certificate fan-out follows this response.
+                    return Err(OrderedEconomicsNetworkError::CompletedRequestRequiresReplay);
+                }
                 Ok(response) if response.status == 200 => {
                     expect_success(response, ORDERED_PROPOSAL_MEDIA_TYPE)?
                 }
@@ -813,6 +942,17 @@ fn run_one_round<T: Transport>(
             break (proposal_bytes, decoded);
         }
     };
+    if let Some(parent) = expected_parent {
+        let justify: &QuorumCertificate = &proposal.proposal.justify;
+        if justify.proposal_digest != parent.proposal_digest
+            || justify.height != parent.height
+            || justify.view != parent.view
+        {
+            return Err(OrderedEconomicsNetworkError::Rejected(
+                "descendant does not extend this submission's certified prefix".into(),
+            ));
+        }
+    }
 
     // Candidate binding: an empty round must carry no candidate; a
     // candidate round must carry a decoded `OrderedCandidate` that
@@ -894,6 +1034,17 @@ fn run_one_round<T: Transport>(
                 }
             }
         };
+        artifacts
+            .record_peer_result(
+                round_index,
+                &PeerResult {
+                    validator_id: endpoint.validator_id,
+                    endpoint_label: endpoint.endpoint_label.clone(),
+                    vote_phase: phase.clone(),
+                    certificate_phase: PeerPhaseOutcome::Skipped("certificate not sent yet".into()),
+                },
+            )
+            .map_err(OrderedEconomicsNetworkError::Artifact)?;
         peer_vote_phase.push((
             endpoint.validator_id,
             endpoint.endpoint_label.clone(),
@@ -968,7 +1119,7 @@ fn run_one_round<T: Transport>(
 
     // One QC is not three-chain finality. Nor is a peer HTTP 200 proof that
     // the operation actually committed. Report acknowledgements separately
-    // from the durable, request-bound `SubmissionOutcome::committed_outcome`.
+    // from the request-bound `SubmissionOutcome::committed_outcome` acknowledgement.
     if !any_replica_applied {
         return Err(OrderedEconomicsNetworkError::NoReplicaAcknowledgement { peers });
     }
@@ -1038,12 +1189,17 @@ pub fn replay_declared_prefix<T: Transport>(
 /// round.
 fn validate_known_blocks(
     output: &OrderedEventOutput,
-    known_blocks: &[(u64, Digest32)],
+    known_blocks: &[(u64, Digest32, [u8; 32], Digest32)],
 ) -> Result<(), String> {
     for outcome in &output.committed {
         let known = known_blocks
             .iter()
-            .any(|(height, digest)| *height == outcome.block_height && *digest == outcome.block_digest);
+            .any(|(height, digest, request_id, candidate_digest)| {
+                *height == outcome.block_height
+                    && *digest == outcome.block_digest
+                    && *request_id == outcome.request_id
+                    && *candidate_digest == outcome.candidate_digest
+            });
         if !known {
             return Err(
                 "committed outcome references a block outside the preverified declared prefix"
@@ -1086,10 +1242,10 @@ pub fn replay_declared_prefix_with_sink<T: Transport>(
 
     // Phase 1: decode and verify the COMPLETE declared prefix -- every
     // proposal/certificate signature, each certificate's own binding to its
-    // round's proposal (view/height/digest), the parent-link chain (each
-    // non-first round's `justify` must equal the previous round's exact
-    // certificate), and that at most one round in the whole prefix carries
-    // a candidate -- before a single POST. An altered or reordered artifact
+    // round's proposal (view/height/digest), and the parent-link chain (each
+    // non-first round extends the previous certified block). Multiple complete
+    // windows are allowed, at most one candidate per closed-profile window,
+    // before a single POST. An altered or reordered artifact
     // fails here with zero network I/O.
     let mut decoded: Vec<(
         consensus::ConsensusProposal,
@@ -1151,10 +1307,23 @@ pub fn replay_declared_prefix_with_sink<T: Transport>(
             decoded_certificate,
         ));
     }
-    let known_blocks: Vec<(u64, Digest32)> = decoded
-        .iter()
-        .map(|(proposal, _, certificate)| (proposal.height, certificate.proposal_digest))
-        .collect();
+    let mut known_blocks: Vec<(u64, Digest32, [u8; 32], Digest32)> = Vec::new();
+    for (index, (proposal, candidate, certificate)) in decoded.iter().enumerate() {
+        if index + 2 < decoded.len()
+            && let Some(candidate) = candidate
+        {
+            let digest = policy
+                .candidate_digest(candidate)
+                .map_err(|error| OrderedEconomicsNetworkError::Rejected(error.to_string()))?;
+            known_blocks.push((
+                proposal.height,
+                certificate.proposal_digest,
+                candidate.request_id,
+                digest,
+            ));
+        }
+    }
+    let mut acknowledged: BTreeMap<[u8; 32], OrderedOutcome> = BTreeMap::new();
 
     // Phase 2: every artifact in the prefix is authenticated and internally
     // consistent -- only now does this function perform any network I/O.
@@ -1188,7 +1357,8 @@ pub fn replay_declared_prefix_with_sink<T: Transport>(
                             )
                             .map_err(|error| error.to_string())
                             .and_then(|body| {
-                                decode_ordered_event_output(&body).map_err(|error| error.to_string())
+                                decode_ordered_event_output(&body)
+                                    .map_err(|error| error.to_string())
                             }) {
                                 Ok(output) => PeerPhaseOutcome::Applied(output),
                                 Err(error) => PeerPhaseOutcome::Rejected(error),
@@ -1206,6 +1376,18 @@ pub fn replay_declared_prefix_with_sink<T: Transport>(
                         let skip = "skipped: this peer own observe step failed this round";
                         (observe_result, PeerPhaseOutcome::Skipped(skip.to_string()))
                     } else {
+                        sink.record_peer_result(
+                            round_index,
+                            &PeerResult {
+                                validator_id: endpoint.validator_id,
+                                endpoint_label: endpoint.endpoint_label.clone(),
+                                vote_phase: observe_result.clone(),
+                                certificate_phase: PeerPhaseOutcome::Skipped(
+                                    "certificate not sent yet".into(),
+                                ),
+                            },
+                        )
+                        .map_err(OrderedEconomicsNetworkError::Artifact)?;
                         let request = WireRequest {
                             method: Method::Post,
                             path: ORDERED_ECONOMICS_CERTIFICATE_PATH.to_string(),
@@ -1213,11 +1395,11 @@ pub fn replay_declared_prefix_with_sink<T: Transport>(
                             body: certificate_bytes.clone(),
                             deadline: Some(request_deadline(overall_deadline, per_request_cap)?),
                         };
-                        let mut certificate_result = match endpoint.client.transport().send(&request)
-                        {
-                            Err(error) => PeerPhaseOutcome::Unreachable(error.to_string()),
-                            Ok(response) => {
-                                match expect_success(
+                        let mut certificate_result =
+                            match endpoint.client.transport().send(&request) {
+                                Err(error) => PeerPhaseOutcome::Unreachable(error.to_string()),
+                                Ok(response) => {
+                                    match expect_success(
                                     response,
                                     node_wire::ordered_economics::ORDERED_EVENT_OUTPUT_MEDIA_TYPE,
                                 )
@@ -1229,8 +1411,8 @@ pub fn replay_declared_prefix_with_sink<T: Transport>(
                                     Ok(output) => PeerPhaseOutcome::Applied(output),
                                     Err(error) => PeerPhaseOutcome::Rejected(error),
                                 }
-                            }
-                        };
+                                }
+                            };
                         if let PeerPhaseOutcome::Applied(output) = &certificate_result
                             && let Err(reason) = validate_known_blocks(output, &known_blocks)
                         {
@@ -1255,6 +1437,18 @@ pub fn replay_declared_prefix_with_sink<T: Transport>(
             // failure, even though this call itself still returns `Err`.
             sink.record_peer_result(round_index, &peer)
                 .map_err(OrderedEconomicsNetworkError::Artifact)?;
+            for phase in [&peer.vote_phase, &peer.certificate_phase] {
+                if let PeerPhaseOutcome::Applied(output) = phase {
+                    for found in &output.committed {
+                        if let Some(original) = acknowledged.get(&found.request_id)
+                            && original != found
+                        {
+                            return Err(OrderedEconomicsNetworkError::ConflictingCommittedOutcome);
+                        }
+                        acknowledged.insert(found.request_id, found.clone());
+                    }
+                }
+            }
             observe_phase.push((peer.validator_id, peer.vote_phase.clone()));
             certificate_phase.push((peer.validator_id, peer.certificate_phase.clone()));
         }
@@ -1754,7 +1948,9 @@ mod recovery_preflight_tests {
         // third round own observe call fails as unreachable.
         let (peers, calls) = endpoints_with_post_failure(&policy, &[Some(1)], false, Some(5));
         let rounds = empty_prefix(&policy, &signers, 4);
-        let mut sink = RecordingSink { records: Vec::new() };
+        let mut sink = RecordingSink {
+            records: Vec::new(),
+        };
         let result = replay_declared_prefix_with_sink(
             &peers,
             &policy,
@@ -1763,18 +1959,27 @@ mod recovery_preflight_tests {
             Duration::from_millis(50),
             &mut sink,
         );
-        assert!(result.is_err(), "round 2 own observe failure must surface as Err");
+        assert!(
+            result.is_err(),
+            "round 2 own observe failure must surface as Err"
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 5);
         assert!(
-            sink.records.iter().any(|(round, _, vote, cert)| *round == 0 && *vote && *cert),
+            sink.records
+                .iter()
+                .any(|(round, _, vote, cert)| *round == 0 && *vote && *cert),
             "round 0 must be recorded as fully acknowledged before the later failure"
         );
         assert!(
-            sink.records.iter().any(|(round, _, vote, cert)| *round == 1 && *vote && *cert),
+            sink.records
+                .iter()
+                .any(|(round, _, vote, cert)| *round == 1 && *vote && *cert),
             "round 1 must be recorded as fully acknowledged before the later failure"
         );
         assert!(
-            sink.records.iter().any(|(round, _, vote, _)| *round == 2 && !vote),
+            sink.records
+                .iter()
+                .any(|(round, _, vote, _)| *round == 2 && !vote),
             "round 2 own failed observe step must still be recorded, not silently dropped"
         );
         assert!(
