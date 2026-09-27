@@ -2,13 +2,14 @@
 
 ## Status
 
-Proposed, 2026-09-27. This record captures the design investigation for
+Accepted implementation direction, 2026-09-27. This record fixes the design for
 [DR-0151](0151-integrated-network-delivery-and-lightweight-stores.md)'s
-integrated membership/epoch delivery. Its mechanism is not accepted for
-implementation. No finality rule, canonical frame or type identifier is
-changed by this document. The concrete candidate is now specified in
-[Complete epoch handoff](../epoch-handoff.md), pending independent design
-review. Implementation and validation status belong in
+integrated membership/epoch delivery after independent design review and
+correction of the availability/drain/readiness gaps. The mechanism is specified
+in [Complete epoch handoff](../epoch-handoff.md). This is a docs-only decision:
+no runtime implementation, canonical bytes or identifiers are changed by it.
+It does require a new apply-admission rule and logical commitment, not a new
+quorum-applied finality rule. Implementation and validation status belong in
 [`TODO.md`](../../../TODO.md).
 
 ## Context and reusable boundaries
@@ -49,7 +50,7 @@ Source boundaries:
 
 ## Required design properties
 
-### Candidate direction and necessary semantic change
+### Decision and necessary semantic change
 
 The existing prepare/apply contract cannot guarantee a non-lossy handoff while
 replacing an absent replica. For A/B/C/D with Byzantine C, both partial votes
@@ -59,7 +60,7 @@ our storage locks. Unique full-certificate safety does not solve this
 surviving-observation ambiguity, and partial votes do not reconstruct the
 missing certificate or original signed intent.
 
-The concrete candidate adds one execution-free quorum publication round before
+The selected direction adds one execution-free quorum publication round before
 any owned application. Retain the full verifying certificate, original signed
 intent and required replay artifacts before exposing an ACK. Then every
 possible application intersects an outgoing frozen quorum in an honest holder
@@ -78,14 +79,20 @@ committed Seal, avoiding an epoch-wide first-writer-wins proposal wedge.
 Preserve inherited consensus locks and resolve business-bearing suffixes
 before sealing. Complete full-certificate operations through narrow cut-bound
 reservation resolution, not arbitrary foreign-lock release or global receipts
-invented from uncertified pending claims. In the initial candidate, committed
+invented from uncertified pending claims. Before a DrainSet vote, its complete
+artifacts must be durably retained by that voter, not only the earlier holder.
+Select a legally eligible ready next set before Seal; conditional readiness is
+repeatable, while the post-Seal transition target is unique. In the initial
+profile, committed
 Freeze has no cancellation: resume the ordered protocol to activation; neither
 elapsed time nor absence of an activation row reopens admission.
 
-The candidate also separates signed logical read observations from physical
+The decision also separates signed logical read observations from physical
 CAS revisions. Current commitment v1 signs some state/head/nonce revisions;
 normalizing only the transfer root would not solve portable re-execution.
-Historical witness bytes remain verifiable; new admission must not silently
+Use deterministic authenticated semantic execution generations rather than
+physical creation/admission checkpoints, including economics minimum-generation
+checks. Historical witness bytes remain verifiable; new admission must not silently
 reuse the physical-revision commitment under a different claimed guarantee.
 
 ### Sui research and applicability
@@ -100,7 +107,7 @@ implementation or permission to redefine retained application finality.
 The [official Sui source inspected at commit d79a998](https://github.com/MystenLabs/sui/blob/d79a998f32bfedac63e7d3f1dbdc9e41c14adf38/crates/sui-core/src/epoch/reconfiguration.rs)
 explicitly describes certificate names as legacy after fast-path removal.
 Do not present the 2024 Lutris description as the current Sui implementation.
-The Sunrise candidate deliberately keeps owned transactions outside global
+The Sunrise design deliberately keeps owned transactions outside global
 ordering and chooses publication-before-apply rather than adopting rollback.
 
 ### Completeness comes from authenticated derivation
@@ -214,11 +221,12 @@ another cut, duplicate/reordered pages, contradictory outgoing votes, retired
 signers, old fresh execution, unresolved prepares/certificates, real stale
 writers, and restart after an interrupted freeze/transfer/activation.
 
-## Required before implementation acceptance
+## Implementation obligations
 
-- Independent review of the concrete candidate, including the full-certificate
-  retention intersection, freeze race, partial-lock resolution and inherited
-  shared branches. An architect's result alone is not acceptance.
+- Exercise the independently reviewed full-certificate retention intersection,
+  freeze race, pre-vote artifact possession, partial-lock resolution, inherited
+  shared branches and repeatable pre-Seal readiness in executable adversarial
+  tests. Design approval is not runtime or security approval.
 - Explicit portable collection schema/projections and runtime enumeration
   interfaces. Preserve semantic deletion tags and signed execution operands,
   not physical counters or synthetic admission receipts.

@@ -263,7 +263,9 @@ about business state.
 The cut commits the **pre-Seal business snapshot** and verified replay prefix,
 not a row that contains its own cut digest. Bind genesis/predecessor cut,
 outgoing context/set/domain, committed DrainSet, applied business-prefix anchor,
-normalized business-state/receipt roots and the artifact manifest. The current
+normalized business-state/receipt roots, an explicit authenticated
+`execution_generation_floor` derived from verified history, and the artifact
+manifest. The current
 Seal, its proof, control-phase bookkeeping, its internal command receipts and
 the later activation/readiness proofs are companion authority artifacts outside
 that snapshot/manifest. Previous epochs' authority history stays bound through
@@ -305,7 +307,8 @@ pristine-versus-deleted tags, semantic generations, ObjectRefs, mutations,
 authorities, nonce value/precondition and an authenticated **semantic execution
 generation**. Define that generation deterministically as one plus the maximum
 of the predecessor cut's generation floor and authenticated input/prerequisite
-generations, using checked arithmetic. Genesis supplies the initial floor.
+generations, using checked arithmetic. Overflow is a typed refusal before any
+reservation/mutation or exposed signature; never saturate or wrap. Genesis supplies the initial floor.
 The next cut derives its floor from verified history. This is a causal operand,
 not a globally incremented counter or proof of checkpoint publication; separate
 owned transactions can share a generation and need no global ordering.
