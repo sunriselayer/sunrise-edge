@@ -51,6 +51,9 @@ roadmap describes a later target state.
 - [Embedded DO contract hosting](decisions/0152-durable-object-contract-host.md):
   real Rust/Wasmi execution, shared synchronous SQL validation, confirmed-output
   and single-domain authority boundaries for the experimental lightweight host.
+- [Ordered network economics](decisions/0153-ordered-network-economics.md):
+  shared HotStuff ordering distinct from owned FastVote, durable reservations,
+  atomic economic/order effects and declared signerless recovery.
 
 Production-oriented persistence requirements and the PostgreSQL mapping are
 separate operational references:

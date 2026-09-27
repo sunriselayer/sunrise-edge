@@ -120,6 +120,18 @@ conformance do not waive any current safety or independent security gate.
 
 The detailed existing evidence and remaining criteria follow:
 
+- [ ] **Delivery 2: ordered network economics**
+  ([DR-0153](docs/architecture/decisions/0153-ordered-network-economics.md)).
+  In progress: reuse the existing shared HotStuff engine for fee claims,
+  bond operations, evidence and slash; preserve owned calls on FastVote.
+  Required evidence includes durable votes/locks, atomic business/order
+  commits, competing-claim progress, actual network CLI operations,
+  missed-validator recovery, restart/exact replay, unchanged-state conflict
+  refusals and parent verification. A single-quorum per-generation escrow
+  lock is explicitly rejected as a shared-resource ordering substitute.
+  No implementation, review, CI, epoch-handoff or activation gate is marked
+  complete by this planning entry.
+
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).
   The actual Rust/Wasmi paid lifecycle runs inside SQLite-backed DOs using
