@@ -54,6 +54,9 @@ roadmap describes a later target state.
 - [Ordered network economics](ordered-economics.md) ([DR-0153](decisions/0153-ordered-network-economics.md)):
   shared HotStuff ordering distinct from owned FastVote, durable reservations,
   atomic economic/order effects and declared signerless recovery.
+- [Complete epoch handoff constraints (proposed)](decisions/0154-complete-epoch-handoff.md):
+  authenticated completeness, preserved application history, durable outgoing
+  vote identity and genuinely usable post-transition execution.
 
 Production-oriented persistence requirements and the PostgreSQL mapping are
 separate operational references:

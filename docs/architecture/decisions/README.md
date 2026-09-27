@@ -60,6 +60,8 @@
 - [DR-0151: integrated network delivery and lightweight validator stores](0151-integrated-network-delivery-and-lightweight-stores.md)
 - [DR-0152: embedded Rust contract hosting in SQLite-backed DO](0152-durable-object-contract-host.md)
 - [DR-0153: ordered network economics](0153-ordered-network-economics.md)
+- [DR-0154: complete epoch handoff constraints (proposed)](0154-complete-epoch-handoff.md)
 
-These records describe accepted decisions and compatibility boundaries. Work
-status and remaining completion criteria belong in [`TODO.md`](../../../TODO.md).
+Each record states whether it is accepted or only proposed; proposals are not
+implementation approval. Work status and remaining completion criteria belong
+in [`TODO.md`](../../../TODO.md).
