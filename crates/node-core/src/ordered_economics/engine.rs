@@ -74,6 +74,29 @@ fn stop(message: &'static str) -> OrderedEconomicsError {
     OrderedEconomicsError::Prerequisite(message)
 }
 
+/// Distinguishes a genuinely virgin row from a deleted one.
+///
+/// [`VersionedStateValue::value`] returning `None` at
+/// [`StateRevision::INITIAL`] means the row was never written. The same `None`
+/// at any later revision means it was written and then deleted: a tombstone.
+///
+/// The two must never be conflated here. Treating a tombstone as virgin absence
+/// would let this module recreate an immutable request header or candidate
+/// record, reset the applied-height marker back to genesis, or report an
+/// already-completed request as never seen -- each of which silently rewrites a
+/// non-initial revision and, for the applied-height marker, would re-execute a
+/// committed economic prefix. A deleted row is persisted corruption: stop and
+/// require reconciliation.
+fn require_virgin_absence(
+    observed: &VersionedStateValue,
+    message: &'static str,
+) -> Result<(), OrderedEconomicsError> {
+    if observed.value().is_none() && observed.revision() != StateRevision::INITIAL {
+        return Err(stop(message));
+    }
+    Ok(())
+}
+
 fn consensus_to_node(_error: consensus::ConsensusError) -> OrderedEconomicsError {
     OrderedEconomicsError::Prerequisite("ordered economics consensus transition failed closed")
 }
@@ -506,21 +529,27 @@ struct OutcomeRow {
     revision: StateRevision,
 }
 
-/// Cross-checks one retained outcome against the durable request receipt that
-/// the very same invocation committed alongside it.
+/// Cross-checks one retained outcome against both durable records the very same
+/// invocation committed alongside it: the immutable request header, and the
+/// request receipt.
 ///
-/// The outcome row is only ever written in the same atomic invocation as a
-/// receipt for the same request id, so a retained outcome without a matching
-/// receipt -- or one whose responses disagree with it -- is persisted
-/// inconsistency, not an answer. It fails closed as a stop rather than being
-/// reported: a completion result is only ever the exact original responses that
-/// were actually committed, never a fabricated or partially recovered one.
+/// The outcome row is only ever written in one atomic invocation together with
+/// a header binding this request id to the candidate digest, and a receipt for
+/// the same request id. So a retained outcome whose header is missing or names a
+/// different candidate digest, or which has no receipt, or whose responses
+/// disagree with that receipt, is persisted inconsistency rather than an answer.
+/// Each case fails closed as a stop: a completion result is only ever the exact
+/// original responses that were really committed, never a fabricated or
+/// partially recovered one, and never an orphan row on its own authority.
 ///
-/// The receipt's own event digest is deliberately *not* constrained here. An
+/// Which digest the receipt records is deliberately *not* constrained. An
 /// accepted handler keeps its original intent receipt digest while a refusal or
 /// a retained-evidence acceptance uses the candidate digest, and both are
-/// correct; what must agree is the request identity and the exact responses.
-fn require_consistent_receipt<S: StructuredDurableDomainStateStore>(
+/// correct. What must agree is the request identity, the exact responses, the
+/// header's candidate digest, and the receipt's own two copies of its event
+/// digest -- the outer [`DurableRequestReceipt::event_digest`] and the one
+/// inside its [`NodeDedupRecord`] projection.
+fn require_consistent_completion<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -530,6 +559,21 @@ fn require_consistent_receipt<S: StructuredDurableDomainStateStore>(
     if &outcome.request_id != request_id {
         return Err(stop(
             "retained ordered outcome is keyed by another request id",
+        ));
+    }
+    // The immutable header that the completing invocation wrote must still bind
+    // this request id to exactly the candidate the outcome names.
+    let header_key: Vec<u8> =
+        ordered_request_header_key(env.policy.context().chain_id(), request_id)?;
+    let observed_header: VersionedStateValue =
+        store.get_versioned_durable(context, env.policy.domain(), &header_key)?;
+    let header_bytes: &[u8] = observed_header.value().ok_or(stop(
+        "retained ordered outcome has no immutable request header",
+    ))?;
+    let header: RequestHeader = decode_request_header(header_bytes)?;
+    if header.candidate_digest != outcome.candidate_digest {
+        return Err(stop(
+            "retained ordered outcome disagrees with its immutable request header",
         ));
     }
     let durable_id: DurableRequestId = DurableRequestId::new(*request_id)
@@ -547,6 +591,7 @@ fn require_consistent_receipt<S: StructuredDurableDomainStateStore>(
     let record: NodeDedupRecord = NodeDedupRecord::decode(receipt.canonical_bytes())
         .map_err(|_| stop("retained ordered outcome receipt does not decode"))?;
     if record.request_id().as_bytes() != request_id
+        || record.event_digest() != receipt.event_digest()
         || record.responses() != outcome.output.responses()
     {
         return Err(stop(
@@ -557,7 +602,12 @@ fn require_consistent_receipt<S: StructuredDurableDomainStateStore>(
 }
 
 /// Reads the outcome row for `request_id`, cross-checked against its own
-/// committed receipt. Bounded point reads only; never writes.
+/// immutable request header and committed receipt. Bounded point reads only;
+/// never writes.
+///
+/// A deleted outcome row is not "not completed": it is corruption, and reporting
+/// virgin absence for it would let a finished request be placed and executed a
+/// second time.
 fn read_outcome_row<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
@@ -567,11 +617,12 @@ fn read_outcome_row<S: StructuredDurableDomainStateStore>(
     let key: Vec<u8> = ordered_outcome_key(env.policy.context().chain_id(), request_id)?;
     let observed: VersionedStateValue =
         store.get_versioned_durable(context, env.policy.domain(), &key)?;
+    require_virgin_absence(&observed, "ordered outcome row was deleted")?;
     let retained = match observed.value() {
         None => None,
         Some(bytes) => {
             let outcome: OrderedOutcome = decode_retained_outcome(bytes)?;
-            require_consistent_receipt(store, context, env, request_id, &outcome)?;
+            require_consistent_completion(store, context, env, request_id, &outcome)?;
             Some(outcome)
         }
     };
@@ -585,9 +636,17 @@ fn read_outcome_row<S: StructuredDurableDomainStateStore>(
 /// Bounded read-only lookup of the exact outcome this replica retained for one
 /// request id, or `None` when it has not completed that request.
 ///
-/// `None` is not proof of absence network-wide: this replica may simply be
-/// behind. It performs one point read, signs nothing, reserves nothing and
-/// writes nothing, so a network surface may expose it directly.
+/// Performs at most three bounded point reads and no scan: the outcome row, and
+/// -- only when that row exists -- the immutable request header and the request
+/// receipt it must agree with. It signs nothing, reserves nothing, writes
+/// nothing, and never reads a module, object or sender nonce, so a network
+/// surface may expose it directly.
+///
+/// `Ok(None)` means this replica has not completed that request. It is not proof
+/// of absence network-wide: this replica may simply be behind. A *deleted*
+/// outcome row is never reported as `None`; like any other inconsistency
+/// between the row, its header and its receipt it fails closed as
+/// [`OrderedEconomicsError::Prerequisite`].
 pub fn query_ordered_outcome<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
@@ -874,6 +933,11 @@ fn load_applied_height<S: StructuredDurableDomainStateStore>(
 ) -> Result<(u64, Vec<u8>, StateRevision), OrderedEconomicsError> {
     let key = ordered_applied_height_key(env.policy.context().chain_id())?;
     let observed = store.get_versioned_durable(context, env.policy.domain(), &key)?;
+    // Virgin absence is genuinely expected here and only here: before the first
+    // committed height there is no marker, which is exactly height zero. A
+    // deleted marker is not height zero -- silently reading it as zero would
+    // re-execute an already applied economic prefix.
+    require_virgin_absence(&observed, "ordered applied-height marker was deleted")?;
     let height = match observed.value() {
         Some(bytes) => decode_applied_height(bytes)?,
         None => 0,
@@ -1194,6 +1258,9 @@ fn admit_candidate<S: StructuredDurableDomainStateStore>(
     // 1. Header reuse is a conflict before all other metadata.
     let header_key = ordered_request_header_key(chain, &candidate.request_id)?;
     let observed_header = store.get_versioned_durable(context, domain, &header_key)?;
+    // A deleted header must never be recreated: it is the immutable binding
+    // every later replay and every completion cross-check depends on.
+    require_virgin_absence(&observed_header, "ordered request header row was deleted")?;
     match observed_header.value() {
         None => {
             let header = RequestHeader {
@@ -1237,6 +1304,12 @@ fn admit_candidate<S: StructuredDurableDomainStateStore>(
     // 3. Exact candidate bytes, content-addressed and immutable.
     let candidate_key = ordered_candidate_record_key(chain, digest)?;
     let observed_candidate = store.get_versioned_durable(context, domain, &candidate_key)?;
+    // Likewise immutable: a deleted candidate record is corruption, not room to
+    // write the same content-addressed bytes again.
+    require_virgin_absence(
+        &observed_candidate,
+        "ordered candidate record row was deleted",
+    )?;
     match observed_candidate.value() {
         None => writes.push((
             candidate_key,
@@ -1416,6 +1489,10 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
         // Answer with its EXACT retained outcome: re-execute nothing, write no
         // receipt, touch no lock, and rewrite no revision. Only the
         // applied-height marker advances, because the block really did commit.
+        //
+        // This returns before the reservation rows are read and before any
+        // handler runs, so a completed candidate costs no module, object or
+        // sender-nonce lookup at all.
         let outcome_row: OutcomeRow = read_outcome_row(store, context, env, &candidate.request_id)?;
         if let Some(retained) = outcome_row.retained {
             if retained.candidate_digest != digest {
@@ -2119,6 +2196,22 @@ pub(crate) fn ordered_outcome_key_for_tests(chain: &ChainId, request_id: &[u8; 3
 #[cfg(test)]
 pub(crate) fn encode_retained_outcome_for_tests(outcome: &OrderedOutcome) -> Vec<u8> {
     encode_retained_outcome(outcome).unwrap()
+}
+
+/// Builds one request-header row for a corruption regression: a header whose
+/// candidate digest deliberately disagrees with a retained outcome.
+#[cfg(test)]
+pub(crate) fn encode_request_header_for_tests(
+    candidate_digest: Digest32,
+    kind: OrderedOperationKind,
+    created_checkpoint: u64,
+) -> Vec<u8> {
+    encode_request_header(&RequestHeader {
+        candidate_digest,
+        kind,
+        created_checkpoint,
+    })
+    .unwrap()
 }
 
 #[cfg(test)]

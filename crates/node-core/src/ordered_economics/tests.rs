@@ -307,6 +307,18 @@ impl Network {
         view: u64,
         candidate: Option<&OrderedCandidate>,
     ) -> (QuorumCertificate, OrderedProposal) {
+        let voters: Vec<usize> = (0..REPLICAS).collect();
+        self.certify_on(&voters, view, candidate)
+    }
+
+    /// [`Self::certify`] restricted to `voters`, for a test in which one
+    /// replica is expected to fail closed and must therefore not vote.
+    fn certify_on(
+        &self,
+        voters: &[usize],
+        view: u64,
+        candidate: Option<&OrderedCandidate>,
+    ) -> (QuorumCertificate, OrderedProposal) {
         let leader = self.leader_index(view);
         let ordered_proposal: OrderedProposal = propose(
             &self.stores[leader],
@@ -318,7 +330,7 @@ impl Network {
         .unwrap();
         assert_eq!(ordered_proposal.proposal.view, view);
         let mut votes: Vec<ConsensusVote> = Vec::new();
-        for replica in 0..REPLICAS {
+        for &replica in voters {
             let output = process_proposal(
                 &self.stores[replica],
                 &self.context,
@@ -2484,6 +2496,372 @@ fn a_completion_query_fails_closed_when_its_own_receipt_is_missing_or_disagrees(
         network
             .value(0, &engine::ordered_leader_record_key_for_tests(&chain, 4))
             .is_none()
+    );
+}
+
+// --- tombstones are corruption, never virgin absence ----------------------
+
+/// One committed Unbond plus the exact outcome it retained, so a tombstone
+/// regression can start from genuinely healthy completed state.
+fn completed_network(
+    request_id: [u8; 32],
+    recipient_seed: u8,
+) -> (Network, OrderedOutcome, OrderedCandidate) {
+    let network = setup();
+    network.install_ordered();
+    let recipient = address_of(recipient_seed);
+    let next = predicted_unbond(&network.bond, 11, *recipient.as_bytes());
+    let candidate = unbond_candidate(&network, &network.bond, &next, request_id, recipient, 11);
+    network.round(1, Some(&candidate));
+    network.round(2, None);
+    let (round3, _, _) = network.round(3, None);
+    let outcome = round3[0].committed[0].clone();
+    (network, outcome, candidate)
+}
+
+#[test]
+fn a_tombstoned_outcome_row_stops_instead_of_reading_as_not_completed() {
+    let (network, original, candidate) = completed_network([0xd1; 32], 0x61);
+    let chain = fixture::chain();
+    let outcome_key = engine::ordered_outcome_key_for_tests(&chain, &candidate.request_id);
+
+    // Healthy first: the completion is visible.
+    assert!(
+        query_ordered_outcome(
+            &network.stores[0],
+            &network.context,
+            &network.env(),
+            &candidate.request_id
+        )
+        .unwrap()
+        .is_some()
+    );
+
+    // Delete the retained outcome. Its revision is now non-initial, so this is
+    // a tombstone: reporting it as `None` would let a finished request be
+    // placed and executed a second time.
+    network.put(0, outcome_key.clone(), StateMutation::Delete);
+    let queried = query_ordered_outcome(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &candidate.request_id,
+    );
+    assert!(
+        matches!(queried, Err(OrderedEconomicsError::Prerequisite(_))),
+        "expected a stop, got {queried:?}"
+    );
+
+    // Every signing path stops too, and rewrites nothing.
+    let leader = network.leader_index(4);
+    let before = network.snapshot(0, &[candidate.request_id], 4);
+    let proposed = propose(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        Some(&candidate),
+        &network.signers[leader],
+    );
+    assert!(
+        matches!(proposed, Err(OrderedEconomicsError::Prerequisite(_))),
+        "expected a stop, got {proposed:?}"
+    );
+    assert_eq!(network.snapshot(0, &[candidate.request_id], 4), before);
+    assert!(network.value(0, &outcome_key).is_none());
+    assert_eq!(network.committed_bond(0), network.committed_bond(1));
+
+    // A replica whose row is intact is unaffected: the stop is local.
+    assert!(
+        query_ordered_outcome(
+            &network.stores[1],
+            &network.context,
+            &network.env(),
+            &candidate.request_id
+        )
+        .unwrap()
+        .map(|outcome| encode_ordered_outcome(&outcome).unwrap())
+            == Some(encode_ordered_outcome(&original).unwrap())
+    );
+}
+
+#[test]
+fn a_tombstoned_applied_height_marker_stops_instead_of_reading_as_genesis() {
+    let (network, _, candidate) = completed_network([0xd2; 32], 0x62);
+    let chain = fixture::chain();
+    let applied_key = engine::ordered_applied_height_key_for_tests(&chain);
+    assert!(network.value(0, &applied_key).is_some());
+    let bond_before = network.committed_bond(0);
+
+    // Deleting the marker must not read back as height zero: that would
+    // re-execute an already applied economic prefix.
+    network.put(0, applied_key.clone(), StateMutation::Delete);
+    let state_before = network.value(0, &engine::ordered_state_key_for_tests(&chain));
+
+    let status = query_status(&network.stores[0], &network.context, &network.env());
+    assert!(status.is_ok(), "status is a pure consensus read");
+    let leader = network.leader_index(4);
+    let proposed = propose(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        None,
+        &network.signers[leader],
+    );
+    // `propose` itself does not read the marker; the applying paths do.
+    let _ = proposed;
+    let (certificate, ordered) = network.certify_on(&[1, 2, 3], 4, None);
+    let applied = process_proposal(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &ordered,
+        &network.signers[0],
+    );
+    assert!(
+        matches!(applied, Err(OrderedEconomicsError::Prerequisite(_))),
+        "expected a stop, got {applied:?}"
+    );
+    let certified = process_certificate(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &certificate,
+    );
+    assert!(
+        matches!(certified, Err(OrderedEconomicsError::Prerequisite(_))),
+        "expected a stop, got {certified:?}"
+    );
+    // Nothing moved: no marker recreated at zero, no state rewrite, no
+    // re-executed business effect.
+    assert!(network.value(0, &applied_key).is_none());
+    assert_eq!(
+        network.value(0, &engine::ordered_state_key_for_tests(&chain)),
+        state_before
+    );
+    assert_eq!(network.committed_bond(0), bond_before);
+    assert!(
+        network
+            .value(0, &engine::ordered_vote_record_key_for_tests(&chain, 4))
+            .is_none()
+    );
+    let _ = candidate;
+}
+
+#[test]
+fn tombstoned_immutable_order_rows_stop_instead_of_being_recreated() {
+    // A header tombstone for a request that was proposed but never completed.
+    let network = setup();
+    network.install_ordered();
+    let chain = fixture::chain();
+    let recipient = address_of(0x63);
+    let next = predicted_unbond(&network.bond, 11, *recipient.as_bytes());
+    let request_id = [0xd3; 32];
+    let candidate = unbond_candidate(&network, &network.bond, &next, request_id, recipient, 11);
+    let leader = network.leader_index(1);
+    propose(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        Some(&candidate),
+        &network.signers[leader],
+    )
+    .unwrap();
+    let header_key = engine::ordered_request_header_key_for_tests(&chain, &request_id);
+    let candidate_key = engine::ordered_candidate_record_key_for_tests(
+        &chain,
+        engine::ordered_candidate_digest_for_tests(&network.resolver, &candidate),
+    );
+    assert!(network.value(0, &header_key).is_some());
+    assert!(network.value(0, &candidate_key).is_some());
+
+    network.put(0, header_key.clone(), StateMutation::Delete);
+    let leader2 = network.leader_index(2);
+    let after_header_tombstone = propose(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        Some(&candidate),
+        &network.signers[leader2],
+    );
+    assert!(
+        matches!(
+            after_header_tombstone,
+            Err(OrderedEconomicsError::Prerequisite(_))
+        ),
+        "expected a stop, got {after_header_tombstone:?}"
+    );
+    // The immutable header was not recreated.
+    assert!(network.value(0, &header_key).is_none());
+
+    // Same for a deleted content-addressed candidate record, on a replica whose
+    // header is still intact.
+    propose(
+        &network.stores[1],
+        &network.context,
+        &network.env(),
+        Some(&candidate),
+        &network.signers[network.leader_index(1)],
+    )
+    .unwrap();
+    network.put(1, candidate_key.clone(), StateMutation::Delete);
+    let after_candidate_tombstone = propose(
+        &network.stores[1],
+        &network.context,
+        &network.env(),
+        Some(&candidate),
+        &network.signers[network.leader_index(2)],
+    );
+    assert!(
+        matches!(
+            after_candidate_tombstone,
+            Err(OrderedEconomicsError::Prerequisite(_))
+        ),
+        "expected a stop, got {after_candidate_tombstone:?}"
+    );
+    assert!(network.value(1, &candidate_key).is_none());
+}
+
+#[test]
+fn a_retained_outcome_must_agree_with_its_immutable_request_header() {
+    let (network, original, candidate) = completed_network([0xd4; 32], 0x64);
+    let chain = fixture::chain();
+    let header_key = engine::ordered_request_header_key_for_tests(&chain, &candidate.request_id);
+
+    // Rewrite the header so it names a different candidate digest. The outcome
+    // row is now an orphan: it must not be reported on its own authority.
+    network.put(
+        0,
+        header_key,
+        StateMutation::Put(engine::encode_request_header_for_tests(
+            digest32(0xee),
+            candidate.kind,
+            candidate.created_checkpoint,
+        )),
+    );
+    let queried = query_ordered_outcome(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &candidate.request_id,
+    );
+    assert!(
+        matches!(queried, Err(OrderedEconomicsError::Prerequisite(_))),
+        "expected a stop, got {queried:?}"
+    );
+
+    // And a completion with no header at all is equally refused.
+    let orphan_id = [0xd5; 32];
+    let orphan = OrderedOutcome {
+        request_id: orphan_id,
+        output: NodeOutput::new(
+            vec![
+                NodeResponse::new(
+                    RequestId::new(orphan_id).unwrap(),
+                    NodeResponseStatus::Accepted,
+                    None,
+                )
+                .unwrap(),
+            ],
+            Vec::new(),
+        )
+        .unwrap(),
+        ..original
+    };
+    network.put(
+        0,
+        engine::ordered_outcome_key_for_tests(&chain, &orphan_id),
+        StateMutation::Put(engine::encode_retained_outcome_for_tests(&orphan)),
+    );
+    let orphan_result = query_ordered_outcome(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &orphan_id,
+    );
+    assert!(
+        matches!(orphan_result, Err(OrderedEconomicsError::Prerequisite(_))),
+        "expected a stop, got {orphan_result:?}"
+    );
+}
+
+#[test]
+fn a_receipt_whose_two_event_digests_disagree_fails_a_completion_closed() {
+    let (network, original, candidate) = completed_network([0xd6; 32], 0x65);
+    let chain = fixture::chain();
+
+    // A fresh request whose header and outcome row agree perfectly, but whose
+    // receipt carries one event digest in its outer field and a different one
+    // inside its own `NodeDedupRecord` projection. Which digest a path records
+    // (intent for an accepted handler, candidate for a refusal) is free; the
+    // receipt disagreeing with itself is corruption.
+    let forged_id = [0xd7; 32];
+    let responses = vec![
+        NodeResponse::new(
+            RequestId::new(forged_id).unwrap(),
+            NodeResponseStatus::Accepted,
+            None,
+        )
+        .unwrap(),
+    ];
+    let outer_digest = digest32(0xa1);
+    let inner_digest = digest32(0xa2);
+    assert_ne!(outer_digest, inner_digest);
+    let dedup = NodeDedupRecord::new(
+        RequestId::new(forged_id).unwrap(),
+        inner_digest,
+        responses.clone(),
+    )
+    .unwrap();
+    let receipt = DurableRequestReceipt::new(
+        DurableRequestId::new(forged_id).unwrap(),
+        outer_digest,
+        dedup.encode().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        network.stores[0].commit_invocation(
+            &network.context,
+            DurableInvocationTransaction::new(
+                network.domain(),
+                None,
+                runtime::DurableObjectChanges::empty(),
+                receipt,
+                None,
+            )
+            .unwrap(),
+        ),
+        DurableCommitOutcome::Committed
+    );
+
+    let forged_outcome = OrderedOutcome {
+        request_id: forged_id,
+        output: NodeOutput::new(responses, Vec::new()).unwrap(),
+        ..original
+    };
+    network.put(
+        0,
+        engine::ordered_request_header_key_for_tests(&chain, &forged_id),
+        StateMutation::Put(engine::encode_request_header_for_tests(
+            forged_outcome.candidate_digest,
+            candidate.kind,
+            candidate.created_checkpoint,
+        )),
+    );
+    network.put(
+        0,
+        engine::ordered_outcome_key_for_tests(&chain, &forged_id),
+        StateMutation::Put(engine::encode_retained_outcome_for_tests(&forged_outcome)),
+    );
+
+    let queried = query_ordered_outcome(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &forged_id,
+    );
+    assert!(
+        matches!(queried, Err(OrderedEconomicsError::Prerequisite(_))),
+        "expected a stop, got {queried:?}"
     );
 }
 
