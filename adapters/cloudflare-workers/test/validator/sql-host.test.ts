@@ -53,6 +53,19 @@ describe("DO SQL host seam", () => {
     });
   });
 
+  it("matches native SELECT change counts and accepts the exact 1025-row bound", async () => {
+    const stub = env.SQL_PROBE.getByName("native-row-semantics");
+    await runInDurableObject(stub, (instance) => {
+      const write = instance.host.exec("INSERT INTO test_records VALUES (?, ?)",
+        [new Uint8Array([1]), new Uint8Array([2])], 0);
+      expect(write.rowsAffected).toBe(1);
+      expect(instance.host.exec("SELECT id FROM test_records", [], 1).rowsAffected).toBe(0);
+      const scan: string = "WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?) SELECT n FROM seq";
+      expect(instance.host.exec(scan, [1025], 1025).rows).toHaveLength(1025);
+      expect(() => instance.host.exec(scan, [1026], 1025)).toThrow("row bound");
+    });
+  });
+
   it("bounds scans and refuses lossy SQL integers or oversized rows", async () => {
     const stub = env.SQL_PROBE.getByName("bounds");
     await runInDurableObject(stub, (instance) => {

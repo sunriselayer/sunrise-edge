@@ -30,7 +30,9 @@ use execution::paid_execution::{
     FeeSourceConsent, PaidApplication, PaidExecutionResult, PaidIntent, ReservationAccessKind,
     decode_paid_execution_result,
 };
-use execution::publication::{ArtifactParts, CodeArtifact, UnverifiedDependencyRef};
+use execution::publication::{
+    ArtifactParts, CodeArtifact, PublicationContext, UnverifiedDependencyRef,
+};
 use execution::{
     GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION, LocalWasmExecutionEngine, ObjectEffect,
 };
@@ -40,6 +42,7 @@ use hashing::HashSuiteResolver;
 use node_core::fast_path::{self, FastPathEd25519Verifier, FastPathError};
 use node_core::local_execution::query_local_instance;
 use node_core::paid_execution::PaidExecutionAdmissionError;
+use node_core::paid_execution::authenticate_paid_execution;
 use node_core::publication::{encode_publication_query_result, query_publication_with_history};
 use node_core::{
     GenesisInstallOutcome, NodeCoreError, ObjectQueryResult, RequestId, decode_genesis_manifest,
@@ -652,6 +655,7 @@ fn print_steps(
     instance_query_path: &str,
     instance_query_hex: &str,
     negatives: &[Negative],
+    repin_signed_paid_intent_hex: &str,
 ) {
     let mut out = String::new();
     out.push_str("{\n");
@@ -761,6 +765,9 @@ fn print_steps(
     ));
     out.push_str(&format!(
         "  \"instance_query_hex\": \"{instance_query_hex}\",\n"
+    ));
+    out.push_str(&format!(
+        "  \"repin_signed_paid_intent_hex\": \"{repin_signed_paid_intent_hex}\",\n"
     ));
     out.push_str("  \"negatives\": [\n");
     for (index, negative) in negatives.iter().enumerate() {
@@ -1698,6 +1705,31 @@ fn main() {
     // placement at rule version 1 for this fixture's domain from epoch 0,
     // and the canonical Ed25519/canonical-prime-order/address-is-public-key
     // transaction-auth profile.
+    let repin_signed_paid_intent_hex: String = {
+        let mut repin_intent: PaidIntent =
+            execution::paid_execution::decode_signed_paid_intent(&genesis_signed)
+                .unwrap()
+                .intent;
+        let repin_context: PublicationContext = PublicationContext::new(
+            fixture.chain_id.clone(),
+            fixture.protocol_version,
+            Epoch::new(1),
+        )
+        .unwrap();
+        repin_intent.context = repin_context.clone();
+        match &mut repin_intent.application {
+            PaidApplication::Call(call) | PaidApplication::Instantiate(call) => {
+                call.context = repin_context.clone();
+            }
+            PaidApplication::Publish(_) => {}
+        }
+        let repin_signed: Vec<u8> = fixture.sign_intent(repin_intent);
+        authenticate_paid_execution(&fixture.resolver, &repin_context, &repin_signed).expect(
+            "genuinely epoch1-signed prepare must authenticate under its own declared epoch",
+        );
+        hex(&repin_signed)
+    };
+
     let mut protocol_config: ProtocolConfig = ProtocolConfig::genesis();
     protocol_config.protocol_version = fixture.protocol_version;
     protocol_config.domain_placement =
@@ -1773,5 +1805,6 @@ fn main() {
         ),
         &hex(&instance_query_bytes),
         &[conflict_negative, apply_conflict_negative, gap_negative],
+        &repin_signed_paid_intent_hex,
     );
 }

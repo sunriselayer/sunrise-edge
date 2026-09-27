@@ -160,13 +160,13 @@ pub enum AdapterError {
     InvalidSelector,
     /// A query path (empty-body GET-equivalent) received a non-empty body.
     NonEmptyQueryBody,
-    /// `fast_path::prepare`/`apply_with_recovery` already succeeded
-    /// (durably locking objects or committing a certified mutation) and
-    /// only the subsequent vote/result encoding or request-id framing
-    /// failed. Never mapped to a client-fault status: the caller cannot
-    /// tell from a 4xx whether the already-durable outcome took effect, so
-    /// this must surface as indeterminate (503), not a rejection.
-    CommittedResultEncoding,
+    /// `fast_path::prepare`/`apply_with_recovery` already committed (or
+    /// exactly-replayed) its durable output, but re-encoding that already-
+    /// committed vote/result for the wire failed. The mutation is not
+    /// retried or rolled back here: the caller must reconcile the
+    /// original request by exact replay. This is never a caller-fault
+    /// admission error, so it is 503 rather than 400.
+    CommittedOutputUnavailable,
 }
 
 impl AdapterError {
@@ -195,7 +195,7 @@ impl AdapterError {
             | Self::Genesis(_)
             | Self::Query(_)
             | Self::FeePolicyNotInstalled
-            | Self::CommittedResultEncoding => 503,
+            | Self::CommittedOutputUnavailable => 503,
         }
     }
 
@@ -225,7 +225,7 @@ impl AdapterError {
             Self::Genesis(_) => "genesis-failed",
             Self::Query(_) => "query-failed",
             Self::FeePolicyNotInstalled => "fee-policy-not-installed",
-            Self::CommittedResultEncoding => "committed-result-encoding-failed",
+            Self::CommittedOutputUnavailable => "committed-output-unavailable",
         }
     }
 }
@@ -334,15 +334,6 @@ fn decode_two_hex64_segments(path: &str) -> Option<([u8; 32], [u8; 32])> {
 fn categorize_fast_path_error(error: &FastPathError) -> (u16, &'static str) {
     match error {
         FastPathError::Admission(admission) => categorize_admission_error(admission),
-        // Mirrors `fastpath_error_response`'s own special case exactly:
-        // an `EpochMismatch` surfacing directly from `fast_path::prepare`/
-        // `apply_with_recovery`'s internal CAS-fence against the durable
-        // current epoch is a repin signal, not the generic context
-        // conflict `categorize_node_core_error` reports for every other
-        // caller of that helper (e.g. admission-time checks).
-        FastPathError::Node(NodeCoreError::EpochMismatch { .. }) => {
-            (409, "fastvote-epoch-repin-required")
-        }
         FastPathError::Consensus(_) => (400, "fastvote-consensus-rejected"),
         FastPathError::Invalid(_) => (400, "fastvote-rejected"),
         FastPathError::Node(node_error) => categorize_node_core_error(node_error),
@@ -375,9 +366,9 @@ fn categorize_admission_error(error: &PaidExecutionAdmissionError) -> (u16, &'st
 /// crate has not specifically categorized.
 fn categorize_node_core_error(error: &NodeCoreError) -> (u16, &'static str) {
     match error {
+        NodeCoreError::EpochMismatch { .. } => (409, "fastvote-epoch-repin-required"),
         NodeCoreError::ChainMismatch { .. }
         | NodeCoreError::ProtocolVersionMismatch { .. }
-        | NodeCoreError::EpochMismatch { .. }
         | NodeCoreError::StateConflict
         | NodeCoreError::RequestIdReuse
         | NodeCoreError::SenderNonceMismatch { .. } => (409, "state-or-context-conflict"),
@@ -939,10 +930,13 @@ impl ValidatorHost {
             let (status, code) = categorize_admission_error(&error);
             return Err(AdapterError::FastPath(status, code).into());
         }
-        // A cached prepared vote must not bypass this host's fixed pin:
-        // authenticate first, then reject before any clock/storage I/O,
-        // matching `crates/native-http/src/fastvote.rs::submit_prepare`
-        // exactly.
+        // A cached prepared vote must not bypass this host's fixed epoch
+        // pin: authenticate first, then reject before any clock/
+        // correlation/storage I/O, matching
+        // `crates/native-http/src/fastvote.rs::submit_prepare`'s own
+        // ordering exactly. `fast_path::apply_with_recovery`'s own
+        // receipt-first historical replay is untouched: this check only
+        // guards `prepare`, never `apply`.
         if expected.epoch() != self.config.epoch() {
             return Err(AdapterError::FastPath(409, "fastvote-epoch-repin-required").into());
         }
@@ -968,11 +962,10 @@ impl ValidatorHost {
             let (status, code) = categorize_fast_path_error(&error);
             AdapterError::FastPath(status, code)
         })?;
-        // `fast_path::prepare` already succeeded (durably locking the
-        // referenced objects) by this point: an encoding failure here must
-        // not be reported as a client-fault rejection, since the caller
-        // cannot otherwise tell the durable lock was actually taken.
-        encode_fast_vote(&vote).map_err(|_| AdapterError::CommittedResultEncoding.into())
+        // `fast_path::prepare` has already committed this vote; a wire-
+        // encoding failure past this point can never be an admission
+        // fault, so it is 503, not 400.
+        encode_fast_vote(&vote).map_err(|_| AdapterError::CommittedOutputUnavailable.into())
     }
 
     fn dispatch_fastvote_apply(&self, body: &[u8]) -> Result<Vec<u8>, JsValue> {
@@ -996,6 +989,12 @@ impl ValidatorHost {
             signed.intent.context.epoch(),
         )
         .map_err(|_| AdapterError::InvalidRequestBody)?;
+        // Derived from the caller's own already-decoded signed bytes, so
+        // this can only ever fail on malformed caller input: resolve it
+        // before any mutation to keep the failure a true 400 admission
+        // error, never conflated with a post-success encode failure.
+        let request_id = RequestId::new(signed.intent.request_id)
+            .map_err(|_| AdapterError::InvalidRequestBody)?;
         if let Err(error) =
             authenticate_paid_execution(&self.resolver, &expected, &request.signed_paid_intent)
         {
@@ -1024,17 +1023,54 @@ impl ValidatorHost {
             let (status, code) = categorize_fast_path_error(&error);
             AdapterError::FastPath(status, code)
         })?;
-        // `fast_path::apply_with_recovery` already committed the certified
-        // mutation by this point: request-id framing and result-encoding
-        // failures below must not be reported as a client-fault rejection,
-        // since the caller cannot otherwise tell the mutation was actually
-        // committed.
-        let request_id = RequestId::new(signed.intent.request_id)
-            .map_err(|_| AdapterError::CommittedResultEncoding)?;
         let result = HttpNodeResult::new(request_id, output.responses().to_vec())
-            .map_err(|_| AdapterError::CommittedResultEncoding)?;
+            .map_err(|_| AdapterError::CommittedOutputUnavailable)?;
         result
             .encode()
-            .map_err(|_| AdapterError::CommittedResultEncoding.into())
+            .map_err(|_| AdapterError::CommittedOutputUnavailable.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AdapterError, categorize_node_core_error};
+    use node_core::NodeCoreError;
+    use protocol_types::Epoch;
+
+    #[test]
+    fn epoch_mismatch_maps_to_fastvote_epoch_repin_required() {
+        let (status, code) = categorize_node_core_error(&NodeCoreError::EpochMismatch {
+            expected: Epoch::new(0),
+            actual: Epoch::new(1),
+        });
+        assert_eq!(status, 409);
+        assert_eq!(code, "fastvote-epoch-repin-required");
+    }
+
+    #[test]
+    fn other_state_or_context_conflicts_keep_their_own_shared_code() {
+        let (status, code) = categorize_node_core_error(&NodeCoreError::StateConflict);
+        assert_eq!(status, 409);
+        assert_eq!(code, "state-or-context-conflict");
+        let (status, code) = categorize_node_core_error(&NodeCoreError::RequestIdReuse);
+        assert_eq!(status, 409);
+        assert_eq!(code, "state-or-context-conflict");
+    }
+
+    /// A post-success wire-encoding failure must be a closed 503, never a
+    /// caller-fault 400, so the same category can never be conflated with a
+    /// true 400 admission error.
+    #[test]
+    fn committed_output_unavailable_is_a_closed_503_distinct_from_admission_errors() {
+        assert_eq!(AdapterError::CommittedOutputUnavailable.http_status(), 503);
+        assert_eq!(
+            AdapterError::CommittedOutputUnavailable.code(),
+            "committed-output-unavailable"
+        );
+        assert_eq!(AdapterError::InvalidRequestBody.http_status(), 400);
+        assert_ne!(
+            AdapterError::CommittedOutputUnavailable.http_status(),
+            AdapterError::InvalidRequestBody.http_status(),
+        );
     }
 }
