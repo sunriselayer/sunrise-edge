@@ -190,7 +190,11 @@ The detailed existing evidence and remaining criteria follow:
   parent verification. Shared storage tests, real file reopen/fresh connection
   reads and authority refusals pass; these do not prove a complete cut.
   Logical provenance/commitment/profile call-site wiring is still unaccepted
-  work in progress. Mandatory publication admission, Freeze/DrainSet/Seal,
+  work in progress: the isolated draft does not install a signed genesis
+  profile or bind the generation into the signed witness, and profile absence
+  still reaches legacy mutation paths. Passing its current tests does not
+  satisfy this delivery and that draft is not integrated. Mandatory publication
+  admission, Freeze/DrainSet/Seal,
   complete authenticated import, readiness/activation and the network E2E are
   not complete. This delivery stays unchecked; no full repository gate,
   final feature approval, PR merge or network activation is claimed.
