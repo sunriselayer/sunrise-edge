@@ -309,6 +309,17 @@ impl AvailabilityCertifier {
     /// verification, deterministic sort/map, or scan of `votes` -- including
     /// votes that later turn out to be irrelevant or duplicate.
     ///
+    /// The prospective encoded certificate size is also bounded to
+    /// [`MAX_ENCODED_CERTIFICATE_BYTES`], but -- unlike the pre-crypto input
+    /// and `chain_id` gates above, and unlike [`Self::verify_certificate`]
+    /// and [`encode_availability_certificate`], which both bound *before*
+    /// any crypto or cloning -- this gate runs incrementally *during*
+    /// formation: after each candidate vote has already passed
+    /// [`Self::verify_vote`], but before that vote is cloned into the
+    /// accumulated result or handed to an encoder. It stops formation
+    /// early rather than letting an otherwise-valid vote set assemble past
+    /// the shared canonical-frame ceiling.
+    ///
     /// `votes` is otherwise untrusted relay input that may mix in messages
     /// for other identities or other contexts. This method applies exactly
     /// one explicit, documented exclusion policy per candidate vote and
@@ -320,17 +331,27 @@ impl AvailabilityCertifier {
     /// * A vote that *is* addressed to this exact identity but fails
     ///   [`Self::verify_vote`] with [`ConsensusError::UnknownValidator`],
     ///   [`ConsensusError::SignatureSchemeMismatch`],
-    ///   [`ConsensusError::InvalidSignatureLength`],
-    ///   [`ConsensusError::InvalidSignature`], or
-    ///   [`ConsensusError::ContextMismatch`] is itself malformed or
+    ///   [`ConsensusError::InvalidSignatureLength`], or
+    ///   [`ConsensusError::InvalidSignature`] is itself malformed or
     ///   cryptographically invalid -- not a sign of infrastructure failure --
-    ///   and is excluded under this same policy.
+    ///   and is excluded under this same policy. (`ConsensusError::ContextMismatch`
+    ///   is not reachable here: every vote reaching this check already has
+    ///   `vote.identity == identity`, and `identity`'s own context was
+    ///   already checked against this certifier above.)
     /// * Any other [`verify_vote`](Self::verify_vote) error (in particular
     ///   [`ConsensusError::Authenticator`], which signals that the caller's
     ///   own [`ConsensusVerifier`] adapter itself failed, not that a
     ///   signature was checked and found invalid) is **not** swallowed: this
     ///   method returns that error immediately, failing closed rather than
     ///   silently forming a certificate over a possibly-unverified vote set.
+    ///   [`ConsensusVerifier`] implementors should therefore classify a
+    ///   per-vote cryptographic condition -- including a registered
+    ///   validator's public key that this adapter cannot itself decode --
+    ///   as an invalid signature (`Ok(false)`), not as `Err(..)`: an `Err`
+    ///   return is reserved for adapter/infrastructure failure (for example
+    ///   an unreachable HSM or crashed verifier backend) and aborts
+    ///   formation for the whole call rather than merely excluding that one
+    ///   vote.
     /// * If one validator supplies multiple valid signatures for the same
     ///   identity (a genuine duplicate), the lexicographically smallest
     ///   signature is retained; the other is discarded, not an error.
@@ -354,7 +375,6 @@ impl AvailabilityCertifier {
                 max: MAX_TRY_FORM_CERTIFICATE_VOTES_INPUT,
             });
         }
-        ensure_chain_id_bound(&identity.chain_id)?;
         self.ensure_context(
             &identity.chain_id,
             identity.protocol_version,
@@ -373,8 +393,7 @@ impl AvailabilityCertifier {
                     ConsensusError::UnknownValidator(_)
                     | ConsensusError::SignatureSchemeMismatch(_)
                     | ConsensusError::InvalidSignatureLength(_)
-                    | ConsensusError::InvalidSignature(_)
-                    | ConsensusError::ContextMismatch,
+                    | ConsensusError::InvalidSignature(_),
                 ) => continue,
                 Err(other) => return Err(other),
             }
@@ -667,6 +686,13 @@ pub fn decode_availability_certificate(
     Ok(certificate)
 }
 
+/// Decodes and strictly re-validates one canonical [`AvailabilityIdentity`].
+///
+/// Requires the input to fit [`MAX_ENCODED_IDENTITY_BYTES`] before any
+/// parsing, the identity type id/encoding version, exactly fields 1-8, a
+/// `chain_id` no longer than [`MAX_CHAIN_ID_BYTES`] before it is copied into
+/// an owned [`ChainId`], a non-zero [`AtomicityDomainId`], and byte-exact
+/// re-encoding of the decoded value.
 pub fn decode_availability_identity(input: &[u8]) -> Result<AvailabilityIdentity, ConsensusError> {
     ensure_encoded_bound(
         "availability identity",
@@ -871,7 +897,8 @@ mod tests {
     }
 
     #[test]
-    fn try_form_certificate_selects_duplicate_valid_signatures_independent_of_arrival_order() {
+    fn try_form_certificate_selects_the_smallest_duplicate_signature_accepted_by_the_fixture_independent_of_arrival_order()
+     {
         let certifier = certifier(4);
         let mut votes: Vec<AvailabilityVote> = (1..=4).map(|byte| cast(&certifier, byte)).collect();
         let mut alternate = votes[0].clone();
@@ -1013,6 +1040,20 @@ mod tests {
         }
     }
 
+    /// Decodes a literal lowercase hex string into bytes. Used only to hold
+    /// the `0xD031`/`0xD032` pinned vectors below as plain data, never to
+    /// derive expected bytes from this crate's own encoder or type-id
+    /// constants (see `scripts/availability-vectors.mjs` for the
+    /// independent, non-Rust reconstruction
+    /// these literals are cross-checked against).
+    fn hex_to_bytes(hex: &str) -> Vec<u8> {
+        assert!(hex.len().is_multiple_of(2), "odd-length hex literal");
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("valid hex digit pair"))
+            .collect()
+    }
+
     #[test]
     fn availability_identity_encoding_vector_0xd030_is_stable() {
         let bytes = encode_availability_identity(&vector_identity()).unwrap();
@@ -1042,23 +1083,12 @@ mod tests {
     #[test]
     fn availability_vote_encoding_vector_0xd031_is_stable() {
         let bytes = encode_availability_vote(&vector_vote()).unwrap();
-        let identity_bytes = encode_availability_identity(&vector_identity()).unwrap();
-        let mut expected = b"SNRE".to_vec();
-        expected.extend_from_slice(&AVAILABILITY_VOTE_TYPE_ID.to_le_bytes());
-        expected.extend_from_slice(&ENCODING_VERSION.to_le_bytes());
-        expected.extend_from_slice(&4u16.to_le_bytes());
-        expected.extend_from_slice(&1u16.to_le_bytes());
-        expected.extend_from_slice(&u32::try_from(identity_bytes.len()).unwrap().to_le_bytes());
-        expected.extend_from_slice(&identity_bytes);
-        expected.extend_from_slice(&2u16.to_le_bytes());
-        expected.extend_from_slice(&32u32.to_le_bytes());
-        expected.extend(std::iter::repeat_n(0x01u8, 32));
-        expected.extend_from_slice(&3u16.to_le_bytes());
-        expected.extend_from_slice(&2u32.to_le_bytes());
-        expected.extend_from_slice(&SignatureSchemeId::Ed25519.as_u16().to_le_bytes());
-        expected.extend_from_slice(&4u16.to_le_bytes());
-        expected.extend_from_slice(&64u32.to_le_bytes());
-        expected.extend(std::iter::repeat_n(0x5Au8, 64));
+        // Independent literal vector: reconstructed by
+        // `scripts/availability-vectors.mjs` (Node, no Rust encoder
+        // involved), not derived from this module's constants or encoders.
+        let expected: Vec<u8> = hex_to_bytes(
+            "534e524531d00100040001003c010000534e524530d00100080001000e0000006472303135342d766563746f727302000400000003000000030008000000090000000000000004002000000044444444444444444444444444444444444444444444444444444444444444440500200000005555555555555555555555555555555555555555555555555555555555555555060038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa070038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb080038000000534e52450301010002000100020000000100020020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc020020000000010101010101010101010101010101010101010101010101010101010101010103000200000001000400400000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        );
         assert_eq!(bytes, expected);
     }
 
@@ -1073,25 +1103,12 @@ mod tests {
             votes: vec![vote_a.clone(), vote_b.clone()],
         };
         let bytes = encode_availability_certificate(&certificate).unwrap();
-        let identity_bytes = encode_availability_identity(&vector_identity()).unwrap();
-        let vote_a_bytes = encode_availability_vote(&vote_a).unwrap();
-        let vote_b_bytes = encode_availability_vote(&vote_b).unwrap();
-        let mut expected = b"SNRE".to_vec();
-        expected.extend_from_slice(&AVAILABILITY_CERTIFICATE_TYPE_ID.to_le_bytes());
-        expected.extend_from_slice(&ENCODING_VERSION.to_le_bytes());
-        expected.extend_from_slice(&4u16.to_le_bytes());
-        expected.extend_from_slice(&1u16.to_le_bytes());
-        expected.extend_from_slice(&u32::try_from(identity_bytes.len()).unwrap().to_le_bytes());
-        expected.extend_from_slice(&identity_bytes);
-        expected.extend_from_slice(&2u16.to_le_bytes());
-        expected.extend_from_slice(&4u32.to_le_bytes());
-        expected.extend_from_slice(&2u32.to_le_bytes());
-        expected.extend_from_slice(&3u16.to_le_bytes());
-        expected.extend_from_slice(&u32::try_from(vote_a_bytes.len()).unwrap().to_le_bytes());
-        expected.extend_from_slice(&vote_a_bytes);
-        expected.extend_from_slice(&4u16.to_le_bytes());
-        expected.extend_from_slice(&u32::try_from(vote_b_bytes.len()).unwrap().to_le_bytes());
-        expected.extend_from_slice(&vote_b_bytes);
+        // Independent literal vector: reconstructed by
+        // `scripts/availability-vectors.mjs` (Node, no Rust encoder
+        // involved), not derived from this module's constants or encoders.
+        let expected: Vec<u8> = hex_to_bytes(
+            "534e524532d00100040001003c010000534e524530d00100080001000e0000006472303135342d766563746f727302000400000003000000030008000000090000000000000004002000000044444444444444444444444444444444444444444444444444444444444444440500200000005555555555555555555555555555555555555555555555555555555555555555060038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa070038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb080038000000534e52450301010002000100020000000100020020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc020004000000020000000300c0010000534e524531d00100040001003c010000534e524530d00100080001000e0000006472303135342d766563746f727302000400000003000000030008000000090000000000000004002000000044444444444444444444444444444444444444444444444444444444444444440500200000005555555555555555555555555555555555555555555555555555555555555555060038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa070038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb080038000000534e52450301010002000100020000000100020020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc020020000000010101010101010101010101010101010101010101010101010101010101010103000200000001000400400000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a0400c0010000534e524531d00100040001003c010000534e524530d00100080001000e0000006472303135342d766563746f727302000400000003000000030008000000090000000000000004002000000044444444444444444444444444444444444444444444444444444444444444440500200000005555555555555555555555555555555555555555555555555555555555555555060038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa070038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb080038000000534e52450301010002000100020000000100020020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc020020000000020202020202020202020202020202020202020202020202020202020202020203000200000001000400400000007c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c",
+        );
         assert_eq!(bytes, expected);
     }
 
@@ -1523,7 +1540,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_ten_thousand_validator_certificate_with_realistic_signatures_is_not_rejected_by_the_bounds()
+    fn a_full_ten_thousand_validator_certificate_with_realistic_signature_lengths_and_an_accepting_fixture_is_not_rejected_by_the_bounds()
      {
         let count = MAX_AVAILABILITY_CERTIFICATE_VOTES;
         let validators: Vec<ValidatorInfo> = (0..count)
@@ -1552,6 +1569,10 @@ mod tests {
                 identity: identity(),
                 validator: validator_info.id,
                 signature_scheme: SignatureSchemeId::Ed25519,
+                // Dummy 64-byte (real-Ed25519-length) placeholder, not a
+                // genuine signature; accepted only by `AcceptingVerifier`
+                // below. This proves the *byte bounds*, not 10,000 real
+                // cryptographic verifications.
                 signature: vec![0xCD; 64],
             })
             .collect();
