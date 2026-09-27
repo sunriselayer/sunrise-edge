@@ -12,12 +12,14 @@ applied it and that replica is now unavailable. Do not roll back its objects,
 receipt, nonce or fee settlement. A caller-supplied transaction list, valid
 individual records or a majority's current state do not establish completeness.
 
-For outgoing voting power `T`, use the existing strict greater-than-two-thirds
+For each outgoing/next committee's voting power `T`, use the existing strict greater-than-two-thirds
 quorum `q = T - floor((T - 1) / 3)`. Byzantine power must be strictly below
 `T / 3`; Byzantine signers need not obey our locks or use our software. Safety
 holds under delayed, duplicate and reordered delivery. Progress requires an
 eventually responsive honest outgoing quorum, the required next-set quorum,
-and delivery of bounded continuation events. No daemon, persistent socket,
+and delivery of bounded continuation events. Historical authorizing signatures
+must remain unforgeable, including retired-key handling; genesis verification
+alone is not proof of a peer's claimed latest epoch. No daemon, persistent socket,
 timeout unlock or cloud provider is an authority.
 
 Two quorums intersect in power at least `2q - T > T / 3`, hence in honest
@@ -70,7 +72,11 @@ reconciliation may expose the retained ACK. A failed or ambiguous write cannot
 expose a fresh signature. Aggregate distinct registered signers of power at
 least `q` over the same publication identity into an availability certificate.
 Signatures bind chain/protocol/epoch, domain, original request and intent,
-execution commitment and artifact identity under an explicit canonical domain.
+execution commitment and semantic replay-artifact identity under an explicit
+canonical domain. This identity excludes FastCertificate signer-subset bytes:
+verify and retain at least one full proof, retain its exact audit bytes, and
+return the same ACK for an equivalent valid proof. Do not fragment availability
+votes or permit unbounded proof-variant storage for the same operation.
 
 `apply` and signerless recovery require the availability certificate in the
 open epoch. Application remains one atomic commit of original effects, exact
@@ -101,7 +107,8 @@ Open -> Freeze committed -> Frontier fixed -> Drain completed -> Seal committed
 ### 1. Freeze and fix authenticated frontiers
 
 Only a committed outgoing-set `Freeze` changes admission. Bind its identity to
-the chain/protocol/epoch/domain, ordered block and proposed eligible next set.
+the chain/protocol/epoch/domain and ordered block. A proposed next set is
+advisory: Freeze does not irrevocably commit membership before readiness.
 A proposal or operator request alone cannot freeze a replica. Check next-set
 eligibility through the existing bond, key, policy and power rules; bond value
 must not become voting power.
@@ -129,7 +136,16 @@ descriptors and all their pages. Select only complete, retrievable frontiers;
 unavailable or forged pages cannot count toward that quorum. Construct the
 union of full-certificate operation identities and authenticated dependency
 closure. Every verifier reconstructs this union, not just its digest/count.
-Choose exactly one `DrainSet` by a normal outgoing ordered commit.
+Choose exactly one `DrainSet` by a normal outgoing ordered commit. Before
+exposing a vote for it, each voting replica must durably retain and verify
+**every union member's full certificate, original signed intent and replay
+artifacts**, including its dependency closure, in its own store. Reconstruction
+means identities plus dependency closure; a descriptor, an earlier holder's
+ACK or a transient download is not possession. Commit this local readiness
+atomically before vote exposure. Thus the committed obligation is backed by
+`q` power of durable artifact retention even for a full certificate that
+previously existed on only one withholding/failing replica. With the assumed
+eventually responsive quorum, an honest intersection holder can supply it.
 
 If any operation applied, an availability quorum retained its **full** proof
 and payload before application. That quorum intersects the selected frozen
@@ -182,6 +198,11 @@ Process the existing committed prefix and inherited justified proposals using
 normal HotStuff ancestry, view and lock rules. Before exposing a new vote,
 account for any Freeze committed by processing the proposal's justification;
 admission must use the resulting control state, not a stale pre-event snapshot.
+After processing committed Freeze, an honest replica emits no fresh vote for
+a business-bearing proposal. Retained pre-freeze votes/QCs may still be replayed
+and inherited justifications processed; this rule does not erase them. No fresh
+business QC can form, so honest empty/control views can drain the finite
+inherited suffix and reach the business-free seal barrier.
 
 An inherited economic candidate that commits after Freeze receives a
 deterministic, authenticated no-effect closed-epoch refusal, its original
@@ -205,8 +226,24 @@ authentication in the applied prefix before deriving the state to seal.
 ### 4. Seal, verify readiness and activate
 
 Each outgoing voter independently derives the normalized final logical state,
-original receipt history and complete artifact manifest after drain. `Seal`
-commits their identity and exact eligible next set through the same old engine.
+original receipt history and complete artifact manifest after drain. Choose a
+currently eligible next set through the existing policy, bond, key and power
+rules; it may differ from Freeze's advisory proposal. The implementation must
+not assume that a dead proposal defines the only next-set choice.
+
+A new host imports using **its own** writer fence into an ineligible namespace.
+It independently verifies genesis, full history, artifact closure and this
+pre-Seal business cut. Only after durable local verification may it sign
+conditional readiness for the exact cut/context/proposed set. Collect a
+next-set quorum's readiness **before committing Seal**; otherwise choose a
+different legally eligible ready set while the epoch remains frozen. Readiness
+binds the pre-Seal cut identity, not a future Seal block digest, and does not
+authorize active serving or consensus votes.
+
+`Seal` commits the cut, the exact ready eligible set and verifying readiness
+evidence through the same old engine. After that decision its target cannot
+change. Loss of that next quorum is a fault-model availability stop, not an
+excuse to sign another epoch-transition target.
 Voting requires the committed business prefix applied, drain complete, no
 unresolved authenticated facts and equality with the locally derived cut.
 Signature-subset differences and local database counters are not disagreement
@@ -222,12 +259,10 @@ that snapshot/manifest. Previous epochs' authority history stays bound through
 the predecessor anchor. This avoids a self-referential root and distinguishes
 business-state equality from changing consensus/control metadata.
 
-A new host imports using **its own** writer fence into an ineligible namespace.
-It independently verifies genesis, full history, artifact closure and sealed
-logical state. A remote readiness signature never substitutes for that local
-verification. Serve/sign as the new active validator only after a durable
-verified-cut marker and activation. Require a next-set quorum's readiness for
-this exact cut/context/set before outgoing activation votes are exposed.
+A remote readiness signature never substitutes for local cut verification.
+Serve/sign as the new active validator only after a durable verified-cut marker,
+the same committed Seal and activation. Conditional readiness is not active
+validator eligibility.
 
 Cast an epoch-transition vote only for the committed Seal. Persist its exact
 signed identity before exposure, retain it on retry, and refuse another target.
@@ -235,6 +270,9 @@ Before Seal, proposal changes use ordinary HotStuff views; they cannot wedge
 an epoch-wide first-writer-wins transition-vote row. Bind activation to the
 outgoing authority, Seal/DrainSet proofs, cut and next set; rederive/verify
 locally and install new policies/epoch atomically with fences.
+Version the activation-set signed preimage to carry these bindings: this is a
+semantic change to the existing `0x6428` frame, not merely a new key constant.
+Historical activation preimages retain their own verification rules.
 
 In this initial profile a committed Freeze is a commitment to finish that
 epoch. There is **no local unfreeze or cancellation transition**. Resume through
@@ -257,6 +295,11 @@ authorities, nonce value/precondition and the authenticated execution operand.
 Keep node-local `StateRevision`, head revision and writer generation solely in
 the local commit read set. **Do not remove read authority along with counters.**
 Historical v1 witnesses remain verifiable as their original bytes.
+Preserve imported creation checkpoints used by admission/provenance checks.
+Derive a common minimum future execution operand from the verified imported
+history, and initialize each host's trusted checkpoint source at or above it
+with checked arithmetic. Different local counters must not cause one new host
+to refuse an otherwise identical Write as moving creation time backwards.
 
 Define explicit runtime-neutral bounded repositories; the current key scanner
 does not enumerate the separate SQL receipt, object-head or object-version
@@ -333,7 +376,10 @@ Test Byzantine dual partial votes; privately aggregated availability ACKs;
 application only on absent D; pre-freeze ACK aggregated afterward; the
 retain/freeze CAS race; full-certificate drain against a conflicting partial
 local lock; uncertified claims that must not occupy global receipt IDs;
-inherited high/locked business branches; different physical revisions with
+inherited high/locked business branches; a sole full-certificate holder failing
+after DrainSet commit; fragmented certificate-proof subsets that must share
+one availability identity; a dead advisory next set replaced before Seal;
+different physical revisions and checkpoint sources with
 identical logical state; all cut/page/history negatives; real stale writers;
 process restart at every boundary; exact successful/trapped/completed replay;
 early/still-member withdrawal refusal and retired-signer rejection.
