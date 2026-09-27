@@ -332,7 +332,10 @@ fields as new semantic generation metadata.
 
 Define explicit runtime-neutral bounded repositories; the current key scanner
 does not enumerate the separate SQL receipt, object-head or object-version
-tables. Each collection has canonical keys, exact semantic projections and
+tables. The [portable reconstruction storage contract](portable-reconstruction.md)
+separates indexed keys, body-free descriptors and bounded payload ranges;
+it provides no authenticated cut or cross-page snapshot by itself.
+Each collection has canonical keys, exact semantic projections and
 complete range boundaries:
 
 - Code/ABI/blob content and authenticated publication/dependency provenance.

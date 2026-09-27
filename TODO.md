@@ -174,12 +174,24 @@ The detailed existing evidence and remaining criteria follow:
   genuine Unbond/remove/epoch advance/Withdraw, actual new-epoch paid user
   contracts and fee claims, restart/exact replay, retired-signer rejection,
   missing/forged/divergent cut refusal and real stale-writer controls. No
-  Delivery 3 runtime implementation, completeness proof, activation or
-  validation is claimed by the design review. Implement the same semantic
+  Delivery 3 runtime completion, completeness proof, activation or
+  validation is established by the design review. Implement the same semantic
   execution-generation substitution in ordered bond/fee-claim minimum checks,
   not only fast-path commitments; checked overflow must refuse before mutation
   or exposed signatures. Fresh-genesis enforcement
   is required; existing pre-rule stores cannot silently receive this guarantee.
+  Implementation started on `codex/epoch-handoff` on 2026-09-28. The checked
+  `ExecutionGeneration` primitive and bounded availability identity/vote/
+  certificate library are integrated; protocol/consensus tests and independent
+  fixed-byte reconstruction pass. Opus approved the pure availability library,
+  not durable ACK retention or apply authority. The memory/SQLite/PostgreSQL
+  portable-read candidate passes shared storage tests, real file reopen/fresh
+  connection reads and authority refusals; its independent review is pending.
+  Logical provenance/commitment/profile call-site wiring is still unaccepted
+  work in progress. Mandatory publication admission, Freeze/DrainSet/Seal,
+  complete authenticated import, readiness/activation and the network E2E are
+  not complete. This delivery stays unchecked; no full repository gate,
+  final feature approval, PR merge or network activation is claimed.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

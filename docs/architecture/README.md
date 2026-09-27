@@ -57,6 +57,9 @@ roadmap describes a later target state.
 - [Complete epoch handoff](epoch-handoff.md) ([DR-0154](decisions/0154-complete-epoch-handoff.md)):
   publication-before-apply, quorum-complete frozen frontiers, ordered epoch
   control, portable logical commitments and verified new-validator readiness.
+- [Portable reconstruction storage contract](portable-reconstruction.md):
+  body-free key/metadata enumeration, bounded payload ranges and the separate
+  protocol obligations for cut authentication and completeness.
 
 Production-oriented persistence requirements and the PostgreSQL mapping are
 separate operational references:
