@@ -197,7 +197,7 @@ async fn certified_router_still_serves_liveness_and_bounded_reads() {
 }
 
 #[tokio::test]
-async fn certified_router_mounts_fastvote_and_publication_retention_routes() {
+async fn certified_router_mounts_fastvote_and_publication_routes() {
     let app = certified_router();
     // Malformed bodies still prove the route exists: a 4xx response from the
     // handler, never the router's own 404.
@@ -218,6 +218,17 @@ async fn certified_router_mounts_fastvote_and_publication_retention_routes() {
         dispatch(&app, "GET", FASTVOTE_PUBLICATION_RETAIN_PATH, Vec::new()).await,
         StatusCode::METHOD_NOT_ALLOWED
     );
+    for path in [FASTVOTE_PUBLICATION_SOURCE_PATH, FASTVOTE_PUBLISHED_APPLY_PATH] {
+        assert_eq!(
+            dispatch(&app, "POST", path, vec![0xAA]).await,
+            StatusCode::BAD_REQUEST,
+            "malformed request must reach the mounted {path} handler"
+        );
+        assert_eq!(
+            dispatch(&app, "GET", path, Vec::new()).await,
+            StatusCode::METHOD_NOT_ALLOWED
+        );
+    }
 }
 
 #[test]
