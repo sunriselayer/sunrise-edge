@@ -235,6 +235,17 @@ pub(crate) fn fence_epoch_state<S: StructuredDurableDomainStateStore>(
 /// transaction epoch to be current. Historical policy selectors use
 /// [`fence_epoch_state`] directly: they still serialize against a transition
 /// without being reinterpreted as a transaction-epoch claim.
+///
+/// DR-0154: additionally requires admission to still be open for `chain`
+/// (see [`crate::ordered_economics::fence_admission_open`]). Every caller of
+/// this function -- fast-path prepare/apply, the direct paid path, local
+/// execution, and every authenticated `SubmitTransaction` path that advances
+/// a nonce -- is exactly the set of "direct local/paid mutations" and "new
+/// prepares" a committed ordered-economics `Freeze` must stop. Local
+/// publication (`crate::publication`) calls [`fence_epoch_state`] directly
+/// rather than through this function (its `policy.context.epoch()` names a
+/// historical policy selector, not a transaction-epoch claim) and fences
+/// admission separately at its own call site for the same reason.
 pub(crate) fn fence_current_epoch<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
@@ -250,6 +261,14 @@ pub(crate) fn fence_current_epoch<S: StructuredDurableDomainStateStore>(
             actual: request_epoch,
         });
     }
+    crate::ordered_economics::fence_admission_open(
+        store,
+        context,
+        domain,
+        chain,
+        record.current_epoch,
+        reads,
+    )?;
     Ok(record)
 }
 

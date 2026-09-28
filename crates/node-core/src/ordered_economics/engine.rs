@@ -1028,6 +1028,7 @@ fn execute_candidate<S: StructuredDurableDomainStateStore>(
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
     admission: Option<&OrderedLegAdmission<'_>>,
+    block_height: u64,
 ) -> LegOutcome {
     if let Err(error) = authenticate_candidate(env, candidate) {
         return disposition(candidate.request_id, error);
@@ -1094,6 +1095,18 @@ fn execute_candidate<S: StructuredDurableDomainStateStore>(
         OrderedOperationKind::Evidence => {
             execute_evidence_candidate(staging, context, domain, env, candidate)
         }
+        OrderedOperationKind::Freeze => dispatch(
+            freeze::handle_freeze_ordered(
+                staging,
+                context,
+                domain,
+                env.policy.context().chain_id(),
+                candidate,
+                block_height,
+            ),
+            candidate.request_id,
+            node_failure,
+        ),
     }
 }
 
@@ -1339,6 +1352,35 @@ fn admit_candidate_for_signer<S: StructuredDurableDomainStateStore>(
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
 ) -> Result<AdmittedCandidate, OrderedEconomicsError> {
+    // DR-0154 liveness gate, additive to (not a substitute for) `preflight`'s
+    // own authoritative closed-epoch refusal at commit time: an honest
+    // leader/replica never even places or votes for a *fresh* business
+    // candidate once a `Freeze` has committed, "Stop new ... construction of
+    // fresh economic candidates" / "an honest replica emits no fresh vote for
+    // a proposal whose own payload carries business." A `Freeze` candidate
+    // itself is exempt -- a second one is still admissible here and resolves
+    // to `AlreadyFrozen` at preflight. This check is deliberately confined to
+    // this signer-only entry point (`propose`/`process_proposal`), never
+    // `observe_proposal`'s plain `admit_candidate(..., reserve: false)` call:
+    // declared, signerless recovery must still be able to record and replay
+    // an authentic pre-freeze business proposal's bytes during catch-up, so
+    // its own already-justified inherited suffix can reach the deterministic
+    // closed-epoch refusal at commit time instead of never being recorded at
+    // all. This check is not itself CAS-fenced (a race is caught at commit
+    // time by `preflight`'s own staged read), so a caller does not need this
+    // exact row's revision recorded to get a safe answer.
+    if candidate.kind != OrderedOperationKind::Freeze
+        && freeze::read_admission_closure(
+            store,
+            context,
+            env.policy.domain(),
+            env.policy.context().chain_id(),
+            env.policy.context().epoch(),
+        )?
+        .is_some()
+    {
+        return Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch));
+    }
     match admit_candidate(store, context, env, candidate, true)? {
         Admission::Fresh(admitted) => Ok(admitted),
         Admission::Completed(outcome) => Err(OrderedEconomicsError::AlreadyCompleted(outcome)),
@@ -1531,7 +1573,14 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
             nonce: plan.nonce,
         });
         let staging: StagingStore<'_, S> = StagingStore::new(store);
-        let outcome = execute_candidate(&staging, context, env, &candidate, admission.as_ref());
+        let outcome = execute_candidate(
+            &staging,
+            context,
+            env,
+            &candidate,
+            admission.as_ref(),
+            block.height,
+        );
         // One durable invocation observes one stable snapshot, so two different
         // revisions for one key can only be concurrent interference. Never
         // retain a decision derived from two disagreeing views of a row.
@@ -2191,6 +2240,11 @@ pub(crate) fn ordered_reservation_key_for_tests(chain: &ChainId, request_id: &[u
 #[cfg(test)]
 pub(crate) fn ordered_outcome_key_for_tests(chain: &ChainId, request_id: &[u8; 32]) -> Vec<u8> {
     ordered_outcome_key(chain, request_id).unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn admission_closure_key_for_tests(chain: &ChainId, epoch: Epoch) -> Vec<u8> {
+    freeze::admission_closure_key(chain, epoch).unwrap()
 }
 
 #[cfg(test)]

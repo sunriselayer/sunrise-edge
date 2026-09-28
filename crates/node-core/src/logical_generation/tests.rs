@@ -233,7 +233,7 @@ fn ordered_outcome_history_is_not_misclassified_as_consensus_cache() {
         );
         assert!(is_excluded_subject(&key));
     }
-    for suffix in [b"header/".as_slice(), b"outcome/"] {
+    for suffix in [b"header/".as_slice(), b"outcome/", b"freeze/"] {
         let key: Vec<u8> = [prefix, suffix, b"example"].concat();
         assert_eq!(
             classify_ordered_row(&key),

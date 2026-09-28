@@ -671,7 +671,7 @@ pub enum OrderedRowClass {
     /// Consensus state, applied height and retained candidate material needed
     /// to prove the committed prefix and safe inherited suffix.
     ConsensusControl,
-    /// Immutable original request header and completed outcome history.
+    /// Immutable request/outcome history and committed epoch-control markers.
     AuthenticatedOutcomeHistory,
 }
 
@@ -681,7 +681,7 @@ pub fn classify_ordered_row(key: &[u8]) -> Option<OrderedRowClass> {
     let suffix: &[u8] =
         key.strip_prefix(ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX)?;
     const CONTROL: [&[u8]; 3] = [b"state/", b"applied-height/", b"candidate/"];
-    const HISTORY: [&[u8]; 2] = [b"header/", b"outcome/"];
+    const HISTORY: [&[u8]; 3] = [b"header/", b"outcome/", b"freeze/"];
     if CONTROL
         .iter()
         .any(|prefix: &&[u8]| suffix.starts_with(prefix))

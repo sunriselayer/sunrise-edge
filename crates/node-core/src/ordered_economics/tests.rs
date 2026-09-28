@@ -883,6 +883,261 @@ fn stale_generation_candidate_is_refused_with_a_typed_reason_and_moves_nothing()
     }
 }
 
+// --- DR-0154 Freeze --------------------------------------------------------
+
+fn freeze_candidate(request_id: [u8; 32]) -> OrderedCandidate {
+    let intent = FreezeIntent {
+        context: fixture::protocol(),
+        request_id,
+    };
+    OrderedCandidate {
+        context: fixture::protocol(),
+        request_id,
+        kind: OrderedOperationKind::Freeze,
+        intent: encode_freeze_intent(&intent).unwrap(),
+        created_checkpoint: 11,
+    }
+}
+
+#[test]
+fn a_committed_freeze_closes_admission_identically_on_every_replica_and_blocks_a_fresh_business_candidate()
+ {
+    let network = setup();
+    network.install_ordered();
+    let chain = fixture::chain();
+    let closure_key = engine::admission_closure_key_for_tests(&chain, fixture::protocol().epoch());
+    let request_id = [0x70; 32];
+    let candidate = freeze_candidate(request_id);
+
+    // Height 1 carries the candidate; chained HotStuff commits it only once
+    // two further heights are certified on top, exactly like a business
+    // candidate.
+    let (round1, _, _) = network.round(1, Some(&candidate));
+    assert!(round1.iter().all(|output| output.committed.is_empty()));
+    let (round2, _, _) = network.round(2, None);
+    assert!(round2.iter().all(|output| output.committed.is_empty()));
+    let (round3, certificate3, _) = network.round(3, None);
+
+    for (replica, outputs) in round3.iter().enumerate() {
+        assert_eq!(outputs.committed.len(), 1, "replica {replica}");
+        let outcome = &outputs.committed[0];
+        assert_eq!(outcome.request_id, request_id);
+        assert_eq!(outcome.block_height, 1);
+        assert_eq!(
+            outcome.output.responses()[0].status(),
+            NodeResponseStatus::Accepted
+        );
+        let record: AdmissionClosureRecord =
+            decode_admission_closure_record(&network.value(replica, &closure_key).unwrap())
+                .unwrap();
+        assert_eq!(record.request_id, request_id);
+        assert_eq!(record.closed_epoch, fixture::protocol().epoch());
+        assert_eq!(record.closed_at_block_height, 1);
+    }
+    // Byte-identical across every independent store.
+    for replica in 1..REPLICAS {
+        assert_eq!(
+            network.value(replica, &closure_key),
+            network.value(0, &closure_key)
+        );
+    }
+
+    // Exact replay of the identical round-3 certificate writes nothing new.
+    for replica in 0..REPLICAS {
+        let before = network.value(replica, &closure_key);
+        let replay = process_certificate(
+            &network.stores[replica],
+            &network.context,
+            &network.env(),
+            &certificate3,
+        )
+        .unwrap();
+        assert!(replay.committed.is_empty(), "replica {replica}");
+        assert_eq!(network.value(replica, &closure_key), before);
+    }
+
+    // DR-0154: "Stop new ... construction of fresh economic candidates." A
+    // fresh business candidate proposed at the next economic height (4) is
+    // refused before it ever enters a block -- not merely refused once
+    // committed.
+    let recipient = address_of(0x71);
+    let next = predicted_unbond(&network.bond, 12, *recipient.as_bytes());
+    let business_request_id = [0x73; 32];
+    let business = unbond_candidate(
+        &network,
+        &network.bond,
+        &next,
+        business_request_id,
+        recipient,
+        12,
+    );
+    let leader4 = network.leader_index(4);
+    assert!(matches!(
+        propose(
+            &network.stores[leader4],
+            &network.context,
+            &network.env(),
+            Some(&business),
+            &network.signers[leader4],
+        ),
+        Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch))
+    ));
+    // Nothing was placed: no header, no candidate bytes, no reservation.
+    let header_key = engine::ordered_request_header_key_for_tests(&chain, &business_request_id);
+    assert!(network.value(leader4, &header_key).is_none());
+
+    // A replica asked to vote for someone else's (e.g. a byzantine leader's)
+    // business proposal at that same height refuses identically, before any
+    // consensus metadata is recorded. Since an honest `propose` already
+    // refuses to build this proposal (proven above), construct its shell
+    // directly from an honest empty proposal for the same view/height,
+    // exactly the shape a byzantine leader would otherwise need to forge.
+    let empty4 = propose(
+        &network.stores[leader4],
+        &network.context,
+        &network.env(),
+        None,
+        &network.signers[leader4],
+    )
+    .unwrap();
+    let other_replica = (0..REPLICAS).find(|&r| r != leader4).unwrap();
+    assert!(matches!(
+        process_proposal(
+            &network.stores[other_replica],
+            &network.context,
+            &network.env(),
+            &OrderedProposal {
+                proposal: empty4.proposal,
+                candidate: Some(business.clone()),
+            },
+            &network.signers[other_replica],
+        ),
+        Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch))
+    ));
+}
+
+#[test]
+fn a_second_freeze_candidate_is_refused_as_already_frozen_and_does_not_rewrite_the_closure_record()
+{
+    let network = setup();
+    network.install_ordered();
+    let chain = fixture::chain();
+    let closure_key = engine::admission_closure_key_for_tests(&chain, fixture::protocol().epoch());
+    let first_request_id = [0x74; 32];
+    let first = freeze_candidate(first_request_id);
+
+    network.round(1, Some(&first));
+    network.round(2, None);
+    network.round(3, None);
+    let original: Vec<Option<Vec<u8>>> = (0..REPLICAS)
+        .map(|replica| network.value(replica, &closure_key))
+        .collect();
+
+    let second_request_id = [0x75; 32];
+    let second = freeze_candidate(second_request_id);
+    // A second `Freeze` is still structurally admissible (the vote-level
+    // gate only refuses *business* kinds once closed) and reaches a
+    // deterministic outcome rather than stalling the shared order.
+    network.round(4, Some(&second));
+    network.round(5, None);
+    let (round6, _, _) = network.round(6, None);
+
+    for (replica, outputs) in round6.iter().enumerate() {
+        assert_eq!(outputs.committed.len(), 1, "replica {replica}");
+        assert_eq!(
+            refusal_of(&outputs.committed[0]),
+            OrderedRefusal::AlreadyFrozen,
+            "replica {replica}"
+        );
+        // The original closure record is untouched.
+        assert_eq!(
+            network.value(replica, &closure_key),
+            original[replica],
+            "replica {replica}"
+        );
+    }
+}
+
+/// The vote-level `ClosedEpoch` gate (`admit_candidate_for_signer`) must never
+/// reach declared, signerless recovery: `observe_proposal` has to remain able
+/// to record an authentic *pre-freeze* business proposal's bytes during
+/// catch-up regardless of whether this replica already closed admission
+/// locally, since that is how an already-justified inherited business suffix
+/// reaches the deterministic commit-time closed-epoch refusal at all. Only
+/// the signer-side `propose`/`process_proposal` path refuses on sight.
+#[test]
+fn observe_proposal_recovery_still_records_a_business_candidate_after_admission_is_closed() {
+    let network = setup();
+    network.install_ordered();
+    let chain = fixture::chain();
+    let closure_key = engine::admission_closure_key_for_tests(&chain, fixture::protocol().epoch());
+
+    // Simulate this replica having already locally closed admission (as if a
+    // `Freeze` had committed here), without driving the full three-chain
+    // Freeze commit: `observe_proposal`'s own admission path never consults
+    // `require_vote_readiness` or any consensus progress, so this directly
+    // isolates the one behavior under test.
+    let closure = AdmissionClosureRecord {
+        closed_epoch: fixture::protocol().epoch(),
+        request_id: [0x76; 32],
+        closed_at_block_height: 1,
+    };
+    network.put(
+        0,
+        closure_key.clone(),
+        StateMutation::Put(encode_admission_closure_record(&closure).unwrap()),
+    );
+    assert!(network.value(0, &closure_key).is_some());
+
+    let leader1 = network.leader_index(1);
+    let recipient = address_of(0x77);
+    let next = predicted_unbond(&network.bond, 11, *recipient.as_bytes());
+    let request_id = [0x78; 32];
+    let business = unbond_candidate(&network, &network.bond, &next, request_id, recipient, 11);
+
+    // The signer-side path still refuses on sight, on this same replica.
+    assert!(matches!(
+        propose(
+            &network.stores[0],
+            &network.context,
+            &network.env(),
+            Some(&business),
+            &network.signers[leader1],
+        ),
+        Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch))
+    ));
+
+    // But an authentic proposal produced elsewhere (here, a fresh store that
+    // never closed admission, standing in for a pre-freeze leader) is still
+    // recordable through declared recovery on the closed replica.
+    let elsewhere = setup();
+    elsewhere.install_ordered();
+    let carrying = propose(
+        &elsewhere.stores[network.leader_index(1)],
+        &elsewhere.context,
+        &elsewhere.env(),
+        Some(&business),
+        &elsewhere.signers[network.leader_index(1)],
+    )
+    .unwrap();
+
+    let header_key = engine::ordered_request_header_key_for_tests(&chain, &request_id);
+    assert!(network.value(0, &header_key).is_none());
+    observe_proposal(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &carrying,
+    )
+    .unwrap();
+    assert!(network.value(0, &header_key).is_some());
+    // Recording the proposal did not touch the closure record.
+    assert_eq!(
+        network.value(0, &closure_key),
+        Some(encode_admission_closure_record(&closure).unwrap())
+    );
+}
+
 #[test]
 fn competing_candidates_both_reach_an_outcome_without_wedging_the_shared_row() {
     let network = setup();

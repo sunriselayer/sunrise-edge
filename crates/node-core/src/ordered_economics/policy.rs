@@ -435,7 +435,28 @@ fn authenticate_with_policy(
         OrderedOperationKind::BondLifecycle => authenticate_bond_lifecycle(env, candidate),
         OrderedOperationKind::BondSlash => authenticate_bond_slash(env, candidate),
         OrderedOperationKind::Evidence => authenticate_evidence(env, candidate),
+        OrderedOperationKind::Freeze => authenticate_freeze(env, candidate),
     }
+}
+
+/// [`OrderedOperationKind::Freeze`] carries no outer signature by
+/// construction (see [`super::freeze`]): its authority is being committed
+/// through the shared three-chain rule, not a signed intent. This function
+/// therefore only proves the structural binding a byzantine leader could
+/// otherwise forge for free -- that the embedded intent names the exact same
+/// context and request id as the candidate envelope carrying it.
+fn authenticate_freeze(
+    _env: &CandidateAuthentication<'_>,
+    candidate: &OrderedCandidate,
+) -> Result<(), OrderedEconomicsError> {
+    let intent = super::freeze::decode_freeze_intent(&candidate.intent)
+        .map_err(|_| OrderedEconomicsError::Unauthenticated("invalid freeze candidate intent"))?;
+    if intent.context != candidate.context || intent.request_id != candidate.request_id {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "freeze candidate context or request id mismatch",
+        ));
+    }
+    Ok(())
 }
 
 fn authenticate_fee_claim(
