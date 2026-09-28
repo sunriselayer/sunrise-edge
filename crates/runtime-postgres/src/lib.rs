@@ -10,6 +10,7 @@
 //! classifies opaque [`runtime::PersistenceLayout`] keys.
 
 mod blob;
+mod outbox_guard;
 mod portable;
 
 pub use blob::{PostgresBlobStore, PostgresBlobStoreError};

@@ -5,6 +5,7 @@
 #[cfg(any(test, feature = "durable-conformance"))]
 pub mod conformance;
 
+pub mod outbox_guard;
 pub mod portable;
 
 use core::{fmt, mem::size_of};
