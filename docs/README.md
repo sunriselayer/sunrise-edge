@@ -3,6 +3,11 @@
 Sunrise Edge keeps only contributor entrypoints at the repository root. The
 detailed design, operator guides, and specialist references live here.
 
+## Development
+
+- [Code ownership map](development/code-map.md): where a feature enters,
+  changes protocol state, and is tested.
+
 ## Architecture
 
 - [Architecture index](architecture/README.md)
