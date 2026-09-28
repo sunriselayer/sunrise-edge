@@ -31,7 +31,7 @@ pub(super) fn validate(
     interface: &VerifiedPublicationInterface,
     authority: &ObjectAuthority,
     expected: &ExpectedCustodyTransfer<'_>,
-    checkpoint: u64,
+    minimum: logical_generation::ObjectMinimum,
     snapshot: &object_snapshots::ObjectSnapshot,
     effects: &ExecutionEffects,
 ) -> Result<(Object, u64), BondLifecycleError> {
@@ -64,7 +64,7 @@ pub(super) fn validate(
         || new_object.type_hash != snapshot.object.type_hash
         || new_object.schema_version != snapshot.object.schema_version
         || new_object.data != snapshot.object.data
-        || checkpoint < snapshot.created_checkpoint
+        || !minimum.admits(snapshot.created_checkpoint)
     {
         return Err(BondLifecycleError::Invalid(
             "custody leg effect identity, version, type, schema or body changed",

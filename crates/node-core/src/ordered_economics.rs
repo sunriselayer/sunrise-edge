@@ -42,7 +42,7 @@
 use super::*;
 
 mod candidate;
-mod engine;
+pub(crate) mod engine;
 mod evidence_submission;
 mod identity;
 mod policy;

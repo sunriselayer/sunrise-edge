@@ -660,10 +660,33 @@ pub fn handle_local_publication_with_history<S: StructuredDurableDomainStateStor
         &mut reads,
     )?;
     insert_read(&mut reads, nonce.key.clone(), nonce.read_revision)?;
-    let mutations: Vec<StateMutationEntry> = vec![
+    let mut mutations: Vec<StateMutationEntry> = vec![
         StateMutationEntry::new(record_key, StateMutation::Put(bytes))?,
-        StateMutationEntry::new(nonce.key, StateMutation::Put(nonce.record.encode()?))?,
+        StateMutationEntry::new(
+            nonce.key.clone(),
+            StateMutation::Put(nonce.record.encode()?),
+        )?,
     ];
+    // DR-0154: a published package record and this publisher's nonce advance are
+    // ordinary verified inputs for every later paid execution against that
+    // package, so this commit derives its own authenticated causal generation
+    // and installs the provenance rows covering both. Without it a
+    // handoff-capable store could publish a package no later operation could
+    // ever verify. A handoff-capable store refuses the publication without that
+    // evidence; a historical store keeps its exact existing behavior.
+    crate::logical_generation::admit_application(
+        store,
+        context,
+        domain,
+        resolver,
+        policy.context.chain_id(),
+        policy.context.epoch(),
+        &[],
+        &[],
+        Some(&nonce),
+        &mut mutations,
+        &mut reads,
+    )?;
     let assertions: Vec<StateReadAssertion> = reads
         .into_iter()
         .map(|(key, revision): (Vec<u8>, StateRevision)| StateReadAssertion::new(key, revision))

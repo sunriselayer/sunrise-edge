@@ -6,6 +6,10 @@ use abi::{
 use ed25519_zebra::SigningKey;
 use execution::{Transaction, encode_transaction, encode_transaction_signable};
 use hashing::{BuiltinHashFunction, HashFunction};
+use logical_generation::{
+    CommitmentProfile, LogicalObservation, LogicalProfileRecord, LogicalProvenanceRecord,
+    encode_logical_profile_record,
+};
 use objects::{AccessMode, Address, ObjectId, ObjectRef, encode_object};
 use protocol_config::TransactionAuthProfile;
 use protocol_types::{HashSuite, HashSuiteId, HashSuiteSchedule, SignatureSchemeId};
@@ -974,9 +978,14 @@ fn authenticate_submit_transaction_event_happy_path_authenticates_transaction() 
 
     assert_eq!(resolved.domain(), domain(0xD7));
     assert_eq!(machine.calls.load(Ordering::SeqCst), 1);
-    // Sender nonce, committed epoch, fast-path nonce lock, then the machine's
-    // one application state key.
-    assert_eq!(store.state_reads.load(Ordering::SeqCst), 4);
+    // Sender nonce, committed epoch, fast-path nonce lock, the machine's one
+    // application state key, and the DR-0154 commitment-profile row. The last
+    // one is read exactly once per transition: this store's signed binding
+    // decides both whether the physical creation-checkpoint minimum still
+    // governs and whether an authenticated generation must be derived, and it
+    // is found absent here, so a historical store adds this single read and
+    // nothing else -- no extra assertion, no provenance write.
+    assert_eq!(store.state_reads.load(Ordering::SeqCst), 5);
     let commits = store.commits.lock().unwrap();
     assert_eq!(commits.len(), 1);
     let state = commits[0].state().unwrap();

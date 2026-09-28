@@ -59,7 +59,11 @@ fn durable_idempotent_handler_builds_typed_sections_and_replays_receipt() {
     assert_eq!(replay.output().responses(), first.output().responses());
     assert!(replay.output().outbound_messages().is_empty());
     assert_eq!(machine.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(store.state_reads.load(Ordering::SeqCst), 1);
+    // The plan's one application key plus the DR-0154 commitment-profile row,
+    // read exactly once per transition. It is absent here, so this historical
+    // store adds no read assertion and no provenance write: the committed read
+    // set above is still exactly the plan's own single key.
+    assert_eq!(store.state_reads.load(Ordering::SeqCst), 2);
     assert_eq!(store.commits.lock().unwrap().len(), 1);
 
     assert_eq!(
@@ -119,6 +123,100 @@ fn durable_idempotent_handler_conforms_against_memory_store() {
             .unwrap()
             .required_u64(1),
         Ok(1)
+    );
+}
+
+/// The provenance key the application row would occupy under the binding this
+/// fixture's chain would install, derived without installing it.
+fn unbound_provenance_key() -> Vec<u8> {
+    let hashes: HashSuiteResolver = resolver("sunrise-test");
+    let profile: LogicalProfileRecord = logical_profile_for("sunrise-test");
+    let space = logical_generation::LogicalKeySpace::new(&profile, &hashes);
+    let subject = logical_generation::LogicalSubject::StateKey(b"state/idempotent".to_vec());
+    space.provenance_key(&subject).unwrap()
+}
+
+/// Binds one fixture store to the handoff-capable profile (DR-0154) and returns
+/// the installed record.
+///
+/// The row's authenticity, atomic installation and byte-exact reopen
+/// verification are covered by the genesis tests; this writes the same
+/// authenticated bytes so the generic durable-event path can be exercised under
+/// the profile without rebuilding a signed genesis on this fixture's chain.
+fn bind_logical_profile(store: &MemoryDurableStateStore, chain: &str) -> LogicalProfileRecord {
+    let record: LogicalProfileRecord = logical_profile_for(chain);
+    commit_generic_row(
+        store,
+        chain,
+        &logical_generation::logical_profile_key(&ChainId::new(chain).unwrap()).unwrap(),
+        encode_logical_profile_record(&record).unwrap(),
+    );
+    record
+}
+
+/// The exact authenticated profile record a signed version-two genesis installs
+/// for `chain`, built without writing it.
+fn logical_profile_for(chain: &str) -> LogicalProfileRecord {
+    LogicalProfileRecord {
+        context: execution::publication::PublicationContext::new(
+            ChainId::new(chain).unwrap(),
+            ProtocolVersion::new(3),
+            Epoch::new(7),
+        )
+        .unwrap(),
+        profile: CommitmentProfile::LogicalGenerationV2,
+        manifest_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x6d; 32]),
+        genesis_authority: [0x6e; 32],
+        genesis_floor: protocol_types::ExecutionGeneration::genesis_floor(),
+    }
+}
+
+/// Runs one generic durable idempotent transition against a fixture store.
+fn run_generic_idempotent(
+    store: &MemoryDurableStateStore,
+    request_id: RequestId,
+) -> Result<ResolvedNodeOutput, NodeCoreError> {
+    let machine = IdempotentMachine {
+        calls: AtomicUsize::new(0),
+    };
+    handle_resolved_durable_idempotent_event(
+        store,
+        &durable_context(),
+        &placement(0xC5, 7),
+        &config("sunrise-test"),
+        &resolver("sunrise-test"),
+        event("sunrise-test", request_id),
+        &machine,
+    )
+}
+
+/// Commits one raw row into a generic-path fixture store, fenced at its exact
+/// observed revision.
+fn commit_generic_row(
+    store: &MemoryDurableStateStore,
+    _chain: &str,
+    key: &[u8],
+    value: Vec<u8>,
+) {
+    let context = durable_context();
+    let observed = store
+        .get_versioned_durable(&context, domain(0xC5), key)
+        .unwrap();
+    let transaction = AtomicStateTransaction::new(
+        domain(0xC5),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(key.to_vec(), observed.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(key.to_vec(), StateMutation::Put(value)).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&context, transaction),
+        DurableCommitOutcome::Committed
     );
 }
 
@@ -1095,4 +1193,91 @@ fn outbound_event_must_match_invocation_context() {
 
     assert!(matches!(error, NodeCoreError::ChainMismatch { .. }));
     assert_eq!(runtime.state_store().get(b"node/state").unwrap(), None);
+}
+
+/// DR-0154: the generic durable-event path commits authenticated provenance for
+/// the application key it wrote when the store's signed genesis bound the
+/// handoff-capable profile.
+#[test]
+fn the_generic_path_commits_provenance_under_the_new_profile() {
+    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    store.set_time(100);
+    let profile: LogicalProfileRecord = bind_logical_profile(&store, "sunrise-test");
+    run_generic_idempotent(&store, request(0x95)).unwrap();
+    let provenance: LogicalProvenanceRecord =
+        read_provenance(&store, &profile, b"state/idempotent");
+    assert_eq!(provenance.generation.get(), profile.genesis_floor.get() + 1);
+    // The row is bound to the exact bytes this transition wrote, not merely
+    // present: a provenance row that described anything else would fail the
+    // very next operation's verification.
+    let written = store
+        .get_versioned_durable(&durable_context(), domain(0xC5), b"state/idempotent")
+        .unwrap();
+    assert_eq!(
+        provenance.observation,
+        LogicalObservation::StatePresent {
+            content_digest: logical_generation::content_digest(
+                &resolver("sunrise-test"),
+                Epoch::new(7),
+                written.value().unwrap(),
+            )
+            .unwrap(),
+        }
+    );
+}
+
+/// DR-0154 refusal on the generic durable-event path: a handoff-capable store
+/// will not apply a transition over an application row that exists without
+/// authenticated provenance. It fails closed instead of treating an
+/// unauthenticated row as a verified input.
+#[test]
+fn the_generic_path_refuses_an_unauthenticated_application_row() {
+    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    store.set_time(100);
+    bind_logical_profile(&store, "sunrise-test");
+    commit_generic_row(
+        &store,
+        "sunrise-test",
+        b"state/idempotent",
+        canonical(TEST_STATE_TYPE_ID, 41),
+    );
+    assert!(matches!(
+        run_generic_idempotent(&store, request(0x96)),
+        Err(NodeCoreError::LogicalProvenance(_))
+    ));
+}
+
+/// A historical store still performs fresh mutations, unchanged, and writes no
+/// provenance at all: DR-0154 adds no row and no assertion to a store whose
+/// signed genesis never bound the new profile.
+#[test]
+fn a_historical_store_still_mutates_and_writes_no_provenance() {
+    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    store.set_time(100);
+    run_generic_idempotent(&store, request(0x97)).unwrap();
+    let written = store
+        .get_versioned_durable(&durable_context(), domain(0xC5), b"state/idempotent")
+        .unwrap();
+    assert!(written.value().is_some());
+    let absent = store
+        .get_versioned_durable(&durable_context(), domain(0xC5), &unbound_provenance_key())
+        .unwrap();
+    assert_eq!(absent.value(), None);
+    assert_eq!(absent.revision(), StateRevision::INITIAL);
+}
+
+/// Returns one subject's authenticated provenance row.
+fn read_provenance(
+    store: &MemoryDurableStateStore,
+    profile: &LogicalProfileRecord,
+    key: &[u8],
+) -> LogicalProvenanceRecord {
+    let hashes: HashSuiteResolver = resolver("sunrise-test");
+    let space = logical_generation::LogicalKeySpace::new(profile, &hashes);
+    let subject = logical_generation::LogicalSubject::StateKey(key.to_vec());
+    let at: Vec<u8> = space.provenance_key(&subject).unwrap();
+    let row = store
+        .get_versioned_durable(&durable_context(), domain(0xC5), &at)
+        .unwrap();
+    logical_generation::decode_logical_provenance_record(row.value().unwrap()).unwrap()
 }
