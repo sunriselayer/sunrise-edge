@@ -206,6 +206,15 @@ the verifier must fetch, independently verify and durably retain those before
 counting the signer toward DrainSet. A local cursor or signed descriptor alone
 is not a closed-range proof to another validator. DrainSet voters must verify
 all pages and their completeness independently before counting that signer.
+The certified-only `/v1/fastvote/frontier/advance` route performs one
+CAS-fenced local step and returns no vote until the final row is committed;
+`/v1/fastvote/frontier/page` reads only from that finalized row, re-verifying
+each selected retained publication and its exact artifact bytes. The Rust
+client checks the returned signature against its locally pinned outgoing set
+and configured endpoint identity. A caller must still compare the vote with
+the expected committed Freeze, keep it identical across all pages, and
+complete the terminal digest check; HTTP success alone never establishes a
+complete frontier or durable possession of its artifacts.
 Publication records, local ACKs and artifact rows must be epoch-scoped before
 activation is enabled. A later epoch must scan only its own immutable
 publication family without deleting older authenticated history or treating

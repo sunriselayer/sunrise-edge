@@ -176,7 +176,7 @@ fn exact_retention_replay_returns_the_retained_acknowledgement() {
 }
 
 #[test]
-fn same_request_id_retained_under_two_epochs_does_not_collide() {
+fn same_request_id_rows_in_two_epochs_do_not_collide() {
     // DR-0154 history never overwrites. The storage key does not itself
     // forbid the same 32-byte request id recurring under a different epoch --
     // that must land on an independent row, never share one "chain + request
@@ -261,7 +261,9 @@ fn freeze_blocks_new_retention_ack_but_preserves_exact_ack_replay() {
 
 #[test]
 fn frozen_frontier_pages_two_real_certified_publications_and_replays_exact_vote() {
-    use crate::ordered_economics::{FrozenFrontierStep, advance_frozen_frontier};
+    use crate::ordered_economics::{
+        FrozenFrontierStep, advance_frozen_frontier, read_frozen_frontier_page,
+    };
 
     let replica: RetentionReplica = logical_replica();
     let first_request: u8 = REQUEST;
@@ -317,10 +319,85 @@ fn frozen_frontier_pages_two_real_certified_publications_and_replays_exact_vote(
     consensus::verify_frozen_frontier(
         &resolver(),
         &vote.identity,
-        &[first_ack.identity, second_ack.identity],
+        &[first_ack.identity.clone(), second_ack.identity.clone()],
     )
     .unwrap();
+    let mut cursor: Option<[u8; 32]> = None;
+    let mut served: Vec<AvailabilityIdentity> = Vec::new();
+    let mut terminal: bool = false;
+    for _ in 0..4 {
+        let (served_vote, page) = read_frozen_frontier_page(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            replica.signer.validator_id(),
+            cursor,
+            std::num::NonZeroUsize::new(1).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(served_vote, *vote);
+        assert_eq!(page.after_request_id, cursor);
+        cursor = page
+            .entries
+            .last()
+            .map(|identity| identity.request_id)
+            .or(cursor);
+        terminal = page.terminal;
+        served.extend(page.entries);
+        if terminal {
+            break;
+        }
+    }
+    assert!(
+        terminal,
+        "a bounded continuation must reach a terminal page"
+    );
+    assert_eq!(served, vec![first_ack.identity, second_ack.identity]);
+    consensus::verify_frozen_frontier(&resolver(), &vote.identity, &served).unwrap();
+    assert!(
+        read_frozen_frontier_page(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            replica.signer.validator_id(),
+            Some([0; 32]),
+            std::num::NonZeroUsize::new(1).unwrap(),
+        )
+        .is_err()
+    );
     assert_eq!(next(), FrozenFrontierStep::Finalized(vote));
+    let first_artifact: &ArtifactEntry = first_bundle.manifest.entries.first().unwrap();
+    let artifact_row: Vec<u8> = artifact_key(
+        protocol().chain_id(),
+        protocol().epoch(),
+        &[first_request; 32],
+        first_artifact,
+    )
+    .unwrap();
+    replica.put_row(
+        artifact_row,
+        b"corrupt retained bytes after final vote".to_vec(),
+    );
+    assert!(
+        read_frozen_frontier_page(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            replica.signer.validator_id(),
+            None,
+            std::num::NonZeroUsize::new(1).unwrap(),
+        )
+        .is_err()
+    );
 }
 
 #[test]

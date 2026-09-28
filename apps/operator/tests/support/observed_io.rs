@@ -5,6 +5,11 @@ use native_http::{
 };
 use objects::ObjectId;
 use protocol_types::{AtomicityDomainId, Digest32};
+use runtime::outbox_guard::{StructuredOutboxExclusionGuard, StructuredOutboxInventory};
+use runtime::portable::{
+    DurablePortableRepository, DurableRecordChunkOutcome, DurableRecordChunkRequest,
+    DurableRecordDescriptor, DurableRecordKey, DurableRecordPage, DurableRecordScan,
+};
 use runtime::*;
 use std::sync::{
     Arc,
@@ -167,5 +172,48 @@ impl<T: IndexedOutboxRepository> IndexedOutboxRepository for Observed<T> {
     ) -> DurableOutboxAcknowledgementOutcome {
         self.write();
         self.inner.acknowledge_outbox(context, acknowledgement)
+    }
+}
+
+impl<T: DurablePortableRepository> DurablePortableRepository for Observed<T> {
+    fn scan_portable_keys(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        scan: &DurableRecordScan,
+    ) -> Result<DurableRecordPage, DurableReadError> {
+        self.read();
+        self.inner.scan_portable_keys(context, domain, scan)
+    }
+
+    fn read_portable_descriptor(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        key: &DurableRecordKey,
+    ) -> Result<Option<DurableRecordDescriptor>, DurableReadError> {
+        self.read();
+        self.inner.read_portable_descriptor(context, domain, key)
+    }
+
+    fn read_portable_chunk(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        request: &DurableRecordChunkRequest,
+    ) -> Result<DurableRecordChunkOutcome, DurableReadError> {
+        self.read();
+        self.inner.read_portable_chunk(context, domain, request)
+    }
+}
+
+impl<T: StructuredOutboxExclusionGuard> StructuredOutboxExclusionGuard for Observed<T> {
+    fn inspect_outbox_exclusion(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<StructuredOutboxInventory, DurableReadError> {
+        self.read();
+        self.inner.inspect_outbox_exclusion(context, domain)
     }
 }

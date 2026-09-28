@@ -83,7 +83,9 @@ pub use freeze::{
     AdmissionClosureRecord, FreezeIntent, decode_admission_closure_record, decode_freeze_intent,
     encode_admission_closure_record, encode_freeze_intent,
 };
-pub use frontier::{FrozenFrontierError, FrozenFrontierStep, advance_frozen_frontier};
+pub use frontier::{
+    FrozenFrontierError, FrozenFrontierStep, advance_frozen_frontier, read_frozen_frontier_page,
+};
 pub use policy::{
     ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE, OrderedEconomicsEnvironment, OrderedEconomicsPolicy,
     authenticate_candidate, ordered_economics_authority_anchor,

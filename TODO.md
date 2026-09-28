@@ -310,19 +310,34 @@ The detailed existing evidence and remaining criteria follow:
   returns the saved vote. Separate focused tests cover four independent stores
   after a real ordered Freeze and a local retainer with two real certified
   publications under a directly installed closure row, plus artifact
-  corruption, vectors and replay. This is local evidence only: a remotely
-  verifiable closed-range proof, quorum union, DrainSet, authenticated cut, readiness,
-  Seal, activation and PostgreSQL network E2E remain open. Neither a local
+  corruption, vectors and replay. That initial step was local evidence only;
+  it did not provide remote pages, quorum union, DrainSet, an authenticated
+  cut, readiness, Seal, activation or PostgreSQL network E2E. Neither a local
   frontier signature nor this safety closure authorizes network activation.
-  Before enabling v2 activation, epoch-scope the publication/ACK/artifact key
-  families or provide an equivalent authenticated epoch-bounded scan. Their
-  current chain/request-only keys would make a later epoch's frontier encounter
-  an earlier epoch's retained publication and stop; deleting that history is
-  not an acceptable workaround.
-  The full local `scripts/check-all.sh` gate passed on 2026-09-29 after the
-  bounded frontier review follow-up; the live PostgreSQL suites were skipped
-  because `SUNRISE_EDGE_TEST_POSTGRES_URL` is unset. This is not a network
-  handoff E2E or a production-readiness claim.
+  A latent pre-activation key-scope defect was identified: chain/request-only
+  publication, ACK and artifact rows would make a later epoch's frontier
+  encounter an earlier publication and stop. Deleting historical rows was not
+  accepted as a workaround.
+  The 2026-09-29 continuation in Draft PR #235 now epoch-scopes those three
+  key families by `chain/epoch/request`, preserving prior rows. Focused tests
+  cover a retained prior-epoch publication followed by an empty next-epoch
+  frontier and independent same-request-ID rows. The same continuation adds
+  bounded `0xD039/v1` pages, `0xE107`/`0xE108` transport envelopes, a
+  verifier that accepts only a consecutive terminal stream matching one
+  registered signer's signed count/digest, a read path that rechecks each
+  retained proof and actual artifact bytes, certified-only advance/page
+  routes, and a locally pinned Rust client. Four-validator real-Freeze empty
+  pages and two real retained certified publications are covered by focused
+  core tests; the client tests cover signed response and endpoint/epoch
+  refusals. This is not quorum union: a page has identities, not the complete
+  bundles, and no DrainSet voter yet retrieves and durably retains every union
+  artifact. No authenticated cut, readiness, Seal, activation or PostgreSQL
+  network handoff E2E is claimed by this slice.
+  `npm ci --prefix adapters/cloudflare-workers` and the full local
+  `scripts/check-all.sh` gate passed again on 2026-09-29 after the epoch-key,
+  page, HTTP and Rust-client continuation. The live PostgreSQL suites were
+  skipped because `SUNRISE_EDGE_TEST_POSTGRES_URL` is unset. This is not a
+  multi-validator PostgreSQL handoff E2E or a production-readiness claim.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

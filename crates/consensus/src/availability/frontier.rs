@@ -608,6 +608,12 @@ impl FrozenFrontierCertifier {
         })
     }
 
+    /// The locally pinned outgoing epoch this certifier authenticates.
+    #[must_use]
+    pub fn epoch(&self) -> Epoch {
+        self.inner.epoch()
+    }
+
     pub fn cast_vote<S: ConsensusSigner>(
         &self,
         identity: FrozenFrontierIdentity,

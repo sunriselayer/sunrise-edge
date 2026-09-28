@@ -15,9 +15,11 @@ use crate::fast_path::{FastPathEd25519Verifier, FastPathError, load_validator_se
 use canonical_encoding::{decode_canonical_frame, encode_chain_id};
 use consensus::{
     ConsensusSigner, FrontierError, FrozenFrontierAccumulator, FrozenFrontierCertifier,
-    FrozenFrontierIdentity, FrozenFrontierVote, decode_frozen_frontier_identity,
-    decode_frozen_frontier_vote, encode_frozen_frontier_identity, encode_frozen_frontier_vote,
+    FrozenFrontierIdentity, FrozenFrontierPage, FrozenFrontierVote,
+    MAX_FROZEN_FRONTIER_PAGE_ENTRIES, decode_frozen_frontier_identity, decode_frozen_frontier_vote,
+    encode_frozen_frontier_identity, encode_frozen_frontier_vote,
 };
+use protocol_types::ValidatorId;
 use runtime::outbox_guard::StructuredOutboxExclusionGuard;
 use runtime::portable::{
     DurableCollection, DurablePortableRepository, DurableRecordKey, DurableRecordScan,
@@ -459,6 +461,173 @@ where
         encode_final(&final_record)?,
     )?;
     Ok(FrozenFrontierStep::Finalized(Box::new(vote)))
+}
+
+/// Reads one bounded, body-free keyset page from a durably finalized local
+/// frontier, then re-verifies every selected publication's full certificate,
+/// signed intent, ACK and exact retained artifact bytes before returning its
+/// identity. The returned vote authenticates the *whole* frontier; a remote
+/// caller must verify a consecutive page stream through its terminal page
+/// with `FrozenFrontierPageVerifier`, and must obtain the complete bundles
+/// separately before any DrainSet vote. This read never signs or mutates.
+#[allow(clippy::too_many_arguments)]
+pub fn read_frozen_frontier_page<S: DurablePortableRepository>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &execution::publication::PublicationContext,
+    local_validator: ValidatorId,
+    after_request_id: Option<[u8; 32]>,
+    limit: NonZeroUsize,
+) -> Result<(FrozenFrontierVote, FrozenFrontierPage), FrozenFrontierError> {
+    if limit.get() > MAX_FROZEN_FRONTIER_PAGE_ENTRIES {
+        return Err(FrozenFrontierError::Invalid("frontier page limit exceeded"));
+    }
+    if after_request_id == Some([0; 32]) {
+        return Err(FrozenFrontierError::Invalid("zero frontier page cursor"));
+    }
+    let chain: ChainId = expected.chain_id().clone();
+    let epoch: Epoch = expected.epoch();
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let installed =
+        logical_generation::fence_commitment_profile(store, context, domain, &chain, &mut reads)?;
+    if installed.logical().is_none() {
+        return Err(FrozenFrontierError::Invalid(
+            "historical profile has no frozen frontier",
+        ));
+    }
+    let epoch_record =
+        mutation_fence::fence_epoch_state(store, context, domain, &chain, &mut reads)?;
+    if epoch_record.current_epoch != epoch {
+        return Err(NodeCoreError::EpochMismatch {
+            expected: epoch_record.current_epoch,
+            actual: epoch,
+        }
+        .into());
+    }
+    let validator_set: ValidatorSet = load_validator_set(
+        store,
+        context,
+        domain,
+        resolver,
+        expected,
+        &epoch_record,
+        &mut reads,
+    )?;
+    let certifier: FrozenFrontierCertifier = FrozenFrontierCertifier::new(
+        chain.clone(),
+        expected.protocol_version(),
+        epoch,
+        validator_set.clone(),
+    )?;
+
+    let closure_key: Vec<u8> = admission_closure_key(&chain, epoch)?;
+    let closure_row: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &closure_key)?;
+    let closure_bytes: &[u8] = closure_row.value().ok_or(FrozenFrontierError::Invalid(
+        "ordered Freeze is not committed",
+    ))?;
+    let closure = decode_admission_closure_record(closure_bytes)?;
+    if closure.closed_epoch != epoch || closure.closed_at_block_height == 0 {
+        return Err(FrozenFrontierError::Invalid("invalid committed Freeze"));
+    }
+    let final_key: Vec<u8> = key(&chain, epoch, FRONTIER_FINAL_PREFIX)?;
+    let final_row: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &final_key)?;
+    let final_bytes: &[u8] = final_row.value().ok_or(FrozenFrontierError::Invalid(
+        "frozen frontier is not finalized",
+    ))?;
+    let final_record: FinalFrontier = decode_final(final_bytes)?;
+    if final_record.identity.chain_id != chain
+        || final_record.identity.protocol_version != expected.protocol_version()
+        || final_record.identity.epoch != epoch
+        || final_record.identity.domain != domain
+        || final_record.identity.closure_request_id != closure.request_id
+        || final_record.identity.closure_height != closure.closed_at_block_height
+        || final_record.vote.validator != local_validator
+    {
+        return Err(FrozenFrontierError::Invalid(
+            "final frontier context or local signer mismatch",
+        ));
+    }
+    certifier.verify_vote(&final_record.vote, &FastPathEd25519Verifier)?;
+
+    let prefix: Vec<u8> = publication_prefix(&chain, epoch)?;
+    let after_key: Vec<u8> = match after_request_id {
+        Some(request_id) => {
+            verify_retained_publication(
+                store,
+                context,
+                domain,
+                resolver,
+                history,
+                expected,
+                &validator_set,
+                local_validator,
+                &request_id,
+            )?;
+            fastpath_publication_key(&chain, epoch, &request_id)?
+        }
+        None => {
+            let prefix_row: VersionedStateValue =
+                store.get_versioned_durable(context, domain, &prefix)?;
+            if prefix_row.value().is_some() || prefix_row.revision() != StateRevision::INITIAL {
+                return Err(FrozenFrontierError::Invalid(
+                    "invalid publication prefix row",
+                ));
+            }
+            prefix.clone()
+        }
+    };
+    let scan: DurableRecordScan = DurableRecordScan::new(
+        DurableCollection::State,
+        Some(DurableRecordKey::State(after_key)),
+        limit,
+    )?;
+    let scanned = store.scan_portable_keys(context, domain, &scan)?;
+    let mut entries: Vec<consensus::AvailabilityIdentity> =
+        Vec::with_capacity(scanned.keys().len());
+    let mut terminal: bool = scanned.continuation().is_none();
+    for row in scanned.keys() {
+        let DurableRecordKey::State(publication_key) = row else {
+            return Err(FrozenFrontierError::Invalid("non-state frontier scan row"));
+        };
+        if !publication_key.starts_with(&prefix) {
+            terminal = true;
+            break;
+        }
+        let request_id: [u8; 32] = publication_key[prefix.len()..]
+            .try_into()
+            .map_err(|_| FrozenFrontierError::Invalid("malformed frozen publication key"))?;
+        entries.push(verify_retained_publication(
+            store,
+            context,
+            domain,
+            resolver,
+            history,
+            expected,
+            &validator_set,
+            local_validator,
+            &request_id,
+        )?);
+    }
+    if entries.is_empty() {
+        terminal = true;
+    }
+    let page: FrozenFrontierPage = FrozenFrontierPage {
+        after_request_id,
+        entries,
+        terminal,
+    };
+    // Validate the same page bounds and strict request ordering as a remote
+    // decoder without allocating a second protocol-specific validation path.
+    consensus::encode_frozen_frontier_page(&page)?;
+    if after_request_id.is_none() && terminal {
+        consensus::verify_frozen_frontier(resolver, &final_record.identity, &page.entries)?;
+    }
+    Ok((final_record.vote, page))
 }
 
 #[cfg(test)]

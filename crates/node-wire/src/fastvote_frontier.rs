@@ -12,6 +12,9 @@ use std::error::Error;
 use std::fmt;
 
 pub const FASTVOTE_FROZEN_FRONTIER_PAGE_PATH: &str = "/v1/fastvote/frontier/page";
+/// One bounded CAS-fenced local frontier step after committed Freeze. A
+/// confirmed final step returns the already retained canonical frontier vote.
+pub const FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH: &str = "/v1/fastvote/frontier/advance";
 pub const FROZEN_FRONTIER_PAGE_REQUEST_TYPE_ID: u16 = 0xE107;
 pub const FROZEN_FRONTIER_PAGE_RESPONSE_TYPE_ID: u16 = 0xE108;
 const VERSION: u16 = 1;
@@ -218,8 +221,7 @@ mod tests {
         wrong_type[4] ^= 1;
         assert!(FrozenFrontierPageRequest::decode(&wrong_type).is_err());
         assert!(
-            FrozenFrontierPageRequest::decode(&[0; MAX_FRONTIER_PAGE_REQUEST_BYTES + 1])
-                .is_err()
+            FrozenFrontierPageRequest::decode(&[0; MAX_FRONTIER_PAGE_REQUEST_BYTES + 1]).is_err()
         );
     }
 
@@ -258,8 +260,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            FrozenFrontierPageResponse::decode(&[0; MAX_FRONTIER_PAGE_RESPONSE_BYTES + 1])
-                .is_err()
+            FrozenFrontierPageResponse::decode(&[0; MAX_FRONTIER_PAGE_RESPONSE_BYTES + 1]).is_err()
         );
     }
 }

@@ -1123,6 +1123,20 @@ fn committed_freeze_yields_four_durable_empty_frontier_votes_without_resigning()
             )
             .is_err()
         );
+        assert!(
+            read_frozen_frontier_page(
+                &network.stores[replica],
+                &network.context,
+                network.domain(),
+                &network.resolver,
+                &network.history,
+                &expected,
+                network.signers[replica].validator_id(),
+                None,
+                std::num::NonZeroUsize::new(1).unwrap(),
+            )
+            .is_err()
+        );
     }
     network.round(1, None);
     network.round(2, None);
@@ -1154,6 +1168,30 @@ fn committed_freeze_yields_four_durable_empty_frontier_votes_without_resigning()
         certifier
             .verify_vote(&vote, &super::policy::Ed25519ConsensusVerifier)
             .unwrap();
+        let (served_vote, page) = read_frozen_frontier_page(
+            &network.stores[replica],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            network.signers[replica].validator_id(),
+            None,
+            std::num::NonZeroUsize::new(1).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(served_vote, *vote);
+        assert!(page.terminal);
+        assert!(page.entries.is_empty());
+        let mut page_verifier = consensus::FrozenFrontierPageVerifier::new(
+            &network.resolver,
+            &certifier,
+            served_vote.clone(),
+            &super::policy::Ed25519ConsensusVerifier,
+        )
+        .unwrap();
+        page_verifier.push_page(&network.resolver, &page).unwrap();
+        assert_eq!(page_verifier.finish().unwrap(), served_vote);
         if let Some(identity) = &first_identity {
             assert_eq!(&vote.identity, identity);
         } else {
@@ -1192,6 +1230,20 @@ fn committed_freeze_yields_four_durable_empty_frontier_votes_without_resigning()
     }
     let final_key: Vec<u8> = frontier::key(&chain, epoch, b"frontier/").unwrap();
     network.put(0, final_key, StateMutation::Delete);
+    assert!(
+        read_frozen_frontier_page(
+            &network.stores[0],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            network.signers[0].validator_id(),
+            None,
+            std::num::NonZeroUsize::new(1).unwrap(),
+        )
+        .is_err()
+    );
     assert!(
         advance_frozen_frontier(
             &network.stores[0],

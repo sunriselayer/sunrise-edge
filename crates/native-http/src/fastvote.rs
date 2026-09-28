@@ -42,8 +42,13 @@ use consensus::{ConsensusSigner, bundle::MAX_ENCODED_BUNDLE_BYTES};
 use execution::paid_execution::{MAX_SIGNED_PAID_INTENT_BYTES, decode_signed_paid_intent};
 use node_core::fast_path::publication::PublicationRetentionError;
 use node_core::fast_path::{self, FastPathError};
+use node_core::ordered_economics::{
+    FrozenFrontierError, FrozenFrontierStep, advance_frozen_frontier, read_frozen_frontier_page,
+};
 use node_core::paid_execution::authenticate_paid_execution;
 use protocol_types::{SignatureSchemeId, ValidatorId};
+use runtime::{outbox_guard::StructuredOutboxExclusionGuard, portable::DurablePortableRepository};
+use std::num::NonZeroUsize;
 
 /// Production mutation-route inventory excluded by certified-only hosting.
 /// Derived from the actual handler constants so route renames remain covered.
@@ -78,7 +83,12 @@ pub(super) fn routes<S, B, M, T, C, I>(
     enabled: bool,
 ) -> Router<SharedPreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I>>
 where
-    S: IndexedOutboxRepository + Send + Sync + 'static,
+    S: IndexedOutboxRepository
+        + DurablePortableRepository
+        + StructuredOutboxExclusionGuard
+        + Send
+        + Sync
+        + 'static,
     B: BlobStore + Send + Sync + 'static,
     M: TransactionalNodeStateMachine + Send + Sync + 'static,
     T: Transport + Send + Sync + 'static,
@@ -117,6 +127,264 @@ where
                 node_wire::MAX_FASTVOTE_PUBLISHED_APPLY_REQUEST_BYTES,
             )),
         )
+        .route(
+            FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
+            post(advance_frontier::<S, B, M, T, C, I>).layer(DefaultBodyLimit::max(0)),
+        )
+        .route(
+            FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
+            post(get_frontier_page::<S, B, M, T, C, I>).layer(DefaultBodyLimit::max(
+                node_wire::MAX_FRONTIER_PAGE_REQUEST_BYTES,
+            )),
+        )
+}
+
+fn frontier_error_response(error: &FrozenFrontierError) -> Response {
+    match error {
+        FrozenFrontierError::Invalid(_) => {
+            error_response(StatusCode::CONFLICT, "frontier-not-ready")
+        }
+        FrozenFrontierError::Node(NodeCoreError::EpochMismatch { .. }) => {
+            error_response(StatusCode::CONFLICT, "frontier-epoch-mismatch")
+        }
+        _ => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "frontier-verification-failed",
+        ),
+    }
+}
+
+/// Advances at most one verified retained publication after a committed
+/// ordered Freeze. A retry after finalization returns the exact saved vote;
+/// a failed or ambiguous store commit cannot expose a fresh signature.
+async fn advance_frontier<S, B, M, T, C, I>(
+    State(state): State<SharedPreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I>>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response
+where
+    S: IndexedOutboxRepository
+        + DurablePortableRepository
+        + StructuredOutboxExclusionGuard
+        + Send
+        + Sync
+        + 'static,
+    B: BlobStore + Send + Sync + 'static,
+    M: TransactionalNodeStateMachine + Send + Sync + 'static,
+    T: Transport + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    I: IndexedOutboxIdentitySource + Send + Sync + 'static,
+{
+    if !has_supported_content_type(&headers) || has_unsupported_content_encoding(&headers) {
+        return error_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported-fastvote-content",
+        );
+    }
+    let body: Bytes = match body {
+        Ok(value) => value,
+        Err(error) => return error_response(error.status(), "body-rejected"),
+    };
+    if !body.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "frontier-advance-body-not-empty");
+    }
+    publication::admitted(
+        state.components.is_cancelled(),
+        state.blocking_executor.clone(),
+        move || {
+            let Some(fastvote) = state.preinstalled_wasm.fastvote.as_ref() else {
+                return error_response(StatusCode::NOT_FOUND, "fastvote-disabled");
+            };
+            let expected = match execution::publication::PublicationContext::new(
+                state.config.chain_id().clone(),
+                state.config.protocol_version(),
+                state.config.epoch(),
+            ) {
+                Ok(value) => value,
+                Err(_) => {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "frontier-host-context",
+                    );
+                }
+            };
+            let (domain, context) = match prepare_storage_context(
+                &state.components,
+                &state.protocol_config,
+                &state.authority,
+                &state.config,
+            ) {
+                Ok(value) => value,
+                Err(error) => return query_invocation_error_response(&error),
+            };
+            if state.components.is_cancelled() {
+                return cancelled_before_storage_response();
+            }
+            match advance_frozen_frontier(
+                state.components.store.as_ref(),
+                &context,
+                domain,
+                &state.resolver,
+                &state.history,
+                &expected,
+                &DynConsensusSigner(fastvote.signer.as_ref()),
+            ) {
+                Ok(FrozenFrontierStep::Advanced { .. }) => StatusCode::NO_CONTENT.into_response(),
+                Ok(FrozenFrontierStep::Finalized(vote)) => {
+                    match consensus::encode_frozen_frontier_vote(&vote) {
+                        Ok(bytes) => (
+                            StatusCode::OK,
+                            [
+                                (header::CONTENT_TYPE, NODE_RESULT_MEDIA_TYPE),
+                                (header::CACHE_CONTROL, "no-store"),
+                            ],
+                            bytes,
+                        )
+                            .into_response(),
+                        Err(_) => error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "frontier-vote-encoding",
+                        ),
+                    }
+                }
+                Err(error) => frontier_error_response(&error),
+            }
+        },
+    )
+    .await
+}
+
+/// Returns a page only from this replica's durably finalized, signed
+/// frontier. Neither an HTTP 200 nor a single page proves the complete log.
+async fn get_frontier_page<S, B, M, T, C, I>(
+    State(state): State<SharedPreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I>>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response
+where
+    S: IndexedOutboxRepository
+        + DurablePortableRepository
+        + StructuredOutboxExclusionGuard
+        + Send
+        + Sync
+        + 'static,
+    B: BlobStore + Send + Sync + 'static,
+    M: TransactionalNodeStateMachine + Send + Sync + 'static,
+    T: Transport + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    I: IndexedOutboxIdentitySource + Send + Sync + 'static,
+{
+    if !has_supported_content_type(&headers) || has_unsupported_content_encoding(&headers) {
+        return error_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported-fastvote-content",
+        );
+    }
+    let body: Bytes = match body {
+        Ok(value) => value,
+        Err(error) => return error_response(error.status(), "body-rejected"),
+    };
+    if body.len() > node_wire::MAX_FRONTIER_PAGE_REQUEST_BYTES {
+        return error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "frontier-page-request-too-large",
+        );
+    }
+    publication::admitted(
+        state.components.is_cancelled(),
+        state.blocking_executor.clone(),
+        move || {
+            let Some(fastvote) = state.preinstalled_wasm.fastvote.as_ref() else {
+                return error_response(StatusCode::NOT_FOUND, "fastvote-disabled");
+            };
+            let request: node_wire::FrozenFrontierPageRequest =
+                match node_wire::FrozenFrontierPageRequest::decode(&body) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return error_response(
+                            StatusCode::BAD_REQUEST,
+                            "invalid-frontier-page-request",
+                        );
+                    }
+                };
+            if request.epoch != state.config.epoch() {
+                return error_response(StatusCode::CONFLICT, "frontier-epoch-repin-required");
+            }
+            let expected = match execution::publication::PublicationContext::new(
+                state.config.chain_id().clone(),
+                state.config.protocol_version(),
+                state.config.epoch(),
+            ) {
+                Ok(value) => value,
+                Err(_) => {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "frontier-host-context",
+                    );
+                }
+            };
+            let (domain, context) = match prepare_storage_context(
+                &state.components,
+                &state.protocol_config,
+                &state.authority,
+                &state.config,
+            ) {
+                Ok(value) => value,
+                Err(error) => return query_invocation_error_response(&error),
+            };
+            if state.components.is_cancelled() {
+                return cancelled_before_storage_response();
+            }
+            let limit: NonZeroUsize = match NonZeroUsize::new(usize::from(request.limit)) {
+                Some(value) => value,
+                None => {
+                    return error_response(StatusCode::BAD_REQUEST, "invalid-frontier-page-limit");
+                }
+            };
+            let (vote, page) = match read_frozen_frontier_page(
+                state.components.store.as_ref(),
+                &context,
+                domain,
+                &state.resolver,
+                &state.history,
+                &expected,
+                fastvote.signer.validator_id(),
+                request.after_request_id,
+                limit,
+            ) {
+                Ok(value) => value,
+                Err(error) => return frontier_error_response(&error),
+            };
+            let response = match (
+                consensus::encode_frozen_frontier_vote(&vote),
+                consensus::encode_frozen_frontier_page(&page),
+            ) {
+                (Ok(vote), Ok(page)) => node_wire::FrozenFrontierPageResponse { vote, page },
+                _ => {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "frontier-page-encoding",
+                    );
+                }
+            };
+            match response.encode() {
+                Ok(bytes) => (
+                    StatusCode::OK,
+                    [
+                        (header::CONTENT_TYPE, NODE_RESULT_MEDIA_TYPE),
+                        (header::CACHE_CONTROL, "no-store"),
+                    ],
+                    bytes,
+                )
+                    .into_response(),
+                Err(_) => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "frontier-page-envelope-encoding",
+                ),
+            }
+        },
+    )
+    .await
 }
 
 /// Returns only the canonical bundle already backed by this replica's
@@ -802,7 +1070,12 @@ pub fn certified_fastvote_router<S, B, T, C, I>(
     blocking_policy: NativeBlockingPolicy,
 ) -> Result<Router, StructuredDurableRouterError>
 where
-    S: IndexedOutboxRepository + Send + Sync + 'static,
+    S: IndexedOutboxRepository
+        + DurablePortableRepository
+        + StructuredOutboxExclusionGuard
+        + Send
+        + Sync
+        + 'static,
     B: BlobStore + Send + Sync + 'static,
     T: Transport + Send + Sync + 'static,
     C: Clock + Send + Sync + 'static,
@@ -844,7 +1117,12 @@ pub fn certified_fastvote_router_with_executor<S, B, T, C, I>(
     blocking_executor: NativeBlockingExecutor,
 ) -> Result<Router, StructuredDurableRouterError>
 where
-    S: IndexedOutboxRepository + Send + Sync + 'static,
+    S: IndexedOutboxRepository
+        + DurablePortableRepository
+        + StructuredOutboxExclusionGuard
+        + Send
+        + Sync
+        + 'static,
     B: BlobStore + Send + Sync + 'static,
     T: Transport + Send + Sync + 'static,
     C: Clock + Send + Sync + 'static,

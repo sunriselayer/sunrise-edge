@@ -221,6 +221,7 @@ async fn certified_router_mounts_fastvote_and_publication_routes() {
     for path in [
         FASTVOTE_PUBLICATION_SOURCE_PATH,
         FASTVOTE_PUBLISHED_APPLY_PATH,
+        FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
     ] {
         assert_eq!(
             dispatch(&app, "POST", path, vec![0xAA]).await,
@@ -232,6 +233,26 @@ async fn certified_router_mounts_fastvote_and_publication_routes() {
             StatusCode::METHOD_NOT_ALLOWED
         );
     }
+    assert_ne!(
+        dispatch(
+            &app,
+            "POST",
+            FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
+            Vec::new()
+        )
+        .await,
+        StatusCode::NOT_FOUND,
+    );
+    assert_eq!(
+        dispatch(
+            &app,
+            "GET",
+            FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
+            Vec::new()
+        )
+        .await,
+        StatusCode::METHOD_NOT_ALLOWED,
+    );
 }
 
 #[test]

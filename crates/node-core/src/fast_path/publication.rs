@@ -446,8 +446,7 @@ pub struct FastPathAvailabilityAckRecord {
 
 /// One retained publication record, keyed by chain, then the pinned serving
 /// context's epoch, then the original signed request id -- in that order --
-/// so a prefix scan bounded to one closed epoch (see
-/// [`super::super::ordered_economics::frontier`]) can never run into an older
+/// so the ordered-economics frontier's one-epoch prefix scan cannot run into an older
 /// or newer epoch's row: those sort strictly outside the epoch-scoped prefix
 /// regardless of how the request id byte pattern happens to compare. `epoch`
 /// must always be the caller's own already-fenced [`PublicationContext`]
