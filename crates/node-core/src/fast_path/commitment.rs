@@ -260,8 +260,11 @@ fn is_excluded_from_mutation_commitment(key: &[u8], shape: Shape) -> bool {
 // this metadata row's local revision. New provenance mutations remain signed
 // below, so this does not remove the resulting causal assertion. The ordered
 // Freeze marker is likewise a CAS-fenced control read, not an application
-// operand with a logical-generation observation; no other ordered row is
-// silently excluded by this exception.
+// operand with a logical-generation observation. This exclusion is required
+// because `logical_generation::classify_ordered_row` makes the marker an
+// authenticated-history row outside generic provenance; no other ordered row
+// is silently excluded by this exception. The certificate does not attest
+// admission-open; each replica's local CAS fence supplies that guarantee.
 fn is_excluded_from_read_commitment(key: &[u8], shape: Shape) -> bool {
     is_excluded_from_mutation_commitment(key, shape)
         || (matches!(shape, Shape::Logical)

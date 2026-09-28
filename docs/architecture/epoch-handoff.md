@@ -143,12 +143,25 @@ A proposal or operator request alone cannot freeze a replica. Check next-set
 eligibility through the existing bond, key, policy and power rules; bond value
 must not become voting power.
 
+HotStuff orders an authorized control decision; it does not make an arbitrary
+caller-supplied Freeze candidate warranted. Before voting, each honest replica
+must verify the same deterministic epoch-end warrant and the legal eligibility
+of at least one next set, including the same set if permitted. A proposal from
+the HTTP surface or one leader is not itself that warrant. The exact warrant
+format and verification rule remain to be specified before Freeze is enabled.
+
 At each replica, commit the closed-admission marker with processing this
 ordered prefix. Stop new prepares, new retention ACKs, direct local/paid
 mutations and construction of fresh economic candidates. Publication commits
 racing this boundary must assert the admission-marker revision: either their
 full artifacts enter the frozen log before their ACK is exposed, or they fail
 without exposing a signature.
+
+The Freeze marker is a local CAS precondition for each replica's admission;
+it is not a signed business read in the FastVote execution commitment. Thus a
+certificate does not by itself attest that admission was open at every later
+replica. Fresh publication ACKs assert the marker revision in their atomic
+commit, and exact earlier ACK replay does not create a new signature.
 
 Still allow historical reads, exact completed replay, safe shared-engine
 progress and catch-up. Ordinary fresh apply stops; certificate-backed missing

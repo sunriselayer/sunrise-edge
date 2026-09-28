@@ -439,10 +439,10 @@ fn authenticate_with_policy(
     }
 }
 
-/// [`OrderedOperationKind::Freeze`] carries no outer signature by
-/// construction (see [`super::freeze`]): its authority is being committed
-/// through the shared three-chain rule, not a signed intent. This function
-/// therefore only proves the structural binding a byzantine leader could
+/// [`OrderedOperationKind::Freeze`] carries no outer signature in this draft
+/// (see [`super::freeze`]). The shared three-chain rule orders it but does not
+/// establish an epoch-end warrant. This function currently only proves the
+/// structural binding a byzantine leader could
 /// otherwise forge for free -- that the embedded intent names the exact same
 /// context and request id as the candidate envelope carrying it.
 fn authenticate_freeze(

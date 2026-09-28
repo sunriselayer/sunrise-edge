@@ -3,13 +3,17 @@
 //!
 //! `Freeze` is an [`OrderedOperationKind`] exactly like `FeeClaim` or
 //! `BondLifecycle`: it occupies the same economic-height proposal slot and is
-//! authorized purely by committing through the existing shared three-chain
+//! committed through the existing shared three-chain
 //! `ChainedHotStuff` rules -- the same leader/view/lock/QC machinery every
 //! other ordered candidate already uses. There is no separate signature or
 //! parallel voting chain: a *proposed* `Freeze` changes nothing, and only a
 //! *committed* one -- decided in [`super::preflight`] and applied here, after
 //! the same [`super::authenticate_candidate`]/preflight sequence every other
 //! kind goes through -- installs the durable [`AdmissionClosureRecord`].
+//! This partial implementation checks no independent epoch-end warrant or
+//! next-set eligibility before honest votes; quorum ordering is not a
+//! substitute for that authorization. It must not be enabled until both
+//! checks are defined and enforced.
 //!
 //! Scope of this slice (DR-0154 Delivery 3, partial): closing admission and
 //! refusing business after closure. Fresh publication-retention ACKs are

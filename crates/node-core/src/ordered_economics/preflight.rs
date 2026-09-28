@@ -176,6 +176,8 @@ fn require_admission_open<S: StructuredDurableDomainStateStore>(
     candidate: &OrderedCandidate,
 ) -> Result<(), OrderedEconomicsError> {
     let chain = env.policy.context().chain_id();
+    // A tombstoned or corrupt marker is a storage stop, never a deterministic
+    // ClosedEpoch refusal that could advance the ordered applied prefix.
     let closure = super::freeze::read_admission_closure(
         store,
         context,

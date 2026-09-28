@@ -241,7 +241,11 @@ The detailed existing evidence and remaining criteria follow:
   admission fences, including fresh retention ACKs; exact earlier ACK replay
   remains available. This is partial control only. The older standalone
   epoch-transition API can still activate without `DrainSet`/`Seal`, and a
-  structurally valid Freeze does not yet prove a legally eligible next set.
+  structurally valid Freeze does not yet prove a legally eligible next set or
+  any epoch-end warrant. The ordered HTTP propose route accepts caller-
+  supplied candidate bytes, so quorum ordering alone must not be mistaken
+  for authorization to irreversibly close an epoch. Define and enforce a
+  validator-checked Freeze warrant before enabling that candidate family.
   Neither path is safe to expose as complete handoff until those gaps close.
   The 2026-09-28 bundle clarification requires a full logical witness and
   verified artifact closure before a retention ACK, including on a retainer
@@ -261,9 +265,10 @@ The detailed existing evidence and remaining criteria follow:
   classified in `logical_generation::classify_fastpath_row`
   (`publication/`/`publication-artifact/` as authenticated history,
   `availability-ack/` as local signing-safety state). This still has
-  no apply-admission gate, HTTP/CLI ingress, Freeze/DrainSet/Seal or
-  availability-certificate aggregation; it is retention only, not usable
-  Delivery 3 acceptance, and independent review of this slice is pending.
+  no apply-admission gate or HTTP/CLI ingress; the Freeze admission fence is
+  only partial, and DrainSet/Seal and availability-certificate aggregation
+  remain open. This does not satisfy Delivery 3 acceptance; independent
+  review of the complete handoff is pending.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).
