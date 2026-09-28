@@ -20,8 +20,8 @@ use crate::genesis::{
 };
 use crate::paid_execution::tests::{
     CountingEngine, Fixture, domain as pe_domain, entry as pe_entry, install as install_pe_fixture,
-    memory_store, protocol as pe_protocol, receipt, refund_account as pe_refund_account,
-    resolver as pe_resolver, set_state,
+    install_logical_profile, memory_store, protocol as pe_protocol, receipt,
+    refund_account as pe_refund_account, resolver as pe_resolver, set_state,
 };
 use abi::call_values::{CallValue, encode_call_value};
 use abi::package_types::{PackageOrigin, ScopedTypeArg, derive_scoped_type_id};
@@ -4968,4 +4968,81 @@ fn decode_fastpath_epoch_transition_record_round_trips_and_rejects_a_bit_flip() 
         decode_fastpath_epoch_transition_record(&truncated).is_err(),
         "a truncated frame must not silently decode"
     );
+}
+
+// ── DR-0154 bounded safety fix: the standalone route refuses a v2 store ──
+
+/// This standalone `propose_and_vote` never derives, votes on, or verifies an
+/// ordered `DrainSet`/`Seal`, so it must refuse outright once the store's
+/// signed genesis binds the handoff-capable v2 profile -- there is no
+/// "before Freeze" carve-out.
+#[test]
+fn propose_and_vote_refuses_a_handoff_capable_v2_profile() {
+    let store: MemoryDurableStateStore = memory_store();
+    let (_fixture, signers, _entries) = install_lightweight(&store);
+    let (_next_signers, next_entries) = four_next_validators();
+    install_logical_profile(&store);
+
+    let error = propose_and_vote(
+        &store,
+        &pe_context(),
+        pe_domain(),
+        &pe_resolver(),
+        pe_protocol().chain_id(),
+        pe_protocol().protocol_version(),
+        next_entries,
+        &signers[0],
+    )
+    .unwrap_err();
+    assert!(matches!(error, EpochTransitionError::Invalid(_)));
+}
+
+/// The same refusal on `activate`, and specifically *including* a store where
+/// a committed ordered-economics `Freeze` has already installed its
+/// `AdmissionClosureRecord` for the outgoing epoch: `refuse_handoff_capable_profile`
+/// never consults that record, so this refusal cannot be mistaken for (or
+/// rely on) the separate `fence_admission_open` gate. Otherwise the pre-Freeze
+/// window on a v2 store would still let this route activate a transition that
+/// never went through `DrainSet`/`Seal`.
+#[test]
+fn activate_refuses_a_handoff_capable_v2_profile_even_after_a_committed_freeze() {
+    let store: MemoryDurableStateStore = memory_store();
+    let (_fixture, signers, entries) = install_lightweight(&store);
+    let (_next_signers, next_entries) = four_next_validators();
+    let (certificate, ..) =
+        propose_vote_and_certify(&store, &signers, &entries, next_entries.clone());
+    let certificate_bytes = consensus::encode_epoch_transition_certificate(&certificate).unwrap();
+
+    // A committed ordered-economics `Freeze` for the outgoing epoch: present
+    // purely to prove the refusal below does not depend on, and is not
+    // satisfied merely by the absence of, this record.
+    let closure_key: Vec<u8> = ordered_economics::engine::admission_closure_key_for_tests(
+        pe_protocol().chain_id(),
+        pe_protocol().epoch(),
+    );
+    let closure = ordered_economics::AdmissionClosureRecord {
+        closed_epoch: pe_protocol().epoch(),
+        request_id: [7; 32],
+        closed_at_block_height: 1,
+    };
+    set_state(
+        &store,
+        closure_key,
+        StateMutation::Put(ordered_economics::encode_admission_closure_record(&closure).unwrap()),
+    );
+    install_logical_profile(&store);
+
+    let error = activate(
+        &store,
+        &pe_context(),
+        pe_domain(),
+        &pe_resolver(),
+        pe_protocol().chain_id(),
+        pe_protocol().protocol_version(),
+        next_entries,
+        &certificate_bytes,
+        30,
+    )
+    .unwrap_err();
+    assert!(matches!(error, EpochTransitionError::Invalid(_)));
 }

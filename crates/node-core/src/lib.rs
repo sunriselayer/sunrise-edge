@@ -131,6 +131,15 @@ const ENCODING_VERSION: u16 = 1;
 const APPLY_REFUSED_MESSAGE: &str =
     "handoff profile: installed commitment profile and derived evidence disagree";
 
+/// Refusal text for [`NodeCoreError::LogicalProfileOutboxUnsupported`]
+/// (DR-0154): the handoff profile's portable cut/import contract only ever
+/// proves an *absent* outbox obligation is safe to exclude
+/// (`docs/architecture/epoch-handoff.md`'s "The initial handoff profile
+/// names outbox batches ... as excluded families"); no cross-epoch delivery
+/// or deterministic reconstruction proof exists yet for a nonempty one.
+const OUTBOX_REFUSED_MESSAGE: &str = "handoff profile: generic durable event produced a nonempty outbox obligation, which the \
+     handoff-capable profile cannot yet admit";
+
 /// Maximum UTF-8 byte length of a chain identifier accepted at node ingress.
 pub const MAX_CHAIN_ID_BYTES: usize = 128;
 /// Maximum canonical payload length carried by one node event or response.
@@ -583,6 +592,13 @@ pub enum NodeCoreError {
     /// [`InstalledCommitmentProfile::Logical`]: logical_generation::InstalledCommitmentProfile::Logical
     /// [`InstalledCommitmentProfile::Historical`]: logical_generation::InstalledCommitmentProfile::Historical
     LogicalProfileApplicationUnsupported,
+    /// A generic durable event produced a nonempty outbox obligation while
+    /// this store is bound to the handoff-capable
+    /// [`logical_generation::CommitmentProfile::LogicalGenerationV2`] profile
+    /// (DR-0154). Historical stores are unaffected: this refusal exists only
+    /// because no cross-epoch outbox delivery/reconstruction proof exists
+    /// yet, not because outbound messages are otherwise invalid.
+    LogicalProfileOutboxUnsupported,
     /// The authenticated causal generation has no representable successor.
     ExecutionGenerationOverflow {
         /// Authenticated floor the derivation started from.
@@ -1708,6 +1724,7 @@ impl fmt::Display for NodeCoreError {
             ),
             Self::LogicalProvenance(reason) => write!(f, "logical provenance: {reason}"),
             Self::LogicalProfileApplicationUnsupported => f.write_str(APPLY_REFUSED_MESSAGE),
+            Self::LogicalProfileOutboxUnsupported => f.write_str(OUTBOX_REFUSED_MESSAGE),
             Self::ExecutionGenerationOverflow { floor } => write!(f, "generation overflow {floor}"),
             Self::ExecutionGenerationRegression {
                 previous,
@@ -5425,6 +5442,38 @@ where
             event.chain_id(),
             &mut logical_reads,
         )?;
+    // DR-0154 bounded safety fix: a reservation carries its own
+    // `fence_current_epoch` call above (which itself asserts admission
+    // still being open, `crate::ordered_economics::fence_admission_open`),
+    // but a generic non-transaction event has no reservation and therefore
+    // took no epoch/admission fence at all above -- "Generic non-transaction
+    // events have no sender-owned mutation authority to fence" was true only
+    // of the lock/nonce fences, not of the epoch/admission ones a
+    // handoff-capable store also requires. A historical store keeps its
+    // exact existing behavior: this store class never installs the
+    // `LogicalProfileRecord` this check is gated on, so
+    // `installed.logical()` is always `None` for it and this block never
+    // runs.
+    if reservation.is_none() && installed.logical().is_some() {
+        mutation_fence::fence_current_epoch(
+            store,
+            context,
+            domain,
+            event.chain_id(),
+            event.epoch(),
+            &mut logical_reads,
+        )?;
+    }
+    // DR-0154: the handoff-capable profile has no proven cross-epoch outbox
+    // delivery or deterministic-reconstruction guarantee yet (see
+    // `docs/architecture/epoch-handoff.md`'s outbox-exclusion rule), so a
+    // v2-bound store must fail closed on a nonempty outbox obligation from
+    // any generic durable event rather than silently admit one no drain/cut/
+    // import path can yet replay. Checked before any mutation is staged or
+    // committed. A historical store is unaffected, matching the guard above.
+    if installed.logical().is_some() && !transition.output.outbound_messages.is_empty() {
+        return Err(NodeCoreError::LogicalProfileOutboxUnsupported);
+    }
     let mutation_context: Option<authenticated_object_effects::TrustedObjectMutationContext<'_>> =
         created_checkpoint.map(|created_checkpoint: u64| {
             authenticated_object_effects::TrustedObjectMutationContext {

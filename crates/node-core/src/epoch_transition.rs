@@ -174,6 +174,54 @@ fn invalid<T>(message: &'static str) -> EtResult<T> {
     Err(EpochTransitionError::Invalid(message))
 }
 
+/// DR-0154 bounded safety fix.
+///
+/// This standalone `e -> e+1` route commits [`local_instance_state::FastPathEpochRecord`]
+/// directly and never derives, votes on, or verifies an ordered `DrainSet` or
+/// `Seal`: it is exactly the "older standalone epoch-transition route" that
+/// `crates/node-core/src/ordered_economics/freeze.rs`'s own
+/// `AdmissionClosureRecord` doc comment warns "can currently advance to that
+/// key without `DrainSet`/`Seal`" and "must be retired before this slice is
+/// enabled". A store whose signed genesis bound the handoff-capable
+/// [`logical_generation::CommitmentProfile::LogicalGenerationV2`] profile must
+/// never advance through this route, in any control state.
+///
+/// Deliberately does not consult
+/// [`ordered_economics::AdmissionClosureRecord`]/`fence_admission_open`: that
+/// would only close this route starting from a committed ordered `Freeze`,
+/// leaving the entire pre-Freeze window on a v2 store still reachable through
+/// here, bypassing `DrainSet`/`Seal` for every transition proposed before
+/// Freeze. Gating on the installed commitment profile itself closes the
+/// route unconditionally instead, so the ordered Freeze/DrainSet/Seal/Activate
+/// chain is the only way a v2 store's epoch ever advances. Historical
+/// (`PhysicalCheckpointV1`) stores are completely unaffected: this call is
+/// additive to every existing check and changes no historical byte, digest or
+/// commit outcome.
+fn refuse_handoff_capable_profile<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain: &ChainId,
+) -> EtResult<()> {
+    let mut discarded_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let installed: logical_generation::InstalledCommitmentProfile =
+        logical_generation::fence_commitment_profile(
+            store,
+            context,
+            domain,
+            chain,
+            &mut discarded_reads,
+        )?;
+    if installed.logical().is_some() {
+        return invalid(
+            "standalone fast-path epoch transition refuses a handoff-capable v2 commitment \
+             profile: only the ordered Freeze/DrainSet/Seal/Activate path may transition this \
+             store",
+        );
+    }
+    Ok(())
+}
+
 /// Frame `0x6427/v1`: the permanent per-`next_epoch` audit record of one
 /// completed `e -> e+1` transition, keyed by
 /// [`local_instance_state::fastpath_epoch_transition_key`].
@@ -640,6 +688,7 @@ where
     S: StructuredDurableDomainStateStore,
     C: ConsensusSigner,
 {
+    refuse_handoff_capable_profile(store, context, domain, chain)?;
     let mut fence_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     let epoch_record: FastPathEpochRecord =
         mutation_fence::fence_epoch_state(store, context, domain, chain, &mut fence_reads)?;
@@ -774,6 +823,8 @@ pub fn activate<S: StructuredDurableDomainStateStore>(
     certificate_bytes: &[u8],
     checkpoint: u64,
 ) -> EtResult<EpochActivationOutcome> {
+    refuse_handoff_capable_profile(store, context, domain, chain)?;
+
     // 1. Decode the certificate (pure).
     let certificate: EpochTransitionCertificate =
         decode_epoch_transition_certificate(certificate_bytes)?;
