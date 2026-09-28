@@ -16,18 +16,21 @@ protocol database.
 
 - **Wire** (`crates/node-wire`): `FastVoteApplyRequest` (frame `0x6439/v1`)
   pairs an already-encoded `SignedPaidIntent` and `FastCertificate` for one
-  HTTP POST body. `FASTVOTE_PREPARE_PATH`/`FASTVOTE_CERTIFICATES_PATH` are
-  the two dedicated route paths, each with its own body-size bound.
+  historical apply POST. `FastVotePublishedApplyRequest` (`0xE106/v1`)
+  adds an exact availability certificate for the handoff-capable profile.
+  The certified router also has bounded source-bundle and retention routes;
+  these carry the complete canonical publication bundle and its signed ACK,
+  not a caller-chosen list of hashes.
 - **Router** (`crates/native-http::fastvote`): `certified_fastvote_router`
   is a genuinely separate constructor from the mutating
   `preinstalled_wasm_structured_durable_router`, not a boolean flag branch
   inside it. It only ever merges liveness, four bounded structured-durable
   read queries, the read halves of publication/local-execution/
-  paid-execution, and its own two FastVote routes. It never references the
+  paid-execution, and its own certified FastVote routes. It never references the
   generic event path or any mutation-route function, so a direct/legacy
   mutating route cannot reach it regardless of configuration.
   `PreinstalledWasmComposition::with_fastvote` is crate-private: only this
-  constructor can attach a `FastVoteComposition`. Both routes authenticate
+  constructor can attach a `FastVoteComposition`. Signed-intent routes authenticate
   the exact signed bytes against the caller's own declared chain/protocol/
   epoch *before* allocating identity, reading the clock, or resolving
   domain/context; `fast_path::prepare`/`apply` then re-authenticate
@@ -37,7 +40,12 @@ protocol database.
   reconciliation, then CAS-fences against the durable current epoch. A
   request whose epoch has since advanced can still return its own
   already-committed receipt (receipt-first historical exact replay), without
-  fee or application reapplication.
+  fee or application reapplication. For the signed logical-generation profile,
+  prepare durably retains its exact witness/artifacts before vote exposure;
+  source reconstructs that retained bundle without execution; retention
+  independently validates closure and durability before ACK; fresh published
+  apply requires a verifying availability quorum. The historical v1 apply
+  route does not silently bypass the v2 gate.
 - **Client** (`clients/rust::fastvote_client`): `load_trusted_fastvote_genesis`
   reuses `node_core::genesis`'s exact production trust model to turn a local
   genesis manifest file into a `consensus::FastPathCertifier` -- the sole,
@@ -60,6 +68,12 @@ protocol database.
   Deadline addition is checked, and zero or excessive per-request caps fail
   before sending. The 300-second cap is a client resource ceiling, not an
   adopted latency or throughput target.
+  The publication client obtains the signed commitment profile and validator
+  pin from the same locally authenticated manifest bytes. For v2 it verifies
+  a sourced full bundle, forwards those exact bytes to retainers, counts only
+  registered exact-identity ACKs, forms an availability certificate and
+  preflights that certificate before any published-apply POST. It never
+  infers the profile from a server response.
 - **Host** (`apps/operator/src/bin/fastvote_host_pg`): a long-running,
   certified-only PostgreSQL-backed FastVote HTTP host, reusing
   `fastvote_pg`'s tested shared `apps/operator/src/common.rs` boundaries
@@ -92,7 +106,10 @@ protocol database.
   outside that cohort are local errors. All requested outputs are reserved
   with `create_new` before the first mutating POST; retained file and parent
   directory handles synchronize the signed intent before prepare and the
-  certificate before apply. Aliases and existing destinations fail closed.
+  certificate before apply. For v2, an additional distinct availability
+  certificate output is reserved before prepare and synchronized before
+  published apply; exact replay can reuse all three saved artifacts without
+  re-signing or re-preparing. Aliases and existing destinations fail closed.
   Optional result output persists exact success or charged-trap bytes.
   `contract fastvote-replay` resubmits exactly saved bytes -- never a fresh
   nonce, never a re-sign. An explicitly supplied missing or corrupt
@@ -101,8 +118,10 @@ protocol database.
 
 ## Certified lifecycle and recovery
 
-All application kinds use `build_paid_admission` and the complete `0x6424/v1`
-staged-effects commitment. Prepare persists only its preparation and locks;
+All application kinds use `build_paid_admission`. Historical v1 uses the
+`0x6424/v1` staged-effects commitment; the signed handoff profile uses the
+`0x6424/v2` logical-generation commitment and publication-before-apply gate.
+Prepare persists only its preparation and locks;
 it does not install published definitions or instances, advance the sender
 nonce or publish final application objects/receipts. Certified apply rederives
 the staged outcome and atomically commits definitions/instances/authorities,

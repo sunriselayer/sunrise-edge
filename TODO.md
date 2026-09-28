@@ -104,7 +104,7 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 | --- | --- | --- |
 | 1 | Generic certified network contract lifecycle | Merged as PR #228 on 2026-09-27 after the full repository gate, fresh exact-head Opus APPROVE and required CI: Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Independent ingress/security gates remain separate. |
 | 2 | Network economics and validator operations | Merged as PR #232 on 2026-09-27 with normal merge commit `86711be`, after fresh exact-head Opus APPROVE and the passing complete repository CI. Fixed-epoch four-namespace CLI evidence is implemented. Membership-dependent Deposit/Withdraw positives join delivery 3; economics/ingress security audits remain separate. |
-| 3 | Validator membership and epoch handoff | Design accepted after independent Opus review and corrections on 2026-09-27: [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Mandatory publication-before-apply, logical execution generations and ordered epoch control are not yet implemented. One integrated feature must cover real add/replace/recover/epoch operations, genuine Deposit/Withdraw, and rejection of incomplete/divergent replicas. |
+| 3 | Validator membership and epoch handoff | In progress in Draft PR #235 under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Logical generations, ordered Freeze and the core publication-before-apply gate have local test evidence; a complete network workflow, DrainSet/Seal, authenticated cut, readiness/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation are not complete. |
 | 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
 
 PostgreSQL remains the existing tested profile for delivery 1, not a mandatory
@@ -228,11 +228,19 @@ The detailed existing evidence and remaining criteria follow:
   merged that foundation at `42adcbb`, retaining its zero-request-ID refusal
   and independent vectors. This resolves the stale-foundation conflict, not
   the feature-completion blocker.
-  Execution-free publication admission, atomic outbox/Freeze gate,
-  DrainSet/Seal, complete authenticated import, readiness/activation
-  and the network E2E are not complete. This delivery stays unchecked; no full
-  repository gate, final feature approval, feature PR merge or network
-  activation is claimed. Before making Freeze live, prove a legally eligible
+  Execution-free publication retention and the core availability-certificate
+  apply gate now exist with local tests. The HTTP source/retention/published-apply
+  routes and locally pinned Rust client/CLI quorum workflow are wired, with
+  focused tests for exact bundle/ACK collection, invalid-AC preflight, saved
+  AC-before-apply and exact three-artifact replay. A real multi-validator
+  PostgreSQL end-to-end run for this new profile is still outstanding.
+  Atomic outbox/Freeze gate, DrainSet/Seal, complete authenticated
+  import, readiness/activation and the network E2E are not complete. This
+  delivery stays unchecked. The full local `scripts/check-all.sh` gate passed
+  on 2026-09-28, but live PostgreSQL suites were skipped because
+  `SUNRISE_EDGE_TEST_POSTGRES_URL` is unset; no final feature approval,
+  feature PR merge or network activation is claimed. Before making Freeze live,
+  prove a legally eligible
   same-set next-epoch Seal/readiness path under the stated quorum assumption;
   an irreversible Freeze with no ready next set would otherwise strand the
   network. This remains a design/implementation obligation, not a deployed
@@ -267,15 +275,28 @@ The detailed existing evidence and remaining criteria follow:
   version, never a bundle-declared epoch or algorithm), then durably retain
   the publication record, artifact bytes and first ACK identity in one atomic
   commit and sign only after. Replay rechecks the saved full certificate and
-  exact stored artifact bytes before returning the original ACK. The three
-  new `fastpath/` key families are
-  classified in `logical_generation::classify_fastpath_row`
-  (`publication/`/`publication-artifact/` as authenticated history,
-  `availability-ack/` as local signing-safety state). This still has
-  no apply-admission gate or HTTP/CLI ingress; the Freeze admission fence is
-  only partial, and DrainSet/Seal and availability-certificate aggregation
-  remain open. This does not satisfy Delivery 3 acceptance; independent
-  review of the complete handoff is pending.
+  exact stored artifact bytes before returning the original ACK. The
+  publication, prepare-side and accepted-certificate `fastpath/` key families
+  are classified in `logical_generation::classify_fastpath_row`: publication,
+  publication artifacts and availability certificates are authenticated
+  history; availability ACKs are local signing-safety state; prepared witness
+  and artifacts are local preparation. Draft PR #235 now also has a
+  prepare-side durable witness/artifact closure before exposing its vote,
+  restart-safe bundle assembly from that retained material, and a v2-only
+  availability-certificate gate before fresh apply/recovery. The accepted
+  certificate bytes commit atomically with original effects and receipt.
+  The new certified-only HTTP source, retention and published-apply routes
+  are mounted. The Rust client verifies the signed local manifest profile,
+  sources a full bundle, forms a quorum from exact verified retention ACKs and
+  preflights published apply. The CLI durably saves the signed intent, full
+  certificate and availability certificate in that order before applying;
+  saved replay does not re-sign. Node-core passed 793 tests, including SQLite
+  close/reopen; native-http passed 123 tests, and client/CLI focused tests
+  passed. The full local repository gate also passed; it is not a real
+  multi-validator PostgreSQL E2E for the new profile. The Freeze fence remains
+  partial;
+  DrainSet/Seal and cut verification remain open. This does not satisfy
+  Delivery 3 acceptance; independent review of complete handoff is pending.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

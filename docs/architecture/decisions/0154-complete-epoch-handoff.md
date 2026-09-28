@@ -11,8 +11,11 @@ design-only decision and did not activate a new runtime rule. Independent
 implementation slices on 2026-09-28 allocate the availability wire family and
 implement the handoff-capable logical commitment profile and a canonical
 publication bundle with one replica's durable `retain_publication` step,
-described below. The apply-admission gate, HTTP/CLI ingress and
-Freeze/DrainSet/Seal remain unimplemented. The complete design requires a
+described below. A later 2026-09-28 Draft PR slice adds prepare-side retained
+witness/artifacts, the v2 availability-certificate apply gate, certified-only
+HTTP source/retention/published-apply routes and Rust client/CLI aggregation.
+Freeze/DrainSet/Seal and integrated epoch handoff remain unimplemented.
+The complete design requires a
 publication-before-apply rule, not a new quorum-applied finality rule.
 Implementation and validation status belong in [`TODO.md`](../../../TODO.md).
 
@@ -350,7 +353,11 @@ still verifies without accepting a bundle-chosen algorithm or epoch.
 identity, requires the manifest to be exactly the closure the witness's
 signed operands demand, and persists the publication record, artifact bytes
 and first ACK identity in one atomic commit under the writer, epoch and
-validator-set fences -- not an apply-admission gate, which remains
-unimplemented. No apply-admission gate, HTTP/CLI ingress, Freeze/DrainSet/Seal
-or availability-certificate aggregation exists yet; this is not complete
-Delivery 3.
+validator-set fences. The later Draft PR slice retains the source's exact
+prepared witness and artifact closure before exposing a vote, reconstructs a
+bundle from those durable bytes, and makes a verifying availability
+certificate a v2-only fresh-apply and recovery precondition. The certified
+HTTP routes and locally pinned Rust client/CLI aggregation join those core
+steps. This does not implement Freeze/DrainSet/Seal, authenticated cut or
+readiness/activation, and it is not complete Delivery 3. Current validation
+and remaining acceptance evidence are recorded in `TODO.md`.

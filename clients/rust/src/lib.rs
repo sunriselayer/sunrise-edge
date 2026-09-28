@@ -56,6 +56,7 @@ pub mod client;
 pub mod context;
 pub mod error;
 pub mod fastvote_client;
+pub mod fastvote_publication_client;
 pub mod key;
 pub mod local_execution_client;
 pub mod ordered_economics_client;
@@ -88,8 +89,13 @@ pub use execution::{call, call_authorization, local_execution};
 pub use fastvote_client::{
     FastVoteApplyAttempt, FastVoteAttempt, FastVoteEndpoint, FastVoteEndpointConfigError,
     FastVoteGenesisTrustError, FastVoteNetworkError, FastVoteQuorumError, FastVoteQuorumFailure,
-    MAX_FASTVOTE_NETWORK_ENDPOINTS, MAX_FASTVOTE_PER_REQUEST_CAP, apply_fastvote_to_all,
-    collect_fastvote_certificate, load_trusted_fastvote_genesis, validate_fastvote_endpoints,
+    MAX_FASTVOTE_NETWORK_ENDPOINTS, MAX_FASTVOTE_PER_REQUEST_CAP, TrustedFastVoteGenesis,
+    apply_fastvote_to_all, collect_fastvote_certificate, load_trusted_fastvote_genesis,
+    load_trusted_fastvote_genesis_with_profile, validate_fastvote_endpoints,
+};
+pub use fastvote_publication_client::{
+    FastVoteAvailabilityAttempt, FastVotePublicationError, FastVotePublishedRound,
+    apply_published_fastvote_to_all, collect_fastvote_availability_certificate,
 };
 pub use hashing::HashSuiteResolver;
 pub use key::LocalSigner;
@@ -99,7 +105,13 @@ pub use node_core::publication::{
 };
 // Offline artifact consumers use the same certificate verifier as the network
 // client, without acquiring signing authority or depending on a transport.
+pub use consensus::bundle::MAX_ENCODED_BUNDLE_BYTES;
+pub use consensus::{
+    AvailabilityCertificate, decode_availability_certificate, encode_availability_certificate,
+};
 pub use node_core::fast_path::FastPathEd25519Verifier;
+pub use node_core::logical_generation::CommitmentProfile;
+pub use node_wire::MAX_FASTVOTE_AVAILABILITY_CERTIFICATE_BYTES;
 pub use paid_execution_client::{
     PAID_EXECUTION_PATH, PAID_FEE_POLICY_PATH, build_signed_paid_execution,
 };
@@ -144,7 +156,8 @@ pub use node_core::publication::local_publication_profile_semantics;
 pub use node_core::{NodeCoreError, NodeResponse, NodeResponseStatus, RequestId};
 pub use node_wire::ordered_economics;
 pub use node_wire::{
-    FASTVOTE_CERTIFICATES_PATH, FASTVOTE_PREPARE_PATH, FastVoteApplyRequest,
+    FASTVOTE_CERTIFICATES_PATH, FASTVOTE_PREPARE_PATH, FASTVOTE_PUBLICATION_RETAIN_PATH,
+    FASTVOTE_PUBLICATION_SOURCE_PATH, FASTVOTE_PUBLISHED_APPLY_PATH, FastVoteApplyRequest,
     FastVoteApplyRequestError, HttpContextQueryResult, HttpNextNonceQueryResult, HttpNodeResult,
     HttpObjectQueryResult, HttpReceiptQueryResult, MAX_FASTVOTE_CERTIFICATE_BYTES,
     NEXT_NONCE_QUERY_RESULT_TYPE_ID, NODE_RESULT_MEDIA_TYPE, ObjectQueryStatus, QUERY_CONTEXT_PATH,

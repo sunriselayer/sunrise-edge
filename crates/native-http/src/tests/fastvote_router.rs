@@ -218,7 +218,10 @@ async fn certified_router_mounts_fastvote_and_publication_routes() {
         dispatch(&app, "GET", FASTVOTE_PUBLICATION_RETAIN_PATH, Vec::new()).await,
         StatusCode::METHOD_NOT_ALLOWED
     );
-    for path in [FASTVOTE_PUBLICATION_SOURCE_PATH, FASTVOTE_PUBLISHED_APPLY_PATH] {
+    for path in [
+        FASTVOTE_PUBLICATION_SOURCE_PATH,
+        FASTVOTE_PUBLISHED_APPLY_PATH,
+    ] {
         assert_eq!(
             dispatch(&app, "POST", path, vec![0xAA]).await,
             StatusCode::BAD_REQUEST,
