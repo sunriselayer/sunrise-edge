@@ -196,6 +196,9 @@ The detailed existing evidence and remaining criteria follow:
   PostgreSQL fresh-connection and namespace-negative case.
   Blob bytes still require protocol hash/provenance verification, and neither
   these reads nor four-collection enumeration prove cut completeness.
+  The initial handoff profile now explicitly excludes outbox transport rows
+  only after proving there is no nonempty or pending outbound obligation;
+  future nonempty cross-epoch delivery remains a separate unsolved contract.
   Logical provenance/commitment/profile call-site wiring is still unaccepted
   work in progress: the isolated draft does not install a signed genesis
   profile or bind the generation into the signed witness, and profile absence

@@ -133,6 +133,19 @@ writer fence or trust an opaque SQL dump. Local prepare/vote/lock metadata is
 not a global state root, but its safety obligations cannot be forgotten merely
 because its bytes are excluded.
 
+Implementation clarification (2026-09-28): classify outbox batches/messages,
+delivery rows and attempt rows explicitly as known exclusions rather than
+letting a generic scanner skip them. The current certified, paid and ordered
+application paths do not emit outbox messages, and production state machines
+have no nonempty outbound projection. A fresh handoff profile must verify that
+there is no nonempty or pending outbox obligation, including in the legacy
+keyspace, before excluding those rows. It must fail closed on any such
+obligation. Delivery leases, errors and attempt counts are replica-local and
+must never be imported. Supporting nonempty outbound messages later requires
+a separate cross-epoch delivery policy and a deterministic reconstruction
+proof; replaying an old-epoch message into ingress that rejects the old epoch
+would silently lose it. The current handoff must not claim to support that.
+
 Every page, collection and resumed step must bind to the same authenticated
 cut. Concurrent old-epoch mutation, omissions, additions, duplicates,
 reordering, divergent prerequisites, missing history, tombstones, fencing and

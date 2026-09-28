@@ -356,6 +356,18 @@ necessary historical proofs separately; normalized roots may ignore equivalent
 signature subsets but must not ignore signed execution operands, tombstones,
 nonce/claim generations or history that affects future authority.
 
+The initial handoff profile names outbox batches, messages, delivery and
+attempt rows as excluded families in each supported schema, including the
+legacy `outbox/` state-key prefix. Exclusion is conditional: verify that no
+nonempty or pending outbound obligation exists before freezing the cut or
+admitting an import; otherwise refuse the handoff. The currently certified,
+paid and ordered application paths emit no outbound messages. Never import
+replica-local leases or delivery attempts. If a future contract runtime emits
+messages, define cross-epoch delivery and prove deterministic reconstruction
+before enabling handoff for it; an old-epoch message rejected at new-epoch
+ingress must not be silently discarded. Empty-batch representations in SQL
+profiles must be normalized explicitly rather than equated by row shape.
+
 Use the committed protocol HashSuite and canonical framing, not a new
 cryptographic primitive. Pages bind collection, frozen frontier/cut identity,
 ordered key ranges, counts and authenticated content linkage. Reject omission,
