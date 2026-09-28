@@ -101,7 +101,122 @@ where
             FASTVOTE_PUBLICATION_RETAIN_PATH,
             post(submit_publication_retain::<S, B, M, T, C, I>),
         )
+        .route(
+            FASTVOTE_PUBLICATION_SOURCE_PATH,
+            post(submit_publication_source::<S, B, M, T, C, I>),
+        )
+        .route(
+            FASTVOTE_PUBLISHED_APPLY_PATH,
+            post(submit_published_apply::<S, B, M, T, C, I>),
+        )
         .layer(DefaultBodyLimit::max(MAX_ENCODED_BUNDLE_BYTES))
+}
+
+/// Returns only the canonical bundle already backed by this replica's
+/// committed prepare-side witness and artifacts. The supplied certificate is
+/// verified by the core; this handler never executes or applies the request.
+async fn submit_publication_source<S, B, M, T, C, I>(
+    State(state): State<SharedPreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I>>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response
+where
+    S: IndexedOutboxRepository + Send + Sync + 'static,
+    B: BlobStore + Send + Sync + 'static,
+    M: TransactionalNodeStateMachine + Send + Sync + 'static,
+    T: Transport + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    I: IndexedOutboxIdentitySource + Send + Sync + 'static,
+{
+    if !has_supported_content_type(&headers) || has_unsupported_content_encoding(&headers) {
+        return error_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported-fastvote-content",
+        );
+    }
+    let body: Bytes = match body {
+        Ok(body) => body,
+        Err(error) => return error_response(error.status(), "body-rejected"),
+    };
+    if body.len() > node_wire::MAX_FASTVOTE_APPLY_REQUEST_BYTES {
+        return error_response(StatusCode::PAYLOAD_TOO_LARGE, "fastvote-source-too-large");
+    }
+    publication::admitted(
+        state.components.is_cancelled(),
+        state.blocking_executor.clone(),
+        move || {
+            if state.preinstalled_wasm.fastvote.is_none() {
+                return error_response(StatusCode::NOT_FOUND, "fastvote-disabled");
+            }
+            let request: node_wire::FastVoteApplyRequest =
+                match node_wire::FastVoteApplyRequest::decode(&body) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return error_response(
+                            StatusCode::BAD_REQUEST,
+                            "invalid-fastvote-source-request",
+                        );
+                    }
+                };
+            let declared_context =
+                match declared_paid_context(&state.config, &request.signed_paid_intent) {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+            if let Err(error) = authenticate_paid_execution(
+                &state.resolver,
+                &declared_context,
+                &request.signed_paid_intent,
+            ) {
+                return paid_execution::admission_error(&error);
+            }
+            if declared_context.epoch() != state.config.epoch() {
+                return error_response(StatusCode::CONFLICT, "fastvote-epoch-repin-required");
+            }
+            let (domain, context) = match prepare_storage_context(
+                &state.components,
+                &state.protocol_config,
+                &state.authority,
+                &state.config,
+            ) {
+                Ok(value) => value,
+                Err(error) => return query_invocation_error_response(&error),
+            };
+            if state.components.is_cancelled() {
+                return cancelled_before_storage_response();
+            }
+            let bundle: consensus::bundle::PublicationBundle =
+                match fast_path::publication::assemble_publication_bundle(
+                    state.components.store.as_ref(),
+                    &context,
+                    domain,
+                    &state.resolver,
+                    &state.history,
+                    &declared_context,
+                    &request.signed_paid_intent,
+                    &request.certificate,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return publication_retention_error_response(&error),
+                };
+            match consensus::bundle::encode_publication_bundle(&bundle) {
+                Ok(bytes) => (
+                    StatusCode::OK,
+                    [
+                        (header::CONTENT_TYPE, NODE_RESULT_MEDIA_TYPE),
+                        (header::CACHE_CONTROL, "no-store"),
+                    ],
+                    bytes,
+                )
+                    .into_response(),
+                Err(_) => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "fastvote-source-bundle-encoding",
+                ),
+            }
+        },
+    )
+    .await
 }
 
 /// Accepts one canonical publication bundle only on the certified router.
@@ -489,6 +604,136 @@ where
     .await
 }
 
+/// Publication-gated apply for a handoff-capable genesis. The core selects
+/// the required availability proof from the signed, installed profile, not
+/// this route: the historical route cannot downgrade a v2 operation.
+async fn submit_published_apply<S, B, M, T, C, I>(
+    State(state): State<SharedPreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I>>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response
+where
+    S: IndexedOutboxRepository + Send + Sync + 'static,
+    B: BlobStore + Send + Sync + 'static,
+    M: TransactionalNodeStateMachine + Send + Sync + 'static,
+    T: Transport + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    I: IndexedOutboxIdentitySource + Send + Sync + 'static,
+{
+    if !has_supported_content_type(&headers) || has_unsupported_content_encoding(&headers) {
+        return error_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported-fastvote-content",
+        );
+    }
+    let body: Bytes = match body {
+        Ok(body) => body,
+        Err(error) => return error_response(error.status(), "body-rejected"),
+    };
+    if body.len() > node_wire::MAX_FASTVOTE_PUBLISHED_APPLY_REQUEST_BYTES {
+        return error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "fastvote-published-apply-too-large",
+        );
+    }
+    publication::admitted(
+        state.components.is_cancelled(),
+        state.blocking_executor.clone(),
+        move || {
+            let Some(fastvote) = state.preinstalled_wasm.fastvote.as_ref() else {
+                return error_response(StatusCode::NOT_FOUND, "fastvote-disabled");
+            };
+            let request: node_wire::FastVotePublishedApplyRequest =
+                match node_wire::FastVotePublishedApplyRequest::decode(&body) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return error_response(
+                            StatusCode::BAD_REQUEST,
+                            "invalid-fastvote-published-apply-request",
+                        );
+                    }
+                };
+            let declared_context =
+                match declared_paid_context(&state.config, &request.signed_paid_intent) {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+            // Keep the historical exact-replay path alive across an epoch
+            // change: authenticate first, then let the core reconcile its
+            // existing receipt before reading current policy or objects.
+            if let Err(error) = authenticate_paid_execution(
+                &state.resolver,
+                &declared_context,
+                &request.signed_paid_intent,
+            ) {
+                return paid_execution::admission_error(&error);
+            }
+            let (domain, context) = match prepare_storage_context(
+                &state.components,
+                &state.protocol_config,
+                &state.authority,
+                &state.config,
+            ) {
+                Ok(value) => value,
+                Err(error) => return query_invocation_error_response(&error),
+            };
+            if state.components.is_cancelled() {
+                return cancelled_before_storage_response();
+            }
+            let output: node_core::NodeOutput =
+                match fast_path::apply_with_recovery_after_publication(
+                    state.components.store.as_ref(),
+                    state.components.blob_store.as_ref(),
+                    &context,
+                    domain,
+                    &state.resolver,
+                    &state.history,
+                    &declared_context,
+                    &fastvote.execution.base_policy,
+                    &fastvote.execution.fee_policy,
+                    &fastvote.execution.engine,
+                    &request.signed_paid_intent,
+                    &request.certificate,
+                    fastvote.created_checkpoint,
+                    &request.availability_certificate,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return fastpath_error_response(&error),
+                };
+            let request_id: RequestId = match decode_signed_paid_intent(&request.signed_paid_intent)
+                .ok()
+                .and_then(|signed| RequestId::new(signed.intent.request_id).ok())
+            {
+                Some(value) => value,
+                None => {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "fastvote-published-apply-request-id-invalid",
+                    );
+                }
+            };
+            match HttpNodeResult::new(request_id, output.responses().to_vec())
+                .and_then(|result| result.encode())
+            {
+                Ok(bytes) => (
+                    StatusCode::OK,
+                    [
+                        (header::CONTENT_TYPE, NODE_RESULT_MEDIA_TYPE),
+                        (header::CACHE_CONTROL, "no-store"),
+                    ],
+                    bytes,
+                )
+                    .into_response(),
+                Err(_) => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "fastvote-published-apply-result-encoding",
+                ),
+            }
+        },
+    )
+    .await
+}
+
 fn fastpath_error_response(error: &FastPathError) -> Response {
     match error {
         FastPathError::Admission(error) => paid_execution::admission_error(error),
@@ -500,6 +745,7 @@ fn fastpath_error_response(error: &FastPathError) -> Response {
             error_response(StatusCode::BAD_REQUEST, "fastvote-consensus-rejected")
         }
         FastPathError::Invalid(_) => error_response(StatusCode::BAD_REQUEST, "fastvote-rejected"),
+        FastPathError::Publication(error) => publication_retention_error_response(error),
     }
 }
 
