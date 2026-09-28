@@ -167,6 +167,53 @@ fn exact_retention_replay_returns_the_retained_acknowledgement() {
 }
 
 #[test]
+fn retention_replay_refuses_corrupt_stored_operands_and_certificate() {
+    for corruption in 0..3 {
+        let replica: RetentionReplica = logical_replica();
+        let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+        let first: AvailabilityVote = retain(&replica, &bundle, &replica.signer).unwrap();
+        let mut record: FastPathPublicationRecord = retained_publication(&replica, REQUEST);
+        match corruption {
+            0 => record.request_id = [0xAB; 32],
+            1 => record.signed_intent.push(0xAB),
+            _ => record.certificate.push(0xAB),
+        }
+        replica.put_row(
+            fastpath_publication_key(protocol().chain_id(), &[REQUEST; 32]).unwrap(),
+            encode_fastpath_publication_record(&record).unwrap(),
+        );
+        assert!(matches!(
+            retain(&replica, &bundle, &replica.signer),
+            Err(PublicationRetentionError::InconsistentRetainedRecord(_))
+        ));
+        assert_eq!(
+            retained_ack(&replica, REQUEST).unwrap().vote,
+            encode_availability_vote(&first).unwrap()
+        );
+    }
+}
+
+#[test]
+fn retention_replay_refuses_corrupt_stored_artifact() {
+    let replica: RetentionReplica = logical_replica();
+    let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    let first: AvailabilityVote = retain(&replica, &bundle, &replica.signer).unwrap();
+    let entry: &ArtifactEntry = bundle.manifest.entries.first().unwrap();
+    let key: Vec<u8> = artifact_key(protocol().chain_id(), &[REQUEST; 32], entry).unwrap();
+    replica.put_row(key, b"corrupted artifact bytes".to_vec());
+    assert!(matches!(
+        retain(&replica, &bundle, &replica.signer),
+        Err(PublicationRetentionError::InconsistentRetainedRecord(
+            "retained publication artifact"
+        ))
+    ));
+    assert_eq!(
+        retained_ack(&replica, REQUEST).unwrap().vote,
+        encode_availability_vote(&first).unwrap()
+    );
+}
+
+#[test]
 fn retention_refuses_a_bundle_whose_identity_differs_from_the_retained_one() {
     // A retained publication pins one logical identity per request id. A
     // fully valid bundle that derives a *different* identity for that same

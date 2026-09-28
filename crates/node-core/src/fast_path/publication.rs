@@ -83,8 +83,8 @@ use consensus::bundle::{
 };
 use consensus::{
     AvailabilityCertifier, AvailabilityIdentity, AvailabilityVote, decode_availability_identity,
-    decode_availability_vote, encode_availability_identity, encode_availability_vote,
-    encode_fast_certificate,
+    decode_availability_vote, decode_fast_certificate, encode_availability_identity,
+    encode_availability_vote, encode_fast_certificate,
 };
 use std::collections::BTreeMap;
 
@@ -715,6 +715,12 @@ where
         expected.epoch(),
         validator_set,
     )?;
+    let staged_artifacts: BTreeMap<Vec<u8>, Vec<u8>> = stage_publication_artifacts(
+        &chain,
+        &bundle.request_id,
+        &bundle.manifest,
+        &bundle.contents,
+    )?;
 
     // Reconcile an already retained publication before anything else is
     // written. An equivalent valid proof for the same operation reaches the
@@ -724,6 +730,51 @@ where
         let existing: FastPathPublicationRecord = decode_fastpath_publication_record(bytes)?;
         if existing.identity != identity_bytes {
             return Err(PublicationRetentionError::ConflictingRetainedIdentity);
+        }
+        if existing.context != *expected
+            || existing.request_id != bundle.request_id
+            || existing.signed_intent != bundle.signed_intent
+            || existing.witness != bundle.witness
+            || existing.manifest != encode_artifact_manifest(&bundle.manifest)?
+        {
+            return Err(PublicationRetentionError::InconsistentRetainedRecord(
+                "retained publication operands",
+            ));
+        }
+        let retained_certificate =
+            decode_fast_certificate(&existing.certificate).map_err(|_| {
+                PublicationRetentionError::InconsistentRetainedRecord(
+                    "retained publication certificate",
+                )
+            })?;
+        fast_certifier
+            .verify_certificate(&retained_certificate, &FastPathEd25519Verifier)
+            .map_err(|_| {
+                PublicationRetentionError::InconsistentRetainedRecord(
+                    "retained publication certificate",
+                )
+            })?;
+        if retained_certificate.chain_id != bundle.certificate.chain_id
+            || retained_certificate.protocol_version != bundle.certificate.protocol_version
+            || retained_certificate.epoch != bundle.certificate.epoch
+            || retained_certificate.tx_hash != bundle.certificate.tx_hash
+            || retained_certificate.execution_effects_hash
+                != bundle.certificate.execution_effects_hash
+            || retained_certificate.locked_objects_digest
+                != bundle.certificate.locked_objects_digest
+        {
+            return Err(PublicationRetentionError::InconsistentRetainedRecord(
+                "retained publication certificate identity",
+            ));
+        }
+        for (key, content) in &staged_artifacts {
+            let observed: VersionedStateValue =
+                store.get_versioned_durable(context, domain, key)?;
+            if observed.value() != Some(content.as_slice()) {
+                return Err(PublicationRetentionError::InconsistentRetainedRecord(
+                    "retained publication artifact",
+                ));
+            }
         }
         let retained: &[u8] =
             observed_ack
@@ -775,12 +826,6 @@ where
         vote: encode_availability_vote(&vote)?,
     };
 
-    let staged_artifacts: BTreeMap<Vec<u8>, Vec<u8>> = stage_publication_artifacts(
-        &chain,
-        &bundle.request_id,
-        &bundle.manifest,
-        &bundle.contents,
-    )?;
     let mut mutations: Vec<StateMutationEntry> = Vec::new();
     for (key, content) in &staged_artifacts {
         let observed: VersionedStateValue = store.get_versioned_durable(context, domain, key)?;
