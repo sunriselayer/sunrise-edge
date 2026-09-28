@@ -403,6 +403,17 @@ fn staged_writes_installs_one_provenance_row_for_a_prestaged_nonce_put() {
             .iter()
             .any(|write| write.subject == LogicalSubject::StateKey(nonce_key.clone()))
     );
+
+    for mutation in [StateMutation::Put(vec![0xFF]), StateMutation::Delete] {
+        let conflicting: Vec<StateMutationEntry> =
+            vec![StateMutationEntry::new(nonce_key.clone(), mutation).unwrap()];
+        assert!(matches!(
+            staged_writes(&hashes, epoch, &conflicting, &[], &[], Some(&pending)),
+            Err(NodeCoreError::LogicalProvenance(
+                "sender nonce mutation differs from reservation"
+            ))
+        ));
+    }
 }
 
 /// A nonce row that moved since its reservation refuses here rather than

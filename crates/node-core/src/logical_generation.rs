@@ -936,7 +936,8 @@ fn provenance_mutation<S: StructuredDurableDomainStateStore>(
 /// skips it on the read side: it is one subject with one closed `NonceNext`
 /// observation, never also a generic state key, so this operation installs
 /// exactly one provenance row for it instead of two disagreeing rows for the
-/// same physical value.
+/// same physical value. If the nonce key is already staged, its bytes must
+/// match the reserved canonical next-nonce write before it is skipped.
 fn object_write_observation(
     entry: &DurableObjectMutationEntry,
     head_reads: &[DurableObjectHeadRead],
@@ -971,9 +972,21 @@ pub(crate) fn staged_writes(
     nonce: Option<&PendingSenderNonceWrite>,
 ) -> Result<Vec<LogicalWrite>, NodeCoreError> {
     let nonce_key: Option<&[u8]> = nonce.map(|pending| pending.key.as_slice());
+    let nonce_value: Option<Vec<u8>> = nonce.map(|pending| pending.record.encode()).transpose()?;
     let mut writes: Vec<LogicalWrite> = Vec::new();
     for entry in state_mutations {
-        if is_excluded_subject(entry.key()) || nonce_key == Some(entry.key()) {
+        if nonce_key == Some(entry.key()) {
+            match (entry.mutation(), nonce_value.as_deref()) {
+                (StateMutation::Put(actual), Some(expected)) if actual.as_slice() == expected => {}
+                _ => {
+                    return Err(provenance_error(
+                        "sender nonce mutation differs from reservation",
+                    ));
+                }
+            }
+            continue;
+        }
+        if is_excluded_subject(entry.key()) {
             continue;
         }
         let observation: LogicalObservation = match entry.mutation() {
