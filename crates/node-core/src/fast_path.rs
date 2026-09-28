@@ -105,6 +105,9 @@ use protocol_types::{SignatureSchemeId, ValidatorId};
 use validator_set::{ValidatorInfo, ValidatorSet, ValidatorSetError};
 
 pub(crate) mod commitment;
+/// DR-0154 execution-free publication: durable verified retention of one
+/// full-certificate publication bundle before an availability ACK.
+pub mod publication;
 pub mod records;
 
 #[cfg(test)]
@@ -583,7 +586,7 @@ where
     E: PaidContractEngine + ?Sized,
     C: ConsensusSigner,
 {
-    if history.len() > publication::MAX_PUBLICATION_HISTORY {
+    if history.len() > crate::publication::MAX_PUBLICATION_HISTORY {
         return invalid("resolver history bound");
     }
     let (authenticated, event_digest, request_id) =
@@ -1023,7 +1026,7 @@ where
     S: StructuredDurableDomainStateStore,
     E: PaidContractEngine + ?Sized,
 {
-    if history.len() > publication::MAX_PUBLICATION_HISTORY {
+    if history.len() > crate::publication::MAX_PUBLICATION_HISTORY {
         return invalid("resolver history bound");
     }
     let (authenticated, event_digest, request_id) =

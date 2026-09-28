@@ -14,6 +14,8 @@ use crate::paid_execution::tests::{
     publish_artifact, publish_artifact_reference, receipt, refund_account, resolver, sender,
     sign_paid, trapping_mint_call,
 };
+use crate::publication::PublicationAdmissionError;
+use crate::publication::publication_record_key;
 use abi::AccessManifest;
 use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::call::CallIntent;
@@ -23,8 +25,6 @@ use execution::paid_execution::{
     ReservationAccessKind, paid_fee_policy_digest,
 };
 use fees::Amount;
-use publication::PublicationAdmissionError;
-use publication::publication_record_key;
 use runtime::{
     DurableCommitOutcome, DurableDomainStateStore, DurableInvocationTransaction,
     DurableObjectChanges, DurableObjectHeadRead, DurableObjectMutation, DurableObjectMutationEntry,
@@ -39,7 +39,7 @@ mod recovery;
 
 /// A real (non-mocked) Ed25519 `ConsensusSigner`, mirroring
 /// `consensus::fast_vote`'s own private test signer.
-struct TestSigner {
+pub(super) struct TestSigner {
     validator_id: ValidatorId,
     signing_key: SigningKey,
 }
@@ -4691,4 +4691,377 @@ fn fastpath_commitment_envelope_frame_0x6424_is_stable() {
         hex(&digest.bytes()),
         "daf6fb51270cf45b82aac8b91b8719f50736fefc79e3bc285d149c1d0503a904"
     );
+}
+
+// --- DR-0154 publication-retention fixtures ---------------------------------
+//
+// Shared with `crate::fast_path::publication::tests`. Everything here builds a
+// *real* certified paid `Call`: three independent replicas prepare, a genuine
+// quorum certificate forms, one replica applies so its exact `0x6424`
+// commitment-witness bytes are persisted, and the required replay artifacts are
+// read back from a fresh pre-apply replica -- exactly the bytes a publishing
+// validator would supply.
+
+use consensus::bundle::{
+    ArtifactEntry, ArtifactKind, ArtifactManifest, LOGICAL_COMMITMENT_PROFILE, PublicationBundle,
+};
+use runtime::{DurableObjectPayload, DurableObjectVersion, IndeterminateCommitReason};
+
+/// One replica that may retain publications: its own store, the identical
+/// installed fixture and its own registered signer.
+pub(super) struct RetentionReplica {
+    pub(super) store: MemoryDurableStateStore,
+    pub(super) fixture: Fixture,
+    pub(super) signer: TestSigner,
+}
+
+impl RetentionReplica {
+    /// Prepares the shared transfer call on this replica, creating its local
+    /// nonce and object locks.
+    pub(super) fn prepare_transfer(&self, request: u8, nonce: u64) -> FastPathResult<FastVote> {
+        prepare_transfer(&self.store, &self.fixture, &self.signer, request, nonce)
+    }
+
+    /// Returns the current durable value of one exact key.
+    pub(super) fn row(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.store
+            .get_versioned_durable(&context(), domain(), key)
+            .unwrap()
+            .value()
+            .map(<[u8]>::to_vec)
+    }
+
+    /// Writes one exact durable row under its observed revision. Test setup
+    /// only: no protocol path writes a foreign publication row.
+    pub(super) fn put_row(&self, key: Vec<u8>, value: Vec<u8>) {
+        let observed: VersionedStateValue = self
+            .store
+            .get_versioned_durable(&context(), domain(), &key)
+            .unwrap();
+        let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+            domain(),
+            AtomicStateReadSet::new(vec![
+                StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
+            ])
+            .unwrap(),
+            AtomicStateMutationSet::new(vec![
+                StateMutationEntry::new(key, StateMutation::Put(value)).unwrap(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            self.store.commit_durable(&context(), transaction),
+            DurableCommitOutcome::Committed
+        );
+    }
+
+    /// Returns this replica's fast-path lock rows for the fixture's fee-source
+    /// object and its sender/epoch nonce lock.
+    pub(super) fn lock_rows(&self) -> Vec<Option<Vec<u8>>> {
+        let object_lock: Vec<u8> =
+            fastpath_lock_key(protocol().chain_id(), self.fixture.coin.id).unwrap();
+        let nonce_lock: Vec<u8> =
+            fastpath_nonce_lock_key(protocol().chain_id(), &sender(), protocol().epoch()).unwrap();
+        vec![self.row(&object_lock), self.row(&nonce_lock)]
+    }
+
+    /// Returns this replica's current head for the fixture's fee-source object.
+    pub(super) fn coin_head(&self) -> DurableObjectHead {
+        self.store
+            .get_object_head(&context(), domain(), self.fixture.coin.id)
+            .unwrap()
+    }
+
+    /// Returns any completed-request receipt under `request_id`.
+    pub(super) fn request_receipt(&self, request_id: [u8; 32]) -> Option<DurableRequestReceipt> {
+        self.store
+            .get_request_receipt(
+                &context(),
+                domain(),
+                DurableRequestId::new(request_id).unwrap(),
+            )
+            .unwrap()
+    }
+}
+
+fn retention_replica(logical: bool, signer_index: usize) -> RetentionReplica {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = if logical {
+        let profile: logical_generation::LogicalProfileRecord = install_logical_profile(&store);
+        install_with_profile(&store, Some(&profile))
+    } else {
+        install(&store)
+    };
+    let (mut signers, entries) = four_validators();
+    install_validator_set(
+        &store,
+        &context(),
+        domain(),
+        &resolver(),
+        protocol(),
+        entries,
+    )
+    .unwrap();
+    RetentionReplica {
+        store,
+        fixture,
+        signer: signers.swap_remove(signer_index),
+    }
+}
+
+/// A handoff-capable (`0x6424/v2`) replica, signing as the one validator that
+/// never participates in the quorums below, so retention is never confused
+/// with this replica's own fast-path vote.
+pub(super) fn logical_replica() -> RetentionReplica {
+    retention_replica(true, 3)
+}
+
+/// A historical physical-profile (`0x6424/v1`) replica.
+pub(super) fn physical_replica() -> RetentionReplica {
+    retention_replica(false, 3)
+}
+
+/// Builds the shared transfer call's signed intent bytes.
+pub(super) fn transfer_bytes(fixture: &Fixture, request: u8, nonce: u64) -> Vec<u8> {
+    paid_call_with_access(
+        PaidCall {
+            fixture,
+            policy: &fixture.policy,
+            request,
+            nonce,
+            source: &fixture.coin,
+            entrypoint: "transfer",
+            arguments: public_standard_asset::transfer_arguments(&refund_account()).unwrap(),
+            access: vec![entry(&fixture.coin, objects::AccessMode::Write)],
+        },
+        ReservationAccessKind::Write,
+    )
+}
+
+/// Builds one complete, genuinely certified publication bundle for the shared
+/// transfer call, using the quorum formed by `subset`'s signers.
+pub(super) fn transfer_bundle(
+    logical: bool,
+    request: u8,
+    nonce: u64,
+    subset: &[usize],
+) -> (PublicationBundle, FastCertificate) {
+    let replicas: Vec<RetentionReplica> = subset
+        .iter()
+        .map(|index| retention_replica(logical, *index))
+        .collect();
+    let votes: Vec<FastVote> = replicas
+        .iter()
+        .map(|replica| replica.prepare_transfer(request, nonce).unwrap())
+        .collect();
+    let certificate: FastCertificate = certifier(installed_validator_set())
+        .try_form_certificate(
+            votes[0].tx_hash,
+            votes[0].execution_effects_hash,
+            votes[0].locked_objects_digest,
+            &votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .expect("quorum reached");
+
+    // Apply on the first participating replica so its exact commitment-witness
+    // bytes are persisted, then read the required artifacts from a *fresh*
+    // pre-apply replica: that is the state the witness's operands describe.
+    let applier: &RetentionReplica = &replicas[0];
+    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+    apply_transfer(
+        &applier.store,
+        &applier.fixture,
+        request,
+        nonce,
+        &certificate_bytes,
+    )
+    .unwrap();
+    let witness_key: Vec<u8> =
+        fastpath_commitment_witness_key(protocol().chain_id(), &[request; 32]).unwrap();
+    let witness: Vec<u8> = applier
+        .row(&witness_key)
+        .expect("apply persists the commitment witness");
+
+    let source: RetentionReplica = retention_replica(logical, 3);
+    let mut entries: Vec<ArtifactEntry> = Vec::new();
+    let mut contents: Vec<Vec<u8>> = Vec::new();
+    if logical {
+        let (_event_digest, required) =
+            crate::fast_path::publication::witness::required_artifacts(&witness).unwrap();
+        for ((kind, identity), digest) in required.iter() {
+            let kind: ArtifactKind = ArtifactKind::from_u16(*kind).unwrap();
+            let content: Vec<u8> = artifact_content(&source, kind, identity);
+            let content_digest: Digest32 = resolver()
+                .hash_for_purpose(protocol().epoch(), kind.hash_purpose(), &content)
+                .unwrap();
+            assert_eq!(
+                content_digest.bytes(),
+                *digest,
+                "fixture content must match the witness-signed digest"
+            );
+            entries.push(ArtifactEntry {
+                kind,
+                identity: identity.clone(),
+                content_digest,
+                content_length: u32::try_from(content.len()).unwrap(),
+            });
+            contents.push(content);
+        }
+    }
+    // A historical v1 witness has no derivable logical closure; the empty
+    // manifest is deliberate, since the profile check must refuse first.
+
+    (
+        PublicationBundle {
+            domain: domain(),
+            request_id: [request; 32],
+            commitment_profile: LOGICAL_COMMITMENT_PROFILE,
+            signed_intent: transfer_bytes(&source.fixture, request, nonce),
+            certificate: certificate.clone(),
+            witness,
+            manifest: ArtifactManifest { entries },
+            contents,
+        },
+        certificate,
+    )
+}
+
+/// Reads one required artifact's exact bytes from a pre-apply replica.
+fn artifact_content(source: &RetentionReplica, kind: ArtifactKind, identity: &[u8]) -> Vec<u8> {
+    match kind {
+        ArtifactKind::StateValue => source
+            .row(identity)
+            .expect("a signed present read must have a value"),
+        ArtifactKind::ObjectBody => {
+            let object_id: ObjectId =
+                ObjectId::new(identity[..32].try_into().expect("32-byte object id"));
+            let version: u64 =
+                u64::from_be_bytes(identity[32..40].try_into().expect("8-byte version"));
+            let record: DurableObjectVersionRecord = source
+                .store
+                .get_object_version(
+                    &context(),
+                    domain(),
+                    object_id,
+                    DurableObjectVersion::new(version).expect("nonzero version"),
+                )
+                .unwrap()
+                .expect("a signed current head must have its version record");
+            match record.payload() {
+                DurableObjectPayload::Inline(inline) => inline.canonical_bytes().to_vec(),
+                DurableObjectPayload::BlobReference(_) => {
+                    panic!("this fixture's objects are all inline")
+                }
+            }
+        }
+    }
+}
+
+/// The default handoff-capable bundle: the quorum formed by signers 0/1/2.
+pub(super) fn transfer_bundle_bytes(
+    request: u8,
+    nonce: u64,
+) -> (PublicationBundle, FastCertificate) {
+    transfer_bundle(true, request, nonce, &[0, 1, 2])
+}
+
+/// The same operation certified by a different, equally valid signer subset.
+pub(super) fn rebundle_with_other_subset(request: u8, nonce: u64) -> PublicationBundle {
+    transfer_bundle(true, request, nonce, &[1, 2, 3]).0
+}
+
+/// A historical physical-profile bundle, used to prove a `0x6424/v1` witness
+/// can never be retained as a publication.
+pub(super) fn physical_transfer_bundle_bytes(
+    request: u8,
+    nonce: u64,
+) -> (PublicationBundle, FastCertificate) {
+    transfer_bundle(false, request, nonce, &[0, 1, 2])
+}
+
+fn installed_validator_set() -> ValidatorSet {
+    let (_signers, entries) = four_validators();
+    ValidatorSet::new(
+        protocol().epoch(),
+        entries
+            .iter()
+            .map(|entry| ValidatorInfo {
+                id: entry.id,
+                voting_power: entry.voting_power,
+                signature_scheme: entry.signature_scheme,
+                public_key: entry.public_key.clone(),
+            })
+            .collect(),
+    )
+    .unwrap()
+}
+
+/// Delegates every read to a real store but reports every *state* commit as
+/// indeterminate, so retention can never expose a signature for an ambiguous
+/// write.
+pub(super) struct IndeterminateCommitStore {
+    inner: MemoryDurableStateStore,
+}
+
+impl IndeterminateCommitStore {
+    pub(super) const fn new(inner: MemoryDurableStateStore) -> Self {
+        Self { inner }
+    }
+}
+
+impl runtime::DurableDomainStateStore for IndeterminateCommitStore {
+    fn get_versioned_durable(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        key: &[u8],
+    ) -> Result<VersionedStateValue, DurableReadError> {
+        self.inner.get_versioned_durable(context, domain, key)
+    }
+    fn commit_durable(
+        &self,
+        _context: &DurableOperationContext,
+        _transaction: AtomicStateTransaction,
+    ) -> DurableCommitOutcome {
+        DurableCommitOutcome::Indeterminate(IndeterminateCommitReason::ConnectionLost)
+    }
+}
+
+impl StructuredDurableDomainStateStore for IndeterminateCommitStore {
+    fn get_object_head(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+    ) -> Result<DurableObjectHead, DurableReadError> {
+        self.inner.get_object_head(context, domain, object_id)
+    }
+    fn get_object_version(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+        object_version: DurableObjectVersion,
+    ) -> Result<Option<DurableObjectVersionRecord>, DurableReadError> {
+        self.inner
+            .get_object_version(context, domain, object_id, object_version)
+    }
+    fn get_request_receipt(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        request_id: DurableRequestId,
+    ) -> Result<Option<DurableRequestReceipt>, DurableReadError> {
+        self.inner.get_request_receipt(context, domain, request_id)
+    }
+    fn commit_invocation(
+        &self,
+        context: &DurableOperationContext,
+        transaction: DurableInvocationTransaction,
+    ) -> DurableCommitOutcome {
+        self.inner.commit_invocation(context, transaction)
+    }
 }
