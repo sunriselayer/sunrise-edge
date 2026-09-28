@@ -199,6 +199,11 @@ The detailed existing evidence and remaining criteria follow:
   The initial handoff profile now explicitly excludes outbox transport rows
   only after proving there is no nonempty or pending outbound obligation;
   future nonempty cross-epoch delivery remains a separate unsolved contract.
+  A bounded read-only outbox-family probe now exists in memory, SQLite and
+  PostgreSQL, with legacy-prefix refusal, file-backed reopen and live
+  PostgreSQL tests. It refuses even fully acknowledged nonempty batches in
+  this initial profile. The probe is not atomic with Freeze or cut creation;
+  no handoff admission gate is wired from it yet.
   Logical provenance/commitment/profile call-site wiring is still unaccepted
   work in progress: the isolated draft does not install a signed genesis
   profile or bind the generation into the signed witness, and profile absence
