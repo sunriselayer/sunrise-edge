@@ -314,19 +314,11 @@ where
     }
     let one: NonZeroUsize =
         NonZeroUsize::new(1).ok_or(FrozenFrontierError::Invalid("invalid frontier page limit"))?;
-    let legacy_scan: DurableRecordScan = DurableRecordScan::new(
-        DurableCollection::State,
-        Some(DurableRecordKey::State(b"outbox".to_vec())),
-        one,
-    )?;
-    let legacy_page = store.scan_portable_keys(context, domain, &legacy_scan)?;
-    if legacy_page.keys().first().is_some_and(
-        |key| matches!(key, DurableRecordKey::State(bytes) if bytes.starts_with(b"outbox/")),
-    ) {
-        return Err(FrozenFrontierError::Invalid(
-            "legacy outbox key blocks frontier",
-        ));
-    }
+    // The legacy `se/<chain>/vN/outbox/` family belongs to plain StateStore
+    // implementations, not this structured-store profile. Its bare-key
+    // portable scan would neither address that namespace nor be a valid
+    // exclusion proof. Only the structured outbox inventory above governs
+    // this store; v2 generic transitions cannot create new obligations.
 
     let final_key: Vec<u8> = key(&chain, epoch, FRONTIER_FINAL_PREFIX)?;
     let observed_final: VersionedStateValue =

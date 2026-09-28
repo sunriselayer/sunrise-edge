@@ -180,8 +180,9 @@ mutation bypass.
 Derive a signed frontier from **all full certificates retained locally before
 closure**, including records whose availability ACKs were never aggregated or
 whose operation was never applied locally. Include the necessary ordered
-prefix/proof artifacts. Persist the immutable frontier descriptor before
-signing it. Enumerate it incrementally while publication stays closed.
+prefix/proof artifacts. Atomically persist the final descriptor with its
+signature before exposing the vote. Enumerate it incrementally while
+publication stays closed.
 
 The local frontier identity binds the chain, protocol, outgoing epoch, logical
 domain, committed Freeze request and height, entry count, and ordered digest.
@@ -194,6 +195,10 @@ identity, vote and accumulator frames are `0xD036`-`0xD038/v1` with a distinct
 `epoch-frozen-frontier-v1` signing domain. A local cursor or signed descriptor
 is not a closed-range proof to another validator. DrainSet voters must verify
 all pages and their completeness independently before counting that signer.
+Publication records, local ACKs and artifact rows must be epoch-scoped before
+activation is enabled. A later epoch must scan only its own immutable
+publication family without deleting older authenticated history or treating
+an earlier epoch's proof as a current candidate.
 
 An untrusted coordinator proposes at least `q` power of verified frontier
 descriptors and all their pages. Select only complete, retrievable frontiers;

@@ -1176,7 +1176,51 @@ fn committed_freeze_yields_four_durable_empty_frontier_votes_without_resigning()
         assert_eq!(replay, FrozenFrontierStep::Finalized(vote));
         assert_eq!(network.value(replica, &final_key), before);
         assert_eq!(network.revision(replica, &final_key), before_revision);
+        let different_signer: usize = (replica + 1) % REPLICAS;
+        assert!(
+            advance_frozen_frontier(
+                &network.stores[replica],
+                &network.context,
+                network.domain(),
+                &network.resolver,
+                &network.history,
+                &expected,
+                &network.signers[different_signer],
+            )
+            .is_err()
+        );
     }
+    let final_key: Vec<u8> = frontier::key(&chain, epoch, b"frontier/").unwrap();
+    network.put(0, final_key, StateMutation::Delete);
+    assert!(
+        advance_frozen_frontier(
+            &network.stores[0],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            &network.signers[0],
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn historical_profile_cannot_sign_a_frozen_frontier() {
+    let network: Network = setup();
+    assert!(
+        advance_frozen_frontier(
+            &network.stores[0],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &fixture::protocol(),
+            &network.signers[0],
+        )
+        .is_err()
+    );
 }
 
 #[test]

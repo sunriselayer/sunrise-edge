@@ -236,9 +236,9 @@ pub(crate) fn require_freeze_warrant<S: StructuredDurableDomainStateStore>(
 /// publication, and every ordered-economics business kind) consults. This
 /// initial profile never removes it. The next epoch has a distinct key, so
 /// admission can reopen at the next epoch without erasing the historical
-/// closure. The older standalone epoch-transition route can currently advance
-/// to that key without `DrainSet`/`Seal`; this is *not* verified DR-0154
-/// activation and must be retired before this slice is enabled.
+/// closure. The older standalone epoch-transition route is refused for a
+/// v2-bound store; only the future ordered `DrainSet`/`Seal`/Activate path may
+/// advance it. Historical v1 transition behavior remains separate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AdmissionClosureRecord {
     /// The epoch admission was closed for.

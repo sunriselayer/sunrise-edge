@@ -304,6 +304,44 @@ fn frozen_frontier_refuses_corrupt_retained_artifact_before_advancing() {
 }
 
 #[test]
+fn frozen_frontier_refuses_corrupt_retained_ack_before_advancing() {
+    use crate::ordered_economics::advance_frozen_frontier;
+
+    let replica: RetentionReplica = logical_replica();
+    let (bundle, _): (PublicationBundle, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    retain(&replica, &bundle, &replica.signer).unwrap();
+    let ack_row: Vec<u8> =
+        fastpath_availability_ack_key(protocol().chain_id(), &[REQUEST; 32]).unwrap();
+    replica.put_row(ack_row, b"corrupt frozen acknowledgement".to_vec());
+    let closure: crate::ordered_economics::AdmissionClosureRecord =
+        crate::ordered_economics::AdmissionClosureRecord {
+            closed_epoch: protocol().epoch(),
+            request_id: [0x59; 32],
+            closed_at_block_height: 4,
+        };
+    let closure_key: Vec<u8> = crate::ordered_economics::engine::admission_closure_key_for_tests(
+        protocol().chain_id(),
+        protocol().epoch(),
+    );
+    replica.put_row(
+        closure_key,
+        crate::ordered_economics::encode_admission_closure_record(&closure).unwrap(),
+    );
+    assert!(
+        advance_frozen_frontier(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &replica.signer,
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn retention_replay_refuses_corrupt_stored_operands_and_certificate() {
     for corruption in 0..3 {
         let replica: RetentionReplica = logical_replica();

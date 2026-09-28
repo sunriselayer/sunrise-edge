@@ -239,9 +239,10 @@ pub(crate) fn fence_epoch_state<S: StructuredDurableDomainStateStore>(
 /// DR-0154: additionally requires admission to still be open for `chain`
 /// (see [`crate::ordered_economics::fence_admission_open`]). Every caller of
 /// this function -- fast-path prepare/apply, the direct paid path, local
-/// execution, and every authenticated `SubmitTransaction` path that advances
-/// a nonce -- is exactly the set of "direct local/paid mutations" and "new
-/// prepares" a committed ordered-economics `Freeze` must stop. Local
+/// execution, every authenticated `SubmitTransaction` path that advances a
+/// nonce, and reservation-less generic durable events on a v2 store -- is
+/// exactly the set of "direct local/paid mutations" and "new prepares" a
+/// committed ordered-economics `Freeze` must stop. Local
 /// publication (`crate::publication`) calls [`fence_epoch_state`] directly
 /// rather than through this function (its `policy.context.epoch()` names a
 /// historical policy selector, not a transaction-epoch claim) and fences

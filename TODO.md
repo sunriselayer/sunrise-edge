@@ -307,12 +307,22 @@ The detailed existing evidence and remaining criteria follow:
   retained full certificate, signed intent, ACK and exact artifact closure,
   then CAS-commits a cursor. After the entire local publication prefix is
   scanned, it commits a final descriptor and vote atomically; exact replay
-  returns the saved vote. Focused tests cover four independent stores after
-  a real ordered Freeze, two real certified publications, artifact corruption,
-  vectors and replay. This is local evidence only: a remotely verifiable
-  closed-range proof, quorum union, DrainSet, authenticated cut, readiness,
+  returns the saved vote. Separate focused tests cover four independent stores
+  after a real ordered Freeze and a local retainer with two real certified
+  publications under a directly installed closure row, plus artifact
+  corruption, vectors and replay. This is local evidence only: a remotely
+  verifiable closed-range proof, quorum union, DrainSet, authenticated cut, readiness,
   Seal, activation and PostgreSQL network E2E remain open. Neither a local
   frontier signature nor this safety closure authorizes network activation.
+  Before enabling v2 activation, epoch-scope the publication/ACK/artifact key
+  families or provide an equivalent authenticated epoch-bounded scan. Their
+  current chain/request-only keys would make a later epoch's frontier encounter
+  an earlier epoch's retained publication and stop; deleting that history is
+  not an acceptable workaround.
+  The full local `scripts/check-all.sh` gate passed on 2026-09-29 after the
+  bounded frontier review follow-up; the live PostgreSQL suites were skipped
+  because `SUNRISE_EDGE_TEST_POSTGRES_URL` is unset. This is not a network
+  handoff E2E or a production-readiness claim.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

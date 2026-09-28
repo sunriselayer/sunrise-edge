@@ -174,3 +174,23 @@ fn frozen_frontier_identity_and_vote_vectors_are_stable() {
         "534e524537d0010004000100db000000534e524536d00100080001000d00000066726f6e746965722d74657374020004000000040000000300080000000800000000000000040020000000090909090909090909090909090909090909090909090909090909090909090905002000000007070707070707070707070707070707070707070707070707070707070707070600080000000b000000000000000700080000000200000000000000080038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa020020000000010101010101010101010101010101010101010101010101010101010101010103000200000001000400400000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
     );
 }
+
+#[test]
+fn frozen_frontier_accumulator_seed_and_step_hashes_are_stable() {
+    let (resolver, _certifier, _signers, domain) = fixture();
+    let mut accumulator: FrozenFrontierAccumulator = empty(&resolver, domain);
+    assert_eq!(
+        hex(&accumulator.identity().entries_digest.bytes()),
+        "0b1c6153949437a5f2617e05a8849b8ae988778ac6e5aaf0ee17897b4212b7cc"
+    );
+    accumulator.push(&resolver, &operation(1, domain)).unwrap();
+    assert_eq!(
+        hex(&accumulator.identity().entries_digest.bytes()),
+        "eb08a9f7032f18bdb7d9c8cd898b46761189faa0da5f741e13ab4cd651114897"
+    );
+    accumulator.push(&resolver, &operation(2, domain)).unwrap();
+    assert_eq!(
+        hex(&accumulator.identity().entries_digest.bytes()),
+        "a7983d9b7dd79253338a97f1a629ea5795db854f6ba32f84cb9d2cff88dd3a41"
+    );
+}
