@@ -163,7 +163,14 @@ fn fastpath_business_history_is_not_misclassified_as_local_reservation() {
         );
         assert!(is_excluded_subject(&key));
     }
-    let history: [Vec<u8>; 12] = [
+    let availability_ack: Vec<u8> =
+        crate::fast_path::publication::fastpath_availability_ack_key(&chain, &request).unwrap();
+    assert_eq!(
+        classify_fastpath_row(&availability_ack),
+        Some(FastpathRowClass::LocalSigningSafety)
+    );
+    assert!(is_excluded_subject(&availability_ack));
+    let history: [Vec<u8>; 14] = [
         local_instance_state::fastpath_certificate_key(&chain, &request).unwrap(),
         local_instance_state::fastpath_commitment_witness_key(&chain, &request).unwrap(),
         local_instance_state::fastpath_settlement_key(&chain, &request).unwrap(),
@@ -188,6 +195,16 @@ fn fastpath_business_history_is_not_misclassified_as_local_reservation() {
         )
         .unwrap(),
         local_instance_state::fastpath_economics_policy_key(&context()).unwrap(),
+        // DR-0154 (2026-09-28): the retained full-certificate publication
+        // record and its content-addressed replay artifacts.
+        crate::fast_path::publication::fastpath_publication_key(&chain, &request).unwrap(),
+        crate::fast_path::publication::fastpath_publication_artifact_key(
+            &chain,
+            &request,
+            consensus::bundle::ArtifactKind::StateValue,
+            &[0x49; 32],
+        )
+        .unwrap(),
     ];
     for key in history {
         assert_eq!(

@@ -9,10 +9,12 @@ correction of the availability/drain/readiness gaps. The mechanism is specified
 in [Complete epoch handoff](../epoch-handoff.md). At acceptance, this was a
 design-only decision and did not activate a new runtime rule. Independent
 implementation slices on 2026-09-28 allocate the availability wire family and
-implement the handoff-capable logical commitment profile, both described
-below, but still do not implement durable retention, Freeze/DrainSet/Seal
-control or the publication-before-apply gate this ADR requires. Implementation
-and validation status belong in [`TODO.md`](../../../TODO.md).
+implement the handoff-capable logical commitment profile and a canonical
+publication bundle with one replica's durable `retain_publication` step,
+described below. The apply-admission gate, HTTP/CLI ingress and
+Freeze/DrainSet/Seal remain unimplemented. The complete design requires a
+publication-before-apply rule, not a new quorum-applied finality rule.
+Implementation and validation status belong in [`TODO.md`](../../../TODO.md).
 
 The independent logical-generation admission extraction on 2026-09-30
 deliberately refuses Logical-profile epoch proposal/vote and fresh activation
@@ -254,7 +256,7 @@ The 2026-09-28 stateless availability-library slice allocates canonical
 domain `fast-path-availability-v1`. The IDs were checked against existing
 canonical type IDs; no historical ID or byte encoding changes. This allocation
 does not activate a publication, retention, or apply-admission rule. Later
-epoch-control and durable-state IDs remain unallocated. The usable handoff
+epoch-control and remaining durable-state IDs remain unallocated. The usable handoff
 implementation must include
 the core, authenticated HTTP/SDK/CLI, genuine multi-validator E2E, stable and
 adversarial vectors, documentation and the full repository/independent-review
@@ -276,10 +278,9 @@ lifecycle, fee-claim settlement, and the generic durable-event path, each
 gated through `logical_generation::admit_application` or
 `admit_generic_transition`. A store whose signed genesis binds the historical
 model keeps its exact existing physical admission, commitment and
-monotonicity rules unchanged. This does not implement durable retention,
-Freeze/DrainSet/Seal control, or the publication-before-apply gate this ADR
-requires: no cross-validator availability quorum is consulted before
-application, and the current
+monotonicity rules unchanged. This does not implement Freeze/DrainSet/Seal
+control or the publication-before-apply gate this ADR requires: no
+cross-validator availability quorum is consulted before application, and the current
 `NodeCoreError::LogicalProfileApplicationUnsupported` refusal is a local,
 always-correctly-paired-by-construction invariant guard against a caller
 presenting a resolved profile and derived evidence that disagree, not an
