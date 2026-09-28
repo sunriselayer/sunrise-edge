@@ -617,7 +617,15 @@ pub enum FastpathRowClass {
 #[must_use]
 pub fn classify_fastpath_row(key: &[u8]) -> Option<FastpathRowClass> {
     let suffix: &[u8] = key.strip_prefix(local_instance_state::FASTPATH_STATE_PREFIX)?;
-    const LOCAL: [&[u8]; 3] = [b"prepared/", b"lock/", b"nonce-lock/"];
+    // Prepare-side witness/artifacts are replica-local backing for a vote,
+    // not a certified publication or a transferable business fact.
+    const LOCAL: [&[u8]; 5] = [
+        b"prepared/",
+        b"lock/",
+        b"nonce-lock/",
+        b"prepared-witness/",
+        b"prepared-artifact/",
+    ];
     // A signed ACK is local safety state, not a mutable prepare reservation
     // and not an imported business fact.
     const SIGNING_SAFETY: [&[u8]; 1] = [b"availability-ack/"];
@@ -626,7 +634,7 @@ pub fn classify_fastpath_row(key: &[u8]) -> Option<FastpathRowClass> {
     // over them, and `publication-artifact/` is the content-addressed,
     // digest-verified replay bytes that manifest requires -- both portable
     // business history a cut must enumerate, not disposable local cache.
-    const HISTORY: [&[u8]; 14] = [
+    const HISTORY: [&[u8]; 15] = [
         b"certificate/",
         b"commitment-witness/",
         b"settlement/",
@@ -641,6 +649,7 @@ pub fn classify_fastpath_row(key: &[u8]) -> Option<FastpathRowClass> {
         b"evidence-consumed/",
         b"publication/",
         b"publication-artifact/",
+        b"availability-certificate/",
     ];
     if LOCAL
         .iter()
