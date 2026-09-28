@@ -189,6 +189,13 @@ The detailed existing evidence and remaining criteria follow:
   Opus prerequisite review, followed by Sonnet's invariant/test refinements and
   parent verification. Shared storage tests, real file reopen/fresh connection
   reads and authority refusals pass; these do not prove a complete cut.
+  Referenced blob content now has bounded descriptor/range reads across
+  memory, the separate SQLite blob file and PostgreSQL. Independent Opus
+  review approved that bounded API with follow-up tests and wording changes;
+  parent made those changes and reran relevant tests, including a live
+  PostgreSQL fresh-connection and namespace-negative case.
+  Blob bytes still require protocol hash/provenance verification, and neither
+  these reads nor four-collection enumeration prove cut completeness.
   Logical provenance/commitment/profile call-site wiring is still unaccepted
   work in progress: the isolated draft does not install a signed genesis
   profile or bind the generation into the signed witness, and profile absence

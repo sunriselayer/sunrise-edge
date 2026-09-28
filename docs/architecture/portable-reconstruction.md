@@ -76,3 +76,24 @@ pagination, legal large values, revision changes and authority refusals.
 File close/reopen and fresh PostgreSQL connections prove persistence behavior
 only; they do not prove authenticated state handoff, independent operational
 control, network activation or production readiness.
+
+## Referenced blob content
+
+`runtime::portable::PortableBlobRepository` reads a present blob's exact
+stored length separately from ranges of at most 1 MiB, including the first
+range. It distinguishes a missing digest from a present empty blob and
+refuses a later missing row or length mismatch instead of stitching ranges.
+Memory, the separate SQLite blob file and namespace-bound PostgreSQL blob
+storage implement this read contract. The current blob stores define no
+delete or garbage collection; introducing reclamation must revisit the
+range-read mismatch outcome.
+
+These reads are content retrieval, not content authentication or cut
+authority. The importer must verify the complete reconstructed bytes with
+the committed digest and its purpose/context, then verify the referenced
+object or publication provenance. The range-read trait itself carries no
+writer fence; PostgreSQL binds its namespace at construction, while SQLite
+and memory blob stores are separate from the structured-store namespace.
+The protocol must independently fence and verify the structured cut. The
+1 MiB bound is a process-side result bound; database-side work per range has
+not been measured.
