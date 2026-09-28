@@ -20,6 +20,7 @@
 //! multi-writer or production deployments.
 
 use crate::rusqlite_backend::NativeSqlBackend;
+use runtime::outbox_guard::{StructuredOutboxExclusionGuard, StructuredOutboxInventory};
 use runtime::portable::{
     DurablePortableRepository, DurableRecordChunkOutcome, DurableRecordChunkRequest,
     DurableRecordDescriptor, DurableRecordKey, DurableRecordPage, DurableRecordScan,
@@ -471,6 +472,16 @@ impl DurablePortableRepository for SqliteDurableStore {
         request: &DurableRecordChunkRequest,
     ) -> Result<DurableRecordChunkOutcome, DurableReadError> {
         self.engine.read_portable_chunk(context, domain, request)
+    }
+}
+
+impl StructuredOutboxExclusionGuard for SqliteDurableStore {
+    fn inspect_outbox_exclusion(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<StructuredOutboxInventory, DurableReadError> {
+        self.engine.inspect_outbox_exclusion(context, domain)
     }
 }
 

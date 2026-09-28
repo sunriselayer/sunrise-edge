@@ -8,6 +8,7 @@
 //! and rejection rules by construction, never two independently
 //! maintained copies.
 
+mod outbox_guard;
 mod portable;
 
 use crate::backend::{

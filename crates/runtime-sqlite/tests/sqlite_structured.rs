@@ -4,6 +4,9 @@
 #[path = "sqlite_structured/portable.rs"]
 mod portable;
 
+#[path = "sqlite_structured/outbox_guard.rs"]
+mod outbox_guard;
+
 use hashing::{BuiltinHashFunction, HashFunction};
 use objects::{Address, Object, Owner};
 use protocol_types::{ChainId, ProtocolVersion, ValidatorId};
