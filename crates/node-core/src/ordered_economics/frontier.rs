@@ -229,8 +229,14 @@ fn commit_row<S: StructuredDurableDomainStateStore>(
     }
 }
 
-fn publication_prefix(chain: &ChainId) -> Result<Vec<u8>, FrozenFrontierError> {
-    let mut prefix: Vec<u8> = fastpath_publication_key(chain, &[0; 32])?;
+/// The exact `chain`-then-`epoch` prefix every retained publication row for
+/// one closed epoch shares. Bounding the scan below to this prefix, rather
+/// than to `chain` alone, is what keeps an older or newer epoch's retained
+/// row entirely outside this epoch's frontier: a request id from another
+/// epoch can never sort inside this range no matter how its bytes compare to
+/// this epoch's request ids.
+fn publication_prefix(chain: &ChainId, epoch: Epoch) -> Result<Vec<u8>, FrozenFrontierError> {
+    let mut prefix: Vec<u8> = fastpath_publication_key(chain, epoch, &[0; 32])?;
     prefix.truncate(prefix.len() - 32);
     Ok(prefix)
 }
@@ -381,9 +387,9 @@ where
         ));
     };
 
-    let prefix: Vec<u8> = publication_prefix(&chain)?;
+    let prefix: Vec<u8> = publication_prefix(&chain, epoch)?;
     let after_key: Vec<u8> = match accumulator.last_request_id() {
-        Some(last) => fastpath_publication_key(&chain, &last)?,
+        Some(last) => fastpath_publication_key(&chain, epoch, &last)?,
         None => prefix.clone(),
     };
     if accumulator.last_request_id().is_none() {

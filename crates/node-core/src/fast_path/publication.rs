@@ -444,27 +444,40 @@ pub struct FastPathAvailabilityAckRecord {
     pub vote: Vec<u8>,
 }
 
-/// One retained publication record, keyed by the original signed request id.
+/// One retained publication record, keyed by chain, then the pinned serving
+/// context's epoch, then the original signed request id -- in that order --
+/// so a prefix scan bounded to one closed epoch (see
+/// [`super::super::ordered_economics::frontier`]) can never run into an older
+/// or newer epoch's row: those sort strictly outside the epoch-scoped prefix
+/// regardless of how the request id byte pattern happens to compare. `epoch`
+/// must always be the caller's own already-fenced [`PublicationContext`]
+/// epoch (`expected.epoch()`), never a bundle-declared or otherwise
+/// untrusted value, even where a separate check also constrains that value to
+/// equal this one.
 pub fn fastpath_publication_key(
     chain: &ChainId,
+    epoch: Epoch,
     request_id: &[u8; 32],
 ) -> Result<Vec<u8>, NodeCoreError> {
     let mut key: Vec<u8> = local_instance_state::FASTPATH_STATE_PREFIX.to_vec();
     key.extend_from_slice(b"publication/");
     key.extend(canonical_encoding::encode_chain_id(chain)?);
+    key.extend_from_slice(&epoch.get().to_be_bytes());
     key.extend_from_slice(request_id);
     validate_transactional_state_key(&key)?;
     Ok(key)
 }
 
-/// One retained publication artifact's exact content bytes, addressed by the
-/// artifact kind and its verified content digest.
+/// One retained publication artifact's exact content bytes, addressed by
+/// chain, epoch, request id, artifact kind and verified content digest, in
+/// that order, for the same epoch-scoping reason as [`fastpath_publication_key`].
 ///
 /// Keying by content digest rather than by ordinal means an equivalent proof
 /// for the same operation rewrites byte-identical rows instead of
 /// accumulating proof variants.
 pub fn fastpath_publication_artifact_key(
     chain: &ChainId,
+    epoch: Epoch,
     request_id: &[u8; 32],
     kind: ArtifactKind,
     content_digest: &[u8; 32],
@@ -472,6 +485,7 @@ pub fn fastpath_publication_artifact_key(
     let mut key: Vec<u8> = local_instance_state::FASTPATH_STATE_PREFIX.to_vec();
     key.extend_from_slice(b"publication-artifact/");
     key.extend(canonical_encoding::encode_chain_id(chain)?);
+    key.extend_from_slice(&epoch.get().to_be_bytes());
     key.extend_from_slice(request_id);
     key.extend_from_slice(&kind.as_u16().to_be_bytes());
     key.extend_from_slice(content_digest);
@@ -479,14 +493,18 @@ pub fn fastpath_publication_artifact_key(
     Ok(key)
 }
 
-/// This replica's first exposed availability acknowledgement for one request.
+/// This replica's first exposed availability acknowledgement for one request,
+/// keyed by chain, epoch then request id for the same epoch-scoping reason as
+/// [`fastpath_publication_key`].
 pub fn fastpath_availability_ack_key(
     chain: &ChainId,
+    epoch: Epoch,
     request_id: &[u8; 32],
 ) -> Result<Vec<u8>, NodeCoreError> {
     let mut key: Vec<u8> = local_instance_state::FASTPATH_STATE_PREFIX.to_vec();
     key.extend_from_slice(b"availability-ack/");
     key.extend(canonical_encoding::encode_chain_id(chain)?);
+    key.extend_from_slice(&epoch.get().to_be_bytes());
     key.extend_from_slice(request_id);
     validate_transactional_state_key(&key)?;
     Ok(key)
@@ -700,9 +718,15 @@ where
     }
     required.require_closed(&bundle.manifest)?;
 
+    // Every key below is derived from `expected.epoch()` -- this function's
+    // own already-fenced context epoch -- never from `bundle.certificate.epoch`
+    // directly, even though `verify_publication_bundle` above has already
+    // proven the two equal for this request. Retention/replay must never make
+    // its storage addressing depend on a caller-supplied bundle field.
+    let epoch: Epoch = expected.epoch();
     let identity_bytes: Vec<u8> = encode_availability_identity(&identity)?;
-    let publication_key: Vec<u8> = fastpath_publication_key(&chain, &bundle.request_id)?;
-    let ack_key: Vec<u8> = fastpath_availability_ack_key(&chain, &bundle.request_id)?;
+    let publication_key: Vec<u8> = fastpath_publication_key(&chain, epoch, &bundle.request_id)?;
+    let ack_key: Vec<u8> = fastpath_availability_ack_key(&chain, epoch, &bundle.request_id)?;
     let observed_publication: VersionedStateValue =
         store.get_versioned_durable(context, domain, &publication_key)?;
     let observed_ack: VersionedStateValue =
@@ -716,6 +740,7 @@ where
     )?;
     let staged_artifacts: BTreeMap<Vec<u8>, Vec<u8>> = stage_publication_artifacts(
         &chain,
+        epoch,
         &bundle.request_id,
         &bundle.manifest,
         &bundle.contents,
@@ -1085,7 +1110,8 @@ pub(crate) fn verify_retained_publication<S: StructuredDurableDomainStateStore>(
         ));
     }
     let chain: ChainId = expected.chain_id().clone();
-    let publication_key: Vec<u8> = fastpath_publication_key(&chain, request_id)?;
+    let epoch: Epoch = expected.epoch();
+    let publication_key: Vec<u8> = fastpath_publication_key(&chain, epoch, request_id)?;
     let observed_publication: VersionedStateValue =
         store.get_versioned_durable(context, domain, &publication_key)?;
     let record_bytes: &[u8] = observed_publication.value().ok_or(
@@ -1109,7 +1135,7 @@ pub(crate) fn verify_retained_publication<S: StructuredDurableDomainStateStore>(
     let mut contents: Vec<Vec<u8>> = Vec::with_capacity(manifest.entries.len());
     let mut total_content_bytes: usize = 0;
     for entry in &manifest.entries {
-        let key: Vec<u8> = artifact_key(&chain, request_id, entry)?;
+        let key: Vec<u8> = artifact_key(&chain, epoch, request_id, entry)?;
         let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
         let content: &[u8] =
             observed
@@ -1174,7 +1200,7 @@ pub(crate) fn verify_retained_publication<S: StructuredDurableDomainStateStore>(
             "frozen publication identity",
         ));
     }
-    let ack_key: Vec<u8> = fastpath_availability_ack_key(&chain, request_id)?;
+    let ack_key: Vec<u8> = fastpath_availability_ack_key(&chain, epoch, request_id)?;
     let observed_ack: VersionedStateValue =
         store.get_versioned_durable(context, domain, &ack_key)?;
     let ack_bytes: &[u8] =
@@ -1207,10 +1233,17 @@ pub(crate) fn verify_retained_publication<S: StructuredDurableDomainStateStore>(
 
 fn artifact_key(
     chain: &ChainId,
+    epoch: Epoch,
     request_id: &[u8; 32],
     entry: &ArtifactEntry,
 ) -> Result<Vec<u8>, NodeCoreError> {
-    fastpath_publication_artifact_key(chain, request_id, entry.kind, &entry.content_digest.bytes())
+    fastpath_publication_artifact_key(
+        chain,
+        epoch,
+        request_id,
+        entry.kind,
+        &entry.content_digest.bytes(),
+    )
 }
 
 /// Stages one manifest's artifacts for the atomic commit, deduplicating by
@@ -1229,13 +1262,14 @@ fn artifact_key(
 /// refused rather than silently resolved by picking one.
 fn stage_publication_artifacts(
     chain: &ChainId,
+    epoch: Epoch,
     request_id: &[u8; 32],
     manifest: &ArtifactManifest,
     contents: &[Vec<u8>],
 ) -> RetentionResult<BTreeMap<Vec<u8>, Vec<u8>>> {
     let mut staged: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
     for (entry, content) in manifest.entries.iter().zip(contents.iter()) {
-        let key: Vec<u8> = artifact_key(chain, request_id, entry)?;
+        let key: Vec<u8> = artifact_key(chain, epoch, request_id, entry)?;
         match staged.get(&key) {
             Some(existing) if existing != content => {
                 return Err(PublicationRetentionError::Node(

@@ -38,13 +38,16 @@ fn retain(
 }
 
 fn retained_publication(replica: &RetentionReplica, request: u8) -> FastPathPublicationRecord {
-    let key: Vec<u8> = fastpath_publication_key(protocol().chain_id(), &[request; 32]).unwrap();
+    let key: Vec<u8> =
+        fastpath_publication_key(protocol().chain_id(), protocol().epoch(), &[request; 32])
+            .unwrap();
     decode_fastpath_publication_record(&replica.row(&key).expect("publication retained")).unwrap()
 }
 
 fn retained_ack(replica: &RetentionReplica, request: u8) -> Option<FastPathAvailabilityAckRecord> {
     let key: Vec<u8> =
-        fastpath_availability_ack_key(protocol().chain_id(), &[request; 32]).unwrap();
+        fastpath_availability_ack_key(protocol().chain_id(), protocol().epoch(), &[request; 32])
+            .unwrap();
     replica
         .row(&key)
         .map(|bytes| decode_fastpath_availability_ack_record(&bytes).unwrap())
@@ -81,7 +84,13 @@ fn retention_verifies_the_complete_closure_and_durably_retains_before_exposing_a
     assert_eq!(record.witness, bundle.witness);
     assert_eq!(record.signed_intent, bundle.signed_intent);
     for (entry, content) in bundle.manifest.entries.iter().zip(bundle.contents.iter()) {
-        let key: Vec<u8> = artifact_key(protocol().chain_id(), &[REQUEST; 32], entry).unwrap();
+        let key: Vec<u8> = artifact_key(
+            protocol().chain_id(),
+            protocol().epoch(),
+            &[REQUEST; 32],
+            entry,
+        )
+        .unwrap();
         assert_eq!(replica.row(&key).as_deref(), Some(content.as_slice()));
     }
 }
@@ -164,6 +173,56 @@ fn exact_retention_replay_returns_the_retained_acknowledgement() {
     let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
     let first: AvailabilityVote = retain(&replica, &bundle, &replica.signer).unwrap();
     assert_eq!(retain(&replica, &bundle, &replica.signer).unwrap(), first);
+}
+
+#[test]
+fn same_request_id_retained_under_two_epochs_does_not_collide() {
+    // DR-0154 history never overwrites. The storage key does not itself
+    // forbid the same 32-byte request id recurring under a different epoch --
+    // that must land on an independent row, never share one "chain + request
+    // id" row the way a naive (pre-epoch-scoped) key would.
+    let replica: RetentionReplica = logical_replica();
+    let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    retain(&replica, &bundle, &replica.signer).unwrap();
+    let epoch0_record: FastPathPublicationRecord = retained_publication(&replica, REQUEST);
+
+    let other_epoch: Epoch = Epoch::new(protocol().epoch().get() + 1);
+    let foreign_context: PublicationContext = PublicationContext::new(
+        protocol().chain_id().clone(),
+        protocol().protocol_version(),
+        other_epoch,
+    )
+    .unwrap();
+    let mut foreign_record: FastPathPublicationRecord = epoch0_record.clone();
+    foreign_record.context = foreign_context;
+    let foreign_key: Vec<u8> =
+        fastpath_publication_key(protocol().chain_id(), other_epoch, &[REQUEST; 32]).unwrap();
+    replica.put_row(
+        foreign_key.clone(),
+        encode_fastpath_publication_record(&foreign_record).unwrap(),
+    );
+
+    // Both rows persist independently at their own epoch-scoped key: neither
+    // write shadowed or overwrote the other.
+    assert_eq!(retained_publication(&replica, REQUEST), epoch0_record);
+    assert_eq!(
+        decode_fastpath_publication_record(&replica.row(&foreign_key).unwrap()).unwrap(),
+        foreign_record
+    );
+
+    // Exact replay at the original epoch must never read or disturb the
+    // foreign epoch's row.
+    assert_eq!(
+        retain(&replica, &bundle, &replica.signer)
+            .unwrap()
+            .identity
+            .request_id,
+        [REQUEST; 32]
+    );
+    assert_eq!(
+        replica.row(&foreign_key).unwrap(),
+        encode_fastpath_publication_record(&foreign_record).unwrap()
+    );
 }
 
 #[test]
@@ -265,6 +324,86 @@ fn frozen_frontier_pages_two_real_certified_publications_and_replays_exact_vote(
 }
 
 #[test]
+fn a_prior_epoch_publication_remains_and_cannot_contaminate_the_next_epoch_frontier() {
+    // The DR-0154 vulnerability this key layout closes: a request id from a
+    // closed, older epoch must never be visited (let alone counted) by a
+    // later epoch's frontier scan, no matter how its 32 raw bytes happen to
+    // compare to anything in the later epoch's key range. The older row must
+    // also survive untouched: retention preserves all history.
+    use crate::ordered_economics::{FrozenFrontierStep, advance_frozen_frontier};
+
+    let replica: RetentionReplica = logical_replica();
+    let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    retain(&replica, &bundle, &replica.signer).unwrap();
+    let epoch0_record: FastPathPublicationRecord = retained_publication(&replica, REQUEST);
+
+    // Advance the committed fast-path epoch and install a validator set for
+    // it -- this replica's own signer, so its frontier vote below verifies --
+    // exactly as a real epoch transition would.
+    let next_epoch: Epoch = Epoch::new(protocol().epoch().get() + 1);
+    let next_context: PublicationContext = PublicationContext::new(
+        protocol().chain_id().clone(),
+        protocol().protocol_version(),
+        next_epoch,
+    )
+    .unwrap();
+    crate::fast_path::install_validator_set(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        next_context.clone(),
+        vec![FastPathValidatorEntry {
+            id: replica.signer.validator_id(),
+            voting_power: 1,
+            signature_scheme: replica.signer.signature_scheme(),
+            public_key: replica.signer.validator_id().as_bytes().to_vec(),
+        }],
+    )
+    .unwrap();
+
+    // Close the next epoch's admission with no publication ever retained
+    // under it.
+    let closure: crate::ordered_economics::AdmissionClosureRecord =
+        crate::ordered_economics::AdmissionClosureRecord {
+            closed_epoch: next_epoch,
+            request_id: [0x5A; 32],
+            closed_at_block_height: 9,
+        };
+    let closure_key: Vec<u8> = crate::ordered_economics::engine::admission_closure_key_for_tests(
+        protocol().chain_id(),
+        next_epoch,
+    );
+    replica.put_row(
+        closure_key,
+        crate::ordered_economics::encode_admission_closure_record(&closure).unwrap(),
+    );
+
+    let step: FrozenFrontierStep = advance_frozen_frontier(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &next_context,
+        &replica.signer,
+    )
+    .unwrap();
+    let vote: Box<consensus::FrozenFrontierVote> = match step {
+        FrozenFrontierStep::Finalized(vote) => vote,
+        FrozenFrontierStep::Advanced { .. } => panic!(
+            "an epoch with no retained publication must finalize empty, not page a prior epoch's row"
+        ),
+    };
+    assert_eq!(vote.identity.epoch, next_epoch);
+    assert_eq!(vote.identity.entry_count, 0);
+
+    // The prior epoch's publication is untouched by the later epoch's scan
+    // and remains addressable exactly as retained.
+    assert_eq!(retained_publication(&replica, REQUEST), epoch0_record);
+}
+
+#[test]
 fn frozen_frontier_refuses_corrupt_retained_artifact_before_advancing() {
     use crate::ordered_economics::advance_frozen_frontier;
 
@@ -272,8 +411,13 @@ fn frozen_frontier_refuses_corrupt_retained_artifact_before_advancing() {
     let (bundle, _): (PublicationBundle, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
     retain(&replica, &bundle, &replica.signer).unwrap();
     let first_artifact: &ArtifactEntry = bundle.manifest.entries.first().unwrap();
-    let artifact_row: Vec<u8> =
-        artifact_key(protocol().chain_id(), &[REQUEST; 32], first_artifact).unwrap();
+    let artifact_row: Vec<u8> = artifact_key(
+        protocol().chain_id(),
+        protocol().epoch(),
+        &[REQUEST; 32],
+        first_artifact,
+    )
+    .unwrap();
     replica.put_row(artifact_row, b"corrupt frozen bytes".to_vec());
     let closure: crate::ordered_economics::AdmissionClosureRecord =
         crate::ordered_economics::AdmissionClosureRecord {
@@ -311,7 +455,8 @@ fn frozen_frontier_refuses_corrupt_retained_ack_before_advancing() {
     let (bundle, _): (PublicationBundle, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
     retain(&replica, &bundle, &replica.signer).unwrap();
     let ack_row: Vec<u8> =
-        fastpath_availability_ack_key(protocol().chain_id(), &[REQUEST; 32]).unwrap();
+        fastpath_availability_ack_key(protocol().chain_id(), protocol().epoch(), &[REQUEST; 32])
+            .unwrap();
     replica.put_row(ack_row, b"corrupt frozen acknowledgement".to_vec());
     let closure: crate::ordered_economics::AdmissionClosureRecord =
         crate::ordered_economics::AdmissionClosureRecord {
@@ -354,7 +499,8 @@ fn retention_replay_refuses_corrupt_stored_operands_and_certificate() {
             _ => record.certificate.push(0xAB),
         }
         replica.put_row(
-            fastpath_publication_key(protocol().chain_id(), &[REQUEST; 32]).unwrap(),
+            fastpath_publication_key(protocol().chain_id(), protocol().epoch(), &[REQUEST; 32])
+                .unwrap(),
             encode_fastpath_publication_record(&record).unwrap(),
         );
         assert!(matches!(
@@ -374,7 +520,13 @@ fn retention_replay_refuses_corrupt_stored_artifact() {
     let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
     let first: AvailabilityVote = retain(&replica, &bundle, &replica.signer).unwrap();
     let entry: &ArtifactEntry = bundle.manifest.entries.first().unwrap();
-    let key: Vec<u8> = artifact_key(protocol().chain_id(), &[REQUEST; 32], entry).unwrap();
+    let key: Vec<u8> = artifact_key(
+        protocol().chain_id(),
+        protocol().epoch(),
+        &[REQUEST; 32],
+        entry,
+    )
+    .unwrap();
     replica.put_row(key, b"corrupted artifact bytes".to_vec());
     assert!(matches!(
         retain(&replica, &bundle, &replica.signer),
@@ -403,7 +555,8 @@ fn retention_refuses_a_bundle_whose_identity_differs_from_the_retained_one() {
     let mut record: FastPathPublicationRecord = retained_publication(&replica, REQUEST);
     record.identity = encode_availability_identity(&other).unwrap();
     replica.put_row(
-        fastpath_publication_key(protocol().chain_id(), &[REQUEST; 32]).unwrap(),
+        fastpath_publication_key(protocol().chain_id(), protocol().epoch(), &[REQUEST; 32])
+            .unwrap(),
         encode_fastpath_publication_record(&record).unwrap(),
     );
 
@@ -602,9 +755,14 @@ fn stage_publication_artifacts_dedupes_identical_content_under_different_identit
             staging_entry(ArtifactKind::StateValue, 0x02, 0x99, &content),
         ],
     };
-    let staged =
-        stage_publication_artifacts(&chain, &request, &manifest, &[content.clone(), content])
-            .expect("identical content under different identities must dedupe, not conflict");
+    let staged = stage_publication_artifacts(
+        &chain,
+        protocol().epoch(),
+        &request,
+        &manifest,
+        &[content.clone(), content],
+    )
+    .expect("identical content under different identities must dedupe, not conflict");
     assert_eq!(staged.len(), 1, "one distinct storage key expected");
 }
 
@@ -623,6 +781,7 @@ fn stage_publication_artifacts_refuses_a_genuine_content_disagreement_under_one_
     };
     let error = stage_publication_artifacts(
         &chain,
+        protocol().epoch(),
         &request,
         &manifest,
         &[b"one".to_vec(), b"other".to_vec()],
