@@ -167,6 +167,40 @@ fn exact_retention_replay_returns_the_retained_acknowledgement() {
 }
 
 #[test]
+fn freeze_blocks_new_retention_ack_but_preserves_exact_ack_replay() {
+    let replica: RetentionReplica = logical_replica();
+    let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    let first: AvailabilityVote = retain(&replica, &bundle, &replica.signer).unwrap();
+    let closure: crate::ordered_economics::AdmissionClosureRecord =
+        crate::ordered_economics::AdmissionClosureRecord {
+            closed_epoch: protocol().epoch(),
+            request_id: [0x55; 32],
+            closed_at_block_height: 3,
+        };
+    let key: Vec<u8> = crate::ordered_economics::engine::admission_closure_key_for_tests(
+        protocol().chain_id(),
+        protocol().epoch(),
+    );
+    replica.put_row(
+        key,
+        crate::ordered_economics::encode_admission_closure_record(&closure).unwrap(),
+    );
+    assert_eq!(retain(&replica, &bundle, &replica.signer).unwrap(), first);
+
+    let fresh_request: u8 = REQUEST + 1;
+    let (fresh, _certificate) = transfer_bundle_bytes(fresh_request, FIRST_PAID_NONCE);
+    assert!(matches!(
+        retain(&replica, &fresh, &replica.signer),
+        Err(PublicationRetentionError::Node(
+            NodeCoreError::PersistenceInvariant(
+                "admission closed by a committed ordered-economics epoch freeze"
+            )
+        ))
+    ));
+    assert!(retained_ack(&replica, fresh_request).is_none());
+}
+
+#[test]
 fn retention_replay_refuses_corrupt_stored_operands_and_certificate() {
     for corruption in 0..3 {
         let replica: RetentionReplica = logical_replica();

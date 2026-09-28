@@ -43,8 +43,8 @@
 //! ## Epoch-handoff integration status
 //!
 //! `Freeze` currently closes admission for ordinary and ordered business
-//! mutations, but is only one part of DR-0154. Publication-retention ACK
-//! fencing, `DrainSet`, `Seal`, verified next-set readiness and activation,
+//! mutations and fresh publication-retention ACKs, but is only one part of
+//! DR-0154. `DrainSet`, `Seal`, verified next-set readiness and activation,
 //! and retirement of the older standalone epoch-transition route must be
 //! integrated before this path can be enabled as a complete handoff.
 use super::*;

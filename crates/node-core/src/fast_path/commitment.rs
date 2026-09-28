@@ -258,10 +258,17 @@ fn is_excluded_from_mutation_commitment(key: &[u8], shape: Shape) -> bool {
 // A provenance row read is only a CAS-fenced validation of its subject. The
 // signed logical read is the verified subject observation and generation, not
 // this metadata row's local revision. New provenance mutations remain signed
-// below, so this does not remove the resulting causal assertion.
+// below, so this does not remove the resulting causal assertion. The ordered
+// Freeze marker is likewise a CAS-fenced control read, not an application
+// operand with a logical-generation observation; no other ordered row is
+// silently excluded by this exception.
 fn is_excluded_from_read_commitment(key: &[u8], shape: Shape) -> bool {
     is_excluded_from_mutation_commitment(key, shape)
-        || (matches!(shape, Shape::Logical) && logical_generation::is_logical_provenance_key(key))
+        || (matches!(shape, Shape::Logical)
+            && (logical_generation::is_logical_provenance_key(key)
+                || key
+                    .strip_prefix(ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX)
+                    .is_some_and(|suffix: &[u8]| suffix.starts_with(b"freeze/"))))
 }
 
 /// Encodes one generic state read for the historical envelope: its exact
@@ -676,4 +683,22 @@ pub(crate) fn hash_witness_bytes(
     resolver
         .hash_for_purpose(epoch, HashPurpose::ExecutionEffects, bytes)
         .map_err(NodeCoreError::Hashing)
+}
+
+#[cfg(test)]
+mod freeze_read_tests {
+    use super::*;
+
+    #[test]
+    fn ordered_freeze_fence_is_a_cas_read_not_a_signed_business_operand() {
+        let mut key: Vec<u8> = ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX.to_vec();
+        key.extend_from_slice(b"freeze/epoch-key");
+        assert!(is_excluded_from_read_commitment(&key, Shape::Logical));
+        assert!(!is_excluded_from_mutation_commitment(&key, Shape::Logical));
+        assert!(!is_excluded_from_read_commitment(&key, Shape::Physical));
+        let mut outcome: Vec<u8> =
+            ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX.to_vec();
+        outcome.extend_from_slice(b"outcome/request-key");
+        assert!(!is_excluded_from_read_commitment(&outcome, Shape::Logical));
+    }
 }

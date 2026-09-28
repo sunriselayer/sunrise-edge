@@ -237,6 +237,12 @@ The detailed existing evidence and remaining criteria follow:
   an irreversible Freeze with no ready next set would otherwise strand the
   network. This remains a design/implementation obligation, not a deployed
   fallback or permission for operator-forced activation.
+  The Draft PR now contains a tested ordered `Freeze` marker and closed-epoch
+  admission fences, including fresh retention ACKs; exact earlier ACK replay
+  remains available. This is partial control only. The older standalone
+  epoch-transition API can still activate without `DrainSet`/`Seal`, and a
+  structurally valid Freeze does not yet prove a legally eligible next set.
+  Neither path is safe to expose as complete handoff until those gaps close.
   The 2026-09-28 bundle clarification requires a full logical witness and
   verified artifact closure before a retention ACK, including on a retainer
   with a conflicting partial lock. A same-day follow-up slice in Draft PR #235

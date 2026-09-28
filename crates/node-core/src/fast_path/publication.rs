@@ -68,8 +68,9 @@
 //!
 //! # Deliberate non-scope
 //!
-//! This module wires no apply-admission gate, no HTTP/CLI ingress and no
-//! Freeze/DrainSet/Seal control. Retaining a bundle does not authorize any
+//! This module fences fresh ACKs against a committed Freeze but wires no
+//! apply-admission gate, HTTP/CLI ingress, or DrainSet/Seal control. Retaining
+//! a bundle does not authorize any
 //! application, and an availability certificate is not formed here. Bounded
 //! *resumable multi-commit* transfer of a closure larger than
 //! [`MAX_RETAINED_ARTIFACTS`] (or one atomic commit) is the separate
@@ -628,24 +629,21 @@ where
         return Err(PublicationRetentionError::ContextMismatch);
     }
 
-    // Fence the committed epoch record and the active validator set exactly
-    // as an admission path does. These are the writer/epoch/admission-state
-    // preconditions the single commit below re-asserts; a committed Freeze
-    // marker will extend this same fenced read set.
+    // Fence the committed epoch record and the active validator set. Unlike
+    // a fresh admission, a matching retained ACK may still be replayed after
+    // Freeze; the closure fence is therefore applied below only after the
+    // already-retained branch has reconciled its complete saved history.
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
-    // `fence_current_epoch` itself refuses (`NodeCoreError::EpochMismatch`,
-    // mapped to `PublicationRetentionError::Node`) unless the committed
-    // current epoch is exactly `bundle.certificate.epoch`; a bundle bound to
-    // a non-current epoch never reaches the line below.
     let epoch_record: local_instance_state::FastPathEpochRecord =
-        mutation_fence::fence_current_epoch(
-            store,
-            context,
-            domain,
-            &chain,
-            bundle.certificate.epoch,
-            &mut reads,
-        )?;
+        mutation_fence::fence_epoch_state(store, context, domain, &chain, &mut reads)?;
+    if epoch_record.current_epoch != bundle.certificate.epoch {
+        return Err(PublicationRetentionError::Node(
+            NodeCoreError::EpochMismatch {
+                expected: epoch_record.current_epoch,
+                actual: bundle.certificate.epoch,
+            },
+        ));
+    }
     let validator_context: PublicationContext = expected.clone();
     let validator_set: ValidatorSet = load_validator_set(
         store,
@@ -805,6 +803,18 @@ where
             "acknowledgement retained without its publication",
         ));
     }
+
+    // A fresh ACK races atomically with the committed Freeze marker. Exact
+    // earlier ACK replay above remains available; a new ACK after closure
+    // fails without exposing a signature or changing publication rows.
+    crate::ordered_economics::fence_admission_open(
+        store,
+        context,
+        domain,
+        &chain,
+        epoch_record.current_epoch,
+        &mut reads,
+    )?;
 
     // Sign only after every verification above has passed. The vote is
     // re-verified before it can be committed, so a misconfigured or rotated

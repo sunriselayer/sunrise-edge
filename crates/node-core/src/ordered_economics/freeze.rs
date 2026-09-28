@@ -12,10 +12,10 @@
 //! kind goes through -- installs the durable [`AdmissionClosureRecord`].
 //!
 //! Scope of this slice (DR-0154 Delivery 3, partial): closing admission and
-//! refusing business after closure. `DrainSet`, `Seal`, the next-set
-//! readiness/activation sequence and the interaction with execution-free
-//! publication retention are **not** implemented here; see the module-level
-//! remaining-integration note in [`super`].
+//! refusing business after closure. Fresh publication-retention ACKs are
+//! fenced in `crate::fast_path::publication`. `DrainSet`, `Seal` and the
+//! next-set readiness/activation sequence are **not** implemented here; see
+//! the module-level remaining-integration note in [`super`].
 use super::*;
 use canonical_encoding::encode_chain_id;
 use execution::publication::{
@@ -201,7 +201,7 @@ pub(crate) fn read_admission_closure<S: StructuredDurableDomainStateStore>(
 /// through [`fence_admission_open`]. Fails closed once a committed `Freeze`
 /// has installed [`AdmissionClosureRecord`] for `chain`: stop new prepares,
 /// direct local/paid mutations and construction of fresh economic candidates.
-/// Publication-retention ACKs need a separate gate before this slice is live.
+/// Publication-retention ACKs use this gate after exact retained-ACK replay.
 ///
 /// This is a distinct, lower-level check from
 /// [`super::preflight::preflight`]'s own closed-admission refusal: this one
