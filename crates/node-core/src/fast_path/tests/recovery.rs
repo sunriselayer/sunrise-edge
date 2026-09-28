@@ -611,7 +611,7 @@ fn recovery_refuses_missing_definitions_policies_divergent_nonce_and_object_head
         match kind {
             0 => write_state(
                 &store,
-                publication::publication_record_key(&fixture.origin).unwrap(),
+                crate::publication::publication_record_key(&fixture.origin).unwrap(),
                 StateMutation::Delete,
             ),
             1 => write_state(

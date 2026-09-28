@@ -1,0 +1,833 @@
+//! DR-0154 execution-free publication: durable verified retention of one
+//! full-certificate publication bundle before an availability ACK.
+//!
+//! [`epoch-handoff.md`](../../../../docs/architecture/epoch-handoff.md)
+//! requires that, before any owned application, a quorum has durably retained
+//! **the full verifying certificate, the original signed intent and every
+//! required replay artifact**, and only then exposed an availability
+//! acknowledgement. [`retain_publication`] is that step for one operation on
+//! one replica.
+//!
+//! # What retention does
+//!
+//! 1. Strictly decodes the canonical `0xD035` bundle and refuses a domain
+//!    other than this deployment's configured logical atomicity domain: an
+//!    untrusted request never selects its own domain.
+//! 2. CAS-fences the committed epoch record and the active per-epoch
+//!    validator set, exactly as [`super::prepare`] does, and refuses a bundle
+//!    bound to a non-current epoch.
+//! 3. Verifies the bundle through
+//!    [`consensus::bundle::verify_publication_bundle`]: a real quorum of the
+//!    committed outgoing set, a witness that hashes to that certificate's
+//!    execution commitment, and every declared artifact's actual bytes
+//!    present and matching their content digest under the epoch's committed
+//!    hash suite. A hash alone is never retention.
+//! 4. Re-derives the signed intent's own event digest and request identity
+//!    through the ordinary authentication pipeline and requires them to equal
+//!    the certificate's `tx_hash` and the bundle's declared request id. This
+//!    is the binding `consensus` structurally cannot check.
+//! 5. Requires the witness to be the handoff-capable `0x6424/v2` profile,
+//!    derives the **required** artifact closure from its signed read, head
+//!    and mutation operands, and requires the manifest to be exactly that
+//!    set: a missing dependency, an unknown artifact kind, a contradictory
+//!    version, a duplicate key or a claimed tombstone presented as absence
+//!    all refuse the ACK.
+//! 6. Persists the publication record, every artifact's exact bytes and the
+//!    first ACK identity in **one** atomic commit under writer, epoch and
+//!    admission fences, and only then signs and returns the availability
+//!    vote. A rejected or indeterminate commit exposes no signature.
+//!
+//! # What retention must not do, and does not
+//!
+//! Retention does not execute WASM, move objects or custody, charge fees,
+//! advance the sender nonce, release or take a lock, or create an original
+//! user receipt. It writes only its own publication-scoped rows, through
+//! [`runtime::DurableDomainStateStore::commit_durable`] -- a state-only
+//! commit with no receipt section at all -- so an honest retainer that holds
+//! a **conflicting partial local prepare** for a different request over the
+//! same objects verifies and retains this full certificate without
+//! overwriting that lock, its object heads, its nonce row or its receipts.
+//! Verification never re-runs admission against local heads.
+//!
+//! # Identity, signer subsets and idempotency
+//!
+//! The retained identity is the [`consensus::AvailabilityIdentity`] derived
+//! from the bundle, which excludes the certificate's signer subset entirely.
+//! An equivalent valid proof for the same operation therefore reaches the
+//! same identity and returns the **same retained ACK** rather than a second
+//! signature or a second stored proof variant; the first accepted proof's
+//! exact bytes stay retained for audit. A bundle that derives a *different*
+//! identity for an already retained `(chain, request id)` is a typed refusal
+//! and signs nothing.
+//!
+//! # Deliberate non-scope
+//!
+//! This module wires no apply-admission gate, no HTTP/CLI ingress and no
+//! Freeze/DrainSet/Seal control. Retaining a bundle does not authorize any
+//! application, and an availability certificate is not formed here. Bounded
+//! *resumable multi-commit* transfer of a closure larger than
+//! [`MAX_RETAINED_ARTIFACTS`] (or one atomic commit) is the separate
+//! DrainSet-stage contract in DR-0154 and is refused here, never truncated.
+
+use super::*;
+use consensus::bundle::{
+    ArtifactEntry, ArtifactKind, ArtifactManifest, PublicationBundle, PublicationBundleError,
+    VerifiedPublicationBundle, decode_publication_bundle, encode_artifact_manifest,
+    verify_publication_bundle,
+};
+use consensus::{
+    AvailabilityCertifier, AvailabilityIdentity, AvailabilityVote, decode_availability_identity,
+    decode_availability_vote, encode_availability_identity, encode_availability_vote,
+    encode_fast_certificate,
+};
+use std::collections::BTreeMap;
+
+pub(crate) mod witness;
+
+#[cfg(test)]
+mod tests;
+
+const FASTPATH_PUBLICATION_RECORD_TYPE: u16 = 0x6455;
+const FASTPATH_AVAILABILITY_ACK_RECORD_TYPE: u16 = 0x6456;
+const ENCODING_VERSION: u16 = 1;
+
+/// Upper bound on the required artifact closure one atomic retention commit
+/// accepts.
+///
+/// The runtime independently caps one atomic transaction at
+/// [`runtime::MAX_ATOMIC_STATE_WRITES`] / [`runtime::MAX_ATOMIC_STATE_READS`]
+/// (4,096 each); this leaves generous headroom for the fence, publication and
+/// ACK rows on top of one row per artifact. A larger closure is refused with
+/// [`PublicationRetentionError::ClosureTooLarge`]: DR-0154's bounded,
+/// resumable chunk/cursor transfer is a separate contract, and silently
+/// retaining part of a closure would expose an ACK that is not backed by
+/// complete artifacts.
+pub const MAX_RETAINED_ARTIFACTS: usize = 2_048;
+
+/// Fail-closed publication-retention errors.
+///
+/// Distinct from [`super::FastPathError`] on purpose: retention is not an
+/// admission path, and none of its refusals may be confused with an
+/// admission, execution or lock outcome.
+#[derive(Debug)]
+pub enum PublicationRetentionError {
+    /// The canonical bundle failed to decode or verify.
+    Bundle(PublicationBundleError),
+    /// A consensus signing/verification step failed.
+    Consensus(ConsensusError),
+    /// A storage or node boundary failure.
+    Node(NodeCoreError),
+    /// The signed intent failed the ordinary authentication pipeline.
+    Admission(PaidExecutionAdmissionError),
+    /// The bundle names an atomicity domain other than this deployment's
+    /// configured logical domain.
+    ForeignDomain,
+    /// The bundle's certificate epoch is not the committed current epoch.
+    NonCurrentEpoch {
+        /// Committed current epoch.
+        current: Epoch,
+        /// Epoch the bundle's certificate is bound to.
+        bundle: Epoch,
+    },
+    /// The re-derived signed-intent digest is not the certificate's
+    /// `tx_hash`: the quorum did not certify these intent bytes.
+    SignedIntentDigestMismatch,
+    /// The signed intent's own request identity is not the bundle's declared
+    /// request id.
+    RequestIdMismatch,
+    /// The signed intent's publication context is not the expected local
+    /// serving context.
+    ContextMismatch,
+    /// A witness operand could not be strictly decoded.
+    MalformedWitnessOperand(&'static str),
+    /// A witness operand list declared more items than the encoder's own
+    /// ceiling permits.
+    WitnessListTooLarge {
+        /// Which list.
+        what: &'static str,
+        /// Declared count.
+        actual: usize,
+        /// Accepted maximum.
+        max: usize,
+    },
+    /// A signed read carries an observation outside the closed schema, or one
+    /// that cannot legally pair with a generic state key.
+    UnsupportedReadObservation(u16),
+    /// Two required artifacts name the same `(kind, identity)` with different
+    /// content digests.
+    ContradictoryArtifact {
+        /// Artifact kind discriminant.
+        kind: u16,
+        /// Artifact identity.
+        identity: Vec<u8>,
+    },
+    /// The manifest omits an artifact the witness requires.
+    MissingRequiredArtifact {
+        /// Artifact kind discriminant.
+        kind: u16,
+        /// Artifact identity.
+        identity: Vec<u8>,
+    },
+    /// The manifest declares an artifact the witness does not require, or
+    /// declares a required one under the wrong content digest.
+    UnrequiredArtifact {
+        /// Artifact kind discriminant.
+        kind: u16,
+        /// Artifact identity.
+        identity: Vec<u8>,
+    },
+    /// The required closure exceeds [`MAX_RETAINED_ARTIFACTS`].
+    ClosureTooLarge {
+        /// Required artifact count.
+        actual: usize,
+        /// Accepted maximum.
+        max: usize,
+    },
+    /// A different publication identity is already retained for this
+    /// `(chain, request id)`.
+    ConflictingRetainedIdentity,
+    /// A retained row disagrees with itself or with the derived identity.
+    InconsistentRetainedRecord(&'static str),
+}
+
+impl fmt::Display for PublicationRetentionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bundle(error) => error.fmt(formatter),
+            Self::Consensus(error) => error.fmt(formatter),
+            Self::Node(error) => error.fmt(formatter),
+            Self::Admission(error) => error.fmt(formatter),
+            Self::ForeignDomain => {
+                formatter.write_str("publication bundle names a foreign atomicity domain")
+            }
+            Self::NonCurrentEpoch { current, bundle } => write!(
+                formatter,
+                "publication bundle epoch {} is not the committed current epoch {}",
+                bundle.get(),
+                current.get()
+            ),
+            Self::SignedIntentDigestMismatch => formatter
+                .write_str("publication bundle signed intent is not the certified transaction"),
+            Self::RequestIdMismatch => formatter
+                .write_str("publication bundle request id is not the signed intent's request id"),
+            Self::ContextMismatch => {
+                formatter.write_str("publication bundle intent context is not the serving context")
+            }
+            Self::MalformedWitnessOperand(what) => {
+                write!(formatter, "malformed commitment witness operand: {what}")
+            }
+            Self::WitnessListTooLarge { what, actual, max } => write!(
+                formatter,
+                "commitment witness {what} declares {actual} items, maximum is {max}"
+            ),
+            Self::UnsupportedReadObservation(tag) => write!(
+                formatter,
+                "commitment witness state read carries unsupported observation tag {tag}"
+            ),
+            Self::ContradictoryArtifact { kind, identity } => write!(
+                formatter,
+                "contradictory required artifact (kind {kind}, {} identity bytes)",
+                identity.len()
+            ),
+            Self::MissingRequiredArtifact { kind, identity } => write!(
+                formatter,
+                "publication manifest omits required artifact (kind {kind}, {} identity bytes)",
+                identity.len()
+            ),
+            Self::UnrequiredArtifact { kind, identity } => write!(
+                formatter,
+                "publication manifest declares an artifact the witness does not require (kind {kind}, {} identity bytes)",
+                identity.len()
+            ),
+            Self::ClosureTooLarge { actual, max } => write!(
+                formatter,
+                "publication closure requires {actual} artifacts, maximum is {max}"
+            ),
+            Self::ConflictingRetainedIdentity => formatter
+                .write_str("a different publication identity is already retained for this request"),
+            Self::InconsistentRetainedRecord(what) => {
+                write!(formatter, "inconsistent retained publication row: {what}")
+            }
+        }
+    }
+}
+
+impl Error for PublicationRetentionError {}
+
+impl From<PublicationBundleError> for PublicationRetentionError {
+    fn from(error: PublicationBundleError) -> Self {
+        Self::Bundle(error)
+    }
+}
+impl From<ConsensusError> for PublicationRetentionError {
+    fn from(error: ConsensusError) -> Self {
+        Self::Consensus(error)
+    }
+}
+impl From<NodeCoreError> for PublicationRetentionError {
+    fn from(error: NodeCoreError) -> Self {
+        Self::Node(error)
+    }
+}
+impl From<DurableReadError> for PublicationRetentionError {
+    fn from(error: DurableReadError) -> Self {
+        Self::Node(error.into())
+    }
+}
+impl From<RuntimeError> for PublicationRetentionError {
+    fn from(error: RuntimeError) -> Self {
+        Self::Node(error.into())
+    }
+}
+impl From<CanonicalEncodingError> for PublicationRetentionError {
+    fn from(error: CanonicalEncodingError) -> Self {
+        Self::Node(error.into())
+    }
+}
+impl From<CanonicalDecodingError> for PublicationRetentionError {
+    fn from(error: CanonicalDecodingError) -> Self {
+        Self::Node(NodeCoreError::CanonicalDecoding(error))
+    }
+}
+impl From<HashingError> for PublicationRetentionError {
+    fn from(error: HashingError) -> Self {
+        Self::Node(error.into())
+    }
+}
+impl From<PaidExecutionAdmissionError> for PublicationRetentionError {
+    fn from(error: PaidExecutionAdmissionError) -> Self {
+        Self::Admission(error)
+    }
+}
+impl From<FastPathError> for PublicationRetentionError {
+    fn from(error: FastPathError) -> Self {
+        match error {
+            FastPathError::Admission(inner) => Self::Admission(inner),
+            FastPathError::Consensus(inner) => Self::Consensus(inner),
+            FastPathError::Node(inner) => Self::Node(inner),
+            FastPathError::Invalid(message) => {
+                Self::Node(NodeCoreError::PersistenceInvariant(message))
+            }
+        }
+    }
+}
+
+type RetentionResult<T> = Result<T, PublicationRetentionError>;
+
+/// The deduplicated required replay-artifact closure derived from one signed
+/// `0x6424/v2` witness, keyed by `(kind discriminant, identity)` so the
+/// comparison against a manifest is an exact set comparison in canonical
+/// order, never a count or digest-of-list.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct RequiredArtifacts {
+    entries: BTreeMap<(u16, Vec<u8>), [u8; 32]>,
+}
+
+impl RequiredArtifacts {
+    /// Records one required artifact, refusing a contradictory digest for an
+    /// identity already required.
+    pub(crate) fn insert(
+        &mut self,
+        kind: ArtifactKind,
+        identity: Vec<u8>,
+        content_digest: [u8; 32],
+    ) -> RetentionResult<()> {
+        let key: (u16, Vec<u8>) = (kind.as_u16(), identity);
+        match self.entries.get(&key) {
+            Some(existing) if *existing != content_digest => {
+                Err(PublicationRetentionError::ContradictoryArtifact {
+                    kind: key.0,
+                    identity: key.1,
+                })
+            }
+            Some(_) => Ok(()),
+            None => {
+                self.entries.insert(key, content_digest);
+                Ok(())
+            }
+        }
+    }
+
+    /// Returns the number of distinct required artifacts.
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Iterates the closure in canonical `(kind, identity)` order -- the exact
+    /// order a conforming [`ArtifactManifest`] declares its entries in.
+    ///
+    /// Producer-side only: retention itself compares sets rather than
+    /// enumerating, so this is gated to the tests that build real bundles
+    /// until a bundle-producing path exists (DR-0154's publishing side is not
+    /// implemented in this slice).
+    #[cfg(test)]
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&(u16, Vec<u8>), &[u8; 32])> {
+        self.entries.iter()
+    }
+
+    /// Requires `manifest` to declare exactly this closure: same identities,
+    /// same content digests, nothing missing and nothing extra.
+    pub(crate) fn require_closed(&self, manifest: &ArtifactManifest) -> RetentionResult<()> {
+        let mut declared: BTreeMap<(u16, Vec<u8>), [u8; 32]> = BTreeMap::new();
+        for entry in &manifest.entries {
+            let key: (u16, Vec<u8>) = (entry.kind.as_u16(), entry.identity.clone());
+            // The canonical manifest order already forbids duplicates, so a
+            // repeat here would mean a decoder regression; refuse rather than
+            // overwrite.
+            if declared
+                .insert(key.clone(), entry.content_digest.bytes())
+                .is_some()
+            {
+                return Err(PublicationRetentionError::ContradictoryArtifact {
+                    kind: key.0,
+                    identity: key.1,
+                });
+            }
+        }
+        for (key, digest) in &self.entries {
+            match declared.get(key) {
+                Some(found) if found == digest => {}
+                Some(_) => {
+                    return Err(PublicationRetentionError::UnrequiredArtifact {
+                        kind: key.0,
+                        identity: key.1.clone(),
+                    });
+                }
+                None => {
+                    return Err(PublicationRetentionError::MissingRequiredArtifact {
+                        kind: key.0,
+                        identity: key.1.clone(),
+                    });
+                }
+            }
+        }
+        for key in declared.keys() {
+            if !self.entries.contains_key(key) {
+                return Err(PublicationRetentionError::UnrequiredArtifact {
+                    kind: key.0,
+                    identity: key.1.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One retained publication: everything the bundle carried except the
+/// artifact contents, which are retained separately under their own
+/// content-addressed rows so an equivalent proof never duplicates them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FastPathPublicationRecord {
+    /// Serving context this publication was retained under.
+    pub context: PublicationContext,
+    /// Original signed request identity.
+    pub request_id: [u8; 32],
+    /// Canonical `0xD030` bytes of the derived availability identity.
+    pub identity: Vec<u8>,
+    /// Exact original signed intent bytes.
+    pub signed_intent: Vec<u8>,
+    /// Exact bytes of the first accepted full certificate, retained for
+    /// audit. An equivalent valid signer subset never replaces these.
+    pub certificate: Vec<u8>,
+    /// Exact `0x6424/v2` commitment witness bytes.
+    pub witness: Vec<u8>,
+    /// Exact canonical `0xD034` artifact manifest bytes.
+    pub manifest: Vec<u8>,
+}
+
+/// The exact first availability acknowledgement this replica exposed for one
+/// publication identity.
+///
+/// Persisted in the same atomic commit as the publication record and its
+/// artifacts, so a signature can never exist without the complete retention
+/// it attests to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FastPathAvailabilityAckRecord {
+    /// Canonical `0xD030` bytes of the acknowledged identity.
+    pub identity: Vec<u8>,
+    /// Canonical `0xD031` bytes of the exposed vote.
+    pub vote: Vec<u8>,
+}
+
+/// One retained publication record, keyed by the original signed request id.
+pub fn fastpath_publication_key(
+    chain: &ChainId,
+    request_id: &[u8; 32],
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = local_instance_state::FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"publication/");
+    key.extend(canonical_encoding::encode_chain_id(chain)?);
+    key.extend_from_slice(request_id);
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+/// One retained publication artifact's exact content bytes, addressed by the
+/// artifact kind and its verified content digest.
+///
+/// Keying by content digest rather than by ordinal means an equivalent proof
+/// for the same operation rewrites byte-identical rows instead of
+/// accumulating proof variants.
+pub fn fastpath_publication_artifact_key(
+    chain: &ChainId,
+    request_id: &[u8; 32],
+    kind: ArtifactKind,
+    content_digest: &[u8; 32],
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = local_instance_state::FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"publication-artifact/");
+    key.extend(canonical_encoding::encode_chain_id(chain)?);
+    key.extend_from_slice(request_id);
+    key.extend_from_slice(&kind.as_u16().to_be_bytes());
+    key.extend_from_slice(content_digest);
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+/// This replica's first exposed availability acknowledgement for one request.
+pub fn fastpath_availability_ack_key(
+    chain: &ChainId,
+    request_id: &[u8; 32],
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = local_instance_state::FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"availability-ack/");
+    key.extend(canonical_encoding::encode_chain_id(chain)?);
+    key.extend_from_slice(request_id);
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+/// Encodes one [`FastPathPublicationRecord`] (`0x6455/v1`).
+pub fn encode_fastpath_publication_record(
+    record: &FastPathPublicationRecord,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut frame: CanonicalStruct =
+        CanonicalStruct::new(FASTPATH_PUBLICATION_RECORD_TYPE, ENCODING_VERSION);
+    frame.field_bytes(
+        1,
+        encode_publication_context(&record.context)
+            .map_err(|_| NodeCoreError::PersistenceInvariant("publication record context"))?,
+    )?;
+    frame.field_bytes(2, record.request_id.to_vec())?;
+    frame.field_bytes(3, record.identity.clone())?;
+    frame.field_bytes(4, record.signed_intent.clone())?;
+    frame.field_bytes(5, record.certificate.clone())?;
+    frame.field_bytes(6, record.witness.clone())?;
+    frame.field_bytes(7, record.manifest.clone())?;
+    Ok(frame.finish()?)
+}
+
+/// Strictly decodes one [`FastPathPublicationRecord`], requiring the exact
+/// type/version, exactly fields 1-7, a nested identity that itself decodes
+/// canonically, and byte-exact re-encoding.
+pub fn decode_fastpath_publication_record(
+    bytes: &[u8],
+) -> Result<FastPathPublicationRecord, NodeCoreError> {
+    let frame = canonical_encoding::decode_canonical_frame(bytes)?;
+    frame.require_type(FASTPATH_PUBLICATION_RECORD_TYPE)?;
+    frame.require_version(ENCODING_VERSION)?;
+    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7])?;
+    let context: PublicationContext = decode_publication_context(frame.required_field(1)?)
+        .map_err(|_| NodeCoreError::PersistenceInvariant("publication record context"))?;
+    let request_field: &[u8] = frame.required_field(2)?;
+    let request_id: [u8; 32] = request_field
+        .try_into()
+        .map_err(|_| NodeCoreError::PersistenceInvariant("publication record request id length"))?;
+    let identity: Vec<u8> = frame.required_field(3)?.to_vec();
+    decode_availability_identity(&identity)
+        .map_err(|_| NodeCoreError::PersistenceInvariant("publication record identity"))?;
+    let record: FastPathPublicationRecord = FastPathPublicationRecord {
+        context,
+        request_id,
+        identity,
+        signed_intent: frame.required_field(4)?.to_vec(),
+        certificate: frame.required_field(5)?.to_vec(),
+        witness: frame.required_field(6)?.to_vec(),
+        manifest: frame.required_field(7)?.to_vec(),
+    };
+    if encode_fastpath_publication_record(&record)? != bytes {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "noncanonical publication record",
+        ));
+    }
+    Ok(record)
+}
+
+/// Encodes one [`FastPathAvailabilityAckRecord`] (`0x6456/v1`).
+pub fn encode_fastpath_availability_ack_record(
+    record: &FastPathAvailabilityAckRecord,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut frame: CanonicalStruct =
+        CanonicalStruct::new(FASTPATH_AVAILABILITY_ACK_RECORD_TYPE, ENCODING_VERSION);
+    frame.field_bytes(1, record.identity.clone())?;
+    frame.field_bytes(2, record.vote.clone())?;
+    Ok(frame.finish()?)
+}
+
+/// Strictly decodes one [`FastPathAvailabilityAckRecord`], requiring the
+/// exact type/version, exactly fields 1-2, nested identity/vote frames that
+/// themselves decode canonically, and byte-exact re-encoding.
+pub fn decode_fastpath_availability_ack_record(
+    bytes: &[u8],
+) -> Result<FastPathAvailabilityAckRecord, NodeCoreError> {
+    let frame = canonical_encoding::decode_canonical_frame(bytes)?;
+    frame.require_type(FASTPATH_AVAILABILITY_ACK_RECORD_TYPE)?;
+    frame.require_version(ENCODING_VERSION)?;
+    frame.require_only_fields(&[1, 2])?;
+    let record: FastPathAvailabilityAckRecord = FastPathAvailabilityAckRecord {
+        identity: frame.required_field(1)?.to_vec(),
+        vote: frame.required_field(2)?.to_vec(),
+    };
+    decode_availability_identity(&record.identity)
+        .map_err(|_| NodeCoreError::PersistenceInvariant("availability ack identity"))?;
+    decode_availability_vote(&record.vote)
+        .map_err(|_| NodeCoreError::PersistenceInvariant("availability ack vote"))?;
+    if encode_fastpath_availability_ack_record(&record)? != bytes {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "noncanonical availability ack record",
+        ));
+    }
+    Ok(record)
+}
+
+/// Verifies one canonical publication bundle and, on success, durably retains
+/// its record, every required artifact's exact bytes and this replica's first
+/// availability acknowledgement in one atomic commit -- then returns that
+/// acknowledgement.
+///
+/// See the module documentation for the complete ordered contract, the
+/// deliberate non-mutation guarantees and the non-scope.
+///
+/// `expected` is the locally pinned serving [`PublicationContext`]; `domain`
+/// is the deployment's configured logical atomicity domain. Neither may come
+/// from the bundle or from an untrusted transport request.
+pub fn retain_publication<S, C>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+    bundle_bytes: &[u8],
+    signer: &C,
+) -> RetentionResult<AvailabilityVote>
+where
+    S: StructuredDurableDomainStateStore,
+    C: ConsensusSigner,
+{
+    let bundle: PublicationBundle = decode_publication_bundle(bundle_bytes)?;
+    if bundle.domain != domain {
+        return Err(PublicationRetentionError::ForeignDomain);
+    }
+    let chain: ChainId = expected.chain_id().clone();
+    if bundle.certificate.chain_id != chain
+        || bundle.certificate.protocol_version != expected.protocol_version()
+    {
+        return Err(PublicationRetentionError::ContextMismatch);
+    }
+
+    // Fence the committed epoch record and the active validator set exactly
+    // as an admission path does. These are the writer/epoch/admission-state
+    // preconditions the single commit below re-asserts; a committed Freeze
+    // marker will extend this same fenced read set.
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let epoch_record: local_instance_state::FastPathEpochRecord =
+        mutation_fence::fence_current_epoch(
+            store,
+            context,
+            domain,
+            &chain,
+            bundle.certificate.epoch,
+            &mut reads,
+        )?;
+    if epoch_record.current_epoch != bundle.certificate.epoch {
+        return Err(PublicationRetentionError::NonCurrentEpoch {
+            current: epoch_record.current_epoch,
+            bundle: bundle.certificate.epoch,
+        });
+    }
+    let validator_context: PublicationContext = expected.clone();
+    let validator_set: ValidatorSet = load_validator_set(
+        store,
+        context,
+        domain,
+        resolver,
+        &validator_context,
+        &epoch_record,
+        &mut reads,
+    )?;
+
+    let fast_certifier: consensus::FastPathCertifier = consensus::FastPathCertifier::new(
+        chain.clone(),
+        expected.protocol_version(),
+        expected.epoch(),
+        validator_set.clone(),
+    )?;
+    let verified: VerifiedPublicationBundle =
+        verify_publication_bundle(&bundle, &fast_certifier, &FastPathEd25519Verifier, resolver)?;
+    let identity: AvailabilityIdentity = verified.identity;
+
+    // The binding `consensus` structurally cannot check: these exact intent
+    // bytes really are the certified transaction, and really carry the
+    // declared request identity and serving context.
+    let (authenticated, event_digest, _request) =
+        authenticate_and_identify(resolver, expected, &bundle.signed_intent)?;
+    if event_digest != bundle.certificate.tx_hash {
+        return Err(PublicationRetentionError::SignedIntentDigestMismatch);
+    }
+    if authenticated.intent().request_id != bundle.request_id {
+        return Err(PublicationRetentionError::RequestIdMismatch);
+    }
+    if authenticated.intent().context != *expected {
+        return Err(PublicationRetentionError::ContextMismatch);
+    }
+
+    // Strictly decode the handoff-capable witness and require the manifest to
+    // be exactly the closure its signed operands demand.
+    let (witness_event_digest, required) = witness::required_artifacts(&bundle.witness)?;
+    if witness_event_digest != event_digest {
+        return Err(PublicationRetentionError::SignedIntentDigestMismatch);
+    }
+    if required.len() > MAX_RETAINED_ARTIFACTS {
+        return Err(PublicationRetentionError::ClosureTooLarge {
+            actual: required.len(),
+            max: MAX_RETAINED_ARTIFACTS,
+        });
+    }
+    required.require_closed(&bundle.manifest)?;
+
+    let identity_bytes: Vec<u8> = encode_availability_identity(&identity)?;
+    let publication_key: Vec<u8> = fastpath_publication_key(&chain, &bundle.request_id)?;
+    let ack_key: Vec<u8> = fastpath_availability_ack_key(&chain, &bundle.request_id)?;
+    let observed_publication: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &publication_key)?;
+    let observed_ack: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &ack_key)?;
+
+    let availability_certifier: AvailabilityCertifier = AvailabilityCertifier::new(
+        chain.clone(),
+        expected.protocol_version(),
+        expected.epoch(),
+        validator_set,
+    )?;
+
+    // Reconcile an already retained publication before anything else is
+    // written. An equivalent valid proof for the same operation reaches the
+    // same identity and returns the same retained ACK; a different identity
+    // for this request id fails closed and signs nothing.
+    if let Some(bytes) = observed_publication.value() {
+        let existing: FastPathPublicationRecord = decode_fastpath_publication_record(bytes)?;
+        if existing.identity != identity_bytes {
+            return Err(PublicationRetentionError::ConflictingRetainedIdentity);
+        }
+        let retained: &[u8] =
+            observed_ack
+                .value()
+                .ok_or(PublicationRetentionError::InconsistentRetainedRecord(
+                    "retained publication without its acknowledgement",
+                ))?;
+        let ack: FastPathAvailabilityAckRecord = decode_fastpath_availability_ack_record(retained)?;
+        if ack.identity != identity_bytes {
+            return Err(PublicationRetentionError::InconsistentRetainedRecord(
+                "retained acknowledgement identity",
+            ));
+        }
+        let vote: AvailabilityVote = decode_availability_vote(&ack.vote)?;
+        if vote.identity != identity
+            || vote.validator != signer.validator_id()
+            || vote.signature_scheme != signer.signature_scheme()
+        {
+            return Err(PublicationRetentionError::InconsistentRetainedRecord(
+                "retained acknowledgement vote",
+            ));
+        }
+        availability_certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+        return Ok(vote);
+    }
+    if observed_ack.value().is_some() {
+        return Err(PublicationRetentionError::InconsistentRetainedRecord(
+            "acknowledgement retained without its publication",
+        ));
+    }
+
+    // Sign only after every verification above has passed. The vote is
+    // re-verified before it can be committed, so a misconfigured or rotated
+    // local key can never durably retain an unverifiable acknowledgement.
+    let vote: AvailabilityVote = availability_certifier.cast_vote(identity.clone(), signer)?;
+    availability_certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+
+    let record: FastPathPublicationRecord = FastPathPublicationRecord {
+        context: expected.clone(),
+        request_id: bundle.request_id,
+        identity: identity_bytes.clone(),
+        signed_intent: bundle.signed_intent.clone(),
+        certificate: encode_fast_certificate(&bundle.certificate)?,
+        witness: bundle.witness.clone(),
+        manifest: encode_artifact_manifest(&bundle.manifest)?,
+    };
+    let ack: FastPathAvailabilityAckRecord = FastPathAvailabilityAckRecord {
+        identity: identity_bytes,
+        vote: encode_availability_vote(&vote)?,
+    };
+
+    let mut mutations: Vec<StateMutationEntry> = Vec::new();
+    for (entry, content) in bundle.manifest.entries.iter().zip(bundle.contents.iter()) {
+        let key: Vec<u8> = artifact_key(&chain, &bundle.request_id, entry)?;
+        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        if let Some(previous) = reads.insert(key.clone(), observed.revision())
+            && previous != observed.revision()
+        {
+            return Err(PublicationRetentionError::Node(
+                NodeCoreError::StateConflict,
+            ));
+        }
+        mutations.push(StateMutationEntry::new(
+            key,
+            StateMutation::Put(content.clone()),
+        )?);
+    }
+    reads.insert(publication_key.clone(), observed_publication.revision());
+    reads.insert(ack_key.clone(), observed_ack.revision());
+    mutations.push(StateMutationEntry::new(
+        publication_key,
+        StateMutation::Put(encode_fastpath_publication_record(&record)?),
+    )?);
+    mutations.push(StateMutationEntry::new(
+        ack_key,
+        StateMutation::Put(encode_fastpath_availability_ack_record(&ack)?),
+    )?);
+
+    let assertions: Vec<StateReadAssertion> = reads
+        .into_iter()
+        .map(|(key, revision)| StateReadAssertion::new(key, revision))
+        .collect::<Result<_, RuntimeError>>()?;
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain,
+        AtomicStateReadSet::new(assertions)?,
+        AtomicStateMutationSet::new(mutations)?,
+    )?;
+    match store.commit_durable(context, transaction) {
+        DurableCommitOutcome::Committed => Ok(vote),
+        DurableCommitOutcome::Rejected(
+            DurableCommitRejection::Conflict { .. }
+            | DurableCommitRejection::RequestAlreadyCommitted,
+        ) => Err(PublicationRetentionError::Node(
+            NodeCoreError::StateConflict,
+        )),
+        DurableCommitOutcome::Rejected(reason) => Err(PublicationRetentionError::Node(
+            NodeCoreError::DurableCommitRejected(reason),
+        )),
+        // An ambiguous commit must never expose a fresh signature: the caller
+        // receives the ambiguity, not the vote it would otherwise have sent.
+        DurableCommitOutcome::Indeterminate(reason) => Err(PublicationRetentionError::Node(
+            NodeCoreError::DurableCommitIndeterminate(reason),
+        )),
+    }
+}
+
+fn artifact_key(
+    chain: &ChainId,
+    request_id: &[u8; 32],
+    entry: &ArtifactEntry,
+) -> Result<Vec<u8>, NodeCoreError> {
+    fastpath_publication_artifact_key(chain, request_id, entry.kind, &entry.content_digest.bytes())
+}
