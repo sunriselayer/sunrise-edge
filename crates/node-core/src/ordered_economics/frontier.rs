@@ -242,7 +242,13 @@ fn commit_row<S: StructuredDurableDomainStateStore>(
 /// this epoch's request ids.
 fn publication_prefix(chain: &ChainId, epoch: Epoch) -> Result<Vec<u8>, FrozenFrontierError> {
     let mut prefix: Vec<u8> = fastpath_publication_key(chain, epoch, &[0; 32])?;
-    prefix.truncate(prefix.len() - 32);
+    let length: usize = prefix
+        .len()
+        .checked_sub(32)
+        .ok_or(FrozenFrontierError::Invalid(
+            "invalid frozen publication prefix length",
+        ))?;
+    prefix.truncate(length);
     Ok(prefix)
 }
 

@@ -329,17 +329,24 @@ The detailed existing evidence and remaining criteria follow:
   routes, and a locally pinned Rust client. Four-validator real-Freeze empty
   pages and two real retained certified publications are covered by focused
   core tests; the client tests cover signed response and endpoint/epoch
-  refusals. Opus approved this bounded slice, then a review follow-up separated
-  missing Freeze/final state, invalid caller cursors and corrupt retained
-  state at the HTTP boundary; it added real retained-page streaming through
+  refusals. A review follow-up separated known missing Freeze/final state and
+  invalid caller cursors from other verification or storage failures at the
+  HTTP boundary; it added real retained-page streaming through
   the signed terminal verifier and negative cursor, over-count, post-terminal,
   signature and transport tests. The source currently serves only the active
   outgoing epoch, so lagging peers need to complete before activation or a
   separately authenticated historical-serving path. This is not quorum union:
-  a page has identities, not the complete
-  bundles, and no DrainSet voter yet retrieves and durably retains every union
+  a page has identities, not complete bundles, and no DrainSet voter yet
+  retrieves and durably retains every union
   artifact. No authenticated cut, readiness, Seal, activation or PostgreSQL
   network handoff E2E is claimed by this slice.
+  The final local frontier vote row is deliberately classified as local
+  signing state, never as a shared cut-history row. Before untrusted network
+  deployment, bound the page route's cumulative re-verification work or
+  authenticate its callers; a 128-entry request can otherwise repeatedly
+  re-read large retained artifact closures. Distinguish corruption from
+  retryable CAS/storage failures in the HTTP error surface before relying on
+  it operationally.
   `npm ci --prefix adapters/cloudflare-workers` and the full local
   `scripts/check-all.sh` gate passed again on 2026-09-29 after the epoch-key,
   page, HTTP and Rust-client continuation. The live PostgreSQL suites were

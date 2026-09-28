@@ -682,8 +682,8 @@ pub enum OrderedRowClass {
     ConsensusControl,
     /// Immutable request/outcome history and committed epoch-control markers.
     AuthenticatedOutcomeHistory,
-    /// CAS-fenced local incremental progress that is not a transferable
-    /// business fact or an authority to activate the next epoch.
+    /// CAS-fenced local progress and local final signatures. Neither is a
+    /// transferable business fact or an authority to activate the next epoch.
     LocalProgress,
 }
 
@@ -693,8 +693,8 @@ pub fn classify_ordered_row(key: &[u8]) -> Option<OrderedRowClass> {
     let suffix: &[u8] =
         key.strip_prefix(ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX)?;
     const CONTROL: [&[u8]; 3] = [b"state/", b"applied-height/", b"candidate/"];
-    const HISTORY: [&[u8]; 4] = [b"header/", b"outcome/", b"freeze/", b"frontier/"];
-    const LOCAL_PROGRESS: [&[u8]; 1] = [b"frontier-progress/"];
+    const HISTORY: [&[u8]; 3] = [b"header/", b"outcome/", b"freeze/"];
+    const LOCAL_PROGRESS: [&[u8]; 2] = [b"frontier-progress/", b"frontier/"];
     if CONTROL
         .iter()
         .any(|prefix: &&[u8]| suffix.starts_with(prefix))

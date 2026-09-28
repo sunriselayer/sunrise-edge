@@ -215,6 +215,14 @@ and configured endpoint identity. A caller must still compare the vote with
 the expected committed Freeze, keep it identical across all pages, and
 complete the terminal digest check; HTTP success alone never establishes a
 complete frontier or durable possession of its artifacts.
+The final frontier row contains one validator's own signature and is local
+signing state, not transferable authenticated business history. A future cut
+may carry the outgoing signer vote as an independently keyed and verified
+attestation, but must never copy that local row into another validator's
+identically named state key. The advance route is an intentional certified-host
+exception to user transaction authentication: it mutates only local cursor
+and final rows after the committed Freeze and deterministic local verification.
+It must not be exposed as a complete handoff or public signing service.
 Publication records, local ACKs and artifact rows are now keyed by chain,
 epoch and request ID. A later epoch scans only its own immutable publication
 family without deleting older authenticated history or treating an earlier
@@ -223,6 +231,11 @@ activation. The current page route serves only while the outgoing epoch is
 the store's active epoch; a lagging validator must finish before activation
 or use a separately designed, authenticated historical serving path. Neither
 historical serving nor DrainSet import is implemented here.
+Before deploying the page route on an untrusted network, bound its per-request
+verification work by cumulative artifact bytes or require peer/operator
+authentication: a valid request can currently make the server re-verify the
+cursor plus up to 128 full publications. Executor concurrency alone does not
+bound that repeated CPU and storage-read cost.
 
 An untrusted coordinator proposes at least `q` power of verified frontier
 descriptors and all their pages. Select only complete, retrievable frontiers;
