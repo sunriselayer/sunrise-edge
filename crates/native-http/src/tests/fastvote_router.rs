@@ -4,7 +4,7 @@
 //! `node_core::fast_path::tests` and `apps/operator/tests` for that); they
 //! prove the *route table itself*: every direct/legacy mutating path is
 //! completely unmounted (a genuine 404, not an internally-gated 200/4xx),
-//! every required bounded read route and both FastVote routes are mounted,
+//! every required bounded read route and the current FastVote routes are mounted,
 //! and construction rejects a FastVote composition whose policy context
 //! disagrees with the native ingress context.
 use super::*;
@@ -197,7 +197,7 @@ async fn certified_router_still_serves_liveness_and_bounded_reads() {
 }
 
 #[tokio::test]
-async fn certified_router_mounts_both_fastvote_routes() {
+async fn certified_router_mounts_fastvote_and_publication_retention_routes() {
     let app = certified_router();
     // Malformed bodies still prove the route exists: a 4xx response from the
     // handler, never the router's own 404.
@@ -208,6 +208,15 @@ async fn certified_router_mounts_both_fastvote_routes() {
     assert_ne!(
         dispatch(&app, "POST", FASTVOTE_CERTIFICATES_PATH, vec![0xAA]).await,
         StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        dispatch(&app, "POST", FASTVOTE_PUBLICATION_RETAIN_PATH, vec![0xAA]).await,
+        StatusCode::BAD_REQUEST,
+        "malformed publication must be rejected by its mounted handler"
+    );
+    assert_eq!(
+        dispatch(&app, "GET", FASTVOTE_PUBLICATION_RETAIN_PATH, Vec::new()).await,
+        StatusCode::METHOD_NOT_ALLOWED
     );
 }
 

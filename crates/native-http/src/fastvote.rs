@@ -10,7 +10,7 @@
 //! other constructor in this crate can ever be handed a FastVote composition
 //! either.
 //!
-//! Two dedicated, opt-in routes wrap the existing
+//! Dedicated, opt-in routes wrap the existing
 //! `node_core::fast_path::{prepare, apply}` entry points -- the exact same
 //! authenticated admission/execution pipeline the direct paid-execution
 //! route uses -- with no new canonical protocol type. `POST
@@ -20,7 +20,7 @@
 //! same signed intent bytes plus a canonical `FastCertificate`) and returns
 //! the same `HttpNodeResult` shape the direct paid-execution route returns.
 //!
-//! Both handlers authenticate the exact signed bytes against the caller's
+//! The prepare and apply handlers authenticate the exact signed bytes against the caller's
 //! own declared chain/protocol/epoch *before* allocating a restart-safe
 //! identity, reading the clock, or resolving domain/context -- exactly the
 //! ordering `node_core::paid_execution::authenticate_paid_execution`'s own
@@ -38,8 +38,9 @@
 //! epoch has since advanced.
 
 use super::*;
-use consensus::ConsensusSigner;
+use consensus::{ConsensusSigner, bundle::MAX_ENCODED_BUNDLE_BYTES};
 use execution::paid_execution::{MAX_SIGNED_PAID_INTENT_BYTES, decode_signed_paid_intent};
+use node_core::fast_path::publication::PublicationRetentionError;
 use node_core::fast_path::{self, FastPathError};
 use node_core::paid_execution::authenticate_paid_execution;
 use protocol_types::{SignatureSchemeId, ValidatorId};
@@ -96,7 +97,140 @@ where
             FASTVOTE_CERTIFICATES_PATH,
             post(submit_apply::<S, B, M, T, C, I>),
         )
-        .layer(DefaultBodyLimit::max(MAX_FASTVOTE_APPLY_REQUEST_BYTES))
+        .route(
+            FASTVOTE_PUBLICATION_RETAIN_PATH,
+            post(submit_publication_retain::<S, B, M, T, C, I>),
+        )
+        .layer(DefaultBodyLimit::max(MAX_ENCODED_BUNDLE_BYTES))
+}
+
+/// Accepts one canonical publication bundle only on the certified router.
+/// Authentication precedes runtime identity, clock, storage and expensive
+/// artifact verification; the core performs the same authentication again
+/// before exposing its durably retained availability vote.
+async fn submit_publication_retain<S, B, M, T, C, I>(
+    State(state): State<SharedPreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I>>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response
+where
+    S: IndexedOutboxRepository + Send + Sync + 'static,
+    B: BlobStore + Send + Sync + 'static,
+    M: TransactionalNodeStateMachine + Send + Sync + 'static,
+    T: Transport + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    I: IndexedOutboxIdentitySource + Send + Sync + 'static,
+{
+    if !has_supported_content_type(&headers) || has_unsupported_content_encoding(&headers) {
+        return error_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported-fastvote-content",
+        );
+    }
+    let body: Bytes = match body {
+        Ok(body) => body,
+        Err(error) => return error_response(error.status(), "body-rejected"),
+    };
+    if body.len() > MAX_ENCODED_BUNDLE_BYTES {
+        return error_response(StatusCode::PAYLOAD_TOO_LARGE, "fastvote-bundle-too-large");
+    }
+    publication::admitted(
+        state.components.is_cancelled(),
+        state.blocking_executor.clone(),
+        move || {
+            let Some(fastvote) = state.preinstalled_wasm.fastvote.as_ref() else {
+                return error_response(StatusCode::NOT_FOUND, "fastvote-disabled");
+            };
+            let bundle: consensus::bundle::PublicationBundle =
+                match consensus::bundle::decode_publication_bundle(&body) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return error_response(
+                            StatusCode::BAD_REQUEST,
+                            "invalid-fastvote-publication-bundle",
+                        );
+                    }
+                };
+            let declared_context =
+                match declared_paid_context(&state.config, &bundle.signed_intent) {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+            if let Err(error) = authenticate_paid_execution(
+                &state.resolver,
+                &declared_context,
+                &bundle.signed_intent,
+            ) {
+                return paid_execution::admission_error(&error);
+            }
+            if declared_context.epoch() != state.config.epoch() {
+                return error_response(StatusCode::CONFLICT, "fastvote-epoch-repin-required");
+            }
+            let (domain, context) = match prepare_storage_context(
+                &state.components,
+                &state.protocol_config,
+                &state.authority,
+                &state.config,
+            ) {
+                Ok(value) => value,
+                Err(error) => return query_invocation_error_response(&error),
+            };
+            if state.components.is_cancelled() {
+                return cancelled_before_storage_response();
+            }
+            let vote: consensus::AvailabilityVote = match fast_path::publication::retain_publication(
+                state.components.store.as_ref(),
+                &context,
+                domain,
+                &state.resolver,
+                &state.history,
+                &declared_context,
+                &body,
+                &DynConsensusSigner(fastvote.signer.as_ref()),
+            ) {
+                Ok(value) => value,
+                Err(error) => return publication_retention_error_response(&error),
+            };
+            match consensus::encode_availability_vote(&vote) {
+                Ok(bytes) => (
+                    StatusCode::OK,
+                    [
+                        (header::CONTENT_TYPE, NODE_RESULT_MEDIA_TYPE),
+                        (header::CACHE_CONTROL, "no-store"),
+                    ],
+                    bytes,
+                )
+                    .into_response(),
+                Err(_) => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "fastvote-availability-vote-encoding",
+                ),
+            }
+        },
+    )
+    .await
+}
+
+fn publication_retention_error_response(error: &PublicationRetentionError) -> Response {
+    match error {
+        PublicationRetentionError::Admission(error) => paid_execution::admission_error(error),
+        PublicationRetentionError::Node(NodeCoreError::EpochMismatch { .. }) => {
+            error_response(StatusCode::CONFLICT, "fastvote-epoch-repin-required")
+        }
+        PublicationRetentionError::Node(error) => node_error_response(error),
+        PublicationRetentionError::ConflictingRetainedIdentity => {
+            error_response(StatusCode::CONFLICT, "fastvote-publication-conflict")
+        }
+        PublicationRetentionError::ClosureTooLarge { .. } => error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "fastvote-publication-closure-too-large",
+        ),
+        PublicationRetentionError::InconsistentRetainedRecord(_) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "fastvote-retained-publication-inconsistent",
+        ),
+        _ => error_response(StatusCode::BAD_REQUEST, "fastvote-publication-rejected"),
+    }
 }
 
 async fn submit_prepare<S, B, M, T, C, I>(
@@ -437,7 +571,7 @@ where
 /// queries, [`paid_execution::read_routes`] (the fee-policy query),
 /// [`local_execution::read_routes`] (the instance query),
 /// [`publication::read_routes`] (the code/publication query), and this
-/// module's own [`routes`] (the two FastVote endpoints). It never references
+/// module's own [`routes`] (the FastVote endpoints). It never references
 /// `paid_execution::mutation_routes`, `local_execution::mutation_routes`,
 /// `publication::mutation_routes`, or `NODE_EVENT_PATH`: a direct/legacy
 /// mutating route cannot reach this router's request path no matter how
