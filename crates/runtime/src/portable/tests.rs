@@ -48,6 +48,13 @@ fn chunk_of(
     *chunk
 }
 
+fn require_chunk(outcome: PortableBlobChunkOutcome) -> Box<PortableBlobChunk> {
+    match outcome {
+        PortableBlobChunkOutcome::Chunk(chunk) => chunk,
+        PortableBlobChunkOutcome::Corrupt => panic!("expected chunk"),
+    }
+}
+
 #[test]
 fn portable_repository_shared_memory_conformance() {
     let store: MemoryDurableStateStore = store();
@@ -196,6 +203,16 @@ fn descriptors_distinguish_absence_tombstone_and_empty() {
     };
     assert_eq!(chunk.bytes(), b"");
     assert!(chunk.is_last());
+}
+
+#[test]
+fn blob_chunk_constructor_rejects_wrong_byte_count() {
+    let digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x90; 32]);
+    let descriptor: PortableBlobDescriptor = PortableBlobDescriptor::new(digest, 8);
+    let request: PortableBlobChunkRequest =
+        PortableBlobChunkRequest::new(descriptor, 0, NonZeroUsize::new(4).unwrap()).unwrap();
+    assert!(PortableBlobChunk::new(request.clone(), vec![0; 3]).is_err());
+    assert!(PortableBlobChunk::new(request, vec![0; 5]).is_err());
 }
 
 #[test]
@@ -454,4 +471,76 @@ fn receipt_pages_keep_complete_continuation_without_payloads() {
         descriptor.payload_length(),
         Some(MAX_PORTABLE_CHUNK_BYTES + 1)
     );
+}
+
+#[test]
+fn blob_repository_memory_conformance() {
+    let store: crate::MemoryBlobStore = crate::MemoryBlobStore::default();
+    let fixture: conformance::BlobFixture = conformance::seed_blob(&store);
+    conformance::verify_blob(&store, &fixture);
+    conformance::assert_blob_chunk_corrupt(&store, &fixture);
+    conformance::verify_blob(&store, &fixture);
+}
+
+#[test]
+fn blob_chunk_request_bounds_offset_limit_and_is_last() {
+    let store: crate::MemoryBlobStore = crate::MemoryBlobStore::default();
+    let digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x77; 32]);
+    crate::BlobStore::put_blob(&store, digest, vec![7; 10]).unwrap();
+    let descriptor: PortableBlobDescriptor = store
+        .read_portable_blob_descriptor(&digest)
+        .unwrap()
+        .unwrap();
+    assert_eq!(descriptor.length(), 10);
+
+    let first: PortableBlobChunkRequest =
+        PortableBlobChunkRequest::new(descriptor, 0, NonZeroUsize::new(4).unwrap()).unwrap();
+    assert_eq!(first.range(), 0..4);
+    let outcome: PortableBlobChunkOutcome = store.read_portable_blob_chunk(&first).unwrap();
+    let first_chunk: Box<PortableBlobChunk> = require_chunk(outcome);
+    assert!(!first_chunk.is_last());
+
+    let last_byte: PortableBlobChunkRequest =
+        PortableBlobChunkRequest::new(descriptor, 9, NonZeroUsize::new(1).unwrap()).unwrap();
+    assert_eq!(last_byte.range(), 9..10);
+    let last_outcome: PortableBlobChunkOutcome =
+        store.read_portable_blob_chunk(&last_byte).unwrap();
+    let last_chunk: Box<PortableBlobChunk> = require_chunk(last_outcome);
+    assert!(last_chunk.is_last());
+
+    assert!(PortableBlobChunkRequest::new(descriptor, 10, NonZeroUsize::new(1).unwrap()).is_err());
+    assert!(
+        PortableBlobChunkRequest::new(descriptor, usize::MAX, NonZeroUsize::new(1).unwrap())
+            .is_err()
+    );
+    assert!(
+        PortableBlobChunkRequest::new(
+            descriptor,
+            0,
+            NonZeroUsize::new(MAX_PORTABLE_CHUNK_BYTES + 1).unwrap()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn blob_missing_and_present_empty_are_distinct() {
+    let store: crate::MemoryBlobStore = crate::MemoryBlobStore::default();
+    let missing: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x88; 32]);
+    assert_eq!(store.read_portable_blob_descriptor(&missing).unwrap(), None);
+
+    let empty: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x89; 32]);
+    crate::BlobStore::put_blob(&store, empty, Vec::new()).unwrap();
+    let descriptor: PortableBlobDescriptor = store
+        .read_portable_blob_descriptor(&empty)
+        .unwrap()
+        .unwrap();
+    assert_eq!(descriptor.length(), 0);
+    let request: PortableBlobChunkRequest =
+        PortableBlobChunkRequest::new(descriptor, 0, NonZeroUsize::new(1).unwrap()).unwrap();
+    assert_eq!(request.range(), 0..0);
+    let outcome: PortableBlobChunkOutcome = store.read_portable_blob_chunk(&request).unwrap();
+    let chunk: Box<PortableBlobChunk> = require_chunk(outcome);
+    assert_eq!(chunk.bytes(), b"");
+    assert!(chunk.is_last());
 }

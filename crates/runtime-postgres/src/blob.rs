@@ -3,16 +3,20 @@
 //! [`runtime::BlobStore`] carries no [`runtime::DurableOperationContext`] and
 //! no writer-fence generation: unlike [`crate::PostgresDurableStore`], a
 //! [`PostgresBlobStore`] cannot fence a live writer out, and callers must not
-//! treat it as though it could. It exists only for immutable,
-//! content-addressed `put`/`get` of blob bytes referenced by digest from the
-//! fence-bearing structured store; ordering, exclusivity, and failover
-//! authority all remain the structured store's job.
+//! treat it as though it could. It supports immutable content-addressed
+//! `put`/`get` and bounded process-memory range reads of blob bytes
+//! referenced from the fence-bearing structured store. Ordering,
+//! exclusivity, and failover authority remain the structured store's job.
 
 use postgres::Client;
 use protocol_types::Digest32;
 use r2d2_postgres::r2d2::{self, ManageConnection, Pool, PooledConnection};
+use runtime::portable::{
+    PortableBlobChunk, PortableBlobChunkOutcome, PortableBlobChunkRequest, PortableBlobDescriptor,
+    PortableBlobRepository,
+};
 use runtime::{BlobStore, MAX_STATE_VALUE_BYTES, RuntimeError};
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, ops::Range};
 
 use crate::{PostgresNamespace, PostgresSchemaError, inspect_namespace, verify_initial_schema};
 
@@ -239,5 +243,132 @@ where
                 Ok(Some(bytes))
             }
         }
+    }
+}
+
+impl<M> PortableBlobRepository for PostgresBlobStore<M>
+where
+    M: ManageConnection<Connection = Client, Error = postgres::Error> + 'static,
+{
+    fn read_portable_blob_descriptor(
+        &self,
+        digest: &Digest32,
+    ) -> Result<Option<PortableBlobDescriptor>, RuntimeError> {
+        let algorithm_id: i32 = i32::from(digest.algorithm().as_u16());
+        let digest_bytes: [u8; 32] = digest.bytes();
+        let mut connection: PooledConnection<M> = self.acquire()?;
+        let row = connection
+            .query_opt(
+                "SELECT octet_length(blob_bytes) FROM sunrise_edge.blobs
+                 WHERE chain_id_bytes = $1
+                   AND validator_id = $2
+                   AND atomicity_domain_id = $3
+                   AND digest_algorithm_id = $4
+                   AND digest_bytes = $5",
+                &[
+                    &self.namespace.chain_id_bytes(),
+                    &&self.namespace.validator_id().as_bytes()[..],
+                    &&self.namespace.domain().as_bytes()[..],
+                    &algorithm_id,
+                    &&digest_bytes[..],
+                ],
+            )
+            .map_err(|_| RuntimeError::DurableStoreUnavailable)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let length: i32 = row
+            .try_get(0)
+            .map_err(|_| RuntimeError::DurableStoreUnavailable)?;
+        let length: usize =
+            usize::try_from(length).map_err(|_| RuntimeError::InvalidPersistedState)?;
+        Ok(Some(PortableBlobDescriptor::new(*digest, length)))
+    }
+
+    fn read_portable_blob_chunk(
+        &self,
+        request: &PortableBlobChunkRequest,
+    ) -> Result<PortableBlobChunkOutcome, RuntimeError> {
+        let descriptor: &PortableBlobDescriptor = request.descriptor();
+        let range: Range<usize> = request.range();
+        let algorithm_id: i32 = i32::from(descriptor.digest().algorithm().as_u16());
+        let digest_bytes: [u8; 32] = descriptor.digest().bytes();
+        let mut connection: PooledConnection<M> = self.acquire()?;
+        if range.is_empty() {
+            // A zero-byte SQL substring may decode as NULL. Check the exact
+            // present-empty row with a length-only query instead.
+            let row = connection
+                .query_opt(
+                    "SELECT octet_length(blob_bytes) FROM sunrise_edge.blobs
+                     WHERE chain_id_bytes = $1
+                       AND validator_id = $2
+                       AND atomicity_domain_id = $3
+                       AND digest_algorithm_id = $4
+                       AND digest_bytes = $5",
+                    &[
+                        &self.namespace.chain_id_bytes(),
+                        &&self.namespace.validator_id().as_bytes()[..],
+                        &&self.namespace.domain().as_bytes()[..],
+                        &algorithm_id,
+                        &&digest_bytes[..],
+                    ],
+                )
+                .map_err(|_| RuntimeError::DurableStoreUnavailable)?;
+            let current_length: Option<i32> = row
+                .map(|row| row.try_get(0))
+                .transpose()
+                .map_err(|_| RuntimeError::DurableStoreUnavailable)?;
+            return match current_length {
+                Some(0) => PortableBlobChunk::new(request.clone(), Vec::new())
+                    .map(|chunk| PortableBlobChunkOutcome::Chunk(Box::new(chunk))),
+                _ => Ok(PortableBlobChunkOutcome::Corrupt),
+            };
+        }
+        let start: i32 = i32::try_from(
+            range
+                .start
+                .checked_add(1)
+                .ok_or(RuntimeError::InvalidPersistedState)?,
+        )
+        .map_err(|_| RuntimeError::InvalidPersistedState)?;
+        let count: i32 =
+            i32::try_from(range.len()).map_err(|_| RuntimeError::InvalidPersistedState)?;
+        let row = connection
+            .query_opt(
+                "SELECT octet_length(blob_bytes),
+                        substring(blob_bytes FROM $1 FOR $2)
+                 FROM sunrise_edge.blobs
+                 WHERE chain_id_bytes = $3
+                   AND validator_id = $4
+                   AND atomicity_domain_id = $5
+                   AND digest_algorithm_id = $6
+                   AND digest_bytes = $7",
+                &[
+                    &start,
+                    &count,
+                    &self.namespace.chain_id_bytes(),
+                    &&self.namespace.validator_id().as_bytes()[..],
+                    &&self.namespace.domain().as_bytes()[..],
+                    &algorithm_id,
+                    &&digest_bytes[..],
+                ],
+            )
+            .map_err(|_| RuntimeError::DurableStoreUnavailable)?;
+        let Some(row) = row else {
+            return Ok(PortableBlobChunkOutcome::Corrupt);
+        };
+        let current_length: i32 = row
+            .try_get(0)
+            .map_err(|_| RuntimeError::DurableStoreUnavailable)?;
+        let current_length: usize =
+            usize::try_from(current_length).map_err(|_| RuntimeError::InvalidPersistedState)?;
+        if current_length != descriptor.length() {
+            return Ok(PortableBlobChunkOutcome::Corrupt);
+        }
+        let bytes: Vec<u8> = row
+            .try_get(1)
+            .map_err(|_| RuntimeError::DurableStoreUnavailable)?;
+        PortableBlobChunk::new(request.clone(), bytes)
+            .map(|chunk| PortableBlobChunkOutcome::Chunk(Box::new(chunk)))
     }
 }

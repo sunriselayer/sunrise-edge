@@ -6,12 +6,17 @@
 use postgres::{Client, Config, NoTls};
 use protocol_types::{AtomicityDomainId, ChainId, Digest32, HashAlgorithmId, ValidatorId};
 use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
+use runtime::portable::{
+    PortableBlobChunkOutcome, PortableBlobChunkRequest, PortableBlobRepository,
+    conformance::{self, BlobFixture},
+};
 use runtime::{BlobStore, MAX_STATE_VALUE_BYTES, RuntimeError, WriterFenceGeneration};
 use runtime_postgres::{
     POSTGRES_SCHEMA_GENERATION, POSTGRES_SCHEMA_IDENTITY, PostgresBlobStore,
     PostgresBlobStoreError, PostgresNamespace, PostgresPoolConfig, PostgresSchemaError,
     apply_initial_schema, bootstrap_namespace, build_postgres_pool,
 };
+use std::num::NonZeroUsize;
 use std::{
     num::NonZeroU32,
     sync::{Arc, Barrier},
@@ -326,5 +331,95 @@ fn postgres_blob_store_conformance() {
             PostgresSchemaError::Database(_)
         ))
     ));
+    // The scope guard restores the shared test schema on success and unwind.
+}
+
+#[test]
+fn postgres_blob_store_portable_range_reads() {
+    let Some(raw_url) = std::env::var_os(support::LIVE_POSTGRES_URL_ENV) else {
+        eprintln!(
+            "skipping live PostgreSQL portable blob reads: {} is unset",
+            support::LIVE_POSTGRES_URL_ENV
+        );
+        return;
+    };
+    let url: String = raw_url.to_string_lossy().into_owned();
+    let _live_test_lock = support::LiveTestLock::acquire();
+    let mut admin: Client = Client::connect(&url, NoTls).unwrap();
+    let database: String = admin
+        .query_one("SELECT current_database()", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        database, TEST_DATABASE,
+        "refusing to reset a non-test database"
+    );
+    let _restore_schema: RestoreTestSchemaOnDrop = RestoreTestSchemaOnDrop { url: url.clone() };
+    admin
+        .batch_execute("DROP SCHEMA IF EXISTS sunrise_edge CASCADE")
+        .unwrap();
+    apply_initial_schema(&mut admin).unwrap();
+    let namespace = PostgresNamespace::new(
+        &ChainId::new("blob-portable-range").unwrap(),
+        ValidatorId::new([0xD1; 32]),
+        AtomicityDomainId::new([0xD2; 32]).unwrap(),
+    )
+    .unwrap();
+    bootstrap_namespace(
+        &mut admin,
+        &namespace,
+        POSTGRES_SCHEMA_GENERATION,
+        WriterFenceGeneration::new(1).unwrap(),
+    )
+    .unwrap();
+    let pool: Pool<TestPostgresManager> = test_pool(&url);
+    let store: PostgresBlobStore<TestPostgresManager> =
+        PostgresBlobStore::new(pool.clone(), namespace.clone()).unwrap();
+    let fixture: BlobFixture = conformance::seed_blob(&store);
+    conformance::verify_blob(&store, &fixture);
+    conformance::assert_blob_chunk_corrupt(&store, &fixture);
+
+    let other_namespace = PostgresNamespace::new(
+        &ChainId::new("blob-portable-range-b").unwrap(),
+        ValidatorId::new([0xE1; 32]),
+        AtomicityDomainId::new([0xE2; 32]).unwrap(),
+    )
+    .unwrap();
+    bootstrap_namespace(
+        &mut admin,
+        &other_namespace,
+        POSTGRES_SCHEMA_GENERATION,
+        WriterFenceGeneration::new(1).unwrap(),
+    )
+    .unwrap();
+    let other_store: PostgresBlobStore<TestPostgresManager> =
+        PostgresBlobStore::new(pool.clone(), other_namespace).unwrap();
+    assert_eq!(
+        other_store
+            .read_portable_blob_descriptor(&fixture.large_digest)
+            .unwrap(),
+        None
+    );
+    let foreign_descriptor = store
+        .read_portable_blob_descriptor(&fixture.large_digest)
+        .unwrap()
+        .unwrap();
+    let foreign_request: PortableBlobChunkRequest =
+        PortableBlobChunkRequest::new(foreign_descriptor, 0, NonZeroUsize::new(1).unwrap())
+            .unwrap();
+    assert_eq!(
+        other_store
+            .read_portable_blob_chunk(&foreign_request)
+            .unwrap(),
+        PortableBlobChunkOutcome::Corrupt
+    );
+
+    drop(store);
+    drop(pool);
+    let reopened_pool: Pool<TestPostgresManager> = test_pool(&url);
+    let reopened_store: PostgresBlobStore<TestPostgresManager> =
+        PostgresBlobStore::new(reopened_pool, namespace).unwrap();
+    conformance::verify_blob(&reopened_store, &fixture);
+    conformance::assert_blob_chunk_corrupt(&reopened_store, &fixture);
     // The scope guard restores the shared test schema on success and unwind.
 }
