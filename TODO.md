@@ -221,13 +221,22 @@ The detailed existing evidence and remaining criteria follow:
   workspace strict lint and independent fixed-byte reconstruction pass.
   FastPath and ordered-economics business-history families are explicitly
   distinguished from local reservations; a future cut still must enumerate
-  and independently verify that history. Independent final Opus review is
-  pending after earlier blockers were repaired; no approval is claimed.
+  and independently verify that history. Opus reviewed the pre-integration
+  branch at `408a649` and blocked a merge: it lacked PR #234's reviewed
+  availability guards/vectors and still lacked the full Delivery 3 runtime
+  path. PR #234 merged normally on 2026-09-28; `codex/epoch-handoff` then
+  merged that foundation at `42adcbb`, retaining its zero-request-ID refusal
+  and independent vectors. This resolves the stale-foundation conflict, not
+  the feature-completion blocker.
   Execution-free publication admission, atomic outbox/Freeze gate,
   Freeze/DrainSet/Seal, complete authenticated import, readiness/activation
   and the network E2E are not complete. This delivery stays unchecked; no full
-  repository gate, final feature approval, PR merge or network activation is
-  claimed.
+  repository gate, final feature approval, feature PR merge or network
+  activation is claimed. Before making Freeze live, prove a legally eligible
+  same-set next-epoch Seal/readiness path under the stated quorum assumption;
+  an irreversible Freeze with no ready next set would otherwise strand the
+  network. This remains a design/implementation obligation, not a deployed
+  fallback or permission for operator-forced activation.
   The 2026-09-28 bundle clarification requires a full logical witness and
   verified artifact closure before a retention ACK, including on a retainer
   with a conflicting partial lock; this is design only until wired and tested.
