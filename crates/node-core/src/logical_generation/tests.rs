@@ -151,10 +151,19 @@ fn fastpath_business_history_is_not_misclassified_as_local_reservation() {
     let chain: ChainId = ChainId::new(CHAIN).unwrap();
     let validator: ValidatorId = ValidatorId::new([0x41; 32]);
     let request: [u8; 32] = [0x42; 32];
-    let local: [Vec<u8>; 3] = [
+    let local: [Vec<u8>; 5] = [
         local_instance_state::fastpath_prepared_record_key(&chain, &request).unwrap(),
         local_instance_state::fastpath_lock_key(&chain, ObjectId::new([0x43; 32])).unwrap(),
         local_instance_state::fastpath_nonce_lock_key(&chain, &[0x44; 32], Epoch::new(0)).unwrap(),
+        crate::fast_path::prepared_material::fastpath_prepared_witness_key(&chain, &request)
+            .unwrap(),
+        crate::fast_path::prepared_material::fastpath_prepared_artifact_key(
+            &chain,
+            &request,
+            consensus::bundle::ArtifactKind::StateValue,
+            &[0x49; 32],
+        )
+        .unwrap(),
     ];
     for key in local {
         assert_eq!(
@@ -170,7 +179,7 @@ fn fastpath_business_history_is_not_misclassified_as_local_reservation() {
         Some(FastpathRowClass::LocalSigningSafety)
     );
     assert!(is_excluded_subject(&availability_ack));
-    let history: [Vec<u8>; 14] = [
+    let history: [Vec<u8>; 15] = [
         local_instance_state::fastpath_certificate_key(&chain, &request).unwrap(),
         local_instance_state::fastpath_commitment_witness_key(&chain, &request).unwrap(),
         local_instance_state::fastpath_settlement_key(&chain, &request).unwrap(),
@@ -205,6 +214,7 @@ fn fastpath_business_history_is_not_misclassified_as_local_reservation() {
             &[0x49; 32],
         )
         .unwrap(),
+        crate::fast_path::records::fastpath_availability_certificate_key(&chain, &request).unwrap(),
     ];
     for key in history {
         assert_eq!(

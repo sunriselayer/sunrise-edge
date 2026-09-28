@@ -416,7 +416,12 @@ pub(super) fn encode_envelope(
 /// independently derived [`crate::paid_execution::PaidAdmissionOutput`];
 /// byte-identical results from byte-identical admission is exactly the
 /// property a fast-path certificate's safety depends on.
-#[allow(clippy::too_many_arguments)]
+// DR-0154: `prepare` now always needs the envelope bytes too (to durably
+// retain a handoff-capable witness before voting), so this simpler
+// digest-only wrapper currently has no non-test caller; kept for its own
+// independent digest vector test and as the natural API for a future caller
+// that only needs the commitment, not the envelope.
+#[allow(clippy::too_many_arguments, dead_code)]
 pub(super) fn compute(
     resolver: &HashSuiteResolver,
     epoch: Epoch,

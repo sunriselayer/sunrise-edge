@@ -77,9 +77,9 @@
 
 use super::*;
 use consensus::bundle::{
-    ArtifactEntry, ArtifactKind, ArtifactManifest, PublicationBundle, PublicationBundleError,
-    VerifiedPublicationBundle, decode_publication_bundle, encode_artifact_manifest,
-    verify_publication_bundle,
+    ArtifactEntry, ArtifactKind, ArtifactManifest, LOGICAL_COMMITMENT_PROFILE, PublicationBundle,
+    PublicationBundleError, VerifiedPublicationBundle, decode_publication_bundle,
+    encode_artifact_manifest, verify_publication_bundle,
 };
 use consensus::{
     AvailabilityCertifier, AvailabilityIdentity, AvailabilityVote, decode_availability_identity,
@@ -301,6 +301,7 @@ impl From<FastPathError> for PublicationRetentionError {
             FastPathError::Invalid(message) => {
                 Self::Node(NodeCoreError::PersistenceInvariant(message))
             }
+            FastPathError::Publication(inner) => inner,
         }
     }
 }
@@ -349,11 +350,10 @@ impl RequiredArtifacts {
     /// Iterates the closure in canonical `(kind, identity)` order -- the exact
     /// order a conforming [`ArtifactManifest`] declares its entries in.
     ///
-    /// Producer-side only: retention itself compares sets rather than
-    /// enumerating, so this is gated to the tests that build real bundles
-    /// until a bundle-producing path exists (DR-0154's publishing side is not
-    /// implemented in this slice).
-    #[cfg(test)]
+    /// Producer-side: used by [`super::prepared_material::retain_prepared_material`]
+    /// to fetch and retain each required artifact's actual bytes, and by
+    /// [`assemble_publication_bundle`] to rebuild a closed [`ArtifactManifest`]
+    /// from durably retained prepare-side material.
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&(u16, Vec<u8>), &[u8; 32])> {
         self.entries.iter()
     }
@@ -872,6 +872,183 @@ where
             NodeCoreError::DurableCommitIndeterminate(reason),
         )),
     }
+}
+
+/// Read-only, restart-safe assembly of one canonical [`PublicationBundle`]
+/// from this replica's own durably retained prepare-side material --
+/// [`prepared_material::fastpath_prepared_witness_key`] and every
+/// [`prepared_material::fastpath_prepared_artifact_key`] row
+/// [`prepared_material::retain_prepared_material`] committed during a
+/// handoff-capable [`super::prepare`] -- plus a genuine, independently
+/// supplied [`consensus::FastCertificate`].
+///
+/// This performs no durable write: it never calls `prepare`, `apply` or
+/// [`retain_publication`], reads only already-committed rows, and therefore
+/// behaves identically before or after a process restart, as long as the
+/// original `prepare` commit succeeded. `certificate_bytes` must already be a
+/// real quorum certificate over this exact operation; this function
+/// independently re-verifies it against the durably installed validator set
+/// and independently re-verifies the whole assembled bundle through
+/// [`verify_publication_bundle`] before returning it, so a caller receives
+/// only an already-verified bundle -- never a partially assembled one.
+///
+/// Fails closed if this replica never prepared this request under the
+/// handoff-capable profile, if its retained material disagrees with
+/// `certificate_bytes` or the supplied `signed_bytes`, or if any required
+/// artifact row is missing.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_publication_bundle<S>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    signed_bytes: &[u8],
+    certificate_bytes: &[u8],
+) -> RetentionResult<PublicationBundle>
+where
+    S: StructuredDurableDomainStateStore,
+{
+    if history.len() > crate::publication::MAX_PUBLICATION_HISTORY {
+        return Err(PublicationRetentionError::Node(
+            NodeCoreError::PersistenceInvariant("resolver history bound"),
+        ));
+    }
+    let (authenticated, event_digest, _request) =
+        authenticate_and_identify(resolver, expected, signed_bytes)?;
+    if authenticated.intent().context != *expected {
+        return Err(PublicationRetentionError::ContextMismatch);
+    }
+    let chain: ChainId = expected.chain_id().clone();
+    let request_id: [u8; 32] = authenticated.intent().request_id;
+
+    let prepared_key: Vec<u8> = fastpath_prepared_record_key(&chain, &request_id)?;
+    let observed_prepared: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &prepared_key)?;
+    let prepared_bytes: &[u8] =
+        observed_prepared
+            .value()
+            .ok_or(PublicationRetentionError::InconsistentRetainedRecord(
+                "no local prepared record for this request",
+            ))?;
+    let prepared: FastPathPreparedRecord =
+        records::decode_fastpath_prepared_record(prepared_bytes)?;
+    if prepared.signed_intent_digest != event_digest
+        || prepared.context != *expected
+        || prepared.request_id != request_id
+    {
+        return Err(PublicationRetentionError::InconsistentRetainedRecord(
+            "prepared record does not match the supplied signed intent",
+        ));
+    }
+
+    let witness_key: Vec<u8> =
+        prepared_material::fastpath_prepared_witness_key(&chain, &request_id)?;
+    let observed_witness: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &witness_key)?;
+    let witness_bytes: Vec<u8> = observed_witness
+        .value()
+        .ok_or(PublicationRetentionError::InconsistentRetainedRecord(
+            "no retained prepare-side commitment witness for this request",
+        ))?
+        .to_vec();
+
+    let certificate: FastCertificate = decode_fast_certificate(certificate_bytes)?;
+    if certificate.chain_id != chain
+        || certificate.protocol_version != expected.protocol_version()
+        || certificate.epoch != expected.epoch()
+        || certificate.tx_hash != event_digest
+        || certificate.execution_effects_hash != prepared.commitment
+    {
+        return Err(PublicationRetentionError::InconsistentRetainedRecord(
+            "supplied certificate does not attest this replica's retained prepared commitment",
+        ));
+    }
+
+    let (witness_event_digest, required) = witness::required_artifacts(&witness_bytes)?;
+    if witness_event_digest != event_digest {
+        return Err(PublicationRetentionError::SignedIntentDigestMismatch);
+    }
+
+    let mut entries: Vec<ArtifactEntry> = Vec::with_capacity(required.len());
+    let mut contents: Vec<Vec<u8>> = Vec::with_capacity(required.len());
+    for ((kind_tag, identity), digest) in required.iter() {
+        let kind: ArtifactKind = ArtifactKind::from_u16(*kind_tag)?;
+        let key: Vec<u8> =
+            prepared_material::fastpath_prepared_artifact_key(&chain, &request_id, kind, digest)?;
+        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        let content: Vec<u8> = observed
+            .value()
+            .ok_or(PublicationRetentionError::MissingRequiredArtifact {
+                kind: kind.as_u16(),
+                identity: identity.clone(),
+            })?
+            .to_vec();
+        let content_digest: Digest32 = std::iter::once(resolver)
+            .chain(history)
+            .find_map(|candidate| {
+                candidate
+                    .hash_for_purpose(expected.epoch(), kind.hash_purpose(), &content)
+                    .ok()
+                    .filter(|computed| computed.bytes() == *digest)
+            })
+            .ok_or(PublicationRetentionError::InconsistentRetainedRecord(
+                "retained artifact content no longer matches the witness-signed digest",
+            ))?;
+        entries.push(ArtifactEntry {
+            kind,
+            identity: identity.clone(),
+            content_digest,
+            content_length: u32::try_from(content.len()).map_err(|_| {
+                PublicationRetentionError::Node(NodeCoreError::PersistenceInvariant(
+                    "retained artifact content length",
+                ))
+            })?,
+        });
+        contents.push(content);
+    }
+
+    let bundle: PublicationBundle = PublicationBundle {
+        domain,
+        request_id,
+        commitment_profile: LOGICAL_COMMITMENT_PROFILE,
+        signed_intent: signed_bytes.to_vec(),
+        certificate,
+        witness: witness_bytes,
+        manifest: ArtifactManifest { entries },
+        contents,
+    };
+
+    // Self-verify before returning: a caller must never receive a bundle
+    // this replica itself could not independently verify.
+    let mut throwaway_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let epoch_record: local_instance_state::FastPathEpochRecord =
+        mutation_fence::fence_epoch_state(store, context, domain, &chain, &mut throwaway_reads)?;
+    let validator_set: ValidatorSet = load_validator_set(
+        store,
+        context,
+        domain,
+        resolver,
+        expected,
+        &epoch_record,
+        &mut throwaway_reads,
+    )?;
+    let fast_certifier: consensus::FastPathCertifier = consensus::FastPathCertifier::new(
+        chain,
+        expected.protocol_version(),
+        expected.epoch(),
+        validator_set,
+    )?;
+    let _verified: VerifiedPublicationBundle = verify_publication_bundle(
+        &bundle,
+        &fast_certifier,
+        &FastPathEd25519Verifier,
+        resolver,
+        history,
+    )?;
+
+    Ok(bundle)
 }
 
 fn artifact_key(
