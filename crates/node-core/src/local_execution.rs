@@ -300,9 +300,29 @@ pub fn handle_local_execution<
     }
     reads.insert(nonce.key.clone(), nonce.read_revision);
     mutations.push(StateMutationEntry::new(
-        nonce.key,
+        nonce.key.clone(),
         StateMutation::Put(nonce.record.encode()?),
     )?);
+    // DR-0154: every staged state mutation, object mutation and this exact
+    // sender-nonce advance is now known, so the authenticated generation and
+    // its provenance rows are derived over the complete write set. A
+    // handoff-capable store refuses this direct local mutation without that
+    // evidence; a historical store keeps its exact existing behavior. Placed
+    // here rather than inside `admit_and_execute_leg`, which staged
+    // preparation paths also use.
+    logical_generation::admit_application(
+        store,
+        context,
+        domain,
+        resolver,
+        call.context.chain_id(),
+        call.context.epoch(),
+        &head_reads,
+        &leg.object_mutations,
+        Some(&nonce),
+        &mut mutations,
+        &mut reads,
+    )?;
     let assertions: Vec<StateReadAssertion> = reads
         .into_iter()
         .map(|(k, r)| StateReadAssertion::new(k, r))

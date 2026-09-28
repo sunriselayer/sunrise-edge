@@ -349,6 +349,25 @@ complete range boundaries:
 - Full-certificate publication artifacts, ordered committed business outcomes
   and the dependency/authority proofs required to replay them.
 
+The existing `fastpath/` namespace is not one homogeneous cache. Only
+`prepared/`, `lock/` and `nonce-lock/` are replica-local reservations.
+`certificate/`, `commitment-witness/`, `settlement/`, `fee-claim/`, `bond/`,
+`bond-transition/`, `evidence-consumed/`, `equivocation/`, `validators/`,
+`economics-policy/`, `transition/` and `epoch/` carry authenticated business
+or control history. The generic logical-generation provenance does not assign
+these separately verified records a second generation. The cut must instead
+enumerate, classify, retain and independently replay/verify every required
+history family, and derive its generation floor from the verified history. An
+unknown family under the reserved prefix is a cut refusal, not an implicit
+local-data exclusion.
+
+Likewise, `ordered-economics/` includes immutable `header/` and `outcome/`
+business history, not just `state/`, `applied-height/` and retained
+`candidate/` consensus controls. A cut must verify the former against original
+receipts and the committed candidate/QC chain and preserve enough of the
+latter to prove the sealed prefix and inherited suffix. Unknown ordered
+families fail closed.
+
 Use a closed key/schema classifier: unknown protocol rows cannot be silently
 skipped. Local prepare/vote/lock identity, writer/schema tokens, delivery cursors
 and import/hash progress are local metadata, not global business facts. Retain

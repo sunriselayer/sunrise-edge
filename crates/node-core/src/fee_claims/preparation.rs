@@ -491,6 +491,7 @@ pub(super) struct ExecutedFeeClaim {
     pub(super) head_reads: Vec<DurableObjectHeadRead>,
     pub(super) object_mutations: Vec<DurableObjectMutationEntry>,
     pub(super) state_mutations: Vec<StateMutationEntry>,
+    pub(super) nonce: PendingSenderNonceWrite,
 }
 
 fn reference_from_effect(
@@ -580,6 +581,19 @@ where
     )?;
     let mut head_reads: Vec<DurableObjectHeadRead> = Vec::new();
     let mut state_mutations: Vec<StateMutationEntry> = Vec::new();
+    // DR-0154: this leg enforces the object monotonicity rule this store's own
+    // signed genesis bound, resolved from the authenticated profile row rather
+    // than assumed to be the historical physical checkpoint.
+    let minimum: logical_generation::ObjectMinimum = logical_generation::ObjectMinimum::for_profile(
+        &logical_generation::fence_commitment_profile(
+            store,
+            context,
+            domain,
+            intent.context.chain_id(),
+            reads,
+        )?,
+        created_checkpoint,
+    );
     let allowed_output: Option<(ObjectId, &ProtocolCustodyScope)> = if is_final {
         None
     } else {
@@ -630,7 +644,7 @@ where
         &admitted.interface,
         &admitted.created_authorities,
         &expected_transfer,
-        created_checkpoint,
+        minimum,
         snapshot,
         &admitted.effects,
         is_final,
@@ -659,7 +673,7 @@ where
         return Err(NodeCoreError::StateConflict.into());
     }
     state_mutations.push(StateMutationEntry::new(
-        nonce.key,
+        nonce.key.clone(),
         StateMutation::Put(nonce.record.encode()?),
     )?);
     Ok(ExecutedFeeClaim {
@@ -668,6 +682,7 @@ where
         head_reads,
         object_mutations: admitted.object_mutations,
         state_mutations,
+        nonce,
     })
 }
 

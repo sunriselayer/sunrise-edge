@@ -78,7 +78,7 @@ fn check_mutation_shape(
     previous_version: u64,
     new_object: &Object,
     snapshot: &object_snapshots::ObjectSnapshot,
-    checkpoint: u64,
+    minimum: logical_generation::ObjectMinimum,
 ) -> Result<(), FeeClaimError> {
     if new_object.id != escrow_id || previous_version != snapshot.object.version {
         return Err(FeeClaimError::Invalid(
@@ -91,7 +91,7 @@ fn check_mutation_shape(
     if new_object.version != next_version
         || new_object.type_hash != snapshot.object.type_hash
         || new_object.schema_version != snapshot.object.schema_version
-        || checkpoint < snapshot.created_checkpoint
+        || !minimum.admits(snapshot.created_checkpoint)
     {
         return Err(FeeClaimError::Invalid(
             "fee claim mutation identity, version, type or schema changed",
@@ -110,7 +110,7 @@ pub(super) fn validate(
     interface: &VerifiedPublicationInterface,
     created_authorities: &[CreatedObjectAuthority],
     expected: &ExpectedFeeClaim<'_>,
-    checkpoint: u64,
+    minimum: logical_generation::ObjectMinimum,
     snapshot: &object_snapshots::ObjectSnapshot,
     effects: &ExecutionEffects,
     is_final: bool,
@@ -123,7 +123,7 @@ pub(super) fn validate(
     }
     if snapshot.object.id != expected.escrow_id
         || snapshot.object.owner != Owner::ProtocolCustody(expected.escrow_scope.clone())
-        || checkpoint < snapshot.created_checkpoint
+        || !minimum.admits(snapshot.created_checkpoint)
     {
         return Err(FeeClaimError::Invalid("fee claim escrow precondition"));
     }
@@ -164,7 +164,7 @@ pub(super) fn validate(
             *previous_version,
             new_object,
             snapshot,
-            checkpoint,
+            minimum,
         )?;
         if new_object.owner != Owner::Address(expected.recipient) {
             return Err(FeeClaimError::Invalid("final fee claim owner mismatch"));
@@ -215,7 +215,7 @@ pub(super) fn validate(
             previous_version,
             retained,
             snapshot,
-            checkpoint,
+            minimum,
         )?;
         if retained.owner != Owner::ProtocolCustody(expected.escrow_scope.clone()) {
             return Err(FeeClaimError::Invalid(

@@ -146,6 +146,22 @@ a separate cross-epoch delivery policy and a deterministic reconstruction
 proof; replaying an old-epoch message into ingress that rejects the old epoch
 would silently lose it. The current handoff must not claim to support that.
 
+The `fastpath/` prefix is not a blanket local-data exclusion. Its
+`prepared/`, `lock/` and `nonce-lock/` families are local reservations;
+certificate/witness, settlement/claim, bond/transition/evidence,
+validator/economics policy and epoch/transition families are authenticated
+business or control history. They keep their existing independent signature,
+certificate and replay verification rather than acquiring a duplicate generic
+logical-generation provenance row. The portable cut must include and verify
+the required history families and derive its generation floor from verified
+history; unknown future families fail closed. Excluding them from the generic
+FastVote admission operand never authorizes omitting them from the cut.
+`ordered-economics/` is likewise not a homogeneous local cache: `header/`
+and `outcome/` retain original business history, while `state/`,
+`applied-height/` and `candidate/` carry consensus control/prerequisites.
+The cut must verify the former against receipts and certified prefix and
+retain enough of the latter to prove safety. Unknown families fail closed.
+
 Every page, collection and resumed step must bind to the same authenticated
 cut. Concurrent old-epoch mutation, omissions, additions, duplicates,
 reordering, divergent prerequisites, missing history, tombstones, fencing and

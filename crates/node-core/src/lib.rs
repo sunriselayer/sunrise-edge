@@ -53,6 +53,7 @@ pub mod fee_effects;
 pub mod genesis;
 pub mod local_execution;
 pub mod local_instance_state;
+pub mod logical_generation;
 mod mutation_fence;
 mod object_snapshots;
 pub mod ordered_economics;
@@ -121,6 +122,10 @@ const NODE_DEDUP_RECORD_TYPE_ID: u16 = 0xE003;
 const NODE_OUTBOX_BATCH_TYPE_ID: u16 = 0xE004;
 const NODE_OUTBOX_DELIVERY_TYPE_ID: u16 = 0xE005;
 const ENCODING_VERSION: u16 = 1;
+
+/// Refusal text for the handoff-capable profile's application gate (DR-0154).
+const APPLY_REFUSED_MESSAGE: &str =
+    "handoff profile refuses application before availability publication";
 
 /// Maximum UTF-8 byte length of a chain identifier accepted at node ingress.
 pub const MAX_CHAIN_ID_BYTES: usize = 128;
@@ -557,6 +562,24 @@ pub enum NodeCoreError {
         previous_created_checkpoint: u64,
         /// Checkpoint proposed for the new immutable version.
         attempted_created_checkpoint: u64,
+    },
+    /// An authenticated logical provenance row is missing, foreign or does not
+    /// match the observation it is bound to (DR-0154).
+    LogicalProvenance(&'static str),
+    /// The handoff-capable profile refuses this live application path until
+    /// mandatory quorum availability publication is integrated (DR-0154).
+    LogicalProfileApplicationUnsupported,
+    /// The authenticated causal generation has no representable successor.
+    ExecutionGenerationOverflow {
+        /// Authenticated floor the derivation started from.
+        floor: u64,
+    },
+    /// A mutated subject's authenticated generation would not advance.
+    ExecutionGenerationRegression {
+        /// Generation recorded on the existing provenance row.
+        previous: u64,
+        /// Generation this operation derived.
+        attempted: u64,
     },
     /// A governance-installed system-module registry or manifest operation failed.
     SystemModules(SystemModuleError),
@@ -1669,6 +1692,13 @@ impl fmt::Display for NodeCoreError {
                 f,
                 "derived created-object id {object_id} already has a current or tombstoned durable head"
             ),
+            Self::LogicalProvenance(reason) => write!(f, "logical provenance: {reason}"),
+            Self::LogicalProfileApplicationUnsupported => f.write_str(APPLY_REFUSED_MESSAGE),
+            Self::ExecutionGenerationOverflow { floor } => write!(f, "generation overflow {floor}"),
+            Self::ExecutionGenerationRegression {
+                previous,
+                attempted,
+            } => write!(f, "generation regressed {previous} to {attempted}"),
         }
     }
 }
@@ -5368,6 +5398,19 @@ where
             dispatch.owner_address_policy,
         )?;
     }
+    // DR-0154: resolve this store's signed binding before any effect is
+    // translated, so the object monotonicity rule below is the one its own
+    // genesis actually bound. The fenced revision is folded into this same
+    // invocation's read set further down.
+    let mut logical_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let installed: logical_generation::InstalledCommitmentProfile =
+        logical_generation::fence_commitment_profile(
+            store,
+            context,
+            domain,
+            event.chain_id(),
+            &mut logical_reads,
+        )?;
     let mutation_context: Option<authenticated_object_effects::TrustedObjectMutationContext<'_>> =
         created_checkpoint.map(|created_checkpoint: u64| {
             authenticated_object_effects::TrustedObjectMutationContext {
@@ -5376,6 +5419,10 @@ where
                 protocol_version: event.protocol_version(),
                 epoch: event.epoch(),
                 created_checkpoint,
+                minimum: logical_generation::ObjectMinimum::for_profile(
+                    &installed,
+                    created_checkpoint,
+                ),
             }
         });
     let object_mutations: Vec<DurableObjectMutationEntry> = match transition.effect_matching() {
@@ -5483,13 +5530,13 @@ where
     }) {
         return Err(NodeCoreError::ReservedStateAccess(mutation.key().to_vec()));
     }
-    if let Some(pending) = pending_nonce {
+    if let Some(pending) = pending_nonce.as_ref() {
         reads.push(StateReadAssertion::new(
             pending.key.clone(),
             pending.read_revision,
         )?);
         mutations.push(StateMutationEntry::new(
-            pending.key,
+            pending.key.clone(),
             StateMutation::Put(pending.record.encode()?),
         )?);
     }
@@ -5499,6 +5546,28 @@ where
     for key in reclaimed_lock_keys {
         mutations.push(StateMutationEntry::new(key, StateMutation::Delete)?);
     }
+    // DR-0154: the complete write set of this generic transition is now known,
+    // so derive its authenticated causal generation over every verified input
+    // and append the provenance rows this same atomic commit installs. A
+    // handoff-capable store refuses the transition without that evidence; a
+    // historical store keeps its exact existing behavior and writes no row.
+    // Placed after the reserved-namespace check above for the same reason the
+    // reclaimed fast-path keys are: these rows are protocol provenance the node
+    // itself derived, never state a caller's transition plan supplied.
+    logical_generation::admit_generic_transition(
+        store,
+        context,
+        domain,
+        resolver,
+        installed,
+        event.epoch(),
+        loaded_objects.head_reads(),
+        &object_mutations,
+        pending_nonce.as_ref(),
+        &logical_reads,
+        &mut mutations,
+        &mut reads,
+    )?;
     let state = DurableStateTransaction::new(domain, AtomicStateReadSet::new(reads)?, mutations)?;
     let objects = DurableObjectChanges::new(loaded_objects.into_reads(), object_mutations)?;
     let invocation =

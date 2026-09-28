@@ -408,6 +408,29 @@ pub(crate) fn load_validator_set<S: StructuredDurableDomainStateStore>(
 /// at every point that computes, re-derives, or replay-checks a
 /// `locked_objects_digest`: `cast_vote`'s own call site, prepare's
 /// exact-replay stored-vote check, and apply's independent re-derivation.
+/// True when this apply's own independent derivation landed on exactly the causal
+/// position the prepared vote attested to.
+///
+/// A historical store derives and records `None` on both sides; a
+/// handoff-capable store can never apply a certificate under a generation its
+/// own voters never saw.
+fn require_prepared_generation(
+    prepared: Option<&FastPathPreparedRecord>,
+    admission: &PaidAdmissionOutput,
+) -> Result<(), FastPathError> {
+    let fresh: Option<protocol_types::ExecutionGeneration> = admission
+        .logical
+        .derived
+        .as_ref()
+        .map(logical_generation::LogicalDerivation::generation);
+    if prepared.is_none_or(|record| record.prepared_generation == fresh) {
+        return Ok(());
+    }
+    Err(FastPathError::Invalid(
+        "fast-path prepared causal position does not match this admission",
+    ))
+}
+
 fn compute_locked_objects_digest(
     resolver: &HashSuiteResolver,
     chain: &ChainId,
@@ -726,6 +749,10 @@ where
         &pending_nonce_write.key,
         pending_nonce_write.read_revision,
         &pending_nonce_bytes,
+        // DR-0154: a handoff-capable store's prepared vote signs the
+        // authenticated generation and its verified dependency set, never the
+        // physical revisions apply would observe again.
+        admission.logical.derived.as_ref(),
     )?;
 
     let locked_objects_digest: Digest32 = compute_locked_objects_digest(
@@ -764,6 +791,14 @@ where
         locked_objects: admission.locked_objects.clone(),
         pending_nonce,
         created_checkpoint,
+        // DR-0154: bind the exact authenticated generation this vote attests
+        // to, so apply can require its own independent derivation to land on
+        // the identical causal position.
+        prepared_generation: admission
+            .logical
+            .derived
+            .as_ref()
+            .map(logical_generation::LogicalDerivation::generation),
     };
     let prepared_bytes: Vec<u8> = records::encode_fastpath_prepared_record(&prepared_record)?;
 
@@ -1121,6 +1156,16 @@ where
     {
         return invalid("fast-path prepared lock set mismatch");
     }
+    // DR-0154: a handoff-capable store applies this fresh certificate, and its
+    // signerless recovery, only with the authenticated generation this exact
+    // admission derived. Checked here, after the completed-receipt
+    // reconciliation above, so exact original completed replay stays
+    // receipt-first ahead of any refusal.
+    logical_generation::require_application_admissible(
+        &admission.logical.profile,
+        admission.logical.derived.as_ref(),
+    )?;
+    require_prepared_generation(prepared.as_ref(), &admission)?;
 
     // Final, independent binding: the commitment re-derived from *this*
     // fresh admission run must still equal what the certificate attests to.
@@ -1159,6 +1204,9 @@ where
             &pending_nonce_write.key,
             pending_nonce_write.read_revision,
             &pending_nonce_bytes,
+            // Must match prepare exactly: the same shape, derived independently
+            // from this admission's own verified inputs.
+            admission.logical.derived.as_ref(),
         )?;
     if fresh_commitment != certificate.execution_effects_hash {
         return invalid("fast-path re-derived commitment no longer matches the certificate");
