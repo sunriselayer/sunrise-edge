@@ -15,9 +15,16 @@
 //! produced and accepted here are unchanged from their prior `native-http`
 //! definitions.
 
+pub mod fastvote_frontier;
 pub mod fastvote_published;
 pub mod ordered_economics;
 
+pub use fastvote_frontier::{
+    FASTVOTE_FROZEN_FRONTIER_PAGE_PATH, FROZEN_FRONTIER_PAGE_REQUEST_TYPE_ID,
+    FROZEN_FRONTIER_PAGE_RESPONSE_TYPE_ID, FrozenFrontierPageRequest, FrozenFrontierPageResponse,
+    FrozenFrontierWireError, MAX_FRONTIER_PAGE_LIMIT, MAX_FRONTIER_PAGE_REQUEST_BYTES,
+    MAX_FRONTIER_PAGE_RESPONSE_BYTES,
+};
 pub use fastvote_published::{
     FASTVOTE_PUBLICATION_RETAIN_PATH, FASTVOTE_PUBLICATION_SOURCE_PATH,
     FASTVOTE_PUBLISHED_APPLY_PATH, FASTVOTE_PUBLISHED_APPLY_REQUEST_TYPE_ID,

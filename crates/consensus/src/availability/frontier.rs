@@ -29,10 +29,14 @@ use validator_set::ValidatorSet;
 const FRONTIER_IDENTITY_TYPE_ID: u16 = 0xD036;
 const FRONTIER_VOTE_TYPE_ID: u16 = 0xD037;
 const FRONTIER_ACCUMULATOR_TYPE_ID: u16 = 0xD038;
+const FRONTIER_PAGE_TYPE_ID: u16 = 0xD039;
 const ENCODING_VERSION: u16 = 1;
 const FRONTIER_VOTE_MESSAGE_TYPE: &str = "epoch-frozen-frontier-v1";
 const MAX_FRONTIER_IDENTITY_BYTES: usize = 2 * 1024;
 const MAX_FRONTIER_VOTE_BYTES: usize = 8 * 1024;
+/// A page is deliberately small enough for bounded event-driven transfer.
+pub const MAX_FROZEN_FRONTIER_PAGE_ENTRIES: usize = 128;
+const MAX_FRONTIER_PAGE_BYTES: usize = 512 * 1024;
 
 /// A deterministic commitment to one replica's complete, immutable frozen
 /// publication log. The digest includes the exact Freeze identity and every
@@ -56,6 +60,188 @@ pub struct FrozenFrontierVote {
     pub validator: ValidatorId,
     pub signature_scheme: SignatureSchemeId,
     pub signature: Vec<u8>,
+}
+
+/// One bounded consecutive range of a signed frozen publication frontier.
+/// The final page may be empty when the frontier is empty or when the last
+/// nonterminal page exactly filled the page limit. The page itself is not an
+/// authority: verification requires the outgoing validator's signed vote.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrozenFrontierPage {
+    /// Exclusive cursor immediately before this page; `None` starts the log.
+    pub after_request_id: Option<[u8; 32]>,
+    /// Strictly ascending publication identities after the cursor.
+    pub entries: Vec<AvailabilityIdentity>,
+    /// Whether this is the last page of the signed log.
+    pub terminal: bool,
+}
+
+/// Incrementally checks bounded pages against one registered validator's
+/// signed complete frontier. The caller must separately verify and retain the
+/// full publication bundle and artifacts for each identity before a DrainSet
+/// vote; identity-only pages do not prove artifact availability.
+pub struct FrozenFrontierPageVerifier {
+    vote: FrozenFrontierVote,
+    accumulator: FrozenFrontierAccumulator,
+    terminal_seen: bool,
+}
+
+impl FrozenFrontierPageVerifier {
+    pub fn new<V: ConsensusVerifier>(
+        resolver: &HashSuiteResolver,
+        certifier: &FrozenFrontierCertifier,
+        vote: FrozenFrontierVote,
+        verifier: &V,
+    ) -> Result<Self, FrontierError> {
+        certifier.verify_vote(&vote, verifier)?;
+        let accumulator: FrozenFrontierAccumulator = FrozenFrontierAccumulator::new(
+            resolver,
+            vote.identity.chain_id.clone(),
+            vote.identity.protocol_version,
+            vote.identity.epoch,
+            vote.identity.domain,
+            vote.identity.closure_request_id,
+            vote.identity.closure_height,
+        )?;
+        Ok(Self {
+            vote,
+            accumulator,
+            terminal_seen: false,
+        })
+    }
+
+    pub fn push_page(
+        &mut self,
+        resolver: &HashSuiteResolver,
+        page: &FrozenFrontierPage,
+    ) -> Result<(), FrontierError> {
+        validate_frontier_page(page)?;
+        if self.terminal_seen {
+            return Err(FrontierError::Invalid("page after terminal frontier page"));
+        }
+        if page.after_request_id != self.accumulator.last_request_id() {
+            return Err(FrontierError::Invalid("frontier page cursor mismatch"));
+        }
+        let mut next: FrozenFrontierAccumulator = self.accumulator.clone();
+        for entry in &page.entries {
+            next.push(resolver, entry)?;
+            if next.identity().entry_count > self.vote.identity.entry_count {
+                return Err(FrontierError::Invalid("frontier page exceeds signed count"));
+            }
+        }
+        if page.terminal {
+            if next.identity() != &self.vote.identity {
+                return Err(FrontierError::Invalid(
+                    "frontier page count or digest mismatch",
+                ));
+            }
+            self.terminal_seen = true;
+        }
+        self.accumulator = next;
+        Ok(())
+    }
+
+    /// Returns the authenticated vote only after a terminal page recomputes
+    /// its complete signed count and digest.
+    pub fn finish(self) -> Result<FrozenFrontierVote, FrontierError> {
+        if !self.terminal_seen {
+            return Err(FrontierError::Invalid("missing terminal frontier page"));
+        }
+        Ok(self.vote)
+    }
+}
+
+fn validate_frontier_page(page: &FrozenFrontierPage) -> Result<(), FrontierError> {
+    if page.entries.len() > MAX_FROZEN_FRONTIER_PAGE_ENTRIES {
+        return Err(FrontierError::Invalid("frontier page entry bound exceeded"));
+    }
+    if page.entries.is_empty() && !page.terminal {
+        return Err(FrontierError::Invalid("empty nonterminal frontier page"));
+    }
+    if page.after_request_id == Some([0; 32]) {
+        return Err(FrontierError::Invalid("zero frontier page cursor"));
+    }
+    let mut previous: Option<[u8; 32]> = page.after_request_id;
+    for entry in &page.entries {
+        ensure_request_id_nonzero(&entry.request_id)?;
+        if previous.is_some_and(|id| id >= entry.request_id) {
+            return Err(FrontierError::Invalid("frontier page request order"));
+        }
+        previous = Some(entry.request_id);
+    }
+    Ok(())
+}
+
+/// Canonical `0xD039/v1` bounded frontier page bytes.
+pub fn encode_frozen_frontier_page(page: &FrozenFrontierPage) -> Result<Vec<u8>, FrontierError> {
+    validate_frontier_page(page)?;
+    let mut frame: CanonicalStruct = CanonicalStruct::new(FRONTIER_PAGE_TYPE_ID, ENCODING_VERSION);
+    frame.field_bytes(
+        1,
+        page.after_request_id
+            .map_or_else(Vec::new, |id| id.to_vec()),
+    )?;
+    frame.field_u16(2, u16::from(page.terminal))?;
+    frame.field_u16(
+        3,
+        u16::try_from(page.entries.len())
+            .map_err(|_| FrontierError::Invalid("frontier page entry count overflow"))?,
+    )?;
+    for (index, entry) in page.entries.iter().enumerate() {
+        let field: u16 = u16::try_from(index + 4)
+            .map_err(|_| FrontierError::Invalid("frontier page field overflow"))?;
+        frame.field_bytes(field, encode_availability_identity(entry)?)?;
+    }
+    let encoded: Vec<u8> = frame.finish()?;
+    if encoded.len() > MAX_FRONTIER_PAGE_BYTES {
+        return Err(FrontierError::Invalid("frontier page frame exceeds bound"));
+    }
+    Ok(encoded)
+}
+
+/// Strict canonical decode of one bounded frontier page. Its entries have no
+/// authority until a page verifier checks the complete signed frontier.
+pub fn decode_frozen_frontier_page(input: &[u8]) -> Result<FrozenFrontierPage, FrontierError> {
+    if input.len() > MAX_FRONTIER_PAGE_BYTES {
+        return Err(FrontierError::Invalid("frontier page frame exceeds bound"));
+    }
+    let frame = decode_canonical_frame(input)?;
+    frame.require_type(FRONTIER_PAGE_TYPE_ID)?;
+    frame.require_version(ENCODING_VERSION)?;
+    let cursor: Option<[u8; 32]> = match frame.required_field(1)? {
+        [] => None,
+        bytes => Some(
+            bytes
+                .try_into()
+                .map_err(|_| FrontierError::Invalid("frontier page cursor length"))?,
+        ),
+    };
+    let terminal: bool = match frame.required_u16(2)? {
+        0 => false,
+        1 => true,
+        _ => return Err(FrontierError::Invalid("frontier page terminal flag")),
+    };
+    let count: usize = usize::from(frame.required_u16(3)?);
+    if count > MAX_FROZEN_FRONTIER_PAGE_ENTRIES || frame.field_count() != count + 3 {
+        return Err(FrontierError::Invalid("frontier page field count"));
+    }
+    let mut entries: Vec<AvailabilityIdentity> = Vec::with_capacity(count);
+    for index in 0..count {
+        let field: u16 = u16::try_from(index + 4)
+            .map_err(|_| FrontierError::Invalid("frontier page field overflow"))?;
+        entries.push(super::decode_availability_identity(
+            frame.required_field(field)?,
+        )?);
+    }
+    let page: FrozenFrontierPage = FrozenFrontierPage {
+        after_request_id: cursor,
+        entries,
+        terminal,
+    };
+    if encode_frozen_frontier_page(&page)?.as_slice() != input {
+        return Err(FrontierError::Invalid("noncanonical frontier page"));
+    }
+    Ok(page)
 }
 
 /// Fail-closed errors for frontier construction and validation.

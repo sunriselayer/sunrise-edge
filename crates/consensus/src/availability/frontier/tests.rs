@@ -147,6 +147,101 @@ fn frontier_decode_rejects_type_mutation_and_excess() {
     assert!(decode_frozen_frontier_identity(&vec![0; MAX_FRONTIER_IDENTITY_BYTES + 1]).is_err());
 }
 
+#[test]
+fn signed_frontier_pages_require_exact_contiguous_terminal_reconstruction() {
+    let (resolver, certifier, signers, domain) = fixture();
+    let entries: Vec<AvailabilityIdentity> = vec![operation(1, domain), operation(2, domain)];
+    let mut accumulator: FrozenFrontierAccumulator = empty(&resolver, domain);
+    for entry in &entries {
+        accumulator.push(&resolver, entry).unwrap();
+    }
+    let vote: FrozenFrontierVote = certifier
+        .cast_vote(accumulator.into_identity(), &signers[0])
+        .unwrap();
+    let first: FrozenFrontierPage = FrozenFrontierPage {
+        after_request_id: None,
+        entries: vec![entries[0].clone()],
+        terminal: false,
+    };
+    let second: FrozenFrontierPage = FrozenFrontierPage {
+        after_request_id: Some(entries[0].request_id),
+        entries: vec![entries[1].clone()],
+        terminal: true,
+    };
+    for page in [&first, &second] {
+        let bytes: Vec<u8> = encode_frozen_frontier_page(page).unwrap();
+        assert_eq!(decode_frozen_frontier_page(&bytes).unwrap(), *page);
+    }
+    let mut verifier: FrozenFrontierPageVerifier =
+        FrozenFrontierPageVerifier::new(&resolver, &certifier, vote.clone(), &signers[0]).unwrap();
+    assert!(verifier.push_page(&resolver, &second).is_err());
+    verifier.push_page(&resolver, &first).unwrap();
+    assert!(verifier.push_page(&resolver, &first).is_err());
+    assert!(
+        FrozenFrontierPageVerifier::new(&resolver, &certifier, vote.clone(), &signers[0])
+            .unwrap()
+            .finish()
+            .is_err()
+    );
+    let omitted_last: FrozenFrontierPage = FrozenFrontierPage {
+        after_request_id: first.after_request_id,
+        entries: first.entries.clone(),
+        terminal: true,
+    };
+    let mut omission_verifier: FrozenFrontierPageVerifier =
+        FrozenFrontierPageVerifier::new(&resolver, &certifier, vote.clone(), &signers[0]).unwrap();
+    assert!(
+        omission_verifier
+            .push_page(&resolver, &omitted_last)
+            .is_err()
+    );
+    let duplicate: FrozenFrontierPage = FrozenFrontierPage {
+        after_request_id: Some(entries[0].request_id),
+        entries: vec![entries[0].clone()],
+        terminal: true,
+    };
+    assert!(encode_frozen_frontier_page(&duplicate).is_err());
+    verifier.push_page(&resolver, &second).unwrap();
+    assert_eq!(verifier.finish().unwrap(), vote);
+}
+
+#[test]
+fn empty_frontier_page_vector_and_bounds_are_stable() {
+    let (resolver, certifier, signers, domain) = fixture();
+    let vote: FrozenFrontierVote = certifier
+        .cast_vote(empty(&resolver, domain).into_identity(), &signers[0])
+        .unwrap();
+    let page: FrozenFrontierPage = FrozenFrontierPage {
+        after_request_id: None,
+        entries: Vec::new(),
+        terminal: true,
+    };
+    let encoded: Vec<u8> = encode_frozen_frontier_page(&page).unwrap();
+    assert_eq!(
+        hex(&encoded),
+        "534e524539d00100030001000000000002000200000001000300020000000000"
+    );
+    assert_eq!(decode_frozen_frontier_page(&encoded).unwrap(), page);
+    let mut verifier: FrozenFrontierPageVerifier =
+        FrozenFrontierPageVerifier::new(&resolver, &certifier, vote.clone(), &signers[0]).unwrap();
+    verifier.push_page(&resolver, &page).unwrap();
+    assert_eq!(verifier.finish().unwrap(), vote);
+
+    let mut wrong_type: Vec<u8> = encoded.clone();
+    wrong_type[4] ^= 1;
+    assert!(decode_frozen_frontier_page(&wrong_type).is_err());
+    let mut wrong_flag: Vec<u8> = encoded.clone();
+    wrong_flag[22] = 2;
+    assert!(decode_frozen_frontier_page(&wrong_flag).is_err());
+    assert!(decode_frozen_frontier_page(&vec![0; MAX_FRONTIER_PAGE_BYTES + 1]).is_err());
+    let too_large: FrozenFrontierPage = FrozenFrontierPage {
+        after_request_id: None,
+        entries: vec![operation(1, domain); MAX_FROZEN_FRONTIER_PAGE_ENTRIES + 1],
+        terminal: true,
+    };
+    assert!(encode_frozen_frontier_page(&too_large).is_err());
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
