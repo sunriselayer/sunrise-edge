@@ -5013,7 +5013,7 @@ pub(super) fn physical_transfer_bundle_bytes(
     transfer_bundle(false, request, nonce, &[0, 1, 2])
 }
 
-fn installed_validator_set() -> ValidatorSet {
+pub(super) fn installed_validator_set() -> ValidatorSet {
     let (_signers, entries) = four_validators();
     ValidatorSet::new(
         protocol().epoch(),

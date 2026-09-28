@@ -23,8 +23,8 @@ use crate::transport::{Method, Transport, WireRequest};
 
 impl<T: Transport> Client<T> {
     /// Asks one locally configured validator to advance at most one
-    /// CAS-fenced frozen-frontier step. `None` means confirmed progress but
-    /// not finality; `Some` is the exact final vote, cryptographically checked
+    /// CAS-fenced frozen-frontier step. `None` means the endpoint reported
+    /// progress, not authenticated finality; `Some` is the exact final vote, cryptographically checked
     /// against the caller's pinned outgoing set and endpoint identity.
     pub fn advance_frozen_frontier(
         &self,
@@ -119,8 +119,8 @@ mod tests {
     use ed25519_zebra::{SigningKey, VerificationKey};
     use hashing::HashSuiteResolver;
     use protocol_types::{
-        AtomicityDomainId, ChainId, Epoch, HashSuite, HashSuiteSchedule, ProtocolVersion,
-        SignatureSchemeId,
+        AtomicityDomainId, ChainId, Digest32, Epoch, HashAlgorithmId, HashSuite, HashSuiteSchedule,
+        ProtocolVersion, SignatureSchemeId,
     };
     use std::cell::Cell;
     use validator_set::{ValidatorInfo, ValidatorSet};
@@ -299,6 +299,92 @@ mod tests {
                 .advance_frozen_frontier(&certifier, signer.id, None)
                 .unwrap(),
             None
+        );
+        let nonempty_progress: Client<FixedTransport> = Client::new(FixedTransport {
+            response: crate::transport::WireResponse {
+                status: 204,
+                content_type: None,
+                body: vec![0xAA],
+            },
+            calls: Cell::new(0),
+        });
+        assert!(
+            nonempty_progress
+                .advance_frozen_frontier(&certifier, signer.id, None)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn page_client_rejects_cursor_limit_and_signature_mismatches() {
+        let (_resolver, certifier, signer, vote) = fixture();
+        let request: FrozenFrontierPageRequest = FrozenFrontierPageRequest {
+            epoch: Epoch::new(8),
+            after_request_id: None,
+            limit: 1,
+        };
+        let encode_response = |vote: &FrozenFrontierVote, page: &FrozenFrontierPage| {
+            FrozenFrontierPageResponse {
+                vote: encode_frozen_frontier_vote(vote).unwrap(),
+                page: encode_frozen_frontier_page(page).unwrap(),
+            }
+            .encode()
+            .unwrap()
+        };
+        let cursor_page: FrozenFrontierPage = FrozenFrontierPage {
+            after_request_id: Some([0x10; 32]),
+            entries: Vec::new(),
+            terminal: true,
+        };
+        assert!(
+            client(encode_response(&vote, &cursor_page))
+                .fetch_signed_frozen_frontier_page(&request, &certifier, signer.id, None)
+                .is_err()
+        );
+        let entry = |request_byte: u8| consensus::AvailabilityIdentity {
+            chain_id: vote.identity.chain_id.clone(),
+            protocol_version: vote.identity.protocol_version,
+            epoch: vote.identity.epoch,
+            domain: vote.identity.domain,
+            request_id: [request_byte; 32],
+            signed_intent_digest: Digest32::new(HashAlgorithmId::Sha2_256, [request_byte; 32]),
+            execution_commitment: Digest32::new(HashAlgorithmId::Sha2_256, [0xA1; 32]),
+            semantic_artifacts_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0xA2; 32]),
+        };
+        let over_limit_page: FrozenFrontierPage = FrozenFrontierPage {
+            after_request_id: None,
+            entries: vec![entry(1), entry(2)],
+            terminal: true,
+        };
+        assert!(
+            client(encode_response(&vote, &over_limit_page))
+                .fetch_signed_frozen_frontier_page(&request, &certifier, signer.id, None)
+                .is_err()
+        );
+        let empty_page: FrozenFrontierPage = FrozenFrontierPage {
+            after_request_id: None,
+            entries: Vec::new(),
+            terminal: true,
+        };
+        let mut forged: FrozenFrontierVote = vote.clone();
+        forged.signature[0] ^= 1;
+        assert!(
+            client(encode_response(&forged, &empty_page))
+                .fetch_signed_frozen_frontier_page(&request, &certifier, signer.id, None)
+                .is_err()
+        );
+        let unavailable: Client<FixedTransport> = Client::new(FixedTransport {
+            response: crate::transport::WireResponse {
+                status: 503,
+                content_type: Some(NODE_RESULT_MEDIA_TYPE.to_owned()),
+                body: encode_response(&vote, &empty_page),
+            },
+            calls: Cell::new(0),
+        });
+        assert!(
+            unavailable
+                .fetch_signed_frozen_frontier_page(&request, &certifier, signer.id, None)
+                .is_err()
         );
     }
 }

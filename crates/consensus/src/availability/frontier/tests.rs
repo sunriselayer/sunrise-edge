@@ -203,6 +203,44 @@ fn signed_frontier_pages_require_exact_contiguous_terminal_reconstruction() {
     assert!(encode_frozen_frontier_page(&duplicate).is_err());
     verifier.push_page(&resolver, &second).unwrap();
     assert_eq!(verifier.finish().unwrap(), vote);
+
+    let mut after_terminal: FrozenFrontierPageVerifier =
+        FrozenFrontierPageVerifier::new(&resolver, &certifier, vote.clone(), &signers[0]).unwrap();
+    after_terminal.push_page(&resolver, &first).unwrap();
+    after_terminal.push_page(&resolver, &second).unwrap();
+    assert!(after_terminal.push_page(&resolver, &second).is_err());
+
+    let one_entry_vote: FrozenFrontierVote = certifier
+        .cast_vote(
+            {
+                let mut one: FrozenFrontierAccumulator = empty(&resolver, domain);
+                one.push(&resolver, &entries[0]).unwrap();
+                one.into_identity()
+            },
+            &signers[0],
+        )
+        .unwrap();
+    let mut overcount: FrozenFrontierPageVerifier =
+        FrozenFrontierPageVerifier::new(&resolver, &certifier, one_entry_vote, &signers[0])
+            .unwrap();
+    assert!(
+        overcount
+            .push_page(
+                &resolver,
+                &FrozenFrontierPage {
+                    after_request_id: None,
+                    entries: entries.clone(),
+                    terminal: true,
+                }
+            )
+            .is_err()
+    );
+
+    let mut altered_vote: FrozenFrontierVote = vote.clone();
+    altered_vote.signature[0] ^= 1;
+    assert!(
+        FrozenFrontierPageVerifier::new(&resolver, &certifier, altered_vote, &signers[0]).is_err()
+    );
 }
 
 #[test]
@@ -233,7 +271,7 @@ fn empty_frontier_page_vector_and_bounds_are_stable() {
     let mut wrong_flag: Vec<u8> = encoded.clone();
     wrong_flag[22] = 2;
     assert!(decode_frozen_frontier_page(&wrong_flag).is_err());
-    assert!(decode_frozen_frontier_page(&vec![0; MAX_FRONTIER_PAGE_BYTES + 1]).is_err());
+    assert!(decode_frozen_frontier_page(&vec![0; MAX_FROZEN_FRONTIER_PAGE_BYTES + 1]).is_err());
     let too_large: FrozenFrontierPage = FrozenFrontierPage {
         after_request_id: None,
         entries: vec![operation(1, domain); MAX_FROZEN_FRONTIER_PAGE_ENTRIES + 1],

@@ -48,6 +48,8 @@ pub enum FrozenFrontierError {
     Node(NodeCoreError),
     Frontier(FrontierError),
     Publication(Box<PublicationRetentionError>),
+    NotReady(&'static str),
+    InvalidCursor(&'static str),
     Invalid(&'static str),
 }
 
@@ -57,6 +59,7 @@ impl fmt::Display for FrozenFrontierError {
             Self::Node(error) => error.fmt(formatter),
             Self::Frontier(error) => error.fmt(formatter),
             Self::Publication(error) => error.fmt(formatter),
+            Self::NotReady(reason) | Self::InvalidCursor(reason) => formatter.write_str(reason),
             Self::Invalid(reason) => formatter.write_str(reason),
         }
     }
@@ -267,7 +270,7 @@ where
     let installed =
         logical_generation::fence_commitment_profile(store, context, domain, &chain, &mut reads)?;
     if installed.logical().is_none() {
-        return Err(FrozenFrontierError::Invalid(
+        return Err(FrozenFrontierError::NotReady(
             "historical profile has no frozen frontier",
         ));
     }
@@ -300,11 +303,15 @@ where
     let observed_closure: VersionedStateValue =
         store.get_versioned_durable(context, domain, &closure_key)?;
     put_read(&mut reads, closure_key, observed_closure.revision())?;
-    let closure_bytes: &[u8] = observed_closure
-        .value()
-        .ok_or(FrozenFrontierError::Invalid(
-            "ordered Freeze is not committed",
-        ))?;
+    let closure_bytes: &[u8] = match observed_closure.value() {
+        Some(bytes) => bytes,
+        None if observed_closure.revision() == StateRevision::INITIAL => {
+            return Err(FrozenFrontierError::NotReady(
+                "ordered Freeze is not committed",
+            ));
+        }
+        None => return Err(FrozenFrontierError::Invalid("Freeze is tombstoned")),
+    };
     let closure = decode_admission_closure_record(closure_bytes)?;
     if closure.closed_epoch != epoch || closure.closed_at_block_height == 0 {
         return Err(FrozenFrontierError::Invalid(
@@ -316,7 +323,7 @@ where
     // later ordinary v2 mutation may create one after the Freeze fence.
     let inventory = store.inspect_outbox_exclusion(context, domain)?;
     if inventory.blocks_exclusion() {
-        return Err(FrozenFrontierError::Invalid(
+        return Err(FrozenFrontierError::NotReady(
             "outbox obligation blocks frontier",
         ));
     }
@@ -483,10 +490,14 @@ pub fn read_frozen_frontier_page<S: DurablePortableRepository>(
     limit: NonZeroUsize,
 ) -> Result<(FrozenFrontierVote, FrozenFrontierPage), FrozenFrontierError> {
     if limit.get() > MAX_FROZEN_FRONTIER_PAGE_ENTRIES {
-        return Err(FrozenFrontierError::Invalid("frontier page limit exceeded"));
+        return Err(FrozenFrontierError::InvalidCursor(
+            "frontier page limit exceeded",
+        ));
     }
     if after_request_id == Some([0; 32]) {
-        return Err(FrozenFrontierError::Invalid("zero frontier page cursor"));
+        return Err(FrozenFrontierError::InvalidCursor(
+            "zero frontier page cursor",
+        ));
     }
     let chain: ChainId = expected.chain_id().clone();
     let epoch: Epoch = expected.epoch();
@@ -494,7 +505,7 @@ pub fn read_frozen_frontier_page<S: DurablePortableRepository>(
     let installed =
         logical_generation::fence_commitment_profile(store, context, domain, &chain, &mut reads)?;
     if installed.logical().is_none() {
-        return Err(FrozenFrontierError::Invalid(
+        return Err(FrozenFrontierError::NotReady(
             "historical profile has no frozen frontier",
         ));
     }
@@ -526,9 +537,15 @@ pub fn read_frozen_frontier_page<S: DurablePortableRepository>(
     let closure_key: Vec<u8> = admission_closure_key(&chain, epoch)?;
     let closure_row: VersionedStateValue =
         store.get_versioned_durable(context, domain, &closure_key)?;
-    let closure_bytes: &[u8] = closure_row.value().ok_or(FrozenFrontierError::Invalid(
-        "ordered Freeze is not committed",
-    ))?;
+    let closure_bytes: &[u8] = match closure_row.value() {
+        Some(bytes) => bytes,
+        None if closure_row.revision() == StateRevision::INITIAL => {
+            return Err(FrozenFrontierError::NotReady(
+                "ordered Freeze is not committed",
+            ));
+        }
+        None => return Err(FrozenFrontierError::Invalid("Freeze is tombstoned")),
+    };
     let closure = decode_admission_closure_record(closure_bytes)?;
     if closure.closed_epoch != epoch || closure.closed_at_block_height == 0 {
         return Err(FrozenFrontierError::Invalid("invalid committed Freeze"));
@@ -536,9 +553,15 @@ pub fn read_frozen_frontier_page<S: DurablePortableRepository>(
     let final_key: Vec<u8> = key(&chain, epoch, FRONTIER_FINAL_PREFIX)?;
     let final_row: VersionedStateValue =
         store.get_versioned_durable(context, domain, &final_key)?;
-    let final_bytes: &[u8] = final_row.value().ok_or(FrozenFrontierError::Invalid(
-        "frozen frontier is not finalized",
-    ))?;
+    let final_bytes: &[u8] = match final_row.value() {
+        Some(bytes) => bytes,
+        None if final_row.revision() == StateRevision::INITIAL => {
+            return Err(FrozenFrontierError::NotReady(
+                "frozen frontier is not finalized",
+            ));
+        }
+        None => return Err(FrozenFrontierError::Invalid("frontier is tombstoned")),
+    };
     let final_record: FinalFrontier = decode_final(final_bytes)?;
     if final_record.identity.chain_id != chain
         || final_record.identity.protocol_version != expected.protocol_version()
@@ -557,6 +580,20 @@ pub fn read_frozen_frontier_page<S: DurablePortableRepository>(
     let prefix: Vec<u8> = publication_prefix(&chain, epoch)?;
     let after_key: Vec<u8> = match after_request_id {
         Some(request_id) => {
+            let cursor_key: Vec<u8> = fastpath_publication_key(&chain, epoch, &request_id)?;
+            let cursor_row: VersionedStateValue =
+                store.get_versioned_durable(context, domain, &cursor_key)?;
+            if cursor_row.value().is_none() {
+                return if cursor_row.revision() == StateRevision::INITIAL {
+                    Err(FrozenFrontierError::InvalidCursor(
+                        "unknown frontier page cursor",
+                    ))
+                } else {
+                    Err(FrozenFrontierError::Invalid(
+                        "frontier page cursor is tombstoned",
+                    ))
+                };
+            }
             verify_retained_publication(
                 store,
                 context,
@@ -568,7 +605,7 @@ pub fn read_frozen_frontier_page<S: DurablePortableRepository>(
                 local_validator,
                 &request_id,
             )?;
-            fastpath_publication_key(&chain, epoch, &request_id)?
+            cursor_key
         }
         None => {
             let prefix_row: VersionedStateValue =

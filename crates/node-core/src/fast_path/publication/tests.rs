@@ -6,9 +6,9 @@
 
 use super::*;
 use crate::fast_path::tests::{
-    IndeterminateCommitStore, RetentionReplica, TestSigner, logical_replica, physical_replica,
-    physical_transfer_bundle_bytes, rebundle_with_other_subset, transfer_bundle_bytes,
-    transfer_bytes,
+    IndeterminateCommitStore, RetentionReplica, TestSigner, installed_validator_set,
+    logical_replica, physical_replica, physical_transfer_bundle_bytes, rebundle_with_other_subset,
+    transfer_bundle_bytes, transfer_bytes,
 };
 use crate::paid_execution::tests::{
     FIRST_PAID_NONCE, context, domain, next_nonce, protocol, resolver,
@@ -322,6 +322,21 @@ fn frozen_frontier_pages_two_real_certified_publications_and_replays_exact_vote(
         &[first_ack.identity.clone(), second_ack.identity.clone()],
     )
     .unwrap();
+    let certifier: consensus::FrozenFrontierCertifier = consensus::FrozenFrontierCertifier::new(
+        protocol().chain_id().clone(),
+        protocol().protocol_version(),
+        protocol().epoch(),
+        installed_validator_set(),
+    )
+    .unwrap();
+    let mut page_verifier: consensus::FrozenFrontierPageVerifier =
+        consensus::FrozenFrontierPageVerifier::new(
+            &resolver(),
+            &certifier,
+            (*vote).clone(),
+            &crate::fast_path::FastPathEd25519Verifier,
+        )
+        .unwrap();
     let mut cursor: Option<[u8; 32]> = None;
     let mut served: Vec<AvailabilityIdentity> = Vec::new();
     let mut terminal: bool = false;
@@ -340,6 +355,7 @@ fn frozen_frontier_pages_two_real_certified_publications_and_replays_exact_vote(
         .unwrap();
         assert_eq!(served_vote, *vote);
         assert_eq!(page.after_request_id, cursor);
+        page_verifier.push_page(&resolver(), &page).unwrap();
         cursor = page
             .entries
             .last()
@@ -357,6 +373,25 @@ fn frozen_frontier_pages_two_real_certified_publications_and_replays_exact_vote(
     );
     assert_eq!(served, vec![first_ack.identity, second_ack.identity]);
     consensus::verify_frozen_frontier(&resolver(), &vote.identity, &served).unwrap();
+    assert_eq!(page_verifier.finish().unwrap(), *vote);
+    assert!(matches!(
+        read_frozen_frontier_page(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            replica.signer.validator_id(),
+            Some([0x99; 32]),
+            std::num::NonZeroUsize::new(1).unwrap(),
+        ),
+        Err(
+            crate::ordered_economics::FrozenFrontierError::InvalidCursor(
+                "unknown frontier page cursor"
+            )
+        )
+    ));
     assert!(
         read_frozen_frontier_page(
             &replica.store,

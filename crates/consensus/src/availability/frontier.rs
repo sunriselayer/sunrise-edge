@@ -36,7 +36,7 @@ const MAX_FRONTIER_IDENTITY_BYTES: usize = 2 * 1024;
 const MAX_FRONTIER_VOTE_BYTES: usize = 8 * 1024;
 /// A page is deliberately small enough for bounded event-driven transfer.
 pub const MAX_FROZEN_FRONTIER_PAGE_ENTRIES: usize = 128;
-const MAX_FRONTIER_PAGE_BYTES: usize = 512 * 1024;
+pub const MAX_FROZEN_FRONTIER_PAGE_BYTES: usize = 512 * 1024;
 
 /// A deterministic commitment to one replica's complete, immutable frozen
 /// publication log. The digest includes the exact Freeze identity and every
@@ -193,7 +193,7 @@ pub fn encode_frozen_frontier_page(page: &FrozenFrontierPage) -> Result<Vec<u8>,
         frame.field_bytes(field, encode_availability_identity(entry)?)?;
     }
     let encoded: Vec<u8> = frame.finish()?;
-    if encoded.len() > MAX_FRONTIER_PAGE_BYTES {
+    if encoded.len() > MAX_FROZEN_FRONTIER_PAGE_BYTES {
         return Err(FrontierError::Invalid("frontier page frame exceeds bound"));
     }
     Ok(encoded)
@@ -202,7 +202,7 @@ pub fn encode_frozen_frontier_page(page: &FrozenFrontierPage) -> Result<Vec<u8>,
 /// Strict canonical decode of one bounded frontier page. Its entries have no
 /// authority until a page verifier checks the complete signed frontier.
 pub fn decode_frozen_frontier_page(input: &[u8]) -> Result<FrozenFrontierPage, FrontierError> {
-    if input.len() > MAX_FRONTIER_PAGE_BYTES {
+    if input.len() > MAX_FROZEN_FRONTIER_PAGE_BYTES {
         return Err(FrontierError::Invalid("frontier page frame exceeds bound"));
     }
     let frame = decode_canonical_frame(input)?;

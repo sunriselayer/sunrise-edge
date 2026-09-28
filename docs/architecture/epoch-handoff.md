@@ -215,10 +215,14 @@ and configured endpoint identity. A caller must still compare the vote with
 the expected committed Freeze, keep it identical across all pages, and
 complete the terminal digest check; HTTP success alone never establishes a
 complete frontier or durable possession of its artifacts.
-Publication records, local ACKs and artifact rows must be epoch-scoped before
-activation is enabled. A later epoch must scan only its own immutable
-publication family without deleting older authenticated history or treating
-an earlier epoch's proof as a current candidate.
+Publication records, local ACKs and artifact rows are now keyed by chain,
+epoch and request ID. A later epoch scans only its own immutable publication
+family without deleting older authenticated history or treating an earlier
+epoch's proof as a current candidate. This key property alone does not enable
+activation. The current page route serves only while the outgoing epoch is
+the store's active epoch; a lagging validator must finish before activation
+or use a separately designed, authenticated historical serving path. Neither
+historical serving nor DrainSet import is implemented here.
 
 An untrusted coordinator proposes at least `q` power of verified frontier
 descriptors and all their pages. Select only complete, retrievable frontiers;

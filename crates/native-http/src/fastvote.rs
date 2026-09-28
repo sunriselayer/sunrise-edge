@@ -129,7 +129,7 @@ where
         )
         .route(
             FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
-            post(advance_frontier::<S, B, M, T, C, I>).layer(DefaultBodyLimit::max(0)),
+            post(advance_frontier::<S, B, M, T, C, I>).layer(DefaultBodyLimit::max(1)),
         )
         .route(
             FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
@@ -139,10 +139,13 @@ where
         )
 }
 
-fn frontier_error_response(error: &FrozenFrontierError) -> Response {
+pub(super) fn frontier_error_response(error: &FrozenFrontierError) -> Response {
     match error {
-        FrozenFrontierError::Invalid(_) => {
+        FrozenFrontierError::NotReady(_) => {
             error_response(StatusCode::CONFLICT, "frontier-not-ready")
+        }
+        FrozenFrontierError::InvalidCursor(_) => {
+            error_response(StatusCode::BAD_REQUEST, "invalid-frontier-page-cursor")
         }
         FrozenFrontierError::Node(NodeCoreError::EpochMismatch { .. }) => {
             error_response(StatusCode::CONFLICT, "frontier-epoch-mismatch")
