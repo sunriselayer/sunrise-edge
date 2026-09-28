@@ -239,8 +239,8 @@ The detailed existing evidence and remaining criteria follow:
   fallback or permission for operator-forced activation.
   The 2026-09-28 bundle clarification requires a full logical witness and
   verified artifact closure before a retention ACK, including on a retainer
-  with a conflicting partial lock; this is design only until wired and tested.
-  A same-day follow-up slice wires it: `consensus::availability::bundle`
+  with a conflicting partial lock. A same-day follow-up slice in Draft PR #235
+  wires and tests that retention: `consensus::availability::bundle`
   (`0xD033`-`0xD035/v1`) and `node_core::fast_path::publication`
   (`0x6455`/`0x6456/v1`, in Draft PR #235, not yet merged) verify a real
   quorum certificate, a witness matching its execution commitment, and every
@@ -249,7 +249,9 @@ The detailed existing evidence and remaining criteria follow:
   historical-resolver fallback for a rotated-away-from suite or protocol
   version, never a bundle-declared epoch or algorithm), then durably retain
   the publication record, artifact bytes and first ACK identity in one atomic
-  commit and sign only after. The three new `fastpath/` key families are
+  commit and sign only after. Replay rechecks the saved full certificate and
+  exact stored artifact bytes before returning the original ACK. The three
+  new `fastpath/` key families are
   classified in `logical_generation::classify_fastpath_row`
   (`publication/`/`publication-artifact/` as authenticated history,
   `availability-ack/` as local signing-safety state). This still has

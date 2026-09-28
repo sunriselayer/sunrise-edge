@@ -103,6 +103,10 @@ canonical domain. This identity excludes FastCertificate signer-subset bytes:
 verify and retain at least one full proof, retain its exact audit bytes, and
 return the same ACK for an equivalent valid proof. Do not fragment availability
 votes or permit unbounded proof-variant storage for the same operation.
+Before returning a retained ACK on retry, verify the saved context, request
+identity, original intent, witness, manifest and first full certificate, and
+re-read every retained artifact's exact bytes. A matching newly supplied proof
+cannot excuse a missing or corrupt retained dependency.
 
 `apply` and signerless recovery require the availability certificate in the
 open epoch. Application remains one atomic commit of original effects, exact
