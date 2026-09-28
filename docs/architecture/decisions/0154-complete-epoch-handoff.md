@@ -6,11 +6,13 @@ Accepted implementation direction, 2026-09-27. This record fixes the design for
 [DR-0151](0151-integrated-network-delivery-and-lightweight-stores.md)'s
 integrated membership/epoch delivery after independent design review and
 correction of the availability/drain/readiness gaps. The mechanism is specified
-in [Complete epoch handoff](../epoch-handoff.md). This is a docs-only decision:
-no runtime implementation, canonical bytes or identifiers are changed by it.
-It does require a new apply-admission rule and logical commitment, not a new
-quorum-applied finality rule. Implementation and validation status belong in
-[`TODO.md`](../../../TODO.md).
+in [Complete epoch handoff](../epoch-handoff.md). At acceptance, this was a
+design-only decision and did not activate a new runtime rule. The first independent
+implementation slice on 2026-09-28 allocates the availability wire family
+below, but still does not implement durable retention or apply admission. The
+complete design requires a new apply-admission rule and logical commitment,
+not a new quorum-applied finality rule. Implementation and validation status
+belong in [`TODO.md`](../../../TODO.md).
 
 ## Context and reusable boundaries
 
@@ -237,7 +239,14 @@ writers, and restart after an interrupted freeze/transfer/activation.
   replay and historical verification must remain defined without an unsafe
   active legacy mutation bypass.
 
-No new IDs or versions are allocated here. The implementation must include
+The 2026-09-28 stateless availability-library slice allocates canonical
+`AvailabilityIdentity` `0xD030/v1`, `AvailabilityVote` `0xD031/v1`, and
+`AvailabilityCertificate` `0xD032/v1`, plus the distinct signature message
+domain `fast-path-availability-v1`. The IDs were checked against existing
+canonical type IDs; no historical ID or byte encoding changes. This allocation
+does not activate a publication, retention, or apply-admission rule. Later
+epoch-control and durable-state IDs remain unallocated. The usable handoff
+implementation must include
 the core, authenticated HTTP/SDK/CLI, genuine multi-validator E2E, stable and
 adversarial vectors, documentation and the full repository/independent-review
 gates as one usable feature. PostgreSQL is a tested profile, not a protocol

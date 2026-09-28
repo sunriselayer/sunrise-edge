@@ -154,9 +154,14 @@ The detailed existing evidence and remaining criteria follow:
   Independent economics/ingress audits, provider conformance and deployment
   remain open; no production or initial-network activation is claimed.
 
-- [ ] **Delivery 3: complete handoff and usable epoch changes**, in one
-  integrated feature PR, following the accepted design in
+- [ ] **Delivery 3: complete handoff and usable epoch changes**, with one
+  integrated usable-feature gate following the accepted design in
   [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md).
+  The independent foundation slice adds bounded, stateless availability
+  identity/vote/certificate codecs and weighted-quorum verification
+  (`0xD030`-`0xD032/v1`, `fast-path-availability-v1`) with stable and independent
+  wire vectors. It neither retains the referenced artifacts nor authorizes
+  application, and it does not detect availability-vote equivocation.
   Existing outgoing-set certificates, policy derivation, genesis restart
   verification and bond operations are reused, not replaced. The accepted
   [design](docs/architecture/epoch-handoff.md) adds execution-free quorum
@@ -174,8 +179,9 @@ The detailed existing evidence and remaining criteria follow:
   genuine Unbond/remove/epoch advance/Withdraw, actual new-epoch paid user
   contracts and fee claims, restart/exact replay, retired-signer rejection,
   missing/forged/divergent cut refusal and real stale-writer controls. No
-  Delivery 3 runtime implementation, completeness proof, activation or
-  validation is claimed by the design review. Implement the same semantic
+  Delivery 3 handoff runtime enforcement, completeness proof, activation or
+  integrated validation is claimed by the design review or this foundation
+  slice. Implement the same semantic
   execution-generation substitution in ordered bond/fee-claim minimum checks,
   not only fast-path commitments; checked overflow must refuse before mutation
   or exposed signatures. Fresh-genesis enforcement
