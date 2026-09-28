@@ -204,15 +204,24 @@ The detailed existing evidence and remaining criteria follow:
   PostgreSQL tests. It refuses even fully acknowledged nonempty batches in
   this initial profile. The probe is not atomic with Freeze or cut creation;
   no handoff admission gate is wired from it yet.
-  Logical provenance/commitment/profile call-site wiring is still unaccepted
-  work in progress: the isolated draft does not install a signed genesis
-  profile or bind the generation into the signed witness, and profile absence
-  still reaches legacy mutation paths. Passing its current tests does not
-  satisfy this delivery and that draft is not integrated. Mandatory publication
-  admission, Freeze/DrainSet/Seal,
-  complete authenticated import, readiness/activation and the network E2E are
-  not complete. This delivery stays unchecked; no full repository gate,
-  final feature approval, PR merge or network activation is claimed.
+  Signed v2 genesis now installs and re-verifies the commitment profile and
+  starting provenance; historical v1 bytes remain fixed. Paid, local,
+  publication, FastVote and economic admission paths derive checked causal
+  generations from verified state/object/nonce observations, fence the
+  provenance rows, and bind v2 prepare/commitment witnesses. Three-validator
+  v2 prepare/certify/apply passes despite one replica's divergent physical
+  revision; real signed-genesis bond deposit and consecutive positive fee
+  claims exercise the shared sender-nonce identity. The node-core suite,
+  workspace strict lint and independent fixed-byte reconstruction pass.
+  FastPath and ordered-economics business-history families are explicitly
+  distinguished from local reservations; a future cut still must enumerate
+  and independently verify that history. Independent final Opus review is
+  pending after earlier blockers were repaired; no approval is claimed.
+  Execution-free publication admission, atomic outbox/Freeze gate,
+  Freeze/DrainSet/Seal, complete authenticated import, readiness/activation
+  and the network E2E are not complete. This delivery stays unchecked; no full
+  repository gate, final feature approval, PR merge or network activation is
+  claimed.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).
