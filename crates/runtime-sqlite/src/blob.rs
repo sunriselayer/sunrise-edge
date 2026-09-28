@@ -14,17 +14,23 @@
 //! under an already-present digest is an idempotent no-op success, storing
 //! different content under an already-present digest fails closed with
 //! [`RuntimeError::BlobDigestConflict`], and each `put_blob` call runs inside
-//! its own `BEGIN IMMEDIATE` transaction. `get_blob` is a single bounded
-//! point query against the connection, not wrapped in a transaction. This
-//! module defines no delete or garbage-collection operation; GC/checkpoint
-//! manifest work that would reclaim unreferenced blobs remains deferred.
+//! its own `BEGIN IMMEDIATE` transaction. `get_blob` is a point query
+//! against the connection. Portable descriptor and range reads project only
+//! the stored length and requested chunk in one query under the connection
+//! lock. This module defines no delete or garbage-collection operation;
+//! GC/checkpoint manifest work that would reclaim blobs remains deferred.
 
 use protocol_types::Digest32;
+use runtime::portable::{
+    PortableBlobChunk, PortableBlobChunkOutcome, PortableBlobChunkRequest, PortableBlobDescriptor,
+    PortableBlobRepository,
+};
 use runtime::{BlobStore, RuntimeError};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use std::{
     error::Error,
     fmt,
+    ops::Range,
     path::Path,
     sync::{Mutex, MutexGuard},
     time::Duration,
@@ -228,6 +234,94 @@ impl BlobStore for SqliteBlobStore {
             )
             .optional()
             .map_err(database_failure)
+    }
+}
+
+impl PortableBlobRepository for SqliteBlobStore {
+    fn read_portable_blob_descriptor(
+        &self,
+        digest: &Digest32,
+    ) -> Result<Option<PortableBlobDescriptor>, RuntimeError> {
+        let connection = self.connection().map_err(runtime_failure)?;
+        let length: Option<i64> = connection
+            .query_row(
+                "SELECT length(content) FROM blobs WHERE digest_algorithm = ?1 AND digest_bytes = ?2",
+                params![
+                    i64::from(digest.algorithm().as_u16()),
+                    digest.bytes().as_slice(),
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(database_failure)?;
+        let Some(length) = length else {
+            return Ok(None);
+        };
+        let length: usize =
+            usize::try_from(length).map_err(|_| RuntimeError::InvalidPersistedState)?;
+        Ok(Some(PortableBlobDescriptor::new(*digest, length)))
+    }
+
+    fn read_portable_blob_chunk(
+        &self,
+        request: &PortableBlobChunkRequest,
+    ) -> Result<PortableBlobChunkOutcome, RuntimeError> {
+        let descriptor: &PortableBlobDescriptor = request.descriptor();
+        let range: Range<usize> = request.range();
+        let start: i64 = i64::try_from(
+            range
+                .start
+                .checked_add(1)
+                .ok_or(RuntimeError::InvalidPersistedState)?,
+        )
+        .map_err(|_| RuntimeError::InvalidPersistedState)?;
+        let chunk_length: i64 =
+            i64::try_from(range.len()).map_err(|_| RuntimeError::InvalidPersistedState)?;
+        let connection = self.connection().map_err(runtime_failure)?;
+        if range.is_empty() {
+            // SQLite returns NULL for substr(empty_blob, 1, 0), so confirm
+            // presence and zero length without decoding a NULL as bytes.
+            let current_length: Option<i64> = connection
+                .query_row(
+                    "SELECT length(content) FROM blobs WHERE digest_algorithm = ?1 AND digest_bytes = ?2",
+                    params![
+                        i64::from(descriptor.digest().algorithm().as_u16()),
+                        descriptor.digest().bytes().as_slice(),
+                    ],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(database_failure)?;
+            return match current_length {
+                Some(0) => PortableBlobChunk::new(request.clone(), Vec::new())
+                    .map(|chunk| PortableBlobChunkOutcome::Chunk(Box::new(chunk))),
+                _ => Ok(PortableBlobChunkOutcome::Corrupt),
+            };
+        }
+        let row: Option<(i64, Vec<u8>)> = connection
+            .query_row(
+                "SELECT length(content), substr(content, ?1, ?2)
+                 FROM blobs WHERE digest_algorithm = ?3 AND digest_bytes = ?4",
+                params![
+                    start,
+                    chunk_length,
+                    i64::from(descriptor.digest().algorithm().as_u16()),
+                    descriptor.digest().bytes().as_slice(),
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(database_failure)?;
+        let Some((current_length, bytes)) = row else {
+            return Ok(PortableBlobChunkOutcome::Corrupt);
+        };
+        let current_length: usize =
+            usize::try_from(current_length).map_err(|_| RuntimeError::InvalidPersistedState)?;
+        if current_length != descriptor.length() {
+            return Ok(PortableBlobChunkOutcome::Corrupt);
+        }
+        PortableBlobChunk::new(request.clone(), bytes)
+            .map(|chunk| PortableBlobChunkOutcome::Chunk(Box::new(chunk)))
     }
 }
 
@@ -535,5 +629,46 @@ mod tests {
             SqliteBlobStore::open(&database.path),
             Err(SqliteBlobStoreError::ApplicationId(_))
         ));
+    }
+
+    #[test]
+    fn portable_blob_reads_survive_close_reopen() {
+        use runtime::portable::conformance::{self, BlobFixture};
+
+        let database = TestDatabase::new();
+        let store: SqliteBlobStore = SqliteBlobStore::open(&database.path).unwrap();
+        let fixture: BlobFixture = conformance::seed_blob(&store);
+        conformance::verify_blob(&store, &fixture);
+        conformance::assert_blob_chunk_corrupt(&store, &fixture);
+        drop(store);
+
+        let reopened: SqliteBlobStore = SqliteBlobStore::open(&database.path).unwrap();
+        conformance::verify_blob(&reopened, &fixture);
+        conformance::assert_blob_chunk_corrupt(&reopened, &fixture);
+    }
+
+    #[test]
+    fn portable_blob_descriptor_missing_and_chunk_offset_bounds() {
+        use runtime::portable::{PortableBlobChunkRequest, PortableBlobDescriptor};
+        use std::num::NonZeroUsize;
+
+        let database = TestDatabase::new();
+        let store: SqliteBlobStore = SqliteBlobStore::open(&database.path).unwrap();
+        let missing: Digest32 = digest(0x60);
+        assert_eq!(store.read_portable_blob_descriptor(&missing).unwrap(), None);
+
+        let content_digest: Digest32 = digest(0x61);
+        store.put_blob(content_digest, vec![9; 6]).unwrap();
+        let descriptor: PortableBlobDescriptor = store
+            .read_portable_blob_descriptor(&content_digest)
+            .unwrap()
+            .unwrap();
+        assert_eq!(descriptor.length(), 6);
+        assert!(
+            PortableBlobChunkRequest::new(descriptor, 6, NonZeroUsize::new(1).unwrap()).is_err()
+        );
+        let request: PortableBlobChunkRequest =
+            PortableBlobChunkRequest::new(descriptor, 2, NonZeroUsize::new(3).unwrap()).unwrap();
+        assert_eq!(request.range(), 2..5);
     }
 }

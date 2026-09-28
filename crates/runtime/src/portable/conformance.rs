@@ -464,3 +464,107 @@ pub fn assert_refused<S: DurablePortableRepository>(
         Err(expected)
     );
 }
+
+/// One reusable content-addressed blob fixture: a present-empty blob and one
+/// present multi-chunk blob whose length exceeds [`MAX_PORTABLE_CHUNK_BYTES`].
+#[derive(Clone, Debug)]
+pub struct BlobFixture {
+    pub empty_digest: Digest32,
+    pub large_digest: Digest32,
+    pub large_bytes: Vec<u8>,
+}
+
+/// Seeds one present-empty blob and one large multi-chunk blob. Panics on
+/// contract failure.
+pub fn seed_blob<S: PortableBlobRepository>(store: &S) -> BlobFixture {
+    let empty_digest: Digest32 = digest(0xe1);
+    store.put_blob(empty_digest, Vec::new()).unwrap();
+    let large_digest: Digest32 = digest(0xe2);
+    let large_bytes: Vec<u8> = (0..(MAX_PORTABLE_CHUNK_BYTES + 17))
+        .map(|index| u8::try_from(index % 256).unwrap())
+        .collect();
+    store.put_blob(large_digest, large_bytes.clone()).unwrap();
+    BlobFixture {
+        empty_digest,
+        large_digest,
+        large_bytes,
+    }
+}
+
+fn blob_payload<S: PortableBlobRepository>(
+    store: &S,
+    descriptor: &PortableBlobDescriptor,
+) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::new();
+    loop {
+        let request: PortableBlobChunkRequest = PortableBlobChunkRequest::new(
+            *descriptor,
+            body.len(),
+            NonZeroUsize::new(MAX_PORTABLE_CHUNK_BYTES).unwrap(),
+        )
+        .unwrap();
+        let outcome: PortableBlobChunkOutcome = store.read_portable_blob_chunk(&request).unwrap();
+        let chunk: Box<PortableBlobChunk> = match outcome {
+            PortableBlobChunkOutcome::Chunk(chunk) => chunk,
+            PortableBlobChunkOutcome::Corrupt => {
+                panic!("quiescent blob fixture descriptor changed")
+            }
+        };
+        assert!(chunk.bytes().len() <= MAX_PORTABLE_CHUNK_BYTES);
+        assert!(chunk.is_last() || !chunk.bytes().is_empty());
+        body.extend_from_slice(chunk.bytes());
+        if chunk.is_last() {
+            assert_eq!(body.len(), descriptor.length());
+            return body;
+        }
+    }
+}
+
+/// Verifies exact missing/present-empty/large-multi-chunk semantics using
+/// the same contract, e.g. after a close/reopen. Panics on contract failure.
+pub fn verify_blob<S: PortableBlobRepository>(store: &S, fixture: &BlobFixture) {
+    let missing_digest: Digest32 = digest(0xef);
+    assert_eq!(
+        store
+            .read_portable_blob_descriptor(&missing_digest)
+            .unwrap(),
+        None
+    );
+
+    let empty_descriptor: PortableBlobDescriptor = store
+        .read_portable_blob_descriptor(&fixture.empty_digest)
+        .unwrap()
+        .unwrap();
+    assert_eq!(empty_descriptor.length(), 0);
+    assert_eq!(blob_payload(store, &empty_descriptor), Vec::<u8>::new());
+
+    let large_descriptor: PortableBlobDescriptor = store
+        .read_portable_blob_descriptor(&fixture.large_digest)
+        .unwrap()
+        .unwrap();
+    assert_eq!(large_descriptor.length(), fixture.large_bytes.len());
+    assert_eq!(blob_payload(store, &large_descriptor), fixture.large_bytes);
+}
+
+/// A descriptor whose claimed length disagrees with the true stored content
+/// must never yield stitched bytes. Panics on contract failure.
+pub fn assert_blob_chunk_corrupt<S: PortableBlobRepository>(store: &S, fixture: &BlobFixture) {
+    let wrong: PortableBlobDescriptor =
+        PortableBlobDescriptor::new(fixture.large_digest, fixture.large_bytes.len() + 1);
+    let request: PortableBlobChunkRequest =
+        PortableBlobChunkRequest::new(wrong, 0, NonZeroUsize::new(1).unwrap()).unwrap();
+    assert_eq!(
+        store.read_portable_blob_chunk(&request).unwrap(),
+        PortableBlobChunkOutcome::Corrupt
+    );
+    for missing_length in [0usize, 1usize] {
+        let missing: PortableBlobDescriptor =
+            PortableBlobDescriptor::new(digest(0xef), missing_length);
+        let request: PortableBlobChunkRequest =
+            PortableBlobChunkRequest::new(missing, 0, NonZeroUsize::new(1).unwrap()).unwrap();
+        assert_eq!(
+            store.read_portable_blob_chunk(&request).unwrap(),
+            PortableBlobChunkOutcome::Corrupt
+        );
+    }
+}

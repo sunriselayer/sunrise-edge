@@ -7,6 +7,7 @@
 //! authenticated cuts: the protocol must freeze the source, classify every row,
 //! bind descriptors/chunks to the cut, and verify content and completeness.
 
+use crate::{BlobStore, MemoryBlobStore};
 use crate::{
     DurableObjectHead, DurableObjectPayload, DurableObjectProvenance, DurableObjectVersion,
     DurableObjectVersionRecord, DurableOperationContext, DurableReadError, DurableRequestId,
@@ -639,6 +640,196 @@ impl DurablePortableRepository for MemoryDurableStateStore {
         DurableRecordChunk::new(request.clone(), bytes)
             .map(|chunk| DurableRecordChunkOutcome::Chunk(Box::new(chunk)))
             .map_err(|_| DurableReadError::InvalidPersistedState)
+    }
+}
+
+/// Validated exact identity of one content-addressed blob, used to detect
+/// storage inconsistency during a chunked range read.
+///
+/// [`BlobStore::put_blob`] forbids differing content under the same digest
+/// and the current contract defines no delete or garbage collection. Under
+/// that contract, a later length mismatch or disappearance is a storage
+/// inconsistency, not a valid update. Introducing reclamation would require
+/// revisiting this outcome. `length` zero is a present, empty blob,
+/// distinct from an absent digest (`None` from
+/// [`PortableBlobRepository::read_portable_blob_descriptor`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PortableBlobDescriptor {
+    digest: Digest32,
+    length: usize,
+}
+
+impl PortableBlobDescriptor {
+    /// Constructs a descriptor for an exact digest and stored byte length.
+    #[must_use]
+    pub const fn new(digest: Digest32, length: usize) -> Self {
+        Self { digest, length }
+    }
+
+    #[must_use]
+    pub const fn digest(&self) -> Digest32 {
+        self.digest
+    }
+
+    #[must_use]
+    pub const fn length(&self) -> usize {
+        self.length
+    }
+}
+
+/// A strict range request, with no zero-length progress except a present
+/// empty blob's single terminal response at offset zero.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortableBlobChunkRequest {
+    descriptor: PortableBlobDescriptor,
+    offset: usize,
+    limit: NonZeroUsize,
+}
+
+impl PortableBlobChunkRequest {
+    pub fn new(
+        descriptor: PortableBlobDescriptor,
+        offset: usize,
+        limit: NonZeroUsize,
+    ) -> Result<Self, RuntimeError> {
+        if limit.get() > MAX_PORTABLE_CHUNK_BYTES {
+            return Err(RuntimeError::InvalidStateScanPage);
+        }
+        let length: usize = descriptor.length();
+        if (length == 0 && offset != 0) || (length > 0 && offset >= length) {
+            return Err(RuntimeError::InvalidStateScanPage);
+        }
+        Ok(Self {
+            descriptor,
+            offset,
+            limit,
+        })
+    }
+
+    #[must_use]
+    pub const fn descriptor(&self) -> &PortableBlobDescriptor {
+        &self.descriptor
+    }
+
+    #[must_use]
+    pub const fn offset(&self) -> usize {
+        self.offset
+    }
+
+    /// Constructor invariants prove the subtraction/addition cannot overflow.
+    #[must_use]
+    pub fn range(&self) -> Range<usize> {
+        self.offset..self.offset + self.limit.get().min(self.descriptor.length() - self.offset)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortableBlobChunk {
+    request: PortableBlobChunkRequest,
+    bytes: Vec<u8>,
+}
+
+impl PortableBlobChunk {
+    /// Exact expected length, never a truncated successful response.
+    pub fn new(request: PortableBlobChunkRequest, bytes: Vec<u8>) -> Result<Self, RuntimeError> {
+        if bytes.len() != request.range().len() {
+            return Err(RuntimeError::InvalidStateScanPage);
+        }
+        Ok(Self { request, bytes })
+    }
+
+    #[must_use]
+    pub const fn request(&self) -> &PortableBlobChunkRequest {
+        &self.request
+    }
+
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    #[must_use]
+    pub fn is_last(&self) -> bool {
+        self.request.range().end == self.request.descriptor.length()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PortableBlobChunkOutcome {
+    Chunk(Box<PortableBlobChunk>),
+    /// The digest-keyed row has become absent or its stored byte length
+    /// differs from the descriptor. This does not verify the content hash.
+    /// Under the current no-delete/no-GC [`BlobStore`] contract, neither
+    /// change is legitimate: discard partial downloads and do not trust any
+    /// bytes already retrieved.
+    Corrupt,
+}
+
+/// Bounded, exact byte-range reads over one content-addressed [`BlobStore`],
+/// for reconstructing a large blob-referenced payload without materializing
+/// the entire blob in the Rust process at once. Database-side work per range
+/// has not been measured and is not claimed to be proportional to the range.
+///
+/// This is NOT an authenticated cut: it exposes exactly what [`BlobStore`]
+/// already exposes, one bounded chunk at a time. A caller MUST hash the
+/// fully reconstructed bytes against the digest it already trusts before
+/// treating them as authentic, and MUST separately validate the structured
+/// store's own cut authority; storing bytes under a digest key is not, by
+/// itself, a claim of either. The trait takes no namespace or writer-fence
+/// argument. A backend may bind a namespace at construction, as PostgreSQL
+/// does, but no implementation here fences a live writer. A caller must not
+/// infer writer authority from these reads.
+pub trait PortableBlobRepository: BlobStore {
+    /// Returns the descriptor for a present digest, or `None` if absent.
+    fn read_portable_blob_descriptor(
+        &self,
+        digest: &Digest32,
+    ) -> Result<Option<PortableBlobDescriptor>, RuntimeError>;
+
+    /// Confirms the digest-keyed row is still present with exactly the
+    /// descriptor's stored byte length in the same read that extracts the
+    /// range. It does not re-hash the stored bytes.
+    fn read_portable_blob_chunk(
+        &self,
+        request: &PortableBlobChunkRequest,
+    ) -> Result<PortableBlobChunkOutcome, RuntimeError>;
+}
+
+impl PortableBlobRepository for MemoryBlobStore {
+    fn read_portable_blob_descriptor(
+        &self,
+        digest: &Digest32,
+    ) -> Result<Option<PortableBlobDescriptor>, RuntimeError> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| RuntimeError::DurableStoreUnavailable)?;
+        Ok(guard
+            .get(digest)
+            .map(|bytes| PortableBlobDescriptor::new(*digest, bytes.len())))
+    }
+
+    fn read_portable_blob_chunk(
+        &self,
+        request: &PortableBlobChunkRequest,
+    ) -> Result<PortableBlobChunkOutcome, RuntimeError> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| RuntimeError::DurableStoreUnavailable)?;
+        let descriptor: &PortableBlobDescriptor = request.descriptor();
+        let Some(bytes) = guard.get(&descriptor.digest()) else {
+            return Ok(PortableBlobChunkOutcome::Corrupt);
+        };
+        if bytes.len() != descriptor.length() {
+            return Ok(PortableBlobChunkOutcome::Corrupt);
+        }
+        let chunk_bytes: Vec<u8> = bytes
+            .get(request.range())
+            .ok_or(RuntimeError::InvalidPersistedState)?
+            .to_vec();
+        PortableBlobChunk::new(request.clone(), chunk_bytes)
+            .map(|chunk| PortableBlobChunkOutcome::Chunk(Box::new(chunk)))
     }
 }
 
