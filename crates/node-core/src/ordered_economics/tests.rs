@@ -1094,6 +1094,92 @@ fn freeze_at_the_first_eligible_economic_height_closes_on_all_four_replicas() {
 }
 
 #[test]
+fn committed_freeze_yields_four_durable_empty_frontier_votes_without_resigning() {
+    let network: Network = setup_with_freeze_height(4);
+    network.install_ordered();
+    let chain = fixture::chain();
+    let epoch = fixture::protocol().epoch();
+    let expected = fixture::protocol();
+    let signer_set: ValidatorSet = validator_set(&network.signers);
+    let certifier = consensus::FrozenFrontierCertifier::new(
+        chain.clone(),
+        expected.protocol_version(),
+        epoch,
+        signer_set,
+    )
+    .unwrap();
+
+    // No local signature is possible before an actual ordered Freeze commit.
+    for replica in 0..REPLICAS {
+        assert!(
+            advance_frozen_frontier(
+                &network.stores[replica],
+                &network.context,
+                network.domain(),
+                &network.resolver,
+                &network.history,
+                &expected,
+                &network.signers[replica],
+            )
+            .is_err()
+        );
+    }
+    network.round(1, None);
+    network.round(2, None);
+    network.round(3, None);
+    let freeze: OrderedCandidate = freeze_candidate([0x79; 32]);
+    network.round(4, Some(&freeze));
+    network.round(5, None);
+    network.round(6, None);
+
+    let mut first_identity: Option<consensus::FrozenFrontierIdentity> = None;
+    for replica in 0..REPLICAS {
+        let step: FrozenFrontierStep = advance_frozen_frontier(
+            &network.stores[replica],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            &network.signers[replica],
+        )
+        .unwrap();
+        let vote: Box<consensus::FrozenFrontierVote> = match step {
+            FrozenFrontierStep::Finalized(vote) => vote,
+            FrozenFrontierStep::Advanced { .. } => panic!("empty publication log must finalize"),
+        };
+        assert_eq!(vote.identity.entry_count, 0);
+        assert_eq!(vote.identity.closure_request_id, freeze.request_id);
+        assert_eq!(vote.identity.closure_height, 4);
+        certifier
+            .verify_vote(&vote, &super::policy::Ed25519ConsensusVerifier)
+            .unwrap();
+        if let Some(identity) = &first_identity {
+            assert_eq!(&vote.identity, identity);
+        } else {
+            first_identity = Some(vote.identity.clone());
+        }
+        let final_key: Vec<u8> = frontier::key(&chain, epoch, b"frontier/").unwrap();
+        let before: Option<Vec<u8>> = network.value(replica, &final_key);
+        let before_revision: StateRevision = network.revision(replica, &final_key);
+        assert!(before.is_some());
+        let replay: FrozenFrontierStep = advance_frozen_frontier(
+            &network.stores[replica],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            &network.signers[replica],
+        )
+        .unwrap();
+        assert_eq!(replay, FrozenFrontierStep::Finalized(vote));
+        assert_eq!(network.value(replica, &final_key), before);
+        assert_eq!(network.revision(replica, &final_key), before_revision);
+    }
+}
+
+#[test]
 fn freeze_advisory_set_requires_the_exact_next_epoch_and_unique_members() {
     let candidate: OrderedCandidate = freeze_candidate([0x6f; 32]);
     let mut intent: FreezeIntent = decode_freeze_intent(&candidate.intent).unwrap();

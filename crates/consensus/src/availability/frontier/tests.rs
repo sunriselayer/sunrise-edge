@@ -1,0 +1,176 @@
+use super::*;
+use crate::test_support::{TestCrypto, validator};
+use protocol_types::{HashAlgorithmId, HashSuite, HashSuiteSchedule};
+use validator_set::ValidatorInfo;
+
+fn fixture() -> (
+    HashSuiteResolver,
+    FrozenFrontierCertifier,
+    Vec<TestCrypto>,
+    AtomicityDomainId,
+) {
+    let chain_id: ChainId = ChainId::new("frontier-test").unwrap();
+    let protocol_version: ProtocolVersion = ProtocolVersion::new(4);
+    let epoch: Epoch = Epoch::new(8);
+    let resolver: HashSuiteResolver = HashSuiteResolver::new(
+        chain_id.clone(),
+        protocol_version,
+        vec![HashSuiteSchedule {
+            activation_epoch: Epoch::new(0),
+            suite: HashSuite::genesis(),
+        }],
+    )
+    .unwrap();
+    let members: Vec<ValidatorInfo> = (1..=4).map(validator).collect();
+    let set: ValidatorSet = ValidatorSet::new(epoch, members).unwrap();
+    let certifier: FrozenFrontierCertifier =
+        FrozenFrontierCertifier::new(chain_id, protocol_version, epoch, set).unwrap();
+    let signers: Vec<TestCrypto> = (1..=4)
+        .map(|byte| TestCrypto {
+            validator: ValidatorId::new([byte; 32]),
+        })
+        .collect();
+    let domain: AtomicityDomainId = AtomicityDomainId::new([9; 32]).unwrap();
+    (resolver, certifier, signers, domain)
+}
+
+fn operation(request_byte: u8, domain: AtomicityDomainId) -> AvailabilityIdentity {
+    AvailabilityIdentity {
+        chain_id: ChainId::new("frontier-test").unwrap(),
+        protocol_version: ProtocolVersion::new(4),
+        epoch: Epoch::new(8),
+        domain,
+        request_id: [request_byte; 32],
+        signed_intent_digest: Digest32::new(HashAlgorithmId::Sha2_256, [request_byte; 32]),
+        execution_commitment: Digest32::new(HashAlgorithmId::Sha2_256, [request_byte + 1; 32]),
+        semantic_artifacts_digest: Digest32::new(HashAlgorithmId::Sha2_256, [request_byte + 2; 32]),
+    }
+}
+
+fn empty(resolver: &HashSuiteResolver, domain: AtomicityDomainId) -> FrozenFrontierAccumulator {
+    FrozenFrontierAccumulator::new(
+        resolver,
+        ChainId::new("frontier-test").unwrap(),
+        ProtocolVersion::new(4),
+        Epoch::new(8),
+        domain,
+        [7; 32],
+        11,
+    )
+    .unwrap()
+}
+
+#[test]
+fn frontier_accumulates_in_pages_and_verifies_exact_order() {
+    let (resolver, _certifier, _signers, domain) = fixture();
+    let entries: Vec<AvailabilityIdentity> = vec![operation(1, domain), operation(2, domain)];
+    let mut first: FrozenFrontierAccumulator = empty(&resolver, domain);
+    first.push(&resolver, &entries[0]).unwrap();
+    let intermediate: FrozenFrontierAccumulator = first.clone();
+    first.push(&resolver, &entries[1]).unwrap();
+    let mut direct: FrozenFrontierAccumulator = empty(&resolver, domain);
+    for entry in &entries {
+        direct.push(&resolver, entry).unwrap();
+    }
+    assert_eq!(first, direct);
+    assert_eq!(intermediate.identity().entry_count, 1);
+    assert_eq!(first.identity().entry_count, 2);
+    verify_frozen_frontier(&resolver, first.identity(), &entries).unwrap();
+    assert!(verify_frozen_frontier(&resolver, first.identity(), &entries[..1]).is_err());
+    assert!(verify_frozen_frontier(&resolver, first.identity(), entries.iter().rev()).is_err());
+
+    let bytes: Vec<u8> = encode_frozen_frontier_identity(first.identity()).unwrap();
+    assert_eq!(
+        decode_frozen_frontier_identity(&bytes).unwrap(),
+        *first.identity()
+    );
+}
+
+#[test]
+fn frontier_rejects_duplicates_foreign_context_and_changed_closure() {
+    let (resolver, _certifier, _signers, domain) = fixture();
+    let first: AvailabilityIdentity = operation(1, domain);
+    let mut accumulator: FrozenFrontierAccumulator = empty(&resolver, domain);
+    accumulator.push(&resolver, &first).unwrap();
+    assert!(accumulator.push(&resolver, &first).is_err());
+    assert!(accumulator.push(&resolver, &operation(0, domain)).is_err());
+    let foreign_domain: AtomicityDomainId = AtomicityDomainId::new([10; 32]).unwrap();
+    assert!(
+        accumulator
+            .push(&resolver, &operation(2, foreign_domain))
+            .is_err()
+    );
+    let original: FrozenFrontierIdentity = accumulator.identity().clone();
+    let changed = FrozenFrontierIdentity {
+        closure_height: original.closure_height + 1,
+        ..original.clone()
+    };
+    assert_ne!(
+        encode_frozen_frontier_identity(&changed).unwrap(),
+        encode_frozen_frontier_identity(&original).unwrap()
+    );
+    assert!(verify_frozen_frontier(&resolver, &changed, [&first]).is_err());
+}
+
+#[test]
+fn frontier_vote_uses_distinct_context_and_registered_key() {
+    let (resolver, certifier, signers, domain) = fixture();
+    let mut accumulator: FrozenFrontierAccumulator = empty(&resolver, domain);
+    accumulator.push(&resolver, &operation(1, domain)).unwrap();
+    let identity: FrozenFrontierIdentity = accumulator.into_identity();
+    let vote: FrozenFrontierVote = certifier.cast_vote(identity.clone(), &signers[0]).unwrap();
+    certifier.verify_vote(&vote, &signers[0]).unwrap();
+    let bytes: Vec<u8> = encode_frozen_frontier_vote(&vote).unwrap();
+    assert_eq!(decode_frozen_frontier_vote(&bytes).unwrap(), vote);
+
+    let mut forged: FrozenFrontierVote = vote.clone();
+    forged.identity.closure_request_id = [8; 32];
+    assert!(certifier.verify_vote(&forged, &signers[0]).is_err());
+    let mut foreign: FrozenFrontierVote = vote.clone();
+    foreign.validator = ValidatorId::new([99; 32]);
+    assert!(certifier.verify_vote(&foreign, &signers[0]).is_err());
+    let wrong_epoch = FrozenFrontierIdentity {
+        epoch: Epoch::new(9),
+        ..identity
+    };
+    assert!(certifier.cast_vote(wrong_epoch, &signers[0]).is_err());
+}
+
+#[test]
+fn frontier_decode_rejects_type_mutation_and_excess() {
+    let (resolver, _certifier, _signers, domain) = fixture();
+    let identity: FrozenFrontierIdentity = empty(&resolver, domain).into_identity();
+    let bytes: Vec<u8> = encode_frozen_frontier_identity(&identity).unwrap();
+    let mut wrong_type: Vec<u8> = bytes.clone();
+    wrong_type[0] ^= 1;
+    assert!(decode_frozen_frontier_identity(&wrong_type).is_err());
+    assert!(decode_frozen_frontier_identity(&vec![0; MAX_FRONTIER_IDENTITY_BYTES + 1]).is_err());
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[test]
+fn frozen_frontier_identity_and_vote_vectors_are_stable() {
+    let (resolver, _certifier, _signers, domain) = fixture();
+    let identity: FrozenFrontierIdentity = FrozenFrontierIdentity {
+        entry_count: 2,
+        entries_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0xaa; 32]),
+        ..empty(&resolver, domain).into_identity()
+    };
+    let vote: FrozenFrontierVote = FrozenFrontierVote {
+        identity: identity.clone(),
+        validator: ValidatorId::new([1; 32]),
+        signature_scheme: SignatureSchemeId::Ed25519,
+        signature: vec![0x5a; 64],
+    };
+    assert_eq!(
+        hex(&encode_frozen_frontier_identity(&identity).unwrap()),
+        "534e524536d00100080001000d00000066726f6e746965722d74657374020004000000040000000300080000000800000000000000040020000000090909090909090909090909090909090909090909090909090909090909090905002000000007070707070707070707070707070707070707070707070707070707070707070600080000000b000000000000000700080000000200000000000000080038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    assert_eq!(
+        hex(&encode_frozen_frontier_vote(&vote).unwrap()),
+        "534e524537d0010004000100db000000534e524536d00100080001000d00000066726f6e746965722d74657374020004000000040000000300080000000800000000000000040020000000090909090909090909090909090909090909090909090909090909090909090905002000000007070707070707070707070707070707070707070707070707070707070707070600080000000b000000000000000700080000000200000000000000080038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa020020000000010101010101010101010101010101010101010101010101010101010101010103000200000001000400400000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+    );
+}

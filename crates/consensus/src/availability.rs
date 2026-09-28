@@ -63,6 +63,7 @@ use validator_set::ValidatorSet;
 /// operation; this parent module keeps the identity/vote/certificate codec
 /// itself free of any bundle dependency.
 pub mod bundle;
+pub mod frontier;
 
 const AVAILABILITY_IDENTITY_TYPE_ID: u16 = 0xD030;
 const AVAILABILITY_VOTE_TYPE_ID: u16 = 0xD031;

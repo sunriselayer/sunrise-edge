@@ -201,6 +201,109 @@ fn freeze_blocks_new_retention_ack_but_preserves_exact_ack_replay() {
 }
 
 #[test]
+fn frozen_frontier_pages_two_real_certified_publications_and_replays_exact_vote() {
+    use crate::ordered_economics::{FrozenFrontierStep, advance_frozen_frontier};
+
+    let replica: RetentionReplica = logical_replica();
+    let first_request: u8 = REQUEST;
+    let second_request: u8 = REQUEST + 1;
+    let (first_bundle, _): (PublicationBundle, _) =
+        transfer_bundle_bytes(first_request, FIRST_PAID_NONCE);
+    let (second_bundle, _): (PublicationBundle, _) =
+        transfer_bundle_bytes(second_request, FIRST_PAID_NONCE);
+    assert!(!first_bundle.manifest.entries.is_empty());
+    assert!(!second_bundle.manifest.entries.is_empty());
+    let first_ack: AvailabilityVote = retain(&replica, &first_bundle, &replica.signer).unwrap();
+    let second_ack: AvailabilityVote = retain(&replica, &second_bundle, &replica.signer).unwrap();
+    let closure: crate::ordered_economics::AdmissionClosureRecord =
+        crate::ordered_economics::AdmissionClosureRecord {
+            closed_epoch: protocol().epoch(),
+            request_id: [0x57; 32],
+            closed_at_block_height: 4,
+        };
+    let closure_key: Vec<u8> = crate::ordered_economics::engine::admission_closure_key_for_tests(
+        protocol().chain_id(),
+        protocol().epoch(),
+    );
+    replica.put_row(
+        closure_key,
+        crate::ordered_economics::encode_admission_closure_record(&closure).unwrap(),
+    );
+
+    // The frontier reader re-verifies one complete publication and its actual
+    // retained artifacts per call, persisting an incremental cursor between
+    // calls. This fixture supplies the committed-closure row directly; the
+    // separate ordered-economics test proves a real four-replica Freeze.
+    let next = || {
+        advance_frozen_frontier(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &replica.signer,
+        )
+        .unwrap()
+    };
+    assert_eq!(next(), FrozenFrontierStep::Advanced { entry_count: 1 });
+    assert_eq!(next(), FrozenFrontierStep::Advanced { entry_count: 2 });
+    let vote: Box<consensus::FrozenFrontierVote> = match next() {
+        FrozenFrontierStep::Finalized(vote) => vote,
+        FrozenFrontierStep::Advanced { .. } => panic!("closed two-row scan must finalize"),
+    };
+    assert_eq!(vote.identity.closure_request_id, closure.request_id);
+    assert_eq!(vote.identity.closure_height, closure.closed_at_block_height);
+    assert_eq!(vote.identity.entry_count, 2);
+    consensus::verify_frozen_frontier(
+        &resolver(),
+        &vote.identity,
+        &[first_ack.identity, second_ack.identity],
+    )
+    .unwrap();
+    assert_eq!(next(), FrozenFrontierStep::Finalized(vote));
+}
+
+#[test]
+fn frozen_frontier_refuses_corrupt_retained_artifact_before_advancing() {
+    use crate::ordered_economics::advance_frozen_frontier;
+
+    let replica: RetentionReplica = logical_replica();
+    let (bundle, _): (PublicationBundle, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    retain(&replica, &bundle, &replica.signer).unwrap();
+    let first_artifact: &ArtifactEntry = bundle.manifest.entries.first().unwrap();
+    let artifact_row: Vec<u8> =
+        artifact_key(protocol().chain_id(), &[REQUEST; 32], first_artifact).unwrap();
+    replica.put_row(artifact_row, b"corrupt frozen bytes".to_vec());
+    let closure: crate::ordered_economics::AdmissionClosureRecord =
+        crate::ordered_economics::AdmissionClosureRecord {
+            closed_epoch: protocol().epoch(),
+            request_id: [0x58; 32],
+            closed_at_block_height: 4,
+        };
+    let closure_key: Vec<u8> = crate::ordered_economics::engine::admission_closure_key_for_tests(
+        protocol().chain_id(),
+        protocol().epoch(),
+    );
+    replica.put_row(
+        closure_key,
+        crate::ordered_economics::encode_admission_closure_record(&closure).unwrap(),
+    );
+    assert!(
+        advance_frozen_frontier(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &replica.signer,
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn retention_replay_refuses_corrupt_stored_operands_and_certificate() {
     for corruption in 0..3 {
         let replica: RetentionReplica = logical_replica();

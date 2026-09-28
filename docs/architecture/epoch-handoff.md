@@ -183,6 +183,18 @@ whose operation was never applied locally. Include the necessary ordered
 prefix/proof artifacts. Persist the immutable frontier descriptor before
 signing it. Enumerate it incrementally while publication stays closed.
 
+The local frontier identity binds the chain, protocol, outgoing epoch, logical
+domain, committed Freeze request and height, entry count, and ordered digest.
+The accumulator seeds from that context and folds each retained availability
+identity in ascending request-ID order. A replica re-verifies each retained
+full certificate, signed intent, ACK and required artifact's actual bytes
+before moving a CAS-fenced cursor. Its final descriptor and vote commit in one
+row; an exact retry returns those bytes without signing again. The canonical
+identity, vote and accumulator frames are `0xD036`-`0xD038/v1` with a distinct
+`epoch-frozen-frontier-v1` signing domain. A local cursor or signed descriptor
+is not a closed-range proof to another validator. DrainSet voters must verify
+all pages and their completeness independently before counting that signer.
+
 An untrusted coordinator proposes at least `q` power of verified frontier
 descriptors and all their pages. Select only complete, retrievable frontiers;
 unavailable or forged pages cannot count toward that quorum. Construct the

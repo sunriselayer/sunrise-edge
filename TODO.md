@@ -256,7 +256,8 @@ The detailed existing evidence and remaining criteria follow:
   refusal for healthy ineligibility and stopping on missing/corrupt rows.
   Historical v1 manifests authorize no Freeze. This is still partial control:
   the current devnet genesis fixture remains v1, the older standalone
-  epoch-transition API can still activate without `DrainSet`/`Seal`, and
+  epoch-transition API is now refused for v2-bound stores but remains the
+  historical v1 route, and
   no DrainSet, verified cut, readiness, Seal or actual next-set activation is
   complete. The ordered HTTP propose route still accepts caller-supplied
   candidate bytes, but the signer-side warrant rejects an unwarranted Freeze.
@@ -297,6 +298,21 @@ The detailed existing evidence and remaining criteria follow:
   partial;
   DrainSet/Seal and cut verification remain open. This does not satisfy
   Delivery 3 acceptance; independent review of complete handoff is pending.
+  The 2026-09-29 continuation closes the reservation-less generic-event
+  admission/epoch fence and refuses nonempty generic outbox obligations under
+  v2. It also refuses the old standalone epoch-transition route for every
+  v2-bound store, including before and after Freeze. Historical v1 behavior
+  is unchanged. The new bounded local frozen-frontier accumulator uses
+  `0xD036`-`0xD038/v1` and a distinct signing domain; one step verifies one
+  retained full certificate, signed intent, ACK and exact artifact closure,
+  then CAS-commits a cursor. After the entire local publication prefix is
+  scanned, it commits a final descriptor and vote atomically; exact replay
+  returns the saved vote. Focused tests cover four independent stores after
+  a real ordered Freeze, two real certified publications, artifact corruption,
+  vectors and replay. This is local evidence only: a remotely verifiable
+  closed-range proof, quorum union, DrainSet, authenticated cut, readiness,
+  Seal, activation and PostgreSQL network E2E remain open. Neither a local
+  frontier signature nor this safety closure authorizes network activation.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).
