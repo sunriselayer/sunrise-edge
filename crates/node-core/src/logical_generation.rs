@@ -603,6 +603,9 @@ pub enum FastpathRowClass {
     /// Uncertified preparation and local lock state, never imported as a
     /// global business fact.
     LocalReservation,
+    /// Replica-local signed availability identity/vote safety state. This
+    /// must survive a local restart but is not imported as a global fact.
+    LocalSigningSafety,
     /// Protocol business/control history that a complete cut must enumerate
     /// and verify independently before activation.
     AuthenticatedHistory,
@@ -614,9 +617,12 @@ pub enum FastpathRowClass {
 pub fn classify_fastpath_row(key: &[u8]) -> Option<FastpathRowClass> {
     let suffix: &[u8] = key.strip_prefix(local_instance_state::FASTPATH_STATE_PREFIX)?;
     const LOCAL: [&[u8]; 3] = [b"prepared/", b"lock/", b"nonce-lock/"];
-    const HISTORY: [&[u8]; 12] = [
+    const SIGNING_SAFETY: [&[u8]; 1] = [b"availability-ack/"];
+    const HISTORY: [&[u8]; 14] = [
         b"certificate/",
         b"commitment-witness/",
+        b"publication/",
+        b"publication-artifact/",
         b"settlement/",
         b"fee-claim/",
         b"bond/",
@@ -633,6 +639,12 @@ pub fn classify_fastpath_row(key: &[u8]) -> Option<FastpathRowClass> {
         .any(|prefix: &&[u8]| suffix.starts_with(prefix))
     {
         return Some(FastpathRowClass::LocalReservation);
+    }
+    if SIGNING_SAFETY
+        .iter()
+        .any(|prefix: &&[u8]| suffix.starts_with(prefix))
+    {
+        return Some(FastpathRowClass::LocalSigningSafety);
     }
     if HISTORY
         .iter()
