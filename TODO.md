@@ -242,9 +242,9 @@ The detailed existing evidence and remaining criteria follow:
   with a conflicting partial lock; this is design only until wired and tested.
   A same-day follow-up slice wires it: `consensus::availability::bundle`
   (`0xD033`-`0xD035/v1`) and `node_core::fast_path::publication`
-  (`0x6455`/`0x6456/v1`, on branch `codex/epoch-publication`, local commit,
-  not yet merged) verify a real quorum certificate, a witness matching its
-  execution commitment, and every declared artifact against its digest under
+  (`0x6455`/`0x6456/v1`, in Draft PR #235, not yet merged) verify a real
+  quorum certificate, a witness matching its execution commitment, and every
+  declared artifact against its digest under
   a hash suite trusted at or before the certifying epoch (with bounded
   historical-resolver fallback for a rotated-away-from suite or protocol
   version, never a bundle-declared epoch or algorithm), then durably retain
