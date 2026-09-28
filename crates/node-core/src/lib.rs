@@ -123,9 +123,13 @@ const NODE_OUTBOX_BATCH_TYPE_ID: u16 = 0xE004;
 const NODE_OUTBOX_DELIVERY_TYPE_ID: u16 = 0xE005;
 const ENCODING_VERSION: u16 = 1;
 
-/// Refusal text for the handoff-capable profile's application gate (DR-0154).
+/// Refusal text for [`NodeCoreError::LogicalProfileApplicationUnsupported`]
+/// (DR-0154): every real caller pairs a store's resolved commitment profile
+/// with evidence derived from that exact same binding, so this text must not
+/// claim an active quorum-availability-publication gate that does not exist
+/// yet.
 const APPLY_REFUSED_MESSAGE: &str =
-    "handoff profile refuses application before availability publication";
+    "handoff profile: installed commitment profile and derived evidence disagree";
 
 /// Maximum UTF-8 byte length of a chain identifier accepted at node ingress.
 pub const MAX_CHAIN_ID_BYTES: usize = 128;
@@ -566,8 +570,18 @@ pub enum NodeCoreError {
     /// An authenticated logical provenance row is missing, foreign or does not
     /// match the observation it is bound to (DR-0154).
     LogicalProvenance(&'static str),
-    /// The handoff-capable profile refuses this live application path until
-    /// mandatory quorum availability publication is integrated (DR-0154).
+    /// A caller presented a resolved commitment profile and derived evidence
+    /// that this admission gate never observes from a well-formed path: a
+    /// [`InstalledCommitmentProfile::Logical`] with no derivation, or a
+    /// [`InstalledCommitmentProfile::Historical`] with one (DR-0154). Every
+    /// current production path pairs the two correctly, so this is a
+    /// defensive fail-closed refusal of an internal invariant violation, not
+    /// the mandatory quorum-availability-publication gate DR-0154 still has
+    /// to add: that gate does not exist yet, and this variant does not
+    /// implement or stand in for it.
+    ///
+    /// [`InstalledCommitmentProfile::Logical`]: logical_generation::InstalledCommitmentProfile::Logical
+    /// [`InstalledCommitmentProfile::Historical`]: logical_generation::InstalledCommitmentProfile::Historical
     LogicalProfileApplicationUnsupported,
     /// The authenticated causal generation has no representable successor.
     ExecutionGenerationOverflow {
