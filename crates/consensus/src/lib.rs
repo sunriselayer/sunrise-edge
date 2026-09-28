@@ -22,12 +22,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use validator_set::{ValidatorSet, ValidatorSetError};
 
+mod availability;
 mod durable;
 mod epoch_transition;
 mod equivocation;
 mod fast_vote;
 #[cfg(test)]
 mod test_support;
+pub use availability::{
+    AvailabilityCertificate, AvailabilityCertifier, AvailabilityIdentity, AvailabilityVote,
+    decode_availability_certificate, decode_availability_identity, decode_availability_vote,
+    encode_availability_certificate, encode_availability_identity, encode_availability_vote,
+};
 pub use durable::{
     decode_consensus_state, decode_proposal, decode_quorum_certificate, decode_vote,
     encode_consensus_state,
@@ -175,6 +181,8 @@ pub enum ConsensusError {
     ZeroViewTimeout,
     /// A signature was empty or exceeded the protocol bound.
     InvalidSignatureLength(usize),
+    /// An availability identity cannot name an all-zero request ID.
+    ZeroAvailabilityRequestId,
     /// A validator used a signature scheme other than its registered scheme.
     SignatureSchemeMismatch(ValidatorId),
     /// Signature verification failed.
@@ -336,6 +344,9 @@ impl fmt::Display for ConsensusError {
             Self::ZeroViewTimeout => write!(f, "consensus view timeout must be non-zero"),
             Self::InvalidSignatureLength(length) => {
                 write!(f, "invalid consensus signature length: {length}")
+            }
+            Self::ZeroAvailabilityRequestId => {
+                f.write_str("availability request id must not be all zeroes")
             }
             Self::SignatureSchemeMismatch(id) => {
                 write!(f, "validator {id} used an unexpected signature scheme")

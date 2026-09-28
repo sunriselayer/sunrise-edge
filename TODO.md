@@ -103,8 +103,8 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 | Order | Integrated outcome | Remaining acceptance |
 | --- | --- | --- |
 | 1 | Generic certified network contract lifecycle | Merged as PR #228 on 2026-09-27 after the full repository gate, fresh exact-head Opus APPROVE and required CI: Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Independent ingress/security gates remain separate. |
-| 2 | Network economics and validator operations | DR-0153 fixed-epoch implementation and real four-namespace CLI evidence are present; full repository gate, fresh exact-head Opus approval and CI remain merge requirements. Membership-dependent Deposit/Withdraw positives join delivery 3; economics/ingress security audits remain separate. |
-| 3 | Validator membership and epoch handoff | Verified required definitions/state/settlement history, completeness and activation-bound catch-up; real add/replace/recover/epoch operations with ineligible/divergent replicas rejected |
+| 2 | Network economics and validator operations | Merged as PR #232 on 2026-09-27 with normal merge commit `86711be`, after fresh exact-head Opus APPROVE and the passing complete repository CI. Fixed-epoch four-namespace CLI evidence is implemented. Membership-dependent Deposit/Withdraw positives join delivery 3; economics/ingress security audits remain separate. |
+| 3 | Validator membership and epoch handoff | Design accepted after independent Opus review and corrections on 2026-09-27: [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Mandatory publication-before-apply, logical execution generations and ordered epoch control are not yet implemented. One integrated feature must cover real add/replace/recover/epoch operations, genuine Deposit/Withdraw, and rejection of incomplete/divergent replicas. |
 | 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
 
 PostgreSQL remains the existing tested profile for delivery 1, not a mandatory
@@ -142,13 +142,50 @@ The detailed existing evidence and remaining criteria follow:
   database; they do not demonstrate independent operational control.
   Actual HTTP counter tests verify authentication before identity/clock/I/O,
   closed routes, bounded completion reads and shared blocking admission.
-  The checkbox records bounded implementation/evidence only: the full gate,
-  fresh exact-final-head Opus APPROVE and required CI must pass before merge.
+  The checkbox records bounded implementation/evidence only. PR #232 merged
+  normally on 2026-09-27 after independent Opus APPROVE on exact head
+  `118b70b` and passing full repository CI. The local full-script invocation
+  ended with SIGTERM after the PostgreSQL gates; its remaining steps passed
+  separately, and CI subsequently passed the complete script. No single local
+  exit-zero full-script result is claimed.
   Fixed-epoch membership does not manufacture an Exited validator or an elapsed
   withdrawal epoch. Genuine network Deposit/Withdraw positives, activation and
   complete verified state/settlement handoff remain delivery 3 acceptance.
   Independent economics/ingress audits, provider conformance and deployment
   remain open; no production or initial-network activation is claimed.
+
+- [ ] **Delivery 3: complete handoff and usable epoch changes**, with one
+  integrated usable-feature gate following the accepted design in
+  [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md).
+  The independent foundation slice adds bounded, stateless availability
+  identity/vote/certificate codecs and weighted-quorum verification
+  (`0xD030`-`0xD032/v1`, `fast-path-availability-v1`) with stable and independent
+  wire vectors. It neither retains the referenced artifacts nor authorizes
+  application, and it does not detect availability-vote equivocation.
+  Existing outgoing-set certificates, policy derivation, genesis restart
+  verification and bond operations are reused, not replaced. The accepted
+  [design](docs/architecture/epoch-handoff.md) adds execution-free quorum
+  publication before apply, closed full-certificate frontiers and ordered
+  Freeze/DrainSet/Seal controls, with complete artifact retention before
+  DrainSet votes and repeatable conditional next-set readiness before Seal.
+  It also needs a logical commitment independent
+  of physical CAS counters, complete bounded portable enumeration and artifact
+  replay in the correct epoch order. Minority-only application is not permission
+  to silently discard authenticated effects or redefine finality. Add durable
+  one-outgoing-epoch vote identity before exposing a signature, separate the
+  genesis pin from verified serving epoch, and initialize shared consensus
+  safely for the new set. Defining-code economics authority must not be
+  blindly rewritten to the live epoch. Acceptance includes a fresh namespace,
+  genuine Unbond/remove/epoch advance/Withdraw, actual new-epoch paid user
+  contracts and fee claims, restart/exact replay, retired-signer rejection,
+  missing/forged/divergent cut refusal and real stale-writer controls. No
+  Delivery 3 handoff runtime enforcement, completeness proof, activation or
+  integrated validation is claimed by the design review or this foundation
+  slice. Implement the same semantic
+  execution-generation substitution in ordered bond/fee-claim minimum checks,
+  not only fast-path commitments; checked overflow must refuse before mutation
+  or exposed signatures. Fresh-genesis enforcement
+  is required; existing pre-rule stores cannot silently receive this guarantee.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).
