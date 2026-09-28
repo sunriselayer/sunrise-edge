@@ -27,7 +27,9 @@
 //! not by itself prove durable retention of the identity's referenced
 //! artifacts, and it does not authorize any apply.** Callers remain fully
 //! responsible for retention and for any admission policy built on top of
-//! this library.
+//! this library. This stateless library also does not persist a validator's
+//! first ACK identity or detect/evidence conflicting availability votes for
+//! the same `(domain, request_id)`; the later handoff implementation must do so.
 //!
 //! Its signature domain (`"fast-path-availability-v1"`) is distinct from
 //! [`crate::ChainedHotStuff`]'s, [`crate::fast_vote`]'s, and
@@ -80,9 +82,10 @@ const MAX_CHAIN_ID_BYTES: usize = 128;
 /// [`MAX_CHAIN_ID_BYTES`] and the existing [`MAX_SIGNATURE_BYTES`](crate)
 /// bound. The certificate bound intentionally equals
 /// [`MAX_CANONICAL_FRAME_BYTES`] rather than a tighter value: a certificate
-/// legitimately carrying [`MAX_AVAILABILITY_CERTIFICATE_VOTES`] (10,000) real
-/// votes already needs several megabytes, and a smaller arbitrary cap would
-/// risk rejecting an otherwise valid, fully-signed validator set.
+/// carrying [`MAX_AVAILABILITY_CERTIFICATE_VOTES`] (10,000) 64-byte signatures
+/// already needs several megabytes. Larger otherwise valid signatures can
+/// exceed this shared ceiling; not every legal validator count and signature
+/// length combination is guaranteed to fit in one canonical frame.
 const MAX_ENCODED_IDENTITY_BYTES: usize = 2 * 1024;
 const MAX_ENCODED_VOTE_BYTES: usize = 8 * 1024;
 const MAX_ENCODED_CERTIFICATE_BYTES: usize = MAX_CANONICAL_FRAME_BYTES;
@@ -244,6 +247,7 @@ impl AvailabilityCertifier {
             identity.epoch,
         )?;
         ensure_chain_id_bound(&identity.chain_id)?;
+        ensure_request_id_nonzero(&identity.request_id)?;
         self.ensure_registered_scheme(signer.validator_id(), signer.signature_scheme())?;
         let framed = self.signature_frame(
             signer.signature_scheme(),
@@ -274,6 +278,7 @@ impl AvailabilityCertifier {
             vote.identity.epoch,
         )?;
         ensure_chain_id_bound(&vote.identity.chain_id)?;
+        ensure_request_id_nonzero(&vote.identity.request_id)?;
         self.ensure_registered_scheme(vote.validator, vote.signature_scheme)?;
         validate_signature_length(&vote.signature)?;
         let info = self
@@ -381,6 +386,7 @@ impl AvailabilityCertifier {
             identity.epoch,
         )?;
         ensure_chain_id_bound(&identity.chain_id)?;
+        ensure_request_id_nonzero(&identity.request_id)?;
 
         let mut by_validator: BTreeMap<ValidatorId, &AvailabilityVote> = BTreeMap::new();
         for vote in votes {
@@ -578,10 +584,18 @@ fn ensure_chain_id_bound_str_inner(actual: usize) -> Result<(), ConsensusError> 
     Ok(())
 }
 
+fn ensure_request_id_nonzero(request_id: &[u8; 32]) -> Result<(), ConsensusError> {
+    if *request_id == [0u8; 32] {
+        return Err(ConsensusError::ZeroAvailabilityRequestId);
+    }
+    Ok(())
+}
+
 /// Exact v1 size: 10-byte frame header, eight 6-byte field headers,
 /// chain + u32/u64 + two 32-byte IDs + three 56-byte Digest32 frames.
 fn encoded_identity_length(identity: &AvailabilityIdentity) -> Result<usize, ConsensusError> {
     ensure_chain_id_bound(&identity.chain_id)?;
+    ensure_request_id_nonzero(&identity.request_id)?;
     Ok(302 + identity.chain_id.as_str().len())
 }
 
@@ -619,6 +633,7 @@ pub fn encode_availability_identity(
     identity: &AvailabilityIdentity,
 ) -> Result<Vec<u8>, ConsensusError> {
     ensure_chain_id_bound(&identity.chain_id)?;
+    ensure_request_id_nonzero(&identity.request_id)?;
     let mut canonical = CanonicalStruct::new(AVAILABILITY_IDENTITY_TYPE_ID, ENCODING_VERSION);
     canonical.field_str(1, identity.chain_id.as_str())?;
     canonical.field_u32(2, identity.protocol_version.get())?;
@@ -691,7 +706,7 @@ pub fn decode_availability_certificate(
 /// Requires the input to fit [`MAX_ENCODED_IDENTITY_BYTES`] before any
 /// parsing, the identity type id/encoding version, exactly fields 1-8, a
 /// `chain_id` no longer than [`MAX_CHAIN_ID_BYTES`] before it is copied into
-/// an owned [`ChainId`], a non-zero [`AtomicityDomainId`], and byte-exact
+/// an owned [`ChainId`], a non-zero [`AtomicityDomainId`] and request ID, and byte-exact
 /// re-encoding of the decoded value.
 pub fn decode_availability_identity(input: &[u8]) -> Result<AvailabilityIdentity, ConsensusError> {
     ensure_encoded_bound(
@@ -726,6 +741,7 @@ pub fn decode_availability_identity(input: &[u8]) -> Result<AvailabilityIdentity
             actual: request_id_field.len(),
         })
     })?;
+    ensure_request_id_nonzero(&request_id)?;
     let signed_intent_digest = decode_digest32(frame.required_field(6)?)?;
     let execution_commitment = decode_digest32(frame.required_field(7)?)?;
     let semantic_artifacts_digest = decode_digest32(frame.required_field(8)?)?;
@@ -1346,6 +1362,46 @@ mod tests {
     }
 
     #[test]
+    fn zero_availability_request_id_rejects_encode_sign_and_decode() {
+        let mut id: AvailabilityIdentity = identity();
+        id.request_id = [0u8; 32];
+        assert_eq!(
+            encode_availability_identity(&id),
+            Err(ConsensusError::ZeroAvailabilityRequestId)
+        );
+
+        let certifier: AvailabilityCertifier = certifier(4);
+        let signer: CountingSigner = CountingSigner::default();
+        assert_eq!(
+            certifier.cast_vote(id.clone(), &signer),
+            Err(ConsensusError::ZeroAvailabilityRequestId)
+        );
+        assert_eq!(signer.call_count(), 0);
+
+        let mut frame: CanonicalStruct =
+            CanonicalStruct::new(AVAILABILITY_IDENTITY_TYPE_ID, ENCODING_VERSION);
+        frame.field_str(1, id.chain_id.as_str()).unwrap();
+        frame.field_u32(2, id.protocol_version.get()).unwrap();
+        frame.field_u64(3, id.epoch.get()).unwrap();
+        frame.field_bytes(4, id.domain.as_bytes().to_vec()).unwrap();
+        frame.field_bytes(5, id.request_id.to_vec()).unwrap();
+        frame
+            .field_bytes(6, encode_digest32(&id.signed_intent_digest).unwrap())
+            .unwrap();
+        frame
+            .field_bytes(7, encode_digest32(&id.execution_commitment).unwrap())
+            .unwrap();
+        frame
+            .field_bytes(8, encode_digest32(&id.semantic_artifacts_digest).unwrap())
+            .unwrap();
+        let bytes: Vec<u8> = frame.finish().unwrap();
+        assert_eq!(
+            decode_availability_identity(&bytes),
+            Err(ConsensusError::ZeroAvailabilityRequestId)
+        );
+    }
+
+    #[test]
     fn decode_availability_vote_rejects_wrong_type_id() {
         let certifier = certifier(4);
         let vote = cast(&certifier, 1);
@@ -1540,8 +1596,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_ten_thousand_validator_certificate_with_realistic_signature_lengths_and_an_accepting_fixture_is_not_rejected_by_the_bounds()
-     {
+    fn a_full_ten_thousand_validator_certificate_with_64_byte_signatures_fits_the_frame_bound() {
         let count = MAX_AVAILABILITY_CERTIFICATE_VOTES;
         let validators: Vec<ValidatorInfo> = (0..count)
             .map(|index| {
