@@ -192,7 +192,18 @@ full certificate, signed intent, ACK and required artifact's actual bytes
 before moving a CAS-fenced cursor. Its final descriptor and vote commit in one
 row; an exact retry returns those bytes without signing again. The canonical
 identity, vote and accumulator frames are `0xD036`-`0xD038/v1` with a distinct
-`epoch-frozen-frontier-v1` signing domain. A local cursor or signed descriptor
+`epoch-frozen-frontier-v1` signing domain. A bounded canonical `0xD039/v1`
+page carries an exclusive request-ID cursor, up to 128 ascending availability
+identities and an explicit terminal flag. The `0xE107` request and `0xE108`
+response envelopes transport an exact epoch/cursor/limit and the final signed
+vote plus page; the envelope itself is not authority. A remote verifier starts
+from the voted Freeze context, authenticates the registered signer, folds
+every consecutive page, and accepts the terminal page only when its count and
+digest equal the signed final descriptor. A missing, repeated, reordered,
+foreign or prematurely terminal page fails closed. An identity-only page never
+proves possession of its full certificate, original intent or artifact bytes;
+the verifier must fetch, independently verify and durably retain those before
+counting the signer toward DrainSet. A local cursor or signed descriptor alone
 is not a closed-range proof to another validator. DrainSet voters must verify
 all pages and their completeness independently before counting that signer.
 Publication records, local ACKs and artifact rows must be epoch-scoped before
