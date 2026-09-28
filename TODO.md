@@ -222,6 +222,9 @@ The detailed existing evidence and remaining criteria follow:
   and the network E2E are not complete. This delivery stays unchecked; no full
   repository gate, final feature approval, PR merge or network activation is
   claimed.
+  The 2026-09-28 bundle clarification requires a full logical witness and
+  verified artifact closure before a retention ACK, including on a retainer
+  with a conflicting partial lock; this is design only until wired and tested.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

@@ -66,6 +66,32 @@ advance the sender nonce, release locks or create an original user receipt.
 An honest retainer may hold a conflicting **partial** local prepare: verifying
 and storing a full certificate is not permission to overwrite that lock.
 
+The publication input is a versioned, canonical bundle, not a certificate
+plus a caller-chosen list of hashes. It contains the original signed intent,
+one verifying full certificate, the exact logical commitment witness, and a
+closed manifest of the bytes needed to replay that witness. The retainer
+strictly decodes every witness field and derives the required artifact set
+from its signed read, object and mutation operands and the transitive
+code/ABI/dependency closure. It verifies the content of every present state
+value, immutable object version, code/ABI record and referenced blob against
+the witness hashes and committed hash suite. A missing dependency,
+unknown artifact kind, contradictory version, duplicate key, unverified blob
+or claimed tombstone presented as absence refuses the ACK. Manifest entries
+are canonically ordered by kind and identity and include content digest and
+length; the availability identity signs the manifest digest. Transfer and
+verification are bounded and resumable, but an ACK is exposed only after the
+complete closure has been durably retained and rechecked.
+
+The full FastCertificate's quorum attests to the exact logical witness hash;
+it does not turn a retainer's own prepared lock or its local physical
+provenance rows into a portable proof. The retainer verifies the witness and
+bundle without re-running admission against local heads or locks, which may
+legitimately contain a conflicting partial prepare. The independently
+reconstructed cut later replays the authenticated history and checks the
+semantic provenance chain before the next set becomes eligible. Neither a
+bare certificate nor an unauthenticated local provenance row can substitute
+for this two-stage verification.
+
 Persist the publication record and exact ACK identity atomically under writer,
 epoch and admission-state CAS fences. Only a confirmed commit or exact
 reconciliation may expose the retained ACK. A failed or ambiguous write cannot

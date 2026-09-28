@@ -68,6 +68,17 @@ of its **full** artifacts. That holder need not know whether its ACK was
 aggregated into an availability certificate. Drain every verifying full
 certificate in the selected closed frontier, never merely partial prepares.
 
+Implementation clarification (2026-09-28): retention must accept a full
+certificate even if the retainer holds a conflicting partial local prepare.
+Its canonical publication bundle therefore supplies the complete logical
+commitment witness and all content-addressed replay artifacts; verification
+cannot re-run admission against local heads or overwrite the local lock.
+The quorum certificate authenticates the exact witness hash, while the
+retainer verifies the bundle's content and closed dependency manifest before
+an ACK. Local provenance rows alone are not transferable proofs. The later
+cut/import verifies the provenance chain by independently replaying the
+authenticated history. See the bundle rules in the linked design.
+
 This is an explicit apply-admission/latency change, not a new rule that
 discards minority applications, not an existing implemented guarantee and not
 global ordering of owned calls. Use a fresh handoff-capable genesis/profile;
