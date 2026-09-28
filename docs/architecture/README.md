@@ -54,7 +54,8 @@ roadmap describes a later target state.
 - [Ordered network economics](ordered-economics.md) ([DR-0153](decisions/0153-ordered-network-economics.md)):
   shared HotStuff ordering distinct from owned FastVote, durable reservations,
   atomic economic/order effects and declared signerless recovery.
-- [Complete epoch handoff](epoch-handoff.md) ([DR-0154](decisions/0154-complete-epoch-handoff.md)):
+- [Complete epoch handoff](epoch-handoff.md) ([DR-0154](decisions/0154-complete-epoch-handoff.md),
+  [DR-0155](decisions/0155-epoch-end-freeze-warrant.md)):
   publication-before-apply, quorum-complete frozen frontiers, ordered epoch
   control, portable logical commitments and verified new-validator readiness.
 - [Portable reconstruction storage contract](portable-reconstruction.md):

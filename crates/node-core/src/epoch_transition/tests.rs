@@ -1954,6 +1954,7 @@ pub(crate) fn build_genesis_fixture(validators: Vec<FastPathValidatorEntry>) -> 
             validators,
         },
         commitment_profile: crate::logical_generation::CommitmentProfile::PhysicalCheckpointV1,
+        minimum_freeze_block_height: 0,
         signature: [0; 64],
     };
     manifest.signature = genesis_authority_key()

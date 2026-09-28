@@ -10,10 +10,9 @@
 //! *committed* one -- decided in [`super::preflight`] and applied here, after
 //! the same [`super::authenticate_candidate`]/preflight sequence every other
 //! kind goes through -- installs the durable [`AdmissionClosureRecord`].
-//! This partial implementation checks no independent epoch-end warrant or
-//! next-set eligibility before honest votes; quorum ordering is not a
-//! substitute for that authorization. It must not be enabled until both
-//! checks are defined and enforced.
+//! Quorum ordering is not a substitute for the signed-genesis epoch-end
+//! height and the advisory next set's committed eligibility. Both are
+//! checked before honest proposal/vote and again at committed execution.
 //!
 //! Scope of this slice (DR-0154 Delivery 3, partial): closing admission and
 //! refusing business after closure. Fresh publication-retention ACKs are
@@ -21,10 +20,17 @@
 //! next-set readiness/activation sequence are **not** implemented here; see
 //! the module-level remaining-integration note in [`super`].
 use super::*;
+use crate::epoch_transition::{self, EpochTransitionError, NextSetEligibilityError};
 use canonical_encoding::encode_chain_id;
 use execution::publication::{
     PublicationContext, decode_publication_context, encode_publication_context,
 };
+use fast_path::records::{
+    FastPathValidatorSetRecord, MAX_FASTPATH_ACTIVE_VALIDATORS,
+    decode_fastpath_validator_set_record, encode_fastpath_validator_set_record,
+};
+use protocol_types::SignatureSchemeId;
+use validator_set::{ValidatorInfo, ValidatorSet};
 
 /// Canonical frame type of an encoded [`FreezeIntent`] (an
 /// [`OrderedCandidate::intent`] body for [`OrderedOperationKind::Freeze`]).
@@ -47,11 +53,11 @@ fn invalid(message: &'static str) -> NodeCoreError {
 /// The candidate body for [`OrderedOperationKind::Freeze`].
 ///
 /// Deliberately carries no signature: unlike a user-originated request
-/// (`FeeClaim`, `BondLifecycle`), `Freeze` is a control decision whose only
-/// authority is having been committed by the outgoing set's own quorum
-/// through the shared `ChainedHotStuff` three-chain rule -- structurally
-/// identical to how `BondSlash` is "unsigned, evidence-authorized" rather
-/// than user-signed. `context` and `request_id` duplicate
+/// (`FeeClaim`, `BondLifecycle`), `Freeze` is a control decision whose
+/// authorization is the signed genesis height rule and an eligible next set,
+/// checked by honest outgoing signers before their ordinary HotStuff votes.
+/// A committed quorum orders the authorized decision; it is not the warrant
+/// by itself. `context` and `request_id` duplicate
 /// [`OrderedCandidate::context`]/[`OrderedCandidate::request_id`] so
 /// [`authenticate_freeze`](super::policy) can cross-check the two bindings
 /// exactly like every other kind's intent envelope.
@@ -61,13 +67,58 @@ pub struct FreezeIntent {
     pub context: PublicationContext,
     /// Replay identity; must equal the candidate's own request id.
     pub request_id: [u8; 32],
+    /// Canonical, advisory set for the immediately following epoch. Freeze
+    /// proves at least one viable continuation, but does not select the final
+    /// membership before readiness and Seal.
+    pub advisory_next_set: FastPathValidatorSetRecord,
+}
+
+pub(crate) fn validate_freeze_intent_structure(intent: &FreezeIntent) -> Result<(), NodeCoreError> {
+    if intent.request_id == [0u8; 32] {
+        return Err(invalid("freeze intent request id must not be zero"));
+    }
+    let next_epoch: u64 = intent
+        .context
+        .epoch()
+        .get()
+        .checked_add(1)
+        .ok_or(invalid("freeze next epoch overflows"))?;
+    let next_context: &PublicationContext = &intent.advisory_next_set.context;
+    if next_context.chain_id() != intent.context.chain_id()
+        || next_context.protocol_version() != intent.context.protocol_version()
+        || next_context.epoch() != Epoch::new(next_epoch)
+    {
+        return Err(invalid(
+            "freeze advisory set is not bound to the next epoch",
+        ));
+    }
+    let validators = &intent.advisory_next_set.validators;
+    if validators.is_empty() || validators.len() > MAX_FASTPATH_ACTIVE_VALIDATORS {
+        return Err(invalid("freeze advisory set has invalid member count"));
+    }
+    if validators.windows(2).any(|pair| pair[0].id >= pair[1].id) {
+        return Err(invalid("freeze advisory set is not strictly ordered"));
+    }
+    let mut info: Vec<ValidatorInfo> = Vec::with_capacity(validators.len());
+    for validator in validators {
+        if validator.signature_scheme != SignatureSchemeId::Ed25519 {
+            return Err(invalid("freeze advisory set supports only Ed25519"));
+        }
+        info.push(ValidatorInfo {
+            id: validator.id,
+            voting_power: validator.voting_power,
+            signature_scheme: validator.signature_scheme,
+            public_key: validator.public_key.clone(),
+        });
+    }
+    ValidatorSet::new(next_context.epoch(), info)
+        .map_err(|_| invalid("freeze advisory validator set is invalid"))?;
+    Ok(())
 }
 
 /// Encodes frame `0x6454/v1`.
 pub fn encode_freeze_intent(intent: &FreezeIntent) -> Result<Vec<u8>, NodeCoreError> {
-    if intent.request_id == [0u8; 32] {
-        return Err(invalid("freeze intent request id must not be zero"));
-    }
+    validate_freeze_intent_structure(intent)?;
     let mut frame: CanonicalStruct = CanonicalStruct::new(FREEZE_INTENT_TYPE, ENCODING_VERSION);
     frame.field_bytes(
         1,
@@ -75,6 +126,10 @@ pub fn encode_freeze_intent(intent: &FreezeIntent) -> Result<Vec<u8>, NodeCoreEr
             .map_err(|_| invalid("invalid freeze intent context"))?,
     )?;
     frame.field_bytes(2, intent.request_id.to_vec())?;
+    frame.field_bytes(
+        3,
+        encode_fastpath_validator_set_record(&intent.advisory_next_set)?,
+    )?;
     Ok(frame.finish()?)
 }
 
@@ -83,7 +138,7 @@ pub fn decode_freeze_intent(bytes: &[u8]) -> Result<FreezeIntent, NodeCoreError>
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(FREEZE_INTENT_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;
-    frame.require_only_fields(&[1, 2])?;
+    frame.require_only_fields(&[1, 2, 3])?;
     let request_id: [u8; 32] = frame
         .required_field(2)?
         .try_into()
@@ -92,11 +147,83 @@ pub fn decode_freeze_intent(bytes: &[u8]) -> Result<FreezeIntent, NodeCoreError>
         context: decode_publication_context(frame.required_field(1)?)
             .map_err(|_| invalid("freeze intent context"))?,
         request_id,
+        advisory_next_set: decode_fastpath_validator_set_record(frame.required_field(3)?)?,
     };
-    if intent.request_id == [0u8; 32] || encode_freeze_intent(&intent)? != bytes {
+    if encode_freeze_intent(&intent)? != bytes {
         return Err(invalid("noncanonical freeze intent"));
     }
     Ok(intent)
+}
+
+/// The independently checked Freeze warrant. The minimum height is pinned by
+/// signed genesis and the proposal's actual consensus block height, never a
+/// candidate-declared number. The advisory set must be an executable next
+/// epoch activation candidate, and each of its members must be eligible in
+/// the current committed bond/policy state. The signer calls this before
+/// exposing a proposal or vote; committed execution calls it again through
+/// the staging store, whose observed rows become final CAS assertions.
+pub(crate) fn require_freeze_warrant<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+    block_height: u64,
+) -> Result<(), OrderedEconomicsError> {
+    let minimum: u64 = env.policy.minimum_freeze_block_height();
+    if minimum == 0 {
+        return Err(OrderedEconomicsError::Prerequisite(
+            "signed genesis does not enable freeze",
+        ));
+    }
+    if block_height < minimum {
+        return Err(OrderedEconomicsError::Refused(
+            OrderedRefusal::PrematureFreeze,
+        ));
+    }
+    super::preflight::require_live_authority(store, context, env)?;
+    let intent: FreezeIntent = decode_freeze_intent(&candidate.intent)
+        .map_err(|_| OrderedEconomicsError::Unauthenticated("invalid freeze candidate intent"))?;
+    if intent.context != candidate.context || intent.request_id != candidate.request_id {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "freeze candidate context or request id mismatch",
+        ));
+    }
+    let current_epoch: Epoch = env.policy.context().epoch();
+    let next_epoch: Epoch = intent.advisory_next_set.context.epoch();
+    epoch_transition::derive_activation_set(
+        store,
+        context,
+        env.policy.domain(),
+        env.resolver,
+        env.policy.context().chain_id(),
+        env.policy.context().protocol_version(),
+        current_epoch,
+        next_epoch,
+        &intent.advisory_next_set.validators,
+    )
+    .map_err(|error: EpochTransitionError| match error {
+        EpochTransitionError::Node(error) => OrderedEconomicsError::Node(error),
+        _ => OrderedEconomicsError::Prerequisite(
+            "freeze next epoch activation prerequisites are unavailable",
+        ),
+    })?;
+    epoch_transition::check_next_set_eligibility(
+        store,
+        context,
+        env.policy.domain(),
+        env.policy.context().chain_id(),
+        current_epoch,
+        &intent.advisory_next_set.validators,
+    )
+    .map_err(|error: NextSetEligibilityError| match error {
+        NextSetEligibilityError::Ineligible => {
+            OrderedEconomicsError::Refused(OrderedRefusal::IneligibleNextSet)
+        }
+        NextSetEligibilityError::Prerequisite => OrderedEconomicsError::Prerequisite(
+            "freeze advisory next set lacks a committed eligibility prerequisite",
+        ),
+        NextSetEligibilityError::Node(error) => OrderedEconomicsError::Node(error),
+    })
 }
 
 /// The durable, per-chain-and-epoch closed-admission marker DR-0154's
@@ -305,7 +432,7 @@ pub(crate) fn handle_freeze_ordered<S: StructuredDurableDomainStateStore>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use protocol_types::{ChainId, ProtocolVersion};
+    use protocol_types::{ChainId, ProtocolVersion, ValidatorId};
     use runtime::{
         DurableDomainStateStore, MemoryDurableStateStore, StorageCorrelationId, StorageDeadline,
         WriterFenceGeneration,
@@ -320,11 +447,29 @@ mod tests {
         .unwrap()
     }
 
+    fn next_set() -> FastPathValidatorSetRecord {
+        FastPathValidatorSetRecord {
+            context: PublicationContext::new(
+                context().chain_id().clone(),
+                context().protocol_version(),
+                Epoch::new(4),
+            )
+            .unwrap(),
+            validators: vec![fast_path::FastPathValidatorEntry {
+                id: ValidatorId::new([7; 32]),
+                voting_power: 1,
+                signature_scheme: SignatureSchemeId::Ed25519,
+                public_key: vec![7; 32],
+            }],
+        }
+    }
+
     #[test]
     fn freeze_intent_round_trips_and_rejects_a_zero_request_id() {
         let intent = FreezeIntent {
             context: context(),
             request_id: [9; 32],
+            advisory_next_set: next_set(),
         };
         let bytes = encode_freeze_intent(&intent).unwrap();
         assert_eq!(decode_freeze_intent(&bytes).unwrap(), intent);
@@ -332,6 +477,7 @@ mod tests {
         let zero = FreezeIntent {
             context: context(),
             request_id: [0; 32],
+            advisory_next_set: next_set(),
         };
         assert!(encode_freeze_intent(&zero).is_err());
     }

@@ -146,9 +146,18 @@ must not become voting power.
 HotStuff orders an authorized control decision; it does not make an arbitrary
 caller-supplied Freeze candidate warranted. Before voting, each honest replica
 must verify the same deterministic epoch-end warrant and the legal eligibility
-of at least one next set, including the same set if permitted. A proposal from
-the HTTP surface or one leader is not itself that warrant. The exact warrant
-format and verification rule remain to be specified before Freeze is enabled.
+of the candidate's canonical, advisory next set, including the same set if it
+passes the ordinary checks. The handoff-capable signed genesis manifest binds a
+positive minimum ordered-block height for Freeze proposals. Validators compare
+that committed rule with the proposal's actual height; a local clock, timeout
+tick, caller-supplied threshold or HTTP request is never the warrant. They
+validate the next-epoch chain/protocol binding, set structure and voting power,
+then each member's committed Active bond, registered key and current economics
+policy before exposing a proposal or vote. At execution of the committed
+ordered block they check the actual height and eligibility again, since the
+intervening prefix may have changed them. A healthy ineligible set is a
+retained refusal with no closure; a missing or corrupt prerequisite stops
+application. See [DR-0155](decisions/0155-epoch-end-freeze-warrant.md).
 
 At each replica, commit the closed-admission marker with processing this
 ordered prefix. Stop new prepares, new retention ACKs, direct local/paid

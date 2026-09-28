@@ -65,7 +65,7 @@ fn require_row<S: StructuredDurableDomainStateStore>(
 /// A non-current epoch here is a *fence*, not a stale candidate: the profile
 /// pinned one epoch, and an epoch transition invalidates this whole profile
 /// rather than this one candidate. It therefore stops.
-fn require_live_authority<S: StructuredDurableDomainStateStore>(
+pub(crate) fn require_live_authority<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -202,6 +202,7 @@ pub(crate) fn preflight<S: StructuredDurableDomainStateStore>(
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
+    block_height: u64,
 ) -> Result<(), OrderedEconomicsError> {
     require_live_authority(store, context, env)?;
     require_admission_open(store, context, env, candidate)?;
@@ -216,10 +217,9 @@ pub(crate) fn preflight<S: StructuredDurableDomainStateStore>(
         // there is no stale predecessor to refuse. Its entire validity is
         // proven purely by `authenticate_candidate`.
         OrderedOperationKind::Evidence => Ok(()),
-        // Nothing further to check: `require_admission_open` above already
-        // proved the closure record is genuinely absent, which is every
-        // precondition `freeze::handle_freeze_ordered` needs.
-        OrderedOperationKind::Freeze => Ok(()),
+        OrderedOperationKind::Freeze => {
+            super::freeze::require_freeze_warrant(store, context, env, candidate, block_height)
+        }
     }
 }
 

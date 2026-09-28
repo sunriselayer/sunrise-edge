@@ -158,8 +158,18 @@ struct Network {
 }
 
 fn setup() -> Network {
+    setup_with_freeze_height(0)
+}
+
+fn setup_with_freeze_height(minimum_freeze_block_height: u64) -> Network {
     let signers: Vec<TestSigner> = signers();
-    let manifest: GenesisManifest = four_validator_manifest(&signers);
+    let mut manifest: GenesisManifest = four_validator_manifest(&signers);
+    if minimum_freeze_block_height != 0 {
+        manifest.commitment_profile =
+            crate::logical_generation::CommitmentProfile::LogicalGenerationV2;
+        manifest.minimum_freeze_block_height = minimum_freeze_block_height;
+        fixture::resign_manifest(&mut manifest);
+    }
     let context: DurableOperationContext = fixture::context(1);
     let mut stores: Vec<MemoryDurableStateStore> = Vec::with_capacity(REPLICAS);
     for _ in 0..REPLICAS {
@@ -189,6 +199,7 @@ fn setup() -> Network {
         fixture::protocol(),
         fixture::domain(),
         genesis::genesis_manifest_commitment(&fixture::resolver(), &manifest).unwrap(),
+        Some(&manifest),
         validator_set(&signers),
         fixture::resolver(),
     )
@@ -604,6 +615,7 @@ fn authority_anchor_binds_domain_genesis_epoch_and_validator_set_identity() {
         &fixture::protocol(),
         fixture::domain(),
         genesis,
+        0,
         &set,
     )
     .unwrap();
@@ -619,6 +631,7 @@ fn authority_anchor_binds_domain_genesis_epoch_and_validator_set_identity() {
         &fixture::protocol(),
         AtomicityDomainId::new([9; 32]).unwrap(),
         genesis,
+        0,
         &set,
     )
     .unwrap();
@@ -628,6 +641,7 @@ fn authority_anchor_binds_domain_genesis_epoch_and_validator_set_identity() {
         &fixture::protocol(),
         fixture::domain(),
         Digest32::new(HashAlgorithmId::Sha2_256, [2; 32]),
+        0,
         &set,
     )
     .unwrap();
@@ -647,6 +661,7 @@ fn authority_anchor_binds_domain_genesis_epoch_and_validator_set_identity() {
         &fixture::protocol(),
         fixture::domain(),
         genesis,
+        0,
         &smaller,
     )
     .unwrap();
@@ -658,6 +673,7 @@ fn authority_anchor_binds_domain_genesis_epoch_and_validator_set_identity() {
         fixture::protocol(),
         fixture::domain(),
         genesis,
+        None,
         set,
         fixture::resolver(),
     )
@@ -684,10 +700,87 @@ fn policy_new_fails_closed_on_validator_set_epoch_mismatch() {
         fixture::protocol(),
         fixture::domain(),
         Digest32::new(HashAlgorithmId::Sha2_256, [1; 32]),
+        None,
         mismatched,
         fixture::resolver(),
     );
     assert!(matches!(result, Err(OrderedEconomicsError::Policy(_))));
+}
+
+#[test]
+fn freeze_height_cannot_be_enabled_without_the_matching_signed_genesis_manifest() {
+    let signers: Vec<TestSigner> = signers();
+    let mut manifest: GenesisManifest = four_validator_manifest(&signers);
+    manifest.commitment_profile = crate::logical_generation::CommitmentProfile::LogicalGenerationV2;
+    manifest.minimum_freeze_block_height = 4;
+    fixture::resign_manifest(&mut manifest);
+    let digest: Digest32 =
+        genesis::genesis_manifest_commitment(&fixture::resolver(), &manifest).unwrap();
+    let selected: ValidatorSet = validator_set(&signers);
+    let valid: OrderedEconomicsPolicy = OrderedEconomicsPolicy::new(
+        fixture::protocol(),
+        fixture::domain(),
+        digest,
+        Some(&manifest),
+        selected.clone(),
+        fixture::resolver(),
+    )
+    .unwrap();
+    assert_eq!(valid.minimum_freeze_block_height(), 4);
+
+    let mut changed: GenesisManifest = manifest.clone();
+    changed.minimum_freeze_block_height = 1;
+    assert!(matches!(
+        OrderedEconomicsPolicy::new(
+            fixture::protocol(),
+            fixture::domain(),
+            digest,
+            Some(&changed),
+            selected.clone(),
+            fixture::resolver(),
+        ),
+        Err(OrderedEconomicsError::Policy(_))
+    ));
+    let changed_digest: Digest32 =
+        genesis::genesis_manifest_commitment(&fixture::resolver(), &changed).unwrap();
+    assert!(matches!(
+        OrderedEconomicsPolicy::new(
+            fixture::protocol(),
+            fixture::domain(),
+            changed_digest,
+            Some(&changed),
+            selected.clone(),
+            fixture::resolver(),
+        ),
+        Err(OrderedEconomicsError::Policy(_))
+    ));
+    let smaller: ValidatorSet = ValidatorSet::new(
+        fixture::protocol().epoch(),
+        vec![selected.validators()[0].clone()],
+    )
+    .unwrap();
+    assert!(matches!(
+        OrderedEconomicsPolicy::new(
+            fixture::protocol(),
+            fixture::domain(),
+            digest,
+            Some(&manifest),
+            smaller,
+            fixture::resolver(),
+        ),
+        Err(OrderedEconomicsError::Policy(_))
+    ));
+
+    let unwarranted: OrderedEconomicsPolicy = OrderedEconomicsPolicy::new(
+        fixture::protocol(),
+        fixture::domain(),
+        digest,
+        None,
+        selected,
+        fixture::resolver(),
+    )
+    .unwrap();
+    assert_eq!(unwarranted.minimum_freeze_block_height(), 0);
 }
 
 // --- pure authentication --------------------------------------------------
@@ -886,9 +979,28 @@ fn stale_generation_candidate_is_refused_with_a_typed_reason_and_moves_nothing()
 // --- DR-0154 Freeze --------------------------------------------------------
 
 fn freeze_candidate(request_id: [u8; 32]) -> OrderedCandidate {
+    let mut validators: Vec<FastPathValidatorEntry> = signers()
+        .into_iter()
+        .map(|signer: TestSigner| FastPathValidatorEntry {
+            id: signer.id,
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: signer.id.as_bytes().to_vec(),
+        })
+        .collect();
+    validators.sort_by_key(|entry: &FastPathValidatorEntry| entry.id);
     let intent = FreezeIntent {
         context: fixture::protocol(),
         request_id,
+        advisory_next_set: FastPathValidatorSetRecord {
+            context: PublicationContext::new(
+                fixture::chain(),
+                fixture::protocol().protocol_version(),
+                Epoch::new(fixture::protocol().epoch().get() + 1),
+            )
+            .unwrap(),
+            validators,
+        },
     };
     OrderedCandidate {
         context: fixture::protocol(),
@@ -900,9 +1012,204 @@ fn freeze_candidate(request_id: [u8; 32]) -> OrderedCandidate {
 }
 
 #[test]
+fn freeze_cannot_be_proposed_or_voted_before_the_signed_minimum_height() {
+    let network: Network = setup_with_freeze_height(4);
+    network.install_ordered();
+    let candidate: OrderedCandidate = freeze_candidate([0x6e; 32]);
+    let leader: usize = network.leader_index(1);
+    assert!(matches!(
+        propose(
+            &network.stores[leader],
+            &network.context,
+            &network.env(),
+            Some(&candidate),
+            &network.signers[leader],
+        ),
+        Err(OrderedEconomicsError::Refused(
+            OrderedRefusal::PrematureFreeze
+        ))
+    ));
+    let header_key: Vec<u8> =
+        engine::ordered_request_header_key_for_tests(&fixture::chain(), &candidate.request_id);
+    assert!(network.value(leader, &header_key).is_none());
+
+    // A malicious leader could attach candidate bytes to a different signed
+    // proposal shell. An honest peer still refuses before signing a vote.
+    let empty: OrderedProposal = propose(
+        &network.stores[leader],
+        &network.context,
+        &network.env(),
+        None,
+        &network.signers[leader],
+    )
+    .unwrap();
+    let other: usize = (0..REPLICAS)
+        .find(|index: &usize| *index != leader)
+        .unwrap();
+    assert!(matches!(
+        process_proposal(
+            &network.stores[other],
+            &network.context,
+            &network.env(),
+            &OrderedProposal {
+                proposal: empty.proposal,
+                candidate: Some(candidate),
+            },
+            &network.signers[other],
+        ),
+        Err(OrderedEconomicsError::Refused(
+            OrderedRefusal::PrematureFreeze
+        ))
+    ));
+    let vote_key: Vec<u8> = engine::ordered_vote_record_key_for_tests(&fixture::chain(), 1);
+    assert!(network.value(other, &vote_key).is_none());
+}
+
+#[test]
+fn freeze_at_the_first_eligible_economic_height_closes_on_all_four_replicas() {
+    let network: Network = setup_with_freeze_height(4);
+    network.install_ordered();
+    network.round(1, None);
+    network.round(2, None);
+    network.round(3, None);
+    let candidate: OrderedCandidate = freeze_candidate([0x69; 32]);
+    network.round(4, Some(&candidate));
+    network.round(5, None);
+    let (commits, _, _) = network.round(6, None);
+    let closure_key: Vec<u8> =
+        engine::admission_closure_key_for_tests(&fixture::chain(), fixture::protocol().epoch());
+    for (replica, commit) in commits.iter().enumerate() {
+        assert_eq!(commit.committed.len(), 1);
+        assert_eq!(commit.committed[0].block_height, 4);
+        assert_eq!(
+            commit.committed[0].output.responses()[0].status(),
+            NodeResponseStatus::Accepted
+        );
+        let closure: AdmissionClosureRecord =
+            decode_admission_closure_record(&network.value(replica, &closure_key).unwrap())
+                .unwrap();
+        assert_eq!(closure.closed_at_block_height, 4);
+        assert_eq!(closure.request_id, candidate.request_id);
+    }
+}
+
+#[test]
+fn freeze_advisory_set_requires_the_exact_next_epoch_and_unique_members() {
+    let candidate: OrderedCandidate = freeze_candidate([0x6f; 32]);
+    let mut intent: FreezeIntent = decode_freeze_intent(&candidate.intent).unwrap();
+    intent.advisory_next_set.context = fixture::protocol();
+    assert!(encode_freeze_intent(&intent).is_err());
+    intent.advisory_next_set.context = PublicationContext::new(
+        fixture::chain(),
+        fixture::protocol().protocol_version(),
+        Epoch::new(1),
+    )
+    .unwrap();
+    let duplicated: FastPathValidatorEntry = intent.advisory_next_set.validators[0].clone();
+    intent.advisory_next_set.validators.insert(0, duplicated);
+    assert!(encode_freeze_intent(&intent).is_err());
+}
+
+#[test]
+fn freeze_refuses_a_healthy_but_ineligible_advisory_member_before_signing() {
+    let network: Network = setup_with_freeze_height(1);
+    network.install_ordered();
+    let mut ineligible: FastPathBondRecord = network.committed_bond(0);
+    ineligible.state = FastPathBondState::Unbonding {
+        unlock_epoch: Epoch::new(7),
+        recipient: [0x30; 32],
+    };
+    let key: Vec<u8> = network.bond_key();
+    for replica in 0..REPLICAS {
+        network.put(
+            replica,
+            key.clone(),
+            StateMutation::Put(encode_fastpath_bond_record(&ineligible).unwrap()),
+        );
+    }
+    let candidate: OrderedCandidate = freeze_candidate([0x6d; 32]);
+    let leader: usize = network.leader_index(1);
+    assert!(matches!(
+        propose(
+            &network.stores[leader],
+            &network.context,
+            &network.env(),
+            Some(&candidate),
+            &network.signers[leader],
+        ),
+        Err(OrderedEconomicsError::Refused(
+            OrderedRefusal::IneligibleNextSet
+        ))
+    ));
+    let closure_key: Vec<u8> =
+        engine::admission_closure_key_for_tests(&fixture::chain(), fixture::protocol().epoch());
+    assert!(network.value(leader, &closure_key).is_none());
+}
+
+#[test]
+fn freeze_rechecks_eligibility_at_commit_and_retains_a_no_closure_refusal() {
+    let network: Network = setup_with_freeze_height(1);
+    network.install_ordered();
+    let candidate: OrderedCandidate = freeze_candidate([0x6c; 32]);
+    network.round(1, Some(&candidate));
+
+    // The proposal was legal when voted on. The committed bond changes before
+    // the three-chain commit; no replica may turn that older vote into a
+    // successful closure against the later ordered state.
+    let mut ineligible: FastPathBondRecord = network.committed_bond(0);
+    ineligible.state = FastPathBondState::Unbonding {
+        unlock_epoch: Epoch::new(7),
+        recipient: [0x31; 32],
+    };
+    let bond_key: Vec<u8> = network.bond_key();
+    let bond_bytes: Vec<u8> = encode_fastpath_bond_record(&ineligible).unwrap();
+    for replica in 0..REPLICAS {
+        network.put(
+            replica,
+            bond_key.clone(),
+            StateMutation::Put(bond_bytes.clone()),
+        );
+    }
+    network.round(2, None);
+    let (commits, certificate, _) = network.round(3, None);
+    let closure_key: Vec<u8> =
+        engine::admission_closure_key_for_tests(&fixture::chain(), fixture::protocol().epoch());
+    for (replica, commit) in commits.iter().enumerate() {
+        assert_eq!(commit.committed.len(), 1);
+        assert_eq!(
+            refusal_of(&commit.committed[0]),
+            OrderedRefusal::IneligibleNextSet
+        );
+        assert!(network.value(replica, &closure_key).is_none());
+        assert_eq!(network.value(replica, &bond_key), Some(bond_bytes.clone()));
+        let first: Vec<u8> = encode_ordered_outcome(&commit.committed[0]).unwrap();
+        assert!(
+            process_certificate(
+                &network.stores[replica],
+                &network.context,
+                &network.env(),
+                &certificate,
+            )
+            .unwrap()
+            .committed
+            .is_empty()
+        );
+        let retained: OrderedOutcome = query_ordered_outcome(
+            &network.stores[replica],
+            &network.context,
+            &network.env(),
+            &candidate.request_id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(encode_ordered_outcome(&retained).unwrap(), first);
+    }
+}
+
+#[test]
 fn a_committed_freeze_closes_admission_identically_on_every_replica_and_blocks_a_fresh_business_candidate()
  {
-    let network = setup();
+    let network = setup_with_freeze_height(1);
     network.install_ordered();
     let chain = fixture::chain();
     let closure_key = engine::admission_closure_key_for_tests(&chain, fixture::protocol().epoch());
@@ -1019,7 +1326,7 @@ fn a_committed_freeze_closes_admission_identically_on_every_replica_and_blocks_a
 #[test]
 fn a_second_freeze_candidate_is_refused_as_already_frozen_and_does_not_rewrite_the_closure_record()
 {
-    let network = setup();
+    let network = setup_with_freeze_height(1);
     network.install_ordered();
     let chain = fixture::chain();
     let closure_key = engine::admission_closure_key_for_tests(&chain, fixture::protocol().epoch());
@@ -1724,7 +2031,8 @@ fn a_diverging_installed_live_validator_set_stops_instead_of_refusing() {
             &network.stores[0],
             &network.context,
             &network.env(),
-            &candidate
+            &candidate,
+            1
         ),
         Err(OrderedEconomicsError::Prerequisite(_))
     ));

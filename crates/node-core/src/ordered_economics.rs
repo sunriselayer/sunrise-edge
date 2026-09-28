@@ -42,8 +42,10 @@
 //!
 //! ## Epoch-handoff integration status
 //!
-//! `Freeze` currently closes admission for ordinary and ordered business
-//! mutations and fresh publication-retention ACKs, but is only one part of
+//! A signed-genesis minimum height and a committed-eligibility check now
+//! warrant `Freeze` before proposal/vote and at ordered execution; successful
+//! `Freeze` closes admission for ordinary and ordered business mutations and
+//! fresh publication-retention ACKs. This is still only one part of
 //! DR-0154. `DrainSet`, `Seal`, verified next-set readiness and activation,
 //! and retirement of the older standalone epoch-transition route must be
 //! integrated before this path can be enabled as a complete handoff.
@@ -132,6 +134,12 @@ pub enum OrderedRefusal {
     /// already closed by an earlier one. There is no unfreeze in this
     /// profile, so a later `Freeze` is refused rather than re-applied.
     AlreadyFrozen,
+    /// The committed Freeze candidate appeared below the signed genesis
+    /// minimum ordered proposal height.
+    PrematureFreeze,
+    /// The advisory next set was structurally valid, but a healthy committed
+    /// bond or resource policy no longer makes one of its members eligible.
+    IneligibleNextSet,
 }
 
 impl OrderedRefusal {
@@ -147,6 +155,8 @@ impl OrderedRefusal {
             Self::RequestCommittedElsewhere => 7,
             Self::ClosedEpoch => 8,
             Self::AlreadyFrozen => 9,
+            Self::PrematureFreeze => 10,
+            Self::IneligibleNextSet => 11,
         }
     }
 
@@ -161,6 +171,8 @@ impl OrderedRefusal {
             7 => Ok(Self::RequestCommittedElsewhere),
             8 => Ok(Self::ClosedEpoch),
             9 => Ok(Self::AlreadyFrozen),
+            10 => Ok(Self::PrematureFreeze),
+            11 => Ok(Self::IneligibleNextSet),
             _ => Err(NodeCoreError::PersistenceInvariant(
                 "unknown ordered refusal tag",
             )),
@@ -184,6 +196,8 @@ impl OrderedRefusal {
                 "ordered candidate committed after admission was closed by a freeze"
             }
             Self::AlreadyFrozen => "admission is already closed by an earlier committed freeze",
+            Self::PrematureFreeze => "freeze precedes the signed epoch-end minimum height",
+            Self::IneligibleNextSet => "freeze advisory next set is no longer eligible",
         }
     }
 }

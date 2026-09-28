@@ -88,6 +88,7 @@ fn exercise_split_then_final<S: StructuredDurableDomainStateStore>(
         .sort_by_key(|entry| entry.id);
     if logical_profile {
         manifest.commitment_profile = CommitmentProfile::LogicalGenerationV2;
+        manifest.minimum_freeze_block_height = 1;
     }
     resign_manifest(&mut manifest);
     genesis::install_genesis(

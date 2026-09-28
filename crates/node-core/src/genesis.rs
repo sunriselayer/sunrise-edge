@@ -98,10 +98,11 @@ pub const GENESIS_MANIFEST_FRAME_TYPE: u16 = 0x6416;
 pub const GENESIS_MANIFEST_VERSION: u16 = 1;
 /// Canonical version of a handoff-capable [`GenesisManifest`] (DR-0154).
 ///
-/// Adds field 9, the explicit [`CommitmentProfile`] wire tag, which a version-2
-/// frame must set to [`CommitmentProfile::LogicalGenerationV2`]. The profile is
-/// therefore inside the genesis authority's signed payload: it is never a node
-/// flag, a caller argument or an inference from observed state.
+/// Adds field 9, the explicit [`CommitmentProfile`] wire tag, and field 10,
+/// the positive minimum ordered proposal height for Freeze. A version-2
+/// frame must bind [`CommitmentProfile::LogicalGenerationV2`]. These values
+/// are inside the genesis authority's signed payload, never node flags,
+/// caller arguments or inferences from observed state.
 pub const GENESIS_MANIFEST_LOGICAL_VERSION: u16 = 2;
 
 /// Signature-domain message family for a complete genesis manifest payload.
@@ -175,10 +176,15 @@ pub struct GenesisManifest {
     /// [`CommitmentProfile::PhysicalCheckpointV1`] encodes frame `0x6416/v1`
     /// with no profile field, exactly as every historical manifest does;
     /// [`CommitmentProfile::LogicalGenerationV2`] encodes `0x6416/v2` with the
-    /// explicit tag in field 9 and additionally installs the authenticated
+    /// explicit tag in field 9, the minimum Freeze height in field 10, and
+    /// additionally installs the authenticated
     /// [`LogicalProfileRecord`] row.
     pub commitment_profile: CommitmentProfile,
-    /// Ed25519 signature by `genesis_authority` over fields 1 through 7.
+    /// Earliest ordered proposal block height at which Freeze may be
+    /// considered in any epoch. Signed field 10 of the handoff-capable v2
+    /// manifest. Historical v1 manifests require zero and cannot Freeze.
+    pub minimum_freeze_block_height: u64,
+    /// Ed25519 signature by `genesis_authority` over the canonical payload.
     pub signature: [u8; 64],
 }
 
@@ -540,6 +546,7 @@ pub fn decode_genesis_object_entries(
 }
 
 fn encode_genesis_manifest_payload(manifest: &GenesisManifest) -> Result<Vec<u8>, GenesisError> {
+    validate_manifest_epoch_end_rule(manifest)?;
     let mut frame: CanonicalStruct =
         CanonicalStruct::new(GENESIS_MANIFEST_FRAME_TYPE, manifest.encoding_version());
     frame.field_bytes(1, manifest.genesis_authority.to_vec())?;
@@ -559,6 +566,7 @@ fn encode_genesis_manifest_payload(manifest: &GenesisManifest) -> Result<Vec<u8>
     // takes field 9 and exists only inside a version-two payload.
     if manifest.commitment_profile.is_logical() {
         frame.field_u16(9, manifest.commitment_profile.to_wire())?;
+        frame.field_u64(10, manifest.minimum_freeze_block_height)?;
     }
     Ok(frame.finish()?)
 }
@@ -566,7 +574,8 @@ fn encode_genesis_manifest_payload(manifest: &GenesisManifest) -> Result<Vec<u8>
 /// Returns the exact domain-separated bytes signed by the genesis authority.
 ///
 /// The payload is the canonical manifest frame containing fields 1 through 7
-/// plus, for a handoff-capable manifest, the profile tag in field 9; the outer
+/// plus, for a handoff-capable manifest, the profile tag in field 9 and
+/// minimum Freeze height in field 10; the outer
 /// stored frame adds the signature as field 8. This binds every initialized
 /// object, authority, validator and the commitment profile itself without a
 /// circular signature.
@@ -597,6 +606,7 @@ pub fn encode_genesis_manifest(manifest: &GenesisManifest) -> Result<Vec<u8>, Ge
     frame.field_bytes(8, manifest.signature.to_vec())?;
     if manifest.commitment_profile.is_logical() {
         frame.field_u16(9, manifest.commitment_profile.to_wire())?;
+        frame.field_u64(10, manifest.minimum_freeze_block_height)?;
     }
     let bytes: Vec<u8> = frame.finish()?;
     if bytes.len() > MAX_GENESIS_MANIFEST_BYTES {
@@ -609,13 +619,13 @@ pub fn encode_genesis_manifest(manifest: &GenesisManifest) -> Result<Vec<u8>, Ge
 ///
 /// The frame version selects the closed field set and the bound profile: a
 /// version-one frame carries exactly fields 1..=8 and binds the historical
-/// profile, a version-two frame carries exactly fields 1..=9 and must bind the
+/// profile, a version-two frame carries exactly fields 1..=10 and must bind the
 /// handoff-capable profile. A version-one frame therefore cannot smuggle a
 /// profile tag, and a version-two frame cannot re-declare the historical
 /// profile, so each profile has exactly one canonical encoding.
 fn decode_manifest_profile(frame: &CanonicalFrame<'_>) -> Result<CommitmentProfile, GenesisError> {
     if frame.version() == GENESIS_MANIFEST_LOGICAL_VERSION {
-        frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9])?;
+        frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10])?;
         let declared: CommitmentProfile =
             CommitmentProfile::from_wire(frame.required_u16(9)?).map_err(GenesisError::NodeCore)?;
         if !declared.is_logical() {
@@ -628,6 +638,23 @@ fn decode_manifest_profile(frame: &CanonicalFrame<'_>) -> Result<CommitmentProfi
     frame.require_version(GENESIS_MANIFEST_VERSION)?;
     frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8])?;
     Ok(CommitmentProfile::PhysicalCheckpointV1)
+}
+
+fn validate_manifest_epoch_end_rule(manifest: &GenesisManifest) -> Result<(), GenesisError> {
+    match manifest.commitment_profile {
+        CommitmentProfile::PhysicalCheckpointV1 if manifest.minimum_freeze_block_height == 0 => {
+            Ok(())
+        }
+        CommitmentProfile::LogicalGenerationV2 if manifest.minimum_freeze_block_height != 0 => {
+            Ok(())
+        }
+        CommitmentProfile::PhysicalCheckpointV1 => Err(GenesisError::Invalid(
+            "historical genesis manifest cannot authorize freeze",
+        )),
+        CommitmentProfile::LogicalGenerationV2 => Err(GenesisError::Invalid(
+            "handoff genesis manifest requires a positive freeze height",
+        )),
+    }
 }
 
 /// Strictly decodes canonical manifest frame `0x6416`, version one or two.
@@ -665,6 +692,11 @@ pub fn decode_genesis_manifest(bytes: &[u8]) -> Result<GenesisManifest, GenesisE
         objects,
         validator_set,
         commitment_profile,
+        minimum_freeze_block_height: if commitment_profile.is_logical() {
+            frame.required_u64(10)?
+        } else {
+            0
+        },
         signature,
     };
     if encode_genesis_manifest(&manifest)? != bytes {

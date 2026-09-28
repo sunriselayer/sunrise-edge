@@ -229,7 +229,7 @@ The detailed existing evidence and remaining criteria follow:
   and independent vectors. This resolves the stale-foundation conflict, not
   the feature-completion blocker.
   Execution-free publication admission, atomic outbox/Freeze gate,
-  Freeze/DrainSet/Seal, complete authenticated import, readiness/activation
+  DrainSet/Seal, complete authenticated import, readiness/activation
   and the network E2E are not complete. This delivery stays unchecked; no full
   repository gate, final feature approval, feature PR merge or network
   activation is claimed. Before making Freeze live, prove a legally eligible
@@ -237,16 +237,23 @@ The detailed existing evidence and remaining criteria follow:
   an irreversible Freeze with no ready next set would otherwise strand the
   network. This remains a design/implementation obligation, not a deployed
   fallback or permission for operator-forced activation.
-  The Draft PR now contains a tested ordered `Freeze` marker and closed-epoch
+  The Draft PR now contains an ordered `Freeze` marker and closed-epoch
   admission fences, including fresh retention ACKs; exact earlier ACK replay
-  remains available. This is partial control only. The older standalone
-  epoch-transition API can still activate without `DrainSet`/`Seal`, and a
-  structurally valid Freeze does not yet prove a legally eligible next set or
-  any epoch-end warrant. The ordered HTTP propose route accepts caller-
-  supplied candidate bytes, so quorum ordering alone must not be mistaken
-  for authorization to irreversibly close an epoch. Define and enforce a
-  validator-checked Freeze warrant before enabling that candidate family.
-  Neither path is safe to expose as complete handoff until those gaps close.
+  remains available. [DR-0155](docs/architecture/decisions/0155-epoch-end-freeze-warrant.md)
+  adds a positive minimum ordered Freeze height to the signed handoff-capable
+  genesis manifest and a canonical advisory next set to the candidate. Honest
+  leader/voter paths check the actual proposal height, live epoch and the
+  next set's committed bond/key/policy eligibility before signing; committed
+  execution rechecks these against staged CAS reads, retaining no-closure
+  refusal for healthy ineligibility and stopping on missing/corrupt rows.
+  Historical v1 manifests authorize no Freeze. This is still partial control:
+  the current devnet genesis fixture remains v1, the older standalone
+  epoch-transition API can still activate without `DrainSet`/`Seal`, and
+  no DrainSet, verified cut, readiness, Seal or actual next-set activation is
+  complete. The ordered HTTP propose route still accepts caller-supplied
+  candidate bytes, but the signer-side warrant rejects an unwarranted Freeze.
+  Neither route is safe to expose as complete handoff until the remaining
+  gates close and independent multi-validator network validation passes.
   The 2026-09-28 bundle clarification requires a full logical witness and
   verified artifact closure before a retention ACK, including on a retainer
   with a conflicting partial lock. A same-day follow-up slice in Draft PR #235

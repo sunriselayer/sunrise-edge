@@ -313,25 +313,45 @@ pub(crate) struct DerivedActivation {
 /// [`activate`]/[`derive_activation_set`] deliberately never call this --
 /// once a certificate exists, applying it is a pure derivation of the
 /// certificate's own bytes (DR-0137 unit 3: "certificate-wins ordering").
-/// This is a pure eligibility gate, not a CAS: unlike
-/// [`bond_lifecycle::read_economics_policy`], it returns nothing a caller
-/// could use to fence a later write against the rows it reads, and no test
-/// consumes its local reads either. The local revision map exists purely as
-/// bookkeeping while iterating `next_validators` -- each visited bond row's
-/// `StateRevision` is recorded once per unique key (duplicate bond/policy
-/// keys cannot occur here: `next_validators` was already validated
-/// duplicate-free by `ValidatorSet::new` inside [`derive_activation_set`],
-/// and `policy_cache` avoids re-fetching a shared resource context) -- and
-/// is discarded once this call returns.
-fn derive_eligibility_reads<S: StructuredDurableDomainStateStore>(
+/// The ordered Freeze path reuses this exact predicate at vote time and
+/// committed execution. The latter reads through its staging store, making
+/// observed revisions part of the atomic result's CAS assertions. Distinguish
+/// a healthy but ineligible row from an absent or corrupt prerequisite so the
+/// ordered prefix never advances on an invented refusal.
+#[derive(Debug)]
+pub(crate) enum NextSetEligibilityError {
+    /// All rows were present and healthy, but the proposed member is illegal.
+    Ineligible,
+    /// A required committed row is absent, or its identity is inconsistent.
+    Prerequisite,
+    /// Storage, key derivation or canonical decoding failed.
+    Node(NodeCoreError),
+}
+
+impl From<NodeCoreError> for NextSetEligibilityError {
+    fn from(error: NodeCoreError) -> Self {
+        Self::Node(error)
+    }
+}
+
+impl From<DurableReadError> for NextSetEligibilityError {
+    fn from(error: DurableReadError) -> Self {
+        Self::Node(error.into())
+    }
+}
+
+/// Checks the current committed bond and resource policy for every member of
+/// a structurally validated next set. Does not itself prove that the set is
+/// canonical or that the current paid fee policy can be carried forward.
+/// Callers must perform those structural/activation checks first.
+pub(crate) fn check_next_set_eligibility<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     chain: &ChainId,
     current_epoch: Epoch,
     next_validators: &[FastPathValidatorEntry],
-) -> EtResult<()> {
-    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+) -> Result<(), NextSetEligibilityError> {
     // Small linear cache keyed by each bond's own genesis-pinned resource
     // context (never the transitioning `current_epoch`'s context, exactly
     // like `bond_lifecycle::read_economics_policy` reads it) -- in practice
@@ -346,9 +366,9 @@ fn derive_eligibility_reads<S: StructuredDurableDomainStateStore>(
             local_instance_state::fastpath_bond_record_key(chain, &validator.id)?;
         let bond_observed: VersionedStateValue =
             store.get_versioned_durable(context, domain, &bond_key)?;
-        let bond_bytes: &[u8] = bond_observed.value().ok_or(EpochTransitionError::Invalid(
-            "fast-path next validator set requires a committed, eligible bond",
-        ))?;
+        let bond_bytes: &[u8] = bond_observed
+            .value()
+            .ok_or(NextSetEligibilityError::Prerequisite)?;
         let bond: FastPathBondRecord = decode_fastpath_bond_record(bond_bytes)?;
         // A fresh `Deposit`/`Reactivate` at `current_epoch` legitimately
         // carries `slashable_from_epoch == current_epoch + 1`: that is
@@ -359,17 +379,23 @@ fn derive_eligibility_reads<S: StructuredDurableDomainStateStore>(
         // rejected here as corrupt/forged state rather than silently
         // admitted as an over-conservative floor.
         let max_slashable_from_epoch: Option<u64> = current_epoch.get().checked_add(1);
-        if bond.context.chain_id() != chain
-            || bond.validator_id != validator.id
-            || bond.state != FastPathBondState::Active
-            || bond.lifecycle_epoch.get() > current_epoch.get()
+        if bond.context.chain_id() != chain || bond.validator_id != validator.id {
+            return Err(NextSetEligibilityError::Prerequisite);
+        }
+        if bond.lifecycle_epoch.get() > current_epoch.get()
             || max_slashable_from_epoch.is_none_or(|bound| bond.slashable_from_epoch.get() > bound)
+        {
+            // These rows cannot have arisen from a valid committed
+            // current-epoch lifecycle. Do not turn corrupt/future state into
+            // a deterministic semantic refusal that advances the prefix.
+            return Err(NextSetEligibilityError::Prerequisite);
+        }
+        if bond.state != FastPathBondState::Active
             || bond.authorization_scheme != validator.signature_scheme
             || bond.authorization_key.as_slice() != validator.public_key.as_slice()
         {
-            return invalid("fast-path next validator set requires a committed, eligible bond");
+            return Err(NextSetEligibilityError::Ineligible);
         }
-        reads.insert(bond_key, bond_observed.revision());
 
         let policy_index: usize = match policy_cache
             .iter()
@@ -381,15 +407,14 @@ fn derive_eligibility_reads<S: StructuredDurableDomainStateStore>(
                     local_instance_state::fastpath_economics_policy_key(&bond.context)?;
                 let policy_observed: VersionedStateValue =
                     store.get_versioned_durable(context, domain, &policy_key)?;
-                let policy_bytes: &[u8] =
-                    policy_observed
-                        .value()
-                        .ok_or(EpochTransitionError::Invalid(
-                            "fast-path next validator set requires a committed, eligible bond",
-                        ))?;
+                let policy_bytes: &[u8] = policy_observed
+                    .value()
+                    .ok_or(NextSetEligibilityError::Prerequisite)?;
                 let policy: FastPathEconomicsPolicy =
                     decode_fastpath_economics_policy(policy_bytes)?;
-                reads.insert(policy_key, policy_observed.revision());
+                if policy.context != bond.context {
+                    return Err(NextSetEligibilityError::Prerequisite);
+                }
                 policy_cache.push((bond.context.clone(), policy));
                 policy_cache.len() - 1
             }
@@ -397,32 +422,53 @@ fn derive_eligibility_reads<S: StructuredDurableDomainStateStore>(
         let policy: &FastPathEconomicsPolicy = &policy_cache[policy_index].1;
 
         let resource_id: BondResourceId = BondResourceId::new(bond.resource_domain, bond.resource)
-            .map_err(|_| {
-                EpochTransitionError::Invalid(
-                    "fast-path next validator set requires a committed, eligible bond",
-                )
-            })?;
+            .map_err(|_| NextSetEligibilityError::Prerequisite)?;
         let resource = policy
             .resources
             .binary_search_by_key(&resource_id, |candidate| candidate.resource_id)
             .ok()
             .map(|index: usize| &policy.resources[index])
-            .ok_or(EpochTransitionError::Invalid(
-                "fast-path next validator set requires a committed, eligible bond",
-            ))?;
-        let bond_cfg = resource.bond.as_ref().ok_or(EpochTransitionError::Invalid(
-            "fast-path next validator set requires a committed, eligible bond",
-        ))?;
+            .ok_or(NextSetEligibilityError::Ineligible)?;
+        let bond_cfg = resource
+            .bond
+            .as_ref()
+            .ok_or(NextSetEligibilityError::Ineligible)?;
         if !bond_cfg.enabled
             || bond.amount < bond_cfg.min_bond.get()
             || bond_cfg
                 .max_validator_exposure
                 .is_some_and(|max| bond.amount > max.get())
         {
-            return invalid("fast-path next validator set requires a committed, eligible bond");
+            return Err(NextSetEligibilityError::Ineligible);
         }
     }
     Ok(())
+}
+
+fn derive_eligibility_reads<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain: &ChainId,
+    current_epoch: Epoch,
+    next_validators: &[FastPathValidatorEntry],
+) -> EtResult<()> {
+    check_next_set_eligibility(
+        store,
+        context,
+        domain,
+        chain,
+        current_epoch,
+        next_validators,
+    )
+    .map_err(|error: NextSetEligibilityError| match error {
+        NextSetEligibilityError::Ineligible | NextSetEligibilityError::Prerequisite => {
+            EpochTransitionError::Invalid(
+                "fast-path next validator set requires a committed, eligible bond",
+            )
+        }
+        NextSetEligibilityError::Node(error) => EpochTransitionError::Node(error),
+    })
 }
 
 /// Deterministically derives the activation write set for `current_epoch ->

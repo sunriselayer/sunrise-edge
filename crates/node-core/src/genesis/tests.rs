@@ -338,6 +338,7 @@ pub(crate) fn build_fixture() -> (
             }],
         },
         commitment_profile: CommitmentProfile::PhysicalCheckpointV1,
+        minimum_freeze_block_height: 0,
         signature: [0; 64],
     };
     manifest.signature = key()
@@ -430,6 +431,7 @@ pub(crate) fn build_bonded_fixture() -> (
 pub(crate) fn logical_manifest_with_custody(object_id: ObjectId) -> GenesisManifest {
     let mut manifest: GenesisManifest = manifest_with_custody(object_id);
     manifest.commitment_profile = CommitmentProfile::LogicalGenerationV2;
+    manifest.minimum_freeze_block_height = 1;
     resign_manifest(&mut manifest);
     manifest
 }
@@ -439,6 +441,7 @@ pub(crate) fn logical_manifest_with_custody(object_id: ObjectId) -> GenesisManif
 pub(crate) fn logical_bonded_manifest() -> GenesisManifest {
     let (mut manifest, _, _, _, _) = build_bonded_fixture();
     manifest.commitment_profile = CommitmentProfile::LogicalGenerationV2;
+    manifest.minimum_freeze_block_height = 1;
     resign_manifest(&mut manifest);
     manifest
 }
@@ -621,10 +624,83 @@ fn a_version_two_manifest_frame_must_name_the_handoff_capable_profile() {
     rebuilt
         .field_u16(9, CommitmentProfile::PhysicalCheckpointV1.to_wire())
         .unwrap();
+    rebuilt
+        .field_u64(10, logical.minimum_freeze_block_height)
+        .unwrap();
     assert!(matches!(
         decode_genesis_manifest(&rebuilt.finish().unwrap()).unwrap_err(),
         GenesisError::Invalid("version-two genesis manifest must bind the handoff-capable profile")
     ));
+}
+
+#[test]
+fn the_signed_handoff_freeze_height_changes_the_manifest_commitment() {
+    let mut one: GenesisManifest = logical_bonded_manifest();
+    let original_frame: Vec<u8> = genesis_manifest_signing_frame(&one).unwrap();
+    let original_digest: Digest32 = genesis_manifest_commitment(&resolver(), &one).unwrap();
+    one.minimum_freeze_block_height = 4;
+    assert_ne!(
+        original_frame,
+        genesis_manifest_signing_frame(&one).unwrap()
+    );
+    resign_manifest(&mut one);
+    assert_ne!(
+        original_digest,
+        genesis_manifest_commitment(&resolver(), &one).unwrap()
+    );
+    assert_eq!(
+        decode_genesis_manifest(&encode_genesis_manifest(&one).unwrap()).unwrap(),
+        one
+    );
+}
+
+#[test]
+fn the_handoff_manifest_requires_a_canonical_positive_freeze_height() {
+    let logical: GenesisManifest = logical_bonded_manifest();
+    let bytes: Vec<u8> = encode_genesis_manifest(&logical).unwrap();
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(&bytes).unwrap();
+    let mut without: CanonicalStruct = CanonicalStruct::new(
+        GENESIS_MANIFEST_FRAME_TYPE,
+        GENESIS_MANIFEST_LOGICAL_VERSION,
+    );
+    for field_id in 1_u16..=9_u16 {
+        without
+            .field_bytes(field_id, frame.required_field(field_id).unwrap().to_vec())
+            .unwrap();
+    }
+    assert!(decode_genesis_manifest(&without.finish().unwrap()).is_err());
+
+    for invalid_height in [vec![0; 8], vec![1]] {
+        let mut malformed: CanonicalStruct = CanonicalStruct::new(
+            GENESIS_MANIFEST_FRAME_TYPE,
+            GENESIS_MANIFEST_LOGICAL_VERSION,
+        );
+        for field_id in 1_u16..=9_u16 {
+            malformed
+                .field_bytes(field_id, frame.required_field(field_id).unwrap().to_vec())
+                .unwrap();
+        }
+        malformed.field_bytes(10, invalid_height).unwrap();
+        assert!(decode_genesis_manifest(&malformed.finish().unwrap()).is_err());
+    }
+    let mut zero: GenesisManifest = logical;
+    zero.minimum_freeze_block_height = 0;
+    assert!(encode_genesis_manifest(&zero).is_err());
+    assert!(genesis_manifest_signing_frame(&zero).is_err());
+}
+
+#[test]
+fn historical_manifest_rejects_an_in_memory_freeze_height_without_changing_its_wire_shape() {
+    let (mut historical, _, _, _, _) = build_bonded_fixture();
+    let original: Vec<u8> = encode_genesis_manifest(&historical).unwrap();
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(&original).unwrap();
+    assert_eq!(frame.version(), GENESIS_MANIFEST_VERSION);
+    frame
+        .require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8])
+        .unwrap();
+    historical.minimum_freeze_block_height = 1;
+    assert!(encode_genesis_manifest(&historical).is_err());
+    assert!(genesis_manifest_signing_frame(&historical).is_err());
 }
 
 /// The two profiles have two disjoint canonical encodings and two disjoint

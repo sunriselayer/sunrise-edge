@@ -1033,7 +1033,7 @@ fn execute_candidate<S: StructuredDurableDomainStateStore>(
     if let Err(error) = authenticate_candidate(env, candidate) {
         return disposition(candidate.request_id, error);
     }
-    if let Err(error) = preflight::preflight(staging, context, env, candidate) {
+    if let Err(error) = preflight::preflight(staging, context, env, candidate, block_height) {
         return disposition(candidate.request_id, error);
     }
     let domain = env.policy.domain();
@@ -1351,6 +1351,7 @@ fn admit_candidate_for_signer<S: StructuredDurableDomainStateStore>(
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
+    proposal_height: u64,
 ) -> Result<AdmittedCandidate, OrderedEconomicsError> {
     // DR-0154 liveness gate, additive to (not a substitute for) `preflight`'s
     // own authoritative closed-epoch refusal at commit time: an honest
@@ -1382,7 +1383,12 @@ fn admit_candidate_for_signer<S: StructuredDurableDomainStateStore>(
         return Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch));
     }
     match admit_candidate(store, context, env, candidate, true)? {
-        Admission::Fresh(admitted) => Ok(admitted),
+        Admission::Fresh(admitted) => {
+            if candidate.kind == OrderedOperationKind::Freeze {
+                freeze::require_freeze_warrant(store, context, env, candidate, proposal_height)?;
+            }
+            Ok(admitted)
+        }
         Admission::Completed(outcome) => Err(OrderedEconomicsError::AlreadyCompleted(outcome)),
     }
 }
@@ -1887,10 +1893,22 @@ where
         authenticate_candidate(env, candidate)?;
     }
     let loaded = load_state(store, context, env)?;
+    let proposal_height: u64 = loaded
+        .state
+        .high_qc
+        .height
+        .checked_add(1)
+        .ok_or(stop("ordered economics height overflow"))?;
     // 2. Header conflict, before any other metadata, and the candidate's own
     //    reservations.
     let admitted = match candidate {
-        Some(candidate) => Some(admit_candidate_for_signer(store, context, env, candidate)?),
+        Some(candidate) => Some(admit_candidate_for_signer(
+            store,
+            context,
+            env,
+            candidate,
+            proposal_height,
+        )?),
         None => None,
     };
     let transactions = transactions_for(&loaded.state, admitted.as_ref().map(|a| a.digest))?;
@@ -1991,7 +2009,13 @@ where
     // 2. Header conflict before any consensus metadata, then reservations.
     let admitted = match &proposal.candidate {
         Some(candidate) => {
-            let admitted = admit_candidate_for_signer(store, context, env, candidate)?;
+            let admitted = admit_candidate_for_signer(
+                store,
+                context,
+                env,
+                candidate,
+                proposal.proposal.height,
+            )?;
             if !proposal.proposal.transactions.contains(&admitted.digest) {
                 return Err(OrderedEconomicsError::Unauthenticated(
                     "ordered proposal candidate does not match its own transaction digest",
