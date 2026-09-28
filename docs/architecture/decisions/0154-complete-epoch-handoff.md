@@ -11,8 +11,11 @@ design-only decision and did not activate a new runtime rule. Independent
 implementation slices on 2026-09-28 allocate the availability wire family and
 implement the handoff-capable logical commitment profile and a canonical
 publication bundle with one replica's durable `retain_publication` step,
-described below. The apply-admission gate, HTTP/CLI ingress and
-Freeze/DrainSet/Seal remain unimplemented. The complete design requires a
+described below. A later 2026-09-28 Draft PR slice adds prepare-side retained
+witness/artifacts, the v2 availability-certificate apply gate, certified-only
+HTTP source/retention/published-apply routes and Rust client/CLI aggregation.
+Freeze/DrainSet/Seal and integrated epoch handoff remain unimplemented.
+The complete design requires a
 publication-before-apply rule, not a new quorum-applied finality rule.
 Implementation and validation status belong in [`TODO.md`](../../../TODO.md).
 
@@ -293,3 +296,31 @@ standalone in
 for a reader who needs only that mechanism. That document does not restate or
 supersede this record's design; `TODO.md` remains the source of truth for
 implementation and validation status, including branch/PR state.
+
+The 2026-09-28 publication-bundle slice adds `consensus::availability::bundle`
+(`ArtifactEntry` `0xD033/v1`, `ArtifactManifest` `0xD034/v1`,
+`PublicationBundle` `0xD035/v1`) and `node_core::fast_path::publication`
+(`FastPathPublicationRecord` `0x6455/v1`, `FastPathAvailabilityAckRecord`
+`0x6456/v1`, key families `fastpath/publication/`,
+`fastpath/publication-artifact/`, `fastpath/availability-ack/`; the latter
+three are now classified in `logical_generation::classify_fastpath_row` per
+the family classification above). `verify_publication_bundle` checks a real
+quorum certificate, a witness matching that certificate's execution
+commitment, and every artifact's actual bytes against their declared digest
+under a hash suite this chain's own schedule trusted for that purpose at or
+before the *certifying* epoch -- an authenticated, non-bundle-declared value
+-- optionally trying additional bounded historical resolvers so an artifact
+whose digest was produced under an earlier hash suite or protocol version
+still verifies without accepting a bundle-chosen algorithm or epoch.
+`retain_publication` re-derives the signed intent's event digest and request
+identity, requires the manifest to be exactly the closure the witness's
+signed operands demand, and persists the publication record, artifact bytes
+and first ACK identity in one atomic commit under the writer, epoch and
+validator-set fences. The later Draft PR slice retains the source's exact
+prepared witness and artifact closure before exposing a vote, reconstructs a
+bundle from those durable bytes, and makes a verifying availability
+certificate a v2-only fresh-apply and recovery precondition. The certified
+HTTP routes and locally pinned Rust client/CLI aggregation join those core
+steps. This does not implement Freeze/DrainSet/Seal, authenticated cut or
+readiness/activation, and it is not complete Delivery 3. Current validation
+and remaining acceptance evidence are recorded in `TODO.md`.

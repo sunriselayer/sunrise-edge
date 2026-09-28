@@ -642,16 +642,19 @@ where
     // Endpoint-to-validator mapping is verified against the local genesis
     // pin *before* any fee/nonce query or signing, exactly like the local
     // expected-context check above.
-    let network: Option<(Vec<FastVoteEndpoint<CliTransport>>, FastPathCertifier)> =
-        if parsed.get("--fastvote-network").is_some() {
-            Some(super::fastvote_network::load_endpoints_and_certifier(
-                &parsed,
-                &resolver,
-                &local_context,
-            )?)
-        } else {
-            None
-        };
+    let network: Option<(
+        Vec<FastVoteEndpoint<CliTransport>>,
+        FastPathCertifier,
+        sunrise_edge_client::CommitmentProfile,
+    )> = if parsed.get("--fastvote-network").is_some() {
+        Some(super::fastvote_network::load_endpoints_and_profile(
+            &parsed,
+            &resolver,
+            &local_context,
+        )?)
+    } else {
+        None
+    };
     if let Some(budget) = budget {
         budget.ensure_live()?;
     }
@@ -664,7 +667,7 @@ where
     } else {
         None
     };
-    let preparation_client: &Client<CliTransport> = if let Some((endpoints, _)) = &network {
+    let preparation_client: &Client<CliTransport> = if let Some((endpoints, _, _)) = &network {
         let selected: &str = parsed.require(ENDPOINT)?;
         super::fastvote_network::selected_preparation_client(endpoints, selected)?
     } else {
@@ -761,11 +764,13 @@ where
         )?;
         let signed_bytes: Vec<u8> = encode_signed_paid_intent(&signed).map_err(failure)?;
         let record_bytes: Vec<u8> = encode_instance_record(&record).map_err(failure)?;
-        let result: PaidExecutionResult = if let Some((endpoints, certifier)) = &network {
+        let result: PaidExecutionResult = if let Some((endpoints, certifier, profile)) = &network {
             super::fastvote_network::run_network_submit(
                 &parsed,
                 endpoints,
                 certifier,
+                *profile,
+                expected.domain(),
                 &resolver,
                 &signed,
                 Some((instance_ref_out, "instance-ref", record_bytes.as_slice())),
@@ -880,11 +885,13 @@ where
         Vec::new(),
     )?;
     let signed_bytes: Vec<u8> = encode_signed_paid_intent(&signed).map_err(failure)?;
-    let result: PaidExecutionResult = if let Some((endpoints, certifier)) = &network {
+    let result: PaidExecutionResult = if let Some((endpoints, certifier, profile)) = &network {
         super::fastvote_network::run_network_submit(
             &parsed,
             endpoints,
             certifier,
+            *profile,
+            expected.domain(),
             &resolver,
             &signed,
             None,

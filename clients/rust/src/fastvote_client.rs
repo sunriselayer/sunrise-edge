@@ -82,6 +82,7 @@ use node_core::genesis::{
     GenesisManifest, decode_genesis_manifest, genesis_manifest_commitment,
     genesis_manifest_signing_frame,
 };
+use node_core::logical_generation::CommitmentProfile;
 use node_core::{MAX_GENESIS_MANIFEST_BYTES, RequestId};
 use node_wire::{FASTVOTE_CERTIFICATES_PATH, FASTVOTE_PREPARE_PATH, FastVoteApplyRequest};
 use protocol_types::{Digest32, SignatureSchemeId, ValidatorId};
@@ -169,6 +170,34 @@ pub fn load_trusted_fastvote_genesis(
     expected_digest: [u8; 32],
     expected_context: &PublicationContext,
 ) -> Result<FastPathCertifier, FastVoteGenesisTrustError> {
+    load_trusted_fastvote_genesis_with_profile(
+        manifest_path,
+        resolver,
+        expected_digest,
+        expected_context,
+    )
+    .map(|trusted| trusted.certifier)
+}
+
+/// Verified local genesis policy and validator-set pin from the *same*
+/// authenticated manifest bytes. The profile is never inferred from a peer,
+/// route choice or an independent second file read.
+pub struct TrustedFastVoteGenesis {
+    /// Pinned committee and its exact chain/protocol/epoch context.
+    pub certifier: FastPathCertifier,
+    /// Signed commitment profile selecting the mandatory publication gate.
+    pub commitment_profile: CommitmentProfile,
+}
+
+/// Like [`load_trusted_fastvote_genesis`], returning the authenticated profile
+/// and certifier together for clients that must choose v1 versus v2 transport.
+#[allow(clippy::result_large_err)]
+pub fn load_trusted_fastvote_genesis_with_profile(
+    manifest_path: &std::path::Path,
+    resolver: &HashSuiteResolver,
+    expected_digest: [u8; 32],
+    expected_context: &PublicationContext,
+) -> Result<TrustedFastVoteGenesis, FastVoteGenesisTrustError> {
     let bytes = read_bounded(manifest_path, MAX_GENESIS_MANIFEST_BYTES)
         .map_err(FastVoteGenesisTrustError::Io)?;
     let manifest: GenesisManifest =
@@ -192,14 +221,19 @@ pub fn load_trusted_fastvote_genesis(
     if !valid {
         return Err(FastVoteGenesisTrustError::InvalidSignature);
     }
+    let commitment_profile: CommitmentProfile = manifest.commitment_profile;
     validator_set_from_record(&manifest.validator_set, expected_context).and_then(|validator_set| {
-        FastPathCertifier::new(
+        let certifier: FastPathCertifier = FastPathCertifier::new(
             expected_context.chain_id().clone(),
             expected_context.protocol_version(),
             expected_context.epoch(),
             validator_set,
         )
-        .map_err(|error| FastVoteGenesisTrustError::InvalidValidatorSet(error.to_string()))
+        .map_err(|error| FastVoteGenesisTrustError::InvalidValidatorSet(error.to_string()))?;
+        Ok(TrustedFastVoteGenesis {
+            certifier,
+            commitment_profile,
+        })
     })
 }
 
@@ -502,7 +536,7 @@ impl From<FastVoteEndpointConfigError> for FastVoteQuorumError {
 /// already elapsed.  Uses checked addition to prevent arithmetic overflow.
 // Keep the same typed preflight error as collection/apply for caller diagnostics.
 #[allow(clippy::result_large_err)]
-fn bounded_deadline(
+pub(crate) fn bounded_deadline(
     overall_deadline: Instant,
     per_request_cap: Duration,
 ) -> Result<Instant, FastVoteNetworkError> {
@@ -760,42 +794,54 @@ impl<T: Transport> Client<T> {
         };
         let response = self.transport().send(&request)?;
         let response_body = expect_success(response, NODE_RESULT_MEDIA_TYPE)?;
-        let outer: HttpNodeResult = HttpNodeResult::decode(&response_body)?;
-        let expected_request_id: RequestId = RequestId::new(signed.intent.request_id)?;
-        if outer.request_id() != expected_request_id {
-            return Err(ClientError::SubmitResponseRequestIdMismatch {
-                expected: expected_request_id,
-                actual: outer.request_id(),
-            });
-        }
-        let [ack] = outer.responses() else {
-            return Err(ClientError::PaidExecutionAcknowledgementMismatch);
-        };
-        let payload = ack
-            .payload()
-            .ok_or(ClientError::PaidExecutionAcknowledgementMismatch)?;
-        let result: PaidExecutionResult = decode_paid_execution_result(payload)?;
-        if ack.request_id() != expected_request_id
-            || result.request_id != signed.intent.request_id
-            || result.effects.tx_hash != expected_tx_hash
-        {
-            return Err(ClientError::PaidExecutionAcknowledgementMismatch);
-        }
-        let expected_status = if result.status == PaidExecutionStatus::Success {
-            node_core::NodeResponseStatus::Accepted
-        } else {
-            node_core::NodeResponseStatus::Rejected
-        };
-        if ack.status() != expected_status {
-            return Err(ClientError::PaidExecutionAcknowledgementMismatch);
-        }
-        crate::paid_execution_client::validate_paid_execution_target(
-            &signed.intent.application,
-            &result,
-            resolver,
-        )?;
-        Ok(result)
+        validate_fastvote_apply_response(signed, resolver, &response_body)
     }
+}
+
+/// Shared acknowledgement binding for historical and publication-gated apply
+/// routes. A different route may change admission authority, never the
+/// canonical paid result or its exact request/transaction binding.
+pub(crate) fn validate_fastvote_apply_response(
+    signed: &SignedPaidIntent,
+    resolver: &HashSuiteResolver,
+    response_body: &[u8],
+) -> Result<PaidExecutionResult, ClientError> {
+    let expected_tx_hash: Digest32 = paid_invocation_digest(resolver, signed)?;
+    let outer: HttpNodeResult = HttpNodeResult::decode(response_body)?;
+    let expected_request_id: RequestId = RequestId::new(signed.intent.request_id)?;
+    if outer.request_id() != expected_request_id {
+        return Err(ClientError::SubmitResponseRequestIdMismatch {
+            expected: expected_request_id,
+            actual: outer.request_id(),
+        });
+    }
+    let [ack] = outer.responses() else {
+        return Err(ClientError::PaidExecutionAcknowledgementMismatch);
+    };
+    let payload = ack
+        .payload()
+        .ok_or(ClientError::PaidExecutionAcknowledgementMismatch)?;
+    let result: PaidExecutionResult = decode_paid_execution_result(payload)?;
+    if ack.request_id() != expected_request_id
+        || result.request_id != signed.intent.request_id
+        || result.effects.tx_hash != expected_tx_hash
+    {
+        return Err(ClientError::PaidExecutionAcknowledgementMismatch);
+    }
+    let expected_status = if result.status == PaidExecutionStatus::Success {
+        node_core::NodeResponseStatus::Accepted
+    } else {
+        node_core::NodeResponseStatus::Rejected
+    };
+    if ack.status() != expected_status {
+        return Err(ClientError::PaidExecutionAcknowledgementMismatch);
+    }
+    crate::paid_execution_client::validate_paid_execution_target(
+        &signed.intent.application,
+        &result,
+        resolver,
+    )?;
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -1058,6 +1104,217 @@ mod tests {
     const CAP: Duration = Duration::from_secs(5);
     fn deadline() -> Instant {
         Instant::now() + CAP
+    }
+
+    struct PublicationRouteTransport {
+        source: Option<Vec<u8>>,
+        retention_vote: Vec<u8>,
+        requests: Mutex<Vec<WireRequest>>,
+    }
+
+    impl Transport for PublicationRouteTransport {
+        fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportError> {
+            self.requests.lock().unwrap().push(request.clone());
+            let body: Vec<u8> = match request.path.as_str() {
+                node_wire::FASTVOTE_PUBLICATION_SOURCE_PATH => self
+                    .source
+                    .clone()
+                    .ok_or(TransportError::RequestDeadlineExceeded)?,
+                node_wire::FASTVOTE_PUBLICATION_RETAIN_PATH => self.retention_vote.clone(),
+                node_wire::FASTVOTE_PUBLISHED_APPLY_PATH => {
+                    return Err(TransportError::RequestDeadlineExceeded);
+                }
+                _ => return Err(TransportError::RequestDeadlineExceeded),
+            };
+            Ok(WireResponse {
+                status: 200,
+                content_type: Some(NODE_RESULT_MEDIA_TYPE.to_owned()),
+                body,
+            })
+        }
+    }
+
+    #[test]
+    fn publication_client_forms_quorum_from_exact_retained_bundle_and_refuses_bad_ac_before_apply()
+    {
+        use consensus::bundle::{
+            ArtifactManifest, LOGICAL_COMMITMENT_PROFILE, PublicationBundle,
+            encode_publication_bundle, verify_publication_bundle,
+        };
+        use consensus::{AvailabilityCertifier, encode_availability_vote};
+        use protocol_types::{AtomicityDomainId, HashPurpose};
+
+        let resolver: HashSuiteResolver = resolver();
+        let signed: SignedPaidIntent = signed_transfer(0x50, [0x51; 32]);
+        let tx_hash: Digest32 = expected_tx_hash(&signed);
+        let (signers, infos) = four_validators();
+        let certifier: FastPathCertifier = certifier(infos);
+        let witness: Vec<u8> = vec![0x64, 0x24, 0x02];
+        let execution_hash: Digest32 = resolver
+            .hash_for_purpose(epoch(), HashPurpose::ExecutionEffects, &witness)
+            .unwrap();
+        let lock_hash: Digest32 = digest(0x52);
+        let votes: Vec<FastVote> = signers
+            .iter()
+            .take(3)
+            .map(|signer: &TestSigner| {
+                certifier
+                    .cast_vote(tx_hash, execution_hash, lock_hash, signer)
+                    .unwrap()
+            })
+            .collect();
+        let certificate: FastCertificate = certifier
+            .try_form_certificate(
+                tx_hash,
+                execution_hash,
+                lock_hash,
+                &votes,
+                &FastPathEd25519Verifier,
+            )
+            .unwrap()
+            .unwrap();
+        let domain: AtomicityDomainId = AtomicityDomainId::new([0x53; 32]).unwrap();
+        let bundle: PublicationBundle = PublicationBundle {
+            domain,
+            request_id: signed.intent.request_id,
+            commitment_profile: LOGICAL_COMMITMENT_PROFILE,
+            signed_intent: encode_signed_paid_intent(&signed).unwrap(),
+            certificate: certificate.clone(),
+            witness,
+            manifest: ArtifactManifest {
+                entries: Vec::new(),
+            },
+            contents: Vec::new(),
+        };
+        let identity: consensus::AvailabilityIdentity = verify_publication_bundle(
+            &bundle,
+            &certifier,
+            &FastPathEd25519Verifier,
+            &resolver,
+            &[],
+        )
+        .unwrap()
+        .identity;
+        let availability_certifier: AvailabilityCertifier = AvailabilityCertifier::new(
+            chain(),
+            protocol_version(),
+            epoch(),
+            certifier.validator_set().clone(),
+        )
+        .unwrap();
+        let endpoints: Vec<FastVoteEndpoint<PublicationRouteTransport>> = signers
+            .iter()
+            .enumerate()
+            .map(|(index, signer): (usize, &TestSigner)| {
+                let mut vote: consensus::AvailabilityVote = availability_certifier
+                    .cast_vote(identity.clone(), signer)
+                    .unwrap();
+                if index == 3 {
+                    vote.signature[0] ^= 0x80;
+                }
+                FastVoteEndpoint {
+                    validator_id: signer.id,
+                    endpoint_label: format!("peer-{index}"),
+                    client: Client::new(PublicationRouteTransport {
+                        source: (index == 0).then(|| encode_publication_bundle(&bundle).unwrap()),
+                        retention_vote: encode_availability_vote(&vote).unwrap(),
+                        requests: Mutex::new(Vec::new()),
+                    }),
+                }
+            })
+            .collect();
+        let round = crate::fastvote_publication_client::collect_fastvote_availability_certificate(
+            &endpoints,
+            &certifier,
+            &resolver,
+            &[],
+            domain,
+            &signed,
+            &certificate,
+            deadline(),
+            CAP,
+        )
+        .unwrap();
+        assert_eq!(round.source_validator, signers[0].id);
+        assert_eq!(round.bundle, bundle);
+        assert_eq!(round.availability_certificate.votes.len(), 3);
+        assert_eq!(round.attempts.len(), 4);
+        assert!(round.attempts[3].result.is_err());
+        availability_certifier
+            .verify_certificate(&round.availability_certificate, &FastPathEd25519Verifier)
+            .unwrap();
+        assert_eq!(
+            endpoints[0].client.transport().requests.lock().unwrap()[0].path,
+            node_wire::FASTVOTE_PUBLICATION_SOURCE_PATH
+        );
+        for endpoint in &endpoints {
+            let requests = endpoint.client.transport().requests.lock().unwrap();
+            assert_eq!(
+                requests.last().unwrap().path,
+                node_wire::FASTVOTE_PUBLICATION_RETAIN_PATH
+            );
+            assert!(
+                requests
+                    .iter()
+                    .all(|request| request.path != node_wire::FASTVOTE_PUBLISHED_APPLY_PATH)
+            );
+        }
+
+        let mut wrong: consensus::AvailabilityCertificate = round.availability_certificate.clone();
+        wrong.identity.request_id = [0x54; 32];
+        let before: Vec<usize> = endpoints
+            .iter()
+            .map(|endpoint| endpoint.client.transport().requests.lock().unwrap().len())
+            .collect();
+        assert!(
+            crate::fastvote_publication_client::apply_published_fastvote_to_all(
+                &endpoints,
+                &certifier,
+                &resolver,
+                domain,
+                &signed,
+                &certificate,
+                &wrong,
+                deadline(),
+                CAP,
+            )
+            .is_err()
+        );
+        for (index, endpoint) in endpoints.iter().enumerate() {
+            assert_eq!(
+                endpoint.client.transport().requests.lock().unwrap().len(),
+                before[index]
+            );
+        }
+        let attempts: Vec<FastVoteApplyAttempt> =
+            crate::fastvote_publication_client::apply_published_fastvote_to_all(
+                &endpoints,
+                &certifier,
+                &resolver,
+                domain,
+                &signed,
+                &certificate,
+                &round.availability_certificate,
+                deadline(),
+                CAP,
+            )
+            .unwrap();
+        assert_eq!(attempts.len(), 4);
+        assert!(attempts.iter().all(|attempt| attempt.result.is_err()));
+        for endpoint in &endpoints {
+            assert_eq!(
+                endpoint
+                    .client
+                    .transport()
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .last()
+                    .unwrap()
+                    .path,
+                node_wire::FASTVOTE_PUBLISHED_APPLY_PATH
+            );
+        }
     }
 
     #[test]

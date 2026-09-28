@@ -42,6 +42,7 @@ use execution::paid_execution::{decode_paid_fee_policy, decode_signed_paid_inten
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
 use host::{DoBlobStore, SqlHost};
+use node_core::fast_path::publication::PublicationRetentionError;
 use node_core::fast_path::records::decode_fastpath_validator_set_record;
 use node_core::fast_path::{self, FastPathError};
 use node_core::genesis::{
@@ -337,6 +338,32 @@ fn categorize_fast_path_error(error: &FastPathError) -> (u16, &'static str) {
         FastPathError::Consensus(_) => (400, "fastvote-consensus-rejected"),
         FastPathError::Invalid(_) => (400, "fastvote-rejected"),
         FastPathError::Node(node_error) => categorize_node_core_error(node_error),
+        FastPathError::Publication(publication_error) => {
+            categorize_publication_error(publication_error)
+        }
+    }
+}
+
+/// Keep the embedded host's refusal categories aligned with native HTTP.
+/// This does not mount the publication routes or authorize logical-profile
+/// apply on the historical embedded FastVote endpoint.
+fn categorize_publication_error(error: &PublicationRetentionError) -> (u16, &'static str) {
+    match error {
+        PublicationRetentionError::Admission(admission) => categorize_admission_error(admission),
+        PublicationRetentionError::Node(NodeCoreError::EpochMismatch { .. }) => {
+            (409, "fastvote-epoch-repin-required")
+        }
+        PublicationRetentionError::Node(node_error) => categorize_node_core_error(node_error),
+        PublicationRetentionError::ConflictingRetainedIdentity => {
+            (409, "fastvote-publication-conflict")
+        }
+        PublicationRetentionError::ClosureTooLarge { .. } => {
+            (413, "fastvote-publication-closure-too-large")
+        }
+        PublicationRetentionError::InconsistentRetainedRecord(_) => {
+            (500, "fastvote-retained-publication-inconsistent")
+        }
+        _ => (400, "fastvote-publication-rejected"),
     }
 }
 
@@ -1033,9 +1060,35 @@ impl ValidatorHost {
 
 #[cfg(test)]
 mod tests {
-    use super::{AdapterError, categorize_node_core_error};
+    use super::{AdapterError, categorize_node_core_error, categorize_publication_error};
     use node_core::NodeCoreError;
+    use node_core::fast_path::publication::PublicationRetentionError;
     use protocol_types::Epoch;
+
+    #[test]
+    fn publication_error_mapping_is_fail_closed_and_preserves_distinct_conflicts() {
+        assert_eq!(
+            categorize_publication_error(&PublicationRetentionError::ConflictingRetainedIdentity),
+            (409, "fastvote-publication-conflict")
+        );
+        assert_eq!(
+            categorize_publication_error(&PublicationRetentionError::ClosureTooLarge {
+                actual: 2,
+                max: 1,
+            }),
+            (413, "fastvote-publication-closure-too-large")
+        );
+        assert_eq!(
+            categorize_publication_error(&PublicationRetentionError::InconsistentRetainedRecord(
+                "test"
+            )),
+            (500, "fastvote-retained-publication-inconsistent")
+        );
+        assert_eq!(
+            categorize_publication_error(&PublicationRetentionError::ForeignDomain),
+            (400, "fastvote-publication-rejected")
+        );
+    }
 
     #[test]
     fn epoch_mismatch_maps_to_fastvote_epoch_repin_required() {

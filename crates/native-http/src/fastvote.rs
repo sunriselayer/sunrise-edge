@@ -91,25 +91,32 @@ where
     Router::new()
         .route(
             FASTVOTE_PREPARE_PATH,
-            post(submit_prepare::<S, B, M, T, C, I>),
+            post(submit_prepare::<S, B, M, T, C, I>)
+                .layer(DefaultBodyLimit::max(MAX_SIGNED_PAID_INTENT_BYTES)),
         )
         .route(
             FASTVOTE_CERTIFICATES_PATH,
-            post(submit_apply::<S, B, M, T, C, I>),
+            post(submit_apply::<S, B, M, T, C, I>).layer(DefaultBodyLimit::max(
+                node_wire::MAX_FASTVOTE_APPLY_REQUEST_BYTES,
+            )),
         )
         .route(
             FASTVOTE_PUBLICATION_RETAIN_PATH,
-            post(submit_publication_retain::<S, B, M, T, C, I>),
+            post(submit_publication_retain::<S, B, M, T, C, I>)
+                .layer(DefaultBodyLimit::max(MAX_ENCODED_BUNDLE_BYTES)),
         )
         .route(
             FASTVOTE_PUBLICATION_SOURCE_PATH,
-            post(submit_publication_source::<S, B, M, T, C, I>),
+            post(submit_publication_source::<S, B, M, T, C, I>).layer(DefaultBodyLimit::max(
+                node_wire::MAX_FASTVOTE_APPLY_REQUEST_BYTES,
+            )),
         )
         .route(
             FASTVOTE_PUBLISHED_APPLY_PATH,
-            post(submit_published_apply::<S, B, M, T, C, I>),
+            post(submit_published_apply::<S, B, M, T, C, I>).layer(DefaultBodyLimit::max(
+                node_wire::MAX_FASTVOTE_PUBLISHED_APPLY_REQUEST_BYTES,
+            )),
         )
-        .layer(DefaultBodyLimit::max(MAX_ENCODED_BUNDLE_BYTES))
 }
 
 /// Returns only the canonical bundle already backed by this replica's
@@ -499,6 +506,9 @@ where
         Ok(body) => body,
         Err(error) => return error_response(error.status(), "body-rejected"),
     };
+    if body.len() > node_wire::MAX_FASTVOTE_APPLY_REQUEST_BYTES {
+        return error_response(StatusCode::PAYLOAD_TOO_LARGE, "fastvote-apply-too-large");
+    }
     publication::admitted(
         state.components.is_cancelled(),
         state.blocking_executor.clone(),
