@@ -81,7 +81,7 @@ use canonical_encoding::{
     decode_digest32, encode_digest32,
 };
 use hashing::HashSuiteResolver;
-use protocol_types::{AtomicityDomainId, Digest32, HashPurpose};
+use protocol_types::{AtomicityDomainId, Digest32, Epoch, HashAlgorithmId, HashPurpose};
 
 const ARTIFACT_ENTRY_TYPE_ID: u16 = 0xD033;
 const ARTIFACT_MANIFEST_TYPE_ID: u16 = 0xD034;
@@ -144,6 +144,16 @@ pub const MAX_ENCODED_MANIFEST_BYTES: usize = MAX_CANONICAL_FRAME_BYTES;
 
 /// Upper bound on one encoded [`PublicationBundle`]: one canonical frame.
 pub const MAX_ENCODED_BUNDLE_BYTES: usize = MAX_CANONICAL_FRAME_BYTES;
+
+/// Upper bound on the additional historical hash-suite resolvers one
+/// [`verify_publication_bundle`] call may consult when an artifact's content
+/// digest was produced under a hash suite or protocol version this chain has
+/// since rotated away from.
+///
+/// Restated from `node_core::publication::MAX_PUBLICATION_HISTORY` (currently
+/// `16`), which `prepare`/`apply` already bound identically for the same
+/// reason: `consensus` must not depend on `node_core`.
+pub const MAX_ARTIFACT_RESOLVER_HISTORY: usize = 16;
 
 /// Which replay artifact one manifest entry names, and therefore which
 /// existing hash domain its content digest was produced under.
@@ -379,6 +389,14 @@ pub enum PublicationBundleError {
     },
     /// A length or count computation would overflow.
     ArithmeticOverflow,
+    /// More historical hash-suite resolvers were supplied than
+    /// [`MAX_ARTIFACT_RESOLVER_HISTORY`] permits.
+    TooManyResolverHistoryEntries {
+        /// Supplied count.
+        actual: usize,
+        /// Accepted maximum.
+        max: usize,
+    },
 }
 
 impl From<ConsensusError> for PublicationBundleError {
@@ -465,6 +483,10 @@ impl core::fmt::Display for PublicationBundleError {
             Self::ArithmeticOverflow => {
                 formatter.write_str("publication bundle length arithmetic overflowed")
             }
+            Self::TooManyResolverHistoryEntries { actual, max } => write!(
+                formatter,
+                "publication bundle verification was given {actual} historical resolvers, maximum is {max}"
+            ),
         }
     }
 }
@@ -875,6 +897,57 @@ pub fn derive_availability_identity(
     })
 }
 
+/// Verifies one artifact's supplied bytes against its manifest-declared
+/// content digest, trying `resolver` first and then each `history` resolver
+/// in order, and accepting the first that both trusts the digest's own
+/// recorded algorithm for `purpose` at-or-before `epoch` and reproduces the
+/// declared digest bytes from `content`.
+///
+/// This mirrors [`hashing::verify_type_identity_digest`]'s established
+/// self-declared-algorithm-plus-schedule-trust-gate pattern rather than
+/// [`hashing::verify_digest`]'s unconditional trust: unlike a durable local
+/// object record (whose digest was written by this replica's own
+/// schedule-driven code and only ever read back), an `ArtifactEntry` arrives
+/// over the wire inside an untrusted bundle, so its `content_digest`'s
+/// algorithm byte is not self-authenticating on its own. Gating on
+/// [`HashSuiteResolver::is_algorithm_trusted_for_purpose`] at the
+/// certificate's own authenticated `epoch` -- never a bundle-declared value
+/// -- means only an algorithm this chain's own configuration genuinely
+/// activated for `purpose` at or before that epoch is ever accepted, closing
+/// the downgrade/second-preimage risk a freely bundle-chosen algorithm would
+/// otherwise open. Trying every schedule entry up to `epoch` (via the gate)
+/// and every supplied historical resolver (via the loop) is what lets a
+/// legitimate artifact whose digest was produced under an earlier hash suite
+/// or an earlier protocol version -- since rotated away from -- still verify,
+/// instead of the single current-epoch algorithm the certifying epoch alone
+/// would select.
+fn verify_artifact_content<'a>(
+    resolver: &'a HashSuiteResolver,
+    history: &'a [HashSuiteResolver],
+    epoch: Epoch,
+    purpose: HashPurpose,
+    content: &[u8],
+    expected: Digest32,
+) -> Result<bool, PublicationBundleError> {
+    let algorithm: HashAlgorithmId = expected.algorithm();
+    for candidate in std::iter::once(resolver).chain(history.iter()) {
+        if !candidate.is_algorithm_trusted_for_purpose(purpose, epoch, algorithm) {
+            continue;
+        }
+        let verified: bool = hashing::verify_digest(
+            &expected,
+            purpose,
+            candidate.protocol_version(),
+            candidate.chain_id(),
+            content,
+        )?;
+        if verified {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Verifies one publication bundle and derives its single logical
 /// [`AvailabilityIdentity`].
 ///
@@ -885,13 +958,24 @@ pub fn derive_availability_identity(
 ///    content per entry.
 /// 2. `resolver` is bound to the same chain and protocol version as
 ///    `certifier`, so no hash can be produced under a foreign context.
+///    `history` (bounded by [`MAX_ARTIFACT_RESOLVER_HISTORY`]) supplies
+///    additional resolvers for hash suites or protocol versions this chain
+///    has since rotated away from, exactly as `node_core::fast_path::prepare`/
+///    `apply` already accept for ordinary admission; it is consulted only for
+///    step 5's per-artifact content digests, never for the certificate or
+///    witness commitment, both of which are always exactly as fresh as the
+///    certifying epoch itself. This slice checks every historical resolver's
+///    chain, but its authority must still come from locally pinned protocol
+///    history, never the bundle or a transport caller.
 /// 3. The carried certificate carries a real quorum of `certifier`'s
 ///    registered outgoing set at the bound context
 ///    ([`FastPathCertifier::verify_certificate`]).
 /// 4. The carried witness hashes to that certificate's
 ///    `execution_effects_hash`.
-/// 5. Every artifact's supplied bytes match their declared length and hash to
-///    their declared content digest under their kind's hash purpose. Content
+/// 5. Every artifact's supplied bytes match their declared length and, via
+///    [`verify_artifact_content`], reproduce their declared content digest
+///    under an algorithm this chain's own schedule genuinely trusted for that
+///    artifact kind's hash purpose at or before the certifying epoch. Content
 ///    is verified against the *manifest*, and the manifest digest is what the
 ///    returned identity binds, so a caller cannot substitute bytes without
 ///    changing the identity.
@@ -906,10 +990,23 @@ pub fn verify_publication_bundle<V: ConsensusVerifier>(
     certifier: &FastPathCertifier,
     verifier: &V,
     resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
 ) -> Result<VerifiedPublicationBundle, PublicationBundleError> {
     validate_bundle_shape(bundle)?;
+    if history.len() > MAX_ARTIFACT_RESOLVER_HISTORY {
+        return Err(PublicationBundleError::TooManyResolverHistoryEntries {
+            actual: history.len(),
+            max: MAX_ARTIFACT_RESOLVER_HISTORY,
+        });
+    }
 
     if resolver.chain_id() != certifier.chain_id() {
+        return Err(ConsensusError::HashChainMismatch.into());
+    }
+    if history
+        .iter()
+        .any(|candidate: &HashSuiteResolver| candidate.chain_id() != resolver.chain_id())
+    {
         return Err(ConsensusError::HashChainMismatch.into());
     }
     if resolver.protocol_version() != certifier.protocol_version() {
@@ -947,9 +1044,15 @@ pub fn verify_publication_bundle<V: ConsensusVerifier>(
                 actual: content.len(),
             });
         }
-        let digest: Digest32 =
-            resolver.hash_for_purpose(epoch, entry.kind.hash_purpose(), content)?;
-        if digest != entry.content_digest {
+        let verified: bool = verify_artifact_content(
+            resolver,
+            history,
+            epoch,
+            entry.kind.hash_purpose(),
+            content,
+            entry.content_digest,
+        )?;
+        if !verified {
             return Err(PublicationBundleError::ArtifactContentDigestMismatch { index });
         }
     }

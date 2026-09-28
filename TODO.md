@@ -240,6 +240,22 @@ The detailed existing evidence and remaining criteria follow:
   The 2026-09-28 bundle clarification requires a full logical witness and
   verified artifact closure before a retention ACK, including on a retainer
   with a conflicting partial lock; this is design only until wired and tested.
+  A same-day follow-up slice wires it: `consensus::availability::bundle`
+  (`0xD033`-`0xD035/v1`) and `node_core::fast_path::publication`
+  (`0x6455`/`0x6456/v1`, on branch `codex/epoch-publication`, local commit,
+  not yet merged) verify a real quorum certificate, a witness matching its
+  execution commitment, and every declared artifact against its digest under
+  a hash suite trusted at or before the certifying epoch (with bounded
+  historical-resolver fallback for a rotated-away-from suite or protocol
+  version, never a bundle-declared epoch or algorithm), then durably retain
+  the publication record, artifact bytes and first ACK identity in one atomic
+  commit and sign only after. The three new `fastpath/` key families are
+  classified in `logical_generation::classify_fastpath_row`
+  (`publication/`/`publication-artifact/` as authenticated history,
+  `availability-ack/` as local signing-safety state). This still has
+  no apply-admission gate, HTTP/CLI ingress, Freeze/DrainSet/Seal or
+  availability-certificate aggregation; it is retention only, not usable
+  Delivery 3 acceptance, and independent review of this slice is pending.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

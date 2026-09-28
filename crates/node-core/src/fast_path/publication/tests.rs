@@ -13,7 +13,9 @@ use crate::fast_path::tests::{
 use crate::paid_execution::tests::{
     FIRST_PAID_NONCE, context, domain, next_nonce, protocol, resolver,
 };
-use consensus::bundle::{ArtifactEntry, PublicationBundle, encode_publication_bundle};
+use consensus::bundle::{
+    ArtifactEntry, ArtifactManifest, PublicationBundle, encode_publication_bundle,
+};
 use protocol_types::HashPurpose;
 
 const REQUEST: u8 = 0xE4;
@@ -28,6 +30,7 @@ fn retain(
         &context(),
         domain(),
         &resolver(),
+        &[],
         &protocol(),
         &encode_publication_bundle(bundle).unwrap(),
         signer,
@@ -301,6 +304,7 @@ fn an_indeterminate_commit_exposes_no_acknowledgement() {
         &context(),
         domain(),
         &resolver(),
+        &[],
         &protocol(),
         &encode_publication_bundle(&bundle).unwrap(),
         &replica.signer,
@@ -341,6 +345,76 @@ fn retained_records_round_trip_and_reject_noncanonical_bytes() {
     let mut truncated: Vec<u8> = ack_bytes;
     truncated.pop();
     assert!(decode_fastpath_availability_ack_record(&truncated).is_err());
+}
+
+/// A synthetic `ArtifactEntry` for exercising [`stage_publication_artifacts`]
+/// in isolation, with no certified bundle required: staging only ever reads
+/// `entry.kind` and `entry.content_digest.bytes()` (via [`artifact_key`]), so
+/// the algorithm and identity here are arbitrary but fixed.
+fn staging_entry(
+    kind: ArtifactKind,
+    identity: u8,
+    digest_byte: u8,
+    content: &[u8],
+) -> ArtifactEntry {
+    ArtifactEntry {
+        kind,
+        identity: vec![identity; 4],
+        content_digest: Digest32::new(protocol_types::HashAlgorithmId::Sha2_256, [digest_byte; 32]),
+        content_length: u32::try_from(content.len()).unwrap(),
+    }
+}
+
+#[test]
+fn stage_publication_artifacts_dedupes_identical_content_under_different_identities() {
+    // Two distinct required identities of the same kind that happen to hold
+    // byte-identical content are content-addressed to the exact same storage
+    // key; staging must write that key once, not refuse the manifest as a
+    // duplicate write.
+    let chain: ChainId = protocol().chain_id().clone();
+    let request: [u8; 32] = [0xE5; 32];
+    let content: Vec<u8> = b"shared artifact bytes".to_vec();
+    let manifest: ArtifactManifest = ArtifactManifest {
+        entries: vec![
+            staging_entry(ArtifactKind::StateValue, 0x01, 0x99, &content),
+            staging_entry(ArtifactKind::StateValue, 0x02, 0x99, &content),
+        ],
+    };
+    let staged =
+        stage_publication_artifacts(&chain, &request, &manifest, &[content.clone(), content])
+            .expect("identical content under different identities must dedupe, not conflict");
+    assert_eq!(staged.len(), 1, "one distinct storage key expected");
+}
+
+#[test]
+fn stage_publication_artifacts_refuses_a_genuine_content_disagreement_under_one_key() {
+    // Two entries that collide on the exact same content-addressed storage
+    // key (same kind, same declared digest) but disagree on their actual
+    // bytes must be refused, never silently resolved by picking one.
+    let chain: ChainId = protocol().chain_id().clone();
+    let request: [u8; 32] = [0xE6; 32];
+    let manifest: ArtifactManifest = ArtifactManifest {
+        entries: vec![
+            staging_entry(ArtifactKind::StateValue, 0x01, 0x99, b"one"),
+            staging_entry(ArtifactKind::StateValue, 0x02, 0x99, b"other"),
+        ],
+    };
+    let error = stage_publication_artifacts(
+        &chain,
+        &request,
+        &manifest,
+        &[b"one".to_vec(), b"other".to_vec()],
+    )
+    .expect_err("a genuine content disagreement under one key must refuse");
+    assert!(
+        matches!(
+            error,
+            PublicationRetentionError::Node(NodeCoreError::PersistenceInvariant(
+                "publication artifact content disagrees under one content-addressed key"
+            ))
+        ),
+        "unexpected error {error}"
+    );
 }
 
 #[test]

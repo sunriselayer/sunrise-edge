@@ -5,7 +5,8 @@ use super::*;
 use crate::test_support::{TestCrypto, validator};
 use crate::{FastVote, encode_fast_certificate};
 use protocol_types::{
-    ChainId, Epoch, HashAlgorithmId, HashSuite, HashSuiteSchedule, ProtocolVersion, ValidatorId,
+    ChainId, Epoch, HashAlgorithmId, HashSuite, HashSuiteId, HashSuiteSchedule, ProtocolVersion,
+    ValidatorId,
 };
 use validator_set::ValidatorSet;
 
@@ -121,6 +122,27 @@ fn certificate(signers: &[u8]) -> FastCertificate {
         .expect("quorum reached")
 }
 
+/// Builds a quorum [`FastCertificate`] over an arbitrary `execution_effects_hash`,
+/// for tests that need to control exactly which suite committed it (rather
+/// than always hashing [`witness_bytes`] under the plain [`resolver`]).
+fn certificate_over(execution_effects_hash: Digest32) -> FastCertificate {
+    let certifier = certifier();
+    let tx_hash = digest(0xAA);
+    let locked = digest(0xCC);
+    let votes: Vec<FastVote> = [1u8, 2, 3]
+        .iter()
+        .map(|byte| {
+            certifier
+                .cast_vote(tx_hash, execution_effects_hash, locked, &crypto(*byte))
+                .expect("vote")
+        })
+        .collect();
+    certifier
+        .try_form_certificate(tx_hash, execution_effects_hash, locked, &votes, &crypto(1))
+        .expect("formation")
+        .expect("quorum reached")
+}
+
 fn bundle_with(signers: &[u8]) -> PublicationBundle {
     let resolver = resolver();
     PublicationBundle {
@@ -140,7 +162,7 @@ fn bundle() -> PublicationBundle {
 }
 
 fn verify(bundle: &PublicationBundle) -> Result<VerifiedPublicationBundle, PublicationBundleError> {
-    verify_publication_bundle(bundle, &certifier(), &crypto(1), &resolver())
+    verify_publication_bundle(bundle, &certifier(), &crypto(1), &resolver(), &[])
 }
 
 #[test]
@@ -334,10 +356,217 @@ fn verify_publication_bundle_rejects_a_resolver_bound_to_another_chain() {
     )
     .expect("valid resolver");
     assert_eq!(
-        verify_publication_bundle(&bundle(), &certifier(), &crypto(1), &foreign),
+        verify_publication_bundle(&bundle(), &certifier(), &crypto(1), &foreign, &[]),
         Err(PublicationBundleError::Consensus(
             ConsensusError::HashChainMismatch
         ))
+    );
+}
+
+/// Builds a minimal, self-contained one-entry bundle so rotation/history tests
+/// control exactly which suite produced the artifact's content digest and the
+/// witness commitment, independent of the shared `bundle()`/`certificate()`
+/// fixtures (which always use the single-entry genesis [`resolver`]).
+fn rotation_bundle(
+    content: Vec<u8>,
+    content_digest: Digest32,
+    execution_effects_hash: Digest32,
+) -> PublicationBundle {
+    let manifest = ArtifactManifest {
+        entries: vec![ArtifactEntry {
+            kind: ArtifactKind::StateValue,
+            identity: b"rotation/state/key".to_vec(),
+            content_digest,
+            content_length: u32::try_from(content.len()).expect("bounded"),
+        }],
+    };
+    PublicationBundle {
+        domain: AtomicityDomainId::new([0x44; 32]).expect("nonzero domain"),
+        request_id: [0x55; 32],
+        commitment_profile: LOGICAL_COMMITMENT_PROFILE,
+        signed_intent: signed_intent(),
+        certificate: certificate_over(execution_effects_hash),
+        witness: witness_bytes(),
+        manifest,
+        contents: vec![content],
+    }
+}
+
+#[test]
+fn verify_publication_bundle_accepts_content_digested_under_a_rotated_away_from_suite() {
+    // Two schedule entries: genesis (Sha2_256) from epoch 0, then Sha3_256
+    // from epoch 5. The certifying epoch (9, see `EPOCH`) is after the
+    // rotation, so the *witness* commitment -- always fresh, never
+    // historical -- is produced under the now-active Sha3_256 suite. The
+    // artifact's own content digest, though, was produced back when the
+    // genesis suite was still the active one.
+    let rotated = HashSuiteResolver::new(
+        chain_id(),
+        ProtocolVersion::new(PROTOCOL),
+        vec![
+            HashSuiteSchedule {
+                activation_epoch: Epoch::new(0),
+                suite: HashSuite::genesis(),
+            },
+            HashSuiteSchedule {
+                activation_epoch: Epoch::new(5),
+                suite: HashSuite::uniform(HashSuiteId::new(2), HashAlgorithmId::Sha3_256),
+            },
+        ],
+    )
+    .expect("valid resolver");
+
+    let content: Vec<u8> = b"pre-rotation state value".to_vec();
+    let content_digest = rotated
+        .hash_for_purpose(Epoch::new(2), HashPurpose::ExecutionEffects, &content)
+        .expect("hash");
+    assert_eq!(content_digest.algorithm(), HashAlgorithmId::Sha2_256);
+    let execution_effects_hash = rotated
+        .hash_for_purpose(
+            Epoch::new(EPOCH),
+            HashPurpose::ExecutionEffects,
+            &witness_bytes(),
+        )
+        .expect("hash");
+    assert_eq!(
+        execution_effects_hash.algorithm(),
+        HashAlgorithmId::Sha3_256
+    );
+
+    let bundle = rotation_bundle(content, content_digest, execution_effects_hash);
+    let verified = verify_publication_bundle(&bundle, &certifier(), &crypto(1), &rotated, &[])
+        .expect(
+            "a legitimate artifact digested under a suite this chain later rotated away from \
+             must still verify",
+        );
+    assert_eq!(verified.identity.epoch, Epoch::new(EPOCH));
+}
+
+#[test]
+fn verify_publication_bundle_rejects_an_algorithm_this_chain_never_trusted_for_the_purpose() {
+    // A byte-correct Sha3_256 digest of the real content -- but the
+    // *verifying* resolver below never scheduled Sha3_256 for
+    // `ExecutionEffects` at any epoch. Trusting a bundle-declared algorithm
+    // unconditionally would accept this; the schedule-trust gate must not.
+    let rotated = HashSuiteResolver::new(
+        chain_id(),
+        ProtocolVersion::new(PROTOCOL),
+        vec![
+            HashSuiteSchedule {
+                activation_epoch: Epoch::new(0),
+                suite: HashSuite::genesis(),
+            },
+            HashSuiteSchedule {
+                activation_epoch: Epoch::new(5),
+                suite: HashSuite::uniform(HashSuiteId::new(2), HashAlgorithmId::Sha3_256),
+            },
+        ],
+    )
+    .expect("valid resolver");
+    let genesis_only = resolver();
+
+    let content: Vec<u8> = b"forged under an untrusted algorithm".to_vec();
+    let untrusted_digest = rotated
+        .hash_for_purpose(Epoch::new(EPOCH), HashPurpose::ExecutionEffects, &content)
+        .expect("hash");
+    assert_eq!(untrusted_digest.algorithm(), HashAlgorithmId::Sha3_256);
+    let execution_effects_hash = genesis_only
+        .hash_for_purpose(
+            Epoch::new(EPOCH),
+            HashPurpose::ExecutionEffects,
+            &witness_bytes(),
+        )
+        .expect("hash");
+
+    let bundle = rotation_bundle(content, untrusted_digest, execution_effects_hash);
+    let error = verify_publication_bundle(&bundle, &certifier(), &crypto(1), &genesis_only, &[])
+        .expect_err(
+            "an algorithm this chain never trusted for the purpose must be refused even with \
+             byte-correct content",
+        );
+    assert_eq!(
+        error,
+        PublicationBundleError::ArtifactContentDigestMismatch { index: 0 }
+    );
+}
+
+#[test]
+fn verify_publication_bundle_accepts_an_artifact_verified_only_through_supplied_history() {
+    // A resolver bound to an earlier protocol version, distinct from the
+    // certifying one, supplied only through `history` -- mirroring
+    // `node_core::fast_path::prepare`'s own historical-resolver convention.
+    let historical = HashSuiteResolver::new(
+        chain_id(),
+        ProtocolVersion::new(PROTOCOL - 1),
+        vec![HashSuiteSchedule {
+            activation_epoch: Epoch::new(0),
+            suite: HashSuite::uniform(HashSuiteId::new(9), HashAlgorithmId::Sha3_256),
+        }],
+    )
+    .expect("valid resolver");
+    let current = resolver();
+
+    let content: Vec<u8> = b"artifact from an earlier protocol version".to_vec();
+    let content_digest = historical
+        .hash_for_purpose(Epoch::new(EPOCH), HashPurpose::ExecutionEffects, &content)
+        .expect("hash");
+    let execution_effects_hash = current
+        .hash_for_purpose(
+            Epoch::new(EPOCH),
+            HashPurpose::ExecutionEffects,
+            &witness_bytes(),
+        )
+        .expect("hash");
+
+    let bundle = rotation_bundle(content, content_digest, execution_effects_hash);
+
+    let refused = verify_publication_bundle(&bundle, &certifier(), &crypto(1), &current, &[])
+        .expect_err("without history, an earlier-protocol-version artifact must not verify");
+    assert_eq!(
+        refused,
+        PublicationBundleError::ArtifactContentDigestMismatch { index: 0 }
+    );
+
+    verify_publication_bundle(
+        &bundle,
+        &certifier(),
+        &crypto(1),
+        &current,
+        std::slice::from_ref(&historical),
+    )
+    .expect("supplying the exact historical resolver must let this artifact verify");
+}
+
+#[test]
+fn verify_publication_bundle_rejects_foreign_chain_history() {
+    let foreign: HashSuiteResolver = HashSuiteResolver::new(
+        ChainId::new("foreign-chain").expect("chain"),
+        ProtocolVersion::new(PROTOCOL - 1),
+        vec![HashSuiteSchedule {
+            activation_epoch: Epoch::new(0),
+            suite: HashSuite::genesis(),
+        }],
+    )
+    .expect("resolver");
+    assert_eq!(
+        verify_publication_bundle(&bundle(), &certifier(), &crypto(1), &resolver(), &[foreign],),
+        Err(PublicationBundleError::Consensus(
+            ConsensusError::HashChainMismatch
+        ))
+    );
+}
+
+#[test]
+fn verify_publication_bundle_rejects_too_much_resolver_history() {
+    let history: Vec<HashSuiteResolver> = (0..=MAX_ARTIFACT_RESOLVER_HISTORY)
+        .map(|_| resolver())
+        .collect();
+    assert_eq!(
+        verify_publication_bundle(&bundle(), &certifier(), &crypto(1), &resolver(), &history),
+        Err(PublicationBundleError::TooManyResolverHistoryEntries {
+            actual: history.len(),
+            max: MAX_ARTIFACT_RESOLVER_HISTORY,
+        })
     );
 }
 

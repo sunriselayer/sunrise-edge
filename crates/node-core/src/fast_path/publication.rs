@@ -20,8 +20,12 @@
 //!    [`consensus::bundle::verify_publication_bundle`]: a real quorum of the
 //!    committed outgoing set, a witness that hashes to that certificate's
 //!    execution commitment, and every declared artifact's actual bytes
-//!    present and matching their content digest under the epoch's committed
-//!    hash suite. A hash alone is never retention.
+//!    present and matching their content digest under a hash suite this
+//!    chain's own schedule trusted for that purpose at or before the
+//!    certifying epoch -- never a bundle-declared epoch or algorithm, so a
+//!    legitimate artifact from a rotated-away-from suite or protocol version
+//!    still verifies without reopening a downgrade risk. A hash alone is
+//!    never retention.
 //! 4. Re-derives the signed intent's own event digest and request identity
 //!    through the ordinary authentication pipeline and requires them to equal
 //!    the certificate's `tx_hash` and the bundle's declared request id. This
@@ -33,9 +37,11 @@
 //!    version, a duplicate key or a claimed tombstone presented as absence
 //!    all refuse the ACK.
 //! 6. Persists the publication record, every artifact's exact bytes and the
-//!    first ACK identity in **one** atomic commit under writer, epoch and
-//!    admission fences, and only then signs and returns the availability
-//!    vote. A rejected or indeterminate commit exposes no signature.
+//!    first ACK identity in **one** atomic commit under the writer, epoch and
+//!    validator-set fences already asserted above, and only then signs and
+//!    returns the availability vote. A rejected or indeterminate commit
+//!    exposes no signature. This is a durable-store fence, not an
+//!    apply-admission gate; see "Deliberate non-scope" below.
 //!
 //! # What retention must not do, and does not
 //!
@@ -122,13 +128,6 @@ pub enum PublicationRetentionError {
     /// The bundle names an atomicity domain other than this deployment's
     /// configured logical domain.
     ForeignDomain,
-    /// The bundle's certificate epoch is not the committed current epoch.
-    NonCurrentEpoch {
-        /// Committed current epoch.
-        current: Epoch,
-        /// Epoch the bundle's certificate is bound to.
-        bundle: Epoch,
-    },
     /// The re-derived signed-intent digest is not the certificate's
     /// `tx_hash`: the quorum did not certify these intent bytes.
     SignedIntentDigestMismatch,
@@ -200,12 +199,6 @@ impl fmt::Display for PublicationRetentionError {
             Self::ForeignDomain => {
                 formatter.write_str("publication bundle names a foreign atomicity domain")
             }
-            Self::NonCurrentEpoch { current, bundle } => write!(
-                formatter,
-                "publication bundle epoch {} is not the committed current epoch {}",
-                bundle.get(),
-                current.get()
-            ),
             Self::SignedIntentDigestMismatch => formatter
                 .write_str("publication bundle signed intent is not the certified transaction"),
             Self::RequestIdMismatch => formatter
@@ -600,12 +593,17 @@ pub fn decode_fastpath_availability_ack_record(
 ///
 /// `expected` is the locally pinned serving [`PublicationContext`]; `domain`
 /// is the deployment's configured logical atomicity domain. Neither may come
-/// from the bundle or from an untrusted transport request.
+/// from the bundle or from an untrusted transport request. `history` mirrors
+/// [`super::prepare`]/[`super::apply`]'s own bounded historical-resolver
+/// parameter and must be locally pinned, never supplied by the bundle or an
+/// untrusted transport request.
+#[allow(clippy::too_many_arguments)]
 pub fn retain_publication<S, C>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
     expected: &PublicationContext,
     bundle_bytes: &[u8],
     signer: &C,
@@ -614,6 +612,11 @@ where
     S: StructuredDurableDomainStateStore,
     C: ConsensusSigner,
 {
+    if history.len() > crate::publication::MAX_PUBLICATION_HISTORY {
+        return Err(PublicationRetentionError::Node(
+            NodeCoreError::PersistenceInvariant("resolver history bound"),
+        ));
+    }
     let bundle: PublicationBundle = decode_publication_bundle(bundle_bytes)?;
     if bundle.domain != domain {
         return Err(PublicationRetentionError::ForeignDomain);
@@ -630,6 +633,10 @@ where
     // preconditions the single commit below re-asserts; a committed Freeze
     // marker will extend this same fenced read set.
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    // `fence_current_epoch` itself refuses (`NodeCoreError::EpochMismatch`,
+    // mapped to `PublicationRetentionError::Node`) unless the committed
+    // current epoch is exactly `bundle.certificate.epoch`; a bundle bound to
+    // a non-current epoch never reaches the line below.
     let epoch_record: local_instance_state::FastPathEpochRecord =
         mutation_fence::fence_current_epoch(
             store,
@@ -639,12 +646,6 @@ where
             bundle.certificate.epoch,
             &mut reads,
         )?;
-    if epoch_record.current_epoch != bundle.certificate.epoch {
-        return Err(PublicationRetentionError::NonCurrentEpoch {
-            current: epoch_record.current_epoch,
-            bundle: bundle.certificate.epoch,
-        });
-    }
     let validator_context: PublicationContext = expected.clone();
     let validator_set: ValidatorSet = load_validator_set(
         store,
@@ -662,8 +663,13 @@ where
         expected.epoch(),
         validator_set.clone(),
     )?;
-    let verified: VerifiedPublicationBundle =
-        verify_publication_bundle(&bundle, &fast_certifier, &FastPathEd25519Verifier, resolver)?;
+    let verified: VerifiedPublicationBundle = verify_publication_bundle(
+        &bundle,
+        &fast_certifier,
+        &FastPathEd25519Verifier,
+        resolver,
+        history,
+    )?;
     let identity: AvailabilityIdentity = verified.identity;
 
     // The binding `consensus` structurally cannot check: these exact intent
@@ -769,19 +775,18 @@ where
         vote: encode_availability_vote(&vote)?,
     };
 
+    let staged_artifacts: BTreeMap<Vec<u8>, Vec<u8>> = stage_publication_artifacts(
+        &chain,
+        &bundle.request_id,
+        &bundle.manifest,
+        &bundle.contents,
+    )?;
     let mut mutations: Vec<StateMutationEntry> = Vec::new();
-    for (entry, content) in bundle.manifest.entries.iter().zip(bundle.contents.iter()) {
-        let key: Vec<u8> = artifact_key(&chain, &bundle.request_id, entry)?;
-        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
-        if let Some(previous) = reads.insert(key.clone(), observed.revision())
-            && previous != observed.revision()
-        {
-            return Err(PublicationRetentionError::Node(
-                NodeCoreError::StateConflict,
-            ));
-        }
+    for (key, content) in &staged_artifacts {
+        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, key)?;
+        reads.insert(key.clone(), observed.revision());
         mutations.push(StateMutationEntry::new(
-            key,
+            key.clone(),
             StateMutation::Put(content.clone()),
         )?);
     }
@@ -830,4 +835,43 @@ fn artifact_key(
     entry: &ArtifactEntry,
 ) -> Result<Vec<u8>, NodeCoreError> {
     fastpath_publication_artifact_key(chain, request_id, entry.kind, &entry.content_digest.bytes())
+}
+
+/// Stages one manifest's artifacts for the atomic commit, deduplicating by
+/// exact storage key.
+///
+/// Artifact rows are content-addressed by `(kind, content digest)`
+/// ([`artifact_key`]/[`fastpath_publication_artifact_key`]), not by manifest
+/// identity: two distinct required identities of the same kind that happen to
+/// hold byte-identical content share one storage row by design. Keying by
+/// storage key here first means such a pair is staged once rather than pushed
+/// twice into one atomic mutation set, which
+/// [`runtime::AtomicStateMutationSet::new`] would otherwise refuse outright as
+/// a duplicate write key for an entirely legitimate manifest. Two entries
+/// that share a storage key but disagree on content -- which would mean a
+/// hash collision already accepted by [`verify_publication_bundle`] -- are
+/// refused rather than silently resolved by picking one.
+fn stage_publication_artifacts(
+    chain: &ChainId,
+    request_id: &[u8; 32],
+    manifest: &ArtifactManifest,
+    contents: &[Vec<u8>],
+) -> RetentionResult<BTreeMap<Vec<u8>, Vec<u8>>> {
+    let mut staged: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+    for (entry, content) in manifest.entries.iter().zip(contents.iter()) {
+        let key: Vec<u8> = artifact_key(chain, request_id, entry)?;
+        match staged.get(&key) {
+            Some(existing) if existing != content => {
+                return Err(PublicationRetentionError::Node(
+                    NodeCoreError::PersistenceInvariant(
+                        "publication artifact content disagrees under one content-addressed key",
+                    ),
+                ));
+            }
+            _ => {
+                staged.insert(key, content.clone());
+            }
+        }
+    }
+    Ok(staged)
 }
