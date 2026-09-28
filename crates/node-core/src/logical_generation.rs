@@ -566,8 +566,12 @@ pub(crate) fn content_digest(
 /// is a per-node, per-attempt artifact rather than transaction content, so the
 /// signed fast-path commitment excludes it for exactly the reason it already
 /// excludes the committed epoch record. The per-subject provenance rows, which
-/// do vary per transaction, stay covered. Admission still compare-and-swap
-/// fences this row inside its own commit.
+/// do vary per transaction, stay covered. A handoff-capable ([`Logical`])
+/// admission still compare-and-swap fences this row inside its own commit; a
+/// historical admission installs no fence on it at all, by design -- see
+/// [`fence_commitment_profile`].
+///
+/// [`Logical`]: InstalledCommitmentProfile::Logical
 #[must_use]
 pub fn is_logical_profile_key(key: &[u8]) -> bool {
     let mut prefix: Vec<u8> = LOGICAL_STATE_PREFIX.to_vec();
@@ -925,7 +929,14 @@ fn provenance_mutation<S: StructuredDurableDomainStateStore>(
 /// Every non-excluded staged state mutation, every object mutation and the
 /// sender-nonce write become exactly one subject each. A deletion keeps its
 /// tombstone observation, taken from the exact observed head, so a tombstone is
-/// never recorded as absence.
+/// never recorded as absence. Every caller stages the sender-nonce row's own
+/// `Put` into `state_mutations` *and* passes it again as `nonce`, exactly like
+/// every other staged mutation; the nonce key is skipped in the
+/// `state_mutations` loop below for the same reason [`logical_subjects`]
+/// skips it on the read side: it is one subject with one closed `NonceNext`
+/// observation, never also a generic state key, so this operation installs
+/// exactly one provenance row for it instead of two disagreeing rows for the
+/// same physical value.
 fn object_write_observation(
     entry: &DurableObjectMutationEntry,
     head_reads: &[DurableObjectHeadRead],
@@ -959,9 +970,10 @@ pub(crate) fn staged_writes(
     head_reads: &[DurableObjectHeadRead],
     nonce: Option<&PendingSenderNonceWrite>,
 ) -> Result<Vec<LogicalWrite>, NodeCoreError> {
+    let nonce_key: Option<&[u8]> = nonce.map(|pending| pending.key.as_slice());
     let mut writes: Vec<LogicalWrite> = Vec::new();
     for entry in state_mutations {
-        if is_excluded_subject(entry.key()) {
+        if is_excluded_subject(entry.key()) || nonce_key == Some(entry.key()) {
             continue;
         }
         let observation: LogicalObservation = match entry.mutation() {
@@ -1392,9 +1404,13 @@ fn fence_provenance<S: StructuredDurableDomainStateStore>(
 /// Requires every live application path to carry exactly the evidence its own
 /// store's signed genesis binding demands.
 ///
-/// This is the single gate every path that applies effects, a receipt, a nonce
-/// advance or a settlement passes through, and it is deliberately not
-/// satisfiable by a bare profile argument:
+/// [`admit_resolved`] calls this for every application path that applies
+/// effects, a receipt, a nonce advance or a settlement against an
+/// *already-installed* profile -- paid execution, local execution,
+/// publication, bond lifecycle, fee-claim settlement and the generic
+/// durable-event path all reach it through [`admit_application`] or
+/// [`admit_generic_transition`]. It is deliberately not satisfiable by a bare
+/// profile argument:
 ///
 /// * a [`InstalledCommitmentProfile::Logical`] store with no derivation is
 ///   refused. Absence of evidence is never an active legacy fallback for a
@@ -1410,7 +1426,10 @@ fn fence_provenance<S: StructuredDurableDomainStateStore>(
 ///
 /// Exact original completed replay stays receipt-first ahead of this refusal,
 /// and historical verification paths never call it at all: they read and verify
-/// recorded bytes without applying anything.
+/// recorded bytes without applying anything. A handoff-capable genesis is the
+/// one exception by construction, not an oversight: [`genesis_provenance`]
+/// installs a fresh store's first provenance rows directly, because no
+/// profile is installed yet for this gate to resolve against.
 pub(crate) fn require_application_admissible(
     installed: &InstalledCommitmentProfile,
     derived: Option<&LogicalDerivation>,
@@ -1686,13 +1705,23 @@ impl InstalledCommitmentProfile {
     }
 }
 
-/// Resolves a store's installed commitment profile, fencing the exact observed
-/// revision of the row so its successor is written under a real CAS fence.
+/// Resolves a store's installed commitment profile.
 ///
 /// Fails closed rather than degrading: a removed row (absent value at a
 /// non-initial revision) and a row binding the historical model are both
 /// refusals, so no handoff-capable store can be talked back into physical
 /// admission by deleting or downgrading its own binding.
+///
+/// A [`InstalledCommitmentProfile::Logical`] result fences the exact observed
+/// revision of the row into `reads`, so its successor is written under a real
+/// compare-and-swap fence. A [`InstalledCommitmentProfile::Historical`]
+/// result installs no fence at all: that row can only ever be written once,
+/// by a fresh `install_genesis` that refuses outright once any marker
+/// exists, so it can never regress from absent to present inside one
+/// already-serving store's lifetime, and asserting it would only cost one
+/// slot of the caller's bounded read set for zero protective value -- the
+/// same reasoning [`admit_generic_transition`] already documents for its own
+/// historical case, now uniform for every caller of this function.
 pub(crate) fn fence_commitment_profile<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
@@ -1701,9 +1730,15 @@ pub(crate) fn fence_commitment_profile<S: StructuredDurableDomainStateStore>(
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<InstalledCommitmentProfile, NodeCoreError> {
     let key: Vec<u8> = logical_profile_key(chain)?;
-    let seen: VersionedStateValue = fence_read(store, context, domain, key, reads)?;
+    let seen: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    if let Some(previous) = reads.get(&key)
+        && *previous != seen.revision()
+    {
+        return Err(NodeCoreError::StateConflict);
+    }
     if let Some(bytes) = seen.value() {
         let record: LogicalProfileRecord = decode_installed_profile(bytes, chain)?;
+        reads.insert(key, seen.revision());
         return Ok(InstalledCommitmentProfile::Logical(record));
     }
     if seen.revision() == StateRevision::INITIAL {

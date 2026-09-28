@@ -351,6 +351,60 @@ fn the_sender_nonce_is_one_subject_with_its_own_dependency() {
     assert_eq!(derived.input(&LogicalSubject::StateKey(key)), None);
 }
 
+/// Every real caller stages the sender-nonce row's own `Put` into
+/// `state_mutations` *and* passes the same reservation as `nonce`, exactly
+/// like every other staged mutation (see `publication.rs`, `local_execution.rs`,
+/// `bond_lifecycle.rs`, `fee_claims/preparation.rs`). `staged_writes` must
+/// still install exactly one provenance row for that one physical row: its
+/// own semantic `NonceNext` observation, never also a generic `StateKey`
+/// observation over the same encoded bytes.
+#[test]
+fn staged_writes_installs_one_provenance_row_for_a_prestaged_nonce_put() {
+    let sender: [u8; 32] = [0x31; 32];
+    let epoch: Epoch = Epoch::new(0);
+    let layout: PersistenceLayout =
+        PersistenceLayout::new(ChainId::new(CHAIN).unwrap(), ProtocolVersion::new(3));
+    let nonce_key: Vec<u8> = layout.sender_nonce_key(sender, epoch);
+    let record: SenderNonceRecord = SenderNonceRecord::new(sender, epoch, 5);
+    let pending: PendingSenderNonceWrite = PendingSenderNonceWrite {
+        key: nonce_key.clone(),
+        read_revision: StateRevision::INITIAL,
+        record,
+    };
+    let other_key: Vec<u8> = b"se/example/other".to_vec();
+    let state_mutations: Vec<StateMutationEntry> = vec![
+        StateMutationEntry::new(
+            nonce_key.clone(),
+            StateMutation::Put(record.encode().unwrap()),
+        )
+        .unwrap(),
+        StateMutationEntry::new(other_key.clone(), StateMutation::Put(vec![1, 2, 3])).unwrap(),
+    ];
+    let hashes: HashSuiteResolver = resolver();
+    let writes: Vec<LogicalWrite> =
+        staged_writes(&hashes, epoch, &state_mutations, &[], &[], Some(&pending)).unwrap();
+    assert_eq!(writes.len(), 2);
+    let nonce_writes: Vec<&LogicalWrite> = writes
+        .iter()
+        .filter(|write| write.subject == LogicalSubject::SenderNonce { sender, epoch })
+        .collect();
+    assert_eq!(nonce_writes.len(), 1);
+    assert_eq!(
+        nonce_writes[0].observation,
+        LogicalObservation::NonceNext { next_nonce: 5 }
+    );
+    assert!(
+        writes
+            .iter()
+            .any(|write| write.subject == LogicalSubject::StateKey(other_key.clone()))
+    );
+    assert!(
+        !writes
+            .iter()
+            .any(|write| write.subject == LogicalSubject::StateKey(nonce_key.clone()))
+    );
+}
+
 /// A nonce row that moved since its reservation refuses here rather than
 /// producing a generation derived from a state this operation never observed.
 #[test]
@@ -644,6 +698,35 @@ fn a_removed_profile_row_fails_closed_instead_of_reading_as_historical() {
         harness.fence_profile(&mut reads),
         Err(NodeCoreError::LogicalProvenance(_))
     ));
+}
+
+/// A historical (v1) admission installs no read assertion on the profile
+/// row: that row can only ever be written once, by a fresh `install_genesis`
+/// that refuses outright once any marker exists, so fencing it protects
+/// against nothing and would only cost a slot of the bounded read set. A
+/// handoff-capable admission keeps its real compare-and-swap fence on it.
+#[test]
+fn historical_admission_fences_no_profile_read_assertion() {
+    let harness: Harness = Harness::new(0);
+    let chain: ChainId = ChainId::new(CHAIN).unwrap();
+    let key: Vec<u8> = logical_profile_key(&chain).unwrap();
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    assert!(matches!(
+        harness.fence_profile(&mut reads).unwrap(),
+        InstalledCommitmentProfile::Historical
+    ));
+    assert!(reads.is_empty());
+    write_row(
+        &harness,
+        &key,
+        StateMutation::Put(encode_logical_profile_record(&harness.profile).unwrap()),
+    );
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    assert!(matches!(
+        harness.fence_profile(&mut reads).unwrap(),
+        InstalledCommitmentProfile::Logical(_)
+    ));
+    assert_eq!(reads.get(&key).copied(), Some(harness.revision(&key)));
 }
 
 #[test]
