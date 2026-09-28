@@ -15,7 +15,15 @@
 //! produced and accepted here are unchanged from their prior `native-http`
 //! definitions.
 
+pub mod fastvote_published;
 pub mod ordered_economics;
+
+pub use fastvote_published::{
+    FASTVOTE_PUBLICATION_RETAIN_PATH, FASTVOTE_PUBLICATION_SOURCE_PATH,
+    FASTVOTE_PUBLISHED_APPLY_PATH, FASTVOTE_PUBLISHED_APPLY_REQUEST_TYPE_ID,
+    FastVotePublishedApplyRequest, FastVotePublishedApplyRequestError,
+    MAX_FASTVOTE_AVAILABILITY_CERTIFICATE_BYTES, MAX_FASTVOTE_PUBLISHED_APPLY_REQUEST_BYTES,
+};
 
 use canonical_encoding::{
     CanonicalDecodingError, CanonicalEncodingError, CanonicalFrame, CanonicalStruct,
