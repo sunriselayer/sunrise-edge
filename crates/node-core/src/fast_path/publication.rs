@@ -1136,7 +1136,7 @@ pub(crate) fn verify_retained_publication<S: StructuredDurableDomainStateStore>(
 /// witness-signed digest, or a mismatch with the re-derived signed intent are
 /// all typed refusals that expose nothing.
 #[allow(clippy::too_many_arguments)]
-pub fn serve_retained_publication_bundle<S: StructuredDurableDomainStateStore>(
+pub(crate) fn serve_retained_publication_bundle<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,

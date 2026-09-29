@@ -1119,3 +1119,181 @@ fn a_truncated_or_padded_witness_is_refused() {
     truncated.pop();
     assert!(witness::required_artifacts(&truncated).is_err());
 }
+
+// --- DR-0154 review: the actual public transport-facing entry point --------
+//
+// Everything above exercises the crate-private `serve_retained_publication_bundle`
+// directly, with a hand-supplied validator set. The tests below instead call
+// the one function `native_http` (and any other future transport) actually
+// invokes: `serve_active_epoch_publication_bundle`, which additionally fences
+// the store's own committed current epoch and loads the validator set itself
+// before ever reaching `serve_retained_publication_bundle`.
+
+#[test]
+fn serve_active_epoch_publication_bundle_serves_a_retained_but_never_prepared_request() {
+    let replica: RetentionReplica = logical_replica();
+    let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    retain(&replica, &bundle, &replica.signer).unwrap();
+
+    let served: PublicationBundle = serve_active_epoch_publication_bundle(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        replica.signer.validator_id(),
+        &[REQUEST; 32],
+    )
+    .expect(
+        "the public entry point must independently fence the current epoch and load the \
+         validator set, then serve the retained bundle exactly like the crate-private path",
+    );
+    assert_eq!(
+        encode_publication_bundle(&served).unwrap(),
+        encode_publication_bundle(&bundle).unwrap(),
+        "the served bundle must be byte-for-byte the original verified bundle"
+    );
+}
+
+#[test]
+fn serve_active_epoch_publication_bundle_rejects_a_store_whose_current_epoch_has_moved_on() {
+    let replica: RetentionReplica = logical_replica();
+    let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    retain(&replica, &bundle, &replica.signer).unwrap();
+
+    let epoch_key: Vec<u8> =
+        local_instance_state::fastpath_epoch_record_key(protocol().chain_id()).unwrap();
+    let installed: local_instance_state::FastPathEpochRecord =
+        local_instance_state::decode_fastpath_epoch_record(&replica.row(&epoch_key).unwrap())
+            .unwrap();
+    let advanced_epoch: Epoch = Epoch::new(installed.current_epoch.get() + 1);
+    replica.put_row(
+        epoch_key,
+        local_instance_state::encode_fastpath_epoch_record(
+            &local_instance_state::FastPathEpochRecord {
+                current_epoch: advanced_epoch,
+                ..installed
+            },
+        )
+        .unwrap(),
+    );
+
+    let error = serve_active_epoch_publication_bundle(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        replica.signer.validator_id(),
+        &[REQUEST; 32],
+    )
+    .expect_err(
+        "a store whose committed current epoch has moved past the caller's own pinned epoch \
+         must be rejected before any retained-publication lookup",
+    );
+    assert!(
+        matches!(
+            error,
+            PublicationRetentionError::Node(NodeCoreError::EpochMismatch { expected, actual })
+                if expected == advanced_epoch && actual == installed.current_epoch
+        ),
+        "unexpected error {error}"
+    );
+}
+
+#[test]
+fn serve_active_epoch_publication_bundle_refuses_a_retained_publication_missing_its_acknowledgement()
+ {
+    // A genuine retained publication row with no acknowledgement row at all --
+    // "missing or tombstoned" both collapse to the same absent-value read this
+    // handler must refuse. `DrainSet` import (`drain_publication`) is the only
+    // real path that ever writes a full publication without an ACK, and it
+    // writes under a completely separate key prefix; this is a fabricated but
+    // otherwise fully self-consistent row proving the ACK check itself, not a
+    // reachable production state under the `publication/` prefix.
+    let source: RetentionReplica = logical_replica();
+    let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    retain(&source, &bundle, &source.signer).unwrap();
+    let record: FastPathPublicationRecord = retained_publication(&source, REQUEST);
+
+    // A fresh replica with the identical installed validator set receives
+    // only the publication record and its artifacts, never an acknowledgement.
+    let replica: RetentionReplica = logical_replica();
+    let publication_key: Vec<u8> =
+        fastpath_publication_key(protocol().chain_id(), protocol().epoch(), &[REQUEST; 32])
+            .unwrap();
+    replica.put_row(
+        publication_key,
+        encode_fastpath_publication_record(&record).unwrap(),
+    );
+    for (entry, content) in bundle.manifest.entries.iter().zip(bundle.contents.iter()) {
+        let key: Vec<u8> = artifact_key(
+            protocol().chain_id(),
+            protocol().epoch(),
+            &[REQUEST; 32],
+            entry,
+        )
+        .unwrap();
+        replica.put_row(key, content.clone());
+    }
+
+    let error = serve_active_epoch_publication_bundle(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        replica.signer.validator_id(),
+        &[REQUEST; 32],
+    )
+    .expect_err("a retained publication with no acknowledgement row must never be served");
+    assert!(
+        matches!(
+            error,
+            PublicationRetentionError::InconsistentRetainedRecord(
+                "frozen publication without an acknowledgement"
+            )
+        ),
+        "unexpected error {error}"
+    );
+}
+
+#[test]
+fn serve_active_epoch_publication_bundle_refuses_an_acknowledgement_signed_by_another_validator() {
+    let replica: RetentionReplica = logical_replica();
+    let (bundle, certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    retain(&replica, &bundle, &replica.signer).unwrap();
+
+    // A genuine member of the same installed validator set (one of the
+    // certificate's own quorum signers) that never cast this replica's
+    // retained acknowledgement.
+    let other_validator: ValidatorId = certificate.votes[0].validator;
+    assert_ne!(other_validator, replica.signer.validator_id());
+
+    let error = serve_active_epoch_publication_bundle(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        other_validator,
+        &[REQUEST; 32],
+    )
+    .expect_err(
+        "an acknowledgement genuinely signed by a different validator must never be served as \
+         this validator's own",
+    );
+    assert!(
+        matches!(
+            error,
+            PublicationRetentionError::InconsistentRetainedRecord(
+                "frozen acknowledgement vote identity"
+            )
+        ),
+        "unexpected error {error}"
+    );
+}

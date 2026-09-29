@@ -1456,6 +1456,251 @@ mod tests {
     }
 
     #[test]
+    fn source_retained_fastvote_publication_refuses_a_same_request_id_bundle_with_a_different_full_identity()
+     {
+        use consensus::bundle::encode_publication_bundle;
+
+        let (resolver, certifier, bundle, mut identity) = retained_only_fixture();
+        // Same domain and request id as the genuinely retained bundle, but a
+        // different full identity: the caller's independently verified
+        // frontier entry actually pins a different execution commitment for
+        // this exact request. This must fall through the cheap domain/request
+        // id check and be caught by the full identity comparison instead.
+        identity.execution_commitment =
+            Digest32::new(identity.execution_commitment.algorithm(), [0x7B; 32]);
+        let client: Client<ScriptedTransport> = Client::new(ScriptedTransport::ok(
+            NODE_RESULT_MEDIA_TYPE,
+            encode_publication_bundle(&bundle).unwrap(),
+        ));
+        let error = client
+            .source_retained_fastvote_publication(
+                &certifier,
+                &resolver,
+                &[],
+                &identity,
+                Some(deadline()),
+            )
+            .expect_err(
+                "a genuinely retained bundle for the same request id but a different full \
+                 identity must be refused",
+            );
+        assert!(matches!(
+            error,
+            ClientError::FastVotePublicationMismatch("retained source bundle identity")
+        ));
+    }
+
+    #[test]
+    fn source_retained_fastvote_publication_refuses_an_under_quorum_or_forged_certificate() {
+        use consensus::bundle::{
+            ArtifactManifest, LOGICAL_COMMITMENT_PROFILE, PublicationBundle,
+            encode_publication_bundle,
+        };
+        use protocol_types::{AtomicityDomainId, HashPurpose};
+
+        let resolver: HashSuiteResolver = resolver();
+        let signed: SignedPaidIntent = signed_transfer(0x64, [0x65; 32]);
+        let tx_hash: Digest32 = expected_tx_hash(&signed);
+        let (signers, infos) = four_validators();
+        let certifier: FastPathCertifier = certifier(infos);
+        let witness: Vec<u8> = vec![0x64, 0x24, 0x02];
+        let execution_hash: Digest32 = resolver
+            .hash_for_purpose(epoch(), HashPurpose::ExecutionEffects, &witness)
+            .unwrap();
+        let lock_hash: Digest32 = digest(0x66);
+        let domain: AtomicityDomainId = AtomicityDomainId::new([0x67; 32]).unwrap();
+        let build_bundle = |certificate: FastCertificate| PublicationBundle {
+            domain,
+            request_id: signed.intent.request_id,
+            commitment_profile: LOGICAL_COMMITMENT_PROFILE,
+            signed_intent: encode_signed_paid_intent(&signed).unwrap(),
+            certificate,
+            witness: witness.clone(),
+            manifest: ArtifactManifest {
+                entries: Vec::new(),
+            },
+            contents: Vec::new(),
+        };
+        let identity: consensus::AvailabilityIdentity = consensus::AvailabilityIdentity {
+            chain_id: chain(),
+            protocol_version: protocol_version(),
+            epoch: epoch(),
+            domain,
+            request_id: signed.intent.request_id,
+            signed_intent_digest: tx_hash,
+            execution_commitment: execution_hash,
+            semantic_artifacts_digest: digest(0x68),
+        };
+
+        // Under-quorum: only 2 of the 4 registered validators, hand-assembled
+        // exactly like `apply_fastvote_to_all_rejects_an_uncertifiable_certificate_before_any_post`
+        // so this "certificate" never passed through `try_form_certificate`'s
+        // own quorum check.
+        let mut under_quorum_votes: Vec<FastVote> = signers
+            .iter()
+            .take(2)
+            .map(|signer: &TestSigner| {
+                certifier
+                    .cast_vote(tx_hash, execution_hash, lock_hash, signer)
+                    .unwrap()
+            })
+            .collect();
+        under_quorum_votes.sort_by_key(|vote| vote.validator);
+        let under_quorum_certificate: FastCertificate = FastCertificate {
+            chain_id: chain(),
+            protocol_version: protocol_version(),
+            epoch: epoch(),
+            tx_hash,
+            execution_effects_hash: execution_hash,
+            locked_objects_digest: lock_hash,
+            votes: under_quorum_votes,
+        };
+        let client: Client<ScriptedTransport> = Client::new(ScriptedTransport::ok(
+            NODE_RESULT_MEDIA_TYPE,
+            encode_publication_bundle(&build_bundle(under_quorum_certificate)).unwrap(),
+        ));
+        let error = client
+            .source_retained_fastvote_publication(
+                &certifier,
+                &resolver,
+                &[],
+                &identity,
+                Some(deadline()),
+            )
+            .expect_err("an under-quorum certificate must be refused");
+        assert!(
+            matches!(
+                error,
+                ClientError::FastVotePublicationBundle(
+                    consensus::bundle::PublicationBundleError::Consensus(
+                        ConsensusError::InsufficientQuorum { .. }
+                    )
+                )
+            ),
+            "unexpected error {error:?}"
+        );
+
+        // Forged: a full 3-of-4 quorum shape, but one vote's signature is
+        // tampered after casting.
+        let mut forged_votes: Vec<FastVote> = signers
+            .iter()
+            .take(3)
+            .map(|signer: &TestSigner| {
+                certifier
+                    .cast_vote(tx_hash, execution_hash, lock_hash, signer)
+                    .unwrap()
+            })
+            .collect();
+        forged_votes[0].signature[0] ^= 0xFF;
+        forged_votes.sort_by_key(|vote| vote.validator);
+        let forged_certificate: FastCertificate = FastCertificate {
+            chain_id: chain(),
+            protocol_version: protocol_version(),
+            epoch: epoch(),
+            tx_hash,
+            execution_effects_hash: execution_hash,
+            locked_objects_digest: lock_hash,
+            votes: forged_votes,
+        };
+        let client: Client<ScriptedTransport> = Client::new(ScriptedTransport::ok(
+            NODE_RESULT_MEDIA_TYPE,
+            encode_publication_bundle(&build_bundle(forged_certificate)).unwrap(),
+        ));
+        let error = client
+            .source_retained_fastvote_publication(
+                &certifier,
+                &resolver,
+                &[],
+                &identity,
+                Some(deadline()),
+            )
+            .expect_err("a certificate carrying a forged vote signature must be refused");
+        assert!(
+            matches!(
+                error,
+                ClientError::FastVotePublicationBundle(
+                    consensus::bundle::PublicationBundleError::Consensus(
+                        ConsensusError::InvalidSignature(_)
+                    )
+                )
+            ),
+            "unexpected error {error:?}"
+        );
+    }
+
+    #[test]
+    fn source_retained_fastvote_publication_refuses_a_signed_intent_that_is_not_the_certified_transaction()
+     {
+        use consensus::bundle::encode_publication_bundle;
+
+        let (resolver, certifier, mut bundle, identity) = retained_only_fixture();
+        // A different, genuinely signed, genuinely encodable intent, swapped
+        // in for the one the quorum actually certified. `verify_publication_bundle`
+        // deliberately does not prove this binding; the client itself must.
+        let substituted: SignedPaidIntent = signed_transfer(0x69, [0x6A; 32]);
+        bundle.signed_intent = encode_signed_paid_intent(&substituted).unwrap();
+
+        let client: Client<ScriptedTransport> = Client::new(ScriptedTransport::ok(
+            NODE_RESULT_MEDIA_TYPE,
+            encode_publication_bundle(&bundle).unwrap(),
+        ));
+        let error = client
+            .source_retained_fastvote_publication(
+                &certifier,
+                &resolver,
+                &[],
+                &identity,
+                Some(deadline()),
+            )
+            .expect_err("a signed intent that is not the certified transaction must be refused");
+        assert!(
+            matches!(error, ClientError::FastVoteUnexpectedTransaction { .. }),
+            "unexpected error {error:?}"
+        );
+    }
+
+    #[test]
+    fn source_retained_fastvote_publication_refuses_a_certifier_pinned_to_the_wrong_epoch() {
+        use consensus::bundle::encode_publication_bundle;
+
+        let (resolver, _certifier, bundle, identity) = retained_only_fixture();
+        let (_signers, infos) = four_validators();
+        let wrong_epoch: Epoch = Epoch::new(epoch().get() + 1);
+        let wrong_certifier: FastPathCertifier = FastPathCertifier::new(
+            chain(),
+            protocol_version(),
+            wrong_epoch,
+            ValidatorSet::new(wrong_epoch, infos).unwrap(),
+        )
+        .unwrap();
+
+        let client: Client<ScriptedTransport> = Client::new(ScriptedTransport::ok(
+            NODE_RESULT_MEDIA_TYPE,
+            encode_publication_bundle(&bundle).unwrap(),
+        ));
+        let error = client
+            .source_retained_fastvote_publication(
+                &wrong_certifier,
+                &resolver,
+                &[],
+                &identity,
+                Some(deadline()),
+            )
+            .expect_err("a certifier pinned to a different epoch than the real bundle must be refused");
+        assert!(
+            matches!(
+                error,
+                ClientError::FastVotePublicationBundle(
+                    consensus::bundle::PublicationBundleError::Consensus(
+                        ConsensusError::ContextMismatch
+                    )
+                )
+            ),
+            "unexpected error {error:?}"
+        );
+    }
+
+    #[test]
     fn collect_fastvote_certificate_tolerates_a_same_header_invalid_signature_malicious_first_responder()
      {
         let (signers, infos) = four_validators();
