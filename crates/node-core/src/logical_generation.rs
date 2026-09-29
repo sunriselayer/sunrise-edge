@@ -64,8 +64,9 @@ mod tests;
 ///
 /// Allocated from the swept, previously unused `0x6480..=0x648F` node-core
 /// block. The repository-wide sweep confirmed `0x6401..=0x6439` and
-/// `0x6440..=0x644F` are taken and `0x6460` belongs to `node-wire`; `0x6450`,
-/// `0x6452` and `0x6453` stay free, and `0x6451` remains reserved for the
+/// `0x6440..=0x644F` are taken and `0x6460` belongs to `node-wire`; `0x6450`
+/// is U7's local drain-lock resolution audit, `0x6452` and `0x6453` stay free,
+/// and `0x6451` remains reserved for the
 /// concurrently owned retention/control/cut work. `0x6454..=0x645A` are the
 /// `ordered_economics`/`fast_path` Freeze/publication/frontier family;
 /// `0x645B..=0x645D` are DR-0157's signer progress, union-progress and local
@@ -623,12 +624,15 @@ pub fn classify_fastpath_row(key: &[u8]) -> Option<FastpathRowClass> {
     let suffix: &[u8] = key.strip_prefix(local_instance_state::FASTPATH_STATE_PREFIX)?;
     // Prepare-side witness/artifacts are replica-local backing for a vote,
     // not a certified publication or a transferable business fact.
-    const LOCAL: [&[u8]; 5] = [
+    const LOCAL: [&[u8]; 6] = [
         b"prepared/",
         b"lock/",
         b"nonce-lock/",
         b"prepared-witness/",
         b"prepared-artifact/",
+        // A displaced partial prepare is replica-local audit, not a
+        // transferable business fact in the eventual cut.
+        b"drain-lock-resolution/",
     ];
     // A signed ACK is local safety state, not a mutable prepare reservation
     // and not an imported business fact.
@@ -699,7 +703,7 @@ pub fn classify_ordered_row(key: &[u8]) -> Option<OrderedRowClass> {
     let suffix: &[u8] =
         key.strip_prefix(ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX)?;
     const CONTROL: [&[u8]; 3] = [b"state/", b"applied-height/", b"candidate/"];
-    const HISTORY: [&[u8]; 3] = [b"header/", b"outcome/", b"freeze/"];
+    const HISTORY: [&[u8]; 4] = [b"header/", b"outcome/", b"freeze/", b"drain-set/"];
     // DR-0157 (2026-09-29): per-signer frozen-frontier import progress,
     // per-`(signer, request_id)` confirmed-entry rows, the in-flight union
     // merge cursor and the local DrainSet-ready marker are all replica-local

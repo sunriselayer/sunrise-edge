@@ -59,7 +59,8 @@ roadmap describes a later target state.
   [DR-0156](decisions/0156-frozen-frontier-possession.md),
   [DR-0157](decisions/0157-frozen-frontier-readiness.md),
   [DR-0158](decisions/0158-bounded-drain-network-driver.md),
-  [DR-0159](decisions/0159-ordered-drainset.md)):
+  [DR-0159](decisions/0159-ordered-drainset.md),
+  [DR-0160](decisions/0160-certified-drain-application.md)):
   publication-before-apply, quorum-complete frozen frontiers, ordered epoch
   control, portable logical commitments and verified new-validator readiness.
 - [Portable reconstruction storage contract](portable-reconstruction.md):

@@ -331,6 +331,8 @@ Do not create a global original-user refusal receipt merely from one
 validator's alleged pending request: a Byzantine claim must not reserve an
 arbitrary request ID. A boundary refusal may be reported without pretending
 that an unauthenticated claim was an executed user transaction.
+The separate certified drain-application and exact lock-resolution rule is
+fixed in [DR-0160](decisions/0160-certified-drain-application.md).
 
 ### 3. Preserve shared-engine safety before sealing
 

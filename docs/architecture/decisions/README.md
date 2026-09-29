@@ -66,6 +66,7 @@
 - [DR-0157: frozen-frontier union readiness](0157-frozen-frontier-readiness.md)
 - [DR-0158: bounded drain network driver](0158-bounded-drain-network-driver.md)
 - [DR-0159: ordered DrainSet readiness boundary](0159-ordered-drainset.md)
+- [DR-0160: certified DrainSet member application](0160-certified-drain-application.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

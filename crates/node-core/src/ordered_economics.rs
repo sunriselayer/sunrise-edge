@@ -75,6 +75,7 @@ pub use candidate::{
     MAX_ORDERED_CANDIDATE_INTENT_BYTES, OrderedCandidate, OrderedOperationKind,
     decode_ordered_candidate, encode_ordered_candidate,
 };
+pub(crate) use drain_set::drain_set_record_key;
 pub use drain_set::{
     DrainSetIntent, DrainSetRecord, decode_drain_set_intent, decode_drain_set_record,
     encode_drain_set_intent, encode_drain_set_record,

@@ -151,7 +151,7 @@ fn fastpath_business_history_is_not_misclassified_as_local_reservation() {
     let chain: ChainId = ChainId::new(CHAIN).unwrap();
     let validator: ValidatorId = ValidatorId::new([0x41; 32]);
     let request: [u8; 32] = [0x42; 32];
-    let local: [Vec<u8>; 5] = [
+    let local: [Vec<u8>; 6] = [
         local_instance_state::fastpath_prepared_record_key(&chain, &request).unwrap(),
         local_instance_state::fastpath_lock_key(&chain, ObjectId::new([0x43; 32])).unwrap(),
         local_instance_state::fastpath_nonce_lock_key(&chain, &[0x44; 32], Epoch::new(0)).unwrap(),
@@ -164,6 +164,11 @@ fn fastpath_business_history_is_not_misclassified_as_local_reservation() {
             &[0x49; 32],
         )
         .unwrap(),
+        [
+            local_instance_state::FASTPATH_STATE_PREFIX,
+            b"drain-lock-resolution/local-audit",
+        ]
+        .concat(),
     ];
     for key in local {
         assert_eq!(
@@ -263,7 +268,12 @@ fn ordered_outcome_history_is_not_misclassified_as_consensus_cache() {
         );
         assert!(is_excluded_subject(&key));
     }
-    for suffix in [b"header/".as_slice(), b"outcome/", b"freeze/"] {
+    for suffix in [
+        b"header/".as_slice(),
+        b"outcome/",
+        b"freeze/",
+        b"drain-set/",
+    ] {
         let key: Vec<u8> = [prefix, suffix, b"example"].concat();
         assert_eq!(
             classify_ordered_row(&key),

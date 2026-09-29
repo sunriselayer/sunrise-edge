@@ -76,8 +76,8 @@ use local_execution::{
     scopes, validate_authority, validate_closure,
 };
 use local_instance_state::{
-    execution_policy_key_for_profile, fastpath_lock_key, instance_record_key, object_authority_key,
-    paid_fee_policy_key,
+    execution_policy_key_for_profile, fastpath_lock_key, fastpath_nonce_lock_key,
+    instance_record_key, object_authority_key, paid_fee_policy_key,
 };
 use publication::{PublicationAdmissionError, PublicationLoadBudget};
 
@@ -431,6 +431,28 @@ pub(crate) enum NonceMode {
     /// Certified recovery has a fresh nonce and strictly absent lock values;
     /// unlike ordinary fresh admission, it must never reclaim stale locks.
     RecoveryApply,
+    /// U7 narrowly scoped drain application
+    /// (`crate::fast_path::drain_apply::apply_drain_member`): the ordinary
+    /// nonce is fresh, exactly like [`Self::RecoveryApply`], but every
+    /// object/sender-epoch nonce lock this admission touches may additionally
+    /// be held by a *different* request's local partial prepare. Any such
+    /// conflict is staged for deletion, atomically with this request's own
+    /// effects, exactly like a stale [`Self::Fresh`] lock reclaim -- see
+    /// [`mutation_fence::LockMode::DrainResolve`] for the safety argument.
+    DrainApply(crate::fast_path::drain_apply::DrainApplyPermit),
+}
+
+/// One local partial-prepare lock [`NonceMode::DrainApply`] found conflicting
+/// with this admission's own required object/sender-epoch inputs, staged for
+/// deletion in the same commit as this admission's own effects. Empty in
+/// every other [`NonceMode`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DrainLockResolution {
+    /// The exact conflicting local lock key resolved (an object lock or the
+    /// sender/epoch nonce lock).
+    pub(crate) key: Vec<u8>,
+    /// The displaced request id that held it.
+    pub(crate) owner_request_id: [u8; 32],
 }
 
 /// The complete staged, uncommitted admission envelope [`build_paid_admission`]
@@ -466,6 +488,9 @@ pub(crate) struct PaidAdmissionOutput {
     /// [`logical_generation::require_application_admissible`] before applying
     /// anything, and the fast-path commitment signs it.
     pub(crate) logical: logical_generation::LogicalAdmission,
+    /// Every conflicting local partial-prepare lock [`NonceMode::DrainApply`]
+    /// resolved for this admission. Always empty in every other mode.
+    pub(crate) drain_resolved_locks: Vec<DrainLockResolution>,
 }
 
 /// Step 1 (authentication, event digest, request id) plus the DR-0130
@@ -492,6 +517,7 @@ const fn lock_mode(nonce_mode: NonceMode) -> mutation_fence::LockMode {
         NonceMode::Fresh => mutation_fence::LockMode::Fresh,
         NonceMode::PreparedApply => mutation_fence::LockMode::OwnedByRequest,
         NonceMode::RecoveryApply => mutation_fence::LockMode::Absent,
+        NonceMode::DrainApply(_) => mutation_fence::LockMode::DrainResolve,
     }
 }
 
@@ -557,7 +583,7 @@ fn check_nonce_lock<S: StructuredDurableDomainStateStore>(
     intent: &PaidIntent,
     nonce_mode: NonceMode,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
-) -> PaidResult<()> {
+) -> PaidResult<mutation_fence::NonceLockState> {
     fence_lock_result(mutation_fence::fence_sender_nonce_lock(
         store,
         context,
@@ -624,17 +650,66 @@ pub(crate) fn build_paid_admission<
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     // DR-0131: CAS-fence the committed epoch record and reject a request
     // bound to a non-current epoch before any lock, execution, or mutation.
-    // Shared unchanged by the direct commit path and both fast-path entry
-    // points, since both call this function.
-    mutation_fence::fence_current_epoch(
-        store,
-        context,
-        domain,
-        intent.context.chain_id(),
-        intent.context.epoch(),
-        &mut reads,
-    )?;
-    check_nonce_lock(store, context, domain, intent, nonce_mode, &mut reads)?;
+    // DrainApply is the sole post-Freeze business application mode. Its
+    // caller has already re-verified the committed DrainSet and exact member
+    // proof, and folds those reads into the same effects commit. All other
+    // modes retain the ordinary closed-admission fence.
+    if matches!(nonce_mode, NonceMode::DrainApply(_)) {
+        let epoch_record: local_instance_state::FastPathEpochRecord =
+            mutation_fence::fence_epoch_state(
+                store,
+                context,
+                domain,
+                intent.context.chain_id(),
+                &mut reads,
+            )?;
+        if epoch_record.current_epoch != intent.context.epoch() {
+            return Err(NodeCoreError::EpochMismatch {
+                expected: epoch_record.current_epoch,
+                actual: intent.context.epoch(),
+            }
+            .into());
+        }
+    } else {
+        mutation_fence::fence_current_epoch(
+            store,
+            context,
+            domain,
+            intent.context.chain_id(),
+            intent.context.epoch(),
+            &mut reads,
+        )?;
+    }
+    let mut drain_resolved_locks: Vec<DrainLockResolution> = Vec::new();
+    // DR-0132 §3.D: a stale (strictly older epoch) object lock observed under
+    // `NonceMode::Fresh` is reclaimed by emitting a `Delete` for it into
+    // `state_mutations` below; `NonceMode::DrainApply`'s foreign-conflict
+    // resolutions (nonce lock here, object locks further down) reuse the
+    // exact same deletion pipeline. See the object-loop comment further down
+    // for the full `Reclaimable` provenance.
+    let mut reclaimed_lock_keys: Vec<Vec<u8>> = Vec::new();
+    let nonce_lock_state: mutation_fence::NonceLockState =
+        check_nonce_lock(store, context, domain, intent, nonce_mode, &mut reads)?;
+    if let mutation_fence::NonceLockState::ForeignConflict { owner_request_id } = nonce_lock_state {
+        let key: Vec<u8> = fastpath_nonce_lock_key(
+            intent.context.chain_id(),
+            &intent.sender,
+            intent.context.epoch(),
+        )?;
+        reclaimed_lock_keys.push(key.clone());
+        drain_resolved_locks.push(DrainLockResolution {
+            key,
+            owner_request_id,
+        });
+    } else if matches!(nonce_mode, NonceMode::DrainApply(_))
+        && nonce_lock_state == mutation_fence::NonceLockState::OwnedByThisRequest
+    {
+        reclaimed_lock_keys.push(fastpath_nonce_lock_key(
+            intent.context.chain_id(),
+            &intent.sender,
+            intent.context.epoch(),
+        )?);
+    }
     if base_policy.profile() != execution::GENERIC_OBJECT_RESULT_WASM_PROFILE_VERSION {
         return invalid("paid execution requires the profile-four base policy");
     }
@@ -926,7 +1001,9 @@ pub(crate) fn build_paid_admission<
     // observes `Reclaimable` in the first place. Lock keys are excluded from
     // the fast-path commitment (`commitment::is_excluded_from_commitment`),
     // so this never perturbs a `FastVote`/`FastCertificate` digest.
-    let mut reclaimed_lock_keys: Vec<Vec<u8>> = Vec::new();
+    // `reclaimed_lock_keys` and `drain_resolved_locks` are declared earlier,
+    // alongside the sender/epoch nonce lock check, so a `DrainApply`
+    // foreign-conflict resolution on that lock shares this same pipeline.
     for (reference, mode) in &order {
         // Reject a held lock from durable state before any object head/body
         // I/O. Certificate apply additionally proves the lock was acquired
@@ -943,6 +1020,19 @@ pub(crate) fn build_paid_admission<
             &mut reads,
         )?;
         if lock_state == mutation_fence::ObjectLockState::Reclaimable {
+            reclaimed_lock_keys.push(fastpath_lock_key(intent.context.chain_id(), reference.id)?);
+        } else if let mutation_fence::ObjectLockState::ForeignConflict { owner_request_id } =
+            lock_state
+        {
+            let key: Vec<u8> = fastpath_lock_key(intent.context.chain_id(), reference.id)?;
+            reclaimed_lock_keys.push(key.clone());
+            drain_resolved_locks.push(DrainLockResolution {
+                key,
+                owner_request_id,
+            });
+        } else if matches!(nonce_mode, NonceMode::DrainApply(_))
+            && lock_state == mutation_fence::ObjectLockState::OwnedByThisRequest
+        {
             reclaimed_lock_keys.push(fastpath_lock_key(intent.context.chain_id(), reference.id)?);
         }
         let snapshot: object_snapshots::ObjectSnapshot = object_snapshots::load_object_snapshot(
@@ -1257,6 +1347,7 @@ pub(crate) fn build_paid_admission<
         nonce_write,
         locked_objects,
         logical,
+        drain_resolved_locks,
     })
 }
 

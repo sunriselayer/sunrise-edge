@@ -108,6 +108,11 @@ use protocol_types::{SignatureSchemeId, ValidatorId};
 use validator_set::{ValidatorInfo, ValidatorSet, ValidatorSetError};
 
 pub(crate) mod commitment;
+/// U7: narrowly scoped drain application of one committed `DrainSet` union
+/// member's full certificate, including one with no aggregated
+/// `AvailabilityCertificate`. See the module's own documentation for the
+/// complete authority and safety argument.
+pub mod drain_apply;
 /// Post-Freeze possession of full publication proofs for a selected drain
 /// frontier. This never creates a fresh availability acknowledgement.
 pub mod drain_publication;
