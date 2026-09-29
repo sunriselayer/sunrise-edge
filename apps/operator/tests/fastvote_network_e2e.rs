@@ -673,19 +673,15 @@ async fn frozen_frontier_drain_reaches_local_ready_over_real_http_and_sqlite() {
         forged.status, 503,
         "forged empty vote must not poison progress"
     );
-    let genuine = post(
-        &target,
-        node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
-        node_wire::NODE_EVENT_MEDIA_TYPE,
-        node_wire::DrainSignerPageRequest {
-            epoch: fixture.epoch,
-            vote: consensus::encode_frozen_frontier_vote(&own_empty_vote).unwrap(),
-            page: consensus::encode_frozen_frontier_page(&own_empty_page).unwrap(),
-        }
-        .encode()
-        .unwrap(),
-    );
-    assert_eq!(genuine.status, 204, "{:?}", genuine.body);
+    target_client
+        .stage_drain_signer_page(
+            &frontier_certifier,
+            own_validator,
+            &own_empty_vote,
+            &own_empty_page,
+            Some(deadline),
+        )
+        .unwrap();
     let mut selected_votes: Vec<consensus::FrozenFrontierVote> = Vec::new();
     for (host, validator) in hosts.iter().zip(&fixture.validators).take(3) {
         let client: Client<LoopbackHttpTransport> = Client::new(transport(host.addr));
@@ -716,19 +712,15 @@ async fn frozen_frontier_drain_reaches_local_ready_over_real_http_and_sqlite() {
         assert_eq!(served_vote, final_vote);
         assert!(page.terminal);
         assert_eq!(page.entries, vec![expected_identity.clone()]);
-        let response = post(
-            &target,
-            node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
-            node_wire::NODE_EVENT_MEDIA_TYPE,
-            node_wire::DrainSignerPageRequest {
-                epoch: fixture.epoch,
-                vote: consensus::encode_frozen_frontier_vote(&final_vote).unwrap(),
-                page: consensus::encode_frozen_frontier_page(&page).unwrap(),
-            }
-            .encode()
-            .unwrap(),
-        );
-        assert_eq!(response.status, 204, "{:?}", response.body);
+        target_client
+            .stage_drain_signer_page(
+                &frontier_certifier,
+                validator.validator_id,
+                &final_vote,
+                &page,
+                Some(deadline),
+            )
+            .unwrap();
         let stale_confirm: node_wire::DrainMemberConfirmRequest =
             node_wire::DrainMemberConfirmRequest {
                 epoch: fixture.epoch,
@@ -745,55 +737,73 @@ async fn frozen_frontier_drain_reaches_local_ready_over_real_http_and_sqlite() {
             .status,
             409
         );
-        let import_path: String = format!("/v1/fastvote/drain/import/{}", validator.validator_id);
-        let imported = post(
-            &target,
-            &import_path,
-            node_wire::NODE_EVENT_MEDIA_TYPE,
-            bundle_bytes.clone(),
-        );
-        assert_eq!(imported.status, 200, "{:?}", imported.body);
-        assert_eq!(
-            consensus::decode_availability_identity(&imported.body).unwrap(),
-            expected_identity
-        );
-        let confirm: node_wire::DrainMemberConfirmRequest = node_wire::DrainMemberConfirmRequest {
-            epoch: fixture.epoch,
-            validator: validator.validator_id,
-            request_id: expected_identity.request_id,
-        };
-        let confirmed = post(
-            &target,
-            node_wire::FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
-            node_wire::NODE_EVENT_MEDIA_TYPE,
-            confirm.encode().unwrap(),
-        );
-        assert_eq!(confirmed.status, 204, "{:?}", confirmed.body);
+        target_client
+            .import_staged_drain_publication(
+                validator.validator_id,
+                &bundle,
+                &expected_identity,
+                &fast_certifier,
+                &fixture.resolver,
+                &[],
+                Some(deadline),
+            )
+            .unwrap();
+        target_client
+            .confirm_drain_member(
+                fixture.epoch,
+                validator.validator_id,
+                expected_identity.request_id,
+                Some(deadline),
+            )
+            .unwrap();
         selected_votes.push(final_vote);
     }
     selected_votes.sort_by_key(|vote| vote.validator);
-    let request: node_wire::DrainUnionAdvanceRequest = node_wire::DrainUnionAdvanceRequest {
-        epoch: fixture.epoch,
-        votes: selected_votes.clone(),
-    };
-    let first = post(
-        &target,
-        node_wire::FASTVOTE_DRAIN_UNION_ADVANCE_PATH,
-        node_wire::NODE_EVENT_MEDIA_TYPE,
-        request.encode().unwrap(),
+    assert!(
+        target_client
+            .advance_drain_union(
+                &frontier_certifier,
+                &selected_votes,
+                fixture.domain,
+                [0xF1; 32],
+                4,
+                Some(deadline),
+            )
+            .unwrap()
+            .is_none()
     );
-    assert_eq!(first.status, 204, "{:?}", first.body);
-    let final_response = post(
-        &target,
-        node_wire::FASTVOTE_DRAIN_UNION_ADVANCE_PATH,
-        node_wire::NODE_EVENT_MEDIA_TYPE,
-        request.encode().unwrap(),
-    );
-    assert_eq!(final_response.status, 200, "{:?}", final_response.body);
-    let identity: consensus::DrainUnionIdentity =
-        consensus::decode_drain_union_identity(&final_response.body).unwrap();
+    let identity: consensus::DrainUnionIdentity = target_client
+        .advance_drain_union(
+            &frontier_certifier,
+            &selected_votes,
+            fixture.domain,
+            [0xF1; 32],
+            4,
+            Some(deadline),
+        )
+        .unwrap()
+        .expect("full union is locally ready after its one member");
     assert_eq!(identity.member_count, 1);
     assert_eq!(identity.closure_request_id, [0xF1; 32]);
+    let selected: Vec<(ValidatorId, consensus::FrozenFrontierIdentity)> = selected_votes
+        .iter()
+        .map(|vote| (vote.validator, vote.identity.clone()))
+        .collect();
+    let mut independent: consensus::DrainUnionAccumulator = consensus::DrainUnionAccumulator::new(
+        &fixture.resolver,
+        fixture.chain_id.clone(),
+        fixture.protocol_version,
+        fixture.epoch,
+        fixture.domain,
+        [0xF1; 32],
+        4,
+        &selected,
+    )
+    .unwrap();
+    independent
+        .push_member(&fixture.resolver, &expected_identity)
+        .unwrap();
+    assert_eq!(identity, independent.into_identity());
     for host in hosts {
         let _ = host.stop.send(());
     }

@@ -56,6 +56,7 @@ pub mod client;
 pub mod context;
 pub mod error;
 pub mod fastvote_client;
+pub mod fastvote_drain_client;
 pub mod fastvote_frontier_client;
 pub mod fastvote_publication_client;
 pub mod key;
