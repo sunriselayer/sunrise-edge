@@ -833,6 +833,99 @@ pub fn import_staged_drain_publication<S: StructuredDurableDomainStateStore>(
     )?)
 }
 
+/// Bounded read-only snapshot of one signer's durable drain progress
+/// (DR-0158): the signer's own signed terminal vote, the confirmed running
+/// [`FrozenFrontierIdentity`] and its cursor, the exact staged page if one is
+/// currently outstanding, and the complete flag. This is a scheduling hint,
+/// never authority -- it creates no ACK, signature or application effect,
+/// and neither reads nor claims DrainSet readiness.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DrainSignerProgress {
+    pub signer: ValidatorId,
+    pub vote: FrozenFrontierVote,
+    pub confirmed_identity: FrozenFrontierIdentity,
+    pub confirmed_last_request_id: Option<[u8; 32]>,
+    pub staged_page: Option<FrozenFrontierPage>,
+    pub complete: bool,
+}
+
+/// Reads the exact durable [`DrainSignerProgress`] row for one signer at the
+/// caller's pinned chain/protocol/epoch, fencing the same installed
+/// profile/epoch/outgoing set/committed Freeze every other function in this
+/// module fences. A pristine (never staged) row is not-ready, never a
+/// silently empty snapshot; a tombstoned or context-foreign row fails closed.
+/// The signer's own vote signature is independently re-verified against the
+/// installed outgoing set, and the persisted running accumulator is
+/// independently re-checked for self-consistency via
+/// [`FrozenFrontierAccumulator::resume`] -- the only re-verification possible
+/// without replaying every already-confirmed entry. This function never
+/// mutates, signs, or advances anything; a caller cannot use it to infer
+/// readiness beyond exactly what it durably observed.
+pub fn read_drain_signer_progress<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+    signer: ValidatorId,
+) -> Result<DrainSignerProgress, DrainSignerError> {
+    let drain: DrainContext = fence_drain_context(store, context, domain, resolver, expected)?;
+    drain
+        .fence
+        .validators
+        .get(signer)
+        .ok_or(DrainSignerError::Invalid("signer not in outgoing set"))?;
+    let progress_key: Vec<u8> =
+        drain_signer_progress_key(&drain.fence.chain, drain.fence.epoch, signer)?;
+    let progress_row: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &progress_key)?;
+    let bytes: &[u8] = match progress_row.value() {
+        Some(bytes) => bytes,
+        None if progress_row.revision() == StateRevision::INITIAL => {
+            return Err(DrainSignerError::NotReady("no signer progress"));
+        }
+        None => return Err(DrainSignerError::Invalid("signer progress is tombstoned")),
+    };
+    let record: SignerProgressRecord = decode_signer_progress(bytes)?;
+    if record.vote.identity.chain_id != drain.fence.chain
+        || record.vote.identity.protocol_version != expected.protocol_version()
+        || record.vote.identity.epoch != drain.fence.epoch
+        || record.vote.identity.domain != domain
+        || record.vote.identity.closure_request_id != drain.fence.closure_request_id
+        || record.vote.identity.closure_height != drain.fence.closure_height
+        || record.vote.validator != signer
+    {
+        return Err(DrainSignerError::Invalid(
+            "signer progress context mismatch",
+        ));
+    }
+    let certifier: FrozenFrontierCertifier = FrozenFrontierCertifier::new(
+        drain.fence.chain.clone(),
+        expected.protocol_version(),
+        drain.fence.epoch,
+        drain.fence.validators.clone(),
+    )?;
+    certifier.verify_vote(&record.vote, &FastPathEd25519Verifier)?;
+    // Independent self-consistency re-check of the persisted running
+    // accumulator: `resume` re-derives the empty-seed digest for a zero
+    // cursor and otherwise checks the identity/cursor pairing and hash-suite
+    // context. A full digest replay would require every already-confirmed
+    // entry, which this bounded read never re-scans.
+    FrozenFrontierAccumulator::resume(
+        resolver,
+        record.confirmed_identity.clone(),
+        record.confirmed_last_request_id,
+    )?;
+    Ok(DrainSignerProgress {
+        signer,
+        vote: record.vote,
+        confirmed_identity: record.confirmed_identity,
+        confirmed_last_request_id: record.confirmed_last_request_id,
+        staged_page: record.staged_page,
+        complete: record.complete,
+    })
+}
+
 /// The canonical selection this progress/ready row is scoped to: the exact
 /// ascending, unique `(validator_id, frontier_identity)` pairs
 /// [`selection_digest`] was folded from. Both `selected_votes` and

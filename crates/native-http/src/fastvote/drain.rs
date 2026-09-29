@@ -7,8 +7,9 @@
 
 use super::*;
 use node_core::ordered_economics::{
-    DrainSignerError, DrainUnionStep, advance_drain_union, confirm_drain_signer_entry,
-    import_staged_drain_publication, ingest_drain_signer_page,
+    DrainSignerError, DrainSignerProgress, DrainUnionStep, advance_drain_union,
+    confirm_drain_signer_entry, import_staged_drain_publication, ingest_drain_signer_page,
+    read_drain_signer_progress,
 };
 
 pub(super) fn routes<S, B, M, T, C, I>()
@@ -48,6 +49,12 @@ where
             node_wire::FASTVOTE_DRAIN_UNION_ADVANCE_PATH,
             post(advance_union::<S, B, M, T, C, I>).layer(DefaultBodyLimit::max(
                 node_wire::MAX_DRAIN_UNION_ADVANCE_REQUEST_BYTES,
+            )),
+        )
+        .route(
+            node_wire::FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH,
+            post(signer_progress::<S, B, M, T, C, I>).layer(DefaultBodyLimit::max(
+                node_wire::MAX_DRAIN_SIGNER_PROGRESS_REQUEST_BYTES,
             )),
         )
 }
@@ -525,6 +532,148 @@ where
                     }
                 }
                 Err(error) => drain_error_response(&error),
+            }
+        },
+    )
+    .await
+}
+
+/// Read-only bounded snapshot of one signer's durable drain progress
+/// (DR-0158). The request selects only the epoch and signer; the response
+/// repeats the chain, epoch and signer alongside the signer's own signed
+/// terminal vote, the confirmed running frontier identity and cursor, the
+/// exact staged page if one is outstanding, and the complete flag. This
+/// handler never mutates storage, signs, ACKs, or claims readiness -- it is
+/// a scheduling hint only, independently re-verified by node-core from
+/// durable state on every call.
+async fn signer_progress<S, B, M, T, C, I>(
+    State(state): State<SharedPreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I>>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response
+where
+    S: IndexedOutboxRepository + Send + Sync + 'static,
+    B: BlobStore + Send + Sync + 'static,
+    M: TransactionalNodeStateMachine + Send + Sync + 'static,
+    T: Transport + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    I: IndexedOutboxIdentitySource + Send + Sync + 'static,
+{
+    if !has_supported_content_type(&headers) || has_unsupported_content_encoding(&headers) {
+        return error_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported-fastvote-content",
+        );
+    }
+    let body: Bytes = match body {
+        Ok(value) => value,
+        Err(error) => return error_response(error.status(), "body-rejected"),
+    };
+    if body.len() > node_wire::MAX_DRAIN_SIGNER_PROGRESS_REQUEST_BYTES {
+        return error_response(StatusCode::PAYLOAD_TOO_LARGE, "drain-progress-too-large");
+    }
+    publication::admitted(
+        state.components.is_cancelled(),
+        state.blocking_executor.clone(),
+        move || {
+            if state.preinstalled_wasm.fastvote.is_none() {
+                return error_response(StatusCode::NOT_FOUND, "fastvote-disabled");
+            }
+            let request: node_wire::DrainSignerProgressRequest =
+                match node_wire::DrainSignerProgressRequest::decode(&body) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return error_response(StatusCode::BAD_REQUEST, "invalid-drain-progress");
+                    }
+                };
+            if request.epoch != state.config.epoch() {
+                return error_response(StatusCode::CONFLICT, "drain-epoch-repin-required");
+            }
+            let expected: execution::publication::PublicationContext =
+                match expected_context(&state.config) {
+                    Some(value) => value,
+                    None => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "drain-host-context",
+                        );
+                    }
+                };
+            let (domain, context): (AtomicityDomainId, DurableOperationContext) =
+                match prepare_storage_context(
+                    &state.components,
+                    &state.protocol_config,
+                    &state.authority,
+                    &state.config,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return query_invocation_error_response(&error),
+                };
+            if state.components.is_cancelled() {
+                return cancelled_before_storage_response();
+            }
+            let progress: DrainSignerProgress = match read_drain_signer_progress(
+                state.components.store.as_ref(),
+                &context,
+                domain,
+                &state.resolver,
+                &expected,
+                request.signer,
+            ) {
+                Ok(value) => value,
+                Err(error) => return drain_error_response(&error),
+            };
+            let (vote, confirmed_identity): (Vec<u8>, Vec<u8>) = match (
+                consensus::encode_frozen_frontier_vote(&progress.vote),
+                consensus::encode_frozen_frontier_identity(&progress.confirmed_identity),
+            ) {
+                (Ok(vote), Ok(identity)) => (vote, identity),
+                _ => {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "drain-progress-encoding",
+                    );
+                }
+            };
+            let staged_page: Option<Vec<u8>> = match progress
+                .staged_page
+                .as_ref()
+                .map(consensus::encode_frozen_frontier_page)
+                .transpose()
+            {
+                Ok(value) => value,
+                Err(_) => {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "drain-progress-page-encoding",
+                    );
+                }
+            };
+            let response: node_wire::DrainSignerProgressResponse =
+                node_wire::DrainSignerProgressResponse {
+                    chain_id: expected.chain_id().as_str().to_owned(),
+                    epoch: expected.epoch(),
+                    signer: progress.signer,
+                    vote,
+                    confirmed_identity,
+                    cursor: progress.confirmed_last_request_id,
+                    staged_page,
+                    complete: progress.complete,
+                };
+            match response.encode() {
+                Ok(bytes) => (
+                    StatusCode::OK,
+                    [
+                        (header::CONTENT_TYPE, NODE_RESULT_MEDIA_TYPE),
+                        (header::CACHE_CONTROL, "no-store"),
+                    ],
+                    bytes,
+                )
+                    .into_response(),
+                Err(_) => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "drain-progress-envelope-encoding",
+                ),
             }
         },
     )

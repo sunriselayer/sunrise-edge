@@ -1513,3 +1513,270 @@ fn union_progress_and_ready_record_vectors_are_stable() {
         "534e52455d64010004000100f3000000534e52453bd001000900010017000000647261696e2d756e696f6e2d766563746f722d74657374020004000000040000000300080000000800000000000000040020000000090909090909090909090909090909090909090909090909090909090909090905002000000007070707070707070707070707070707070707070707070707070707070707070600080000000b0000000000000007000800000001000000000000000800080000000000000000000000090038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb020038000000534e52450301010002000100020000000100020020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0300020000000100040069010000534e524537d0010004000100e5000000534e524536d001000800010017000000647261696e2d756e696f6e2d766563746f722d74657374020004000000040000000300080000000800000000000000040020000000090909090909090909090909090909090909090909090909090909090909090905002000000007070707070707070707070707070707070707070707070707070707070707070600080000000b000000000000000700080000000100000000000000080038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa020020000000010101010101010101010101010101010101010101010101010101010101010103000200000001000400400000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
     );
 }
+
+/// DR-0158: pristine is not-ready, a partially staged page reports the
+/// signer's own vote/running identity/cursor/staged page with `complete ==
+/// false`, and full completion reports the terminal identity with `staged_page
+/// == None` and `complete == true`. This never mutates or signs anything.
+#[test]
+fn read_signer_progress_reports_pristine_partial_and_complete_snapshots() {
+    let replica: RetentionReplica = logical_replica();
+    close(&replica.store);
+    let (signers, _entries) = four_validators();
+    let signer: &TestSigner = &signers[0];
+
+    // Pristine: nothing staged yet is not-ready, never a silently empty
+    // snapshot that a caller could mistake for "zero entries confirmed".
+    assert!(matches!(
+        read_drain_signer_progress(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &protocol(),
+            signer.validator_id(),
+        ),
+        Err(DrainSignerError::NotReady(_))
+    ));
+
+    let (bundle1, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    let (bundle2, _) = transfer_bundle_bytes(REQUEST + 1, FIRST_PAID_NONCE);
+    let id1: AvailabilityIdentity = identity(&bundle1);
+    let id2: AvailabilityIdentity = identity(&bundle2);
+    let vote: FrozenFrontierVote = cast_vote(signer, &[id1.clone(), id2.clone()]);
+    let page: FrozenFrontierPage = one_page(&[id1.clone(), id2.clone()]);
+    ingest_drain_signer_page(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &protocol(),
+        signer.validator_id(),
+        vote.clone(),
+        page.clone(),
+    )
+    .unwrap();
+
+    let staged: DrainSignerProgress = read_drain_signer_progress(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &protocol(),
+        signer.validator_id(),
+    )
+    .unwrap();
+    assert_eq!(staged.signer, signer.validator_id());
+    assert_eq!(staged.vote, vote);
+    assert_eq!(staged.confirmed_last_request_id, None);
+    assert_eq!(staged.staged_page, Some(page));
+    assert!(!staged.complete);
+
+    import_into(&replica.store, &bundle1, &id1);
+    confirm_drain_signer_entry(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        signer.validator_id(),
+        id1.request_id,
+    )
+    .unwrap();
+    let partial: DrainSignerProgress = read_drain_signer_progress(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &protocol(),
+        signer.validator_id(),
+    )
+    .unwrap();
+    assert_eq!(partial.confirmed_last_request_id, Some(id1.request_id));
+    assert!(partial.staged_page.is_some());
+    assert!(!partial.complete);
+
+    import_into(&replica.store, &bundle2, &id2);
+    confirm_drain_signer_entry(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        signer.validator_id(),
+        id2.request_id,
+    )
+    .unwrap();
+    let done: DrainSignerProgress = read_drain_signer_progress(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &protocol(),
+        signer.validator_id(),
+    )
+    .unwrap();
+    assert_eq!(done.confirmed_last_request_id, Some(id2.request_id));
+    assert_eq!(done.staged_page, None);
+    assert!(done.complete);
+    assert_eq!(done.confirmed_identity, vote.identity);
+}
+
+/// A caller pinned to a different epoch than the durably installed one gets
+/// the same fenced `EpochMismatch` stop every mutating function in this
+/// module returns -- never a silently empty or foreign-epoch snapshot.
+#[test]
+fn read_signer_progress_rejects_wrong_epoch() {
+    let replica: RetentionReplica = logical_replica();
+    close(&replica.store);
+    let (signers, _entries) = four_validators();
+    let signer: &TestSigner = &signers[0];
+    let wrong_epoch: execution::publication::PublicationContext =
+        execution::publication::PublicationContext::new(
+            protocol().chain_id().clone(),
+            protocol().protocol_version(),
+            Epoch::new(protocol().epoch().get() + 1),
+        )
+        .unwrap();
+    assert!(matches!(
+        read_drain_signer_progress(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &wrong_epoch,
+            signer.validator_id(),
+        ),
+        Err(DrainSignerError::Node(NodeCoreError::EpochMismatch { .. }))
+    ));
+}
+
+/// A tombstoned progress row and a malformed one both fail closed rather
+/// than being treated as pristine/not-ready.
+#[test]
+fn read_signer_progress_rejects_tombstoned_and_malformed_rows() {
+    let replica: RetentionReplica = logical_replica();
+    close(&replica.store);
+    let (signers, _entries) = four_validators();
+    let signer: &TestSigner = &signers[0];
+    let (bundle1, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    let id1: AvailabilityIdentity = identity(&bundle1);
+    let vote: FrozenFrontierVote = cast_vote(signer, std::slice::from_ref(&id1));
+    ingest_drain_signer_page(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &protocol(),
+        signer.validator_id(),
+        vote,
+        one_page(std::slice::from_ref(&id1)),
+    )
+    .unwrap();
+
+    let progress_key: Vec<u8> = drain_signer_progress_key(
+        protocol().chain_id(),
+        protocol().epoch(),
+        signer.validator_id(),
+    )
+    .unwrap();
+    delete_row(&replica.store, progress_key.clone());
+    assert!(matches!(
+        read_drain_signer_progress(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &protocol(),
+            signer.validator_id(),
+        ),
+        Err(DrainSignerError::Invalid(
+            "signer progress is tombstoned"
+        ))
+    ));
+
+    put_row(&replica.store, progress_key, vec![0xFF; 4]);
+    assert!(matches!(
+        read_drain_signer_progress(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &protocol(),
+            signer.validator_id(),
+        ),
+        Err(DrainSignerError::Node(_))
+    ));
+}
+
+/// A progress row whose stored vote disagrees with the currently fenced
+/// chain/protocol/epoch/domain/Freeze/signer context (for example, a foreign
+/// or corrupted row surviving from a different deployment) fails closed
+/// instead of being served as this signer's progress.
+#[test]
+fn read_signer_progress_rejects_context_foreign_row() {
+    let replica: RetentionReplica = logical_replica();
+    close(&replica.store);
+    let (signers, _entries) = four_validators();
+    let signer: &TestSigner = &signers[0];
+    let (bundle1, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    let id1: AvailabilityIdentity = identity(&bundle1);
+    let vote: FrozenFrontierVote = cast_vote(signer, std::slice::from_ref(&id1));
+    ingest_drain_signer_page(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &protocol(),
+        signer.validator_id(),
+        vote.clone(),
+        one_page(std::slice::from_ref(&id1)),
+    )
+    .unwrap();
+
+    let progress_key: Vec<u8> = drain_signer_progress_key(
+        protocol().chain_id(),
+        protocol().epoch(),
+        signer.validator_id(),
+    )
+    .unwrap();
+    let mut foreign_vote: FrozenFrontierVote = vote;
+    foreign_vote.identity.domain = AtomicityDomainId::new([0x99; 32]).unwrap();
+    let foreign_record = SignerProgressRecord {
+        vote: foreign_vote,
+        confirmed_identity: FrozenFrontierAccumulator::new(
+            &resolver(),
+            protocol().chain_id().clone(),
+            protocol().protocol_version(),
+            protocol().epoch(),
+            domain(),
+            CLOSURE_REQUEST_ID,
+            CLOSURE_HEIGHT,
+        )
+        .unwrap()
+        .into_identity(),
+        confirmed_last_request_id: None,
+        staged_page: Some(one_page(std::slice::from_ref(&id1))),
+        complete: false,
+    };
+    put_row(
+        &replica.store,
+        progress_key,
+        encode_signer_progress(&foreign_record).unwrap(),
+    );
+    assert!(matches!(
+        read_drain_signer_progress(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &protocol(),
+            signer.validator_id(),
+        ),
+        Err(DrainSignerError::Invalid(
+            "signer progress context mismatch"
+        ))
+    ));
+}

@@ -1,10 +1,17 @@
-//! Bounded transport locators for post-Freeze frontier possession (DR-0157).
+//! Bounded transport locators for post-Freeze frontier possession (DR-0157)
+//! and bounded read-only durable drain signer progress (DR-0158).
 //!
 //! These frames select one operation on the host's own pinned outgoing epoch.
 //! They are never authority: signed votes, pages and the selection are
 //! independently verified by node-core against the installed set and Freeze.
 //! The full publication import route accepts the existing canonical bundle
 //! frame directly, avoiding an outer frame that would shrink its 32 MiB bound.
+//!
+//! [`DrainSignerProgressResponse`] is a bounded scheduling hint only: its
+//! nested vote, running identity and staged page are exact canonical
+//! protocol bytes, independently decoded and re-verified by the caller
+//! against its own local pin. It is never handoff authority, creates no ACK,
+//! signature or application effect, and is not a ready/`DrainSet` claim.
 
 use crate::fastvote_frontier::{MAX_FRONTIER_PAGE_BYTES, MAX_FRONTIER_VOTE_BYTES};
 use canonical_encoding::{
@@ -22,10 +29,15 @@ pub const FASTVOTE_DRAIN_UNION_ADVANCE_PATH: &str = "/v1/fastvote/drain/union-ad
 /// The `validator_id` path segment is only a locator. The complete canonical
 /// bundle body is checked against the locally staged, page-verified identity.
 pub const FASTVOTE_DRAIN_IMPORT_PATH: &str = "/v1/fastvote/drain/import/{validator_id}";
+/// Certified-only, read-only. Never mutates, signs, ACKs, or claims
+/// readiness; see [`DrainSignerProgressResponse`].
+pub const FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH: &str = "/v1/fastvote/drain/signer-progress";
 
 pub const DRAIN_SIGNER_PAGE_REQUEST_TYPE_ID: u16 = 0xE10A;
 pub const DRAIN_MEMBER_CONFIRM_REQUEST_TYPE_ID: u16 = 0xE10B;
 pub const DRAIN_UNION_ADVANCE_REQUEST_TYPE_ID: u16 = 0xE10C;
+pub const DRAIN_SIGNER_PROGRESS_REQUEST_TYPE_ID: u16 = 0xE10D;
+pub const DRAIN_SIGNER_PROGRESS_RESPONSE_TYPE_ID: u16 = 0xE10E;
 const VERSION: u16 = 1;
 
 pub const MAX_DRAIN_SIGNER_PAGE_REQUEST_BYTES: usize =
@@ -33,6 +45,17 @@ pub const MAX_DRAIN_SIGNER_PAGE_REQUEST_BYTES: usize =
 pub const MAX_DRAIN_MEMBER_CONFIRM_REQUEST_BYTES: usize = 160;
 pub const MAX_DRAIN_UNION_ADVANCE_REQUEST_BYTES: usize =
     MAX_FASTPATH_ACTIVE_VALIDATORS * (MAX_FRONTIER_VOTE_BYTES + 8) + 128;
+pub const MAX_DRAIN_SIGNER_PROGRESS_REQUEST_BYTES: usize = 128;
+/// Matches the private `consensus::availability::frontier::MAX_FRONTIER_IDENTITY_BYTES`
+/// bound on one encoded [`consensus::FrozenFrontierIdentity`].
+const MAX_DRAIN_SIGNER_PROGRESS_IDENTITY_BYTES: usize = 2 * 1024;
+/// Matches `consensus::availability::frontier`'s own 128-byte chain-id bound.
+const MAX_DRAIN_SIGNER_PROGRESS_CHAIN_ID_BYTES: usize = 128;
+pub const MAX_DRAIN_SIGNER_PROGRESS_RESPONSE_BYTES: usize = MAX_DRAIN_SIGNER_PROGRESS_CHAIN_ID_BYTES
+    + MAX_FRONTIER_VOTE_BYTES
+    + MAX_DRAIN_SIGNER_PROGRESS_IDENTITY_BYTES
+    + MAX_FRONTIER_PAGE_BYTES
+    + 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DrainWireError {
@@ -250,6 +273,179 @@ impl DrainUnionAdvanceRequest {
     }
 }
 
+/// A bounded read-only request for one signer's durable drain progress at an
+/// exact epoch (DR-0158). Never mutates, signs, ACKs, or claims readiness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DrainSignerProgressRequest {
+    pub epoch: Epoch,
+    pub signer: ValidatorId,
+}
+
+impl DrainSignerProgressRequest {
+    pub fn encode(&self) -> Result<Vec<u8>, DrainWireError> {
+        let mut frame: CanonicalStruct =
+            CanonicalStruct::new(DRAIN_SIGNER_PROGRESS_REQUEST_TYPE_ID, VERSION);
+        frame.field_u64(1, self.epoch.get())?;
+        frame.field_bytes(2, self.signer.as_bytes().to_vec())?;
+        Ok(frame.finish()?)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, DrainWireError> {
+        if bytes.len() > MAX_DRAIN_SIGNER_PROGRESS_REQUEST_BYTES {
+            return Err(DrainWireError::Invalid(
+                "drain signer progress request bound",
+            ));
+        }
+        let frame = decode_canonical_frame(bytes)?;
+        frame.require_type(DRAIN_SIGNER_PROGRESS_REQUEST_TYPE_ID)?;
+        frame.require_version(VERSION)?;
+        frame.require_only_fields(&[1, 2])?;
+        let signer_bytes: [u8; 32] = frame
+            .required_field(2)?
+            .try_into()
+            .map_err(|_| DrainWireError::Invalid("drain signer progress validator length"))?;
+        let request: Self = Self {
+            epoch: Epoch::new(frame.required_u64(1)?),
+            signer: ValidatorId::new(signer_bytes),
+        };
+        if request.encode()?.as_slice() != bytes {
+            return Err(DrainWireError::Invalid(
+                "noncanonical drain signer progress request",
+            ));
+        }
+        Ok(request)
+    }
+}
+
+/// Bounded read-only signer-progress snapshot (DR-0158): the chain, epoch
+/// and signer are repeated in the clear so a caller can fence its own local
+/// pin before decoding any nested field; the signed vote, running
+/// [`consensus::FrozenFrontierIdentity`], optional cursor, optional exact
+/// staged page and complete flag are exact canonical protocol bytes, never
+/// independently trusted by this decoder. This is a scheduling hint, never
+/// authority: it creates no ACK, signature or application effect, and is not
+/// a ready/`DrainSet` claim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DrainSignerProgressResponse {
+    pub chain_id: String,
+    pub epoch: Epoch,
+    pub signer: ValidatorId,
+    pub vote: Vec<u8>,
+    pub confirmed_identity: Vec<u8>,
+    pub cursor: Option<[u8; 32]>,
+    pub staged_page: Option<Vec<u8>>,
+    pub complete: bool,
+}
+
+impl DrainSignerProgressResponse {
+    fn validate(&self) -> Result<(), DrainWireError> {
+        if self.chain_id.is_empty()
+            || self.chain_id.len() > MAX_DRAIN_SIGNER_PROGRESS_CHAIN_ID_BYTES
+        {
+            return Err(DrainWireError::Invalid(
+                "drain signer progress chain id bound",
+            ));
+        }
+        if self.vote.is_empty() || self.vote.len() > MAX_FRONTIER_VOTE_BYTES {
+            return Err(DrainWireError::Invalid("drain signer progress vote bound"));
+        }
+        if self.confirmed_identity.is_empty()
+            || self.confirmed_identity.len() > MAX_DRAIN_SIGNER_PROGRESS_IDENTITY_BYTES
+        {
+            return Err(DrainWireError::Invalid(
+                "drain signer progress identity bound",
+            ));
+        }
+        if self.cursor == Some([0; 32]) {
+            return Err(DrainWireError::Invalid(
+                "zero drain signer progress cursor",
+            ));
+        }
+        if let Some(page) = &self.staged_page
+            && (page.is_empty() || page.len() > MAX_FRONTIER_PAGE_BYTES)
+        {
+            return Err(DrainWireError::Invalid("drain signer progress page bound"));
+        }
+        Ok(())
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, DrainWireError> {
+        self.validate()?;
+        let mut frame: CanonicalStruct =
+            CanonicalStruct::new(DRAIN_SIGNER_PROGRESS_RESPONSE_TYPE_ID, VERSION);
+        frame.field_str(1, &self.chain_id)?;
+        frame.field_u64(2, self.epoch.get())?;
+        frame.field_bytes(3, self.signer.as_bytes().to_vec())?;
+        frame.field_bytes(4, self.vote.clone())?;
+        frame.field_bytes(5, self.confirmed_identity.clone())?;
+        frame.field_bytes(
+            6,
+            self.cursor.map_or_else(Vec::new, |value| value.to_vec()),
+        )?;
+        frame.field_bytes(7, self.staged_page.clone().unwrap_or_default())?;
+        frame.field_u16(8, u16::from(self.complete))?;
+        Ok(frame.finish()?)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, DrainWireError> {
+        if bytes.len() > MAX_DRAIN_SIGNER_PROGRESS_RESPONSE_BYTES {
+            return Err(DrainWireError::Invalid(
+                "drain signer progress response bound",
+            ));
+        }
+        let frame = decode_canonical_frame(bytes)?;
+        frame.require_type(DRAIN_SIGNER_PROGRESS_RESPONSE_TYPE_ID)?;
+        frame.require_version(VERSION)?;
+        frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8])?;
+        let chain_str: &str = frame.required_str(1)?;
+        if chain_str.is_empty() || chain_str.len() > MAX_DRAIN_SIGNER_PROGRESS_CHAIN_ID_BYTES {
+            return Err(DrainWireError::Invalid(
+                "drain signer progress chain id bound",
+            ));
+        }
+        let signer_bytes: [u8; 32] = frame
+            .required_field(3)?
+            .try_into()
+            .map_err(|_| DrainWireError::Invalid("drain signer progress validator length"))?;
+        let cursor: Option<[u8; 32]> = match frame.required_field(6)? {
+            [] => None,
+            value => Some(value.try_into().map_err(|_| {
+                DrainWireError::Invalid("drain signer progress cursor length")
+            })?),
+        };
+        let staged_page: Option<Vec<u8>> = match frame.required_field(7)? {
+            [] => None,
+            value => Some(value.to_vec()),
+        };
+        let complete: bool = match frame.required_u16(8)? {
+            0 => false,
+            1 => true,
+            _ => {
+                return Err(DrainWireError::Invalid(
+                    "drain signer progress complete flag",
+                ));
+            }
+        };
+        let response: Self = Self {
+            chain_id: chain_str.to_owned(),
+            epoch: Epoch::new(frame.required_u64(2)?),
+            signer: ValidatorId::new(signer_bytes),
+            vote: frame.required_field(4)?.to_vec(),
+            confirmed_identity: frame.required_field(5)?.to_vec(),
+            cursor,
+            staged_page,
+            complete,
+        };
+        response.validate()?;
+        if response.encode()?.as_slice() != bytes {
+            return Err(DrainWireError::Invalid(
+                "noncanonical drain signer progress response",
+            ));
+        }
+        Ok(response)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,5 +588,204 @@ mod tests {
             .encode()
             .is_err()
         );
+    }
+
+    #[test]
+    fn signer_progress_request_has_stable_bytes_and_refuses_noncanonical_inputs() {
+        let request: DrainSignerProgressRequest = DrainSignerProgressRequest {
+            epoch: Epoch::new(7),
+            signer: ValidatorId::new([0x11; 32]),
+        };
+        let encoded: Vec<u8> = request.encode().unwrap();
+
+        let mut expected: Vec<u8> = Vec::new();
+        expected.extend_from_slice(b"SNRE");
+        expected.extend_from_slice(&DRAIN_SIGNER_PROGRESS_REQUEST_TYPE_ID.to_le_bytes());
+        expected.extend_from_slice(&1u16.to_le_bytes());
+        expected.extend_from_slice(&2u16.to_le_bytes());
+        expected.extend_from_slice(&1u16.to_le_bytes());
+        expected.extend_from_slice(&8u32.to_le_bytes());
+        expected.extend_from_slice(&7u64.to_le_bytes());
+        expected.extend_from_slice(&2u16.to_le_bytes());
+        expected.extend_from_slice(&32u32.to_le_bytes());
+        expected.extend_from_slice(&[0x11u8; 32]);
+        assert_eq!(encoded, expected);
+
+        assert_eq!(
+            DrainSignerProgressRequest::decode(&encoded).unwrap(),
+            request
+        );
+
+        let mut wrong_type: Vec<u8> = encoded.clone();
+        wrong_type[4] ^= 1;
+        assert!(DrainSignerProgressRequest::decode(&wrong_type).is_err());
+        assert!(
+            DrainSignerProgressRequest::decode(&vec![
+                0u8;
+                MAX_DRAIN_SIGNER_PROGRESS_REQUEST_BYTES + 1
+            ])
+            .is_err()
+        );
+
+        // A truncated validator id is rejected before any semantic check.
+        let mut short_signer: CanonicalStruct =
+            CanonicalStruct::new(DRAIN_SIGNER_PROGRESS_REQUEST_TYPE_ID, VERSION);
+        short_signer.field_u64(1, 7).unwrap();
+        short_signer.field_bytes(2, vec![0x11; 31]).unwrap();
+        assert!(DrainSignerProgressRequest::decode(&short_signer.finish().unwrap()).is_err());
+    }
+
+    /// Stable `0xE10E/v1` [`DrainSignerProgressResponse`] vector (DR-0158).
+    /// The chain/epoch/signer are repeated in the clear; the nested vote,
+    /// running identity and staged page are opaque bounded bytes this
+    /// decoder never interprets.
+    #[test]
+    fn signer_progress_response_has_stable_bytes_and_refuses_invalid_fields() {
+        let response: DrainSignerProgressResponse = DrainSignerProgressResponse {
+            chain_id: "sr".to_owned(),
+            epoch: Epoch::new(7),
+            signer: ValidatorId::new([0x11; 32]),
+            vote: vec![0xaa, 0xbb],
+            confirmed_identity: vec![0xcc],
+            cursor: Some([0x22; 32]),
+            staged_page: Some(vec![0xdd, 0xee]),
+            complete: true,
+        };
+        let encoded: Vec<u8> = response.encode().unwrap();
+
+        let mut expected: Vec<u8> = Vec::new();
+        expected.extend_from_slice(b"SNRE");
+        expected.extend_from_slice(&DRAIN_SIGNER_PROGRESS_RESPONSE_TYPE_ID.to_le_bytes());
+        expected.extend_from_slice(&1u16.to_le_bytes());
+        expected.extend_from_slice(&8u16.to_le_bytes());
+        expected.extend_from_slice(&1u16.to_le_bytes());
+        expected.extend_from_slice(&2u32.to_le_bytes());
+        expected.extend_from_slice(b"sr");
+        expected.extend_from_slice(&2u16.to_le_bytes());
+        expected.extend_from_slice(&8u32.to_le_bytes());
+        expected.extend_from_slice(&7u64.to_le_bytes());
+        expected.extend_from_slice(&3u16.to_le_bytes());
+        expected.extend_from_slice(&32u32.to_le_bytes());
+        expected.extend_from_slice(&[0x11u8; 32]);
+        expected.extend_from_slice(&4u16.to_le_bytes());
+        expected.extend_from_slice(&2u32.to_le_bytes());
+        expected.extend_from_slice(&[0xaa, 0xbb]);
+        expected.extend_from_slice(&5u16.to_le_bytes());
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        expected.extend_from_slice(&[0xcc]);
+        expected.extend_from_slice(&6u16.to_le_bytes());
+        expected.extend_from_slice(&32u32.to_le_bytes());
+        expected.extend_from_slice(&[0x22u8; 32]);
+        expected.extend_from_slice(&7u16.to_le_bytes());
+        expected.extend_from_slice(&2u32.to_le_bytes());
+        expected.extend_from_slice(&[0xdd, 0xee]);
+        expected.extend_from_slice(&8u16.to_le_bytes());
+        expected.extend_from_slice(&2u32.to_le_bytes());
+        expected.extend_from_slice(&1u16.to_le_bytes());
+        assert_eq!(encoded, expected);
+        assert_eq!(
+            DrainSignerProgressResponse::decode(&encoded).unwrap(),
+            response
+        );
+
+        // The pristine/no-cursor/no-staged-page/incomplete shape round-trips
+        // to a genuinely different encoding, never silently coerced to the
+        // staged shape above.
+        let pristine: DrainSignerProgressResponse = DrainSignerProgressResponse {
+            cursor: None,
+            staged_page: None,
+            complete: false,
+            ..response.clone()
+        };
+        let pristine_encoded: Vec<u8> = pristine.encode().unwrap();
+        assert_eq!(
+            DrainSignerProgressResponse::decode(&pristine_encoded).unwrap(),
+            pristine
+        );
+        assert_ne!(pristine_encoded, encoded);
+
+        assert!(
+            DrainSignerProgressResponse {
+                chain_id: String::new(),
+                ..response.clone()
+            }
+            .encode()
+            .is_err()
+        );
+        assert!(
+            DrainSignerProgressResponse {
+                vote: Vec::new(),
+                ..response.clone()
+            }
+            .encode()
+            .is_err()
+        );
+        assert!(
+            DrainSignerProgressResponse {
+                confirmed_identity: Vec::new(),
+                ..response.clone()
+            }
+            .encode()
+            .is_err()
+        );
+        assert!(
+            DrainSignerProgressResponse {
+                cursor: Some([0; 32]),
+                ..response.clone()
+            }
+            .encode()
+            .is_err()
+        );
+        assert!(
+            DrainSignerProgressResponse {
+                staged_page: Some(Vec::new()),
+                ..response.clone()
+            }
+            .encode()
+            .is_err()
+        );
+
+        let mut wrong_type: Vec<u8> = encoded.clone();
+        wrong_type[4] ^= 1;
+        assert!(DrainSignerProgressResponse::decode(&wrong_type).is_err());
+        assert!(
+            DrainSignerProgressResponse::decode(&vec![
+                0u8;
+                MAX_DRAIN_SIGNER_PROGRESS_RESPONSE_BYTES + 1
+            ])
+            .is_err()
+        );
+
+        // A malformed response: an out-of-range complete flag is never
+        // silently coerced to a boolean.
+        let mut malformed_complete: CanonicalStruct =
+            CanonicalStruct::new(DRAIN_SIGNER_PROGRESS_RESPONSE_TYPE_ID, VERSION);
+        malformed_complete.field_str(1, "sr").unwrap();
+        malformed_complete.field_u64(2, 7).unwrap();
+        malformed_complete.field_bytes(3, vec![0x11; 32]).unwrap();
+        malformed_complete
+            .field_bytes(4, vec![0xaa, 0xbb])
+            .unwrap();
+        malformed_complete.field_bytes(5, vec![0xcc]).unwrap();
+        malformed_complete.field_bytes(6, Vec::new()).unwrap();
+        malformed_complete.field_bytes(7, Vec::new()).unwrap();
+        malformed_complete.field_u16(8, 2).unwrap();
+        assert!(
+            DrainSignerProgressResponse::decode(&malformed_complete.finish().unwrap()).is_err()
+        );
+
+        // A malformed context: a truncated signer field is rejected before
+        // any nested vote/page is even inspected.
+        let mut short_signer: CanonicalStruct =
+            CanonicalStruct::new(DRAIN_SIGNER_PROGRESS_RESPONSE_TYPE_ID, VERSION);
+        short_signer.field_str(1, "sr").unwrap();
+        short_signer.field_u64(2, 7).unwrap();
+        short_signer.field_bytes(3, vec![0x11; 31]).unwrap();
+        short_signer.field_bytes(4, vec![0xaa, 0xbb]).unwrap();
+        short_signer.field_bytes(5, vec![0xcc]).unwrap();
+        short_signer.field_bytes(6, Vec::new()).unwrap();
+        short_signer.field_bytes(7, Vec::new()).unwrap();
+        short_signer.field_u16(8, 0).unwrap();
+        assert!(DrainSignerProgressResponse::decode(&short_signer.finish().unwrap()).is_err());
     }
 }
