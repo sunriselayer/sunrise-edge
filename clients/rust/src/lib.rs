@@ -57,6 +57,7 @@ pub mod context;
 pub mod error;
 pub mod fastvote_client;
 pub mod fastvote_drain_client;
+pub mod fastvote_drain_driver;
 pub mod fastvote_frontier_client;
 pub mod fastvote_publication_client;
 pub mod key;
@@ -94,6 +95,9 @@ pub use fastvote_client::{
     MAX_FASTVOTE_NETWORK_ENDPOINTS, MAX_FASTVOTE_PER_REQUEST_CAP, TrustedFastVoteGenesis,
     apply_fastvote_to_all, collect_fastvote_certificate, load_trusted_fastvote_genesis,
     load_trusted_fastvote_genesis_with_profile, validate_fastvote_endpoints,
+};
+pub use fastvote_drain_driver::{
+    DrainDriveBounds, DrainDriveError, DrainDriveOutcome, drive_drain_to_local_ready,
 };
 pub use fastvote_publication_client::{
     FastVoteAvailabilityAttempt, FastVotePublicationError, FastVotePublishedRound,

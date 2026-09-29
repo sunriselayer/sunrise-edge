@@ -67,6 +67,11 @@ Once all selected signers are complete, the driver repeatedly advances the
 selection-specific union. Its 204 response means only progress. The
 canonical ready identity is accepted only after the target's final CAS and
 the client checks its chain/protocol/epoch/domain/Freeze/selection shape.
+There is not yet a bounded read route for the union's own intermediate row:
+an ambiguous union-advance response stops this invocation instead of
+blindly repeating it. The operator may rerun with the exact same selection;
+the target's selection-scoped CAS reconciles that retry. A 204 is not an
+ambiguous response and may be followed by another bounded advance step.
 The future ordered DrainSet voter reads the matching ready row under the
 same CAS as its own immutable vote identity. Neither this driver nor the
 ready response signs or publishes a DrainSet vote.

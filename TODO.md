@@ -434,17 +434,29 @@ The detailed existing evidence and remaining criteria follow:
   stage, full-bundle import, member confirm and union advance; the same E2E
   independently compares the returned union digest. See
   [DR-0158](docs/architecture/decisions/0158-bounded-drain-network-driver.md)
-  for the remaining resumable-driver design. A bounded progress-read route,
-  executable resume loop, trusted peer admission or cumulative work budget,
-  PostgreSQL multi-validator handoff, ordered DrainSet/Seal, cut, conditional
-  next-set readiness and activation remain open. Draft PR #235 is not
-  Delivery 3 or merge-ready. `npm ci --prefix adapters/cloudflare-workers`,
-  changed-crate Clippy and `./scripts/check-all.sh` passed for this
-  continuation on 2026-09-29. The install reported five dependency audit
-  advisories (one moderate, four high); no forced upgrade was applied.
-  Live PostgreSQL suites were skipped because
-  `SUNRISE_EDGE_TEST_POSTGRES_URL` is unset. Final review and pushed-head CI
-  remain open.
+  for the bounded driver contract. This U5 continuation adds a read-only
+  durable signer-progress route (`0xE10D`/`0xE10E`) behind the same profile,
+  epoch, outgoing-set and committed-Freeze fence, plus a pinned Rust driver
+  with a whole-run deadline, per-request/page caps and mutation-attempt budget.
+  A pristine signer is not-ready; tombstoned, malformed or foreign progress
+  fails closed. The driver resumes from the target's durable confirmed cursor
+  and exact staged page, independently verifies source votes and full
+  publication bundles, rereads signer progress after ambiguous stage/import/
+  confirm outcomes, and stops on an ambiguous union outcome because no union
+  progress-read route exists yet. The real four-validator HTTP/SQLite E2E now
+  stops after an import-only budget, reconstructs the client and resumes to
+  local readiness, checks a forged selection is rejected before mutation,
+  and compares the final union identity independently. It does not close and
+  reopen the target server or prove PostgreSQL failover. An operator CLI
+  subcommand, trusted peer admission or cumulative work budget, PostgreSQL
+  multi-validator handoff, ordered DrainSet/Seal, cut, conditional next-set
+  readiness and activation remain open. Draft PR #235 remains incomplete
+  Delivery 3 and not merge-ready. U5's `npm ci`, changed-crate Clippy and
+  complete `./scripts/check-all.sh` passed on 2026-09-29. The install
+  reported five dependency audit advisories (one moderate, four high); no
+  forced upgrade was applied. Live PostgreSQL suites were skipped because
+  `SUNRISE_EDGE_TEST_POSTGRES_URL` is unset. Independent review and
+  pushed-head CI remain open.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

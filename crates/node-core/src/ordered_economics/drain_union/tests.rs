@@ -1625,8 +1625,8 @@ fn read_signer_progress_reports_pristine_partial_and_complete_snapshots() {
 }
 
 /// A caller pinned to a different epoch than the durably installed one gets
-/// the same fenced `EpochMismatch` stop every mutating function in this
-/// module returns -- never a silently empty or foreign-epoch snapshot.
+/// the same fenced `EpochMismatch` stop, wrapped by the shared publication
+/// fence -- never a silently empty or foreign-epoch snapshot.
 #[test]
 fn read_signer_progress_rejects_wrong_epoch() {
     let replica: RetentionReplica = logical_replica();
@@ -1649,7 +1649,11 @@ fn read_signer_progress_rejects_wrong_epoch() {
             &wrong_epoch,
             signer.validator_id(),
         ),
-        Err(DrainSignerError::Node(NodeCoreError::EpochMismatch { .. }))
+        Err(DrainSignerError::Publication(inner))
+            if matches!(
+                inner.as_ref(),
+                PublicationRetentionError::Node(NodeCoreError::EpochMismatch { .. })
+            )
     ));
 }
 
@@ -1692,9 +1696,7 @@ fn read_signer_progress_rejects_tombstoned_and_malformed_rows() {
             &protocol(),
             signer.validator_id(),
         ),
-        Err(DrainSignerError::Invalid(
-            "signer progress is tombstoned"
-        ))
+        Err(DrainSignerError::Invalid("signer progress is tombstoned"))
     ));
 
     put_row(&replica.store, progress_key, vec![0xFF; 4]);

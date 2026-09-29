@@ -9,20 +9,23 @@ use std::time::Instant;
 
 use consensus::bundle::{PublicationBundle, encode_publication_bundle, verify_publication_bundle};
 use consensus::{
-    AvailabilityIdentity, DrainUnionIdentity, FastPathCertifier, FrozenFrontierCertifier,
-    FrozenFrontierPage, FrozenFrontierVote, decode_availability_identity,
-    decode_drain_union_identity, encode_frozen_frontier_page, encode_frozen_frontier_vote,
-    verify_frozen_frontier_quorum,
+    AvailabilityIdentity, DrainUnionIdentity, FastPathCertifier, FrozenFrontierAccumulator,
+    FrozenFrontierCertifier, FrozenFrontierIdentity, FrozenFrontierPage, FrozenFrontierVote,
+    decode_availability_identity, decode_drain_union_identity, decode_frozen_frontier_identity,
+    decode_frozen_frontier_page, decode_frozen_frontier_vote, encode_frozen_frontier_page,
+    encode_frozen_frontier_vote, verify_frozen_frontier_quorum,
 };
 use execution::paid_execution::{
     authenticate_paid_intent, decode_signed_paid_intent, paid_invocation_digest,
 };
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
+use node_core::ordered_economics::DrainSignerProgress;
 use node_wire::{
-    DrainMemberConfirmRequest, DrainSignerPageRequest, DrainUnionAdvanceRequest,
-    FASTVOTE_DRAIN_IMPORT_PATH, FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
-    FASTVOTE_DRAIN_SIGNER_PAGE_PATH, FASTVOTE_DRAIN_UNION_ADVANCE_PATH, NODE_EVENT_MEDIA_TYPE,
+    DrainMemberConfirmRequest, DrainSignerPageRequest, DrainSignerProgressRequest,
+    DrainSignerProgressResponse, DrainUnionAdvanceRequest, FASTVOTE_DRAIN_IMPORT_PATH,
+    FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH, FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
+    FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH, FASTVOTE_DRAIN_UNION_ADVANCE_PATH, NODE_EVENT_MEDIA_TYPE,
     NODE_RESULT_MEDIA_TYPE,
 };
 use protocol_types::{AtomicityDomainId, ValidatorId};
@@ -67,6 +70,110 @@ fn validator_path(validator: ValidatorId) -> String {
 }
 
 impl<T: Transport> Client<T> {
+    /// Reads one bounded durable signer-progress snapshot. A pristine row is
+    /// represented by `None` only for the exact `drain-not-ready` response;
+    /// epoch re-pin, corrupt state and storage failures remain errors. The
+    /// response is checked against the caller's *local* resolver, outgoing
+    /// committee, endpoint signer and committed Freeze expectation. It is a
+    /// scheduling hint, never an authority for an ACK, cut or DrainSet vote.
+    pub fn read_drain_signer_progress(
+        &self,
+        certifier: &FrozenFrontierCertifier,
+        expected_signer: ValidatorId,
+        freeze: ExpectedDrainFreeze,
+        resolver: &HashSuiteResolver,
+        deadline: Option<Instant>,
+    ) -> Result<Option<DrainSignerProgress>, ClientError> {
+        let request: DrainSignerProgressRequest = DrainSignerProgressRequest {
+            epoch: certifier.epoch(),
+            signer: expected_signer,
+        };
+        let response: WireResponse = self.transport().send(&WireRequest {
+            method: Method::Post,
+            path: FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH.to_owned(),
+            content_type: Some(NODE_EVENT_MEDIA_TYPE),
+            body: request.encode()?,
+            deadline,
+        })?;
+        if response.status == 409 && response.body == b"drain-not-ready" {
+            return Ok(None);
+        }
+        let body: Vec<u8> = expect_success(response, NODE_RESULT_MEDIA_TYPE)?;
+        let envelope: DrainSignerProgressResponse = DrainSignerProgressResponse::decode(&body)?;
+        if envelope.chain_id != resolver.chain_id().as_str()
+            || envelope.epoch != certifier.epoch()
+            || envelope.signer != expected_signer
+        {
+            return Err(ClientError::DrainMismatch(
+                "progress envelope differs from local chain, epoch or signer",
+            ));
+        }
+        let vote: FrozenFrontierVote = decode_frozen_frontier_vote(&envelope.vote)?;
+        if vote.validator != expected_signer
+            || vote.identity.chain_id != *resolver.chain_id()
+            || vote.identity.protocol_version != resolver.protocol_version()
+            || vote.identity.epoch != certifier.epoch()
+            || vote.identity.domain != freeze.domain
+            || vote.identity.closure_request_id != freeze.closure_request_id
+            || vote.identity.closure_height != freeze.closure_height
+        {
+            return Err(ClientError::DrainMismatch(
+                "progress vote differs from local signer, resolver or Freeze",
+            ));
+        }
+        certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+        let confirmed_identity: FrozenFrontierIdentity =
+            decode_frozen_frontier_identity(&envelope.confirmed_identity)?;
+        if confirmed_identity.chain_id != vote.identity.chain_id
+            || confirmed_identity.protocol_version != vote.identity.protocol_version
+            || confirmed_identity.epoch != vote.identity.epoch
+            || confirmed_identity.domain != vote.identity.domain
+            || confirmed_identity.closure_request_id != vote.identity.closure_request_id
+            || confirmed_identity.closure_height != vote.identity.closure_height
+            || confirmed_identity.entry_count > vote.identity.entry_count
+        {
+            return Err(ClientError::DrainMismatch(
+                "progress accumulator differs from signed frontier context or count",
+            ));
+        }
+        FrozenFrontierAccumulator::resume(resolver, confirmed_identity.clone(), envelope.cursor)?;
+        let staged_page: Option<FrozenFrontierPage> = envelope
+            .staged_page
+            .as_deref()
+            .map(decode_frozen_frontier_page)
+            .transpose()?;
+        if envelope.complete {
+            if confirmed_identity != vote.identity || staged_page.is_some() {
+                return Err(ClientError::DrainMismatch(
+                    "complete progress differs from signed terminal frontier",
+                ));
+            }
+        } else if let Some(page) = &staged_page
+            && (page.entries.is_empty()
+                || (envelope.cursor.is_none() && page.after_request_id.is_some())
+                || page
+                    .after_request_id
+                    .is_some_and(|prior| envelope.cursor.is_some_and(|cursor| prior > cursor))
+                || !page.entries.iter().any(|entry| {
+                    envelope
+                        .cursor
+                        .is_none_or(|cursor| entry.request_id > cursor)
+                }))
+        {
+            return Err(ClientError::DrainMismatch(
+                "staged progress page has no consecutive pending member",
+            ));
+        }
+        Ok(Some(DrainSignerProgress {
+            signer: expected_signer,
+            vote,
+            confirmed_identity,
+            confirmed_last_request_id: envelope.cursor,
+            staged_page,
+            complete: envelope.complete,
+        }))
+    }
+
     /// Stages one signed, consecutive page on the target. A valid signature
     /// and endpoint mapping are checked locally; the target independently
     /// fences its installed Freeze and verifies the page before durable CAS.
@@ -367,6 +474,64 @@ mod tests {
             },
             calls: Cell::new(0),
         })
+    }
+
+    #[test]
+    fn signer_progress_read_accepts_only_locally_pinned_complete_snapshot() {
+        let (resolver, certifier, vote, signer, domain) = fixture();
+        let freeze: ExpectedDrainFreeze = ExpectedDrainFreeze {
+            domain,
+            closure_request_id: [7; 32],
+            closure_height: 11,
+        };
+        let envelope: DrainSignerProgressResponse = DrainSignerProgressResponse {
+            chain_id: vote.identity.chain_id.as_str().to_owned(),
+            epoch: certifier.epoch(),
+            signer,
+            vote: encode_frozen_frontier_vote(&vote).unwrap(),
+            confirmed_identity: consensus::encode_frozen_frontier_identity(&vote.identity).unwrap(),
+            cursor: None,
+            staged_page: None,
+            complete: true,
+        };
+        let valid: Client<FixedTransport> = client(200, envelope.encode().unwrap());
+        let progress: DrainSignerProgress = valid
+            .read_drain_signer_progress(&certifier, signer, freeze, &resolver, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(progress.vote, vote);
+        assert_eq!(progress.confirmed_identity, vote.identity);
+        assert!(progress.complete);
+
+        let pristine: Client<FixedTransport> = client(409, b"drain-not-ready".to_vec());
+        assert!(
+            pristine
+                .read_drain_signer_progress(&certifier, signer, freeze, &resolver, None)
+                .unwrap()
+                .is_none()
+        );
+        let repin: Client<FixedTransport> = client(409, b"drain-epoch-repin-required".to_vec());
+        assert!(matches!(
+            repin.read_drain_signer_progress(&certifier, signer, freeze, &resolver, None),
+            Err(ClientError::UnexpectedStatus { status: 409, .. })
+        ));
+
+        let mut foreign: DrainSignerProgressResponse = envelope.clone();
+        foreign.signer = ValidatorId::new([0x99; 32]);
+        assert!(matches!(
+            client(200, foreign.encode().unwrap())
+                .read_drain_signer_progress(&certifier, signer, freeze, &resolver, None),
+            Err(ClientError::DrainMismatch(_))
+        ));
+        let mut forged: FrozenFrontierVote = vote.clone();
+        forged.signature[0] ^= 1;
+        let mut forged_envelope: DrainSignerProgressResponse = envelope;
+        forged_envelope.vote = encode_frozen_frontier_vote(&forged).unwrap();
+        assert!(matches!(
+            client(200, forged_envelope.encode().unwrap())
+                .read_drain_signer_progress(&certifier, signer, freeze, &resolver, None),
+            Err(ClientError::FrozenFrontier(_))
+        ));
     }
 
     #[test]

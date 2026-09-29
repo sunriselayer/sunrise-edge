@@ -54,8 +54,7 @@ const MAX_DRAIN_SIGNER_PROGRESS_CHAIN_ID_BYTES: usize = 128;
 pub const MAX_DRAIN_SIGNER_PROGRESS_RESPONSE_BYTES: usize = MAX_DRAIN_SIGNER_PROGRESS_CHAIN_ID_BYTES
     + MAX_FRONTIER_VOTE_BYTES
     + MAX_DRAIN_SIGNER_PROGRESS_IDENTITY_BYTES
-    + MAX_FRONTIER_PAGE_BYTES
-    + 256;
+    + MAX_FRONTIER_PAGE_BYTES + 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DrainWireError {
@@ -357,9 +356,7 @@ impl DrainSignerProgressResponse {
             ));
         }
         if self.cursor == Some([0; 32]) {
-            return Err(DrainWireError::Invalid(
-                "zero drain signer progress cursor",
-            ));
+            return Err(DrainWireError::Invalid("zero drain signer progress cursor"));
         }
         if let Some(page) = &self.staged_page
             && (page.is_empty() || page.len() > MAX_FRONTIER_PAGE_BYTES)
@@ -378,10 +375,7 @@ impl DrainSignerProgressResponse {
         frame.field_bytes(3, self.signer.as_bytes().to_vec())?;
         frame.field_bytes(4, self.vote.clone())?;
         frame.field_bytes(5, self.confirmed_identity.clone())?;
-        frame.field_bytes(
-            6,
-            self.cursor.map_or_else(Vec::new, |value| value.to_vec()),
-        )?;
+        frame.field_bytes(6, self.cursor.map_or_else(Vec::new, |value| value.to_vec()))?;
         frame.field_bytes(7, self.staged_page.clone().unwrap_or_default())?;
         frame.field_u16(8, u16::from(self.complete))?;
         Ok(frame.finish()?)
@@ -409,9 +403,11 @@ impl DrainSignerProgressResponse {
             .map_err(|_| DrainWireError::Invalid("drain signer progress validator length"))?;
         let cursor: Option<[u8; 32]> = match frame.required_field(6)? {
             [] => None,
-            value => Some(value.try_into().map_err(|_| {
-                DrainWireError::Invalid("drain signer progress cursor length")
-            })?),
+            value => Some(
+                value
+                    .try_into()
+                    .map_err(|_| DrainWireError::Invalid("drain signer progress cursor length"))?,
+            ),
         };
         let staged_page: Option<Vec<u8>> = match frame.required_field(7)? {
             [] => None,
@@ -620,11 +616,8 @@ mod tests {
         wrong_type[4] ^= 1;
         assert!(DrainSignerProgressRequest::decode(&wrong_type).is_err());
         assert!(
-            DrainSignerProgressRequest::decode(&vec![
-                0u8;
-                MAX_DRAIN_SIGNER_PROGRESS_REQUEST_BYTES + 1
-            ])
-            .is_err()
+            DrainSignerProgressRequest::decode(&[0u8; MAX_DRAIN_SIGNER_PROGRESS_REQUEST_BYTES + 1])
+                .is_err()
         );
 
         // A truncated validator id is rejected before any semantic check.
@@ -763,9 +756,7 @@ mod tests {
         malformed_complete.field_str(1, "sr").unwrap();
         malformed_complete.field_u64(2, 7).unwrap();
         malformed_complete.field_bytes(3, vec![0x11; 32]).unwrap();
-        malformed_complete
-            .field_bytes(4, vec![0xaa, 0xbb])
-            .unwrap();
+        malformed_complete.field_bytes(4, vec![0xaa, 0xbb]).unwrap();
         malformed_complete.field_bytes(5, vec![0xcc]).unwrap();
         malformed_complete.field_bytes(6, Vec::new()).unwrap();
         malformed_complete.field_bytes(7, Vec::new()).unwrap();
