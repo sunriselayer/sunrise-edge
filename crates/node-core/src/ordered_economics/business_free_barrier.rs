@@ -3,6 +3,9 @@
 use super::*;
 use consensus::{DrainUnionIdentity, decode_drain_union_identity, encode_drain_union_identity};
 
+// Verified unallocated across `crates/` and `docs/` at the 2026-09-30 U11
+// allocation; unlike the neighbouring 0x6461/0x6462 frames this is local
+// progress, never a transferable cut or signed authority.
 const BARRIER_TYPE: u16 = 0x6463;
 const BARRIER_VERSION: u16 = 1;
 const MAX_BARRIER_BYTES: usize = 4096;

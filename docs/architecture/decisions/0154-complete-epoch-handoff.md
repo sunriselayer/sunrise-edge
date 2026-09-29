@@ -11,13 +11,14 @@ design-only decision and did not activate a new runtime rule. Independent
 implementation slices on 2026-09-28 allocate the availability wire family and
 implement the handoff-capable logical commitment profile and a canonical
 publication bundle with one replica's durable `retain_publication` step,
-described below. A later 2026-09-28 Draft PR slice adds prepare-side retained
+described below. Later Draft PR slices add prepare-side retained
 witness/artifacts, the v2 availability-certificate apply gate, certified-only
-HTTP source/retention/published-apply routes and Rust client/CLI aggregation.
-Freeze/DrainSet/Seal and integrated epoch handoff remain unimplemented.
-The complete design requires a
-publication-before-apply rule, not a new quorum-applied finality rule.
-Implementation and validation status belong in [`TODO.md`](../../../TODO.md).
+HTTP source/retention/published-apply routes, Rust client/CLI aggregation,
+ordered Freeze, DrainSet and local drain/barrier progress. These slices do not
+constitute a portable cut, Seal or integrated epoch handoff. The complete
+design requires a publication-before-apply rule, not a new quorum-applied
+finality rule. Current implementation and validation status belong only in
+[`TODO.md`](../../../TODO.md).
 
 ## Context and reusable boundaries
 

@@ -50,6 +50,10 @@ a paginated state scan cannot detect an intervening receipt or outcome write.
    new header, publication, receipt, outcome, nonce or object mutation. Exact
    already-committed drain replay remains receipt-first and writes nothing;
    exact retained publication replay may only rebuild replica-local progress.
+   A newly committing ordered re-placement of an already-completed candidate
+   can still stop at this fence: ordered completion replay is not an exception
+   to a new committed block after the cut. An unchanged certificate event
+   with no newly committed candidate remains a no-op.
    Empty consensus progress remains possible. A future `Seal` needs a narrow
    reviewed exception to fresh candidate placement, not an exception for
    already-inherited control candidates. Ordinary fast-path writes are
@@ -58,6 +62,10 @@ a paginated state scan cannot detect an intervening receipt or outcome write.
    active; exact retained evidence replay remains legal. Evidence about an
    old offense may still be newly submitted after activation, so the future
    historical cut cannot naively rescan all evidence keys by offense epoch.
+   The installer is an internal local step at present. Any future exposed
+   request surface must require operator authority: installing this marker
+   permanently stops fresh candidate progress on that replica until a
+   separately verified Seal/activation path exists.
 
 The barrier is **local cut-stability evidence**, not portable authority and
 not an alternative to an authenticated history replay on a joining validator.

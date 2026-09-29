@@ -621,11 +621,17 @@ The detailed existing evidence and remaining criteria follow:
   admits new evidence about an old offense after actual activation. U11 is
   not yet a portable cut or a completed Seal/activation path. U11's `npm ci`
   and complete local repository gate passed, with live PostgreSQL suites
-  skipped because no disposable URL was configured. Exact-head CI and
-  independent review remain pending. Before Seal, establish a network-level
-  argument for exhausting any earlier certified business branch unknown to
-  one replica; a local high/locked suffix check alone cannot prove global
-  absence.
+  skipped because no disposable URL was configured. The implementation head
+  `47b3373` passed [required CI run #36641493126](https://github.com/sunriselayer/sunrise-edge/actions/runs/36641493126),
+  and a fresh read-only Opus tech-lead review explicitly APPROVED the U11
+  delta only. Neither result approves Draft PR #235 or Delivery 3. Before
+  portable enumeration/Seal, retain and independently verify the committed
+  proposal/QC history, establish a direct certified post-Freeze control anchor,
+  close post-DrainSet candidate voting, and handle an authenticated but dead
+  conflicting suffix without treating its candidate as a future committable
+  branch. Test the actual shared-engine safety properties under delayed and
+  adversarial delivery; a local high/locked suffix check alone is not a
+  network-level proof of global absence.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).
