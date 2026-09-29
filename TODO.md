@@ -420,6 +420,11 @@ The detailed existing evidence and remaining criteria follow:
   Freeze reads into its own future CAS. A full `0xE10C` union-request stable
   vector is tested. Review follow-up added a competing artifact-revision
   test for marker rebuild and corrected the durable-read error taxonomy.
+  Opus then identified a valid confirm arriving before its proof import as
+  misclassified permanent; the follow-up distinguishes a never-written proof
+  (409, retry after import) from a tombstoned proof or partial retained
+  artifact closure (invalid), with a real HTTP case. The nested import epoch
+  mismatch also retains its explicit re-pin label.
   A pinned Rust client and real HTTP/file-backed SQLite E2E now exercise
   stage, full-bundle import, member confirm and union advance; the same E2E
   independently compares the returned union digest. See

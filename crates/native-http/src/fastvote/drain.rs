@@ -100,6 +100,7 @@ fn node_core_error_class(error: &NodeCoreError) -> DrainErrorClass {
 
 fn publication_error_class(error: &PublicationRetentionError) -> DrainErrorClass {
     match error {
+        PublicationRetentionError::DrainProofNotReady => DrainErrorClass::NotReadyOrCas,
         PublicationRetentionError::Node(inner) => node_core_error_class(inner),
         _ => DrainErrorClass::PermanentlyInvalid,
     }
@@ -119,7 +120,15 @@ fn drain_error_class(error: &DrainSignerError) -> DrainErrorClass {
 }
 
 fn drain_error_response(error: &DrainSignerError) -> Response {
-    if let DrainSignerError::Node(NodeCoreError::EpochMismatch { .. }) = error {
+    let epoch_mismatch: bool = match error {
+        DrainSignerError::Node(NodeCoreError::EpochMismatch { .. }) => true,
+        DrainSignerError::Publication(inner) => matches!(
+            inner.as_ref(),
+            PublicationRetentionError::Node(NodeCoreError::EpochMismatch { .. })
+        ),
+        _ => false,
+    };
+    if epoch_mismatch {
         return error_response(StatusCode::CONFLICT, "drain-epoch-repin-required");
     }
     match drain_error_class(error) {
@@ -563,6 +572,12 @@ mod error_taxonomy_tests {
     fn not_ready_and_cas_errors_map_to_409() {
         assert_eq!(
             status_of(DrainSignerError::NotReady("not yet")),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            status_of(DrainSignerError::Publication(Box::new(
+                PublicationRetentionError::DrainProofNotReady
+            ))),
             StatusCode::CONFLICT
         );
         assert_eq!(

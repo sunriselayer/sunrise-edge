@@ -5,7 +5,7 @@ use crate::fast_path::drain_publication::{
     retain_drain_publication,
 };
 use crate::fast_path::publication::{
-    FastPathPublicationRecord, encode_fastpath_publication_record,
+    FastPathPublicationRecord, PublicationRetentionError, encode_fastpath_publication_record,
 };
 use crate::fast_path::tests::{
     RetentionReplica, TestSigner, four_validators, installed_validator_set, logical_replica,
@@ -507,8 +507,9 @@ fn confirm_fails_closed_on_missing_and_tombstoned_proof_and_marker() {
     )
     .unwrap();
 
-    // Missing proof.
-    assert!(
+    // A correct confirm arriving before import is not-ready, not a
+    // permanently invalid proof. The same bytes can succeed after import.
+    assert!(matches!(
         confirm_drain_signer_entry(
             &replica.store,
             &context(),
@@ -518,9 +519,10 @@ fn confirm_fails_closed_on_missing_and_tombstoned_proof_and_marker() {
             &protocol(),
             signer.validator_id(),
             id1.request_id,
-        )
-        .is_err()
-    );
+        ),
+        Err(DrainSignerError::Publication(error))
+            if matches!(*error, PublicationRetentionError::DrainProofNotReady)
+    ));
 
     import_into(&replica.store, &bundle1, &id1);
     let marker_key: Vec<u8> = crate::fast_path::drain_publication::drain_possession_key(
@@ -544,6 +546,27 @@ fn confirm_fails_closed_on_missing_and_tombstoned_proof_and_marker() {
         )
         .is_err()
     );
+
+    let proof_key: Vec<u8> =
+        drain_publication_key(protocol().chain_id(), protocol().epoch(), &id1.request_id).unwrap();
+    delete_row(&replica.store, proof_key);
+    assert!(matches!(
+        confirm_drain_signer_entry(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            signer.validator_id(),
+            id1.request_id,
+        ),
+        Err(DrainSignerError::Publication(error))
+            if matches!(
+                *error,
+                PublicationRetentionError::InconsistentRetainedRecord("tombstoned drain publication")
+            )
+    ));
 }
 
 #[test]

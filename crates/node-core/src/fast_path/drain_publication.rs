@@ -460,11 +460,17 @@ fn verify_drain_proof_into<S: StructuredDurableDomainStateStore>(
     let key: Vec<u8> = drain_publication_key(&chain, epoch, &request_id)?;
     let row: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
     put_read(reads, key, row.revision())?;
-    let bytes: &[u8] = row
-        .value()
-        .ok_or(PublicationRetentionError::InconsistentRetainedRecord(
-            "missing drain publication",
-        ))?;
+    let bytes: &[u8] = match row.value() {
+        Some(value) => value,
+        None if row.revision() == StateRevision::INITIAL => {
+            return Err(PublicationRetentionError::DrainProofNotReady);
+        }
+        None => {
+            return Err(PublicationRetentionError::InconsistentRetainedRecord(
+                "tombstoned drain publication",
+            ));
+        }
+    };
     let record: FastPathPublicationRecord = decode_fastpath_publication_record(bytes)?;
     if record.context != *expected || record.request_id != request_id {
         return Err(PublicationRetentionError::InconsistentRetainedRecord(
@@ -486,6 +492,10 @@ fn verify_drain_proof_into<S: StructuredDurableDomainStateStore>(
         let artifact_row: VersionedStateValue =
             store.get_versioned_durable(context, domain, &artifact_key)?;
         put_read(reads, artifact_key, artifact_row.revision())?;
+        // The publication record and its complete artifact closure are
+        // committed together. A missing artifact beneath an existing record
+        // cannot be an in-flight import; it is an inconsistent partial
+        // restore, even if the artifact key was never written on this host.
         let content_bytes: &[u8] =
             artifact_row
                 .value()

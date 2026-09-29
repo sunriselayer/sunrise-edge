@@ -690,7 +690,7 @@ async fn frozen_frontier_drain_reaches_local_ready_over_real_http_and_sqlite() {
         )
         .unwrap();
     let mut selected_votes: Vec<consensus::FrozenFrontierVote> = Vec::new();
-    for (host, validator) in hosts.iter().zip(&fixture.validators).take(3) {
+    for (index, (host, validator)) in hosts.iter().zip(&fixture.validators).take(3).enumerate() {
         let client: Client<LoopbackHttpTransport> = Client::new(transport(host.addr));
         let final_vote: consensus::FrozenFrontierVote = (0..4)
             .find_map(|_| {
@@ -745,6 +745,27 @@ async fn frozen_frontier_drain_reaches_local_ready_over_real_http_and_sqlite() {
             .status,
             409
         );
+        if index == 0 {
+            // The selected signers share this one request ID. Only the first
+            // signer is guaranteed to reach the target before any import.
+            let early_confirm: node_wire::DrainMemberConfirmRequest =
+                node_wire::DrainMemberConfirmRequest {
+                    epoch: fixture.epoch,
+                    validator: validator.validator_id,
+                    request_id: expected_identity.request_id,
+                };
+            assert_eq!(
+                post(
+                    &target,
+                    node_wire::FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
+                    node_wire::NODE_EVENT_MEDIA_TYPE,
+                    early_confirm.encode().unwrap(),
+                )
+                .status,
+                409,
+                "a valid confirm before import must remain retryable"
+            );
+        }
         target_client
             .import_staged_drain_publication(
                 validator.validator_id,

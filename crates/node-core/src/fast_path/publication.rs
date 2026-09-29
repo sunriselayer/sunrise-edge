@@ -187,6 +187,10 @@ pub enum PublicationRetentionError {
     /// A different publication identity is already retained for this
     /// `(chain, request id)`.
     ConflictingRetainedIdentity,
+    /// A staged drain member's full proof has not yet been imported. Only a
+    /// never-written publication row qualifies; tombstones and partial
+    /// retained closures are inconsistent persisted state instead.
+    DrainProofNotReady,
     /// A retained row disagrees with itself or with the derived identity.
     InconsistentRetainedRecord(&'static str),
 }
@@ -240,6 +244,9 @@ impl fmt::Display for PublicationRetentionError {
             ),
             Self::ConflictingRetainedIdentity => formatter
                 .write_str("a different publication identity is already retained for this request"),
+            Self::DrainProofNotReady => {
+                formatter.write_str("staged drain proof is not yet imported")
+            }
             Self::InconsistentRetainedRecord(what) => {
                 write!(formatter, "inconsistent retained publication row: {what}")
             }

@@ -245,7 +245,10 @@ impl<T: Transport> Client<T> {
             .map(|vote| vote.identity.entry_count)
             .max()
             .unwrap_or(0);
-        let expected: &consensus::FrozenFrontierIdentity = &selected_votes[0].identity;
+        let expected: &consensus::FrozenFrontierIdentity = &selected_votes
+            .first()
+            .ok_or(ClientError::DrainMismatch("no selected frontier votes"))?
+            .identity;
         if identity.chain_id != expected.chain_id
             || identity.protocol_version != expected.protocol_version
             || identity.epoch != certifier.epoch()

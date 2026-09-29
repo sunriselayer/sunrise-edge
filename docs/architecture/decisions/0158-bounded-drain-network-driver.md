@@ -44,6 +44,10 @@ continues from the actual durable state. A staged partial page resumes at its
 next unconfirmed entry; a completed page resumes from its confirmed cursor.
 The driver never skips a missing page or member, and an inconsistent,
 tombstoned or foreign progress row stops rather than resetting state.
+Confirming the exact staged request before its full proof arrives is a
+not-ready response; a tombstoned publication or an existing publication with
+an incomplete artifact closure is inconsistent retained state, not another
+retryable empty row.
 
 Each remote page is checked by the target's CAS against the signed terminal
 count/digest and previous confirmed accumulator; a driver that independently
