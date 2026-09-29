@@ -31,17 +31,25 @@ The target independently rechecks the same installed authority and its
 committed Freeze in every mutating CAS.
 
 A bounded read-only signer-progress response exposes the target's current
-durable vote, confirmed cursor/count, exact staged page and complete bit for
-one signer. It is a scheduling hint, not authority. The driver rechecks it
-against the locally pinned signer and the authenticated source page stream.
+durable vote, confirmed accumulator identity/cursor/count, exact staged page
+and complete bit for one signer. The response repeats the chain, epoch and
+signer, and the driver rejects any mismatch with its local pin or the
+source's signed vote. It is a scheduling hint, not authority: the target's
+CAS transition remains the authoritative consecutive-page verifier. The
+driver fetches from the confirmed cursor, compares an existing staged page
+with the configured source, and never treats a response's cursor alone as
+proof of a complete frontier.
 After any ambiguous stage/import/confirm response, it reads progress and
 continues from the actual durable state. A staged partial page resumes at its
 next unconfirmed entry; a completed page resumes from its confirmed cursor.
 The driver never skips a missing page or member, and an inconsistent,
 tombstoned or foreign progress row stops rather than resetting state.
 
-Each remote page is verified consecutively through the signed terminal
-count/digest. For each entry the driver obtains a full publication bundle
+Each remote page is checked by the target's CAS against the signed terminal
+count/digest and previous confirmed accumulator; a driver that independently
+re-verifies from a midpoint must use the authenticated running accumulator
+from the progress response, never an untrusted cursor alone. For each entry
+the driver obtains a full publication bundle
 from an authenticated configured source or a verified relay, independently
 checks its certificate, signed intent and artifacts against the page identity,
 imports it on the target, and confirms that exact request ID. The import may

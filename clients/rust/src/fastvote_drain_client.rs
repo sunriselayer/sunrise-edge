@@ -33,6 +33,15 @@ use crate::client::expect_success;
 use crate::error::ClientError;
 use crate::transport::{Method, Transport, WireRequest, WireResponse};
 
+/// The caller's expected committed Freeze, separate from TLS endpoint
+/// validation and never inferred from an HTTP response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExpectedDrainFreeze {
+    pub domain: AtomicityDomainId,
+    pub closure_request_id: [u8; 32],
+    pub closure_height: u64,
+}
+
 fn expect_no_content(response: WireResponse) -> Result<(), ClientError> {
     if response.status != 204 {
         return Err(ClientError::UnexpectedStatus {
@@ -65,6 +74,7 @@ impl<T: Transport> Client<T> {
         &self,
         certifier: &FrozenFrontierCertifier,
         expected_signer: ValidatorId,
+        freeze: ExpectedDrainFreeze,
         vote: &FrozenFrontierVote,
         page: &FrozenFrontierPage,
         deadline: Option<Instant>,
@@ -72,6 +82,14 @@ impl<T: Transport> Client<T> {
         if vote.validator != expected_signer {
             return Err(ClientError::DrainMismatch(
                 "frontier vote signer differs from configured source",
+            ));
+        }
+        if vote.identity.domain != freeze.domain
+            || vote.identity.closure_request_id != freeze.closure_request_id
+            || vote.identity.closure_height != freeze.closure_height
+        {
+            return Err(ClientError::DrainMismatch(
+                "frontier vote differs from expected committed Freeze",
             ));
         }
         certifier.verify_vote(vote, &FastPathEd25519Verifier)?;
@@ -192,17 +210,15 @@ impl<T: Transport> Client<T> {
         &self,
         certifier: &FrozenFrontierCertifier,
         selected_votes: &[FrozenFrontierVote],
-        expected_domain: AtomicityDomainId,
-        expected_closure_request_id: [u8; 32],
-        expected_closure_height: u64,
+        freeze: ExpectedDrainFreeze,
         deadline: Option<Instant>,
     ) -> Result<Option<DrainUnionIdentity>, ClientError> {
         verify_frozen_frontier_quorum(
             certifier,
             selected_votes,
-            expected_domain,
-            expected_closure_request_id,
-            expected_closure_height,
+            freeze.domain,
+            freeze.closure_request_id,
+            freeze.closure_height,
             &FastPathEd25519Verifier,
         )?;
         let request: DrainUnionAdvanceRequest = DrainUnionAdvanceRequest {
@@ -224,14 +240,20 @@ impl<T: Transport> Client<T> {
         let identity: DrainUnionIdentity = decode_drain_union_identity(&body)?;
         let selected_count: u64 = u64::try_from(selected_votes.len())
             .map_err(|_| ClientError::DrainMismatch("selected signer count overflow"))?;
+        let minimum_members: u64 = selected_votes
+            .iter()
+            .map(|vote| vote.identity.entry_count)
+            .max()
+            .unwrap_or(0);
         let expected: &consensus::FrozenFrontierIdentity = &selected_votes[0].identity;
         if identity.chain_id != expected.chain_id
             || identity.protocol_version != expected.protocol_version
             || identity.epoch != certifier.epoch()
-            || identity.domain != expected_domain
-            || identity.closure_request_id != expected_closure_request_id
-            || identity.closure_height != expected_closure_height
+            || identity.domain != freeze.domain
+            || identity.closure_request_id != freeze.closure_request_id
+            || identity.closure_height != freeze.closure_height
             || identity.signer_count != selected_count
+            || identity.member_count < minimum_members
         {
             return Err(ClientError::DrainMismatch(
                 "ready identity disagrees with locally selected Freeze",
@@ -346,7 +368,12 @@ mod tests {
 
     #[test]
     fn stage_checks_endpoint_identity_and_signature_before_http() {
-        let (_, certifier, vote, signer, _) = fixture();
+        let (_, certifier, vote, signer, domain) = fixture();
+        let freeze: ExpectedDrainFreeze = ExpectedDrainFreeze {
+            domain,
+            closure_request_id: [7; 32],
+            closure_height: 11,
+        };
         let page: FrozenFrontierPage = FrozenFrontierPage {
             after_request_id: None,
             entries: Vec::new(),
@@ -357,6 +384,22 @@ mod tests {
             endpoint.stage_drain_signer_page(
                 &certifier,
                 ValidatorId::new([0x11; 32]),
+                freeze,
+                &vote,
+                &page,
+                None,
+            ),
+            Err(ClientError::DrainMismatch(_))
+        ));
+        assert_eq!(endpoint.transport().calls.get(), 0);
+        assert!(matches!(
+            endpoint.stage_drain_signer_page(
+                &certifier,
+                signer,
+                ExpectedDrainFreeze {
+                    closure_request_id: [8; 32],
+                    ..freeze
+                },
                 &vote,
                 &page,
                 None,
@@ -368,12 +411,12 @@ mod tests {
         forged.signature[0] ^= 1;
         assert!(
             endpoint
-                .stage_drain_signer_page(&certifier, signer, &forged, &page, None)
+                .stage_drain_signer_page(&certifier, signer, freeze, &forged, &page, None)
                 .is_err()
         );
         assert_eq!(endpoint.transport().calls.get(), 0);
         endpoint
-            .stage_drain_signer_page(&certifier, signer, &vote, &page, None)
+            .stage_drain_signer_page(&certifier, signer, freeze, &vote, &page, None)
             .unwrap();
         assert_eq!(endpoint.transport().calls.get(), 1);
     }
@@ -381,6 +424,11 @@ mod tests {
     #[test]
     fn confirm_and_union_reject_success_shaped_mismatches() {
         let (_, certifier, vote, signer, domain) = fixture();
+        let freeze: ExpectedDrainFreeze = ExpectedDrainFreeze {
+            domain,
+            closure_request_id: [7; 32],
+            closure_height: 11,
+        };
         let with_body = client(204, vec![1]);
         assert!(matches!(
             with_body.confirm_drain_member(Epoch::new(8), signer, [2; 32], None),
@@ -405,14 +453,7 @@ mod tests {
         };
         let endpoint = client(200, consensus::encode_drain_union_identity(&wrong).unwrap());
         assert!(matches!(
-            endpoint.advance_drain_union(
-                &certifier,
-                std::slice::from_ref(&vote),
-                domain,
-                [7; 32],
-                11,
-                None,
-            ),
+            endpoint.advance_drain_union(&certifier, std::slice::from_ref(&vote), freeze, None,),
             Err(ClientError::DrainMismatch(_))
         ));
         assert_eq!(endpoint.transport().calls.get(), 1);
@@ -420,7 +461,7 @@ mod tests {
         let endpoint = client(200, consensus::encode_drain_union_identity(&wrong).unwrap());
         assert!(
             endpoint
-                .advance_drain_union(&certifier, &[vote], domain, [7; 32], 11, None)
+                .advance_drain_union(&certifier, &[vote], freeze, None)
                 .unwrap()
                 .is_some()
         );

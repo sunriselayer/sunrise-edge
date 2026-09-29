@@ -635,6 +635,12 @@ async fn frozen_frontier_drain_reaches_local_ready_over_real_http_and_sqlite() {
 
     let target: LoopbackHttpTransport = transport(hosts[3].addr);
     let target_client: Client<LoopbackHttpTransport> = Client::new(transport(hosts[3].addr));
+    let expected_freeze: sunrise_edge_client::fastvote_drain_client::ExpectedDrainFreeze =
+        sunrise_edge_client::fastvote_drain_client::ExpectedDrainFreeze {
+            domain: fixture.domain,
+            closure_request_id: [0xF1; 32],
+            closure_height: 4,
+        };
     let own_validator: ValidatorId = fixture.validators[3].validator_id;
     let own_empty_vote: consensus::FrozenFrontierVote = target_client
         .advance_frozen_frontier(&frontier_certifier, own_validator, Some(deadline))
@@ -677,6 +683,7 @@ async fn frozen_frontier_drain_reaches_local_ready_over_real_http_and_sqlite() {
         .stage_drain_signer_page(
             &frontier_certifier,
             own_validator,
+            expected_freeze,
             &own_empty_vote,
             &own_empty_page,
             Some(deadline),
@@ -716,6 +723,7 @@ async fn frozen_frontier_drain_reaches_local_ready_over_real_http_and_sqlite() {
             .stage_drain_signer_page(
                 &frontier_certifier,
                 validator.validator_id,
+                expected_freeze,
                 &final_vote,
                 &page,
                 Some(deadline),
@@ -764,9 +772,7 @@ async fn frozen_frontier_drain_reaches_local_ready_over_real_http_and_sqlite() {
             .advance_drain_union(
                 &frontier_certifier,
                 &selected_votes,
-                fixture.domain,
-                [0xF1; 32],
-                4,
+                expected_freeze,
                 Some(deadline),
             )
             .unwrap()
@@ -776,9 +782,7 @@ async fn frozen_frontier_drain_reaches_local_ready_over_real_http_and_sqlite() {
         .advance_drain_union(
             &frontier_certifier,
             &selected_votes,
-            fixture.domain,
-            [0xF1; 32],
-            4,
+            expected_freeze,
             Some(deadline),
         )
         .unwrap()
