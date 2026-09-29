@@ -199,3 +199,53 @@ pub fn advance_business_free_barrier<S: StructuredDurableDomainStateStore>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol_types::{HashAlgorithmId, ProtocolVersion};
+    use sha2::{Digest, Sha256};
+
+    fn fixture() -> (ChainId, Epoch, DrainUnionIdentity) {
+        let chain: ChainId = ChainId::new("barrier-vector").unwrap();
+        let epoch: Epoch = Epoch::new(3);
+        let identity: DrainUnionIdentity = DrainUnionIdentity {
+            chain_id: chain.clone(),
+            protocol_version: ProtocolVersion::new(1),
+            epoch,
+            domain: AtomicityDomainId::new([2; 32]).unwrap(),
+            closure_request_id: [9; 32],
+            closure_height: 7,
+            signer_count: 3,
+            member_count: 2,
+            entries_digest: Digest32::new(HashAlgorithmId::Blake3_256, [3; 32]),
+        };
+        (chain, epoch, identity)
+    }
+
+    #[test]
+    fn barrier_frame_has_a_stable_sha256_vector_and_round_trips() {
+        let (chain, epoch, identity): (ChainId, Epoch, DrainUnionIdentity) = fixture();
+        let bytes: Vec<u8> = encode_barrier(&chain, epoch, &identity).unwrap();
+        assert_eq!(decode_barrier(&bytes, &chain, epoch).unwrap(), identity);
+        let hash: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte: &u8| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(
+            hash,
+            "904fcb882cc657219711f53b2464d6a334e4f304435a744398d9bf62934b7a60"
+        );
+    }
+
+    #[test]
+    fn barrier_frame_rejects_wrong_context_truncation_and_oversize() {
+        let (chain, epoch, identity): (ChainId, Epoch, DrainUnionIdentity) = fixture();
+        let bytes: Vec<u8> = encode_barrier(&chain, epoch, &identity).unwrap();
+        let foreign_chain: ChainId = ChainId::new("foreign-chain").unwrap();
+        assert!(decode_barrier(&bytes, &foreign_chain, epoch).is_err());
+        assert!(decode_barrier(&bytes, &chain, Epoch::new(4)).is_err());
+        assert!(decode_barrier(&bytes[..bytes.len() - 1], &chain, epoch).is_err());
+        assert!(decode_barrier(&vec![0; MAX_BARRIER_BYTES + 1], &chain, epoch).is_err());
+    }
+}
