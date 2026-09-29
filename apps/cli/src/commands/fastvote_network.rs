@@ -48,6 +48,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use consensus::{FrozenFrontierVote, decode_frozen_frontier_vote};
 use protocol_types::AtomicityDomainId;
 use sunrise_edge_client::{
     AvailabilityCertificate, Client, CommitmentProfile, FastCertificate, FastPathCertifier,
@@ -237,6 +238,70 @@ fn persist_handles(file: &mut File, parent: &File, bytes: &[u8]) -> std::io::Res
     file.sync_all()?;
     parent.sync_all()?;
     Ok(())
+}
+
+/// Matches [`MAX_FASTVOTE_NETWORK_ENDPOINTS`]: a selection can never
+/// legitimately name more signers than one configured cohort. Shared by
+/// `contract fastvote-drain-local-ready` and `economics drain-set-build`,
+/// neither of which may legitimately accept a wider selection than the other.
+pub(super) const MAX_DRAIN_SELECTION_ENTRIES: usize = MAX_FASTVOTE_NETWORK_ENDPOINTS;
+const MAX_DRAIN_SELECTION_MANIFEST_BYTES: usize = 64 * 1024;
+/// Mirrors `node_wire::MAX_FRONTIER_VOTE_BYTES` without adding that crate to
+/// the CLI's dependencies; this bounds the read before decoding.
+const MAX_DRAIN_SELECTION_VOTE_FILE_BYTES: usize = 8 * 1024;
+
+/// Loads and decodes a bounded, locally supplied frontier-vote selection
+/// manifest: UTF-8, one file path per line, each file the exact canonical
+/// bytes of one already-signed outgoing [`FrozenFrontierVote`]. Blank lines
+/// and full-line `#` comments are ignored; relative paths resolve against the
+/// manifest's own canonical parent directory; whitespace in paths is
+/// unsupported. Performs no cryptographic verification and mints nothing --
+/// signature and quorum/Freeze-identity checks happen only later, in the
+/// caller's own pinned outgoing set. Shared verbatim by `contract
+/// fastvote-drain-local-ready` and `economics drain-set-build` so both
+/// commands accept exactly the same manifest grammar and bounds.
+pub(super) fn load_drain_selection(path: &str) -> Result<Vec<FrozenFrontierVote>, CliError> {
+    let bytes: Vec<u8> = read_bounded(path, MAX_DRAIN_SELECTION_MANIFEST_BYTES)?;
+    let text: &str = std::str::from_utf8(&bytes)
+        .map_err(|_| invalid("--drain-selection-manifest must be UTF-8"))?;
+    let parent: PathBuf = Path::new(path)
+        .canonicalize()
+        .map_err(failure)?
+        .parent()
+        .ok_or_else(|| invalid("--drain-selection-manifest parent missing"))?
+        .to_owned();
+    let mut votes: Vec<FrozenFrontierVote> = Vec::new();
+    for raw_line in text.lines() {
+        let line: &str = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.split_whitespace().count() != 1 {
+            return Err(invalid(
+                "--drain-selection-manifest line must be a single path; whitespace in paths is unsupported",
+            ));
+        }
+        if votes.len() >= MAX_DRAIN_SELECTION_ENTRIES {
+            return Err(invalid(format!(
+                "--drain-selection-manifest exceeds the maximum accepted {MAX_DRAIN_SELECTION_ENTRIES} entries"
+            )));
+        }
+        let vote_path: PathBuf = parent.join(line);
+        let vote_bytes: Vec<u8> = read_bounded(
+            vote_path
+                .to_str()
+                .ok_or_else(|| invalid("--drain-selection-manifest vote path must be UTF-8"))?,
+            MAX_DRAIN_SELECTION_VOTE_FILE_BYTES,
+        )?;
+        let vote: FrozenFrontierVote = decode_frozen_frontier_vote(&vote_bytes).map_err(failure)?;
+        votes.push(vote);
+    }
+    if votes.is_empty() {
+        return Err(invalid(
+            "--drain-selection-manifest needs at least one selected signer",
+        ));
+    }
+    Ok(votes)
 }
 
 /// One line of `--fastvote-network`: `validator_id endpoint tls_server_name

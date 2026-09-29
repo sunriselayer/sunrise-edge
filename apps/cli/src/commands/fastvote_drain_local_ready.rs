@@ -30,17 +30,17 @@
 //!   `--drain-freeze-request-id`/`--drain-freeze-height`) before any
 //!   mutation, by [`sunrise_edge_client::drive_drain_to_local_ready`]
 //!   itself.
+//! * `--out-drain-union-identity` (optional) is written only after a genuine
+//!   `LocallyReady` outcome, as the exact canonical `0xD03B/v1`
+//!   [`consensus::DrainUnionIdentity`] bytes -- never a text report. This is
+//!   the recommended input to `economics drain-set-build`'s
+//!   `--drain-union-identity`. This invocation does not write it for an
+//!   incomplete run; the later builder still treats any supplied file as
+//!   untrusted data, and every ordered voter rechecks its own ready marker.
+//!   An existing path fails closed rather than being overwritten.
 use super::*;
 use crate::parse::{parse_u16, parse_u32};
-use consensus::{FrozenFrontierVote, decode_frozen_frontier_vote};
-
-/// Matches [`MAX_FASTVOTE_NETWORK_ENDPOINTS`]: a selection can never
-/// legitimately name more signers than one configured cohort.
-const MAX_DRAIN_SELECTION_ENTRIES: usize = MAX_FASTVOTE_NETWORK_ENDPOINTS;
-const MAX_DRAIN_SELECTION_MANIFEST_BYTES: usize = 64 * 1024;
-/// Mirrors `node_wire::MAX_FRONTIER_VOTE_BYTES` without adding that crate to
-/// the CLI's dependencies; this bounds the read before decoding.
-const MAX_DRAIN_SELECTION_VOTE_FILE_BYTES: usize = 8 * 1024;
+use consensus::{FrozenFrontierVote, encode_drain_union_identity};
 
 const HELP: &str = "contract fastvote-drain-local-ready
   --target-validator VALIDATOR_ID_HEX
@@ -51,6 +51,7 @@ const HELP: &str = "contract fastvote-drain-local-ready
   --drain-selection-manifest FILE
   --drain-freeze-request-id REQUEST_ID_HEX --drain-freeze-height HEIGHT
   --drain-page-limit LIMIT --drain-max-mutation-attempts ATTEMPTS
+  [--out-drain-union-identity FILE]
   [--fastvote-deadline-seconds SECONDS] [--fastvote-per-request-cap-seconds SECONDS]
 Resumes only the target validator's own local post-Freeze drain readiness (DR-0157/DR-0158).
 This never forms an ordered DrainSet vote, never establishes a signed/portable cut, and never
@@ -63,7 +64,10 @@ blank lines and full-line # comments are ignored; relative paths resolve against
 own canonical parent directory; whitespace in paths is unsupported. This command never signs or
 mints a vote itself. On completion, exactly one of drain_local_ready=true (locally ready; no
 finality claim) or drain_local_ready=false/drain_incomplete=true (safe to rerun unchanged, exit
-non-zero) is printed; durable signer/union progress may already have advanced either way.";
+non-zero) is printed; durable signer/union progress may already have advanced either way.
+--out-drain-union-identity, if given, is written once, only on drain_local_ready=true, as the
+exact canonical DrainUnionIdentity bytes (not text) -- feed it directly to economics
+drain-set-build's --drain-union-identity. It is never written for an incomplete/failed run.";
 
 pub(in crate::commands) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
     let args: Vec<OsString> = args.into_iter().collect();
@@ -88,6 +92,7 @@ pub(in crate::commands) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Res
         "--drain-freeze-height",
         "--drain-page-limit",
         "--drain-max-mutation-attempts",
+        "--out-drain-union-identity",
     ]
     .into_iter()
     .map(scalar)
@@ -140,6 +145,7 @@ pub(in crate::commands) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Res
         load_drain_selection(parsed.require("--drain-selection-manifest")?)?;
     let sources: Vec<FastVoteEndpoint<CliTransport>> =
         selected_source_endpoints(&endpoints, &selected_votes)?;
+    let out_identity_path: Option<&str> = parsed.get("--out-drain-union-identity");
     execute(
         target,
         &sources,
@@ -148,6 +154,7 @@ pub(in crate::commands) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Res
         &resolver,
         freeze,
         bounds,
+        out_identity_path,
     )
 }
 
@@ -177,6 +184,9 @@ fn selected_source_endpoints<T: Transport + Clone>(
 /// readiness (or a bounded incomplete step count) and reports the outcome.
 /// Split out from [`run`] so tests can supply fake transports directly,
 /// exactly as the sibling FastVote commands' own inner functions do.
+/// Keep target, selected sources, protocol pin and local output distinct at
+/// this trust boundary instead of hiding them in one loosely typed bag.
+#[allow(clippy::too_many_arguments)]
 fn execute<T: Transport>(
     target: &Client<T>,
     sources: &[FastVoteEndpoint<T>],
@@ -185,6 +195,7 @@ fn execute<T: Transport>(
     resolver: &sunrise_edge_client::HashSuiteResolver,
     freeze: sunrise_edge_client::fastvote_drain_client::ExpectedDrainFreeze,
     bounds: sunrise_edge_client::DrainDriveBounds,
+    out_identity_path: Option<&str>,
 ) -> Result<(), CliError> {
     // No rotation history: this bounded command only replays the currently
     // active hash suite, matching the other FastVote CLI commands' default.
@@ -204,6 +215,10 @@ fn execute<T: Transport>(
             identity,
             mutation_attempts,
         } => {
+            if let Some(path) = out_identity_path {
+                persist_drain_union_identity(path, &identity)?;
+                println!("drain_union_identity_out={path}");
+            }
             println!("drain_local_ready=true");
             println!("drain_scope=local_readiness_only");
             println!("drain_ordered_drainset=not_established");
@@ -234,6 +249,23 @@ fn execute<T: Transport>(
     }
 }
 
+/// Writes the exact canonical `0xD03B/v1` [`consensus::DrainUnionIdentity`]
+/// bytes this run's genuine `LocallyReady` outcome reconstructed. Reserved
+/// (`create_new`) before write, so an existing path at `path` fails closed
+/// rather than silently overwriting a previous run's saved identity. Only
+/// ever called on the `LocallyReady` arm: an `Incomplete` outcome never
+/// reaches this function, so a caller cannot misread an incomplete run's
+/// report as success by inspecting this file's mere existence.
+fn persist_drain_union_identity(
+    path: &str,
+    identity: &consensus::DrainUnionIdentity,
+) -> Result<(), CliError> {
+    let encoded: Vec<u8> = encode_drain_union_identity(identity).map_err(failure)?;
+    let mut reserved = reserve_artifacts(&[(path, "drain-union-identity")], &[])?;
+    let mut reserved = reserved.pop().expect("identity artifact reserved");
+    reserved.persist(&encoded)
+}
+
 /// Selects the driven target's [`Client`] by validator id from the same
 /// TLS-validated `--fastvote-network` cohort every selected source vote is
 /// checked against -- never a separately supplied, unvalidated endpoint.
@@ -248,56 +280,6 @@ fn selected_target_client<T: Transport>(
         .ok_or_else(|| {
             invalid("--target-validator must select a validator configured in --fastvote-network")
         })
-}
-
-/// Loads and decodes the bounded, locally supplied frontier-vote selection.
-/// Every file's exact canonical bytes must decode to a well-formed
-/// [`FrozenFrontierVote`] (signature and quorum/Freeze-identity checks
-/// happen only later, inside [`sunrise_edge_client::drive_drain_to_local_ready`],
-/// against the caller's own pinned outgoing set); this function performs no
-/// cryptographic verification of its own and mints nothing.
-fn load_drain_selection(path: &str) -> Result<Vec<FrozenFrontierVote>, CliError> {
-    let bytes: Vec<u8> = read_bounded(path, MAX_DRAIN_SELECTION_MANIFEST_BYTES)?;
-    let text: &str = std::str::from_utf8(&bytes)
-        .map_err(|_| invalid("--drain-selection-manifest must be UTF-8"))?;
-    let parent: PathBuf = Path::new(path)
-        .canonicalize()
-        .map_err(failure)?
-        .parent()
-        .ok_or_else(|| invalid("--drain-selection-manifest parent missing"))?
-        .to_owned();
-    let mut votes: Vec<FrozenFrontierVote> = Vec::new();
-    for raw_line in text.lines() {
-        let line: &str = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if line.split_whitespace().count() != 1 {
-            return Err(invalid(
-                "--drain-selection-manifest line must be a single path; whitespace in paths is unsupported",
-            ));
-        }
-        if votes.len() >= MAX_DRAIN_SELECTION_ENTRIES {
-            return Err(invalid(format!(
-                "--drain-selection-manifest exceeds the maximum accepted {MAX_DRAIN_SELECTION_ENTRIES} entries"
-            )));
-        }
-        let vote_path: PathBuf = parent.join(line);
-        let vote_bytes: Vec<u8> = read_bounded(
-            vote_path
-                .to_str()
-                .ok_or_else(|| invalid("--drain-selection-manifest vote path must be UTF-8"))?,
-            MAX_DRAIN_SELECTION_VOTE_FILE_BYTES,
-        )?;
-        let vote: FrozenFrontierVote = decode_frozen_frontier_vote(&vote_bytes).map_err(failure)?;
-        votes.push(vote);
-    }
-    if votes.is_empty() {
-        return Err(invalid(
-            "--drain-selection-manifest needs at least one selected signer",
-        ));
-    }
-    Ok(votes)
 }
 
 #[cfg(test)]
@@ -636,6 +618,7 @@ mod tests {
             &fixture.resolver,
             freeze,
             bounds,
+            None,
         )
         .unwrap_err()
         .to_string();
@@ -656,5 +639,45 @@ mod tests {
         let loaded: Vec<FrozenFrontierVote> =
             load_drain_selection(manifest_path.to_str().unwrap()).unwrap();
         assert_eq!(loaded, vec![vote]);
+    }
+
+    #[test]
+    fn persist_drain_union_identity_writes_canonical_bytes_and_never_overwrites() {
+        let fixture: Fixture = Fixture::new();
+        let frontier = FrozenFrontierAccumulator::new(
+            &fixture.resolver,
+            fixture.expected.chain_id().clone(),
+            fixture.expected.protocol_version(),
+            fixture.expected.epoch(),
+            fixture.expected.domain(),
+            [0xEE; 32],
+            3,
+        )
+        .unwrap()
+        .into_identity();
+        let identity = consensus::DrainUnionAccumulator::new(
+            &fixture.resolver,
+            fixture.expected.chain_id().clone(),
+            fixture.expected.protocol_version(),
+            fixture.expected.epoch(),
+            fixture.expected.domain(),
+            [0xEE; 32],
+            3,
+            &[(ValidatorId::new([0x41; 32]), frontier)],
+        )
+        .unwrap()
+        .into_identity();
+        let out_path: String = fixture.path("identity.bin");
+        persist_drain_union_identity(&out_path, &identity).unwrap();
+        let saved: Vec<u8> = std::fs::read(&out_path).unwrap();
+        assert_eq!(saved, encode_drain_union_identity(&identity).unwrap());
+        assert_eq!(
+            consensus::decode_drain_union_identity(&saved).unwrap(),
+            identity
+        );
+
+        // An existing destination fails closed rather than being overwritten
+        // with a second run's identity.
+        assert!(persist_drain_union_identity(&out_path, &identity).is_err());
     }
 }

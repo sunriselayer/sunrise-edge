@@ -45,3 +45,13 @@ specified selected union; `drain_local_ready=false` with
 `drain_incomplete=true` is a safe-to-resume incomplete result, not rollback.
 Keep the same selection and rerun after resolving the reported prerequisite.
 Neither result is a quorum decision, and no command here creates signatures.
+
+Add `--out-drain-union-identity /secure/drain/union-identity.bin` to also save
+the exact canonical `DrainUnionIdentity` bytes this run reconstructed. It is
+written once by this invocation only on `drain_local_ready=true`, not on an
+incomplete result. A later reader must still treat any supplied file as
+untrusted candidate data; canonical decoding cannot prove its provenance or
+another validator's readiness. Feed the saved bytes to
+[`economics drain-set-build`](ordered-economics.md#construct-a-drainset-candidate-offline)'s
+`--drain-union-identity` to construct the ordered `DrainSet` candidate. An
+existing file at that path is never overwritten.
