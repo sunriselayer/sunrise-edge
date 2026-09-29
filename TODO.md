@@ -367,13 +367,14 @@ The detailed existing evidence and remaining criteria follow:
   quorum verifier rejects duplicate, unordered, forged, mixed-Freeze and
   underpowered signed frontier votes, including weighted-set cases. See
   [DR-0156](docs/architecture/decisions/0156-frozen-frontier-possession.md).
-  This is still a core import primitive, not an end-to-end DrainSet voter:
-  there is no network import route, completed-page/possession cursor, union
-  readiness marker, relay from imported proof, ordered DrainSet decision,
-  drain application, authenticated cut, conditional next-set readiness,
-  Seal or activation. The source is active-epoch only, and its page and
-  bundle re-verification cost needs a network admission bound. Draft PR #235
-  remains open. Follow-up adversarial tests cover the public route's installed
+  At that intermediate U2 stage this was a core import primitive, not an
+  end-to-end DrainSet voter: it still lacked a network import route,
+  completed-page/possession cursor and union readiness marker, as well as
+  relay from imported proof, ordered DrainSet decision, drain application,
+  authenticated cut, conditional next-set readiness, Seal and activation.
+  The source is active-epoch only, and its page and bundle re-verification
+  cost needs a network admission bound. Draft PR #235 remains open.
+  Follow-up adversarial tests cover the public route's installed
   profile and live-epoch fences, missing and tombstoned local ACKs, wrong
   validator identity, signed-intent/certificate/expected-identity mismatches,
   imported-proof CAS races, and frontier quorum edge cases. A real four-host
@@ -385,6 +386,29 @@ The detailed existing evidence and remaining criteria follow:
   2026-09-29, with
   five npm audit advisories reported by install (one moderate, four high).
   Live PostgreSQL handoff E2E and independent final-head review remain open.
+  The next 2026-09-29 U3 continuation (see
+  [DR-0157](docs/architecture/decisions/0157-frozen-frontier-readiness.md))
+  adds bounded, CAS-fenced per-signer page staging and full-proof confirmation,
+  selection-specific weighted-quorum union progress and a local DrainSet-ready
+  marker. A real four-host loopback HTTP/file-backed SQLite test obtains three
+  signed one-entry frontiers, imports the full publication onto an unprepared
+  fourth host, confirms each signer, folds the deduplicated union and reads
+  ready bytes. The same test rejects a forged empty-frontier vote before it
+  can poison signer progress and rejects a stale confirm request ID. Focused
+  tests cover two-page progress, quorum selection, conflict, missing/tombstoned
+  proof or marker, pristine marker rebuild after same-epoch restore and
+  possession re-verification on every union step. No new ACK, signature,
+  application effect, fee, nonce or receipt is created by these steps. This
+  is local readiness only, not an ordered DrainSet decision or authenticated
+  cut. The HTTP body and concurrency bounds do not provide peer authentication
+  or per-peer rate/work limits: expose these new routes only behind trusted
+  validator/operator ingress until that control exists. The HTTP test installs
+  the already-committed Freeze row as a fixture; real ordered Freeze is covered
+  separately in node-core, not claimed by this HTTP test. An executable
+  network driver, exact retry/progress-read UX, PostgreSQL multi-validator
+  handoff, DrainSet/Seal, cut, conditional next-set readiness and activation
+  remain open. Full post-fix repository gate, fresh final-head Opus review and
+  CI are pending at this point; do not treat Draft PR #235 as merge-ready.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).
