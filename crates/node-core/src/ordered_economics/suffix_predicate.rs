@@ -183,20 +183,24 @@ fn verify_ancestor_chain<S: StructuredDurableDomainStateStore>(
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
     state: &ConsensusState,
-    mut cursor_digest: Digest32,
-    mut cursor_view: u64,
+    mut cursor: (Digest32, u64, u64),
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<(), SuffixPredicateError> {
     for _ in 0..MAX_SUFFIX_ANCESTOR_WALK {
-        if cursor_view == 0 {
+        if cursor.1 == 0 {
             return Ok(());
         }
         let ancestor: &ConsensusProposal =
             state
-                .known_proposal(&cursor_digest)
+                .known_proposal(&cursor.0)
                 .ok_or(SuffixPredicateError::Invalid(
                     "certified ancestor above the committed height is unknown locally",
                 ))?;
+        if ancestor.view != cursor.1 || ancestor.height != cursor.2 {
+            return Err(SuffixPredicateError::Invalid(
+                "certified ancestor disagrees with the referencing certificate",
+            ));
+        }
         if ancestor.height <= state.committed_height {
             return Ok(());
         }
@@ -210,8 +214,11 @@ fn verify_ancestor_chain<S: StructuredDurableDomainStateStore>(
         for digest in &ancestor.transactions {
             verify_control_candidate(store, context, env, *digest, reads)?;
         }
-        cursor_digest = ancestor.justify.proposal_digest;
-        cursor_view = ancestor.justify.view;
+        cursor = (
+            ancestor.justify.proposal_digest,
+            ancestor.justify.view,
+            ancestor.justify.height,
+        );
     }
     Err(SuffixPredicateError::Invalid(
         "certified-ancestor walk exceeded its bound",
@@ -274,8 +281,11 @@ pub fn verify_business_free_suffix_into<S: StructuredDurableDomainStateStore>(
         context,
         env,
         &state,
-        state.high_qc.proposal_digest,
-        state.high_qc.view,
+        (
+            state.high_qc.proposal_digest,
+            state.high_qc.view,
+            state.high_qc.height,
+        ),
         reads,
     )?;
     verify_ancestor_chain(
@@ -283,8 +293,11 @@ pub fn verify_business_free_suffix_into<S: StructuredDurableDomainStateStore>(
         context,
         env,
         &state,
-        state.locked_qc.proposal_digest,
-        state.locked_qc.view,
+        (
+            state.locked_qc.proposal_digest,
+            state.locked_qc.view,
+            state.locked_qc.height,
+        ),
         reads,
     )?;
     Ok(())
