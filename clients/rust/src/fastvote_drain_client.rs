@@ -71,7 +71,8 @@ fn validator_path(validator: ValidatorId) -> String {
 
 impl<T: Transport> Client<T> {
     /// Reads one bounded durable signer-progress snapshot. A pristine row is
-    /// represented by `None` only for the exact `drain-not-ready` response;
+    /// represented by `None` only for the exact `drain-progress-pristine`
+    /// response;
     /// epoch re-pin, corrupt state and storage failures remain errors. The
     /// response is checked against the caller's *local* resolver, outgoing
     /// committee, endpoint signer and committed Freeze expectation. It is a
@@ -95,7 +96,7 @@ impl<T: Transport> Client<T> {
             body: request.encode()?,
             deadline,
         })?;
-        if response.status == 409 && response.body == b"drain-not-ready" {
+        if response.status == 409 && response.body == b"drain-progress-pristine" {
             return Ok(None);
         }
         let body: Vec<u8> = expect_success(response, NODE_RESULT_MEDIA_TYPE)?;
@@ -503,7 +504,7 @@ mod tests {
         assert_eq!(progress.confirmed_identity, vote.identity);
         assert!(progress.complete);
 
-        let pristine: Client<FixedTransport> = client(409, b"drain-not-ready".to_vec());
+        let pristine: Client<FixedTransport> = client(409, b"drain-progress-pristine".to_vec());
         assert!(
             pristine
                 .read_drain_signer_progress(&certifier, signer, freeze, &resolver, None)
@@ -513,6 +514,11 @@ mod tests {
         let repin: Client<FixedTransport> = client(409, b"drain-epoch-repin-required".to_vec());
         assert!(matches!(
             repin.read_drain_signer_progress(&certifier, signer, freeze, &resolver, None),
+            Err(ClientError::UnexpectedStatus { status: 409, .. })
+        ));
+        let conflicting: Client<FixedTransport> = client(409, b"drain-not-ready".to_vec());
+        assert!(matches!(
+            conflicting.read_drain_signer_progress(&certifier, signer, freeze, &resolver, None),
             Err(ClientError::UnexpectedStatus { status: 409, .. })
         ));
 

@@ -439,7 +439,11 @@ The detailed existing evidence and remaining criteria follow:
   epoch, outgoing-set and committed-Freeze fence, plus a pinned Rust driver
   with a whole-run deadline, per-request/page caps and mutation-attempt budget.
   A pristine signer is not-ready; tombstoned, malformed or foreign progress
-  fails closed. The driver resumes from the target's durable confirmed cursor
+  fails closed. The pristine row has a distinct `drain-progress-pristine` 409;
+  other 409/CAS outcomes cannot reset its cursor, and corrupt saved progress
+  is reported as a host-storage failure. The stored running accumulator's
+  context and count are rechecked against the committed Freeze. The driver
+  resumes from the target's durable confirmed cursor
   and exact staged page, independently verifies source votes and full
   publication bundles, rereads signer progress after ambiguous stage/import/
   confirm outcomes, and stops on an ambiguous union outcome because no union
@@ -455,8 +459,10 @@ The detailed existing evidence and remaining criteria follow:
   complete `./scripts/check-all.sh` passed on 2026-09-29. The install
   reported five dependency audit advisories (one moderate, four high); no
   forced upgrade was applied. Live PostgreSQL suites were skipped because
-  `SUNRISE_EDGE_TEST_POSTGRES_URL` is unset. Independent review and
-  pushed-head CI remain open.
+  `SUNRISE_EDGE_TEST_POSTGRES_URL` is unset. Opus approved the U5 slice at
+  `82a0a6e` only, not Delivery 3 or a merge; its non-blocking read-classification
+  and accumulator-context findings were then fixed. Fresh exact-head review
+  and pushed-head CI remain open.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

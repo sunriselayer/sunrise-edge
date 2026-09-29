@@ -703,7 +703,7 @@ async fn frozen_frontier_drain_reaches_local_ready_over_real_http_and_sqlite() {
         progress_request.encode().unwrap(),
     );
     assert_eq!(pristine_progress.status, 409);
-    assert_eq!(pristine_progress.body, b"drain-not-ready");
+    assert_eq!(pristine_progress.body, b"drain-progress-pristine");
     let wrong_epoch_progress: sunrise_edge_client::WireResponse = post(
         &target,
         node_wire::FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH,

@@ -39,6 +39,10 @@ CAS transition remains the authoritative consecutive-page verifier. The
 driver fetches from the confirmed cursor, compares an existing staged page
 with the configured source, and never treats a response's cursor alone as
 proof of a complete frontier.
+Only a pristine signer row has the distinct `drain-progress-pristine` response;
+other not-ready/CAS outcomes must not be mistaken for an empty cursor. A
+corrupt saved vote, accumulator or tombstoned progress row is a local storage
+fault, not a malformed caller request.
 After any ambiguous stage/import/confirm response, it reads progress and
 continues from the actual durable state. A staged partial page resumes at its
 next unconfirmed entry; a completed page resumes from its confirmed cursor.

@@ -899,6 +899,19 @@ pub fn read_drain_signer_progress<S: StructuredDurableDomainStateStore>(
             "signer progress context mismatch",
         ));
     }
+    if record.confirmed_identity.chain_id != drain.fence.chain
+        || record.confirmed_identity.protocol_version != expected.protocol_version()
+        || record.confirmed_identity.epoch != drain.fence.epoch
+        || record.confirmed_identity.domain != domain
+        || record.confirmed_identity.closure_request_id != drain.fence.closure_request_id
+        || record.confirmed_identity.closure_height != drain.fence.closure_height
+        || record.confirmed_identity.entry_count > record.vote.identity.entry_count
+        || (record.complete && record.staged_page.is_some())
+    {
+        return Err(DrainSignerError::Invalid(
+            "signer progress accumulator context mismatch",
+        ));
+    }
     let certifier: FrozenFrontierCertifier = FrozenFrontierCertifier::new(
         drain.fence.chain.clone(),
         expected.protocol_version(),

@@ -621,6 +621,21 @@ where
                 request.signer,
             ) {
                 Ok(value) => value,
+                Err(DrainSignerError::NotReady("no signer progress")) => {
+                    return error_response(StatusCode::CONFLICT, "drain-progress-pristine");
+                }
+                Err(DrainSignerError::Invalid("signer not in outgoing set")) => {
+                    return error_response(StatusCode::BAD_REQUEST, "drain-invalid");
+                }
+                // This route only reads locally persisted progress. A
+                // malformed/tombstoned row, bad saved vote or inconsistent
+                // accumulator is a host-state fault, not bad caller input.
+                Err(DrainSignerError::Invalid(_) | DrainSignerError::Frontier(_)) => {
+                    return error_response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "drain-storage-unavailable",
+                    );
+                }
                 Err(error) => return drain_error_response(&error),
             };
             let (vote, confirmed_identity): (Vec<u8>, Vec<u8>) = match (

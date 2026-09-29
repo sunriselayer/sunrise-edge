@@ -206,27 +206,13 @@ pub fn drive_drain_to_local_ready<T: Transport>(
                 .as_ref()
                 .and_then(|record| record.staged_page.as_ref());
             // Re-fetch exactly the page already staged even when a later
-            // invocation changed its page cap. Source pagination marks a
-            // full-limit page nonterminal, so a terminal staged page needs
-            // one spare slot to reproduce its terminal bit.
+            // invocation changed its page cap. A terminal staged page may
+            // need one spare slot to observe the next out-of-prefix key;
+            // a full page can also be terminal when the scan has no
+            // continuation, so staying within the current cap is safe.
             let page_limit: u16 = match staged {
                 Some(page) => {
-                    let length: u16 = u16::try_from(page.entries.len()).map_err(|_| {
-                        DrainDriveError::Mismatch("staged page exceeds wire entry count")
-                    })?;
-                    let exact_limit: u16 = if page.terminal {
-                        length.checked_add(1).ok_or(DrainDriveError::Mismatch(
-                            "terminal staged page limit overflow",
-                        ))?
-                    } else {
-                        length
-                    };
-                    if exact_limit == 0 || exact_limit > bounds.page_limit {
-                        return Err(DrainDriveError::InvalidConfig(
-                            "page limit cannot reproduce the already-staged page",
-                        ));
-                    }
-                    exact_limit
+                    staged_page_limit(page.entries.len(), page.terminal, bounds.page_limit)?
                 }
                 None => bounds.page_limit,
             };
@@ -350,6 +336,22 @@ fn request_deadline(bounds: DrainDriveBounds) -> Result<Instant, DrainDriveError
         .map_err(|error| DrainDriveError::NetworkBound(Box::new(error)))
 }
 
+fn staged_page_limit(entry_count: usize, terminal: bool, cap: u16) -> Result<u16, DrainDriveError> {
+    let length: u16 = u16::try_from(entry_count)
+        .map_err(|_| DrainDriveError::Mismatch("staged page exceeds wire entry count"))?;
+    if length == 0 || length > cap {
+        return Err(DrainDriveError::InvalidConfig(
+            "page limit cannot reproduce the already-staged page",
+        ));
+    }
+    if terminal && length < cap {
+        return length.checked_add(1).ok_or(DrainDriveError::Mismatch(
+            "terminal staged page limit overflow",
+        ));
+    }
+    Ok(length)
+}
+
 fn mutation_requires_reconcile(error: &ClientError) -> bool {
     match error {
         ClientError::Transport(_) => true,
@@ -385,5 +387,13 @@ mod tests {
             503,
             "drain-storage-unavailable"
         )));
+    }
+
+    #[test]
+    fn staged_page_replay_limit_preserves_terminal_room_without_exceeding_cap() {
+        assert_eq!(staged_page_limit(1, true, 4).unwrap(), 2);
+        assert_eq!(staged_page_limit(1, false, 4).unwrap(), 1);
+        assert_eq!(staged_page_limit(128, true, 128).unwrap(), 128);
+        assert!(staged_page_limit(2, true, 1).is_err());
     }
 }

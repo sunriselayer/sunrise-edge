@@ -1744,7 +1744,7 @@ fn read_signer_progress_rejects_context_foreign_row() {
         signer.validator_id(),
     )
     .unwrap();
-    let mut foreign_vote: FrozenFrontierVote = vote;
+    let mut foreign_vote: FrozenFrontierVote = vote.clone();
     foreign_vote.identity.domain = AtomicityDomainId::new([0x99; 32]).unwrap();
     let foreign_record = SignerProgressRecord {
         vote: foreign_vote,
@@ -1779,6 +1779,39 @@ fn read_signer_progress_rejects_context_foreign_row() {
         ),
         Err(DrainSignerError::Invalid(
             "signer progress context mismatch"
+        ))
+    ));
+
+    let mut foreign_accumulator: FrozenFrontierIdentity = foreign_record.confirmed_identity;
+    foreign_accumulator.domain = AtomicityDomainId::new([0x98; 32]).unwrap();
+    let foreign_accumulator_record = SignerProgressRecord {
+        vote,
+        confirmed_identity: foreign_accumulator,
+        confirmed_last_request_id: None,
+        staged_page: Some(one_page(std::slice::from_ref(&id1))),
+        complete: false,
+    };
+    put_row(
+        &replica.store,
+        drain_signer_progress_key(
+            protocol().chain_id(),
+            protocol().epoch(),
+            signer.validator_id(),
+        )
+        .unwrap(),
+        encode_signer_progress(&foreign_accumulator_record).unwrap(),
+    );
+    assert!(matches!(
+        read_drain_signer_progress(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &protocol(),
+            signer.validator_id(),
+        ),
+        Err(DrainSignerError::Invalid(
+            "signer progress accumulator context mismatch"
         ))
     ));
 }
