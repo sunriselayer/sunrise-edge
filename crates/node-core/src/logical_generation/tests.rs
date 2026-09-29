@@ -220,16 +220,20 @@ fn fastpath_business_history_is_not_misclassified_as_local_reservation() {
             &[0x49; 32],
         )
         .unwrap(),
-        [
-            local_instance_state::FASTPATH_STATE_PREFIX,
-            b"drain-publication/example",
-        ]
-        .concat(),
-        [
-            local_instance_state::FASTPATH_STATE_PREFIX,
-            b"drain-publication-artifact/example",
-        ]
-        .concat(),
+        crate::fast_path::drain_publication::drain_publication_key(&chain, Epoch::new(0), &request)
+            .unwrap(),
+        crate::fast_path::drain_publication::drain_publication_artifact_key(
+            &chain,
+            Epoch::new(0),
+            &request,
+            &consensus::bundle::ArtifactEntry {
+                kind: consensus::bundle::ArtifactKind::StateValue,
+                identity: vec![1],
+                content_digest: digest(0x49),
+                content_length: 1,
+            },
+        )
+        .unwrap(),
         crate::fast_path::records::fastpath_availability_certificate_key(&chain, &request).unwrap(),
     ];
     for key in history {
@@ -267,11 +271,7 @@ fn ordered_outcome_history_is_not_misclassified_as_consensus_cache() {
         );
         assert!(is_excluded_subject(&key));
     }
-    for suffix in [
-        b"frontier-progress/".as_slice(),
-        b"frontier/",
-        b"drain-possession/",
-    ] {
+    for suffix in [b"frontier-progress/".as_slice(), b"frontier/"] {
         let local_progress: Vec<u8> = [prefix, suffix, b"example"].concat();
         assert_eq!(
             classify_ordered_row(&local_progress),
@@ -279,6 +279,16 @@ fn ordered_outcome_history_is_not_misclassified_as_consensus_cache() {
         );
         assert!(is_excluded_subject(&local_progress));
     }
+    let possession: Vec<u8> = crate::fast_path::drain_publication::drain_possession_key(
+        &ChainId::new(CHAIN).unwrap(),
+        Epoch::new(0),
+        &[0x51; 32],
+    )
+    .unwrap();
+    assert_eq!(
+        classify_ordered_row(&possession),
+        Some(OrderedRowClass::LocalProgress)
+    );
     let unknown: Vec<u8> = [prefix, b"future-family/"].concat();
     assert_eq!(classify_ordered_row(&unknown), None);
     assert!(!is_excluded_subject(&unknown));

@@ -63,3 +63,9 @@ to further peers requires an independently verified read path. Until that
 relay path, terminal page completion, union reconstruction and ordered
 DrainSet vote fence exist, this decision does not establish a usable handoff
 or permit network activation.
+
+A same-epoch cut restore may carry the two authenticated proof families but
+must not import the local possession marker. The restored host fails closed
+until it independently re-verifies each complete proof under its own writer,
+epoch, Freeze and outgoing-set fences and atomically rebuilds its local
+markers. A missing marker is not silently inferred from a proof row.

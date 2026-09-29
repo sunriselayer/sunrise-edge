@@ -227,6 +227,34 @@ fn frozen_frontier_quorum_counts_registered_power_not_vote_count() {
             .unwrap(),
         6
     );
+    let underpowered_three: Vec<FrozenFrontierVote> = signers[1..]
+        .iter()
+        .map(|signer: &TestCrypto| certifier.cast_vote(identity.clone(), signer).unwrap())
+        .collect();
+    assert!(
+        verify_frozen_frontier_quorum(
+            &certifier,
+            &underpowered_three,
+            domain,
+            [7; 32],
+            11,
+            &signers[0]
+        )
+        .is_err()
+    );
+    let mut foreign_vote: FrozenFrontierVote = votes[0].clone();
+    foreign_vote.validator = ValidatorId::new([99; 32]);
+    assert!(
+        verify_frozen_frontier_quorum(
+            &certifier,
+            &[foreign_vote],
+            domain,
+            [7; 32],
+            11,
+            &signers[0]
+        )
+        .is_err()
+    );
 }
 
 #[test]
