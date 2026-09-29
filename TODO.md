@@ -615,7 +615,10 @@ The detailed existing evidence and remaining criteria follow:
   not yet a portable cut or a completed Seal/activation path. U11's `npm ci`
   and complete local repository gate passed, with live PostgreSQL suites
   skipped because no disposable URL was configured. Exact-head CI and
-  independent review remain pending.
+  independent review remain pending. Before Seal, establish a network-level
+  argument for exhausting any earlier certified business branch unknown to
+  one replica; a local high/locked suffix check alone cannot prove global
+  absence.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

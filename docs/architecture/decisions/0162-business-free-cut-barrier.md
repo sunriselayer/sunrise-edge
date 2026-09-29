@@ -63,9 +63,11 @@ bounded manifest. It cannot import another replica's barrier marker.
 The barrier also is not a leader-supplied Boolean. If a previously unknown
 authenticated business branch somehow appears after installation, stop rather
 than silently creating a late refusal under an already-derived cut. The
-business-free high/locked suffix plus the no-new-business-vote rule is the
-protocol reason that branch is not expected to become commit-relevant; the
-writer fence is the final local safety boundary. Seal and its own control
+business-free high/locked suffix and no-new-business-vote rule are local
+checks, not proof that every earlier certified branch is globally known.
+How an unseen pre-Freeze branch is exhausted before Seal remains a separate
+network-level proof obligation; the writer fence only prevents local silent
+mutation if one arrives. Seal and its own control
 receipt, if any, require an explicit, separately reviewed exception to the
 post-barrier ordered economic-block fence so the pre-Seal business snapshot
 does not include a self-referential Seal result.
