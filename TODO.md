@@ -470,8 +470,23 @@ The detailed existing evidence and remaining criteria follow:
   voter CAS races, identical record bytes, replay and duplicate refusal;
   forged/weak/mixed/foreign selection cases and 256-roster frame bounds are
   covered. These checks do not yet compose a nonempty business union into an
-  ordered DrainSet, authorize drain application, prove a cut, Seal or activate
-  an epoch. Changed-crate Clippy and all node-core tests passed locally.
+  ordered DrainSet, prove a cut, Seal or activate an epoch. U7 adds the separate
+  certified drain-member application described in
+  [DR-0160](docs/architecture/decisions/0160-certified-drain-application.md):
+  it loads retained signed intent and full certificate, independently verifies
+  the committed DrainSet membership and local ready/proof closure, re-derives
+  the exact execution commitment, and atomically applies effects, fee, nonce,
+  receipt and settlement. A conflicting partial prepare's exact object/nonce
+  locks are removed only after prepared-record/provenance checks and with an
+  immutable local resolution audit. Eight focused tests cover the conflicting,
+  own-lock and no-lock cases, missing/mismatched authority, unrelated locks,
+  and receipt-first exact replay. The nonempty DrainSet fixture installs the
+  committed record directly after a genuine signed frontier/union; it is not
+  a full ordered-network E2E. Post-restart SQLite/PostgreSQL replay, CAS races,
+  ordered nonempty DrainSet composition, operator route and complete Freeze to
+  activation network sequence remain open. U7 node-core tests passed locally
+  (873 passed, 5 ignored), as did its changed-crate Clippy and format check.
+  The full repository gate and exact-head review/CI for U7 are pending.
   `npm ci` and complete `./scripts/check-all.sh` also passed locally on
   2026-09-30, after installing the exact `wasm-bindgen-cli` version required
   by the gate. Live PostgreSQL tests were skipped locally without
@@ -482,8 +497,9 @@ The detailed existing evidence and remaining criteria follow:
   code/docs now CAS-fence the committed closure before classifying a
   foreign selection, check record encodability before authenticating the
   vote, test no-Freeze and wrong-Freeze refusal, and document the retention
-  and network-admission gates. These follow-ups need fresh exact-head review
-  and CI; U6 approval is not Delivery 3 or PR merge approval. Draft PR #235
+  and network-admission gates. The follow-up head `414e583` passed complete
+  local `./scripts/check-all.sh` and CI run #536, but has no subsequent Opus
+  approval. U6 approval is not Delivery 3 or PR merge approval. Draft PR #235
   remains incomplete Delivery 3 and not merge-ready. U5's `npm ci`,
   changed-crate Clippy and complete `./scripts/check-all.sh` passed on
   2026-09-29. The install
