@@ -37,6 +37,10 @@ pub use availability::frontier::{
     encode_frozen_frontier_identity, encode_frozen_frontier_page, encode_frozen_frontier_vote,
     verify_frozen_frontier, verify_frozen_frontier_quorum,
 };
+pub use availability::union::{
+    DrainUnionAccumulator, DrainUnionIdentity, MAX_DRAIN_UNION_SIGNERS,
+    decode_drain_union_identity, encode_drain_union_identity,
+};
 pub use availability::{
     AvailabilityCertificate, AvailabilityCertifier, AvailabilityIdentity, AvailabilityVote, bundle,
     decode_availability_certificate, decode_availability_identity, decode_availability_vote,

@@ -149,6 +149,63 @@ impl FrozenFrontierPageVerifier {
         }
         Ok(self.vote)
     }
+
+    /// Resumes a consecutive page stream from a caller's own durably
+    /// persisted progress, instead of starting from an empty accumulator.
+    /// The caller is responsible for the authenticity of `accumulator`; this
+    /// only checks it is contextually consistent with `vote` and does not by
+    /// itself prove the accumulator was honestly derived.
+    pub fn resume<V: ConsensusVerifier>(
+        resolver: &HashSuiteResolver,
+        certifier: &FrozenFrontierCertifier,
+        vote: FrozenFrontierVote,
+        accumulator: FrozenFrontierAccumulator,
+        verifier: &V,
+    ) -> Result<Self, FrontierError> {
+        certifier.verify_vote(&vote, verifier)?;
+        if accumulator.identity().chain_id != vote.identity.chain_id
+            || accumulator.identity().protocol_version != vote.identity.protocol_version
+            || accumulator.identity().epoch != vote.identity.epoch
+            || accumulator.identity().domain != vote.identity.domain
+            || accumulator.identity().closure_request_id != vote.identity.closure_request_id
+            || accumulator.identity().closure_height != vote.identity.closure_height
+        {
+            return Err(FrontierError::Invalid("frontier resume context mismatch"));
+        }
+        if accumulator.identity().entry_count > vote.identity.entry_count {
+            return Err(FrontierError::Invalid(
+                "frontier resume exceeds signed count",
+            ));
+        }
+        if resolver.chain_id() != &vote.identity.chain_id
+            || resolver.protocol_version() != vote.identity.protocol_version
+        {
+            return Err(FrontierError::Invalid(
+                "frontier resume hash resolver mismatch",
+            ));
+        }
+        let terminal_seen: bool = accumulator.identity() == &vote.identity;
+        Ok(Self {
+            vote,
+            accumulator,
+            terminal_seen,
+        })
+    }
+
+    /// Current accumulator progress, including a page staged but not yet
+    /// fully processed by a caller. Save its identity/cursor to resume later;
+    /// this verifier never persists anything itself.
+    #[must_use]
+    pub const fn accumulator(&self) -> &FrozenFrontierAccumulator {
+        &self.accumulator
+    }
+
+    /// True once a terminal page has recomputed the complete signed count
+    /// and digest, without consuming `self`.
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        self.terminal_seen
+    }
 }
 
 fn validate_frontier_page(page: &FrozenFrontierPage) -> Result<(), FrontierError> {

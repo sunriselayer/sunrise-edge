@@ -95,7 +95,7 @@ fn put_read(
     Ok(())
 }
 
-fn fence_closed_epoch<S: StructuredDurableDomainStateStore>(
+pub(crate) fn fence_closed_epoch<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -423,38 +423,117 @@ pub fn verify_drain_possession<S: StructuredDurableDomainStateStore>(
     expected: &PublicationContext,
     expected_identity: &AvailabilityIdentity,
 ) -> DrainResult<()> {
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let validators: ValidatorSet =
+        fence_closed_epoch(store, context, domain, resolver, expected, &mut reads)?;
+    verify_drain_possession_into(
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        &validators,
+        expected_identity,
+        &mut reads,
+    )?;
+    Ok(())
+}
+
+/// Same check as [`verify_drain_possession`], but for a caller that already
+/// fenced the closed epoch and outgoing set, and that folds every read
+/// revision this performs (publication, every artifact, and the possession
+/// marker) into its own CAS read set so a signer-entry confirmation and this
+/// re-verification commit atomically together. Returns the re-verified
+/// identity so a caller never needs to trust its own request as authority.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn verify_drain_possession_into<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    validators: &ValidatorSet,
+    expected_identity: &AvailabilityIdentity,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> DrainResult<AvailabilityIdentity> {
     if history.len() > crate::publication::MAX_PUBLICATION_HISTORY {
         return Err(NodeCoreError::PersistenceInvariant("resolver history bound").into());
     }
     let chain: ChainId = expected.chain_id().clone();
     let epoch: Epoch = expected.epoch();
     let request_id: [u8; 32] = expected_identity.request_id;
-    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
-    let validators: ValidatorSet =
-        fence_closed_epoch(store, context, domain, resolver, expected, &mut reads)?;
     let key: Vec<u8> = drain_publication_key(&chain, epoch, &request_id)?;
     let row: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    put_read(reads, key, row.revision())?;
     let bytes: &[u8] = row
         .value()
         .ok_or(PublicationRetentionError::InconsistentRetainedRecord(
             "missing drain publication",
         ))?;
     let record: FastPathPublicationRecord = decode_fastpath_publication_record(bytes)?;
-    let bundle: PublicationBundle =
-        load_imported_bundle(store, context, domain, expected, &request_id, &record)?;
+    if record.context != *expected || record.request_id != request_id {
+        return Err(PublicationRetentionError::InconsistentRetainedRecord(
+            "drain publication context or request id",
+        ));
+    }
+    let manifest: ArtifactManifest = decode_artifact_manifest(&record.manifest)?;
+    if manifest.entries.len() > MAX_RETAINED_ARTIFACTS {
+        return Err(PublicationRetentionError::ClosureTooLarge {
+            actual: manifest.entries.len(),
+            max: MAX_RETAINED_ARTIFACTS,
+        });
+    }
+    let mut contents: Vec<Vec<u8>> = Vec::with_capacity(manifest.entries.len());
+    let mut total: usize = 0;
+    for entry in &manifest.entries {
+        let artifact_key: Vec<u8> =
+            drain_publication_artifact_key(&chain, epoch, &request_id, entry)?;
+        let artifact_row: VersionedStateValue =
+            store.get_versioned_durable(context, domain, &artifact_key)?;
+        put_read(reads, artifact_key, artifact_row.revision())?;
+        let content_bytes: &[u8] =
+            artifact_row
+                .value()
+                .ok_or(PublicationRetentionError::InconsistentRetainedRecord(
+                    "missing or tombstoned drain artifact",
+                ))?;
+        total = total.checked_add(content_bytes.len()).ok_or(
+            PublicationRetentionError::InconsistentRetainedRecord("drain artifact size overflow"),
+        )?;
+        if total > MAX_ENCODED_BUNDLE_BYTES {
+            return Err(PublicationRetentionError::InconsistentRetainedRecord(
+                "drain artifact budget exceeded",
+            ));
+        }
+        contents.push(content_bytes.to_vec());
+    }
+    let bundle: PublicationBundle = PublicationBundle {
+        domain,
+        request_id,
+        commitment_profile: LOGICAL_COMMITMENT_PROFILE,
+        signed_intent: record.signed_intent.clone(),
+        certificate: decode_fast_certificate(&record.certificate)?,
+        witness: record.witness.clone(),
+        manifest,
+        contents,
+    };
     let identity: AvailabilityIdentity =
-        verify_bundle(resolver, history, expected, domain, &validators, &bundle)?;
+        verify_bundle(resolver, history, expected, domain, validators, &bundle)?;
     let marker_key: Vec<u8> = drain_possession_key(&chain, epoch, &request_id)?;
     let marker: VersionedStateValue = store.get_versioned_durable(context, domain, &marker_key)?;
+    put_read(reads, marker_key, marker.revision())?;
+    let identity_bytes: Vec<u8> = encode_availability_identity(&identity)?;
     if identity != *expected_identity
-        || record.identity != encode_availability_identity(&identity)?
-        || marker.value() != Some(record.identity.as_slice())
+        || record.identity != identity_bytes
+        || marker.value() != Some(identity_bytes.as_slice())
     {
         return Err(PublicationRetentionError::InconsistentRetainedRecord(
             "drain possession identity or marker",
         ));
     }
-    Ok(())
+    Ok(identity)
 }
 
 #[cfg(test)]

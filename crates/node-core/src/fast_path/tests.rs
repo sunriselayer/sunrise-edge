@@ -39,7 +39,7 @@ mod recovery;
 
 /// A real (non-mocked) Ed25519 `ConsensusSigner`, mirroring
 /// `consensus::fast_vote`'s own private test signer.
-pub(super) struct TestSigner {
+pub(crate) struct TestSigner {
     validator_id: ValidatorId,
     signing_key: SigningKey,
 }
@@ -78,7 +78,7 @@ fn validator(seed: u8) -> (TestSigner, FastPathValidatorEntry) {
 /// Four equal-power validators: `ValidatorSet::quorum_threshold` for four
 /// validators of power one each is `4 - (4-1)/3 = 3`, so three votes form a
 /// certificate and one is never enough.
-fn four_validators() -> (Vec<TestSigner>, Vec<FastPathValidatorEntry>) {
+pub(crate) fn four_validators() -> (Vec<TestSigner>, Vec<FastPathValidatorEntry>) {
     let mut signers: Vec<TestSigner> = Vec::new();
     let mut entries: Vec<FastPathValidatorEntry> = Vec::new();
     for seed in [101u8, 102, 103, 104] {
@@ -4777,10 +4777,10 @@ use runtime::{DurableObjectVersion, IndeterminateCommitReason};
 
 /// One replica that may retain publications: its own store, the identical
 /// installed fixture and its own registered signer.
-pub(super) struct RetentionReplica {
-    pub(super) store: MemoryDurableStateStore,
+pub(crate) struct RetentionReplica {
+    pub(crate) store: MemoryDurableStateStore,
     pub(super) fixture: Fixture,
-    pub(super) signer: TestSigner,
+    pub(crate) signer: TestSigner,
 }
 
 impl RetentionReplica {
@@ -4791,7 +4791,7 @@ impl RetentionReplica {
     }
 
     /// Returns the current durable value of one exact key.
-    pub(super) fn row(&self, key: &[u8]) -> Option<Vec<u8>> {
+    pub(crate) fn row(&self, key: &[u8]) -> Option<Vec<u8>> {
         self.store
             .get_versioned_durable(&context(), domain(), key)
             .unwrap()
@@ -4801,7 +4801,7 @@ impl RetentionReplica {
 
     /// Writes one exact durable row under its observed revision. Test setup
     /// only: no protocol path writes a foreign publication row.
-    pub(super) fn put_row(&self, key: Vec<u8>, value: Vec<u8>) {
+    pub(crate) fn put_row(&self, key: Vec<u8>, value: Vec<u8>) {
         let observed: VersionedStateValue = self
             .store
             .get_versioned_durable(&context(), domain(), &key)
@@ -4881,7 +4881,7 @@ fn retention_replica(logical: bool, signer_index: usize) -> RetentionReplica {
 /// A handoff-capable (`0x6424/v2`) replica, signing as the one validator that
 /// never participates in the quorums below, so retention is never confused
 /// with this replica's own fast-path vote.
-pub(super) fn logical_replica() -> RetentionReplica {
+pub(crate) fn logical_replica() -> RetentionReplica {
     retention_replica(true, 3)
 }
 
@@ -4909,7 +4909,7 @@ pub(super) fn transfer_bytes(fixture: &Fixture, request: u8, nonce: u64) -> Vec<
 
 /// Builds one complete, genuinely certified publication bundle for the shared
 /// transfer call, using the quorum formed by `subset`'s signers.
-pub(super) fn transfer_bundle(
+pub(crate) fn transfer_bundle(
     logical: bool,
     request: u8,
     nonce: u64,
@@ -4992,7 +4992,7 @@ pub(super) fn transfer_bundle(
 }
 
 /// The default handoff-capable bundle: the quorum formed by signers 0/1/2.
-pub(super) fn transfer_bundle_bytes(
+pub(crate) fn transfer_bundle_bytes(
     request: u8,
     nonce: u64,
 ) -> (PublicationBundle, FastCertificate) {
@@ -5013,7 +5013,7 @@ pub(super) fn physical_transfer_bundle_bytes(
     transfer_bundle(false, request, nonce, &[0, 1, 2])
 }
 
-pub(super) fn installed_validator_set() -> ValidatorSet {
+pub(crate) fn installed_validator_set() -> ValidatorSet {
     let (_signers, entries) = four_validators();
     ValidatorSet::new(
         protocol().epoch(),

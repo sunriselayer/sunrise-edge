@@ -127,7 +127,7 @@ mod commitment_witness_tests;
 #[cfg(test)]
 mod soak_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use records::{
     FastPathBondRecord, FastPathCertificateRecord, FastPathFeeShare, FastPathPreparedRecord,

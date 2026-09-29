@@ -64,6 +64,7 @@ use validator_set::ValidatorSet;
 /// itself free of any bundle dependency.
 pub mod bundle;
 pub mod frontier;
+pub mod union;
 
 const AVAILABILITY_IDENTITY_TYPE_ID: u16 = 0xD030;
 const AVAILABILITY_VOTE_TYPE_ID: u16 = 0xD031;

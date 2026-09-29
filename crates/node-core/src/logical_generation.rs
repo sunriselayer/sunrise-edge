@@ -65,8 +65,12 @@ mod tests;
 /// Allocated from the swept, previously unused `0x6480..=0x648F` node-core
 /// block. The repository-wide sweep confirmed `0x6401..=0x6439` and
 /// `0x6440..=0x644F` are taken and `0x6460` belongs to `node-wire`; `0x6450`,
-/// `0x6452` and `0x6453` stay free, and `0x6451` plus `0x6454..=0x645D` remain
-/// reserved for the concurrently owned retention/control/cut work.
+/// `0x6452` and `0x6453` stay free, and `0x6451` remains reserved for the
+/// concurrently owned retention/control/cut work. `0x6454..=0x645A` are the
+/// `ordered_economics`/`fast_path` Freeze/publication/frontier family;
+/// `0x6454..=0x645D`'s remaining `0x645B..=0x645D` are DR-0156's per-signer
+/// progress, per-entry and union-progress/ready frames
+/// (`ordered_economics::drain_union`).
 pub const LOGICAL_PROFILE_RECORD_FRAME_TYPE: u16 = 0x6480;
 /// Canonical version of [`LogicalProfileRecord`].
 pub const LOGICAL_PROFILE_RECORD_VERSION: u16 = 1;
@@ -696,7 +700,21 @@ pub fn classify_ordered_row(key: &[u8]) -> Option<OrderedRowClass> {
         key.strip_prefix(ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX)?;
     const CONTROL: [&[u8]; 3] = [b"state/", b"applied-height/", b"candidate/"];
     const HISTORY: [&[u8]; 3] = [b"header/", b"outcome/", b"freeze/"];
-    const LOCAL_PROGRESS: [&[u8]; 3] = [b"frontier-progress/", b"frontier/", b"drain-possession/"];
+    // DR-0156 (2026-09-29): per-signer frozen-frontier import progress,
+    // per-`(signer, request_id)` confirmed-entry rows, the in-flight union
+    // merge cursor and the local DrainSet-ready marker are all replica-local
+    // progress, exactly like `drain-possession/`: none of them is itself the
+    // proof (that remains `fastpath/drain-publication/` history) or a signed,
+    // transferable business fact.
+    const LOCAL_PROGRESS: [&[u8]; 7] = [
+        b"frontier-progress/",
+        b"frontier/",
+        b"drain-possession/",
+        b"drain-signer-progress/",
+        b"drain-signer-entry/",
+        b"drain-union-progress/",
+        b"drain-union-ready/",
+    ];
     if CONTROL
         .iter()
         .any(|prefix: &&[u8]| suffix.starts_with(prefix))

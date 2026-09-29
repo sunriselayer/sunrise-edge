@@ -448,3 +448,71 @@ fn frozen_frontier_accumulator_seed_and_step_hashes_are_stable() {
         "a7983d9b7dd79253338a97f1a629ea5795db854f6ba32f84cb9d2cff88dd3a41"
     );
 }
+
+#[test]
+fn page_verifier_resumes_persisted_progress_and_rejects_foreign_or_overrun_state() {
+    let (resolver, certifier, signers, domain) = fixture();
+    let entries: Vec<AvailabilityIdentity> = vec![operation(1, domain), operation(2, domain)];
+    let mut full: FrozenFrontierAccumulator = empty(&resolver, domain);
+    for entry in &entries {
+        full.push(&resolver, entry).unwrap();
+    }
+    let vote: FrozenFrontierVote = certifier
+        .cast_vote(full.into_identity(), &signers[0])
+        .unwrap();
+
+    let mut partial: FrozenFrontierAccumulator = empty(&resolver, domain);
+    partial.push(&resolver, &entries[0]).unwrap();
+    let mut resumed: FrozenFrontierPageVerifier = FrozenFrontierPageVerifier::resume(
+        &resolver,
+        &certifier,
+        vote.clone(),
+        partial,
+        &signers[0],
+    )
+    .unwrap();
+    assert!(!resumed.is_terminal());
+    assert_eq!(resumed.accumulator().identity().entry_count, 1);
+    resumed
+        .push_page(
+            &resolver,
+            &FrozenFrontierPage {
+                after_request_id: Some(entries[0].request_id),
+                entries: vec![entries[1].clone()],
+                terminal: true,
+            },
+        )
+        .unwrap();
+    assert!(resumed.is_terminal());
+    assert_eq!(resumed.finish().unwrap(), vote);
+
+    let mut wrong_freeze: FrozenFrontierAccumulator = empty(&resolver, domain);
+    wrong_freeze.push(&resolver, &entries[0]).unwrap();
+    let changed_identity: FrozenFrontierIdentity = FrozenFrontierIdentity {
+        closure_height: 12,
+        ..wrong_freeze.identity().clone()
+    };
+    let mismatched_vote: FrozenFrontierVote = FrozenFrontierVote {
+        identity: changed_identity,
+        ..vote.clone()
+    };
+    assert!(
+        FrozenFrontierPageVerifier::resume(
+            &resolver,
+            &certifier,
+            mismatched_vote,
+            wrong_freeze,
+            &signers[0]
+        )
+        .is_err()
+    );
+
+    let mut overrun: FrozenFrontierAccumulator = empty(&resolver, domain);
+    overrun.push(&resolver, &entries[0]).unwrap();
+    overrun.push(&resolver, &entries[1]).unwrap();
+    overrun.push(&resolver, &operation(3, domain)).unwrap();
+    assert!(
+        FrozenFrontierPageVerifier::resume(&resolver, &certifier, vote, overrun, &signers[0])
+            .is_err()
+    );
+}
