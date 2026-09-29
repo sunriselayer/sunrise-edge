@@ -508,7 +508,7 @@ fn confirm_fails_closed_on_missing_and_tombstoned_proof_and_marker() {
     .unwrap();
 
     // A correct confirm arriving before import is not-ready, not a
-    // permanently invalid proof. The same bytes can succeed after import.
+    // permanently invalid proof. The HTTP E2E covers subsequent success.
     assert!(matches!(
         confirm_drain_signer_entry(
             &replica.store,
@@ -1339,6 +1339,60 @@ fn union_step_rechecks_possession_even_when_every_selected_entry_agrees_on_a_tam
     )
     .unwrap();
     assert!(replica.row(&progress_key).is_none());
+}
+
+#[test]
+fn confirmed_signer_entry_without_its_proof_is_corruption_not_retryable_import_wait() {
+    let source: RetentionReplica = logical_replica();
+    close(&source.store);
+    let (bundle, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    let identity: AvailabilityIdentity = identity(&bundle);
+    let (signers, _entries) = four_validators();
+    let mut votes: Vec<FrozenFrontierVote> = Vec::new();
+    for signer in signers.iter().take(3) {
+        votes.push(complete_signer(
+            &source.store,
+            signer,
+            &[(identity.clone(), bundle.clone())],
+        ));
+    }
+    // Model an inconsistent partial restore that carried signed progress and
+    // immutable entry rows but omitted the full publication and artifacts.
+    let restored: RetentionReplica = logical_replica();
+    close(&restored.store);
+    for signer in signers.iter().take(3) {
+        let progress_key: Vec<u8> = drain_signer_progress_key(
+            protocol().chain_id(),
+            protocol().epoch(),
+            signer.validator_id(),
+        )
+        .unwrap();
+        let entry_key: Vec<u8> = drain_signer_entry_key(
+            protocol().chain_id(),
+            protocol().epoch(),
+            signer.validator_id(),
+            &identity.request_id,
+        )
+        .unwrap();
+        for key in [progress_key, entry_key] {
+            restored.put_row(key.clone(), source.row(&key).unwrap());
+        }
+    }
+    let selected: Vec<FrozenFrontierVote> = sorted(votes);
+    assert!(matches!(
+        advance_drain_union(
+            &restored.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &selected,
+        ),
+        Err(DrainSignerError::Invalid(
+            "confirmed signer entry lost its retained drain proof"
+        ))
+    ));
 }
 
 fn hex(bytes: &[u8]) -> String {

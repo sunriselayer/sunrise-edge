@@ -57,7 +57,7 @@ where
 /// matter how many times it is retried unmodified (a forged/malformed vote,
 /// tombstoned proof or artifact, or a profile/context mismatch);
 /// [`NotReadyOrCas`](Self::NotReadyOrCas) is an ordinary local-state race a
-/// caller should resync and retry (a stale expected identity, an
+/// caller should resync and retry (a stale confirm request ID, an
 /// unconfirmed prerequisite, or an optimistic-concurrency conflict on an
 /// exact CAS revision); [`StorageUnavailable`](Self::StorageUnavailable)
 /// is a failed read or a definitely uncommitted backend failure;
@@ -75,12 +75,10 @@ enum DrainErrorClass {
 fn node_core_error_class(error: &NodeCoreError) -> DrainErrorClass {
     match error {
         NodeCoreError::DurableCommitIndeterminate(_) => DrainErrorClass::StorageIndeterminate,
-        NodeCoreError::DurableRead(runtime::DurableReadError::WriterFenced { .. })
-        | NodeCoreError::DurableCommitRejected(
+        NodeCoreError::DurableCommitRejected(
             runtime::DurableCommitRejection::Conflict { .. }
             | runtime::DurableCommitRejection::ObjectConflict { .. }
             | runtime::DurableCommitRejection::RequestAlreadyCommitted
-            | runtime::DurableCommitRejection::WriterFenced { .. }
             | runtime::DurableCommitRejection::SerializationFailure,
         )
         | NodeCoreError::StateConflict
@@ -625,6 +623,8 @@ mod error_taxonomy_tests {
 
     #[test]
     fn storage_read_and_definite_backend_failures_map_to_503() {
+        let generation: runtime::WriterFenceGeneration =
+            runtime::WriterFenceGeneration::new(2).unwrap();
         assert_eq!(
             status_of(DrainSignerError::Node(NodeCoreError::DurableRead(
                 runtime::DurableReadError::Unavailable
@@ -635,6 +635,24 @@ mod error_taxonomy_tests {
             status_of(DrainSignerError::Node(
                 NodeCoreError::DurableCommitRejected(
                     runtime::DurableCommitRejection::UnavailableBeforeCommit
+                )
+            )),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            status_of(DrainSignerError::Node(NodeCoreError::DurableRead(
+                runtime::DurableReadError::WriterFenced {
+                    active_generation: generation,
+                }
+            ))),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            status_of(DrainSignerError::Node(
+                NodeCoreError::DurableCommitRejected(
+                    runtime::DurableCommitRejection::WriterFenced {
+                        active_generation: generation,
+                    }
                 )
             )),
             StatusCode::SERVICE_UNAVAILABLE

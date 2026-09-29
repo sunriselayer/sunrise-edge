@@ -676,6 +676,43 @@ fn concurrent_artifact_rewrite_rejects_pristine_marker_rebuild() {
 }
 
 #[test]
+fn saved_publication_with_pristine_missing_artifact_is_invalid_not_import_not_ready() {
+    let (bundle, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    let expected_identity: AvailabilityIdentity = identity(&bundle);
+    let source: RetentionReplica = logical_replica();
+    close(&source);
+    stage_proof_without_marker(&source, &bundle, &expected_identity);
+    let publication_key: Vec<u8> = drain_publication_key(
+        protocol().chain_id(),
+        protocol().epoch(),
+        &bundle.request_id,
+    )
+    .unwrap();
+    let incomplete: RetentionReplica = logical_replica();
+    close(&incomplete);
+    incomplete.put_row(
+        publication_key.clone(),
+        source.row(&publication_key).unwrap(),
+    );
+    // An actual import commits its publication and artifact closure together;
+    // carrying only the publication row is a corrupt partial restore, not an
+    // in-flight import that can become valid by retrying unchanged bytes.
+    assert!(matches!(
+        import(&incomplete, &bundle, &expected_identity),
+        Err(PublicationRetentionError::InconsistentRetainedRecord(
+            "missing or tombstoned drain artifact"
+        ))
+    ));
+    let marker_key: Vec<u8> = drain_possession_key(
+        protocol().chain_id(),
+        protocol().epoch(),
+        &bundle.request_id,
+    )
+    .unwrap();
+    assert!(incomplete.row(&marker_key).is_none());
+}
+
+#[test]
 fn concurrent_profile_freeze_epoch_or_validator_row_changes_reject_the_whole_import() {
     let (bundle, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
     let expected_identity: AvailabilityIdentity = identity(&bundle);

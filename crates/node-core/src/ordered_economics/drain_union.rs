@@ -24,8 +24,9 @@
 //! time regardless of when the proof was imported. A pristine missing
 //! signer-entry row is exactly the ordinary not-yet-confirmed case and is
 //! rebuilt by the very next successful confirmation; a tombstoned one, or a
-//! tombstoned/missing drain-publication or possession marker, fails closed
-//! instead.
+//! tombstoned drain-publication or possession marker, fails closed instead.
+//! A never-written publication is only not-ready before confirmation; it is
+//! inconsistent after a signer entry was already confirmed.
 //!
 //! [`advance_drain_union`] then reconstructs the deterministic union of
 //! confirmed signer entries -- never raw drain-publication proof rows, which
@@ -1223,7 +1224,10 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
             // and possession marker fresh from storage -- not merely the
             // signer-entry row's own bytes -- folding those reads into the
             // *same* CAS as the progress/ready commit below.
-            verify_drain_possession_into(
+            let proof_result: Result<
+                AvailabilityIdentity,
+                crate::fast_path::publication::PublicationRetentionError,
+            > = verify_drain_possession_into(
                 store,
                 context,
                 domain,
@@ -1233,7 +1237,18 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
                 &drain.fence.validators,
                 &identity,
                 &mut drain.reads,
-            )?;
+            );
+            match proof_result {
+                Ok(_) => {}
+                Err(
+                    crate::fast_path::publication::PublicationRetentionError::DrainProofNotReady,
+                ) => {
+                    return Err(DrainSignerError::Invalid(
+                        "confirmed signer entry lost its retained drain proof",
+                    ));
+                }
+                Err(error) => return Err(error.into()),
+            }
             let mut next: DrainUnionAccumulator = accumulator;
             next.push_member(resolver, &identity)?;
             let member_count: u64 = next.identity().member_count;

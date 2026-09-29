@@ -47,7 +47,9 @@ tombstoned or foreign progress row stops rather than resetting state.
 Confirming the exact staged request before its full proof arrives is a
 not-ready response; a tombstoned publication or an existing publication with
 an incomplete artifact closure is inconsistent retained state, not another
-retryable empty row.
+retryable empty row. Once a signer entry is confirmed, even a pristine absence
+of its formerly verified publication is corruption, not a reason for the
+union driver to poll forever.
 
 Each remote page is checked by the target's CAS against the signed terminal
 count/digest and previous confirmed accumulator; a driver that independently
