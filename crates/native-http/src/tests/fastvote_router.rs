@@ -261,6 +261,7 @@ async fn certified_router_mounts_fastvote_and_publication_routes() {
         node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
         node_wire::FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
         node_wire::FASTVOTE_DRAIN_UNION_ADVANCE_PATH,
+        node_wire::FASTVOTE_DRAIN_APPLY_PATH,
     ] {
         assert_eq!(
             dispatch(&app, "POST", path, vec![0xAA]).await,
@@ -284,6 +285,10 @@ async fn certified_router_mounts_fastvote_and_publication_routes() {
         (
             node_wire::FASTVOTE_DRAIN_UNION_ADVANCE_PATH,
             node_wire::MAX_DRAIN_UNION_ADVANCE_REQUEST_BYTES,
+        ),
+        (
+            node_wire::FASTVOTE_DRAIN_APPLY_PATH,
+            node_wire::MAX_DRAIN_MEMBER_APPLY_REQUEST_BYTES,
         ),
     ] {
         assert_eq!(
@@ -380,6 +385,21 @@ async fn certified_router_mounts_fastvote_and_publication_routes() {
         )
         .await,
         StatusCode::CONFLICT,
+    );
+    let absent_member: node_wire::DrainMemberApplyRequest = node_wire::DrainMemberApplyRequest {
+        epoch: config().epoch(),
+        member_request_id: [0x33; 32],
+    };
+    assert_eq!(
+        dispatch(
+            &app,
+            "POST",
+            node_wire::FASTVOTE_DRAIN_APPLY_PATH,
+            absent_member.encode().unwrap()
+        )
+        .await,
+        StatusCode::CONFLICT,
+        "a request id without locally retained certified drain authority cannot apply",
     );
     assert_eq!(
         dispatch(

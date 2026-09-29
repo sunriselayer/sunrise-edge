@@ -32,12 +32,16 @@ pub const FASTVOTE_DRAIN_IMPORT_PATH: &str = "/v1/fastvote/drain/import/{validat
 /// Certified-only, read-only. Never mutates, signs, ACKs, or claims
 /// readiness; see [`DrainSignerProgressResponse`].
 pub const FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH: &str = "/v1/fastvote/drain/signer-progress";
+/// A locator-only request. The server loads and re-verifies every authority
+/// from its own durable store before applying one certified DrainSet member.
+pub const FASTVOTE_DRAIN_APPLY_PATH: &str = "/v1/fastvote/drain/apply";
 
 pub const DRAIN_SIGNER_PAGE_REQUEST_TYPE_ID: u16 = 0xE10A;
 pub const DRAIN_MEMBER_CONFIRM_REQUEST_TYPE_ID: u16 = 0xE10B;
 pub const DRAIN_UNION_ADVANCE_REQUEST_TYPE_ID: u16 = 0xE10C;
 pub const DRAIN_SIGNER_PROGRESS_REQUEST_TYPE_ID: u16 = 0xE10D;
 pub const DRAIN_SIGNER_PROGRESS_RESPONSE_TYPE_ID: u16 = 0xE10E;
+pub const DRAIN_MEMBER_APPLY_REQUEST_TYPE_ID: u16 = 0xE10F;
 const VERSION: u16 = 1;
 
 pub const MAX_DRAIN_SIGNER_PAGE_REQUEST_BYTES: usize =
@@ -46,6 +50,7 @@ pub const MAX_DRAIN_MEMBER_CONFIRM_REQUEST_BYTES: usize = 160;
 pub const MAX_DRAIN_UNION_ADVANCE_REQUEST_BYTES: usize =
     MAX_FASTPATH_ACTIVE_VALIDATORS * (MAX_FRONTIER_VOTE_BYTES + 8) + 128;
 pub const MAX_DRAIN_SIGNER_PROGRESS_REQUEST_BYTES: usize = 128;
+pub const MAX_DRAIN_MEMBER_APPLY_REQUEST_BYTES: usize = 128;
 /// Matches the private `consensus::availability::frontier::MAX_FRONTIER_IDENTITY_BYTES`
 /// bound on one encoded [`consensus::FrozenFrontierIdentity`].
 const MAX_DRAIN_SIGNER_PROGRESS_IDENTITY_BYTES: usize = 2 * 1024;
@@ -61,6 +66,52 @@ pub enum DrainWireError {
     Encoding(CanonicalEncodingError),
     Decoding(CanonicalDecodingError),
     Invalid(&'static str),
+}
+
+/// Locates one member on the host's own pinned outgoing epoch. It carries no
+/// certificate, signed intent, publication, DrainSet, or caller-chosen fee
+/// policy. The physical creation checkpoint comes from host configuration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DrainMemberApplyRequest {
+    pub epoch: Epoch,
+    pub member_request_id: [u8; 32],
+}
+
+impl DrainMemberApplyRequest {
+    pub fn encode(&self) -> Result<Vec<u8>, DrainWireError> {
+        if self.member_request_id == [0; 32] {
+            return Err(DrainWireError::Invalid("zero drain member request id"));
+        }
+        let mut frame: CanonicalStruct =
+            CanonicalStruct::new(DRAIN_MEMBER_APPLY_REQUEST_TYPE_ID, VERSION);
+        frame.field_u64(1, self.epoch.get())?;
+        frame.field_bytes(2, self.member_request_id.to_vec())?;
+        Ok(frame.finish()?)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, DrainWireError> {
+        if bytes.len() > MAX_DRAIN_MEMBER_APPLY_REQUEST_BYTES {
+            return Err(DrainWireError::Invalid("drain member apply request bound"));
+        }
+        let frame = decode_canonical_frame(bytes)?;
+        frame.require_type(DRAIN_MEMBER_APPLY_REQUEST_TYPE_ID)?;
+        frame.require_version(VERSION)?;
+        frame.require_only_fields(&[1, 2])?;
+        let member_request_id: [u8; 32] = frame
+            .required_field(2)?
+            .try_into()
+            .map_err(|_| DrainWireError::Invalid("drain member request id length"))?;
+        let request: Self = Self {
+            epoch: Epoch::new(frame.required_u64(1)?),
+            member_request_id,
+        };
+        if request.encode()?.as_slice() != bytes {
+            return Err(DrainWireError::Invalid(
+                "noncanonical drain member apply request",
+            ));
+        }
+        Ok(request)
+    }
 }
 
 impl fmt::Display for DrainWireError {
@@ -466,6 +517,42 @@ mod tests {
             signature_scheme: SignatureSchemeId::Ed25519,
             signature: vec![0x77; 64],
         }
+    }
+
+    #[test]
+    fn member_apply_request_has_stable_locator_only_bytes() {
+        let request: DrainMemberApplyRequest = DrainMemberApplyRequest {
+            epoch: Epoch::new(7),
+            member_request_id: [0x11; 32],
+        };
+        let mut expected: Vec<u8> = Vec::new();
+        expected.extend_from_slice(b"SNRE");
+        expected.extend_from_slice(&DRAIN_MEMBER_APPLY_REQUEST_TYPE_ID.to_le_bytes());
+        expected.extend_from_slice(&VERSION.to_le_bytes());
+        expected.extend_from_slice(&2u16.to_le_bytes());
+        expected.extend_from_slice(&1u16.to_le_bytes());
+        expected.extend_from_slice(&8u32.to_le_bytes());
+        expected.extend_from_slice(&7u64.to_le_bytes());
+        expected.extend_from_slice(&2u16.to_le_bytes());
+        expected.extend_from_slice(&32u32.to_le_bytes());
+        expected.extend_from_slice(&[0x11; 32]);
+        assert_eq!(request.encode().unwrap(), expected);
+        assert_eq!(DrainMemberApplyRequest::decode(&expected).unwrap(), request);
+
+        let mut trailing: Vec<u8> = expected.clone();
+        trailing.push(0);
+        assert!(DrainMemberApplyRequest::decode(&trailing).is_err());
+        let mut wrong_type: Vec<u8> = expected;
+        wrong_type[4] ^= 1;
+        assert!(DrainMemberApplyRequest::decode(&wrong_type).is_err());
+        assert!(
+            DrainMemberApplyRequest {
+                member_request_id: [0; 32],
+                ..request
+            }
+            .encode()
+            .is_err()
+        );
     }
 
     #[test]

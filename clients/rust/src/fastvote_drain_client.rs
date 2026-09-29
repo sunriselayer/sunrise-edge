@@ -16,17 +16,18 @@ use consensus::{
     encode_frozen_frontier_vote, verify_frozen_frontier_quorum,
 };
 use execution::paid_execution::{
-    authenticate_paid_intent, decode_signed_paid_intent, paid_invocation_digest,
+    PaidExecutionResult, SignedPaidIntent, authenticate_paid_intent, decode_signed_paid_intent,
+    encode_signed_paid_intent, paid_invocation_digest,
 };
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
 use node_core::ordered_economics::DrainSignerProgress;
 use node_wire::{
-    DrainMemberConfirmRequest, DrainSignerPageRequest, DrainSignerProgressRequest,
-    DrainSignerProgressResponse, DrainUnionAdvanceRequest, FASTVOTE_DRAIN_IMPORT_PATH,
-    FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH, FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
-    FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH, FASTVOTE_DRAIN_UNION_ADVANCE_PATH, NODE_EVENT_MEDIA_TYPE,
-    NODE_RESULT_MEDIA_TYPE,
+    DrainMemberApplyRequest, DrainMemberConfirmRequest, DrainSignerPageRequest,
+    DrainSignerProgressRequest, DrainSignerProgressResponse, DrainUnionAdvanceRequest,
+    FASTVOTE_DRAIN_APPLY_PATH, FASTVOTE_DRAIN_IMPORT_PATH, FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
+    FASTVOTE_DRAIN_SIGNER_PAGE_PATH, FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH,
+    FASTVOTE_DRAIN_UNION_ADVANCE_PATH, NODE_EVENT_MEDIA_TYPE, NODE_RESULT_MEDIA_TYPE,
 };
 use protocol_types::{AtomicityDomainId, ValidatorId};
 
@@ -70,6 +71,37 @@ fn validator_path(validator: ValidatorId) -> String {
 }
 
 impl<T: Transport> Client<T> {
+    /// Applies one member only after the server independently proves its own
+    /// committed DrainSet membership and retained full certificate. The wire
+    /// request contains only a locator; the locally supplied original signed
+    /// intent is used here solely to authenticate before network I/O and bind
+    /// the returned canonical receipt/result. A transport connection is not
+    /// a protocol-context pin: `expected` must come from local configuration.
+    pub fn apply_drain_member(
+        &self,
+        signed: &SignedPaidIntent,
+        resolver: &HashSuiteResolver,
+        expected: &PublicationContext,
+        deadline: Option<Instant>,
+    ) -> Result<PaidExecutionResult, ClientError> {
+        let signed_bytes: Vec<u8> = encode_signed_paid_intent(signed)?;
+        authenticate_paid_intent(resolver, expected, &signed_bytes)?;
+        let body: Vec<u8> = DrainMemberApplyRequest {
+            epoch: expected.epoch(),
+            member_request_id: signed.intent.request_id,
+        }
+        .encode()?;
+        let response: WireResponse = self.transport().send(&WireRequest {
+            method: Method::Post,
+            path: FASTVOTE_DRAIN_APPLY_PATH.to_owned(),
+            content_type: Some(NODE_EVENT_MEDIA_TYPE),
+            body,
+            deadline,
+        })?;
+        let response_body: Vec<u8> = expect_success(response, NODE_RESULT_MEDIA_TYPE)?;
+        crate::fastvote_client::validate_fastvote_apply_response(signed, resolver, &response_body)
+    }
+
     /// Reads one bounded durable signer-progress snapshot. A pristine row is
     /// represented by `None` only for the exact `drain-progress-pristine`
     /// response;
@@ -377,12 +409,21 @@ impl<T: Transport> Client<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::key::LocalSigner;
     use consensus::{ConsensusSigner, FrozenFrontierAccumulator};
+    use crypto::SignatureSigner;
     use ed25519_zebra::{SigningKey, VerificationKey};
-    use protocol_types::{
-        ChainId, Epoch, HashSuite, HashSuiteSchedule, ProtocolVersion, SignatureSchemeId,
+    use execution::call::{CallIntent, InstanceTarget};
+    use execution::paid_execution::{
+        FeeSourceConsent, PaidApplication, PaidIntent, ReservationAccessKind,
+        paid_intent_signing_frame,
     };
-    use std::cell::Cell;
+    use execution::publication::UnverifiedDependencyRef;
+    use protocol_types::{
+        ChainId, Digest32, Epoch, HashAlgorithmId, HashSuite, HashSuiteSchedule, ProtocolVersion,
+        SignatureSchemeId,
+    };
+    use std::cell::{Cell, RefCell};
     use validator_set::{ValidatorInfo, ValidatorSet};
 
     struct Signer {
@@ -406,6 +447,7 @@ mod tests {
     struct FixedTransport {
         response: WireResponse,
         calls: Cell<u32>,
+        last_request: RefCell<Option<WireRequest>>,
     }
 
     impl Transport for FixedTransport {
@@ -415,6 +457,7 @@ mod tests {
         ) -> Result<WireResponse, crate::transport::TransportError> {
             assert_eq!(request.method, Method::Post);
             self.calls.set(self.calls.get() + 1);
+            self.last_request.replace(Some(request.clone()));
             Ok(self.response.clone())
         }
     }
@@ -474,7 +517,130 @@ mod tests {
                 body,
             },
             calls: Cell::new(0),
+            last_request: RefCell::new(None),
         })
+    }
+
+    fn signed_drain_member() -> SignedPaidIntent {
+        let signer: LocalSigner = LocalSigner::from_seed([0x31; 32]);
+        let context: PublicationContext = PublicationContext::new(
+            ChainId::new("drain-client-test").unwrap(),
+            ProtocolVersion::new(4),
+            Epoch::new(8),
+        )
+        .unwrap();
+        let sender: [u8; 32] = *signer.address().as_bytes();
+        let digest = |byte: u8| Digest32::new(HashAlgorithmId::Sha2_256, [byte; 32]);
+        let request_id: [u8; 32] = [0x51; 32];
+        let intent: PaidIntent = PaidIntent {
+            context: context.clone(),
+            request_id,
+            sender,
+            nonce: 1,
+            fee_policy_digest: digest(0x11),
+            consent: FeeSourceConsent {
+                source: objects::ObjectRef {
+                    id: objects::ObjectId::new([0x22; 32]),
+                    version: 1,
+                    digest: digest(0x33),
+                },
+                access: ReservationAccessKind::Write,
+                max_fee: fees::Amount::new(1),
+                refund_recipient: sender,
+            },
+            application: PaidApplication::Call(CallIntent {
+                context: context.clone(),
+                request_id,
+                sender,
+                nonce: 1,
+                code: UnverifiedDependencyRef::new(
+                    abi::package_types::PackageOrigin::unverified(
+                        context.chain_id().clone(),
+                        sender,
+                        [0x44; 32],
+                    )
+                    .unwrap(),
+                    1,
+                    context.clone(),
+                    digest(0x45),
+                )
+                .unwrap(),
+                instance: InstanceTarget {
+                    creator: sender,
+                    seed: [0x46; 32],
+                    revision: 1,
+                    record_digest: digest(0x47),
+                },
+                entrypoint: "transfer".to_owned(),
+                type_arguments: Vec::new(),
+                access: abi::AccessManifest::new(),
+                arguments: Vec::new(),
+                gas_limit: 1,
+            }),
+            gas_limit: 1,
+            authorizations: Vec::new(),
+        };
+        let frame: Vec<u8> = paid_intent_signing_frame(&context, &intent).unwrap();
+        let signature_bytes: Vec<u8> = signer.sign_framed(&frame).unwrap();
+        let signature: [u8; 64] = signature_bytes.as_slice().try_into().unwrap();
+        SignedPaidIntent { intent, signature }
+    }
+
+    #[test]
+    fn drain_apply_client_authenticates_before_post_and_binds_request_id() {
+        let (resolver, _, _, _, _) = fixture();
+        let signed: SignedPaidIntent = signed_drain_member();
+        let expected: PublicationContext = signed.intent.context.clone();
+        let endpoint: Client<FixedTransport> = client(409, b"drain-member-not-ready".to_vec());
+        assert!(matches!(
+            endpoint.apply_drain_member(&signed, &resolver, &expected, None),
+            Err(ClientError::UnexpectedStatus { status: 409, .. })
+        ));
+        assert_eq!(endpoint.transport().calls.get(), 1);
+        let captured: WireRequest = endpoint.transport().last_request.borrow().clone().unwrap();
+        assert_eq!(captured.path, FASTVOTE_DRAIN_APPLY_PATH);
+        assert_eq!(
+            DrainMemberApplyRequest::decode(&captured.body).unwrap(),
+            DrainMemberApplyRequest {
+                epoch: expected.epoch(),
+                member_request_id: signed.intent.request_id,
+            }
+        );
+
+        let wrong_context: PublicationContext = PublicationContext::new(
+            expected.chain_id().clone(),
+            expected.protocol_version(),
+            Epoch::new(expected.epoch().get() + 1),
+        )
+        .unwrap();
+        let untouched: Client<FixedTransport> = client(409, Vec::new());
+        assert!(
+            untouched
+                .apply_drain_member(&signed, &resolver, &wrong_context, None)
+                .is_err()
+        );
+        assert_eq!(untouched.transport().calls.get(), 0);
+        let mut forged: SignedPaidIntent = signed.clone();
+        forged.signature[0] ^= 1;
+        assert!(
+            untouched
+                .apply_drain_member(&forged, &resolver, &expected, None)
+                .is_err()
+        );
+        assert_eq!(untouched.transport().calls.get(), 0);
+
+        let wrong_id_result: Vec<u8> = node_wire::HttpNodeResult::new(
+            node_core::RequestId::new([0x52; 32]).unwrap(),
+            Vec::new(),
+        )
+        .unwrap()
+        .encode()
+        .unwrap();
+        let forged_response: Client<FixedTransport> = client(200, wrong_id_result);
+        assert!(matches!(
+            forged_response.apply_drain_member(&signed, &resolver, &expected, None),
+            Err(ClientError::SubmitResponseRequestIdMismatch { .. })
+        ));
     }
 
     #[test]

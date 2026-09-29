@@ -49,6 +49,16 @@ replay returns the retained original result before re-checking the old live
 epoch or local ready marker; it cannot reapply fees or effects. Fresh work
 still requires every DrainSet and current-epoch precondition.
 
+The certified-only HTTP adapter uses locator frame `0xE10F/v1` (epoch and
+member request ID only). It supplies its own pinned policies, resolver and
+physical checkpoint; the request cannot carry a certificate, signed intent,
+union proof or authority. The Rust client authenticates its locally supplied
+original signed intent against a separate expected protocol context before
+contacting the host and binds the returned canonical result to that intent.
+This transport does not itself authenticate an untrusted peer or bound total
+repeated proof-verification work; that ingress gate remains required before
+untrusted-network exposure.
+
 The committed DrainSet record is authenticated outcome history. A future
 portable cut must carry and verify its ordered proof and reconstruct the
 full signed frontier membership rather than importing replica-local ready,

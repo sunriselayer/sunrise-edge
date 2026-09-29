@@ -29,6 +29,12 @@ where
 {
     Router::new()
         .route(
+            node_wire::FASTVOTE_DRAIN_APPLY_PATH,
+            post(apply_member::<S, B, M, T, C, I>).layer(DefaultBodyLimit::max(
+                node_wire::MAX_DRAIN_MEMBER_APPLY_REQUEST_BYTES,
+            )),
+        )
+        .route(
             node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
             post(ingest_signer_page::<S, B, M, T, C, I>).layer(DefaultBodyLimit::max(
                 node_wire::MAX_DRAIN_SIGNER_PAGE_REQUEST_BYTES,
@@ -57,6 +63,131 @@ where
                 node_wire::MAX_DRAIN_SIGNER_PROGRESS_REQUEST_BYTES,
             )),
         )
+}
+
+/// Executes only a member of the host's own committed DrainSet. The request
+/// is a locator, not authority: core reloads the retained signed intent,
+/// certificate, local union readiness and exact committed membership. The
+/// host supplies its own trusted policies and physical checkpoint.
+async fn apply_member<S, B, M, T, C, I>(
+    State(state): State<SharedPreinstalledWasmStructuredDurableNativeHttpState<S, B, M, T, C, I>>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response
+where
+    S: IndexedOutboxRepository + Send + Sync + 'static,
+    B: BlobStore + Send + Sync + 'static,
+    M: TransactionalNodeStateMachine + Send + Sync + 'static,
+    T: Transport + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    I: IndexedOutboxIdentitySource + Send + Sync + 'static,
+{
+    if !has_supported_content_type(&headers) || has_unsupported_content_encoding(&headers) {
+        return error_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported-fastvote-content",
+        );
+    }
+    let body: Bytes = match body {
+        Ok(value) => value,
+        Err(error) => return error_response(error.status(), "body-rejected"),
+    };
+    if body.len() > node_wire::MAX_DRAIN_MEMBER_APPLY_REQUEST_BYTES {
+        return error_response(StatusCode::PAYLOAD_TOO_LARGE, "drain-apply-too-large");
+    }
+    publication::admitted(
+        state.components.is_cancelled(),
+        state.blocking_executor.clone(),
+        move || {
+            let Some(fastvote) = state.preinstalled_wasm.fastvote.as_ref() else {
+                return error_response(StatusCode::NOT_FOUND, "fastvote-disabled");
+            };
+            let request: node_wire::DrainMemberApplyRequest =
+                match node_wire::DrainMemberApplyRequest::decode(&body) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return error_response(
+                            StatusCode::BAD_REQUEST,
+                            "invalid-drain-apply-request",
+                        );
+                    }
+                };
+            let expected: execution::publication::PublicationContext =
+                match execution::publication::PublicationContext::new(
+                    state.config.chain_id().clone(),
+                    state.config.protocol_version(),
+                    request.epoch,
+                ) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return error_response(
+                            StatusCode::BAD_REQUEST,
+                            "invalid-drain-apply-context",
+                        );
+                    }
+                };
+            let (domain, context): (AtomicityDomainId, DurableOperationContext) =
+                match prepare_storage_context(
+                    &state.components,
+                    &state.protocol_config,
+                    &state.authority,
+                    &state.config,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return query_invocation_error_response(&error),
+                };
+            if state.components.is_cancelled() {
+                return cancelled_before_storage_response();
+            }
+            let output: node_core::NodeOutput = match fast_path::drain_apply::apply_drain_member(
+                state.components.store.as_ref(),
+                state.components.blob_store.as_ref(),
+                &context,
+                domain,
+                &state.resolver,
+                &state.history,
+                &expected,
+                &fastvote.execution.base_policy,
+                &fastvote.execution.fee_policy,
+                &fastvote.execution.engine,
+                request.member_request_id,
+                fastvote.created_checkpoint,
+            ) {
+                Ok(value) => value,
+                Err(FastPathError::Invalid(_)) => {
+                    return error_response(StatusCode::CONFLICT, "drain-member-not-ready");
+                }
+                Err(error) => return fastpath_error_response(&error),
+            };
+            let request_id: RequestId = match RequestId::new(request.member_request_id) {
+                Ok(value) => value,
+                Err(_) => {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "drain-member-request-id",
+                    );
+                }
+            };
+            match HttpNodeResult::new(request_id, output.responses().to_vec())
+                .and_then(|result| result.encode())
+            {
+                Ok(bytes) => (
+                    StatusCode::OK,
+                    [
+                        (header::CONTENT_TYPE, NODE_RESULT_MEDIA_TYPE),
+                        (header::CACHE_CONTROL, "no-store"),
+                    ],
+                    bytes,
+                )
+                    .into_response(),
+                Err(_) => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "drain-member-result-encoding",
+                ),
+            }
+        },
+    )
+    .await
 }
 
 /// The retry outcomes a caller must be able to tell apart:
