@@ -289,6 +289,8 @@ fn ordered_outcome_history_is_not_misclassified_as_consensus_cache() {
         b"drain-signer-entry/",
         b"drain-union-progress/",
         b"drain-union-ready/",
+        b"drain-completion-progress/",
+        b"drain-completion/",
     ] {
         let local_progress: Vec<u8> = [prefix, suffix, b"example"].concat();
         assert_eq!(

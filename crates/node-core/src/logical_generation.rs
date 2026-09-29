@@ -709,8 +709,10 @@ pub fn classify_ordered_row(key: &[u8]) -> Option<OrderedRowClass> {
     // merge cursor and the local DrainSet-ready marker are all replica-local
     // progress, exactly like `drain-possession/`: none of them is itself the
     // proof (that remains `fastpath/drain-publication/` history) or a signed,
-    // transferable business fact.
-    const LOCAL_PROGRESS: [&[u8]; 7] = [
+    // transferable business fact. DR-0161 (2026-09-30) adds the local
+    // drain-completion cursor and its immutable terminal marker: neither is a
+    // signed vote or a portable proof of the receipt history it matched.
+    const LOCAL_PROGRESS: [&[u8]; 9] = [
         b"frontier-progress/",
         b"frontier/",
         b"drain-possession/",
@@ -718,6 +720,8 @@ pub fn classify_ordered_row(key: &[u8]) -> Option<OrderedRowClass> {
         b"drain-signer-entry/",
         b"drain-union-progress/",
         b"drain-union-ready/",
+        b"drain-completion-progress/",
+        b"drain-completion/",
     ];
     if CONTROL
         .iter()

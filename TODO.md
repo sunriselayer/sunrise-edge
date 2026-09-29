@@ -549,7 +549,40 @@ The detailed existing evidence and remaining criteria follow:
   This does not yet provide an
   all-member causal scheduler, drain-complete proof, portable cut, Seal,
   next-set readiness, activation, PostgreSQL network E2E or authenticated
-  public ingress. Exact-head CI and U9 review remain pending.
+  public ingress. Opus APPROVED the U9 and shared-enumerator delta through
+  `4a4bdba`, not PR #235 or Delivery 3. CI for that head remains pending.
+  U10 adds the bounded resumable drain-completion state machine described in
+  [DR-0161](docs/architecture/decisions/0161-bounded-drain-completion.md):
+  `ordered_economics::drain_completion` re-derives `selected_votes` from the
+  exact locally committed `DrainSetRecord`, reuses
+  `next_union_member_after`/`verify_drain_ready_into` unmodified, and
+  advances at most one canonical union member per call, only after a typed
+  original receipt exists for that member's request id and carries its exact
+  certified signed-intent digest (`AvailabilityIdentity::signed_intent_digest`,
+  bound to the certificate's own `tx_hash`). Progress stores a running
+  canonical accumulator identity. At the terminal step an exhausted scan is
+  insufficient: its independently accumulated count/digest must match the
+  committed and locally ready union. No physical storage counter is stored;
+  only then is the immutable local `drain-completion/` marker
+  persisted, CAS-fenced with the committed Freeze, epoch, set, record, ready
+  marker and progress. `verify_drain_complete_into` rechecks the committed
+  record, exact local ready union and completion marker while folding all
+  reads into a future Seal vote's atomic commit. Both new local rows use
+  `0x6461` and `0x6462` type IDs and are classified `LocalProgress` in
+  `logical_generation`. A two-member signed-frontier fixture with two
+  individually certified bundles and test-inserted receipts walks
+  resumability (advance, advance, complete, idempotent complete),
+  a missing-receipt stop, a mismatched-digest rejection that records no
+  progress, tombstoned progress/completion rows, and a tampered completion
+  marker caught by both advancement and read-only verification, plus a
+  skipped-member cursor that cannot falsely complete. This fixture does not
+  prove jointly honest certification or actual application of both members.
+  This does not provide an all-member causal scheduler that drives repeated advance
+  calls automatically, a portable cut, Seal, next-set readiness, activation,
+  or a PostgreSQL/network multi-validator run; HTTP/CLI wiring is separately
+  out of scope for this slice. Fifteen focused tests and changed-crate Clippy
+  pass locally; the complete repository gate and exact-head CI for U10 remain
+  pending.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

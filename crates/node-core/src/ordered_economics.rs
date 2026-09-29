@@ -52,13 +52,21 @@
 //! revision assertion into the same durable commit as the signed
 //! proposal/vote; at committed execution it re-verifies readiness through the
 //! staging store and installs the one-per-epoch immutable
-//! [`drain_set::DrainSetRecord`]. This is still only one part of DR-0154.
-//! `Seal`, verified next-set readiness and activation, and retirement of the
-//! older standalone epoch-transition route must be integrated before this
-//! path can be enabled as a complete handoff.
+//! [`drain_set::DrainSetRecord`]. [`drain_completion`] (DR-0161) adds a
+//! bounded resumable local state machine that advances at most one committed
+//! DrainSet member per call, requires a matching typed original receipt
+//! before ever recording a member as complete, and -- once every selected
+//! signer's confirmed entries are exhausted and the receipt-backed running
+//! union count and digest match the committed record -- persists an immutable
+//! local completion marker plus a read-only `verify_drain_complete_into` for
+//! a future Seal vote to fold into its own atomic commit. This is still only
+//! one part of DR-0154. `Seal`, verified next-set readiness and activation,
+//! and retirement of the older standalone epoch-transition route must be
+//! integrated before this path can be enabled as a complete handoff.
 use super::*;
 
 mod candidate;
+mod drain_completion;
 mod drain_set;
 mod drain_union;
 pub(crate) mod engine;
@@ -74,6 +82,10 @@ mod staging;
 pub use candidate::{
     MAX_ORDERED_CANDIDATE_INTENT_BYTES, OrderedCandidate, OrderedOperationKind,
     decode_ordered_candidate, encode_ordered_candidate,
+};
+pub use drain_completion::{
+    DrainCompletionError, DrainCompletionStep, advance_drain_completion, drain_completion_key,
+    drain_completion_progress_key, verify_drain_complete, verify_drain_complete_into,
 };
 pub(crate) use drain_set::drain_set_record_key;
 pub use drain_set::{
