@@ -1014,6 +1014,89 @@ fn freeze_candidate(request_id: [u8; 32]) -> OrderedCandidate {
 }
 
 #[test]
+fn business_free_suffix_accepts_real_control_qc_and_folds_its_candidate_reads() {
+    let network: Network = setup_with_freeze_height(1);
+    network.install_ordered();
+    let freeze: OrderedCandidate = freeze_candidate([0xD1; 32]);
+    let (certificate, proposal): (QuorumCertificate, OrderedProposal) =
+        network.certify(1, Some(&freeze));
+    for replica in 0..REPLICAS {
+        process_certificate(
+            &network.stores[replica],
+            &network.context,
+            &network.env(),
+            &certificate,
+        )
+        .unwrap();
+        let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+        verify_business_free_suffix_into(
+            &network.stores[replica],
+            &network.context,
+            &network.env(),
+            &mut reads,
+        )
+        .unwrap();
+        let candidate_key: Vec<u8> = engine::ordered_candidate_record_key(
+            &fixture::chain(),
+            proposal.proposal.transactions[0],
+        )
+        .unwrap();
+        assert_eq!(
+            reads.get(&candidate_key),
+            Some(&network.revision(replica, &candidate_key))
+        );
+        assert!(reads.contains_key(&engine::ordered_state_key(&fixture::chain()).unwrap()));
+        assert!(
+            reads.contains_key(&engine::ordered_applied_height_key(&fixture::chain()).unwrap())
+        );
+    }
+}
+
+#[test]
+fn business_free_suffix_rejects_real_business_qc_and_missing_control_body() {
+    let business: Network = setup();
+    business.install_ordered();
+    let recipient: Address = address_of(0xD2);
+    let next: FastPathBondRecord = predicted_unbond(&business.bond, 11, *recipient.as_bytes());
+    let candidate: OrderedCandidate =
+        unbond_candidate(&business, &business.bond, &next, [0xD2; 32], recipient, 11);
+    let (certificate, _): (QuorumCertificate, OrderedProposal) =
+        business.certify(1, Some(&candidate));
+    process_certificate(
+        &business.stores[0],
+        &business.context,
+        &business.env(),
+        &certificate,
+    )
+    .unwrap();
+    assert!(matches!(
+        verify_business_free_suffix(&business.stores[0], &business.context, &business.env()),
+        Err(SuffixPredicateError::Invalid(_))
+    ));
+
+    let control: Network = setup_with_freeze_height(1);
+    control.install_ordered();
+    let freeze: OrderedCandidate = freeze_candidate([0xD3; 32]);
+    let (certificate, proposal): (QuorumCertificate, OrderedProposal) =
+        control.certify(1, Some(&freeze));
+    process_certificate(
+        &control.stores[0],
+        &control.context,
+        &control.env(),
+        &certificate,
+    )
+    .unwrap();
+    let candidate_key: Vec<u8> =
+        engine::ordered_candidate_record_key(&fixture::chain(), proposal.proposal.transactions[0])
+            .unwrap();
+    control.put(0, candidate_key, StateMutation::Delete);
+    assert!(matches!(
+        verify_business_free_suffix(&control.stores[0], &control.context, &control.env()),
+        Err(SuffixPredicateError::Invalid(_))
+    ));
+}
+
+#[test]
 fn freeze_cannot_be_proposed_or_voted_before_the_signed_minimum_height() {
     let network: Network = setup_with_freeze_height(4);
     network.install_ordered();
@@ -1415,7 +1498,7 @@ fn ordered_drain_set_requires_local_readiness_then_commits_once_on_four_replicas
     let mut second_intent: DrainSetIntent = intent;
     second_intent.request_id = [0xA3; 32];
     let second: OrderedCandidate = OrderedCandidate {
-        context: expected,
+        context: expected.clone(),
         request_id: second_intent.request_id,
         kind: OrderedOperationKind::DrainSet,
         intent: encode_drain_set_intent(&second_intent).unwrap(),
@@ -1432,6 +1515,99 @@ fn ordered_drain_set_requires_local_readiness_then_commits_once_on_four_replicas
         );
         assert_eq!(network.value(replica, &key), original_bytes);
     }
+
+    // The barrier is a separate local step: the committed DrainSet alone is
+    // not enough. Each independent replica must finish its own receipt-backed
+    // drain cursor, then install the marker against that exact completed
+    // identity and the real shared-engine high/locked suffix.
+    let barrier_key: Vec<u8> =
+        business_free_barrier_key(expected.chain_id(), expected.epoch()).unwrap();
+    for replica in 0..REPLICAS {
+        assert!(matches!(
+            advance_business_free_barrier(
+                &network.stores[replica],
+                &network.context,
+                &network.env()
+            ),
+            Err(BusinessFreeBarrierError::Drain(
+                DrainCompletionError::NotReady(_)
+            ))
+        ));
+        assert!(network.value(replica, &barrier_key).is_none());
+        assert_eq!(
+            advance_drain_completion(
+                &network.stores[replica],
+                &network.context,
+                network.domain(),
+                &network.resolver,
+                &fixture::protocol(),
+            )
+            .unwrap(),
+            DrainCompletionStep::Complete(Box::new(identity.clone()))
+        );
+        if replica == 0 {
+            let state_key: Vec<u8> = engine::ordered_state_key(expected.chain_id()).unwrap();
+            let race: RaceStore<'_> = RaceStore {
+                inner: &network.stores[replica],
+                context: network.context,
+                domain: network.domain(),
+                race_key: state_key.clone(),
+                race_value: network.value(replica, &state_key).unwrap(),
+                race_on_durable: true,
+                raced: std::cell::Cell::new(false),
+            };
+            assert!(
+                advance_business_free_barrier(&race, &network.context, &network.env()).is_err()
+            );
+            assert!(race.raced.get());
+            assert!(network.value(replica, &barrier_key).is_none());
+        }
+        assert_eq!(
+            advance_business_free_barrier(
+                &network.stores[replica],
+                &network.context,
+                &network.env()
+            )
+            .unwrap(),
+            identity
+        );
+        let installed_revision: StateRevision = network.revision(replica, &barrier_key);
+        assert_ne!(installed_revision, StateRevision::INITIAL);
+        assert_eq!(
+            advance_business_free_barrier(
+                &network.stores[replica],
+                &network.context,
+                &network.env()
+            )
+            .unwrap(),
+            identity
+        );
+        assert_eq!(network.revision(replica, &barrier_key), installed_revision);
+    }
+    let third: OrderedCandidate = OrderedCandidate {
+        request_id: [0xA5; 32],
+        ..second
+    };
+    let leader: usize = network.leader_index(10);
+    assert!(
+        propose(
+            &network.stores[leader],
+            &network.context,
+            &network.env(),
+            Some(&third),
+            &network.signers[leader],
+        )
+        .is_err()
+    );
+    let third_header: Vec<u8> =
+        engine::ordered_request_header_key_for_tests(expected.chain_id(), &third.request_id);
+    assert!(network.value(leader, &third_header).is_none());
+    let (empty_outputs, _, _) = network.round(10, None);
+    assert!(
+        empty_outputs
+            .iter()
+            .all(|output| output.committed.is_empty())
+    );
 }
 
 #[test]
@@ -2726,8 +2902,7 @@ fn justification_committing_freeze_never_exposes_a_vote_for_its_own_business_pay
     // height-3 QC. The lagging target must process that QC and persist Freeze
     // without signing the proposal's own business payload.
     let recipient: Address = address_of(0x7a);
-    let next: FastPathBondRecord =
-        predicted_unbond(&network.bond, 11, *recipient.as_bytes());
+    let next: FastPathBondRecord = predicted_unbond(&network.bond, 11, *recipient.as_bytes());
     let request_id: [u8; 32] = [0x7b; 32];
     let business: OrderedCandidate =
         unbond_candidate(&network, &network.bond, &next, request_id, recipient, 11);
@@ -2739,7 +2914,11 @@ fn justification_committing_freeze_never_exposes_a_vote_for_its_own_business_pay
     let signed: consensus::ConsensusProposal = network
         .policy
         .engine()
-        .propose(&leader_state, vec![candidate_digest], &network.signers[leader])
+        .propose(
+            &leader_state,
+            vec![candidate_digest],
+            &network.signers[leader],
+        )
         .unwrap();
     assert_eq!(signed.height, 4);
     let carrying: OrderedProposal = OrderedProposal {
@@ -2757,12 +2936,22 @@ fn justification_committing_freeze_never_exposes_a_vote_for_its_own_business_pay
         Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch))
     ));
     assert!(network.value(target, &closure_key).is_some());
-    assert!(network
-        .value(target, &engine::ordered_vote_record_key_for_tests(&chain, 4))
-        .is_none());
-    assert!(network
-        .value(target, &engine::ordered_outcome_key_for_tests(&chain, &request_id))
-        .is_none());
+    assert!(
+        network
+            .value(
+                target,
+                &engine::ordered_vote_record_key_for_tests(&chain, 4)
+            )
+            .is_none()
+    );
+    assert!(
+        network
+            .value(
+                target,
+                &engine::ordered_outcome_key_for_tests(&chain, &request_id)
+            )
+            .is_none()
+    );
 }
 
 #[test]

@@ -104,7 +104,7 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 | --- | --- | --- |
 | 1 | Generic certified network contract lifecycle | Merged as PR #228 on 2026-09-27 after the full repository gate, fresh exact-head Opus APPROVE and required CI: Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Independent ingress/security gates remain separate. |
 | 2 | Network economics and validator operations | Merged as PR #232 on 2026-09-27 with normal merge commit `86711be`, after fresh exact-head Opus APPROVE and the passing complete repository CI. Fixed-epoch four-namespace CLI evidence is implemented. Membership-dependent Deposit/Withdraw positives join delivery 3; economics/ingress security audits remain separate. |
-| 3 | Validator membership and epoch handoff | In progress in Draft PR #235 under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Logical generations, ordered Freeze, publication-before-apply and bounded ordered DrainSet have local test evidence. A nonempty network drain, complete causal application, Seal, authenticated cut, readiness/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation are not complete. |
+| 3 | Validator membership and epoch handoff | In progress in Draft PR #235 under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Logical generations, ordered Freeze, publication-before-apply, bounded DrainSet, a real nonempty certified-drain local four-validator test and a CAS-fenced local business-free barrier have evidence. A portable authenticated cut, complete causal scheduling, Seal, readiness/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation are not complete. |
 | 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
 
 PostgreSQL remains the existing tested profile for delivery 1, not a mandatory
@@ -603,6 +603,19 @@ The detailed existing evidence and remaining criteria follow:
   A stable portable cut additionally requires a complete audit of every
   cut-classified writer and an independent authenticated importer replay;
   neither is implemented by a local barrier alone.
+  U11 now implements the local `0x6463/v1` barrier installer: it CAS-folds the
+  serving-epoch row, receipt-backed completed DrainSet, verified high/locked
+  suffix and virgin marker, then writes only the replica-local marker. Real
+  four-validator tests cover a business QC rejection, a control QC, a
+  missing candidate body, no install before drain completion, idempotent
+  installation after completion, a state-revision race, fresh candidate
+  rejection and post-barrier empty progress. The direct evidence path also
+  fences new records while the current serving epoch is frozen, but still
+  admits new evidence about an old offense after actual activation. U11 is
+  not yet a portable cut or a completed Seal/activation path. U11's `npm ci`
+  and complete local repository gate passed, with live PostgreSQL suites
+  skipped because no disposable URL was configured. Exact-head CI and
+  independent review remain pending.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

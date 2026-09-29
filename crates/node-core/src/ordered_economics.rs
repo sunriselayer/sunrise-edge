@@ -67,9 +67,12 @@
 //! never a business one. This is still only one part of DR-0154. `Seal`,
 //! verified next-set readiness and activation, and retirement of the older
 //! standalone epoch-transition route must be integrated before this path can
-//! be enabled as a complete handoff.
+//! be enabled as a complete handoff. [`business_free_barrier`] composes the
+//! receipt-backed drain completion and suffix predicate into one local CAS
+//! marker, and fresh writers reject that marker. It is not a portable cut.
 use super::*;
 
+mod business_free_barrier;
 mod candidate;
 mod drain_completion;
 mod drain_set;
@@ -85,6 +88,7 @@ mod reservation;
 mod staging;
 mod suffix_predicate;
 
+pub use business_free_barrier::{BusinessFreeBarrierError, advance_business_free_barrier};
 pub use candidate::{
     MAX_ORDERED_CANDIDATE_INTENT_BYTES, OrderedCandidate, OrderedOperationKind,
     decode_ordered_candidate, encode_ordered_candidate,
@@ -106,6 +110,7 @@ pub use drain_union::{
     read_drain_signer_progress, staged_drain_signer_identity, verify_drain_ready,
     verify_drain_ready_into,
 };
+pub(crate) use engine::business_free_barrier_key;
 pub use engine::{
     OrderedEventOutput, OrderedOutcome, OrderedProposal, OrderedStatus,
     decode_ordered_event_output, decode_ordered_outcome, decode_ordered_proposal,
@@ -114,7 +119,6 @@ pub use engine::{
     encode_ordered_status, install_ordered_genesis, observe_proposal, process_certificate,
     process_proposal, process_tick, propose, query_ordered_outcome, query_status,
 };
-pub(crate) use engine::business_free_barrier_key;
 pub use evidence_submission::{
     MAX_ORDERED_EVIDENCE_SUBMISSION_BYTES, OrderedEvidenceSubmission,
     decode_ordered_evidence_submission, encode_ordered_evidence_submission,

@@ -493,24 +493,27 @@ fn freeze_fences_new_evidence_but_preserves_exact_replay() {
         second_digest,
     )
     .unwrap();
-    assert!(submit_fast_vote_equivocation_evidence(
-        &store,
-        &context(),
-        domain(),
-        &resolver(),
-        &chain(),
-        protocol_version(),
-        &second_a_bytes,
-        &second_b_bytes,
-        3,
-    )
-    .is_err());
-    assert!(store
-        .get_versioned_durable(&context(), domain(), &second_key)
-        .unwrap()
-        .value()
-        .is_none());
-
+    assert!(
+        submit_fast_vote_equivocation_evidence(
+            &store,
+            &context(),
+            domain(),
+            &resolver(),
+            &chain(),
+            protocol_version(),
+            &second_a_bytes,
+            &second_b_bytes,
+            3,
+        )
+        .is_err()
+    );
+    assert!(
+        store
+            .get_versioned_durable(&context(), domain(), &second_key)
+            .unwrap()
+            .value()
+            .is_none()
+    );
 }
 
 #[test]

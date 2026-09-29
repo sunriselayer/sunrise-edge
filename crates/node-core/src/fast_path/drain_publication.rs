@@ -361,8 +361,7 @@ pub fn retain_drain_publication<S: StructuredDurableDomainStateStore>(
     // the middle of a paginated cut scan. Exact retained replay above stays
     // legal because it only re-verifies history and may rebuild a local-only
     // possession marker. CAS the virgin barrier row with every fresh import.
-    let barrier_key: Vec<u8> =
-        crate::ordered_economics::business_free_barrier_key(&chain, epoch)?;
+    let barrier_key: Vec<u8> = crate::ordered_economics::business_free_barrier_key(&chain, epoch)?;
     let barrier_row: VersionedStateValue =
         store.get_versioned_durable(context, domain, &barrier_key)?;
     if barrier_row.value().is_some() || barrier_row.revision() != StateRevision::INITIAL {

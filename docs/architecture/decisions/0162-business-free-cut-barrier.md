@@ -35,6 +35,9 @@ a paginated state scan cannot detect an intervening receipt or outcome write.
    stop, never an inferred empty suffix. Fold every relevant row revision into
    the same CAS read set used to install the barrier.
 3. Install one immutable replica-local barrier row only after those checks.
+   Its canonical local marker uses type `0x6463/v1` and stores the exact chain,
+   epoch and completed drain-union identity. It is classified local progress,
+   not a transferable history claim.
    From then on, fresh ordered candidate placement (including header and
    candidate history), a newly committed ordered economic block, fresh
    post-Freeze drain-publication/artifact retention, and a fresh certified

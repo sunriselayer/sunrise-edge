@@ -1,0 +1,201 @@
+//! Replica-local, CAS-installed pre-Seal writer barrier. This is not a
+//! portable cut or a substitute for authenticated import verification.
+use super::*;
+use consensus::{DrainUnionIdentity, decode_drain_union_identity, encode_drain_union_identity};
+
+const BARRIER_TYPE: u16 = 0x6463;
+const BARRIER_VERSION: u16 = 1;
+const MAX_BARRIER_BYTES: usize = 4096;
+
+#[derive(Debug)]
+pub enum BusinessFreeBarrierError {
+    Node(NodeCoreError),
+    Drain(DrainCompletionError),
+    Suffix(SuffixPredicateError),
+    NotReady(&'static str),
+    Invalid(&'static str),
+}
+
+impl fmt::Display for BusinessFreeBarrierError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Node(error) => error.fmt(formatter),
+            Self::Drain(error) => error.fmt(formatter),
+            Self::Suffix(error) => error.fmt(formatter),
+            Self::NotReady(reason) | Self::Invalid(reason) => formatter.write_str(reason),
+        }
+    }
+}
+
+impl Error for BusinessFreeBarrierError {}
+
+impl From<NodeCoreError> for BusinessFreeBarrierError {
+    fn from(value: NodeCoreError) -> Self {
+        Self::Node(value)
+    }
+}
+impl From<RuntimeError> for BusinessFreeBarrierError {
+    fn from(value: RuntimeError) -> Self {
+        Self::Node(value.into())
+    }
+}
+impl From<DurableReadError> for BusinessFreeBarrierError {
+    fn from(value: DurableReadError) -> Self {
+        Self::Node(value.into())
+    }
+}
+impl From<DrainCompletionError> for BusinessFreeBarrierError {
+    fn from(value: DrainCompletionError) -> Self {
+        Self::Drain(value)
+    }
+}
+impl From<SuffixPredicateError> for BusinessFreeBarrierError {
+    fn from(value: SuffixPredicateError) -> Self {
+        Self::Suffix(value)
+    }
+}
+
+fn encode_barrier(
+    chain: &ChainId,
+    epoch: Epoch,
+    identity: &DrainUnionIdentity,
+) -> Result<Vec<u8>, BusinessFreeBarrierError> {
+    let mut frame: CanonicalStruct = CanonicalStruct::new(BARRIER_TYPE, BARRIER_VERSION);
+    frame
+        .field_bytes(
+            1,
+            canonical_encoding::encode_chain_id(chain)
+                .map_err(|_| BusinessFreeBarrierError::Invalid("barrier chain does not encode"))?,
+        )
+        .map_err(|_| BusinessFreeBarrierError::Invalid("barrier chain field does not encode"))?;
+    frame
+        .field_u64(2, epoch.get())
+        .map_err(|_| BusinessFreeBarrierError::Invalid("barrier epoch does not encode"))?;
+    frame
+        .field_bytes(
+            3,
+            encode_drain_union_identity(identity).map_err(|_| {
+                BusinessFreeBarrierError::Invalid("barrier union identity does not encode")
+            })?,
+        )
+        .map_err(|_| BusinessFreeBarrierError::Invalid("barrier union field does not encode"))?;
+    let bytes: Vec<u8> = frame
+        .finish()
+        .map_err(|_| BusinessFreeBarrierError::Invalid("barrier does not encode"))?;
+    if bytes.len() > MAX_BARRIER_BYTES {
+        return Err(BusinessFreeBarrierError::Invalid(
+            "barrier exceeds row bound",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn decode_barrier(
+    bytes: &[u8],
+    chain: &ChainId,
+    epoch: Epoch,
+) -> Result<DrainUnionIdentity, BusinessFreeBarrierError> {
+    if bytes.len() > MAX_BARRIER_BYTES {
+        return Err(BusinessFreeBarrierError::Invalid(
+            "barrier exceeds row bound",
+        ));
+    }
+    let frame = decode_canonical_frame(bytes)
+        .map_err(|_| BusinessFreeBarrierError::Invalid("barrier does not decode"))?;
+    frame
+        .require_type(BARRIER_TYPE)
+        .and_then(|()| frame.require_version(BARRIER_VERSION))
+        .and_then(|()| frame.require_only_fields(&[1, 2, 3]))
+        .map_err(|_| BusinessFreeBarrierError::Invalid("barrier frame is foreign"))?;
+    let stored_chain: &[u8] = frame
+        .required_field(1)
+        .map_err(|_| BusinessFreeBarrierError::Invalid("barrier chain is missing"))?;
+    let expected_chain: Vec<u8> = canonical_encoding::encode_chain_id(chain)
+        .map_err(|_| BusinessFreeBarrierError::Invalid("barrier chain does not encode"))?;
+    let stored_epoch: u64 = frame
+        .required_u64(2)
+        .map_err(|_| BusinessFreeBarrierError::Invalid("barrier epoch is missing"))?;
+    if stored_chain != expected_chain || stored_epoch != epoch.get() {
+        return Err(BusinessFreeBarrierError::Invalid(
+            "barrier context mismatch",
+        ));
+    }
+    let identity: DrainUnionIdentity = decode_drain_union_identity(
+        frame
+            .required_field(3)
+            .map_err(|_| BusinessFreeBarrierError::Invalid("barrier union is missing"))?,
+    )
+    .map_err(|_| BusinessFreeBarrierError::Invalid("barrier union does not decode"))?;
+    if encode_barrier(chain, epoch, &identity)? != bytes {
+        return Err(BusinessFreeBarrierError::Invalid("noncanonical barrier"));
+    }
+    Ok(identity)
+}
+
+/// Installs the local barrier only after the committed DrainSet is fully
+/// receipt-backed and the authenticated high/locked suffix is business-free.
+/// All observed rows, including the serving epoch and virgin barrier key,
+/// are asserted in the *same* atomic commit as the marker. Exact replay
+/// rechecks the prerequisites and returns the original identity unchanged.
+pub fn advance_business_free_barrier<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+) -> Result<DrainUnionIdentity, BusinessFreeBarrierError> {
+    let expected: &execution::publication::PublicationContext = env.policy.context();
+    let chain: &ChainId = expected.chain_id();
+    let epoch: Epoch = expected.epoch();
+    let domain: AtomicityDomainId = env.policy.domain();
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let serving: crate::local_instance_state::FastPathEpochRecord =
+        crate::mutation_fence::fence_epoch_state(store, context, domain, chain, &mut reads)?;
+    if serving.current_epoch != epoch {
+        return Err(BusinessFreeBarrierError::NotReady(
+            "barrier policy is not the current serving epoch",
+        ));
+    }
+    let identity: DrainUnionIdentity =
+        verify_drain_complete_into(store, context, domain, env.resolver, expected, &mut reads)?;
+    verify_business_free_suffix_into(store, context, env, &mut reads)?;
+    let key: Vec<u8> = business_free_barrier_key(chain, epoch)?;
+    let row: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    if reads
+        .insert(key.clone(), row.revision())
+        .is_some_and(|prior| prior != row.revision())
+    {
+        return Err(NodeCoreError::StateConflict.into());
+    }
+    if let Some(bytes) = row.value() {
+        let retained: DrainUnionIdentity = decode_barrier(bytes, chain, epoch)?;
+        if retained != identity {
+            return Err(BusinessFreeBarrierError::Invalid(
+                "barrier disagrees with completed drain",
+            ));
+        }
+        return Ok(retained);
+    }
+    if row.revision() != StateRevision::INITIAL {
+        return Err(BusinessFreeBarrierError::Invalid("barrier is tombstoned"));
+    }
+    let assertions: Vec<StateReadAssertion> = reads
+        .into_iter()
+        .map(|(key, revision)| StateReadAssertion::new(key, revision))
+        .collect::<Result<Vec<_>, _>>()?;
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain,
+        AtomicStateReadSet::new(assertions)?,
+        AtomicStateMutationSet::new(vec![StateMutationEntry::new(
+            key,
+            StateMutation::Put(encode_barrier(chain, epoch, &identity)?),
+        )?])?,
+    )?;
+    match store.commit_durable(context, transaction) {
+        DurableCommitOutcome::Committed => Ok(identity),
+        DurableCommitOutcome::Rejected(reason) => {
+            Err(NodeCoreError::DurableCommitRejected(reason).into())
+        }
+        DurableCommitOutcome::Indeterminate(reason) => {
+            Err(NodeCoreError::DurableCommitIndeterminate(reason).into())
+        }
+    }
+}

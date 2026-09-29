@@ -1355,17 +1355,15 @@ fn admit_candidate<S: StructuredDurableDomainStateStore>(
     // Keep the original header-conflict and exact-completion reconciliation
     // before this check. The read assertion follows the candidate into the
     // same proposal/vote/observer commit, closing the installation race.
-    let barrier_key: Vec<u8> =
-        business_free_barrier_key(chain, env.policy.context().epoch())?;
+    let barrier_key: Vec<u8> = business_free_barrier_key(chain, env.policy.context().epoch())?;
     let barrier_row: VersionedStateValue =
         store.get_versioned_durable(context, domain, &barrier_key)?;
     if barrier_row.value().is_some() {
-        return Err(stop("ordered candidate arrived after the cut-stability barrier"));
+        return Err(stop(
+            "ordered candidate arrived after the cut-stability barrier",
+        ));
     }
-    require_virgin_absence(
-        &barrier_row,
-        "ordered cut-stability barrier was deleted",
-    )?;
+    require_virgin_absence(&barrier_row, "ordered cut-stability barrier was deleted")?;
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     reads.insert(barrier_key, barrier_row.revision());
 
@@ -1552,17 +1550,15 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
     // CAS, and a present/tombstoned barrier stops before any business receipt
     // or applied-prefix mutation. Empty consensus progress remains legal.
     if !economic_blocks.is_empty() {
-        let barrier_key: Vec<u8> =
-            business_free_barrier_key(&chain, env.policy.context().epoch())?;
+        let barrier_key: Vec<u8> = business_free_barrier_key(&chain, env.policy.context().epoch())?;
         let barrier_row: VersionedStateValue =
             store.get_versioned_durable(context, domain, &barrier_key)?;
         if barrier_row.value().is_some() {
-            return Err(stop("ordered business block arrived after the cut-stability barrier"));
+            return Err(stop(
+                "ordered business block arrived after the cut-stability barrier",
+            ));
         }
-        require_virgin_absence(
-            &barrier_row,
-            "ordered cut-stability barrier was deleted",
-        )?;
+        require_virgin_absence(&barrier_row, "ordered cut-stability barrier was deleted")?;
         writes.read(barrier_key, barrier_row.revision())?;
     }
 
@@ -2202,7 +2198,9 @@ where
             )?
             .is_none()
             {
-                return Err(stop("ordered Freeze preview changed before observation; retry"));
+                return Err(stop(
+                    "ordered Freeze preview changed before observation; retry",
+                ));
             }
             return Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch));
         }
