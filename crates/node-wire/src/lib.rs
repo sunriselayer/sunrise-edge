@@ -15,11 +15,20 @@
 //! produced and accepted here are unchanged from their prior `native-http`
 //! definitions.
 
+pub mod fastvote_drain;
 pub mod fastvote_frontier;
 pub mod fastvote_published;
 pub mod fastvote_retained_publication;
 pub mod ordered_economics;
 
+pub use fastvote_drain::{
+    DRAIN_MEMBER_CONFIRM_REQUEST_TYPE_ID, DRAIN_SIGNER_PAGE_REQUEST_TYPE_ID,
+    DRAIN_UNION_ADVANCE_REQUEST_TYPE_ID, DrainMemberConfirmRequest, DrainSignerPageRequest,
+    DrainUnionAdvanceRequest, DrainWireError, FASTVOTE_DRAIN_IMPORT_PATH,
+    FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH, FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
+    FASTVOTE_DRAIN_UNION_ADVANCE_PATH, MAX_DRAIN_MEMBER_CONFIRM_REQUEST_BYTES,
+    MAX_DRAIN_SIGNER_PAGE_REQUEST_BYTES, MAX_DRAIN_UNION_ADVANCE_REQUEST_BYTES,
+};
 pub use fastvote_frontier::{
     FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH, FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
     FROZEN_FRONTIER_PAGE_REQUEST_TYPE_ID, FROZEN_FRONTIER_PAGE_RESPONSE_TYPE_ID,
