@@ -227,10 +227,11 @@ Publication records, local ACKs and artifact rows are now keyed by chain,
 epoch and request ID. A later epoch scans only its own immutable publication
 family without deleting older authenticated history or treating an earlier
 epoch's proof as a current candidate. This key property alone does not enable
-activation. The current page route serves only while the outgoing epoch is
-the store's active epoch; a lagging validator must finish before activation
-or use a separately designed, authenticated historical serving path. Neither
-historical serving nor DrainSet import is implemented here.
+activation. The active-epoch serving contract requires a lagging validator to
+finish before activation or use a separately designed, authenticated
+historical serving path. The historical path must pin the old committee and
+complete proof history independently; an untrusted epoch field cannot select
+it.
 Before deploying the page route on an untrusted network, bound its per-request
 verification work by cumulative artifact bytes or require peer/operator
 authentication: a valid request can currently make the server re-verify the
@@ -242,6 +243,18 @@ descriptors and all their pages. Select only complete, retrievable frontiers;
 unavailable or forged pages cannot count toward that quorum. Construct the
 union of full-certificate operation identities and authenticated dependency
 closure. Every verifier reconstructs this union, not just its digest/count.
+The selected descriptors must carry ascending, unique registered validator
+IDs, valid outgoing signatures and one exact locally committed Freeze identity;
+duplicate or mixed-Freeze power never counts. Each importer stores a verified
+full bundle and its exact artifacts in a separate post-Freeze drain namespace,
+with an atomic local possession marker. It does not call availability
+retention, create an ACK, or extend its own immutable `publication/` frontier.
+The imported proof and artifacts are authenticated cut history; the possession
+marker is local progress only. A marker counts toward a selected frontier
+only after that signer's consecutive pages reach their authenticated terminal
+count and digest. A new source may relay an imported proof only after
+independently rechecking its saved bytes. See
+[DR-0156](decisions/0156-frozen-frontier-possession.md).
 Choose exactly one `DrainSet` by a normal outgoing ordered commit. Before
 exposing a vote for it, each voting replica must durably retain and verify
 **every union member's full certificate, original signed intent and replay

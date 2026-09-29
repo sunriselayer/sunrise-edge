@@ -78,11 +78,11 @@ pub use evidence_submission::{
     MAX_ORDERED_EVIDENCE_SUBMISSION_BYTES, OrderedEvidenceSubmission,
     decode_ordered_evidence_submission, encode_ordered_evidence_submission,
 };
-pub(crate) use freeze::fence_admission_open;
 pub use freeze::{
     AdmissionClosureRecord, FreezeIntent, decode_admission_closure_record, decode_freeze_intent,
     encode_admission_closure_record, encode_freeze_intent,
 };
+pub(crate) use freeze::{admission_closure_key, fence_admission_open};
 pub use frontier::{
     FrozenFrontierError, FrozenFrontierStep, advance_frozen_frontier, read_frozen_frontier_page,
 };

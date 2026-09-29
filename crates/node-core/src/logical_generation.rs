@@ -634,7 +634,7 @@ pub fn classify_fastpath_row(key: &[u8]) -> Option<FastpathRowClass> {
     // over them, and `publication-artifact/` is the content-addressed,
     // digest-verified replay bytes that manifest requires -- both portable
     // business history a cut must enumerate, not disposable local cache.
-    const HISTORY: [&[u8]; 15] = [
+    const HISTORY: [&[u8]; 17] = [
         b"certificate/",
         b"commitment-witness/",
         b"settlement/",
@@ -649,6 +649,8 @@ pub fn classify_fastpath_row(key: &[u8]) -> Option<FastpathRowClass> {
         b"evidence-consumed/",
         b"publication/",
         b"publication-artifact/",
+        b"drain-publication/",
+        b"drain-publication-artifact/",
         b"availability-certificate/",
     ];
     if LOCAL
@@ -694,7 +696,7 @@ pub fn classify_ordered_row(key: &[u8]) -> Option<OrderedRowClass> {
         key.strip_prefix(ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX)?;
     const CONTROL: [&[u8]; 3] = [b"state/", b"applied-height/", b"candidate/"];
     const HISTORY: [&[u8]; 3] = [b"header/", b"outcome/", b"freeze/"];
-    const LOCAL_PROGRESS: [&[u8]; 2] = [b"frontier-progress/", b"frontier/"];
+    const LOCAL_PROGRESS: [&[u8]; 3] = [b"frontier-progress/", b"frontier/", b"drain-possession/"];
     if CONTROL
         .iter()
         .any(|prefix: &&[u8]| suffix.starts_with(prefix))

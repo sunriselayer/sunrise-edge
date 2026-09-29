@@ -137,6 +137,99 @@ fn frontier_vote_uses_distinct_context_and_registered_key() {
 }
 
 #[test]
+fn frozen_frontier_quorum_requires_one_signed_vote_per_ordered_member_and_exact_freeze() {
+    let (resolver, certifier, signers, domain) = fixture();
+    let identity: FrozenFrontierIdentity = empty(&resolver, domain).into_identity();
+    let votes: Vec<FrozenFrontierVote> = signers[..3]
+        .iter()
+        .map(|signer: &TestCrypto| certifier.cast_vote(identity.clone(), signer).unwrap())
+        .collect();
+    assert_eq!(
+        verify_frozen_frontier_quorum(&certifier, &votes, domain, [7; 32], 11, &signers[0])
+            .unwrap(),
+        3
+    );
+    assert!(
+        verify_frozen_frontier_quorum(&certifier, &votes[..2], domain, [7; 32], 11, &signers[0])
+            .is_err()
+    );
+    assert!(
+        verify_frozen_frontier_quorum(
+            &certifier,
+            &[votes[0].clone(), votes[0].clone(), votes[1].clone()],
+            domain,
+            [7; 32],
+            11,
+            &signers[0]
+        )
+        .is_err()
+    );
+    assert!(
+        verify_frozen_frontier_quorum(
+            &certifier,
+            &[votes[1].clone(), votes[0].clone(), votes[2].clone()],
+            domain,
+            [7; 32],
+            11,
+            &signers[0]
+        )
+        .is_err()
+    );
+    assert!(
+        verify_frozen_frontier_quorum(&certifier, &votes, domain, [8; 32], 11, &signers[0])
+            .is_err()
+    );
+    let changed: FrozenFrontierIdentity = FrozenFrontierIdentity {
+        closure_height: 12,
+        ..identity
+    };
+    let mut mixed: Vec<FrozenFrontierVote> = votes.clone();
+    mixed[2] = certifier.cast_vote(changed, &signers[2]).unwrap();
+    assert!(
+        verify_frozen_frontier_quorum(&certifier, &mixed, domain, [7; 32], 11, &signers[0])
+            .is_err()
+    );
+    let mut forged: Vec<FrozenFrontierVote> = votes;
+    forged[2].signature[0] ^= 1;
+    assert!(
+        verify_frozen_frontier_quorum(&certifier, &forged, domain, [7; 32], 11, &signers[0])
+            .is_err()
+    );
+}
+
+#[test]
+fn frozen_frontier_quorum_counts_registered_power_not_vote_count() {
+    let (resolver, _uniform, signers, domain) = fixture();
+    let epoch: Epoch = Epoch::new(8);
+    let mut members: Vec<ValidatorInfo> = (1..=4).map(validator).collect();
+    for (member, power) in members.iter_mut().zip([4_u64, 2, 1, 1]) {
+        member.voting_power = power;
+    }
+    let set: ValidatorSet = ValidatorSet::new(epoch, members).unwrap();
+    let certifier: FrozenFrontierCertifier = FrozenFrontierCertifier::new(
+        ChainId::new("frontier-test").unwrap(),
+        ProtocolVersion::new(4),
+        epoch,
+        set,
+    )
+    .unwrap();
+    let identity: FrozenFrontierIdentity = empty(&resolver, domain).into_identity();
+    let votes: Vec<FrozenFrontierVote> = signers[..2]
+        .iter()
+        .map(|signer: &TestCrypto| certifier.cast_vote(identity.clone(), signer).unwrap())
+        .collect();
+    assert!(
+        verify_frozen_frontier_quorum(&certifier, &votes[..1], domain, [7; 32], 11, &signers[0])
+            .is_err()
+    );
+    assert_eq!(
+        verify_frozen_frontier_quorum(&certifier, &votes, domain, [7; 32], 11, &signers[0])
+            .unwrap(),
+        6
+    );
+}
+
+#[test]
 fn frontier_decode_rejects_type_mutation_and_excess() {
     let (resolver, _certifier, _signers, domain) = fixture();
     let identity: FrozenFrontierIdentity = empty(&resolver, domain).into_identity();

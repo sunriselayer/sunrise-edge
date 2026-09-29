@@ -35,7 +35,7 @@ pub use availability::frontier::{
     MAX_FROZEN_FRONTIER_PAGE_BYTES, MAX_FROZEN_FRONTIER_PAGE_ENTRIES,
     decode_frozen_frontier_identity, decode_frozen_frontier_page, decode_frozen_frontier_vote,
     encode_frozen_frontier_identity, encode_frozen_frontier_page, encode_frozen_frontier_vote,
-    verify_frozen_frontier,
+    verify_frozen_frontier, verify_frozen_frontier_quorum,
 };
 pub use availability::{
     AvailabilityCertificate, AvailabilityCertifier, AvailabilityIdentity, AvailabilityVote, bundle,

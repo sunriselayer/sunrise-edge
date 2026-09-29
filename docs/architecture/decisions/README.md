@@ -62,6 +62,7 @@
 - [DR-0153: ordered network economics](0153-ordered-network-economics.md)
 - [DR-0154: complete epoch handoff](0154-complete-epoch-handoff.md)
 - [DR-0155: epoch-end Freeze warrant](0155-epoch-end-freeze-warrant.md)
+- [DR-0156: frozen-frontier drain possession](0156-frozen-frontier-possession.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

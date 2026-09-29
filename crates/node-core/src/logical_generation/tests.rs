@@ -183,7 +183,7 @@ fn fastpath_business_history_is_not_misclassified_as_local_reservation() {
         Some(FastpathRowClass::LocalSigningSafety)
     );
     assert!(is_excluded_subject(&availability_ack));
-    let history: [Vec<u8>; 15] = [
+    let history: [Vec<u8>; 17] = [
         local_instance_state::fastpath_certificate_key(&chain, &request).unwrap(),
         local_instance_state::fastpath_commitment_witness_key(&chain, &request).unwrap(),
         local_instance_state::fastpath_settlement_key(&chain, &request).unwrap(),
@@ -220,6 +220,16 @@ fn fastpath_business_history_is_not_misclassified_as_local_reservation() {
             &[0x49; 32],
         )
         .unwrap(),
+        [
+            local_instance_state::FASTPATH_STATE_PREFIX,
+            b"drain-publication/example",
+        ]
+        .concat(),
+        [
+            local_instance_state::FASTPATH_STATE_PREFIX,
+            b"drain-publication-artifact/example",
+        ]
+        .concat(),
         crate::fast_path::records::fastpath_availability_certificate_key(&chain, &request).unwrap(),
     ];
     for key in history {
@@ -257,7 +267,11 @@ fn ordered_outcome_history_is_not_misclassified_as_consensus_cache() {
         );
         assert!(is_excluded_subject(&key));
     }
-    for suffix in [b"frontier-progress/".as_slice(), b"frontier/"] {
+    for suffix in [
+        b"frontier-progress/".as_slice(),
+        b"frontier/",
+        b"drain-possession/",
+    ] {
         let local_progress: Vec<u8> = [prefix, suffix, b"example"].concat();
         assert_eq!(
             classify_ordered_row(&local_progress),

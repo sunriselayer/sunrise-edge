@@ -108,6 +108,9 @@ use protocol_types::{SignatureSchemeId, ValidatorId};
 use validator_set::{ValidatorInfo, ValidatorSet, ValidatorSetError};
 
 pub(crate) mod commitment;
+/// Post-Freeze possession of full publication proofs for a selected drain
+/// frontier. This never creates a fresh availability acknowledgement.
+pub mod drain_publication;
 /// DR-0154 handoff-capable prepare-side retention: the exact logical
 /// commitment witness and every required replay artifact, durably retained
 /// before a [`consensus::FastVote`] is ever exposed.
