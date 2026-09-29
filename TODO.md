@@ -457,12 +457,23 @@ The detailed existing evidence and remaining criteria follow:
   source quorum that need not include the driven target. CLI unit and
   integration tests and changed-crate Clippy pass locally. It cannot form an
   ordered decision or authorize activation. Trusted peer admission or a
-  cumulative work budget, PostgreSQL multi-validator handoff, ordered
-  DrainSet/Seal, cut, conditional next-set readiness and activation remain
-  open. The ordered DrainSet design is fixed in
-  [DR-0159](docs/architecture/decisions/0159-ordered-drainset.md), but its
-  implementation and verification are not yet complete. Draft PR #235
-  remains incomplete Delivery 3 and not merge-ready. U5's `npm ci`,
+  cumulative work budget, PostgreSQL multi-validator handoff, complete
+  ordered DrainSet integration, Seal, cut, conditional next-set readiness
+  and activation remain open. The ordered DrainSet design is fixed in
+  [DR-0159](docs/architecture/decisions/0159-ordered-drainset.md). U6 now
+  implements its same-chain kind 6, canonical intent/record, exact selected
+  roster retention, pure outgoing-quorum authentication and post-Freeze
+  positive control-kind admission. Leader and voter ready-marker reads are
+  CAS-asserted in the same commit as their signed identity; execution repeats
+  readiness under staged commit. A real four-validator ordered Freeze →
+  empty-frontier DrainSet test checks lagging-replica stop/recovery, leader and
+  voter CAS races, identical record bytes, replay and duplicate refusal;
+  forged/weak/mixed/foreign selection cases and 256-roster frame bounds are
+  covered. These checks do not yet compose a nonempty business union into an
+  ordered DrainSet, authorize drain application, prove a cut, Seal or activate
+  an epoch. Changed-crate Clippy and all node-core tests passed locally;
+  full repository gate, exact-head Opus review and CI are pending. Draft PR
+  #235 remains incomplete Delivery 3 and not merge-ready. U5's `npm ci`,
   changed-crate Clippy and complete `./scripts/check-all.sh` passed on
   2026-09-29. The install
   reported five dependency audit advisories (one moderate, four high); no

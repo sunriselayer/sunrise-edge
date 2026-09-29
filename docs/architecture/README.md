@@ -57,7 +57,9 @@ roadmap describes a later target state.
 - [Complete epoch handoff](epoch-handoff.md) ([DR-0154](decisions/0154-complete-epoch-handoff.md),
   [DR-0155](decisions/0155-epoch-end-freeze-warrant.md),
   [DR-0156](decisions/0156-frozen-frontier-possession.md),
-  [DR-0157](decisions/0157-frozen-frontier-readiness.md)):
+  [DR-0157](decisions/0157-frozen-frontier-readiness.md),
+  [DR-0158](decisions/0158-bounded-drain-network-driver.md),
+  [DR-0159](decisions/0159-ordered-drainset.md)):
   publication-before-apply, quorum-complete frozen frontiers, ordered epoch
   control, portable logical commitments and verified new-validator readiness.
 - [Portable reconstruction storage contract](portable-reconstruction.md):

@@ -15,8 +15,8 @@ repository-swept free type IDs `0x645E/v1` and `0x645F/v1`; `0x6460` already
 belongs to the ordered HTTP envelope. Later cut, readiness and Seal frames
 must receive separate swept IDs.
 
-The handoff-capable signed-genesis profile admits at most 256 active
-validators, matching the existing FastVote economics admission ceiling. The
+The handoff-capable signed-genesis profile reuses the existing 256-active-
+validator genesis ceiling from FastVote economics. The
 selected frontier roster cannot exceed that committed outgoing set, so its
 canonical votes fit the existing 512 KiB ordered candidate intent ceiling.
 Historical signed-genesis profiles retain their existing interpretation; a
@@ -41,7 +41,10 @@ control kind is not implicitly allowed. Committed execution repeats the
 readiness check through the ordered staging store, making the observed
 revisions assertions in the one commit that installs an immutable,
 one-per-epoch `DrainSet` record and retained ordered outcome. A different
-later candidate cannot replace that record. Exact replay returns retained
+later candidate cannot replace that record. The record retains the exact
+signed selected-vote roster as well as the reconstructed union identity, so
+later drain membership need not be inferred from a digest or caller input.
+Exact replay returns retained
 bytes and does not rewrite it. No object, sender nonce, fee, original user
 receipt or ordinary mutation fence is changed by this control decision.
 
