@@ -283,7 +283,13 @@ async fn certified_router_mounts_fastvote_and_publication_routes() {
         StatusCode::METHOD_NOT_ALLOWED
     );
     assert_eq!(
-        dispatch(&app, "POST", "/v1/fastvote/drain/import/not-hex", vec![0xAA]).await,
+        dispatch(
+            &app,
+            "POST",
+            "/v1/fastvote/drain/import/not-hex",
+            vec![0xAA]
+        )
+        .await,
         StatusCode::BAD_REQUEST,
         "invalid validator selector must be rejected before storage"
     );
@@ -323,12 +329,11 @@ async fn certified_router_mounts_fastvote_and_publication_routes() {
         .await,
         StatusCode::CONFLICT,
     );
-    let stale_drain_page: node_wire::DrainSignerPageRequest =
-        node_wire::DrainSignerPageRequest {
-            epoch: Epoch::new(config().epoch().get() + 1),
-            vote: vec![0xAA],
-            page: vec![0xBB],
-        };
+    let stale_drain_page: node_wire::DrainSignerPageRequest = node_wire::DrainSignerPageRequest {
+        epoch: Epoch::new(config().epoch().get() + 1),
+        vote: vec![0xAA],
+        page: vec![0xBB],
+    };
     assert_eq!(
         dispatch(
             &app,
