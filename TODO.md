@@ -409,14 +409,32 @@ The detailed existing evidence and remaining criteria follow:
   handoff, DrainSet/Seal, cut, conditional next-set readiness and activation
   remain open. The post-fix `npm ci` and full `scripts/check-all.sh` gate passed
   on 2026-09-29, and a fresh Opus review approved this local-readiness slice;
-  final pushed-head CI is still pending. Before the network driver, close the
-  remaining functional retry gap: after a same-epoch restore a pristine marker
-  is rebuilt by `confirm`, but blindly retrying `import` still returns 503.
-  Also move confirm's expected request ID into its core CAS guard, distinguish
-  permanent proof errors from retryable storage failures, and give DrainSet
-  voting a CAS-read variant of `verify_drain_ready`. A full stable union-request
-  wire vector and an authenticated or rate-budgeted untrusted ingress remain
-  open. Draft PR #235 is not Delivery 3 or merge-ready.
+  pushed-head CI for `1b06fac` passed. The next continuation closes the
+  same-epoch restore retry gap: an exact `import` can rebuild only a pristine
+  missing possession marker after re-verifying the saved proof and every
+  artifact in the same CAS. A tombstone still refuses. `confirm` checks the
+  caller's request ID inside its core CAS; the HTTP boundary separates
+  permanently invalid proof/page input (400), not-ready/CAS races (409),
+  backend unavailability (503), and indeterminate commits (503). The
+  DrainSet voter now has `verify_drain_ready_into` to fold the ready and
+  Freeze reads into its own future CAS. A full `0xE10C` union-request stable
+  vector is tested. Review follow-up added a competing artifact-revision
+  test for marker rebuild and corrected the durable-read error taxonomy.
+  A pinned Rust client and real HTTP/file-backed SQLite E2E now exercise
+  stage, full-bundle import, member confirm and union advance; the same E2E
+  independently compares the returned union digest. See
+  [DR-0158](docs/architecture/decisions/0158-bounded-drain-network-driver.md)
+  for the remaining resumable-driver design. A bounded progress-read route,
+  executable resume loop, trusted peer admission or cumulative work budget,
+  PostgreSQL multi-validator handoff, ordered DrainSet/Seal, cut, conditional
+  next-set readiness and activation remain open. Draft PR #235 is not
+  Delivery 3 or merge-ready. `npm ci --prefix adapters/cloudflare-workers`,
+  changed-crate Clippy and `./scripts/check-all.sh` passed for this
+  continuation on 2026-09-29. The install reported five dependency audit
+  advisories (one moderate, four high); no forced upgrade was applied.
+  Live PostgreSQL suites were skipped because
+  `SUNRISE_EDGE_TEST_POSTGRES_URL` is unset. Final review and pushed-head CI
+  remain open.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

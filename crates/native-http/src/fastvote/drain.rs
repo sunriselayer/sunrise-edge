@@ -52,35 +52,49 @@ where
         )
 }
 
-/// The three outcomes a caller must be able to tell apart before it can
-/// decide whether re-sending the exact same request bytes is ever safe:
+/// The retry outcomes a caller must be able to tell apart:
 /// [`PermanentlyInvalid`](Self::PermanentlyInvalid) never becomes success no
 /// matter how many times it is retried unmodified (a forged/malformed vote,
 /// tombstoned proof or artifact, or a profile/context mismatch);
 /// [`NotReadyOrCas`](Self::NotReadyOrCas) is an ordinary local-state race a
 /// caller should resync and retry (a stale expected identity, an
 /// unconfirmed prerequisite, or an optimistic-concurrency conflict on an
-/// exact CAS revision); [`StorageIndeterminate`](Self::StorageIndeterminate)
-/// is a storage-layer failure with no authoritative outcome, for which the
-/// exact same retry remains safe because every commit in this module is
-/// re-verified from scratch on every attempt.
+/// exact CAS revision); [`StorageUnavailable`](Self::StorageUnavailable)
+/// is a failed read or a definitely uncommitted backend failure;
+/// [`StorageIndeterminate`](Self::StorageIndeterminate) means the commit
+/// outcome is unknown. Both require an exact-byte retry or reconciliation,
+/// never a modified replacement request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DrainErrorClass {
     PermanentlyInvalid,
     NotReadyOrCas,
+    StorageUnavailable,
     StorageIndeterminate,
 }
 
 fn node_core_error_class(error: &NodeCoreError) -> DrainErrorClass {
     match error {
         NodeCoreError::DurableCommitIndeterminate(_) => DrainErrorClass::StorageIndeterminate,
-        NodeCoreError::DurableCommitRejected(_)
+        NodeCoreError::DurableRead(runtime::DurableReadError::WriterFenced { .. })
+        | NodeCoreError::DurableCommitRejected(
+            runtime::DurableCommitRejection::Conflict { .. }
+            | runtime::DurableCommitRejection::ObjectConflict { .. }
+            | runtime::DurableCommitRejection::RequestAlreadyCommitted
+            | runtime::DurableCommitRejection::WriterFenced { .. }
+            | runtime::DurableCommitRejection::SerializationFailure,
+        )
         | NodeCoreError::StateConflict
         | NodeCoreError::EpochMismatch { .. } => DrainErrorClass::NotReadyOrCas,
-        // Every other `NodeCoreError` reachable here indicates a decode,
-        // encoding or invariant failure against already-validated wire input
-        // or a locally retained row; none of these become success on retry.
-        _ => DrainErrorClass::PermanentlyInvalid,
+        NodeCoreError::DurableRead(_)
+        | NodeCoreError::DurableCommitRejected(_)
+        | NodeCoreError::PersistenceInvariant(_) => DrainErrorClass::StorageUnavailable,
+        NodeCoreError::ChainMismatch { .. } | NodeCoreError::ProtocolVersionMismatch { .. } => {
+            DrainErrorClass::PermanentlyInvalid
+        }
+        // Other node-core errors can arise from already-persisted local data
+        // or an invariant failure; do not blame a caller with a permanent
+        // 4xx when storage or the deployment may need repair.
+        _ => DrainErrorClass::StorageUnavailable,
     }
 }
 
@@ -113,6 +127,9 @@ fn drain_error_response(error: &DrainSignerError) -> Response {
             error_response(StatusCode::BAD_REQUEST, "drain-invalid")
         }
         DrainErrorClass::NotReadyOrCas => error_response(StatusCode::CONFLICT, "drain-not-ready"),
+        DrainErrorClass::StorageUnavailable => {
+            error_response(StatusCode::SERVICE_UNAVAILABLE, "drain-storage-unavailable")
+        }
         DrainErrorClass::StorageIndeterminate => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "drain-storage-indeterminate",
@@ -570,9 +587,7 @@ mod error_taxonomy_tests {
         );
     }
 
-    /// A storage-layer failure with no authoritative outcome must surface as
-    /// 503: the exact same retry stays safe, since every commit in this
-    /// module is re-verified from scratch on every attempt.
+    /// Unknown commit outcomes surface as 503 for exact-byte reconciliation.
     #[test]
     fn storage_indeterminate_errors_map_to_503() {
         assert_eq!(
@@ -589,6 +604,24 @@ mod error_taxonomy_tests {
                     IndeterminateCommitReason::DeadlineExceeded
                 ))
             ))),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn storage_read_and_definite_backend_failures_map_to_503() {
+        assert_eq!(
+            status_of(DrainSignerError::Node(NodeCoreError::DurableRead(
+                runtime::DurableReadError::Unavailable
+            ))),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            status_of(DrainSignerError::Node(
+                NodeCoreError::DurableCommitRejected(
+                    runtime::DurableCommitRejection::UnavailableBeforeCommit
+                )
+            )),
             StatusCode::SERVICE_UNAVAILABLE
         );
     }

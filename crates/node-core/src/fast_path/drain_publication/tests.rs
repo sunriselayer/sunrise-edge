@@ -625,6 +625,57 @@ fn import_rebuilds_a_pristine_missing_marker_after_a_same_epoch_restore() {
 }
 
 #[test]
+fn concurrent_artifact_rewrite_rejects_pristine_marker_rebuild() {
+    let (bundle, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    let expected_identity: AvailabilityIdentity = identity(&bundle);
+    let replica: RetentionReplica = logical_replica();
+    close(&replica);
+    stage_proof_without_marker(&replica, &bundle, &expected_identity);
+    let first_artifact: &ArtifactEntry = bundle
+        .manifest
+        .entries
+        .first()
+        .expect("test bundle must carry an artifact");
+    let artifact_key: Vec<u8> = drain_publication_artifact_key(
+        protocol().chain_id(),
+        protocol().epoch(),
+        &bundle.request_id,
+        first_artifact,
+    )
+    .unwrap();
+    let marker_key: Vec<u8> = drain_possession_key(
+        protocol().chain_id(),
+        protocol().epoch(),
+        &bundle.request_id,
+    )
+    .unwrap();
+    let racing: RacingStore<'_> = RacingStore {
+        inner: &replica.store,
+        race_key: artifact_key.clone(),
+        race_value: replica.row(&artifact_key).unwrap(),
+        raced: Cell::new(false),
+    };
+    let result: DrainResult<AvailabilityIdentity> = retain_drain_publication(
+        &racing,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &expected_identity,
+        &encode_publication_bundle(&bundle).unwrap(),
+    );
+    assert!(racing.raced.get());
+    assert!(matches!(
+        result,
+        Err(PublicationRetentionError::Node(
+            NodeCoreError::DurableCommitRejected(_)
+        ))
+    ));
+    assert!(replica.row(&marker_key).is_none());
+}
+
+#[test]
 fn concurrent_profile_freeze_epoch_or_validator_row_changes_reject_the_whole_import() {
     let (bundle, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
     let expected_identity: AvailabilityIdentity = identity(&bundle);

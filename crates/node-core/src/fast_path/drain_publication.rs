@@ -241,63 +241,6 @@ fn verify_bundle(
     Ok(verified.identity)
 }
 
-fn load_imported_bundle<S: StructuredDurableDomainStateStore>(
-    store: &S,
-    context: &DurableOperationContext,
-    domain: AtomicityDomainId,
-    expected: &PublicationContext,
-    request_id: &[u8; 32],
-    record: &FastPathPublicationRecord,
-) -> DrainResult<PublicationBundle> {
-    if record.context != *expected || record.request_id != *request_id {
-        return Err(PublicationRetentionError::InconsistentRetainedRecord(
-            "drain publication context or request id",
-        ));
-    }
-    let manifest: ArtifactManifest = decode_artifact_manifest(&record.manifest)?;
-    if manifest.entries.len() > MAX_RETAINED_ARTIFACTS {
-        return Err(PublicationRetentionError::ClosureTooLarge {
-            actual: manifest.entries.len(),
-            max: MAX_RETAINED_ARTIFACTS,
-        });
-    }
-    let mut contents: Vec<Vec<u8>> = Vec::with_capacity(manifest.entries.len());
-    let mut total: usize = 0;
-    for entry in &manifest.entries {
-        let key: Vec<u8> = drain_publication_artifact_key(
-            expected.chain_id(),
-            expected.epoch(),
-            request_id,
-            entry,
-        )?;
-        let row: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
-        let bytes: &[u8] =
-            row.value()
-                .ok_or(PublicationRetentionError::InconsistentRetainedRecord(
-                    "missing or tombstoned drain artifact",
-                ))?;
-        total = total.checked_add(bytes.len()).ok_or(
-            PublicationRetentionError::InconsistentRetainedRecord("drain artifact size overflow"),
-        )?;
-        if total > MAX_ENCODED_BUNDLE_BYTES {
-            return Err(PublicationRetentionError::InconsistentRetainedRecord(
-                "drain artifact budget exceeded",
-            ));
-        }
-        contents.push(bytes.to_vec());
-    }
-    Ok(PublicationBundle {
-        domain,
-        request_id: *request_id,
-        commitment_profile: LOGICAL_COMMITMENT_PROFILE,
-        signed_intent: record.signed_intent.clone(),
-        certificate: decode_fast_certificate(&record.certificate)?,
-        witness: record.witness.clone(),
-        manifest,
-        contents,
-    })
-}
-
 /// Verifies and atomically imports one complete bundle after committed
 /// Freeze, against an identity from a signed frontier page. This bounded
 /// event never signs, acknowledges, executes, or mutates the original local
@@ -361,15 +304,20 @@ pub fn retain_drain_publication<S: StructuredDurableDomainStateStore>(
         if saved.identity != identity_bytes {
             return Err(PublicationRetentionError::ConflictingRetainedIdentity);
         }
-        let saved_bundle: PublicationBundle =
-            load_imported_bundle(store, context, domain, expected, &bundle.request_id, &saved)?;
-        let saved_identity: AvailabilityIdentity = verify_bundle(
+        // Fold the saved publication and every artifact revision into the
+        // marker-rebuild CAS. An artifact changed after verification must
+        // reject the whole rebuild rather than leaving a possession marker
+        // over bytes that are no longer the verified proof.
+        let saved_identity: AvailabilityIdentity = verify_drain_proof_into(
+            store,
+            context,
+            domain,
             resolver,
             history,
             expected,
-            domain,
             &validators,
-            &saved_bundle,
+            &identity,
+            &mut reads,
         )?;
         if saved_identity != identity {
             return Err(PublicationRetentionError::InconsistentRetainedRecord(

@@ -662,6 +662,7 @@ pub fn staged_drain_signer_identity<S: StructuredDurableDomainStateStore>(
 /// mismatch here fails closed atomically with every other read this
 /// function performs, instead of racing a plain prior read against this
 /// commit.
+#[allow(clippy::too_many_arguments)]
 pub fn confirm_drain_signer_entry<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,

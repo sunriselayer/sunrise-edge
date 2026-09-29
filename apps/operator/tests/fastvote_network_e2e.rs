@@ -676,7 +676,7 @@ async fn frozen_frontier_drain_reaches_local_ready_over_real_http_and_sqlite() {
         .unwrap(),
     );
     assert_eq!(
-        forged.status, 503,
+        forged.status, 400,
         "forged empty vote must not poison progress"
     );
     target_client
