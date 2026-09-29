@@ -1,5 +1,5 @@
 //! Bounded post-Freeze signer-frontier import and deterministic DrainSet
-//! union reconstruction (DR-0154 / DR-0156).
+//! union reconstruction (DR-0154 / DR-0157).
 //!
 //! This module is local progress only, layered strictly on top of two
 //! already-owned primitives it never bypasses: [`consensus::frontier`]'s pure
@@ -1250,9 +1250,13 @@ pub fn verify_drain_ready<S: StructuredDurableDomainStateStore>(
     let ready_key: Vec<u8> = drain_union_ready_key(&drain.chain, drain.epoch, &selection_digest)?;
     let ready_row: VersionedStateValue =
         store.get_versioned_durable(context, domain, &ready_key)?;
-    let bytes: &[u8] = ready_row
-        .value()
-        .ok_or(DrainSignerError::NotReady("drain union is not ready"))?;
+    let bytes: &[u8] = match ready_row.value() {
+        Some(value) => value,
+        None if ready_row.revision() == StateRevision::INITIAL => {
+            return Err(DrainSignerError::NotReady("drain union is not ready"));
+        }
+        None => return Err(DrainSignerError::Invalid("drain union ready is tombstoned")),
+    };
     let ready: UnionReadyRecord = decode_union_ready(bytes)?;
     if ready.selection_digest != selection_digest
         || ready.selected_votes != selected_votes

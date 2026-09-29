@@ -711,6 +711,31 @@ fn union_dedupes_shared_entries_reaches_ready_and_replays_exactly() {
         )
         .is_err()
     );
+
+    let drain: DrainContext = fence_drain_context(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &protocol(),
+    )
+    .unwrap();
+    let seed: DrainUnionAccumulator =
+        selection_seed(&resolver(), &drain, &protocol(), domain(), &selected).unwrap();
+    let ready_key: Vec<u8> =
+        drain_union_ready_key(&drain.chain, drain.epoch, &seed.identity().entries_digest).unwrap();
+    delete_row(&replica.store, ready_key);
+    assert!(matches!(
+        verify_drain_ready(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &protocol(),
+            &selected,
+        ),
+        Err(DrainSignerError::Invalid("drain union ready is tombstoned"))
+    ));
 }
 
 #[test]

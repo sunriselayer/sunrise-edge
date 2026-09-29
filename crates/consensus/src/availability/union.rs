@@ -1,4 +1,4 @@
-//! Deterministic local DrainSet-union reconstruction (DR-0154 / DR-0156).
+//! Deterministic local DrainSet-union reconstruction (DR-0154 / DR-0157).
 //!
 //! This module owns only a pure, stateless accumulator over the canonically
 //! ascending, unique confirmed availability identities selected across a
@@ -11,7 +11,7 @@
 //! type, since the failure modes are identical. Its digest domain is
 //! distinct from [`super::frontier`]'s own accumulator/identity family
 //! purely through this module's own canonical frame type IDs -- there is no
-//! signed vote here at all: DR-0156 deliberately never signs, ACKs or
+//! signed vote here at all: DR-0157 deliberately never signs, ACKs or
 //! otherwise authorizes this reconstruction, so callers must not treat a
 //! [`DrainUnionIdentity`] as anything beyond one replica's own local
 //! progress.

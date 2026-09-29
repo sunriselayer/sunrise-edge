@@ -68,8 +68,8 @@ mod tests;
 /// `0x6452` and `0x6453` stay free, and `0x6451` remains reserved for the
 /// concurrently owned retention/control/cut work. `0x6454..=0x645A` are the
 /// `ordered_economics`/`fast_path` Freeze/publication/frontier family;
-/// `0x6454..=0x645D`'s remaining `0x645B..=0x645D` are DR-0156's per-signer
-/// progress, per-entry and union-progress/ready frames
+/// `0x6454..=0x645D`'s remaining `0x645B..=0x645D` are DR-0157's signer
+/// progress, union-progress and local ready frames
 /// (`ordered_economics::drain_union`).
 pub const LOGICAL_PROFILE_RECORD_FRAME_TYPE: u16 = 0x6480;
 /// Canonical version of [`LogicalProfileRecord`].
@@ -700,7 +700,7 @@ pub fn classify_ordered_row(key: &[u8]) -> Option<OrderedRowClass> {
         key.strip_prefix(ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX)?;
     const CONTROL: [&[u8]; 3] = [b"state/", b"applied-height/", b"candidate/"];
     const HISTORY: [&[u8]; 3] = [b"header/", b"outcome/", b"freeze/"];
-    // DR-0156 (2026-09-29): per-signer frozen-frontier import progress,
+    // DR-0157 (2026-09-29): per-signer frozen-frontier import progress,
     // per-`(signer, request_id)` confirmed-entry rows, the in-flight union
     // merge cursor and the local DrainSet-ready marker are all replica-local
     // progress, exactly like `drain-possession/`: none of them is itself the

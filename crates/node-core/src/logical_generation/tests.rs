@@ -271,7 +271,15 @@ fn ordered_outcome_history_is_not_misclassified_as_consensus_cache() {
         );
         assert!(is_excluded_subject(&key));
     }
-    for suffix in [b"frontier-progress/".as_slice(), b"frontier/"] {
+    for suffix in [
+        b"frontier-progress/".as_slice(),
+        b"frontier/",
+        b"drain-possession/",
+        b"drain-signer-progress/",
+        b"drain-signer-entry/",
+        b"drain-union-progress/",
+        b"drain-union-ready/",
+    ] {
         let local_progress: Vec<u8> = [prefix, suffix, b"example"].concat();
         assert_eq!(
             classify_ordered_row(&local_progress),
@@ -289,6 +297,7 @@ fn ordered_outcome_history_is_not_misclassified_as_consensus_cache() {
         classify_ordered_row(&possession),
         Some(OrderedRowClass::LocalProgress)
     );
+    assert!(is_excluded_subject(&possession));
     let unknown: Vec<u8> = [prefix, b"future-family/"].concat();
     assert_eq!(classify_ordered_row(&unknown), None);
     assert!(!is_excluded_subject(&unknown));

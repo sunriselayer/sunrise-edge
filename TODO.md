@@ -407,8 +407,16 @@ The detailed existing evidence and remaining criteria follow:
   separately in node-core, not claimed by this HTTP test. An executable
   network driver, exact retry/progress-read UX, PostgreSQL multi-validator
   handoff, DrainSet/Seal, cut, conditional next-set readiness and activation
-  remain open. Full post-fix repository gate, fresh final-head Opus review and
-  CI are pending at this point; do not treat Draft PR #235 as merge-ready.
+  remain open. The post-fix `npm ci` and full `scripts/check-all.sh` gate passed
+  on 2026-09-29, and a fresh Opus review approved this local-readiness slice;
+  final pushed-head CI is still pending. Before the network driver, close the
+  remaining functional retry gap: after a same-epoch restore a pristine marker
+  is rebuilt by `confirm`, but blindly retrying `import` still returns 503.
+  Also move confirm's expected request ID into its core CAS guard, distinguish
+  permanent proof errors from retryable storage failures, and give DrainSet
+  voting a CAS-read variant of `verify_drain_ready`. A full stable union-request
+  wire vector and an authenticated or rate-budgeted untrusted ingress remain
+  open. Draft PR #235 is not Delivery 3 or merge-ready.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).
