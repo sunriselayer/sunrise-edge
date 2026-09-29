@@ -14,7 +14,9 @@ use bond_lifecycle::{
     encode_signed_bond_lifecycle_intent,
 };
 use bonds::BondResourceId;
-use consensus::{ConsensusMessage, ConsensusSigner, ConsensusVote, QuorumCertificate};
+use consensus::{
+    ConsensusMessage, ConsensusSigner, ConsensusVote, QuorumCertificate, decode_consensus_state,
+};
 use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::LocalWasmExecutionEngine;
 use execution::local_execution::{
@@ -2681,6 +2683,86 @@ fn observe_proposal_recovery_still_records_a_business_candidate_after_admission_
         network.value(0, &closure_key),
         Some(encode_admission_closure_record(&closure).unwrap())
     );
+}
+
+#[test]
+fn justification_committing_freeze_never_exposes_a_vote_for_its_own_business_payload() {
+    let network: Network = setup_with_freeze_height(1);
+    network.install_ordered();
+    let chain: ChainId = fixture::chain();
+    let target: usize = network.non_leader(&[4]);
+    let leader: usize = network.leader_index(4);
+    let freeze: OrderedCandidate = freeze_candidate([0x79; 32]);
+
+    // All four independently vote for the real Freeze chain. The target
+    // receives QCs at heights 1 and 2 but not the height-3 QC that commits
+    // Freeze; the other replicas receive all three. This is a normal delayed
+    // certificate delivery, not a forged closure row.
+    for view in 1..=3 {
+        let candidate: Option<&OrderedCandidate> = (view == 1).then_some(&freeze);
+        let (certificate, _proposal): (QuorumCertificate, OrderedProposal) =
+            network.certify(view, candidate);
+        for replica in 0..REPLICAS {
+            if view == 3 && replica == target {
+                continue;
+            }
+            process_certificate(
+                &network.stores[replica],
+                &network.context,
+                &network.env(),
+                &certificate,
+            )
+            .unwrap();
+        }
+    }
+    let closure_key: Vec<u8> =
+        engine::admission_closure_key_for_tests(&chain, fixture::protocol().epoch());
+    assert!(network.value(target, &closure_key).is_none());
+    assert!(network.value(leader, &closure_key).is_some());
+
+    // A faulty leader bypasses node-core's honest post-Freeze proposal gate
+    // and signs a business-bearing height-4 proposal directly through the
+    // authenticated consensus engine. Its justify QC is exactly the missing
+    // height-3 QC. The lagging target must process that QC and persist Freeze
+    // without signing the proposal's own business payload.
+    let recipient: Address = address_of(0x7a);
+    let next: FastPathBondRecord =
+        predicted_unbond(&network.bond, 11, *recipient.as_bytes());
+    let request_id: [u8; 32] = [0x7b; 32];
+    let business: OrderedCandidate =
+        unbond_candidate(&network, &network.bond, &next, request_id, recipient, 11);
+    let state_key: Vec<u8> = engine::ordered_state_key_for_tests(&chain);
+    let leader_state: consensus::ConsensusState =
+        decode_consensus_state(&network.value(leader, &state_key).unwrap()).unwrap();
+    let candidate_digest: Digest32 =
+        engine::ordered_candidate_digest_for_tests(&network.resolver, &business);
+    let signed: consensus::ConsensusProposal = network
+        .policy
+        .engine()
+        .propose(&leader_state, vec![candidate_digest], &network.signers[leader])
+        .unwrap();
+    assert_eq!(signed.height, 4);
+    let carrying: OrderedProposal = OrderedProposal {
+        proposal: signed,
+        candidate: Some(business),
+    };
+    assert!(matches!(
+        process_proposal(
+            &network.stores[target],
+            &network.context,
+            &network.env(),
+            &carrying,
+            &network.signers[target],
+        ),
+        Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch))
+    ));
+    assert!(network.value(target, &closure_key).is_some());
+    assert!(network
+        .value(target, &engine::ordered_vote_record_key_for_tests(&chain, 4))
+        .is_none());
+    assert!(network
+        .value(target, &engine::ordered_outcome_key_for_tests(&chain, &request_id))
+        .is_none());
 }
 
 #[test]

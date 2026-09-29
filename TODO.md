@@ -588,8 +588,21 @@ The detailed existing evidence and remaining criteria follow:
   out of scope for this slice. The U10 baseline `790aaf8` passed fifteen
   focused tests, changed-crate Clippy, `npm ci` and the complete local
   repository gate; Opus explicitly APPROVED that U10 delta, not PR #235 or
-  Delivery 3. The follow-up real-receipt/CAS evidence and exact-head CI still
-  require final verification.
+  Delivery 3. The follow-up real-receipt/CAS test, changed-crate checks,
+  `npm ci` and the complete local repository gate passed at `83469b8`.
+  Opus explicitly APPROVED the follow-up U10 delta; GitHub repository checks
+  passed on the exact `83469b8` head in run
+  [#36628870111](https://github.com/sunriselayer/sunrise-edge/actions/runs/36628870111).
+  The local gate still skipped live PostgreSQL suites without
+  `SUNRISE_EDGE_TEST_POSTGRES_URL`. This is U10 evidence, not PR #235 or
+  Delivery 3 approval. The next integrated work follows
+  [DR-0162](docs/architecture/decisions/0162-business-free-cut-barrier.md):
+  prevent a proposal from receiving a business vote when its justification
+  newly commits Freeze, verify the complete high/locked inherited suffix and
+  completed drain, then install a CAS-fenced local business-free barrier.
+  A stable portable cut additionally requires a complete audit of every
+  cut-classified writer and an independent authenticated importer replay;
+  neither is implemented by a local barrier alone.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

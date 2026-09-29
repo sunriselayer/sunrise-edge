@@ -68,6 +68,7 @@
 - [DR-0159: ordered DrainSet readiness boundary](0159-ordered-drainset.md)
 - [DR-0160: certified DrainSet member application](0160-certified-drain-application.md)
 - [DR-0161: bounded resumable drain-completion state machine](0161-bounded-drain-completion.md)
+- [DR-0162: business-free cut barrier before portable enumeration](0162-business-free-cut-barrier.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

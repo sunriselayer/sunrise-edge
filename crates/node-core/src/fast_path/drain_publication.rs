@@ -355,6 +355,22 @@ pub fn retain_drain_publication<S: StructuredDurableDomainStateStore>(
             "partial or tombstoned drain possession",
         ));
     }
+    // Fresh post-Freeze imports add authenticated publication and artifact
+    // history to the future cut. Once its local business-free barrier is
+    // installed, even a proof that would never be applied cannot appear in
+    // the middle of a paginated cut scan. Exact retained replay above stays
+    // legal because it only re-verifies history and may rebuild a local-only
+    // possession marker. CAS the virgin barrier row with every fresh import.
+    let barrier_key: Vec<u8> =
+        crate::ordered_economics::business_free_barrier_key(&chain, epoch)?;
+    let barrier_row: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &barrier_key)?;
+    if barrier_row.value().is_some() || barrier_row.revision() != StateRevision::INITIAL {
+        return Err(PublicationRetentionError::InconsistentRetainedRecord(
+            "fresh drain retention attempted after the cut-stability barrier",
+        ));
+    }
+    put_read(&mut reads, barrier_key, barrier_row.revision())?;
     let record: FastPathPublicationRecord = FastPathPublicationRecord {
         context: expected.clone(),
         request_id: bundle.request_id,

@@ -466,6 +466,19 @@ fn ordered_applied_height_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError>
     prefixed_key(b"applied-height/", chain)
 }
 
+/// Replica-local, CAS-fenced cut-stability barrier. A future pre-Seal cut may
+/// only start scanning after this row has been installed from the verified
+/// business-free suffix and completed drain. It is not portable authority.
+pub(crate) fn business_free_barrier_key(
+    chain: &ChainId,
+    epoch: Epoch,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = prefixed_key(b"business-free-barrier/", chain)?;
+    key.extend_from_slice(&epoch.get().to_be_bytes());
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
 fn ordered_candidate_record_key(
     chain: &ChainId,
     digest: Digest32,
@@ -1336,6 +1349,26 @@ fn admit_candidate<S: StructuredDurableDomainStateStore>(
         return Ok(Admission::Completed(Box::new(retained)));
     }
 
+    // A fresh candidate would write an immutable header/candidate row even
+    // before it commits an economic receipt. Both are cut-classified history,
+    // so the post-drain barrier must fence placement as well as execution.
+    // Keep the original header-conflict and exact-completion reconciliation
+    // before this check. The read assertion follows the candidate into the
+    // same proposal/vote/observer commit, closing the installation race.
+    let barrier_key: Vec<u8> =
+        business_free_barrier_key(chain, env.policy.context().epoch())?;
+    let barrier_row: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &barrier_key)?;
+    if barrier_row.value().is_some() {
+        return Err(stop("ordered candidate arrived after the cut-stability barrier"));
+    }
+    require_virgin_absence(
+        &barrier_row,
+        "ordered cut-stability barrier was deleted",
+    )?;
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    reads.insert(barrier_key, barrier_row.revision());
+
     // 3. Exact candidate bytes, content-addressed and immutable.
     let candidate_key = ordered_candidate_record_key(chain, digest)?;
     let observed_candidate = store.get_versioned_durable(context, domain, &candidate_key)?;
@@ -1365,7 +1398,7 @@ fn admit_candidate<S: StructuredDurableDomainStateStore>(
     Ok(Admission::Fresh(AdmittedCandidate {
         digest,
         writes,
-        reads: BTreeMap::new(),
+        reads,
     }))
 }
 
@@ -1510,6 +1543,28 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
     let mut writes = MergedWrites::default();
     writes.read(loaded.key.clone(), loaded.revision)?;
     writes.read(applied_height_key.clone(), applied_height_revision)?;
+
+    // The post-drain barrier is a *writer fence*, not just a point-in-time
+    // suffix predicate. A late inherited economic candidate can still create
+    // a closed-epoch refusal receipt and outcome after Freeze. Its absence
+    // must therefore be asserted in the same commit as every newly committed
+    // economic block; a concurrent barrier install rejects this commit by
+    // CAS, and a present/tombstoned barrier stops before any business receipt
+    // or applied-prefix mutation. Empty consensus progress remains legal.
+    if !economic_blocks.is_empty() {
+        let barrier_key: Vec<u8> =
+            business_free_barrier_key(&chain, env.policy.context().epoch())?;
+        let barrier_row: VersionedStateValue =
+            store.get_versioned_durable(context, domain, &barrier_key)?;
+        if barrier_row.value().is_some() {
+            return Err(stop("ordered business block arrived after the cut-stability barrier"));
+        }
+        require_virgin_absence(
+            &barrier_row,
+            "ordered cut-stability barrier was deleted",
+        )?;
+        writes.read(barrier_key, barrier_row.revision())?;
+    }
 
     let next_state_bytes = encode_consensus_state(&next_state)
         .map_err(|_| stop("ordered consensus state does not encode"))?;
@@ -2095,6 +2150,63 @@ where
             None
         }
     };
+
+    // A proposal can commit the Freeze carried by its justification before
+    // the engine produces its own vote. Looking only at the closure row here
+    // would see the pre-event state and could sign a fresh business proposal
+    // in the same event that closes admission. After preserving the normal
+    // header/admission error precedence, preview the signerless event. If it
+    // commits Freeze, persist that authenticated observation without signing
+    // this proposal. Ordinary proposals below retain one atomic signer event.
+    if proposal.candidate.as_ref().is_some_and(|candidate| {
+        !matches!(
+            candidate.kind,
+            OrderedOperationKind::Freeze | OrderedOperationKind::DrainSet
+        )
+    }) {
+        let preview: ConsensusOutput = env
+            .policy
+            .engine()
+            .on_observer_event(
+                &loaded.state,
+                ConsensusEvent::Proposal(proposal.proposal.clone()),
+                &Ed25519ConsensusVerifier,
+            )
+            .map_err(consensus_to_node)?;
+        let mut commits_freeze: bool = false;
+        for block in &preview.committed_blocks {
+            for candidate_digest in &block.transactions {
+                let candidate_key: Vec<u8> = ordered_candidate_record_key(
+                    env.policy.context().chain_id(),
+                    *candidate_digest,
+                )?;
+                let row: VersionedStateValue =
+                    store.get_versioned_durable(context, env.policy.domain(), &candidate_key)?;
+                let candidate_bytes: &[u8] = row.value().ok_or_else(|| {
+                    stop("ordered Freeze preview lacks committed candidate bytes")
+                })?;
+                let committed: OrderedCandidate = decode_ordered_candidate(candidate_bytes)?;
+                if committed.kind == OrderedOperationKind::Freeze {
+                    commits_freeze = true;
+                }
+            }
+        }
+        if commits_freeze {
+            observe_proposal(store, context, env, proposal)?;
+            if freeze::read_admission_closure(
+                store,
+                context,
+                env.policy.domain(),
+                env.policy.context().chain_id(),
+                env.policy.context().epoch(),
+            )?
+            .is_none()
+            {
+                return Err(stop("ordered Freeze preview changed before observation; retry"));
+            }
+            return Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch));
+        }
+    }
 
     // 3. Vote readiness, then the immutable local vote identity.
     require_vote_readiness(store, context, env, &loaded.state, &proposal.proposal)?;

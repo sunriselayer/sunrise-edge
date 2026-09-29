@@ -468,6 +468,18 @@ where
     {
         return Ok(output);
     }
+    // A completed exact replay stays receipt-first, but no fresh drain
+    // application may mutate business state after the local pre-Seal cut
+    // barrier. Assert virgin absence in the same atomic application commit,
+    // so a concurrent barrier install rejects rather than racing the cut's
+    // multi-page scan. A tombstone is corruption, not an open barrier.
+    let barrier_key: Vec<u8> = ordered_economics::business_free_barrier_key(&chain, epoch)?;
+    let barrier_row: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &barrier_key)?;
+    if barrier_row.value().is_some() || barrier_row.revision() != StateRevision::INITIAL {
+        return invalid("drain application attempted after the cut-stability barrier");
+    }
+    put_read(&mut drain_reads, barrier_key, barrier_row.revision())?;
     // Fresh work needs the complete committed DrainSet authority. A completed
     // exact replay is receipt-first and must not be re-blocked by a later
     // epoch transition or by a now-stale local ready marker.

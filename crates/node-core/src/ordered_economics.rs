@@ -108,6 +108,7 @@ pub use engine::{
     encode_ordered_status, install_ordered_genesis, observe_proposal, process_certificate,
     process_proposal, process_tick, propose, query_ordered_outcome, query_status,
 };
+pub(crate) use engine::business_free_barrier_key;
 pub use evidence_submission::{
     MAX_ORDERED_EVIDENCE_SUBMISSION_BYTES, OrderedEvidenceSubmission,
     decode_ordered_evidence_submission, encode_ordered_evidence_submission,

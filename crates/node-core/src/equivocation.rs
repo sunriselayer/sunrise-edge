@@ -388,23 +388,44 @@ fn commit_new_evidence<S: StructuredDurableDomainStateStore>(
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     resolver: &HashSuiteResolver,
+    chain: &ChainId,
     key: Vec<u8>,
     observed_revision: StateRevision,
     checkpoint: u64,
     evidence_bytes: Vec<u8>,
     conflict_digest: Digest32,
 ) -> EqResult<EquivocationEvidenceOutcome<FastPathEquivocationEvidenceRecord>> {
+    // Evidence may concern an old validator epoch, but a *new* evidence row
+    // belongs to the currently serving epoch's ordered history. Once that
+    // epoch freezes, adding an old-key evidence row would change the pre-Seal
+    // cut during enumeration. Exact retained replay returned before this
+    // function and remains legal; fresh submission can resume after the next
+    // epoch activates. Fence the current epoch and its admission closure in
+    // the same commit as the evidence row, not the offense epoch's closure.
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    reads.insert(key.clone(), observed_revision);
+    let active_epoch: local_instance_state::FastPathEpochRecord =
+        crate::mutation_fence::fence_epoch_state(store, context, domain, chain, &mut reads)?;
+    crate::ordered_economics::fence_admission_open(
+        store,
+        context,
+        domain,
+        chain,
+        active_epoch.current_epoch,
+        &mut reads,
+    )?;
     let record: FastPathEquivocationEvidenceRecord = FastPathEquivocationEvidenceRecord {
         evidence_bytes,
         recorded_at_checkpoint: checkpoint,
     };
     let record_bytes: Vec<u8> = encode_fastpath_equivocation_evidence_record(&record)?;
+    let assertions: Vec<StateReadAssertion> = reads
+        .into_iter()
+        .map(|(key, revision): (Vec<u8>, StateRevision)| StateReadAssertion::new(key, revision))
+        .collect::<Result<Vec<_>, _>>()?;
     let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
         domain,
-        AtomicStateReadSet::new(vec![StateReadAssertion::new(
-            key.clone(),
-            observed_revision,
-        )?])?,
+        AtomicStateReadSet::new(assertions)?,
         AtomicStateMutationSet::new(vec![StateMutationEntry::new(
             key.clone(),
             StateMutation::Put(record_bytes),
@@ -638,6 +659,7 @@ pub fn submit_fast_vote_equivocation_evidence<S: StructuredDurableDomainStateSto
         context,
         domain,
         resolver,
+        chain,
         key,
         observed.revision(),
         checkpoint,
@@ -737,6 +759,7 @@ pub fn submit_fast_vote_object_conflict_evidence<S: StructuredDurableDomainState
         context,
         domain,
         resolver,
+        chain,
         key,
         observed.revision(),
         checkpoint,
@@ -807,6 +830,7 @@ pub fn submit_epoch_transition_equivocation_evidence<S: StructuredDurableDomainS
         context,
         domain,
         resolver,
+        chain,
         key,
         observed.revision(),
         checkpoint,
