@@ -459,10 +459,13 @@ The detailed existing evidence and remaining criteria follow:
   complete `./scripts/check-all.sh` passed on 2026-09-29. The install
   reported five dependency audit advisories (one moderate, four high); no
   forced upgrade was applied. Live PostgreSQL suites were skipped because
-  `SUNRISE_EDGE_TEST_POSTGRES_URL` is unset. Opus approved the U5 slice at
-  `82a0a6e` only, not Delivery 3 or a merge; its non-blocking read-classification
-  and accumulator-context findings were then fixed. Fresh exact-head review
-  and pushed-head CI remain open.
+  `SUNRISE_EDGE_TEST_POSTGRES_URL` is unset. Opus initially approved the U5
+  slice at `82a0a6e` and, after its read-classification and
+  accumulator-context findings were fixed, approved the complete U5 diff at
+  `411d237`. Neither review approves Delivery 3 or a merge. Exact-head CI
+  run #532 was canceled during repository validation when its configured
+  35-minute job limit elapsed; it did not pass. The job limit is raised to
+  60 minutes without skipping checks, pending a fresh pushed-head CI run.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).
