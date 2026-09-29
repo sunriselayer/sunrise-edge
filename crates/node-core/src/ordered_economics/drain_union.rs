@@ -1269,8 +1269,7 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
         store,
         context,
         domain,
-        &drain.fence.chain,
-        drain.fence.epoch,
+        expected,
         &selected_signers,
         accumulator.last_request_id(),
         &mut drain.reads,
@@ -1359,12 +1358,13 @@ pub(crate) fn next_union_member_after<S: DurablePortableRepository>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
-    chain: &ChainId,
-    epoch: Epoch,
+    expected: &PublicationContext,
     selected_signers: &[ValidatorId],
     after_request_id: Option<[u8; 32]>,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<Option<AvailabilityIdentity>, DrainSignerError> {
+    let chain: &ChainId = expected.chain_id();
+    let epoch: Epoch = expected.epoch();
     let mut candidates: Vec<AvailabilityIdentity> = Vec::with_capacity(selected_signers.len());
     for signer in selected_signers {
         let entry_prefix: Vec<u8> = drain_signer_entry_prefix(chain, epoch, *signer)?;
