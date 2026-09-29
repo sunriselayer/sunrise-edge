@@ -488,15 +488,24 @@ The detailed existing evidence and remaining criteria follow:
   its own durable store, while the SDK verifies locally supplied signed bytes
   and binds the returned result to them. The wire vector, no-DrainSet HTTP
   refusal and SDK preflight/response-binding tests pass, as does changed-crate
-  Clippy. This is not an authenticated public operator workflow. Post-restart
+  Clippy. The offline `economics drain-set-build` CLI now constructs the
+  canonical candidate from a bounded signed-vote selection and canonical
+  union-identity file under a separate local genesis/context pin; the
+  `fastvote-drain-local-ready` command can save that identity only on its
+  successful outcome. The builder cannot prove a file's origin or local
+  readiness; each ordered voter must recheck its own durable marker. All
+  `sunrise-edge-cli` tests and changed-crate Clippy pass, but the full live
+  candidate-build → ordered-submit → drain-apply workflow is not tested.
+  This is not an authenticated public operator workflow. Post-restart
   SQLite/PostgreSQL replay, CAS races, ordered nonempty DrainSet composition,
   bounded operator orchestration, ingress authentication/work budgets and the
   complete Freeze to activation network sequence remain open. U7's first head
   passed the complete local repository gate; Opus found no blocking issue but
   requested stronger boundary assertions and negative tests. Those follow-ups
   are implemented, with all 10 focused tests, changed-crate Clippy and a
-  second complete local repository gate passing. Combined U8 exact-head
-  validation, CI and review remain pending.
+  second complete local repository gate passing. The combined route head
+  also passed the complete local repository gate. Final CLI-integrated
+  exact-head validation, CI and review remain pending.
   `npm ci` and complete `./scripts/check-all.sh` also passed locally on
   2026-09-30, after installing the exact `wasm-bindgen-cli` version required
   by the gate. Live PostgreSQL tests were skipped locally without
