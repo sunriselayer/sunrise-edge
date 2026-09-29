@@ -12,11 +12,9 @@
 //! * the committed prefix's economic effects are fully applied locally
 //!   (`applied_height == committed_height`); and
 //! * every certified ancestor strictly above `committed_height`, reached by
-//!   walking *both* `high_qc`'s and `locked_qc`'s own justify chains, carries
-//!   only closed-admission control candidates
-//!   ([`OrderedOperationKind::Freeze`] / [`OrderedOperationKind::DrainSet`]) --
-//!   never a business candidate, and never a missing, tombstoned, foreign or
-//!   noncanonical one.
+//!   walking *both* `high_qc`'s and `locked_qc`'s own justify chains, is
+//!   candidate-free. A control candidate also creates a receipt and outcome
+//!   when committed, so it must first enter the applied prefix.
 //!
 //! It never mutates, signs, selects a cut, installs a marker, or implements
 //! `Seal` or a writer fence. A future `Seal` barrier composes this predicate
@@ -123,9 +121,9 @@ fn put_read(
 /// itself), bound to the pinned policy context, digest-matching (the digest
 /// recomputed from the exact retrieved bytes must equal the transaction
 /// digest the ancestor proposal names, not merely the storage key it was
-/// fetched at), and restricted to the two closed-admission control kinds.
-/// Every other kind -- every business candidate -- fails closed.
-fn verify_control_candidate<S: StructuredDurableDomainStateStore>(
+/// fetched at). Any still-uncommitted candidate, including a control kind,
+/// would create a post-barrier receipt/outcome and therefore fails closed.
+fn reject_unapplied_candidate<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -158,12 +156,14 @@ fn verify_control_candidate<S: StructuredDurableDomainStateStore>(
         ));
     }
     authenticate_candidate(env, &candidate).map_err(|_| {
-        SuffixPredicateError::Invalid(
-            "certified ancestor's control candidate failed authentication",
-        )
+        SuffixPredicateError::Invalid("certified ancestor's candidate failed authentication")
     })?;
     match candidate.kind {
-        OrderedOperationKind::Freeze | OrderedOperationKind::DrainSet => Ok(()),
+        OrderedOperationKind::Freeze | OrderedOperationKind::DrainSet => {
+            Err(SuffixPredicateError::Invalid(
+                "certified control candidate is not yet in the applied prefix",
+            ))
+        }
         OrderedOperationKind::FeeClaim
         | OrderedOperationKind::BondLifecycle
         | OrderedOperationKind::BondSlash
@@ -204,15 +204,13 @@ fn verify_ancestor_chain<S: StructuredDurableDomainStateStore>(
         if ancestor.height <= state.committed_height {
             return Ok(());
         }
-        if ancestor.transactions.len() > 1
-            || (!ancestor.transactions.is_empty() && ancestor.height % 3 != 1)
-        {
-            return Err(SuffixPredicateError::Invalid(
+        engine::require_profile_shape(ancestor).map_err(|_| {
+            SuffixPredicateError::Invalid(
                 "certified ancestor violates the closed ordered scheduling profile",
-            ));
-        }
+            )
+        })?;
         for digest in &ancestor.transactions {
-            verify_control_candidate(store, context, env, *digest, reads)?;
+            reject_unapplied_candidate(store, context, env, *digest, reads)?;
         }
         cursor = (
             ancestor.justify.proposal_digest,

@@ -59,7 +59,7 @@ const ENCODING_VERSION: u16 = 1;
 /// vote plus one certificate).
 const MAX_ORDERED_EVENT_MESSAGES: usize = 8;
 /// DR-0153 §"One atomic business/order commit": at most one newly committed
-/// business operation per durable invocation.
+/// candidate, business or control, per durable invocation.
 const MAX_ORDERED_EVENT_COMMITTED: usize = 1;
 /// Hard bound on the certified-ancestor walk one vote-readiness check
 /// performs. `ChainedHotStuff::prune_state` retains only a couple of
@@ -1499,6 +1499,27 @@ fn build_receipt(
     .map_err(NodeCoreError::from)
 }
 
+/// Read the local cut fence and return its revision for the caller's atomic
+/// commit. This is used by `finalize_event` for every newly committed
+/// candidate, including Freeze/DrainSet control receipts and outcomes.
+pub(super) fn fence_cut_for_committed_candidate<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain: &ChainId,
+    epoch: Epoch,
+) -> Result<(Vec<u8>, StateRevision), OrderedEconomicsError> {
+    let key: Vec<u8> = business_free_barrier_key(chain, epoch)?;
+    let row: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    if row.value().is_some() {
+        return Err(stop(
+            "ordered candidate committed after the cut-stability barrier",
+        ));
+    }
+    require_virgin_absence(&row, "ordered cut-stability barrier was deleted")?;
+    Ok((key, row.revision()))
+}
+
 /// Merges every read and mutation this invocation produced with the event
 /// application's outcome, executes at most one newly committed candidate, and
 /// commits exactly once: through `commit_invocation` when a business
@@ -1527,12 +1548,12 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
     }
 
     let next_state = consensus_output.state;
-    let economic_blocks: Vec<&CommittedBlock> = consensus_output
+    let candidate_blocks: Vec<&CommittedBlock> = consensus_output
         .committed_blocks
         .iter()
         .filter(|block| !block.transactions.is_empty())
         .collect();
-    if economic_blocks.len() > MAX_ORDERED_EVENT_COMMITTED {
+    if candidate_blocks.len() > MAX_ORDERED_EVENT_COMMITTED {
         return Err(stop(
             "ordered economics cannot execute more than one newly committed candidate per invocation",
         ));
@@ -1542,24 +1563,22 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
     writes.read(loaded.key.clone(), loaded.revision)?;
     writes.read(applied_height_key.clone(), applied_height_revision)?;
 
-    // The post-drain barrier is a *writer fence*, not just a point-in-time
-    // suffix predicate. A late inherited economic candidate can still create
-    // a closed-epoch refusal receipt and outcome after Freeze. Its absence
-    // must therefore be asserted in the same commit as every newly committed
-    // economic block; a concurrent barrier install rejects this commit by
-    // CAS, and a present/tombstoned barrier stops before any business receipt
-    // or applied-prefix mutation. Empty consensus progress remains legal.
-    if !economic_blocks.is_empty() {
-        let barrier_key: Vec<u8> = business_free_barrier_key(&chain, env.policy.context().epoch())?;
-        let barrier_row: VersionedStateValue =
-            store.get_versioned_durable(context, domain, &barrier_key)?;
-        if barrier_row.value().is_some() {
-            return Err(stop(
-                "ordered business block arrived after the cut-stability barrier",
-            ));
-        }
-        require_virgin_absence(&barrier_row, "ordered cut-stability barrier was deleted")?;
-        writes.read(barrier_key, barrier_row.revision())?;
+    // The post-drain barrier is a writer fence, not just a point-in-time
+    // suffix predicate. A late inherited business candidate may create a
+    // closed-epoch refusal; a control candidate also creates an outcome and
+    // receipt. Both must have entered the applied prefix before the barrier.
+    // A concurrent install rejects this commit by CAS. Empty consensus
+    // progress remains legal.
+    if !candidate_blocks.is_empty() {
+        let (barrier_key, barrier_revision): (Vec<u8>, StateRevision) =
+            fence_cut_for_committed_candidate(
+                store,
+                context,
+                domain,
+                &chain,
+                env.policy.context().epoch(),
+            )?;
+        writes.read(barrier_key, barrier_revision)?;
     }
 
     let next_state_bytes = encode_consensus_state(&next_state)
@@ -1624,7 +1643,7 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
     let mut committed_outcome: Option<OrderedOutcome> = None;
     let mut business: Option<DurableInvocationTransaction> = None;
 
-    if let Some(block) = economic_blocks.first().copied() {
+    if let Some(block) = candidate_blocks.first().copied() {
         if applied_height != loaded.state.committed_height {
             return Err(stop(
                 "ordered economics unapplied committed prefix; declared catch-up required",
@@ -1900,7 +1919,9 @@ fn transactions_for(
 
 /// Requires the closed profile's transaction shape: zero digests, or exactly
 /// one at an economic-bearing height.
-fn require_profile_shape(proposal: &ConsensusProposal) -> Result<(), OrderedEconomicsError> {
+pub(super) fn require_profile_shape(
+    proposal: &ConsensusProposal,
+) -> Result<(), OrderedEconomicsError> {
     let economic_height: bool = proposal.height % 3 == 1;
     match (proposal.transactions.len(), economic_height) {
         (0, _) | (1, true) => Ok(()),
@@ -2169,12 +2190,28 @@ where
                 &Ed25519ConsensusVerifier,
             )
             .map_err(consensus_to_node)?;
+        if preview
+            .committed_blocks
+            .iter()
+            .filter(|block| !block.transactions.is_empty())
+            .count()
+            > MAX_ORDERED_EVENT_COMMITTED
+        {
+            return Err(stop(
+                "ordered Freeze preview exceeds the committed candidate bound",
+            ));
+        }
         let mut commits_freeze: bool = false;
         for block in &preview.committed_blocks {
-            for candidate_digest in &block.transactions {
+            if block.transactions.len() > 1 {
+                return Err(stop(
+                    "ordered Freeze preview violates the candidate profile",
+                ));
+            }
+            for committed_digest in &block.transactions {
                 let candidate_key: Vec<u8> = ordered_candidate_record_key(
                     env.policy.context().chain_id(),
-                    *candidate_digest,
+                    *committed_digest,
                 )?;
                 let row: VersionedStateValue =
                     store.get_versioned_durable(context, env.policy.domain(), &candidate_key)?;
@@ -2182,13 +2219,23 @@ where
                     stop("ordered Freeze preview lacks committed candidate bytes")
                 })?;
                 let committed: OrderedCandidate = decode_ordered_candidate(candidate_bytes)?;
+                if committed.context != *env.policy.context()
+                    || candidate_digest(env.resolver, committed.context.epoch(), candidate_bytes)?
+                        != *committed_digest
+                {
+                    return Err(stop(
+                        "ordered Freeze preview candidate context or digest mismatch",
+                    ));
+                }
+                authenticate_candidate(env, &committed)
+                    .map_err(|_| stop("ordered Freeze preview candidate failed authentication"))?;
                 if committed.kind == OrderedOperationKind::Freeze {
                     commits_freeze = true;
                 }
             }
         }
         if commits_freeze {
-            observe_proposal(store, context, env, proposal)?;
+            let observed: OrderedEventOutput = observe_proposal(store, context, env, proposal)?;
             if freeze::read_admission_closure(
                 store,
                 context,
@@ -2202,7 +2249,16 @@ where
                     "ordered Freeze preview changed before observation; retry",
                 ));
             }
-            return Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch));
+            if observed
+                .messages
+                .iter()
+                .any(|message| matches!(message, ConsensusMessage::Vote(_)))
+            {
+                return Err(stop(
+                    "signerless Freeze observation unexpectedly produced a vote",
+                ));
+            }
+            return Ok(observed);
         }
     }
 

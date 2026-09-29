@@ -1014,7 +1014,7 @@ fn freeze_candidate(request_id: [u8; 32]) -> OrderedCandidate {
 }
 
 #[test]
-fn business_free_suffix_accepts_real_control_qc_and_folds_its_candidate_reads() {
+fn business_free_suffix_waits_for_control_outcome_then_accepts_applied_prefix() {
     let network: Network = setup_with_freeze_height(1);
     network.install_ordered();
     let freeze: OrderedCandidate = freeze_candidate([0xD1; 32]);
@@ -1029,13 +1029,15 @@ fn business_free_suffix_accepts_real_control_qc_and_folds_its_candidate_reads() 
         )
         .unwrap();
         let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
-        verify_business_free_suffix_into(
-            &network.stores[replica],
-            &network.context,
-            &network.env(),
-            &mut reads,
-        )
-        .unwrap();
+        assert!(matches!(
+            verify_business_free_suffix_into(
+                &network.stores[replica],
+                &network.context,
+                &network.env(),
+                &mut reads,
+            ),
+            Err(SuffixPredicateError::Invalid(_))
+        ));
         let candidate_key: Vec<u8> = engine::ordered_candidate_record_key(
             &fixture::chain(),
             proposal.proposal.transactions[0],
@@ -1045,6 +1047,18 @@ fn business_free_suffix_accepts_real_control_qc_and_folds_its_candidate_reads() 
             reads.get(&candidate_key),
             Some(&network.revision(replica, &candidate_key))
         );
+    }
+    network.round(2, None);
+    network.round(3, None);
+    for replica in 0..REPLICAS {
+        let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+        verify_business_free_suffix_into(
+            &network.stores[replica],
+            &network.context,
+            &network.env(),
+            &mut reads,
+        )
+        .unwrap();
         assert!(reads.contains_key(&engine::ordered_state_key(&fixture::chain()).unwrap()));
         assert!(
             reads.contains_key(&engine::ordered_applied_height_key(&fixture::chain()).unwrap())
@@ -1607,6 +1621,72 @@ fn ordered_drain_set_requires_local_readiness_then_commits_once_on_four_replicas
         empty_outputs
             .iter()
             .all(|output| output.committed.is_empty())
+    );
+    let completion_key: Vec<u8> =
+        drain_completion_key(expected.chain_id(), expected.epoch()).unwrap();
+    network.put(0, completion_key, StateMutation::Delete);
+    assert_eq!(
+        read_business_free_barrier(
+            &network.stores[0],
+            &network.context,
+            network.domain(),
+            expected.chain_id(),
+            expected.epoch(),
+        )
+        .unwrap(),
+        Some(identity.clone())
+    );
+    assert_eq!(
+        advance_business_free_barrier(&network.stores[0], &network.context, &network.env())
+            .unwrap(),
+        identity
+    );
+}
+
+#[test]
+fn committed_candidate_fence_cas_rejects_a_racing_cut_without_an_outcome_write() {
+    let network: Network = setup();
+    let chain: ChainId = fixture::chain();
+    let epoch: Epoch = fixture::protocol().epoch();
+    let (barrier_key, observed_revision): (Vec<u8>, StateRevision) =
+        engine::fence_cut_for_committed_candidate(
+            &network.stores[0],
+            &network.context,
+            network.domain(),
+            &chain,
+            epoch,
+        )
+        .unwrap();
+    assert_eq!(observed_revision, StateRevision::INITIAL);
+    let outcome_key: Vec<u8> = b"cut-fence-racing-outcome".to_vec();
+    network.put(0, barrier_key.clone(), StateMutation::Put(vec![0xA5]));
+    let commit: AtomicStateTransaction = AtomicStateTransaction::new(
+        network.domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(barrier_key.clone(), observed_revision).unwrap(),
+            StateReadAssertion::new(outcome_key.clone(), StateRevision::INITIAL).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(outcome_key.clone(), StateMutation::Put(vec![0xCC])).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        network.stores[0].commit_durable(&network.context, commit),
+        DurableCommitOutcome::Rejected(_)
+    ));
+    assert!(network.value(0, &outcome_key).is_none());
+    assert!(
+        engine::fence_cut_for_committed_candidate(
+            &network.stores[0],
+            &network.context,
+            network.domain(),
+            &chain,
+            epoch,
+        )
+        .is_err()
     );
 }
 
@@ -2420,6 +2500,14 @@ fn nonempty_drain_set_from_real_ordered_consensus_lets_a_nonpreparing_replica_ap
         identity
     );
 
+    // A complete member and candidate-free certified suffix permit the real
+    // local barrier. Receipt-first replay must remain valid after it.
+    assert_eq!(
+        advance_business_free_barrier(&network.stores[d], &network.context, &network.env())
+            .unwrap(),
+        identity
+    );
+
     // Exact replay, even with a corrupted local ready marker: receipt-first,
     // no re-execution, no re-resolution or mutation of the completed bytes.
     assert!(network.value(d, &ready_key).is_some());
@@ -2490,6 +2578,115 @@ fn nonempty_drain_set_from_real_ordered_consensus_lets_a_nonpreparing_replica_ap
     assert!(network.value(d, &object_lock_key).is_none());
     assert!(network.value(d, &nonce_lock_key).is_none());
     assert_eq!(network.value(d, &unrelated_key), Some(vec![0xA5]));
+
+    // A different replica has the same certified member and retained proof,
+    // but has never applied it. An installed cut barrier must reject that
+    // *fresh* application before execution or any receipt/object/nonce write.
+    let unexecuted: usize = quorum[0];
+    let barrier_key: Vec<u8> =
+        business_free_barrier_key(expected.chain_id(), expected.epoch()).unwrap();
+    let head_before_fence: runtime::DurableObjectHead = network.stores[unexecuted]
+        .get_object_head(&network.context, network.domain(), coin_object.id)
+        .unwrap();
+    let nonce_before_fence: u64 = query_sender_next_nonce(
+        &network.stores[unexecuted],
+        &network.context,
+        network.domain(),
+        fixture::chain(),
+        fixture::protocol().protocol_version(),
+        fixture::protocol().epoch(),
+        fixture::sender(),
+    )
+    .unwrap();
+    assert!(
+        network.stores[unexecuted]
+            .get_request_receipt(
+                &network.context,
+                network.domain(),
+                runtime::DurableRequestId::new(x_identity.request_id).unwrap(),
+            )
+            .unwrap()
+            .is_none()
+    );
+    let racing_store: RaceStore<'_> = RaceStore {
+        inner: &network.stores[unexecuted],
+        context: network.context,
+        domain: network.domain(),
+        race_key: barrier_key,
+        race_value: vec![0xA5],
+        race_on_durable: false,
+        raced: std::cell::Cell::new(false),
+    };
+    assert!(
+        crate::fast_path::drain_apply::apply_drain_member(
+            &racing_store,
+            &network.blobs,
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            &network.leg_policy,
+            &fee_policy,
+            &crate::paid_execution::tests::CountingEngine::new(),
+            x_identity.request_id,
+            15,
+        )
+        .is_err()
+    );
+    assert!(racing_store.raced.get());
+    // After the lost CAS, a second fresh attempt stops before WASM.
+    let fenced_engine: crate::paid_execution::tests::CountingEngine =
+        crate::paid_execution::tests::CountingEngine::new();
+    assert!(matches!(
+        crate::fast_path::drain_apply::apply_drain_member(
+            &network.stores[unexecuted],
+            &network.blobs,
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            &network.leg_policy,
+            &fee_policy,
+            &fenced_engine,
+            x_identity.request_id,
+            15,
+        ),
+        Err(crate::fast_path::FastPathError::Invalid(
+            "drain application attempted after the cut-stability barrier"
+        ))
+    ));
+    assert_eq!(fenced_engine.calls.get(), 0);
+    assert_eq!(
+        network.stores[unexecuted]
+            .get_object_head(&network.context, network.domain(), coin_object.id)
+            .unwrap(),
+        head_before_fence
+    );
+    assert_eq!(
+        query_sender_next_nonce(
+            &network.stores[unexecuted],
+            &network.context,
+            network.domain(),
+            fixture::chain(),
+            fixture::protocol().protocol_version(),
+            fixture::protocol().epoch(),
+            fixture::sender(),
+        )
+        .unwrap(),
+        nonce_before_fence
+    );
+    assert!(
+        network.stores[unexecuted]
+            .get_request_receipt(
+                &network.context,
+                network.domain(),
+                runtime::DurableRequestId::new(x_identity.request_id).unwrap(),
+            )
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -2925,16 +3122,55 @@ fn justification_committing_freeze_never_exposes_a_vote_for_its_own_business_pay
         proposal: signed,
         candidate: Some(business),
     };
-    assert!(matches!(
+    let freeze_digest: Digest32 =
+        engine::ordered_candidate_digest_for_tests(&network.resolver, &freeze);
+    let freeze_key: Vec<u8> = engine::ordered_candidate_record_key(&chain, freeze_digest).unwrap();
+    let original_freeze_bytes: Vec<u8> = network.value(target, &freeze_key).unwrap();
+    network.put(
+        target,
+        freeze_key.clone(),
+        StateMutation::Put(encode_ordered_candidate(carrying.candidate.as_ref().unwrap()).unwrap()),
+    );
+    assert!(
         process_proposal(
             &network.stores[target],
             &network.context,
             &network.env(),
             &carrying,
             &network.signers[target],
-        ),
-        Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch))
-    ));
+        )
+        .is_err()
+    );
+    assert!(network.value(target, &closure_key).is_none());
+    assert!(
+        network
+            .value(
+                target,
+                &engine::ordered_vote_record_key_for_tests(&chain, 4)
+            )
+            .is_none()
+    );
+    network.put(
+        target,
+        freeze_key,
+        StateMutation::Put(original_freeze_bytes),
+    );
+    let observed: OrderedEventOutput = process_proposal(
+        &network.stores[target],
+        &network.context,
+        &network.env(),
+        &carrying,
+        &network.signers[target],
+    )
+    .unwrap();
+    assert!(
+        observed
+            .messages
+            .iter()
+            .all(|message| !matches!(message, ConsensusMessage::Vote(_)))
+    );
+    assert_eq!(observed.committed.len(), 1);
+    assert_eq!(observed.committed[0].request_id, freeze.request_id);
     assert!(network.value(target, &closure_key).is_some());
     assert!(
         network

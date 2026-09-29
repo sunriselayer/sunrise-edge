@@ -291,6 +291,7 @@ fn ordered_outcome_history_is_not_misclassified_as_consensus_cache() {
         b"drain-union-ready/",
         b"drain-completion-progress/",
         b"drain-completion/",
+        b"business-free-barrier/",
     ] {
         let local_progress: Vec<u8> = [prefix, suffix, b"example"].concat();
         assert_eq!(
@@ -310,6 +311,14 @@ fn ordered_outcome_history_is_not_misclassified_as_consensus_cache() {
         Some(OrderedRowClass::LocalProgress)
     );
     assert!(is_excluded_subject(&possession));
+    let barrier: Vec<u8> =
+        ordered_economics::business_free_barrier_key(&ChainId::new(CHAIN).unwrap(), Epoch::new(0))
+            .unwrap();
+    assert_eq!(
+        classify_ordered_row(&barrier),
+        Some(OrderedRowClass::LocalProgress)
+    );
+    assert!(is_excluded_subject(&barrier));
     let unknown: Vec<u8> = [prefix, b"future-family/"].concat();
     assert_eq!(classify_ordered_row(&unknown), None);
     assert!(!is_excluded_subject(&unknown));

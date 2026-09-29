@@ -275,6 +275,47 @@ fn post_freeze_import_keeps_full_proof_without_ack_or_application_and_replays_ex
 }
 
 #[test]
+fn cut_barrier_rejects_fresh_drain_import_but_preserves_exact_replay() {
+    let fresh: RetentionReplica = logical_replica();
+    let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    let expected_identity: AvailabilityIdentity = identity(&bundle);
+    let barrier_key: Vec<u8> = crate::ordered_economics::business_free_barrier_key(
+        protocol().chain_id(),
+        protocol().epoch(),
+    )
+    .unwrap();
+    close(&fresh);
+    let coin_before = fresh.coin_head();
+    fresh.put_row(barrier_key.clone(), vec![0xA5]);
+    assert!(matches!(
+        import(&fresh, &bundle, &expected_identity),
+        Err(PublicationRetentionError::InconsistentRetainedRecord(
+            "fresh drain retention attempted after the cut-stability barrier"
+        ))
+    ));
+    assert_no_import(&fresh);
+    assert_eq!(fresh.coin_head(), coin_before);
+    assert!(fresh.request_receipt([REQUEST; 32]).is_none());
+
+    let replay: RetentionReplica = logical_replica();
+    close(&replay);
+    assert_eq!(
+        import(&replay, &bundle, &expected_identity).unwrap(),
+        expected_identity
+    );
+    let publication_key: Vec<u8> =
+        drain_publication_key(protocol().chain_id(), protocol().epoch(), &[REQUEST; 32]).unwrap();
+    let retained_before: Option<Vec<u8>> = replay.row(&publication_key);
+    replay.put_row(barrier_key.clone(), vec![0xA5]);
+    assert_eq!(
+        import(&replay, &bundle, &expected_identity).unwrap(),
+        expected_identity
+    );
+    assert_eq!(replay.row(&publication_key), retained_before);
+    assert_eq!(replay.row(&barrier_key), Some(vec![0xA5]));
+}
+
+#[test]
 fn import_requires_freeze_and_exact_frontier_identity_and_rechecks_saved_artifacts() {
     let replica: RetentionReplica = logical_replica();
     let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);

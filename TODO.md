@@ -606,10 +606,17 @@ The detailed existing evidence and remaining criteria follow:
   U11 now implements the local `0x6463/v1` barrier installer: it CAS-folds the
   serving-epoch row, receipt-backed completed DrainSet, verified high/locked
   suffix and virgin marker, then writes only the replica-local marker. Real
-  four-validator tests cover a business QC rejection, a control QC, a
+  four-validator tests cover a business QC rejection, a control QC held until
+  its receipt/outcome enters the applied prefix, a
   missing candidate body, no install before drain completion, idempotent
   installation after completion, a state-revision race, fresh candidate
-  rejection and post-barrier empty progress. The direct evidence path also
+  rejection and post-barrier empty progress. The follow-up review fixes also
+  authenticate the pre-vote Freeze preview before its read-only classification,
+  keep its committed output without emitting a business vote, reject a
+  not-yet-applied control candidate above the committed prefix, and exercise
+  the ordered-commit, fresh drain-retention and fresh drain-application writer
+  fences. Exact completed drain replay and retained publication replay stay
+  legal after the barrier. The direct evidence path also
   fences new records while the current serving epoch is frozen, but still
   admits new evidence about an old offense after actual activation. U11 is
   not yet a portable cut or a completed Seal/activation path. U11's `npm ci`

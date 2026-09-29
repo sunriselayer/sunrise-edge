@@ -24,14 +24,17 @@ a paginated state scan cannot detect an intervening receipt or outcome write.
 1. Before exposing a vote for a proposal whose own payload carries business,
    account for a Freeze that its justification would newly commit. Persist the
    authenticated observation of that Freeze without exposing a business vote.
-   Declared signerless recovery still accepts historical proposal bytes and
-   processes inherited justifications through ordinary HotStuff rules.
+   Before barrier installation, declared signerless recovery still accepts
+   historical proposal bytes and processes inherited justifications through
+   ordinary HotStuff rules. After installation, a newly arriving candidate
+   body stops locally; the network-level exhaustion proof remains separate.
 2. A local business-free predicate requires the applied committed prefix to
    equal the committed height, verifies local DrainSet completion, and walks
    the complete authenticated high-QC and locked-QC ancestor suffixes above
    that prefix. Every referenced candidate must have present, canonical,
-   digest-matching bytes. Only the exact ordered control kinds may remain in
-   either suffix. Missing ancestry, business content or a walk bound is a
+   digest-matching bytes. No candidate, including `Freeze` or `DrainSet`, may
+   remain above the applied prefix: control commits also write receipts and
+   outcomes. Missing ancestry, candidate content or a walk bound is a
    stop, never an inferred empty suffix. Fold every relevant row revision into
    the same CAS read set used to install the barrier.
 3. Install one immutable replica-local barrier row only after those checks.
@@ -39,7 +42,7 @@ a paginated state scan cannot detect an intervening receipt or outcome write.
    epoch and completed drain-union identity. It is classified local progress,
    not a transferable history claim.
    From then on, fresh ordered candidate placement (including header and
-   candidate history), a newly committed ordered economic block, fresh
+   candidate history), a newly committed ordered candidate block, fresh
    post-Freeze drain-publication/artifact retention, and a fresh certified
    drain application must assert the row's virgin absence in their
    own atomic commit. A concurrent barrier installation makes the writer lose
@@ -47,7 +50,9 @@ a paginated state scan cannot detect an intervening receipt or outcome write.
    new header, publication, receipt, outcome, nonce or object mutation. Exact
    already-committed drain replay remains receipt-first and writes nothing;
    exact retained publication replay may only rebuild replica-local progress.
-   Empty consensus progress remains possible. Ordinary fast-path writes are
+   Empty consensus progress remains possible. A future `Seal` needs a narrow
+   reviewed exception to fresh candidate placement, not an exception for
+   already-inherited control candidates. Ordinary fast-path writes are
    independently closed by the committed Freeze fence. Direct evidence
    submission must also fence the current serving epoch while Freeze is
    active; exact retained evidence replay remains legal. Evidence about an
@@ -78,7 +83,7 @@ Use a genuine four-validator Freeze chain with one replica missing the QC
 that commits Freeze; its next business-bearing proposal must cause the
 justification to commit Freeze but produce no vote. Verify that an inherited
 business suffix prevents barrier installation until its authenticated
-no-effect refusal is durably applied, and that a healthy empty/control suffix
+no-effect refusal is durably applied, and that a healthy candidate-free suffix
 allows installation only after real drain completion. Race the barrier commit
 against both ordered refusal and drain application and assert one side loses
 without partial receipt/object/nonce changes. After installation, empty

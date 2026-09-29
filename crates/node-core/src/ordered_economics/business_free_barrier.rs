@@ -126,17 +126,48 @@ fn decode_barrier(
             .map_err(|_| BusinessFreeBarrierError::Invalid("barrier union is missing"))?,
     )
     .map_err(|_| BusinessFreeBarrierError::Invalid("barrier union does not decode"))?;
+    if identity.chain_id != *chain || identity.epoch != epoch {
+        return Err(BusinessFreeBarrierError::Invalid(
+            "barrier union identity context mismatch",
+        ));
+    }
     if encode_barrier(chain, epoch, &identity)? != bytes {
         return Err(BusinessFreeBarrierError::Invalid("noncanonical barrier"));
     }
     Ok(identity)
 }
 
+/// Reads the retained local marker without treating it as portable authority
+/// or re-deriving the conditions that originally installed it. A future Seal
+/// driver must independently verify the current cut and consensus state.
+pub fn read_business_free_barrier<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain: &ChainId,
+    epoch: Epoch,
+) -> Result<Option<DrainUnionIdentity>, BusinessFreeBarrierError> {
+    let key: Vec<u8> = business_free_barrier_key(chain, epoch)?;
+    let row: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    match row.value() {
+        Some(bytes) => {
+            let identity: DrainUnionIdentity = decode_barrier(bytes, chain, epoch)?;
+            if identity.domain != domain {
+                return Err(BusinessFreeBarrierError::Invalid("barrier domain mismatch"));
+            }
+            Ok(Some(identity))
+        }
+        None if row.revision() == StateRevision::INITIAL => Ok(None),
+        None => Err(BusinessFreeBarrierError::Invalid("barrier is tombstoned")),
+    }
+}
+
 /// Installs the local barrier only after the committed DrainSet is fully
-/// receipt-backed and the authenticated high/locked suffix is business-free.
+/// receipt-backed and the authenticated high/locked suffix is candidate-free.
 /// All observed rows, including the serving epoch and virgin barrier key,
 /// are asserted in the *same* atomic commit as the marker. Exact replay
-/// rechecks the prerequisites and returns the original identity unchanged.
+/// returns the immutable retained identity, but does not re-establish that a
+/// future Seal's separate preconditions are currently satisfied.
 pub fn advance_business_free_barrier<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
@@ -154,22 +185,13 @@ pub fn advance_business_free_barrier<S: StructuredDurableDomainStateStore>(
             "barrier policy is not the current serving epoch",
         ));
     }
-    let identity: DrainUnionIdentity =
-        verify_drain_complete_into(store, context, domain, env.resolver, expected, &mut reads)?;
-    verify_business_free_suffix_into(store, context, env, &mut reads)?;
     let key: Vec<u8> = business_free_barrier_key(chain, epoch)?;
     let row: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
-    if reads
-        .insert(key.clone(), row.revision())
-        .is_some_and(|prior| prior != row.revision())
-    {
-        return Err(NodeCoreError::StateConflict.into());
-    }
     if let Some(bytes) = row.value() {
         let retained: DrainUnionIdentity = decode_barrier(bytes, chain, epoch)?;
-        if retained != identity {
+        if retained.domain != domain || retained.protocol_version != expected.protocol_version() {
             return Err(BusinessFreeBarrierError::Invalid(
-                "barrier disagrees with completed drain",
+                "barrier domain or protocol mismatch",
             ));
         }
         return Ok(retained);
@@ -177,6 +199,10 @@ pub fn advance_business_free_barrier<S: StructuredDurableDomainStateStore>(
     if row.revision() != StateRevision::INITIAL {
         return Err(BusinessFreeBarrierError::Invalid("barrier is tombstoned"));
     }
+    reads.insert(key.clone(), row.revision());
+    let identity: DrainUnionIdentity =
+        verify_drain_complete_into(store, context, domain, env.resolver, expected, &mut reads)?;
+    verify_business_free_suffix_into(store, context, env, &mut reads)?;
     let assertions: Vec<StateReadAssertion> = reads
         .into_iter()
         .map(|(key, revision)| StateReadAssertion::new(key, revision))

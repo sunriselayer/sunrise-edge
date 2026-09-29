@@ -713,6 +713,8 @@ pub fn classify_ordered_row(key: &[u8]) -> Option<OrderedRowClass> {
     // transferable business fact. DR-0161 (2026-09-30) adds the local
     // drain-completion cursor and its immutable terminal marker: neither is a
     // signed vote or a portable proof of the receipt history it matched.
+    // DR-0162 adds the local business-free barrier; it records a CAS-fenced
+    // installation event, not transferable cut authority.
     const LOCAL_PROGRESS: [&[u8]; 10] = [
         b"frontier-progress/",
         b"frontier/",

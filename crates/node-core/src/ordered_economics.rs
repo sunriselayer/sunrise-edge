@@ -63,8 +63,8 @@
 //! [`suffix_predicate::verify_business_free_suffix_into`] adds the
 //! complementary read-only check over the shared HotStuff engine itself: the
 //! committed prefix is fully applied and every certified `high_qc`/`locked_qc`
-//! ancestor above it carries only `Freeze`/`DrainSet` control candidates,
-//! never a business one. This is still only one part of DR-0154. `Seal`,
+//! ancestor above it is candidate-free. Even `Freeze`/`DrainSet` would create
+//! a late receipt/outcome if committed. This is still only one part of DR-0154. `Seal`,
 //! verified next-set readiness and activation, and retirement of the older
 //! standalone epoch-transition route must be integrated before this path can
 //! be enabled as a complete handoff. [`business_free_barrier`] composes the
@@ -88,7 +88,9 @@ mod reservation;
 mod staging;
 mod suffix_predicate;
 
-pub use business_free_barrier::{BusinessFreeBarrierError, advance_business_free_barrier};
+pub use business_free_barrier::{
+    BusinessFreeBarrierError, advance_business_free_barrier, read_business_free_barrier,
+};
 pub use candidate::{
     MAX_ORDERED_CANDIDATE_INTENT_BYTES, OrderedCandidate, OrderedOperationKind,
     decode_ordered_candidate, encode_ordered_candidate,
