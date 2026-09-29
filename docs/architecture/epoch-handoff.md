@@ -560,6 +560,15 @@ Keep TLS endpoint checks and locally pinned protocol-context validation distinct
 before signing. Transport callers, relays and supplied live-epoch hints remain
 untrusted. A retired key verifies history but authorizes no fresh work.
 
+Post-Freeze signer-page, proof-import, member-confirm and union-advance HTTP
+routes are internal validator/operator ingress, not public authorization.
+Canonical body limits and the native blocking executor bound one invocation's
+bytes and concurrency, but do not authenticate a caller or stop repeated
+expensive proof verification. A deployment reachable from an untrusted network
+must add authenticated peer/operator ingress and per-peer work/rate budgets
+before exposing these routes. A certified-only router excludes direct legacy
+mutations; it is not itself a peer-authentication mechanism.
+
 This is a fresh handoff-capable genesis/profile, not an optional request flag.
 A bare legacy certificate cannot reach a mutation fallback. Existing stores
 with pre-rule applications lack the required availability guarantee: refuse

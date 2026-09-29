@@ -382,9 +382,10 @@ impl BoundedTransportIo for TcpStream {
 ///
 /// Opens exactly one bounded [`TcpStream`] per request, sends
 /// `Connection: close`, and enforces connect/read/write timeouts plus
-/// header/body byte bounds. It requires an exact `Content-Length` on the
-/// response and rejects `Transfer-Encoding`, a missing/duplicate/invalid
-/// `Content-Length`, a truncated or trailing body, and any non-loopback
+/// header/body byte bounds. It requires an exact `Content-Length` on responses
+/// other than bodyless HTTP 204, and rejects `Transfer-Encoding`, a
+/// missing/duplicate/invalid `Content-Length`, a truncated or trailing body,
+/// and any non-loopback
 /// target. It performs no TLS handshake, never follows a redirect, never
 /// uses a proxy, never reuses a connection across requests, and does no
 /// work after returning: there is no background thread, retry, or async
@@ -1046,7 +1047,12 @@ fn read_response<S: BoundedTransportIo>(
         }
     }
 
-    let content_length = content_length.ok_or(TransportError::MissingContentLength)?;
+    let content_length: usize = match (status, content_length) {
+        (204, None | Some(0)) => 0,
+        (204, Some(_)) => return Err(TransportError::InvalidContentLength),
+        (_, Some(length)) => length,
+        (_, None) => return Err(TransportError::MissingContentLength),
+    };
     if content_length > max_body_bytes {
         return Err(TransportError::ResponseBodyTooLarge {
             declared: content_length,

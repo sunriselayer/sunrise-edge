@@ -64,15 +64,13 @@ fn drain_error_response(error: &DrainSignerError) -> Response {
     }
 }
 
-fn expected_context(
-    config: &NodeConfig,
-) -> Result<execution::publication::PublicationContext, Response> {
+fn expected_context(config: &NodeConfig) -> Option<execution::publication::PublicationContext> {
     execution::publication::PublicationContext::new(
         config.chain_id().clone(),
         config.protocol_version(),
         config.epoch(),
     )
-    .map_err(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "drain-host-context"))
+    .ok()
 }
 
 async fn ingest_signer_page<S, B, M, T, C, I>(
@@ -127,8 +125,10 @@ where
                     Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid-drain-page"),
                 };
             let expected = match expected_context(&state.config) {
-                Ok(value) => value,
-                Err(response) => return response,
+                Some(value) => value,
+                None => {
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, "drain-host-context");
+                }
             };
             let (domain, context) = match prepare_storage_context(
                 &state.components,
@@ -304,8 +304,10 @@ where
                 return error_response(StatusCode::CONFLICT, "drain-epoch-repin-required");
             }
             let expected = match expected_context(&state.config) {
-                Ok(value) => value,
-                Err(response) => return response,
+                Some(value) => value,
+                None => {
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, "drain-host-context");
+                }
             };
             let (domain, context) = match prepare_storage_context(
                 &state.components,
@@ -399,8 +401,10 @@ where
                 return error_response(StatusCode::CONFLICT, "drain-epoch-repin-required");
             }
             let expected = match expected_context(&state.config) {
-                Ok(value) => value,
-                Err(response) => return response,
+                Some(value) => value,
+                None => {
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, "drain-host-context");
+                }
             };
             let (domain, context) = match prepare_storage_context(
                 &state.components,

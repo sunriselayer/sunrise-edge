@@ -91,6 +91,28 @@ fn rejects_a_missing_content_length() {
 }
 
 #[test]
+fn accepts_bodyless_204_without_content_length() {
+    let addr = serve_once(b"HTTP/1.1 204 No Content\r\n\r\n".to_vec());
+    let response = transport(addr).send(&get_request()).unwrap();
+    assert_eq!(response.status, 204);
+    assert!(response.body.is_empty());
+}
+
+#[test]
+fn rejects_204_with_declared_or_actual_body() {
+    let declared = serve_once(b"HTTP/1.1 204 No Content\r\nContent-Length: 1\r\n\r\nx".to_vec());
+    assert!(matches!(
+        transport(declared).send(&get_request()),
+        Err(TransportError::InvalidContentLength)
+    ));
+    let undeclared = serve_once(b"HTTP/1.1 204 No Content\r\n\r\nx".to_vec());
+    assert!(matches!(
+        transport(undeclared).send(&get_request()),
+        Err(TransportError::TrailingResponseBytes)
+    ));
+}
+
+#[test]
 fn rejects_a_non_numeric_content_length() {
     let addr = serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: five\r\n\r\nhello".to_vec());
     let error = transport(addr).send(&get_request()).unwrap_err();
