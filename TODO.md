@@ -531,6 +531,19 @@ The detailed existing evidence and remaining criteria follow:
   run #532 was canceled during repository validation when its configured
   35-minute job limit elapsed; it did not pass. The job limit is raised to
   60 minutes without skipping checks. Final-head CI remains a separate gate.
+  U9 now has a passing genuine nonempty four-validator node-core E2E: real
+  3-of-4 paid-transfer certification and retention precede ordered Freeze;
+  signed nonempty frontiers are reconstructed to the same local union on all
+  replicas; the real HotStuff chain commits DrainSet without direct record
+  insertion; and a replica that only prepared conflicting Y applies certified
+  X, resolves only Y's relevant locks, preserves an unrelated lock, refuses
+  foreign members and exactly replays after local readiness corruption without
+  changing the object head, receipt, nonce, settlement or resolution audit.
+  The focused test passes locally. Narrow U7 boundary tests still use direct
+  records for their own unit-level cases. This does not yet provide an
+  all-member causal scheduler, drain-complete proof, portable cut, Seal,
+  next-set readiness, activation, PostgreSQL network E2E or authenticated
+  public ingress. CI and the complete repository gate for U9 remain pending.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

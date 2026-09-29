@@ -160,7 +160,10 @@ pub fn decode_drain_lock_resolution_record(
     Ok(record)
 }
 
-fn drain_lock_resolution_key(
+/// `pub(crate)` (not private) so a genuine cross-module integration test can
+/// independently locate and decode this audit row without a second, looser
+/// key-derivation copy: the encoding itself is unchanged.
+pub(crate) fn drain_lock_resolution_key(
     chain: &ChainId,
     epoch: Epoch,
     resolving_request_id: &[u8; 32],

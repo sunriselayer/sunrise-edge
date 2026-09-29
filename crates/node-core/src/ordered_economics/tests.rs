@@ -1597,6 +1597,607 @@ fn committed_freeze_yields_four_durable_empty_frontier_votes_without_resigning()
     );
 }
 
+// --- DR-0154/DR-0160 nonempty DrainSet: real four-validator ordered
+// consensus end to end, no direct `DrainSetRecord` injection -----------
+
+/// One real signed [`execution::paid_execution::PaidIntent`] transfer call
+/// against the genesis coin, bound to `fixture`'s own chain, protocol and
+/// sender -- never `paid_execution::tests`' own separate fixture context,
+/// which is signed for a different chain no [`Network`] replica ever
+/// installs.
+fn genesis_transfer_paid_intent_bytes(
+    resolver: &HashSuiteResolver,
+    fee_policy: &execution::paid_execution::PaidFeePolicy,
+    instance_record: &execution::local_execution::InstanceRecord,
+    coin: &Object,
+    request_id: [u8; 32],
+    nonce: u64,
+    recipient: [u8; 32],
+) -> Vec<u8> {
+    let target: execution::call::InstanceTarget =
+        execution::local_execution::instance_target(resolver, instance_record).unwrap();
+    let source_ref: ObjectRef = ObjectRef {
+        id: coin.id,
+        version: coin.version,
+        digest: resolver
+            .hash_for_purpose(
+                fixture::protocol().epoch(),
+                HashPurpose::Object,
+                &objects::encode_object(coin).unwrap(),
+            )
+            .unwrap(),
+    };
+    let application: execution::call::CallIntent = execution::call::CallIntent {
+        context: fixture::protocol(),
+        request_id,
+        sender: fixture::sender(),
+        nonce,
+        code: instance_record.code.clone(),
+        instance: target,
+        entrypoint: "transfer".into(),
+        type_arguments: fee_policy.type_arguments.clone(),
+        access: abi::AccessManifest {
+            entries: vec![abi::AccessEntry {
+                object_ref: source_ref.clone(),
+                mode: objects::AccessMode::Write,
+            }],
+        },
+        arguments: public_standard_asset::transfer_arguments(&recipient).unwrap(),
+        gas_limit: 100_000,
+    };
+    let intent: execution::paid_execution::PaidIntent = execution::paid_execution::PaidIntent {
+        context: fixture::protocol(),
+        request_id,
+        sender: fixture::sender(),
+        nonce,
+        fee_policy_digest: execution::paid_execution::paid_fee_policy_digest(resolver, fee_policy)
+            .unwrap(),
+        consent: execution::paid_execution::FeeSourceConsent {
+            source: source_ref,
+            access: execution::paid_execution::ReservationAccessKind::Write,
+            max_fee: fees::Amount::new(1_000_000),
+            refund_recipient: recipient,
+        },
+        application: execution::paid_execution::PaidApplication::Call(application),
+        gas_limit: 100_000,
+        authorizations: Vec::new(),
+    };
+    let frame: Vec<u8> =
+        execution::paid_execution::paid_intent_signing_frame(&fixture::protocol(), &intent)
+            .unwrap();
+    execution::paid_execution::encode_signed_paid_intent(
+        &execution::paid_execution::SignedPaidIntent {
+            signature: fixture::key().sign(&frame).into(),
+            intent,
+        },
+    )
+    .unwrap()
+}
+
+/// Ingests, imports and confirms every selected signer's page on `replica`,
+/// then advances that replica's own local union reconstruction to
+/// readiness. Every replica that must independently reach the same
+/// [`consensus::DrainUnionIdentity`] -- including one that never prepared or
+/// retained the drained member itself -- runs exactly this real sequence,
+/// never a synthetic shortcut.
+fn reconstruct_drain_union_ready(
+    network: &Network,
+    replica: usize,
+    selected: &[(consensus::FrozenFrontierVote, consensus::FrozenFrontierPage)],
+    votes: &[consensus::FrozenFrontierVote],
+    bundle_bytes: &[u8],
+    expected: &PublicationContext,
+    member_request_id: [u8; 32],
+) -> consensus::DrainUnionIdentity {
+    for (vote, page) in selected {
+        ingest_drain_signer_page(
+            &network.stores[replica],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            expected,
+            vote.validator,
+            vote.clone(),
+            page.clone(),
+        )
+        .unwrap();
+        import_staged_drain_publication(
+            &network.stores[replica],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            expected,
+            vote.validator,
+            bundle_bytes,
+        )
+        .unwrap();
+        confirm_drain_signer_entry(
+            &network.stores[replica],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            expected,
+            vote.validator,
+            member_request_id,
+        )
+        .unwrap();
+    }
+    loop {
+        match advance_drain_union(
+            &network.stores[replica],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            expected,
+            votes,
+        )
+        .unwrap()
+        {
+            DrainUnionStep::Ready(identity) => return *identity,
+            DrainUnionStep::Advanced { .. } => continue,
+        }
+    }
+}
+
+/// The genuine end-to-end replacement for U7's fixture shortcut
+/// (`fast_path::drain_apply::tests::drain_ready_fixture`, which installs a
+/// committed [`DrainSetRecord`] directly): four real independent
+/// [`MemoryDurableStateStore`] replicas, the unmodified
+/// [`OrderedEconomicsEnvironment`] orchestrator and the unmodified
+/// `fast_path`/`ordered_economics` production functions drive a real
+/// 3-of-4 [`consensus::FastCertificate`] for a nonempty transfer X, a real
+/// ordered Freeze, a real per-replica frozen frontier naming X, a real
+/// [`consensus::DrainUnionIdentity`] reconstruction identical on all four
+/// replicas (including D, which never prepares or retains X), and a real
+/// ordered [`DrainSetIntent`] committed by the same chained HotStuff engine
+/// the empty-frontier DrainSet test already uses. D then applies X from its
+/// retained full certificate -- with no aggregated
+/// [`consensus::AvailabilityCertificate`] ever formed -- atomically
+/// resolving its own genuinely conflicting local partial prepare Y.
+#[test]
+fn nonempty_drain_set_from_real_ordered_consensus_lets_a_nonpreparing_replica_apply_the_certified_member()
+ {
+    let network: Network = setup_with_freeze_height(1);
+    network.install_ordered();
+    let expected: PublicationContext = fixture::protocol();
+
+    let (base_manifest, _origin, instance_record, _def_id, _coin_id) = fixture::build_fixture();
+    let fee_policy: execution::paid_execution::PaidFeePolicy = base_manifest.fee_policy.clone();
+    let coin_object: Object = base_manifest.objects[1].object.clone();
+    let recipient: [u8; 32] = *address_of(0x70).as_bytes();
+    let nonce: u64 = query_sender_next_nonce(
+        &network.stores[0],
+        &network.context,
+        network.domain(),
+        fixture::chain(),
+        fixture::protocol().protocol_version(),
+        fixture::protocol().epoch(),
+        fixture::sender(),
+    )
+    .unwrap();
+
+    // X: a genuine 3-of-4 quorum prepares and certifies a real transfer
+    // against the genesis coin, before Freeze, each on its own independent
+    // replica -- never a shared or ad hoc store.
+    let x_request_id: [u8; 32] = [0xC1; 32];
+    let x_bytes: Vec<u8> = genesis_transfer_paid_intent_bytes(
+        &network.resolver,
+        &fee_policy,
+        &instance_record,
+        &coin_object,
+        x_request_id,
+        nonce,
+        recipient,
+    );
+    let quorum: [usize; 3] = [0, 1, 2];
+    let d: usize = 3;
+    let mut x_votes: Vec<consensus::FastVote> = Vec::new();
+    for &idx in &quorum {
+        let vote: consensus::FastVote = crate::fast_path::prepare(
+            &network.stores[idx],
+            &network.blobs,
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            &network.leg_policy,
+            &fee_policy,
+            &crate::paid_execution::tests::CountingEngine::new(),
+            &network.signers[idx],
+            &x_bytes,
+            11,
+        )
+        .unwrap();
+        x_votes.push(vote);
+    }
+    let fastpath_certifier: consensus::FastPathCertifier = consensus::FastPathCertifier::new(
+        fixture::chain(),
+        fixture::protocol().protocol_version(),
+        fixture::protocol().epoch(),
+        validator_set(&network.signers),
+    )
+    .unwrap();
+    let certificate: consensus::FastCertificate = fastpath_certifier
+        .try_form_certificate(
+            x_votes[0].tx_hash,
+            x_votes[0].execution_effects_hash,
+            x_votes[0].locked_objects_digest,
+            &x_votes,
+            &crate::fast_path::FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .expect("three real independent votes reach fast-path quorum");
+    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+    let bundle: consensus::bundle::PublicationBundle =
+        crate::fast_path::publication::assemble_publication_bundle(
+            &network.stores[quorum[0]],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            &x_bytes,
+            &certificate_bytes,
+        )
+        .unwrap();
+    let bundle_bytes: Vec<u8> = consensus::bundle::encode_publication_bundle(&bundle).unwrap();
+    let x_identity: consensus::AvailabilityIdentity = consensus::bundle::verify_publication_bundle(
+        &bundle,
+        &fastpath_certifier,
+        &crate::fast_path::FastPathEd25519Verifier,
+        &network.resolver,
+        &network.history,
+    )
+    .unwrap()
+    .identity;
+    assert_eq!(x_identity.request_id, x_request_id);
+
+    // Each of the three quorum replicas independently, durably retains X's
+    // publication before Freeze -- this is what later makes its own local
+    // frontier genuinely nonempty. D never does this for X.
+    for &idx in &quorum {
+        crate::fast_path::publication::retain_publication(
+            &network.stores[idx],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            &bundle_bytes,
+            &network.signers[idx],
+        )
+        .unwrap();
+    }
+
+    // Y: D's own genuine conflicting local partial prepare over the exact
+    // same coin and sender/epoch nonce X's own certified inputs require. D
+    // never prepares or retains X.
+    let y_request_id: [u8; 32] = [0xC2; 32];
+    let y_bytes: Vec<u8> = genesis_transfer_paid_intent_bytes(
+        &network.resolver,
+        &fee_policy,
+        &instance_record,
+        &coin_object,
+        y_request_id,
+        nonce,
+        recipient,
+    );
+    crate::fast_path::prepare(
+        &network.stores[d],
+        &network.blobs,
+        &network.context,
+        network.domain(),
+        &network.resolver,
+        &network.history,
+        &expected,
+        &network.leg_policy,
+        &fee_policy,
+        &crate::paid_execution::tests::CountingEngine::new(),
+        &network.signers[d],
+        &y_bytes,
+        11,
+    )
+    .unwrap();
+
+    let object_lock_key: Vec<u8> =
+        local_instance_state::fastpath_lock_key(expected.chain_id(), coin_object.id).unwrap();
+    let nonce_lock_key: Vec<u8> = local_instance_state::fastpath_nonce_lock_key(
+        expected.chain_id(),
+        &fixture::sender(),
+        expected.epoch(),
+    )
+    .unwrap();
+    let y_locks_before_freeze: (Option<Vec<u8>>, Option<Vec<u8>>) = (
+        network.value(d, &object_lock_key),
+        network.value(d, &nonce_lock_key),
+    );
+    assert!(y_locks_before_freeze.0.is_some());
+    assert!(y_locks_before_freeze.1.is_some());
+
+    // Real ordered Freeze, committed identically on all four replicas.
+    let freeze: OrderedCandidate = freeze_candidate([0xB1; 32]);
+    network.round(1, Some(&freeze));
+    network.round(2, None);
+    network.round(3, None);
+
+    // The three quorum replicas each independently advance their own real
+    // post-Freeze frontier -- genuinely nonempty, naming exactly X.
+    let mut selected: Vec<(consensus::FrozenFrontierVote, consensus::FrozenFrontierPage)> =
+        Vec::new();
+    for &source in &quorum {
+        let vote: consensus::FrozenFrontierVote = loop {
+            match advance_frozen_frontier(
+                &network.stores[source],
+                &network.context,
+                network.domain(),
+                &network.resolver,
+                &network.history,
+                &expected,
+                &network.signers[source],
+            )
+            .unwrap()
+            {
+                FrozenFrontierStep::Finalized(vote) => break *vote,
+                FrozenFrontierStep::Advanced { .. } => continue,
+            }
+        };
+        assert_eq!(vote.identity.entry_count, 1);
+        let (served_vote, page): (consensus::FrozenFrontierVote, consensus::FrozenFrontierPage) =
+            read_frozen_frontier_page(
+                &network.stores[source],
+                &network.context,
+                network.domain(),
+                &network.resolver,
+                &network.history,
+                &expected,
+                network.signers[source].validator_id(),
+                None,
+                std::num::NonZeroUsize::new(2).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(served_vote, vote);
+        assert!(page.terminal);
+        assert_eq!(page.entries, vec![x_identity.clone()]);
+        selected.push((vote, page));
+    }
+    selected.sort_by_key(|pair| pair.0.validator);
+    let votes: Vec<consensus::FrozenFrontierVote> =
+        selected.iter().map(|pair| pair.0.clone()).collect();
+
+    // Every replica -- including D, which never prepared or retained X --
+    // independently reconstructs the identical real union readiness.
+    let mut ready_identity: Option<consensus::DrainUnionIdentity> = None;
+    for replica in 0..REPLICAS {
+        let identity: consensus::DrainUnionIdentity = reconstruct_drain_union_ready(
+            &network,
+            replica,
+            &selected,
+            &votes,
+            &bundle_bytes,
+            &expected,
+            x_identity.request_id,
+        );
+        if let Some(previous) = &ready_identity {
+            assert_eq!(&identity, previous, "replica {replica}");
+        } else {
+            ready_identity = Some(identity);
+        }
+    }
+    let identity: consensus::DrainUnionIdentity = ready_identity.unwrap();
+
+    // A real, ordered DrainSetIntent naming this exact selection and union
+    // identity, committed identically on all four replicas by the same
+    // chained HotStuff engine the empty-frontier DrainSet test already
+    // uses -- never a directly inserted record.
+    let intent: DrainSetIntent = DrainSetIntent {
+        context: expected.clone(),
+        request_id: [0xB2; 32],
+        selected_votes: votes.clone(),
+        drain_union_identity: identity.clone(),
+    };
+    let candidate: OrderedCandidate = OrderedCandidate {
+        context: expected.clone(),
+        request_id: intent.request_id,
+        kind: OrderedOperationKind::DrainSet,
+        intent: encode_drain_set_intent(&intent).unwrap(),
+        created_checkpoint: 14,
+    };
+    network.round(4, Some(&candidate));
+    network.round(5, None);
+    let (outputs, _certificate, _) = network.round(6, None);
+    let record_key: Vec<u8> = drain_set_record_key(expected.chain_id(), expected.epoch()).unwrap();
+    let mut committed_bytes: Option<Vec<u8>> = None;
+    for (replica, output) in outputs.iter().enumerate() {
+        assert_eq!(output.committed.len(), 1, "replica {replica}");
+        assert_eq!(
+            output.committed[0].output.responses()[0].status(),
+            NodeResponseStatus::Accepted
+        );
+        let bytes: Vec<u8> = network.value(replica, &record_key).unwrap();
+        let record: DrainSetRecord = decode_drain_set_record(&bytes).unwrap();
+        assert_eq!(record.drain_union_identity, identity);
+        assert_eq!(record.selected_votes, votes);
+        if let Some(previous) = &committed_bytes {
+            assert_eq!(&bytes, previous, "replica {replica}");
+        } else {
+            committed_bytes = Some(bytes);
+        }
+    }
+
+    // Missing/foreign member refusal: neither Y's own real but never-drained
+    // request nor a wholly unrelated request id may be applied, and neither
+    // attempt moves Y's own still-held locks or writes a receipt.
+    for foreign_request_id in [y_request_id, [0xFE; 32]] {
+        let result = crate::fast_path::drain_apply::apply_drain_member(
+            &network.stores[d],
+            &network.blobs,
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            &network.leg_policy,
+            &fee_policy,
+            &crate::paid_execution::tests::CountingEngine::new(),
+            foreign_request_id,
+            15,
+        );
+        assert!(result.is_err(), "request {foreign_request_id:?}");
+        assert_eq!(network.value(d, &object_lock_key), y_locks_before_freeze.0);
+        assert_eq!(network.value(d, &nonce_lock_key), y_locks_before_freeze.1);
+    }
+
+    // The positive path: D applies X's certified effects from its retained
+    // full certificate -- with no aggregated availability certificate ever
+    // formed -- atomically resolving Y's conflicting locks, and touches no
+    // unrelated lock.
+    let unrelated_key: Vec<u8> =
+        local_instance_state::fastpath_lock_key(expected.chain_id(), ObjectId::new([0xEE; 32]))
+            .unwrap();
+    network.put(d, unrelated_key.clone(), StateMutation::Put(vec![0xA5]));
+
+    let apply_engine: crate::paid_execution::tests::CountingEngine =
+        crate::paid_execution::tests::CountingEngine::new();
+    let output: NodeOutput = crate::fast_path::drain_apply::apply_drain_member(
+        &network.stores[d],
+        &network.blobs,
+        &network.context,
+        network.domain(),
+        &network.resolver,
+        &network.history,
+        &expected,
+        &network.leg_policy,
+        &fee_policy,
+        &apply_engine,
+        x_identity.request_id,
+        15,
+    )
+    .unwrap();
+    let executions_after_apply: u32 = apply_engine.calls.get();
+    assert_eq!(executions_after_apply, 1);
+    assert_eq!(output.responses()[0].status(), NodeResponseStatus::Accepted);
+    assert!(network.value(d, &object_lock_key).is_none());
+    assert!(network.value(d, &nonce_lock_key).is_none());
+    assert_eq!(network.value(d, &unrelated_key), Some(vec![0xA5]));
+
+    let certificate_row_key: Vec<u8> =
+        local_instance_state::fastpath_certificate_key(expected.chain_id(), &x_identity.request_id)
+            .unwrap();
+    assert!(network.value(d, &certificate_row_key).is_some());
+    let settlement_row_key: Vec<u8> =
+        local_instance_state::fastpath_settlement_key(expected.chain_id(), &x_identity.request_id)
+            .unwrap();
+    assert!(network.value(d, &settlement_row_key).is_some());
+
+    let audit_key: Vec<u8> = crate::fast_path::drain_apply::drain_lock_resolution_key(
+        expected.chain_id(),
+        expected.epoch(),
+        &x_identity.request_id,
+        &object_lock_key,
+    )
+    .unwrap();
+    let audit_bytes: Vec<u8> = network
+        .value(d, &audit_key)
+        .expect("lock resolution audit row");
+    let audit_record: crate::fast_path::drain_apply::FastPathDrainLockResolutionRecord =
+        crate::fast_path::drain_apply::decode_drain_lock_resolution_record(&audit_bytes).unwrap();
+    assert_eq!(audit_record.resolving_request_id, x_identity.request_id);
+    assert_eq!(audit_record.displaced_request_id, y_request_id);
+    assert_eq!(audit_record.resolved_key, object_lock_key);
+
+    let head_after_apply: runtime::DurableObjectHead = network.stores[d]
+        .get_object_head(&network.context, network.domain(), coin_object.id)
+        .unwrap();
+    let receipt_after_apply: runtime::DurableRequestReceipt = network.stores[d]
+        .get_request_receipt(
+            &network.context,
+            network.domain(),
+            runtime::DurableRequestId::new(x_identity.request_id).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    let next_nonce_after_apply: u64 = query_sender_next_nonce(
+        &network.stores[d],
+        &network.context,
+        network.domain(),
+        fixture::chain(),
+        fixture::protocol().protocol_version(),
+        fixture::protocol().epoch(),
+        fixture::sender(),
+    )
+    .unwrap();
+    let settlement_after_apply: Option<Vec<u8>> = network.value(d, &settlement_row_key);
+
+    // Exact replay, even with a corrupted local ready marker: receipt-first,
+    // no re-execution, no re-resolution or mutation of the completed bytes.
+    let ready_key: Vec<u8> = drain_union_ready_key(
+        expected.chain_id(),
+        expected.epoch(),
+        &identity.entries_digest,
+    )
+    .unwrap();
+    network.put(d, ready_key, StateMutation::Put(vec![0xFF]));
+    let replay: NodeOutput = crate::fast_path::drain_apply::apply_drain_member(
+        &network.stores[d],
+        &network.blobs,
+        &network.context,
+        network.domain(),
+        &network.resolver,
+        &network.history,
+        &expected,
+        &network.leg_policy,
+        &fee_policy,
+        &apply_engine,
+        x_identity.request_id,
+        15,
+    )
+    .unwrap();
+    assert_eq!(apply_engine.calls.get(), executions_after_apply);
+    assert_eq!(replay.responses(), output.responses());
+    assert_eq!(
+        network.stores[d]
+            .get_object_head(&network.context, network.domain(), coin_object.id)
+            .unwrap(),
+        head_after_apply
+    );
+    assert_eq!(
+        network.stores[d]
+            .get_request_receipt(
+                &network.context,
+                network.domain(),
+                runtime::DurableRequestId::new(x_identity.request_id).unwrap(),
+            )
+            .unwrap()
+            .unwrap(),
+        receipt_after_apply
+    );
+    assert_eq!(
+        query_sender_next_nonce(
+            &network.stores[d],
+            &network.context,
+            network.domain(),
+            fixture::chain(),
+            fixture::protocol().protocol_version(),
+            fixture::protocol().epoch(),
+            fixture::sender(),
+        )
+        .unwrap(),
+        next_nonce_after_apply
+    );
+    assert_eq!(
+        network.value(d, &settlement_row_key),
+        settlement_after_apply
+    );
+    assert_eq!(network.value(d, &audit_key), Some(audit_bytes));
+    assert!(network.value(d, &object_lock_key).is_none());
+    assert!(network.value(d, &nonce_lock_key).is_none());
+    assert_eq!(network.value(d, &unrelated_key), Some(vec![0xA5]));
+}
+
 #[test]
 fn historical_profile_cannot_sign_a_frozen_frontier() {
     let network: Network = setup();
