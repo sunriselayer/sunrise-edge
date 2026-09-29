@@ -285,6 +285,8 @@ atomically before vote exposure. Thus the committed obligation is backed by
 `q` power of durable artifact retention even for a full certificate that
 previously existed on only one withholding/failing replica. With the assumed
 eventually responsive quorum, an honest intersection holder can supply it.
+The exact ordered-vote/CAS binding and initial roster bound are fixed in
+[DR-0159](decisions/0159-ordered-drainset.md).
 
 If any operation applied, an availability quorum retained its **full** proof
 and payload before application. That quorum intersects the selected frozen

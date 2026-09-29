@@ -451,12 +451,20 @@ The detailed existing evidence and remaining criteria follow:
   stops after an import-only budget, reconstructs the client and resumes to
   local readiness, checks a forged selection is rejected before mutation,
   and compares the final union identity independently. It does not close and
-  reopen the target server or prove PostgreSQL failover. An operator CLI
-  subcommand, trusted peer admission or cumulative work budget, PostgreSQL
-  multi-validator handoff, ordered DrainSet/Seal, cut, conditional next-set
-  readiness and activation remain open. Draft PR #235 remains incomplete
-  Delivery 3 and not merge-ready. U5's `npm ci`, changed-crate Clippy and
-  complete `./scripts/check-all.sh` passed on 2026-09-29. The install
+  reopen the target server or prove PostgreSQL failover. U6 adds the bounded
+  `contract fastvote-drain-local-ready` operator command using separately
+  pinned protocol/genesis context and per-peer TLS, including a selected
+  source quorum that need not include the driven target. CLI unit and
+  integration tests and changed-crate Clippy pass locally. It cannot form an
+  ordered decision or authorize activation. Trusted peer admission or a
+  cumulative work budget, PostgreSQL multi-validator handoff, ordered
+  DrainSet/Seal, cut, conditional next-set readiness and activation remain
+  open. The ordered DrainSet design is fixed in
+  [DR-0159](docs/architecture/decisions/0159-ordered-drainset.md), but its
+  implementation and verification are not yet complete. Draft PR #235
+  remains incomplete Delivery 3 and not merge-ready. U5's `npm ci`,
+  changed-crate Clippy and complete `./scripts/check-all.sh` passed on
+  2026-09-29. The install
   reported five dependency audit advisories (one moderate, four high); no
   forced upgrade was applied. Live PostgreSQL suites were skipped because
   `SUNRISE_EDGE_TEST_POSTGRES_URL` is unset. Opus initially approved the U5
