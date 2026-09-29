@@ -104,7 +104,7 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 | --- | --- | --- |
 | 1 | Generic certified network contract lifecycle | Merged as PR #228 on 2026-09-27 after the full repository gate, fresh exact-head Opus APPROVE and required CI: Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Independent ingress/security gates remain separate. |
 | 2 | Network economics and validator operations | Merged as PR #232 on 2026-09-27 with normal merge commit `86711be`, after fresh exact-head Opus APPROVE and the passing complete repository CI. Fixed-epoch four-namespace CLI evidence is implemented. Membership-dependent Deposit/Withdraw positives join delivery 3; economics/ingress security audits remain separate. |
-| 3 | Validator membership and epoch handoff | In progress in Draft PR #235 under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Logical generations, ordered Freeze and the core publication-before-apply gate have local test evidence; a complete network workflow, DrainSet/Seal, authenticated cut, readiness/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation are not complete. |
+| 3 | Validator membership and epoch handoff | In progress in Draft PR #235 under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Logical generations, ordered Freeze, publication-before-apply and bounded ordered DrainSet have local test evidence. A nonempty network drain, complete causal application, Seal, authenticated cut, readiness/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation are not complete. |
 | 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
 
 PostgreSQL remains the existing tested profile for delivery 1, not a mandatory
@@ -458,7 +458,7 @@ The detailed existing evidence and remaining criteria follow:
   integration tests and changed-crate Clippy pass locally. It cannot form an
   ordered decision or authorize activation. Trusted peer admission or a
   cumulative work budget, PostgreSQL multi-validator handoff, complete
-  ordered DrainSet integration, Seal, cut, conditional next-set readiness
+  ordered DrainSet operator submission, Seal, cut, conditional next-set readiness
   and activation remain open. The ordered DrainSet design is fixed in
   [DR-0159](docs/architecture/decisions/0159-ordered-drainset.md). U6 now
   implements its same-chain kind 6, canonical intent/record, exact selected
@@ -471,9 +471,20 @@ The detailed existing evidence and remaining criteria follow:
   forged/weak/mixed/foreign selection cases and 256-roster frame bounds are
   covered. These checks do not yet compose a nonempty business union into an
   ordered DrainSet, authorize drain application, prove a cut, Seal or activate
-  an epoch. Changed-crate Clippy and all node-core tests passed locally;
-  full repository gate, exact-head Opus review and CI are pending. Draft PR
-  #235 remains incomplete Delivery 3 and not merge-ready. U5's `npm ci`,
+  an epoch. Changed-crate Clippy and all node-core tests passed locally.
+  `npm ci` and complete `./scripts/check-all.sh` also passed locally on
+  2026-09-30, after installing the exact `wasm-bindgen-cli` version required
+  by the gate. Live PostgreSQL tests were skipped locally without
+  `SUNRISE_EDGE_TEST_POSTGRES_URL`. Opus explicitly APPROVED the U6 delta
+  through `8d29d25` while identifying a vote-time local-marker retention
+  precondition, externally selectable propose-route admission, missing
+  NoFreeze coverage and stale allocation/operator documentation. Follow-up
+  code/docs now CAS-fence the committed closure before classifying a
+  foreign selection, check record encodability before authenticating the
+  vote, test no-Freeze and wrong-Freeze refusal, and document the retention
+  and network-admission gates. These follow-ups need fresh exact-head review
+  and CI; U6 approval is not Delivery 3 or PR merge approval. Draft PR #235
+  remains incomplete Delivery 3 and not merge-ready. U5's `npm ci`,
   changed-crate Clippy and complete `./scripts/check-all.sh` passed on
   2026-09-29. The install
   reported five dependency audit advisories (one moderate, four high); no
@@ -484,7 +495,7 @@ The detailed existing evidence and remaining criteria follow:
   `411d237`. Neither review approves Delivery 3 or a merge. Exact-head CI
   run #532 was canceled during repository validation when its configured
   35-minute job limit elapsed; it did not pass. The job limit is raised to
-  60 minutes without skipping checks, pending a fresh pushed-head CI run.
+  60 minutes without skipping checks. Final-head CI remains a separate gate.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

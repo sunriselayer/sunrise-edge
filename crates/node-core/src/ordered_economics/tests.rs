@@ -1192,6 +1192,52 @@ fn ordered_drain_set_requires_local_readiness_then_commits_once_on_four_replicas
         created_checkpoint: 12,
     };
     assert!(authenticate_candidate(&network.env(), &candidate).is_ok());
+    // A valid signed selection cannot be ordered before this replica has
+    // committed Freeze. This is a deterministic no-effect refusal, not a
+    // synthetic locally-ready marker or a way to close admission early.
+    let before_freeze: Network = setup_with_freeze_height(1);
+    before_freeze.install_ordered();
+    assert!(matches!(
+        preflight::preflight(
+            &before_freeze.stores[0],
+            &before_freeze.context,
+            &before_freeze.env(),
+            &candidate,
+            4,
+        ),
+        Err(OrderedEconomicsError::Refused(OrderedRefusal::NoFreeze))
+    ));
+    let absent_drain_key: Vec<u8> =
+        drain_set::drain_set_record_key(expected.chain_id(), expected.epoch()).unwrap();
+    assert!(before_freeze.value(0, &absent_drain_key).is_none());
+    assert_eq!(
+        before_freeze.revision(0, &absent_drain_key),
+        StateRevision::INITIAL
+    );
+    let different_freeze: Network = setup_with_freeze_height(1);
+    different_freeze.install_ordered();
+    let other_freeze: OrderedCandidate = freeze_candidate([0xA4; 32]);
+    different_freeze.round(1, Some(&other_freeze));
+    different_freeze.round(2, None);
+    different_freeze.round(3, None);
+    let other_leader: usize = different_freeze.leader_index(4);
+    assert!(matches!(
+        propose(
+            &different_freeze.stores[other_leader],
+            &different_freeze.context,
+            &different_freeze.env(),
+            Some(&candidate),
+            &different_freeze.signers[other_leader],
+        ),
+        Err(OrderedEconomicsError::Refused(
+            OrderedRefusal::ForeignDrainSet
+        ))
+    ));
+    assert!(
+        different_freeze
+            .value(other_leader, &absent_drain_key)
+            .is_none()
+    );
     let mut forged_intent: DrainSetIntent = intent.clone();
     forged_intent.selected_votes[0].signature[0] ^= 1;
     let mut forged: OrderedCandidate = candidate.clone();

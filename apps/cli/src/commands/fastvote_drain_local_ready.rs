@@ -38,9 +38,8 @@ use consensus::{FrozenFrontierVote, decode_frozen_frontier_vote};
 /// legitimately name more signers than one configured cohort.
 const MAX_DRAIN_SELECTION_ENTRIES: usize = MAX_FASTVOTE_NETWORK_ENDPOINTS;
 const MAX_DRAIN_SELECTION_MANIFEST_BYTES: usize = 64 * 1024;
-/// Mirrors `consensus::availability::frontier`'s own private canonical
-/// frame bound for one encoded vote (`MAX_FRONTIER_VOTE_BYTES = 8 * 1024`),
-/// which is not itself exported; this bounds the read before decoding.
+/// Mirrors `node_wire::MAX_FRONTIER_VOTE_BYTES` without adding that crate to
+/// the CLI's dependencies; this bounds the read before decoding.
 const MAX_DRAIN_SELECTION_VOTE_FILE_BYTES: usize = 8 * 1024;
 
 const HELP: &str = "contract fastvote-drain-local-ready

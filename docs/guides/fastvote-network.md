@@ -202,6 +202,11 @@ network failure or a condition to retry with fresh signing.
 
 ## Replay from saved artifacts
 
+For an already frozen outgoing epoch, the separate
+[local DrainSet-readiness guide](fastvote-drain-local-ready.md) describes
+bounded frontier import on one validator. It is not a network activation
+procedure.
+
 `contract fastvote-replay` reads back exactly the saved bytes and resubmits
 them unchanged -- it never queries a fresh nonce, never re-signs, and never
 invents a new request ID. It accepts the same `--expected-*` and

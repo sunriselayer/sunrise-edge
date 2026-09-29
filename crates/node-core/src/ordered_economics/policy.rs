@@ -605,6 +605,27 @@ fn authenticate_drain_set(
         &Ed25519ConsensusVerifier,
     )
     .map_err(|_| OrderedEconomicsError::Unauthenticated("drain set frontier quorum"))?;
+    // Authentication must also prove that the immutable record this
+    // candidate would install can be encoded within the same frame ceiling.
+    // Otherwise a future wider signature scheme could pass the intent bound
+    // yet wedge committed execution on an oversized record.
+    let first_possible_height: u64 =
+        identity
+            .closure_height
+            .checked_add(1)
+            .ok_or(OrderedEconomicsError::Unauthenticated(
+                "drain set closure height overflow",
+            ))?;
+    let record: super::drain_set::DrainSetRecord = super::drain_set::DrainSetRecord {
+        closed_epoch: candidate.context.epoch(),
+        request_id: candidate.request_id,
+        committed_at_block_height: first_possible_height,
+        drain_union_identity: identity.clone(),
+        selected_votes: intent.selected_votes.clone(),
+    };
+    super::drain_set::encode_drain_set_record(&record).map_err(|_| {
+        OrderedEconomicsError::Unauthenticated("drain set record cannot be encoded")
+    })?;
     Ok(())
 }
 

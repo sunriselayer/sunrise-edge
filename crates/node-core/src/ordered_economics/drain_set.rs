@@ -434,6 +434,44 @@ pub(crate) fn verify_and_match_readiness<S: StructuredDurableDomainStateStore>(
     intent: &DrainSetIntent,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<(), OrderedEconomicsError> {
+    // A valid signed frontier for a *different* committed Freeze is a
+    // candidate defect, decidable from the healthy shared closure row. Do
+    // this before the local ready-marker check, whose verifier correctly
+    // treats damaged or incomplete replica-local progress as a stop.
+    let chain: &ChainId = env.policy.context().chain_id();
+    let epoch: Epoch = env.policy.context().epoch();
+    let closure_key: Vec<u8> = super::freeze::admission_closure_key(chain, epoch)?;
+    let closure_row: VersionedStateValue =
+        store.get_versioned_durable(context, env.policy.domain(), &closure_key)?;
+    if let Some(previous) = reads.insert(closure_key, closure_row.revision())
+        && previous != closure_row.revision()
+    {
+        return Err(OrderedEconomicsError::Node(NodeCoreError::StateConflict));
+    }
+    let closure: super::freeze::AdmissionClosureRecord = match closure_row.value() {
+        Some(bytes) => super::freeze::decode_admission_closure_record(bytes)?,
+        None if closure_row.revision() == StateRevision::INITIAL => {
+            return Err(OrderedEconomicsError::Refused(OrderedRefusal::NoFreeze));
+        }
+        None => {
+            return Err(OrderedEconomicsError::Prerequisite(
+                "ordered Freeze record is tombstoned",
+            ));
+        }
+    };
+    if closure.closed_epoch != epoch || closure.closed_at_block_height == 0 {
+        return Err(OrderedEconomicsError::Prerequisite(
+            "ordered Freeze identity is corrupt",
+        ));
+    }
+    if intent.selected_votes.iter().any(|vote| {
+        vote.identity.closure_request_id != closure.request_id
+            || vote.identity.closure_height != closure.closed_at_block_height
+    }) {
+        return Err(OrderedEconomicsError::Refused(
+            OrderedRefusal::ForeignDrainSet,
+        ));
+    }
     let identity: DrainUnionIdentity = drain_union::verify_drain_ready_into(
         store,
         context,

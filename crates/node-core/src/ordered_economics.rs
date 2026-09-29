@@ -123,11 +123,13 @@ pub(crate) const MAX_ORDERED_RESERVED_OBJECTS: usize = 2;
 /// One typed semantic refusal: a deterministic business outcome decided
 /// against a healthy, present, decodable committed row.
 ///
-/// Every variant is re-evaluable by any replica from the same committed
-/// state, moves no value, advances no sender nonce, and releases only the
-/// refused candidate's own reservations. Nothing that depends on a row being
-/// *absent*, tombstoned, undecodable or fenced is representable here: those
-/// are [`OrderedEconomicsError::Prerequisite`] stops.
+/// Business variants are re-evaluable by any replica from the same committed
+/// state. `ForeignDrainSet` additionally requires the same locally retained
+/// DrainSet-ready selection; a replica still importing that selection stops
+/// before deciding the refusal. Every variant moves no value, advances no
+/// sender nonce, and releases only the refused candidate's own reservations.
+/// Tombstoned, undecodable or fenced prerequisites are stops, not refusals;
+/// `NoFreeze` is the explicitly modeled initially absent closure exception.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrderedRefusal {
     /// The signed `expected_generation` does not equal the healthy committed
@@ -150,7 +152,7 @@ pub enum OrderedRefusal {
     /// canonical bytes (it was spent through another path).
     RequestCommittedElsewhere,
     /// DR-0154: a business candidate (every kind other than
-    /// [`OrderedOperationKind::Freeze`]) committed after admission was
+    /// [`OrderedOperationKind::Freeze`] and [`OrderedOperationKind::DrainSet`]) committed after admission was
     /// already closed by an earlier committed `Freeze`. The deterministic,
     /// authenticated no-effect closed-epoch refusal: no value or nonce
     /// movement, and the original retained outcome (if any) is untouched.

@@ -68,9 +68,9 @@ mod tests;
 /// `0x6452` and `0x6453` stay free, and `0x6451` remains reserved for the
 /// concurrently owned retention/control/cut work. `0x6454..=0x645A` are the
 /// `ordered_economics`/`fast_path` Freeze/publication/frontier family;
-/// `0x6454..=0x645D`'s remaining `0x645B..=0x645D` are DR-0157's signer
-/// progress, union-progress and local ready frames
-/// (`ordered_economics::drain_union`).
+/// `0x645B..=0x645D` are DR-0157's signer progress, union-progress and local
+/// ready frames (`ordered_economics::drain_union`); `0x645E..=0x645F` are
+/// DR-0159's ordered DrainSet intent and committed record frames.
 pub const LOGICAL_PROFILE_RECORD_FRAME_TYPE: u16 = 0x6480;
 /// Canonical version of [`LogicalProfileRecord`].
 pub const LOGICAL_PROFILE_RECORD_VERSION: u16 = 1;
