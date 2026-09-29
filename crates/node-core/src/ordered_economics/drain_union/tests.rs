@@ -199,6 +199,44 @@ fn one_page(entries: &[AvailabilityIdentity]) -> FrozenFrontierPage {
 }
 
 #[test]
+fn union_member_enumerator_refuses_an_entry_under_the_wrong_request_key() {
+    let replica: RetentionReplica = logical_replica();
+    let (bundle, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    let member: AvailabilityIdentity = identity(&bundle);
+    let (signers, _) = four_validators();
+    let signer: ValidatorId = signers[0].validator_id();
+    let wrong_key: Vec<u8> = drain_signer_entry_key(
+        protocol().chain_id(),
+        protocol().epoch(),
+        signer,
+        &[REQUEST + 1; 32],
+    )
+    .unwrap();
+    put_row(
+        &replica.store,
+        wrong_key,
+        encode_availability_identity(&member).unwrap(),
+    );
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let result: Result<Option<AvailabilityIdentity>, DrainSignerError> = next_union_member_after(
+        &replica.store,
+        &context(),
+        domain(),
+        protocol().chain_id(),
+        protocol().epoch(),
+        &[signer],
+        None,
+        &mut reads,
+    );
+    assert!(matches!(
+        result,
+        Err(DrainSignerError::Invalid(
+            "drain signer entry key disagrees with identity"
+        ))
+    ));
+}
+
+#[test]
 fn ingest_confirm_and_import_round_trip_across_two_pages_and_reject_replay_and_gaps() {
     let replica: RetentionReplica = logical_replica();
     close(&replica.store);

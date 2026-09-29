@@ -1265,67 +1265,19 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
     let selected_signers: Vec<ValidatorId> =
         selected_votes.iter().map(|vote| vote.validator).collect();
 
-    // Bounded (one scan per selected signer) collection of every signer's
-    // exact next unmerged candidate, then a single in-memory pass to find
-    // the canonical ascending minimum and check every same-request-ID tie
-    // for a cross-signer identity conflict before ever folding one in.
-    let mut candidates: Vec<AvailabilityIdentity> = Vec::with_capacity(selected_signers.len());
-    for signer in &selected_signers {
-        let entry_prefix: Vec<u8> =
-            drain_signer_entry_prefix(&drain.fence.chain, drain.fence.epoch, *signer)?;
-        let after_key: Vec<u8> = match accumulator.last_request_id() {
-            Some(last) => {
-                drain_signer_entry_key(&drain.fence.chain, drain.fence.epoch, *signer, &last)?
-            }
-            None => entry_prefix.clone(),
-        };
-        let one: NonZeroUsize = NonZeroUsize::new(1)
-            .ok_or(DrainSignerError::Invalid("invalid drain union scan limit"))?;
-        let scan: DurableRecordScan = DurableRecordScan::new(
-            DurableCollection::State,
-            Some(DurableRecordKey::State(after_key)),
-            one,
-        )?;
-        let scanned = store.scan_portable_keys(context, domain, &scan)?;
-        let Some(DurableRecordKey::State(candidate_key)) = scanned.keys().first() else {
-            continue;
-        };
-        if !candidate_key.starts_with(&entry_prefix) {
-            continue;
-        }
-        let candidate_row: VersionedStateValue =
-            store.get_versioned_durable(context, domain, candidate_key)?;
-        put_read(
-            &mut drain.reads,
-            candidate_key.clone(),
-            candidate_row.revision(),
-        )?;
-        let candidate_bytes: &[u8] = candidate_row
-            .value()
-            .ok_or(DrainSignerError::Invalid("missing signer entry"))?;
-        candidates.push(decode_availability_identity(candidate_bytes)?);
-    }
+    let next: Option<AvailabilityIdentity> = next_union_member_after(
+        store,
+        context,
+        domain,
+        &drain.fence.chain,
+        drain.fence.epoch,
+        &selected_signers,
+        accumulator.last_request_id(),
+        &mut drain.reads,
+    )?;
 
-    match candidates.iter().map(|entry| entry.request_id).min() {
-        Some(min_request_id) => {
-            let mut winner: Option<&AvailabilityIdentity> = None;
-            for candidate in &candidates {
-                if candidate.request_id != min_request_id {
-                    continue;
-                }
-                match winner {
-                    None => winner = Some(candidate),
-                    Some(existing) if existing != candidate => {
-                        return Err(DrainSignerError::Invalid(
-                            "cross-signer drain union identity conflict",
-                        ));
-                    }
-                    Some(_) => {}
-                }
-            }
-            let identity: AvailabilityIdentity = winner
-                .ok_or(DrainSignerError::Invalid("drain union candidate vanished"))?
-                .clone();
+    match next {
+        Some(identity) => {
             // H1: re-verify the winning member's complete proof, artifacts
             // and possession marker fresh from storage -- not merely the
             // signer-entry row's own bytes -- folding those reads into the
@@ -1396,6 +1348,81 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
             Ok(DrainUnionStep::Ready(Box::new(identity)))
         }
     }
+}
+
+/// Selects one canonical next member across an already authenticated exact
+/// signer selection. This is a bounded merge primitive, not authority to
+/// apply: its caller must verify the committed DrainSet, the local ready
+/// marker, and the winning member's retained full proof. It folds all
+/// observed signer-entry rows into the caller's CAS read set.
+pub(crate) fn next_union_member_after<S: DurablePortableRepository>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain: &ChainId,
+    epoch: Epoch,
+    selected_signers: &[ValidatorId],
+    after_request_id: Option<[u8; 32]>,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<Option<AvailabilityIdentity>, DrainSignerError> {
+    let mut candidates: Vec<AvailabilityIdentity> = Vec::with_capacity(selected_signers.len());
+    for signer in selected_signers {
+        let entry_prefix: Vec<u8> = drain_signer_entry_prefix(chain, epoch, *signer)?;
+        let after_key: Vec<u8> = match after_request_id {
+            Some(last) => drain_signer_entry_key(chain, epoch, *signer, &last)?,
+            None => entry_prefix.clone(),
+        };
+        let one: NonZeroUsize = NonZeroUsize::new(1)
+            .ok_or(DrainSignerError::Invalid("invalid drain union scan limit"))?;
+        let scan: DurableRecordScan = DurableRecordScan::new(
+            DurableCollection::State,
+            Some(DurableRecordKey::State(after_key)),
+            one,
+        )?;
+        let scanned = store.scan_portable_keys(context, domain, &scan)?;
+        let Some(DurableRecordKey::State(candidate_key)) = scanned.keys().first() else {
+            continue;
+        };
+        if !candidate_key.starts_with(&entry_prefix) {
+            continue;
+        }
+        let candidate_row: VersionedStateValue =
+            store.get_versioned_durable(context, domain, candidate_key)?;
+        put_read(reads, candidate_key.clone(), candidate_row.revision())?;
+        let candidate_bytes: &[u8] = candidate_row
+            .value()
+            .ok_or(DrainSignerError::Invalid("missing signer entry"))?;
+        let candidate: AvailabilityIdentity = decode_availability_identity(candidate_bytes)?;
+        if drain_signer_entry_key(chain, epoch, *signer, &candidate.request_id)? != *candidate_key {
+            return Err(DrainSignerError::Invalid(
+                "drain signer entry key disagrees with identity",
+            ));
+        }
+        candidates.push(candidate);
+    }
+
+    let Some(min_request_id) = candidates.iter().map(|entry| entry.request_id).min() else {
+        return Ok(None);
+    };
+    let mut winner: Option<&AvailabilityIdentity> = None;
+    for candidate in &candidates {
+        if candidate.request_id != min_request_id {
+            continue;
+        }
+        match winner {
+            None => winner = Some(candidate),
+            Some(existing) if existing != candidate => {
+                return Err(DrainSignerError::Invalid(
+                    "cross-signer drain union identity conflict",
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    winner
+        .cloned()
+        .map(Some)
+        .ok_or(DrainSignerError::Invalid("drain union candidate vanished"))
 }
 
 /// Read-only re-verification of the immutable local DrainSet-ready marker
