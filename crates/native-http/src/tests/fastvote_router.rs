@@ -272,6 +272,26 @@ async fn certified_router_mounts_fastvote_and_publication_routes() {
             StatusCode::METHOD_NOT_ALLOWED
         );
     }
+    for (path, limit) in [
+        (
+            node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
+            node_wire::MAX_DRAIN_SIGNER_PAGE_REQUEST_BYTES,
+        ),
+        (
+            node_wire::FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
+            node_wire::MAX_DRAIN_MEMBER_CONFIRM_REQUEST_BYTES,
+        ),
+        (
+            node_wire::FASTVOTE_DRAIN_UNION_ADVANCE_PATH,
+            node_wire::MAX_DRAIN_UNION_ADVANCE_REQUEST_BYTES,
+        ),
+    ] {
+        assert_eq!(
+            dispatch(&app, "POST", path, vec![0xAA; limit + 1]).await,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "oversized {path} body must be rejected at ingress"
+        );
+    }
     let import_path: String = format!("/v1/fastvote/drain/import/{}", "11".repeat(32));
     assert_eq!(
         dispatch(&app, "POST", &import_path, vec![0xAA]).await,

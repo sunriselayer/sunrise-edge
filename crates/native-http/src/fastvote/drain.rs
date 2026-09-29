@@ -124,21 +124,26 @@ where
                     Ok(value) => value,
                     Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid-drain-page"),
                 };
-            let expected = match expected_context(&state.config) {
-                Some(value) => value,
-                None => {
-                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, "drain-host-context");
-                }
-            };
-            let (domain, context) = match prepare_storage_context(
-                &state.components,
-                &state.protocol_config,
-                &state.authority,
-                &state.config,
-            ) {
-                Ok(value) => value,
-                Err(error) => return query_invocation_error_response(&error),
-            };
+            let expected: execution::publication::PublicationContext =
+                match expected_context(&state.config) {
+                    Some(value) => value,
+                    None => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "drain-host-context",
+                        );
+                    }
+                };
+            let (domain, context): (AtomicityDomainId, DurableOperationContext) =
+                match prepare_storage_context(
+                    &state.components,
+                    &state.protocol_config,
+                    &state.authority,
+                    &state.config,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return query_invocation_error_response(&error),
+                };
             if state.components.is_cancelled() {
                 return cancelled_before_storage_response();
             }
@@ -205,10 +210,11 @@ where
                         return error_response(StatusCode::BAD_REQUEST, "invalid-drain-bundle");
                     }
                 };
-            let declared = match declared_paid_context(&state.config, &bundle.signed_intent) {
-                Ok(value) => value,
-                Err(response) => return response,
-            };
+            let declared: execution::publication::PublicationContext =
+                match declared_paid_context(&state.config, &bundle.signed_intent) {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
             if let Err(error) =
                 authenticate_paid_execution(&state.resolver, &declared, &bundle.signed_intent)
             {
@@ -217,15 +223,16 @@ where
             if declared.epoch() != state.config.epoch() {
                 return error_response(StatusCode::CONFLICT, "drain-epoch-repin-required");
             }
-            let (domain, context) = match prepare_storage_context(
-                &state.components,
-                &state.protocol_config,
-                &state.authority,
-                &state.config,
-            ) {
-                Ok(value) => value,
-                Err(error) => return query_invocation_error_response(&error),
-            };
+            let (domain, context): (AtomicityDomainId, DurableOperationContext) =
+                match prepare_storage_context(
+                    &state.components,
+                    &state.protocol_config,
+                    &state.authority,
+                    &state.config,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return query_invocation_error_response(&error),
+                };
             if state.components.is_cancelled() {
                 return cancelled_before_storage_response();
             }
@@ -303,21 +310,26 @@ where
             if request.epoch != state.config.epoch() {
                 return error_response(StatusCode::CONFLICT, "drain-epoch-repin-required");
             }
-            let expected = match expected_context(&state.config) {
-                Some(value) => value,
-                None => {
-                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, "drain-host-context");
-                }
-            };
-            let (domain, context) = match prepare_storage_context(
-                &state.components,
-                &state.protocol_config,
-                &state.authority,
-                &state.config,
-            ) {
-                Ok(value) => value,
-                Err(error) => return query_invocation_error_response(&error),
-            };
+            let expected: execution::publication::PublicationContext =
+                match expected_context(&state.config) {
+                    Some(value) => value,
+                    None => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "drain-host-context",
+                        );
+                    }
+                };
+            let (domain, context): (AtomicityDomainId, DurableOperationContext) =
+                match prepare_storage_context(
+                    &state.components,
+                    &state.protocol_config,
+                    &state.authority,
+                    &state.config,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return query_invocation_error_response(&error),
+                };
             if state.components.is_cancelled() {
                 return cancelled_before_storage_response();
             }
@@ -400,21 +412,26 @@ where
             if request.epoch != state.config.epoch() {
                 return error_response(StatusCode::CONFLICT, "drain-epoch-repin-required");
             }
-            let expected = match expected_context(&state.config) {
-                Some(value) => value,
-                None => {
-                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, "drain-host-context");
-                }
-            };
-            let (domain, context) = match prepare_storage_context(
-                &state.components,
-                &state.protocol_config,
-                &state.authority,
-                &state.config,
-            ) {
-                Ok(value) => value,
-                Err(error) => return query_invocation_error_response(&error),
-            };
+            let expected: execution::publication::PublicationContext =
+                match expected_context(&state.config) {
+                    Some(value) => value,
+                    None => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "drain-host-context",
+                        );
+                    }
+                };
+            let (domain, context): (AtomicityDomainId, DurableOperationContext) =
+                match prepare_storage_context(
+                    &state.components,
+                    &state.protocol_config,
+                    &state.authority,
+                    &state.config,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return query_invocation_error_response(&error),
+                };
             if state.components.is_cancelled() {
                 return cancelled_before_storage_response();
             }
@@ -423,6 +440,7 @@ where
                 &context,
                 domain,
                 &state.resolver,
+                &state.history,
                 &expected,
                 &request.votes,
             ) {

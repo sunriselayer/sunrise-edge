@@ -634,6 +634,58 @@ async fn frozen_frontier_drain_reaches_local_ready_over_real_http_and_sqlite() {
     }
 
     let target: LoopbackHttpTransport = transport(hosts[3].addr);
+    let target_client: Client<LoopbackHttpTransport> = Client::new(transport(hosts[3].addr));
+    let own_validator: ValidatorId = fixture.validators[3].validator_id;
+    let own_empty_vote: consensus::FrozenFrontierVote = target_client
+        .advance_frozen_frontier(&frontier_certifier, own_validator, Some(deadline))
+        .unwrap()
+        .expect("empty local frontier finalizes in one step");
+    let (_, own_empty_page): (consensus::FrozenFrontierVote, consensus::FrozenFrontierPage) =
+        target_client
+            .fetch_signed_frozen_frontier_page(
+                &node_wire::FrozenFrontierPageRequest {
+                    epoch: fixture.epoch,
+                    after_request_id: None,
+                    limit: 1,
+                },
+                &frontier_certifier,
+                own_validator,
+                Some(deadline),
+            )
+            .unwrap();
+    assert!(own_empty_page.entries.is_empty());
+    assert!(own_empty_page.terminal);
+    let mut forged_empty_vote: consensus::FrozenFrontierVote = own_empty_vote.clone();
+    forged_empty_vote.signature[0] ^= 1;
+    let forged = post(
+        &target,
+        node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
+        node_wire::NODE_EVENT_MEDIA_TYPE,
+        node_wire::DrainSignerPageRequest {
+            epoch: fixture.epoch,
+            vote: consensus::encode_frozen_frontier_vote(&forged_empty_vote).unwrap(),
+            page: consensus::encode_frozen_frontier_page(&own_empty_page).unwrap(),
+        }
+        .encode()
+        .unwrap(),
+    );
+    assert_eq!(
+        forged.status, 503,
+        "forged empty vote must not poison progress"
+    );
+    let genuine = post(
+        &target,
+        node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
+        node_wire::NODE_EVENT_MEDIA_TYPE,
+        node_wire::DrainSignerPageRequest {
+            epoch: fixture.epoch,
+            vote: consensus::encode_frozen_frontier_vote(&own_empty_vote).unwrap(),
+            page: consensus::encode_frozen_frontier_page(&own_empty_page).unwrap(),
+        }
+        .encode()
+        .unwrap(),
+    );
+    assert_eq!(genuine.status, 204, "{:?}", genuine.body);
     let mut selected_votes: Vec<consensus::FrozenFrontierVote> = Vec::new();
     for (host, validator) in hosts.iter().zip(&fixture.validators).take(3) {
         let client: Client<LoopbackHttpTransport> = Client::new(transport(host.addr));
