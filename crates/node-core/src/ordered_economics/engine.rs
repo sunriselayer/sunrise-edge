@@ -458,11 +458,11 @@ fn prefixed_key(infix: &[u8], chain: &ChainId) -> Result<Vec<u8>, NodeCoreError>
     Ok(key)
 }
 
-fn ordered_state_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError> {
+pub(super) fn ordered_state_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError> {
     prefixed_key(b"state/", chain)
 }
 
-fn ordered_applied_height_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError> {
+pub(super) fn ordered_applied_height_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError> {
     prefixed_key(b"applied-height/", chain)
 }
 
@@ -479,7 +479,7 @@ pub(crate) fn business_free_barrier_key(
     Ok(key)
 }
 
-fn ordered_candidate_record_key(
+pub(super) fn ordered_candidate_record_key(
     chain: &ChainId,
     digest: Digest32,
 ) -> Result<Vec<u8>, NodeCoreError> {
@@ -675,7 +675,7 @@ fn encode_applied_height(height: u64) -> Result<Vec<u8>, NodeCoreError> {
     Ok(frame.finish()?)
 }
 
-fn decode_applied_height(bytes: &[u8]) -> Result<u64, NodeCoreError> {
+pub(super) fn decode_applied_height(bytes: &[u8]) -> Result<u64, NodeCoreError> {
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(APPLIED_HEIGHT_RECORD_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;

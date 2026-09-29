@@ -59,10 +59,15 @@
 //! signer's confirmed entries are exhausted and the receipt-backed running
 //! union count and digest match the committed record -- persists an immutable
 //! local completion marker plus a read-only `verify_drain_complete_into` for
-//! a future Seal vote to fold into its own atomic commit. This is still only
-//! one part of DR-0154. `Seal`, verified next-set readiness and activation,
-//! and retirement of the older standalone epoch-transition route must be
-//! integrated before this path can be enabled as a complete handoff.
+//! a future Seal vote to fold into its own atomic commit.
+//! [`suffix_predicate::verify_business_free_suffix_into`] adds the
+//! complementary read-only check over the shared HotStuff engine itself: the
+//! committed prefix is fully applied and every certified `high_qc`/`locked_qc`
+//! ancestor above it carries only `Freeze`/`DrainSet` control candidates,
+//! never a business one. This is still only one part of DR-0154. `Seal`,
+//! verified next-set readiness and activation, and retirement of the older
+//! standalone epoch-transition route must be integrated before this path can
+//! be enabled as a complete handoff.
 use super::*;
 
 mod candidate;
@@ -78,6 +83,7 @@ mod policy;
 mod preflight;
 mod reservation;
 mod staging;
+mod suffix_predicate;
 
 pub use candidate::{
     MAX_ORDERED_CANDIDATE_INTENT_BYTES, OrderedCandidate, OrderedOperationKind,
@@ -127,6 +133,9 @@ pub use policy::{
 };
 pub(crate) use reservation::OrderedLegAdmission;
 pub(crate) use staging::StagingStore;
+pub use suffix_predicate::{
+    SuffixPredicateError, verify_business_free_suffix, verify_business_free_suffix_into,
+};
 
 /// Maximum address-owned object inputs one admitted candidate may reserve.
 /// DR-0153's closed profile only ever reserves a bond deposit leg's single
