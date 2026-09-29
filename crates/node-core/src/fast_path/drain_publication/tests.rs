@@ -554,14 +554,16 @@ fn same_request_conflicting_identity_and_missing_marker_refuse_without_repair() 
 }
 
 #[test]
-fn concurrent_freeze_epoch_or_validator_row_changes_reject_the_whole_import() {
+fn concurrent_profile_freeze_epoch_or_validator_row_changes_reject_the_whole_import() {
     let (bundle, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
     let expected_identity: AvailabilityIdentity = identity(&bundle);
     let epoch_key: Vec<u8> =
         local_instance_state::fastpath_epoch_record_key(protocol().chain_id()).unwrap();
     let validator_key: Vec<u8> =
         local_instance_state::fastpath_validator_set_key(&protocol()).unwrap();
-    for key in [closure_key(), epoch_key, validator_key] {
+    let profile_key: Vec<u8> =
+        logical_generation::logical_profile_key(protocol().chain_id()).unwrap();
+    for key in [profile_key, closure_key(), epoch_key, validator_key] {
         let replica: RetentionReplica = logical_replica();
         close(&replica);
         let original: Vec<u8> = replica.row(&key).unwrap();
