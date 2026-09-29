@@ -8,7 +8,7 @@
 use super::*;
 use node_core::ordered_economics::{
     DrainSignerError, DrainUnionStep, advance_drain_union, confirm_drain_signer_entry,
-    import_staged_drain_publication, ingest_drain_signer_page, staged_drain_signer_identity,
+    import_staged_drain_publication, ingest_drain_signer_page,
 };
 
 pub(super) fn routes<S, B, M, T, C, I>()
@@ -52,15 +52,71 @@ where
         )
 }
 
-fn drain_error_response(error: &DrainSignerError) -> Response {
+/// The three outcomes a caller must be able to tell apart before it can
+/// decide whether re-sending the exact same request bytes is ever safe:
+/// [`PermanentlyInvalid`](Self::PermanentlyInvalid) never becomes success no
+/// matter how many times it is retried unmodified (a forged/malformed vote,
+/// tombstoned proof or artifact, or a profile/context mismatch);
+/// [`NotReadyOrCas`](Self::NotReadyOrCas) is an ordinary local-state race a
+/// caller should resync and retry (a stale expected identity, an
+/// unconfirmed prerequisite, or an optimistic-concurrency conflict on an
+/// exact CAS revision); [`StorageIndeterminate`](Self::StorageIndeterminate)
+/// is a storage-layer failure with no authoritative outcome, for which the
+/// exact same retry remains safe because every commit in this module is
+/// re-verified from scratch on every attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DrainErrorClass {
+    PermanentlyInvalid,
+    NotReadyOrCas,
+    StorageIndeterminate,
+}
+
+fn node_core_error_class(error: &NodeCoreError) -> DrainErrorClass {
     match error {
-        DrainSignerError::NotReady(_) => error_response(StatusCode::CONFLICT, "drain-not-ready"),
-        DrainSignerError::Node(NodeCoreError::EpochMismatch { .. }) => {
-            error_response(StatusCode::CONFLICT, "drain-epoch-repin-required")
+        NodeCoreError::DurableCommitIndeterminate(_) => DrainErrorClass::StorageIndeterminate,
+        NodeCoreError::DurableCommitRejected(_)
+        | NodeCoreError::StateConflict
+        | NodeCoreError::EpochMismatch { .. } => DrainErrorClass::NotReadyOrCas,
+        // Every other `NodeCoreError` reachable here indicates a decode,
+        // encoding or invariant failure against already-validated wire input
+        // or a locally retained row; none of these become success on retry.
+        _ => DrainErrorClass::PermanentlyInvalid,
+    }
+}
+
+fn publication_error_class(error: &PublicationRetentionError) -> DrainErrorClass {
+    match error {
+        PublicationRetentionError::Node(inner) => node_core_error_class(inner),
+        _ => DrainErrorClass::PermanentlyInvalid,
+    }
+}
+
+fn drain_error_class(error: &DrainSignerError) -> DrainErrorClass {
+    match error {
+        DrainSignerError::NotReady(_) => DrainErrorClass::NotReadyOrCas,
+        DrainSignerError::Invalid(_) => DrainErrorClass::PermanentlyInvalid,
+        DrainSignerError::Node(inner) => node_core_error_class(inner),
+        // `consensus::FrontierError` has no storage/indeterminate variant: it
+        // is always a forged signature, mixed-Freeze vote, gap, reorder or
+        // other permanently invalid page/vote.
+        DrainSignerError::Frontier(_) => DrainErrorClass::PermanentlyInvalid,
+        DrainSignerError::Publication(inner) => publication_error_class(inner),
+    }
+}
+
+fn drain_error_response(error: &DrainSignerError) -> Response {
+    if let DrainSignerError::Node(NodeCoreError::EpochMismatch { .. }) = error {
+        return error_response(StatusCode::CONFLICT, "drain-epoch-repin-required");
+    }
+    match drain_error_class(error) {
+        DrainErrorClass::PermanentlyInvalid => {
+            error_response(StatusCode::BAD_REQUEST, "drain-invalid")
         }
-        // A malformed vote, invalid proof, tombstone, profile mismatch or
-        // failed durable commit must never become a success-shaped response.
-        _ => error_response(StatusCode::SERVICE_UNAVAILABLE, "drain-verification-failed"),
+        DrainErrorClass::NotReadyOrCas => error_response(StatusCode::CONFLICT, "drain-not-ready"),
+        DrainErrorClass::StorageIndeterminate => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "drain-storage-indeterminate",
+        ),
     }
 }
 
@@ -333,19 +389,6 @@ where
             if state.components.is_cancelled() {
                 return cancelled_before_storage_response();
             }
-            let staged: consensus::AvailabilityIdentity = match staged_drain_signer_identity(
-                state.components.store.as_ref(),
-                &context,
-                domain,
-                &expected,
-                request.validator,
-            ) {
-                Ok(value) => value,
-                Err(error) => return drain_error_response(&error),
-            };
-            if staged.request_id != request.request_id {
-                return error_response(StatusCode::CONFLICT, "drain-staged-member-changed");
-            }
             match confirm_drain_signer_entry(
                 state.components.store.as_ref(),
                 &context,
@@ -354,14 +397,9 @@ where
                 &state.history,
                 &expected,
                 request.validator,
+                request.request_id,
             ) {
-                Ok(identity) if identity.request_id == request.request_id => {
-                    StatusCode::NO_CONTENT.into_response()
-                }
-                Ok(_) => error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "drain-confirm-inconsistent",
-                ),
+                Ok(_) => StatusCode::NO_CONTENT.into_response(),
                 Err(error) => drain_error_response(&error),
             }
         },
@@ -467,4 +505,91 @@ where
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod error_taxonomy_tests {
+    use super::*;
+    use node_core::fast_path::publication::PublicationRetentionError;
+
+    fn status_of(error: DrainSignerError) -> StatusCode {
+        drain_error_response(&error).status()
+    }
+
+    /// A permanently invalid vote, page, proof or context can never become
+    /// success by retrying the exact same bytes: it must surface as a 4xx,
+    /// never the 503 a caller would otherwise read as "try again".
+    #[test]
+    fn permanently_invalid_errors_map_to_4xx() {
+        assert_eq!(
+            status_of(DrainSignerError::Invalid("bad")),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            status_of(DrainSignerError::Frontier(
+                consensus::FrontierError::Invalid("bad frontier")
+            )),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            status_of(DrainSignerError::Publication(Box::new(
+                PublicationRetentionError::ForeignDomain
+            ))),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    /// A not-ready or optimistic-concurrency (CAS) condition is an ordinary
+    /// local-state race: the caller should resync and retry, so it must
+    /// surface as 409, distinct from both a permanent 4xx and a 503.
+    #[test]
+    fn not_ready_and_cas_errors_map_to_409() {
+        assert_eq!(
+            status_of(DrainSignerError::NotReady("not yet")),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            status_of(DrainSignerError::Node(NodeCoreError::StateConflict)),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            status_of(DrainSignerError::Node(
+                NodeCoreError::DurableCommitRejected(runtime::DurableCommitRejection::Conflict {
+                    key: vec![0x01],
+                    current_revision: runtime::StateRevision::INITIAL,
+                })
+            )),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            status_of(DrainSignerError::Node(NodeCoreError::EpochMismatch {
+                expected: protocol_types::Epoch::new(1),
+                actual: protocol_types::Epoch::new(2),
+            })),
+            StatusCode::CONFLICT
+        );
+    }
+
+    /// A storage-layer failure with no authoritative outcome must surface as
+    /// 503: the exact same retry stays safe, since every commit in this
+    /// module is re-verified from scratch on every attempt.
+    #[test]
+    fn storage_indeterminate_errors_map_to_503() {
+        assert_eq!(
+            status_of(DrainSignerError::Node(
+                NodeCoreError::DurableCommitIndeterminate(
+                    IndeterminateCommitReason::ConnectionLost
+                )
+            )),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            status_of(DrainSignerError::Publication(Box::new(
+                PublicationRetentionError::Node(NodeCoreError::DurableCommitIndeterminate(
+                    IndeterminateCommitReason::DeadlineExceeded
+                ))
+            ))),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
 }

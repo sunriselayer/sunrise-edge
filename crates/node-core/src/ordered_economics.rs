@@ -72,7 +72,7 @@ pub use drain_union::{
     advance_drain_union, confirm_drain_signer_entry, drain_signer_entry_key,
     drain_signer_progress_key, drain_union_progress_key, drain_union_ready_key,
     import_staged_drain_publication, ingest_drain_signer_page, staged_drain_signer_identity,
-    verify_drain_ready,
+    verify_drain_ready, verify_drain_ready_into,
 };
 pub use engine::{
     OrderedEventOutput, OrderedOutcome, OrderedProposal, OrderedStatus,

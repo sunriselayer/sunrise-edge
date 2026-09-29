@@ -100,6 +100,33 @@ fn put_read(
     Ok(())
 }
 
+fn commit_reads_and_mutations<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    reads: BTreeMap<Vec<u8>, StateRevision>,
+    mutations: Vec<StateMutationEntry>,
+) -> DrainResult<()> {
+    let assertions: Vec<StateReadAssertion> = reads
+        .into_iter()
+        .map(|(key, revision): (Vec<u8>, StateRevision)| StateReadAssertion::new(key, revision))
+        .collect::<Result<Vec<_>, _>>()?;
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain,
+        AtomicStateReadSet::new(assertions)?,
+        AtomicStateMutationSet::new(mutations)?,
+    )?;
+    match store.commit_durable(context, transaction) {
+        DurableCommitOutcome::Committed => Ok(()),
+        DurableCommitOutcome::Rejected(reason) => {
+            Err(NodeCoreError::DurableCommitRejected(reason).into())
+        }
+        DurableCommitOutcome::Indeterminate(reason) => {
+            Err(NodeCoreError::DurableCommitIndeterminate(reason).into())
+        }
+    }
+}
+
 pub(crate) fn fence_closed_epoch<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
@@ -276,6 +303,15 @@ fn load_imported_bundle<S: StructuredDurableDomainStateStore>(
 /// event never signs, acknowledges, executes, or mutates the original local
 /// `publication/` log. A successful exact retry re-verifies all saved bytes.
 /// It does **not** establish that any full frontier or quorum is complete.
+///
+/// A same-epoch restore may carry the authenticated `drain-publication/` and
+/// `drain-publication-artifact/` history while this host's own local
+/// `drain-possession/` marker is pristine (never written here): an exact
+/// retry re-verifies the saved proof and every artifact byte against this
+/// staged identity -- never a caller-supplied claim -- and only then
+/// rebuilds the marker, atomically with that re-verification. A tombstoned
+/// marker, like a tombstoned or conflicting proof or artifact, still fails
+/// closed instead of ever being rebuilt.
 #[allow(clippy::too_many_arguments)]
 pub fn retain_drain_publication<S: StructuredDurableDomainStateStore>(
     store: &S,
@@ -335,12 +371,33 @@ pub fn retain_drain_publication<S: StructuredDurableDomainStateStore>(
             &validators,
             &saved_bundle,
         )?;
-        if saved_identity != identity || possession_row.value() != Some(identity_bytes.as_slice()) {
+        if saved_identity != identity {
             return Err(PublicationRetentionError::InconsistentRetainedRecord(
                 "drain possession marker or retained proof",
             ));
         }
-        return Ok(identity);
+        return match possession_row.value() {
+            Some(bytes) if bytes == identity_bytes.as_slice() => Ok(identity),
+            Some(_) => Err(PublicationRetentionError::InconsistentRetainedRecord(
+                "drain possession marker or retained proof",
+            )),
+            None if possession_row.revision() == StateRevision::INITIAL => {
+                commit_reads_and_mutations(
+                    store,
+                    context,
+                    domain,
+                    reads,
+                    vec![StateMutationEntry::new(
+                        possession_key,
+                        StateMutation::Put(identity_bytes),
+                    )?],
+                )?;
+                Ok(identity)
+            }
+            None => Err(PublicationRetentionError::InconsistentRetainedRecord(
+                "drain possession marker is tombstoned",
+            )),
+        };
     }
     if publication_row.revision() != StateRevision::INITIAL
         || possession_row.value().is_some()
@@ -395,24 +452,8 @@ pub fn retain_drain_publication<S: StructuredDurableDomainStateStore>(
         possession_key,
         StateMutation::Put(identity_bytes),
     )?);
-    let assertions: Vec<StateReadAssertion> = reads
-        .into_iter()
-        .map(|(key, revision): (Vec<u8>, StateRevision)| StateReadAssertion::new(key, revision))
-        .collect::<Result<Vec<_>, _>>()?;
-    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
-        domain,
-        AtomicStateReadSet::new(assertions)?,
-        AtomicStateMutationSet::new(mutations)?,
-    )?;
-    match store.commit_durable(context, transaction) {
-        DurableCommitOutcome::Committed => Ok(identity),
-        DurableCommitOutcome::Rejected(reason) => {
-            Err(NodeCoreError::DurableCommitRejected(reason).into())
-        }
-        DurableCommitOutcome::Indeterminate(reason) => {
-            Err(NodeCoreError::DurableCommitIndeterminate(reason).into())
-        }
-    }
+    commit_reads_and_mutations(store, context, domain, reads, mutations)?;
+    Ok(identity)
 }
 
 /// Read-only check of an imported marker plus all exact stored proof bytes.

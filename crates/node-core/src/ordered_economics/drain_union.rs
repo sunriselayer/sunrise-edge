@@ -360,13 +360,60 @@ fn commit_row<S: StructuredDurableDomainStateStore>(
     }
 }
 
-struct DrainContext {
+/// The exact fenced Freeze/epoch/set identity [`DrainContext`] wraps.
+/// Factored out so a caller that already owns its own CAS read set (for
+/// example a future DrainSet vote) can fence and verify readiness by folding
+/// these same reads into that read set directly, via
+/// [`fence_drain_context_into`] and [`verify_drain_ready_into`], instead of
+/// discarding a freshly fenced, standalone one.
+struct DrainFreezeFence {
     chain: ChainId,
     epoch: Epoch,
     validators: ValidatorSet,
     closure_request_id: [u8; 32],
     closure_height: u64,
+}
+
+struct DrainContext {
+    fence: DrainFreezeFence,
     reads: BTreeMap<Vec<u8>, StateRevision>,
+}
+
+/// Fences the installed logical profile, current epoch, outgoing set and
+/// committed Freeze exactly once for every function in this module, folding
+/// every read into the caller-owned `reads` set instead of a fresh one.
+fn fence_drain_context_into<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<DrainFreezeFence, DrainSignerError> {
+    let chain: ChainId = expected.chain_id().clone();
+    let epoch: Epoch = expected.epoch();
+    let validators: ValidatorSet =
+        fence_closed_epoch(store, context, domain, resolver, expected, reads)?;
+    let closure_key: Vec<u8> = admission_closure_key(&chain, epoch)?;
+    let closure_row: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &closure_key)?;
+    put_read(reads, closure_key, closure_row.revision())?;
+    let closure_bytes: &[u8] = closure_row.value().ok_or(DrainSignerError::NotReady(
+        "ordered Freeze is not committed",
+    ))?;
+    let closure = decode_admission_closure_record(closure_bytes)?;
+    if closure.closed_epoch != epoch || closure.closed_at_block_height == 0 {
+        return Err(DrainSignerError::Invalid(
+            "invalid committed Freeze identity",
+        ));
+    }
+    Ok(DrainFreezeFence {
+        chain,
+        epoch,
+        validators,
+        closure_request_id: closure.request_id,
+        closure_height: closure.closed_at_block_height,
+    })
 }
 
 /// Fences the installed logical profile, current epoch, outgoing set and
@@ -378,32 +425,10 @@ fn fence_drain_context<S: StructuredDurableDomainStateStore>(
     resolver: &HashSuiteResolver,
     expected: &PublicationContext,
 ) -> Result<DrainContext, DrainSignerError> {
-    let chain: ChainId = expected.chain_id().clone();
-    let epoch: Epoch = expected.epoch();
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
-    let validators: ValidatorSet =
-        fence_closed_epoch(store, context, domain, resolver, expected, &mut reads)?;
-    let closure_key: Vec<u8> = admission_closure_key(&chain, epoch)?;
-    let closure_row: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &closure_key)?;
-    put_read(&mut reads, closure_key, closure_row.revision())?;
-    let closure_bytes: &[u8] = closure_row.value().ok_or(DrainSignerError::NotReady(
-        "ordered Freeze is not committed",
-    ))?;
-    let closure = decode_admission_closure_record(closure_bytes)?;
-    if closure.closed_epoch != epoch || closure.closed_at_block_height == 0 {
-        return Err(DrainSignerError::Invalid(
-            "invalid committed Freeze identity",
-        ));
-    }
-    Ok(DrainContext {
-        chain,
-        epoch,
-        validators,
-        closure_request_id: closure.request_id,
-        closure_height: closure.closed_at_block_height,
-        reads,
-    })
+    let fence: DrainFreezeFence =
+        fence_drain_context_into(store, context, domain, resolver, expected, &mut reads)?;
+    Ok(DrainContext { fence, reads })
 }
 
 /// Stages at most one bounded page of a registered signer's complete frozen
@@ -427,12 +452,12 @@ pub fn ingest_drain_signer_page<S: StructuredDurableDomainStateStore>(
     page: FrozenFrontierPage,
 ) -> Result<(), DrainSignerError> {
     let mut drain: DrainContext = fence_drain_context(store, context, domain, resolver, expected)?;
-    if vote.identity.chain_id != drain.chain
+    if vote.identity.chain_id != drain.fence.chain
         || vote.identity.protocol_version != expected.protocol_version()
-        || vote.identity.epoch != drain.epoch
+        || vote.identity.epoch != drain.fence.epoch
         || vote.identity.domain != domain
-        || vote.identity.closure_request_id != drain.closure_request_id
-        || vote.identity.closure_height != drain.closure_height
+        || vote.identity.closure_request_id != drain.fence.closure_request_id
+        || vote.identity.closure_height != drain.fence.closure_height
     {
         return Err(DrainSignerError::Invalid(
             "frontier vote disagrees with committed Freeze",
@@ -442,14 +467,15 @@ pub fn ingest_drain_signer_page<S: StructuredDurableDomainStateStore>(
         return Err(DrainSignerError::Invalid("frontier vote signer mismatch"));
     }
     drain
+        .fence
         .validators
         .get(signer)
         .ok_or(DrainSignerError::Invalid("signer not in outgoing set"))?;
     let certifier: FrozenFrontierCertifier = FrozenFrontierCertifier::new(
-        drain.chain.clone(),
+        drain.fence.chain.clone(),
         expected.protocol_version(),
-        drain.epoch,
-        drain.validators.clone(),
+        drain.fence.epoch,
+        drain.fence.validators.clone(),
     )?;
     // Unconditional: a genuinely empty frontier is already "terminal" the
     // moment it is seeded (see below), so without this check up front a
@@ -458,7 +484,8 @@ pub fn ingest_drain_signer_page<S: StructuredDurableDomainStateStore>(
     // progress row as complete.
     certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
 
-    let progress_key: Vec<u8> = drain_signer_progress_key(&drain.chain, drain.epoch, signer)?;
+    let progress_key: Vec<u8> =
+        drain_signer_progress_key(&drain.fence.chain, drain.fence.epoch, signer)?;
     let progress_row: VersionedStateValue =
         store.get_versioned_durable(context, domain, &progress_key)?;
     put_read(
@@ -499,12 +526,12 @@ pub fn ingest_drain_signer_page<S: StructuredDurableDomainStateStore>(
         None => (
             FrozenFrontierAccumulator::new(
                 resolver,
-                drain.chain.clone(),
+                drain.fence.chain.clone(),
                 expected.protocol_version(),
-                drain.epoch,
+                drain.fence.epoch,
                 domain,
-                drain.closure_request_id,
-                drain.closure_height,
+                drain.fence.closure_request_id,
+                drain.fence.closure_height,
             )?
             .into_identity(),
             None,
@@ -626,6 +653,15 @@ pub fn staged_drain_signer_identity<S: StructuredDurableDomainStateStore>(
 /// publication and marker revision this re-verification read. Confirming an
 /// entry that is not the exact next staged one, or confirming when nothing is
 /// staged, fails closed without writing anything.
+///
+/// `expected_request_id` is a stale-driver guard, checked against the exact
+/// next staged identity inside this same fenced read -- never accepted as a
+/// substitute identity. Checking it here, rather than in a separate
+/// unsynchronized pre-read before this call, closes the race where the
+/// staged member changes between a caller's own check and this commit: a
+/// mismatch here fails closed atomically with every other read this
+/// function performs, instead of racing a plain prior read against this
+/// commit.
 pub fn confirm_drain_signer_entry<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
@@ -634,9 +670,11 @@ pub fn confirm_drain_signer_entry<S: StructuredDurableDomainStateStore>(
     history: &[HashSuiteResolver],
     expected: &PublicationContext,
     signer: ValidatorId,
+    expected_request_id: [u8; 32],
 ) -> Result<AvailabilityIdentity, DrainSignerError> {
     let mut drain: DrainContext = fence_drain_context(store, context, domain, resolver, expected)?;
-    let progress_key: Vec<u8> = drain_signer_progress_key(&drain.chain, drain.epoch, signer)?;
+    let progress_key: Vec<u8> =
+        drain_signer_progress_key(&drain.fence.chain, drain.fence.epoch, signer)?;
     let progress_row: VersionedStateValue =
         store.get_versioned_durable(context, domain, &progress_key)?;
     put_read(
@@ -648,9 +686,9 @@ pub fn confirm_drain_signer_entry<S: StructuredDurableDomainStateStore>(
         .value()
         .ok_or(DrainSignerError::NotReady("no staged signer page"))?;
     let mut record: SignerProgressRecord = decode_signer_progress(bytes)?;
-    if record.vote.identity.chain_id != drain.chain
+    if record.vote.identity.chain_id != drain.fence.chain
         || record.vote.identity.protocol_version != expected.protocol_version()
-        || record.vote.identity.epoch != drain.epoch
+        || record.vote.identity.epoch != drain.fence.epoch
         || record.vote.identity.domain != domain
         || record.vote.validator != signer
     {
@@ -674,6 +712,11 @@ pub fn confirm_drain_signer_entry<S: StructuredDurableDomainStateStore>(
         .ok_or(DrainSignerError::NotReady(
             "staged page already fully confirmed",
         ))?;
+    if pending.request_id != expected_request_id {
+        return Err(DrainSignerError::NotReady(
+            "staged member changed since caller's expected request id",
+        ));
+    }
 
     // A same-epoch restore may carry the authenticated proof and artifacts
     // while this host's own possession marker is still pristine; rebuild it
@@ -691,7 +734,7 @@ pub fn confirm_drain_signer_entry<S: StructuredDurableDomainStateStore>(
         resolver,
         history,
         expected,
-        &drain.validators,
+        &drain.fence.validators,
         &pending,
         &mut drain.reads,
     )?;
@@ -725,7 +768,8 @@ pub fn confirm_drain_signer_entry<S: StructuredDurableDomainStateStore>(
     record.staged_page = staged_page;
     record.complete = complete;
 
-    let entry_key: Vec<u8> = drain_signer_entry_key(&drain.chain, drain.epoch, signer, &new_last)?;
+    let entry_key: Vec<u8> =
+        drain_signer_entry_key(&drain.fence.chain, drain.fence.epoch, signer, &new_last)?;
     let entry_row: VersionedStateValue =
         store.get_versioned_durable(context, domain, &entry_key)?;
     let entry_bytes: Vec<u8> = encode_availability_identity(&pending)?;
@@ -926,23 +970,23 @@ fn decode_union_ready(input: &[u8]) -> Result<UnionReadyRecord, DrainSignerError
 /// Verifies that `selected_votes` form an ascending, unique, quorum-weighted
 /// set bound to the exact locally committed Freeze and atomicity domain.
 fn verify_selection(
-    drain: &DrainContext,
+    fence: &DrainFreezeFence,
     expected: &PublicationContext,
     domain: AtomicityDomainId,
     selected_votes: &[FrozenFrontierVote],
 ) -> Result<(), DrainSignerError> {
     let certifier: FrozenFrontierCertifier = FrozenFrontierCertifier::new(
-        drain.chain.clone(),
+        fence.chain.clone(),
         expected.protocol_version(),
-        drain.epoch,
-        drain.validators.clone(),
+        fence.epoch,
+        fence.validators.clone(),
     )?;
     verify_frozen_frontier_quorum(
         &certifier,
         selected_votes,
         domain,
-        drain.closure_request_id,
-        drain.closure_height,
+        fence.closure_request_id,
+        fence.closure_height,
         &FastPathEd25519Verifier,
     )?;
     Ok(())
@@ -969,19 +1013,19 @@ fn selected_pairs(
 /// progress independently rather than colliding.
 fn selection_seed(
     resolver: &HashSuiteResolver,
-    drain: &DrainContext,
+    fence: &DrainFreezeFence,
     expected: &PublicationContext,
     domain: AtomicityDomainId,
     selected_votes: &[FrozenFrontierVote],
 ) -> Result<DrainUnionAccumulator, DrainSignerError> {
     Ok(DrainUnionAccumulator::new(
         resolver,
-        drain.chain.clone(),
+        fence.chain.clone(),
         expected.protocol_version(),
-        drain.epoch,
+        fence.epoch,
         domain,
-        drain.closure_request_id,
-        drain.closure_height,
+        fence.closure_request_id,
+        fence.closure_height,
         &selected_pairs(selected_votes),
     )?)
 }
@@ -999,7 +1043,7 @@ fn require_selected_signers_complete<S: StructuredDurableDomainStateStore>(
 ) -> Result<(), DrainSignerError> {
     for vote in selected_votes {
         let progress_key: Vec<u8> =
-            drain_signer_progress_key(&drain.chain, drain.epoch, vote.validator)?;
+            drain_signer_progress_key(&drain.fence.chain, drain.fence.epoch, vote.validator)?;
         let progress_row: VersionedStateValue =
             store.get_versioned_durable(context, domain, &progress_key)?;
         put_read(&mut drain.reads, progress_key, progress_row.revision())?;
@@ -1039,13 +1083,14 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
     selected_votes: &[FrozenFrontierVote],
 ) -> Result<DrainUnionStep, DrainSignerError> {
     let mut drain: DrainContext = fence_drain_context(store, context, domain, resolver, expected)?;
-    verify_selection(&drain, expected, domain, selected_votes)?;
+    verify_selection(&drain.fence, expected, domain, selected_votes)?;
     require_selected_signers_complete(store, context, domain, &mut drain, selected_votes)?;
     let seed: DrainUnionAccumulator =
-        selection_seed(resolver, &drain, expected, domain, selected_votes)?;
+        selection_seed(resolver, &drain.fence, expected, domain, selected_votes)?;
     let selection_digest: Digest32 = seed.identity().entries_digest;
 
-    let ready_key: Vec<u8> = drain_union_ready_key(&drain.chain, drain.epoch, &selection_digest)?;
+    let ready_key: Vec<u8> =
+        drain_union_ready_key(&drain.fence.chain, drain.fence.epoch, &selection_digest)?;
     let ready_row: VersionedStateValue =
         store.get_versioned_durable(context, domain, &ready_key)?;
     put_read(&mut drain.reads, ready_key.clone(), ready_row.revision())?;
@@ -1053,12 +1098,12 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
         let ready: UnionReadyRecord = decode_union_ready(bytes)?;
         if ready.selection_digest != selection_digest
             || ready.selected_votes != selected_votes
-            || ready.identity.chain_id != drain.chain
+            || ready.identity.chain_id != drain.fence.chain
             || ready.identity.protocol_version != expected.protocol_version()
-            || ready.identity.epoch != drain.epoch
+            || ready.identity.epoch != drain.fence.epoch
             || ready.identity.domain != domain
-            || ready.identity.closure_request_id != drain.closure_request_id
-            || ready.identity.closure_height != drain.closure_height
+            || ready.identity.closure_request_id != drain.fence.closure_request_id
+            || ready.identity.closure_height != drain.fence.closure_height
         {
             return Err(DrainSignerError::Invalid(
                 "drain union ready disagrees with selection",
@@ -1071,7 +1116,7 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
     }
 
     let progress_key: Vec<u8> =
-        drain_union_progress_key(&drain.chain, drain.epoch, &selection_digest)?;
+        drain_union_progress_key(&drain.fence.chain, drain.fence.epoch, &selection_digest)?;
     let progress_row: VersionedStateValue =
         store.get_versioned_durable(context, domain, &progress_key)?;
     put_read(
@@ -1084,12 +1129,12 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
             let record: UnionProgressRecord = decode_union_progress(bytes)?;
             if record.selection_digest != selection_digest
                 || record.selected_votes != selected_votes
-                || record.identity.chain_id != drain.chain
+                || record.identity.chain_id != drain.fence.chain
                 || record.identity.protocol_version != expected.protocol_version()
-                || record.identity.epoch != drain.epoch
+                || record.identity.epoch != drain.fence.epoch
                 || record.identity.domain != domain
-                || record.identity.closure_request_id != drain.closure_request_id
-                || record.identity.closure_height != drain.closure_height
+                || record.identity.closure_request_id != drain.fence.closure_request_id
+                || record.identity.closure_height != drain.fence.closure_height
             {
                 return Err(DrainSignerError::Invalid(
                     "drain union progress disagrees with selection or Freeze",
@@ -1118,9 +1163,12 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
     // for a cross-signer identity conflict before ever folding one in.
     let mut candidates: Vec<AvailabilityIdentity> = Vec::with_capacity(selected_signers.len());
     for signer in &selected_signers {
-        let entry_prefix: Vec<u8> = drain_signer_entry_prefix(&drain.chain, drain.epoch, *signer)?;
+        let entry_prefix: Vec<u8> =
+            drain_signer_entry_prefix(&drain.fence.chain, drain.fence.epoch, *signer)?;
         let after_key: Vec<u8> = match accumulator.last_request_id() {
-            Some(last) => drain_signer_entry_key(&drain.chain, drain.epoch, *signer, &last)?,
+            Some(last) => {
+                drain_signer_entry_key(&drain.fence.chain, drain.fence.epoch, *signer, &last)?
+            }
             None => entry_prefix.clone(),
         };
         let one: NonZeroUsize = NonZeroUsize::new(1)
@@ -1181,7 +1229,7 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
                 resolver,
                 history,
                 expected,
-                &drain.validators,
+                &drain.fence.validators,
                 &identity,
                 &mut drain.reads,
             )?;
@@ -1230,26 +1278,39 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
 
 /// Read-only re-verification of the immutable local DrainSet-ready marker
 /// against the exact currently committed Freeze and a fresh quorum check of
-/// `selected_votes`. This never re-scans every retained proof: it trusts the
-/// marker's own CAS-committed history, exactly like every other local
-/// progress/final row in this crate. A pristine (never written) marker
-/// refuses as not-ready; a tombstoned one fails closed instead.
-pub fn verify_drain_ready<S: StructuredDurableDomainStateStore>(
+/// `selected_votes`, folding every read into the caller-owned `reads` CAS
+/// read set instead of a fresh, standalone one. This never re-scans every
+/// retained proof: it trusts the marker's own CAS-committed history, exactly
+/// like every other local progress/final row in this crate. A pristine
+/// (never written) marker refuses as not-ready; a tombstoned one fails closed
+/// instead.
+///
+/// This is the variant DrainSet voting must use: folding this readiness
+/// check's reads into the vote's own atomic commit means the vote is
+/// rejected, not merely observed as stale, if the local ready marker or any
+/// of its Freeze/epoch/set prerequisites changes between this check and the
+/// vote's own commit -- the same CAS-fencing discipline every other read in
+/// this module already gets, rather than a plain read trusted at a distance.
+/// See [`verify_drain_ready`] for a caller with no CAS read set of its own.
+pub fn verify_drain_ready_into<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     resolver: &HashSuiteResolver,
     expected: &PublicationContext,
     selected_votes: &[FrozenFrontierVote],
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<DrainUnionIdentity, DrainSignerError> {
-    let drain: DrainContext = fence_drain_context(store, context, domain, resolver, expected)?;
-    verify_selection(&drain, expected, domain, selected_votes)?;
+    let fence: DrainFreezeFence =
+        fence_drain_context_into(store, context, domain, resolver, expected, reads)?;
+    verify_selection(&fence, expected, domain, selected_votes)?;
     let seed: DrainUnionAccumulator =
-        selection_seed(resolver, &drain, expected, domain, selected_votes)?;
+        selection_seed(resolver, &fence, expected, domain, selected_votes)?;
     let selection_digest: Digest32 = seed.identity().entries_digest;
-    let ready_key: Vec<u8> = drain_union_ready_key(&drain.chain, drain.epoch, &selection_digest)?;
+    let ready_key: Vec<u8> = drain_union_ready_key(&fence.chain, fence.epoch, &selection_digest)?;
     let ready_row: VersionedStateValue =
         store.get_versioned_durable(context, domain, &ready_key)?;
+    put_read(reads, ready_key, ready_row.revision())?;
     let bytes: &[u8] = match ready_row.value() {
         Some(value) => value,
         None if ready_row.revision() == StateRevision::INITIAL => {
@@ -1260,18 +1321,40 @@ pub fn verify_drain_ready<S: StructuredDurableDomainStateStore>(
     let ready: UnionReadyRecord = decode_union_ready(bytes)?;
     if ready.selection_digest != selection_digest
         || ready.selected_votes != selected_votes
-        || ready.identity.chain_id != drain.chain
+        || ready.identity.chain_id != fence.chain
         || ready.identity.protocol_version != expected.protocol_version()
-        || ready.identity.epoch != drain.epoch
+        || ready.identity.epoch != fence.epoch
         || ready.identity.domain != domain
-        || ready.identity.closure_request_id != drain.closure_request_id
-        || ready.identity.closure_height != drain.closure_height
+        || ready.identity.closure_request_id != fence.closure_request_id
+        || ready.identity.closure_height != fence.closure_height
     {
         return Err(DrainSignerError::Invalid(
             "drain union ready disagrees with selection",
         ));
     }
     Ok(ready.identity)
+}
+
+/// Same check as [`verify_drain_ready_into`], for a caller with no CAS read
+/// set of its own; every read is folded into a fresh one and discarded.
+pub fn verify_drain_ready<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+    selected_votes: &[FrozenFrontierVote],
+) -> Result<DrainUnionIdentity, DrainSignerError> {
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    verify_drain_ready_into(
+        store,
+        context,
+        domain,
+        resolver,
+        expected,
+        selected_votes,
+        &mut reads,
+    )
 }
 
 #[cfg(test)]

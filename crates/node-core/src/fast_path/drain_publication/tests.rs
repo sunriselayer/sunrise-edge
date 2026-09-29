@@ -56,6 +56,37 @@ fn import(
     )
 }
 
+/// Writes the exact `drain-publication/`+`drain-publication-artifact/` rows
+/// [`retain_drain_publication`] would have written, but deliberately leaves
+/// the `drain-possession/` marker key completely untouched (pristine,
+/// `StateRevision::INITIAL`) -- simulating a same-epoch restore that carried
+/// the authenticated proof/artifact history without importing the local
+/// marker.
+fn stage_proof_without_marker(
+    replica: &RetentionReplica,
+    bundle: &PublicationBundle,
+    identity: &AvailabilityIdentity,
+) {
+    let chain: ChainId = protocol().chain_id().clone();
+    let epoch: Epoch = protocol().epoch();
+    let record: FastPathPublicationRecord = FastPathPublicationRecord {
+        context: protocol(),
+        request_id: bundle.request_id,
+        identity: encode_availability_identity(identity).unwrap(),
+        signed_intent: bundle.signed_intent.clone(),
+        certificate: encode_fast_certificate(&bundle.certificate).unwrap(),
+        witness: bundle.witness.clone(),
+        manifest: encode_artifact_manifest(&bundle.manifest).unwrap(),
+    };
+    for (entry, content) in bundle.manifest.entries.iter().zip(bundle.contents.iter()) {
+        let key: Vec<u8> =
+            drain_publication_artifact_key(&chain, epoch, &bundle.request_id, entry).unwrap();
+        replica.put_row(key, content.clone());
+    }
+    let key: Vec<u8> = drain_publication_key(&chain, epoch, &bundle.request_id).unwrap();
+    replica.put_row(key, encode_fastpath_publication_record(&record).unwrap());
+}
+
 fn closure_key() -> Vec<u8> {
     crate::ordered_economics::admission_closure_key(protocol().chain_id(), protocol().epoch())
         .unwrap()
@@ -538,10 +569,12 @@ fn same_request_conflicting_identity_and_missing_marker_refuse_without_repair() 
     let marker_key: Vec<u8> =
         drain_possession_key(protocol().chain_id(), protocol().epoch(), &[REQUEST; 32]).unwrap();
     delete_row(&replica, marker_key);
+    // A genuinely tombstoned marker (as opposed to a pristine, never-written
+    // one) must still fail closed rather than being silently rebuilt.
     assert!(matches!(
         import(&replica, &bundle, &expected_identity),
         Err(PublicationRetentionError::InconsistentRetainedRecord(
-            "drain possession marker or retained proof"
+            "drain possession marker is tombstoned"
         ))
     ));
     assert!(
@@ -555,6 +588,39 @@ fn same_request_conflicting_identity_and_missing_marker_refuse_without_repair() 
             &expected_identity,
         )
         .is_err()
+    );
+}
+
+/// A same-epoch restore may carry the authenticated `drain-publication/`
+/// and `drain-publication-artifact/` history while this host's own local
+/// `drain-possession/` marker was never written (pristine, as opposed to
+/// tombstoned). An exact retry must independently re-verify the complete
+/// saved proof and every artifact against the caller's staged identity, then
+/// safely rebuild the marker atomically with that re-verification.
+#[test]
+fn import_rebuilds_a_pristine_missing_marker_after_a_same_epoch_restore() {
+    let (bundle, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    let expected_identity: AvailabilityIdentity = identity(&bundle);
+    let replica: RetentionReplica = logical_replica();
+    close(&replica);
+    stage_proof_without_marker(&replica, &bundle, &expected_identity);
+    let marker_key: Vec<u8> =
+        drain_possession_key(protocol().chain_id(), protocol().epoch(), &[REQUEST; 32]).unwrap();
+    assert!(replica.row(&marker_key).is_none());
+
+    assert_eq!(
+        import(&replica, &bundle, &expected_identity).unwrap(),
+        expected_identity
+    );
+    assert_eq!(
+        replica.row(&marker_key),
+        Some(encode_availability_identity(&expected_identity).unwrap())
+    );
+
+    // A further exact retry now takes the ordinary already-retained path.
+    assert_eq!(
+        import(&replica, &bundle, &expected_identity).unwrap(),
+        expected_identity
     );
 }
 

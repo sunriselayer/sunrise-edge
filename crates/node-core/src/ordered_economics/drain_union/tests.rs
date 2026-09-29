@@ -283,8 +283,38 @@ fn ingest_confirm_and_import_round_trip_across_two_pages_and_reject_replay_and_g
             &[],
             &protocol(),
             signer.validator_id(),
+            id1.request_id,
         )
         .is_err()
+    );
+    // A caller expecting a different request id than the exact next staged
+    // one is refused before any proof/possession re-verification, and
+    // nothing is committed.
+    let mut wrong_request_id: [u8; 32] = id1.request_id;
+    wrong_request_id[0] ^= 1;
+    let progress_key: Vec<u8> = drain_signer_progress_key(
+        protocol().chain_id(),
+        protocol().epoch(),
+        signer.validator_id(),
+    )
+    .unwrap();
+    let before_wrong_expectation: Vec<u8> = replica.row(&progress_key).unwrap();
+    assert!(
+        confirm_drain_signer_entry(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            signer.validator_id(),
+            wrong_request_id,
+        )
+        .is_err()
+    );
+    assert_eq!(
+        replica.row(&progress_key).unwrap(),
+        before_wrong_expectation
     );
     assert_eq!(
         import_staged_drain_publication(
@@ -309,6 +339,7 @@ fn ingest_confirm_and_import_round_trip_across_two_pages_and_reject_replay_and_g
             &[],
             &protocol(),
             signer.validator_id(),
+            id1.request_id,
         )
         .unwrap(),
         id1
@@ -324,6 +355,7 @@ fn ingest_confirm_and_import_round_trip_across_two_pages_and_reject_replay_and_g
             &[],
             &protocol(),
             signer.validator_id(),
+            id1.request_id,
         )
         .is_err()
     );
@@ -359,6 +391,7 @@ fn ingest_confirm_and_import_round_trip_across_two_pages_and_reject_replay_and_g
             &[],
             &protocol(),
             signer.validator_id(),
+            id2.request_id,
         )
         .unwrap(),
         id2
@@ -387,6 +420,7 @@ fn ingest_confirm_and_import_round_trip_across_two_pages_and_reject_replay_and_g
             &[],
             &protocol(),
             signer.validator_id(),
+            id2.request_id,
         )
         .is_err()
     );
@@ -483,6 +517,7 @@ fn confirm_fails_closed_on_missing_and_tombstoned_proof_and_marker() {
             &[],
             &protocol(),
             signer.validator_id(),
+            id1.request_id,
         )
         .is_err()
     );
@@ -505,6 +540,7 @@ fn confirm_fails_closed_on_missing_and_tombstoned_proof_and_marker() {
             &[],
             &protocol(),
             signer.validator_id(),
+            id1.request_id,
         )
         .is_err()
     );
@@ -547,6 +583,7 @@ fn empty_frontier_completes_on_ingest_without_any_confirmation() {
             &[],
             &protocol(),
             signer.validator_id(),
+            [0xAB; 32],
         )
         .is_err()
     );
@@ -592,7 +629,8 @@ fn complete_signer(
                 &resolver(),
                 &[],
                 &protocol(),
-                signer.validator_id()
+                signer.validator_id(),
+                id.request_id,
             )
             .unwrap(),
             *id
@@ -698,6 +736,54 @@ fn union_dedupes_shared_entries_reaches_ready_and_replays_exactly() {
     .unwrap();
     assert_eq!(verified, ready_identity);
 
+    // The CAS-read variant folds every read into a caller-owned set instead
+    // of a fresh, standalone one -- exactly what DrainSet voting needs to
+    // commit its own vote atomically together with this readiness check.
+    let mut folded_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let verified_into: DrainUnionIdentity = verify_drain_ready_into(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &protocol(),
+        &selected,
+        &mut folded_reads,
+    )
+    .unwrap();
+    assert_eq!(verified_into, ready_identity);
+    assert!(!folded_reads.is_empty());
+
+    // A caller whose own read set already pins a stale revision for one of
+    // these same keys is refused atomically, exactly like any other CAS
+    // conflict in this module -- it never silently observes a newer,
+    // inconsistent snapshot for the rest of its own commit.
+    let (repeated_key, fresh_revision): (Vec<u8>, StateRevision) = folded_reads
+        .iter()
+        .next()
+        .map(|(k, v)| (k.clone(), *v))
+        .unwrap();
+    let mut stale_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    stale_reads.insert(
+        repeated_key,
+        StateRevision::new(fresh_revision.get().wrapping_add(1)),
+    );
+    let stale_result = verify_drain_ready_into(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &protocol(),
+        &selected,
+        &mut stale_reads,
+    );
+    assert!(
+        stale_result
+            .unwrap_err()
+            .to_string()
+            .contains("state changed"),
+        "a pre-seeded stale revision for a key this check re-reads must fail as a state conflict"
+    );
+
     // A changed selection disagrees with the committed ready marker.
     let changed_selection: Vec<FrozenFrontierVote> = selected[..2].to_vec();
     assert!(
@@ -721,9 +807,13 @@ fn union_dedupes_shared_entries_reaches_ready_and_replays_exactly() {
     )
     .unwrap();
     let seed: DrainUnionAccumulator =
-        selection_seed(&resolver(), &drain, &protocol(), domain(), &selected).unwrap();
-    let ready_key: Vec<u8> =
-        drain_union_ready_key(&drain.chain, drain.epoch, &seed.identity().entries_digest).unwrap();
+        selection_seed(&resolver(), &drain.fence, &protocol(), domain(), &selected).unwrap();
+    let ready_key: Vec<u8> = drain_union_ready_key(
+        &drain.fence.chain,
+        drain.fence.epoch,
+        &seed.identity().entries_digest,
+    )
+    .unwrap();
     delete_row(&replica.store, ready_key);
     assert!(matches!(
         verify_drain_ready(
@@ -925,6 +1015,7 @@ fn crash_between_import_and_confirm_leaves_only_a_harmless_extra_proof() {
             &[],
             &protocol(),
             signer.validator_id(),
+            id1.request_id,
         )
         .unwrap(),
         id1
@@ -1101,6 +1192,7 @@ fn confirm_rebuilds_a_pristine_missing_marker_after_a_same_epoch_restore() {
             &[],
             &protocol(),
             signer.validator_id(),
+            id1.request_id,
         )
         .unwrap(),
         id1
@@ -1147,6 +1239,7 @@ fn confirm_refuses_to_rebuild_a_tombstoned_marker() {
             &[],
             &protocol(),
             signer.validator_id(),
+            id1.request_id,
         )
         .is_err()
     );
