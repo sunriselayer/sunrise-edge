@@ -45,13 +45,21 @@
 //! A signed-genesis minimum height and a committed-eligibility check now
 //! warrant `Freeze` before proposal/vote and at ordered execution; successful
 //! `Freeze` closes admission for ordinary and ordered business mutations and
-//! fresh publication-retention ACKs. This is still only one part of
-//! DR-0154. `DrainSet`, `Seal`, verified next-set readiness and activation,
-//! and retirement of the older standalone epoch-transition route must be
-//! integrated before this path can be enabled as a complete handoff.
+//! fresh publication-retention ACKs. `DrainSet` is now integrated as a
+//! second closed-admission control command ([`drain_set`]): before honest
+//! proposal/vote it locally re-verifies exact drain-union readiness via
+//! [`drain_union::verify_drain_ready_into`] and folds every resulting
+//! revision assertion into the same durable commit as the signed
+//! proposal/vote; at committed execution it re-verifies readiness through the
+//! staging store and installs the one-per-epoch immutable
+//! [`drain_set::DrainSetRecord`]. This is still only one part of DR-0154.
+//! `Seal`, verified next-set readiness and activation, and retirement of the
+//! older standalone epoch-transition route must be integrated before this
+//! path can be enabled as a complete handoff.
 use super::*;
 
 mod candidate;
+mod drain_set;
 mod drain_union;
 pub(crate) mod engine;
 mod evidence_submission;
@@ -66,6 +74,10 @@ mod staging;
 pub use candidate::{
     MAX_ORDERED_CANDIDATE_INTENT_BYTES, OrderedCandidate, OrderedOperationKind,
     decode_ordered_candidate, encode_ordered_candidate,
+};
+pub use drain_set::{
+    DrainSetIntent, DrainSetRecord, decode_drain_set_intent, decode_drain_set_record,
+    encode_drain_set_intent, encode_drain_set_record,
 };
 pub use drain_union::{
     DrainSignerError, DrainSignerProgress, DrainUnionStep, MAX_DRAIN_SIGNER_PAGE_ENTRIES,
@@ -153,6 +165,20 @@ pub enum OrderedRefusal {
     /// The advisory next set was structurally valid, but a healthy committed
     /// bond or resource policy no longer makes one of its members eligible.
     IneligibleNextSet,
+    /// DR-0154/DR-0157: a `DrainSet` candidate committed before any `Freeze`
+    /// was committed for this epoch. Symmetric with [`Self::ClosedEpoch`]:
+    /// every replica decides this identically from the same absent closure
+    /// row.
+    NoFreeze,
+    /// DR-0154/DR-0157: a second `DrainSet` candidate committed after this
+    /// epoch's one-per-epoch immutable [`super::drain_set::DrainSetRecord`]
+    /// was already installed. There is no re-selection in this profile.
+    AlreadyDrained,
+    /// DR-0154/DR-0157: the committed `DrainSet` candidate's declared
+    /// [`consensus::DrainUnionIdentity`] disagrees with this replica's own
+    /// independently reconstructed, quorum-verified local ready union for the
+    /// exact same selected-signer roster and committed Freeze.
+    ForeignDrainSet,
 }
 
 impl OrderedRefusal {
@@ -170,6 +196,9 @@ impl OrderedRefusal {
             Self::AlreadyFrozen => 9,
             Self::PrematureFreeze => 10,
             Self::IneligibleNextSet => 11,
+            Self::NoFreeze => 12,
+            Self::AlreadyDrained => 13,
+            Self::ForeignDrainSet => 14,
         }
     }
 
@@ -186,6 +215,9 @@ impl OrderedRefusal {
             9 => Ok(Self::AlreadyFrozen),
             10 => Ok(Self::PrematureFreeze),
             11 => Ok(Self::IneligibleNextSet),
+            12 => Ok(Self::NoFreeze),
+            13 => Ok(Self::AlreadyDrained),
+            14 => Ok(Self::ForeignDrainSet),
             _ => Err(NodeCoreError::PersistenceInvariant(
                 "unknown ordered refusal tag",
             )),
@@ -211,6 +243,11 @@ impl OrderedRefusal {
             Self::AlreadyFrozen => "admission is already closed by an earlier committed freeze",
             Self::PrematureFreeze => "freeze precedes the signed epoch-end minimum height",
             Self::IneligibleNextSet => "freeze advisory next set is no longer eligible",
+            Self::NoFreeze => "drain set committed before any freeze was committed",
+            Self::AlreadyDrained => "drain set already committed for this epoch",
+            Self::ForeignDrainSet => {
+                "drain set union identity disagrees with the local ready union"
+            }
         }
     }
 }

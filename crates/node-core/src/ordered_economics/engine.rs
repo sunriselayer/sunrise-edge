@@ -1107,6 +1107,18 @@ fn execute_candidate<S: StructuredDurableDomainStateStore>(
             candidate.request_id,
             node_failure,
         ),
+        OrderedOperationKind::DrainSet => dispatch(
+            drain_set::handle_drain_set_ordered(
+                staging,
+                context,
+                domain,
+                env.policy.context().chain_id(),
+                candidate,
+                block_height,
+            ),
+            candidate.request_id,
+            node_failure,
+        ),
     }
 }
 
@@ -1226,6 +1238,16 @@ fn execute_evidence_candidate<S: StructuredDurableDomainStateStore>(
 struct AdmittedCandidate {
     digest: Digest32,
     writes: Vec<PendingWrite>,
+    /// Pure CAS read assertions with no accompanying mutation, folded into
+    /// the same commit as `writes`. DR-0157's pre-vote DrainSet readiness
+    /// re-verification ([`admit_candidate_for_signer`]) is the only current
+    /// contributor: every row
+    /// [`drain_set::require_drain_set_readiness`]/[`drain_union::verify_drain_ready_into`]
+    /// observed must be asserted in the *same* durable commit that records
+    /// the signed proposal/vote, so a local ready marker or any of its
+    /// Freeze/epoch/set prerequisites moving afterward rejects that commit
+    /// instead of silently exposing a signature over stale readiness.
+    reads: BTreeMap<Vec<u8>, StateRevision>,
 }
 
 /// What reconciling one candidate against retained order state concluded.
@@ -1340,7 +1362,11 @@ fn admit_candidate<S: StructuredDurableDomainStateStore>(
             store, context, env, candidate, &plan,
         )?);
     }
-    Ok(Admission::Fresh(AdmittedCandidate { digest, writes }))
+    Ok(Admission::Fresh(AdmittedCandidate {
+        digest,
+        writes,
+        reads: BTreeMap::new(),
+    }))
 }
 
 /// Reconciles one candidate for a **signing** caller: a completed request is
@@ -1353,39 +1379,67 @@ fn admit_candidate_for_signer<S: StructuredDurableDomainStateStore>(
     candidate: &OrderedCandidate,
     proposal_height: u64,
 ) -> Result<AdmittedCandidate, OrderedEconomicsError> {
-    // DR-0154 liveness gate, additive to (not a substitute for) `preflight`'s
-    // own authoritative closed-epoch refusal at commit time: an honest
-    // leader/replica never even places or votes for a *fresh* business
+    // DR-0154/DR-0157 liveness gate, additive to (not a substitute for)
+    // `preflight`'s own authoritative closed-epoch refusal at commit time: an
+    // honest leader/replica never even places or votes for a *fresh* business
     // candidate once a `Freeze` has committed, "Stop new ... construction of
     // fresh economic candidates" / "an honest replica emits no fresh vote for
-    // a proposal whose own payload carries business." A `Freeze` candidate
-    // itself is exempt -- a second one is still admissible here and resolves
-    // to `AlreadyFrozen` at preflight. This check is deliberately confined to
-    // this signer-only entry point (`propose`/`process_proposal`), never
-    // `observe_proposal`'s plain `admit_candidate(..., reserve: false)` call:
-    // declared, signerless recovery must still be able to record and replay
-    // an authentic pre-freeze business proposal's bytes during catch-up, so
-    // its own already-justified inherited suffix can reach the deterministic
+    // a proposal whose own payload carries business." `Freeze` and `DrainSet`
+    // are both exempt from this business-only gate: a second `Freeze` is
+    // still admissible here and resolves to `AlreadyFrozen` at preflight, and
+    // `DrainSet` is admissible here *only* once `Freeze` has committed --
+    // exactly the positive `{Freeze, DrainSet}` allowlist
+    // `preflight::require_admission_open` enforces authoritatively. This
+    // check is deliberately confined to this signer-only entry point
+    // (`propose`/`process_proposal`), never `observe_proposal`'s plain
+    // `admit_candidate(..., reserve: false)` call: declared, signerless
+    // recovery must still be able to record and replay an authentic
+    // pre-freeze business proposal's bytes during catch-up, so its own
+    // already-justified inherited suffix can reach the deterministic
     // closed-epoch refusal at commit time instead of never being recorded at
     // all. This check is not itself CAS-fenced (a race is caught at commit
     // time by `preflight`'s own staged read), so a caller does not need this
     // exact row's revision recorded to get a safe answer.
-    if candidate.kind != OrderedOperationKind::Freeze
-        && freeze::read_admission_closure(
-            store,
-            context,
-            env.policy.domain(),
-            env.policy.context().chain_id(),
-            env.policy.context().epoch(),
-        )?
-        .is_some()
+    if !matches!(
+        candidate.kind,
+        OrderedOperationKind::Freeze | OrderedOperationKind::DrainSet
+    ) && freeze::read_admission_closure(
+        store,
+        context,
+        env.policy.domain(),
+        env.policy.context().chain_id(),
+        env.policy.context().epoch(),
+    )?
+    .is_some()
     {
         return Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch));
     }
     match admit_candidate(store, context, env, candidate, true)? {
-        Admission::Fresh(admitted) => {
+        Admission::Fresh(mut admitted) => {
             if candidate.kind == OrderedOperationKind::Freeze {
                 freeze::require_freeze_warrant(store, context, env, candidate, proposal_height)?;
+            }
+            // DR-0157: before this replica ever exposes a leader proposal or
+            // a vote for a `DrainSet` candidate, it must re-verify its own
+            // exact local readiness for the candidate's declared selection
+            // and union identity. Every row this reads is folded into
+            // `admitted.reads`, which `propose`/`finalize_event` then commit
+            // atomically with the signed proposal/vote record itself -- a
+            // race that moves the local ready marker or any of its
+            // Freeze/epoch/set prerequisites between this check and that
+            // commit is rejected by CAS rather than silently exposing a
+            // signature over stale readiness. Missing local readiness
+            // surfaces as `OrderedEconomicsError::Prerequisite`, stopping
+            // this proposal/vote attempt entirely -- never a committed
+            // refusal.
+            if candidate.kind == OrderedOperationKind::DrainSet {
+                drain_set::require_drain_set_readiness(
+                    store,
+                    context,
+                    env,
+                    candidate,
+                    &mut admitted.reads,
+                )?;
             }
             Ok(admitted)
         }
@@ -1468,6 +1522,9 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
     if let Some(admitted) = &admitted {
         for write in &admitted.writes {
             writes.apply(write.clone())?;
+        }
+        for (key, revision) in &admitted.reads {
+            writes.read(key.clone(), *revision)?;
         }
     }
 
@@ -1958,9 +2015,13 @@ where
         for write in &admitted.writes {
             writes.apply(write.clone())?;
         }
+        for (key, revision) in &admitted.reads {
+            writes.read(key.clone(), *revision)?;
+        }
     }
     // `propose` applies no consensus event, so it commits only the leader
-    // identity, candidate/header bookkeeping and reservations -- atomically.
+    // identity, candidate/header bookkeeping, reservations and any DrainSet
+    // readiness read assertions -- atomically.
     if let outcome @ (DurableCommitOutcome::Rejected(_) | DurableCommitOutcome::Indeterminate(_)) =
         store.commit_durable(
             context,
@@ -2147,6 +2208,7 @@ pub fn observe_proposal<S: StructuredDurableDomainStateStore>(
                 Admission::Completed(_) => AdmittedCandidate {
                     digest: env.policy.candidate_digest(candidate)?,
                     writes: Vec::new(),
+                    reads: BTreeMap::new(),
                 },
             };
             if !proposal.proposal.transactions.contains(&admitted.digest) {

@@ -16,7 +16,10 @@ use bond_lifecycle::{
     bond_lifecycle_signing_frame, decode_signed_bond_lifecycle_intent,
 };
 use canonical_encoding::encode_digest32;
-use consensus::{ChainedHotStuff, ConsensusError, ConsensusParameters, ConsensusVerifier};
+use consensus::{
+    ChainedHotStuff, ConsensusError, ConsensusParameters, ConsensusVerifier,
+    FrozenFrontierCertifier, verify_frozen_frontier_quorum,
+};
 use crypto::{
     Ed25519OwnerAddressPolicy, Ed25519Verifier, SignatureVerifier, validate_ed25519_owner_address,
 };
@@ -531,6 +534,7 @@ fn authenticate_with_policy(
         OrderedOperationKind::BondSlash => authenticate_bond_slash(env, candidate),
         OrderedOperationKind::Evidence => authenticate_evidence(env, candidate),
         OrderedOperationKind::Freeze => authenticate_freeze(env, candidate),
+        OrderedOperationKind::DrainSet => authenticate_drain_set(env, candidate),
     }
 }
 
@@ -553,6 +557,54 @@ fn authenticate_freeze(
             "freeze candidate context or request id mismatch",
         ));
     }
+    Ok(())
+}
+
+/// Purely validates the DrainSet candidate's own bytes: its structural
+/// self-consistency (checked by [`super::drain_set::decode_drain_set_intent`]
+/// itself), its binding to the candidate's own context/request id, and the
+/// pinned outgoing quorum's own signatures and voting power over
+/// `intent.selected_votes` -- with zero storage reads. Every registered
+/// signer's key and voting power come from the pinned profile's own loaded
+/// [`validator_set::ValidatorSet`], never a storage read; this is exactly why
+/// [`FrozenFrontierCertifier`] and [`verify_frozen_frontier_quorum`] are
+/// stateless.
+///
+/// Whether this replica's own local drain-union reconstruction actually
+/// matches `intent.drain_union_identity` -- and whether `intent`'s declared
+/// committed-Freeze binding matches the *actually* committed one -- can only
+/// be proven through durable storage; see
+/// [`super::drain_set::require_drain_set_readiness`] and
+/// [`super::drain_set::preflight_drain_set`].
+fn authenticate_drain_set(
+    env: &CandidateAuthentication<'_>,
+    candidate: &OrderedCandidate,
+) -> Result<(), OrderedEconomicsError> {
+    let intent = super::drain_set::decode_drain_set_intent(&candidate.intent).map_err(|_| {
+        OrderedEconomicsError::Unauthenticated("invalid drain set candidate intent")
+    })?;
+    if intent.context != candidate.context || intent.request_id != candidate.request_id {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "drain set candidate context or request id mismatch",
+        ));
+    }
+    let identity = &intent.drain_union_identity;
+    let certifier: FrozenFrontierCertifier = FrozenFrontierCertifier::new(
+        env.policy.context().chain_id().clone(),
+        env.policy.context().protocol_version(),
+        env.policy.context().epoch(),
+        env.policy.engine().validator_set().clone(),
+    )
+    .map_err(|_| OrderedEconomicsError::Unauthenticated("drain set certifier context"))?;
+    verify_frozen_frontier_quorum(
+        &certifier,
+        &intent.selected_votes,
+        env.policy.domain(),
+        identity.closure_request_id,
+        identity.closure_height,
+        &Ed25519ConsensusVerifier,
+    )
+    .map_err(|_| OrderedEconomicsError::Unauthenticated("drain set frontier quorum"))?;
     Ok(())
 }
 

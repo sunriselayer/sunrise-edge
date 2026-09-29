@@ -1094,6 +1094,299 @@ fn freeze_at_the_first_eligible_economic_height_closes_on_all_four_replicas() {
 }
 
 #[test]
+fn ordered_drain_set_requires_local_readiness_then_commits_once_on_four_replicas() {
+    let network: Network = setup_with_freeze_height(1);
+    network.install_ordered();
+    let freeze: OrderedCandidate = freeze_candidate([0xA1; 32]);
+    network.round(1, Some(&freeze));
+    network.round(2, None);
+    network.round(3, None);
+
+    let expected: PublicationContext = fixture::protocol();
+    let mut selected: Vec<(consensus::FrozenFrontierVote, consensus::FrozenFrontierPage)> =
+        Vec::new();
+    for source in 0..3 {
+        let step: FrozenFrontierStep = advance_frozen_frontier(
+            &network.stores[source],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            &network.signers[source],
+        )
+        .unwrap();
+        assert!(matches!(step, FrozenFrontierStep::Finalized(_)));
+        let pair: (consensus::FrozenFrontierVote, consensus::FrozenFrontierPage) =
+            read_frozen_frontier_page(
+                &network.stores[source],
+                &network.context,
+                network.domain(),
+                &network.resolver,
+                &network.history,
+                &expected,
+                network.signers[source].validator_id(),
+                None,
+                std::num::NonZeroUsize::new(1).unwrap(),
+            )
+            .unwrap();
+        assert!(pair.1.terminal && pair.1.entries.is_empty());
+        selected.push(pair);
+    }
+    selected.sort_by_key(|pair| pair.0.validator);
+    let votes: Vec<consensus::FrozenFrontierVote> =
+        selected.iter().map(|pair| pair.0.clone()).collect();
+
+    // Leave one non-leader without its selection-scoped union marker. The
+    // leader can propose, but the lagging replica must neither vote nor
+    // produce a deterministic global refusal from its local storage lag.
+    let leader: usize = network.leader_index(4);
+    let lagging: usize = (0..REPLICAS).find(|&replica| replica != leader).unwrap();
+    let mut ready: Option<consensus::DrainUnionIdentity> = None;
+    for replica in (0..REPLICAS).filter(|&replica| replica != lagging) {
+        for (vote, page) in &selected {
+            ingest_drain_signer_page(
+                &network.stores[replica],
+                &network.context,
+                network.domain(),
+                &network.resolver,
+                &expected,
+                vote.validator,
+                vote.clone(),
+                page.clone(),
+            )
+            .unwrap();
+        }
+        let identity: consensus::DrainUnionIdentity = match advance_drain_union(
+            &network.stores[replica],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            &votes,
+        )
+        .unwrap()
+        {
+            DrainUnionStep::Ready(identity) => *identity,
+            DrainUnionStep::Advanced { .. } => panic!("empty frontier union must finish"),
+        };
+        if let Some(previous) = &ready {
+            assert_eq!(&identity, previous);
+        } else {
+            ready = Some(identity);
+        }
+    }
+    let identity: consensus::DrainUnionIdentity = ready.unwrap();
+    let intent: DrainSetIntent = DrainSetIntent {
+        context: expected.clone(),
+        request_id: [0xA2; 32],
+        selected_votes: votes.clone(),
+        drain_union_identity: identity.clone(),
+    };
+    let candidate: OrderedCandidate = OrderedCandidate {
+        context: expected.clone(),
+        request_id: intent.request_id,
+        kind: OrderedOperationKind::DrainSet,
+        intent: encode_drain_set_intent(&intent).unwrap(),
+        created_checkpoint: 12,
+    };
+    assert!(authenticate_candidate(&network.env(), &candidate).is_ok());
+    let mut forged_intent: DrainSetIntent = intent.clone();
+    forged_intent.selected_votes[0].signature[0] ^= 1;
+    let mut forged: OrderedCandidate = candidate.clone();
+    forged.intent = encode_drain_set_intent(&forged_intent).unwrap();
+    assert!(matches!(
+        authenticate_candidate(&network.env(), &forged),
+        Err(OrderedEconomicsError::Unauthenticated(_))
+    ));
+    let mut weak_intent: DrainSetIntent = intent.clone();
+    weak_intent.selected_votes.pop();
+    weak_intent.drain_union_identity.signer_count = 2;
+    let mut underpowered: OrderedCandidate = candidate.clone();
+    underpowered.intent = encode_drain_set_intent(&weak_intent).unwrap();
+    assert!(matches!(
+        authenticate_candidate(&network.env(), &underpowered),
+        Err(OrderedEconomicsError::Unauthenticated(_))
+    ));
+    let mut mixed_intent: DrainSetIntent = intent.clone();
+    mixed_intent.selected_votes[0].identity.closure_request_id = [0xAB; 32];
+    assert!(encode_drain_set_intent(&mixed_intent).is_err());
+    let mut foreign_intent: DrainSetIntent = intent.clone();
+    foreign_intent.drain_union_identity.entries_digest =
+        Digest32::new(HashAlgorithmId::Blake3_256, [0xFA; 32]);
+    let mut foreign: OrderedCandidate = candidate.clone();
+    foreign.intent = encode_drain_set_intent(&foreign_intent).unwrap();
+    assert!(matches!(
+        propose(
+            &network.stores[leader],
+            &network.context,
+            &network.env(),
+            Some(&foreign),
+            &network.signers[leader],
+        ),
+        Err(OrderedEconomicsError::Refused(
+            OrderedRefusal::ForeignDrainSet
+        ))
+    ));
+    let ready_key: Vec<u8> = drain_union_ready_key(
+        expected.chain_id(),
+        expected.epoch(),
+        &identity.entries_digest,
+    )
+    .unwrap();
+    let race: RaceStore<'_> = RaceStore {
+        inner: &network.stores[leader],
+        context: network.context,
+        domain: network.domain(),
+        race_key: ready_key.clone(),
+        race_value: network.value(leader, &ready_key).unwrap(),
+        race_on_durable: true,
+        raced: std::cell::Cell::new(false),
+    };
+    assert!(
+        propose(
+            &race,
+            &network.context,
+            &network.env(),
+            Some(&candidate),
+            &network.signers[leader],
+        )
+        .is_err()
+    );
+    assert!(race.raced.get());
+    let leader_key: Vec<u8> = engine::ordered_leader_record_key_for_tests(expected.chain_id(), 4);
+    assert!(network.value(leader, &leader_key).is_none());
+
+    let proposal: OrderedProposal = propose(
+        &network.stores[leader],
+        &network.context,
+        &network.env(),
+        Some(&candidate),
+        &network.signers[leader],
+    )
+    .unwrap();
+    assert!(matches!(
+        process_proposal(
+            &network.stores[lagging],
+            &network.context,
+            &network.env(),
+            &proposal,
+            &network.signers[lagging],
+        ),
+        Err(OrderedEconomicsError::Prerequisite(_))
+    ));
+    let vote_key: Vec<u8> = engine::ordered_vote_record_key_for_tests(&fixture::chain(), 4);
+    assert!(network.value(lagging, &vote_key).is_none());
+
+    for (vote, page) in &selected {
+        ingest_drain_signer_page(
+            &network.stores[lagging],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &expected,
+            vote.validator,
+            vote.clone(),
+            page.clone(),
+        )
+        .unwrap();
+    }
+    let recovered: DrainUnionStep = advance_drain_union(
+        &network.stores[lagging],
+        &network.context,
+        network.domain(),
+        &network.resolver,
+        &network.history,
+        &expected,
+        &votes,
+    )
+    .unwrap();
+    assert_eq!(recovered, DrainUnionStep::Ready(Box::new(identity.clone())));
+
+    let vote_race: RaceStore<'_> = RaceStore {
+        inner: &network.stores[lagging],
+        context: network.context,
+        domain: network.domain(),
+        race_key: ready_key.clone(),
+        race_value: network.value(lagging, &ready_key).unwrap(),
+        race_on_durable: true,
+        raced: std::cell::Cell::new(false),
+    };
+    assert!(
+        process_proposal(
+            &vote_race,
+            &network.context,
+            &network.env(),
+            &proposal,
+            &network.signers[lagging],
+        )
+        .is_err()
+    );
+    assert!(vote_race.raced.get());
+    assert!(network.value(lagging, &vote_key).is_none());
+
+    network.round(4, Some(&candidate));
+    network.round(5, None);
+    let (outputs, certificate, _) = network.round(6, None);
+    let key: Vec<u8> =
+        drain_set::drain_set_record_key(expected.chain_id(), expected.epoch()).unwrap();
+    let mut original_bytes: Option<Vec<u8>> = None;
+    for (replica, output) in outputs.iter().enumerate() {
+        assert_eq!(output.committed.len(), 1, "replica {replica}");
+        assert_eq!(output.committed[0].request_id, candidate.request_id);
+        assert_eq!(
+            output.committed[0].output.responses()[0].status(),
+            NodeResponseStatus::Accepted
+        );
+        let bytes: Vec<u8> = network.value(replica, &key).unwrap();
+        let record: DrainSetRecord = decode_drain_set_record(&bytes).unwrap();
+        assert_eq!(record.request_id, candidate.request_id);
+        assert_eq!(record.closed_epoch, expected.epoch());
+        assert_eq!(record.committed_at_block_height, 4);
+        assert_eq!(record.drain_union_identity, identity);
+        assert_eq!(record.selected_votes, votes);
+        if let Some(previous) = &original_bytes {
+            assert_eq!(&bytes, previous);
+        } else {
+            original_bytes = Some(bytes);
+        }
+        let revision: StateRevision = network.revision(replica, &key);
+        let replay: OrderedEventOutput = process_certificate(
+            &network.stores[replica],
+            &network.context,
+            &network.env(),
+            &certificate,
+        )
+        .unwrap();
+        assert!(replay.committed.is_empty());
+        assert_eq!(network.revision(replica, &key), revision);
+        assert_eq!(network.value(replica, &key), original_bytes);
+    }
+
+    let mut second_intent: DrainSetIntent = intent;
+    second_intent.request_id = [0xA3; 32];
+    let second: OrderedCandidate = OrderedCandidate {
+        context: expected,
+        request_id: second_intent.request_id,
+        kind: OrderedOperationKind::DrainSet,
+        intent: encode_drain_set_intent(&second_intent).unwrap(),
+        created_checkpoint: 13,
+    };
+    network.round(7, Some(&second));
+    network.round(8, None);
+    let (second_outputs, _, _) = network.round(9, None);
+    for (replica, output) in second_outputs.iter().enumerate() {
+        assert_eq!(output.committed.len(), 1);
+        assert_eq!(
+            refusal_of(&output.committed[0]),
+            OrderedRefusal::AlreadyDrained
+        );
+        assert_eq!(network.value(replica, &key), original_bytes);
+    }
+}
+
+#[test]
 fn committed_freeze_yields_four_durable_empty_frontier_votes_without_resigning() {
     let network: Network = setup_with_freeze_height(4);
     network.install_ordered();
@@ -2696,6 +2989,7 @@ struct RaceStore<'a> {
     domain: AtomicityDomainId,
     race_key: Vec<u8>,
     race_value: Vec<u8>,
+    race_on_durable: bool,
     raced: std::cell::Cell<bool>,
 }
 
@@ -2744,6 +3038,9 @@ impl DurableDomainStateStore for RaceStore<'_> {
         context: &DurableOperationContext,
         transaction: AtomicStateTransaction,
     ) -> DurableCommitOutcome {
+        if self.race_on_durable && !self.raced.replace(true) {
+            self.land_foreign_write();
+        }
         self.inner.commit_durable(context, transaction)
     }
 }
@@ -2783,7 +3080,7 @@ impl StructuredDurableDomainStateStore for RaceStore<'_> {
         context: &DurableOperationContext,
         transaction: DurableInvocationTransaction,
     ) -> DurableCommitOutcome {
-        if !self.raced.replace(true) {
+        if !self.race_on_durable && !self.raced.replace(true) {
             self.land_foreign_write();
         }
         self.inner.commit_invocation(context, transaction)
@@ -2823,6 +3120,7 @@ fn a_refusal_asserts_the_row_that_decided_it_so_a_concurrent_change_rejects_the_
         domain: network.domain(),
         race_key: network.bond_key(),
         race_value: encode_fastpath_bond_record(&raced_row).unwrap(),
+        race_on_durable: false,
         raced: std::cell::Cell::new(false),
     };
     let chain = fixture::chain();
