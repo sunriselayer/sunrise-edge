@@ -55,7 +55,9 @@ roadmap describes a later target state.
   shared HotStuff ordering distinct from owned FastVote, durable reservations,
   atomic economic/order effects and declared signerless recovery.
 - [Complete epoch handoff](epoch-handoff.md) ([DR-0154](decisions/0154-complete-epoch-handoff.md),
-  [DR-0155](decisions/0155-epoch-end-freeze-warrant.md)):
+  [DR-0155](decisions/0155-epoch-end-freeze-warrant.md),
+  [DR-0156](decisions/0156-frozen-frontier-possession.md),
+  [DR-0157](decisions/0157-frozen-frontier-readiness.md)):
   publication-before-apply, quorum-complete frozen frontiers, ordered epoch
   control, portable logical commitments and verified new-validator readiness.
 - [Portable reconstruction storage contract](portable-reconstruction.md):

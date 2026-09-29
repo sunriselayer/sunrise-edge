@@ -265,6 +265,16 @@ only after that signer's consecutive pages reach their authenticated terminal
 count and digest. A new source may relay an imported proof only after
 independently rechecking its saved bytes. See
 [DR-0156](decisions/0156-frozen-frontier-possession.md).
+
+The importer's bounded per-signer progress must authenticate every consecutive
+page through the signer's terminal count and digest, then confirm each entry
+against a fully re-verified local proof. Only confirmed entries of the
+selected weighted quorum are folded into a deterministic union, one bounded
+step at a time. The separate proof store is not the union's member list; a
+local ready marker is written only after the whole union is reconstructed.
+The later DrainSet vote reads that marker under CAS. See
+[DR-0157](decisions/0157-frozen-frontier-readiness.md).
+
 Choose exactly one `DrainSet` by a normal outgoing ordered commit. Before
 exposing a vote for it, each voting replica must durably retain and verify
 **every union member's full certificate, original signed intent and replay

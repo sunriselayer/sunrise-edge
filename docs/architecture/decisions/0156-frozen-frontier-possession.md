@@ -42,6 +42,11 @@ local progress and is never imported as business history. The original
 unchanged. No signature, ACK, application effect, fee, nonce or receipt is
 created. Exact retries reverify the saved proof and all artifacts; an
 indeterminate commit returns ambiguity rather than claiming possession.
+The proof families are a possession store, not a list of members of any
+selected frontier union. An import left by a crash or an abandoned selection
+cannot enter DrainSet merely because its proof is present. Membership is
+derived only from the selected signers' terminal-verified frontier entries;
+see [DR-0157](0157-frozen-frontier-readiness.md).
 
 Selected frontier votes must bind the same locally committed Freeze and form
 a weighted outgoing quorum with ascending unique validator IDs. This vote
