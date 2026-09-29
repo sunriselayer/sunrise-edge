@@ -2118,6 +2118,18 @@ fn nonempty_drain_set_from_real_ordered_consensus_lets_a_nonpreparing_replica_ap
             .is_none()
     );
     network.put(d, ready_key.clone(), StateMutation::Put(original_ready));
+    // U10 cannot advance on an authenticated union member until the same
+    // replica has an actual original application receipt for that member.
+    assert!(matches!(
+        advance_drain_completion(
+            &network.stores[d],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &expected,
+        ),
+        Err(DrainCompletionError::NotReady(_))
+    ));
 
     let apply_engine: crate::paid_execution::tests::CountingEngine =
         crate::paid_execution::tests::CountingEngine::new();
@@ -2191,10 +2203,59 @@ fn nonempty_drain_set_from_real_ordered_consensus_lets_a_nonpreparing_replica_ap
     .unwrap();
     let settlement_after_apply: Option<Vec<u8>> = network.value(d, &settlement_row_key);
 
+    // The completion walk consumes the real receipt atomically produced by
+    // certified application above, not a test-inserted receipt. The exact
+    // committed one-member union is independently accumulated to completion.
+    assert_eq!(
+        advance_drain_completion(
+            &network.stores[d],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &expected,
+        )
+        .unwrap(),
+        DrainCompletionStep::Advanced {
+            request_id: x_identity.request_id,
+        }
+    );
+    assert_eq!(
+        advance_drain_completion(
+            &network.stores[d],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &expected,
+        )
+        .unwrap(),
+        DrainCompletionStep::Complete(Box::new(identity.clone()))
+    );
+    assert_eq!(
+        verify_drain_complete(
+            &network.stores[d],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &expected,
+        )
+        .unwrap(),
+        identity
+    );
+
     // Exact replay, even with a corrupted local ready marker: receipt-first,
     // no re-execution, no re-resolution or mutation of the completed bytes.
     assert!(network.value(d, &ready_key).is_some());
     network.put(d, ready_key.clone(), StateMutation::Put(vec![0xFF]));
+    assert!(
+        verify_drain_complete(
+            &network.stores[d],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &expected,
+        )
+        .is_err()
+    );
     let replay: NodeOutput = crate::fast_path::drain_apply::apply_drain_member(
         &network.stores[d],
         &network.blobs,

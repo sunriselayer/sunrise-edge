@@ -550,7 +550,7 @@ The detailed existing evidence and remaining criteria follow:
   all-member causal scheduler, drain-complete proof, portable cut, Seal,
   next-set readiness, activation, PostgreSQL network E2E or authenticated
   public ingress. Opus APPROVED the U9 and shared-enumerator delta through
-  `4a4bdba`, not PR #235 or Delivery 3. CI for that head remains pending.
+  `4a4bdba`, not PR #235 or Delivery 3.
   U10 adds the bounded resumable drain-completion state machine described in
   [DR-0161](docs/architecture/decisions/0161-bounded-drain-completion.md):
   `ordered_economics::drain_completion` re-derives `selected_votes` from the
@@ -577,12 +577,19 @@ The detailed existing evidence and remaining criteria follow:
   marker caught by both advancement and read-only verification, plus a
   skipped-member cursor that cannot falsely complete. This fixture does not
   prove jointly honest certification or actual application of both members.
-  This does not provide an all-member causal scheduler that drives repeated advance
-  calls automatically, a portable cut, Seal, next-set readiness, activation,
+  The real nonempty four-validator U9 test now additionally shows U10 refusing
+  before X has an original receipt, then advancing and completing after D's
+  certified X application generated that receipt. A ready-marker race rejects
+  a future Seal-like caller commit using `verify_drain_complete_into`'s CAS
+  reads. This does not provide an all-member causal scheduler that drives
+  repeated advance calls automatically, a portable cut, Seal, next-set
+  readiness, activation,
   or a PostgreSQL/network multi-validator run; HTTP/CLI wiring is separately
-  out of scope for this slice. Fifteen focused tests and changed-crate Clippy
-  pass locally; the complete repository gate and exact-head CI for U10 remain
-  pending.
+  out of scope for this slice. The U10 baseline `790aaf8` passed fifteen
+  focused tests, changed-crate Clippy, `npm ci` and the complete local
+  repository gate; Opus explicitly APPROVED that U10 delta, not PR #235 or
+  Delivery 3. The follow-up real-receipt/CAS evidence and exact-head CI still
+  require final verification.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

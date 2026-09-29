@@ -48,8 +48,13 @@ signer entry could otherwise look like completion. The running identity,
 count and digest must equal the locally ready union and the committed
 `DrainSetRecord` before the local completion marker is persisted. That
 commit CAS-fences the committed record, ready marker and its Freeze/epoch/set
-prerequisites, signer entries observed on the terminal scan, and completion
-progress. No physical storage revision counter enters the canonical bytes.
+prerequisites, plus completion progress. The terminal scan sees no next
+signer entry; completeness comes from the independently accumulated digest
+and count, not a CAS assertion over absent scan results. No physical storage
+revision counter enters the canonical bytes. The running digest is trusted
+only because its row is under the reserved internal state prefix and every
+transition is written by this CAS-fenced state machine. It is not an
+authenticated remote fact, so it must not be imported as cut authority.
 Both the progress cursor (`0x6461/v1`) and the
 terminal marker (`0x6462/v1`) are swept-free type IDs from the repository's
 reserved control/cut block, verified free at allocation time. Both key
@@ -73,7 +78,10 @@ re-verifies the exact local ready union, and compares the terminal marker's
 request ID and full identity to them. It folds every read into the caller's
 CAS set for a future Seal vote or proposal; a marker alone cannot make a
 different or corrupted DrainSet appear complete. It is not wired into any
-consensus path by this module.
+consensus path by this module. Both verification and advancement require the
+outgoing epoch to remain current; after activation, historical replay needs
+the separate authenticated cut/Seal/transition history, not this local
+completion marker.
 
 This does not select a DrainSet, apply a member, prove a portable cut, or
 implement Seal, next-set readiness or activation. It is local progress and

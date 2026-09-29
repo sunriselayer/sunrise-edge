@@ -464,6 +464,79 @@ fn verify_drain_complete_is_not_ready_before_completion() {
 }
 
 #[test]
+fn completion_verification_folds_ready_marker_into_the_caller_commit() {
+    let (d, x, z, record) = drain_set_fixture();
+    commit_receipt(&d, x.request_id, x.signed_intent_digest);
+    advance_drain_completion(&d.store, &context(), domain(), &resolver(), &protocol()).unwrap();
+    commit_receipt(&d, z.request_id, z.signed_intent_digest);
+    advance_drain_completion(&d.store, &context(), domain(), &resolver(), &protocol()).unwrap();
+    advance_drain_completion(&d.store, &context(), domain(), &resolver(), &protocol()).unwrap();
+
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    assert_eq!(
+        verify_drain_complete_into(
+            &d.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &protocol(),
+            &mut reads,
+        )
+        .unwrap(),
+        record.drain_union_identity
+    );
+    let selected_pairs: Vec<(ValidatorId, consensus::FrozenFrontierIdentity)> = record
+        .selected_votes
+        .iter()
+        .map(|vote| (vote.validator, vote.identity.clone()))
+        .collect();
+    let seed: DrainUnionAccumulator = DrainUnionAccumulator::new(
+        &resolver(),
+        protocol().chain_id().clone(),
+        protocol().protocol_version(),
+        protocol().epoch(),
+        domain(),
+        CLOSURE_REQUEST_ID,
+        CLOSURE_HEIGHT,
+        &selected_pairs,
+    )
+    .unwrap();
+    let ready_key: Vec<u8> = drain_union::drain_union_ready_key(
+        protocol().chain_id(),
+        protocol().epoch(),
+        &seed.identity().entries_digest,
+    )
+    .unwrap();
+    assert!(reads.contains_key(&ready_key));
+    d.put_row(ready_key, vec![0xFF]);
+
+    let probe_key: Vec<u8> = drain_completion_key(protocol().chain_id(), Epoch::new(999)).unwrap();
+    let probe: VersionedStateValue = d
+        .store
+        .get_versioned_durable(&context(), domain(), &probe_key)
+        .unwrap();
+    reads.insert(probe_key.clone(), probe.revision());
+    let assertions: Vec<StateReadAssertion> = reads
+        .into_iter()
+        .map(|(key, revision)| StateReadAssertion::new(key, revision).unwrap())
+        .collect();
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(assertions).unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(probe_key.clone(), StateMutation::Put(vec![0xAA])).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        d.store.commit_durable(&context(), transaction),
+        DurableCommitOutcome::Rejected(runtime::DurableCommitRejection::Conflict { .. })
+    ));
+    assert!(d.row(&probe_key).is_none());
+}
+
+#[test]
 fn advance_drain_completion_rejects_a_tombstoned_progress_row() {
     let (d, x, _z, _record) = drain_set_fixture();
     commit_receipt(&d, x.request_id, x.signed_intent_digest);
@@ -531,7 +604,7 @@ fn advance_drain_completion_rejects_a_completion_marker_disagreeing_with_the_dra
 }
 
 #[test]
-fn terminal_scan_does_not_complete_with_a_skipped_member_cursor() {
+fn terminal_scan_refuses_a_cursor_with_an_incomplete_running_digest() {
     let (d, _x, z, record) = drain_set_fixture();
     let selected_pairs: Vec<(ValidatorId, consensus::FrozenFrontierIdentity)> = record
         .selected_votes

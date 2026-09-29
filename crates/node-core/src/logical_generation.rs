@@ -71,7 +71,8 @@ mod tests;
 /// `ordered_economics`/`fast_path` Freeze/publication/frontier family;
 /// `0x645B..=0x645D` are DR-0157's signer progress, union-progress and local
 /// ready frames (`ordered_economics::drain_union`); `0x645E..=0x645F` are
-/// DR-0159's ordered DrainSet intent and committed record frames.
+/// DR-0159's ordered DrainSet intent and committed record frames; `0x6461`
+/// and `0x6462` are DR-0161's local drain-completion progress and marker.
 pub const LOGICAL_PROFILE_RECORD_FRAME_TYPE: u16 = 0x6480;
 /// Canonical version of [`LogicalProfileRecord`].
 pub const LOGICAL_PROFILE_RECORD_VERSION: u16 = 1;
