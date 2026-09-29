@@ -232,6 +232,16 @@ finish before activation or use a separately designed, authenticated
 historical serving path. The historical path must pin the old committee and
 complete proof history independently; an untrusted epoch field cannot select
 it.
+The active-epoch retained-publication source accepts only a signed-frontier
+request ID and the locally pinned current epoch. Its store must carry the
+installed logical commitment profile, current outgoing set, complete retained
+publication and artifacts, and its own valid ACK. It is a read-only proof
+source even when the validator never prepared the operation. The requester
+independently verifies the complete bundle against its locally pinned
+committee and exact signed-frontier identity. A historical profile, missing
+or tombstoned ACK, or server-supplied identity cannot authorize the source.
+It does not by itself prove complete frontier pages, DrainSet readiness, or
+historical serving after activation.
 Before deploying the page route on an untrusted network, bound its per-request
 verification work by cumulative artifact bytes or require peer/operator
 authentication: a valid request can currently make the server re-verify the

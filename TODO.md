@@ -373,8 +373,16 @@ The detailed existing evidence and remaining criteria follow:
   drain application, authenticated cut, conditional next-set readiness,
   Seal or activation. The source is active-epoch only, and its page and
   bundle re-verification cost needs a network admission bound. Draft PR #235
-  remains open. `npm ci --prefix adapters/cloudflare-workers` and the full
-  `scripts/check-all.sh` gate passed after integration on 2026-09-29, with
+  remains open. Follow-up adversarial tests cover the public route's installed
+  profile and live-epoch fences, missing and tombstoned local ACKs, wrong
+  validator identity, signed-intent/certificate/expected-identity mismatches,
+  imported-proof CAS races, and frontier quorum edge cases. A real four-host
+  SQLite/HTTP test obtains a quorum from three preparing validators, retains
+  the complete bundle on the fourth unprepared validator, then retrieves and
+  compares its exact bytes through the read-only retained-source route.
+  `npm ci --prefix adapters/cloudflare-workers` and the full
+  `scripts/check-all.sh` gate passed again after these follow-ups on
+  2026-09-29, with
   five npm audit advisories reported by install (one moderate, four high).
   Live PostgreSQL handoff E2E and independent final-head review remain open.
 

@@ -17,6 +17,7 @@ use consensus::bundle::{
     ArtifactEntry, ArtifactManifest, PublicationBundle, encode_publication_bundle,
 };
 use protocol_types::HashPurpose;
+use runtime::DurableDomainStateStore;
 
 const REQUEST: u8 = 0xE4;
 
@@ -1157,6 +1158,31 @@ fn serve_active_epoch_publication_bundle_serves_a_retained_but_never_prepared_re
 }
 
 #[test]
+fn serve_active_epoch_publication_bundle_refuses_a_historical_store_before_publication_lookup() {
+    let replica: RetentionReplica = physical_replica();
+    let error = serve_active_epoch_publication_bundle(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        replica.signer.validator_id(),
+        &[REQUEST; 32],
+    )
+    .expect_err("a historical installed profile must not expose the logical handoff source");
+    assert!(
+        matches!(
+            error,
+            PublicationRetentionError::Node(NodeCoreError::PersistenceInvariant(
+                "historical profile has no retained publication source"
+            ))
+        ),
+        "unexpected error {error}"
+    );
+}
+
+#[test]
 fn serve_active_epoch_publication_bundle_rejects_a_store_whose_current_epoch_has_moved_on() {
     let replica: RetentionReplica = logical_replica();
     let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
@@ -1250,6 +1276,58 @@ fn serve_active_epoch_publication_bundle_refuses_a_retained_publication_missing_
         &[REQUEST; 32],
     )
     .expect_err("a retained publication with no acknowledgement row must never be served");
+    assert!(
+        matches!(
+            error,
+            PublicationRetentionError::InconsistentRetainedRecord(
+                "frozen publication without an acknowledgement"
+            )
+        ),
+        "unexpected error {error}"
+    );
+}
+
+#[test]
+fn serve_active_epoch_publication_bundle_refuses_a_tombstoned_acknowledgement() {
+    let replica: RetentionReplica = logical_replica();
+    let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    retain(&replica, &bundle, &replica.signer).unwrap();
+    let ack_key: Vec<u8> =
+        fastpath_availability_ack_key(protocol().chain_id(), protocol().epoch(), &[REQUEST; 32])
+            .unwrap();
+    let observed: VersionedStateValue = replica
+        .store
+        .get_versioned_durable(&context(), domain(), &ack_key)
+        .unwrap();
+    assert!(observed.value().is_some());
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(ack_key.clone(), observed.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(ack_key, StateMutation::Delete).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        replica.store.commit_durable(&context(), transaction),
+        DurableCommitOutcome::Committed
+    );
+
+    let error = serve_active_epoch_publication_bundle(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        replica.signer.validator_id(),
+        &[REQUEST; 32],
+    )
+    .expect_err("a tombstoned ACK cannot authorize serving a retained publication");
     assert!(
         matches!(
             error,

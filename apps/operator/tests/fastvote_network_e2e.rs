@@ -12,6 +12,7 @@
 
 mod support;
 
+use consensus::bundle::encode_publication_bundle;
 use execution::local_execution::LocalExecutionPolicy;
 use execution::paid_execution::{PaidExecutionStatus, SignedPaidIntent, decode_signed_paid_intent};
 use hashing::HashSuiteResolver;
@@ -403,6 +404,103 @@ async fn fastvote_network_prepares_certifies_and_applies_a_real_transfer_over_re
 
     for stop in stops {
         let _ = stop.send(());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retained_only_validator_serves_the_exact_verified_publication_over_real_http() {
+    let unique: String = unique("retained-source");
+    let fixture: FastVoteGenesisFixture = genesis_fixture::build_logical_network_fixture(&unique);
+    let manifest: GenesisManifest = decode_genesis_manifest(&fixture.manifest_bytes).unwrap();
+    let owned: TempDir = owned_directory(&unique);
+    let mut hosts: Vec<ObservedHost> = Vec::with_capacity(fixture.validators.len());
+    for validator in &fixture.validators {
+        hosts.push(
+            spawn_observed_host(
+                &fixture,
+                &manifest,
+                &fixture.resolver,
+                validator.validator_id,
+                validator.signing_key,
+                &owned.0,
+                fixture.epoch,
+                false,
+            )
+            .await,
+        );
+    }
+    let endpoints: Vec<FastVoteEndpoint<LoopbackHttpTransport>> = hosts[..3]
+        .iter()
+        .zip(&fixture.validators[..3])
+        .enumerate()
+        .map(|(index, (host, validator))| FastVoteEndpoint {
+            validator_id: validator.validator_id,
+            endpoint_label: format!("prepared-{index}"),
+            client: Client::new(transport(host.addr)),
+        })
+        .collect();
+    let manifest_path: PathBuf = std::env::temp_dir().join(format!(
+        "sunrise-fastvote-retained-source-manifest-{unique}"
+    ));
+    fs::write(&manifest_path, &fixture.manifest_bytes).unwrap();
+    let _manifest_guard: FileGuard = scopeguard(manifest_path.clone());
+    let certifier = load_trusted_fastvote_genesis(
+        &manifest_path,
+        &fixture.resolver,
+        fixture.manifest_digest,
+        &fixture.context,
+    )
+    .unwrap();
+    let signed: SignedPaidIntent = decode_signed_paid_intent(&fixture.paid_intent_bytes).unwrap();
+    let deadline: Instant = Instant::now() + Duration::from_secs(30);
+    let (certificate, attempts) = collect_fastvote_certificate(
+        &endpoints,
+        &certifier,
+        &fixture.resolver,
+        &signed,
+        deadline,
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_eq!(attempts.len(), 3);
+    assert!(attempts.iter().all(|attempt| attempt.result.is_ok()));
+
+    let prepared_client: Client<LoopbackHttpTransport> = Client::new(transport(hosts[0].addr));
+    let (bundle, expected_identity) = prepared_client
+        .source_fastvote_publication(
+            &signed,
+            &certificate,
+            &certifier,
+            &fixture.resolver,
+            &[],
+            fixture.domain,
+            Some(deadline),
+        )
+        .unwrap();
+    let original_bytes: Vec<u8> = encode_publication_bundle(&bundle).unwrap();
+    let retained_client: Client<LoopbackHttpTransport> = Client::new(transport(hosts[3].addr));
+    let ack = retained_client
+        .retain_fastvote_publication(&original_bytes, Some(deadline))
+        .unwrap();
+    assert_eq!(ack.validator, fixture.validators[3].validator_id);
+    assert_eq!(ack.identity, expected_identity);
+
+    // Validator 3 was never included in the prepare round. The endpoint must
+    // reconstruct its own ACK-backed durable bytes, not depend on a local
+    // prepare cache or a caller-supplied signed intent/certificate.
+    let served = retained_client
+        .source_retained_fastvote_publication(
+            &certifier,
+            &fixture.resolver,
+            &[],
+            &expected_identity,
+            Some(deadline),
+        )
+        .unwrap();
+    assert_eq!(encode_publication_bundle(&served).unwrap(), original_bytes);
+
+    for host in hosts {
+        let _ = host.stop.send(());
     }
 }
 

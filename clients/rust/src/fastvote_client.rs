@@ -1686,7 +1686,9 @@ mod tests {
                 &identity,
                 Some(deadline()),
             )
-            .expect_err("a certifier pinned to a different epoch than the real bundle must be refused");
+            .expect_err(
+                "a certifier pinned to a different epoch than the real bundle must be refused",
+            );
         assert!(
             matches!(
                 error,

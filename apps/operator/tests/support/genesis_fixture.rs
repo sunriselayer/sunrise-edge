@@ -209,6 +209,27 @@ pub fn build_network_fixture(unique: &str) -> FastVoteGenesisFixture {
     build_network_fixture_at_epoch(unique, Epoch::new(0))
 }
 
+/// A handoff-capable network fixture with the same real paid transaction and
+/// validator set as [`build_network_fixture`], but a freshly signed v2 genesis
+/// profile. This exercises publication retention over real HTTP and SQLite.
+#[must_use]
+pub fn build_logical_network_fixture(unique: &str) -> FastVoteGenesisFixture {
+    let mut fixture: FastVoteGenesisFixture = build_network_fixture(unique);
+    let mut manifest: node_core::GenesisManifest =
+        node_core::decode_genesis_manifest(&fixture.manifest_bytes).unwrap();
+    manifest.commitment_profile =
+        node_core::logical_generation::CommitmentProfile::LogicalGenerationV2;
+    manifest.minimum_freeze_block_height = 1;
+    manifest.signature = genesis_signing_key()
+        .sign(&genesis_manifest_signing_frame(&manifest).unwrap())
+        .into();
+    fixture.manifest_digest = genesis_manifest_commitment(&fixture.resolver, &manifest)
+        .unwrap()
+        .bytes();
+    fixture.manifest_bytes = encode_genesis_manifest(&manifest).unwrap();
+    fixture
+}
+
 /// Adds two ordinary sender-owned application Coins distinct from the fee
 /// source. The catch-up sequence transfers the first, traps on the second,
 /// then transfers the second, while every call advances the same fee Coin.

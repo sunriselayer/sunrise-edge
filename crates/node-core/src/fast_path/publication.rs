@@ -1194,6 +1194,15 @@ pub fn serve_active_epoch_publication_bundle<S: StructuredDurableDomainStateStor
     }
     let chain: ChainId = expected.chain_id().clone();
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let installed =
+        logical_generation::fence_commitment_profile(store, context, domain, &chain, &mut reads)?;
+    if installed.logical().is_none() {
+        return Err(PublicationRetentionError::Node(
+            NodeCoreError::PersistenceInvariant(
+                "historical profile has no retained publication source",
+            ),
+        ));
+    }
     let epoch_record: local_instance_state::FastPathEpochRecord =
         mutation_fence::fence_epoch_state(store, context, domain, &chain, &mut reads)?;
     if epoch_record.current_epoch != expected.epoch() {
