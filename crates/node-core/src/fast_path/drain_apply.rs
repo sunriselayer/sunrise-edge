@@ -68,6 +68,7 @@ use crate::ordered_economics::{
     verify_drain_ready_into,
 };
 use consensus::{AvailabilityIdentity, decode_availability_identity};
+use std::collections::BTreeSet;
 
 impl From<ordered_economics::DrainSignerError> for FastPathError {
     fn from(error: ordered_economics::DrainSignerError) -> Self {
@@ -129,13 +130,14 @@ fn encode_drain_lock_resolution_record(
     Ok(frame.finish()?)
 }
 
-#[cfg(test)]
-fn decode_drain_lock_resolution_record(
+/// Decodes one durable local resolution-audit row for operator inspection.
+pub fn decode_drain_lock_resolution_record(
     bytes: &[u8],
 ) -> FastPathResult<FastPathDrainLockResolutionRecord> {
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(FASTPATH_DRAIN_LOCK_RESOLUTION_RECORD_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;
+    frame.require_only_fields(&[1, 2, 3, 4])?;
     let resolving_request_id: [u8; 32] = frame
         .required_field(2)?
         .try_into()
@@ -193,9 +195,9 @@ fn put_read(
 /// `(chain, epoch)`, and that its full publication proof and artifact
 /// closure are durably present, folding every read into `reads`. Returns the
 /// committed [`DrainSetRecord`], the reconstructed member
-/// [`AvailabilityIdentity`] and the validator set every subsequent
-/// verification step re-used, so a caller never re-derives any of this from
-/// anything other than durable storage. See the module documentation for the
+/// [`AvailabilityIdentity`] and the validator set used by possession
+/// verification. The apply path independently re-reads the validator set for
+/// certificate verification; both reads enter its final CAS. See the module documentation for the
 /// exact four-part authority this establishes.
 #[allow(clippy::too_many_arguments)]
 fn verify_drain_member<S: StructuredDurableDomainStateStore>(
@@ -561,8 +563,6 @@ where
         &admission.logical.profile,
         admission.logical.derived.as_ref(),
     )?;
-    require_prepared_generation(None, &admission)?;
-
     let pending_nonce_write: &PendingSenderNonceWrite = admission
         .nonce_write
         .as_ref()
@@ -611,6 +611,39 @@ where
         drain_resolved_locks,
         ..
     } = admission;
+
+    // Boundary defense in depth: admission is allowed to resolve only exact
+    // object/sender-epoch lock keys this certificate itself admits. A future
+    // change to the shared paid pipeline cannot smuggle an unrelated
+    // fastpath mutation into this post-Freeze special case merely because
+    // such local reservation bytes are excluded from the signed commitment.
+    let mut allowed_lock_keys: BTreeSet<Vec<u8>> = BTreeSet::new();
+    allowed_lock_keys.insert(fastpath_nonce_lock_key(
+        &chain,
+        &intent_sender,
+        intent_context.epoch(),
+    )?);
+    for reference in &locked_objects {
+        allowed_lock_keys.insert(fastpath_lock_key(&chain, reference.id)?);
+    }
+    let mut staged_lock_deletes: BTreeSet<Vec<u8>> = BTreeSet::new();
+    for mutation in &mutations {
+        if mutation
+            .key()
+            .starts_with(local_instance_state::FASTPATH_STATE_PREFIX)
+            && (!allowed_lock_keys.contains(mutation.key())
+                || !matches!(mutation.mutation(), StateMutation::Delete)
+                || !staged_lock_deletes.insert(mutation.key().to_vec()))
+        {
+            return invalid("drain admission staged an unauthorized fast-path mutation");
+        }
+    }
+    if drain_resolved_locks
+        .iter()
+        .any(|resolution| !staged_lock_deletes.contains(&resolution.key))
+    {
+        return invalid("drain conflict resolution is missing its exact staged lock delete");
+    }
 
     let mut tx_reads: BTreeMap<Vec<u8>, StateRevision> = admission_reads;
     merge_apply_reads(&mut tx_reads, fence_reads)?;

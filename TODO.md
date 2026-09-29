@@ -478,15 +478,18 @@ The detailed existing evidence and remaining criteria follow:
   the exact execution commitment, and atomically applies effects, fee, nonce,
   receipt and settlement. A conflicting partial prepare's exact object/nonce
   locks are removed only after prepared-record/provenance checks and with an
-  immutable local resolution audit. Eight focused tests cover the conflicting,
+  immutable local resolution audit. Ten focused tests cover the conflicting,
   own-lock and no-lock cases, missing/mismatched authority, unrelated locks,
-  and receipt-first exact replay. The nonempty DrainSet fixture installs the
+  already-certified partial-prepare refusal, missing Freeze, and receipt-first
+  exact replay. The nonempty DrainSet fixture installs the
   committed record directly after a genuine signed frontier/union; it is not
   a full ordered-network E2E. Post-restart SQLite/PostgreSQL replay, CAS races,
   ordered nonempty DrainSet composition, operator route and complete Freeze to
-  activation network sequence remain open. U7 node-core tests passed locally
-  (873 passed, 5 ignored), as did its changed-crate Clippy and format check.
-  The full repository gate and exact-head review/CI for U7 are pending.
+  activation network sequence remain open. U7's first head passed the complete
+  local repository gate; Opus found no blocking issue but requested stronger
+  boundary assertions and negative tests. Those follow-ups are implemented,
+  with all 10 focused tests and changed-crate Clippy passing. Complete
+  exact-head validation and CI for the follow-up are pending.
   `npm ci` and complete `./scripts/check-all.sh` also passed locally on
   2026-09-30, after installing the exact `wasm-bindgen-cli` version required
   by the gate. Live PostgreSQL tests were skipped locally without

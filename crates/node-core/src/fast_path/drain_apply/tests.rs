@@ -21,6 +21,9 @@ use consensus::{
     FrozenFrontierCertifier, FrozenFrontierPage, FrozenFrontierVote,
 };
 use runtime::MemoryBlobStore;
+use runtime::{
+    AtomicStateMutationSet, AtomicStateReadSet, AtomicStateTransaction, DurableDomainStateStore,
+};
 
 const CLOSURE_REQUEST_ID: [u8; 32] = [0x77; 32];
 const CLOSURE_HEIGHT: u64 = 4;
@@ -39,6 +42,32 @@ fn close(replica: &RetentionReplica) {
     replica.put_row(
         key,
         ordered_economics::encode_admission_closure_record(&record).unwrap(),
+    );
+}
+
+fn remove_closure(replica: &RetentionReplica) {
+    let key: Vec<u8> =
+        ordered_economics::admission_closure_key(protocol().chain_id(), protocol().epoch())
+            .unwrap();
+    let observed: VersionedStateValue = replica
+        .store
+        .get_versioned_durable(&context(), domain(), &key)
+        .unwrap();
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(key, StateMutation::Delete).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        replica.store.commit_durable(&context(), transaction),
+        DurableCommitOutcome::Committed
     );
 }
 
@@ -543,4 +572,59 @@ fn apply_drain_member_rejects_a_union_identity_disagreeing_with_local_readiness(
         10,
     );
     assert!(matches!(result, Err(FastPathError::Invalid(_))));
+}
+
+#[test]
+fn apply_drain_member_refuses_to_displace_a_prepare_with_a_local_certificate_outcome() {
+    let (d, x_identity) = drain_ready_fixture(Some(Y_REQUEST));
+    let head_before: DurableObjectHead = d.coin_head();
+    let locks_before: Vec<Option<Vec<u8>>> = d.lock_rows();
+    let y_certificate_key: Vec<u8> =
+        fastpath_certificate_key(protocol().chain_id(), &[Y_REQUEST; 32]).unwrap();
+    // A certificate outcome next to a still-held local prepare is inconsistent
+    // state. It must never be papered over by the drain's lock resolution.
+    d.put_row(y_certificate_key, vec![0xA5]);
+
+    let result: FastPathResult<NodeOutput> = apply_drain_member(
+        &d.store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &d.fixture.policy,
+        &CountingEngine::new(),
+        x_identity.request_id,
+        10,
+    );
+    assert!(result.is_err());
+    assert_eq!(d.coin_head(), head_before);
+    assert_eq!(d.lock_rows(), locks_before);
+    assert!(d.request_receipt(x_identity.request_id).is_none());
+}
+
+#[test]
+fn apply_drain_member_refuses_when_the_committed_freeze_disappears() {
+    let (d, x_identity) = drain_ready_fixture(None);
+    let head_before: DurableObjectHead = d.coin_head();
+    remove_closure(&d);
+    let result: FastPathResult<NodeOutput> = apply_drain_member(
+        &d.store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &d.fixture.policy,
+        &CountingEngine::new(),
+        x_identity.request_id,
+        10,
+    );
+    assert!(result.is_err());
+    assert_eq!(d.coin_head(), head_before);
+    assert!(d.request_receipt(x_identity.request_id).is_none());
 }
