@@ -17,6 +17,14 @@ protocol-types.workspace = true
 sunrise-edge-client.workspace = true
 sunrise-edge-ledger.workspace = true
 public-standard-asset = { path = "../../contracts/standard-asset" }
+# `fastvote-drain-local-ready` needs `FrozenFrontierVote`/`decode_frozen_frontier_vote`
+# and friends directly: `sunrise-edge-client` re-exports its `fastvote_drain_driver`
+# module (whose public signatures already reference these types) but never
+# re-exports the `consensus`/`hashing` items themselves. Both already resolved
+# transitively for this crate via `[dev-dependencies]` below, so promoting them
+# here does not change `Cargo.lock`.
+consensus.workspace = true
+hashing.workspace = true
 
 [features]
 default = []
@@ -26,11 +34,9 @@ usb-hid = ["sunrise-edge-ledger/usb-hid"]
 
 [dev-dependencies]
 abi.workspace = true
-consensus.workspace = true
 crypto.workspace = true
 execution.workspace = true
 fees.workspace = true
-hashing.workspace = true
 native-http.workspace = true
 node-core.workspace = true
 objects.workspace = true

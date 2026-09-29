@@ -1467,3 +1467,6 @@ mod boundary_tests;
 
 #[path = "fastvote_catch_up.rs"]
 pub(super) mod catch_up;
+
+#[path = "fastvote_drain_local_ready.rs"]
+pub(super) mod drain_local_ready;
