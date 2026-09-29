@@ -478,6 +478,11 @@ fn import_refuses_historical_profile_wrong_epoch_and_invalid_freeze_without_writ
             request_id: [0x55; 32],
             closed_at_block_height: 0,
         },
+        AdmissionClosureRecord {
+            closed_epoch: protocol().epoch(),
+            request_id: [0; 32],
+            closed_at_block_height: 3,
+        },
     ] {
         let replica: RetentionReplica = logical_replica();
         replica.put_row(

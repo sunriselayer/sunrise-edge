@@ -143,7 +143,10 @@ fn fence_closed_epoch<S: StructuredDurableDomainStateStore>(
             ))?;
     let closure: crate::ordered_economics::AdmissionClosureRecord =
         crate::ordered_economics::decode_admission_closure_record(closure_bytes)?;
-    if closure.closed_epoch != epoch || closure.closed_at_block_height == 0 {
+    if closure.closed_epoch != epoch
+        || closure.request_id == [0; 32]
+        || closure.closed_at_block_height == 0
+    {
         return Err(PublicationRetentionError::InconsistentRetainedRecord(
             "invalid committed Freeze",
         ));
