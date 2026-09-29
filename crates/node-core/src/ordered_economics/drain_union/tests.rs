@@ -1,14 +1,24 @@
 use super::*;
 use crate::fast_path::FastPathEd25519Verifier;
-use crate::fast_path::drain_publication::retain_drain_publication;
+use crate::fast_path::drain_publication::{
+    drain_possession_key, drain_publication_artifact_key, drain_publication_key,
+    retain_drain_publication,
+};
+use crate::fast_path::publication::{
+    FastPathPublicationRecord, encode_fastpath_publication_record,
+};
 use crate::fast_path::tests::{
     RetentionReplica, TestSigner, four_validators, installed_validator_set, logical_replica,
     transfer_bundle_bytes,
 };
 use crate::ordered_economics::{AdmissionClosureRecord, encode_admission_closure_record};
 use crate::paid_execution::tests::{FIRST_PAID_NONCE, context, domain, protocol, resolver};
-use consensus::bundle::{PublicationBundle, encode_publication_bundle, verify_publication_bundle};
-use consensus::{ConsensusSigner, FastPathCertifier};
+use consensus::bundle::{
+    PublicationBundle, encode_artifact_manifest, encode_publication_bundle,
+    verify_publication_bundle,
+};
+use consensus::{ConsensusSigner, FastPathCertifier, encode_fast_certificate};
+use protocol_types::{HashAlgorithmId, SignatureSchemeId};
 use runtime::{DurableDomainStateStore, MemoryDurableStateStore};
 
 const REQUEST: u8 = 0xE5;
@@ -109,6 +119,40 @@ fn import_into(
         &encode_publication_bundle(bundle).unwrap(),
     )
     .unwrap();
+}
+
+/// Writes the exact `drain-publication/`+`drain-publication-artifact/` rows
+/// [`retain_drain_publication`] would have written, but deliberately leaves
+/// the `drain-possession/` marker key completely untouched (pristine,
+/// `StateRevision::INITIAL`) -- simulating a same-epoch restore that carried
+/// the authenticated proof/artifact history without importing the local
+/// marker, per DR-0156's own closing paragraph.
+fn stage_proof_without_marker(
+    store: &MemoryDurableStateStore,
+    bundle: &PublicationBundle,
+    identity: &AvailabilityIdentity,
+) {
+    let chain = protocol().chain_id().clone();
+    let epoch = protocol().epoch();
+    let record = FastPathPublicationRecord {
+        context: protocol(),
+        request_id: bundle.request_id,
+        identity: encode_availability_identity(identity).unwrap(),
+        signed_intent: bundle.signed_intent.clone(),
+        certificate: encode_fast_certificate(&bundle.certificate).unwrap(),
+        witness: bundle.witness.clone(),
+        manifest: encode_artifact_manifest(&bundle.manifest).unwrap(),
+    };
+    for (entry, content) in bundle.manifest.entries.iter().zip(bundle.contents.iter()) {
+        let key = drain_publication_artifact_key(&chain, epoch, &bundle.request_id, entry).unwrap();
+        put_row(store, key, content.clone());
+    }
+    let key = drain_publication_key(&chain, epoch, &bundle.request_id).unwrap();
+    put_row(
+        store,
+        key,
+        encode_fastpath_publication_record(&record).unwrap(),
+    );
 }
 
 /// Builds one signer's real signed complete-frontier vote over exactly
@@ -592,6 +636,7 @@ fn union_dedupes_shared_entries_reaches_ready_and_replays_exactly() {
         &context(),
         domain(),
         &resolver(),
+        &[],
         &protocol(),
         &selected,
     )
@@ -602,6 +647,7 @@ fn union_dedupes_shared_entries_reaches_ready_and_replays_exactly() {
         &context(),
         domain(),
         &resolver(),
+        &[],
         &protocol(),
         &selected,
     )
@@ -612,6 +658,7 @@ fn union_dedupes_shared_entries_reaches_ready_and_replays_exactly() {
         &context(),
         domain(),
         &resolver(),
+        &[],
         &protocol(),
         &selected,
     )
@@ -630,6 +677,7 @@ fn union_dedupes_shared_entries_reaches_ready_and_replays_exactly() {
         &context(),
         domain(),
         &resolver(),
+        &[],
         &protocol(),
         &selected,
     )
@@ -688,6 +736,7 @@ fn union_refuses_underquorum_forged_and_incomplete_selection() {
             &context(),
             domain(),
             &resolver(),
+            &[],
             &protocol(),
             &[vote_a.clone(), vote_b.clone()],
         )
@@ -702,6 +751,7 @@ fn union_refuses_underquorum_forged_and_incomplete_selection() {
             &context(),
             domain(),
             &resolver(),
+            &[],
             &protocol(),
             &sorted(vec![vote_a.clone(), vote_b.clone(), vote_c]),
         )
@@ -717,6 +767,7 @@ fn union_refuses_underquorum_forged_and_incomplete_selection() {
             &context(),
             domain(),
             &resolver(),
+            &[],
             &protocol(),
             &sorted(vec![vote_a, forged]),
         )
@@ -786,6 +837,7 @@ fn union_detects_a_cross_signer_conflict_at_the_same_request_id() {
             &context(),
             domain(),
             &resolver(),
+            &[],
             &protocol(),
             &sorted(vec![vote_a, vote_b, vote_c]),
         )
@@ -851,5 +903,418 @@ fn crash_between_import_and_confirm_leaves_only_a_harmless_extra_proof() {
         )
         .unwrap(),
         id1
+    );
+}
+
+/// B1 regression: an empty signed frontier is already "terminal" the moment
+/// it is seeded, so ingest must still verify the real registered signature
+/// unconditionally before it can ever stage or complete anything -- not only
+/// on the dry-run page-verification branch used for nonempty frontiers.
+#[test]
+fn ingest_rejects_a_forged_signature_on_an_empty_frontier_vote_and_stages_nothing() {
+    let replica: RetentionReplica = logical_replica();
+    close(&replica.store);
+    let (signers, _entries) = four_validators();
+    let signer: &TestSigner = &signers[0];
+    let mut forged_empty_vote: FrozenFrontierVote = cast_vote(signer, &[]);
+    forged_empty_vote.signature[0] ^= 1;
+    assert!(
+        ingest_drain_signer_page(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &protocol(),
+            signer.validator_id(),
+            forged_empty_vote,
+            one_page(&[]),
+        )
+        .is_err()
+    );
+    let progress_key: Vec<u8> = drain_signer_progress_key(
+        protocol().chain_id(),
+        protocol().epoch(),
+        signer.validator_id(),
+    )
+    .unwrap();
+    assert!(replica.row(&progress_key).is_none());
+}
+
+/// B2 regression: two different, equally valid quorum selections over the
+/// exact same completed signer set must progress at two independent keys,
+/// each reaching its own `Ready` identity without one clobbering or wedging
+/// the other's progress.
+#[test]
+fn two_valid_selections_over_the_same_signers_progress_independently() {
+    let replica: RetentionReplica = logical_replica();
+    close(&replica.store);
+    let (bundle1, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    let id1: AvailabilityIdentity = identity(&bundle1);
+    let (signers, _entries) = four_validators();
+
+    let vote0: FrozenFrontierVote = complete_signer(
+        &replica.store,
+        &signers[0],
+        &[(id1.clone(), bundle1.clone())],
+    );
+    let vote1: FrozenFrontierVote = complete_signer(
+        &replica.store,
+        &signers[1],
+        &[(id1.clone(), bundle1.clone())],
+    );
+    let vote2: FrozenFrontierVote = complete_signer(
+        &replica.store,
+        &signers[2],
+        &[(id1.clone(), bundle1.clone())],
+    );
+    let vote3: FrozenFrontierVote =
+        complete_signer(&replica.store, &signers[3], &[(id1.clone(), bundle1)]);
+
+    let selection_a: Vec<FrozenFrontierVote> = sorted(vec![vote0.clone(), vote1.clone(), vote2]);
+    let selection_b: Vec<FrozenFrontierVote> = sorted(vec![vote0, vote1, vote3]);
+
+    let ready_a: DrainUnionIdentity = run_to_ready(&replica.store, &selection_a);
+    let ready_b: DrainUnionIdentity = run_to_ready(&replica.store, &selection_b);
+    assert_eq!(ready_a.member_count, 1);
+    assert_eq!(ready_b.member_count, 1);
+    assert_eq!(ready_a.signer_count, 3);
+    assert_eq!(ready_b.signer_count, 3);
+    // Different selected rosters must fold to different selection digests
+    // even though they share the same single confirmed member.
+    assert_ne!(ready_a.entries_digest, ready_b.entries_digest);
+
+    // Each selection independently re-verifies from its own committed
+    // marker, without disturbing the other's.
+    assert_eq!(
+        verify_drain_ready(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &protocol(),
+            &selection_a
+        )
+        .unwrap(),
+        ready_a
+    );
+    assert_eq!(
+        verify_drain_ready(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &protocol(),
+            &selection_b
+        )
+        .unwrap(),
+        ready_b
+    );
+}
+
+fn run_to_ready(
+    store: &MemoryDurableStateStore,
+    selection: &[FrozenFrontierVote],
+) -> DrainUnionIdentity {
+    loop {
+        match advance_drain_union(
+            store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            selection,
+        )
+        .unwrap()
+        {
+            DrainUnionStep::Ready(identity) => return *identity,
+            DrainUnionStep::Advanced { .. } => {}
+        }
+    }
+}
+
+/// B3 regression: a same-epoch restore may carry the authenticated
+/// `drain-publication/`+`drain-publication-artifact/` history while this
+/// host's own `drain-possession/` marker is pristine (never written here).
+/// Confirmation must independently re-verify the complete saved proof and
+/// every artifact against the locally staged, page-authenticated identity,
+/// then safely rebuild the marker atomically with this same confirmation.
+#[test]
+fn confirm_rebuilds_a_pristine_missing_marker_after_a_same_epoch_restore() {
+    let replica: RetentionReplica = logical_replica();
+    close(&replica.store);
+    let (bundle1, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    let id1: AvailabilityIdentity = identity(&bundle1);
+    let (signers, _entries) = four_validators();
+    let signer: &TestSigner = &signers[0];
+    let vote: FrozenFrontierVote = cast_vote(signer, std::slice::from_ref(&id1));
+    ingest_drain_signer_page(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &protocol(),
+        signer.validator_id(),
+        vote,
+        one_page(std::slice::from_ref(&id1)),
+    )
+    .unwrap();
+
+    // Simulate the restore: the proof and artifacts exist, but the
+    // possession marker was never written on this host.
+    stage_proof_without_marker(&replica.store, &bundle1, &id1);
+    let marker_key: Vec<u8> =
+        drain_possession_key(protocol().chain_id(), protocol().epoch(), &id1.request_id).unwrap();
+    assert!(replica.row(&marker_key).is_none());
+
+    assert_eq!(
+        confirm_drain_signer_entry(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            signer.validator_id(),
+        )
+        .unwrap(),
+        id1
+    );
+    assert_eq!(
+        replica.row(&marker_key).unwrap(),
+        encode_availability_identity(&id1).unwrap()
+    );
+}
+
+/// B3 negative: a tombstoned marker (as opposed to a pristine one) must
+/// still fail closed rather than being silently rebuilt, even though the
+/// proof and artifacts independently re-verify.
+#[test]
+fn confirm_refuses_to_rebuild_a_tombstoned_marker() {
+    let replica: RetentionReplica = logical_replica();
+    close(&replica.store);
+    let (bundle1, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    let id1: AvailabilityIdentity = identity(&bundle1);
+    let (signers, _entries) = four_validators();
+    let signer: &TestSigner = &signers[0];
+    let vote: FrozenFrontierVote = cast_vote(signer, std::slice::from_ref(&id1));
+    ingest_drain_signer_page(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &protocol(),
+        signer.validator_id(),
+        vote,
+        one_page(std::slice::from_ref(&id1)),
+    )
+    .unwrap();
+    import_into(&replica.store, &bundle1, &id1);
+    let marker_key: Vec<u8> =
+        drain_possession_key(protocol().chain_id(), protocol().epoch(), &id1.request_id).unwrap();
+    delete_row(&replica.store, marker_key);
+    assert!(
+        confirm_drain_signer_entry(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            signer.validator_id(),
+        )
+        .is_err()
+    );
+}
+
+/// H1 regression: a union step must re-verify the winning member's complete
+/// proof/artifacts/marker fresh from storage, not merely trust the signer-
+/// entry row's own bytes -- even when *every* selected signer's entry row
+/// agrees on a tampered identity (so no cross-signer conflict is raised).
+#[test]
+fn union_step_rechecks_possession_even_when_every_selected_entry_agrees_on_a_tampered_identity() {
+    let replica: RetentionReplica = logical_replica();
+    close(&replica.store);
+    let (bundle1, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    let id1: AvailabilityIdentity = identity(&bundle1);
+    let (signers, _entries) = four_validators();
+
+    let vote0: FrozenFrontierVote = complete_signer(
+        &replica.store,
+        &signers[0],
+        &[(id1.clone(), bundle1.clone())],
+    );
+    let vote1: FrozenFrontierVote = complete_signer(
+        &replica.store,
+        &signers[1],
+        &[(id1.clone(), bundle1.clone())],
+    );
+    let vote2: FrozenFrontierVote =
+        complete_signer(&replica.store, &signers[2], &[(id1.clone(), bundle1)]);
+
+    let mut tampered: AvailabilityIdentity = id1.clone();
+    tampered.signed_intent_digest = Digest32::new(HashAlgorithmId::Sha2_256, [0xEE; 32]);
+    let tampered_bytes: Vec<u8> = encode_availability_identity(&tampered).unwrap();
+    for signer in [&signers[0], &signers[1], &signers[2]] {
+        let entry_key: Vec<u8> = drain_signer_entry_key(
+            protocol().chain_id(),
+            protocol().epoch(),
+            signer.validator_id(),
+            &id1.request_id,
+        )
+        .unwrap();
+        put_row(&replica.store, entry_key, tampered_bytes.clone());
+    }
+
+    let selection: Vec<FrozenFrontierVote> = sorted(vec![vote0, vote1, vote2]);
+    assert!(
+        advance_drain_union(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &selection,
+        )
+        .is_err()
+    );
+    // Nothing was committed: no progress row exists for this selection.
+    let seed = DrainUnionAccumulator::new(
+        &resolver(),
+        protocol().chain_id().clone(),
+        protocol().protocol_version(),
+        protocol().epoch(),
+        domain(),
+        CLOSURE_REQUEST_ID,
+        CLOSURE_HEIGHT,
+        &selected_pairs(&selection),
+    )
+    .unwrap();
+    let progress_key: Vec<u8> = drain_union_progress_key(
+        protocol().chain_id(),
+        protocol().epoch(),
+        &seed.identity().entries_digest,
+    )
+    .unwrap();
+    assert!(replica.row(&progress_key).is_none());
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn fixed_frontier_identity(entry_count: u64, digest_byte: u8) -> FrozenFrontierIdentity {
+    FrozenFrontierIdentity {
+        chain_id: ChainId::new("drain-union-vector-test").unwrap(),
+        protocol_version: ProtocolVersion::new(4),
+        epoch: Epoch::new(8),
+        domain: AtomicityDomainId::new([9; 32]).unwrap(),
+        closure_request_id: [7; 32],
+        closure_height: 11,
+        entry_count,
+        entries_digest: Digest32::new(HashAlgorithmId::Sha2_256, [digest_byte; 32]),
+    }
+}
+
+fn fixed_frontier_vote(validator_byte: u8, identity: FrozenFrontierIdentity) -> FrozenFrontierVote {
+    FrozenFrontierVote {
+        identity,
+        validator: ValidatorId::new([validator_byte; 32]),
+        signature_scheme: SignatureSchemeId::Ed25519,
+        signature: vec![0x5a; 64],
+    }
+}
+
+fn fixed_availability_identity(request_byte: u8) -> AvailabilityIdentity {
+    AvailabilityIdentity {
+        chain_id: ChainId::new("drain-union-vector-test").unwrap(),
+        protocol_version: ProtocolVersion::new(4),
+        epoch: Epoch::new(8),
+        domain: AtomicityDomainId::new([9; 32]).unwrap(),
+        request_id: [request_byte; 32],
+        signed_intent_digest: Digest32::new(HashAlgorithmId::Sha2_256, [request_byte; 32]),
+        execution_commitment: Digest32::new(HashAlgorithmId::Sha2_256, [request_byte + 1; 32]),
+        semantic_artifacts_digest: Digest32::new(HashAlgorithmId::Sha2_256, [request_byte + 2; 32]),
+    }
+}
+
+fn fixed_drain_union_identity() -> DrainUnionIdentity {
+    DrainUnionIdentity {
+        chain_id: ChainId::new("drain-union-vector-test").unwrap(),
+        protocol_version: ProtocolVersion::new(4),
+        epoch: Epoch::new(8),
+        domain: AtomicityDomainId::new([9; 32]).unwrap(),
+        closure_request_id: [7; 32],
+        closure_height: 11,
+        signer_count: 1,
+        member_count: 0,
+        entries_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0xbb; 32]),
+    }
+}
+
+/// Stable `0x645B/v1` [`SignerProgressRecord`] vector, pinned so an
+/// unintended future field/framing change is caught by CI rather than only
+/// by a live-store round trip.
+#[test]
+fn signer_progress_record_vector_is_stable() {
+    let vote: FrozenFrontierVote = fixed_frontier_vote(1, fixed_frontier_identity(0, 0xaa));
+    let record = SignerProgressRecord {
+        vote: vote.clone(),
+        confirmed_identity: fixed_frontier_identity(0, 0xaa),
+        confirmed_last_request_id: None,
+        staged_page: None,
+        complete: false,
+    };
+    let encoded: Vec<u8> = encode_signer_progress(&record).unwrap();
+    assert_eq!(decode_signer_progress(&encoded).unwrap(), record);
+    assert_eq!(
+        hex(&encoded),
+        "534e52455b6401000500010069010000534e524537d0010004000100e5000000534e524536d001000800010017000000647261696e2d756e696f6e2d766563746f722d74657374020004000000040000000300080000000800000000000000040020000000090909090909090909090909090909090909090909090909090909090909090905002000000007070707070707070707070707070707070707070707070707070707070707070600080000000b000000000000000700080000000000000000000000080038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa020020000000010101010101010101010101010101010101010101010101010101010101010103000200000001000400400000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a0200e5000000534e524536d001000800010017000000647261696e2d756e696f6e2d766563746f722d74657374020004000000040000000300080000000800000000000000040020000000090909090909090909090909090909090909090909090909090909090909090905002000000007070707070707070707070707070707070707070707070707070707070707070600080000000b000000000000000700080000000000000000000000080038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0300000000000400000000000500020000000000"
+    );
+
+    let staged = SignerProgressRecord {
+        vote,
+        confirmed_identity: fixed_frontier_identity(0, 0xaa),
+        confirmed_last_request_id: None,
+        staged_page: Some(one_page(&[fixed_availability_identity(1)])),
+        complete: false,
+    };
+    let staged_encoded: Vec<u8> = encode_signer_progress(&staged).unwrap();
+    assert_eq!(decode_signer_progress(&staged_encoded).unwrap(), staged);
+    assert_ne!(staged_encoded, encoded);
+}
+
+/// Stable `0x645C/v1`/`0x645D/v1` [`UnionProgressRecord`]/[`UnionReadyRecord`]
+/// vectors.
+#[test]
+fn union_progress_and_ready_record_vectors_are_stable() {
+    let vote: FrozenFrontierVote = fixed_frontier_vote(1, fixed_frontier_identity(1, 0xaa));
+    let selection_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0xcc; 32]);
+    let progress = UnionProgressRecord {
+        selection_digest,
+        identity: fixed_drain_union_identity(),
+        selected_votes: vec![vote.clone()],
+        last_request_id: None,
+    };
+    let progress_encoded: Vec<u8> = encode_union_progress(&progress).unwrap();
+    assert_eq!(decode_union_progress(&progress_encoded).unwrap(), progress);
+
+    let ready = UnionReadyRecord {
+        selection_digest,
+        identity: fixed_drain_union_identity(),
+        selected_votes: vec![vote],
+    };
+    let ready_encoded: Vec<u8> = encode_union_ready(&ready).unwrap();
+    assert_eq!(decode_union_ready(&ready_encoded).unwrap(), ready);
+    assert_ne!(ready_encoded, progress_encoded);
+
+    assert_eq!(
+        hex(&progress_encoded),
+        "534e52455c64010005000100f3000000534e52453bd001000900010017000000647261696e2d756e696f6e2d766563746f722d74657374020004000000040000000300080000000800000000000000040020000000090909090909090909090909090909090909090909090909090909090909090905002000000007070707070707070707070707070707070707070707070707070707070707070600080000000b0000000000000007000800000001000000000000000800080000000000000000000000090038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb020000000000030038000000534e52450301010002000100020000000100020020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0400020000000100050069010000534e524537d0010004000100e5000000534e524536d001000800010017000000647261696e2d756e696f6e2d766563746f722d74657374020004000000040000000300080000000800000000000000040020000000090909090909090909090909090909090909090909090909090909090909090905002000000007070707070707070707070707070707070707070707070707070707070707070600080000000b000000000000000700080000000100000000000000080038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa020020000000010101010101010101010101010101010101010101010101010101010101010103000200000001000400400000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+    );
+    assert_eq!(
+        hex(&ready_encoded),
+        "534e52455d64010004000100f3000000534e52453bd001000900010017000000647261696e2d756e696f6e2d766563746f722d74657374020004000000040000000300080000000800000000000000040020000000090909090909090909090909090909090909090909090909090909090909090905002000000007070707070707070707070707070707070707070707070707070707070707070600080000000b0000000000000007000800000001000000000000000800080000000000000000000000090038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb020038000000534e52450301010002000100020000000100020020000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0300020000000100040069010000534e524537d0010004000100e5000000534e524536d001000800010017000000647261696e2d756e696f6e2d766563746f722d74657374020004000000040000000300080000000800000000000000040020000000090909090909090909090909090909090909090909090909090909090909090905002000000007070707070707070707070707070707070707070707070707070707070707070600080000000b000000000000000700080000000100000000000000080038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa020020000000010101010101010101010101010101010101010101010101010101010101010103000200000001000400400000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
     );
 }

@@ -16,7 +16,7 @@
 //! [`DrainUnionIdentity`] as anything beyond one replica's own local
 //! progress.
 
-use super::frontier::FrontierError;
+use super::frontier::{FrontierError, FrozenFrontierIdentity, encode_frozen_frontier_identity};
 use super::{AvailabilityIdentity, encode_availability_identity, ensure_chain_id_bound};
 use crate::ConsensusError;
 use canonical_encoding::{
@@ -70,11 +70,17 @@ pub struct DrainUnionAccumulator {
 }
 
 impl DrainUnionAccumulator {
-    /// Starts a context- and roster-bound empty-union seed. `selected_signers`
-    /// must already be the exact strictly ascending, unique, quorum-verified
-    /// roster: this constructor re-checks ordering/uniqueness for its own
-    /// self-containment but does not itself verify quorum power or
-    /// signatures.
+    /// Starts a context- and selection-bound empty-union seed. `selected`
+    /// must already be the exact strictly ascending, unique,
+    /// quorum-verified roster paired with each signer's own complete signed
+    /// frontier identity: this constructor re-checks ordering/uniqueness for
+    /// its own self-containment but does not itself verify quorum power or
+    /// signatures. Folding each signer's frontier identity -- not just its
+    /// validator ID -- into the seed digest is what lets two selections that
+    /// name the same validators but different frontier content (an
+    /// impossibility for one honest signer, but not for a caller error or a
+    /// stale supplied vote) progress under two distinct digests rather than
+    /// silently colliding.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         resolver: &HashSuiteResolver,
@@ -84,18 +90,18 @@ impl DrainUnionAccumulator {
         domain: AtomicityDomainId,
         closure_request_id: [u8; 32],
         closure_height: u64,
-        selected_signers: &[ValidatorId],
+        selected: &[(ValidatorId, FrozenFrontierIdentity)],
     ) -> Result<Self, FrontierError> {
         ensure_chain_id_bound(&chain_id)?;
         ensure_member_request_id_nonzero(&closure_request_id)?;
         if closure_height == 0 {
             return Err(FrontierError::Invalid("zero Freeze block height"));
         }
-        if selected_signers.is_empty() || selected_signers.len() > MAX_DRAIN_UNION_SIGNERS {
+        if selected.is_empty() || selected.len() > MAX_DRAIN_UNION_SIGNERS {
             return Err(FrontierError::Invalid("drain union signer count"));
         }
-        for pair in selected_signers.windows(2) {
-            if pair[0] >= pair[1] {
+        for pair in selected.windows(2) {
+            if pair[0].0 >= pair[1].0 {
                 return Err(FrontierError::Invalid("drain union signer order"));
             }
         }
@@ -113,13 +119,23 @@ impl DrainUnionAccumulator {
         frame.field_bytes(5, domain.as_bytes().to_vec())?;
         frame.field_bytes(6, closure_request_id.to_vec())?;
         frame.field_u64(7, closure_height)?;
-        let signer_count: u64 = u64::try_from(selected_signers.len())
+        let signer_count: u64 = u64::try_from(selected.len())
             .map_err(|_| FrontierError::Invalid("drain union signer count overflow"))?;
         frame.field_u64(8, signer_count)?;
-        for (index, signer) in selected_signers.iter().enumerate() {
-            let field: u16 = u16::try_from(index + 9)
+        for (index, (signer, frontier_identity)) in selected.iter().enumerate() {
+            let base: usize = index
+                .checked_mul(2)
+                .and_then(|doubled| doubled.checked_add(9))
+                .ok_or(FrontierError::Invalid("drain union signer field overflow"))?;
+            let id_field: u16 = u16::try_from(base)
                 .map_err(|_| FrontierError::Invalid("drain union signer field overflow"))?;
-            frame.field_bytes(field, signer.as_bytes())?;
+            let identity_field: u16 = u16::try_from(base + 1)
+                .map_err(|_| FrontierError::Invalid("drain union signer field overflow"))?;
+            frame.field_bytes(id_field, signer.as_bytes())?;
+            frame.field_bytes(
+                identity_field,
+                encode_frozen_frontier_identity(frontier_identity)?,
+            )?;
         }
         let entries_digest: Digest32 =
             resolver.hash_for_purpose(epoch, HashPurpose::ExecutionEffects, &frame.finish()?)?;
@@ -146,7 +162,7 @@ impl DrainUnionAccumulator {
         resolver: &HashSuiteResolver,
         identity: DrainUnionIdentity,
         last_request_id: Option<[u8; 32]>,
-        selected_signers: &[ValidatorId],
+        selected: &[(ValidatorId, FrozenFrontierIdentity)],
     ) -> Result<Self, FrontierError> {
         encode_drain_union_identity(&identity)?;
         if resolver.chain_id() != &identity.chain_id
@@ -168,7 +184,7 @@ impl DrainUnionAccumulator {
                 "drain union cursor count and key mismatch",
             ));
         }
-        let signer_count: u64 = u64::try_from(selected_signers.len())
+        let signer_count: u64 = u64::try_from(selected.len())
             .map_err(|_| FrontierError::Invalid("drain union signer count overflow"))?;
         if identity.signer_count != signer_count {
             return Err(FrontierError::Invalid("drain union signer count mismatch"));
@@ -182,7 +198,7 @@ impl DrainUnionAccumulator {
                 identity.domain,
                 identity.closure_request_id,
                 identity.closure_height,
-                selected_signers,
+                selected,
             )?;
             if seed.identity != identity {
                 return Err(FrontierError::Invalid(

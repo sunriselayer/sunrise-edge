@@ -25,6 +25,11 @@ use std::collections::BTreeMap;
 
 type DrainResult<T> = Result<T, PublicationRetentionError>;
 
+/// A pending `(key, bytes)` write for a possession marker this host has
+/// independently re-verified is safe to rebuild; `None` means the marker
+/// already matched and nothing needs to change.
+pub(crate) type PossessionMarkerRebuild = Option<(Vec<u8>, Vec<u8>)>;
+
 fn drain_key(
     chain: &ChainId,
     epoch: Epoch,
@@ -440,14 +445,13 @@ pub fn verify_drain_possession<S: StructuredDurableDomainStateStore>(
     Ok(())
 }
 
-/// Same check as [`verify_drain_possession`], but for a caller that already
-/// fenced the closed epoch and outgoing set, and that folds every read
-/// revision this performs (publication, every artifact, and the possession
-/// marker) into its own CAS read set so a signer-entry confirmation and this
-/// re-verification commit atomically together. Returns the re-verified
-/// identity so a caller never needs to trust its own request as authority.
+/// Re-verifies the retained proof and every exact artifact byte against
+/// `expected_identity`, folding every read into `reads`. Does not itself
+/// read or write the possession marker: callers decide separately whether a
+/// missing marker is a hard failure ([`verify_drain_possession_into`]) or a
+/// safe rebuild candidate ([`verify_or_stage_drain_possession_rebuild`]).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn verify_drain_possession_into<S: StructuredDurableDomainStateStore>(
+fn verify_drain_proof_into<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -521,19 +525,118 @@ pub(crate) fn verify_drain_possession_into<S: StructuredDurableDomainStateStore>
     };
     let identity: AvailabilityIdentity =
         verify_bundle(resolver, history, expected, domain, validators, &bundle)?;
+    if identity != *expected_identity || record.identity != encode_availability_identity(&identity)?
+    {
+        return Err(PublicationRetentionError::InconsistentRetainedRecord(
+            "drain publication identity mismatch",
+        ));
+    }
+    Ok(identity)
+}
+
+/// Same check as [`verify_drain_possession`], but for a caller that already
+/// fenced the closed epoch and outgoing set, and that folds every read
+/// revision this performs (publication, every artifact, and the possession
+/// marker) into its own CAS read set so a signer-entry confirmation and this
+/// re-verification commit atomically together. Returns the re-verified
+/// identity so a caller never needs to trust its own request as authority.
+/// A pristine (never-written) marker is treated exactly like a tombstoned
+/// one here: this function never mutates anything, so it cannot safely
+/// rebuild a missing marker itself. See
+/// [`verify_or_stage_drain_possession_rebuild`] for the repair-capable path.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn verify_drain_possession_into<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    validators: &ValidatorSet,
+    expected_identity: &AvailabilityIdentity,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> DrainResult<AvailabilityIdentity> {
+    let identity: AvailabilityIdentity = verify_drain_proof_into(
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        validators,
+        expected_identity,
+        reads,
+    )?;
+    let chain: ChainId = expected.chain_id().clone();
+    let epoch: Epoch = expected.epoch();
+    let request_id: [u8; 32] = expected_identity.request_id;
     let marker_key: Vec<u8> = drain_possession_key(&chain, epoch, &request_id)?;
     let marker: VersionedStateValue = store.get_versioned_durable(context, domain, &marker_key)?;
     put_read(reads, marker_key, marker.revision())?;
     let identity_bytes: Vec<u8> = encode_availability_identity(&identity)?;
-    if identity != *expected_identity
-        || record.identity != identity_bytes
-        || marker.value() != Some(identity_bytes.as_slice())
-    {
+    if marker.value() != Some(identity_bytes.as_slice()) {
         return Err(PublicationRetentionError::InconsistentRetainedRecord(
             "drain possession identity or marker",
         ));
     }
     Ok(identity)
+}
+
+/// A same-epoch restore may carry the authenticated `drain-publication/` and
+/// `drain-publication-artifact/` history while its local `drain-possession/`
+/// marker is pristine (never written on this host): DR-0156 requires that
+/// marker never be inferred from the proof row alone, but does allow it to
+/// be safely *rebuilt* once the complete saved proof and every artifact have
+/// been independently re-verified against the caller's own locally staged,
+/// page-authenticated `expected_identity` -- never a caller-supplied claim
+/// and never the proof's own self-reported identity alone. This function
+/// never writes anything itself; it folds the marker's own read revision
+/// into `reads` and, only for the pristine case, returns the exact
+/// `(key, bytes)` pair the caller must fold into the *same* atomic commit as
+/// every other read this function performed. A tombstoned marker -- like a
+/// tombstoned or missing proof/artifact -- still fails closed.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn verify_or_stage_drain_possession_rebuild<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    validators: &ValidatorSet,
+    expected_identity: &AvailabilityIdentity,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> DrainResult<(AvailabilityIdentity, PossessionMarkerRebuild)> {
+    let identity: AvailabilityIdentity = verify_drain_proof_into(
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        validators,
+        expected_identity,
+        reads,
+    )?;
+    let chain: ChainId = expected.chain_id().clone();
+    let epoch: Epoch = expected.epoch();
+    let request_id: [u8; 32] = expected_identity.request_id;
+    let marker_key: Vec<u8> = drain_possession_key(&chain, epoch, &request_id)?;
+    let marker: VersionedStateValue = store.get_versioned_durable(context, domain, &marker_key)?;
+    put_read(reads, marker_key.clone(), marker.revision())?;
+    let identity_bytes: Vec<u8> = encode_availability_identity(&identity)?;
+    match marker.value() {
+        Some(bytes) if bytes == identity_bytes.as_slice() => Ok((identity, None)),
+        Some(_) => Err(PublicationRetentionError::InconsistentRetainedRecord(
+            "drain possession identity or marker",
+        )),
+        None if marker.revision() == StateRevision::INITIAL => {
+            Ok((identity, Some((marker_key, identity_bytes))))
+        }
+        None => Err(PublicationRetentionError::InconsistentRetainedRecord(
+            "drain possession marker is tombstoned",
+        )),
+    }
 }
 
 #[cfg(test)]

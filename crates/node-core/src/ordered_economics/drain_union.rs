@@ -41,8 +41,11 @@ use super::*;
 use crate::fast_path::FastPathEd25519Verifier;
 use crate::fast_path::drain_publication::{
     fence_closed_epoch, retain_drain_publication, verify_drain_possession_into,
+    verify_or_stage_drain_possession_rebuild,
 };
-use canonical_encoding::{decode_canonical_frame, encode_chain_id};
+use canonical_encoding::{
+    decode_canonical_frame, decode_digest32, encode_chain_id, encode_digest32,
+};
 use consensus::{
     AvailabilityIdentity, DrainUnionAccumulator, DrainUnionIdentity, FrozenFrontierAccumulator,
     FrozenFrontierCertifier, FrozenFrontierIdentity, FrozenFrontierPage,
@@ -53,7 +56,7 @@ use consensus::{
     verify_frozen_frontier_quorum,
 };
 use execution::publication::PublicationContext;
-use protocol_types::ValidatorId;
+use protocol_types::{Digest32, ValidatorId};
 use runtime::portable::{
     DurableCollection, DurablePortableRepository, DurableRecordKey, DurableRecordScan,
 };
@@ -203,27 +206,42 @@ pub fn drain_signer_entry_key(
     Ok(key)
 }
 
-/// CAS-fenced local progress of one in-flight DrainSet union merge, pinned
-/// to one exact selected-signer roster.
+/// CAS-fenced local progress of one in-flight DrainSet union merge, keyed by
+/// the canonical selection digest over the exact ascending `(validator_id,
+/// frontier_identity)` pairs the caller selected -- not merely by chain and
+/// epoch. Two valid selections (e.g. two different quorum subsets, or the
+/// same signers at two different points of their own frontier) therefore
+/// progress at two independent keys instead of colliding or wedging each
+/// other; each still reuses the same underlying per-signer confirmed-entry
+/// rows, since those are keyed independently of any selection.
 pub fn drain_union_progress_key(
     chain: &ChainId,
     epoch: Epoch,
+    selection_digest: &Digest32,
 ) -> Result<Vec<u8>, DrainSignerError> {
     let mut key: Vec<u8> = engine::ORDERED_ECONOMICS_STATE_PREFIX.to_vec();
     key.extend_from_slice(b"drain-union-progress/");
     key.extend(encode_chain_id(chain)?);
     key.extend_from_slice(&epoch.get().to_be_bytes());
+    key.extend_from_slice(&selection_digest.bytes());
     validate_transactional_state_key(&key)?;
     Ok(key)
 }
 
 /// Immutable local DrainSet-ready marker: never a signed vote, never cut
 /// history, and never itself a proof that the referenced proofs still exist.
-pub fn drain_union_ready_key(chain: &ChainId, epoch: Epoch) -> Result<Vec<u8>, DrainSignerError> {
+/// Keyed by the same canonical selection digest as
+/// [`drain_union_progress_key`], for the same reason.
+pub fn drain_union_ready_key(
+    chain: &ChainId,
+    epoch: Epoch,
+    selection_digest: &Digest32,
+) -> Result<Vec<u8>, DrainSignerError> {
     let mut key: Vec<u8> = engine::ORDERED_ECONOMICS_STATE_PREFIX.to_vec();
     key.extend_from_slice(b"drain-union-ready/");
     key.extend(encode_chain_id(chain)?);
     key.extend_from_slice(&epoch.get().to_be_bytes());
+    key.extend_from_slice(&selection_digest.bytes());
     validate_transactional_state_key(&key)?;
     Ok(key)
 }
@@ -433,6 +451,12 @@ pub fn ingest_drain_signer_page<S: StructuredDurableDomainStateStore>(
         drain.epoch,
         drain.validators.clone(),
     )?;
+    // Unconditional: a genuinely empty frontier is already "terminal" the
+    // moment it is seeded (see below), so without this check up front a
+    // forged or unregistered signature on an empty vote would never reach
+    // any signature verification at all and could still wedge this signer's
+    // progress row as complete.
+    certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
 
     let progress_key: Vec<u8> = drain_signer_progress_key(&drain.chain, drain.epoch, signer)?;
     let progress_row: VersionedStateValue =
@@ -651,7 +675,16 @@ pub fn confirm_drain_signer_entry<S: StructuredDurableDomainStateStore>(
             "staged page already fully confirmed",
         ))?;
 
-    let reconfirmed: AvailabilityIdentity = verify_drain_possession_into(
+    // A same-epoch restore may carry the authenticated proof and artifacts
+    // while this host's own possession marker is still pristine; rebuild it
+    // here, atomically with this same confirmation, only after the complete
+    // proof independently re-verifies against `pending` -- the identity this
+    // host's own locally staged, page-authenticated frontier expects, never
+    // a caller-supplied claim.
+    let (reconfirmed, marker_rebuild): (
+        AvailabilityIdentity,
+        crate::fast_path::drain_publication::PossessionMarkerRebuild,
+    ) = verify_or_stage_drain_possession_rebuild(
         store,
         context,
         domain,
@@ -707,19 +740,20 @@ pub fn confirm_drain_signer_entry<S: StructuredDurableDomainStateStore>(
     }
     put_read(&mut drain.reads, entry_key.clone(), entry_row.revision())?;
 
-    commit_row(
-        store,
-        context,
-        domain,
-        drain.reads,
-        vec![
-            StateMutationEntry::new(
-                progress_key,
-                StateMutation::Put(encode_signer_progress(&record)?),
-            )?,
-            StateMutationEntry::new(entry_key, StateMutation::Put(entry_bytes))?,
-        ],
-    )?;
+    let mut mutations: Vec<StateMutationEntry> = vec![
+        StateMutationEntry::new(
+            progress_key,
+            StateMutation::Put(encode_signer_progress(&record)?),
+        )?,
+        StateMutationEntry::new(entry_key, StateMutation::Put(entry_bytes))?,
+    ];
+    if let Some((marker_key, marker_bytes)) = marker_rebuild {
+        mutations.push(StateMutationEntry::new(
+            marker_key,
+            StateMutation::Put(marker_bytes),
+        )?);
+    }
+    commit_row(store, context, domain, drain.reads, mutations)?;
     Ok(pending)
 }
 
@@ -753,38 +787,67 @@ pub fn import_staged_drain_publication<S: StructuredDurableDomainStateStore>(
     )?)
 }
 
+/// The canonical selection this progress/ready row is scoped to: the exact
+/// ascending, unique `(validator_id, frontier_identity)` pairs
+/// [`selection_digest`] was folded from. Both `selected_votes` and
+/// `selection_digest` are stored, and every reader recomputes and compares
+/// both against its own fresh selection -- the digest binding is what makes
+/// the storage *key* selection-specific (see [`drain_union_progress_key`]),
+/// and the stored votes let a reader recheck signatures/content without
+/// trusting the key match alone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct UnionProgressRecord {
+    selection_digest: Digest32,
     identity: DrainUnionIdentity,
-    selected_signers: Vec<ValidatorId>,
+    selected_votes: Vec<FrozenFrontierVote>,
     last_request_id: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct UnionReadyRecord {
+    selection_digest: Digest32,
     identity: DrainUnionIdentity,
-    selected_signers: Vec<ValidatorId>,
+    selected_votes: Vec<FrozenFrontierVote>,
 }
 
-fn encode_signer_roster(
+fn encode_vote_list(
     frame: &mut CanonicalStruct,
     base_field: u16,
-    selected_signers: &[ValidatorId],
+    votes: &[FrozenFrontierVote],
 ) -> Result<(), DrainSignerError> {
-    let count: u16 = u16::try_from(selected_signers.len())
-        .map_err(|_| DrainSignerError::Invalid("drain union signer count overflow"))?;
+    let count: u16 = u16::try_from(votes.len())
+        .map_err(|_| DrainSignerError::Invalid("drain union vote count overflow"))?;
     frame.field_u16(base_field, count)?;
-    for (index, signer) in selected_signers.iter().enumerate() {
+    for (index, vote) in votes.iter().enumerate() {
         let offset: u16 = u16::try_from(index + 1)
-            .map_err(|_| DrainSignerError::Invalid("drain union signer field overflow"))?;
+            .map_err(|_| DrainSignerError::Invalid("drain union vote field overflow"))?;
         let field: u16 = base_field
             .checked_add(offset)
-            .ok_or(DrainSignerError::Invalid(
-                "drain union signer field overflow",
-            ))?;
-        frame.field_bytes(field, signer.as_bytes())?;
+            .ok_or(DrainSignerError::Invalid("drain union vote field overflow"))?;
+        frame.field_bytes(field, encode_frozen_frontier_vote(vote)?)?;
     }
     Ok(())
+}
+
+fn decode_vote_list(
+    frame: &canonical_encoding::CanonicalFrame<'_>,
+    count_field: u16,
+    base_field: u16,
+) -> Result<Vec<FrozenFrontierVote>, DrainSignerError> {
+    let count: usize = usize::from(frame.required_u16(count_field)?);
+    if count == 0 || count > MAX_DRAIN_UNION_SIGNERS {
+        return Err(DrainSignerError::Invalid("drain union vote count"));
+    }
+    let mut votes: Vec<FrozenFrontierVote> = Vec::with_capacity(count);
+    for index in 0..count {
+        let offset: u16 = u16::try_from(index + 1)
+            .map_err(|_| DrainSignerError::Invalid("drain union vote field overflow"))?;
+        let field: u16 = base_field
+            .checked_add(offset)
+            .ok_or(DrainSignerError::Invalid("drain union vote field overflow"))?;
+        votes.push(decode_frozen_frontier_vote(frame.required_field(field)?)?);
+    }
+    Ok(votes)
 }
 
 fn encode_union_progress(record: &UnionProgressRecord) -> Result<Vec<u8>, DrainSignerError> {
@@ -796,7 +859,8 @@ fn encode_union_progress(record: &UnionProgressRecord) -> Result<Vec<u8>, DrainS
             .last_request_id
             .map_or_else(Vec::new, |id| id.to_vec()),
     )?;
-    encode_signer_roster(&mut frame, 3, &record.selected_signers)?;
+    frame.field_bytes(3, encode_digest32(&record.selection_digest)?)?;
+    encode_vote_list(&mut frame, 4, &record.selected_votes)?;
     Ok(frame.finish()?)
 }
 
@@ -812,23 +876,16 @@ fn decode_union_progress(input: &[u8]) -> Result<UnionProgressRecord, DrainSigne
                 .map_err(|_| DrainSignerError::Invalid("drain union cursor length"))?,
         ),
     };
-    let count: usize = usize::from(frame.required_u16(3)?);
-    if count == 0 || count > MAX_DRAIN_UNION_SIGNERS || frame.field_count() != count + 3 {
-        return Err(DrainSignerError::Invalid("drain union signer count"));
-    }
-    let mut selected_signers: Vec<ValidatorId> = Vec::with_capacity(count);
-    for index in 0..count {
-        let field: u16 = u16::try_from(index + 4)
-            .map_err(|_| DrainSignerError::Invalid("drain union signer field overflow"))?;
-        let bytes: [u8; 32] = frame
-            .required_field(field)?
-            .try_into()
-            .map_err(|_| DrainSignerError::Invalid("drain union signer id length"))?;
-        selected_signers.push(ValidatorId::new(bytes));
+    let selected_votes: Vec<FrozenFrontierVote> = decode_vote_list(&frame, 4, 4)?;
+    if frame.field_count() != selected_votes.len() + 4 {
+        return Err(DrainSignerError::Invalid(
+            "drain union progress field count",
+        ));
     }
     let record = UnionProgressRecord {
         identity: decode_drain_union_identity(frame.required_field(1)?)?,
-        selected_signers,
+        selection_digest: decode_digest32(frame.required_field(3)?)?,
+        selected_votes,
         last_request_id,
     };
     if encode_union_progress(&record)?.as_slice() != input {
@@ -842,7 +899,8 @@ fn decode_union_progress(input: &[u8]) -> Result<UnionProgressRecord, DrainSigne
 fn encode_union_ready(record: &UnionReadyRecord) -> Result<Vec<u8>, DrainSignerError> {
     let mut frame: CanonicalStruct = CanonicalStruct::new(UNION_READY_TYPE, ENCODING_VERSION);
     frame.field_bytes(1, encode_drain_union_identity(&record.identity)?)?;
-    encode_signer_roster(&mut frame, 2, &record.selected_signers)?;
+    frame.field_bytes(2, encode_digest32(&record.selection_digest)?)?;
+    encode_vote_list(&mut frame, 3, &record.selected_votes)?;
     Ok(frame.finish()?)
 }
 
@@ -850,23 +908,14 @@ fn decode_union_ready(input: &[u8]) -> Result<UnionReadyRecord, DrainSignerError
     let frame = decode_canonical_frame(input)?;
     frame.require_type(UNION_READY_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;
-    let count: usize = usize::from(frame.required_u16(2)?);
-    if count == 0 || count > MAX_DRAIN_UNION_SIGNERS || frame.field_count() != count + 2 {
-        return Err(DrainSignerError::Invalid("drain union signer count"));
-    }
-    let mut selected_signers: Vec<ValidatorId> = Vec::with_capacity(count);
-    for index in 0..count {
-        let field: u16 = u16::try_from(index + 3)
-            .map_err(|_| DrainSignerError::Invalid("drain union signer field overflow"))?;
-        let bytes: [u8; 32] = frame
-            .required_field(field)?
-            .try_into()
-            .map_err(|_| DrainSignerError::Invalid("drain union signer id length"))?;
-        selected_signers.push(ValidatorId::new(bytes));
+    let selected_votes: Vec<FrozenFrontierVote> = decode_vote_list(&frame, 3, 3)?;
+    if frame.field_count() != selected_votes.len() + 3 {
+        return Err(DrainSignerError::Invalid("drain union ready field count"));
     }
     let record = UnionReadyRecord {
         identity: decode_drain_union_identity(frame.required_field(1)?)?,
-        selected_signers,
+        selection_digest: decode_digest32(frame.required_field(2)?)?,
+        selected_votes,
     };
     if encode_union_ready(&record)?.as_slice() != input {
         return Err(DrainSignerError::Invalid("noncanonical drain union ready"));
@@ -875,14 +924,13 @@ fn decode_union_ready(input: &[u8]) -> Result<UnionReadyRecord, DrainSignerError
 }
 
 /// Verifies that `selected_votes` form an ascending, unique, quorum-weighted
-/// set bound to the exact locally committed Freeze and atomicity domain, and
-/// returns their validator IDs in that same ascending, unique order.
+/// set bound to the exact locally committed Freeze and atomicity domain.
 fn verify_selection(
     drain: &DrainContext,
     expected: &PublicationContext,
     domain: AtomicityDomainId,
     selected_votes: &[FrozenFrontierVote],
-) -> Result<Vec<ValidatorId>, DrainSignerError> {
+) -> Result<(), DrainSignerError> {
     let certifier: FrozenFrontierCertifier = FrozenFrontierCertifier::new(
         drain.chain.clone(),
         expected.protocol_version(),
@@ -897,7 +945,45 @@ fn verify_selection(
         drain.closure_height,
         &FastPathEd25519Verifier,
     )?;
-    Ok(selected_votes.iter().map(|vote| vote.validator).collect())
+    Ok(())
+}
+
+/// The exact ascending `(validator_id, frontier_identity)` pairs a selection
+/// digest folds. `selected_votes` must already be ascending/unique/quorum
+/// verified by [`verify_selection`].
+fn selected_pairs(
+    selected_votes: &[FrozenFrontierVote],
+) -> Vec<(ValidatorId, FrozenFrontierIdentity)> {
+    selected_votes
+        .iter()
+        .map(|vote| (vote.validator, vote.identity.clone()))
+        .collect()
+}
+
+/// Builds the fresh empty-union seed for exactly this selection and Freeze:
+/// its `entries_digest` is the canonical selection digest that keys both
+/// [`drain_union_progress_key`] and [`drain_union_ready_key`], binding the
+/// key to the exact ascending signer IDs *and* frontier identities selected,
+/// as well as to the committed Freeze and domain. Two selections that ever
+/// differ in any of those inputs are guaranteed two different keys, so they
+/// progress independently rather than colliding.
+fn selection_seed(
+    resolver: &HashSuiteResolver,
+    drain: &DrainContext,
+    expected: &PublicationContext,
+    domain: AtomicityDomainId,
+    selected_votes: &[FrozenFrontierVote],
+) -> Result<DrainUnionAccumulator, DrainSignerError> {
+    Ok(DrainUnionAccumulator::new(
+        resolver,
+        drain.chain.clone(),
+        expected.protocol_version(),
+        drain.epoch,
+        domain,
+        drain.closure_request_id,
+        drain.closure_height,
+        &selected_pairs(selected_votes),
+    )?)
 }
 
 /// Every selected signer must have independently, locally verified its own
@@ -932,29 +1018,41 @@ fn require_selected_signers_complete<S: StructuredDurableDomainStateStore>(
 
 /// Advances the deterministic local DrainSet union by exactly one merged
 /// request ID, or -- once every selected signer's confirmed entries are
-/// exhausted -- commits the immutable local ready marker. Callers must
-/// resubmit the identical `selected_votes` roster on every call; a changed
-/// selection fails closed rather than silently starting a new merge.
+/// exhausted -- commits the immutable local ready marker. Both the progress
+/// and ready rows are keyed by the canonical selection digest over the exact
+/// ascending `(validator_id, frontier_identity)` pairs `selected_votes`
+/// names (see [`drain_union_progress_key`]): a different, equally valid
+/// selection progresses at its own independent key rather than colliding
+/// with or wedging this one, and both reuse the same underlying per-signer
+/// confirmed-entry rows. Before folding the winning candidate for this step
+/// into the union, its complete retained proof, artifacts and possession
+/// marker are re-verified fresh from storage -- not merely trusted from the
+/// signer-entry row's own bytes -- in the *same* atomic commit as the
+/// progress/ready update.
 pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
     expected: &PublicationContext,
     selected_votes: &[FrozenFrontierVote],
 ) -> Result<DrainUnionStep, DrainSignerError> {
     let mut drain: DrainContext = fence_drain_context(store, context, domain, resolver, expected)?;
-    let selected_signers: Vec<ValidatorId> =
-        verify_selection(&drain, expected, domain, selected_votes)?;
+    verify_selection(&drain, expected, domain, selected_votes)?;
     require_selected_signers_complete(store, context, domain, &mut drain, selected_votes)?;
+    let seed: DrainUnionAccumulator =
+        selection_seed(resolver, &drain, expected, domain, selected_votes)?;
+    let selection_digest: Digest32 = seed.identity().entries_digest;
 
-    let ready_key: Vec<u8> = drain_union_ready_key(&drain.chain, drain.epoch)?;
+    let ready_key: Vec<u8> = drain_union_ready_key(&drain.chain, drain.epoch, &selection_digest)?;
     let ready_row: VersionedStateValue =
         store.get_versioned_durable(context, domain, &ready_key)?;
     put_read(&mut drain.reads, ready_key.clone(), ready_row.revision())?;
     if let Some(bytes) = ready_row.value() {
         let ready: UnionReadyRecord = decode_union_ready(bytes)?;
-        if ready.selected_signers != selected_signers
+        if ready.selection_digest != selection_digest
+            || ready.selected_votes != selected_votes
             || ready.identity.chain_id != drain.chain
             || ready.identity.protocol_version != expected.protocol_version()
             || ready.identity.epoch != drain.epoch
@@ -972,7 +1070,8 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
         return Err(DrainSignerError::Invalid("drain union ready is tombstoned"));
     }
 
-    let progress_key: Vec<u8> = drain_union_progress_key(&drain.chain, drain.epoch)?;
+    let progress_key: Vec<u8> =
+        drain_union_progress_key(&drain.chain, drain.epoch, &selection_digest)?;
     let progress_row: VersionedStateValue =
         store.get_versioned_durable(context, domain, &progress_key)?;
     put_read(
@@ -983,7 +1082,8 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
     let accumulator: DrainUnionAccumulator = match progress_row.value() {
         Some(bytes) => {
             let record: UnionProgressRecord = decode_union_progress(bytes)?;
-            if record.selected_signers != selected_signers
+            if record.selection_digest != selection_digest
+                || record.selected_votes != selected_votes
                 || record.identity.chain_id != drain.chain
                 || record.identity.protocol_version != expected.protocol_version()
                 || record.identity.epoch != drain.epoch
@@ -999,25 +1099,18 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
                 resolver,
                 record.identity,
                 record.last_request_id,
-                &selected_signers,
+                &selected_pairs(selected_votes),
             )?
         }
-        None if progress_row.revision() == StateRevision::INITIAL => DrainUnionAccumulator::new(
-            resolver,
-            drain.chain.clone(),
-            expected.protocol_version(),
-            drain.epoch,
-            domain,
-            drain.closure_request_id,
-            drain.closure_height,
-            &selected_signers,
-        )?,
+        None if progress_row.revision() == StateRevision::INITIAL => seed,
         None => {
             return Err(DrainSignerError::Invalid(
                 "drain union progress is tombstoned",
             ));
         }
     };
+    let selected_signers: Vec<ValidatorId> =
+        selected_votes.iter().map(|vote| vote.validator).collect();
 
     // Bounded (one scan per selected signer) collection of every signer's
     // exact next unmerged candidate, then a single in-memory pass to find
@@ -1077,12 +1170,28 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
             let identity: AvailabilityIdentity = winner
                 .ok_or(DrainSignerError::Invalid("drain union candidate vanished"))?
                 .clone();
+            // H1: re-verify the winning member's complete proof, artifacts
+            // and possession marker fresh from storage -- not merely the
+            // signer-entry row's own bytes -- folding those reads into the
+            // *same* CAS as the progress/ready commit below.
+            verify_drain_possession_into(
+                store,
+                context,
+                domain,
+                resolver,
+                history,
+                expected,
+                &drain.validators,
+                &identity,
+                &mut drain.reads,
+            )?;
             let mut next: DrainUnionAccumulator = accumulator;
             next.push_member(resolver, &identity)?;
             let member_count: u64 = next.identity().member_count;
             let record: UnionProgressRecord = UnionProgressRecord {
+                selection_digest,
                 identity: next.into_identity(),
-                selected_signers,
+                selected_votes: selected_votes.to_vec(),
                 last_request_id: Some(identity.request_id),
             };
             commit_row(
@@ -1100,8 +1209,9 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
         None => {
             let identity: DrainUnionIdentity = accumulator.into_identity();
             let ready: UnionReadyRecord = UnionReadyRecord {
+                selection_digest,
                 identity: identity.clone(),
-                selected_signers,
+                selected_votes: selected_votes.to_vec(),
             };
             commit_row(
                 store,
@@ -1133,16 +1243,19 @@ pub fn verify_drain_ready<S: StructuredDurableDomainStateStore>(
     selected_votes: &[FrozenFrontierVote],
 ) -> Result<DrainUnionIdentity, DrainSignerError> {
     let drain: DrainContext = fence_drain_context(store, context, domain, resolver, expected)?;
-    let selected_signers: Vec<ValidatorId> =
-        verify_selection(&drain, expected, domain, selected_votes)?;
-    let ready_key: Vec<u8> = drain_union_ready_key(&drain.chain, drain.epoch)?;
+    verify_selection(&drain, expected, domain, selected_votes)?;
+    let seed: DrainUnionAccumulator =
+        selection_seed(resolver, &drain, expected, domain, selected_votes)?;
+    let selection_digest: Digest32 = seed.identity().entries_digest;
+    let ready_key: Vec<u8> = drain_union_ready_key(&drain.chain, drain.epoch, &selection_digest)?;
     let ready_row: VersionedStateValue =
         store.get_versioned_durable(context, domain, &ready_key)?;
     let bytes: &[u8] = ready_row
         .value()
         .ok_or(DrainSignerError::NotReady("drain union is not ready"))?;
     let ready: UnionReadyRecord = decode_union_ready(bytes)?;
-    if ready.selected_signers != selected_signers
+    if ready.selection_digest != selection_digest
+        || ready.selected_votes != selected_votes
         || ready.identity.chain_id != drain.chain
         || ready.identity.protocol_version != expected.protocol_version()
         || ready.identity.epoch != drain.epoch

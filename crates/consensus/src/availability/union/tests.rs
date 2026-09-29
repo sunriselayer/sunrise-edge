@@ -1,7 +1,11 @@
 use super::*;
 use protocol_types::{HashAlgorithmId, HashSuite, HashSuiteSchedule};
 
-fn fixture() -> (HashSuiteResolver, AtomicityDomainId, Vec<ValidatorId>) {
+fn fixture() -> (
+    HashSuiteResolver,
+    AtomicityDomainId,
+    Vec<(ValidatorId, FrozenFrontierIdentity)>,
+) {
     let chain_id: ChainId = ChainId::new("union-test").unwrap();
     let protocol_version: ProtocolVersion = ProtocolVersion::new(4);
     let resolver: HashSuiteResolver = HashSuiteResolver::new(
@@ -14,8 +18,23 @@ fn fixture() -> (HashSuiteResolver, AtomicityDomainId, Vec<ValidatorId>) {
     )
     .unwrap();
     let domain: AtomicityDomainId = AtomicityDomainId::new([9; 32]).unwrap();
-    let signers: Vec<ValidatorId> = (1..=3).map(|byte| ValidatorId::new([byte; 32])).collect();
-    (resolver, domain, signers)
+    let selected: Vec<(ValidatorId, FrozenFrontierIdentity)> = (1..=3)
+        .map(|byte| (ValidatorId::new([byte; 32]), frontier_identity(byte)))
+        .collect();
+    (resolver, domain, selected)
+}
+
+fn frontier_identity(byte: u8) -> FrozenFrontierIdentity {
+    FrozenFrontierIdentity {
+        chain_id: ChainId::new("union-test").unwrap(),
+        protocol_version: ProtocolVersion::new(4),
+        epoch: Epoch::new(8),
+        domain: AtomicityDomainId::new([9; 32]).unwrap(),
+        closure_request_id: [7; 32],
+        closure_height: 11,
+        entry_count: u64::from(byte),
+        entries_digest: Digest32::new(HashAlgorithmId::Sha2_256, [byte; 32]),
+    }
 }
 
 fn member(request_byte: u8, domain: AtomicityDomainId) -> AvailabilityIdentity {
@@ -34,7 +53,7 @@ fn member(request_byte: u8, domain: AtomicityDomainId) -> AvailabilityIdentity {
 fn empty(
     resolver: &HashSuiteResolver,
     domain: AtomicityDomainId,
-    signers: &[ValidatorId],
+    selected: &[(ValidatorId, FrozenFrontierIdentity)],
 ) -> DrainUnionAccumulator {
     DrainUnionAccumulator::new(
         resolver,
@@ -44,16 +63,16 @@ fn empty(
         domain,
         [7; 32],
         11,
-        signers,
+        selected,
     )
     .unwrap()
 }
 
 #[test]
 fn union_accumulates_members_and_resumes_exact_progress() {
-    let (resolver, domain, signers) = fixture();
+    let (resolver, domain, selected) = fixture();
     let entries: Vec<AvailabilityIdentity> = vec![member(1, domain), member(2, domain)];
-    let mut accumulator: DrainUnionAccumulator = empty(&resolver, domain, &signers);
+    let mut accumulator: DrainUnionAccumulator = empty(&resolver, domain, &selected);
     accumulator.push_member(&resolver, &entries[0]).unwrap();
     let intermediate: DrainUnionIdentity = accumulator.identity().clone();
     accumulator.push_member(&resolver, &entries[1]).unwrap();
@@ -65,7 +84,7 @@ fn union_accumulates_members_and_resumes_exact_progress() {
         &resolver,
         intermediate,
         Some(entries[0].request_id),
-        &signers,
+        &selected,
     )
     .unwrap();
     continued.push_member(&resolver, &entries[1]).unwrap();
@@ -80,9 +99,9 @@ fn union_accumulates_members_and_resumes_exact_progress() {
 
 #[test]
 fn union_rejects_duplicates_reordering_foreign_context_and_wrong_roster() {
-    let (resolver, domain, signers) = fixture();
+    let (resolver, domain, selected) = fixture();
     let first: AvailabilityIdentity = member(1, domain);
-    let mut accumulator: DrainUnionAccumulator = empty(&resolver, domain, &signers);
+    let mut accumulator: DrainUnionAccumulator = empty(&resolver, domain, &selected);
     accumulator.push_member(&resolver, &first).unwrap();
     assert!(accumulator.push_member(&resolver, &first).is_err());
     assert!(
@@ -110,7 +129,8 @@ fn union_rejects_duplicates_reordering_foreign_context_and_wrong_roster() {
         )
         .is_err()
     );
-    let unordered: Vec<ValidatorId> = vec![signers[1], signers[0]];
+    let unordered: Vec<(ValidatorId, FrozenFrontierIdentity)> =
+        vec![selected[1].clone(), selected[0].clone()];
     assert!(
         DrainUnionAccumulator::new(
             &resolver,
@@ -124,7 +144,8 @@ fn union_rejects_duplicates_reordering_foreign_context_and_wrong_roster() {
         )
         .is_err()
     );
-    let duplicate: Vec<ValidatorId> = vec![signers[0], signers[0]];
+    let duplicate: Vec<(ValidatorId, FrozenFrontierIdentity)> =
+        vec![selected[0].clone(), selected[0].clone()];
     assert!(
         DrainUnionAccumulator::new(
             &resolver,
@@ -139,17 +160,23 @@ fn union_rejects_duplicates_reordering_foreign_context_and_wrong_roster() {
         .is_err()
     );
 
-    let seed: DrainUnionIdentity = empty(&resolver, domain, &signers).into_identity();
-    assert!(DrainUnionAccumulator::resume(&resolver, seed.clone(), None, &signers[..2]).is_err());
+    let seed: DrainUnionIdentity = empty(&resolver, domain, &selected).into_identity();
+    assert!(DrainUnionAccumulator::resume(&resolver, seed.clone(), None, &selected[..2]).is_err());
+    // Same validator IDs, but a different signer's frontier identity: the
+    // seed digest folds identities too, so this must not collide with the
+    // real selection's seed.
+    let mut relabeled: Vec<(ValidatorId, FrozenFrontierIdentity)> = selected.clone();
+    relabeled[0].1.entry_count += 1;
+    assert!(DrainUnionAccumulator::resume(&resolver, seed.clone(), None, &relabeled).is_err());
     let mut changed: DrainUnionIdentity = seed.clone();
     changed.closure_height += 1;
-    assert!(DrainUnionAccumulator::resume(&resolver, changed, None, &signers).is_err());
+    assert!(DrainUnionAccumulator::resume(&resolver, changed, None, &selected).is_err());
 }
 
 #[test]
 fn union_decode_rejects_type_mutation_and_excess() {
-    let (resolver, domain, signers) = fixture();
-    let identity: DrainUnionIdentity = empty(&resolver, domain, &signers).into_identity();
+    let (resolver, domain, selected) = fixture();
+    let identity: DrainUnionIdentity = empty(&resolver, domain, &selected).into_identity();
     let bytes: Vec<u8> = encode_drain_union_identity(&identity).unwrap();
     let mut wrong_type: Vec<u8> = bytes.clone();
     wrong_type[0] ^= 1;
@@ -163,11 +190,11 @@ fn hex(bytes: &[u8]) -> String {
 
 #[test]
 fn drain_union_identity_vector_is_stable() {
-    let (resolver, domain, signers) = fixture();
+    let (resolver, domain, selected) = fixture();
     let identity: DrainUnionIdentity = DrainUnionIdentity {
         member_count: 2,
         entries_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0xaa; 32]),
-        ..empty(&resolver, domain, &signers).into_identity()
+        ..empty(&resolver, domain, &selected).into_identity()
     };
     assert_eq!(
         hex(&encode_drain_union_identity(&identity).unwrap()),
@@ -177,24 +204,24 @@ fn drain_union_identity_vector_is_stable() {
 
 #[test]
 fn drain_union_accumulator_seed_and_step_hashes_are_stable() {
-    let (resolver, domain, signers) = fixture();
-    let mut accumulator: DrainUnionAccumulator = empty(&resolver, domain, &signers);
+    let (resolver, domain, selected) = fixture();
+    let mut accumulator: DrainUnionAccumulator = empty(&resolver, domain, &selected);
     assert_eq!(
         hex(&accumulator.identity().entries_digest.bytes()),
-        "b35326626b9345526f3ab22b7fc16f671aa4a0be91f9045bc721fcb58ff0ae11"
+        "6aca76c445901bd421f3729a4b9b7521a2bfeebaaf516bc39e37b0d01dc1cc74"
     );
     accumulator
         .push_member(&resolver, &member(1, domain))
         .unwrap();
     assert_eq!(
         hex(&accumulator.identity().entries_digest.bytes()),
-        "64c56301e5d849a9a72e28e078d8ddd50ed4332cab0bdb784cacf3bc779fa97b"
+        "b9f65d85f09dac71212187851b395f33d3dc9328d7f1167bd924b561bff7b862"
     );
     accumulator
         .push_member(&resolver, &member(2, domain))
         .unwrap();
     assert_eq!(
         hex(&accumulator.identity().entries_digest.bytes()),
-        "80d1dce3501e633eb6381e4c7ec7a2283c14777f3aeb3bc524686b5f6c004c3a"
+        "f20fbe0bfee0e665a8d9ea44ac506350f1d81be7b188f3a0c5e16e0edd3d5c87"
     );
 }
