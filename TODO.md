@@ -337,8 +337,8 @@ The detailed existing evidence and remaining criteria follow:
   outgoing epoch, so lagging peers need to complete before activation or a
   separately authenticated historical-serving path. This is not quorum union:
   a page has identities, not complete bundles, and no DrainSet voter yet
-  retrieves and durably retains every union
-  artifact. No authenticated cut, readiness, Seal, activation or PostgreSQL
+  coordinates a complete verified union and durably retains every artifact.
+  No authenticated cut, readiness, Seal, activation or PostgreSQL
   network handoff E2E is claimed by this slice.
   The final local frontier vote row is deliberately classified as local
   signing state, never as a shared cut-history row. Before untrusted network
@@ -352,6 +352,31 @@ The detailed existing evidence and remaining criteria follow:
   page, HTTP and Rust-client continuation. The live PostgreSQL suites were
   skipped because `SUNRISE_EDGE_TEST_POSTGRES_URL` is unset. This is not a
   multi-validator PostgreSQL handoff E2E or a production-readiness claim.
+  A further 2026-09-29 Draft PR #235 slice adds a read-only, certified-only
+  source of full retained publications by pinned active epoch and frontier
+  request ID. It serves a validator's verified publication record and exact
+  artifact bytes even if that validator never prepared the request. The Rust
+  client independently checks the returned bundle, certificate, signed
+  intent and frontier identity; the core source also rechecks its local ACK.
+  Separate post-Freeze `drain-publication/`, `drain-publication-artifact/` and
+  local `drain-possession/` rows now allow one full bundle and its exact
+  witness-required closure to commit atomically without creating an ACK or
+  extending this validator's own frozen `publication/` frontier. Retry
+  re-verifies saved content, and tests compare the local frontier vote/pages
+  byte-for-byte before and after another publication is imported. A pure
+  quorum verifier rejects duplicate, unordered, forged, mixed-Freeze and
+  underpowered signed frontier votes, including weighted-set cases. See
+  [DR-0156](docs/architecture/decisions/0156-frozen-frontier-possession.md).
+  This is still a core import primitive, not an end-to-end DrainSet voter:
+  there is no network import route, completed-page/possession cursor, union
+  readiness marker, relay from imported proof, ordered DrainSet decision,
+  drain application, authenticated cut, conditional next-set readiness,
+  Seal or activation. The source is active-epoch only, and its page and
+  bundle re-verification cost needs a network admission bound. Draft PR #235
+  remains open. `npm ci --prefix adapters/cloudflare-workers` and the full
+  `scripts/check-all.sh` gate passed after integration on 2026-09-29, with
+  five npm audit advisories reported by install (one moderate, four high).
+  Live PostgreSQL handoff E2E and independent final-head review remain open.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

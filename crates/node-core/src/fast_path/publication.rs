@@ -1176,6 +1176,7 @@ pub fn serve_retained_publication_bundle<S: StructuredDurableDomainStateStore>(
 /// prepared it locally -- serves it identically to one that also prepared
 /// it, because both paths reconstruct and re-verify from the same durably
 /// retained publication record and artifact rows.
+#[allow(clippy::too_many_arguments)]
 pub fn serve_active_epoch_publication_bundle<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
