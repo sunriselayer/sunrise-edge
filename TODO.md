@@ -497,15 +497,16 @@ The detailed existing evidence and remaining criteria follow:
   `sunrise-edge-cli` tests and changed-crate Clippy pass, but the full live
   candidate-build → ordered-submit → drain-apply workflow is not tested.
   This is not an authenticated public operator workflow. Post-restart
-  SQLite/PostgreSQL replay, CAS races, ordered nonempty DrainSet composition,
+  SQLite/PostgreSQL replay, CAS races, full operator/HTTP nonempty DrainSet composition,
   bounded operator orchestration, ingress authentication/work budgets and the
   complete Freeze to activation network sequence remain open. U7's first head
   passed the complete local repository gate; Opus found no blocking issue but
   requested stronger boundary assertions and negative tests. Those follow-ups
   are implemented, with all 10 focused tests, changed-crate Clippy and a
   second complete local repository gate passing. The combined route head
-  also passed the complete local repository gate. Final CLI-integrated
-  exact-head validation, CI and review remain pending.
+  and CLI-integrated head passed the complete local repository gate. Opus
+  explicitly APPROVED the U7 follow-up and U8 delta only; neither that
+  review nor the local gate approves Delivery 3 or PR merge.
   `npm ci` and complete `./scripts/check-all.sh` also passed locally on
   2026-09-30, after installing the exact `wasm-bindgen-cli` version required
   by the gate. Live PostgreSQL tests were skipped locally without
@@ -539,11 +540,14 @@ The detailed existing evidence and remaining criteria follow:
   X, resolves only Y's relevant locks, preserves an unrelated lock, refuses
   foreign members and exactly replays after local readiness corruption without
   changing the object head, receipt, nonce, settlement or resolution audit.
-  The focused test passes locally. Narrow U7 boundary tests still use direct
-  records for their own unit-level cases. This does not yet provide an
+  The focused test, `npm ci` and the complete local repository gate passed
+  after U9 and the bounded union-enumerator refactor. Live PostgreSQL suites
+  were skipped locally without `SUNRISE_EDGE_TEST_POSTGRES_URL`. Narrow U7
+  boundary tests still use direct records for their own unit-level cases.
+  This does not yet provide an
   all-member causal scheduler, drain-complete proof, portable cut, Seal,
   next-set readiness, activation, PostgreSQL network E2E or authenticated
-  public ingress. CI and the complete repository gate for U9 remain pending.
+  public ingress. Exact-head CI and U9 review remain pending.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).
