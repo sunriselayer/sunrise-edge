@@ -1317,6 +1317,144 @@ mod tests {
         }
     }
 
+    /// Builds a real, independently verifiable retained (never prepared)
+    /// publication bundle and its expected [`consensus::AvailabilityIdentity`],
+    /// exactly as a validator that only ever called `retain_publication`
+    /// would durably hold.
+    fn retained_only_fixture() -> (
+        HashSuiteResolver,
+        FastPathCertifier,
+        consensus::bundle::PublicationBundle,
+        consensus::AvailabilityIdentity,
+    ) {
+        use consensus::bundle::{
+            ArtifactManifest, LOGICAL_COMMITMENT_PROFILE, PublicationBundle,
+            verify_publication_bundle,
+        };
+        use protocol_types::{AtomicityDomainId, HashPurpose};
+
+        let resolver: HashSuiteResolver = resolver();
+        let signed: SignedPaidIntent = signed_transfer(0x60, [0x61; 32]);
+        let tx_hash: Digest32 = expected_tx_hash(&signed);
+        let (signers, infos) = four_validators();
+        let certifier: FastPathCertifier = certifier(infos);
+        let witness: Vec<u8> = vec![0x64, 0x24, 0x02];
+        let execution_hash: Digest32 = resolver
+            .hash_for_purpose(epoch(), HashPurpose::ExecutionEffects, &witness)
+            .unwrap();
+        let lock_hash: Digest32 = digest(0x62);
+        let votes: Vec<FastVote> = signers
+            .iter()
+            .take(3)
+            .map(|signer: &TestSigner| {
+                certifier
+                    .cast_vote(tx_hash, execution_hash, lock_hash, signer)
+                    .unwrap()
+            })
+            .collect();
+        let certificate: FastCertificate = certifier
+            .try_form_certificate(
+                tx_hash,
+                execution_hash,
+                lock_hash,
+                &votes,
+                &FastPathEd25519Verifier,
+            )
+            .unwrap()
+            .unwrap();
+        let domain: AtomicityDomainId = AtomicityDomainId::new([0x63; 32]).unwrap();
+        let bundle: PublicationBundle = PublicationBundle {
+            domain,
+            request_id: signed.intent.request_id,
+            commitment_profile: LOGICAL_COMMITMENT_PROFILE,
+            signed_intent: encode_signed_paid_intent(&signed).unwrap(),
+            certificate,
+            witness,
+            manifest: ArtifactManifest {
+                entries: Vec::new(),
+            },
+            contents: Vec::new(),
+        };
+        let identity: consensus::AvailabilityIdentity = verify_publication_bundle(
+            &bundle,
+            &certifier,
+            &FastPathEd25519Verifier,
+            &resolver,
+            &[],
+        )
+        .unwrap()
+        .identity;
+        (resolver, certifier, bundle, identity)
+    }
+
+    #[test]
+    fn source_retained_fastvote_publication_returns_and_independently_verifies_a_retained_but_never_prepared_bundle()
+     {
+        use consensus::bundle::encode_publication_bundle;
+
+        let (resolver, certifier, bundle, identity) = retained_only_fixture();
+        let client: Client<ScriptedTransport> = Client::new(ScriptedTransport::ok(
+            NODE_RESULT_MEDIA_TYPE,
+            encode_publication_bundle(&bundle).unwrap(),
+        ));
+        let served: consensus::bundle::PublicationBundle = client
+            .source_retained_fastvote_publication(
+                &certifier,
+                &resolver,
+                &[],
+                &identity,
+                Some(deadline()),
+            )
+            .unwrap();
+        assert_eq!(served, bundle);
+        assert_eq!(client.transport().calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn source_retained_fastvote_publication_refuses_a_bundle_for_a_different_identity() {
+        use consensus::bundle::encode_publication_bundle;
+
+        let (resolver, certifier, bundle, mut identity) = retained_only_fixture();
+        // A source that answers with a genuinely valid bundle -- just not the
+        // one this caller's independently verified frontier entry named.
+        identity.request_id = [0x7A; 32];
+        let client: Client<ScriptedTransport> = Client::new(ScriptedTransport::ok(
+            NODE_RESULT_MEDIA_TYPE,
+            encode_publication_bundle(&bundle).unwrap(),
+        ));
+        let error = client
+            .source_retained_fastvote_publication(
+                &certifier,
+                &resolver,
+                &[],
+                &identity,
+                Some(deadline()),
+            )
+            .expect_err("a bundle for an unrequested identity must be refused");
+        assert!(matches!(
+            error,
+            ClientError::FastVotePublicationMismatch("retained source bundle domain or request id")
+        ));
+    }
+
+    #[test]
+    fn source_retained_fastvote_publication_refuses_a_corrupt_or_unparseable_response() {
+        let (resolver, certifier, _bundle, identity) = retained_only_fixture();
+        let client: Client<ScriptedTransport> =
+            Client::new(ScriptedTransport::ok(NODE_RESULT_MEDIA_TYPE, vec![0xAA; 8]));
+        assert!(
+            client
+                .source_retained_fastvote_publication(
+                    &certifier,
+                    &resolver,
+                    &[],
+                    &identity,
+                    Some(deadline())
+                )
+                .is_err()
+        );
+    }
+
     #[test]
     fn collect_fastvote_certificate_tolerates_a_same_header_invalid_signature_malicious_first_responder()
      {

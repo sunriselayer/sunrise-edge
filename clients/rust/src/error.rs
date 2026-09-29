@@ -186,6 +186,9 @@ pub enum ClientError {
     FastVotePublishedApplyRequestWire(node_wire::FastVotePublishedApplyRequestError),
     /// A bounded frozen-frontier HTTP request or response failed decoding.
     FrozenFrontierWire(node_wire::FrozenFrontierWireError),
+    /// A bounded retained-publication-source HTTP request failed encoding or
+    /// decoding.
+    RetainedPublicationSourceRequestWire(node_wire::RetainedPublicationSourceRequestError),
     /// A signed frozen-frontier vote or page failed independent verification.
     FrozenFrontier(consensus::FrontierError),
     /// A well-formed frontier response disagreed with the requested endpoint,
@@ -319,6 +322,9 @@ impl fmt::Display for ClientError {
                 write!(f, "FastVote published-apply request codec error: {error}")
             }
             Self::FrozenFrontierWire(error) => write!(f, "frozen frontier wire error: {error}"),
+            Self::RetainedPublicationSourceRequestWire(error) => {
+                write!(f, "retained publication source request codec error: {error}")
+            }
             Self::FrozenFrontier(error) => write!(f, "frozen frontier proof error: {error}"),
             Self::FrozenFrontierMismatch(reason) => {
                 write!(f, "frozen frontier response mismatch: {reason}")
@@ -386,6 +392,7 @@ impl Error for ClientError {
             Self::FastVoteApplyRequestWire(error) => Some(error),
             Self::FastVotePublishedApplyRequestWire(error) => Some(error),
             Self::FrozenFrontierWire(error) => Some(error),
+            Self::RetainedPublicationSourceRequestWire(error) => Some(error),
             Self::FrozenFrontier(error) => Some(error),
             Self::FrozenFrontierMismatch(_) => None,
             Self::FastVotePublicationBundle(error) => Some(error),
@@ -491,6 +498,12 @@ impl From<node_wire::FastVotePublishedApplyRequestError> for ClientError {
 impl From<node_wire::FrozenFrontierWireError> for ClientError {
     fn from(value: node_wire::FrozenFrontierWireError) -> Self {
         Self::FrozenFrontierWire(value)
+    }
+}
+
+impl From<node_wire::RetainedPublicationSourceRequestError> for ClientError {
+    fn from(value: node_wire::RetainedPublicationSourceRequestError) -> Self {
+        Self::RetainedPublicationSourceRequestWire(value)
     }
 }
 

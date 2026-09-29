@@ -17,6 +17,7 @@
 
 pub mod fastvote_frontier;
 pub mod fastvote_published;
+pub mod fastvote_retained_publication;
 pub mod ordered_economics;
 
 pub use fastvote_frontier::{
@@ -31,6 +32,11 @@ pub use fastvote_published::{
     FASTVOTE_PUBLISHED_APPLY_PATH, FASTVOTE_PUBLISHED_APPLY_REQUEST_TYPE_ID,
     FastVotePublishedApplyRequest, FastVotePublishedApplyRequestError,
     MAX_FASTVOTE_AVAILABILITY_CERTIFICATE_BYTES, MAX_FASTVOTE_PUBLISHED_APPLY_REQUEST_BYTES,
+};
+pub use fastvote_retained_publication::{
+    FASTVOTE_RETAINED_PUBLICATION_SOURCE_PATH, MAX_RETAINED_PUBLICATION_SOURCE_REQUEST_BYTES,
+    RETAINED_PUBLICATION_SOURCE_REQUEST_TYPE_ID, RetainedPublicationSourceRequest,
+    RetainedPublicationSourceRequestError,
 };
 
 use canonical_encoding::{

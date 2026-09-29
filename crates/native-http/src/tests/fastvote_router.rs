@@ -257,6 +257,7 @@ async fn certified_router_mounts_fastvote_and_publication_routes() {
         FASTVOTE_PUBLICATION_SOURCE_PATH,
         FASTVOTE_PUBLISHED_APPLY_PATH,
         FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
+        node_wire::FASTVOTE_RETAINED_PUBLICATION_SOURCE_PATH,
     ] {
         assert_eq!(
             dispatch(&app, "POST", path, vec![0xAA]).await,
@@ -313,6 +314,22 @@ async fn certified_router_mounts_fastvote_and_publication_routes() {
         )
         .await,
         StatusCode::METHOD_NOT_ALLOWED,
+    );
+    let stale_retained_source_request: node_wire::RetainedPublicationSourceRequest =
+        node_wire::RetainedPublicationSourceRequest {
+            epoch: Epoch::new(config().epoch().get() + 1),
+            request_id: [0x01; 32],
+        };
+    assert_eq!(
+        dispatch(
+            &app,
+            "POST",
+            node_wire::FASTVOTE_RETAINED_PUBLICATION_SOURCE_PATH,
+            stale_retained_source_request.encode().unwrap()
+        )
+        .await,
+        StatusCode::CONFLICT,
+        "a request pinned to a non-current epoch must be rejected before any storage read"
     );
 }
 

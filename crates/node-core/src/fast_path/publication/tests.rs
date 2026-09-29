@@ -923,6 +923,193 @@ fn a_real_v2_witness_round_trips_through_the_mirrored_operand_decoders() {
 }
 
 #[test]
+fn serve_retained_publication_bundle_returns_the_exact_bundle_for_a_retained_but_never_prepared_request()
+ {
+    // `retain` alone -- never `prepare_transfer` -- is exactly the
+    // retained-but-not-prepared case this route exists for: this replica
+    // holds only the full-certificate publication row and its artifacts.
+    let replica: RetentionReplica = logical_replica();
+    let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    retain(&replica, &bundle, &replica.signer).unwrap();
+
+    let served: PublicationBundle = serve_retained_publication_bundle(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &installed_validator_set(),
+        replica.signer.validator_id(),
+        &[REQUEST; 32],
+    )
+    .expect("a retained-but-never-prepared publication must still be servable");
+    assert_eq!(
+        encode_publication_bundle(&served).unwrap(),
+        encode_publication_bundle(&bundle).unwrap(),
+        "the served bundle must be byte-for-byte the original verified bundle"
+    );
+}
+
+#[test]
+fn serve_retained_publication_bundle_refuses_a_request_id_nothing_was_ever_retained_under() {
+    let replica: RetentionReplica = logical_replica();
+    let error = serve_retained_publication_bundle(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &installed_validator_set(),
+        replica.signer.validator_id(),
+        &[REQUEST; 32],
+    )
+    .expect_err("nothing was ever retained under this request id");
+    assert!(
+        matches!(
+            error,
+            PublicationRetentionError::InconsistentRetainedRecord(
+                "missing or tombstoned frozen publication"
+            )
+        ),
+        "unexpected error {error}"
+    );
+}
+
+#[test]
+fn serve_retained_publication_bundle_refuses_a_corrupt_retained_artifact() {
+    let replica: RetentionReplica = logical_replica();
+    let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    retain(&replica, &bundle, &replica.signer).unwrap();
+    let entry: &ArtifactEntry = bundle.manifest.entries.first().unwrap();
+    let key: Vec<u8> = artifact_key(
+        protocol().chain_id(),
+        protocol().epoch(),
+        &[REQUEST; 32],
+        entry,
+    )
+    .unwrap();
+    replica.put_row(key, b"corrupted artifact bytes".to_vec());
+
+    let error = serve_retained_publication_bundle(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &installed_validator_set(),
+        replica.signer.validator_id(),
+        &[REQUEST; 32],
+    )
+    .expect_err("a corrupted retained artifact must never be served as verified");
+    assert!(
+        matches!(
+            error,
+            PublicationRetentionError::Bundle(
+                consensus::bundle::PublicationBundleError::ArtifactLengthMismatch { .. }
+                    | consensus::bundle::PublicationBundleError::ArtifactContentDigestMismatch { .. }
+            )
+        ),
+        "unexpected error {error}"
+    );
+}
+
+#[test]
+fn serve_retained_publication_bundle_refuses_a_pinned_epoch_other_than_the_retained_one() {
+    // The lookup key is scoped by the caller's own pinned `expected.epoch()`,
+    // never by a bundle- or transport-declared value; a request pinned to any
+    // other epoch must find nothing, never silently read across epochs.
+    let replica: RetentionReplica = logical_replica();
+    let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    retain(&replica, &bundle, &replica.signer).unwrap();
+
+    let other_epoch: Epoch = Epoch::new(protocol().epoch().get() + 1);
+    let other_context: PublicationContext = PublicationContext::new(
+        protocol().chain_id().clone(),
+        protocol().protocol_version(),
+        other_epoch,
+    )
+    .unwrap();
+    let error = serve_retained_publication_bundle(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &other_context,
+        &installed_validator_set(),
+        replica.signer.validator_id(),
+        &[REQUEST; 32],
+    )
+    .expect_err("a publication retained under a different epoch must not be served");
+    assert!(
+        matches!(
+            error,
+            PublicationRetentionError::InconsistentRetainedRecord(
+                "missing or tombstoned frozen publication"
+            )
+        ),
+        "unexpected error {error}"
+    );
+
+    // The originally retained epoch's row is untouched and still serves.
+    assert!(
+        serve_retained_publication_bundle(
+            &replica.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &installed_validator_set(),
+            replica.signer.validator_id(),
+            &[REQUEST; 32],
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn serve_retained_publication_bundle_refuses_a_record_whose_declared_identity_disagrees_with_its_own_bytes()
+ {
+    let replica: RetentionReplica = logical_replica();
+    let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    let vote: AvailabilityVote = retain(&replica, &bundle, &replica.signer).unwrap();
+
+    let mut other: AvailabilityIdentity = vote.identity.clone();
+    other.signed_intent_digest = Digest32::new(other.signed_intent_digest.algorithm(), [0x77; 32]);
+    let mut record: FastPathPublicationRecord = retained_publication(&replica, REQUEST);
+    record.identity = encode_availability_identity(&other).unwrap();
+    replica.put_row(
+        fastpath_publication_key(protocol().chain_id(), protocol().epoch(), &[REQUEST; 32])
+            .unwrap(),
+        encode_fastpath_publication_record(&record).unwrap(),
+    );
+
+    let error = serve_retained_publication_bundle(
+        &replica.store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &installed_validator_set(),
+        replica.signer.validator_id(),
+        &[REQUEST; 32],
+    )
+    .expect_err("a record whose declared identity disagrees with its own bytes must refuse");
+    assert!(
+        matches!(
+            error,
+            PublicationRetentionError::InconsistentRetainedRecord("frozen publication identity")
+        ),
+        "unexpected error {error}"
+    );
+}
+
+#[test]
 fn a_truncated_or_padded_witness_is_refused() {
     let (bundle, _certificate) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
     let mut padded: Vec<u8> = bundle.witness.clone();

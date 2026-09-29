@@ -1103,6 +1103,140 @@ pub(crate) fn verify_retained_publication<S: StructuredDurableDomainStateStore>(
     local_validator: ValidatorId,
     request_id: &[u8; 32],
 ) -> RetentionResult<AvailabilityIdentity> {
+    let (_bundle, identity) = reconstruct_and_verify_retained_bundle(
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        validator_set,
+        local_validator,
+        request_id,
+    )?;
+    Ok(identity)
+}
+
+/// Read-only, restart-safe reconstruction of one canonical [`PublicationBundle`]
+/// from a replica's own durably retained publication -- whether or not this
+/// replica ever locally prepared the request. This performs exactly the same
+/// verification [`verify_retained_publication`] does (the retained full
+/// certificate, the re-derived signed-intent binding, the local ACK, the
+/// witness-derived closure and every artifact's actual content), and returns
+/// the complete already-verified bundle rather than reducing it to an
+/// identity, so a caller can serve it to an untrusted requester by
+/// `(pinned epoch, signed-frontier request id)` alone. HTTP or any other
+/// transport that calls this is never itself an authority: every check below
+/// runs regardless of how this function was reached, and nothing here signs,
+/// mutates storage, or creates a new ACK.
+///
+/// Fails closed exactly as [`verify_retained_publication`] does: a missing or
+/// tombstoned publication/artifact/ACK row, a corrupt or inconsistent
+/// original proof, an artifact whose content no longer matches its
+/// witness-signed digest, or a mismatch with the re-derived signed intent are
+/// all typed refusals that expose nothing.
+#[allow(clippy::too_many_arguments)]
+pub fn serve_retained_publication_bundle<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    validator_set: &ValidatorSet,
+    local_validator: ValidatorId,
+    request_id: &[u8; 32],
+) -> RetentionResult<PublicationBundle> {
+    let (bundle, _identity) = reconstruct_and_verify_retained_bundle(
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        validator_set,
+        local_validator,
+        request_id,
+    )?;
+    Ok(bundle)
+}
+
+/// The bounded, transport-facing entry point for the retained-publication
+/// source route: fences the caller's pinned active epoch and loads its
+/// validator set exactly as [`retain_publication`] does, then serves the
+/// exact verified retained bundle for `request_id` through
+/// [`serve_retained_publication_bundle`].
+///
+/// This is deliberately independent of Freeze/DrainSet: it is a plain
+/// bounded read of this replica's own already durably retained state by
+/// `(pinned active epoch, signed-frontier request id)`, not a frontier or
+/// handoff operation, and it never requires a committed ordered Freeze the
+/// way [`crate::ordered_economics::read_frozen_frontier_page`] does. A
+/// replica that only ever retained the full publication -- and never
+/// prepared it locally -- serves it identically to one that also prepared
+/// it, because both paths reconstruct and re-verify from the same durably
+/// retained publication record and artifact rows.
+pub fn serve_active_epoch_publication_bundle<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    local_validator: ValidatorId,
+    request_id: &[u8; 32],
+) -> RetentionResult<PublicationBundle> {
+    if history.len() > crate::publication::MAX_PUBLICATION_HISTORY {
+        return Err(PublicationRetentionError::Node(
+            NodeCoreError::PersistenceInvariant("resolver history bound"),
+        ));
+    }
+    let chain: ChainId = expected.chain_id().clone();
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let epoch_record: local_instance_state::FastPathEpochRecord =
+        mutation_fence::fence_epoch_state(store, context, domain, &chain, &mut reads)?;
+    if epoch_record.current_epoch != expected.epoch() {
+        return Err(PublicationRetentionError::Node(
+            NodeCoreError::EpochMismatch {
+                expected: epoch_record.current_epoch,
+                actual: expected.epoch(),
+            },
+        ));
+    }
+    let validator_set: ValidatorSet = load_validator_set(
+        store,
+        context,
+        domain,
+        resolver,
+        expected,
+        &epoch_record,
+        &mut reads,
+    )?;
+    serve_retained_publication_bundle(
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        &validator_set,
+        local_validator,
+        request_id,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reconstruct_and_verify_retained_bundle<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    validator_set: &ValidatorSet,
+    local_validator: ValidatorId,
+    request_id: &[u8; 32],
+) -> RetentionResult<(PublicationBundle, AvailabilityIdentity)> {
     if history.len() > crate::publication::MAX_PUBLICATION_HISTORY {
         return Err(PublicationRetentionError::Node(
             NodeCoreError::PersistenceInvariant("resolver history bound"),
@@ -1227,7 +1361,7 @@ pub(crate) fn verify_retained_publication<S: StructuredDurableDomainStateStore>(
         validator_set.clone(),
     )?;
     availability_certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
-    Ok(verified.identity)
+    Ok((bundle, verified.identity))
 }
 
 fn artifact_key(
