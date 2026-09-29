@@ -17,8 +17,8 @@ use crate::paid_execution::tests::{
 };
 use consensus::bundle::{PublicationBundle, encode_publication_bundle, verify_publication_bundle};
 use consensus::{
-    AvailabilityIdentity, ConsensusSigner, FastPathCertifier, FrozenFrontierAccumulator,
-    FrozenFrontierCertifier, FrozenFrontierPage, FrozenFrontierVote,
+    AvailabilityIdentity, ConsensusSigner, DrainUnionAccumulator, FastPathCertifier,
+    FrozenFrontierAccumulator, FrozenFrontierCertifier, FrozenFrontierPage, FrozenFrontierVote,
 };
 use runtime::MemoryBlobStore;
 use runtime::{
@@ -331,13 +331,32 @@ fn apply_drain_member_resolves_conflicting_partial_prepare_lock_and_applies_the_
         drain_set_record_key(protocol().chain_id(), protocol().epoch()).unwrap();
     let record: DrainSetRecord =
         ordered_economics::decode_drain_set_record(&d.row(&record_key).unwrap()).unwrap();
+    let selected_pairs: Vec<(ValidatorId, consensus::FrozenFrontierIdentity)> = record
+        .selected_votes
+        .iter()
+        .map(|vote| (vote.validator, vote.identity.clone()))
+        .collect();
+    let selection_seed: DrainUnionAccumulator = DrainUnionAccumulator::new(
+        &resolver(),
+        protocol().chain_id().clone(),
+        protocol().protocol_version(),
+        protocol().epoch(),
+        domain(),
+        record.selected_votes[0].identity.closure_request_id,
+        record.selected_votes[0].identity.closure_height,
+        &selected_pairs,
+    )
+    .unwrap();
+    let selection_digest: Digest32 = selection_seed.identity().entries_digest;
+    assert_ne!(selection_digest, record.drain_union_identity.entries_digest);
     let ready_key: Vec<u8> = ordered_economics::drain_union_ready_key(
         protocol().chain_id(),
         protocol().epoch(),
-        &record.drain_union_identity.entries_digest,
+        &selection_digest,
     )
     .unwrap();
-    d.put_row(ready_key, vec![0xFF]);
+    assert!(d.row(&ready_key).is_some());
+    d.put_row(ready_key.clone(), vec![0xFF]);
     let applied_head: DurableObjectHead = d.coin_head();
     let replay: NodeOutput = apply_drain_member(
         &d.store,
@@ -360,6 +379,7 @@ fn apply_drain_member_resolves_conflicting_partial_prepare_lock_and_applies_the_
     );
     assert_eq!(d.coin_head(), applied_head);
     assert_eq!(d.lock_rows(), after);
+    assert_eq!(d.row(&ready_key), Some(vec![0xFF]));
 }
 
 #[test]

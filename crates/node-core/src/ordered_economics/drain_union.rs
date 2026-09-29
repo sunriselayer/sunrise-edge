@@ -1349,11 +1349,13 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
     }
 }
 
-/// Selects one canonical next member across an already authenticated exact
-/// signer selection. This is a bounded merge primitive, not authority to
-/// apply: its caller must verify the committed DrainSet, the local ready
-/// marker, and the winning member's retained full proof. It folds all
-/// observed signer-entry rows into the caller's CAS read set.
+/// Selects one canonical next member across an authenticated, locally
+/// complete signer selection. The union builder verifies the selection and
+/// every selected signer's completion before calling this bounded merge
+/// primitive, then re-verifies the winning member's full retained proof.
+/// A later application scheduler must additionally verify the committed
+/// DrainSet and its local ready marker. This helper alone is no authority to
+/// apply; it folds every observed signer-entry row into the caller's CAS set.
 pub(crate) fn next_union_member_after<S: DurablePortableRepository>(
     store: &S,
     context: &DurableOperationContext,

@@ -538,8 +538,10 @@ The detailed existing evidence and remaining criteria follow:
   replicas; the real HotStuff chain commits DrainSet without direct record
   insertion; and a replica that only prepared conflicting Y applies certified
   X, resolves only Y's relevant locks, preserves an unrelated lock, refuses
-  foreign members and exactly replays after local readiness corruption without
-  changing the object head, receipt, nonce, settlement or resolution audit.
+  foreign members and refuses a first apply when the actual selection-keyed
+  ready marker is corrupt. After completion, the exact replay succeeds despite
+  that same marker's corruption without re-execution or changes to the object
+  head, receipt, nonce, settlement or resolution audit.
   The focused test, `npm ci` and the complete local repository gate passed
   after U9 and the bounded union-enumerator refactor. Live PostgreSQL suites
   were skipped locally without `SUNRISE_EDGE_TEST_POSTGRES_URL`. Narrow U7

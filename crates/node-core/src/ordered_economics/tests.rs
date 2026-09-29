@@ -1751,7 +1751,8 @@ fn reconstruct_drain_union_ready(
 /// 3-of-4 [`consensus::FastCertificate`] for a nonempty transfer X, a real
 /// ordered Freeze, a real per-replica frozen frontier naming X, a real
 /// [`consensus::DrainUnionIdentity`] reconstruction identical on all four
-/// replicas (including D, which never prepares or retains X), and a real
+/// replicas (including D, which never prepares X and only imports its proof
+/// after Freeze), and a real
 /// ordered [`DrainSetIntent`] committed by the same chained HotStuff engine
 /// the empty-frontier DrainSet test already uses. D then applies X from its
 /// retained full certificate -- with no aggregated
@@ -1875,7 +1876,7 @@ fn nonempty_drain_set_from_real_ordered_consensus_lets_a_nonpreparing_replica_ap
 
     // Y: D's own genuine conflicting local partial prepare over the exact
     // same coin and sender/epoch nonce X's own certified inputs require. D
-    // never prepares or retains X.
+    // never prepares X or retains its proof before Freeze.
     let y_request_id: [u8; 32] = [0xC2; 32];
     let y_bytes: Vec<u8> = genesis_transfer_paid_intent_bytes(
         &network.resolver,
@@ -1968,7 +1969,8 @@ fn nonempty_drain_set_from_real_ordered_consensus_lets_a_nonpreparing_replica_ap
     let votes: Vec<consensus::FrozenFrontierVote> =
         selected.iter().map(|pair| pair.0.clone()).collect();
 
-    // Every replica -- including D, which never prepared or retained X --
+    // Every replica -- including D, which never prepared X or retained its
+    // proof before Freeze but now imports it through the drain path --
     // independently reconstructs the identical real union readiness.
     let mut ready_identity: Option<consensus::DrainUnionIdentity> = None;
     for replica in 0..REPLICAS {
@@ -2028,6 +2030,27 @@ fn nonempty_drain_set_from_real_ordered_consensus_lets_a_nonpreparing_replica_ap
         }
     }
 
+    let selected_pairs: Vec<(ValidatorId, consensus::FrozenFrontierIdentity)> = votes
+        .iter()
+        .map(|vote| (vote.validator, vote.identity.clone()))
+        .collect();
+    let seed: consensus::DrainUnionAccumulator = consensus::DrainUnionAccumulator::new(
+        &network.resolver,
+        fixture::chain(),
+        expected.protocol_version(),
+        expected.epoch(),
+        network.domain(),
+        votes[0].identity.closure_request_id,
+        votes[0].identity.closure_height,
+        &selected_pairs,
+    )
+    .unwrap();
+    let selection_digest: Digest32 = seed.identity().entries_digest;
+    assert_ne!(selection_digest, identity.entries_digest);
+    let ready_key: Vec<u8> =
+        drain_union_ready_key(expected.chain_id(), expected.epoch(), &selection_digest).unwrap();
+    let original_ready: Vec<u8> = network.value(d, &ready_key).unwrap();
+
     // Missing/foreign member refusal: neither Y's own real but never-drained
     // request nor a wholly unrelated request id may be applied, and neither
     // attempt moves Y's own still-held locks or writes a receipt.
@@ -2059,6 +2082,42 @@ fn nonempty_drain_set_from_real_ordered_consensus_lets_a_nonpreparing_replica_ap
         local_instance_state::fastpath_lock_key(expected.chain_id(), ObjectId::new([0xEE; 32]))
             .unwrap();
     network.put(d, unrelated_key.clone(), StateMutation::Put(vec![0xA5]));
+
+    // The same exact locator must fail closed before its first application
+    // when the real, selection-keyed local ready marker is corrupt. Restore
+    // the original test fixture bytes only after checking no effect escaped.
+    network.put(d, ready_key.clone(), StateMutation::Put(vec![0xFF]));
+    assert_eq!(network.value(d, &ready_key), Some(vec![0xFF]));
+    assert!(
+        crate::fast_path::drain_apply::apply_drain_member(
+            &network.stores[d],
+            &network.blobs,
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            &network.leg_policy,
+            &fee_policy,
+            &crate::paid_execution::tests::CountingEngine::new(),
+            x_identity.request_id,
+            15,
+        )
+        .is_err()
+    );
+    assert_eq!(network.value(d, &object_lock_key), y_locks_before_freeze.0);
+    assert_eq!(network.value(d, &nonce_lock_key), y_locks_before_freeze.1);
+    assert!(
+        network.stores[d]
+            .get_request_receipt(
+                &network.context,
+                network.domain(),
+                runtime::DurableRequestId::new(x_identity.request_id).unwrap(),
+            )
+            .unwrap()
+            .is_none()
+    );
+    network.put(d, ready_key.clone(), StateMutation::Put(original_ready));
 
     let apply_engine: crate::paid_execution::tests::CountingEngine =
         crate::paid_execution::tests::CountingEngine::new();
@@ -2134,13 +2193,8 @@ fn nonempty_drain_set_from_real_ordered_consensus_lets_a_nonpreparing_replica_ap
 
     // Exact replay, even with a corrupted local ready marker: receipt-first,
     // no re-execution, no re-resolution or mutation of the completed bytes.
-    let ready_key: Vec<u8> = drain_union_ready_key(
-        expected.chain_id(),
-        expected.epoch(),
-        &identity.entries_digest,
-    )
-    .unwrap();
-    network.put(d, ready_key, StateMutation::Put(vec![0xFF]));
+    assert!(network.value(d, &ready_key).is_some());
+    network.put(d, ready_key.clone(), StateMutation::Put(vec![0xFF]));
     let replay: NodeOutput = crate::fast_path::drain_apply::apply_drain_member(
         &network.stores[d],
         &network.blobs,
@@ -2157,6 +2211,7 @@ fn nonempty_drain_set_from_real_ordered_consensus_lets_a_nonpreparing_replica_ap
     )
     .unwrap();
     assert_eq!(apply_engine.calls.get(), executions_after_apply);
+    assert_eq!(network.value(d, &ready_key), Some(vec![0xFF]));
     assert_eq!(replay.responses(), output.responses());
     assert_eq!(
         network.stores[d]
