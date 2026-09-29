@@ -50,6 +50,8 @@ use protocol_types::{SignatureSchemeId, ValidatorId};
 use runtime::{outbox_guard::StructuredOutboxExclusionGuard, portable::DurablePortableRepository};
 use std::num::NonZeroUsize;
 
+mod drain;
+
 /// Production mutation-route inventory excluded by certified-only hosting.
 /// Derived from the actual handler constants so route renames remain covered.
 pub const CERTIFIED_FASTVOTE_EXCLUDED_MUTATION_PATHS: &[&str] = &[
@@ -143,6 +145,7 @@ where
                 DefaultBodyLimit::max(node_wire::MAX_RETAINED_PUBLICATION_SOURCE_REQUEST_BYTES),
             ),
         )
+        .merge(drain::routes::<S, B, M, T, C, I>())
 }
 
 pub(super) fn frontier_error_response(error: &FrozenFrontierError) -> Response {

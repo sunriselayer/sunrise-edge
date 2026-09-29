@@ -10,6 +10,8 @@ use crate::fastvote_frontier::{MAX_FRONTIER_PAGE_BYTES, MAX_FRONTIER_VOTE_BYTES}
 use canonical_encoding::{
     CanonicalDecodingError, CanonicalEncodingError, CanonicalStruct, decode_canonical_frame,
 };
+use consensus::{FrozenFrontierVote, decode_frozen_frontier_vote, encode_frozen_frontier_vote};
+use node_core::fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS;
 use protocol_types::{Epoch, ValidatorId};
 use std::error::Error;
 use std::fmt;
@@ -30,7 +32,7 @@ pub const MAX_DRAIN_SIGNER_PAGE_REQUEST_BYTES: usize =
     MAX_FRONTIER_VOTE_BYTES + MAX_FRONTIER_PAGE_BYTES + 128;
 pub const MAX_DRAIN_MEMBER_CONFIRM_REQUEST_BYTES: usize = 160;
 pub const MAX_DRAIN_UNION_ADVANCE_REQUEST_BYTES: usize =
-    crate::MAX_FASTVOTE_CERTIFICATE_BYTES * 2 + 4096;
+    MAX_FASTPATH_ACTIVE_VALIDATORS * (MAX_FRONTIER_VOTE_BYTES + 8) + 128;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DrainWireError {
@@ -181,15 +183,18 @@ impl DrainMemberConfirmRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DrainUnionAdvanceRequest {
     pub epoch: Epoch,
-    pub selection: Vec<u8>,
+    pub votes: Vec<FrozenFrontierVote>,
 }
 
 impl DrainUnionAdvanceRequest {
     fn validate(&self) -> Result<(), DrainWireError> {
-        if self.selection.is_empty()
-            || self.selection.len() > MAX_DRAIN_UNION_ADVANCE_REQUEST_BYTES - 128
-        {
-            return Err(DrainWireError::Invalid("drain union selection bound"));
+        if self.votes.is_empty() || self.votes.len() > MAX_FASTPATH_ACTIVE_VALIDATORS {
+            return Err(DrainWireError::Invalid("drain union vote count"));
+        }
+        for pair in self.votes.windows(2) {
+            if pair[0].validator >= pair[1].validator {
+                return Err(DrainWireError::Invalid("drain union vote order"));
+            }
         }
         Ok(())
     }
@@ -199,7 +204,16 @@ impl DrainUnionAdvanceRequest {
         let mut frame: CanonicalStruct =
             CanonicalStruct::new(DRAIN_UNION_ADVANCE_REQUEST_TYPE_ID, VERSION);
         frame.field_u64(1, self.epoch.get())?;
-        frame.field_bytes(2, self.selection.clone())?;
+        let count: u16 = u16::try_from(self.votes.len())
+            .map_err(|_| DrainWireError::Invalid("drain union vote count"))?;
+        frame.field_u16(2, count)?;
+        for (index, vote) in self.votes.iter().enumerate() {
+            let field: u16 = u16::try_from(index + 3)
+                .map_err(|_| DrainWireError::Invalid("drain union vote field"))?;
+            let encoded: Vec<u8> = encode_frozen_frontier_vote(vote)
+                .map_err(|_| DrainWireError::Invalid("drain union vote encoding"))?;
+            frame.field_bytes(field, encoded)?;
+        }
         Ok(frame.finish()?)
     }
 
@@ -210,10 +224,23 @@ impl DrainUnionAdvanceRequest {
         let frame = decode_canonical_frame(bytes)?;
         frame.require_type(DRAIN_UNION_ADVANCE_REQUEST_TYPE_ID)?;
         frame.require_version(VERSION)?;
-        frame.require_only_fields(&[1, 2])?;
+        let count: usize = usize::from(frame.required_u16(2)?);
+        if count == 0 || count > MAX_FASTPATH_ACTIVE_VALIDATORS || frame.field_count() != count + 2
+        {
+            return Err(DrainWireError::Invalid("drain union vote count"));
+        }
+        let mut votes: Vec<FrozenFrontierVote> = Vec::with_capacity(count);
+        for index in 0..count {
+            let field: u16 = u16::try_from(index + 3)
+                .map_err(|_| DrainWireError::Invalid("drain union vote field"))?;
+            votes.push(
+                decode_frozen_frontier_vote(frame.required_field(field)?)
+                    .map_err(|_| DrainWireError::Invalid("invalid drain union vote"))?,
+            );
+        }
         let request: Self = Self {
             epoch: Epoch::new(frame.required_u64(1)?),
-            selection: frame.required_field(2)?.to_vec(),
+            votes,
         };
         request.validate()?;
         if request.encode()?.as_slice() != bytes {
@@ -226,6 +253,28 @@ impl DrainUnionAdvanceRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use consensus::FrozenFrontierIdentity;
+    use protocol_types::{
+        AtomicityDomainId, ChainId, Digest32, HashAlgorithmId, ProtocolVersion, SignatureSchemeId,
+    };
+
+    fn vote(validator_byte: u8) -> FrozenFrontierVote {
+        FrozenFrontierVote {
+            identity: FrozenFrontierIdentity {
+                chain_id: ChainId::new("drain-wire-test").unwrap(),
+                protocol_version: ProtocolVersion::new(1),
+                epoch: Epoch::new(7),
+                domain: AtomicityDomainId::new([0x44; 32]).unwrap(),
+                closure_request_id: [0x55; 32],
+                closure_height: 9,
+                entry_count: 0,
+                entries_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x66; 32]),
+            },
+            validator: ValidatorId::new([validator_byte; 32]),
+            signature_scheme: SignatureSchemeId::Ed25519,
+            signature: vec![0x77; 64],
+        }
+    }
 
     #[test]
     fn signer_page_has_stable_bytes_and_refuses_noncanonical_inputs() {
@@ -280,7 +329,10 @@ mod tests {
         };
         let bytes: Vec<u8> = request.encode().unwrap();
         assert_eq!(
-            bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
             concat!(
                 "534e52450be1010003000100080000000700000000000000",
                 "02002000000011111111111111111111111111111111",
@@ -307,23 +359,28 @@ mod tests {
     }
 
     #[test]
-    fn union_request_round_trips_and_refuses_empty_selection() {
+    fn union_request_round_trips_and_refuses_empty_or_unordered_votes() {
         let request: DrainUnionAdvanceRequest = DrainUnionAdvanceRequest {
             epoch: Epoch::new(7),
-            selection: vec![0xaa, 0xbb],
+            votes: vec![vote(1), vote(2)],
         };
         let bytes: Vec<u8> = request.encode().unwrap();
-        assert_eq!(
-            bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
-            "534e52450ce1010002000100080000000700000000000000020002000000aabb"
-        );
+        assert_eq!(&bytes[..10], b"SNRE\x0c\xe1\x01\x00\x04\x00");
         assert_eq!(
             DrainUnionAdvanceRequest::decode(&bytes),
             Ok(request.clone())
         );
         assert!(
             DrainUnionAdvanceRequest {
-                selection: Vec::new(),
+                votes: Vec::new(),
+                ..request.clone()
+            }
+            .encode()
+            .is_err()
+        );
+        assert!(
+            DrainUnionAdvanceRequest {
+                votes: vec![request.votes[1].clone(), request.votes[0].clone()],
                 ..request
             }
             .encode()

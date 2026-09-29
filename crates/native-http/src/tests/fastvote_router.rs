@@ -258,6 +258,9 @@ async fn certified_router_mounts_fastvote_and_publication_routes() {
         FASTVOTE_PUBLISHED_APPLY_PATH,
         FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
         node_wire::FASTVOTE_RETAINED_PUBLICATION_SOURCE_PATH,
+        node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
+        node_wire::FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
+        node_wire::FASTVOTE_DRAIN_UNION_ADVANCE_PATH,
     ] {
         assert_eq!(
             dispatch(&app, "POST", path, vec![0xAA]).await,
@@ -269,6 +272,21 @@ async fn certified_router_mounts_fastvote_and_publication_routes() {
             StatusCode::METHOD_NOT_ALLOWED
         );
     }
+    let import_path: String = format!("/v1/fastvote/drain/import/{}", "11".repeat(32));
+    assert_eq!(
+        dispatch(&app, "POST", &import_path, vec![0xAA]).await,
+        StatusCode::BAD_REQUEST,
+        "raw bundle import must be mounted only on the certified router"
+    );
+    assert_eq!(
+        dispatch(&app, "GET", &import_path, Vec::new()).await,
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+    assert_eq!(
+        dispatch(&app, "POST", "/v1/fastvote/drain/import/not-hex", vec![0xAA]).await,
+        StatusCode::BAD_REQUEST,
+        "invalid validator selector must be rejected before storage"
+    );
     assert_ne!(
         dispatch(
             &app,
@@ -301,6 +319,39 @@ async fn certified_router_mounts_fastvote_and_publication_routes() {
             "POST",
             FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
             stale_request.encode().unwrap()
+        )
+        .await,
+        StatusCode::CONFLICT,
+    );
+    let stale_drain_page: node_wire::DrainSignerPageRequest =
+        node_wire::DrainSignerPageRequest {
+            epoch: Epoch::new(config().epoch().get() + 1),
+            vote: vec![0xAA],
+            page: vec![0xBB],
+        };
+    assert_eq!(
+        dispatch(
+            &app,
+            "POST",
+            node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
+            stale_drain_page.encode().unwrap()
+        )
+        .await,
+        StatusCode::CONFLICT,
+        "untrusted page bytes must not bypass the pinned epoch"
+    );
+    let stale_drain_confirm: node_wire::DrainMemberConfirmRequest =
+        node_wire::DrainMemberConfirmRequest {
+            epoch: Epoch::new(config().epoch().get() + 1),
+            validator: ValidatorId::new([0x11; 32]),
+            request_id: [0x22; 32],
+        };
+    assert_eq!(
+        dispatch(
+            &app,
+            "POST",
+            node_wire::FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
+            stale_drain_confirm.encode().unwrap()
         )
         .await,
         StatusCode::CONFLICT,
