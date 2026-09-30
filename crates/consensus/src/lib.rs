@@ -708,6 +708,13 @@ impl ConsensusState {
     pub fn known_proposal(&self, digest: &Digest32) -> Option<&ConsensusProposal> {
         self.known_proposals.get(digest)
     }
+
+    /// Whether this exact digest is retained as committed. The engine keeps
+    /// the current committed tip in this set even after pruning older heights.
+    #[must_use]
+    pub fn contains_committed(&self, digest: &Digest32) -> bool {
+        self.committed.contains(digest)
+    }
 }
 
 /// Result of one deterministic consensus transition.

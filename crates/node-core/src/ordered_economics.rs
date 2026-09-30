@@ -88,6 +88,7 @@ mod preflight;
 mod reservation;
 mod staging;
 mod suffix_predicate;
+mod terminal_anchor;
 
 pub use business_free_barrier::{
     BusinessFreeBarrierError, advance_business_free_barrier, read_business_free_barrier,
@@ -146,6 +147,9 @@ pub(crate) use reservation::OrderedLegAdmission;
 pub(crate) use staging::StagingStore;
 pub use suffix_predicate::{
     SuffixPredicateError, verify_business_free_suffix, verify_business_free_suffix_into,
+};
+pub use terminal_anchor::{
+    CandidateFreeTerminalWitness, TerminalAnchorError, derive_candidate_free_terminal_into,
 };
 
 /// Maximum address-owned object inputs one admitted candidate may reserve.

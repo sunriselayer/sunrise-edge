@@ -93,7 +93,7 @@ fn encode_barrier(
     Ok(bytes)
 }
 
-fn decode_barrier(
+pub(super) fn decode_barrier(
     bytes: &[u8],
     chain: &ChainId,
     epoch: Epoch,
