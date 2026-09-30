@@ -184,6 +184,13 @@ pub enum ClientError {
     FastVoteApplyRequestWire(node_wire::FastVoteApplyRequestError),
     /// Publication-gated apply request framing failed.
     FastVotePublishedApplyRequestWire(node_wire::FastVotePublishedApplyRequestError),
+    /// A bounded frozen-frontier HTTP request or response failed decoding.
+    FrozenFrontierWire(node_wire::FrozenFrontierWireError),
+    /// A signed frozen-frontier vote or page failed independent verification.
+    FrozenFrontier(consensus::FrontierError),
+    /// A well-formed frontier response disagreed with the requested endpoint,
+    /// epoch, cursor, page bound or response shape.
+    FrozenFrontierMismatch(&'static str),
     /// A canonical publication bundle failed decoding or independent verification.
     FastVotePublicationBundle(consensus::bundle::PublicationBundleError),
     /// A validly framed publication claim did not match this exact local request.
@@ -311,6 +318,11 @@ impl fmt::Display for ClientError {
             Self::FastVotePublishedApplyRequestWire(error) => {
                 write!(f, "FastVote published-apply request codec error: {error}")
             }
+            Self::FrozenFrontierWire(error) => write!(f, "frozen frontier wire error: {error}"),
+            Self::FrozenFrontier(error) => write!(f, "frozen frontier proof error: {error}"),
+            Self::FrozenFrontierMismatch(reason) => {
+                write!(f, "frozen frontier response mismatch: {reason}")
+            }
             Self::FastVotePublicationBundle(error) => {
                 write!(f, "FastVote publication bundle error: {error}")
             }
@@ -373,6 +385,9 @@ impl Error for ClientError {
             | Self::ExternalSignatureInvalid { .. } => None,
             Self::FastVoteApplyRequestWire(error) => Some(error),
             Self::FastVotePublishedApplyRequestWire(error) => Some(error),
+            Self::FrozenFrontierWire(error) => Some(error),
+            Self::FrozenFrontier(error) => Some(error),
+            Self::FrozenFrontierMismatch(_) => None,
             Self::FastVotePublicationBundle(error) => Some(error),
             Self::FastVotePublicationMismatch(_) => None,
             Self::FastVoteConsensus(error) => Some(error),
@@ -470,6 +485,18 @@ impl From<node_wire::FastVoteApplyRequestError> for ClientError {
 impl From<node_wire::FastVotePublishedApplyRequestError> for ClientError {
     fn from(value: node_wire::FastVotePublishedApplyRequestError) -> Self {
         Self::FastVotePublishedApplyRequestWire(value)
+    }
+}
+
+impl From<node_wire::FrozenFrontierWireError> for ClientError {
+    fn from(value: node_wire::FrozenFrontierWireError) -> Self {
+        Self::FrozenFrontierWire(value)
+    }
+}
+
+impl From<consensus::FrontierError> for ClientError {
+    fn from(value: consensus::FrontierError) -> Self {
+        Self::FrozenFrontier(value)
     }
 }
 

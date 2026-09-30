@@ -4856,7 +4856,8 @@ impl RetentionReplica {
 fn retention_replica(logical: bool, signer_index: usize) -> RetentionReplica {
     let store: MemoryDurableStateStore = memory_store();
     let fixture: Fixture = if logical {
-        let profile: logical_generation::LogicalProfileRecord = install_logical_profile(&store);
+        let profile: logical_generation::LogicalProfileRecord =
+            crate::paid_execution::tests::install_freeze_profile(&store);
         install_with_profile(&store, Some(&profile))
     } else {
         install(&store)
@@ -5013,7 +5014,7 @@ pub(super) fn physical_transfer_bundle_bytes(
     transfer_bundle(false, request, nonce, &[0, 1, 2])
 }
 
-fn installed_validator_set() -> ValidatorSet {
+pub(super) fn installed_validator_set() -> ValidatorSet {
     let (_signers, entries) = four_validators();
     ValidatorSet::new(
         protocol().epoch(),

@@ -684,6 +684,65 @@ fn run_candidate_wrap<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
     Ok(())
 }
 
+/// Builds only an advisory Freeze body. The actual consensus height and
+/// committed bond/key/power eligibility remain authoritative host checks.
+fn run_freeze_build<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
+    let specs: Vec<crate::args::FlagSpec> = network_flag_specs(&[
+        "--request-id",
+        "--created-checkpoint",
+        "--advisory-next-set",
+        "--out",
+    ]);
+    let parsed: ParsedArgs = parse_flags(args, &specs)?;
+    let inputs: LoadedPolicyInputs = load_policy_and_endpoints(&parsed)?;
+    if inputs.policy.minimum_freeze_block_height() == 0 {
+        return Err(invalid(
+            "ordered Freeze requires a locally pinned signed-v3 genesis",
+        ));
+    }
+    let request_id: [u8; 32] = decode_hex_32("--request-id", parsed.require("--request-id")?)?;
+    let created_checkpoint: u64 = parse_u64(
+        "--created-checkpoint",
+        parsed.require("--created-checkpoint")?,
+    )?;
+    let advisory_path: &str = parsed.require("--advisory-next-set")?;
+    let advisory_bytes: Vec<u8> = read_bounded(advisory_path, MAX_ORDERED_CANDIDATE_BYTES)?;
+    let advisory = sunrise_edge_client::decode_fastpath_validator_set_record(&advisory_bytes)
+        .map_err(failure)?;
+    let intent = sunrise_edge_client::ordered_economics_core::FreezeIntent {
+        context: inputs.policy.context().clone(),
+        request_id,
+        advisory_next_set: advisory,
+    };
+    let candidate = sunrise_edge_client::ordered_economics_core::OrderedCandidate {
+        context: inputs.policy.context().clone(),
+        request_id,
+        kind: sunrise_edge_client::ordered_economics_core::OrderedOperationKind::Freeze,
+        intent: sunrise_edge_client::ordered_economics_core::encode_freeze_intent(&intent)
+            .map_err(failure)?,
+        created_checkpoint,
+    };
+    authenticate_ordered_candidate(&inputs.policy, &candidate).map_err(failure)?;
+    let encoded: Vec<u8> =
+        sunrise_edge_client::ordered_economics_core::encode_ordered_candidate(&candidate)
+            .map_err(failure)?;
+    let out: &str = parsed.require("--out")?;
+    let mut reserved: Vec<ReservedArtifact> = reserve_artifacts(
+        &[(out, "ordered-freeze-candidate")],
+        &[advisory_path, parsed.require("--ordered-genesis-manifest")?],
+    )?;
+    let mut artifact: ReservedArtifact = reserved
+        .pop()
+        .ok_or_else(|| invalid("missing Freeze output reservation"))?;
+    artifact.persist(&encoded)?;
+    println!(
+        "candidate_bytes={} out={out} minimum_freeze_block_height={}",
+        encoded.len(),
+        inputs.policy.minimum_freeze_block_height()
+    );
+    Ok(())
+}
+
 /// Dispatches `economics <subcommand>`.
 pub(crate) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
     let mut iterator = args.into_iter();
@@ -697,6 +756,7 @@ pub(crate) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
         "network-submit" => run_network_submit(iterator),
         "network-replay" => run_network_replay(iterator),
         "candidate-wrap" => run_candidate_wrap(iterator),
+        "ordered-freeze-build" => run_freeze_build(iterator),
         other => Err(invalid(format!("unknown economics subcommand: {other}"))),
     }
 }

@@ -187,6 +187,8 @@ pub struct TrustedFastVoteGenesis {
     pub certifier: FastPathCertifier,
     /// Signed commitment profile selecting the mandatory publication gate.
     pub commitment_profile: CommitmentProfile,
+    /// Signed v3 Freeze warrant; zero preserves the released v1/v2 policy.
+    pub minimum_freeze_block_height: u64,
 }
 
 /// Like [`load_trusted_fastvote_genesis`], returning the authenticated profile
@@ -233,6 +235,7 @@ pub fn load_trusted_fastvote_genesis_with_profile(
         Ok(TrustedFastVoteGenesis {
             certifier,
             commitment_profile,
+            minimum_freeze_block_height: manifest.minimum_freeze_block_height,
         })
     })
 }

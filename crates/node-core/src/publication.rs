@@ -611,11 +611,25 @@ pub fn handle_local_publication_with_history<S: StructuredDurableDomainStateStor
     // publication support is not narrowed to the current epoch. The epoch row
     // revision is nevertheless asserted by the publication commit, so it
     // cannot interleave with a Slice 2 transition.
-    mutation_fence::fence_epoch_state(
+    let current_epoch_record: local_instance_state::FastPathEpochRecord =
+        mutation_fence::fence_epoch_state(
+            store,
+            context,
+            domain,
+            policy.context.chain_id(),
+            &mut reads,
+        )?;
+    // DR-0154: local publication is a "direct local/paid mutation" a
+    // committed `Freeze` must stop, exactly like every `fence_current_epoch`
+    // caller -- but this function fences the historical-selector
+    // [`fence_epoch_state`] directly instead, so it fences admission
+    // separately here rather than through `fence_current_epoch`.
+    ordered_economics::fence_admission_open(
         store,
         context,
         domain,
         policy.context.chain_id(),
+        current_epoch_record.current_epoch,
         &mut reads,
     )?;
     // Honor a sender/epoch nonce a pending fast-path prepare already holds,

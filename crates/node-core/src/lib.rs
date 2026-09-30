@@ -5451,6 +5451,20 @@ where
             event.chain_id(),
             &mut logical_reads,
         )?;
+    if reservation.is_none()
+        && installed
+            .logical()
+            .is_some_and(|profile| profile.minimum_freeze_block_height != 0)
+    {
+        mutation_fence::fence_current_epoch(
+            store,
+            context,
+            domain,
+            event.chain_id(),
+            event.epoch(),
+            &mut logical_reads,
+        )?;
+    }
     let mutation_context: Option<authenticated_object_effects::TrustedObjectMutationContext<'_>> =
         created_checkpoint.map(|created_checkpoint: u64| {
             authenticated_object_effects::TrustedObjectMutationContext {

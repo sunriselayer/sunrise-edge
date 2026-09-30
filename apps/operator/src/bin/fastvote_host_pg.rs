@@ -664,6 +664,7 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
             expected_context.clone(),
             domain,
             genesis_digest,
+            Some(&manifest),
             ordered_validator_set,
             resolver.clone(),
         )

@@ -56,6 +56,7 @@ pub mod client;
 pub mod context;
 pub mod error;
 pub mod fastvote_client;
+pub mod fastvote_frontier_client;
 pub mod fastvote_publication_client;
 pub mod key;
 pub mod local_execution_client;
@@ -109,9 +110,21 @@ pub use consensus::bundle::MAX_ENCODED_BUNDLE_BYTES;
 pub use consensus::{
     AvailabilityCertificate, decode_availability_certificate, encode_availability_certificate,
 };
+pub use consensus::{
+    FrozenFrontierCertifier, FrozenFrontierPage, FrozenFrontierPageVerifier, FrozenFrontierVote,
+    decode_frozen_frontier_page, decode_frozen_frontier_vote, encode_frozen_frontier_page,
+    encode_frozen_frontier_vote,
+};
 pub use node_core::fast_path::FastPathEd25519Verifier;
+pub use node_core::fast_path::records::{
+    FastPathValidatorSetRecord, decode_fastpath_validator_set_record,
+};
 pub use node_core::logical_generation::CommitmentProfile;
 pub use node_wire::MAX_FASTVOTE_AVAILABILITY_CERTIFICATE_BYTES;
+pub use node_wire::{
+    FrozenFrontierPageRequest, FrozenFrontierPageResponse, MAX_FRONTIER_PAGE_LIMIT,
+    MAX_FRONTIER_PAGE_RESPONSE_BYTES, MAX_FRONTIER_VOTE_BYTES,
+};
 pub use paid_execution_client::{
     PAID_EXECUTION_PATH, PAID_FEE_POLICY_PATH, build_signed_paid_execution,
 };

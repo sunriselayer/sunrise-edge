@@ -115,6 +115,7 @@ async fn ordered_router_authenticates_before_actual_io_and_has_no_direct_mutatio
         fixture.context.clone(),
         fixture.domain,
         node_core::genesis_manifest_commitment(&fixture.resolver, &manifest).unwrap(),
+        Some(&manifest),
         ValidatorSet::new(fixture.epoch, validators).unwrap(),
         fixture.resolver.clone(),
     )

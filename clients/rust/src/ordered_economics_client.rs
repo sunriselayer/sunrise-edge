@@ -212,6 +212,7 @@ pub fn load_trusted_ordered_policy(
         expected_context.clone(),
         domain,
         digest,
+        Some(&manifest),
         validator_set,
         resolver.clone(),
     )
@@ -1622,6 +1623,7 @@ mod recovery_preflight_tests {
             PublicationContext::new(chain, protocol, epoch).unwrap(),
             AtomicityDomainId::new([0x11; 32]).unwrap(),
             Digest32::new(HashAlgorithmId::Sha2_256, [0x22; 32]),
+            None,
             set,
             resolver,
         )

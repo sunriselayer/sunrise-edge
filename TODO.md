@@ -294,6 +294,31 @@ The detailed existing evidence and remaining criteria follow:
   an Opus approval. Freeze/frontier/drain/cut/import/readiness/Seal/activation,
   next-epoch provenance and complete Delivery 3 remain separate and unchecked.
 
+- [ ] **Ordered Freeze and immutable frontier export: next independent functional capability**
+  ([DR-0167](docs/architecture/decisions/0167-frozen-frontier-extraction-boundary.md),
+  [architecture](docs/architecture/frozen-frontier.md),
+  [operator workflow](docs/guides/frozen-frontier.md)). On 2026-09-30 the
+  selected extraction is being implemented on `codex/freeze-frontier-drain`:
+  explicit fresh signed-v3 minimum-height authority, proposal/vote and
+  committed advisory next-set eligibility, atomic admission closure,
+  Freeze/retention CAS fencing and same-event justified closure, complete
+  bounded full-publication verification, durable scan progress/final votes,
+  native HTTP/Rust SDK and compiled CLI immutable paged export/resume.
+  Keep existing v1/v2 bytes, installed-profile behavior and publication
+  addresses unchanged; unsupported foreign/corrupt history fails closed.
+  The acceptance fixture extends the ordinary real four-namespace contract
+  lifecycle with actual ordered Freeze, a retained full certificate never
+  applied locally and only one unaggregated ACK, partial cursor/host restart,
+  bounded CLI page resume, exact saved signature/page replay and no-overwrite
+  corruption refusals. It has not yet passed the complete validation gate.
+  Parent integration/review, targeted and full required PostgreSQL checks,
+  independent exact-head approval and CI remain open. This checkbox covers
+  frozen progress/export only, not safe live rollover: fresh Logical
+  activation remains refused and there is no unfreeze. Quorum-retained
+  frontier union, ordered DrainSet and certificate-backed drain application
+  are next; cut/import, readiness, Seal, activation and integrated Delivery 3
+  acceptance remain unchecked. The aggregate PR #235 stays unmerged.
+
 - [x] **Portable storage implementation: bounded reads and backend-enforced snapshot continuity**
   ([DR-0166](docs/architecture/decisions/0166-portable-candidate-snapshot.md),
   [portable reconstruction](docs/architecture/portable-reconstruction.md)).

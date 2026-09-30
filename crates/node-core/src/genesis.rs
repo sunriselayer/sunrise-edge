@@ -104,6 +104,10 @@ pub const GENESIS_MANIFEST_VERSION: u16 = 1;
 /// flag, a caller argument or an inference from observed state.
 pub const GENESIS_MANIFEST_LOGICAL_VERSION: u16 = 2;
 
+/// Fresh logical genesis version explicitly authorizing ordered Freeze.
+/// Preserves the historical version-one and logical version-two bytes.
+pub const GENESIS_MANIFEST_FREEZE_VERSION: u16 = 3;
+
 /// Signature-domain message family for a complete genesis manifest payload.
 pub const GENESIS_MANIFEST_SIGNATURE_MESSAGE_TYPE: &str = "genesis-manifest-v1";
 /// Signature-domain message family for a handoff-capable manifest payload.
@@ -112,6 +116,9 @@ pub const GENESIS_MANIFEST_SIGNATURE_MESSAGE_TYPE: &str = "genesis-manifest-v1";
 /// over a historical manifest can never be replayed as authorization for the
 /// handoff-capable profile even if every other signed field were identical.
 pub const GENESIS_MANIFEST_LOGICAL_SIGNATURE_MESSAGE_TYPE: &str = "genesis-manifest-v2";
+
+/// Signature family for the explicitly authorized version-three Freeze rule.
+pub const GENESIS_MANIFEST_FREEZE_SIGNATURE_MESSAGE_TYPE: &str = "genesis-manifest-v3";
 
 /// Canonical frame type of an encoded [`GenesisInstallMarker`] (DR-0126).
 pub const GENESIS_INSTALL_MARKER_FRAME_TYPE: u16 = 0x6417;
@@ -178,6 +185,9 @@ pub struct GenesisManifest {
     /// explicit tag in field 9 and additionally installs the authenticated
     /// [`LogicalProfileRecord`] row.
     pub commitment_profile: CommitmentProfile,
+    /// Positive signed field 10 only in a fresh `0x6416/v3` logical manifest.
+    /// Zero preserves version one or two and grants no Freeze authority.
+    pub minimum_freeze_block_height: u64,
     /// Ed25519 signature by `genesis_authority` over fields 1 through 7 of a
     /// historical (`0x6416/v1`) manifest, or over fields 1 through 7 plus the
     /// profile tag in field 9 of a handoff-capable (`0x6416/v2`) manifest --
@@ -197,6 +207,9 @@ impl GenesisManifest {
     pub const fn encoding_version(&self) -> u16 {
         match self.commitment_profile {
             CommitmentProfile::PhysicalCheckpointV1 => GENESIS_MANIFEST_VERSION,
+            CommitmentProfile::LogicalGenerationV2 if self.minimum_freeze_block_height != 0 => {
+                GENESIS_MANIFEST_FREEZE_VERSION
+            }
             CommitmentProfile::LogicalGenerationV2 => GENESIS_MANIFEST_LOGICAL_VERSION,
         }
     }
@@ -206,6 +219,9 @@ impl GenesisManifest {
     pub const fn signature_message_type(&self) -> &'static str {
         match self.commitment_profile {
             CommitmentProfile::PhysicalCheckpointV1 => GENESIS_MANIFEST_SIGNATURE_MESSAGE_TYPE,
+            CommitmentProfile::LogicalGenerationV2 if self.minimum_freeze_block_height != 0 => {
+                GENESIS_MANIFEST_FREEZE_SIGNATURE_MESSAGE_TYPE
+            }
             CommitmentProfile::LogicalGenerationV2 => {
                 GENESIS_MANIFEST_LOGICAL_SIGNATURE_MESSAGE_TYPE
             }
@@ -543,6 +559,11 @@ pub fn decode_genesis_object_entries(
 }
 
 fn encode_genesis_manifest_payload(manifest: &GenesisManifest) -> Result<Vec<u8>, GenesisError> {
+    if !manifest.commitment_profile.is_logical() && manifest.minimum_freeze_block_height != 0 {
+        return Err(GenesisError::Invalid(
+            "historical genesis cannot authorize Freeze",
+        ));
+    }
     let mut frame: CanonicalStruct =
         CanonicalStruct::new(GENESIS_MANIFEST_FRAME_TYPE, manifest.encoding_version());
     frame.field_bytes(1, manifest.genesis_authority.to_vec())?;
@@ -562,6 +583,9 @@ fn encode_genesis_manifest_payload(manifest: &GenesisManifest) -> Result<Vec<u8>
     // takes field 9 and exists only inside a version-two payload.
     if manifest.commitment_profile.is_logical() {
         frame.field_u16(9, manifest.commitment_profile.to_wire())?;
+    }
+    if manifest.encoding_version() == GENESIS_MANIFEST_FREEZE_VERSION {
+        frame.field_u64(10, manifest.minimum_freeze_block_height)?;
     }
     Ok(frame.finish()?)
 }
@@ -601,6 +625,9 @@ pub fn encode_genesis_manifest(manifest: &GenesisManifest) -> Result<Vec<u8>, Ge
     if manifest.commitment_profile.is_logical() {
         frame.field_u16(9, manifest.commitment_profile.to_wire())?;
     }
+    if manifest.encoding_version() == GENESIS_MANIFEST_FREEZE_VERSION {
+        frame.field_u64(10, manifest.minimum_freeze_block_height)?;
+    }
     let bytes: Vec<u8> = frame.finish()?;
     if bytes.len() > MAX_GENESIS_MANIFEST_BYTES {
         return Err(GenesisError::Limit("manifest bytes"));
@@ -617,8 +644,19 @@ pub fn encode_genesis_manifest(manifest: &GenesisManifest) -> Result<Vec<u8>, Ge
 /// profile tag, and a version-two frame cannot re-declare the historical
 /// profile, so each profile has exactly one canonical encoding.
 fn decode_manifest_profile(frame: &CanonicalFrame<'_>) -> Result<CommitmentProfile, GenesisError> {
-    if frame.version() == GENESIS_MANIFEST_LOGICAL_VERSION {
-        frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9])?;
+    if frame.version() == GENESIS_MANIFEST_LOGICAL_VERSION
+        || frame.version() == GENESIS_MANIFEST_FREEZE_VERSION
+    {
+        if frame.version() == GENESIS_MANIFEST_FREEZE_VERSION {
+            frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10])?;
+            if frame.required_u64(10)? == 0 {
+                return Err(GenesisError::Invalid(
+                    "version-three genesis requires positive Freeze height",
+                ));
+            }
+        } else {
+            frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9])?;
+        }
         let declared: CommitmentProfile =
             CommitmentProfile::from_wire(frame.required_u16(9)?).map_err(GenesisError::NodeCore)?;
         if !declared.is_logical() {
@@ -668,6 +706,11 @@ pub fn decode_genesis_manifest(bytes: &[u8]) -> Result<GenesisManifest, GenesisE
         objects,
         validator_set,
         commitment_profile,
+        minimum_freeze_block_height: if frame.version() == GENESIS_MANIFEST_FREEZE_VERSION {
+            frame.required_u64(10)?
+        } else {
+            0
+        },
         signature,
     };
     if encode_genesis_manifest(&manifest)? != bytes {
@@ -1278,6 +1321,7 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             manifest_digest,
             genesis_authority: manifest.genesis_authority,
             genesis_floor: ExecutionGeneration::genesis_floor(),
+            minimum_freeze_block_height: manifest.minimum_freeze_block_height,
         })
     } else {
         None

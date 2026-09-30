@@ -27,6 +27,7 @@ use execution::local_execution::{
 use execution::publication::{PublicationContext, encode_publication_context};
 use fee_claims::codec::{FeeClaimOperation, SignedFeeClaimIntent, decode_signed_fee_claim_intent};
 use fee_claims::{fee_claim_intent_digest, fee_claim_signing_frame};
+use genesis::{GenesisManifest, genesis_manifest_commitment, genesis_manifest_signing_frame};
 use protocol_types::{SignatureSchemeId, ValidatorId};
 use validator_set::{ValidatorInfo, ValidatorSet};
 
@@ -35,17 +36,19 @@ use validator_set::{ValidatorInfo, ValidatorSet};
 /// frame is never persisted or transported, only hashed.
 pub const ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE: u16 = 0x6441;
 const ANCHOR_ENCODING_VERSION: u16 = 1;
+const HANDOFF_ANCHOR_ENCODING_VERSION: u16 = 2;
 
 /// Fixed logical-domain label separating this anchor from any other digest
 /// that might one day be derived over the same fields.
 const ANCHOR_DOMAIN_LABEL: &[u8] = b"se/ordered-economics/anchor/v1";
+const HANDOFF_ANCHOR_DOMAIN_LABEL: &[u8] = b"se/ordered-economics/anchor/v2";
 
 /// Derives the canonical consensus genesis anchor DR-0153 requires: a
 /// domain-separated digest binding the logical ordered-economics domain, the
 /// chain/protocol/epoch replay boundary, the atomicity domain, the
 /// independently pinned signed-genesis digest, the exact active
-/// validator-set identity, and the fixed [`ConsensusParameters::genesis`]
-/// this profile runs.
+/// validator-set identity, the fixed [`ConsensusParameters::genesis`] and,
+/// for a handoff-capable signed genesis, its positive Freeze height.
 ///
 /// The raw genesis-manifest digest alone is deliberately *not* the anchor: it
 /// binds none of the consensus identity, so two profiles differing only in
@@ -61,6 +64,7 @@ pub fn ordered_economics_authority_anchor(
     context: &PublicationContext,
     domain: AtomicityDomainId,
     genesis_digest: Digest32,
+    minimum_freeze_block_height: u64,
     validator_set: &ValidatorSet,
 ) -> Result<Digest32, OrderedEconomicsError> {
     if resolver.chain_id() != context.chain_id()
@@ -79,9 +83,23 @@ pub fn ordered_economics_authority_anchor(
     let set_digest: Digest32 = validator_set.digest(resolver).map_err(|_| {
         OrderedEconomicsError::Policy("ordered economics anchor validator set identity")
     })?;
-    let mut frame: CanonicalStruct =
-        CanonicalStruct::new(ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE, ANCHOR_ENCODING_VERSION);
-    frame.field_bytes(1, ANCHOR_DOMAIN_LABEL.to_vec())?;
+    let handoff_capable: bool = minimum_freeze_block_height != 0;
+    let mut frame: CanonicalStruct = CanonicalStruct::new(
+        ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE,
+        if handoff_capable {
+            HANDOFF_ANCHOR_ENCODING_VERSION
+        } else {
+            ANCHOR_ENCODING_VERSION
+        },
+    );
+    frame.field_bytes(
+        1,
+        if handoff_capable {
+            HANDOFF_ANCHOR_DOMAIN_LABEL.to_vec()
+        } else {
+            ANCHOR_DOMAIN_LABEL.to_vec()
+        },
+    )?;
     frame.field_bytes(
         2,
         encode_publication_context(context)
@@ -93,6 +111,9 @@ pub fn ordered_economics_authority_anchor(
     frame.field_u16(6, parameters.protocol.as_u16())?;
     frame.field_u32(7, parameters.max_block_transactions)?;
     frame.field_u64(8, parameters.view_timeout_millis)?;
+    if handoff_capable {
+        frame.field_u64(9, minimum_freeze_block_height)?;
+    }
     let preimage: Vec<u8> = frame.finish()?;
     Ok(resolver.hash_for_purpose(context.epoch(), HashPurpose::ProtocolConfig, &preimage)?)
 }
@@ -106,6 +127,7 @@ pub struct OrderedEconomicsPolicy {
     context: PublicationContext,
     domain: AtomicityDomainId,
     genesis_digest: Digest32,
+    minimum_freeze_block_height: u64,
     anchor: Digest32,
     engine: ChainedHotStuff,
     resolver: HashSuiteResolver,
@@ -113,21 +135,86 @@ pub struct OrderedEconomicsPolicy {
 
 impl OrderedEconomicsPolicy {
     /// Creates the canonical anchor for one fixed-epoch profile and the
-    /// existing [`ConsensusParameters::genesis`] engine around it. Fails
-    /// closed if `validator_set`/`resolver` do not match `context`'s chain,
-    /// protocol version and epoch.
+    /// existing [`ConsensusParameters::genesis`] engine around it. A supplied
+    /// signed genesis manifest must match the independently pinned digest,
+    /// context and initial validator set; only that path enables Freeze.
+    /// `None` preserves the historical fixed-epoch profile but cannot Freeze.
     pub fn new(
         context: PublicationContext,
         domain: AtomicityDomainId,
         genesis_digest: Digest32,
+        genesis_manifest: Option<&GenesisManifest>,
         validator_set: ValidatorSet,
         resolver: HashSuiteResolver,
     ) -> Result<Self, OrderedEconomicsError> {
+        let minimum_freeze_block_height: u64 = match genesis_manifest {
+            Some(manifest) => {
+                if manifest.context() != &context || manifest.validator_set.context != context {
+                    return Err(OrderedEconomicsError::Policy(
+                        "signed genesis manifest does not match ordered context",
+                    ));
+                }
+                let derived_digest: Digest32 = genesis_manifest_commitment(&resolver, manifest)
+                    .map_err(|_| {
+                        OrderedEconomicsError::Policy(
+                            "signed genesis manifest commitment is invalid",
+                        )
+                    })?;
+                if derived_digest != genesis_digest {
+                    return Err(OrderedEconomicsError::Policy(
+                        "signed genesis manifest does not match the pinned digest",
+                    ));
+                }
+                let frame: Vec<u8> = genesis_manifest_signing_frame(manifest).map_err(|_| {
+                    OrderedEconomicsError::Policy("signed genesis manifest frame is invalid")
+                })?;
+                let verifier: Ed25519Verifier =
+                    Ed25519Verifier::from_verifying_key_bytes(&manifest.genesis_authority)
+                        .map_err(|_| {
+                            OrderedEconomicsError::Policy(
+                                "signed genesis manifest authority is invalid",
+                            )
+                        })?;
+                if !verifier
+                    .verify_framed(&frame, &manifest.signature)
+                    .map_err(|_| {
+                        OrderedEconomicsError::Policy("signed genesis manifest verification failed")
+                    })?
+                {
+                    return Err(OrderedEconomicsError::Policy(
+                        "signed genesis manifest signature is invalid",
+                    ));
+                }
+                let signed_members: Vec<ValidatorInfo> = manifest
+                    .validator_set
+                    .validators
+                    .iter()
+                    .map(|entry| ValidatorInfo {
+                        id: entry.id,
+                        voting_power: entry.voting_power,
+                        signature_scheme: entry.signature_scheme,
+                        public_key: entry.public_key.clone(),
+                    })
+                    .collect();
+                let signed_set: ValidatorSet = ValidatorSet::new(context.epoch(), signed_members)
+                    .map_err(|_| {
+                    OrderedEconomicsError::Policy("signed genesis validator set is invalid")
+                })?;
+                if signed_set.validators() != validator_set.validators() {
+                    return Err(OrderedEconomicsError::Policy(
+                        "ordered validator set disagrees with signed genesis",
+                    ));
+                }
+                manifest.minimum_freeze_block_height
+            }
+            None => 0,
+        };
         let anchor: Digest32 = ordered_economics_authority_anchor(
             &resolver,
             &context,
             domain,
             genesis_digest,
+            minimum_freeze_block_height,
             &validator_set,
         )?;
         let engine: ChainedHotStuff = ChainedHotStuff::new(
@@ -144,6 +231,7 @@ impl OrderedEconomicsPolicy {
             context,
             domain,
             genesis_digest,
+            minimum_freeze_block_height,
             anchor,
             engine,
             resolver,
@@ -172,6 +260,13 @@ impl OrderedEconomicsPolicy {
     #[must_use]
     pub const fn genesis_digest(&self) -> Digest32 {
         self.genesis_digest
+    }
+
+    /// Minimum proposal height authorized by the signed genesis schedule.
+    /// Zero denotes a historical manifest and disables Freeze entirely.
+    #[must_use]
+    pub const fn minimum_freeze_block_height(&self) -> u64 {
+        self.minimum_freeze_block_height
     }
 
     /// Returns the derived canonical consensus genesis anchor actually used
@@ -435,7 +530,30 @@ fn authenticate_with_policy(
         OrderedOperationKind::BondLifecycle => authenticate_bond_lifecycle(env, candidate),
         OrderedOperationKind::BondSlash => authenticate_bond_slash(env, candidate),
         OrderedOperationKind::Evidence => authenticate_evidence(env, candidate),
+        OrderedOperationKind::Freeze => authenticate_freeze(env, candidate),
     }
+}
+
+/// Purely validates the Freeze candidate's own bytes. The signed-genesis
+/// height and committed next-set state are checked separately before honest
+/// proposal/vote and again when the ordered block executes.
+fn authenticate_freeze(
+    env: &CandidateAuthentication<'_>,
+    candidate: &OrderedCandidate,
+) -> Result<(), OrderedEconomicsError> {
+    if env.policy.minimum_freeze_block_height() == 0 {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "freeze is not enabled by the signed genesis profile",
+        ));
+    }
+    let intent = super::freeze::decode_freeze_intent(&candidate.intent)
+        .map_err(|_| OrderedEconomicsError::Unauthenticated("invalid freeze candidate intent"))?;
+    if intent.context != candidate.context || intent.request_id != candidate.request_id {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "freeze candidate context or request id mismatch",
+        ));
+    }
+    Ok(())
 }
 
 fn authenticate_fee_claim(

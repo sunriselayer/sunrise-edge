@@ -230,6 +230,25 @@ pub fn build_logical_network_fixture(unique: &str) -> FastVoteGenesisFixture {
     fixture
 }
 
+/// Fresh signed version-3 fixture authorizing irreversible ordered Freeze.
+/// Existing logical fixtures remain version 2 and never acquire this authority.
+#[must_use]
+pub fn build_frozen_frontier_network_fixture(unique: &str) -> FastVoteGenesisFixture {
+    let mut fixture: FastVoteGenesisFixture = build_logical_network_fixture(unique);
+    let mut manifest: node_core::GenesisManifest =
+        decode_genesis_manifest(&fixture.manifest_bytes).unwrap();
+    manifest.minimum_freeze_block_height = 1;
+    manifest.signature = genesis_signing_key()
+        .sign(&genesis_manifest_signing_frame(&manifest).unwrap())
+        .into();
+    assert_eq!(manifest.encoding_version(), 3);
+    fixture.manifest_digest = genesis_manifest_commitment(&fixture.resolver, &manifest)
+        .unwrap()
+        .bytes();
+    fixture.manifest_bytes = encode_genesis_manifest(&manifest).unwrap();
+    fixture
+}
+
 /// Adds two ordinary sender-owned application Coins distinct from the fee
 /// source. The catch-up sequence transfers the first, traps on the second,
 /// then transfers the second, while every call advances the same fee Coin.

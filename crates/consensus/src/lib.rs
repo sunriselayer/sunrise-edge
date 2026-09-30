@@ -29,6 +29,14 @@ mod equivocation;
 mod fast_vote;
 #[cfg(test)]
 mod test_support;
+pub use availability::frontier::{
+    FrontierError, FrozenFrontierAccumulator, FrozenFrontierCertifier, FrozenFrontierIdentity,
+    FrozenFrontierPage, FrozenFrontierPageVerifier, FrozenFrontierVote,
+    MAX_FROZEN_FRONTIER_PAGE_BYTES, MAX_FROZEN_FRONTIER_PAGE_ENTRIES,
+    decode_frozen_frontier_identity, decode_frozen_frontier_page, decode_frozen_frontier_vote,
+    encode_frozen_frontier_identity, encode_frozen_frontier_page, encode_frozen_frontier_vote,
+    verify_frozen_frontier,
+};
 pub use availability::{
     AvailabilityCertificate, AvailabilityCertifier, AvailabilityIdentity, AvailabilityVote, bundle,
     decode_availability_certificate, decode_availability_identity, decode_availability_vote,

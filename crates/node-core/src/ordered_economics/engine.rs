@@ -1028,11 +1028,12 @@ fn execute_candidate<S: StructuredDurableDomainStateStore>(
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
     admission: Option<&OrderedLegAdmission<'_>>,
+    block_height: u64,
 ) -> LegOutcome {
     if let Err(error) = authenticate_candidate(env, candidate) {
         return disposition(candidate.request_id, error);
     }
-    if let Err(error) = preflight::preflight(staging, context, env, candidate) {
+    if let Err(error) = preflight::preflight(staging, context, env, candidate, block_height) {
         return disposition(candidate.request_id, error);
     }
     let domain = env.policy.domain();
@@ -1094,6 +1095,18 @@ fn execute_candidate<S: StructuredDurableDomainStateStore>(
         OrderedOperationKind::Evidence => {
             execute_evidence_candidate(staging, context, domain, env, candidate)
         }
+        OrderedOperationKind::Freeze => dispatch(
+            freeze::handle_freeze_ordered(
+                staging,
+                context,
+                domain,
+                env.policy.context().chain_id(),
+                candidate,
+                block_height,
+            ),
+            candidate.request_id,
+            node_failure,
+        ),
     }
 }
 
@@ -1212,6 +1225,7 @@ fn execute_evidence_candidate<S: StructuredDurableDomainStateStore>(
 /// Everything one newly admitted candidate contributes to the single commit.
 struct AdmittedCandidate {
     digest: Digest32,
+    reads: BTreeMap<Vec<u8>, StateRevision>,
     writes: Vec<PendingWrite>,
 }
 
@@ -1327,7 +1341,11 @@ fn admit_candidate<S: StructuredDurableDomainStateStore>(
             store, context, env, candidate, &plan,
         )?);
     }
-    Ok(Admission::Fresh(AdmittedCandidate { digest, writes }))
+    Ok(Admission::Fresh(AdmittedCandidate {
+        digest,
+        reads: BTreeMap::new(),
+        writes,
+    }))
 }
 
 /// Reconciles one candidate for a **signing** caller: a completed request is
@@ -1338,9 +1356,46 @@ fn admit_candidate_for_signer<S: StructuredDurableDomainStateStore>(
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
+    proposal_height: u64,
 ) -> Result<AdmittedCandidate, OrderedEconomicsError> {
+    // DR-0154 liveness gate, additive to (not a substitute for) `preflight`'s
+    // own authoritative closed-epoch refusal at commit time: an honest
+    // leader/replica never even places or votes for a *fresh* business
+    // candidate once a `Freeze` has committed, "Stop new ... construction of
+    // fresh economic candidates" / "an honest replica emits no fresh vote for
+    // a proposal whose own payload carries business." A `Freeze` candidate
+    // itself is exempt -- a second one is still admissible here and resolves
+    // to `AlreadyFrozen` at preflight. This check is deliberately confined to
+    // this signer-only entry point (`propose`/`process_proposal`), never
+    // `observe_proposal`'s plain `admit_candidate(..., reserve: false)` call:
+    // declared, signerless recovery must still be able to record and replay
+    // an authentic pre-freeze business proposal's bytes during catch-up, so
+    // its own already-justified inherited suffix can reach the deterministic
+    // closed-epoch refusal at commit time instead of never being recorded at
+    // all. Closure and warrant observations join the same CAS batch as the
+    // signing identity: a concurrent Freeze cannot expose a fresh vote.
     match admit_candidate(store, context, env, candidate, true)? {
-        Admission::Fresh(admitted) => Ok(admitted),
+        Admission::Fresh(mut admitted) => {
+            let staging: StagingStore<'_, S> = StagingStore::new(store);
+            if candidate.kind != OrderedOperationKind::Freeze
+                && freeze::read_authorized_closure(&staging, context, env)?.is_some()
+            {
+                return Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch));
+            }
+            if candidate.kind == OrderedOperationKind::Freeze {
+                freeze::require_freeze_warrant(&staging, context, env, candidate, proposal_height)?;
+            }
+            for (key, revision) in staging.observed_reads() {
+                if admitted
+                    .reads
+                    .insert(key, revision)
+                    .is_some_and(|prior| prior != revision)
+                {
+                    return Err(NodeCoreError::StateConflict.into());
+                }
+            }
+            Ok(admitted)
+        }
         Admission::Completed(outcome) => Err(OrderedEconomicsError::AlreadyCompleted(outcome)),
     }
 }
@@ -1418,6 +1473,9 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
     }
 
     if let Some(admitted) = &admitted {
+        for (key, revision) in &admitted.reads {
+            writes.read(key.clone(), *revision)?;
+        }
         for write in &admitted.writes {
             writes.apply(write.clone())?;
         }
@@ -1531,7 +1589,14 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
             nonce: plan.nonce,
         });
         let staging: StagingStore<'_, S> = StagingStore::new(store);
-        let outcome = execute_candidate(&staging, context, env, &candidate, admission.as_ref());
+        let outcome = execute_candidate(
+            &staging,
+            context,
+            env,
+            &candidate,
+            admission.as_ref(),
+            block.height,
+        );
         // One durable invocation observes one stable snapshot, so two different
         // revisions for one key can only be concurrent interference. Never
         // retain a decision derived from two disagreeing views of a row.
@@ -1838,10 +1903,22 @@ where
         authenticate_candidate(env, candidate)?;
     }
     let loaded = load_state(store, context, env)?;
+    let proposal_height: u64 = loaded
+        .state
+        .high_qc
+        .height
+        .checked_add(1)
+        .ok_or(stop("ordered economics height overflow"))?;
     // 2. Header conflict, before any other metadata, and the candidate's own
     //    reservations.
     let admitted = match candidate {
-        Some(candidate) => Some(admit_candidate_for_signer(store, context, env, candidate)?),
+        Some(candidate) => Some(admit_candidate_for_signer(
+            store,
+            context,
+            env,
+            candidate,
+            proposal_height,
+        )?),
         None => None,
     };
     let transactions = transactions_for(&loaded.state, admitted.as_ref().map(|a| a.digest))?;
@@ -1888,6 +1965,9 @@ where
         StateMutation::Put(identity::encode_leader_proposal_record(&record)?),
     )?;
     if let Some(admitted) = &admitted {
+        for (key, revision) in &admitted.reads {
+            writes.read(key.clone(), *revision)?;
+        }
         for write in &admitted.writes {
             writes.apply(write.clone())?;
         }
@@ -1940,9 +2020,41 @@ where
         .map_err(consensus_to_node)?;
 
     // 2. Header conflict before any consensus metadata, then reservations.
+    let retained: LocalVoteReconciliation =
+        identity::reconcile_local_vote(store, context, env, proposal.proposal.view, digest)?;
+    if let RetainedIdentity::Exact(vote) = retained.retained {
+        if vote.validator != signer.validator_id() {
+            return Err(stop("retained ordered vote signer differs"));
+        }
+        env.policy
+            .engine()
+            .verify_vote(&vote, &Ed25519ConsensusVerifier)
+            .map_err(consensus_to_node)?;
+        if let Some(candidate) = &proposal.candidate {
+            let candidate_digest: Digest32 = env.policy.candidate_digest(candidate)?;
+            let expected: [Digest32; 1] = [candidate_digest];
+            if proposal.proposal.transactions.as_slice() != expected.as_slice() {
+                return Err(OrderedEconomicsError::Unauthenticated(
+                    "replayed candidate differs from retained proposal",
+                ));
+            }
+        } else if !proposal.proposal.transactions.is_empty() {
+            return Err(stop("replayed business proposal lacks candidate bytes"));
+        }
+        return Ok(OrderedEventOutput {
+            messages: vec![ConsensusMessage::Vote(vote)],
+            committed: Vec::new(),
+        });
+    }
     let admitted = match &proposal.candidate {
         Some(candidate) => {
-            let admitted = admit_candidate_for_signer(store, context, env, candidate)?;
+            let admitted = admit_candidate_for_signer(
+                store,
+                context,
+                env,
+                candidate,
+                proposal.proposal.height,
+            )?;
             if !proposal.proposal.transactions.contains(&admitted.digest) {
                 return Err(OrderedEconomicsError::Unauthenticated(
                     "ordered proposal candidate does not match its own transaction digest",
@@ -1961,6 +2073,83 @@ where
             None
         }
     };
+
+    // A verified justification may commit Freeze during this very event.
+    // Process that observation without exposing a vote for its own business
+    // payload. The persisted prefix and inherited consensus locks remain intact.
+    if proposal
+        .candidate
+        .as_ref()
+        .is_some_and(|candidate| candidate.kind != OrderedOperationKind::Freeze)
+    {
+        let preview: ConsensusOutput = env
+            .policy
+            .engine()
+            .on_observer_event(
+                &loaded.state,
+                ConsensusEvent::Proposal(proposal.proposal.clone()),
+                &Ed25519ConsensusVerifier,
+            )
+            .map_err(consensus_to_node)?;
+        if preview
+            .committed_blocks
+            .iter()
+            .filter(|block| !block.transactions.is_empty())
+            .count()
+            > MAX_ORDERED_EVENT_COMMITTED
+        {
+            return Err(stop("Freeze preview exceeds committed candidate bound"));
+        }
+        let mut commits_freeze: bool = false;
+        for block in &preview.committed_blocks {
+            if block.transactions.len() > 1 {
+                return Err(stop("Freeze preview violates the candidate profile"));
+            }
+            for committed_digest in &block.transactions {
+                let key: Vec<u8> = ordered_candidate_record_key(
+                    env.policy.context().chain_id(),
+                    *committed_digest,
+                )?;
+                let row: VersionedStateValue =
+                    store.get_versioned_durable(context, env.policy.domain(), &key)?;
+                let bytes: &[u8] = row
+                    .value()
+                    .ok_or_else(|| stop("Freeze preview lacks committed candidate"))?;
+                let committed: OrderedCandidate = decode_ordered_candidate(bytes)?;
+                if committed.context != *env.policy.context()
+                    || candidate_digest(env.resolver, committed.context.epoch(), bytes)?
+                        != *committed_digest
+                {
+                    return Err(stop("Freeze preview candidate context or digest differs"));
+                }
+                authenticate_candidate(env, &committed)
+                    .map_err(|_| stop("Freeze preview candidate authentication failed"))?;
+                commits_freeze |= committed.kind == OrderedOperationKind::Freeze;
+            }
+        }
+        if commits_freeze {
+            let observed: OrderedEventOutput = observe_proposal(store, context, env, proposal)?;
+            if freeze::read_admission_closure(
+                store,
+                context,
+                env.policy.domain(),
+                env.policy.context().chain_id(),
+                env.policy.context().epoch(),
+            )?
+            .is_none()
+            {
+                return Err(stop("Freeze preview changed before observation; retry"));
+            }
+            if observed
+                .messages
+                .iter()
+                .any(|message| matches!(message, ConsensusMessage::Vote(_)))
+            {
+                return Err(stop("Freeze observation unexpectedly produced a vote"));
+            }
+            return Ok(observed);
+        }
+    }
 
     // 3. Vote readiness, then the immutable local vote identity.
     require_vote_readiness(store, context, env, &loaded.state, &proposal.proposal)?;
@@ -2073,6 +2262,7 @@ pub fn observe_proposal<S: StructuredDurableDomainStateStore>(
                 Admission::Fresh(admitted) => admitted,
                 Admission::Completed(_) => AdmittedCandidate {
                     digest: env.policy.candidate_digest(candidate)?,
+                    reads: BTreeMap::new(),
                     writes: Vec::new(),
                 },
             };
@@ -2191,6 +2381,11 @@ pub(crate) fn ordered_reservation_key_for_tests(chain: &ChainId, request_id: &[u
 #[cfg(test)]
 pub(crate) fn ordered_outcome_key_for_tests(chain: &ChainId, request_id: &[u8; 32]) -> Vec<u8> {
     ordered_outcome_key(chain, request_id).unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn admission_closure_key_for_tests(chain: &ChainId, epoch: Epoch) -> Vec<u8> {
+    freeze::admission_closure_key(chain, epoch).unwrap()
 }
 
 #[cfg(test)]

@@ -39,11 +39,23 @@
 //! own free-form invariant string can fall into and become a committed
 //! rejection. Every existing handler failure this module does not itself
 //! positively classify defaults to a stop.
+//!
+//! ## Epoch-handoff integration status
+//!
+//! A signed-genesis minimum height and a committed-eligibility check now
+//! warrant `Freeze` before proposal/vote and at ordered execution; successful
+//! `Freeze` closes admission for ordinary and ordered business mutations and
+//! fresh publication-retention ACKs. This is still only one part of
+//! DR-0154. `DrainSet`, `Seal`, verified next-set readiness and activation,
+//! and retirement of the older standalone epoch-transition route must be
+//! integrated before this path can be enabled as a complete handoff.
 use super::*;
 
 mod candidate;
 pub(crate) mod engine;
 mod evidence_submission;
+mod freeze;
+mod frontier;
 mod identity;
 mod policy;
 mod preflight;
@@ -65,6 +77,14 @@ pub use engine::{
 pub use evidence_submission::{
     MAX_ORDERED_EVIDENCE_SUBMISSION_BYTES, OrderedEvidenceSubmission,
     decode_ordered_evidence_submission, encode_ordered_evidence_submission,
+};
+pub(crate) use freeze::fence_admission_open;
+pub use freeze::{
+    AdmissionClosureRecord, FreezeIntent, decode_admission_closure_record, decode_freeze_intent,
+    encode_admission_closure_record, encode_freeze_intent,
+};
+pub use frontier::{
+    FrozenFrontierError, FrozenFrontierStep, advance_frozen_frontier, read_frozen_frontier_page,
 };
 pub use policy::{
     ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE, OrderedEconomicsEnvironment, OrderedEconomicsPolicy,
@@ -108,6 +128,22 @@ pub enum OrderedRefusal {
     /// This request id already carries a committed receipt over different
     /// canonical bytes (it was spent through another path).
     RequestCommittedElsewhere,
+    /// DR-0154: a business candidate (every kind other than
+    /// [`OrderedOperationKind::Freeze`]) committed after admission was
+    /// already closed by an earlier committed `Freeze`. The deterministic,
+    /// authenticated no-effect closed-epoch refusal: no value or nonce
+    /// movement, and the original retained outcome (if any) is untouched.
+    ClosedEpoch,
+    /// DR-0154: a second `Freeze` candidate committed after admission was
+    /// already closed by an earlier one. There is no unfreeze in this
+    /// profile, so a later `Freeze` is refused rather than re-applied.
+    AlreadyFrozen,
+    /// The committed Freeze candidate appeared below the signed genesis
+    /// minimum ordered proposal height.
+    PrematureFreeze,
+    /// The advisory next set was structurally valid, but a healthy committed
+    /// bond or resource policy no longer makes one of its members eligible.
+    IneligibleNextSet,
 }
 
 impl OrderedRefusal {
@@ -121,6 +157,10 @@ impl OrderedRefusal {
             Self::StaleSenderNonce => 5,
             Self::ShareUnavailable => 6,
             Self::RequestCommittedElsewhere => 7,
+            Self::ClosedEpoch => 8,
+            Self::AlreadyFrozen => 9,
+            Self::PrematureFreeze => 10,
+            Self::IneligibleNextSet => 11,
         }
     }
 
@@ -133,6 +173,10 @@ impl OrderedRefusal {
             5 => Ok(Self::StaleSenderNonce),
             6 => Ok(Self::ShareUnavailable),
             7 => Ok(Self::RequestCommittedElsewhere),
+            8 => Ok(Self::ClosedEpoch),
+            9 => Ok(Self::AlreadyFrozen),
+            10 => Ok(Self::PrematureFreeze),
+            11 => Ok(Self::IneligibleNextSet),
             _ => Err(NodeCoreError::PersistenceInvariant(
                 "unknown ordered refusal tag",
             )),
@@ -152,6 +196,12 @@ impl OrderedRefusal {
             Self::RequestCommittedElsewhere => {
                 "request id already carries a different committed receipt"
             }
+            Self::ClosedEpoch => {
+                "ordered candidate committed after admission was closed by a freeze"
+            }
+            Self::AlreadyFrozen => "admission is already closed by an earlier committed freeze",
+            Self::PrematureFreeze => "freeze precedes the signed epoch-end minimum height",
+            Self::IneligibleNextSet => "freeze advisory next set is no longer eligible",
         }
     }
 }
