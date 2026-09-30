@@ -307,9 +307,13 @@ The detailed existing evidence and remaining criteria follow:
   lifecycle with actual ordered Freeze, a retained full certificate never
   applied locally and only one unaggregated ACK, partial cursor/host restart,
   bounded CLI page resume, exact saved signature/page replay and no-overwrite
-  corruption refusals. It has not yet passed the complete validation gate.
-  Parent integration/review, targeted and full required PostgreSQL checks,
-  independent exact-head approval and CI remain open. This checkbox covers
+  corruption refusals. Parent actual four-namespace PostgreSQL/compiled-CLI
+  acceptance passed, including fresh HTTP export after the second host restart
+  and full same-store revision/byte comparisons. Seven portable-artifact
+  verification tests and 34 raw TCP/TLS transport tests passed; the shared
+  parser now accepts legitimate bodyless HTTP 204 without weakening ordinary
+  exact-length framing. The complete repository gate, independent exact-head
+  approval and CI remain open. This checkbox covers
   frozen progress/export only, not safe live rollover: fresh Logical
   activation remains refused and there is no unfreeze. Quorum-retained
   frontier union, ordered DrainSet and certificate-backed drain application
