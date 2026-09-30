@@ -131,6 +131,13 @@ const ENCODING_VERSION: u16 = 1;
 const APPLY_REFUSED_MESSAGE: &str =
     "handoff profile: installed commitment profile and derived evidence disagree";
 
+/// Refusal text for
+/// [`NodeCoreError::EpochTransitionLogicalProfileUnsupported`] (DR-0154):
+/// this PR's scope is admission alone, so the message must not claim the
+/// deferred publication-before-apply/Freeze/DrainSet/Seal gate is active.
+const EPOCH_TRANSITION_LOGICAL_REFUSED_MESSAGE: &str =
+    "epoch transition: handoff-capable (Logical) commitment profile is not yet supported";
+
 /// Maximum UTF-8 byte length of a chain identifier accepted at node ingress.
 pub const MAX_CHAIN_ID_BYTES: usize = 128;
 /// Maximum canonical payload length carried by one node event or response.
@@ -583,6 +590,22 @@ pub enum NodeCoreError {
     /// [`InstalledCommitmentProfile::Logical`]: logical_generation::InstalledCommitmentProfile::Logical
     /// [`InstalledCommitmentProfile::Historical`]: logical_generation::InstalledCommitmentProfile::Historical
     LogicalProfileApplicationUnsupported,
+    /// A store's signed genesis binds the handoff-capable (`Logical`)
+    /// commitment profile: DR-0132 epoch-transition vote/activation does not
+    /// yet implement the authenticated logical-generation provenance its
+    /// next-epoch execution/fee/publication policy writes would require, so
+    /// [`epoch_transition::propose_and_vote`] and [`epoch_transition::activate`]
+    /// refuse new transitions before any vote signature or mutation.
+    /// Activation first reconciles an already-committed transition identity
+    /// and checks the outgoing epoch, then refuses fresh Logical activation
+    /// before policy derivation. A `Historical` store remains supported.
+    /// This is scope isolation, not the deferred
+    /// publication-before-apply/Freeze/DrainSet/Seal gate DR-0154's complete
+    /// design still requires.
+    ///
+    /// [`epoch_transition::propose_and_vote`]: crate::epoch_transition::propose_and_vote
+    /// [`epoch_transition::activate`]: crate::epoch_transition::activate
+    EpochTransitionLogicalProfileUnsupported,
     /// The authenticated causal generation has no representable successor.
     ExecutionGenerationOverflow {
         /// Authenticated floor the derivation started from.
@@ -1708,6 +1731,9 @@ impl fmt::Display for NodeCoreError {
             ),
             Self::LogicalProvenance(reason) => write!(f, "logical provenance: {reason}"),
             Self::LogicalProfileApplicationUnsupported => f.write_str(APPLY_REFUSED_MESSAGE),
+            Self::EpochTransitionLogicalProfileUnsupported => {
+                f.write_str(EPOCH_TRANSITION_LOGICAL_REFUSED_MESSAGE)
+            }
             Self::ExecutionGenerationOverflow { floor } => write!(f, "generation overflow {floor}"),
             Self::ExecutionGenerationRegression {
                 previous,

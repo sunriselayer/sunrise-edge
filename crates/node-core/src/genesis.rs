@@ -178,7 +178,10 @@ pub struct GenesisManifest {
     /// explicit tag in field 9 and additionally installs the authenticated
     /// [`LogicalProfileRecord`] row.
     pub commitment_profile: CommitmentProfile,
-    /// Ed25519 signature by `genesis_authority` over fields 1 through 7.
+    /// Ed25519 signature by `genesis_authority` over fields 1 through 7 of a
+    /// historical (`0x6416/v1`) manifest, or over fields 1 through 7 plus the
+    /// profile tag in field 9 of a handoff-capable (`0x6416/v2`) manifest --
+    /// see [`genesis_manifest_signing_frame`].
     pub signature: [u8; 64],
 }
 

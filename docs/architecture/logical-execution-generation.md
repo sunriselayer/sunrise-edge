@@ -41,8 +41,8 @@ without reading the full epoch-handoff design.
     exceeds the profile's authenticated genesis floor, and refuses a
     `Historical` store that carries any logical derivation at all. The two
     models can never be mixed inside one commit.
-  - Every live application path that installs effects, a receipt, a nonce
-    advance, or a settlement against an already-installed profile is wired
+  - Supported application paths that install effects, a receipt, a nonce
+    advance, or a settlement against an already-installed profile are wired
     through one of these two entry points: paid execution
     (`paid_execution.rs`), local execution (`local_execution.rs`),
     publication (`publication.rs`), bond lifecycle (`bond_lifecycle.rs`),
@@ -54,8 +54,16 @@ without reading the full epoch-handoff design.
   - A fresh handoff-capable genesis installs its first provenance rows
     directly through `genesis_provenance`, the one by-construction exception:
     no profile row exists yet for the gate to resolve against.
+  - Logical-profile epoch proposal/vote and fresh activation refuse with
+    `NodeCoreError::EpochTransitionLogicalProfileUnsupported`: the existing
+    transition writer does not yet derive next-epoch logical provenance.
+    Refusal happens before a vote signature or fresh policy mutation.
+    Activation reconciles an already-committed transition's complete identity
+    and checks the outgoing epoch before resolving the fresh-activation
+    profile. Historical-profile transitions remain supported. This is a
+    deliberate unsupported-operation boundary, not implemented handoff.
   - `NodeCoreError::LogicalProfileApplicationUnsupported` and
-    `NodeCoreError::ExecutionGenerationRegression` are the two fail-closed
+    `NodeCoreError::ExecutionGenerationRegression` are application-binding
     refusals; both are local invariant guards against a caller presenting a
     resolved profile and derived evidence that disagree with each other or
     with the genesis floor, not a cross-validator gate.
@@ -68,7 +76,8 @@ This slice does not implement, and must not be read as implementing, any of:
 - Freeze, DrainSet, Seal, or any ordered epoch-control state machine.
 - Frontier closure, cut derivation, or portable-collection enumeration.
 - Import/readiness verification for a joining or recovering validator.
-- Activation of a next validator set, or any Delivery 3 completion claim.
+- Logical-profile transition votes, next-epoch provenance and activation of
+  a next validator set, or any Delivery 3 completion claim.
 
 No cross-validator availability quorum is consulted before an admitted
 generation is applied. The current refusal errors are single-node,

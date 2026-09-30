@@ -14,6 +14,15 @@ below, but still do not implement durable retention, Freeze/DrainSet/Seal
 control or the publication-before-apply gate this ADR requires. Implementation
 and validation status belong in [`TODO.md`](../../../TODO.md).
 
+The independent logical-generation admission extraction on 2026-09-30
+deliberately refuses Logical-profile epoch proposal/vote and fresh activation
+with `EpochTransitionLogicalProfileUnsupported`. The existing transition
+writer cannot install next-epoch policies with the required provenance in
+this slice. Exact already-committed transition identity is reconciled before
+the fresh-activation gate; Historical transitions remain supported. Full
+Logical handoff and activation remain a later, independently verified
+implementation, not authority conferred by these local admission guards.
+
 ## Context and reusable boundaries
 
 The existing [epoch transition](0132-fastvote-epoch-transition.md) derives

@@ -592,6 +592,26 @@ where
     let epoch_record: FastPathEpochRecord =
         mutation_fence::fence_epoch_state(store, context, domain, chain, &mut fence_reads)?;
     let current_epoch: Epoch = epoch_record.current_epoch;
+    // DR-0154 scope isolation: this PR implements admission alone, not the
+    // authenticated logical-generation provenance this transition's
+    // next-epoch execution/fee/publication-policy writes would require.
+    // Refuse a handoff-capable store here, before any policy/bond read,
+    // before the eligibility gate, and before a vote is ever cast/signed.
+    // Use the same signed-genesis binding as application admission.
+    if matches!(
+        logical_generation::fence_commitment_profile(
+            store,
+            context,
+            domain,
+            chain,
+            &mut fence_reads,
+        )?,
+        logical_generation::InstalledCommitmentProfile::Logical(_)
+    ) {
+        return Err(EpochTransitionError::Node(
+            NodeCoreError::EpochTransitionLogicalProfileUnsupported,
+        ));
+    }
     let current_context: PublicationContext =
         PublicationContext::new(chain.clone(), protocol_version, current_epoch)?;
     let outgoing_validator_set: ValidatorSet = load_validator_set(
@@ -767,6 +787,26 @@ pub fn activate<S: StructuredDurableDomainStateStore>(
             expected: epoch_record.current_epoch,
             actual: certificate.epoch,
         }));
+    }
+
+    // 4b. This independent admission feature does not implement next-epoch
+    //     logical provenance. Refuse fresh Logical activation before any
+    //     policy derivation or mutation, but preserve committed identity
+    //     reconciliation above. Keep the profile reads in the eventual CAS
+    //     set for the supported Historical branch.
+    if matches!(
+        logical_generation::fence_commitment_profile(
+            store,
+            context,
+            domain,
+            chain,
+            &mut fence_reads,
+        )?,
+        logical_generation::InstalledCommitmentProfile::Logical(_)
+    ) {
+        return Err(EpochTransitionError::Node(
+            NodeCoreError::EpochTransitionLogicalProfileUnsupported,
+        ));
     }
 
     // 5. Cryptographically verify the certificate under the fenced outgoing
