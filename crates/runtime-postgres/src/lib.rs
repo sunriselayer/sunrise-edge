@@ -10,6 +10,8 @@
 //! classifies opaque [`runtime::PersistenceLayout`] keys.
 
 mod blob;
+mod outbox_guard;
+mod portable;
 
 pub use blob::{PostgresBlobStore, PostgresBlobStoreError};
 
@@ -59,6 +61,9 @@ pub const INITIAL_MIGRATION_SQL: &str = include_str!("../migrations/0001_initial
 /// This crate ships no migration from `v2` to `v3`: an existing `v2` (or
 /// `v1`) database fails closed with `SchemaMismatch` rather than being
 /// silently accepted, exactly as `v1` failed closed under `v2`.
+/// DR-0166 also redefines this unreleased shape in place with a per-bootstrap
+/// UUIDv4 source-instance ID. A pre-production v3 table missing that column
+/// fails closed on inspection/use; no automatic repair or backfill is shipped.
 pub const POSTGRES_SCHEMA_IDENTITY: [u8; 32] = *b"sunrise-edge/postgres/schema/v3\0";
 
 /// First supported schema generation.
@@ -336,6 +341,13 @@ pub struct PostgresSchemaMetadata {
     schema_generation: SchemaGeneration,
     writer_fence: WriterFenceGeneration,
     commit_sequence: u64,
+    /// A 16-byte UUIDv4 identity persisted once at trusted bootstrap. It
+    /// distinguishes two independently bootstrapped stores that otherwise
+    /// share the same chain/validator/domain namespace tuple, so a portable
+    /// snapshot token can never validate against the wrong physical source.
+    /// It never substitutes for an operator restore/failover writer-refencing
+    /// procedure.
+    source_instance_id: [u8; 16],
 }
 
 impl PostgresSchemaMetadata {
@@ -355,6 +367,12 @@ impl PostgresSchemaMetadata {
     #[must_use]
     pub const fn commit_sequence(self) -> u64 {
         self.commit_sequence
+    }
+
+    /// Returns the random bootstrap-time source instance identity.
+    #[must_use]
+    pub const fn source_instance_id(self) -> [u8; 16] {
+        self.source_instance_id
     }
 }
 
@@ -535,6 +553,7 @@ pub fn bootstrap_namespace(
              validator_id,
              atomicity_domain_id,
              schema_identity,
+             source_instance_id,
              schema_generation,
              migration_phase_id,
              compatibility_min_generation,
@@ -543,6 +562,7 @@ pub fn bootstrap_namespace(
              commit_sequence
          ) VALUES (
              $1, $2, $3, $4,
+             decode(replace(gen_random_uuid()::text, '-', ''), 'hex'),
              CAST(CAST($5 AS TEXT) AS NUMERIC), $6,
              CAST(CAST($5 AS TEXT) AS NUMERIC), CAST(CAST($5 AS TEXT) AS NUMERIC),
              CAST(CAST($7 AS TEXT) AS NUMERIC), 0
@@ -644,6 +664,7 @@ pub fn inspect_namespace(
     let row = client.query_opt(
         "SELECT
              schema_identity,
+             source_instance_id,
              schema_generation::TEXT,
              compatibility_min_generation::TEXT,
              compatibility_max_generation::TEXT,
@@ -664,10 +685,14 @@ pub fn inspect_namespace(
         return Ok(None);
     };
     let identity: Vec<u8> = row.get(0);
-    let generation = parse_u64("schema_generation", row.get(1))?;
-    let minimum = parse_u64("compatibility_min_generation", row.get(2))?;
-    let maximum = parse_u64("compatibility_max_generation", row.get(3))?;
-    let migration_phase: i16 = row.get(4);
+    let source_instance_id_bytes: Vec<u8> = row.get(1);
+    let source_instance_id: [u8; 16] = source_instance_id_bytes
+        .try_into()
+        .map_err(|_| PostgresSchemaError::SchemaMismatch)?;
+    let generation = parse_u64("schema_generation", row.get(2))?;
+    let minimum = parse_u64("compatibility_min_generation", row.get(3))?;
+    let maximum = parse_u64("compatibility_max_generation", row.get(4))?;
+    let migration_phase: i16 = row.get(5);
     if identity.as_slice() != POSTGRES_SCHEMA_IDENTITY
         || generation != POSTGRES_SCHEMA_GENERATION.get()
         || minimum != generation
@@ -676,14 +701,15 @@ pub fn inspect_namespace(
     {
         return Err(PostgresSchemaError::SchemaMismatch);
     }
-    let writer_fence_value = parse_u64("writer_fence_generation", row.get(5))?;
+    let writer_fence_value = parse_u64("writer_fence_generation", row.get(6))?;
     let writer_fence = WriterFenceGeneration::new(writer_fence_value)
         .ok_or(PostgresSchemaError::ZeroWriterFence)?;
-    let commit_sequence = parse_u64("commit_sequence", row.get(6))?;
+    let commit_sequence = parse_u64("commit_sequence", row.get(7))?;
     Ok(Some(PostgresSchemaMetadata {
         schema_generation: POSTGRES_SCHEMA_GENERATION,
         writer_fence,
         commit_sequence,
+        source_instance_id,
     }))
 }
 
@@ -701,6 +727,8 @@ enum PreCommitFailure {
     InvalidPersistedState,
     SchemaMismatch,
     Unavailable,
+    SequenceOverflow,
+    NonemptyOutbox,
 }
 
 impl PreCommitFailure {
@@ -738,6 +766,8 @@ impl PreCommitFailure {
             Self::InvalidPersistedState => DurableReadError::InvalidPersistedState,
             Self::SchemaMismatch => DurableReadError::SchemaMismatch,
             Self::Serialization | Self::Unavailable => DurableReadError::Unavailable,
+            Self::SequenceOverflow => DurableReadError::InvalidPersistedState,
+            Self::NonemptyOutbox => DurableReadError::InvalidPersistedState,
         }
     }
 
@@ -751,6 +781,8 @@ impl PreCommitFailure {
             Self::InvalidPersistedState => DurableCommitRejection::InvalidPersistedState,
             Self::SchemaMismatch => DurableCommitRejection::SchemaMismatch,
             Self::Unavailable => DurableCommitRejection::UnavailableBeforeCommit,
+            Self::SequenceOverflow => DurableCommitRejection::CommitSequenceOverflow,
+            Self::NonemptyOutbox => DurableCommitRejection::InvalidPersistedState,
         }
     }
 
@@ -764,6 +796,8 @@ impl PreCommitFailure {
             Self::InvalidPersistedState => DurableOutboxClaimRejection::InvalidPersistedState,
             Self::SchemaMismatch => DurableOutboxClaimRejection::SchemaMismatch,
             Self::Unavailable => DurableOutboxClaimRejection::UnavailableBeforeCommit,
+            Self::SequenceOverflow => DurableOutboxClaimRejection::ArithmeticOverflow,
+            Self::NonemptyOutbox => DurableOutboxClaimRejection::InvalidPersistedState,
         }
     }
 
@@ -779,6 +813,8 @@ impl PreCommitFailure {
             }
             Self::SchemaMismatch => DurableOutboxAcknowledgementRejection::SchemaMismatch,
             Self::Unavailable => DurableOutboxAcknowledgementRejection::UnavailableBeforeCommit,
+            Self::SequenceOverflow => DurableOutboxAcknowledgementRejection::ArithmeticOverflow,
+            Self::NonemptyOutbox => DurableOutboxAcknowledgementRejection::InvalidPersistedState,
         }
     }
 }
@@ -823,7 +859,6 @@ fn set_local_timeouts(
 #[derive(Clone, Copy, Debug)]
 enum MetadataLockMode {
     None,
-    Share,
     Update,
 }
 
@@ -834,12 +869,12 @@ fn load_namespace_metadata(
 ) -> Result<PostgresSchemaMetadata, PreCommitFailure> {
     let suffix: &str = match lock_mode {
         MetadataLockMode::None => "",
-        MetadataLockMode::Share => " FOR SHARE",
         MetadataLockMode::Update => " FOR UPDATE",
     };
     let sql = format!(
         "SELECT
              schema_identity,
+             source_instance_id,
              schema_generation::TEXT,
              compatibility_min_generation::TEXT,
              compatibility_max_generation::TEXT,
@@ -865,11 +900,17 @@ fn load_namespace_metadata(
     let identity: Vec<u8> = row
         .try_get(0)
         .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
-    let generation = parse_database_u64(&row, 1)?;
-    let minimum = parse_database_u64(&row, 2)?;
-    let maximum = parse_database_u64(&row, 3)?;
+    let source_instance_id_bytes: Vec<u8> = row
+        .try_get(1)
+        .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
+    let source_instance_id: [u8; 16] = source_instance_id_bytes
+        .try_into()
+        .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
+    let generation = parse_database_u64(&row, 2)?;
+    let minimum = parse_database_u64(&row, 3)?;
+    let maximum = parse_database_u64(&row, 4)?;
     let migration_phase: i16 = row
-        .try_get(4)
+        .try_get(5)
         .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
     if identity.as_slice() != POSTGRES_SCHEMA_IDENTITY
         || generation != POSTGRES_SCHEMA_GENERATION.get()
@@ -879,12 +920,13 @@ fn load_namespace_metadata(
     {
         return Err(PreCommitFailure::SchemaMismatch);
     }
-    let writer_fence = WriterFenceGeneration::new(parse_database_u64(&row, 5)?)
+    let writer_fence = WriterFenceGeneration::new(parse_database_u64(&row, 6)?)
         .ok_or(PreCommitFailure::InvalidPersistedState)?;
     Ok(PostgresSchemaMetadata {
         schema_generation: POSTGRES_SCHEMA_GENERATION,
         writer_fence,
-        commit_sequence: parse_database_u64(&row, 6)?,
+        commit_sequence: parse_database_u64(&row, 7)?,
+        source_instance_id,
     })
 }
 
@@ -1891,11 +1933,11 @@ fn allocate_commit_sequence(
     context: &DurableOperationContext,
     namespace: &PostgresNamespace,
     current: u64,
-) -> Result<u64, DurableCommitRejection> {
-    set_local_timeouts(transaction, context).map_err(PreCommitFailure::into_commit_rejection)?;
+) -> Result<u64, PreCommitFailure> {
+    set_local_timeouts(transaction, context)?;
     let next = current
         .checked_add(1)
-        .ok_or(DurableCommitRejection::CommitSequenceOverflow)?;
+        .ok_or(PreCommitFailure::SequenceOverflow)?;
     let updated = transaction
         .execute(
             "UPDATE sunrise_edge.storage_metadata
@@ -1910,9 +1952,9 @@ fn allocate_commit_sequence(
                 &&namespace.domain().as_bytes()[..],
             ],
         )
-        .map_err(|error| PreCommitFailure::from_database(&error).into_commit_rejection())?;
+        .map_err(|error| PreCommitFailure::from_database(&error))?;
     if updated != 1 {
-        return Err(DurableCommitRejection::SchemaMismatch);
+        return Err(PreCommitFailure::SchemaMismatch);
     }
     Ok(next)
 }
@@ -2373,6 +2415,7 @@ fn reconcile_outbox_claim(
     .map_err(|_| DurableOutboxClaimRejection::InvalidPersistedState)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn install_outbox_claim(
     transaction: &mut postgres::Transaction<'_>,
     context: &DurableOperationContext,
@@ -2381,6 +2424,7 @@ fn install_outbox_claim(
     now_unix_millis: u64,
     lease_id: DurableOutboxLeaseId,
     lease_expires_at_unix_millis: u64,
+    current_commit_sequence: u64,
 ) -> Result<DurableOutboxClaim, DurableOutboxClaimRejection> {
     if delivery.state_id != OUTBOX_DELIVERY_PENDING
         || delivery.available_at_unix_millis > now_unix_millis
@@ -2439,6 +2483,8 @@ fn install_outbox_claim(
         _ => return Err(DurableOutboxClaimRejection::InvalidPersistedState),
     }
 
+    allocate_commit_sequence(transaction, context, namespace, current_commit_sequence)
+        .map_err(PreCommitFailure::into_claim_rejection)?;
     let attempt_count = delivery
         .attempt_count
         .checked_add(1)
@@ -2808,7 +2854,7 @@ where
                 &self.namespace,
                 metadata.commit_sequence(),
             ) {
-                return DurableCommitOutcome::Rejected(reason);
+                return DurableCommitOutcome::Rejected(reason.into_commit_rejection());
             }
             if let Err(reason) = apply_state_mutations(
                 &mut transaction,
@@ -3040,7 +3086,9 @@ where
                 metadata.commit_sequence(),
             ) {
                 Ok(sequence) => sequence,
-                Err(reason) => return DurableCommitOutcome::Rejected(reason),
+                Err(reason) => {
+                    return DurableCommitOutcome::Rejected(reason.into_commit_rejection());
+                }
             };
             if let Some(state) = invocation.state()
                 && let Err(reason) = apply_state_mutations(
@@ -3164,7 +3212,7 @@ where
             let metadata = match load_namespace_metadata(
                 &mut transaction,
                 &self.namespace,
-                MetadataLockMode::Share,
+                MetadataLockMode::Update,
             ) {
                 Ok(metadata) => metadata,
                 Err(reason) => {
@@ -3231,6 +3279,7 @@ where
                 request.now_unix_millis(),
                 request.lease_id(),
                 request.lease_expires_at_unix_millis(),
+                metadata.commit_sequence(),
             ) {
                 Ok(claim) => claim,
                 Err(reason) => return DurableOutboxClaimOutcome::Rejected(reason),
@@ -3283,7 +3332,7 @@ where
             let metadata = match load_namespace_metadata(
                 &mut transaction,
                 &self.namespace,
-                MetadataLockMode::Share,
+                MetadataLockMode::Update,
             ) {
                 Ok(metadata) => metadata,
                 Err(reason) => {
@@ -3337,6 +3386,7 @@ where
                 request.now_unix_millis(),
                 request.lease_id(),
                 request.lease_expires_at_unix_millis(),
+                metadata.commit_sequence(),
             ) {
                 Ok(claim) => claim,
                 Err(reason) => return DurableOutboxClaimOutcome::Rejected(reason),
@@ -3395,7 +3445,7 @@ where
             let metadata = match load_namespace_metadata(
                 &mut transaction,
                 &self.namespace,
-                MetadataLockMode::Share,
+                MetadataLockMode::Update,
             ) {
                 Ok(metadata) => metadata,
                 Err(reason) => {
@@ -3505,6 +3555,16 @@ where
                 }
             };
             if let Err(reason) = set_local_timeouts(&mut transaction, context) {
+                return DurableOutboxAcknowledgementOutcome::Rejected(
+                    reason.into_acknowledgement_rejection(),
+                );
+            }
+            if let Err(reason) = allocate_commit_sequence(
+                &mut transaction,
+                context,
+                &self.namespace,
+                metadata.commit_sequence(),
+            ) {
                 return DurableOutboxAcknowledgementOutcome::Rejected(
                     reason.into_acknowledgement_rejection(),
                 );

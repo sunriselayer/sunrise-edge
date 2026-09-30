@@ -854,11 +854,19 @@ fn postgres_wal_full_bounded_wal_exhaustion() {
         DurableOutboxClaimOutcome::NoDueWork
     );
 
+    // The cycle-1 baseline commit already allocated one commit sequence
+    // (checked above), and both rejected pre-COMMIT fault attempts (cycle 1's
+    // direct probe never went through the adapter; cycle 2's adapter commit
+    // failed before COMMIT) allocated none. Past that baseline of 1: the
+    // cycle-2 replay commit_invocation (1 -> 2), the claim (2 -> 3), and the
+    // acknowledgement (3 -> 4) each allocate their own commit sequence in the
+    // same transaction as their write; the rejected re-replay and the
+    // trailing `NoDueWork` claim allocate none. Four in total.
     assert_eq!(
         inspect_namespace(&mut fresh_client, &namespace)
             .unwrap()
             .unwrap()
             .commit_sequence(),
-        2
+        4
     );
 }

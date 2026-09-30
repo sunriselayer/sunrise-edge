@@ -57,6 +57,11 @@ roadmap describes a later target state.
 - [Complete epoch handoff](epoch-handoff.md) ([DR-0154](decisions/0154-complete-epoch-handoff.md)):
   publication-before-apply, quorum-complete frozen frontiers, ordered epoch
   control, portable logical commitments and verified new-validator readiness.
+- [Portable storage reconstruction reads](portable-reconstruction.md)
+  ([DR-0166](decisions/0166-portable-candidate-snapshot.md)): bounded
+  independent durable/blob/outbox reads and an optional backend-enforced
+  snapshot-continuity contract for one quiet source; source-local storage
+  metadata only, with no cut/import/readiness/Seal/activation claim.
 
 Production-oriented persistence requirements and the PostgreSQL mapping are
 separate operational references:
