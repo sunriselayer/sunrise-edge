@@ -15,12 +15,15 @@ use protocol_types::{ChainId, ValidatorId};
 use runtime::{AtomicityDomainId, WriterFenceGeneration};
 use std::fmt;
 
-/// Stable identity of the shared structured SQL schema, generation one.
+/// Stable identity of the shared structured SQL schema.
 ///
 /// A future additive migration bumps this identity together with any new
 /// column; a database claimed by an unsupported identity fails closed
-/// rather than being silently reinterpreted.
-pub const SQL_DURABLE_SCHEMA_IDENTITY: &[u8] = b"sunrise-edge/sqlite/structured/schema/v1";
+/// rather than being silently reinterpreted. `v2` adds the checked
+/// `mutation_sequence` column bumped at every write chokepoint (see
+/// [`advance_mutation_sequence`]); a `v1` database fails closed, including
+/// when its older metadata table has no mutation-sequence column.
+pub const SQL_DURABLE_SCHEMA_IDENTITY: &[u8] = b"sunrise-edge/sqlite/structured/schema/v2";
 
 pub(crate) const OBJECT_HEAD_STATUS_CURRENT: i64 = 1;
 pub(crate) const OBJECT_HEAD_STATUS_TOMBSTONED: i64 = 2;
@@ -103,7 +106,8 @@ pub const TABLE_STATEMENTS: &[&str] = &[
          chain_id TEXT NOT NULL,
          validator_id BLOB NOT NULL CHECK(length(validator_id) = 32),
          domain BLOB NOT NULL CHECK(length(domain) = 32),
-         writer_fence BLOB NOT NULL CHECK(length(writer_fence) = 8)
+         writer_fence BLOB NOT NULL CHECK(length(writer_fence) = 8),
+         mutation_sequence BLOB NOT NULL CHECK(length(mutation_sequence) = 8)
      )",
     "CREATE TABLE IF NOT EXISTS durable_state (
          key BLOB PRIMARY KEY NOT NULL,
@@ -194,6 +198,12 @@ pub enum SchemaError {
         /// Generation actually persisted.
         actual: WriterFenceGeneration,
     },
+    /// The checked mutation sequence would overflow, so no covered write
+    /// applied.
+    MutationSequenceOverflow,
+    /// The checked mutation sequence row did not match the value this same
+    /// transaction already observed, so no covered write applied.
+    MutationSequenceConflict,
 }
 
 impl fmt::Display for SchemaError {
@@ -214,6 +224,10 @@ impl fmt::Display for SchemaError {
                 expected.get(),
                 actual.get()
             ),
+            Self::MutationSequenceOverflow => f.write_str("mutation sequence would overflow"),
+            Self::MutationSequenceConflict => {
+                f.write_str("mutation sequence changed mid-transaction")
+            }
         }
     }
 }
@@ -231,6 +245,7 @@ impl From<SqlSessionError> for SchemaError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NamespaceMetadata {
     writer_fence: WriterFenceGeneration,
+    mutation_sequence: u64,
 }
 
 impl NamespaceMetadata {
@@ -238,6 +253,12 @@ impl NamespaceMetadata {
     #[must_use]
     pub const fn writer_fence(&self) -> WriterFenceGeneration {
         self.writer_fence
+    }
+
+    /// Returns the last checked mutation sequence this transaction observed.
+    #[must_use]
+    pub const fn mutation_sequence(&self) -> u64 {
+        self.mutation_sequence
     }
 }
 
@@ -260,7 +281,7 @@ pub fn verify_namespace(
     namespace: &SqlDurableNamespace,
 ) -> Result<NamespaceMetadata, SchemaError> {
     let rows = session.exec(
-        "SELECT schema_identity, chain_id, validator_id, domain, writer_fence
+        "SELECT schema_identity, chain_id, validator_id, domain, writer_fence, mutation_sequence
          FROM durable_metadata WHERE id = 1",
         &[],
     )?;
@@ -282,7 +303,13 @@ pub fn verify_namespace(
     let writer_fence = decode_u64(writer_fence_bytes)
         .and_then(WriterFenceGeneration::new)
         .ok_or(SchemaError::ZeroWriterFence)?;
-    Ok(NamespaceMetadata { writer_fence })
+    let mutation_sequence_bytes = row.blob(5).map_err(SqlSessionError::from)?;
+    let mutation_sequence =
+        decode_u64(mutation_sequence_bytes).ok_or(SchemaError::InvalidPersistedMetadata)?;
+    Ok(NamespaceMetadata {
+        writer_fence,
+        mutation_sequence,
+    })
 }
 
 /// Creates the shared tables if absent, installs `namespace`'s metadata
@@ -317,17 +344,48 @@ pub fn bootstrap_namespace(
     ensure_schema(session)?;
     session.exec(
         "INSERT OR IGNORE INTO durable_metadata
-             (id, schema_identity, chain_id, validator_id, domain, writer_fence)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+             (id, schema_identity, chain_id, validator_id, domain, writer_fence,
+              mutation_sequence)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
         &[
             SqlValue::Blob(SQL_DURABLE_SCHEMA_IDENTITY.to_vec()),
             SqlValue::Text(namespace.chain_id().as_str().to_owned()),
             SqlValue::Blob(namespace.validator_id().as_bytes().to_vec()),
             SqlValue::Blob(namespace.domain().as_bytes().to_vec()),
             SqlValue::Blob(encode_u64(initial_writer_fence.get()).to_vec()),
+            SqlValue::Blob(encode_u64(0).to_vec()),
         ],
     )?;
     verify_namespace(session, namespace)
+}
+
+/// Atomically advances the persisted mutation sequence by exactly one.
+///
+/// `current` must be the exact value this same active transaction already
+/// observed via [`verify_namespace`]; a mismatch (a concurrent writer already
+/// advanced it, which cannot happen inside one exclusive SQL write
+/// transaction but is still checked defensively) or an overflow leaves the
+/// row untouched and every covered write in the same transaction must then
+/// roll back rather than apply.
+pub fn advance_mutation_sequence(
+    session: &mut dyn SqlSession,
+    current: u64,
+) -> Result<u64, SchemaError> {
+    let next = current
+        .checked_add(1)
+        .ok_or(SchemaError::MutationSequenceOverflow)?;
+    let rows = session.exec(
+        "UPDATE durable_metadata SET mutation_sequence = ?1
+         WHERE id = 1 AND mutation_sequence = ?2",
+        &[
+            SqlValue::Blob(encode_u64(next).to_vec()),
+            SqlValue::Blob(encode_u64(current).to_vec()),
+        ],
+    )?;
+    if rows.rows_affected() != 1 {
+        return Err(SchemaError::MutationSequenceConflict);
+    }
+    Ok(next)
 }
 
 /// Atomically advances the persisted writer fence from `expected` to

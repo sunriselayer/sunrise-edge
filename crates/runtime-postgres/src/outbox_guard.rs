@@ -26,7 +26,9 @@ fn any_row(
         .map_err(|error| PreCommitFailure::from_database(&error))
 }
 
-fn probe(
+/// Visible to the sibling `portable` module so the snapshot outbox-empty
+/// check reuses this exact presence query instead of a second one.
+pub(crate) fn probe(
     transaction: &mut postgres::Transaction<'_>,
     namespace: &PostgresNamespace,
 ) -> Result<StructuredOutboxInventory, PreCommitFailure> {

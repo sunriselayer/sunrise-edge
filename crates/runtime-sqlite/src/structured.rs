@@ -22,8 +22,9 @@
 use crate::rusqlite_backend::NativeSqlBackend;
 use runtime::outbox_guard::{StructuredOutboxExclusionGuard, StructuredOutboxInventory};
 use runtime::portable::{
-    DurablePortableRepository, DurableRecordChunkOutcome, DurableRecordChunkRequest,
-    DurableRecordDescriptor, DurableRecordKey, DurableRecordPage, DurableRecordScan,
+    DurablePortableRepository, DurablePortableSnapshotRepository, DurableRecordChunkOutcome,
+    DurableRecordChunkRequest, DurableRecordDescriptor, DurableRecordKey, DurableRecordPage,
+    DurableRecordScan, PortableSnapshotError, PortableSnapshotToken,
 };
 use runtime::{
     AtomicStateTransaction, AtomicityDomainId, DueOutboxClaimRequest, DurableCommitOutcome,
@@ -94,6 +95,10 @@ pub enum SqliteDurableStoreError {
     },
     /// The backend transaction was unavailable.
     Unavailable,
+    /// The checked mutation sequence would overflow.
+    MutationSequenceOverflow,
+    /// The checked mutation sequence changed within the active transaction.
+    MutationSequenceConflict,
 }
 
 impl fmt::Display for SqliteDurableStoreError {
@@ -137,6 +142,8 @@ impl fmt::Display for SqliteDurableStoreError {
                 requested.get()
             ),
             Self::Unavailable => f.write_str("SQLite structured backend is unavailable"),
+            Self::MutationSequenceOverflow => f.write_str("SQLite mutation sequence overflow"),
+            Self::MutationSequenceConflict => f.write_str("SQLite mutation sequence conflict"),
         }
     }
 }
@@ -167,6 +174,8 @@ impl From<schema::SchemaError> for SqliteDurableStoreError {
             schema::SchemaError::WriterFenceMismatch { expected, actual } => {
                 Self::WriterFenceMismatch { expected, actual }
             }
+            schema::SchemaError::MutationSequenceOverflow => Self::MutationSequenceOverflow,
+            schema::SchemaError::MutationSequenceConflict => Self::MutationSequenceConflict,
         }
     }
 }
@@ -472,6 +481,55 @@ impl DurablePortableRepository for SqliteDurableStore {
         request: &DurableRecordChunkRequest,
     ) -> Result<DurableRecordChunkOutcome, DurableReadError> {
         self.engine.read_portable_chunk(context, domain, request)
+    }
+}
+
+impl DurablePortableSnapshotRepository for SqliteDurableStore {
+    fn begin_portable_snapshot(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<PortableSnapshotToken, PortableSnapshotError> {
+        self.engine.begin_portable_snapshot(context, domain)
+    }
+    fn scan_portable_keys_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+        scan: &DurableRecordScan,
+    ) -> Result<DurableRecordPage, PortableSnapshotError> {
+        self.engine
+            .scan_portable_keys_at(context, domain, token, scan)
+    }
+    fn read_portable_descriptor_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+        key: &DurableRecordKey,
+    ) -> Result<Option<DurableRecordDescriptor>, PortableSnapshotError> {
+        self.engine
+            .read_portable_descriptor_at(context, domain, token, key)
+    }
+    fn read_portable_chunk_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+        request: &DurableRecordChunkRequest,
+    ) -> Result<DurableRecordChunkOutcome, PortableSnapshotError> {
+        self.engine
+            .read_portable_chunk_at(context, domain, token, request)
+    }
+    fn check_portable_outbox_empty_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+    ) -> Result<(), PortableSnapshotError> {
+        self.engine
+            .check_portable_outbox_empty_at(context, domain, token)
     }
 }
 

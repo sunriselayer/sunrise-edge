@@ -9,7 +9,11 @@ fn any_row(session: &mut dyn SqlSession, sql: &str) -> Result<bool, PreCommitFai
     Ok(session.exec(sql, &[])?.one()?.is_some())
 }
 
-fn probe(session: &mut dyn SqlSession) -> Result<StructuredOutboxInventory, PreCommitFailure> {
+/// Visible to the sibling `portable` module so the snapshot outbox-empty
+/// check reuses this exact presence query instead of a second one.
+pub(super) fn probe(
+    session: &mut dyn SqlSession,
+) -> Result<StructuredOutboxInventory, PreCommitFailure> {
     let delivery_present: bool = any_row(session, "SELECT 1 FROM durable_outbox_delivery LIMIT 1")?;
     let pending_delivery_present: bool = any_row(
         session,
