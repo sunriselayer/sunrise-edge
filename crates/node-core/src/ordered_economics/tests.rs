@@ -922,7 +922,7 @@ fn unbond_commits_identically_on_four_stores_and_exact_replay_writes_nothing() {
         let page: VerifiedCommittedHistoryPage = verify_stored_committed_history_page(
             &network.stores[replica],
             &network.context,
-            &network.policy,
+            &network.env(),
             &VerifiedCommittedHistoryTip::genesis(&network.policy),
             1,
         )
@@ -973,7 +973,7 @@ fn independent_committed_history_reader_refuses_missing_tombstoned_and_malformed
     let original: VerifiedCommittedHistoryPage = verify_stored_committed_history_page(
         &network.stores[0],
         &network.context,
-        &network.policy,
+        &network.env(),
         &VerifiedCommittedHistoryTip::genesis(&network.policy),
         1,
     )
@@ -988,7 +988,7 @@ fn independent_committed_history_reader_refuses_missing_tombstoned_and_malformed
         verify_stored_committed_history_page(
             &network.stores[0],
             &network.context,
-            &network.policy,
+            &network.env(),
             &original.tip,
             1,
         )
@@ -1001,7 +1001,7 @@ fn independent_committed_history_reader_refuses_missing_tombstoned_and_malformed
     let continuation: VerifiedCommittedHistoryPage = verify_stored_committed_history_page(
         &network.stores[0],
         &network.context,
-        &network.policy,
+        &network.env(),
         &original.tip,
         1,
     )
@@ -1011,7 +1011,7 @@ fn independent_committed_history_reader_refuses_missing_tombstoned_and_malformed
     let complete: VerifiedCommittedHistoryPage = verify_stored_committed_history_page(
         &network.stores[0],
         &network.context,
-        &network.policy,
+        &network.env(),
         &VerifiedCommittedHistoryTip::genesis(&network.policy),
         2,
     )
@@ -1023,7 +1023,7 @@ fn independent_committed_history_reader_refuses_missing_tombstoned_and_malformed
         verify_stored_committed_history_page(
             &network.stores[0],
             &network.context,
-            &network.policy,
+            &network.env(),
             &VerifiedCommittedHistoryTip::genesis(&network.policy),
             1,
         )
@@ -1036,13 +1036,314 @@ fn independent_committed_history_reader_refuses_missing_tombstoned_and_malformed
         verify_stored_committed_history_page(
             &network.stores[0],
             &network.context,
-            &network.policy,
+            &network.env(),
             &VerifiedCommittedHistoryTip::genesis(&network.policy),
             1,
         )
         .unwrap_err()
         .to_string(),
         "ordered committed history proof is malformed"
+    );
+}
+
+// --- U14-A: candidate/header/outcome/receipt linkage over committed history
+
+#[test]
+fn committed_history_page_binds_a_real_candidate_to_its_exact_linkage_across_bounded_pages() {
+    let network: Network = setup();
+    network.install_ordered();
+    let recipient: Address = address_of(0x70);
+    let next: FastPathBondRecord = predicted_unbond(&network.bond, 11, *recipient.as_bytes());
+    let request_id: [u8; 32] = [0x70; 32];
+    let candidate: OrderedCandidate =
+        unbond_candidate(&network, &network.bond, &next, request_id, recipient, 11);
+    network.round(1, Some(&candidate));
+    network.round(2, None);
+    let (round3, _, _) = network.round(3, None);
+    let original: OrderedOutcome = round3[0].committed[0].clone();
+    // Three further rounds are needed to commit heights 2, 3 and 4: each
+    // round's certificate commits the height two views behind it.
+    network.round(4, None);
+    network.round(5, None);
+    network.round(6, None);
+
+    // The candidate-bearing height proves its full linkage in isolation.
+    let first: VerifiedCommittedHistoryPage = verify_stored_committed_history_page(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &VerifiedCommittedHistoryTip::genesis(&network.policy),
+        1,
+    )
+    .unwrap();
+    assert_eq!(first.blocks.len(), 1);
+    assert_eq!(
+        first.blocks[0].transactions,
+        vec![original.candidate_digest]
+    );
+
+    // The returned cursor resumes exactly where it left off, across the
+    // remaining bounded page.
+    let rest: VerifiedCommittedHistoryPage = verify_stored_committed_history_page(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &first.tip,
+        3,
+    )
+    .unwrap();
+    assert_eq!(
+        rest.blocks
+            .iter()
+            .map(|block| block.height)
+            .collect::<Vec<_>>(),
+        vec![2, 3, 4]
+    );
+
+    // One page over the whole range reaches byte-identical progress.
+    let whole: VerifiedCommittedHistoryPage = verify_stored_committed_history_page(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &VerifiedCommittedHistoryTip::genesis(&network.policy),
+        4,
+    )
+    .unwrap();
+    assert_eq!(whole.tip, rest.tip);
+
+    // The exact response the retained outcome carries is what page
+    // verification just proved reachable through the header and receipt.
+    let queried: OrderedOutcome = query_ordered_outcome(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &request_id,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        encode_ordered_outcome(&queried).unwrap(),
+        encode_ordered_outcome(&original).unwrap()
+    );
+}
+
+#[test]
+fn committed_history_page_rejects_a_missing_candidate_record() {
+    let (network, original, _candidate) = completed_network([0xe0; 32], 0x71);
+    let chain = fixture::chain();
+    let candidate_key: Vec<u8> =
+        engine::ordered_candidate_record_key_for_tests(&chain, original.candidate_digest);
+    network.put(0, candidate_key, StateMutation::Delete);
+    let result = verify_stored_committed_history_page(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &VerifiedCommittedHistoryTip::genesis(&network.policy),
+        1,
+    );
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "ordered committed history candidate bytes are missing or tombstoned"
+    );
+}
+
+#[test]
+fn committed_history_page_rejects_a_malformed_candidate_record() {
+    let (network, original, _candidate) = completed_network([0xe1; 32], 0x72);
+    let chain = fixture::chain();
+    let candidate_key: Vec<u8> =
+        engine::ordered_candidate_record_key_for_tests(&chain, original.candidate_digest);
+    network.put(0, candidate_key, StateMutation::Put(vec![0xff, 0x01, 0x02]));
+    let result = verify_stored_committed_history_page(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &VerifiedCommittedHistoryTip::genesis(&network.policy),
+        1,
+    );
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "ordered committed history candidate bytes are malformed"
+    );
+}
+
+#[test]
+fn committed_history_page_rejects_a_substituted_candidate_with_a_wrong_digest() {
+    let (network, original, _candidate) = completed_network([0xe2; 32], 0x73);
+    let chain = fixture::chain();
+    let candidate_key: Vec<u8> =
+        engine::ordered_candidate_record_key_for_tests(&chain, original.candidate_digest);
+
+    // A genuinely valid, really signed candidate for a *different* request --
+    // substituted wholesale under the first candidate's own content-addressed
+    // key. Its digest cannot possibly equal the key it was stored under.
+    let other_recipient: Address = address_of(0x74);
+    let other_next: FastPathBondRecord =
+        predicted_unbond(&network.bond, 12, *other_recipient.as_bytes());
+    let other_request_id: [u8; 32] = [0xe3; 32];
+    let substituted: OrderedCandidate = unbond_candidate(
+        &network,
+        &network.bond,
+        &other_next,
+        other_request_id,
+        other_recipient,
+        12,
+    );
+    network.put(
+        0,
+        candidate_key,
+        StateMutation::Put(encode_ordered_candidate(&substituted).unwrap()),
+    );
+    let result = verify_stored_committed_history_page(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &VerifiedCommittedHistoryTip::genesis(&network.policy),
+        1,
+    );
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "ordered committed history candidate bytes do not hash to the committed transaction digest"
+    );
+}
+
+#[test]
+fn committed_history_page_rejects_a_missing_request_header() {
+    let (network, _original, candidate) = completed_network([0xe4; 32], 0x75);
+    let chain = fixture::chain();
+    let header_key: Vec<u8> =
+        engine::ordered_request_header_key_for_tests(&chain, &candidate.request_id);
+    network.put(0, header_key, StateMutation::Delete);
+    let result = verify_stored_committed_history_page(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &VerifiedCommittedHistoryTip::genesis(&network.policy),
+        1,
+    );
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "retained ordered outcome has no immutable request header"
+    );
+}
+
+#[test]
+fn committed_history_page_rejects_an_outcome_with_a_wrong_block_digest() {
+    let (network, original, candidate) = completed_network([0xe5; 32], 0x76);
+    let chain = fixture::chain();
+    let tampered = OrderedOutcome {
+        block_digest: digest32(0xaa),
+        ..original
+    };
+    network.put(
+        0,
+        engine::ordered_outcome_key_for_tests(&chain, &candidate.request_id),
+        StateMutation::Put(engine::encode_retained_outcome_for_tests(&tampered)),
+    );
+    let result = verify_stored_committed_history_page(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &VerifiedCommittedHistoryTip::genesis(&network.policy),
+        1,
+    );
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "ordered committed history outcome disagrees with the committed block it names"
+    );
+}
+
+#[test]
+fn committed_history_page_rejects_an_outcome_that_claims_a_height_after_its_own_block() {
+    let (network, original, candidate) = completed_network([0xe6; 32], 0x77);
+    let chain = fixture::chain();
+    let tampered = OrderedOutcome {
+        block_height: original.block_height + 1,
+        ..original
+    };
+    network.put(
+        0,
+        engine::ordered_outcome_key_for_tests(&chain, &candidate.request_id),
+        StateMutation::Put(engine::encode_retained_outcome_for_tests(&tampered)),
+    );
+    let result = verify_stored_committed_history_page(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &VerifiedCommittedHistoryTip::genesis(&network.policy),
+        1,
+    );
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "ordered committed history outcome claims a height after its own committed block"
+    );
+}
+
+#[test]
+fn committed_history_page_requires_an_authenticated_replay_origin_outside_the_page() {
+    let (network, original, candidate) = completed_network([0xe8; 32], 0x79);
+    let chain: ChainId = fixture::chain();
+    // The outcome row and original receipt still agree on request identity
+    // and responses, but a claimed origin at genesis has no committed
+    // proposal proof. A page cannot accept that claim merely because the
+    // asserted height precedes the current signed block.
+    let tampered: OrderedOutcome = OrderedOutcome {
+        block_height: 0,
+        ..original
+    };
+    network.put(
+        0,
+        engine::ordered_outcome_key_for_tests(&chain, &candidate.request_id),
+        StateMutation::Put(engine::encode_retained_outcome_for_tests(&tampered)),
+    );
+    assert_eq!(
+        verify_stored_committed_history_page(
+            &network.stores[0],
+            &network.context,
+            &network.env(),
+            &VerifiedCommittedHistoryTip::genesis(&network.policy),
+            1,
+        )
+        .unwrap_err()
+        .to_string(),
+        "ordered committed history replay origin proof is missing or tombstoned"
+    );
+}
+
+#[test]
+fn committed_history_page_rejects_an_outcome_that_disagrees_with_its_own_committed_receipt() {
+    let (network, original, candidate) = completed_network([0xe7; 32], 0x78);
+    let chain = fixture::chain();
+    let tampered = OrderedOutcome {
+        output: NodeOutput::new(
+            vec![
+                NodeResponse::new(
+                    RequestId::new(candidate.request_id).unwrap(),
+                    NodeResponseStatus::Rejected,
+                    Some(encode_ordered_refusal_payload(OrderedRefusal::StaleGeneration).unwrap()),
+                )
+                .unwrap(),
+            ],
+            Vec::new(),
+        )
+        .unwrap(),
+        ..original
+    };
+    network.put(
+        0,
+        engine::ordered_outcome_key_for_tests(&chain, &candidate.request_id),
+        StateMutation::Put(engine::encode_retained_outcome_for_tests(&tampered)),
+    );
+    let result = verify_stored_committed_history_page(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &VerifiedCommittedHistoryTip::genesis(&network.policy),
+        1,
+    );
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "retained ordered outcome disagrees with its own committed receipt"
     );
 }
 
@@ -1157,7 +1458,7 @@ fn signerless_delayed_certificate_archives_every_batched_empty_height_atomically
     let page: VerifiedCommittedHistoryPage = verify_stored_committed_history_page(
         &destination.stores[0],
         &destination.context,
-        &destination.policy,
+        &destination.env(),
         &VerifiedCommittedHistoryTip::genesis(&destination.policy),
         4,
     )
