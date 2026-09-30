@@ -7,7 +7,12 @@ exist As-Is. Generation-one schema identity was redefined in place to `v2`
 ([DR-0143](../architecture/decisions/0143-postgres-first-network-escrow-operations.md)) to add a namespace-bound content-addressed blob table. These are pre-production
 bootstrap-only changes, not migrations: no migration/backfill/verify/activate
 operation was added, and an existing `v1` or `v2` database fails closed with
-`SchemaMismatch`. A bounded synchronous pool now implements fenced state/object/
+`SchemaMismatch`. Following that same precedent, `v3` is further redefined in
+place (its identity is not advanced) to add a per-bootstrap UUIDv4
+`source_instance_id` column to `storage_metadata`
+([DR-0166](../architecture/decisions/0166-portable-candidate-snapshot.md));
+a pre-production `v3` table missing that column fails closed on the next
+inspection or bootstrap, with no automatic backfill. A bounded synchronous pool now implements fenced state/object/
 receipt reads and serializable structured state/object/receipt/outbox commit with transaction-
 local deadlines, bounded unchanged-envelope serialization retry, and typed
 outcomes. Indexed exact-request/due outbox claim and acknowledgement now use
@@ -194,6 +199,8 @@ the authoritative lease or ordering value.
 - migration phase and supported compatibility window;
 - non-zero monotonic writer-fence generation;
 - monotonic commit sequence;
+- a per-bootstrap 16-byte UUIDv4 `source_instance_id`, generated once at
+  trusted bootstrap and never rewritten;
 - last verified checkpoint and operator metadata.
 
 Every write transaction first locks this exact row and compares schema identity,
@@ -202,6 +209,20 @@ unsupported, or stale row is a definite pre-commit rejection. Reads validate
 the same values before returning authoritative data. Failover advances the
 generation at the replacement authority only after the old writer is fenced;
 rollback never restores an earlier generation.
+
+The bounded [portable storage reconstruction](../architecture/portable-reconstruction.md)
+reads (`DurablePortableSnapshotRepository`,
+[DR-0166](../architecture/decisions/0166-portable-candidate-snapshot.md))
+read `writer_fence_generation`, `commit_sequence` and `source_instance_id` from this
+same row, inside the same guarded transaction as every other check, to
+bind a local snapshot token to the exact physical namespace row it was
+issued against. This is source-local storage metadata only, never a
+protocol or cut identifier.
+`source_instance_id` alone does not distinguish a byte-identical
+`pg_dump`/restore copy from its source, since the copy carries the same
+bytes over; a copied namespace still REQUIRES the operator-only
+`advance_writer_fence` procedure below, whether or not a pre-restore
+snapshot token happens to still validate against the copy.
 
 The request path never creates or migrates this row. Bootstrap and migration
 are explicit operator commands.

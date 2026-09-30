@@ -55,6 +55,18 @@ payout verification. **FastVote is complete only after phase 3.** Phase 1
 permits a closed local developer rehearsal, not multi-validator protocol-v3
 live activation; the hard activation constraints below still apply.
 
+**2026-09-30: feature-sized PR policy.** Use independently complete,
+single-capability PRs rather than one large PR. Independent work bases on
+`origin/main`; dependent feature PRs may stack on their prerequisites. An
+earlier aggregate integration PR (for example PR #235) may be preserved as
+the source these slices originated from, but it is not a required merge
+target. Deliveries above are acceptance gates for a whole capability, not
+merge gates: an independently complete, feature-sized PR may merge to
+`main` on its own after the full repository gate, exact-head Opus review
+and CI, without the delivery it contributes to being complete. Each
+stacked PR states its own owned paths, exact implemented scope and pending
+verification.
+
 | Order | Deliverable | Completion evidence | Status |
 | --- | --- | --- | --- |
 | 1 | Durable local code publication | CLI publish/query; immutable code/ABI/exact dependencies; authenticated admission; origin absence; shared nonce and receipt atomicity (no outgoing message); real SQLite restart/replay/conflict/fencing | Implemented and locally validated (DR-0121); fee-free opt-in local storage only |
@@ -186,6 +198,36 @@ The detailed existing evidence and remaining criteria follow:
   not only fast-path commitments; checked overflow must refuse before mutation
   or exposed signatures. Fresh-genesis enforcement
   is required; existing pre-rule stores cannot silently receive this guarantee.
+
+- [ ] **Portable storage reads and backend-enforced snapshot continuity**
+  ([DR-0166](docs/architecture/decisions/0166-portable-candidate-snapshot.md),
+  [portable reconstruction](docs/architecture/portable-reconstruction.md)).
+  Bounded keyset/descriptor/chunk reads over the four closed structured
+  collections (state, receipts, object heads, object versions) and bounded
+  content-addressed blob range reads are implemented for memory, SQL-durable
+  (SQLite/DO) and PostgreSQL on branch `codex/portable-store-snapshot`,
+  which bases directly on `origin/main`. PR #235 is preserved as the
+  integration source this work originated from, not a required merge
+  target: an independently complete, feature-sized PR may merge to `main`
+  on its own after the full repository gate, exact-head Opus review and CI.
+  An optional stronger contract adds a
+  local `PortableSnapshotToken` binding namespace/domain, writer fence, a
+  per-backend bootstrap physical source identity (PostgreSQL: UUIDv4;
+  shared SQL-durable/SQLite: random 16 bytes; memory: an unpersisted
+  process-local counter) and a checked monotonic
+  mutation sequence advanced at every covered write, including outbox
+  claim/acknowledgement; guarded reads compare the token inside the same
+  backend read snapshot. This is source-local storage-consistency evidence
+  only, not authenticated cut/import/readiness/Seal/activation, and does not
+  by itself close Delivery 3's "complete bounded portable enumeration"
+  criterion above. This slice also fixed a stale PostgreSQL
+  backup-restore-rehearsal test expectation (a successful outbox claim,
+  acknowledgement and fresh structured commit each advance the mutation
+  sequence by one, not one total across all three). Parent verified the four
+  runtime libraries build independently of the integration branch, and ran
+  the real disposable PostgreSQL backup/restore rehearsal with the required
+  pinned-image configuration. The complete repository gate, exact-head Opus
+  review and required CI are separate pending gates until recorded below.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).
