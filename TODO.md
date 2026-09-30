@@ -306,8 +306,16 @@ The detailed existing evidence and remaining criteria follow:
   formatting and diff checks. Regression evidence includes both deterministic
   conflicting-prepare schedules, signer rejection, rejected and applied/unapplied
   indeterminate commits, corrupt replay refusal and real SQLite reopen.
-  The complete repository rerun, fresh exact-final-head independent approval
-  and passing required CI remain merge gates. Freeze/frontier/drain/cut/import/readiness/Seal/activation,
+  A new complete-diff Codex reviewer explicitly approved exact corrected
+  code `3f725e1` against merged #238. The additional hash/history and bundle
+  capacity hypotheses were withdrawn after verifying current fixed-epoch
+  reachability and actual WASM gas limits; no speculative fixes were retained.
+  GitHub run `36718236021` reached the final edge-adapter checks but was
+  canceled at the existing 35-minute job deadline, not a test assertion.
+  The CI job budget is raised to55minutes without skipping any gate or
+  changing operation deadlines. Complete local validation is still running;
+  the final CI/TODO-only update requires independent exact-head approval and
+  passing required CI before merge. Freeze/frontier/drain/cut/import/readiness/Seal/activation,
   next-epoch provenance and complete Delivery 3 remain separate and unchecked.
 
 - [ ] **Ordered Freeze and immutable frontier export: next independent functional capability**
