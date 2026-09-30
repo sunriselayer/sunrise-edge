@@ -293,6 +293,10 @@ impl Network {
         for view in 1..=views {
             keys.push(engine::ordered_leader_record_key_for_tests(&chain, view));
             keys.push(engine::ordered_vote_record_key_for_tests(&chain, view));
+            keys.push(
+                engine::ordered_committed_proof_key(&chain, fixture::protocol().epoch(), view)
+                    .unwrap(),
+            );
         }
         for request_id in request_ids {
             keys.push(engine::ordered_request_header_key_for_tests(
@@ -915,6 +919,17 @@ fn unbond_commits_identically_on_four_stores_and_exact_replay_writes_nothing() {
                 .committed_height,
             1
         );
+        let page: VerifiedCommittedHistoryPage = verify_stored_committed_history_page(
+            &network.stores[replica],
+            &network.context,
+            &network.policy,
+            &VerifiedCommittedHistoryTip::genesis(&network.policy),
+            1,
+        )
+        .unwrap();
+        assert_eq!(page.blocks.len(), 1);
+        assert_eq!(page.blocks[0].transactions, vec![outcome.candidate_digest]);
+        assert!(page.tip.matches_declared_tip(1, outcome.block_digest));
     }
     // Every replica produced byte-identical outcomes.
     for replica in 1..REPLICAS {
@@ -939,6 +954,225 @@ fn unbond_commits_identically_on_four_stores_and_exact_replay_writes_nothing() {
         assert!(replay.messages.is_empty(), "replica {replica}");
         assert_eq!(network.snapshot(replica, &[request_id], 3), before);
     }
+}
+
+#[test]
+fn independent_committed_history_reader_refuses_missing_tombstoned_and_malformed_proofs() {
+    let network: Network = setup();
+    network.install_ordered();
+    let (round1, _, _) = network.round(1, None);
+    let (round2, _, _) = network.round(2, None);
+    let (round3, _, _) = network.round(3, None);
+    assert!(round1.iter().all(|output| output.committed.is_empty()));
+    assert!(round2.iter().all(|output| output.committed.is_empty()));
+    assert!(round3.iter().all(|output| output.committed.is_empty()));
+    let key: Vec<u8> =
+        engine::ordered_committed_proof_key(&fixture::chain(), fixture::protocol().epoch(), 1)
+            .unwrap();
+    assert!(network.value(0, &key).is_some(), "empty block has a proof");
+    let original: VerifiedCommittedHistoryPage = verify_stored_committed_history_page(
+        &network.stores[0],
+        &network.context,
+        &network.policy,
+        &VerifiedCommittedHistoryTip::genesis(&network.policy),
+        1,
+    )
+    .unwrap();
+    assert_eq!(original.blocks[0].transactions, Vec::new());
+    assert!(
+        !original
+            .tip
+            .matches_declared_tip(1, network.policy.anchor())
+    );
+    assert_eq!(
+        verify_stored_committed_history_page(
+            &network.stores[0],
+            &network.context,
+            &network.policy,
+            &original.tip,
+            1,
+        )
+        .unwrap_err()
+        .to_string(),
+        "ordered committed history proof is missing or tombstoned"
+    );
+    let (round4, _, _) = network.round(4, None);
+    assert!(round4.iter().all(|output| output.committed.is_empty()));
+    let continuation: VerifiedCommittedHistoryPage = verify_stored_committed_history_page(
+        &network.stores[0],
+        &network.context,
+        &network.policy,
+        &original.tip,
+        1,
+    )
+    .unwrap();
+    assert_eq!(continuation.tip.height(), 2);
+    assert_eq!(continuation.blocks[0].height, 2);
+    let complete: VerifiedCommittedHistoryPage = verify_stored_committed_history_page(
+        &network.stores[0],
+        &network.context,
+        &network.policy,
+        &VerifiedCommittedHistoryTip::genesis(&network.policy),
+        2,
+    )
+    .unwrap();
+    assert_eq!(complete.tip, continuation.tip);
+
+    network.put(0, key.clone(), StateMutation::Delete);
+    assert_eq!(
+        verify_stored_committed_history_page(
+            &network.stores[0],
+            &network.context,
+            &network.policy,
+            &VerifiedCommittedHistoryTip::genesis(&network.policy),
+            1,
+        )
+        .unwrap_err()
+        .to_string(),
+        "ordered committed history proof is missing or tombstoned"
+    );
+    network.put(0, key, StateMutation::Put(vec![0xff]));
+    assert_eq!(
+        verify_stored_committed_history_page(
+            &network.stores[0],
+            &network.context,
+            &network.policy,
+            &VerifiedCommittedHistoryTip::genesis(&network.policy),
+            1,
+        )
+        .unwrap_err()
+        .to_string(),
+        "ordered committed history proof is malformed"
+    );
+}
+
+#[test]
+fn preexisting_committed_proof_height_stops_business_apply_atomically() {
+    let network: Network = setup();
+    network.install_ordered();
+    let recipient: Address = address_of(0x51);
+    let next: FastPathBondRecord = predicted_unbond(&network.bond, 11, *recipient.as_bytes());
+    let request_id: [u8; 32] = [0x62; 32];
+    let candidate: OrderedCandidate =
+        unbond_candidate(&network, &network.bond, &next, request_id, recipient, 11);
+    network.round(1, Some(&candidate));
+    network.round(2, None);
+    let (certificate, _) = network.certify(3, None);
+    let key: Vec<u8> =
+        engine::ordered_committed_proof_key(&fixture::chain(), fixture::protocol().epoch(), 1)
+            .unwrap();
+    network.put(0, key.clone(), StateMutation::Put(vec![0xff]));
+    let before: Vec<(Vec<u8>, StateRevision, Option<Vec<u8>>)> =
+        network.snapshot(0, &[request_id], 3);
+    let error = process_certificate(
+        &network.stores[0],
+        &network.context,
+        &network.env(),
+        &certificate,
+    )
+    .unwrap_err();
+    assert!(matches!(error, OrderedEconomicsError::Prerequisite(_)));
+    assert_eq!(network.snapshot(0, &[request_id], 3), before);
+    assert_eq!(network.committed_bond(0), network.bond);
+    assert_eq!(network.value(0, &key), Some(vec![0xff]));
+    assert_eq!(
+        query_status(&network.stores[0], &network.context, &network.env())
+            .unwrap()
+            .committed_height,
+        0
+    );
+    assert!(
+        query_ordered_outcome(
+            &network.stores[0],
+            &network.context,
+            &network.env(),
+            &request_id,
+        )
+        .unwrap()
+        .is_none()
+    );
+}
+
+#[test]
+fn signerless_delayed_certificate_archives_every_batched_empty_height_atomically() {
+    let source: Network = setup();
+    source.install_ordered();
+    let mut proposals: Vec<OrderedProposal> = Vec::new();
+    let mut certificates: Vec<QuorumCertificate> = Vec::new();
+    for view in 1..=6 {
+        let (_, certificate, proposal) = source.round(view, None);
+        proposals.push(proposal);
+        certificates.push(certificate);
+    }
+
+    let destination: Network = setup();
+    destination.install_ordered();
+    // Learn future signed bodies before height 3. The known certificate for
+    // height 3 will commit height 1 when that missing body arrives, while the
+    // later certificate can then commit heights 2-4 in one real observer
+    // transition. No local destination vote is ever produced.
+    for index in [0usize, 1, 3, 4, 5, 2] {
+        let output: OrderedEventOutput = observe_proposal(
+            &destination.stores[0],
+            &destination.context,
+            &destination.env(),
+            &proposals[index],
+        )
+        .unwrap();
+        assert!(
+            !output
+                .messages
+                .iter()
+                .any(|message| { matches!(message, ConsensusMessage::Vote(_)) })
+        );
+    }
+    assert_eq!(
+        query_status(
+            &destination.stores[0],
+            &destination.context,
+            &destination.env(),
+        )
+        .unwrap()
+        .committed_height,
+        1
+    );
+    let output: OrderedEventOutput = process_certificate(
+        &destination.stores[0],
+        &destination.context,
+        &destination.env(),
+        &certificates[5],
+    )
+    .unwrap();
+    assert!(output.committed.is_empty());
+    assert_eq!(
+        query_status(
+            &destination.stores[0],
+            &destination.context,
+            &destination.env(),
+        )
+        .unwrap()
+        .committed_height,
+        4
+    );
+    let page: VerifiedCommittedHistoryPage = verify_stored_committed_history_page(
+        &destination.stores[0],
+        &destination.context,
+        &destination.policy,
+        &VerifiedCommittedHistoryTip::genesis(&destination.policy),
+        4,
+    )
+    .unwrap();
+    assert_eq!(
+        page.blocks
+            .iter()
+            .map(|block| block.height)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+    let applied_key: Vec<u8> = engine::ordered_applied_height_key_for_tests(&fixture::chain());
+    let applied_bytes: Vec<u8> = destination.value(0, &applied_key).unwrap();
+    let applied_frame = canonical_encoding::decode_canonical_frame(&applied_bytes).unwrap();
+    assert_eq!(applied_frame.required_u64(1).unwrap(), 4);
 }
 
 #[test]

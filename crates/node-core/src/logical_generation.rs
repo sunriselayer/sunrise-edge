@@ -72,7 +72,9 @@ mod tests;
 /// `0x645B..=0x645D` are DR-0157's signer progress, union-progress and local
 /// ready frames (`ordered_economics::drain_union`); `0x645E..=0x645F` are
 /// DR-0159's ordered DrainSet intent and committed record frames; `0x6461`
-/// and `0x6462` are DR-0161's local drain-completion progress and marker.
+/// and `0x6462` are DR-0161's local drain-completion progress and marker;
+/// `0x6463` is DR-0162's replica-local cut-stability barrier. `0xD017` is
+/// DR-0164's committed three-chain proof in `crates/consensus`.
 pub const LOGICAL_PROFILE_RECORD_FRAME_TYPE: u16 = 0x6480;
 /// Canonical version of [`LogicalProfileRecord`].
 pub const LOGICAL_PROFILE_RECORD_VERSION: u16 = 1;
@@ -693,6 +695,9 @@ pub enum OrderedRowClass {
     ConsensusControl,
     /// Immutable request/outcome history and committed epoch-control markers.
     AuthenticatedOutcomeHistory,
+    /// Immutable signed proposal/QC commit evidence. This is portable
+    /// authority history, not a prunable or replica-local consensus cache.
+    AuthenticatedConsensusHistory,
     /// CAS-fenced local progress and local final signatures. Neither is a
     /// transferable business fact or an authority to activate the next epoch.
     LocalProgress,
@@ -738,6 +743,9 @@ pub fn classify_ordered_row(key: &[u8]) -> Option<OrderedRowClass> {
         .any(|prefix: &&[u8]| suffix.starts_with(prefix))
     {
         return Some(OrderedRowClass::AuthenticatedOutcomeHistory);
+    }
+    if suffix.starts_with(b"committed-proof/") {
+        return Some(OrderedRowClass::AuthenticatedConsensusHistory);
     }
     if LOCAL_PROGRESS
         .iter()

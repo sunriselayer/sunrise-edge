@@ -30,9 +30,10 @@ use super::*;
 use canonical_encoding::{decode_digest32, encode_chain_id, encode_digest32};
 use consensus::{
     CommittedBlock, ConsensusEngine, ConsensusEvent, ConsensusMessage, ConsensusOutput,
-    ConsensusProposal, ConsensusSigner, ConsensusState, QuorumCertificate, decode_consensus_state,
-    decode_proposal, decode_quorum_certificate, encode_consensus_state, encode_proposal,
-    encode_quorum_certificate,
+    ConsensusProposal, ConsensusSigner, ConsensusState, QuorumCertificate,
+    decode_committed_block_proof, decode_consensus_state, decode_proposal,
+    decode_quorum_certificate, encode_committed_block_proof, encode_consensus_state,
+    encode_proposal, encode_quorum_certificate,
 };
 use runtime::DurableCommitOutcome;
 
@@ -464,6 +465,21 @@ pub(super) fn ordered_state_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreErro
 
 pub(super) fn ordered_applied_height_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError> {
     prefixed_key(b"applied-height/", chain)
+}
+
+/// Immutable, signed three-chain proof for one committed height. The epoch is
+/// explicit even though the current ordered state has a fixed-epoch anchor:
+/// imported histories must never alias a later serving epoch's heights.
+pub(crate) fn ordered_committed_proof_key(
+    chain: &ChainId,
+    epoch: Epoch,
+    height: u64,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = prefixed_key(b"committed-proof/", chain)?;
+    key.extend_from_slice(&epoch.get().to_be_bytes());
+    key.extend_from_slice(&height.to_be_bytes());
+    validate_transactional_state_key(&key)?;
+    Ok(key)
 }
 
 /// Replica-local, CAS-fenced cut-stability barrier. A future pre-Seal cut may
@@ -1576,6 +1592,55 @@ pub(super) fn fence_cut_for_committed_candidate<S: StructuredDurableDomainStateS
     Ok((key, row.revision()))
 }
 
+/// One certificate can commit several heights. The previous prefix must be
+/// fully applied, and the new batch must be contiguous with at most one
+/// candidate. Once that candidate has an accepted or refused outcome, all
+/// other heights in the batch are empty and its full tip can be marked
+/// applied. A stop before that outcome never commits the returned tip.
+fn applied_height_for_committed_batch(
+    applied_height: u64,
+    prior_committed_height: u64,
+    next_committed_height: u64,
+    blocks: &[CommittedBlock],
+) -> Result<u64, OrderedEconomicsError> {
+    if blocks.is_empty() {
+        if next_committed_height != prior_committed_height {
+            return Err(stop("ordered consensus advanced without committed blocks"));
+        }
+        return Ok(applied_height);
+    }
+    if applied_height != prior_committed_height {
+        return Err(stop(
+            "ordered economics unapplied committed prefix; declared catch-up required",
+        ));
+    }
+    let mut expected_height: u64 = prior_committed_height;
+    let mut candidates: usize = 0;
+    for block in blocks {
+        expected_height = expected_height
+            .checked_add(1)
+            .ok_or(stop("ordered committed batch height overflow"))?;
+        if block.height != expected_height {
+            return Err(stop("ordered committed batch has a height gap"));
+        }
+        if !block.transactions.is_empty() {
+            if block.transactions.len() != 1 || block.height % 3 != 1 {
+                return Err(stop("ordered committed batch violates candidate shape"));
+            }
+            candidates += 1;
+            if candidates > MAX_ORDERED_EVENT_COMMITTED {
+                return Err(stop("ordered committed batch has too many candidates"));
+            }
+        }
+    }
+    if expected_height != next_committed_height {
+        return Err(stop(
+            "ordered committed batch disagrees with consensus state",
+        ));
+    }
+    Ok(next_committed_height)
+}
+
 /// Merges every read and mutation this invocation produced with the event
 /// application's outcome, executes at most one newly committed candidate, and
 /// commits exactly once: through `commit_invocation` when a business
@@ -1614,10 +1679,91 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
             "ordered economics cannot execute more than one newly committed candidate per invocation",
         ));
     }
+    let batch_applied_height: u64 = applied_height_for_committed_batch(
+        applied_height,
+        loaded.state.committed_height,
+        next_state.committed_height,
+        &consensus_output.committed_blocks,
+    )?;
 
     let mut writes = MergedWrites::default();
     writes.read(loaded.key.clone(), loaded.revision)?;
     writes.read(applied_height_key.clone(), applied_height_revision)?;
+
+    // Consensus prunes old proposal/QC caches after every transition. Its
+    // output carries a pre-prune proof for *every* newly committed height,
+    // including empty windows. Persist those immutable proofs in the very
+    // same atomic transaction as the ordered state, applied marker and any
+    // original business receipt. A missing proof or pre-existing/tombstoned
+    // height is corruption, never a reason to advance without an archive.
+    if consensus_output.committed_proofs.len() != consensus_output.committed_blocks.len() {
+        return Err(stop("ordered consensus omitted a committed proof"));
+    }
+    let predecessor: Option<(u64, Digest32, u64)> = if consensus_output.committed_blocks.is_empty()
+    {
+        // An exact replay or view advance has no new archive row. Do not
+        // manufacture a predecessor digest that no caller actually read.
+        None
+    } else if loaded.state.committed_height == 0 {
+        Some((0, env.policy.anchor(), 0))
+    } else {
+        let key: Vec<u8> = ordered_committed_proof_key(
+            &chain,
+            env.policy.context().epoch(),
+            loaded.state.committed_height,
+        )?;
+        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        let bytes: &[u8] = observed.value().ok_or(stop(
+            "ordered previous committed proof is missing or tombstoned",
+        ))?;
+        let proof = decode_committed_block_proof(bytes)
+            .map_err(|_| stop("ordered previous committed proof is malformed"))?;
+        let previous: CommittedBlock =
+            super::committed_history::verified_committed_block(env.policy, &proof)?;
+        if previous.height != loaded.state.committed_height {
+            return Err(stop(
+                "ordered previous committed proof has the wrong height",
+            ));
+        }
+        writes.read(key, observed.revision())?;
+        Some((previous.height, previous.digest, previous.view))
+    };
+    if let Some((mut prior_height, mut prior_digest, mut prior_view)) = predecessor {
+        for (block, proof) in consensus_output
+            .committed_blocks
+            .iter()
+            .zip(consensus_output.committed_proofs.iter())
+        {
+            let verified: CommittedBlock =
+                super::committed_history::verified_committed_block(env.policy, proof)?;
+            if verified != *block
+                || block.height
+                    != prior_height
+                        .checked_add(1)
+                        .ok_or(stop("ordered committed proof height overflow"))?
+                || proof.committed.justify.height != prior_height
+                || proof.committed.justify.proposal_digest != prior_digest
+                || proof.committed.justify.view != prior_view
+            {
+                return Err(stop(
+                    "ordered committed proof does not extend its predecessor",
+                ));
+            }
+            let key: Vec<u8> =
+                ordered_committed_proof_key(&chain, env.policy.context().epoch(), block.height)?;
+            let observed: VersionedStateValue =
+                store.get_versioned_durable(context, domain, &key)?;
+            if observed.value().is_some() || observed.revision() != StateRevision::INITIAL {
+                return Err(stop("ordered committed proof height already exists"));
+            }
+            let proof_bytes: Vec<u8> = encode_committed_block_proof(proof)
+                .map_err(|_| stop("ordered committed proof does not encode"))?;
+            writes.mutate(key, observed.revision(), StateMutation::Put(proof_bytes))?;
+            prior_height = block.height;
+            prior_digest = block.digest;
+            prior_view = block.view;
+        }
+    }
 
     // The post-drain barrier is a writer fence, not just a point-in-time
     // suffix predicate. A late inherited business candidate may create a
@@ -1695,16 +1841,10 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
         }
     }
 
-    let mut new_applied_height = applied_height;
     let mut committed_outcome: Option<OrderedOutcome> = None;
     let mut business: Option<DurableInvocationTransaction> = None;
 
     if let Some(block) = candidate_blocks.first().copied() {
-        if applied_height != loaded.state.committed_height {
-            return Err(stop(
-                "ordered economics unapplied committed prefix; declared catch-up required",
-            ));
-        }
         let digest = block.transactions[0];
         let candidate_key = ordered_candidate_record_key(&chain, digest)?;
         let observed_candidate = store.get_versioned_durable(context, domain, &candidate_key)?;
@@ -1732,10 +1872,10 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
                 ));
             }
             writes.read(outcome_row.key, outcome_row.revision)?;
-            if block.height != applied_height {
+            if batch_applied_height != applied_height {
                 writes.record_mutation(
                     applied_height_key,
-                    StateMutation::Put(encode_applied_height(block.height)?),
+                    StateMutation::Put(encode_applied_height(batch_applied_height)?),
                 )?;
             }
             let output = OrderedEventOutput {
@@ -1900,21 +2040,16 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
         for write in release {
             writes.apply(write)?;
         }
-        new_applied_height = block.height;
-    } else if let Some(block) = consensus_output
-        .committed_blocks
-        .iter()
-        .max_by_key(|block| block.height)
-    {
-        // Empty windows carry no economic effect, so their heights may be
-        // marked applied directly.
-        new_applied_height = block.height;
     }
 
-    if new_applied_height != applied_height {
+    // The only successful early return above is completed-outcome replay; it
+    // records this same batch tip before returning. Every other candidate
+    // branch either falls through after its accepted/refused outcome or
+    // returns an error without committing anything.
+    if batch_applied_height != applied_height {
         writes.record_mutation(
             applied_height_key,
-            StateMutation::Put(encode_applied_height(new_applied_height)?),
+            StateMutation::Put(encode_applied_height(batch_applied_height)?),
         )?;
     }
 
@@ -2612,4 +2747,47 @@ fn materialize_event_output(output: &OrderedEventOutput) -> Result<(), OrderedEc
     encode_ordered_event_output(output)
         .map(|_| ())
         .map_err(|_| stop("ordered event output exceeds the closed profile canonical bounds"))
+}
+
+#[cfg(test)]
+mod committed_batch_tests {
+    use super::*;
+
+    fn block(height: u64, transactions: Vec<Digest32>) -> CommittedBlock {
+        CommittedBlock {
+            height,
+            view: height,
+            digest: Digest32::new(
+                protocol_types::HashAlgorithmId::Sha2_256,
+                [u8::try_from(height).unwrap(); 32],
+            ),
+            transactions,
+        }
+    }
+
+    #[test]
+    fn one_candidate_and_later_empty_heights_apply_as_one_contiguous_batch() {
+        let candidate: Digest32 =
+            Digest32::new(protocol_types::HashAlgorithmId::Sha2_256, [0x41; 32]);
+        let blocks: Vec<CommittedBlock> = vec![
+            block(1, vec![candidate]),
+            block(2, Vec::new()),
+            block(3, Vec::new()),
+        ];
+        assert_eq!(
+            applied_height_for_committed_batch(0, 0, 3, &blocks).unwrap(),
+            3
+        );
+        assert!(applied_height_for_committed_batch(0, 1, 3, &blocks).is_err());
+        assert!(applied_height_for_committed_batch(0, 0, 2, &blocks).is_err());
+        let gap: Vec<CommittedBlock> = vec![block(1, vec![candidate]), block(3, Vec::new())];
+        assert!(applied_height_for_committed_batch(0, 0, 3, &gap).is_err());
+        let two_candidates: Vec<CommittedBlock> = vec![
+            block(1, vec![candidate]),
+            block(2, Vec::new()),
+            block(3, Vec::new()),
+            block(4, vec![candidate]),
+        ];
+        assert!(applied_height_for_committed_batch(0, 0, 4, &two_candidates).is_err());
+    }
 }

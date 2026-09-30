@@ -31,14 +31,12 @@ use canonical_encoding::{CanonicalStruct, decode_canonical_frame};
 const COMMITTED_BLOCK_PROOF_TYPE_ID: u16 = 0xD017;
 const ENCODING_VERSION: u16 = 1;
 
-/// Outer byte bound checked before any parsing, mirroring
-/// [`crate::durable`]'s per-type caps: one proof carries at most three
-/// [`ConsensusProposal`]s (each bounded by
-/// `crate::durable::MAX_ENCODED_PROPOSAL_BYTES`) and one
-/// [`QuorumCertificate`] (bounded by
-/// `crate::durable::MAX_ENCODED_CERTIFICATE_BYTES`).
+/// Outer byte bound checked before any parsing. Three individually bounded
+/// proposals plus one certificate can exceed the canonical frame limit, so
+/// the enclosing frame uses the stricter actual canonical cap. A proof that
+/// cannot fit must fail before a node archives the corresponding commit.
 pub const MAX_ENCODED_COMMITTED_BLOCK_PROOF_BYTES: usize =
-    3 * crate::durable::MAX_ENCODED_PROPOSAL_BYTES + crate::durable::MAX_ENCODED_CERTIFICATE_BYTES;
+    canonical_encoding::MAX_CANONICAL_FRAME_BYTES;
 
 /// Self-contained three-chain commit witness for one [`CommittedBlock`]
 /// (Delivery 3 Unit 13).

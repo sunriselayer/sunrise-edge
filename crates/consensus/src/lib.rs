@@ -1276,7 +1276,7 @@ impl ChainedHotStuff {
     }
 
     /// Commits every proposal from `state.committed_height + 1` up to and
-    /// including `target` (the great-grandparent of the just-certified
+    /// including `target` (the grandparent of the just-certified
     /// `grandchild`), walking backward through each proposal's own
     /// `justify.proposal_digest` link -- which, because
     /// [`Self::validate_proposal`] enforces `height == justify.height + 1`

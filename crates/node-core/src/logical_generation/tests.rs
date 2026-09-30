@@ -281,6 +281,17 @@ fn ordered_outcome_history_is_not_misclassified_as_consensus_cache() {
         );
         assert!(is_excluded_subject(&key));
     }
+    let committed_proof: Vec<u8> = ordered_economics::engine::ordered_committed_proof_key(
+        &ChainId::new(CHAIN).unwrap(),
+        Epoch::new(0),
+        1,
+    )
+    .unwrap();
+    assert_eq!(
+        classify_ordered_row(&committed_proof),
+        Some(OrderedRowClass::AuthenticatedConsensusHistory)
+    );
+    assert!(is_excluded_subject(&committed_proof));
     for suffix in [
         b"frontier-progress/".as_slice(),
         b"frontier/",

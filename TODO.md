@@ -646,6 +646,28 @@ The detailed existing evidence and remaining criteria follow:
   establish a certified empty post-DrainSet anchor, audit all remaining cut
   writers, implement Seal/readiness/activation, and run adversarial and
   independent-PostgreSQL network E2E before declaring Delivery 3 complete.
+  U13 follows [DR-0164](docs/architecture/decisions/0164-durable-committed-history.md):
+  the consensus engine now emits a separately verifiable `0xD017/v1`
+  three-chain proof for **every** newly committed height before pruning,
+  including empty windows, in both signing and observer paths. Ordered
+  economics archives those proofs with the original state/outcome/receipt in
+  one CAS-fenced commit and rejects a missing, duplicate or divergent
+  predecessor. A bounded independent page reader verifies the pinned
+  epoch's validator set signatures and QC power, proof linkage and a
+  contiguous genesis-to-declared-tip prefix; it does not authenticate the
+  declared terminal tip itself. Four-validator tests cover business/empty
+  commits, exact replay, corrupted archive rows, and atomic refusal when a
+  height already exists. A delayed certificate test covers multi-height
+  commitment and distinct proofs for each height; a separate signerless
+  node-core test archives and verifies four heights with three committed in
+  one event. The applied-height path now refuses an older unapplied prefix
+  and advances through the full empty suffix only after its single candidate
+  is resolved. This is **not** a portable
+  cut or complete importer: a signed terminal anchor, candidate/outcome/
+  receipt and full-artifact closure, post-DrainSet certified empty anchor,
+  bounded oversized catch-up behavior, epoch-scoped live engine keys,
+  an explicit fresh-genesis gate for stores predating this archive,
+  Seal/readiness/activation and independent PostgreSQL E2E remain open.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

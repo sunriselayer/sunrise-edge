@@ -64,14 +64,8 @@ const MAX_STATE_COMMITTED: usize = 4_096;
 /// [`decode_vote`]/[`decode_proposal`]/[`decode_quorum_certificate`] are
 /// called standalone (outside a `ConsensusState`).
 const MAX_ENCODED_VOTE_BYTES: usize = 8 * 1024;
-/// Also reused by [`crate::commit_proof`] to size
-/// [`crate::commit_proof::MAX_ENCODED_COMMITTED_BLOCK_PROOF_BYTES`], since a
-/// [`crate::CommittedBlockProof`] embeds exactly one [`QuorumCertificate`].
-pub(crate) const MAX_ENCODED_CERTIFICATE_BYTES: usize = 8 * 1024 * 1024;
-/// Also reused by [`crate::commit_proof`] to size
-/// [`crate::commit_proof::MAX_ENCODED_COMMITTED_BLOCK_PROOF_BYTES`], since a
-/// [`crate::CommittedBlockProof`] embeds exactly three [`ConsensusProposal`]s.
-pub(crate) const MAX_ENCODED_PROPOSAL_BYTES: usize = 10 * 1024 * 1024;
+const MAX_ENCODED_CERTIFICATE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_ENCODED_PROPOSAL_BYTES: usize = 10 * 1024 * 1024;
 const MAX_ENCODED_CONSENSUS_STATE_BYTES: usize = 16 * 1024 * 1024;
 /// Bound on the `votes` slice a caller may pass to
 /// [`ChainedHotStuff::certificate_from_votes`], checked before any

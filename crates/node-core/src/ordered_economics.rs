@@ -74,6 +74,7 @@ use super::*;
 
 mod business_free_barrier;
 mod candidate;
+mod committed_history;
 mod drain_completion;
 mod drain_set;
 mod drain_union;
@@ -94,6 +95,10 @@ pub use business_free_barrier::{
 pub use candidate::{
     MAX_ORDERED_CANDIDATE_INTENT_BYTES, OrderedCandidate, OrderedOperationKind,
     decode_ordered_candidate, encode_ordered_candidate,
+};
+pub use committed_history::{
+    MAX_COMMITTED_HISTORY_PAGE, VerifiedCommittedHistoryPage, VerifiedCommittedHistoryTip,
+    verify_stored_committed_history_page,
 };
 pub use drain_completion::{
     DrainCompletionError, DrainCompletionStep, advance_drain_completion, drain_completion_key,

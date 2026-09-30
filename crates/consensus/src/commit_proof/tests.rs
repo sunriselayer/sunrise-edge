@@ -1,6 +1,7 @@
 use super::*;
 use crate::test_support::{TestCrypto, proposal_votes, setup};
 use crate::{CommittedBlock, ConsensusEngine, ConsensusEvent, ConsensusMessage, ConsensusState};
+use sha2::Digest as _;
 
 /// Drives `up_to_byte` real propose/vote/certify rounds across all four
 /// validators (mirroring `test_support::certify`, but also collecting every
@@ -115,6 +116,15 @@ fn committed_block_proof_round_trips_through_canonical_codec() {
         .unwrap();
 
     let bytes = encode_committed_block_proof(&proof).unwrap();
+    let hash: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+    assert_eq!(bytes.len(), 3_808);
+    assert_eq!(
+        hash,
+        [
+            113, 59, 87, 192, 29, 64, 31, 37, 68, 38, 223, 234, 125, 143, 121, 75, 69, 201, 14, 64,
+            196, 230, 250, 1, 225, 194, 115, 89, 100, 78, 182, 181,
+        ]
+    );
     let decoded = decode_committed_block_proof(&bytes).unwrap();
     assert_eq!(decoded, proof);
     assert_eq!(encode_committed_block_proof(&decoded).unwrap(), bytes);
@@ -250,4 +260,48 @@ fn observer_event_produces_the_same_committed_proof_as_on_event() {
     engine
         .verify_committed_block_proof(&expected, &observed_proof, &cryptos[0])
         .unwrap();
+}
+
+#[test]
+fn one_delayed_certificate_builds_distinct_proofs_for_every_batched_height() {
+    let (engine, cryptos) = setup();
+    let mut source_states: Vec<ConsensusState> = vec![engine.genesis_state(0); 4];
+    let source: Vec<(CommittedBlock, CommittedBlockProof)> =
+        drive_heights(&engine, &cryptos, &mut source_states, 6);
+    let mut delayed: ConsensusState = engine.genesis_state(0);
+    for (_, proof) in &source {
+        for proposal in [&proof.committed, &proof.child, &proof.grandchild] {
+            let digest = engine.proposal_digest(proposal).unwrap();
+            delayed.known_proposals.insert(digest, proposal.clone());
+        }
+    }
+    // The source proposals and votes are all real signed network material,
+    // but this observer has learned their bodies before the terminal QC. It
+    // can therefore discover several committed heights in one transition.
+    let terminal: QuorumCertificate = source
+        .iter()
+        .find(|(block, _)| block.height == 4)
+        .unwrap()
+        .1
+        .grandchild_certificate
+        .clone();
+    let output = engine
+        .on_observer_event(&delayed, ConsensusEvent::Certificate(terminal), &cryptos[0])
+        .unwrap();
+    assert_eq!(output.committed_blocks.len(), 4);
+    assert_eq!(output.committed_proofs.len(), 4);
+    for (index, (block, proof)) in output
+        .committed_blocks
+        .iter()
+        .zip(output.committed_proofs.iter())
+        .enumerate()
+    {
+        assert_eq!(block.height, index as u64 + 1);
+        assert_eq!(proof.committed.height, block.height);
+        assert_eq!(proof.grandchild.height, block.height + 2);
+        assert_eq!(proof.grandchild_certificate.height, block.height + 2);
+        engine
+            .verify_committed_block_proof(block, proof, &cryptos[0])
+            .unwrap();
+    }
 }

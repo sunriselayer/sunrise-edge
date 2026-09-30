@@ -504,12 +504,18 @@ history family, and derive its generation floor from the verified history. An
 unknown family under the reserved prefix is a cut refusal, not an implicit
 local-data exclusion.
 
-Likewise, `ordered-economics/` includes immutable `header/` and `outcome/`
-business history, not just `state/`, `applied-height/` and retained
-`candidate/` consensus controls. A cut must verify the former against original
-receipts and the committed candidate/QC chain and preserve enough of the
-latter to prove the sealed prefix and inherited suffix. Unknown ordered
-families fail closed.
+Likewise, `ordered-economics/header/` is an immutable **request-id binding**,
+not a consensus block header. `outcome/` retains business results, while
+`candidate/` retains the candidate body; none of these rows alone proves that
+the shared engine committed a block. The signed proposal/QC chain for every
+committed height must be retained separately as `committed-proof/` history
+before the engine prunes its short-lived cache. A cut must verify that history
+against the configured outgoing validator set, contiguous genesis ancestry,
+the original candidate bytes, request headers, outcomes and receipts, plus a
+separately authenticated terminal anchor. `state/` and `applied-height/` are
+local engine/progress rows, not substitutes for that proof. The inherited
+high/locked suffix also needs a direct certified empty control anchor.
+Unknown ordered families fail closed.
 
 Use a closed key/schema classifier: unknown protocol rows cannot be silently
 skipped. Local prepare/vote/lock identity, writer/schema tokens, delivery cursors
