@@ -47,11 +47,23 @@ frontier members or completeness proof.
 
 Publication/artifact/ACK addresses remain unchanged. Corrupt or unsupported
 foreign-epoch rows cannot be skipped as absence. Chunked artifact validation
-and bounded scans introduce no whole-history cap. Cursor updates bind exact
+pins each portable descriptor and reads at most 1 MiB per range. An advance
+verifies one complete publication, bounded by the existing 2,048-artifact
+and 32 MiB bundle limits; it does not impose a whole-history cap or persist
+an intra-artifact continuation. A page may re-verify up to 128 publications
+sequentially. These are native correctness bounds, not an edge CPU, load or
+production-readiness claim. Cursor updates bind exact
 Freeze/context/committee and observed revisions. Complete enumeration
 atomically fixes the immutable descriptor and local signature before
 exposing the vote. Retry verifies and returns the same vote; no contract
 execution or alternate signature is performed.
+
+Resumption trusts the previous local CAS-protected cursor transition under
+the repository's trusted-storage model. Malformed frames, tombstones and
+context mismatches are refused; arbitrary canonically valid at-rest cursor
+corruption is not authenticated before signing. Independent complete-page
+verification rejects a mismatching final count or digest. Stronger media
+fault detection remains separate from this extraction's correctness scope.
 
 Frontier identity, vote, accumulator and page use `0xD036` through
 `0xD039/v1`, with signature domain `epoch-frozen-frontier-v1`. Durable
@@ -67,6 +79,11 @@ The opt-in native certified host exposes:
   means progress only; final response carries the original retained vote.
 - `POST /v1/fastvote/frontier/page`: a bounded consecutive range and exact
   final vote. This read never advances or applies state.
+
+The shared loopback/TLS HTTP parser accepts a bodyless 204 only without
+Content-Length and completes at the header boundary. It rejects
+already-buffered payload, then drops the one-shot connection without reading
+later bytes. Non-204 exact-length and bounded trailing-byte checks are unchanged.
 
 The SDK pins the outgoing committee and endpoint signer. The compiled CLI
 additionally pins signed-v3 genesis, chain/protocol/epoch, atomicity domain

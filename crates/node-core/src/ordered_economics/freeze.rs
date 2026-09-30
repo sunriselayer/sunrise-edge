@@ -481,11 +481,9 @@ pub(crate) fn handle_freeze_ordered<S: StructuredDurableDomainStateStore>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::genesis::tests as fixture;
     use protocol_types::{ChainId, ProtocolVersion, ValidatorId};
-    use runtime::{
-        DurableDomainStateStore, MemoryDurableStateStore, StorageCorrelationId, StorageDeadline,
-        WriterFenceGeneration,
-    };
+    use runtime::{DurableDomainStateStore, MemoryDurableStateStore, WriterFenceGeneration};
 
     fn context() -> PublicationContext {
         PublicationContext::new(
@@ -585,22 +583,28 @@ mod tests {
         DurableOperationContext,
         AtomicityDomainId,
     ) {
-        let generation = WriterFenceGeneration::new(1).unwrap();
-        let store = MemoryDurableStateStore::new(generation);
-        let context = DurableOperationContext::new(
-            generation,
-            StorageDeadline::new(u64::MAX).unwrap(),
-            StorageCorrelationId::new([1; 16]).unwrap(),
-        );
-        let domain = AtomicityDomainId::new([2; 32]).unwrap();
+        let generation: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+        let store: MemoryDurableStateStore = MemoryDurableStateStore::new(generation);
+        let context: DurableOperationContext = fixture::context(1);
+        let domain: AtomicityDomainId = fixture::domain();
+        let manifest: crate::genesis::GenesisManifest = fixture::freeze_bonded_manifest();
+        crate::genesis::install_genesis(
+            &store,
+            &context,
+            domain,
+            &fixture::resolver(),
+            &manifest,
+            10,
+        )
+        .unwrap();
         (store, context, domain)
     }
 
     #[test]
     fn fence_admission_open_is_open_until_a_closure_record_is_written() {
         let (store, context, domain) = store_context();
-        let chain = ChainId::new("fence-admission").unwrap();
-        let mut reads = BTreeMap::new();
+        let chain: ChainId = fixture::chain();
+        let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
         fence_admission_open(&store, &context, domain, &chain, Epoch::new(0), &mut reads).unwrap();
         assert!(reads.contains_key(&admission_closure_key(&chain, Epoch::new(0)).unwrap()));
 

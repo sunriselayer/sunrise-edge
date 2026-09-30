@@ -1,4 +1,5 @@
 use super::*;
+use consensus::decode_consensus_state;
 
 #[test]
 fn historical_signed_votes_replay_exactly_after_a_real_freeze_without_mutation() {
@@ -223,7 +224,7 @@ fn justification_committing_freeze_never_exposes_a_vote_for_its_own_business_pay
     };
     let freeze_digest: Digest32 =
         engine::ordered_candidate_digest_for_tests(&network.resolver, &freeze);
-    let freeze_key: Vec<u8> = engine::ordered_candidate_record_key(&chain, freeze_digest).unwrap();
+    let freeze_key: Vec<u8> = engine::ordered_candidate_record_key_for_tests(&chain, freeze_digest);
     let original_freeze_bytes: Vec<u8> = network.value(target, &freeze_key).unwrap();
     network.put(
         target,

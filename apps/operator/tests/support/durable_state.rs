@@ -134,13 +134,14 @@ pub fn snapshot(
     format!("{values:?}\n{objects:?}\n{receipt:?}")
 }
 
-const REPLICA_LOCAL_PREFIXES: [&[u8]; 6] = [
+const REPLICA_LOCAL_PREFIXES: [&[u8]; 7] = [
     b"se/instances/v1/fastpath/prepared/",
     b"se/instances/v1/fastpath/lock/",
     b"se/instances/v1/fastpath/nonce-lock/",
     b"se/instances/v1/fastpath/prepared-witness/",
     b"se/instances/v1/fastpath/prepared-artifact/",
     b"se/instances/v1/fastpath/availability-ack/",
+    b"se/instances/v1/ordered-economics/state/",
 ];
 
 fn scan_se_entries<S: StructuredDurableDomainStateStore + DurableStateKeyScanner>(
@@ -305,7 +306,7 @@ pub fn execution_snapshot<S: StructuredDurableDomainStateStore + DurableStateKey
 
 /// Same inputs as [`convergence_snapshot`], but built for comparing across
 /// *different* replicas rather than the same store before/after a no-op
-/// replay. It deliberately excludes six closed key prefixes that are legitimately
+/// replay. It deliberately excludes seven closed key prefixes that are legitimately
 /// replica-local and are never expected to converge:
 ///
 /// - `se/instances/v1/fastpath/prepared/...` -- retained local prepare/vote
@@ -321,6 +322,10 @@ pub fn execution_snapshot<S: StructuredDurableDomainStateStore + DurableStateKey
 ///   validator's signed retention vote. These are respectively
 ///   `LocalReservation` and `LocalSigningSafety` in the production classifier,
 ///   not interchangeable global history. Same-store snapshots include them.
+/// - `ordered-economics/state/` contains this replica's consensus progress
+///   and locally initialized view timer. Real hosts have different startup
+///   times; this is not globally certified application history. Same-store
+///   snapshots retain the complete bytes and revision, including that timer.
 ///
 /// Every other key -- publication, instance, authority, nonce, certificate,
 /// commitment-witness, settlement records, and any unexpected new key -- is

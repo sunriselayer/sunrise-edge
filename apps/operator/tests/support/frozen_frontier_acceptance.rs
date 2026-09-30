@@ -508,7 +508,7 @@ pub fn run(
     // checked by every replica at proposal/vote and execution.
     let manifest: node_core::GenesisManifest =
         node_core::decode_genesis_manifest(&fixture.manifest_bytes).unwrap();
-    let advisory: node_core::fast_path::records::FastPathValidatorSetRecord =
+    let mut advisory: node_core::fast_path::records::FastPathValidatorSetRecord =
         node_core::fast_path::records::FastPathValidatorSetRecord {
             context: execution::publication::PublicationContext::new(
                 fixture.chain_id.clone(),
@@ -518,6 +518,9 @@ pub fn run(
             .unwrap(),
             validators: manifest.validator_set.validators,
         };
+    advisory
+        .validators
+        .sort_by_key(|entry: &node_core::fast_path::FastPathValidatorEntry| entry.id);
     let advisory_path: PathBuf = temp_file(data_dir, "freeze-advisory.set");
     write_new(
         &advisory_path,

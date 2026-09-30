@@ -91,6 +91,78 @@ fn rejects_a_missing_content_length() {
 }
 
 #[test]
+fn accepts_bodyless_204_without_content_length() {
+    let addr: SocketAddr = serve_once(b"HTTP/1.1 204 No Content\r\n\r\n".to_vec());
+    let response: sunrise_edge_client::WireResponse = transport(addr).send(&get_request()).unwrap();
+    assert_eq!(response.status, 204);
+    assert!(response.body.is_empty());
+    assert!(response.content_type.is_none());
+}
+
+#[test]
+fn rejects_payload_after_a_bodyless_204() {
+    let addr: SocketAddr = serve_once(b"HTTP/1.1 204 No Content\r\n\r\nunexpected".to_vec());
+    let error: TransportError = transport(addr).send(&get_request()).unwrap_err();
+    assert!(matches!(error, TransportError::TrailingResponseBytes));
+}
+
+#[test]
+fn rejects_any_content_length_for_204_before_waiting_for_a_body() {
+    for bytes in [
+        b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n".as_slice(),
+        b"HTTP/1.1 204 No Content\r\nContent-Length: 1\r\n\r\n".as_slice(),
+    ] {
+        let addr: SocketAddr = serve_once(bytes.to_vec());
+        let error: TransportError = transport(addr).send(&get_request()).unwrap_err();
+        assert!(matches!(error, TransportError::InvalidContentLength));
+    }
+}
+
+#[test]
+fn bodyless_204_preserves_duplicate_length_and_transfer_encoding_refusals() {
+    let duplicate: SocketAddr = serve_once(
+        b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n".to_vec(),
+    );
+    assert!(matches!(
+        transport(duplicate).send(&get_request()),
+        Err(TransportError::DuplicateContentLength)
+    ));
+    let transfer_encoded: SocketAddr =
+        serve_once(b"HTTP/1.1 204 No Content\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec());
+    assert!(matches!(
+        transport(transfer_encoded).send(&get_request()),
+        Err(TransportError::TransferEncodingUnsupported)
+    ));
+}
+
+#[test]
+fn bodyless_204_finishes_at_headers_without_waiting_for_connection_close() {
+    let listener: TcpListener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (release_sender, release_receiver) = std::sync::mpsc::channel::<()>();
+    let server: thread::JoinHandle<()> = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request_bytes: [u8; 4096] = [0; 4096];
+        let read: usize = stream.read(&mut request_bytes).unwrap();
+        assert!(read > 0);
+        stream
+            .write_all(b"HTTP/1.1 204 No Content\r\n\r\n")
+            .unwrap();
+        stream.flush().unwrap();
+        // A sender cannot release this held-open response until send() has
+        // returned, so success proves the parser did not wait for EOF.
+        let _ = release_receiver.recv_timeout(Duration::from_secs(3));
+    });
+    let mut request: WireRequest = get_request();
+    request.deadline = Some(Instant::now() + Duration::from_secs(1));
+    let response: sunrise_edge_client::WireResponse = transport(addr).send(&request).unwrap();
+    release_sender.send(()).unwrap();
+    server.join().unwrap();
+    assert_eq!(response.status, 204);
+    assert!(response.body.is_empty());
+}
+
+#[test]
 fn rejects_a_non_numeric_content_length() {
     let addr = serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: five\r\n\r\nhello".to_vec());
     let error = transport(addr).send(&get_request()).unwrap_err();

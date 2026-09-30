@@ -78,6 +78,8 @@ pub use evidence_submission::{
     MAX_ORDERED_EVIDENCE_SUBMISSION_BYTES, OrderedEvidenceSubmission,
     decode_ordered_evidence_submission, encode_ordered_evidence_submission,
 };
+#[cfg(test)]
+pub(crate) use freeze::admission_closure_key;
 pub(crate) use freeze::fence_admission_open;
 pub use freeze::{
     AdmissionClosureRecord, FreezeIntent, decode_admission_closure_record, decode_freeze_intent,

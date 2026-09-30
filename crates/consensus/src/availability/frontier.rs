@@ -141,6 +141,13 @@ impl FrozenFrontierPageVerifier {
         Ok(())
     }
 
+    /// Returns whether a verified terminal page has reproduced the signed
+    /// frontier's complete entry count and digest.
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        self.terminal_seen
+    }
+
     /// Returns the authenticated vote only after a terminal page recomputes
     /// its complete signed count and digest.
     pub fn finish(self) -> Result<FrozenFrontierVote, FrontierError> {

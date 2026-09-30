@@ -90,10 +90,18 @@ use consensus::{
     decode_availability_vote, decode_fast_certificate, encode_availability_identity,
     encode_availability_vote, encode_fast_certificate,
 };
+use runtime::portable::{
+    DurablePortableRepository, DurableRecordChunk, DurableRecordChunkOutcome,
+    DurableRecordChunkRequest, DurableRecordDescriptor, DurableRecordKey, DurableRecordMetadata,
+    MAX_PORTABLE_CHUNK_BYTES,
+};
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 
 pub(crate) mod witness;
 
+#[cfg(test)]
+mod frozen_artifact_tests;
 #[cfg(test)]
 mod tests;
 
@@ -1068,9 +1076,11 @@ where
 /// publication without re-running application admission or touching locks.
 /// A frozen-frontier signer uses this for every enumerated row before its
 /// identity may enter the signed log. It rejects a missing ACK or artifact,
-/// a corrupt original proof, and any mismatch with the signed intent.
+/// a corrupt original proof, and any mismatch with the signed intent. Artifact
+/// metadata and the complete declared content budget are checked before body
+/// allocation; exact descriptor-pinned range reads never fetch whole artifacts.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn verify_retained_publication<S: StructuredDurableDomainStateStore>(
+pub(crate) fn verify_retained_publication<S: DurablePortableRepository>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1102,34 +1112,16 @@ pub(crate) fn verify_retained_publication<S: StructuredDurableDomainStateStore>(
         ));
     }
     let manifest: ArtifactManifest = decode_artifact_manifest(&record.manifest)?;
-    if manifest.entries.len() > MAX_RETAINED_ARTIFACTS {
-        return Err(PublicationRetentionError::ClosureTooLarge {
-            actual: manifest.entries.len(),
-            max: MAX_RETAINED_ARTIFACTS,
-        });
-    }
-    let mut contents: Vec<Vec<u8>> = Vec::with_capacity(manifest.entries.len());
-    let mut total_content_bytes: usize = 0;
-    for entry in &manifest.entries {
-        let key: Vec<u8> = artifact_key(&chain, request_id, entry)?;
-        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
-        let content: &[u8] =
-            observed
-                .value()
-                .ok_or(PublicationRetentionError::InconsistentRetainedRecord(
-                    "missing or tombstoned frozen publication artifact",
-                ))?;
-        total_content_bytes = total_content_bytes.checked_add(content.len()).ok_or(
-            PublicationRetentionError::InconsistentRetainedRecord(
-                "frozen publication artifact length overflow",
-            ),
-        )?;
-        if total_content_bytes > MAX_ENCODED_BUNDLE_BYTES {
-            return Err(PublicationRetentionError::InconsistentRetainedRecord(
-                "frozen publication artifact budget exceeded",
-            ));
-        }
-        contents.push(content.to_vec());
+    let descriptors: Vec<DurableRecordDescriptor> =
+        frozen_artifact_descriptors(store, context, domain, &chain, request_id, &manifest)?;
+    let mut contents: Vec<Vec<u8>> = Vec::new();
+    contents.try_reserve_exact(descriptors.len()).map_err(|_| {
+        PublicationRetentionError::InconsistentRetainedRecord(
+            "frozen publication artifact allocation failed",
+        )
+    })?;
+    for descriptor in &descriptors {
+        contents.push(read_frozen_artifact(store, context, domain, descriptor)?);
     }
     let bundle: PublicationBundle = PublicationBundle {
         domain,
@@ -1205,6 +1197,162 @@ pub(crate) fn verify_retained_publication<S: StructuredDurableDomainStateStore>(
     )?;
     availability_certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
     Ok(verified.identity)
+}
+
+/// Resolves all bounded body-free metadata before allocating any artifact
+/// content. Declared lengths are untrusted until each exact state descriptor
+/// agrees; a tombstone is never treated as a present empty value.
+fn frozen_artifact_descriptors<S: DurablePortableRepository>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain: &ChainId,
+    request_id: &[u8; 32],
+    manifest: &ArtifactManifest,
+) -> RetentionResult<Vec<DurableRecordDescriptor>> {
+    if manifest.entries.len() > MAX_RETAINED_ARTIFACTS {
+        return Err(PublicationRetentionError::ClosureTooLarge {
+            actual: manifest.entries.len(),
+            max: MAX_RETAINED_ARTIFACTS,
+        });
+    }
+    let mut total_content_bytes: usize = 0;
+    for entry in &manifest.entries {
+        let declared_length: usize = usize::try_from(entry.content_length).map_err(|_| {
+            PublicationRetentionError::InconsistentRetainedRecord(
+                "frozen publication artifact length overflow",
+            )
+        })?;
+        total_content_bytes = total_content_bytes.checked_add(declared_length).ok_or(
+            PublicationRetentionError::InconsistentRetainedRecord(
+                "frozen publication artifact length overflow",
+            ),
+        )?;
+        if total_content_bytes > MAX_ENCODED_BUNDLE_BYTES {
+            return Err(PublicationRetentionError::InconsistentRetainedRecord(
+                "frozen publication artifact budget exceeded",
+            ));
+        }
+    }
+    let mut descriptors: Vec<DurableRecordDescriptor> = Vec::new();
+    descriptors
+        .try_reserve_exact(manifest.entries.len())
+        .map_err(|_| {
+            PublicationRetentionError::InconsistentRetainedRecord(
+                "frozen publication descriptor allocation failed",
+            )
+        })?;
+    for entry in &manifest.entries {
+        let key: DurableRecordKey =
+            DurableRecordKey::State(artifact_key(chain, request_id, entry)?);
+        let descriptor: DurableRecordDescriptor = store
+            .read_portable_descriptor(context, domain, &key)?
+            .ok_or(PublicationRetentionError::InconsistentRetainedRecord(
+                "missing frozen publication artifact descriptor",
+            ))?;
+        let declared_length: usize = usize::try_from(entry.content_length).map_err(|_| {
+            PublicationRetentionError::InconsistentRetainedRecord(
+                "frozen publication artifact length overflow",
+            )
+        })?;
+        if descriptor.key() != &key
+            || !matches!(
+                descriptor.metadata(),
+                DurableRecordMetadata::State { revision, value_length }
+                    if *revision != StateRevision::INITIAL
+                        && *value_length == Some(declared_length)
+            )
+        {
+            return Err(PublicationRetentionError::InconsistentRetainedRecord(
+                "frozen publication artifact descriptor mismatch or tombstone",
+            ));
+        }
+        descriptors.push(descriptor);
+    }
+    Ok(descriptors)
+}
+
+/// Reconstructs one bounded artifact through strict ranges of a single exact
+/// descriptor. Present declared-empty content receives one pinned terminal
+/// empty read; every nonempty response must make positive exact progress.
+fn read_frozen_artifact<S: DurablePortableRepository>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    descriptor: &DurableRecordDescriptor,
+) -> RetentionResult<Vec<u8>> {
+    let length: usize = match (descriptor.key(), descriptor.metadata()) {
+        (
+            DurableRecordKey::State(_),
+            DurableRecordMetadata::State {
+                revision,
+                value_length: Some(length),
+            },
+        ) if *revision != StateRevision::INITIAL && *length <= MAX_ENCODED_BUNDLE_BYTES => *length,
+        _ => {
+            return Err(PublicationRetentionError::InconsistentRetainedRecord(
+                "invalid frozen publication artifact metadata",
+            ));
+        }
+    };
+    let limit: NonZeroUsize = NonZeroUsize::new(MAX_PORTABLE_CHUNK_BYTES).ok_or(
+        PublicationRetentionError::InconsistentRetainedRecord(
+            "invalid frozen artifact chunk bound",
+        ),
+    )?;
+    let mut content: Vec<u8> = Vec::new();
+    content.try_reserve_exact(length).map_err(|_| {
+        PublicationRetentionError::InconsistentRetainedRecord(
+            "frozen publication artifact allocation failed",
+        )
+    })?;
+    let mut offset: usize = 0;
+    loop {
+        let request: DurableRecordChunkRequest =
+            DurableRecordChunkRequest::new(descriptor.clone(), offset, limit)?;
+        let expected_end: usize = request.range().end;
+        let expected_length: usize = expected_end.checked_sub(offset).ok_or(
+            PublicationRetentionError::InconsistentRetainedRecord("frozen artifact range overflow"),
+        )?;
+        let chunk: Box<DurableRecordChunk> =
+            match store.read_portable_chunk(context, domain, &request)? {
+                DurableRecordChunkOutcome::Chunk(chunk) => chunk,
+                DurableRecordChunkOutcome::Changed => {
+                    return Err(PublicationRetentionError::InconsistentRetainedRecord(
+                        "frozen publication artifact changed during range read",
+                    ));
+                }
+            };
+        if chunk.request() != &request
+            || chunk.bytes().len() != expected_length
+            || (length != 0 && expected_length == 0)
+            || chunk.is_last() != (expected_end == length)
+        {
+            return Err(PublicationRetentionError::InconsistentRetainedRecord(
+                "frozen publication artifact chunk mismatch",
+            ));
+        }
+        let next_offset: usize = offset.checked_add(chunk.bytes().len()).ok_or(
+            PublicationRetentionError::InconsistentRetainedRecord(
+                "frozen artifact offset overflow",
+            ),
+        )?;
+        if next_offset != expected_end || next_offset > length {
+            return Err(PublicationRetentionError::InconsistentRetainedRecord(
+                "frozen publication artifact chunk exceeds declared length",
+            ));
+        }
+        content.extend_from_slice(chunk.bytes());
+        if chunk.is_last() {
+            if content.len() != length {
+                return Err(PublicationRetentionError::InconsistentRetainedRecord(
+                    "incomplete frozen publication artifact",
+                ));
+            }
+            return Ok(content);
+        }
+        offset = next_offset;
+    }
 }
 
 fn artifact_key(

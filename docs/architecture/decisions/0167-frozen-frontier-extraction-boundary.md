@@ -107,6 +107,16 @@ omission, addition, duplicate, reorder, alternate closure, malformed cursor,
 tombstone and missing artifact fail closed. Chunking must accommodate legal
 large artifacts without an arbitrary whole-history limit or unbounded scan.
 
+The extraction processes one complete publication per advance using the
+existing 2,048-artifact and 32 MiB bundle bounds. It checks declared lengths
+before allocating bodies and pins portable descriptors across reads of at
+most 1 MiB each. Missing, tombstoned or changed descriptors are refusals,
+not evidence of absence. Present declared-empty values retain their exact
+terminal-empty range semantics. There is no intra-artifact durable cursor.
+An identity page may re-verify up to 128 complete publications sequentially;
+the page byte cap is not an artifact-I/O budget. These bounded native checks
+do not establish edge-runtime CPU or production load readiness.
+
 The native route, SDK and CLI expose Freeze candidate construction, ordinary
 ordered submission and bounded frontier advance/export. Locators never confer
 authority. The client pins the signed genesis/committee and verifies returned

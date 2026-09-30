@@ -184,7 +184,12 @@ fn verify_pin(inputs: &Inputs, vote: &FrozenFrontierVote) -> Result<(), CliError
     Ok(())
 }
 
-fn limit(parsed: &ParsedArgs, flag: &str, default: u64, maximum: u64) -> Result<u64, CliError> {
+fn limit(
+    parsed: &ParsedArgs,
+    flag: &'static str,
+    default: u64,
+    maximum: u64,
+) -> Result<u64, CliError> {
     let count: u64 = parsed
         .get(flag)
         .map(|value| parse_u64(flag, value))
