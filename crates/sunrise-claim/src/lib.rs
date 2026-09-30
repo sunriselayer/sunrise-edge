@@ -51,16 +51,30 @@ struct ClaimRow {
     claimable_at: u64,
 }
 
+/// The USDRise wrapper. Its USDN is the backing for USDrise, so that balance
+/// is not a second claim.
+const USDRISE_WRAPPER: &str = "sunrise14hj2tavq8fpesdwxxcu44rty3hh90vhujrvcmstl4zr3txmfvw9s2v9j75";
+const USDN_IBC: &str = "ibc/A7AD825A4B48DDA0138D118655E60100D22A4D690C45B95221520B58C9A64B63";
+
 /// Builds one leaf per claimant, asset, and unlock time.
 ///
-/// `rise` and `usdrise` stay on Edge. `usdn` is settled later as USDC.
-/// Other IBC denoms are settled on the chain named in [`payout_route`].
+/// `rise` and `usdrise` stay on Edge. Unwrapped USDN is added to `usdrise`.
+/// The wrapper contract's own USDN is skipped. Other IBC denoms are settled
+/// on the chain named in [`payout_route`].
 pub fn ledger_leaves(raw: &[u8]) -> Result<(u64, Vec<Leaf>), ClaimError> {
     let file: ClaimsFile =
         serde_json::from_slice(raw).map_err(|err| ClaimError::Ledger(err.to_string()))?;
     let mut totals: BTreeMap<([u8; 20], String, u64), u64> = BTreeMap::new();
     for row in file.claims {
-        if payout_route(&row.asset).is_none() && !is_edge_asset(&row.asset) {
+        if is_wrapper_usdn(&row.owner, &row.asset) {
+            continue;
+        }
+        let asset = if is_usdn(&row.asset) {
+            "usdrise".to_string()
+        } else {
+            row.asset.clone()
+        };
+        if payout_route(&asset).is_none() && !is_edge_asset(&asset) {
             return Err(ClaimError::Ledger(format!("unknown asset {}", row.asset)));
         }
         let claimant = adr036::sunrise_address(&row.owner)?;
@@ -72,7 +86,7 @@ pub fn ledger_leaves(raw: &[u8]) -> Result<(u64, Vec<Leaf>), ClaimError> {
             continue;
         }
         let entry = totals
-            .entry((claimant, row.asset, row.claimable_at))
+            .entry((claimant, asset, row.claimable_at))
             .or_insert(0);
         *entry = entry.checked_add(amount).ok_or(ClaimError::Overflow)?;
     }
@@ -86,6 +100,14 @@ pub fn ledger_leaves(raw: &[u8]) -> Result<(u64, Vec<Leaf>), ClaimError> {
         })
         .collect();
     Ok((file.snapshot_unix, leaves))
+}
+
+fn is_usdn(asset: &str) -> bool {
+    asset == "usdn" || asset == USDN_IBC
+}
+
+fn is_wrapper_usdn(owner: &str, asset: &str) -> bool {
+    owner == USDRISE_WRAPPER && is_usdn(asset)
 }
 
 fn is_edge_asset(asset: &str) -> bool {
@@ -380,11 +402,6 @@ struct PayRoute {
 
 fn payout_route(asset: &str) -> Option<PayRoute> {
     Some(match asset {
-        "usdn" => PayRoute {
-            chain_id: "1",
-            denom: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-            bech32_prefix: None,
-        },
         "ibc/C4CFF46FD6DE35CA4CF4CE031E643C8FDC9BA4B99AE598E9B0ED98FE3A2319F9" => PayRoute {
             chain_id: "cosmoshub-4",
             denom: "uatom",

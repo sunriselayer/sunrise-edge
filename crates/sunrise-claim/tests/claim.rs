@@ -44,6 +44,11 @@ fn a_signed_unlocked_leaf_reduces_custody_and_replay_fails() {
         .iter()
         .position(|leaf| leaf.asset == "rise" && leaf.claimable_at == snapshot)
         .unwrap();
+    let usdrise = leaves
+        .iter()
+        .find(|leaf| leaf.asset == "usdrise")
+        .expect("unwrapped USDN is credited as USDrise");
+    assert_eq!(usdrise.amount, 5);
     let proof = tree.proof(index).unwrap();
     let auth = Authorization {
         ledger_sha256: hex::encode(ledger_sha256(&raw)),
