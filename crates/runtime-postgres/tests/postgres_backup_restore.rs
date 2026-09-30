@@ -637,6 +637,15 @@ fn postgres_backup_restore_rehearsal() {
         target_store.commit_invocation(&fresh_context, replay_invocation),
         DurableCommitOutcome::Rejected(DurableCommitRejection::RequestAlreadyCommitted)
     );
+    // A rejected replay allocates no commit sequence: the baseline is
+    // unchanged at this point, before the claim below runs.
+    assert_eq!(
+        inspect_namespace(&mut target_client, &namespace)
+            .unwrap()
+            .unwrap()
+            .commit_sequence(),
+        pre_backup_metadata.commit_sequence()
+    );
 
     let claim_lease = DurableOutboxLeaseId::new([0x2c; 32]).unwrap();
     let claim_window = now_millis();
@@ -655,12 +664,41 @@ fn postgres_backup_restore_rehearsal() {
     assert_eq!(claim.lease_expires_at_unix_millis(), claim_expiry);
     assert_eq!(claim.canonical_payload(), b"backup-restore-outbound-event");
 
+    // A successful claim allocates a fresh commit sequence in the same
+    // transaction as its persisted lease/state-id update, so the covered
+    // outbox collection advances the restored baseline's sequence by
+    // exactly one here, before any acknowledgement or structured commit.
+    assert_eq!(
+        inspect_namespace(&mut target_client, &namespace)
+            .unwrap()
+            .unwrap()
+            .commit_sequence(),
+        pre_backup_metadata
+            .commit_sequence()
+            .checked_add(1)
+            .unwrap()
+    );
+
     assert_eq!(
         target_store.acknowledge_outbox(
             &fresh_context,
             DurableOutboxAcknowledgement::new(domain, request_id, 0, claim_lease),
         ),
         DurableOutboxAcknowledgementOutcome::Acknowledged
+    );
+
+    // Acknowledgement allocates its own fresh commit sequence, distinct from
+    // the claim's, so the sequence advances by exactly one more here: two
+    // total past the restored baseline before any structured commit runs.
+    assert_eq!(
+        inspect_namespace(&mut target_client, &namespace)
+            .unwrap()
+            .unwrap()
+            .commit_sequence(),
+        pre_backup_metadata
+            .commit_sequence()
+            .checked_add(2)
+            .unwrap()
     );
 
     let no_due_work_window = now_millis();
@@ -680,6 +718,20 @@ fn postgres_backup_restore_rehearsal() {
         DurableOutboxClaimOutcome::NoDueWork
     );
 
+    // NoDueWork is a refusal to serve, not a write: the sequence stays at
+    // the claim (+1) and acknowledgement (+1) total from above, unchanged
+    // by this rejected claim attempt.
+    assert_eq!(
+        inspect_namespace(&mut target_client, &namespace)
+            .unwrap()
+            .unwrap()
+            .commit_sequence(),
+        pre_backup_metadata
+            .commit_sequence()
+            .checked_add(2)
+            .unwrap()
+    );
+
     assert_eq!(
         target_store.commit_invocation(&fresh_context, fresh_invocation),
         DurableCommitOutcome::Committed
@@ -692,10 +744,11 @@ fn postgres_backup_restore_rehearsal() {
         fresh_committed_state.value(),
         Some(fresh_state_value.as_slice())
     );
-    // Only structured invocation commits allocate a new commit sequence;
-    // claim and acknowledgement do not, so the restored baseline's sequence
-    // (from `pre_backup_metadata`) advances by exactly one more here, for
-    // this one fresh commit.
+    // The claim, the acknowledgement, and this fresh structured commit each
+    // allocate their own commit sequence in the same transaction as their
+    // write, so the restored baseline's sequence (from `pre_backup_metadata`)
+    // advances by exactly three in total: one per covered mutation, not one
+    // for the whole reconciliation.
     assert_eq!(
         inspect_namespace(&mut target_client, &namespace)
             .unwrap()
@@ -703,7 +756,7 @@ fn postgres_backup_restore_rehearsal() {
             .commit_sequence(),
         pre_backup_metadata
             .commit_sequence()
-            .checked_add(1)
+            .checked_add(3)
             .unwrap()
     );
 
