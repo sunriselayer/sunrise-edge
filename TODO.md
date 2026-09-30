@@ -244,9 +244,16 @@ The detailed existing evidence and remaining criteria follow:
   unsupported-transition boundary was added, and parent-run epoch-transition
   regressions pass (53 tests), including eligible Historical activation,
   signed Logical refusal with snapshot-token invariance, and committed
-  activation replay before malformed-profile resolution. Full repository
-  validation, fresh complete-feature Opus review and CI are still required;
-  focused evidence is not a complete merge or handoff gate.
+  activation replay before malformed-profile resolution. On 2026-09-30 the
+  complete parent-run `./scripts/check-all.sh` passed on code head `473bf24`,
+  with live disposable PostgreSQL and all required SIGKILL, backup/restore,
+  disk/WAL-full, connection-exhaustion and PgBouncer profiles, existing
+  network/CLI E2Es, independent vectors and Rust/WASM/edge-adapter checks.
+  Fresh read-only Opus approved the complete independent feature at
+  `1445827` and explicitly approved final code head `473bf24`. Every final
+  PR head, including documentation-only progress updates, must still have
+  latest-head approval and passing required CI before merge. This unchecked
+  item is not a completed merge or an integrated handoff gate.
 
 - [x] **Portable storage implementation: bounded reads and backend-enforced snapshot continuity**
   ([DR-0166](docs/architecture/decisions/0166-portable-candidate-snapshot.md),
