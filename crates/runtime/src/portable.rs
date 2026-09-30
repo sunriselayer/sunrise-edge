@@ -17,7 +17,9 @@ use crate::{
     validate_memory_durable_read_authority, validate_memory_durable_read_domain,
     validate_state_key,
 };
-use protocol_types::{AtomicityDomainId, Digest32};
+use protocol_types::{AtomicityDomainId, Digest32, WriterFenceGeneration};
+use std::error::Error;
+use std::fmt;
 use std::num::NonZeroUsize;
 use std::ops::{Bound, Range};
 
@@ -31,6 +33,114 @@ pub const MAX_PORTABLE_DESCRIPTOR_BYTES: usize = 16 * 1024;
 /// Matches existing execution/publication and PostgreSQL namespace boundaries.
 /// `ChainId` itself does not enforce a byte-length bound.
 pub const MAX_PORTABLE_CHAIN_ID_BYTES: usize = 128;
+
+/// Local source identity bound, not a protocol or cut identifier.
+pub const MAX_PORTABLE_SNAPSHOT_NAMESPACE_BYTES: usize = 256;
+
+/// A local, backend-enforced observation of one namespace/domain's mutation
+/// sequence. This is neither a state root nor authority to import or serve.
+///
+/// All writes to the covered structured collections and outbox must advance
+/// the sequence atomically. It is checked inside the same read snapshot as
+/// each guarded page/descriptor/chunk. Physical tokens are never compared
+/// across replicas or included in a semantic commitment. Immutable blob
+/// content is outside this token and must be authenticated separately.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortableSnapshotToken {
+    namespace: Vec<u8>,
+    domain: AtomicityDomainId,
+    writer_fence: WriterFenceGeneration,
+    mutation_sequence: u64,
+}
+
+impl PortableSnapshotToken {
+    /// Backend construction after namespace/schema/writer validation. The
+    /// namespace is an exact local identity, not an untrusted request input.
+    pub fn new(
+        namespace: Vec<u8>,
+        domain: AtomicityDomainId,
+        writer_fence: WriterFenceGeneration,
+        mutation_sequence: u64,
+    ) -> Result<Self, RuntimeError> {
+        if namespace.is_empty() || namespace.len() > MAX_PORTABLE_SNAPSHOT_NAMESPACE_BYTES {
+            return Err(RuntimeError::InvalidStateScanPage);
+        }
+        Ok(Self {
+            namespace,
+            domain,
+            writer_fence,
+            mutation_sequence,
+        })
+    }
+
+    #[must_use]
+    pub fn namespace(&self) -> &[u8] {
+        &self.namespace
+    }
+    #[must_use]
+    pub const fn domain(&self) -> AtomicityDomainId {
+        self.domain
+    }
+    #[must_use]
+    pub const fn writer_fence(&self) -> WriterFenceGeneration {
+        self.writer_fence
+    }
+    #[must_use]
+    pub const fn mutation_sequence(&self) -> u64 {
+        self.mutation_sequence
+    }
+
+    /// Checks the exact local binding. Call only while holding the same
+    /// transaction/lock that supplies the guarded read's result.
+    pub fn check(
+        &self,
+        namespace: &[u8],
+        domain: AtomicityDomainId,
+        writer_fence: WriterFenceGeneration,
+        mutation_sequence: u64,
+    ) -> Result<(), PortableSnapshotError> {
+        if self.namespace != namespace
+            || self.domain != domain
+            || self.writer_fence != writer_fence
+            || self.mutation_sequence != mutation_sequence
+        {
+            return Err(PortableSnapshotError::Changed);
+        }
+        Ok(())
+    }
+}
+
+/// A stale snapshot is a restart/refusal, never evidence that a missing row
+/// is absent or permission to stitch bytes from a newer source.
+#[derive(Debug)]
+pub enum PortableSnapshotError {
+    Read(DurableReadError),
+    Changed,
+    /// Even a fully acknowledged nonempty outbox is not reconstructible by
+    /// the initial handoff profile. Empty-batch representations are allowed.
+    NonemptyOutbox,
+}
+
+impl fmt::Display for PortableSnapshotError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read(error) => error.fmt(f),
+            Self::Changed => f.write_str("portable source snapshot changed"),
+            Self::NonemptyOutbox => f.write_str("portable source has a nonempty outbox"),
+        }
+    }
+}
+impl Error for PortableSnapshotError {}
+impl From<DurableReadError> for PortableSnapshotError {
+    fn from(value: DurableReadError) -> Self {
+        Self::Read(value)
+    }
+}
+impl From<RuntimeError> for PortableSnapshotError {
+    fn from(value: RuntimeError) -> Self {
+        Self::Read(DurableReadError::InvalidRequest(value))
+    }
+}
 
 /// Closed structured collections; the core classifier decides which state
 /// keys are protocol facts and which are replica-local metadata.
@@ -415,6 +525,52 @@ pub trait DurablePortableRepository: StructuredDurableDomainStateStore {
         domain: AtomicityDomainId,
         request: &DurableRecordChunkRequest,
     ) -> Result<DurableRecordChunkOutcome, DurableReadError>;
+}
+
+/// Optional stronger contract for a complete, consistent enumeration of a
+/// quiet source. No default implementation may emulate these methods with a
+/// separate before/after token read: token comparison and data extraction must
+/// share a backend read snapshot. Writers must advance the sequence at every
+/// write chokepoint, including legacy access to these same rows and outbox
+/// delivery/attempt changes, or the backend must not implement this trait.
+///
+/// This is local storage consistency, not authenticated history completeness.
+/// A later write invalidates continuation; it does not revoke an already
+/// completed observation of that earlier source. Resumable progress belongs
+/// outside the pinned namespace/domain, under its own writer/CAS fences.
+pub trait DurablePortableSnapshotRepository: DurablePortableRepository {
+    fn begin_portable_snapshot(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<PortableSnapshotToken, PortableSnapshotError>;
+    fn scan_portable_keys_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+        scan: &DurableRecordScan,
+    ) -> Result<DurableRecordPage, PortableSnapshotError>;
+    fn read_portable_descriptor_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+        key: &DurableRecordKey,
+    ) -> Result<Option<DurableRecordDescriptor>, PortableSnapshotError>;
+    fn read_portable_chunk_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+        request: &DurableRecordChunkRequest,
+    ) -> Result<DurableRecordChunkOutcome, PortableSnapshotError>;
+    fn check_portable_outbox_empty_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+    ) -> Result<(), PortableSnapshotError>;
 }
 
 fn version_metadata(
