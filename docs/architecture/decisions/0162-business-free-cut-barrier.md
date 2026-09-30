@@ -24,6 +24,11 @@ a paginated state scan cannot detect an intervening receipt or outcome write.
 1. Before exposing a vote for a proposal whose own payload carries business,
    account for a Freeze that its justification would newly commit. Persist the
    authenticated observation of that Freeze without exposing a business vote.
+   After an accepted committed `DrainSet`, close fresh votes and proposals for
+   **all** candidate kinds, including control, as specified in
+   [DR-0163](0163-committed-drain-set-closes-candidate-voting.md). Its
+   same-event preview likewise abstains when a justification newly commits
+   `DrainSet`. Empty consensus progress remains votable.
    Before barrier installation, declared signerless recovery still accepts
    historical proposal bytes and processes inherited justifications through
    ordinary HotStuff rules. After installation, a newly arriving candidate
@@ -65,7 +70,10 @@ a paginated state scan cannot detect an intervening receipt or outcome write.
    The installer is an internal local step at present. Any future exposed
    request surface must require operator authority: installing this marker
    permanently stops fresh candidate progress on that replica until a
-   separately verified Seal/activation path exists.
+   separately verified Seal/activation path exists. In particular, a local
+   barrier before the DR-0163 network-wide candidate-vote closure can strand
+   one replica while an honest quorum commits another control candidate; the
+   barrier row alone is not an activation-safe protocol decision.
 
 The barrier is **local cut-stability evidence**, not portable authority and
 not an alternative to an authenticated history replay on a joining validator.

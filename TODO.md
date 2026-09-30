@@ -632,6 +632,20 @@ The detailed existing evidence and remaining criteria follow:
   branch. Test the actual shared-engine safety properties under delayed and
   adversarial delivery; a local high/locked suffix check alone is not a
   network-level proof of global absence.
+  U12 follows [DR-0163](docs/architecture/decisions/0163-committed-drain-set-closes-candidate-voting.md):
+  the accepted committed `DrainSetRecord` now closes fresh signer proposals
+  and votes for every candidate kind, not just business. A proposal that
+  newly commits `DrainSet` through its justification takes an authenticated
+  signerless path before any candidate vote. The record revision is asserted
+  with the proposal/vote identity; exact completed replay and request-id
+  conflicts keep their existing precedence. A real four-validator test puts
+  the local barrier on only one replica and verifies the other three cannot
+  certify a later control candidate, while empty progress continues. Focused
+  CAS races cover proposal and vote signing. This is not yet a portable cut:
+  preserve and independently verify the committed proposal/QC history,
+  establish a certified empty post-DrainSet anchor, audit all remaining cut
+  writers, implement Seal/readiness/activation, and run adversarial and
+  independent-PostgreSQL network E2E before declaring Delivery 3 complete.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

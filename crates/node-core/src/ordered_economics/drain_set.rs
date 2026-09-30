@@ -374,6 +374,19 @@ pub(crate) fn read_drain_set_record<S: StructuredDurableDomainStateStore>(
     chain: &ChainId,
     epoch: Epoch,
 ) -> Result<Option<DrainSetRecord>, NodeCoreError> {
+    Ok(read_drain_set_record_with_revision(store, context, domain, chain, epoch)?.0)
+}
+
+/// Returns the same validated record and the exact row revision observed by
+/// a signer. The revision must be asserted in the proposal/vote commit so a
+/// concurrent accepted DrainSet cannot race a fresh candidate signature.
+pub(crate) fn read_drain_set_record_with_revision<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain: &ChainId,
+    epoch: Epoch,
+) -> Result<(Option<DrainSetRecord>, StateRevision), NodeCoreError> {
     let key: Vec<u8> = drain_set_record_key(chain, epoch)?;
     let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
     match observed.value() {
@@ -387,9 +400,9 @@ pub(crate) fn read_drain_set_record<S: StructuredDurableDomainStateStore>(
             {
                 return Err(invalid("drain set record context disagrees with its key"));
             }
-            Ok(Some(record))
+            Ok((Some(record), observed.revision()))
         }
-        None if observed.revision() == StateRevision::INITIAL => Ok(None),
+        None if observed.revision() == StateRevision::INITIAL => Ok((None, observed.revision())),
         None => Err(invalid("drain set record is tombstoned")),
     }
 }

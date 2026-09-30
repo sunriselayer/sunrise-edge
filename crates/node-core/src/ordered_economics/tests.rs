@@ -1313,6 +1313,20 @@ fn ordered_drain_set_requires_local_readiness_then_commits_once_on_four_replicas
         before_freeze.revision(0, &absent_drain_key),
         StateRevision::INITIAL
     );
+    // A refused pre-Freeze DrainSet does not install the accepted record and
+    // therefore cannot close honest candidate voting for the real Freeze.
+    let freeze_after_refusal: OrderedCandidate = freeze_candidate([0xA3; 32]);
+    let leader1: usize = before_freeze.leader_index(1);
+    assert!(
+        propose(
+            &before_freeze.stores[leader1],
+            &before_freeze.context,
+            &before_freeze.env(),
+            Some(&freeze_after_refusal),
+            &before_freeze.signers[leader1],
+        )
+        .is_ok()
+    );
     let different_freeze: Network = setup_with_freeze_height(1);
     different_freeze.install_ordered();
     let other_freeze: OrderedCandidate = freeze_candidate([0xA4; 32]);
@@ -1518,17 +1532,40 @@ fn ordered_drain_set_requires_local_readiness_then_commits_once_on_four_replicas
         intent: encode_drain_set_intent(&second_intent).unwrap(),
         created_checkpoint: 13,
     };
-    network.round(7, Some(&second));
-    network.round(8, None);
-    let (second_outputs, _, _) = network.round(9, None);
-    for (replica, output) in second_outputs.iter().enumerate() {
-        assert_eq!(output.committed.len(), 1);
-        assert_eq!(
-            refusal_of(&output.committed[0]),
-            OrderedRefusal::AlreadyDrained
+    // Post-DrainSet closure: once this epoch's one-per-epoch `DrainSetRecord`
+    // is installed, an honest replica never again proposes or votes for a
+    // fresh `DrainSet` -- it is refused on sight, exactly like every other
+    // fresh candidate kind, instead of being placed, voted on and only
+    // refused once committed.
+    for replica in 0..REPLICAS {
+        assert!(matches!(
+            propose(
+                &network.stores[replica],
+                &network.context,
+                &network.env(),
+                Some(&second),
+                &network.signers[replica],
+            ),
+            Err(OrderedEconomicsError::Refused(
+                OrderedRefusal::AlreadyDrained
+            ))
+        ));
+        assert!(
+            network
+                .value(
+                    replica,
+                    &engine::ordered_request_header_key_for_tests(
+                        expected.chain_id(),
+                        &second.request_id
+                    )
+                )
+                .is_none()
         );
         assert_eq!(network.value(replica, &key), original_bytes);
     }
+    network.round(7, None);
+    network.round(8, None);
+    network.round(9, None);
 
     // The barrier is a separate local step: the committed DrainSet alone is
     // not enough. Each independent replica must finish its own receipt-backed
@@ -1640,6 +1677,359 @@ fn ordered_drain_set_requires_local_readiness_then_commits_once_on_four_replicas
         advance_business_free_barrier(&network.stores[0], &network.context, &network.env())
             .unwrap(),
         identity
+    );
+}
+
+/// DR-0157 post-DrainSet closure: once this epoch's one-per-epoch
+/// `DrainSetRecord` commits, *no* replica -- whether or not it has installed
+/// its own local business-free barrier -- proposes or votes for a fresh
+/// candidate of any kind at the next candidate height. Replica 0 installs the
+/// barrier; replicas 1-3 deliberately never do, which proves the closure gate
+/// is keyed on the durable, replicated `DrainSetRecord` alone, never on that
+/// per-replica local marker. No honest replica ever signs a vote for the
+/// third control candidate, so no certificate -- let alone a quorum -- can
+/// ever form for it, while empty consensus progress remains fully legal
+/// everywhere, replica 0 included.
+#[test]
+fn post_drain_set_closure_blocks_every_fresh_candidate_with_an_asymmetric_local_barrier() {
+    let network: Network = setup_with_freeze_height(1);
+    network.install_ordered();
+    let expected: PublicationContext = fixture::protocol();
+    let freeze: OrderedCandidate = freeze_candidate([0xE1; 32]);
+    network.round(1, Some(&freeze));
+    network.round(2, None);
+    network.round(3, None);
+
+    // An empty-frontier `DrainSet`, reconstructed and committed identically
+    // on all four replicas, exactly like the dedicated DrainSet test above.
+    let mut selected: Vec<(consensus::FrozenFrontierVote, consensus::FrozenFrontierPage)> =
+        Vec::new();
+    for source in 0..3 {
+        let step: FrozenFrontierStep = advance_frozen_frontier(
+            &network.stores[source],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            &network.signers[source],
+        )
+        .unwrap();
+        assert!(matches!(step, FrozenFrontierStep::Finalized(_)));
+        let pair: (consensus::FrozenFrontierVote, consensus::FrozenFrontierPage) =
+            read_frozen_frontier_page(
+                &network.stores[source],
+                &network.context,
+                network.domain(),
+                &network.resolver,
+                &network.history,
+                &expected,
+                network.signers[source].validator_id(),
+                None,
+                std::num::NonZeroUsize::new(1).unwrap(),
+            )
+            .unwrap();
+        selected.push(pair);
+    }
+    selected.sort_by_key(|pair| pair.0.validator);
+    let votes: Vec<consensus::FrozenFrontierVote> =
+        selected.iter().map(|pair| pair.0.clone()).collect();
+    let mut ready: Option<consensus::DrainUnionIdentity> = None;
+    for replica in 0..REPLICAS {
+        for (vote, page) in &selected {
+            ingest_drain_signer_page(
+                &network.stores[replica],
+                &network.context,
+                network.domain(),
+                &network.resolver,
+                &expected,
+                vote.validator,
+                vote.clone(),
+                page.clone(),
+            )
+            .unwrap();
+        }
+        let identity: consensus::DrainUnionIdentity = match advance_drain_union(
+            &network.stores[replica],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            &votes,
+        )
+        .unwrap()
+        {
+            DrainUnionStep::Ready(identity) => *identity,
+            DrainUnionStep::Advanced { .. } => panic!("empty frontier union must finish"),
+        };
+        if let Some(previous) = &ready {
+            assert_eq!(&identity, previous);
+        } else {
+            ready = Some(identity);
+        }
+    }
+    let identity: consensus::DrainUnionIdentity = ready.unwrap();
+    let intent: DrainSetIntent = DrainSetIntent {
+        context: expected.clone(),
+        request_id: [0xE2; 32],
+        selected_votes: votes.clone(),
+        drain_union_identity: identity.clone(),
+    };
+    let drain_candidate: OrderedCandidate = OrderedCandidate {
+        context: expected.clone(),
+        request_id: intent.request_id,
+        kind: OrderedOperationKind::DrainSet,
+        intent: encode_drain_set_intent(&intent).unwrap(),
+        created_checkpoint: 12,
+    };
+    network.round(4, Some(&drain_candidate));
+    network.round(5, None);
+    let (outputs, _, _) = network.round(6, None);
+    let record_key: Vec<u8> = drain_set_record_key(expected.chain_id(), expected.epoch()).unwrap();
+    for (replica, output) in outputs.iter().enumerate() {
+        assert_eq!(output.committed.len(), 1, "replica {replica}");
+        assert_eq!(
+            output.committed[0].output.responses()[0].status(),
+            NodeResponseStatus::Accepted
+        );
+        assert!(network.value(replica, &record_key).is_some());
+    }
+
+    // Only replica 0 finishes its own receipt-backed local barrier; replicas
+    // 1-3 deliberately never do.
+    assert_eq!(
+        advance_drain_completion(
+            &network.stores[0],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &expected,
+        )
+        .unwrap(),
+        DrainCompletionStep::Complete(Box::new(identity.clone()))
+    );
+    assert_eq!(
+        advance_business_free_barrier(&network.stores[0], &network.context, &network.env())
+            .unwrap(),
+        identity
+    );
+    let barrier_key: Vec<u8> =
+        business_free_barrier_key(expected.chain_id(), expected.epoch()).unwrap();
+    assert!(network.value(0, &barrier_key).is_some());
+    for replica in 1..REPLICAS {
+        assert!(network.value(replica, &barrier_key).is_none());
+    }
+
+    // The accepted DrainSet itself is already complete. Closure must not
+    // reinterpret its exact replay as a fresh post-drain candidate.
+    for (replica, output) in outputs.iter().enumerate() {
+        let replay: Result<OrderedProposal, OrderedEconomicsError> = propose(
+            &network.stores[replica],
+            &network.context,
+            &network.env(),
+            Some(&drain_candidate),
+            &network.signers[replica],
+        );
+        let Err(OrderedEconomicsError::AlreadyCompleted(retained)) = replay else {
+            panic!("completed DrainSet must replay its retained outcome");
+        };
+        assert_eq!(
+            encode_ordered_outcome(&retained).unwrap(),
+            encode_ordered_outcome(&output.committed[0]).unwrap()
+        );
+    }
+    let reused_request: OrderedCandidate = freeze_candidate(drain_candidate.request_id);
+    assert!(matches!(
+        propose(
+            &network.stores[0],
+            &network.context,
+            &network.env(),
+            Some(&reused_request),
+            &network.signers[0],
+        ),
+        Err(OrderedEconomicsError::RequestHeaderConflict)
+    ));
+
+    // A third control candidate (another `Freeze`) at the next candidate
+    // height (7 = 4 + 3): no replica -- including the three without a local
+    // barrier -- ever proposes or votes for it.
+    let third: OrderedCandidate = freeze_candidate([0xE3; 32]);
+    for replica in 0..REPLICAS {
+        assert!(matches!(
+            propose(
+                &network.stores[replica],
+                &network.context,
+                &network.env(),
+                Some(&third),
+                &network.signers[replica],
+            ),
+            Err(OrderedEconomicsError::Refused(
+                OrderedRefusal::AlreadyDrained
+            ))
+        ));
+        assert!(
+            network
+                .value(
+                    replica,
+                    &engine::ordered_request_header_key_for_tests(
+                        expected.chain_id(),
+                        &third.request_id
+                    )
+                )
+                .is_none()
+        );
+    }
+
+    // A byzantine leader can bypass the signer-side proposal gate and sign a
+    // real consensus proposal for this candidate directly. Its transaction
+    // digest and signed payload match the sidecar, but honest replicas still
+    // emit no vote for it.
+    let leader7: usize = network.leader_index(7);
+    let state_key: Vec<u8> = engine::ordered_state_key_for_tests(expected.chain_id());
+    let leader_state: consensus::ConsensusState =
+        decode_consensus_state(&network.value(leader7, &state_key).unwrap()).unwrap();
+    let third_digest: Digest32 =
+        engine::ordered_candidate_digest_for_tests(&network.resolver, &third);
+    let signed: consensus::ConsensusProposal = network
+        .policy
+        .engine()
+        .propose(&leader_state, vec![third_digest], &network.signers[leader7])
+        .unwrap();
+    assert_eq!(signed.height, 7);
+    let carrying: OrderedProposal = OrderedProposal {
+        proposal: signed,
+        candidate: Some(third.clone()),
+    };
+    for replica in 0..REPLICAS {
+        assert!(matches!(
+            process_proposal(
+                &network.stores[replica],
+                &network.context,
+                &network.env(),
+                &carrying,
+                &network.signers[replica],
+            ),
+            Err(OrderedEconomicsError::Refused(
+                OrderedRefusal::AlreadyDrained
+            ))
+        ));
+        assert!(
+            network
+                .value(
+                    replica,
+                    &engine::ordered_vote_record_key_for_tests(expected.chain_id(), 7)
+                )
+                .is_none()
+        );
+    }
+    // No honest replica ever signed a vote for the third candidate above, so
+    // no certificate -- let alone a quorum -- can ever form for it.
+
+    // Empty consensus progress remains fully legal for every replica,
+    // including replica 0 with its own local barrier already installed.
+    let (round7, _, _) = network.round(7, None);
+    assert!(round7.iter().all(|output| output.committed.is_empty()));
+    assert!(network.value(0, &barrier_key).is_some());
+}
+
+#[test]
+fn candidate_signatures_cas_fence_a_racing_drain_set_record() {
+    let network: Network = setup_with_freeze_height(1);
+    network.install_ordered();
+    let expected: PublicationContext = fixture::protocol();
+    let candidate: OrderedCandidate = freeze_candidate([0xE4; 32]);
+    let drain_key: Vec<u8> = drain_set_record_key(expected.chain_id(), expected.epoch()).unwrap();
+    let leader: usize = network.leader_index(1);
+    let leader_race: RaceStore<'_> = RaceStore {
+        inner: &network.stores[leader],
+        context: network.context,
+        domain: network.domain(),
+        race_key: drain_key.clone(),
+        race_value: vec![0xA5],
+        race_on_durable: true,
+        raced: std::cell::Cell::new(false),
+    };
+    assert!(
+        propose(
+            &leader_race,
+            &network.context,
+            &network.env(),
+            Some(&candidate),
+            &network.signers[leader],
+        )
+        .is_err()
+    );
+    assert!(leader_race.raced.get());
+    assert!(
+        network
+            .value(
+                leader,
+                &engine::ordered_leader_record_key_for_tests(expected.chain_id(), 1)
+            )
+            .is_none()
+    );
+    assert!(
+        network
+            .value(
+                leader,
+                &engine::ordered_request_header_key_for_tests(
+                    expected.chain_id(),
+                    &candidate.request_id
+                )
+            )
+            .is_none()
+    );
+
+    // The same absence assertion is part of a vote commit, not only leader
+    // proposal creation. Sign a valid proposal directly with the leader key;
+    // the separate voter must lose its CAS when the row appears at commit.
+    let state_key: Vec<u8> = engine::ordered_state_key_for_tests(expected.chain_id());
+    let leader_state: consensus::ConsensusState =
+        decode_consensus_state(&network.value(leader, &state_key).unwrap()).unwrap();
+    let candidate_digest: Digest32 =
+        engine::ordered_candidate_digest_for_tests(&network.resolver, &candidate);
+    let signed: consensus::ConsensusProposal = network
+        .policy
+        .engine()
+        .propose(
+            &leader_state,
+            vec![candidate_digest],
+            &network.signers[leader],
+        )
+        .unwrap();
+    let proposal: OrderedProposal = OrderedProposal {
+        proposal: signed,
+        candidate: Some(candidate.clone()),
+    };
+    let voter: usize = (0..REPLICAS).find(|&replica| replica != leader).unwrap();
+    let voter_race: RaceStore<'_> = RaceStore {
+        inner: &network.stores[voter],
+        context: network.context,
+        domain: network.domain(),
+        race_key: drain_key,
+        race_value: vec![0xA5],
+        race_on_durable: true,
+        raced: std::cell::Cell::new(false),
+    };
+    assert!(
+        process_proposal(
+            &voter_race,
+            &network.context,
+            &network.env(),
+            &proposal,
+            &network.signers[voter],
+        )
+        .is_err()
+    );
+    assert!(voter_race.raced.get());
+    assert!(
+        network
+            .value(
+                voter,
+                &engine::ordered_vote_record_key_for_tests(expected.chain_id(), 1)
+            )
+            .is_none()
     );
 }
 
@@ -3185,6 +3575,201 @@ fn justification_committing_freeze_never_exposes_a_vote_for_its_own_business_pay
             .value(
                 target,
                 &engine::ordered_outcome_key_for_tests(&chain, &request_id)
+            )
+            .is_none()
+    );
+}
+
+/// Generalization of the test above: a proposal's own payload can be *any*
+/// fresh candidate kind -- here a second `Freeze`, a kind the
+/// pre-generalization preview exempted entirely -- and its justification can
+/// newly commit `DrainSet` rather than `Freeze`. Either way, the lagging
+/// replica must not expose a vote for its own payload in the same event that
+/// first observes the ancestor's commit.
+#[test]
+fn justification_committing_drain_set_never_exposes_a_vote_for_its_own_freeze_payload() {
+    let network: Network = setup_with_freeze_height(1);
+    network.install_ordered();
+    let chain: ChainId = fixture::chain();
+    let expected: PublicationContext = fixture::protocol();
+    let freeze: OrderedCandidate = freeze_candidate([0xE5; 32]);
+    network.round(1, Some(&freeze));
+    network.round(2, None);
+    network.round(3, None);
+
+    // An empty-frontier `DrainSet`, ready on every replica up front: this
+    // test is about vote timing, not readiness catch-up.
+    let mut selected: Vec<(consensus::FrozenFrontierVote, consensus::FrozenFrontierPage)> =
+        Vec::new();
+    for source in 0..3 {
+        let step: FrozenFrontierStep = advance_frozen_frontier(
+            &network.stores[source],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            &network.signers[source],
+        )
+        .unwrap();
+        assert!(matches!(step, FrozenFrontierStep::Finalized(_)));
+        let pair: (consensus::FrozenFrontierVote, consensus::FrozenFrontierPage) =
+            read_frozen_frontier_page(
+                &network.stores[source],
+                &network.context,
+                network.domain(),
+                &network.resolver,
+                &network.history,
+                &expected,
+                network.signers[source].validator_id(),
+                None,
+                std::num::NonZeroUsize::new(1).unwrap(),
+            )
+            .unwrap();
+        selected.push(pair);
+    }
+    selected.sort_by_key(|pair| pair.0.validator);
+    let votes: Vec<consensus::FrozenFrontierVote> =
+        selected.iter().map(|pair| pair.0.clone()).collect();
+    let mut ready: Option<consensus::DrainUnionIdentity> = None;
+    for replica in 0..REPLICAS {
+        for (vote, page) in &selected {
+            ingest_drain_signer_page(
+                &network.stores[replica],
+                &network.context,
+                network.domain(),
+                &network.resolver,
+                &expected,
+                vote.validator,
+                vote.clone(),
+                page.clone(),
+            )
+            .unwrap();
+        }
+        let identity: consensus::DrainUnionIdentity = match advance_drain_union(
+            &network.stores[replica],
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &expected,
+            &votes,
+        )
+        .unwrap()
+        {
+            DrainUnionStep::Ready(identity) => *identity,
+            DrainUnionStep::Advanced { .. } => panic!("empty frontier union must finish"),
+        };
+        if let Some(previous) = &ready {
+            assert_eq!(&identity, previous);
+        } else {
+            ready = Some(identity);
+        }
+    }
+    let identity: consensus::DrainUnionIdentity = ready.unwrap();
+    let intent: DrainSetIntent = DrainSetIntent {
+        context: expected.clone(),
+        request_id: [0xE6; 32],
+        selected_votes: votes.clone(),
+        drain_union_identity: identity.clone(),
+    };
+    let drain_candidate: OrderedCandidate = OrderedCandidate {
+        context: expected.clone(),
+        request_id: intent.request_id,
+        kind: OrderedOperationKind::DrainSet,
+        intent: encode_drain_set_intent(&intent).unwrap(),
+        created_checkpoint: 12,
+    };
+
+    // All four independently vote for the real DrainSet chain. The target
+    // receives QCs at heights 4 and 5 but not the height-6 QC that commits
+    // DrainSet; the other replicas receive all three. This is a normal
+    // delayed certificate delivery, not a forged closure row.
+    let target: usize = network.non_leader(&[7]);
+    let leader: usize = network.leader_index(7);
+    for view in 4..=6 {
+        let candidate: Option<&OrderedCandidate> = (view == 4).then_some(&drain_candidate);
+        let (certificate, _proposal): (QuorumCertificate, OrderedProposal) =
+            network.certify(view, candidate);
+        for replica in 0..REPLICAS {
+            if view == 6 && replica == target {
+                continue;
+            }
+            process_certificate(
+                &network.stores[replica],
+                &network.context,
+                &network.env(),
+                &certificate,
+            )
+            .unwrap();
+        }
+    }
+    let record_key: Vec<u8> = drain_set_record_key(&chain, expected.epoch()).unwrap();
+    assert!(network.value(target, &record_key).is_none());
+    assert!(network.value(leader, &record_key).is_some());
+
+    // A second `Freeze` -- a kind the pre-generalization preview exempted
+    // entirely -- is this racing proposal's own payload. A faulty leader
+    // signs it directly through the authenticated consensus engine; its
+    // justify QC is exactly the missing height-6 QC.
+    let second_freeze: OrderedCandidate = freeze_candidate([0xE7; 32]);
+    let state_key: Vec<u8> = engine::ordered_state_key_for_tests(&chain);
+    let leader_state: consensus::ConsensusState =
+        decode_consensus_state(&network.value(leader, &state_key).unwrap()).unwrap();
+    let candidate_digest: Digest32 =
+        engine::ordered_candidate_digest_for_tests(&network.resolver, &second_freeze);
+    let signed: consensus::ConsensusProposal = network
+        .policy
+        .engine()
+        .propose(
+            &leader_state,
+            vec![candidate_digest],
+            &network.signers[leader],
+        )
+        .unwrap();
+    assert_eq!(signed.height, 7);
+    let carrying: OrderedProposal = OrderedProposal {
+        proposal: signed,
+        candidate: Some(second_freeze.clone()),
+    };
+
+    // The target must not expose a vote for this racing proposal's own
+    // `Freeze` payload in the same event that first observes DrainSet's
+    // commit -- the exact generalization under test.
+    let observed: OrderedEventOutput = process_proposal(
+        &network.stores[target],
+        &network.context,
+        &network.env(),
+        &carrying,
+        &network.signers[target],
+    )
+    .unwrap();
+    assert!(
+        observed
+            .messages
+            .iter()
+            .all(|message| !matches!(message, ConsensusMessage::Vote(_)))
+    );
+    assert_eq!(observed.committed.len(), 1);
+    assert_eq!(observed.committed[0].request_id, drain_candidate.request_id);
+    assert_eq!(
+        observed.committed[0].output.responses()[0].status(),
+        NodeResponseStatus::Accepted
+    );
+    assert!(network.value(target, &record_key).is_some());
+    assert!(
+        network
+            .value(
+                target,
+                &engine::ordered_vote_record_key_for_tests(&chain, 7)
+            )
+            .is_none()
+    );
+    assert!(
+        network
+            .value(
+                target,
+                &engine::ordered_outcome_key_for_tests(&chain, &second_freeze.request_id)
             )
             .is_none()
     );
