@@ -74,9 +74,10 @@ re-compares the exact expected descriptor inside its own read before
 extracting bytes, and returns `Changed`/`Corrupt` rather than stitching
 bytes from two different row revisions when it disagrees. A page's
 continuation cursor (`after`) is a caller-supplied lower bound: the backend
-validates it against the collection it was issued for and rejects one that
-is not strictly ordered relative to the page it appends to, but this is
-bounds validation, not a cryptographic completeness proof. An arbitrary
+checks that it belongs to the requested collection and that returned keys
+are strictly increasing and greater than `after`. It does not verify that
+`after` was actually issued by an earlier page. These are bounds and ordering
+checks, not a cryptographic completeness proof. An arbitrary
 cursor value that happens to fall in-range is not detected as forged; the
 backend simply resumes the scan from wherever it points. Enumeration
 completeness is established by walking every page under one unchanged
@@ -176,8 +177,11 @@ still-unreleased schema, not a migration:
 
 Per explicit user instruction, this PR does not design pre-release backward
 compatibility for either shape. An existing database whose schema is
-missing the new column fails closed (`SchemaMismatch`/equivalent) on the
-next bootstrap or inspection; no migration, backfill, or silent rewrite is
+missing the new column fails closed on the next bootstrap or inspection.
+Bootstrap/inspection can return a database/schema error rather than the
+runtime's typed `SchemaMismatch`; PostgreSQL runtime reads classify an
+undefined column (SQLSTATE `42703`) as `SchemaMismatch`, not a retryable
+availability failure. No migration, backfill, or silent rewrite is
 shipped or planned for these unreleased shapes.
 
 ## Consequences
@@ -186,15 +190,20 @@ This is local storage-read consistency evidence for one quiet source, not
 authenticated history completeness, transport verification, or activation
 authority. It does not, by itself, prove that a source's business state is
 legitimate, that its dependencies are complete, or that any other replica
-shares the same semantic state. Required negative evidence (implemented in
-`crates/runtime/src/portable/conformance.rs` and exercised per backend)
+shares the same semantic state. Negative evidence in shared conformance
+fixtures (`crates/runtime/src/portable/conformance.rs`) and backend-specific tests
 includes: a legacy or covered mutation invalidating an outstanding token; a
 mid-page/mid-chunk row change; a changed writer fence, namespace, or
-domain; an unsupported/missing-column schema; a duplicate, reordered or
+domain; an unsupported schema; a duplicate, reordered or
 out-of-collection continuation cursor rejected by bounds validation (not a
 forgery-detection guarantee); tombstone versus absence; a large
 legal payload continuation across chunk boundaries; and exact no-write
 replay stability (no spurious sequence advance or token invalidation).
+SQLite additionally tests missing `mutation_sequence` and
+`source_instance_id` columns, refusing both existing-open and bootstrap
+without adding the missing column or changing the schema identity. There
+is no live PostgreSQL missing-column fixture in this slice; the typed
+undefined-column classification above is established by the runtime code.
 
 Remaining work belongs to Delivery 3 and later phases, not this decision:
 causal fastpath/economics replay, artifact/dependency closure, logical
