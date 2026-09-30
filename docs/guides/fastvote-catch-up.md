@@ -10,6 +10,18 @@ extends it to the generic lifecycle. Current readiness and independent review ga
 in [`TODO.md`](../../TODO.md). Do not deploy this experimental network publicly
 or use real assets.
 
+The multi-entry `fastvote-catch-up` manifest below is for the Historical
+physical-checkpoint profile only; it cannot carry Logical availability
+proofs. A locally signed Logical genesis instead requires the original
+signed intent, FastCertificate and availability certificate for each saved
+`contract fastvote-replay` operation, in predecessor order; see
+[saved replay](fastvote-network.md#replay-from-saved-artifacts) and
+[publication availability](../architecture/publication-availability.md).
+Only a complete validated bundle can establish retained publication history
+on a missed-prepare validator: native publication source/retention and the
+Rust SDK expose that separate execution-free step. Applying an availability
+proof is not a whole-store import or permission to activate a new epoch.
+
 ## Prerequisites
 
 The returning validator must have the same independently trusted signed

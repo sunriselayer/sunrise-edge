@@ -43,17 +43,23 @@ use std::{
     ffi::OsString,
     fs::{File, OpenOptions},
     io::{Read, Write},
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
+use protocol_types::AtomicityDomainId;
 use sunrise_edge_client::{
-    Client, FastCertificate, FastPathCertifier, FastVoteEndpoint, FastVoteNetworkError,
-    FastVoteQuorumError, MAX_FASTVOTE_NETWORK_ENDPOINTS, PaidApplication, PaidExecutionResult,
-    PaidExecutionStatus, SignedPaidIntent, Transport, ValidatorId, apply_fastvote_to_all,
+    AvailabilityCertificate, Client, CommitmentProfile, FastCertificate, FastPathCertifier,
+    FastVoteEndpoint, FastVoteNetworkError, FastVoteQuorumError, MAX_ENCODED_BUNDLE_BYTES,
+    MAX_FASTVOTE_NETWORK_ENDPOINTS, PaidApplication, PaidExecutionResult, PaidExecutionStatus,
+    SignedPaidIntent, Transport, ValidatorId, apply_fastvote_to_all,
+    apply_published_fastvote_to_all,
     call::CallIntent,
-    collect_fastvote_certificate, decode_fast_certificate, decode_signed_paid_intent,
-    encode_fast_certificate, encode_signed_paid_intent, load_trusted_fastvote_genesis,
+    collect_fastvote_availability_certificate, collect_fastvote_certificate,
+    decode_availability_certificate, decode_fast_certificate, decode_signed_paid_intent,
+    encode_availability_certificate, encode_fast_certificate, encode_signed_paid_intent,
+    load_trusted_fastvote_genesis_with_profile,
     local_execution::{encode_instance_record, instance_target},
     local_publication_resolver, validate_fastvote_endpoints,
 };
@@ -96,6 +102,7 @@ pub(super) fn network_flag_specs() -> Vec<crate::args::FlagSpec> {
         scalar("--fastvote-expected-genesis-digest"),
         scalar("--fastvote-signed-intent-out"),
         scalar("--fastvote-certificate-out"),
+        scalar("--fastvote-availability-certificate-out"),
         scalar("--fastvote-deadline-seconds"),
         scalar("--fastvote-per-request-cap-seconds"),
     ]
@@ -344,12 +351,25 @@ pub(super) fn configure_peer_transport(
 /// Builds one [`FastVoteEndpoint`] per configured peer and rejects a config
 /// that mixes loopback-plaintext and remote-TLS peers in one cohort, before
 /// any of them is dialed.
-fn build_endpoints(peers: &[PeerConfig]) -> Result<Vec<FastVoteEndpoint<CliTransport>>, CliError> {
+fn build_endpoints(
+    peers: &[PeerConfig],
+    profile: CommitmentProfile,
+) -> Result<Vec<FastVoteEndpoint<CliTransport>>, CliError> {
     let mut endpoints: Vec<FastVoteEndpoint<CliTransport>> = Vec::with_capacity(peers.len());
     let mut saw_loopback = false;
     let mut saw_remote_tls = false;
     for peer in peers {
-        let transport = configure_peer_transport(peer, &mut saw_loopback, &mut saw_remote_tls)?;
+        let mut transport: CliTransport =
+            configure_peer_transport(peer, &mut saw_loopback, &mut saw_remote_tls)?;
+        if profile.is_logical() {
+            // A genuine publication bundle can exceed the ordinary 4 MiB
+            // query cap; preserve an explicit canonical-frame bound rather
+            // than accepting unbounded response bodies.
+            transport = transport.with_max_response_body_bytes(
+                NonZeroUsize::new(MAX_ENCODED_BUNDLE_BYTES)
+                    .ok_or_else(|| invalid("zero publication bundle bound"))?,
+            );
+        }
         endpoints.push(FastVoteEndpoint {
             validator_id: peer.validator_id,
             endpoint_label: peer.endpoint.clone(),
@@ -366,6 +386,24 @@ pub(super) fn load_endpoints_and_certifier(
     resolver: &sunrise_edge_client::HashSuiteResolver,
     context: &sunrise_edge_client::PublicationContext,
 ) -> Result<(Vec<FastVoteEndpoint<CliTransport>>, FastPathCertifier), CliError> {
+    let (endpoints, certifier, _) = load_endpoints_and_profile(parsed, resolver, context)?;
+    Ok((endpoints, certifier))
+}
+
+/// Loads one locally authenticated manifest and returns its committee and
+/// signed commitment profile together, before the caller signs anything.
+pub(super) fn load_endpoints_and_profile(
+    parsed: &ParsedArgs,
+    resolver: &sunrise_edge_client::HashSuiteResolver,
+    context: &sunrise_edge_client::PublicationContext,
+) -> Result<
+    (
+        Vec<FastVoteEndpoint<CliTransport>>,
+        FastPathCertifier,
+        CommitmentProfile,
+    ),
+    CliError,
+> {
     let peers = parse_network_config(parsed.require("--fastvote-network")?)?;
     if let Some(endpoint) = parsed.get("--endpoint")
         && !peers.iter().any(|peer| peer.endpoint == endpoint)
@@ -374,17 +412,23 @@ pub(super) fn load_endpoints_and_certifier(
             "--endpoint must select an exact endpoint_label from --fastvote-network; preparation uses that peer's TLS configuration",
         ));
     }
-    let endpoints = build_endpoints(&peers)?;
     let manifest_path = parsed.require("--fastvote-genesis-manifest")?;
     let expected_digest = decode_hex_32(
         "--fastvote-expected-genesis-digest",
         parsed.require("--fastvote-expected-genesis-digest")?,
     )?;
-    let certifier =
-        load_trusted_fastvote_genesis(Path::new(manifest_path), resolver, expected_digest, context)
-            .map_err(failure)?;
+    let trusted = load_trusted_fastvote_genesis_with_profile(
+        Path::new(manifest_path),
+        resolver,
+        expected_digest,
+        context,
+    )
+    .map_err(failure)?;
+    let endpoints: Vec<FastVoteEndpoint<CliTransport>> =
+        build_endpoints(&peers, trusted.commitment_profile)?;
+    let certifier: FastPathCertifier = trusted.certifier;
     validate_fastvote_endpoints(&endpoints, &certifier).map_err(failure)?;
-    Ok((endpoints, certifier))
+    Ok((endpoints, certifier, trusted.commitment_profile))
 }
 
 pub(super) fn parse_deadline(parsed: &ParsedArgs) -> Result<OperationBudget, CliError> {
@@ -506,10 +550,13 @@ fn print_repin_diagnostic(error: &impl std::fmt::Display) {
 /// `ApplicationFailed` (or any other non-`Success`) result keeps its exact
 /// `PaidExecutionResult` output but leaves the reserved reference file
 /// empty, since no usable published/instantiated reference exists yet.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run_network_submit<T: Transport>(
     parsed: &ParsedArgs,
     endpoints: &[FastVoteEndpoint<T>],
     certifier: &FastPathCertifier,
+    profile: CommitmentProfile,
+    domain: AtomicityDomainId,
     resolver: &sunrise_edge_client::HashSuiteResolver,
     signed: &SignedPaidIntent,
     derived: Option<(&str, &'static str, &[u8])>,
@@ -526,6 +573,23 @@ pub(super) fn run_network_submit<T: Transport>(
         (signed_intent_out, "signed-intent"),
         (certificate_out, "certificate"),
     ];
+    let availability_index: Option<usize> = if profile.is_logical() {
+        outputs.push((
+            parsed.require("--fastvote-availability-certificate-out")?,
+            "availability-certificate",
+        ));
+        Some(outputs.len() - 1)
+    } else {
+        if parsed
+            .get("--fastvote-availability-certificate-out")
+            .is_some()
+        {
+            return Err(invalid(
+                "availability-certificate output requires a locally verified handoff-capable genesis profile",
+            ));
+        }
+        None
+    };
     let result_index: Option<usize> = parsed.get("--result-out").map(|path| {
         outputs.push((path, "result"));
         outputs.len() - 1
@@ -566,15 +630,69 @@ pub(super) fn run_network_submit<T: Transport>(
     }
     println!("fastvote_certificate_out={certificate_out}");
 
-    let result: PaidExecutionResult = apply_certificate_and_report(
-        endpoints,
-        certifier,
-        resolver,
-        signed,
-        &certificate,
-        deadline,
-        per_request_cap,
-    )?;
+    let result: PaidExecutionResult = if profile.is_logical() {
+        let published = collect_fastvote_availability_certificate(
+            endpoints,
+            certifier,
+            resolver,
+            &[],
+            domain,
+            signed,
+            &certificate,
+            deadline,
+            per_request_cap,
+        )
+        .map_err(|error| invalid(format!(
+            "FastVote publication failed before apply: {error}; retain the exact saved signed intent and FastCertificate for replay"
+        )))?;
+        println!("fastvote_publication_source={}", published.source_validator);
+        for attempt in &published.attempts {
+            match &attempt.result {
+                Ok(_) => println!(
+                    "retain validator={} status=ack_received",
+                    attempt.validator_id
+                ),
+                Err(error) => println!(
+                    "retain validator={} status=failed reason={error}",
+                    attempt.validator_id
+                ),
+            }
+        }
+        let availability_bytes: Vec<u8> =
+            encode_availability_certificate(&published.availability_certificate)
+                .map_err(failure)?;
+        let index: usize = availability_index
+            .ok_or_else(|| invalid("missing reserved availability-certificate output"))?;
+        artifacts[index].persist(&availability_bytes)?;
+        for artifact in &artifacts {
+            artifact.ensure_attached()?;
+        }
+        println!(
+            "fastvote_availability_certificate_out={}",
+            parsed.require("--fastvote-availability-certificate-out")?
+        );
+        apply_published_certificate_and_report(
+            endpoints,
+            certifier,
+            resolver,
+            domain,
+            signed,
+            &certificate,
+            &published.availability_certificate,
+            deadline,
+            per_request_cap,
+        )?
+    } else {
+        apply_certificate_and_report(
+            endpoints,
+            certifier,
+            resolver,
+            signed,
+            &certificate,
+            deadline,
+            per_request_cap,
+        )?
+    };
     if result.status == PaidExecutionStatus::Success
         && let (Some(index), Some((_, _, bytes))) = (derived_index, derived)
     {
@@ -631,6 +749,43 @@ fn apply_certificate_and_report<T: Transport>(
         per_request_cap,
     )
     .map_err(|error| invalid(format!("fastvote apply preflight rejected: {error}")))?;
+    finish_apply_attempts(attempts)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_published_certificate_and_report<T: Transport>(
+    endpoints: &[FastVoteEndpoint<T>],
+    certifier: &FastPathCertifier,
+    resolver: &sunrise_edge_client::HashSuiteResolver,
+    domain: AtomicityDomainId,
+    signed: &SignedPaidIntent,
+    certificate: &FastCertificate,
+    availability: &AvailabilityCertificate,
+    deadline: Instant,
+    per_request_cap: Duration,
+) -> Result<PaidExecutionResult, CliError> {
+    let attempts: Vec<sunrise_edge_client::FastVoteApplyAttempt> = apply_published_fastvote_to_all(
+        endpoints,
+        certifier,
+        resolver,
+        domain,
+        signed,
+        certificate,
+        availability,
+        deadline,
+        per_request_cap,
+    )
+    .map_err(|error| {
+        invalid(format!(
+            "published fastvote apply preflight rejected: {error}"
+        ))
+    })?;
+    finish_apply_attempts(attempts)
+}
+
+fn finish_apply_attempts(
+    attempts: Vec<sunrise_edge_client::FastVoteApplyAttempt>,
+) -> Result<PaidExecutionResult, CliError> {
     let any_applied = print_apply_attempts(&attempts);
     if !any_applied {
         return Err(invalid(
@@ -697,6 +852,7 @@ fn describe_quorum_error(error: &FastVoteQuorumError) -> CliError {
 const REPLAY_VALUE_FLAGS_EXTRA: &[&str] = &[
     "--submission",
     "--certificate",
+    "--availability-certificate",
     "--result-out",
     "--dependency-ref-out",
     "--instance-ref-out",
@@ -741,6 +897,20 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
             "--fastvote-certificate-out is unsupported when replay supplies --certificate",
         ));
     }
+    if parsed.get("--availability-certificate").is_some() && parsed.get("--certificate").is_none() {
+        return Err(invalid(
+            "--availability-certificate requires the exact saved --certificate",
+        ));
+    }
+    if parsed.get("--availability-certificate").is_some()
+        && parsed
+            .get("--fastvote-availability-certificate-out")
+            .is_some()
+    {
+        return Err(invalid(
+            "--fastvote-availability-certificate-out is unsupported when replay supplies --availability-certificate",
+        ));
+    }
     if parsed.get("--dependency-ref-out").is_some() && parsed.get("--instance-ref-out").is_some() {
         return Err(invalid(
             "--dependency-ref-out and --instance-ref-out are mutually exclusive; a saved signed intent is exactly one application kind",
@@ -765,6 +935,18 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
                 .map_err(|error| artifact_read_error(path, "certificate", &error))
         })
         .transpose()?;
+    let availability_certificate: Option<AvailabilityCertificate> = parsed
+        .get("--availability-certificate")
+        .map(|path| {
+            let bytes: Vec<u8> = read_bounded(
+                path,
+                sunrise_edge_client::MAX_FASTVOTE_AVAILABILITY_CERTIFICATE_BYTES,
+            )
+            .map_err(|error| artifact_read_error(path, "availability-certificate", &error))?;
+            decode_availability_certificate(&bytes)
+                .map_err(|error| artifact_read_error(path, "availability-certificate", &error))
+        })
+        .transpose()?;
 
     let expected = super::standard_asset::parse_expected_context(&parsed)?;
     let resolver = local_publication_resolver(&expected)?;
@@ -776,7 +958,17 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
     .map_err(failure)?;
     let derived: Option<DerivedReference<'_>> =
         recompute_derived_reference(&parsed, &resolver, &context, &signed.intent.application)?;
-    let (endpoints, certifier) = load_endpoints_and_certifier(&parsed, &resolver, &context)?;
+    let (endpoints, certifier, profile) = load_endpoints_and_profile(&parsed, &resolver, &context)?;
+    if !profile.is_logical()
+        && (availability_certificate.is_some()
+            || parsed
+                .get("--fastvote-availability-certificate-out")
+                .is_some())
+    {
+        return Err(invalid(
+            "availability-certificate flags require a locally verified handoff-capable genesis profile",
+        ));
+    }
 
     println!("fastvote_replay_submission={submission_path}");
     println!("request_id={}", encode_hex(&signed.intent.request_id));
@@ -786,9 +978,12 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
         &parsed,
         &endpoints,
         &certifier,
+        profile,
+        expected.domain(),
         &resolver,
         &signed,
         certificate.as_ref(),
+        availability_certificate.as_ref(),
         derived,
         budget,
     )?;
@@ -877,9 +1072,12 @@ fn replay_loaded<T: Transport>(
     parsed: &ParsedArgs,
     endpoints: &[FastVoteEndpoint<T>],
     certifier: &FastPathCertifier,
+    profile: CommitmentProfile,
+    domain: AtomicityDomainId,
     resolver: &sunrise_edge_client::HashSuiteResolver,
     signed: &SignedPaidIntent,
     certificate: Option<&FastCertificate>,
+    availability: Option<&AvailabilityCertificate>,
     derived: Option<DerivedReference<'_>>,
     budget: OperationBudget,
 ) -> Result<PaidExecutionResult, CliError> {
@@ -898,6 +1096,15 @@ fn replay_loaded<T: Transport>(
     } else {
         None
     };
+    let availability_index: Option<usize> = if profile.is_logical() && availability.is_none() {
+        outputs.push((
+            parsed.require("--fastvote-availability-certificate-out")?,
+            "availability-certificate",
+        ));
+        Some(outputs.len() - 1)
+    } else {
+        None
+    };
     let result_index: Option<usize> = parsed.get("--result-out").map(|path| {
         outputs.push((path, "result"));
         outputs.len() - 1
@@ -910,19 +1117,14 @@ fn replay_loaded<T: Transport>(
     if let Some(path) = parsed.get("--certificate") {
         inputs.push(path);
     }
+    if let Some(path) = parsed.get("--availability-certificate") {
+        inputs.push(path);
+    }
     let mut artifacts: Vec<ReservedArtifact> = reserve_artifacts(&outputs, &inputs)?;
 
-    let result = if let Some(certificate) = certificate {
+    let certificate: FastCertificate = if let Some(certificate) = certificate {
         println!("fastvote_replay_mode=saved_certificate");
-        apply_certificate_and_report(
-            endpoints,
-            certifier,
-            resolver,
-            signed,
-            certificate,
-            deadline,
-            per_request_cap,
-        )?
+        certificate.clone()
     } else {
         println!("fastvote_replay_mode=prepare_from_saved_intent");
         let certificate_out = parsed.require("--fastvote-certificate-out")?;
@@ -944,6 +1146,55 @@ fn replay_loaded<T: Transport>(
             artifact.ensure_attached()?;
         }
         println!("fastvote_certificate_out={certificate_out}");
+        certificate
+    };
+
+    let result: PaidExecutionResult = if profile.is_logical() {
+        let availability: AvailabilityCertificate = if let Some(saved) = availability {
+            println!("fastvote_replay_availability_mode=saved_certificate");
+            saved.clone()
+        } else {
+            let published = collect_fastvote_availability_certificate(
+                endpoints,
+                certifier,
+                resolver,
+                &[],
+                domain,
+                signed,
+                &certificate,
+                deadline,
+                per_request_cap,
+            )
+            .map_err(|error| invalid(format!(
+                "FastVote publication failed before replay apply: {error}; retain the exact saved signed intent and FastCertificate"
+            )))?;
+            let bytes: Vec<u8> =
+                encode_availability_certificate(&published.availability_certificate)
+                    .map_err(failure)?;
+            let index: usize = availability_index
+                .ok_or_else(|| invalid("missing reserved availability-certificate output"))?;
+            artifacts[index].persist(&bytes)?;
+            for artifact in &artifacts {
+                artifact.ensure_attached()?;
+            }
+            println!(
+                "fastvote_availability_certificate_out={}",
+                parsed.require("--fastvote-availability-certificate-out")?
+            );
+            published.availability_certificate
+        };
+        apply_published_certificate_and_report(
+            endpoints,
+            certifier,
+            resolver,
+            domain,
+            signed,
+            &certificate,
+            &availability,
+            deadline,
+            per_request_cap,
+        )?
+    } else {
         apply_certificate_and_report(
             endpoints,
             certifier,
@@ -1038,16 +1289,16 @@ mod tests {
         ));
         let peers: Vec<PeerConfig> = parse_network_config(config_path.to_str().unwrap()).unwrap();
         assert_eq!(peers[0].bearer_token_file.as_deref(), token_path.to_str());
-        assert!(build_endpoints(&peers).is_ok());
+        assert!(build_endpoints(&peers, CommitmentProfile::PhysicalCheckpointV1).is_ok());
         std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o640)).unwrap();
-        let error = match build_endpoints(&peers) {
+        let error = match build_endpoints(&peers, CommitmentProfile::PhysicalCheckpointV1) {
             Ok(_) => panic!("insecure credential accepted"),
             Err(error) => error,
         };
         assert!(!error.to_string().contains(TOKEN));
         std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         std::fs::write(&token_path, format!("{TOKEN}\r\nInjected: yes")).unwrap();
-        assert!(build_endpoints(&peers).is_err());
+        assert!(build_endpoints(&peers, CommitmentProfile::PhysicalCheckpointV1).is_err());
         std::fs::remove_file(token_path).unwrap();
         std::fs::remove_file(config_path).unwrap();
     }
@@ -1121,7 +1372,7 @@ mod tests {
                 bearer_token_file: None,
             },
         ];
-        let error = match build_endpoints(&peers) {
+        let error = match build_endpoints(&peers, CommitmentProfile::PhysicalCheckpointV1) {
             Ok(_) => {
                 panic!("expected build_endpoints to reject a mixed loopback/remote-TLS cohort")
             }
@@ -1164,7 +1415,7 @@ mod tests {
                 bearer_token_file: None,
             },
         ];
-        let endpoints = build_endpoints(&peers).unwrap();
+        let endpoints = build_endpoints(&peers, CommitmentProfile::PhysicalCheckpointV1).unwrap();
         let _ = std::fs::remove_file(&ca_path_1);
         let _ = std::fs::remove_file(&ca_path_2);
         assert_eq!(endpoints.len(), 2);

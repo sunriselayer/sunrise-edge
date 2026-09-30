@@ -31,6 +31,11 @@ const FASTPATH_BOND_TRANSITION_RECORD_TYPE: u16 = 0x6431;
 const FASTPATH_BOND_TRANSITION_AUTHORIZATION_TYPE: u16 = 0x6433;
 const FASTPATH_FEE_SHARE_TYPE: u16 = 0x6435;
 const FASTPATH_FEE_SHARE_LIST_TYPE: u16 = 0x6436;
+/// Allocated from the `0x6454..=0x645D` block DR-0154's concurrently owned
+/// retention/control/cut work reserved (`0x6455`/`0x6456` are
+/// `super::publication`'s publication/ACK records, `0x6457` is
+/// `crate::ordered_economics::freeze`'s admission-closure record).
+const FASTPATH_AVAILABILITY_CERTIFICATE_RECORD_TYPE: u16 = 0x6458;
 const ENCODING_VERSION: u16 = 1;
 
 /// Bounds every nested fast-path record list. Locked-object and
@@ -1376,6 +1381,72 @@ pub fn decode_fastpath_validator_set_record(
     if encode_fastpath_validator_set_record(&record)? != bytes {
         return Err(NodeCoreError::PersistenceInvariant(
             "noncanonical fast-path validator set record",
+        ));
+    }
+    Ok(record)
+}
+
+/// DR-0154: the exact verified [`consensus::AvailabilityCertificate`] bytes
+/// [`super::apply_after_publication`]/[`super::apply_with_recovery_after_publication`]
+/// required and durably committed, atomically with the original
+/// effects/receipt, before applying one handoff-capable (`0x6424/v2`)
+/// request. A permanent audit record, mirroring [`FastPathCertificateRecord`]'s
+/// own shape for the underlying [`consensus::FastCertificate`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FastPathAvailabilityCertificateRecord {
+    /// Original signed intent's request id.
+    pub request_id: [u8; 32],
+    /// Exact `consensus::encode_availability_certificate` bytes accepted at
+    /// apply.
+    pub certificate: Vec<u8>,
+}
+
+/// One durably retained availability certificate, keyed by the original
+/// signed request id.
+pub fn fastpath_availability_certificate_key(
+    chain: &ChainId,
+    request_id: &[u8; 32],
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = local_instance_state::FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"availability-certificate/");
+    key.extend(canonical_encoding::encode_chain_id(chain)?);
+    key.extend_from_slice(request_id);
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+/// Encodes Frame `0x6458/v1`.
+pub fn encode_fastpath_availability_certificate_record(
+    record: &FastPathAvailabilityCertificateRecord,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut frame: CanonicalStruct = CanonicalStruct::new(
+        FASTPATH_AVAILABILITY_CERTIFICATE_RECORD_TYPE,
+        ENCODING_VERSION,
+    );
+    frame.field_bytes(1, record.request_id.to_vec())?;
+    frame.field_bytes(2, record.certificate.clone())?;
+    Ok(frame.finish()?)
+}
+
+/// Strictly decodes Frame `0x6458/v1`.
+pub fn decode_fastpath_availability_certificate_record(
+    bytes: &[u8],
+) -> Result<FastPathAvailabilityCertificateRecord, NodeCoreError> {
+    let frame = decode_canonical_frame(bytes)?;
+    frame.require_type(FASTPATH_AVAILABILITY_CERTIFICATE_RECORD_TYPE)?;
+    frame.require_version(ENCODING_VERSION)?;
+    frame.require_only_fields(&[1, 2])?;
+    let request_id: [u8; 32] = frame.required_field(1)?.try_into().map_err(|_| {
+        NodeCoreError::PersistenceInvariant("availability certificate record request id")
+    })?;
+    let certificate: Vec<u8> = frame.required_field(2)?.to_vec();
+    let record: FastPathAvailabilityCertificateRecord = FastPathAvailabilityCertificateRecord {
+        request_id,
+        certificate,
+    };
+    if encode_fastpath_availability_certificate_record(&record)? != bytes {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "noncanonical fast-path availability certificate record",
         ));
     }
     Ok(record)

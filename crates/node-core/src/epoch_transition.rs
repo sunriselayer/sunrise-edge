@@ -158,6 +158,12 @@ impl From<fast_path::FastPathError> for EpochTransitionError {
             fast_path::FastPathError::Consensus(error) => Self::Consensus(error),
             fast_path::FastPathError::Node(error) => Self::Node(error),
             fast_path::FastPathError::Invalid(message) => Self::Invalid(message),
+            // DR-0154: `load_validator_set` never touches publication
+            // retention either; this arm is unreachable in practice but kept
+            // total rather than panicking.
+            fast_path::FastPathError::Publication(_) => Self::Invalid(
+                "unexpected publication-retention error while loading a validator set",
+            ),
         }
     }
 }

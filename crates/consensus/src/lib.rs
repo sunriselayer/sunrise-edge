@@ -30,7 +30,7 @@ mod fast_vote;
 #[cfg(test)]
 mod test_support;
 pub use availability::{
-    AvailabilityCertificate, AvailabilityCertifier, AvailabilityIdentity, AvailabilityVote,
+    AvailabilityCertificate, AvailabilityCertifier, AvailabilityIdentity, AvailabilityVote, bundle,
     decode_availability_certificate, decode_availability_identity, decode_availability_vote,
     encode_availability_certificate, encode_availability_identity, encode_availability_vote,
 };

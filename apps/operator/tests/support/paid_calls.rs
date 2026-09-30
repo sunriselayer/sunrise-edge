@@ -14,14 +14,22 @@ use abi::{
     AccessEntry, AccessManifest, encode_access_manifest,
     package_types::encode_scoped_type_arguments,
 };
+use consensus::{
+    AvailabilityCertificate, AvailabilityCertifier, FastCertificate,
+    decode_availability_certificate, decode_fast_certificate,
+};
 use execution::{
     ObjectEffect,
-    paid_execution::{PaidExecutionResult, decode_paid_execution_result},
+    paid_execution::{
+        PaidExecutionResult, SignedPaidIntent, decode_paid_execution_result,
+        decode_signed_paid_intent, paid_invocation_digest,
+    },
 };
 use hashing::HashSuiteResolver;
-use node_core::{ObjectQueryResult, query_object};
+use node_core::fast_path::FastPathEd25519Verifier;
+use node_core::{ObjectQueryResult, decode_genesis_manifest, query_object};
 use objects::{AccessMode, Object, ObjectId, ObjectRef};
-use protocol_types::{AtomicityDomainId, ChainId, Epoch};
+use protocol_types::{AtomicityDomainId, ChainId, Epoch, HashSuite, HashSuiteSchedule};
 use public_standard_asset::{
     asset_type_argument, coin_type_tag, definition_type_tag, mint_arguments, treasury_cap_type_tag,
 };
@@ -38,6 +46,75 @@ use super::host::temp_file;
 
 pub fn decode_result(path: &Path) -> PaidExecutionResult {
     decode_paid_execution_result(&fs::read(path).unwrap()).unwrap()
+}
+
+pub fn verify_saved_availability_certificate(
+    call: &NetworkCall<'_>,
+    path: &Path,
+    signed_path: &Path,
+    certificate_path: &Path,
+) {
+    let bytes: Vec<u8> = fs::read(path).expect("availability certificate file must exist");
+    assert!(
+        !bytes.is_empty(),
+        "availability certificate must not be empty"
+    );
+    let cert: AvailabilityCertificate =
+        decode_availability_certificate(&bytes).expect("availability certificate must decode");
+    let manifest_bytes: Vec<u8> = fs::read(call.manifest_path).unwrap();
+    let manifest: node_core::GenesisManifest = decode_genesis_manifest(&manifest_bytes).unwrap();
+    let resolver: HashSuiteResolver = HashSuiteResolver::new(
+        manifest.context().chain_id().clone(),
+        manifest.context().protocol_version(),
+        vec![HashSuiteSchedule {
+            activation_epoch: Epoch::new(0),
+            suite: HashSuite::genesis(),
+        }],
+    )
+    .unwrap();
+    let manifest_digest: protocol_types::Digest32 =
+        node_core::genesis_manifest_commitment(&resolver, &manifest).unwrap();
+    assert_eq!(
+        super::cli::to_hex(&manifest_digest.bytes()),
+        call.digest_hex
+    );
+    let trusted: sunrise_edge_client::TrustedFastVoteGenesis =
+        sunrise_edge_client::load_trusted_fastvote_genesis_with_profile(
+            call.manifest_path,
+            &resolver,
+            manifest_digest.bytes(),
+            manifest.context(),
+        )
+        .unwrap();
+    assert!(trusted.commitment_profile.is_logical());
+    let certifier: AvailabilityCertifier = AvailabilityCertifier::new(
+        manifest.context().chain_id().clone(),
+        manifest.context().protocol_version(),
+        manifest.context().epoch(),
+        trusted.certifier.validator_set().clone(),
+    )
+    .unwrap();
+    certifier
+        .verify_certificate(&cert, &FastPathEd25519Verifier)
+        .expect("saved availability certificate must verify under genesis validator set");
+    let signed: SignedPaidIntent =
+        decode_signed_paid_intent(&fs::read(signed_path).unwrap()).unwrap();
+    let full: FastCertificate =
+        decode_fast_certificate(&fs::read(certificate_path).unwrap()).unwrap();
+    trusted
+        .certifier
+        .verify_certificate(&full, &FastPathEd25519Verifier)
+        .unwrap();
+    let signed_digest: protocol_types::Digest32 =
+        paid_invocation_digest(&resolver, &signed).unwrap();
+    assert_eq!(cert.identity.domain.to_string(), call.domain_hex);
+    assert_eq!(cert.identity.request_id, signed.intent.request_id);
+    assert_eq!(cert.identity.signed_intent_digest, signed_digest);
+    assert_eq!(full.tx_hash, signed_digest);
+    assert_eq!(
+        cert.identity.execution_commitment,
+        full.execution_effects_hash
+    );
 }
 
 /// Identifies the freshly created `Definition`/`TreasuryCap` pair a
@@ -159,6 +236,12 @@ pub struct NetworkCall<'a> {
 }
 
 impl NetworkCall<'_> {
+    pub fn is_logical(&self) -> bool {
+        let bytes: Vec<u8> = fs::read(self.manifest_path).unwrap();
+        let manifest: node_core::GenesisManifest = decode_genesis_manifest(&bytes).unwrap();
+        manifest.commitment_profile.is_logical()
+    }
+
     pub fn preamble(&self, request_id: [u8; 32], nonce: u64) -> Vec<OsString> {
         [
             "--endpoint",
@@ -220,6 +303,7 @@ pub fn run_asset_verb(
     let signed_out = temp_file(data_dir, &format!("{label}.intent"));
     let cert_out = temp_file(data_dir, &format!("{label}.cert"));
     let result_out = temp_file(data_dir, &format!("{label}.result"));
+    let avail_out = temp_file(data_dir, &format!("{label}.avail"));
     let mut flags: Vec<OsString> = vec![OsString::from(action)];
     flags.extend(call.preamble(request_id, nonce));
     for (flag, value) in extra {
@@ -238,6 +322,10 @@ pub fn run_asset_verb(
         .into_iter()
         .map(OsString::from),
     );
+    if call.is_logical() {
+        flags.push(OsString::from("--fastvote-availability-certificate-out"));
+        flags.push(OsString::from(avail_out.to_str().unwrap()));
+    }
     let output = super::cli::edge_cli_command(flags).output().unwrap();
     assert_eq!(
         output.status.success(),
@@ -246,6 +334,9 @@ pub fn run_asset_verb(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    if call.is_logical() {
+        verify_saved_availability_certificate(call, &avail_out, &signed_out, &cert_out);
+    }
     decode_result(&result_out)
 }
 
@@ -269,6 +360,7 @@ pub fn run_asset_verb_expect_rejected(
     let signed_out = temp_file(data_dir, &format!("{label}.intent"));
     let cert_out = temp_file(data_dir, &format!("{label}.cert"));
     let result_out = temp_file(data_dir, &format!("{label}.result"));
+    let avail_out = temp_file(data_dir, &format!("{label}.avail"));
     let mut flags: Vec<OsString> = vec![OsString::from(action)];
     flags.extend(call.preamble(request_id, nonce));
     for (flag, value) in extra {
@@ -287,6 +379,10 @@ pub fn run_asset_verb_expect_rejected(
         .into_iter()
         .map(OsString::from),
     );
+    if call.is_logical() {
+        flags.push(OsString::from("--fastvote-availability-certificate-out"));
+        flags.push(OsString::from(avail_out.to_str().unwrap()));
+    }
     let output = super::cli::edge_cli_command(flags).output().unwrap();
     assert!(
         !output.status.success(),
@@ -294,7 +390,12 @@ pub fn run_asset_verb_expect_rejected(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    for (path, artifact) in [(&result_out, "result"), (&cert_out, "certificate")] {
+    let mut artifacts: Vec<(&PathBuf, &'static str)> =
+        vec![(&result_out, "result"), (&cert_out, "certificate")];
+    if call.is_logical() {
+        artifacts.push((&avail_out, "availability"));
+    }
+    for (path, artifact) in artifacts {
         let bytes: Vec<u8> = fs::read(path).unwrap_or_default();
         assert!(
             bytes.is_empty(),
@@ -324,6 +425,7 @@ pub fn run_contract_paid(
     let signed_out = temp_file(data_dir, &format!("{label}.intent"));
     let cert_out = temp_file(data_dir, &format!("{label}.cert"));
     let result_out = temp_file(data_dir, &format!("{label}.result"));
+    let avail_out = temp_file(data_dir, &format!("{label}.avail"));
     let mut flags: Vec<OsString> = vec![OsString::from("contract"), OsString::from(action)];
     flags.extend(call.preamble(request_id, nonce));
     flags.push(OsString::from("--fee-access"));
@@ -344,7 +446,14 @@ pub fn run_contract_paid(
         .into_iter()
         .map(OsString::from),
     );
+    if call.is_logical() {
+        flags.push(OsString::from("--fastvote-availability-certificate-out"));
+        flags.push(OsString::from(avail_out.to_str().unwrap()));
+    }
     super::run_expect_success(super::cli::edge_cli_command(flags), label);
+    if call.is_logical() {
+        verify_saved_availability_certificate(call, &avail_out, &signed_out, &cert_out);
+    }
     (decode_result(&result_out), signed_out, cert_out)
 }
 

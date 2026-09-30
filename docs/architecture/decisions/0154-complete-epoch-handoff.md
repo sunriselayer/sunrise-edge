@@ -9,10 +9,15 @@ correction of the availability/drain/readiness gaps. The mechanism is specified
 in [Complete epoch handoff](../epoch-handoff.md). At acceptance, this was a
 design-only decision and did not activate a new runtime rule. Independent
 implementation slices on 2026-09-28 allocate the availability wire family and
-implement the handoff-capable logical commitment profile, both described
-below, but still do not implement durable retention, Freeze/DrainSet/Seal
-control or the publication-before-apply gate this ADR requires. Implementation
-and validation status belong in [`TODO.md`](../../../TODO.md).
+implement the handoff-capable logical commitment profile and a canonical
+publication bundle with one replica's durable `retain_publication` step,
+described below. A later 2026-09-28 Draft PR slice adds prepare-side retained
+witness/artifacts, the v2 availability-certificate apply gate, certified-only
+HTTP source/retention/published-apply routes and Rust client/CLI aggregation.
+Freeze/DrainSet/Seal and integrated epoch handoff remain unimplemented.
+The complete design requires a
+publication-before-apply rule, not a new quorum-applied finality rule.
+Implementation and validation status belong in [`TODO.md`](../../../TODO.md).
 
 The independent logical-generation admission extraction on 2026-09-30
 deliberately refuses Logical-profile epoch proposal/vote and fresh activation
@@ -254,7 +259,7 @@ The 2026-09-28 stateless availability-library slice allocates canonical
 domain `fast-path-availability-v1`. The IDs were checked against existing
 canonical type IDs; no historical ID or byte encoding changes. This allocation
 does not activate a publication, retention, or apply-admission rule. Later
-epoch-control and durable-state IDs remain unallocated. The usable handoff
+epoch-control and remaining durable-state IDs remain unallocated. The usable handoff
 implementation must include
 the core, authenticated HTTP/SDK/CLI, genuine multi-validator E2E, stable and
 adversarial vectors, documentation and the full repository/independent-review
@@ -276,15 +281,14 @@ lifecycle, fee-claim settlement, and the generic durable-event path, each
 gated through `logical_generation::admit_application` or
 `admit_generic_transition`. A store whose signed genesis binds the historical
 model keeps its exact existing physical admission, commitment and
-monotonicity rules unchanged. This does not implement durable retention,
-Freeze/DrainSet/Seal control, or the publication-before-apply gate this ADR
-requires: no cross-validator availability quorum is consulted before
-application, and the current
+monotonicity rules unchanged. This generation primitive does not itself
+implement Freeze/DrainSet/Seal control or publication-before-apply: it
+consults no cross-validator quorum, and the
 `NodeCoreError::LogicalProfileApplicationUnsupported` refusal is a local,
 always-correctly-paired-by-construction invariant guard against a caller
 presenting a resolved profile and derived evidence that disagree, not an
-active gate on quorum availability publication. The complete design's
-apply-admission rule, described above, remains open.
+active gate on quorum availability publication. The separate capability below
+composes the open-epoch FastVote apply rule without implementing epoch handoff.
 
 As of 2026-09-30, this second slice's As-Is/To-Be boundary is also recorded
 standalone in
@@ -292,3 +296,41 @@ standalone in
 for a reader who needs only that mechanism. That document does not restate or
 supersede this record's design; `TODO.md` remains the source of truth for
 implementation and validation status, including branch/PR state.
+
+The 2026-09-28 publication-bundle slice adds `consensus::availability::bundle`
+(`ArtifactEntry` `0xD033/v1`, `ArtifactManifest` `0xD034/v1`,
+`PublicationBundle` `0xD035/v1`) and `node_core::fast_path::publication`
+(`FastPathPublicationRecord` `0x6455/v1`, `FastPathAvailabilityAckRecord`
+`0x6456/v1`, key families `fastpath/publication/`,
+`fastpath/publication-artifact/`, `fastpath/availability-ack/`; the latter
+three are now classified in `logical_generation::classify_fastpath_row` per
+the family classification above). `verify_publication_bundle` checks a real
+quorum certificate, a witness matching that certificate's execution
+commitment, and every artifact's actual bytes against their declared digest
+under a hash suite this chain's own schedule trusted for that purpose at or
+before the *certifying* epoch -- an authenticated, non-bundle-declared value
+-- optionally trying additional bounded historical resolvers so an artifact
+whose digest was produced under an earlier hash suite or protocol version
+still verifies without accepting a bundle-chosen algorithm or epoch.
+`retain_publication` re-derives the signed intent's event digest and request
+identity, requires the manifest to be exactly the closure the witness's
+signed operands demand, and persists the publication record, artifact bytes
+and first ACK identity in one atomic commit under the writer, epoch and
+validator-set fences. The independently extracted capability retains the source's exact
+prepared witness and artifact closure before exposing a vote, reconstructs a
+bundle from those durable bytes, and makes a verifying availability
+certificate a v2-only fresh-apply and recovery precondition. The certified
+HTTP routes and locally pinned Rust client/CLI aggregation join those core
+steps. This does not implement Freeze/DrainSet/Seal, authenticated cut or
+readiness/activation, and it is not complete Delivery 3. Current validation
+and remaining acceptance evidence are recorded in `TODO.md`.
+
+Extraction clarification (2026-09-30):
+[Publication-before-apply availability](../publication-availability.md)
+documents this open-epoch capability separately. The local signed ACK is
+computed and verified before its atomic retention commit, but is exposed
+only after confirmed durability; refusal or ambiguity returns no vote.
+No Freeze marker or drain authority is imported merely to make extraction
+compile. The existing fresh Logical transition refusal remains in force,
+and complete frontier/cut/import/readiness/Seal/activation requirements
+above remain unchanged.

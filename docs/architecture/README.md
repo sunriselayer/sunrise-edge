@@ -62,6 +62,10 @@ roadmap describes a later target state.
   genesis commitment-profile binding, and per-subject provenance admission
   wired through every live application path; explicit As-Is/To-Be boundary
   against the rest of DR-0154's design.
+- [Publication-before-apply availability](publication-availability.md)
+  (DR-0154 capability): exact prepared artifacts, execution-free durable
+  full-certificate retention, quorum ACKs and proof-gated Logical apply;
+  bounded native HTTP, Rust SDK and saved CLI replay, without epoch handoff.
 - [Portable storage reconstruction reads](portable-reconstruction.md)
   ([DR-0166](decisions/0166-portable-candidate-snapshot.md)): bounded
   independent durable/blob/outbox reads and an optional backend-enforced

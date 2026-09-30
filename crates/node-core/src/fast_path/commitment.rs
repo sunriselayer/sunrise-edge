@@ -416,7 +416,12 @@ pub(super) fn encode_envelope(
 /// independently derived [`crate::paid_execution::PaidAdmissionOutput`];
 /// byte-identical results from byte-identical admission is exactly the
 /// property a fast-path certificate's safety depends on.
-#[allow(clippy::too_many_arguments)]
+// DR-0154: `prepare` now always needs the envelope bytes too (to durably
+// retain a handoff-capable witness before voting), so this simpler
+// digest-only wrapper currently has no non-test caller; kept for its own
+// independent digest vector test and as the natural API for a future caller
+// that only needs the commitment, not the envelope.
+#[allow(clippy::too_many_arguments, dead_code)]
 pub(super) fn compute(
     resolver: &HashSuiteResolver,
     epoch: Epoch,
@@ -598,6 +603,63 @@ pub(crate) fn decode_witness(bytes: &[u8]) -> Result<DecodedCommitmentWitness, N
         paid_execution_result,
     })
 }
+
+/// The exact handoff-capable `0x6424/v2` operand lists a publication retainer
+/// needs in order to derive one operation's required replay-artifact closure.
+///
+/// The slices are the envelope's own raw field bytes, borrowed from the caller's
+/// verified witness buffer. They are deliberately *not* decoded here:
+/// [`super::publication::witness`] owns the list/operand decoders that mirror
+/// this module's encoders, and a round-trip test pins the two together.
+pub(super) struct LogicalWitnessOperands<'a> {
+    /// Field 1: the signed intent digest the certificate's `tx_hash` attests.
+    pub(super) event_digest: Digest32,
+    /// Field 4: `encode_head_read` list under [`Shape::Logical`].
+    pub(super) head_reads: &'a [u8],
+    /// Field 5: `encode_object_mutation` list under [`Shape::Logical`].
+    pub(super) object_mutations: &'a [u8],
+    /// Field 6: `encode_logical_state_read` list.
+    pub(super) state_reads: &'a [u8],
+    /// Field 12: `encode_dependency` list.
+    pub(super) dependencies: &'a [u8],
+}
+
+/// Strictly validates `bytes` as a handoff-capable `0x6424/v2` envelope and
+/// returns its raw operand lists.
+///
+/// A historical `0x6424/v1` witness is refused rather than reinterpreted: it
+/// signs per-node physical state/head/nonce revisions and an immutable creation
+/// checkpoint, so it is not portable replay material and can never back a
+/// publication bundle. Its own bytes stay verifiable under [`decode_witness`]
+/// exactly as before; nothing about v1 changes here.
+///
+/// Validation reuses [`decode_witness`] first, so the type id, the closed
+/// per-version field set and the byte-exact canonical re-encoding are all
+/// enforced before any field slice is handed out.
+pub(super) fn logical_witness_operands(
+    bytes: &[u8],
+) -> Result<LogicalWitnessOperands<'_>, NodeCoreError> {
+    let decoded: DecodedCommitmentWitness = decode_witness(bytes)?;
+    let frame = canonical_encoding::decode_canonical_frame(bytes)?;
+    frame.require_type(COMMITMENT_ENVELOPE_TYPE)?;
+    if frame.version() != LOGICAL_ENCODING_VERSION {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "fast-path commitment witness is not the handoff-capable v2 profile",
+        ));
+    }
+    Ok(LogicalWitnessOperands {
+        event_digest: decoded.event_digest,
+        head_reads: frame.required_field(4)?,
+        object_mutations: frame.required_field(5)?,
+        state_reads: frame.required_field(6)?,
+        dependencies: frame.required_field(12)?,
+    })
+}
+
+/// The per-list item ceiling every `0x6424` operand list is encoded under,
+/// re-exported so the mirrored decoders bound a declared count identically
+/// before allocating.
+pub(super) const MAX_WITNESS_LIST_ITEMS: usize = MAX_COMMITMENT_LIST_ITEMS;
 
 /// Hashes already-persisted (or otherwise already-encoded) exact `0x6424`
 /// envelope bytes under `HashPurpose::ExecutionEffects` at `epoch` -- the

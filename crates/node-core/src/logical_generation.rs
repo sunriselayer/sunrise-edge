@@ -591,11 +591,12 @@ pub fn is_logical_provenance_key(key: &[u8]) -> bool {
     key.starts_with(LOGICAL_STATE_PREFIX)
 }
 
-/// Fast-path rows have two distinct handoff treatments. Reservation rows are
-/// replica-local; authenticated-history rows, including settlements, claims,
-/// bonds, evidence, policy and epoch transitions, are mandatory proof-checked
-/// cut collections. None is a generic application causal subject: each is
-/// owned and CAS-fenced by its separate certified or signed history path.
+/// Fast-path rows have three distinct handoff treatments. Reservations and
+/// exposed-signature safety records are replica-local; authenticated-history
+/// rows, including publication, settlements, claims, bonds, evidence, policy
+/// and epoch transitions, are mandatory proof-checked cut collections. None
+/// is a generic application causal subject: each is owned and CAS-fenced by
+/// its separate certified or signed history path.
 /// This classifier recognizes only the currently defined keys; an unknown
 /// future fast-path prefix cannot silently inherit this exclusion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -603,6 +604,9 @@ pub enum FastpathRowClass {
     /// Uncertified preparation and local lock state, never imported as a
     /// global business fact.
     LocalReservation,
+    /// Replica-local exposed availability vote identity. It survives local
+    /// restart but is not a transferable reservation or global cut fact.
+    LocalSigningSafety,
     /// Protocol business/control history that a complete cut must enumerate
     /// and verify independently before activation.
     AuthenticatedHistory,
@@ -613,8 +617,24 @@ pub enum FastpathRowClass {
 #[must_use]
 pub fn classify_fastpath_row(key: &[u8]) -> Option<FastpathRowClass> {
     let suffix: &[u8] = key.strip_prefix(local_instance_state::FASTPATH_STATE_PREFIX)?;
-    const LOCAL: [&[u8]; 3] = [b"prepared/", b"lock/", b"nonce-lock/"];
-    const HISTORY: [&[u8]; 12] = [
+    // Prepare-side witness/artifacts are replica-local backing for a vote,
+    // not a certified publication or a transferable business fact.
+    const LOCAL: [&[u8]; 5] = [
+        b"prepared/",
+        b"lock/",
+        b"nonce-lock/",
+        b"prepared-witness/",
+        b"prepared-artifact/",
+    ];
+    // A signed ACK is local safety state, not a mutable prepare reservation
+    // and not an imported business fact.
+    const SIGNING_SAFETY: [&[u8]; 1] = [b"availability-ack/"];
+    // DR-0154 (2026-09-28): `publication/` embeds exactly a verified
+    // `certificate/`+`commitment-witness/` pair plus the manifest that closes
+    // over them, and `publication-artifact/` is the content-addressed,
+    // digest-verified replay bytes that manifest requires -- both portable
+    // business history a cut must enumerate, not disposable local cache.
+    const HISTORY: [&[u8]; 15] = [
         b"certificate/",
         b"commitment-witness/",
         b"settlement/",
@@ -627,6 +647,9 @@ pub fn classify_fastpath_row(key: &[u8]) -> Option<FastpathRowClass> {
         b"equivocation/",
         b"economics-policy/",
         b"evidence-consumed/",
+        b"publication/",
+        b"publication-artifact/",
+        b"availability-certificate/",
     ];
     if LOCAL
         .iter()
@@ -639,6 +662,12 @@ pub fn classify_fastpath_row(key: &[u8]) -> Option<FastpathRowClass> {
         .any(|prefix: &&[u8]| suffix.starts_with(prefix))
     {
         return Some(FastpathRowClass::AuthenticatedHistory);
+    }
+    if SIGNING_SAFETY
+        .iter()
+        .any(|prefix: &&[u8]| suffix.starts_with(prefix))
+    {
+        return Some(FastpathRowClass::LocalSigningSafety);
     }
     None
 }

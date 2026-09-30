@@ -57,6 +57,13 @@ use protocol_types::{
 use std::collections::BTreeMap;
 use validator_set::ValidatorSet;
 
+/// The canonical v2 full-certificate publication bundle this identity family
+/// is derived from (DR-0154 / `epoch-handoff.md`). Deriving an identity from
+/// a verified bundle is the only supported way to obtain one for a real
+/// operation; this parent module keeps the identity/vote/certificate codec
+/// itself free of any bundle dependency.
+pub mod bundle;
+
 const AVAILABILITY_IDENTITY_TYPE_ID: u16 = 0xD030;
 const AVAILABILITY_VOTE_TYPE_ID: u16 = 0xD031;
 const AVAILABILITY_CERTIFICATE_TYPE_ID: u16 = 0xD032;
