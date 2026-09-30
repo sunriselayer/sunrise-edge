@@ -976,6 +976,7 @@ name = "node-wire"
 version = "0.1.0"
 dependencies = [
  "canonical-encoding",
+ "consensus",
  "execution",
  "node-core",
  "objects",

@@ -63,6 +63,7 @@
 - [DR-0154: complete epoch handoff](0154-complete-epoch-handoff.md)
 - [DR-0166: backend-enforced portable snapshot continuity](0166-portable-candidate-snapshot.md)
 - [DR-0167: ordered Freeze and immutable frontier extraction](0167-frozen-frontier-extraction-boundary.md)
+- [DR-0168: quorum-retained DrainSet and certified member drain](0168-quorum-retained-drainset-and-member-drain.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

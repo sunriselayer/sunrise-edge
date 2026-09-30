@@ -16,10 +16,10 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # Cold all-target/all-feature builds plus required real PostgreSQL fault
-    # and compiled-CLI acceptance exceed 35 minutes. Keep every gate and its
-    # bounded operation deadlines; allow the complete serial job to finish.
-    timeout-minutes: 55
+    # A cold run exhausted 55 minutes after passing PostgreSQL/compiled-CLI
+    # acceptance and vectors, before WASM generation/provider checks finished.
+    # Keep every gate and operation deadline; allow finite cold-run headroom.
+    timeout-minutes: 75
     services:
       postgres:
         image: postgres:18.6-alpine3.24@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2

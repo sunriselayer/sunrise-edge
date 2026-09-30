@@ -156,6 +156,56 @@ impl FrozenFrontierPageVerifier {
         }
         Ok(self.vote)
     }
+
+    /// Resumes a consecutive page stream from a caller's own durably
+    /// persisted progress, instead of starting from an empty accumulator.
+    /// The caller is responsible for the authenticity of `accumulator`; this
+    /// only checks it is contextually consistent with `vote` and does not by
+    /// itself prove the accumulator was honestly derived.
+    pub fn resume<V: ConsensusVerifier>(
+        resolver: &HashSuiteResolver,
+        certifier: &FrozenFrontierCertifier,
+        vote: FrozenFrontierVote,
+        accumulator: FrozenFrontierAccumulator,
+        verifier: &V,
+    ) -> Result<Self, FrontierError> {
+        certifier.verify_vote(&vote, verifier)?;
+        if accumulator.identity().chain_id != vote.identity.chain_id
+            || accumulator.identity().protocol_version != vote.identity.protocol_version
+            || accumulator.identity().epoch != vote.identity.epoch
+            || accumulator.identity().domain != vote.identity.domain
+            || accumulator.identity().closure_request_id != vote.identity.closure_request_id
+            || accumulator.identity().closure_height != vote.identity.closure_height
+        {
+            return Err(FrontierError::Invalid("frontier resume context mismatch"));
+        }
+        if accumulator.identity().entry_count > vote.identity.entry_count {
+            return Err(FrontierError::Invalid(
+                "frontier resume exceeds signed count",
+            ));
+        }
+        if resolver.chain_id() != &vote.identity.chain_id
+            || resolver.protocol_version() != vote.identity.protocol_version
+        {
+            return Err(FrontierError::Invalid(
+                "frontier resume hash resolver mismatch",
+            ));
+        }
+        let terminal_seen: bool = accumulator.identity() == &vote.identity;
+        Ok(Self {
+            vote,
+            accumulator,
+            terminal_seen,
+        })
+    }
+
+    /// Current accumulator progress, including a page staged but not yet
+    /// fully processed by a caller. Save its identity/cursor to resume later;
+    /// this verifier never persists anything itself.
+    #[must_use]
+    pub const fn accumulator(&self) -> &FrozenFrontierAccumulator {
+        &self.accumulator
+    }
 }
 
 fn validate_frontier_page(page: &FrozenFrontierPage) -> Result<(), FrontierError> {
@@ -601,6 +651,56 @@ pub fn decode_frozen_frontier_vote(input: &[u8]) -> Result<FrozenFrontierVote, F
 #[derive(Clone, Debug)]
 pub struct FrozenFrontierCertifier {
     inner: AvailabilityCertifier,
+}
+
+/// Verifies a deterministic outgoing-quorum selection of complete-frontier
+/// votes. This authenticates only the selected descriptors: the caller must
+/// still verify every consecutive page through its terminal digest and
+/// durably retain every member of their union before a DrainSet vote.
+///
+/// `closure_*` and `domain` come from the locally committed Freeze, never
+/// from the first untrusted vote. Requiring ascending, unique validator IDs
+/// makes the selected quorum stable and prevents duplicate voting power.
+pub fn verify_frozen_frontier_quorum<V: ConsensusVerifier>(
+    certifier: &FrozenFrontierCertifier,
+    votes: &[FrozenFrontierVote],
+    domain: AtomicityDomainId,
+    closure_request_id: [u8; 32],
+    closure_height: u64,
+    verifier: &V,
+) -> Result<u64, FrontierError> {
+    let validator_set: &ValidatorSet = certifier.inner.validator_set();
+    if votes.is_empty() || votes.len() > validator_set.validators().len() {
+        return Err(FrontierError::Invalid("frontier quorum vote count"));
+    }
+    if closure_request_id == [0; 32] || closure_height == 0 {
+        return Err(FrontierError::Invalid("invalid committed Freeze identity"));
+    }
+    let mut previous: Option<ValidatorId> = None;
+    let mut power: u64 = 0;
+    for vote in votes {
+        if previous.is_some_and(|id| id >= vote.validator) {
+            return Err(FrontierError::Invalid("frontier quorum validator order"));
+        }
+        previous = Some(vote.validator);
+        if vote.identity.domain != domain
+            || vote.identity.closure_request_id != closure_request_id
+            || vote.identity.closure_height != closure_height
+        {
+            return Err(FrontierError::Invalid("frontier quorum Freeze mismatch"));
+        }
+        certifier.verify_vote(vote, verifier)?;
+        let info = validator_set
+            .get(vote.validator)
+            .ok_or(ConsensusError::UnknownValidator(vote.validator))?;
+        power = power
+            .checked_add(info.voting_power)
+            .ok_or(FrontierError::Invalid("frontier quorum power overflow"))?;
+    }
+    if power < validator_set.quorum_threshold() {
+        return Err(FrontierError::Invalid("insufficient frontier quorum power"));
+    }
+    Ok(power)
 }
 
 impl FrozenFrontierCertifier {

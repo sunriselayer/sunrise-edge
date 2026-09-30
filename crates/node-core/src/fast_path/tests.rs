@@ -39,7 +39,7 @@ mod recovery;
 
 /// A real (non-mocked) Ed25519 `ConsensusSigner`, mirroring
 /// `consensus::fast_vote`'s own private test signer.
-pub(super) struct TestSigner {
+pub(crate) struct TestSigner {
     validator_id: ValidatorId,
     signing_key: SigningKey,
 }
@@ -78,7 +78,7 @@ fn validator(seed: u8) -> (TestSigner, FastPathValidatorEntry) {
 /// Four equal-power validators: `ValidatorSet::quorum_threshold` for four
 /// validators of power one each is `4 - (4-1)/3 = 3`, so three votes form a
 /// certificate and one is never enough.
-fn four_validators() -> (Vec<TestSigner>, Vec<FastPathValidatorEntry>) {
+pub(crate) fn four_validators() -> (Vec<TestSigner>, Vec<FastPathValidatorEntry>) {
     let mut signers: Vec<TestSigner> = Vec::new();
     let mut entries: Vec<FastPathValidatorEntry> = Vec::new();
     for seed in [101u8, 102, 103, 104] {
@@ -4777,21 +4777,21 @@ use runtime::{DurableObjectVersion, IndeterminateCommitReason};
 
 /// One replica that may retain publications: its own store, the identical
 /// installed fixture and its own registered signer.
-pub(super) struct RetentionReplica {
-    pub(super) store: MemoryDurableStateStore,
-    pub(super) fixture: Fixture,
-    pub(super) signer: TestSigner,
+pub(crate) struct RetentionReplica {
+    pub(crate) store: MemoryDurableStateStore,
+    pub(crate) fixture: Fixture,
+    pub(crate) signer: TestSigner,
 }
 
 impl RetentionReplica {
     /// Prepares the shared transfer call on this replica, creating its local
     /// nonce and object locks.
-    pub(super) fn prepare_transfer(&self, request: u8, nonce: u64) -> FastPathResult<FastVote> {
+    pub(crate) fn prepare_transfer(&self, request: u8, nonce: u64) -> FastPathResult<FastVote> {
         prepare_transfer(&self.store, &self.fixture, &self.signer, request, nonce)
     }
 
     /// Returns the current durable value of one exact key.
-    pub(super) fn row(&self, key: &[u8]) -> Option<Vec<u8>> {
+    pub(crate) fn row(&self, key: &[u8]) -> Option<Vec<u8>> {
         self.store
             .get_versioned_durable(&context(), domain(), key)
             .unwrap()
@@ -4801,7 +4801,7 @@ impl RetentionReplica {
 
     /// Writes one exact durable row under its observed revision. Test setup
     /// only: no protocol path writes a foreign publication row.
-    pub(super) fn put_row(&self, key: Vec<u8>, value: Vec<u8>) {
+    pub(crate) fn put_row(&self, key: Vec<u8>, value: Vec<u8>) {
         let observed: VersionedStateValue = self
             .store
             .get_versioned_durable(&context(), domain(), &key)
@@ -4826,7 +4826,7 @@ impl RetentionReplica {
 
     /// Returns this replica's fast-path lock rows for the fixture's fee-source
     /// object and its sender/epoch nonce lock.
-    pub(super) fn lock_rows(&self) -> Vec<Option<Vec<u8>>> {
+    pub(crate) fn lock_rows(&self) -> Vec<Option<Vec<u8>>> {
         let object_lock: Vec<u8> =
             fastpath_lock_key(protocol().chain_id(), self.fixture.coin.id).unwrap();
         let nonce_lock: Vec<u8> =
@@ -4835,14 +4835,14 @@ impl RetentionReplica {
     }
 
     /// Returns this replica's current head for the fixture's fee-source object.
-    pub(super) fn coin_head(&self) -> DurableObjectHead {
+    pub(crate) fn coin_head(&self) -> DurableObjectHead {
         self.store
             .get_object_head(&context(), domain(), self.fixture.coin.id)
             .unwrap()
     }
 
     /// Returns any completed-request receipt under `request_id`.
-    pub(super) fn request_receipt(&self, request_id: [u8; 32]) -> Option<DurableRequestReceipt> {
+    pub(crate) fn request_receipt(&self, request_id: [u8; 32]) -> Option<DurableRequestReceipt> {
         self.store
             .get_request_receipt(
                 &context(),
@@ -4882,17 +4882,17 @@ fn retention_replica(logical: bool, signer_index: usize) -> RetentionReplica {
 /// A handoff-capable (`0x6424/v2`) replica, signing as the one validator that
 /// never participates in the quorums below, so retention is never confused
 /// with this replica's own fast-path vote.
-pub(super) fn logical_replica() -> RetentionReplica {
+pub(crate) fn logical_replica() -> RetentionReplica {
     retention_replica(true, 3)
 }
 
 /// A historical physical-profile (`0x6424/v1`) replica.
-pub(super) fn physical_replica() -> RetentionReplica {
+pub(crate) fn physical_replica() -> RetentionReplica {
     retention_replica(false, 3)
 }
 
 /// Builds the shared transfer call's signed intent bytes.
-pub(super) fn transfer_bytes(fixture: &Fixture, request: u8, nonce: u64) -> Vec<u8> {
+pub(crate) fn transfer_bytes(fixture: &Fixture, request: u8, nonce: u64) -> Vec<u8> {
     paid_call_with_access(
         PaidCall {
             fixture,
@@ -4910,7 +4910,7 @@ pub(super) fn transfer_bytes(fixture: &Fixture, request: u8, nonce: u64) -> Vec<
 
 /// Builds one complete, genuinely certified publication bundle for the shared
 /// transfer call, using the quorum formed by `subset`'s signers.
-pub(super) fn transfer_bundle(
+pub(crate) fn transfer_bundle(
     logical: bool,
     request: u8,
     nonce: u64,
@@ -4993,7 +4993,7 @@ pub(super) fn transfer_bundle(
 }
 
 /// The default handoff-capable bundle: the quorum formed by signers 0/1/2.
-pub(super) fn transfer_bundle_bytes(
+pub(crate) fn transfer_bundle_bytes(
     request: u8,
     nonce: u64,
 ) -> (PublicationBundle, FastCertificate) {
@@ -5001,20 +5001,20 @@ pub(super) fn transfer_bundle_bytes(
 }
 
 /// The same operation certified by a different, equally valid signer subset.
-pub(super) fn rebundle_with_other_subset(request: u8, nonce: u64) -> PublicationBundle {
+pub(crate) fn rebundle_with_other_subset(request: u8, nonce: u64) -> PublicationBundle {
     transfer_bundle(true, request, nonce, &[1, 2, 3]).0
 }
 
 /// A historical physical-profile bundle, used to prove a `0x6424/v1` witness
 /// can never be retained as a publication.
-pub(super) fn physical_transfer_bundle_bytes(
+pub(crate) fn physical_transfer_bundle_bytes(
     request: u8,
     nonce: u64,
 ) -> (PublicationBundle, FastCertificate) {
     transfer_bundle(false, request, nonce, &[0, 1, 2])
 }
 
-pub(super) fn installed_validator_set() -> ValidatorSet {
+pub(crate) fn installed_validator_set() -> ValidatorSet {
     let (_signers, entries) = four_validators();
     ValidatorSet::new(
         protocol().epoch(),
@@ -5029,6 +5029,153 @@ pub(super) fn installed_validator_set() -> ValidatorSet {
             .collect(),
     )
     .unwrap()
+}
+
+/// Complete structured rows, metadata and exact payloads for refusal/replay
+/// comparisons. A fixture's own setup writes occur before this snapshot.
+pub(crate) fn full_snapshot(
+    store: &MemoryDurableStateStore,
+) -> Vec<(runtime::portable::DurableRecordDescriptor, Vec<u8>)> {
+    use runtime::portable::{
+        DurableCollection, DurablePortableRepository, DurableRecordChunkOutcome,
+        DurableRecordChunkRequest, DurableRecordDescriptor, DurableRecordKey, DurableRecordScan,
+    };
+    use std::num::NonZeroUsize;
+    let mut rows: Vec<(DurableRecordDescriptor, Vec<u8>)> = Vec::new();
+    for collection in [
+        DurableCollection::State,
+        DurableCollection::Receipts,
+        DurableCollection::ObjectHeads,
+        DurableCollection::ObjectVersions,
+    ] {
+        let mut after: Option<DurableRecordKey> = None;
+        loop {
+            let scan: DurableRecordScan =
+                DurableRecordScan::new(collection, after.clone(), NonZeroUsize::new(128).unwrap())
+                    .unwrap();
+            let page = store
+                .scan_portable_keys(&context(), domain(), &scan)
+                .unwrap();
+            for key in page.keys() {
+                let descriptor: DurableRecordDescriptor = store
+                    .read_portable_descriptor(&context(), domain(), key)
+                    .unwrap()
+                    .unwrap();
+                let mut bytes: Vec<u8> = Vec::new();
+                if descriptor.payload_length().is_some() {
+                    loop {
+                        let request: DurableRecordChunkRequest = DurableRecordChunkRequest::new(
+                            descriptor.clone(),
+                            bytes.len(),
+                            NonZeroUsize::new(1024 * 1024).unwrap(),
+                        )
+                        .unwrap();
+                        let DurableRecordChunkOutcome::Chunk(chunk) = store
+                            .read_portable_chunk(&context(), domain(), &request)
+                            .unwrap()
+                        else {
+                            panic!("snapshot changed");
+                        };
+                        bytes.extend_from_slice(chunk.bytes());
+                        if chunk.is_last() {
+                            break;
+                        }
+                    }
+                }
+                rows.push((descriptor, bytes));
+            }
+            after = page.continuation().cloned();
+            if after.is_none() {
+                break;
+            }
+        }
+    }
+    rows
+}
+
+/// Injectable connection loss, optionally after the atomic commit lands.
+/// Only the selected commit kind is affected once; reads are real storage.
+pub(crate) struct AmbiguousCommitStore<'a> {
+    pub(crate) inner: &'a MemoryDurableStateStore,
+    pub(crate) state: Cell<bool>,
+    pub(crate) invocation: Cell<bool>,
+    pub(crate) land_before_outcome: bool,
+}
+
+impl runtime::DurableDomainStateStore for AmbiguousCommitStore<'_> {
+    fn get_versioned_durable(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        key: &[u8],
+    ) -> Result<VersionedStateValue, DurableReadError> {
+        self.inner.get_versioned_durable(context, domain, key)
+    }
+
+    fn commit_durable(
+        &self,
+        context: &DurableOperationContext,
+        transaction: AtomicStateTransaction,
+    ) -> DurableCommitOutcome {
+        if self.state.take() {
+            if self.land_before_outcome {
+                assert_eq!(
+                    self.inner.commit_durable(context, transaction),
+                    DurableCommitOutcome::Committed
+                );
+            }
+            return DurableCommitOutcome::Indeterminate(IndeterminateCommitReason::ConnectionLost);
+        }
+        self.inner.commit_durable(context, transaction)
+    }
+}
+
+impl StructuredDurableDomainStateStore for AmbiguousCommitStore<'_> {
+    fn get_object_head(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+    ) -> Result<DurableObjectHead, DurableReadError> {
+        self.inner.get_object_head(context, domain, object_id)
+    }
+
+    fn get_object_version(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+        object_version: DurableObjectVersion,
+    ) -> Result<Option<DurableObjectVersionRecord>, DurableReadError> {
+        self.inner
+            .get_object_version(context, domain, object_id, object_version)
+    }
+
+    fn get_request_receipt(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        request_id: DurableRequestId,
+    ) -> Result<Option<DurableRequestReceipt>, DurableReadError> {
+        self.inner.get_request_receipt(context, domain, request_id)
+    }
+
+    fn commit_invocation(
+        &self,
+        context: &DurableOperationContext,
+        transaction: DurableInvocationTransaction,
+    ) -> DurableCommitOutcome {
+        if self.invocation.take() {
+            if self.land_before_outcome {
+                assert_eq!(
+                    self.inner.commit_invocation(context, transaction),
+                    DurableCommitOutcome::Committed
+                );
+            }
+            return DurableCommitOutcome::Indeterminate(IndeterminateCommitReason::ConnectionLost);
+        }
+        self.inner.commit_invocation(context, transaction)
+    }
 }
 
 // --- DR-0154 apply-admission gate: prepare -> bundle -> ACKs -> AC -> apply -
@@ -5543,12 +5690,12 @@ fn assemble_publication_bundle_is_restart_safe_across_a_real_sqlite_reopen() {
 /// Delegates every read to a real store but reports every *state* commit as
 /// indeterminate, so retention can never expose a signature for an ambiguous
 /// write.
-pub(super) struct IndeterminateCommitStore {
+pub(crate) struct IndeterminateCommitStore {
     inner: MemoryDurableStateStore,
 }
 
 impl IndeterminateCommitStore {
-    pub(super) const fn new(inner: MemoryDurableStateStore) -> Self {
+    pub(crate) const fn new(inner: MemoryDurableStateStore) -> Self {
         Self { inner }
     }
 }

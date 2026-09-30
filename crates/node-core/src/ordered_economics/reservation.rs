@@ -268,8 +268,11 @@ pub(crate) fn reservation_plan(
         // Evidence admission commits through a content-addressed absence
         // fence and consumes neither an object nor a nonce.
         OrderedOperationKind::Evidence => OrderedReservationPlan::default(),
-        // Freeze is pure control: no address-owned input, no sender nonce.
-        OrderedOperationKind::Freeze => OrderedReservationPlan::default(),
+        // Freeze and DrainSet are pure control: no address-owned input, no
+        // sender nonce.
+        OrderedOperationKind::Freeze | OrderedOperationKind::DrainSet => {
+            OrderedReservationPlan::default()
+        }
     };
     if plan.objects.len() > MAX_ORDERED_RESERVED_OBJECTS {
         return Err(OrderedEconomicsError::Unauthenticated(

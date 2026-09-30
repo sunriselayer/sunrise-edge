@@ -64,8 +64,9 @@ mod tests;
 ///
 /// Allocated from the swept, previously unused `0x6480..=0x648F` node-core
 /// block. The repository-wide sweep confirmed `0x6401..=0x6439` and
-/// `0x6440..=0x644F` are taken and `0x6460` belongs to `node-wire`; `0x6450`,
-/// `0x6452` and `0x6453` stay free, and `0x6451` plus `0x6454..=0x645D` remain
+/// `0x6440..=0x644F` are taken and `0x6460` belongs to `node-wire`; `0x6450`
+/// is the local drain-resolution audit, `0x6452` and `0x6453` stay free,
+/// and `0x6451` plus `0x6454..=0x645F` remain
 /// reserved for the concurrently owned retention/control/cut work.
 pub const LOGICAL_PROFILE_RECORD_FRAME_TYPE: u16 = 0x6480;
 /// Canonical version of [`LogicalProfileRecord`].
@@ -638,12 +639,13 @@ pub fn classify_fastpath_row(key: &[u8]) -> Option<FastpathRowClass> {
     let suffix: &[u8] = key.strip_prefix(local_instance_state::FASTPATH_STATE_PREFIX)?;
     // Prepare-side witness/artifacts are replica-local backing for a vote,
     // not a certified publication or a transferable business fact.
-    const LOCAL: [&[u8]; 5] = [
+    const LOCAL: [&[u8]; 6] = [
         b"prepared/",
         b"lock/",
         b"nonce-lock/",
         b"prepared-witness/",
         b"prepared-artifact/",
+        b"drain-lock-resolution/",
     ];
     // A signed ACK is local safety state, not a mutable prepare reservation
     // and not an imported business fact.
@@ -653,7 +655,7 @@ pub fn classify_fastpath_row(key: &[u8]) -> Option<FastpathRowClass> {
     // over them, and `publication-artifact/` is the content-addressed,
     // digest-verified replay bytes that manifest requires -- both portable
     // business history a cut must enumerate, not disposable local cache.
-    const HISTORY: [&[u8]; 15] = [
+    const HISTORY: [&[u8]; 17] = [
         b"certificate/",
         b"commitment-witness/",
         b"settlement/",
@@ -668,6 +670,8 @@ pub fn classify_fastpath_row(key: &[u8]) -> Option<FastpathRowClass> {
         b"evidence-consumed/",
         b"publication/",
         b"publication-artifact/",
+        b"drain-publication/",
+        b"drain-publication-artifact/",
         b"availability-certificate/",
     ];
     if LOCAL
@@ -712,8 +716,16 @@ pub fn classify_ordered_row(key: &[u8]) -> Option<OrderedRowClass> {
     let suffix: &[u8] =
         key.strip_prefix(ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX)?;
     const CONTROL: [&[u8]; 3] = [b"state/", b"applied-height/", b"candidate/"];
-    const HISTORY: [&[u8]; 3] = [b"header/", b"outcome/", b"freeze/"];
-    const LOCAL_PROGRESS: [&[u8]; 2] = [b"frontier-progress/", b"frontier/"];
+    const HISTORY: [&[u8]; 4] = [b"header/", b"outcome/", b"freeze/", b"drain-set/"];
+    const LOCAL_PROGRESS: [&[u8]; 7] = [
+        b"frontier-progress/",
+        b"frontier/",
+        b"drain-possession/",
+        b"drain-signer-progress/",
+        b"drain-signer-entry/",
+        b"drain-union-progress/",
+        b"drain-union-ready/",
+    ];
     if CONTROL
         .iter()
         .any(|prefix: &&[u8]| suffix.starts_with(prefix))

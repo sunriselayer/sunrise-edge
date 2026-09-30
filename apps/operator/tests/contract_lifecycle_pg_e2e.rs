@@ -301,22 +301,28 @@ fn recover_logical_lifecycle(
 #[test]
 #[ignore = "run through scripts/check-fastvote-pg.sh"]
 fn contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator_e2e() {
-    contract_lifecycle_pg_e2e_case(false, false);
+    contract_lifecycle_pg_e2e_case(false, false, false);
 }
 
 #[test]
 #[ignore = "run through scripts/check-fastvote-pg.sh"]
 fn contract_lifecycle_pg_logical_publish_instantiate_call_and_asset_verbs_multivalidator_e2e() {
-    contract_lifecycle_pg_e2e_case(true, false);
+    contract_lifecycle_pg_e2e_case(true, false, false);
 }
 
 #[test]
 #[ignore = "run through scripts/check-fastvote-pg.sh"]
 fn contract_lifecycle_pg_ordered_freeze_and_frontier_binary_cli_e2e() {
-    contract_lifecycle_pg_e2e_case(true, true);
+    contract_lifecycle_pg_e2e_case(true, true, false);
 }
 
-fn contract_lifecycle_pg_e2e_case(logical: bool, frozen_frontier: bool) {
+#[test]
+#[ignore = "run through scripts/check-fastvote-pg.sh"]
+fn contract_lifecycle_pg_drainset_member_drain_binary_cli_e2e() {
+    contract_lifecycle_pg_e2e_case(true, true, true);
+}
+
+fn contract_lifecycle_pg_e2e_case(logical: bool, frozen_frontier: bool, member_drain: bool) {
     let database_url_option = support::live_postgres_url();
     if database_url_option.is_none() {
         return;
@@ -331,7 +337,9 @@ fn contract_lifecycle_pg_e2e_case(logical: bool, frozen_frontier: bool) {
     let dsn: String = proxied_dsn(&original_config, proxy.local_addr().port());
     let unique: String = format!(
         "lifecycle-{}-{}-{}",
-        if frozen_frontier {
+        if member_drain {
+            "drain"
+        } else if frozen_frontier {
             "frozen"
         } else if logical {
             "logical"
@@ -1053,6 +1061,7 @@ fn contract_lifecycle_pg_e2e_case(logical: bool, frozen_frontier: bool) {
                 &ids,
                 &requests,
                 &publications,
+                member_drain,
             );
         } else {
             drop(follower);

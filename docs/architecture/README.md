@@ -75,6 +75,10 @@ roadmap describes a later target state.
   ([DR-0167](decisions/0167-frozen-frontier-extraction-boundary.md)):
   the fresh signed-profile boundary for the next core/HTTP/SDK/CLI capability;
   no local unfreeze, drain authority or new-epoch activation is implied.
+- [Quorum-retained DrainSet and member drain](quorum-drain.md)
+  ([DR-0168](decisions/0168-quorum-retained-drainset-and-member-drain.md)):
+  complete selected frontier union, pre-vote full proof possession, imported
+  proof relay and explicit committed-member application; no cut or activation.
 
 Production-oriented persistence requirements and the PostgreSQL mapping are
 separate operational references:

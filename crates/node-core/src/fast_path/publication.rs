@@ -197,6 +197,8 @@ pub enum PublicationRetentionError {
     /// A different publication identity is already retained for this
     /// `(chain, request id)`.
     ConflictingRetainedIdentity,
+    /// The requested post-Freeze proof has not yet been durably imported.
+    DrainProofNotReady,
     /// A retained row disagrees with itself or with the derived identity.
     InconsistentRetainedRecord(&'static str),
 }
@@ -204,6 +206,9 @@ pub enum PublicationRetentionError {
 impl fmt::Display for PublicationRetentionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::DrainProofNotReady => {
+                formatter.write_str("drain publication proof is not retained")
+            }
             Self::Bundle(error) => error.fmt(formatter),
             Self::Consensus(error) => error.fmt(formatter),
             Self::Node(error) => error.fmt(formatter),
@@ -1275,7 +1280,7 @@ fn frozen_artifact_descriptors<S: DurablePortableRepository>(
 /// Reconstructs one bounded artifact through strict ranges of a single exact
 /// descriptor. Present declared-empty content receives one pinned terminal
 /// empty read; every nonempty response must make positive exact progress.
-fn read_frozen_artifact<S: DurablePortableRepository>(
+pub(crate) fn read_frozen_artifact<S: DurablePortableRepository>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1400,4 +1405,16 @@ fn stage_publication_artifacts(
         }
     }
     Ok(staged)
+}
+/// Strictly decodes the event digest and canonical paid result in a
+/// commitment witness. This is read-only parsing, not authentication:
+/// callers must first verify the publication bundle's certificate, witness
+/// commitment, context and exact signed intent, then compare the returned
+/// digest and canonical result to the member response they accept.
+pub fn decode_certified_execution_witness(
+    bytes: &[u8],
+) -> Result<(Digest32, execution::paid_execution::PaidExecutionResult), NodeCoreError> {
+    let decoded: super::commitment::DecodedCommitmentWitness =
+        super::commitment::decode_witness(bytes)?;
+    Ok((decoded.event_digest, decoded.paid_execution_result))
 }
