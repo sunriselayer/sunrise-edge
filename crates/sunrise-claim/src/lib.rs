@@ -55,12 +55,14 @@ struct ClaimRow {
 /// is not a second claim.
 const USDRISE_WRAPPER: &str = "sunrise14hj2tavq8fpesdwxxcu44rty3hh90vhujrvcmstl4zr3txmfvw9s2v9j75";
 const USDN_IBC: &str = "ibc/A7AD825A4B48DDA0138D118655E60100D22A4D690C45B95221520B58C9A64B63";
+const USDC_IBC: &str = "ibc/8E27BA2D5493AF5636760E354E46004562C46AB7EC0CC4C1CA14E9E20E2545B5";
 
 /// Builds one leaf per claimant, asset, and unlock time.
 ///
-/// `rise` and `usdrise` stay on Edge. Unwrapped USDN is added to `usdrise`.
-/// The wrapper contract's own USDN is skipped. Other IBC denoms are settled
-/// on the chain named in [`payout_route`].
+/// `rise` and `usdrise` stay on Edge. Unwrapped USDN and Noble USDC are added
+/// to `usdrise`. The wrapper contract's own USDN is skipped. Eureka WBTC, WETH,
+/// and USDT are Cosmos Hub denoms. Other IBC denoms are settled on the chain
+/// named in [`payout_route`].
 pub fn ledger_leaves(raw: &[u8]) -> Result<(u64, Vec<Leaf>), ClaimError> {
     let file: ClaimsFile =
         serde_json::from_slice(raw).map_err(|err| ClaimError::Ledger(err.to_string()))?;
@@ -69,7 +71,7 @@ pub fn ledger_leaves(raw: &[u8]) -> Result<(u64, Vec<Leaf>), ClaimError> {
         if is_wrapper_usdn(&row.owner, &row.asset) {
             continue;
         }
-        let asset = if is_usdn(&row.asset) {
+        let asset = if is_usdrise_source(&row.asset) {
             "usdrise".to_string()
         } else {
             row.asset.clone()
@@ -104,6 +106,10 @@ pub fn ledger_leaves(raw: &[u8]) -> Result<(u64, Vec<Leaf>), ClaimError> {
 
 fn is_usdn(asset: &str) -> bool {
     asset == "usdn" || asset == USDN_IBC
+}
+
+fn is_usdrise_source(asset: &str) -> bool {
+    is_usdn(asset) || asset == "usdc" || asset == USDC_IBC
 }
 
 fn is_wrapper_usdn(owner: &str, asset: &str) -> bool {
@@ -412,35 +418,30 @@ fn payout_route(asset: &str) -> Option<PayRoute> {
             denom: "uosmo",
             bech32_prefix: Some("osmo"),
         },
-        "ibc/8E27BA2D5493AF5636760E354E46004562C46AB7EC0CC4C1CA14E9E20E2545B5" => PayRoute {
-            chain_id: "noble-1",
-            denom: "uusdc",
-            bech32_prefix: Some("noble"),
-        },
         "ibc/AAF322A78A0E34B76CDA05BA9AE96DC1521F9E103EC576AB9931116B2AB8C26B" => PayRoute {
             chain_id: "noble-1",
             denom: "ausdy",
             bech32_prefix: Some("noble"),
         },
         "ibc/694A6B26A43A2FBECCFFEAC022DEACB39578E54207FDD32005CD976B57B98004" => PayRoute {
-            chain_id: "1",
-            denom: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
-            bech32_prefix: None,
+            chain_id: "cosmoshub-4",
+            denom: "transfer/08-wasm-1369/0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+            bech32_prefix: Some("cosmos"),
         },
         "ibc/0E293A7622DC9A6439DB60E6D234B5AF446962E27CA3AB44D0590603DFF6968E" => PayRoute {
-            chain_id: "1",
-            denom: "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
-            bech32_prefix: None,
+            chain_id: "cosmoshub-4",
+            denom: "transfer/08-wasm-1369/0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+            bech32_prefix: Some("cosmos"),
         },
         "ibc/D4FF12988C31AD8E3D2555621F95C7EB2B6FBAAD2F9487FB11A2A8BBB004B4B3" => PayRoute {
-            chain_id: "1",
-            denom: "0xdac17f958d2ee523a2206206994597c13d831ec7",
-            bech32_prefix: None,
+            chain_id: "cosmoshub-4",
+            denom: "transfer/08-wasm-1369/0xdac17f958d2ee523a2206206994597c13d831ec7",
+            bech32_prefix: Some("cosmos"),
         },
         "ibc/361B5A15BD029B92BC57500263F926EA0D59901A48A35A40F84696EF153C7B1D" => PayRoute {
-            chain_id: "1",
-            denom: "0xa00C59fF5a080D2b954d0c75e46E22a0c371235a",
-            bech32_prefix: None,
+            chain_id: "cosmoshub-4",
+            denom: "transfer/channel-220/erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a",
+            bech32_prefix: Some("cosmos"),
         },
         _ => return None,
     })
