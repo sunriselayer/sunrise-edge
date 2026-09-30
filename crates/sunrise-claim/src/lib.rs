@@ -56,6 +56,10 @@ struct ClaimRow {
 const USDRISE_WRAPPER: &str = "sunrise14hj2tavq8fpesdwxxcu44rty3hh90vhujrvcmstl4zr3txmfvw9s2v9j75";
 const USDN_IBC: &str = "ibc/A7AD825A4B48DDA0138D118655E60100D22A4D690C45B95221520B58C9A64B63";
 const USDC_IBC: &str = "ibc/8E27BA2D5493AF5636760E354E46004562C46AB7EC0CC4C1CA14E9E20E2545B5";
+const INJECTIVE_USDC_IBC: &str =
+    "ibc/361B5A15BD029B92BC57500263F926EA0D59901A48A35A40F84696EF153C7B1D";
+const STRISE: &str =
+    "factory/sunrise1ghd753shjuwexxywmgs4xz7x2q732vcnkm6h2pyv9s6ah3hylvrqz5nv4h/strise";
 
 /// Builds one leaf per claimant, asset, and unlock time.
 ///
@@ -73,6 +77,8 @@ pub fn ledger_leaves(raw: &[u8]) -> Result<(u64, Vec<Leaf>), ClaimError> {
         }
         let asset = if is_usdrise_source(&row.asset) {
             "usdrise".to_string()
+        } else if is_strise(&row.asset) {
+            "rise".to_string()
         } else {
             row.asset.clone()
         };
@@ -109,7 +115,11 @@ fn is_usdn(asset: &str) -> bool {
 }
 
 fn is_usdrise_source(asset: &str) -> bool {
-    is_usdn(asset) || asset == "usdc" || asset == USDC_IBC
+    is_usdn(asset) || asset == "usdc" || asset == USDC_IBC || asset == INJECTIVE_USDC_IBC
+}
+
+fn is_strise(asset: &str) -> bool {
+    asset == STRISE || asset == "strise"
 }
 
 fn is_wrapper_usdn(owner: &str, asset: &str) -> bool {
@@ -436,11 +446,6 @@ fn payout_route(asset: &str) -> Option<PayRoute> {
         "ibc/D4FF12988C31AD8E3D2555621F95C7EB2B6FBAAD2F9487FB11A2A8BBB004B4B3" => PayRoute {
             chain_id: "cosmoshub-4",
             denom: "transfer/08-wasm-1369/0xdac17f958d2ee523a2206206994597c13d831ec7",
-            bech32_prefix: Some("cosmos"),
-        },
-        "ibc/361B5A15BD029B92BC57500263F926EA0D59901A48A35A40F84696EF153C7B1D" => PayRoute {
-            chain_id: "cosmoshub-4",
-            denom: "transfer/channel-220/erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a",
             bech32_prefix: Some("cosmos"),
         },
         _ => return None,
