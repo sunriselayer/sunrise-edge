@@ -118,7 +118,7 @@ unchecked until its integrated acceptance criteria actually pass. Preserve
 Draft PR #235 as the aggregate implementation source while extracting those
 feature PRs; do not merge its whole unfinished diff merely to shorten the queue.
 
-The first independently based extraction is Draft PR #237: bounded portable
+The first independently based extraction is merged PR #237: bounded portable
 storage reads and backend-enforced snapshot continuity, with its own runtime
 conformance, persistent-store regressions and storage-only design. Subsequent
 PRs follow capability dependencies (logical execution generations and
@@ -135,9 +135,12 @@ disk-full, WAL-full and PgBouncer rehearsals pass on the extracted branch.
 The extracted complete parent gate passed on code head `66f8f68` with all
 required PostgreSQL fault/recovery profiles, existing network/CLI E2Es,
 vectors and Rust/WASM/edge-adapter checks. Fresh Opus approved the entire
-independent feature at that head. Subsequent documentation-only updates still
-require latest-head approval and passing CI before PR #237 merges. This is
-not whole-aggregate validation or handoff completion.
+independent feature at that head, then explicitly approved the final
+documentation-only head `b0d969b`. Required CI passed on that exact final
+head (run `36695206854`); PR #237 merged normally on 2026-09-30 as `0f201eb`.
+The parent verified a clean `main` equal to `origin/main` and removal of the
+remote feature branch. This is not whole-aggregate validation or handoff
+completion; Draft PR #235 stays unmerged.
 
 PostgreSQL remains the existing tested profile for delivery 1, not a mandatory
 protocol database. Lightweight authoritative profiles (Cloudflare SQLite-backed
