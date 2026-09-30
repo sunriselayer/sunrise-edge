@@ -295,7 +295,7 @@ The detailed existing evidence and remaining criteria follow:
   ([DR-0167](docs/architecture/decisions/0167-frozen-frontier-extraction-boundary.md),
   [architecture](docs/architecture/frozen-frontier.md),
   [operator workflow](docs/guides/frozen-frontier.md)). On 2026-09-30 the
-  selected extraction is being implemented on `codex/freeze-frontier-drain`:
+  selected extraction is implemented on `codex/freeze-frontier-drain`:
   explicit fresh signed-v3 minimum-height authority, proposal/vote and
   committed advisory next-set eligibility, atomic admission closure,
   Freeze/retention CAS fencing and same-event justified closure, complete
@@ -312,8 +312,11 @@ The detailed existing evidence and remaining criteria follow:
   and full same-store revision/byte comparisons. Seven portable-artifact
   verification tests and 34 raw TCP/TLS transport tests passed; the shared
   parser now accepts legitimate bodyless HTTP 204 without weakening ordinary
-  exact-length framing. The complete repository gate, independent exact-head
-  approval and CI remain open. This checkbox covers
+  exact-length framing. Existing test-store portable/outbox delegation now
+  preserves I/O counters and exact backend fence/domain/Changed results,
+  with three regressions and operator all-target/all-feature Clippy passing.
+  Merging requires the complete repository gate, independent exact-head
+  approval and CI. This checkbox covers
   frozen progress/export only, not safe live rollover: fresh Logical
   activation remains refused and there is no unfreeze. Quorum-retained
   frontier union, ordered DrainSet and certificate-backed drain application
