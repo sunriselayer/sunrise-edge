@@ -2256,6 +2256,7 @@ fn ordered_drain_set_requires_local_readiness_then_commits_once_on_four_replicas
             terminal_reads.get(&proof_key),
             Some(&network.revision(replica, &proof_key))
         );
+        exercise_portable_candidate_from_real_terminal(&network, replica, &terminal);
     }
     let third: OrderedCandidate = OrderedCandidate {
         request_id: [0xA5; 32],
@@ -2418,6 +2419,377 @@ fn ordered_drain_set_requires_local_readiness_then_commits_once_on_four_replicas
         .to_string(),
         "committed DrainSet proof does not name its signed candidate at the recorded height"
     );
+}
+
+/// DR-0166: all four real terminal witnesses feed the connected candidate
+/// driver. Source stores remain the independent memory fixtures; progress is
+/// a real separate SQLite file, reopened between every bounded step.
+fn exercise_portable_candidate_from_real_terminal(
+    network: &Network,
+    replica: usize,
+    terminal: &CandidateFreeTerminalWitness,
+) {
+    use crate::portable_candidate::*;
+    use runtime::portable::{DurablePortableSnapshotRepository, MAX_PORTABLE_CHUNK_BYTES};
+    use runtime_sqlite::{SqliteDurableStore, SqliteNamespace};
+    let source: &MemoryDurableStateStore = &network.stores[replica];
+    let env: OrderedEconomicsEnvironment<'_> = network.env();
+    let large: Vec<u8> = vec![0xab; MAX_PORTABLE_CHUNK_BYTES + 9];
+    for (key, mutation) in [
+        (
+            b"candidate/large".to_vec(),
+            StateMutation::Put(large.clone()),
+        ),
+        (b"candidate/empty".to_vec(), StateMutation::Put(Vec::new())),
+        (b"candidate/deleted".to_vec(), StateMutation::Delete),
+    ] {
+        network.put(replica, key, mutation);
+    }
+    let progress_domain: AtomicityDomainId =
+        AtomicityDomainId::new([0xc0 + u8::try_from(replica).unwrap(); 32]).unwrap();
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+    let context: DurableOperationContext = fixture::context(1);
+    let probe: MemoryDurableStateStore = MemoryDurableStateStore::new_bound(progress_domain, fence);
+    assert!(
+        begin_portable_candidate_enumeration(
+            source,
+            &network.context,
+            &env,
+            source,
+            &context,
+            progress_domain
+        )
+        .is_err()
+    );
+    let initial: PortableCandidateBegin = begin_portable_candidate_enumeration(
+        source,
+        &network.context,
+        &env,
+        &probe,
+        &context,
+        progress_domain,
+    )
+    .unwrap();
+    assert_eq!(initial.identity.terminal_height, terminal.height());
+    assert_eq!(initial.identity.terminal_digest, terminal.digest());
+    let initial_again: PortableCandidateBegin = begin_portable_candidate_enumeration(
+        source,
+        &network.context,
+        &env,
+        &probe,
+        &context,
+        progress_domain,
+    )
+    .unwrap();
+    assert_eq!(initial_again, initial);
+    let id: Digest32 = initial.identity.digest(&network.resolver).unwrap();
+    let mut key: Vec<u8> = b"se/instances/v1/portable-candidate/".to_vec();
+    key.extend_from_slice(&id.algorithm().as_u16().to_be_bytes());
+    key.extend_from_slice(&id.bytes());
+    let first: PortableCandidateAdvanceOutcome = advance_portable_candidate_transfer(
+        source,
+        &network.context,
+        &network.resolver,
+        &initial.identity,
+        &probe,
+        &context,
+        progress_domain,
+        0,
+    )
+    .unwrap();
+    assert!(matches!(first, PortableCandidateAdvanceOutcome::Item(_)));
+    let before: VersionedStateValue = probe
+        .get_versioned_durable(&context, progress_domain, &key)
+        .unwrap();
+    assert_eq!(
+        advance_portable_candidate_transfer(
+            source,
+            &network.context,
+            &network.resolver,
+            &initial.identity,
+            &probe,
+            &context,
+            progress_domain,
+            0
+        )
+        .unwrap(),
+        first
+    );
+    assert_eq!(
+        probe
+            .get_versioned_durable(&context, progress_domain, &key)
+            .unwrap(),
+        before
+    );
+    assert!(matches!(
+        advance_portable_candidate_transfer(
+            source,
+            &network.context,
+            &network.resolver,
+            &initial.identity,
+            &probe,
+            &context,
+            progress_domain,
+            u64::MAX
+        ),
+        Err(PortableCandidateError::Conflict(_))
+    ));
+    let race: RaceStore<'_> = RaceStore {
+        inner: &probe,
+        context,
+        domain: progress_domain,
+        race_key: key.clone(),
+        race_value: before.value().unwrap().to_vec(),
+        race_on_durable: true,
+        raced: std::cell::Cell::new(false),
+    };
+    assert!(matches!(
+        advance_portable_candidate_transfer(
+            source,
+            &network.context,
+            &network.resolver,
+            &initial.identity,
+            &race,
+            &context,
+            progress_domain,
+            1
+        ),
+        Err(PortableCandidateError::Conflict(_))
+    ));
+    assert!(race.raced.get());
+    let after_race: VersionedStateValue = probe
+        .get_versioned_durable(&context, progress_domain, &key)
+        .unwrap();
+    assert_eq!(after_race.value(), before.value());
+    // A byte-identical source rewrite changes only physical CAS metadata:
+    // the old token refuses any next item, and progress stays unchanged.
+    network.put(
+        replica,
+        b"candidate/large".to_vec(),
+        StateMutation::Put(large.clone()),
+    );
+    assert!(matches!(
+        advance_portable_candidate_transfer(
+            source,
+            &network.context,
+            &network.resolver,
+            &initial.identity,
+            &probe,
+            &context,
+            progress_domain,
+            1
+        ),
+        Err(PortableCandidateError::Source(
+            runtime::portable::PortableSnapshotError::Changed
+        ))
+    ));
+    assert_eq!(
+        probe
+            .get_versioned_durable(&context, progress_domain, &key)
+            .unwrap(),
+        after_race
+    );
+    assert_eq!(
+        advance_portable_candidate_transfer(
+            source,
+            &network.context,
+            &network.resolver,
+            &initial.identity,
+            &probe,
+            &context,
+            progress_domain,
+            0
+        )
+        .unwrap(),
+        first
+    );
+
+    let path: std::path::PathBuf = std::env::temp_dir().join(format!(
+        "sunrise-candidate-progress-{}-{replica}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let mut path = self.0.as_os_str().to_owned();
+                path.push(suffix);
+                let path: std::path::PathBuf = path.into();
+                if path.exists() {
+                    std::fs::remove_file(path).unwrap();
+                }
+            }
+        }
+    }
+    let _cleanup: Cleanup = Cleanup(path.clone());
+    let ns: SqliteNamespace = SqliteNamespace::new(
+        env.policy.context().chain_id().clone(),
+        network.signers[replica].id,
+        progress_domain,
+    );
+    let progress: SqliteDurableStore = SqliteDurableStore::open(&path, ns.clone(), fence).unwrap();
+    let begin: PortableCandidateBegin = begin_portable_candidate_enumeration(
+        source,
+        &network.context,
+        &env,
+        &progress,
+        &context,
+        progress_domain,
+    )
+    .unwrap();
+    drop(progress);
+    // Audit the closed classifier against every real source row, including
+    // retained genesis and consensus history. Unknown protocol families must
+    // be deliberately classified, never rescued by a catch-all prefix.
+    let mut after: Option<runtime::portable::DurableRecordKey> = None;
+    loop {
+        let scan: runtime::portable::DurableRecordScan = runtime::portable::DurableRecordScan::new(
+            runtime::portable::DurableCollection::State,
+            after,
+            std::num::NonZeroUsize::new(128).unwrap(),
+        )
+        .unwrap();
+        let page: runtime::portable::DurableRecordPage = source
+            .scan_portable_keys_at(
+                &network.context,
+                network.domain(),
+                &begin.source_token,
+                &scan,
+            )
+            .unwrap();
+        for key in page.keys() {
+            if let runtime::portable::DurableRecordKey::State(bytes) = key {
+                crate::portable_candidate::classify_state_key(
+                    bytes,
+                    env.policy.context().chain_id(),
+                    env.policy.context().protocol_version(),
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "unclassified real row {:?}: {error}",
+                        String::from_utf8_lossy(bytes)
+                    )
+                });
+            }
+        }
+        after = page.continuation().cloned();
+        if after.is_none() {
+            break;
+        }
+    }
+    let mut items: Vec<PortableCandidateTransferItem> = Vec::new();
+    let manifest: PortableCandidateManifest = loop {
+        assert!(
+            items.len() < 512,
+            "fixture bound, not a protocol whole-cut ceiling"
+        );
+        let progress: SqliteDurableStore =
+            SqliteDurableStore::open_existing(&path, ns.clone()).unwrap();
+        let index: u64 = u64::try_from(items.len()).unwrap();
+        let outcome: PortableCandidateAdvanceOutcome = advance_portable_candidate_transfer(
+            source,
+            &network.context,
+            &network.resolver,
+            &begin.identity,
+            &progress,
+            &context,
+            progress_domain,
+            index,
+        )
+        .unwrap();
+        match outcome {
+            PortableCandidateAdvanceOutcome::Item(item) => {
+                let before: VersionedStateValue = progress
+                    .get_versioned_durable(&context, progress_domain, &key)
+                    .unwrap();
+                assert_eq!(
+                    advance_portable_candidate_transfer(
+                        source,
+                        &network.context,
+                        &network.resolver,
+                        &begin.identity,
+                        &progress,
+                        &context,
+                        progress_domain,
+                        index
+                    )
+                    .unwrap(),
+                    PortableCandidateAdvanceOutcome::Item(item.clone())
+                );
+                assert_eq!(
+                    progress
+                        .get_versioned_durable(&context, progress_domain, &key)
+                        .unwrap(),
+                    before
+                );
+                items.push(item);
+            }
+            PortableCandidateAdvanceOutcome::Continue => (),
+            PortableCandidateAdvanceOutcome::Complete(manifest) => break manifest,
+        }
+    };
+    // Every exact original receipt is a transported record, not an invented
+    // response. Large state is split; empty and deleted remain distinct.
+    let mut collected: Vec<u8> = Vec::new();
+    let mut saw_empty: bool = false;
+    let mut saw_deleted: bool = false;
+    let mut receipt_count: u64 = 0;
+    for item in &items {
+        if let PortableCandidateBoundary::Row(row) = &item.boundary {
+            match &row.key {
+                runtime::portable::DurableRecordKey::State(k) if k == b"candidate/large" => {
+                    collected.extend_from_slice(&row.chunk_bytes)
+                }
+                runtime::portable::DurableRecordKey::State(k) if k == b"candidate/empty" => {
+                    assert_eq!(
+                        row.descriptor,
+                        PortableCandidateDescriptor::State { deleted: false }
+                    );
+                    assert!(row.chunk_bytes.is_empty());
+                    saw_empty = true;
+                }
+                runtime::portable::DurableRecordKey::State(k) if k == b"candidate/deleted" => {
+                    assert_eq!(
+                        row.descriptor,
+                        PortableCandidateDescriptor::State { deleted: true }
+                    );
+                    assert!(row.chunk_bytes.is_empty());
+                    saw_deleted = true;
+                }
+                runtime::portable::DurableRecordKey::Receipt(id) => {
+                    let stored: DurableRequestReceipt = source
+                        .get_request_receipt(&network.context, network.domain(), *id)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(row.chunk_bytes, stored.canonical_bytes());
+                    receipt_count += 1;
+                }
+                _ => (),
+            }
+        }
+    }
+    assert_eq!(collected, large);
+    assert!(saw_empty && saw_deleted);
+    assert_eq!(receipt_count, manifest.row_counts[1]);
+    assert!(receipt_count > 0);
+    assert!(manifest.row_counts[2] > 0 && manifest.row_counts[3] > 0);
+    let mut verifier: PortableCandidateVerifier =
+        PortableCandidateVerifier::new(&network.resolver, manifest.clone()).unwrap();
+    for item in &items {
+        verifier.verify_next(&network.resolver, item).unwrap();
+    }
+    assert!(verifier.is_complete());
+    assert_eq!(
+        begin.source_token,
+        source
+            .begin_portable_snapshot(&network.context, network.domain())
+            .unwrap()
+    );
+    assert_eq!(manifest.identity.terminal_digest, terminal.digest());
 }
 
 /// DR-0157 post-DrainSet closure: once this epoch's one-per-epoch

@@ -60,6 +60,7 @@ pub mod ordered_economics;
 pub mod paid_execution;
 pub mod phase2_authorization;
 pub mod phase3_authorization;
+pub mod portable_candidate;
 mod preinstalled_wasm;
 pub mod publication;
 mod query;
