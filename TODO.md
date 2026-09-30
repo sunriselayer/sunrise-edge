@@ -142,6 +142,15 @@ The parent verified a clean `main` equal to `origin/main` and removal of the
 remote feature branch. This is not whole-aggregate validation or handoff
 completion; Draft PR #235 stays unmerged.
 
+The next independent extraction is Draft PR #238, based on merged PR #237:
+signed logical execution generations/provenance and supported application
+admission. Its corrected boundary refuses fresh Logical epoch transitions
+without next-epoch provenance and preserves committed replay. Parent full
+validation passed on extracted code `473bf24`, and fresh complete-feature
+Opus review approved it; final-head CI remains a separate merge gate. These
+results describe the extracted branch, not this aggregate's full validation
+or an implemented next-set activation.
+
 PostgreSQL remains the existing tested profile for delivery 1, not a mandatory
 protocol database. Lightweight authoritative profiles (Cloudflare SQLite-backed
 DO and separately verified native SQLite) are not production-certified
