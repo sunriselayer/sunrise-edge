@@ -129,13 +129,15 @@ cargo run -p sunrise-edge-cli -- contract paid-call \
 ```
 
 The availability output shown above is required only when the locally
-authenticated genesis manifest selects the handoff-capable logical-generation
+authenticated genesis manifest selects the logical-generation
 profile. Omit it for a historical physical-checkpoint manifest: the CLI
 rejects a mismatched flag rather than switching profiles based on an endpoint
 response. With the logical profile, the operation is prepare → full
 certificate → source a complete retained bundle → retain it with an
 availability quorum → save the availability certificate → published apply.
 The source and retention steps do not themselves apply the transaction.
+This profile does not yet authorize a new epoch; availability publication is
+separate from the remaining Freeze/cut/import/readiness/activation workflow.
 
 `--endpoint` must exactly select an endpoint in the network configuration.
 Ordinary preparation reads (context, fee policy, objects, nonce, instance,

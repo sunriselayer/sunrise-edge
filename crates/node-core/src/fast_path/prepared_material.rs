@@ -90,8 +90,14 @@ fn decode_object_body_identity(
     let bytes: [u8; 40] = identity
         .try_into()
         .map_err(|_| FastPathError::Invalid("fast-path object artifact identity length"))?;
-    let object_id: ObjectId = ObjectId::new(bytes[..32].try_into().expect("32-byte slice"));
-    let version: u64 = u64::from_be_bytes(bytes[32..40].try_into().expect("8-byte slice"));
+    let object_bytes: [u8; 32] = bytes[..32]
+        .try_into()
+        .map_err(|_| FastPathError::Invalid("fast-path object artifact id length"))?;
+    let version_bytes: [u8; 8] = bytes[32..40]
+        .try_into()
+        .map_err(|_| FastPathError::Invalid("fast-path object artifact version length"))?;
+    let object_id: ObjectId = ObjectId::new(object_bytes);
+    let version: u64 = u64::from_be_bytes(version_bytes);
     let version: DurableObjectVersion = DurableObjectVersion::new(version)
         .ok_or(FastPathError::Invalid("fast-path object artifact version"))?;
     Ok((object_id, version))

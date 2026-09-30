@@ -55,6 +55,11 @@ require_exact_test contract_lifecycle_pg_publish_instantiate_call_and_asset_verb
 cargo test --quiet -p sunrise-edge-operator --test contract_lifecycle_pg_e2e \
   -- --ignored --exact contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator_e2e
 
+require_exact_test contract_lifecycle_pg_logical_publish_instantiate_call_and_asset_verbs_multivalidator_e2e \
+  -p sunrise-edge-operator --test contract_lifecycle_pg_e2e
+cargo test --quiet -p sunrise-edge-operator --test contract_lifecycle_pg_e2e \
+  -- --ignored --exact contract_lifecycle_pg_logical_publish_instantiate_call_and_asset_verbs_multivalidator_e2e
+
 require_exact_test certified_catch_up_pg_missed_prepare_binary_cli_e2e \
   -p sunrise-edge-operator --test certified_catch_up_pg_e2e
 cargo test --quiet -p sunrise-edge-operator --test certified_catch_up_pg_e2e \

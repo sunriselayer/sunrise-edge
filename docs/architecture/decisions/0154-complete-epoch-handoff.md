@@ -281,14 +281,14 @@ lifecycle, fee-claim settlement, and the generic durable-event path, each
 gated through `logical_generation::admit_application` or
 `admit_generic_transition`. A store whose signed genesis binds the historical
 model keeps its exact existing physical admission, commitment and
-monotonicity rules unchanged. This does not implement Freeze/DrainSet/Seal
-control or the publication-before-apply gate this ADR requires: no
-cross-validator availability quorum is consulted before application, and the current
+monotonicity rules unchanged. This generation primitive does not itself
+implement Freeze/DrainSet/Seal control or publication-before-apply: it
+consults no cross-validator quorum, and the
 `NodeCoreError::LogicalProfileApplicationUnsupported` refusal is a local,
 always-correctly-paired-by-construction invariant guard against a caller
 presenting a resolved profile and derived evidence that disagree, not an
-active gate on quorum availability publication. The complete design's
-apply-admission rule, described above, remains open.
+active gate on quorum availability publication. The separate capability below
+composes the open-epoch FastVote apply rule without implementing epoch handoff.
 
 As of 2026-09-30, this second slice's As-Is/To-Be boundary is also recorded
 standalone in
@@ -316,7 +316,7 @@ still verifies without accepting a bundle-chosen algorithm or epoch.
 identity, requires the manifest to be exactly the closure the witness's
 signed operands demand, and persists the publication record, artifact bytes
 and first ACK identity in one atomic commit under the writer, epoch and
-validator-set fences. The later Draft PR slice retains the source's exact
+validator-set fences. The independently extracted capability retains the source's exact
 prepared witness and artifact closure before exposing a vote, reconstructs a
 bundle from those durable bytes, and makes a verifying availability
 certificate a v2-only fresh-apply and recovery precondition. The certified
@@ -324,3 +324,13 @@ HTTP routes and locally pinned Rust client/CLI aggregation join those core
 steps. This does not implement Freeze/DrainSet/Seal, authenticated cut or
 readiness/activation, and it is not complete Delivery 3. Current validation
 and remaining acceptance evidence are recorded in `TODO.md`.
+
+Extraction clarification (2026-09-30):
+[Publication-before-apply availability](../publication-availability.md)
+documents this open-epoch capability separately. The local signed ACK is
+computed and verified before its atomic retention commit, but is exposed
+only after confirmed durability; refusal or ambiguity returns no vote.
+No Freeze marker or drain authority is imported merely to make extraction
+compile. The existing fresh Logical transition refusal remains in force,
+and complete frontier/cut/import/readiness/Seal/activation requirements
+above remain unchanged.

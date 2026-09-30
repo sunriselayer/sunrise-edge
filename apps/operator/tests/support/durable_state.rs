@@ -134,10 +134,13 @@ pub fn snapshot(
     format!("{values:?}\n{objects:?}\n{receipt:?}")
 }
 
-const REPLICA_LOCAL_PREFIXES: [&[u8]; 3] = [
+const REPLICA_LOCAL_PREFIXES: [&[u8]; 6] = [
     b"se/instances/v1/fastpath/prepared/",
     b"se/instances/v1/fastpath/lock/",
     b"se/instances/v1/fastpath/nonce-lock/",
+    b"se/instances/v1/fastpath/prepared-witness/",
+    b"se/instances/v1/fastpath/prepared-artifact/",
+    b"se/instances/v1/fastpath/availability-ack/",
 ];
 
 fn scan_se_entries<S: StructuredDurableDomainStateStore + DurableStateKeyScanner>(
@@ -281,9 +284,28 @@ pub fn convergence_snapshot<S: StructuredDurableDomainStateStore + DurableStateK
     format!("{values:?}\n{objects_evidence}{shared_evidence}")
 }
 
+/// Application state only: canonical object heads/versions and queries,
+/// original receipts, ordinary package publications and the sender nonce.
+/// Execution-free retention may add authenticated replay material and a local
+/// ACK, but must leave this evidence unchanged. Replay no-op assertions still
+/// use [`convergence_snapshot`] to include every safety/history row.
+pub fn execution_snapshot<S: StructuredDurableDomainStateStore + DurableStateKeyScanner>(
+    store: &S,
+    context: &DurableOperationContext,
+    fixture: &super::genesis_fixture::FastVoteGenesisFixture,
+    ids: &std::collections::BTreeSet<objects::ObjectId>,
+    requests: &[[u8; 32]],
+    publications: &[abi::package_types::PackageOrigin],
+) -> String {
+    let objects: String = object_head_version_evidence(store, context, fixture, ids);
+    let shared: String =
+        request_publication_nonce_evidence(store, context, fixture, requests, publications);
+    format!("{objects}{shared}")
+}
+
 /// Same inputs as [`convergence_snapshot`], but built for comparing across
 /// *different* replicas rather than the same store before/after a no-op
-/// replay. It deliberately excludes three key prefixes that are legitimately
+/// replay. It deliberately excludes six closed key prefixes that are legitimately
 /// replica-local and are never expected to converge:
 ///
 /// - `se/instances/v1/fastpath/prepared/...` -- retained local prepare/vote
@@ -294,6 +316,11 @@ pub fn convergence_snapshot<S: StructuredDurableDomainStateStore + DurableStateK
 ///   restarts. Their acquisition/release tombstones legitimately differ on a
 ///   missed-prepare replica. They are safety-critical, not connection-local
 ///   database locks, and remain included in every same-store replay snapshot.
+/// - Logical prepare witness/artifacts are local reservation backing, absent
+///   on a missed-prepare replica; `availability-ack/` records this specific
+///   validator's signed retention vote. These are respectively
+///   `LocalReservation` and `LocalSigningSafety` in the production classifier,
+///   not interchangeable global history. Same-store snapshots include them.
 ///
 /// Every other key -- publication, instance, authority, nonce, certificate,
 /// commitment-witness, settlement records, and any unexpected new key -- is

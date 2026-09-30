@@ -38,8 +38,10 @@
 //!    all refuse the ACK.
 //! 6. Persists the publication record, every artifact's exact bytes and the
 //!    first ACK identity in **one** atomic commit under the writer, epoch and
-//!    validator-set fences already asserted above, and only then signs and
-//!    returns the availability vote. A rejected or indeterminate commit
+//!    validator-set fences already asserted above, and only then exposes
+//!    the availability vote. Signing and local verification occur before the
+//!    atomic commit so the exact vote can be retained with its artifacts;
+//!    a rejected or indeterminate commit
 //!    exposes no signature. This is a durable-store fence, not an
 //!    apply-admission gate; see "Deliberate non-scope" below.
 //!
@@ -68,9 +70,10 @@
 //!
 //! # Deliberate non-scope
 //!
-//! This module wires no apply-admission gate, no HTTP/CLI ingress and no
-//! Freeze/DrainSet/Seal control. Retaining a bundle does not authorize any
-//! application, and an availability certificate is not formed here. Bounded
+//! This module owns retention and read-only source assembly, not the separate
+//! quorum-gated apply or native HTTP/SDK/CLI composition. Retaining a bundle
+//! alone does not authorize application, and an availability certificate is
+//! not formed here. It provides no Freeze/DrainSet/Seal control. Bounded
 //! *resumable multi-commit* transfer of a closure larger than
 //! [`MAX_RETAINED_ARTIFACTS`] (or one atomic commit) is the separate
 //! DrainSet-stage contract in DR-0154 and is refused here, never truncated.
