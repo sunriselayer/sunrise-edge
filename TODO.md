@@ -262,7 +262,7 @@ The detailed existing evidence and remaining criteria follow:
 - [ ] **Publication-before-apply availability: independent functional capability**
   ([DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md),
   [publication availability](docs/architecture/publication-availability.md)).
-  Branch `codex/availability-apply-admission`, based on merged PR #238,
+  Draft PR #239 on `codex/availability-apply-admission`, based on merged PR #238,
   extracts full certificate/intent/witness/artifact retention, exact ACK
   replay, prepared source assembly, strict availability quorum and proof-gated
   Logical FastVote apply/recovery. Includes bounded native HTTP, Rust SDK
@@ -283,9 +283,14 @@ The detailed existing evidence and remaining criteria follow:
   and recovers each saved request without preparing or signing an execution
   vote. All application and global authenticated history rows converge;
   only the closed replica-local reservation/signing-safety families differ.
-  Workspace all-target/all-feature Clippy passes. Complete required repository
-  validation, exact-head Opus approval and required CI are required merge gates.
-  Claude currently reports its weekly usage limit; no fallback reviewer is
+  Workspace all-target/all-feature Clippy passes. On 2026-09-30 the complete
+  parent-run `./scripts/check-all.sh` passes on code head `e1d85a6`, including
+  live disposable PostgreSQL and required SIGKILL, backup/restore, disk/WAL-full,
+  connection-exhaustion and PgBouncer profiles, existing network/CLI E2Es,
+  independent vectors and Rust/WASM/all edge-adapter checks. The final
+  validation-record update is TODO-only; fresh exact-final-head Opus approval
+  and required CI remain merge gates. A fresh read-only Opus attempt on
+  `e1d85a6` reported its weekly usage limit; no fallback reviewer is
   an Opus approval. Freeze/frontier/drain/cut/import/readiness/Seal/activation,
   next-epoch provenance and complete Delivery 3 remain separate and unchecked.
 
