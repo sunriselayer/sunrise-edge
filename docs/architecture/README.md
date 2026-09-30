@@ -57,6 +57,11 @@ roadmap describes a later target state.
 - [Complete epoch handoff](epoch-handoff.md) ([DR-0154](decisions/0154-complete-epoch-handoff.md)):
   publication-before-apply, quorum-complete frozen frontiers, ordered epoch
   control, portable logical commitments and verified new-validator readiness.
+- [Logical execution generation admission](logical-execution-generation.md)
+  (DR-0154 slice): the checked causal `ExecutionGeneration` operand, signed
+  genesis commitment-profile binding, and per-subject provenance admission
+  wired through every live application path; explicit As-Is/To-Be boundary
+  against the rest of DR-0154's design.
 - [Portable storage reconstruction reads](portable-reconstruction.md)
   ([DR-0166](decisions/0166-portable-candidate-snapshot.md)): bounded
   independent durable/blob/outbox reads and an optional backend-enforced

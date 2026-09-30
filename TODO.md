@@ -199,6 +199,31 @@ The detailed existing evidence and remaining criteria follow:
   or exposed signatures. Fresh-genesis enforcement
   is required; existing pre-rule stores cannot silently receive this guarantee.
 
+- [ ] **Logical execution generation admission: independent feature PR**
+  ([DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md),
+  [logical execution generation](docs/architecture/logical-execution-generation.md)).
+  Adds the checked causal `ExecutionGeneration` type
+  (`crates/protocol-types/src/execution_generation.rs`) and
+  `crates/node-core/src/logical_generation.rs`'s `LogicalProfileRecord`
+  (`0x6480/v1`)/`LogicalProvenanceRecord` (`0x6481/v1`), bound only by a
+  fresh signed version-2 (`0x6416/v2`) genesis manifest. Wires
+  `admit_application`/`admit_generic_transition` through every live
+  application path that installs effects, a receipt, a nonce advance, or a
+  settlement against an already-installed profile: paid execution, local
+  execution, publication, bond lifecycle, fee-claim settlement, and the
+  generic durable-event path (satisfying the ordered bond/fee-claim
+  minimum-check substitution called for above). A historical store's
+  existing physical checkpoint/revision admission is unchanged. On branch
+  `codex/logical-generation-admission` (commits `837770e`, `83329d7`, `56c1cd8`,
+  `a095a62`), based on approved PR #237 head `b0d969b`; no PR number yet.
+  Does not implement availability publication/ACK gates, Freeze/DrainSet/Seal
+  control, frontier/cut/import/readiness/activation, or any other Delivery 3
+  completion criterion above. Parent focused checks pass on `a095a62`:
+  5 checked-generation tests, 746 node-core library tests (5 ignored), and
+  the independent JavaScript fast-path vector generator. Full repository
+  validation, fresh complete-feature Opus review and CI are still required;
+  focused evidence is not a complete merge or handoff gate.
+
 - [x] **Portable storage implementation: bounded reads and backend-enforced snapshot continuity**
   ([DR-0166](docs/architecture/decisions/0166-portable-candidate-snapshot.md),
   [portable reconstruction](docs/architecture/portable-reconstruction.md)).

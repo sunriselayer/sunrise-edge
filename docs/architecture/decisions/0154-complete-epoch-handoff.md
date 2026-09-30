@@ -276,3 +276,10 @@ always-correctly-paired-by-construction invariant guard against a caller
 presenting a resolved profile and derived evidence that disagree, not an
 active gate on quorum availability publication. The complete design's
 apply-admission rule, described above, remains open.
+
+As of 2026-09-30, this second slice's As-Is/To-Be boundary is also recorded
+standalone in
+[Logical execution generation admission](../logical-execution-generation.md),
+for a reader who needs only that mechanism. That document does not restate or
+supersede this record's design; `TODO.md` remains the source of truth for
+implementation and validation status, including branch/PR state.
