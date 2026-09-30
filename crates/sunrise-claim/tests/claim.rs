@@ -1,9 +1,12 @@
 use k256::ecdsa::SigningKey;
 use k256::ecdsa::signature::Signer;
 use sunrise_claim::{
-    Authorization, ClaimRequest, ClaimState, MerkleTree, apply_claim, canonical_bytes,
+    Authorization, ClaimRequest, ClaimState, Leaf, MerkleTree, apply_claim, canonical_bytes,
     encode_sunrise, ledger_leaves, ledger_sha256, sign_doc_bytes,
 };
+
+const STRISE_STAKING: &str = "sunrise1ghd753shjuwexxywmgs4xz7x2q732vcnkm6h2pyv9s6ah3hylvrqz5nv4h";
+const USDRISE_WRAPPER: &str = "sunrise14hj2tavq8fpesdwxxcu44rty3hh90vhujrvcmstl4zr3txmfvw9s2v9j75";
 
 fn sample_file(owner: &str, unlocked: &str, locked_at: u64) -> Vec<u8> {
     format!(
@@ -131,6 +134,37 @@ fn a_leaf_after_the_snapshot_is_rejected() {
     .unwrap_err();
     assert!(err.to_string().contains("unlocks"));
     assert_eq!(state.custody.get("rise").copied(), Some(100));
+}
+
+#[test]
+fn the_staking_contract_rise_is_not_a_second_strise_claim() {
+    let holder = encode_sunrise(&[0x11; 20]);
+    let raw = format!(
+        r#"{{"snapshot_unix":1000,"claims":[{{"owner":"{holder}","asset":"factory/{STRISE_STAKING}/strise","amount":"40","claimable_at":1000,"payout":"edge"}},{{"owner":"{holder}","asset":"rise","amount":"9","claimable_at":1000,"payout":"edge"}},{{"owner":"{STRISE_STAKING}","asset":"rise","amount":"30","claimable_at":1000,"payout":"edge"}},{{"owner":"{STRISE_STAKING}","asset":"rise","amount":"10","claimable_at":5000,"payout":"edge"}}]}}"#
+    )
+    .into_bytes();
+    let (_, leaves) = ledger_leaves(&raw).unwrap();
+    assert_eq!(
+        leaves,
+        vec![Leaf {
+            claimant: [0x11; 20],
+            asset: "rise".into(),
+            claimable_at: 1000,
+            amount: 49,
+        }]
+    );
+}
+
+#[test]
+fn only_the_staking_contract_own_rise_is_skipped() {
+    for (owner, asset) in [(USDRISE_WRAPPER, "rise"), (STRISE_STAKING, "usdn")] {
+        let raw = format!(
+            r#"{{"snapshot_unix":1000,"claims":[{{"owner":"{owner}","asset":"{asset}","amount":"3","claimable_at":1000,"payout":"edge"}}]}}"#
+        )
+        .into_bytes();
+        let err = ledger_leaves(&raw).unwrap_err();
+        assert!(err.to_string().contains(owner), "{owner} {asset}: {err}");
+    }
 }
 
 fn cosmos_from_pubkey(pubkey: &[u8]) -> [u8; 20] {

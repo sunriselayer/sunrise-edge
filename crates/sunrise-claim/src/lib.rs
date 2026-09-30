@@ -58,21 +58,25 @@ const USDN_IBC: &str = "ibc/A7AD825A4B48DDA0138D118655E60100D22A4D690C45B9522152
 const USDC_IBC: &str = "ibc/8E27BA2D5493AF5636760E354E46004562C46AB7EC0CC4C1CA14E9E20E2545B5";
 const INJECTIVE_USDC_IBC: &str =
     "ibc/361B5A15BD029B92BC57500263F926EA0D59901A48A35A40F84696EF153C7B1D";
+/// The stRISE staking contract, the factory admin in [`STRISE`]. Its RISE is
+/// the backing for stRISE, so that balance is not a second claim.
+const STRISE_STAKING: &str = "sunrise1ghd753shjuwexxywmgs4xz7x2q732vcnkm6h2pyv9s6ah3hylvrqz5nv4h";
 const STRISE: &str =
     "factory/sunrise1ghd753shjuwexxywmgs4xz7x2q732vcnkm6h2pyv9s6ah3hylvrqz5nv4h/strise";
 
 /// Builds one leaf per claimant, asset, and unlock time.
 ///
 /// `rise` and `usdrise` stay on Edge. Unwrapped USDN and Noble USDC are added
-/// to `usdrise`. The wrapper contract's own USDN is skipped. Eureka WBTC, WETH,
-/// and USDT are Cosmos Hub denoms. Other IBC denoms are settled on the chain
-/// named in [`payout_route`].
+/// to `usdrise`, and stRISE is added to `rise`. The wrapper contract's own USDN
+/// and the staking contract's own RISE are skipped, because they back those
+/// balances. Eureka WBTC, WETH, and USDT are Cosmos Hub denoms. Other IBC
+/// denoms are settled on the chain named in [`payout_route`].
 pub fn ledger_leaves(raw: &[u8]) -> Result<(u64, Vec<Leaf>), ClaimError> {
     let file: ClaimsFile =
         serde_json::from_slice(raw).map_err(|err| ClaimError::Ledger(err.to_string()))?;
     let mut totals: BTreeMap<([u8; 20], String, u64), u64> = BTreeMap::new();
     for row in file.claims {
-        if is_wrapper_usdn(&row.owner, &row.asset) {
+        if is_wrapper_usdn(&row.owner, &row.asset) || is_staking_rise(&row.owner, &row.asset) {
             continue;
         }
         let asset = if is_usdrise_source(&row.asset) {
@@ -124,6 +128,10 @@ fn is_strise(asset: &str) -> bool {
 
 fn is_wrapper_usdn(owner: &str, asset: &str) -> bool {
     owner == USDRISE_WRAPPER && is_usdn(asset)
+}
+
+fn is_staking_rise(owner: &str, asset: &str) -> bool {
+    owner == STRISE_STAKING && asset == "rise"
 }
 
 fn is_edge_asset(asset: &str) -> bool {
