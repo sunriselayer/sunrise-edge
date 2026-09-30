@@ -65,7 +65,9 @@ roadmap describes a later target state.
   control, portable logical commitments and verified new-validator readiness.
 - [Portable reconstruction storage contract](portable-reconstruction.md):
   body-free key/metadata enumeration, bounded payload ranges and the separate
-  protocol obligations for cut authentication and completeness.
+  protocol obligations for cut authentication and completeness;
+  [DR-0166](decisions/0166-portable-candidate-snapshot.md) defines the stronger
+  backend-enforced snapshot boundary for candidate enumeration, not cut authority.
 
 Production-oriented persistence requirements and the PostgreSQL mapping are
 separate operational references:

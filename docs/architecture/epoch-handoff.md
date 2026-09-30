@@ -477,7 +477,11 @@ Define explicit runtime-neutral bounded repositories; the current key scanner
 does not enumerate the separate SQL receipt, object-head or object-version
 tables. The [portable reconstruction storage contract](portable-reconstruction.md)
 separates indexed keys, body-free descriptors and bounded payload ranges;
-it provides no authenticated cut or cross-page snapshot by itself.
+its original per-record API provides no authenticated cut or cross-page snapshot
+by itself. [DR-0166](decisions/0166-portable-candidate-snapshot.md) defines a
+stronger provider-enforced local snapshot for consistent candidate enumeration.
+That token still proves neither authenticated replay closure nor serving
+authority; it belongs outside logical roots and cannot substitute for Seal.
 Each collection has canonical keys, exact semantic projections and
 complete range boundaries:
 

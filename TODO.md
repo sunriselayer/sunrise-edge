@@ -104,7 +104,7 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 | --- | --- | --- |
 | 1 | Generic certified network contract lifecycle | Merged as PR #228 on 2026-09-27 after the full repository gate, fresh exact-head Opus APPROVE and required CI: Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Independent ingress/security gates remain separate. |
 | 2 | Network economics and validator operations | Merged as PR #232 on 2026-09-27 with normal merge commit `86711be`, after fresh exact-head Opus APPROVE and the passing complete repository CI. Fixed-epoch four-namespace CLI evidence is implemented. Membership-dependent Deposit/Withdraw positives join delivery 3; economics/ingress security audits remain separate. |
-| 3 | Validator membership and epoch handoff | In progress in Draft PR #235 under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Logical generations, ordered Freeze, publication-before-apply, bounded DrainSet, a real nonempty certified-drain local four-validator test and a CAS-fenced local business-free barrier have evidence. A portable authenticated cut, complete causal scheduling, Seal, readiness/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation are not complete. |
+| 3 | Validator membership and epoch handoff | In progress in Draft PR #235 under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Logical generations, ordered Freeze, publication-before-apply, bounded DrainSet, certified ordered history and local candidate enumeration/transport have bounded evidence. A portable authenticated cut, complete causal scheduling, Seal, readiness/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation are not complete. |
 | 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
 
 PostgreSQL remains the existing tested profile for delivery 1, not a mandatory
@@ -693,6 +693,49 @@ The detailed existing evidence and remaining criteria follow:
   primitive and must be included in that later authenticated manifest.
   Neither the local barrier nor a source-local
   committed counter is transferable authority.
+  U15 follows [DR-0166](docs/architecture/decisions/0166-portable-candidate-snapshot.md):
+  optional backend-enforced tokens pin a local source namespace/domain,
+  writer and checked mutation sequence. Memory, shared SQL/SQLite and
+  PostgreSQL compare them inside the same lock/read transaction as every
+  page, descriptor, chunk and outbox check. SQL stores persist a random
+  bootstrap source-instance ID; a different fresh DB cannot reuse a token
+  just because its logical namespace, fence and counter match. Covered writes
+  include legacy commits, objects, receipts, outbox claim/expiry/ACK; overflow
+  rejects atomically. Unsupported metadata shapes fail closed without repair.
+  The connected candidate driver binds the already verified real post-DrainSet
+  terminal, emits four fixed-order collections with bounded chunks and end
+  counts, and persists progress by its own CAS in a separate namespace/domain.
+  Closed classifiers retain original consensus/economic/publication history
+  and provenance, exclude named local reservations/progress, and refuse
+  unknown reserved families and legacy outbox rows. Six new canonical frames
+  have independent JavaScript/Rust fixed vectors. The incremental receiver
+  checks an externally pinned manifest, ordering, key/descriptor kinds,
+  chunk continuity, counts and root without advancing on a rejected item.
+  Candidate transport is **not an authenticated importer**. The root is not
+  yet a normalized logical root; retained legacy bodies can contain checkpoint
+  operands or valid QC subsets. Blob references do not prove content closure.
+  Source/control writes conservatively invalidate new continuation; this
+  requires a quiet source, not a handoff-liveness or throughput claim.
+  Exact previous-item replay serves saved bytes without reapplication;
+  indeterminate progress commits expose no success and require reconciliation.
+  The local progress transaction cannot atomically assert the source's U14
+  CAS set. Full signed-genesis/causal replay and dependency closure, a signed
+  cut decision, Seal, conditional next-set readiness, activation,
+  fresh-genesis gating and independent PostgreSQL network E2E remain next.
+  Draft PR #235 remains incomplete Delivery 3 and **must not be merged**.
+  Parent-run focused evidence covers all four real signed-genesis/DrainSet
+  memory replicas feeding this driver, with a separate file-backed SQLite
+  progress DB closed/reopened between every step, exact replay without CAS
+  rewrite, source mutation and progress-CAS conflicts, preserved receipt
+  bytes, large/empty/deleted records and successful pinned-root verification.
+  Dedicated unit cases exercise all-excluded 128-key continuation, lost
+  confirmation before/after real progress CAS and immutable receiver state
+  on foreign/gapped/reordered/truncated streams. Live PostgreSQL portable
+  reads exercise fresh connections, wrong source identity and atomic overflow;
+  SQLite tests include same-namespace/counter fresh files and reopen continuity.
+  These are local storage/transport tests, not independent PostgreSQL network
+  handoff, target import or activation evidence.
+  U15 full repository/Opus/CI validation is still pending until recorded below.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).
