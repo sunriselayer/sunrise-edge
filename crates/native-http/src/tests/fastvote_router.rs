@@ -257,6 +257,13 @@ async fn certified_router_mounts_fastvote_and_publication_retention_routes() {
         FASTVOTE_PUBLICATION_SOURCE_PATH,
         FASTVOTE_PUBLISHED_APPLY_PATH,
         FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
+        node_wire::FASTVOTE_RETAINED_PUBLICATION_SOURCE_PATH,
+        node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
+        node_wire::FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
+        node_wire::FASTVOTE_DRAIN_UNION_ADVANCE_PATH,
+        node_wire::FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH,
+        node_wire::FASTVOTE_DRAIN_APPLY_PATH,
+        "/v1/fastvote/drain/import/0101010101010101010101010101010101010101010101010101010101010101",
     ] {
         assert_eq!(
             dispatch(&app, "POST", path, vec![0xAA]).await,

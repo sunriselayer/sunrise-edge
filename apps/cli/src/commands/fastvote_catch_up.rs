@@ -137,7 +137,7 @@ fn add_input_bytes(current: usize, intent: usize, certificate: usize) -> Result<
     Ok(combined)
 }
 
-fn retained_input(
+pub(super) fn retained_input(
     path: &Path,
     maximum: usize,
     kind: &'static str,

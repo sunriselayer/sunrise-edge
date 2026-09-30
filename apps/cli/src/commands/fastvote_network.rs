@@ -42,7 +42,7 @@ use std::{
     error::Error,
     ffi::OsString,
     fs::{File, OpenOptions},
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     num::NonZeroUsize,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -51,15 +51,15 @@ use std::{
 use protocol_types::AtomicityDomainId;
 use sunrise_edge_client::{
     AvailabilityCertificate, Client, CommitmentProfile, FastCertificate, FastPathCertifier,
-    FastVoteEndpoint, FastVoteNetworkError, FastVoteQuorumError, MAX_ENCODED_BUNDLE_BYTES,
-    MAX_FASTVOTE_NETWORK_ENDPOINTS, PaidApplication, PaidExecutionResult, PaidExecutionStatus,
-    SignedPaidIntent, Transport, ValidatorId, apply_fastvote_to_all,
+    FastVoteEndpoint, FastVoteNetworkError, FastVoteQuorumError, FrozenFrontierVote,
+    MAX_ENCODED_BUNDLE_BYTES, MAX_FASTVOTE_NETWORK_ENDPOINTS, PaidApplication, PaidExecutionResult,
+    PaidExecutionStatus, SignedPaidIntent, Transport, ValidatorId, apply_fastvote_to_all,
     apply_published_fastvote_to_all,
     call::CallIntent,
     collect_fastvote_availability_certificate, collect_fastvote_certificate,
-    decode_availability_certificate, decode_fast_certificate, decode_signed_paid_intent,
-    encode_availability_certificate, encode_fast_certificate, encode_signed_paid_intent,
-    load_trusted_fastvote_genesis_with_profile,
+    decode_availability_certificate, decode_fast_certificate, decode_frozen_frontier_vote,
+    decode_signed_paid_intent, encode_availability_certificate, encode_fast_certificate,
+    encode_signed_paid_intent, load_trusted_fastvote_genesis_with_profile,
     local_execution::{encode_instance_record, instance_target},
     local_publication_resolver, validate_fastvote_endpoints,
 };
@@ -187,6 +187,28 @@ pub(super) fn reserve_artifacts(
 }
 
 impl ReservedArtifact {
+    fn ensure_exact_input(&mut self, expected: &[u8]) -> Result<(), CliError> {
+        self.ensure_attached()?;
+        let limit: u64 = u64::try_from(expected.len())
+            .map_err(failure)?
+            .checked_add(1)
+            .ok_or_else(|| invalid("input recheck bound overflow"))?;
+        self.file.seek(SeekFrom::Start(0)).map_err(failure)?;
+        let mut actual: Vec<u8> = Vec::new();
+        Read::by_ref(&mut self.file)
+            .take(limit)
+            .read_to_end(&mut actual)
+            .map_err(failure)?;
+        if actual != expected {
+            return Err(invalid(format!(
+                "retained {} input changed at {:?}",
+                self.kind, self.path
+            )));
+        }
+        self.file.sync_all().map_err(failure)?;
+        self.parent.sync_all().map_err(failure)?;
+        Ok(())
+    }
     pub(super) fn path(&self) -> &Path {
         &self.path
     }
@@ -237,6 +259,55 @@ fn persist_handles(file: &mut File, parent: &File, bytes: &[u8]) -> std::io::Res
     file.sync_all()?;
     parent.sync_all()?;
     Ok(())
+}
+
+pub(super) const MAX_DRAIN_SELECTION_ENTRIES: usize = MAX_FASTVOTE_NETWORK_ENDPOINTS;
+const MAX_DRAIN_SELECTION_MANIFEST_BYTES: usize = 64 * 1024;
+const MAX_DRAIN_SELECTION_VOTE_FILE_BYTES: usize = sunrise_edge_client::MAX_FRONTIER_VOTE_BYTES;
+
+/// Reads bounded exact vote files; pinned callers verify all authority.
+pub(super) fn load_drain_selection(path: &str) -> Result<Vec<FrozenFrontierVote>, CliError> {
+    let bytes: Vec<u8> = read_bounded(path, MAX_DRAIN_SELECTION_MANIFEST_BYTES)?;
+    let text: &str = std::str::from_utf8(&bytes)
+        .map_err(|_| invalid("--drain-selection-manifest must be UTF-8"))?;
+    let parent: PathBuf = Path::new(path)
+        .canonicalize()
+        .map_err(failure)?
+        .parent()
+        .ok_or_else(|| invalid("--drain-selection-manifest parent missing"))?
+        .to_owned();
+    let mut votes: Vec<FrozenFrontierVote> = Vec::new();
+    for raw_line in text.lines() {
+        let line: &str = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.split_whitespace().count() != 1 {
+            return Err(invalid(
+                "--drain-selection-manifest line must be a single path; whitespace in paths is unsupported",
+            ));
+        }
+        if votes.len() >= MAX_DRAIN_SELECTION_ENTRIES {
+            return Err(invalid(format!(
+                "--drain-selection-manifest exceeds the maximum accepted {MAX_DRAIN_SELECTION_ENTRIES} entries"
+            )));
+        }
+        let vote_path: PathBuf = parent.join(line);
+        let vote_bytes: Vec<u8> = read_bounded(
+            vote_path
+                .to_str()
+                .ok_or_else(|| invalid("--drain-selection-manifest vote path must be UTF-8"))?,
+            MAX_DRAIN_SELECTION_VOTE_FILE_BYTES,
+        )?;
+        let vote: FrozenFrontierVote = decode_frozen_frontier_vote(&vote_bytes).map_err(failure)?;
+        votes.push(vote);
+    }
+    if votes.is_empty() {
+        return Err(invalid(
+            "--drain-selection-manifest needs at least one selected signer",
+        ));
+    }
+    Ok(votes)
 }
 
 /// One line of `--fastvote-network`: `validator_id endpoint tls_server_name
@@ -408,6 +479,43 @@ pub(super) fn load_endpoints_and_certifier(
 ) -> Result<(Vec<FastVoteEndpoint<CliTransport>>, FastPathCertifier), CliError> {
     let (endpoints, certifier, _) = load_endpoints_and_profile(parsed, resolver, context)?;
     Ok((endpoints, certifier))
+}
+
+/// Drain authority is available only in a locally authenticated signed-v3
+/// genesis. The signed minimum is not inferred from an endpoint response.
+pub(super) fn load_drain_endpoints_and_certifier(
+    parsed: &ParsedArgs,
+    resolver: &sunrise_edge_client::HashSuiteResolver,
+    context: &sunrise_edge_client::PublicationContext,
+) -> Result<(Vec<FastVoteEndpoint<CliTransport>>, FastPathCertifier, u64), CliError> {
+    let digest: [u8; 32] = decode_hex_32(
+        "--fastvote-expected-genesis-digest",
+        parsed.require("--fastvote-expected-genesis-digest")?,
+    )?;
+    let trusted: sunrise_edge_client::TrustedFastVoteGenesis =
+        load_trusted_fastvote_genesis_with_profile(
+            Path::new(parsed.require("--fastvote-genesis-manifest")?),
+            resolver,
+            digest,
+            context,
+        )
+        .map_err(failure)?;
+    if trusted.commitment_profile != CommitmentProfile::LogicalGenerationV2
+        || trusted.minimum_freeze_block_height == 0
+    {
+        return Err(invalid(
+            "drain requires a locally pinned fresh signed-v3 genesis",
+        ));
+    }
+    let peers: Vec<PeerConfig> = parse_network_config(parsed.require("--fastvote-network")?)?;
+    let endpoints: Vec<FastVoteEndpoint<CliTransport>> =
+        build_endpoints(&peers, trusted.commitment_profile)?;
+    validate_fastvote_endpoints(&endpoints, &trusted.certifier).map_err(failure)?;
+    Ok((
+        endpoints,
+        trusted.certifier,
+        trusted.minimum_freeze_block_height,
+    ))
 }
 
 /// Loads one locally authenticated manifest and returns its committee and
@@ -1487,3 +1595,9 @@ mod boundary_tests;
 
 #[path = "fastvote_catch_up.rs"]
 pub(super) mod catch_up;
+
+#[path = "fastvote_drain_local_ready.rs"]
+pub(super) mod drain_local_ready;
+
+#[path = "fastvote_drain_member.rs"]
+pub(super) mod drain_member;

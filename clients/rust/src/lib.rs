@@ -56,6 +56,8 @@ pub mod client;
 pub mod context;
 pub mod error;
 pub mod fastvote_client;
+pub mod fastvote_drain_client;
+pub mod fastvote_drain_driver;
 pub mod fastvote_frontier_client;
 pub mod fastvote_publication_client;
 pub mod key;
@@ -94,6 +96,10 @@ pub use fastvote_client::{
     apply_fastvote_to_all, collect_fastvote_certificate, load_trusted_fastvote_genesis,
     load_trusted_fastvote_genesis_with_profile, validate_fastvote_endpoints,
 };
+pub use fastvote_drain_client::{ExpectedDrainFreeze, validate_drain_member_output};
+pub use fastvote_drain_driver::{
+    DrainDriveBounds, DrainDriveError, DrainDriveOutcome, drive_drain_to_local_ready,
+};
 pub use fastvote_publication_client::{
     FastVoteAvailabilityAttempt, FastVotePublicationError, FastVotePublishedRound,
     apply_published_fastvote_to_all, collect_fastvote_availability_certificate,
@@ -110,6 +116,7 @@ pub use consensus::bundle::MAX_ENCODED_BUNDLE_BYTES;
 pub use consensus::{
     AvailabilityCertificate, decode_availability_certificate, encode_availability_certificate,
 };
+pub use consensus::{DrainUnionIdentity, decode_drain_union_identity, encode_drain_union_identity};
 pub use consensus::{
     FrozenFrontierCertifier, FrozenFrontierPage, FrozenFrontierPageVerifier, FrozenFrontierVote,
     decode_frozen_frontier_page, decode_frozen_frontier_vote, encode_frozen_frontier_page,
@@ -122,8 +129,13 @@ pub use node_core::fast_path::records::{
 pub use node_core::logical_generation::CommitmentProfile;
 pub use node_wire::MAX_FASTVOTE_AVAILABILITY_CERTIFICATE_BYTES;
 pub use node_wire::{
+    DrainMemberApplyRequest, DrainMemberConfirmRequest, DrainSignerPageRequest,
+    DrainSignerProgressRequest, DrainSignerProgressResponse, DrainUnionAdvanceRequest,
+    FASTVOTE_DRAIN_APPLY_PATH, FASTVOTE_DRAIN_IMPORT_PATH, FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
+    FASTVOTE_DRAIN_SIGNER_PAGE_PATH, FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH,
+    FASTVOTE_DRAIN_UNION_ADVANCE_PATH, FASTVOTE_RETAINED_PUBLICATION_SOURCE_PATH,
     FrozenFrontierPageRequest, FrozenFrontierPageResponse, MAX_FRONTIER_PAGE_LIMIT,
-    MAX_FRONTIER_PAGE_RESPONSE_BYTES, MAX_FRONTIER_VOTE_BYTES,
+    MAX_FRONTIER_PAGE_RESPONSE_BYTES, MAX_FRONTIER_VOTE_BYTES, RetainedPublicationSourceRequest,
 };
 pub use paid_execution_client::{
     PAID_EXECUTION_PATH, PAID_FEE_POLICY_PATH, build_signed_paid_execution,

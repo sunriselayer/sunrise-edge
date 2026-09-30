@@ -18,15 +18,15 @@ use consensus::{
     encode_fast_certificate,
 };
 use execution::paid_execution::{
-    PaidExecutionResult, SignedPaidIntent, authenticate_paid_intent, encode_signed_paid_intent,
-    paid_invocation_digest,
+    PaidExecutionResult, SignedPaidIntent, authenticate_paid_intent, decode_signed_paid_intent,
+    encode_signed_paid_intent, paid_invocation_digest,
 };
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
 use node_wire::{
     FASTVOTE_PUBLICATION_RETAIN_PATH, FASTVOTE_PUBLICATION_SOURCE_PATH,
-    FASTVOTE_PUBLISHED_APPLY_PATH, FastVoteApplyRequest, FastVotePublishedApplyRequest,
-    NODE_EVENT_MEDIA_TYPE,
+    FASTVOTE_PUBLISHED_APPLY_PATH, FASTVOTE_RETAINED_PUBLICATION_SOURCE_PATH, FastVoteApplyRequest,
+    FastVotePublishedApplyRequest, NODE_EVENT_MEDIA_TYPE, RetainedPublicationSourceRequest,
 };
 use protocol_types::{AtomicityDomainId, Digest32, ValidatorId};
 
@@ -253,6 +253,83 @@ impl<T: Transport> Client<T> {
             ));
         }
         Ok((bundle, verified.identity))
+    }
+
+    /// Fetches original or imported retained proof from any configured outgoing
+    /// replica, verifying it against the exact selected frontier identity.
+    pub fn source_retained_fastvote_publication(
+        &self,
+        certifier: &FastPathCertifier,
+        resolver: &HashSuiteResolver,
+        history: &[HashSuiteResolver],
+        expected_identity: &AvailabilityIdentity,
+        deadline: Option<Instant>,
+    ) -> Result<PublicationBundle, ClientError> {
+        if resolver.chain_id() != certifier.chain_id()
+            || resolver.protocol_version() != certifier.protocol_version()
+            || expected_identity.chain_id != *certifier.chain_id()
+            || expected_identity.protocol_version != certifier.protocol_version()
+            || expected_identity.epoch != certifier.epoch()
+        {
+            return Err(ClientError::FastVotePublicationMismatch(
+                "retained source differs from locally pinned authority",
+            ));
+        }
+        let request: RetainedPublicationSourceRequest = RetainedPublicationSourceRequest {
+            epoch: certifier.epoch(),
+            request_id: expected_identity.request_id,
+        };
+        let response = self.transport().send(&WireRequest {
+            method: Method::Post,
+            path: FASTVOTE_RETAINED_PUBLICATION_SOURCE_PATH.to_owned(),
+            content_type: Some(NODE_EVENT_MEDIA_TYPE),
+            body: request.encode()?,
+            deadline,
+        })?;
+        let response_body: Vec<u8> = expect_success(response, NODE_RESULT_MEDIA_TYPE)?;
+        let bundle: PublicationBundle = decode_publication_bundle(&response_body)?;
+        if bundle.domain != expected_identity.domain
+            || bundle.request_id != expected_identity.request_id
+        {
+            return Err(ClientError::FastVotePublicationMismatch(
+                "retained source bundle domain or request id",
+            ));
+        }
+        let verified = verify_publication_bundle(
+            &bundle,
+            certifier,
+            &FastPathEd25519Verifier,
+            resolver,
+            history,
+        )?;
+        if verified.identity != *expected_identity {
+            return Err(ClientError::FastVotePublicationMismatch(
+                "retained source bundle identity",
+            ));
+        }
+        let expected_context: PublicationContext = PublicationContext::new(
+            certifier.chain_id().clone(),
+            certifier.protocol_version(),
+            certifier.epoch(),
+        )
+        .map_err(ClientError::Publication)?;
+        authenticate_paid_intent(resolver, &expected_context, &bundle.signed_intent)?;
+        let signed: SignedPaidIntent = decode_signed_paid_intent(&bundle.signed_intent)?;
+        let tx_hash: Digest32 = paid_invocation_digest(resolver, &signed)?;
+        if tx_hash != bundle.certificate.tx_hash
+            || tx_hash != expected_identity.signed_intent_digest
+        {
+            return Err(ClientError::FastVoteUnexpectedTransaction {
+                expected: expected_identity.signed_intent_digest,
+                actual: tx_hash,
+            });
+        }
+        if signed.intent.request_id != expected_identity.request_id {
+            return Err(ClientError::FastVotePublicationMismatch(
+                "retained source bundle signed-intent request id",
+            ));
+        }
+        Ok(bundle)
     }
 
     /// Asks this endpoint to retain the *complete* verified bundle. The core
