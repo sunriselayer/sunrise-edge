@@ -22,7 +22,11 @@ use std::fmt;
 /// rather than being silently reinterpreted. `v2` adds the checked
 /// `mutation_sequence` column bumped at every write chokepoint (see
 /// [`advance_mutation_sequence`]); a `v1` database fails closed, including
-/// when its older metadata table has no mutation-sequence column.
+/// when its older metadata table has no mutation-sequence column. `v2` is
+/// redefined in place (not advanced) to add the `source_instance_id`
+/// column: this schema generation is unreleased, so a pre-production shape
+/// missing the column fails closed on the next read rather than being
+/// migrated.
 pub const SQL_DURABLE_SCHEMA_IDENTITY: &[u8] = b"sunrise-edge/sqlite/structured/schema/v2";
 
 pub(crate) const OBJECT_HEAD_STATUS_CURRENT: i64 = 1;
@@ -107,7 +111,8 @@ pub const TABLE_STATEMENTS: &[&str] = &[
          validator_id BLOB NOT NULL CHECK(length(validator_id) = 32),
          domain BLOB NOT NULL CHECK(length(domain) = 32),
          writer_fence BLOB NOT NULL CHECK(length(writer_fence) = 8),
-         mutation_sequence BLOB NOT NULL CHECK(length(mutation_sequence) = 8)
+         mutation_sequence BLOB NOT NULL CHECK(length(mutation_sequence) = 8),
+         source_instance_id BLOB NOT NULL CHECK(length(source_instance_id) = 16)
      )",
     "CREATE TABLE IF NOT EXISTS durable_state (
          key BLOB PRIMARY KEY NOT NULL,
@@ -241,11 +246,20 @@ impl From<SqlSessionError> for SchemaError {
 }
 
 /// The one persisted fact every commit/read must revalidate: the active
-/// writer generation.
+/// writer generation, plus this database's random bootstrap-time identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NamespaceMetadata {
     writer_fence: WriterFenceGeneration,
     mutation_sequence: u64,
+    /// A random 16-byte identity persisted once at trusted bootstrap. It
+    /// distinguishes two independently bootstrapped stores that otherwise
+    /// share the same chain/validator/domain namespace tuple, so a portable
+    /// snapshot token can never validate against the wrong physical source.
+    /// It is a local source-identity bound, never a protocol fact, and does
+    /// not survive a cloned/restored backup file being reattached as a new
+    /// writer: an operator restore or failover still requires its own
+    /// writer-refencing procedure, not this identity.
+    source_instance_id: [u8; 16],
 }
 
 impl NamespaceMetadata {
@@ -259,6 +273,12 @@ impl NamespaceMetadata {
     #[must_use]
     pub const fn mutation_sequence(&self) -> u64 {
         self.mutation_sequence
+    }
+
+    /// Returns the random bootstrap-time source instance identity.
+    #[must_use]
+    pub const fn source_instance_id(&self) -> [u8; 16] {
+        self.source_instance_id
     }
 }
 
@@ -281,7 +301,8 @@ pub fn verify_namespace(
     namespace: &SqlDurableNamespace,
 ) -> Result<NamespaceMetadata, SchemaError> {
     let rows = session.exec(
-        "SELECT schema_identity, chain_id, validator_id, domain, writer_fence, mutation_sequence
+        "SELECT schema_identity, chain_id, validator_id, domain, writer_fence, mutation_sequence,
+                source_instance_id
          FROM durable_metadata WHERE id = 1",
         &[],
     )?;
@@ -306,9 +327,14 @@ pub fn verify_namespace(
     let mutation_sequence_bytes = row.blob(5).map_err(SqlSessionError::from)?;
     let mutation_sequence =
         decode_u64(mutation_sequence_bytes).ok_or(SchemaError::InvalidPersistedMetadata)?;
+    let source_instance_id_bytes = row.blob(6).map_err(SqlSessionError::from)?;
+    let source_instance_id: [u8; 16] = source_instance_id_bytes
+        .try_into()
+        .map_err(|_| SchemaError::InvalidPersistedMetadata)?;
     Ok(NamespaceMetadata {
         writer_fence,
         mutation_sequence,
+        source_instance_id,
     })
 }
 
@@ -345,8 +371,8 @@ pub fn bootstrap_namespace(
     session.exec(
         "INSERT OR IGNORE INTO durable_metadata
              (id, schema_identity, chain_id, validator_id, domain, writer_fence,
-              mutation_sequence)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+              mutation_sequence, source_instance_id)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, randomblob(16))",
         &[
             SqlValue::Blob(SQL_DURABLE_SCHEMA_IDENTITY.to_vec()),
             SqlValue::Text(namespace.chain_id().as_str().to_owned()),

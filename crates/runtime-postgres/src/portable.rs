@@ -6,7 +6,8 @@ use runtime::portable::{
     DurableCollection, DurablePayloadDescriptor, DurablePortableRepository,
     DurablePortableSnapshotRepository, DurableRecordChunk, DurableRecordChunkOutcome,
     DurableRecordChunkRequest, DurableRecordDescriptor, DurableRecordKey, DurableRecordMetadata,
-    DurableRecordPage, DurableRecordScan, PortableSnapshotError, PortableSnapshotToken,
+    DurableRecordPage, DurableRecordScan, MAX_PORTABLE_CHAIN_ID_BYTES, PortableSnapshotError,
+    PortableSnapshotToken,
 };
 use std::num::NonZeroUsize;
 
@@ -346,11 +347,21 @@ where
 
 /// Exact bounded local namespace identity: a one-byte chain-id length
 /// prefix (explicit framing over a variable-length field, never bare
-/// concatenation), the chain id itself, the 32-byte validator id, and the
-/// 32-byte atomicity domain. This is a local source-identity bound, not a
-/// protocol or cut identifier; it is never compared across replicas.
+/// concatenation), the chain id itself (bounded to
+/// [`MAX_PORTABLE_CHAIN_ID_BYTES`]), the 32-byte validator id, the 32-byte
+/// atomicity domain, and the 16-byte random `source_instance_id` persisted
+/// at trusted bootstrap and read inside the same guarded transaction as the
+/// writer fence/commit sequence. That last field distinguishes two
+/// independently bootstrapped rows that otherwise share the same
+/// chain/validator/domain tuple, so the same writer fence/commit sequence
+/// pair can never validate against a different physical source. This is a
+/// local source-identity bound, not a protocol or cut identifier; it is
+/// never compared across replicas. It does not by itself solve a
+/// cloned/restored backup's identity: an operator restore or failover
+/// still needs its own writer-refencing procedure.
 fn portable_namespace_bytes(
     namespace: &PostgresNamespace,
+    source_instance_id: &[u8; 16],
 ) -> Result<Vec<u8>, runtime::RuntimeError> {
     // `PROVIDER_PREFIX` distinguishes this backend's identity bytes from any
     // other backend's, so two stores that happen to share the same
@@ -358,15 +369,19 @@ fn portable_namespace_bytes(
     // deployment mirroring the same namespace) never produce equal tokens.
     const PROVIDER_PREFIX: &[u8] = b"pg/";
     let chain_id: &[u8] = namespace.chain_id_bytes();
+    if chain_id.len() > MAX_PORTABLE_CHAIN_ID_BYTES {
+        return Err(runtime::RuntimeError::InvalidStateScanPage);
+    }
     let length: u8 =
         u8::try_from(chain_id.len()).map_err(|_| runtime::RuntimeError::InvalidStateScanPage)?;
     let mut bytes: Vec<u8> =
-        Vec::with_capacity(PROVIDER_PREFIX.len() + 1 + chain_id.len() + 32 + 32);
+        Vec::with_capacity(PROVIDER_PREFIX.len() + 1 + chain_id.len() + 32 + 32 + 16);
     bytes.extend_from_slice(PROVIDER_PREFIX);
     bytes.push(length);
     bytes.extend_from_slice(chain_id);
     bytes.extend_from_slice(&namespace.validator_id().as_bytes()[..]);
     bytes.extend_from_slice(&namespace.domain().as_bytes()[..]);
+    bytes.extend_from_slice(source_instance_id);
     Ok(bytes)
 }
 
@@ -390,7 +405,6 @@ where
                 DurableReadError::InvalidRequest(runtime::RuntimeError::AtomicityDomainMismatch),
             ));
         }
-        let namespace_bytes: Vec<u8> = portable_namespace_bytes(&self.namespace)?;
         let mut client = self
             .acquire(context)
             .map_err(|failure| PortableSnapshotError::Read(failure.into_read_error()))?;
@@ -411,6 +425,8 @@ where
                 .map_err(|failure| PortableSnapshotError::Read(failure.into_read_error()))?;
         validate_operation_authority(metadata, context)
             .map_err(|failure| PortableSnapshotError::Read(failure.into_read_error()))?;
+        let namespace_bytes: Vec<u8> =
+            portable_namespace_bytes(&self.namespace, &metadata.source_instance_id())?;
         if token
             .check(
                 &namespace_bytes,
@@ -449,7 +465,6 @@ where
                 DurableReadError::InvalidRequest(runtime::RuntimeError::AtomicityDomainMismatch),
             ));
         }
-        let namespace_bytes: Vec<u8> = portable_namespace_bytes(&self.namespace)?;
         let mut client = self
             .acquire(context)
             .map_err(|failure| PortableSnapshotError::Read(failure.into_read_error()))?;
@@ -470,6 +485,8 @@ where
                 .map_err(|failure| PortableSnapshotError::Read(failure.into_read_error()))?;
         validate_operation_authority(metadata, context)
             .map_err(|failure| PortableSnapshotError::Read(failure.into_read_error()))?;
+        let namespace_bytes: Vec<u8> =
+            portable_namespace_bytes(&self.namespace, &metadata.source_instance_id())?;
         transaction.rollback().map_err(|error| {
             PortableSnapshotError::Read(PreCommitFailure::from_database(&error).into_read_error())
         })?;

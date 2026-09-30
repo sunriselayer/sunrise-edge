@@ -445,11 +445,18 @@ impl<B: SqlBackend> SqlDurableEngine<B> {
 
 /// Exact bounded local namespace identity: a one-byte chain-id length
 /// prefix (explicit framing over a variable-length field, never bare
-/// concatenation), the chain id itself, the 32-byte validator id, and the
-/// 32-byte atomicity domain. This is a local source-identity bound, not a
-/// protocol or cut identifier; it is never compared across replicas.
+/// concatenation), the chain id itself (bounded to
+/// [`MAX_PORTABLE_CHAIN_ID_BYTES`]), the 32-byte validator id, the 32-byte
+/// atomicity domain, and the 16-byte random `source_instance_id` persisted
+/// at trusted bootstrap. The last field is what distinguishes two
+/// independently bootstrapped stores that otherwise share the same
+/// chain/validator/domain tuple, so the same fence/sequence pair can never
+/// validate against a different store's bytes. This is a local
+/// source-identity bound, not a protocol or cut identifier; it is never
+/// compared across replicas.
 fn portable_namespace_bytes(
     namespace: &SqlDurableNamespace,
+    source_instance_id: &[u8; 16],
 ) -> Result<Vec<u8>, runtime::RuntimeError> {
     // `PROVIDER_PREFIX` distinguishes this backend's identity bytes from any
     // other backend's, so two stores that happen to share the same
@@ -457,15 +464,19 @@ fn portable_namespace_bytes(
     // deployment mirroring the same namespace) never produce equal tokens.
     const PROVIDER_PREFIX: &[u8] = b"sql/";
     let chain_id: &[u8] = namespace.chain_id().as_str().as_bytes();
+    if chain_id.len() > MAX_PORTABLE_CHAIN_ID_BYTES {
+        return Err(runtime::RuntimeError::InvalidStateScanPage);
+    }
     let length: u8 =
         u8::try_from(chain_id.len()).map_err(|_| runtime::RuntimeError::InvalidStateScanPage)?;
     let mut bytes: Vec<u8> =
-        Vec::with_capacity(PROVIDER_PREFIX.len() + 1 + chain_id.len() + 32 + 32);
+        Vec::with_capacity(PROVIDER_PREFIX.len() + 1 + chain_id.len() + 32 + 32 + 16);
     bytes.extend_from_slice(PROVIDER_PREFIX);
     bytes.push(length);
     bytes.extend_from_slice(chain_id);
     bytes.extend_from_slice(namespace.validator_id().as_bytes());
     bytes.extend_from_slice(namespace.domain().as_bytes());
+    bytes.extend_from_slice(source_instance_id);
     Ok(bytes)
 }
 
@@ -482,11 +493,13 @@ impl<B: SqlBackend> SqlDurableEngine<B> {
                 DurableReadError::InvalidRequest(RuntimeError::AtomicityDomainMismatch),
             ));
         }
-        let namespace_bytes: Vec<u8> = portable_namespace_bytes(&self.namespace)?;
         run_read(&self.backend, Self::budget(context), |session, now| {
             check_deadline(context, now)?;
             let metadata: NamespaceMetadata = schema::verify_namespace(session, &self.namespace)?;
             validate_authority(&metadata, context, now)?;
+            let namespace_bytes: Vec<u8> =
+                portable_namespace_bytes(&self.namespace, &metadata.source_instance_id())
+                    .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
             if token
                 .check(
                     &namespace_bytes,
@@ -521,15 +534,21 @@ impl<B: SqlBackend> DurablePortableSnapshotRepository for SqlDurableEngine<B> {
                 DurableReadError::InvalidRequest(RuntimeError::AtomicityDomainMismatch),
             ));
         }
-        let namespace_bytes: Vec<u8> = portable_namespace_bytes(&self.namespace)?;
-        let (writer_fence, mutation_sequence) =
+        let (namespace_bytes, writer_fence, mutation_sequence) =
             run_read(&self.backend, Self::budget(context), |session, now| {
                 check_deadline(context, now)?;
                 let metadata: NamespaceMetadata =
                     schema::verify_namespace(session, &self.namespace)?;
                 validate_authority(&metadata, context, now)?;
+                let namespace_bytes: Vec<u8> =
+                    portable_namespace_bytes(&self.namespace, &metadata.source_instance_id())
+                        .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
                 check_deadline_before_commit(session, context)?;
-                Ok((metadata.writer_fence(), metadata.mutation_sequence()))
+                Ok((
+                    namespace_bytes,
+                    metadata.writer_fence(),
+                    metadata.mutation_sequence(),
+                ))
             })
             .map_err(|failure| PortableSnapshotError::Read(failure.into_read_error()))?;
         Ok(PortableSnapshotToken::new(

@@ -391,6 +391,27 @@ pub trait SqlBackend {
     /// `now_unix_millis` reading it must use for every time-dependent
     /// decision instead of reading a platform clock itself, so the same
     /// engine code runs unchanged on a host with no local wall clock.
+    ///
+    /// # Read snapshot / serializability guarantee
+    ///
+    /// Every implementation must give `run` a single consistent view of
+    /// every table it reads or writes: the exact metadata row and every
+    /// other row visible inside one call are frozen at the moment the
+    /// transaction starts (or are serializable against the rest of this
+    /// process's single-writer access pattern) and never change out from
+    /// under `run` because of another concurrent transaction. A
+    /// [`TransactionDecision::Rollback`] or a returned `Err` must leave
+    /// storage exactly as it was before `run` began; a partial write must
+    /// never become visible. No statement issued by `run` may interleave
+    /// with a statement from a different, concurrently executing
+    /// `transaction` call in a way that lets `run` observe a mix of rows
+    /// from two different logical points in time.
+    ///
+    /// `crate::engine::portable`'s blanket portable-snapshot support depends
+    /// on exactly this guarantee: it reads the namespace metadata row
+    /// (including the bootstrap-time `source_instance_id`) and the guarded
+    /// page/descriptor/chunk inside one `run` call and trusts that no other
+    /// write can be interleaved between them.
     fn transaction<T>(
         &self,
         budget: TransactionBudget,
