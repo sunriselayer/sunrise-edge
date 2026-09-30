@@ -132,8 +132,12 @@ outbox claim and ACK now each advance the covered mutation sequence. Their
 expectations are corrected without relaxing rejected/replayed/fenced-write
 invariants; parent-run required-image backup/restore, connection-exhaustion,
 disk-full, WAL-full and PgBouncer rehearsals pass on the extracted branch.
-The extracted full gate, latest-head Opus review and CI remain separate gates;
-this is not whole-aggregate validation or handoff completion.
+The extracted complete parent gate passed on code head `66f8f68` with all
+required PostgreSQL fault/recovery profiles, existing network/CLI E2Es,
+vectors and Rust/WASM/edge-adapter checks. Fresh Opus approved the entire
+independent feature at that head. Subsequent documentation-only updates still
+require latest-head approval and passing CI before PR #237 merges. This is
+not whole-aggregate validation or handoff completion.
 
 PostgreSQL remains the existing tested profile for delivery 1, not a mandatory
 protocol database. Lightweight authoritative profiles (Cloudflare SQLite-backed
