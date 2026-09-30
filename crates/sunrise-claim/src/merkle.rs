@@ -110,6 +110,8 @@ fn leaf_hash(leaf: &Leaf) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update([0x00]);
     hasher.update(leaf.claimant);
+    hasher.update(leaf.asset.as_bytes());
+    hasher.update([0xff]);
     hasher.update(leaf.claimable_at.to_be_bytes());
     hasher.update(leaf.amount.to_be_bytes());
     hasher.finalize().into()

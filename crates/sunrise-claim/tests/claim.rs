@@ -2,7 +2,7 @@ use k256::ecdsa::SigningKey;
 use k256::ecdsa::signature::Signer;
 use sunrise_claim::{
     Authorization, ClaimRequest, ClaimState, MerkleTree, apply_claim, canonical_bytes,
-    encode_sunrise, ledger_sha256, rise_leaves, sign_doc_bytes,
+    encode_sunrise, ledger_leaves, ledger_sha256, sign_doc_bytes,
 };
 
 fn sample_file(owner: &str, unlocked: &str, locked_at: u64) -> Vec<u8> {
@@ -37,12 +37,12 @@ fn a_signed_unlocked_leaf_reduces_custody_and_replay_fails() {
     let address = cosmos_from_pubkey(pubkey);
     let owner = encode_sunrise(&address);
     let raw = sample_file(&owner, "9", 5000);
-    let (snapshot, leaves) = rise_leaves(&raw).unwrap();
-    assert_eq!(leaves.len(), 2);
+    let (snapshot, leaves) = ledger_leaves(&raw).unwrap();
+    assert_eq!(leaves.len(), 3);
     let tree = MerkleTree::new(&leaves).unwrap();
     let index = leaves
         .iter()
-        .position(|leaf| leaf.claimable_at == snapshot)
+        .position(|leaf| leaf.asset == "rise" && leaf.claimable_at == snapshot)
         .unwrap();
     let proof = tree.proof(index).unwrap();
     let auth = Authorization {
@@ -59,7 +59,8 @@ fn a_signed_unlocked_leaf_reduces_custody_and_replay_fails() {
         root: tree.root(),
         ledger_sha256: ledger_sha256(&raw),
         snapshot_unix: snapshot,
-        custody: leaves.iter().map(|leaf| leaf.amount).sum(),
+        custody: [("rise".into(), 16u64)].into(),
+        edge_balance: Default::default(),
         consumed: Default::default(),
         nonces: Default::default(),
     };
@@ -67,12 +68,15 @@ fn a_signed_unlocked_leaf_reduces_custody_and_replay_fails() {
         authorization: auth.clone(),
         pubkey: pubkey.to_vec(),
         signature: signature.to_bytes().to_vec(),
-        leaf: leaves[index],
+        leaf: leaves[index].clone(),
         proof: proof.siblings,
     };
     let receipt = apply_claim(&mut state, &request).unwrap();
-    assert_eq!(receipt.amount, 4);
-    assert_eq!(state.custody, receipt.custody_remaining);
+    let sunrise_claim::Settlement::Edge { amount, .. } = receipt else {
+        panic!("rise claim must credit an Edge balance");
+    };
+    assert_eq!(amount, 4);
+    assert_eq!(state.custody.get("rise").copied(), Some(12));
     let err = apply_claim(&mut state, &request).unwrap_err();
     assert!(err.to_string().contains("nonce"));
 }
@@ -84,7 +88,7 @@ fn a_leaf_after_the_snapshot_is_rejected() {
     let pubkey = pubkey.as_bytes();
     let owner = encode_sunrise(&cosmos_from_pubkey(pubkey));
     let raw = sample_file(&owner, "9", 5000);
-    let (snapshot, leaves) = rise_leaves(&raw).unwrap();
+    let (snapshot, leaves) = ledger_leaves(&raw).unwrap();
     let tree = MerkleTree::new(&leaves).unwrap();
     let index = leaves
         .iter()
@@ -104,7 +108,8 @@ fn a_leaf_after_the_snapshot_is_rejected() {
         root: tree.root(),
         ledger_sha256: ledger_sha256(&raw),
         snapshot_unix: snapshot,
-        custody: 100,
+        custody: [("rise".into(), 100u64)].into(),
+        edge_balance: Default::default(),
         consumed: Default::default(),
         nonces: Default::default(),
     };
@@ -114,13 +119,13 @@ fn a_leaf_after_the_snapshot_is_rejected() {
             authorization: auth,
             pubkey: pubkey.to_vec(),
             signature: signature.to_bytes().to_vec(),
-            leaf: leaves[index],
+            leaf: leaves[index].clone(),
             proof: tree.proof(index).unwrap().siblings,
         },
     )
     .unwrap_err();
     assert!(err.to_string().contains("unlocks"));
-    assert_eq!(state.custody, 100);
+    assert_eq!(state.custody.get("rise").copied(), Some(100));
 }
 
 fn cosmos_from_pubkey(pubkey: &[u8]) -> [u8; 20] {

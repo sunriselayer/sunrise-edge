@@ -8,7 +8,7 @@ use std::env;
 use std::fs;
 use std::process::ExitCode;
 
-use sunrise_claim::{MerkleTree, ledger_sha256, rise_leaves};
+use sunrise_claim::{MerkleTree, ledger_leaves, ledger_sha256};
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
@@ -29,7 +29,7 @@ fn main() -> ExitCode {
 
 fn print_root(path: &str) -> Result<(), String> {
     let raw = fs::read(path).map_err(|err| err.to_string())?;
-    let (snapshot, leaves) = rise_leaves(&raw).map_err(|err| err.to_string())?;
+    let (snapshot, leaves) = ledger_leaves(&raw).map_err(|err| err.to_string())?;
     let tree =
         MerkleTree::new(&leaves).ok_or_else(|| "claims file has no rise rows".to_string())?;
     let total: u128 = leaves.iter().map(|leaf| leaf.amount as u128).sum();
