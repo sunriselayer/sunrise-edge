@@ -192,12 +192,7 @@ fn run_generic_idempotent(
 
 /// Commits one raw row into a generic-path fixture store, fenced at its exact
 /// observed revision.
-fn commit_generic_row(
-    store: &MemoryDurableStateStore,
-    _chain: &str,
-    key: &[u8],
-    value: Vec<u8>,
-) {
+fn commit_generic_row(store: &MemoryDurableStateStore, _chain: &str, key: &[u8], value: Vec<u8>) {
     let context = durable_context();
     let observed = store
         .get_versioned_durable(&context, domain(0xC5), key)
