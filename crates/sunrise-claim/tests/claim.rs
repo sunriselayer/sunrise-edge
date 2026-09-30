@@ -2,7 +2,7 @@ use k256::ecdsa::SigningKey;
 use k256::ecdsa::signature::Signer;
 use sunrise_claim::{
     Authorization, ClaimRequest, ClaimState, Leaf, MerkleTree, apply_claim, canonical_bytes,
-    encode_sunrise, ledger_leaves, ledger_sha256, sign_doc_bytes,
+    encode_sunrise, ledger_leaves, ledger_sha256, sign_doc_bytes, withdraw_usdrise,
 };
 
 const STRISE_STAKING: &str = "sunrise1ghd753shjuwexxywmgs4xz7x2q732vcnkm6h2pyv9s6ah3hylvrqz5nv4h";
@@ -164,6 +164,97 @@ fn only_the_staking_contract_own_rise_is_skipped() {
         .into_bytes();
         let err = ledger_leaves(&raw).unwrap_err();
         assert!(err.to_string().contains(owner), "{owner} {asset}: {err}");
+    }
+}
+
+#[test]
+fn a_usdrise_withdrawal_to_a_malformed_evm_address_burns_nothing() {
+    let signing = SigningKey::from_slice(&[0x22; 32]).unwrap();
+    let pubkey = signing.verifying_key().to_encoded_point(true);
+    let claimant = cosmos_from_pubkey(pubkey.as_bytes());
+    let key = (claimant, "usdrise".to_string());
+    let ledger = ledger_sha256(b"claims");
+    let mut state = credited_usdrise(claimant, ledger, 5);
+    for destination in [
+        "0x".to_string(),
+        "0x1234".to_string(),
+        "11".repeat(20),
+        format!("0x{}", "zz".repeat(20)),
+        format!("0x{}1", "11".repeat(20)),
+        format!("0x{}", "00".repeat(20)),
+        // A signed USDrise claim to a 32-byte Edge address is not a withdrawal.
+        format!("0x{}", "11".repeat(32)),
+    ] {
+        let request = withdrawal(&signing, ledger, &destination);
+        let err = withdraw_usdrise(&mut state, &request).unwrap_err();
+        assert!(
+            err.to_string().contains("destination"),
+            "{destination}: {err}"
+        );
+    }
+    assert_eq!(state.edge_balance.get(&key), Some(&5));
+    assert!(state.nonces.is_empty());
+
+    let destination = format!("0x{}", "11".repeat(20));
+    let request = withdrawal(&signing, ledger, &destination);
+    let order = withdraw_usdrise(&mut state, &request).unwrap();
+    assert_eq!(order.destination, destination);
+    assert_eq!(order.amount, 3);
+    assert_eq!(order.ledger_sha256, hex::encode(ledger));
+    assert_eq!(state.edge_balance.get(&key), Some(&2));
+}
+
+#[test]
+fn a_usdrise_withdrawal_signed_for_another_ledger_burns_nothing() {
+    let signing = SigningKey::from_slice(&[0x22; 32]).unwrap();
+    let pubkey = signing.verifying_key().to_encoded_point(true);
+    let claimant = cosmos_from_pubkey(pubkey.as_bytes());
+    let key = (claimant, "usdrise".to_string());
+    let mut state = credited_usdrise(claimant, ledger_sha256(b"claims"), 5);
+    let destination = format!("0x{}", "11".repeat(20));
+    let request = withdrawal(&signing, ledger_sha256(b"rehearsal"), &destination);
+    let err = withdraw_usdrise(&mut state, &request).unwrap_err();
+    assert!(err.to_string().contains("ledger hash"), "{err}");
+    assert_eq!(state.edge_balance.get(&key), Some(&5));
+    assert!(state.nonces.is_empty());
+}
+
+fn credited_usdrise(claimant: [u8; 20], ledger: [u8; 32], balance: u64) -> ClaimState {
+    ClaimState {
+        root: [0; 32],
+        ledger_sha256: ledger,
+        snapshot_unix: 1000,
+        custody: Default::default(),
+        edge_balance: [((claimant, "usdrise".to_string()), balance)].into(),
+        consumed: Default::default(),
+        nonces: Default::default(),
+    }
+}
+
+fn withdrawal(signing: &SigningKey, ledger: [u8; 32], destination: &str) -> ClaimRequest {
+    let pubkey = signing.verifying_key().to_encoded_point(true);
+    let claimant = cosmos_from_pubkey(pubkey.as_bytes());
+    let auth = Authorization {
+        ledger_sha256: hex::encode(ledger),
+        claimant: encode_sunrise(&claimant),
+        asset: "usdrise".into(),
+        amount: 3,
+        destination: destination.into(),
+        nonce: 1,
+    };
+    let sign_doc = sign_doc_bytes(&canonical_bytes(&auth).unwrap(), &auth.claimant);
+    let signature: k256::ecdsa::Signature = signing.sign(sign_doc.as_bytes());
+    ClaimRequest {
+        authorization: auth,
+        pubkey: pubkey.as_bytes().to_vec(),
+        signature: signature.to_bytes().to_vec(),
+        leaf: Leaf {
+            claimant,
+            asset: "usdrise".into(),
+            claimable_at: 0,
+            amount: 0,
+        },
+        proof: Vec::new(),
     }
 }
 

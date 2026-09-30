@@ -270,13 +270,7 @@ pub fn apply_claim(
             "signed asset does not match the leaf".into(),
         ));
     }
-    let ledger =
-        hex::decode(&auth.ledger_sha256).map_err(|err| ClaimError::Rejected(err.to_string()))?;
-    if ledger.as_slice() != state.ledger_sha256 {
-        return Err(ClaimError::Rejected(
-            "ledger hash does not match the commitment".into(),
-        ));
-    }
+    check_ledger(state, auth)?;
     let claimant = adr036::sunrise_address(&auth.claimant)?;
     if claimant != request.leaf.claimant {
         return Err(ClaimError::Rejected(
@@ -369,6 +363,9 @@ pub fn apply_claim(
 }
 
 /// Burns credited USDrise and authorizes an Ethereum USDC send of the same base units.
+///
+/// The ledger hash and EVM destination are checked before the nonce or balance
+/// changes, so a malformed address or another ledger's signature burns nothing.
 pub fn withdraw_usdrise(
     state: &mut ClaimState,
     request: &ClaimRequest,
@@ -379,14 +376,11 @@ pub fn withdraw_usdrise(
             "USDrise withdrawal must use asset usdrise".into(),
         ));
     }
+    check_ledger(state, auth)?;
     verify_authorization(auth, &request.pubkey, &request.signature)
         .map_err(|err| ClaimError::Rejected(err.to_string()))?;
     let claimant = adr036::sunrise_address(&auth.claimant)?;
-    if !auth.destination.starts_with("0x") {
-        return Err(ClaimError::Rejected(
-            "USDrise withdrawal destination must be an EVM address".into(),
-        ));
-    }
+    parse_evm_address(&auth.destination)?;
     if !state.nonces.insert((claimant, auth.nonce)) {
         return Err(ClaimError::Rejected(format!(
             "nonce {} was already used",
@@ -462,14 +456,41 @@ fn payout_route(asset: &str) -> Option<PayRoute> {
 
 fn validate_external_destination(route: PayRoute, destination: &str) -> Result<(), ClaimError> {
     if route.bech32_prefix.is_none() {
-        if destination.starts_with("0x") && destination.len() == 42 {
-            return Ok(());
-        }
-        return Err(ClaimError::Rejected(format!(
-            "destination {destination} is not an EVM address"
-        )));
+        parse_evm_address(destination)?;
     }
     Ok(())
+}
+
+/// Rejects an authorization signed for any ledger other than the committed one.
+fn check_ledger(state: &ClaimState, auth: &Authorization) -> Result<(), ClaimError> {
+    let ledger =
+        hex::decode(&auth.ledger_sha256).map_err(|err| ClaimError::Rejected(err.to_string()))?;
+    if ledger.as_slice() != state.ledger_sha256 {
+        return Err(ClaimError::Rejected(
+            "ledger hash does not match the commitment".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Parses `0x` and 40 hex digits. The zero address is not a recipient.
+fn parse_evm_address(value: &str) -> Result<[u8; 20], ClaimError> {
+    let Some(text) = value.strip_prefix("0x") else {
+        return Err(ClaimError::Rejected(format!(
+            "destination {value} is not an EVM address"
+        )));
+    };
+    let bytes = hex::decode(text)
+        .map_err(|err| ClaimError::Rejected(format!("destination {value}: {err}")))?;
+    let address: [u8; 20] = bytes
+        .try_into()
+        .map_err(|_| ClaimError::Rejected(format!("destination {value} is not 20 bytes")))?;
+    if address == [0u8; 20] {
+        return Err(ClaimError::Rejected(format!(
+            "destination {value} is the zero address"
+        )));
+    }
+    Ok(address)
 }
 
 fn parse_edge_address(value: &str) -> Result<[u8; 32], ClaimError> {
