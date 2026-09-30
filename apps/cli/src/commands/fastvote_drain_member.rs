@@ -14,11 +14,109 @@ const HELP: &str = "contract fastvote-drain-member
   [--fastvote-deadline-seconds SECONDS] [--fastvote-per-request-cap-seconds SECONDS]
 Applies or replays exactly one original signed member using the target's committed DrainSet
 and retained full certificate. Missing causal prerequisites stop the operation. The exact full
-original NodeOutput HTTP envelope is saved once, only after it matches the certified witness;
-an attempt that fails earlier creates no output file, so rerun the identical command. An
-existing output is authenticated before POST, then must agree byte-for-byte with the replay;
-it is never overwritten. A charged trap is a valid saved result, not permission to re-sign or
-charge again. No complete-drain claim.";
+original NodeOutput HTTP envelope is saved once. An existing output is authenticated before
+POST, then must agree byte-for-byte with the replay; it is never overwritten. A charged trap
+is a valid saved result, not permission to re-sign or charge again. Fresh output is staged
+privately and published only when complete; retry identical signed bytes after a failed
+attempt. No complete-drain claim.";
+
+/// Fresh results are written to a private sibling, never an empty final-path
+/// reservation. Only complete authenticated bytes are atomically linked into
+/// place without replacement. A crash before publication can leave an orphan
+/// sibling, but retries never read it as saved authority.
+struct MemberOutput {
+    artifact: ReservedArtifact,
+    destination: Option<PathBuf>,
+}
+
+impl MemberOutput {
+    fn pending(out_path: &str) -> Result<Self, CliError> {
+        let destination: PathBuf = artifact_path(out_path)?;
+        let parent_path: &Path = destination
+            .parent()
+            .ok_or_else(|| invalid("member output parent missing"))?;
+        let parent: File = File::open(parent_path).map_err(failure)?;
+        // Fail unsupported directory synchronization before any member POST.
+        parent.sync_all().map_err(failure)?;
+        let timestamp: u128 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(failure)?
+            .as_nanos();
+        for attempt in 0u8..16 {
+            let path: PathBuf = parent_path.join(format!(
+                ".sunrise-drain-member-{}-{timestamp}-{attempt}.pending",
+                std::process::id()
+            ));
+            // The caller may itself have chosen a staging-shaped output name.
+            if path == destination {
+                continue;
+            }
+            let file: File = match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(failure(error)),
+            };
+            let output: Self = Self {
+                artifact: ReservedArtifact {
+                    path,
+                    file,
+                    parent,
+                    kind: "drain-member-result",
+                },
+                destination: Some(destination),
+            };
+            output.artifact.parent.sync_all().map_err(failure)?;
+            output.artifact.ensure_attached()?;
+            return Ok(output);
+        }
+        Err(invalid("unable to reserve a private member output sibling"))
+    }
+
+    fn publish(&mut self, bytes: &[u8]) -> Result<(), CliError> {
+        let destination: &PathBuf = self
+            .destination
+            .as_ref()
+            .ok_or_else(|| invalid("saved member output cannot be published again"))?;
+        self.artifact.persist(bytes)?;
+        self.artifact.ensure_exact_input(bytes)?;
+        let mut published: ReservedArtifact = ReservedArtifact {
+            path: destination.clone(),
+            file: self.artifact.file.try_clone().map_err(failure)?,
+            parent: self.artifact.parent.try_clone().map_err(failure)?,
+            kind: "drain-member-result",
+        };
+        // Same-directory hard linking publishes the complete inode atomically
+        // and refuses every existing destination, including symlinks. Rename
+        // would overwrite a concurrent writer and is deliberately not used.
+        std::fs::hard_link(self.artifact.path(), destination).map_err(|source| {
+            invalid(format!(
+                "failed to publish member output at {destination:?} without replacement: {source}; retry identical saved signed bytes, never a fresh nonce"
+            ))
+        })?;
+        published.ensure_exact_input(bytes)?;
+        // If a later sync/recheck fails, leave the complete final file intact
+        // for exact replay. Cleanup below only ever concerns the private sibling.
+        Ok(())
+    }
+}
+
+impl Drop for MemberOutput {
+    fn drop(&mut self) {
+        // Unix inode checks let us clean up only our still-attached sibling.
+        // On other platforms, retaining an ignored orphan is safer than
+        // deleting a path whose identity cannot be established by this helper.
+        #[cfg(unix)]
+        if self.destination.is_some() && self.artifact.ensure_attached().is_ok() {
+            let _ = std::fs::remove_file(self.artifact.path());
+            let _ = self.artifact.parent.sync_all();
+        }
+    }
+}
 
 pub(in crate::commands) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
     let args: Vec<OsString> = args.into_iter().collect();
@@ -102,11 +200,7 @@ fn execute<T: Transport>(
         .map_err(failure)?;
     // Existing output is not a success hint. Fully authenticate it locally
     // before any POST and hold its exact bytes/handles until replay ends.
-    // A fresh path only has its directory resolved before POST and, as in
-    // drain-local-ready, is created once a certified result authenticates:
-    // a failed attempt must not leave an empty file that a rerun would read
-    // as the saved original. Completed replay returns the original bytes.
-    let mut existing: Option<(ReservedArtifact, Vec<u8>)> =
+    let (mut output, saved): (MemberOutput, Option<Vec<u8>>) =
         match std::fs::symlink_metadata(out_path) {
             Ok(metadata) => {
                 if !metadata.is_file() {
@@ -121,17 +215,24 @@ fn execute<T: Transport>(
                 )?;
                 validate_drain_member_output(&signed, resolver, context, &bytes)
                     .map_err(failure)?;
-                Some((output, bytes))
+                (
+                    MemberOutput {
+                        artifact: output,
+                        destination: None,
+                    },
+                    Some(bytes),
+                )
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                artifact_path(out_path)?;
-                None
+                (MemberOutput::pending(out_path)?, None)
             }
             Err(error) => return Err(failure(error)),
         };
     input.ensure_exact_input(&signed_bytes)?;
-    if let Some((output, original)) = existing.as_mut() {
-        output.ensure_exact_input(original)?;
+    if let Some(bytes) = &saved {
+        output.artifact.ensure_exact_input(bytes)?;
+    } else {
+        output.artifact.ensure_attached()?;
     }
     let client: Client<crate::net::BudgetedTransport<'_, T>> =
         Client::new(crate::net::BudgetedTransport {
@@ -146,26 +247,20 @@ fn execute<T: Transport>(
             &[],
             context,
             domain,
-            existing.as_ref().map(|(_, original)| original.as_slice()),
+            saved.as_deref(),
             Some(budget.deadline),
         )
         .map_err(failure)?;
     input.ensure_exact_input(&signed_bytes)?;
-    if let Some((mut output, original)) = existing {
-        output.ensure_exact_input(&original)?;
+    if let Some(original) = saved {
+        output.artifact.ensure_exact_input(&original)?;
         if bytes != original {
             return Err(invalid(
                 "member replay differs from saved original NodeOutput; output not overwritten",
             ));
         }
     } else {
-        // `create_new` still refuses anything that appeared meanwhile.
-        let mut reserved: Vec<ReservedArtifact> =
-            reserve_artifacts(&[(out_path, "drain-member-result")], &[signed_path])?;
-        reserved
-            .pop()
-            .ok_or_else(|| invalid("member output reservation missing"))?
-            .persist(&bytes)?;
+        output.publish(&bytes)?;
     }
     println!("drain_member_applied=true");
     println!("request_id={}", encode_hex(&signed.intent.request_id));
@@ -187,8 +282,8 @@ mod tests {
     use crypto::SignatureSigner;
     use sunrise_edge_client::{
         CanonicalStruct, Digest32, HttpNodeResult, LocalSigner, NODE_RESULT_MEDIA_TYPE,
-        NodeResponse, NodeResponseStatus, RequestId, SignatureSchemeId, WireResponse,
-        encode_paid_execution_result,
+        NodeResponse, NodeResponseStatus, RequestId, SignatureSchemeId, TransportError,
+        WireRequest, WireResponse, encode_paid_execution_result,
     };
 
     struct VoteSigner(LocalSigner);
@@ -298,17 +393,53 @@ mod tests {
         status: PaidExecutionStatus,
         bytes: Vec<u8>,
     ) -> Client<FakeTransport> {
-        let responses = [retained_bundle(fixture, status), bytes]
-            .into_iter()
-            .map(|body| {
-                Ok(WireResponse {
-                    status: 200,
-                    content_type: Some(NODE_RESULT_MEDIA_TYPE.to_owned()),
-                    body,
-                })
-            })
-            .collect();
+        let responses: Vec<Result<WireResponse, TransportError>> =
+            [retained_bundle(fixture, status), bytes]
+                .into_iter()
+                .map(|body| Ok(wire(body)))
+                .collect();
         Client::new(FakeTransport::new(responses))
+    }
+
+    fn wire(body: Vec<u8>) -> WireResponse {
+        WireResponse {
+            status: 200,
+            content_type: Some(NODE_RESULT_MEDIA_TYPE.to_owned()),
+            body,
+        }
+    }
+
+    fn execute_fixture<T: Transport>(
+        fixture: &Fixture,
+        target: &Client<T>,
+        signed_path: &str,
+        out_path: &str,
+    ) -> Result<(), CliError> {
+        execute(
+            target,
+            &fixture.certifier,
+            &fixture.resolver,
+            &fixture.signed.intent.context,
+            fixture.expected.domain(),
+            signed_path,
+            out_path,
+            budget(),
+        )
+    }
+
+    fn assert_absent(path: &str) {
+        assert_eq!(
+            std::fs::symlink_metadata(path).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+    }
+
+    #[cfg(unix)]
+    fn assert_no_pending(fixture: &Fixture) {
+        for entry in std::fs::read_dir(&fixture.directory).unwrap() {
+            let name: OsString = entry.unwrap().file_name();
+            assert!(!name.to_string_lossy().starts_with(".sunrise-drain-member-"));
+        }
     }
 
     #[test]
@@ -387,31 +518,23 @@ mod tests {
 
     #[test]
     fn malformed_or_different_saved_output_fails_before_post_without_overwrite() {
-        let fixture: Fixture = Fixture::new();
-        let signed_path: String = fixture.path("member.signed");
-        let out_path: String = fixture.path("member.result");
-        std::fs::write(
-            &signed_path,
-            encode_signed_paid_intent(&fixture.signed).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(&out_path, b"partial").unwrap();
-        let target: Client<FakeTransport> = Client::new(FakeTransport::new(Vec::new()));
-        assert!(
-            execute(
-                &target,
-                &fixture.certifier,
-                &fixture.resolver,
-                &fixture.signed.intent.context,
-                fixture.expected.domain(),
+        for bytes in [b"".as_slice(), b"partial".as_slice()] {
+            let fixture: Fixture = Fixture::new();
+            let signed_path: String = fixture.path("member.signed");
+            let out_path: String = fixture.path("member.result");
+            std::fs::write(
                 &signed_path,
-                &out_path,
-                budget()
+                encode_signed_paid_intent(&fixture.signed).unwrap(),
             )
-            .is_err()
-        );
-        assert!(target.transport().requests().is_empty());
-        assert_eq!(std::fs::read(&out_path).unwrap(), b"partial");
+            .unwrap();
+            std::fs::write(&out_path, bytes).unwrap();
+            let target: Client<FakeTransport> = Client::new(FakeTransport::new(Vec::new()));
+            assert!(execute_fixture(&fixture, &target, &signed_path, &out_path).is_err());
+            assert!(target.transport().requests().is_empty());
+            assert_eq!(std::fs::read(&out_path).unwrap(), bytes);
+            #[cfg(unix)]
+            assert_no_pending(&fixture);
+        }
     }
 
     #[test]
@@ -501,7 +624,9 @@ mod tests {
             sunrise_edge_client::FASTVOTE_RETAINED_PUBLICATION_SOURCE_PATH
         );
         assert_eq!(std::fs::read(&signed_path).unwrap(), input);
-        assert!(!Path::new(&out_path).exists());
+        assert_absent(&out_path);
+        #[cfg(unix)]
+        assert_no_pending(&fixture);
     }
 
     #[test]
@@ -533,7 +658,227 @@ mod tests {
             .is_err()
         );
         assert_eq!(target.transport().requests().len(), 2);
-        assert!(!Path::new(&out_path).exists());
+        assert_absent(&out_path);
+        #[cfg(unix)]
+        assert_no_pending(&fixture);
+        let original: Vec<u8> = response(&fixture, PaidExecutionStatus::Success);
+        let resumed: Client<FakeTransport> =
+            endpoint(&fixture, PaidExecutionStatus::Success, original.clone());
+        execute_fixture(&fixture, &resumed, &signed_path, &out_path).unwrap();
+        assert_eq!(std::fs::read(&out_path).unwrap(), original);
+    }
+
+    #[test]
+    fn not_ready_transport_and_uncertified_errors_allow_fresh_same_path_retry() {
+        for status in [
+            PaidExecutionStatus::Success,
+            PaidExecutionStatus::ApplicationFailed,
+        ] {
+            let fixture: Fixture = Fixture::new();
+            let signed_path: String = fixture.path("signed");
+            let signed: Vec<u8> = encode_signed_paid_intent(&fixture.signed).unwrap();
+            std::fs::write(&signed_path, &signed).unwrap();
+            let bundle: Vec<u8> = retained_bundle(&fixture, status);
+            let original: Vec<u8> = response(&fixture, status);
+            let not_ready = || -> Result<WireResponse, TransportError> {
+                Ok(WireResponse {
+                    status: 409,
+                    content_type: Some("text/plain".to_owned()),
+                    body: b"drain-proof-not-retained".to_vec(),
+                })
+            };
+            let cases: Vec<(Vec<Result<WireResponse, TransportError>>, usize)> = vec![
+                (vec![not_ready()], 1),
+                (vec![Err(TransportError::RequestDeadlineExceeded)], 1),
+                (vec![Ok(wire(b"uncertified source".to_vec()))], 1),
+                (vec![Ok(wire(bundle.clone())), not_ready()], 2),
+                (
+                    vec![
+                        Ok(wire(bundle.clone())),
+                        Err(TransportError::RequestDeadlineExceeded),
+                    ],
+                    2,
+                ),
+                (
+                    vec![Ok(wire(bundle)), Ok(wire(b"partial result".to_vec()))],
+                    2,
+                ),
+            ];
+            for (index, (responses, request_count)) in cases.into_iter().enumerate() {
+                let out_path: String = fixture.path(&format!("output-{index}"));
+                let failed: Client<FakeTransport> = Client::new(FakeTransport::new(responses));
+                assert!(execute_fixture(&fixture, &failed, &signed_path, &out_path).is_err());
+                assert_eq!(failed.transport().requests().len(), request_count);
+                assert_absent(&out_path);
+                #[cfg(unix)]
+                assert_no_pending(&fixture);
+                let resumed: Client<FakeTransport> = endpoint(&fixture, status, original.clone());
+                execute_fixture(&fixture, &resumed, &signed_path, &out_path).unwrap();
+                assert_eq!(resumed.transport().requests().len(), 2);
+                assert_eq!(std::fs::read(&out_path).unwrap(), original);
+                assert_eq!(std::fs::read(&signed_path).unwrap(), signed);
+                #[cfg(unix)]
+                assert_no_pending(&fixture);
+            }
+        }
+    }
+
+    #[test]
+    fn crash_orphan_empty_partial_or_complete_staging_never_becomes_authority() {
+        let fixture: Fixture = Fixture::new();
+        let signed_path: String = fixture.path("signed");
+        std::fs::write(
+            &signed_path,
+            encode_signed_paid_intent(&fixture.signed).unwrap(),
+        )
+        .unwrap();
+        let original: Vec<u8> = response(&fixture, PaidExecutionStatus::Success);
+        for (index, bytes) in [Vec::new(), b"partial".to_vec(), original.clone()]
+            .into_iter()
+            .enumerate()
+        {
+            let out_path: String = fixture.path(&format!("output-{index}"));
+            let mut interrupted: MemberOutput = MemberOutput::pending(&out_path).unwrap();
+            let orphan: PathBuf = interrupted.artifact.path().to_owned();
+            interrupted.artifact.file.write_all(&bytes).unwrap();
+            interrupted.artifact.file.sync_all().unwrap();
+            // Model process death: close handles without running sibling cleanup.
+            interrupted.destination = None;
+            drop(interrupted);
+            assert_absent(&out_path);
+            let resumed: Client<FakeTransport> =
+                endpoint(&fixture, PaidExecutionStatus::Success, original.clone());
+            execute_fixture(&fixture, &resumed, &signed_path, &out_path).unwrap();
+            assert_eq!(resumed.transport().requests().len(), 2);
+            assert_eq!(std::fs::read(&out_path).unwrap(), original);
+            assert_eq!(std::fs::read(&orphan).unwrap(), bytes);
+        }
+    }
+
+    struct ConcurrentOutputTransport {
+        inner: FakeTransport,
+        destination: PathBuf,
+        retain_original_at: Option<PathBuf>,
+        competing_bytes: Vec<u8>,
+    }
+
+    impl Transport for ConcurrentOutputTransport {
+        fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportError> {
+            if request.path == sunrise_edge_client::FASTVOTE_DRAIN_APPLY_PATH {
+                if let Some(retained) = &self.retain_original_at {
+                    std::fs::rename(&self.destination, retained).unwrap();
+                }
+                let mut competing: File = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&self.destination)
+                    .unwrap();
+                competing.write_all(&self.competing_bytes).unwrap();
+                competing.sync_all().unwrap();
+            }
+            self.inner.send(request)
+        }
+    }
+
+    #[test]
+    fn concurrent_final_path_creation_is_never_overwritten_or_removed() {
+        let fixture: Fixture = Fixture::new();
+        let signed_path: String = fixture.path("signed");
+        let out_path: String = fixture.path("output");
+        std::fs::write(
+            &signed_path,
+            encode_signed_paid_intent(&fixture.signed).unwrap(),
+        )
+        .unwrap();
+        let original: Vec<u8> = response(&fixture, PaidExecutionStatus::Success);
+        let competing: Vec<u8> = b"another writer's incomplete file".to_vec();
+        let target: Client<ConcurrentOutputTransport> = Client::new(ConcurrentOutputTransport {
+            inner: FakeTransport::new(vec![
+                Ok(wire(retained_bundle(
+                    &fixture,
+                    PaidExecutionStatus::Success,
+                ))),
+                Ok(wire(original)),
+            ]),
+            destination: PathBuf::from(&out_path),
+            retain_original_at: None,
+            competing_bytes: competing.clone(),
+        });
+        assert!(execute_fixture(&fixture, &target, &signed_path, &out_path).is_err());
+        assert_eq!(target.transport().inner.requests().len(), 2);
+        assert_eq!(std::fs::read(&out_path).unwrap(), competing);
+        #[cfg(unix)]
+        assert_no_pending(&fixture);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_saved_output_replacement_preserves_both_inodes() {
+        let fixture: Fixture = Fixture::new();
+        let signed_path: String = fixture.path("signed");
+        let out_path: String = fixture.path("output");
+        let retained_path: String = fixture.path("retained-original");
+        std::fs::write(
+            &signed_path,
+            encode_signed_paid_intent(&fixture.signed).unwrap(),
+        )
+        .unwrap();
+        let original: Vec<u8> = response(&fixture, PaidExecutionStatus::Success);
+        std::fs::write(&out_path, &original).unwrap();
+        let competing: Vec<u8> = b"replacement inode".to_vec();
+        let target: Client<ConcurrentOutputTransport> = Client::new(ConcurrentOutputTransport {
+            inner: FakeTransport::new(vec![
+                Ok(wire(retained_bundle(
+                    &fixture,
+                    PaidExecutionStatus::Success,
+                ))),
+                Ok(wire(original.clone())),
+            ]),
+            destination: PathBuf::from(&out_path),
+            retain_original_at: Some(PathBuf::from(&retained_path)),
+            competing_bytes: competing.clone(),
+        });
+        assert!(execute_fixture(&fixture, &target, &signed_path, &out_path).is_err());
+        assert_eq!(target.transport().inner.requests().len(), 2);
+        assert_eq!(std::fs::read(&out_path).unwrap(), competing);
+        assert_eq!(std::fs::read(&retained_path).unwrap(), original);
+        assert_no_pending(&fixture);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_does_not_remove_a_replaced_staging_path() {
+        let fixture: Fixture = Fixture::new();
+        let out_path: String = fixture.path("output");
+        let pending: MemberOutput = MemberOutput::pending(&out_path).unwrap();
+        let stage: PathBuf = pending.artifact.path().to_owned();
+        let original: PathBuf = fixture.directory.join("retained-stage");
+        std::fs::rename(&stage, &original).unwrap();
+        std::fs::write(&stage, b"other inode").unwrap();
+        drop(pending);
+        assert_eq!(std::fs::read(&stage).unwrap(), b"other inode");
+        assert_eq!(std::fs::read(&original).unwrap(), Vec::<u8>::new());
+        assert_absent(&out_path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_symlink_output_is_preserved_and_rejected_before_requests() {
+        let fixture: Fixture = Fixture::new();
+        let signed_path: String = fixture.path("signed");
+        let out_path: String = fixture.path("output");
+        let signed: Vec<u8> = encode_signed_paid_intent(&fixture.signed).unwrap();
+        std::fs::write(&signed_path, &signed).unwrap();
+        std::os::unix::fs::symlink(&signed_path, &out_path).unwrap();
+        let target: Client<FakeTransport> = Client::new(FakeTransport::new(Vec::new()));
+        assert!(execute_fixture(&fixture, &target, &signed_path, &out_path).is_err());
+        assert!(target.transport().requests().is_empty());
+        assert_eq!(
+            std::fs::read_link(&out_path).unwrap(),
+            PathBuf::from(&signed_path)
+        );
+        assert_eq!(std::fs::read(&signed_path).unwrap(), signed);
+        assert_no_pending(&fixture);
     }
 
     #[test]
