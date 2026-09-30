@@ -7,12 +7,21 @@ Accepted implementation direction, 2026-09-27. This record fixes the design for
 integrated membership/epoch delivery after independent design review and
 correction of the availability/drain/readiness gaps. The mechanism is specified
 in [Complete epoch handoff](../epoch-handoff.md). At acceptance, this was a
-design-only decision and did not activate a new runtime rule. The first independent
-implementation slice on 2026-09-28 allocates the availability wire family
-below, but still does not implement durable retention or apply admission. The
-complete design requires a new apply-admission rule and logical commitment,
-not a new quorum-applied finality rule. Implementation and validation status
-belong in [`TODO.md`](../../../TODO.md).
+design-only decision and did not activate a new runtime rule. Independent
+implementation slices on 2026-09-28 allocate the availability wire family and
+implement the handoff-capable logical commitment profile, both described
+below, but still do not implement durable retention, Freeze/DrainSet/Seal
+control or the publication-before-apply gate this ADR requires. Implementation
+and validation status belong in [`TODO.md`](../../../TODO.md).
+
+The independent logical-generation admission extraction on 2026-09-30
+deliberately refuses Logical-profile epoch proposal/vote and fresh activation
+with `EpochTransitionLogicalProfileUnsupported`. The existing transition
+writer cannot install next-epoch policies with the required provenance in
+this slice. Exact already-committed transition identity is reconciled before
+the fresh-activation gate; Historical transitions remain supported. Full
+Logical handoff and activation remain a later, independently verified
+implementation, not authority conferred by these local admission guards.
 
 ## Context and reusable boundaries
 
@@ -253,3 +262,33 @@ gates as one usable feature. PostgreSQL is a tested profile, not a protocol
 assumption. Operational independence, security audits and live startup remain
 separate; no deployment, real custody, performance, HA or provider
 certification is authorized or implied.
+
+A second 2026-09-28 slice implements the handoff-capable logical commitment
+profile itself, in
+[`crates/node-core/src/logical_generation.rs`](../../../crates/node-core/src/logical_generation.rs).
+It allocates `LogicalProfileRecord` `0x6480/v1` and `LogicalProvenanceRecord`
+`0x6481/v1`, derives the authenticated `ExecutionGeneration` operand from
+verified per-subject provenance instead of a physical creation checkpoint, and
+wires that derivation and admission through every live application path that
+installs effects, a receipt, a nonce advance or a settlement against an
+already-installed profile: paid execution, local execution, publication, bond
+lifecycle, fee-claim settlement, and the generic durable-event path, each
+gated through `logical_generation::admit_application` or
+`admit_generic_transition`. A store whose signed genesis binds the historical
+model keeps its exact existing physical admission, commitment and
+monotonicity rules unchanged. This does not implement durable retention,
+Freeze/DrainSet/Seal control, or the publication-before-apply gate this ADR
+requires: no cross-validator availability quorum is consulted before
+application, and the current
+`NodeCoreError::LogicalProfileApplicationUnsupported` refusal is a local,
+always-correctly-paired-by-construction invariant guard against a caller
+presenting a resolved profile and derived evidence that disagree, not an
+active gate on quorum availability publication. The complete design's
+apply-admission rule, described above, remains open.
+
+As of 2026-09-30, this second slice's As-Is/To-Be boundary is also recorded
+standalone in
+[Logical execution generation admission](../logical-execution-generation.md),
+for a reader who needs only that mechanism. That document does not restate or
+supersede this record's design; `TODO.md` remains the source of truth for
+implementation and validation status, including branch/PR state.

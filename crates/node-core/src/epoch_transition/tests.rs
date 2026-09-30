@@ -54,6 +54,7 @@ use protocol_types::{
     HashAlgorithmId, HashPurpose, HashSuite, HashSuiteId, HashSuiteSchedule, ProtocolVersion,
     ValidatorId,
 };
+use runtime::portable::{DurablePortableSnapshotRepository, PortableSnapshotToken};
 use runtime::{
     DurableDomainStateStore, DurableOutboxClaimOutcome, DurableOutboxLeaseId,
     IndexedOutboxRepository, MemoryDurableStateStore, OutboxRequestId, RequestOutboxClaimRequest,
@@ -1953,6 +1954,7 @@ pub(crate) fn build_genesis_fixture(validators: Vec<FastPathValidatorEntry>) -> 
             context,
             validators,
         },
+        commitment_profile: crate::logical_generation::CommitmentProfile::PhysicalCheckpointV1,
         signature: [0; 64],
     };
     manifest.signature = genesis_authority_key()
@@ -1967,6 +1969,280 @@ pub(crate) fn build_genesis_fixture(validators: Vec<FastPathValidatorEntry>) -> 
         coin: coin_obj,
         fee_policy,
     }
+}
+
+/// [`build_genesis_fixture`], re-bound to the handoff-capable (`Logical`)
+/// commitment profile and re-signed under that profile's own signature
+/// domain -- mirrors `crate::genesis::tests::logical_bonded_manifest`, kept
+/// local so this module's own `chain()`/`resolver()`/validator fixtures stay
+/// self-contained.
+fn build_logical_genesis_fixture(validators: Vec<FastPathValidatorEntry>) -> GenesisFixture {
+    let mut fixture: GenesisFixture = build_genesis_fixture(validators);
+    fixture.manifest.commitment_profile =
+        crate::logical_generation::CommitmentProfile::LogicalGenerationV2;
+    fixture.manifest.signature = genesis_authority_key()
+        .sign(&genesis_manifest_signing_frame(&fixture.manifest).unwrap())
+        .into();
+    fixture
+}
+
+/// Builds a signed Historical (`PhysicalCheckpointV1`) genesis store bound to
+/// `entries`, casts a real 4-of-4 quorum vote via `propose_and_vote`, and
+/// forms the resulting real certificate -- not a syntactically valid but
+/// semantically empty stand-in. Reused verbatim below against a Logical
+/// store that installs the identical `entries`.
+fn historical_positive_control(
+    entries: &[FastPathValidatorEntry],
+    signers: &[TestSigner],
+) -> (MemoryDurableStateStore, Vec<u8>) {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: GenesisFixture = build_genesis_fixture(entries.to_vec());
+    assert!(matches!(
+        install_genesis(&store, &fixture.manifest),
+        GenesisInstallOutcome::FreshInstall { .. }
+    ));
+    let mut votes: Vec<EpochTransitionVote> = Vec::new();
+    for signer in signers {
+        votes.push(
+            propose_and_vote(
+                &store,
+                &context(1),
+                domain(),
+                &resolver(),
+                &chain(),
+                protocol_version(),
+                entries.to_vec(),
+                signer,
+            )
+            .unwrap(),
+        );
+    }
+    let cert: EpochTransitionCertifier = certifier(chain(), Epoch::new(0), entries);
+    let certificate: EpochTransitionCertificate = cert
+        .try_form_certificate(
+            votes[0].next_epoch,
+            votes[0].current_validator_set_digest,
+            votes[0].next_validator_set_digest,
+            votes[0].activation_digest,
+            &votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .expect("4-of-4 equal-power validators exceed quorum");
+    (
+        store,
+        consensus::encode_epoch_transition_certificate(&certificate).unwrap(),
+    )
+}
+
+/// DR-0154 scope isolation (Option (a)): `propose_and_vote` refuses a
+/// handoff-capable genesis store before reading any bond/policy state or
+/// casting a vote. Positive control first: the same eligible `entries`
+/// reused as the next set, with a real quorum certificate, genuinely
+/// activate against a Historical store, so the Logical refusal below is
+/// attributable to the profile alone.
+#[test]
+fn propose_and_vote_refuses_a_logical_genesis_store() {
+    let (signers, entries) = four_validators();
+    let (historical_store, certificate_bytes) = historical_positive_control(&entries, &signers);
+    assert!(matches!(
+        activate(
+            &historical_store,
+            &context(1),
+            domain(),
+            &resolver(),
+            &chain(),
+            protocol_version(),
+            entries.clone(),
+            &certificate_bytes,
+            1,
+        )
+        .unwrap(),
+        EpochActivationOutcome::Activated(_)
+    ));
+
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: GenesisFixture = build_logical_genesis_fixture(entries.clone());
+    assert!(matches!(
+        install_genesis(&store, &fixture.manifest),
+        GenesisInstallOutcome::FreshInstall { .. }
+    ));
+
+    let before: PortableSnapshotToken = store
+        .begin_portable_snapshot(&context(1), domain())
+        .unwrap();
+    let error = propose_and_vote(
+        &store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &chain(),
+        protocol_version(),
+        entries.clone(),
+        &signers[0],
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        EpochTransitionError::Node(NodeCoreError::EpochTransitionLogicalProfileUnsupported)
+    ));
+    assert_eq!(
+        before,
+        store
+            .begin_portable_snapshot(&context(1), domain())
+            .unwrap()
+    );
+
+    // No transition record was ever installed, and restart-verify still
+    // accepts the exact original genesis bytes: store/profile/nonce/object
+    // state is untouched and no signature or commit was produced.
+    let transition_key =
+        local_instance_state::fastpath_epoch_transition_key(&chain(), Epoch::new(1)).unwrap();
+    assert!(
+        store
+            .get_versioned_durable(&context(1), domain(), &transition_key)
+            .unwrap()
+            .value()
+            .is_none()
+    );
+    assert!(matches!(
+        install_genesis_result(&store, &fixture.manifest).unwrap(),
+        GenesisInstallOutcome::VerifiedExisting { .. }
+    ));
+}
+
+/// DR-0154 scope isolation (Option (a)): `activate` refuses a
+/// handoff-capable genesis store after fencing the epoch record,
+/// reconciling exact already-activated identity, and checking the outgoing
+/// epoch -- but before certificate verification, policy derivation or any
+/// mutation. Reuses the sibling test's real quorum certificate: both
+/// fixtures install identical `entries`, so its chain/protocol/epoch header
+/// and committed outgoing validator-set digest line up here too, and only
+/// the profile check stops it.
+#[test]
+fn activate_refuses_a_logical_genesis_store() {
+    let (signers, entries) = four_validators();
+    let (_historical_store, certificate_bytes) = historical_positive_control(&entries, &signers);
+
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: GenesisFixture = build_logical_genesis_fixture(entries.clone());
+    assert!(matches!(
+        install_genesis(&store, &fixture.manifest),
+        GenesisInstallOutcome::FreshInstall { .. }
+    ));
+
+    let before: PortableSnapshotToken = store
+        .begin_portable_snapshot(&context(1), domain())
+        .unwrap();
+    let error = activate(
+        &store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &chain(),
+        protocol_version(),
+        entries.clone(),
+        &certificate_bytes,
+        7,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        EpochTransitionError::Node(NodeCoreError::EpochTransitionLogicalProfileUnsupported)
+    ));
+    assert_eq!(
+        before,
+        store
+            .begin_portable_snapshot(&context(1), domain())
+            .unwrap()
+    );
+
+    let epoch_record_key = local_instance_state::fastpath_epoch_record_key(&chain()).unwrap();
+    let live = local_instance_state::decode_fastpath_epoch_record(
+        store
+            .get_versioned_durable(&context(1), domain(), &epoch_record_key)
+            .unwrap()
+            .value()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(live.current_epoch, Epoch::new(0));
+    let transition_key =
+        local_instance_state::fastpath_epoch_transition_key(&chain(), Epoch::new(1)).unwrap();
+    assert!(
+        store
+            .get_versioned_durable(&context(1), domain(), &transition_key)
+            .unwrap()
+            .value()
+            .is_none()
+    );
+    assert!(matches!(
+        install_genesis_result(&store, &fixture.manifest).unwrap(),
+        GenesisInstallOutcome::VerifiedExisting { .. }
+    ));
+}
+
+/// Committed transition identity wins over fresh admission, even if later
+/// local profile corruption would make a new operation refuse. This is a
+/// Historical positive-control store with explicit fault injection, not a
+/// purported valid Logical activation.
+#[test]
+fn activation_replay_precedes_fresh_profile_resolution() {
+    let (signers, entries) = four_validators();
+    let (store, certificate_bytes) = historical_positive_control(&entries, &signers);
+    let activated: EpochActivationOutcome = activate(
+        &store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &chain(),
+        protocol_version(),
+        entries.clone(),
+        &certificate_bytes,
+        7,
+    )
+    .unwrap();
+    let expected: FastPathEpochTransitionRecord = match activated {
+        EpochActivationOutcome::Activated(record) => record,
+        EpochActivationOutcome::AlreadyActivated(_) => panic!("expected fresh positive control"),
+    };
+
+    let profile_key: Vec<u8> = logical_generation::logical_profile_key(&chain()).unwrap();
+    overwrite_row(&store, &profile_key, vec![0xff]);
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    assert!(
+        logical_generation::fence_commitment_profile(
+            &store,
+            &context(1),
+            domain(),
+            &chain(),
+            &mut reads,
+        )
+        .is_err(),
+        "fault injection must refuse fresh profile resolution"
+    );
+    let before: PortableSnapshotToken = store
+        .begin_portable_snapshot(&context(1), domain())
+        .unwrap();
+    let replay: EpochActivationOutcome = activate(
+        &store,
+        &context(1),
+        domain(),
+        &resolver(),
+        &chain(),
+        protocol_version(),
+        entries,
+        &certificate_bytes,
+        999,
+    )
+    .unwrap();
+    assert_eq!(replay, EpochActivationOutcome::AlreadyActivated(expected));
+    assert_eq!(
+        before,
+        store
+            .begin_portable_snapshot(&context(1), domain())
+            .unwrap()
+    );
 }
 
 fn install_genesis<S: StructuredDurableDomainStateStore>(

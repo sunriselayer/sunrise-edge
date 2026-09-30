@@ -800,9 +800,20 @@ struct Preamble<'a, S: StructuredDurableDomainStateStore, E: LocalContractEngine
     bond: FastPathBondRecord,
     validator_set: ValidatorSet,
     reads: BTreeMap<Vec<u8>, StateRevision>,
+    /// DR-0154: the store's resolved signed binding, fenced once alongside the
+    /// committed bond row. Every leg derives its object monotonicity rule from
+    /// this rather than assuming the historical physical checkpoint.
+    profile: logical_generation::InstalledCommitmentProfile,
     /// DR-0153 private admitted-candidate capability, threaded unchanged into
     /// every embedded leg. `None` on every ordinary public path.
     ordered: Option<&'a ordered_economics::OrderedLegAdmission<'a>>,
+}
+
+impl<S: StructuredDurableDomainStateStore, E: LocalContractEngine + ?Sized> Preamble<'_, S, E> {
+    /// Returns the object monotonicity rule this store's signed genesis bound.
+    const fn object_minimum(&self) -> logical_generation::ObjectMinimum {
+        logical_generation::ObjectMinimum::for_profile(&self.profile, self.created_checkpoint)
+    }
 }
 
 /// Authenticates then reconciles replay before any epoch, policy, object,
@@ -1027,6 +1038,17 @@ where
     }
 
     // 8. only now: policy/live-set/nonce/lock/publication/object/execution work.
+    // DR-0154: resolve this store's signed binding once, fenced alongside the
+    // bond row, so every leg below enforces the monotonicity rule its own
+    // genesis actually bound rather than assuming the physical one.
+    let profile: logical_generation::InstalledCommitmentProfile =
+        logical_generation::fence_commitment_profile(
+            store,
+            context,
+            domain,
+            signed.intent.context.chain_id(),
+            &mut reads,
+        )?;
     let preamble: Preamble<'_, S, E> = Preamble {
         store,
         blob_store,
@@ -1048,6 +1070,7 @@ where
         bond,
         validator_set,
         reads,
+        profile,
         ordered,
     };
     match legs {
@@ -1076,6 +1099,7 @@ fn commit<S, E>(
     head_reads: Vec<DurableObjectHeadRead>,
     object_mutations: Vec<DurableObjectMutationEntry>,
     state_mutations: Vec<StateMutationEntry>,
+    nonce: Option<&PendingSenderNonceWrite>,
 ) -> Result<NodeOutput, BondLifecycleError>
 where
     S: StructuredDurableDomainStateStore,
@@ -1122,6 +1146,7 @@ where
         head_reads,
         object_mutations,
         state_mutations,
+        nonce,
     )
 }
 
@@ -1162,6 +1187,7 @@ fn commit_bond_transition<S: StructuredDurableDomainStateStore>(
     head_reads: Vec<DurableObjectHeadRead>,
     object_mutations: Vec<DurableObjectMutationEntry>,
     mut state_mutations: Vec<StateMutationEntry>,
+    nonce: Option<&PendingSenderNonceWrite>,
 ) -> Result<NodeOutput, BondLifecycleError> {
     let new_bond_bytes: Vec<u8> = encode_fastpath_bond_record(&new_bond)?;
     // Each row's digest is hashed at its own `lifecycle_epoch`, not the
@@ -1218,6 +1244,24 @@ fn commit_bond_transition<S: StructuredDurableDomainStateStore>(
         transition_key,
         StateMutation::Put(transition_bytes),
     )?);
+    // DR-0154: the bond row and its permanent transition record are the last
+    // state this transition writes, so the authenticated generation and the
+    // provenance rows covering both are derived here, over the complete write
+    // set, before the atomic commit. A handoff-capable store refuses the
+    // transition without that evidence; a historical store is unaffected.
+    logical_generation::admit_application(
+        store,
+        context,
+        domain,
+        resolver,
+        new_bond.context.chain_id(),
+        transition.context.epoch(),
+        &head_reads,
+        &object_mutations,
+        nonce,
+        &mut state_mutations,
+        &mut reads,
+    )?;
     let assertions: Vec<StateReadAssertion> = reads
         .into_iter()
         .map(|(k, r)| StateReadAssertion::new(k, r))
@@ -1425,7 +1469,7 @@ where
             owner_before: &owner_before,
             owner_after: &owner_after,
         },
-        preamble.created_checkpoint,
+        preamble.object_minimum(),
         snapshot,
         &admitted.effects,
     )?;
@@ -1450,7 +1494,7 @@ where
     )?;
     reads_insert_nonce(&mut preamble.reads, &nonce);
     state_mutations.push(StateMutationEntry::new(
-        nonce.key,
+        nonce.key.clone(),
         StateMutation::Put(nonce.record.encode()?),
     )?);
     let deposit_epoch: Epoch = preamble.current_context.epoch();
@@ -1501,6 +1545,7 @@ where
         head_reads,
         vec![mutation_entry],
         state_mutations,
+        Some(&nonce),
     )
 }
 
@@ -1686,7 +1731,7 @@ where
             owner_before: &deposit_owner_before,
             owner_after: &deposit_owner_after,
         },
-        preamble.created_checkpoint,
+        preamble.object_minimum(),
         deposit_snapshot,
         &admitted_deposit.effects,
     )?;
@@ -1737,7 +1782,7 @@ where
             owner_before: &release_owner_before,
             owner_after: &release_owner_after,
         },
-        preamble.created_checkpoint,
+        preamble.object_minimum(),
         release_snapshot,
         &admitted_release.effects,
     )?;
@@ -1757,7 +1802,7 @@ where
     )?;
     reads_insert_nonce(&mut preamble.reads, &nonce);
     state_mutations.push(StateMutationEntry::new(
-        nonce.key,
+        nonce.key.clone(),
         StateMutation::Put(nonce.record.encode()?),
     )?);
     let new_bond: FastPathBondRecord = FastPathBondRecord {
@@ -1798,6 +1843,7 @@ where
         head_reads,
         vec![deposit_mutation, release_mutation],
         state_mutations,
+        Some(&nonce),
     )
 }
 
@@ -1880,6 +1926,7 @@ where
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        None,
     )
 }
 
@@ -2020,7 +2067,7 @@ where
             owner_before: &owner_before,
             owner_after: &owner_after,
         },
-        preamble.created_checkpoint,
+        preamble.object_minimum(),
         snapshot,
         &admitted.effects,
     )?;
@@ -2033,7 +2080,7 @@ where
     )?;
     reads_insert_nonce(&mut preamble.reads, &nonce);
     state_mutations.push(StateMutationEntry::new(
-        nonce.key,
+        nonce.key.clone(),
         StateMutation::Put(nonce.record.encode()?),
     )?);
     let new_bond: FastPathBondRecord = FastPathBondRecord {
@@ -2075,5 +2122,6 @@ where
         head_reads,
         vec![mutation_entry],
         state_mutations,
+        Some(&nonce),
     )
 }

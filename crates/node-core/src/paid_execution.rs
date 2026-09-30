@@ -459,6 +459,13 @@ pub(crate) struct PaidAdmissionOutput {
     /// this admission observed and validated: the complete fast-path
     /// exclusive-lock set for this request.
     pub(crate) locked_objects: Vec<ObjectRef>,
+    /// This admission's complete DR-0154 result: the store's resolved signed
+    /// binding plus, for a handoff-capable store, the authenticated generation
+    /// and verified dependency set derived from this exact input set. Every
+    /// committing caller passes it to
+    /// [`logical_generation::require_application_admissible`] before applying
+    /// anything, and the fast-path commitment signs it.
+    pub(crate) logical: logical_generation::LogicalAdmission,
 }
 
 /// Step 1 (authentication, event digest, request id) plus the DR-0130
@@ -1220,6 +1227,24 @@ pub(crate) fn build_paid_admission<
     }
     budget.merge_reads(&mut reads)?;
 
+    // DR-0154: resolve this store's signed binding and, for a handoff-capable
+    // store, derive the authenticated causal generation and the provenance rows
+    // this operation installs from the complete verified input set -- before any
+    // caller can reserve, mutate or expose a signature. Overflow, regression,
+    // missing, foreign or mismatched provenance are typed refusals here.
+    let logical: logical_generation::LogicalAdmission = logical_generation::admit_application(
+        store,
+        context,
+        domain,
+        resolver,
+        intent.context.chain_id(),
+        intent.context.epoch(),
+        &head_reads,
+        &object_mutations,
+        nonce_write.as_ref(),
+        &mut state_mutations,
+        &mut reads,
+    )?;
     Ok(PaidAdmissionOutput {
         event_digest,
         outcome,
@@ -1231,6 +1256,7 @@ pub(crate) fn build_paid_admission<
         object_mutations,
         nonce_write,
         locked_objects,
+        logical,
     })
 }
 
@@ -1399,8 +1425,14 @@ fn commit_direct_paid_admission<S: StructuredDurableDomainStateStore>(
         mut state_mutations,
         object_mutations,
         nonce_write,
+        logical,
         ..
     } = admission;
+    // DR-0154: a handoff-capable store applies this direct paid commit only
+    // with the authenticated generation this very admission derived; a
+    // historical store applies exactly as it always did. Neither can present
+    // the other's evidence.
+    logical_generation::require_application_admissible(&logical.profile, logical.derived.as_ref())?;
     let nonce: PendingSenderNonceWrite = nonce_write.ok_or(
         PaidExecutionAdmissionError::Invalid("direct commit always reserves a fresh nonce"),
     )?;

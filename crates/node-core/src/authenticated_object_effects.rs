@@ -155,6 +155,13 @@ impl LoadedAuthenticatedObjects {
     pub(super) fn into_reads(self) -> Vec<DurableObjectHeadRead> {
         self.reads
     }
+
+    /// Borrows the exact object head reads this load observed, for callers that
+    /// must derive over them before surrendering ownership to
+    /// [`runtime::DurableObjectChanges`].
+    pub(super) fn head_reads(&self) -> &[DurableObjectHeadRead] {
+        &self.reads
+    }
 }
 
 /// Trusted context required only when execution creates a new immutable version.
@@ -173,6 +180,16 @@ pub(super) struct TrustedObjectMutationContext<'a> {
     pub(super) protocol_version: ProtocolVersion,
     pub(super) epoch: Epoch,
     pub(super) created_checkpoint: u64,
+    /// DR-0154: which rule bounds this mutation's semantic monotonicity.
+    ///
+    /// `created_checkpoint` above still stamps every new immutable version and
+    /// stays a persistence and audit input under both profiles. It gates
+    /// admission only where this resolves to
+    /// [`logical_generation::ObjectMinimum::CreationCheckpoint`]; under the
+    /// handoff-capable profile the authenticated generation ordering replaces
+    /// it, because a node serving a later epoch legitimately holds its own
+    /// local checkpoint sequence.
+    pub(super) minimum: crate::logical_generation::ObjectMinimum,
 }
 
 /// Revalidates every owner-bearing execution output under the authentication
@@ -841,7 +858,7 @@ fn translate_update_impl(
 
     let context: &TrustedObjectMutationContext<'_> =
         context.ok_or(NodeCoreError::ObjectMutationContextMissing { object_id })?;
-    if context.created_checkpoint < input.previous_created_checkpoint {
+    if !context.minimum.admits(input.previous_created_checkpoint) {
         return Err(NodeCoreError::ObjectCreatedCheckpointRegression {
             object_id,
             previous_created_checkpoint: input.previous_created_checkpoint,
@@ -1044,6 +1061,7 @@ mod tests {
             protocol_version: ProtocolVersion::new(1),
             epoch: Epoch::new(3),
             created_checkpoint: 17,
+            minimum: historical(17),
         };
 
         let mutations = translate_authenticated_object_effects(
@@ -1108,6 +1126,7 @@ mod tests {
             protocol_version: ProtocolVersion::new(1),
             epoch: Epoch::new(3),
             created_checkpoint: 17,
+            minimum: historical(17),
         };
 
         let mut valid: Object = current.clone();
@@ -1213,6 +1232,7 @@ mod tests {
             protocol_version: ProtocolVersion::new(1),
             epoch: Epoch::new(3),
             created_checkpoint: 17,
+            minimum: historical(17),
         };
         let expected_id: ObjectId = ObjectId::new([0x47; 32]);
         let creation = PendingObjectCreation {
@@ -1506,6 +1526,7 @@ mod tests {
             protocol_version: ProtocolVersion::new(1),
             epoch: Epoch::new(0),
             created_checkpoint: 1,
+            minimum: historical(1),
         };
         assert!(matches!(
             translate_authenticated_object_effects(
@@ -1527,6 +1548,7 @@ mod tests {
             protocol_version: ProtocolVersion::new(1),
             epoch: Epoch::new(0),
             created_checkpoint: 1,
+            minimum: historical(1),
         };
         next.owner = Owner::Address(Address::new([0x52; 32]));
         assert!(matches!(
@@ -1721,6 +1743,7 @@ mod tests {
             protocol_version: ProtocolVersion::new(2),
             epoch: Epoch::new(0),
             created_checkpoint: 1,
+            minimum: historical(1),
         };
         assert!(matches!(
             translate_authenticated_object_effects(
@@ -1752,6 +1775,7 @@ mod tests {
             protocol_version: ProtocolVersion::new(1),
             epoch: Epoch::new(0),
             created_checkpoint: 1,
+            minimum: historical(1),
         };
         assert_eq!(
             translate_authenticated_object_effects(
@@ -1792,6 +1816,7 @@ mod tests {
             protocol_version: ProtocolVersion::new(1),
             epoch: Epoch::new(0),
             created_checkpoint: 1,
+            minimum: historical(1),
         };
         assert_eq!(
             translate_authenticated_object_effects(
@@ -1831,6 +1856,7 @@ mod tests {
             protocol_version: ProtocolVersion::new(1),
             epoch: Epoch::new(0),
             created_checkpoint: 1,
+            minimum: historical(1),
         };
         assert!(matches!(
             translate_authenticated_object_effects(
@@ -1860,6 +1886,7 @@ mod tests {
             protocol_version: ProtocolVersion::new(1),
             epoch: Epoch::new(0),
             created_checkpoint: 17,
+            minimum: historical(17),
         };
         let effect = ObjectEffect::Mutated {
             previous_version: 5,
@@ -1892,6 +1919,14 @@ mod tests {
                 attempted_created_checkpoint: 17,
             })
         );
+        // DR-0154: the rule this site consults is the store's own binding. The
+        // historical rule above is the local checkpoint comparison; the
+        // handoff-capable rule is the authenticated generation ordering, which
+        // `provenance_mutations` enforces per subject before any commit, so the
+        // local checkpoint no longer decides admission there.
+        assert!(historical(17).admits(17));
+        assert!(!historical(17).admits(18));
+        assert!(authenticated().admits(18));
     }
 
     // ── translate_fee_only_object_effects (S3 fee-only allowlist) ──────────
@@ -1907,6 +1942,19 @@ mod tests {
         }
     }
 
+    /// The handoff-capable profile's object monotonicity rule (DR-0154), where
+    /// the authenticated generation ordering replaces the local checkpoint.
+    fn authenticated() -> crate::logical_generation::ObjectMinimum {
+        crate::logical_generation::ObjectMinimum::AuthenticatedGeneration
+    }
+
+    /// The historical profile's object monotonicity rule at `checkpoint`: every
+    /// fixture here pins the physical creation-checkpoint behavior DR-0154
+    /// leaves untouched for a historical store.
+    fn historical(checkpoint: u64) -> crate::logical_generation::ObjectMinimum {
+        crate::logical_generation::ObjectMinimum::CreationCheckpoint(checkpoint)
+    }
+
     fn fee_only_context<'a>(
         resolver: &'a HashSuiteResolver,
         chain_id: &'a ChainId,
@@ -1917,6 +1965,7 @@ mod tests {
             protocol_version: ProtocolVersion::new(1),
             epoch: Epoch::new(0),
             created_checkpoint: 1,
+            minimum: historical(1),
         }
     }
 

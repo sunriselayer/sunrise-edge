@@ -543,6 +543,10 @@ pub fn build_paid_genesis_manifest(
                 public_key: genesis_authority.to_vec(),
             }],
         },
+        // The devnet fixture stays on the historical profile, so every existing
+        // devnet and operator vector keeps its exact manifest bytes. A
+        // handoff-capable devnet is a separate, explicit fixture.
+        commitment_profile: node_core::logical_generation::CommitmentProfile::PhysicalCheckpointV1,
         signature: [0; 64],
     };
     manifest.signature = genesis_key()

@@ -415,6 +415,18 @@ where
         intent.context.epoch(),
         &mut reads,
     )?;
+    // DR-0154: resolve this store's signed binding once, so the forfeiture leg
+    // below enforces the monotonicity rule its own genesis bound.
+    let minimum: logical_generation::ObjectMinimum = logical_generation::ObjectMinimum::for_profile(
+        &logical_generation::fence_commitment_profile(
+            store,
+            context,
+            domain,
+            intent.context.chain_id(),
+            &mut reads,
+        )?,
+        created_checkpoint,
+    );
 
     // 7. read the committed bond row and cross-check the intent's pins.
     let bond_key: Vec<u8> = local_instance_state::fastpath_bond_record_key(
@@ -700,7 +712,7 @@ where
             owner_before: &owner_before,
             owner_after: &owner_after,
         },
-        created_checkpoint,
+        minimum,
         snapshot,
         &admitted.effects,
     )?;
@@ -814,6 +826,7 @@ where
         head_reads,
         vec![mutation_entry],
         state_mutations,
+        None,
     )
 }
 

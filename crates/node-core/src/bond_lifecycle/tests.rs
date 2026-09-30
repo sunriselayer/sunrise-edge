@@ -240,6 +240,13 @@ fn object_ref(resolver: &HashSuiteResolver, object: &Object) -> ObjectRef {
     object_ref_at(resolver, object, Epoch::new(0))
 }
 
+/// The historical profile's object monotonicity rule, which every fixture in
+/// this module exercises: these tests pin the physical creation-checkpoint
+/// behavior DR-0154 leaves untouched for a historical store.
+fn historical_minimum() -> logical_generation::ObjectMinimum {
+    logical_generation::ObjectMinimum::CreationCheckpoint(0)
+}
+
 /// Predicts the exact whole-object result of a `transfer`: same identity,
 /// version + 1, new owner, byte-identical body -- computable without ever
 /// running WASM, matching the invariant `effects::validate` enforces.
@@ -386,6 +393,29 @@ fn seed_owned_coin<S: StructuredDurableDomainStateStore>(
         DurableCommitOutcome::Committed
     );
     (object, authority)
+}
+
+/// Commits one raw state row, fenced at its exact observed revision.
+fn put_row<S: StructuredDurableDomainStateStore>(store: &S, key: &[u8], value: Vec<u8>) {
+    let observed = store
+        .get_versioned_durable(&context(1), domain(), key)
+        .unwrap();
+    let transaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(key.to_vec(), observed.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(key.to_vec(), StateMutation::Put(value)).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&context(1), transaction),
+        DurableCommitOutcome::Committed
+    );
 }
 
 fn install<S: StructuredDurableDomainStateStore>(store: &S, manifest: &genesis::GenesisManifest) {
@@ -705,7 +735,7 @@ fn custody_effects_validate_accepts_a_conserving_owner_transition() {
             owner_before: &owner_before,
             owner_after: &owner_after,
         },
-        0,
+        historical_minimum(),
         &snapshot,
         &effects,
     )
@@ -749,7 +779,17 @@ fn custody_effects_validate_rejects_every_adversarial_shape() {
             Vec::new(),
         )
     };
-    assert!(effects::validate(&interface, &authority, &expected, 0, &snapshot, &trapped,).is_err());
+    assert!(
+        effects::validate(
+            &interface,
+            &authority,
+            &expected,
+            historical_minimum(),
+            &snapshot,
+            &trapped,
+        )
+        .is_err()
+    );
 
     // Emitted an event.
     let with_event = success(
@@ -763,7 +803,15 @@ fn custody_effects_validate_rejects_every_adversarial_shape() {
         }],
     );
     assert!(
-        effects::validate(&interface, &authority, &expected, 0, &snapshot, &with_event).is_err()
+        effects::validate(
+            &interface,
+            &authority,
+            &expected,
+            historical_minimum(),
+            &snapshot,
+            &with_event
+        )
+        .is_err()
     );
 
     // No effects / too many effects.
@@ -772,7 +820,7 @@ fn custody_effects_validate_rejects_every_adversarial_shape() {
             &interface,
             &authority,
             &expected,
-            0,
+            historical_minimum(),
             &snapshot,
             &success(Vec::new(), Vec::new()),
         )
@@ -783,7 +831,7 @@ fn custody_effects_validate_rejects_every_adversarial_shape() {
             &interface,
             &authority,
             &expected,
-            0,
+            historical_minimum(),
             &snapshot,
             &success(
                 vec![
@@ -808,7 +856,7 @@ fn custody_effects_validate_rejects_every_adversarial_shape() {
             &interface,
             &authority,
             &expected,
-            0,
+            historical_minimum(),
             &snapshot,
             &success(vec![ObjectEffect::Created(conserving.clone())], Vec::new()),
         )
@@ -819,7 +867,7 @@ fn custody_effects_validate_rejects_every_adversarial_shape() {
             &interface,
             &authority,
             &expected,
-            0,
+            historical_minimum(),
             &snapshot,
             &success(
                 vec![ObjectEffect::Deleted {
@@ -840,7 +888,7 @@ fn custody_effects_validate_rejects_every_adversarial_shape() {
             &interface,
             &authority,
             &expected,
-            0,
+            historical_minimum(),
             &snapshot,
             &success(
                 vec![ObjectEffect::Mutated {
@@ -859,7 +907,7 @@ fn custody_effects_validate_rejects_every_adversarial_shape() {
             &interface,
             &authority,
             &expected,
-            0,
+            historical_minimum(),
             &snapshot,
             &success(
                 vec![ObjectEffect::Mutated {
@@ -880,7 +928,7 @@ fn custody_effects_validate_rejects_every_adversarial_shape() {
             &interface,
             &authority,
             &expected,
-            0,
+            historical_minimum(),
             &snapshot,
             &success(
                 vec![ObjectEffect::Mutated {
@@ -901,7 +949,7 @@ fn custody_effects_validate_rejects_every_adversarial_shape() {
             &interface,
             &authority,
             &expected,
-            0,
+            historical_minimum(),
             &snapshot,
             &success(
                 vec![ObjectEffect::Mutated {
@@ -922,7 +970,7 @@ fn custody_effects_validate_rejects_every_adversarial_shape() {
             &interface,
             &authority,
             &expected,
-            0,
+            historical_minimum(),
             &snapshot,
             &success(
                 vec![ObjectEffect::Mutated {
@@ -944,7 +992,7 @@ fn custody_effects_validate_rejects_every_adversarial_shape() {
             &interface,
             &authority,
             &expected,
-            0,
+            historical_minimum(),
             &snapshot,
             &success(
                 vec![ObjectEffect::Mutated {
@@ -965,7 +1013,7 @@ fn custody_effects_validate_rejects_every_adversarial_shape() {
             &interface,
             &authority,
             &expected,
-            0,
+            historical_minimum(),
             &different_start,
             &success(
                 vec![ObjectEffect::Mutated {
@@ -986,7 +1034,7 @@ fn custody_effects_validate_rejects_every_adversarial_shape() {
             &interface,
             &authority,
             &expected,
-            0,
+            historical_minimum(),
             &snapshot,
             &success(
                 vec![ObjectEffect::Mutated {
@@ -1007,7 +1055,7 @@ fn custody_effects_validate_rejects_every_adversarial_shape() {
             &interface,
             &authority,
             &expected,
-            0,
+            historical_minimum(),
             &later_snapshot,
             &success(
                 vec![ObjectEffect::Mutated {
@@ -1561,6 +1609,203 @@ fn deposit_transitions_exited_to_active_with_real_wasm_execution() {
         head,
         DurableObjectHead::Current { object_version, .. } if object_version.get() == 2
     ));
+}
+
+/// DR-0154 end to end on a live economic path: a store whose signed genesis
+/// bound the handoff-capable profile really admits and commits a bond deposit,
+/// and that commit installs the authenticated provenance for the exact custody
+/// object subject it mutated, at the generation derived from the genesis floor.
+#[test]
+fn a_handoff_capable_store_commits_a_real_deposit_with_authenticated_provenance() {
+    let object_id = ObjectId::new([0x4A; 32]);
+    let manifest = genesis::tests::logical_manifest_with_custody(object_id);
+    let store = store();
+    install(&store, &manifest);
+    let bond = force_exited(&store, &get_bond(&store, ValidatorId::new(sender())));
+
+    let fixture = build_fixture();
+    let source_id = ObjectId::new([0x4B; 32]);
+    let (source_object, source_authority) =
+        seed_owned_coin(&store, &fixture, source_id, 5_000, sender(), [0x70; 32]);
+    let profile: logical_generation::LogicalProfileRecord = installed_profile(&store);
+    seed_coin_provenance(&store, &profile, &source_object);
+
+    let scope = custody_scope_of(&bond);
+    let token: [u8; 32] = execution::protocol_custody::derive_deposit_owner_token(
+        &resolver(),
+        &protocol(),
+        source_id,
+        &scope,
+    )
+    .unwrap();
+    let request_id: [u8; 32] = [0x71; 32];
+    let leg = transfer_leg(
+        &fixture,
+        protocol(),
+        object_ref(&resolver(), &source_object),
+        sender(),
+        0,
+        request_id,
+        token,
+    );
+    let (new_object, oref) = transferred(
+        &source_object,
+        Owner::ProtocolCustody(scope),
+        protocol().epoch(),
+    );
+    let mut next = predicted_next(&bond, 20, protocol().epoch());
+    next.custody_object = oref;
+    next.custody_object_epoch = next.lifecycle_epoch;
+    next.slashable_from_epoch = Epoch::new(next.lifecycle_epoch.get() + 1);
+    next.authority = source_authority;
+    next.amount = 5_000;
+    next.required_minimum = 100;
+    next.state = FastPathBondState::Active;
+    let intent = base_intent(
+        &protocol(),
+        request_id,
+        &bond,
+        &next,
+        BondLifecycleOperation::Deposit { leg },
+    );
+    let signed = signed_envelope(intent, &key());
+    let output = call(&store, &signed, &protocol(), &leg_policy(), 20).unwrap();
+    let committed = decode_fastpath_bond_record(output.responses()[0].payload().unwrap()).unwrap();
+    assert_eq!(committed, next);
+
+    // The authenticated provenance for the mutated custody object exists, at
+    // the generation derived from this profile's own genesis floor, and is
+    // bound to the exact live head the commit produced.
+    let hashes: HashSuiteResolver = resolver();
+    let keys = logical_generation::LogicalKeySpace::new(&profile, &hashes);
+    let subject = logical_generation::LogicalSubject::Object(source_id);
+    let row = store
+        .get_versioned_durable(
+            &context(1),
+            domain(),
+            &keys.provenance_key(&subject).unwrap(),
+        )
+        .unwrap();
+    let record =
+        logical_generation::decode_logical_provenance_record(row.value().unwrap()).unwrap();
+    assert_eq!(record.subject, subject);
+    assert_eq!(record.generation.get(), 1);
+    assert_eq!(
+        record.observation,
+        logical_generation::LogicalObservation::ObjectLive {
+            object_version: 2,
+            digest: object_ref(&resolver(), &new_object).digest,
+        }
+    );
+    // The same physical nonce row must have the same logical subject identity
+    // as paid/local/publication paths. A generic StateKey row here would wedge
+    // the sender's next paid call even though this Deposit itself succeeded.
+    let nonce_subject = logical_generation::LogicalSubject::SenderNonce {
+        sender: sender(),
+        epoch: protocol().epoch(),
+    };
+    let nonce_row = store
+        .get_versioned_durable(
+            &context(1),
+            domain(),
+            &keys.provenance_key(&nonce_subject).unwrap(),
+        )
+        .unwrap();
+    let nonce_provenance =
+        logical_generation::decode_logical_provenance_record(nonce_row.value().unwrap()).unwrap();
+    assert_eq!(nonce_provenance.subject, nonce_subject);
+    assert_eq!(
+        nonce_provenance.observation,
+        logical_generation::LogicalObservation::NonceNext { next_nonce: 1 }
+    );
+    let layout: PersistenceLayout = PersistenceLayout::new(chain(), protocol().protocol_version());
+    let nonce_key: Vec<u8> = layout.sender_nonce_key(sender(), protocol().epoch());
+    let nonce_observed: VersionedStateValue = store
+        .get_versioned_durable(&context(1), domain(), &nonce_key)
+        .unwrap();
+    let pending: PendingSenderNonceWrite = PendingSenderNonceWrite {
+        key: nonce_key.clone(),
+        read_revision: nonce_observed.revision(),
+        record: SenderNonceRecord::new(sender(), protocol().epoch(), 2),
+    };
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    reads.insert(nonce_key, nonce_observed.revision());
+    let next: logical_generation::LogicalDerivation = logical_generation::derive(
+        &store,
+        &context(1),
+        domain(),
+        &hashes,
+        &profile,
+        &[],
+        Some(&pending),
+        &mut reads,
+    )
+    .unwrap();
+    assert_eq!(next.generation.get(), 2);
+    assert_eq!(next.inputs.get(&nonce_subject).unwrap().get(), 1);
+}
+
+/// Seeds the authenticated provenance a real admitted operation would have
+/// written for a directly seeded object and its authority row, so a
+/// handoff-capable store sees verified inputs for this fixture's own shortcut.
+fn seed_coin_provenance<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    profile: &logical_generation::LogicalProfileRecord,
+    object: &Object,
+) {
+    let hashes: HashSuiteResolver = resolver();
+    let keys = logical_generation::LogicalKeySpace::new(profile, &hashes);
+    let epoch: Epoch = protocol().epoch();
+    let auth_key: Vec<u8> = local_instance_state::object_authority_key(object.id);
+    let auth_bytes: Vec<u8> = store
+        .get_versioned_durable(&context(1), domain(), &auth_key)
+        .unwrap()
+        .value()
+        .unwrap()
+        .to_vec();
+    let subjects: Vec<(
+        logical_generation::LogicalSubject,
+        logical_generation::LogicalObservation,
+    )> = vec![
+        (
+            logical_generation::LogicalSubject::Object(object.id),
+            logical_generation::LogicalObservation::ObjectLive {
+                object_version: object.version,
+                digest: object_ref(&hashes, object).digest,
+            },
+        ),
+        (
+            logical_generation::LogicalSubject::StateKey(auth_key),
+            logical_generation::LogicalObservation::StatePresent {
+                content_digest: logical_generation::content_digest(&hashes, epoch, &auth_bytes)
+                    .unwrap(),
+            },
+        ),
+    ];
+    for (subject, observation) in subjects {
+        let record = logical_generation::LogicalProvenanceRecord {
+            subject: subject.clone(),
+            observed_epoch: epoch,
+            generation: profile.genesis_floor,
+            observation,
+        };
+        put_row(
+            store,
+            &keys.provenance_key(&subject).unwrap(),
+            logical_generation::encode_logical_provenance_record(&record).unwrap(),
+        );
+    }
+}
+
+/// Reads back the authenticated profile row a handoff-capable genesis installed.
+fn installed_profile<S: StructuredDurableDomainStateStore>(
+    store: &S,
+) -> logical_generation::LogicalProfileRecord {
+    let key: Vec<u8> = logical_generation::logical_profile_key(protocol().chain_id()).unwrap();
+    let observed = store
+        .get_versioned_durable(&context(1), domain(), &key)
+        .unwrap();
+    logical_generation::decode_logical_profile_record(observed.value().unwrap()).unwrap()
 }
 
 /// Every embedded leg's own `CallIntent::request_id` must equal the outer

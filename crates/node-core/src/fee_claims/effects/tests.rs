@@ -131,6 +131,13 @@ fn split_effect(f: &Fixture) -> (ExecutionEffects, Vec<CreatedObjectAuthority>) 
     )
 }
 
+/// The historical profile's object monotonicity rule: these fixtures pin the
+/// physical creation-checkpoint behavior DR-0154 leaves untouched for a
+/// historical store.
+fn historical_minimum() -> logical_generation::ObjectMinimum {
+    logical_generation::ObjectMinimum::CreationCheckpoint(4)
+}
+
 fn accepted(
     f: &Fixture,
     output: &ExecutionEffects,
@@ -142,7 +149,7 @@ fn accepted(
         &f.interface,
         authorities,
         &expected(f, amount),
-        4,
+        historical_minimum(),
         &f.snapshot,
         output,
         is_final,
@@ -161,7 +168,7 @@ fn escrow_value_must_equal_the_settlement_rows_unclaimed_positive_total() {
             &f.interface,
             &[],
             &row_derived,
-            4,
+            historical_minimum(),
             &f.snapshot,
             &baseline,
             true,
@@ -177,7 +184,7 @@ fn escrow_value_must_equal_the_settlement_rows_unclaimed_positive_total() {
             &f.interface,
             &authorities,
             &row_derived,
-            4,
+            historical_minimum(),
             &f.snapshot,
             &split,
             false,

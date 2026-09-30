@@ -419,12 +419,37 @@ fn fee_policy(
 pub(crate) const FIRST_PAID_NONCE: u64 = 4;
 
 pub(crate) fn install<S: StructuredDurableDomainStateStore>(store: &S) -> Fixture {
+    install_with_profile(store, None)
+}
+
+/// [`install`], optionally on a store whose signed genesis bound the
+/// handoff-capable profile (DR-0154).
+///
+/// Passing `Some` seeds the authenticated provenance a real handoff-capable
+/// history would already carry for the policy rows this fixture writes directly
+/// with [`set_state`]. Everything else the fixture creates -- the published
+/// package record, the instance record, every minted object and every publisher
+/// nonce advance -- comes from the ordinary publication and local execution
+/// paths, which derive and install their own provenance, so the resulting store
+/// is a genuine handoff-capable history rather than a hand-built one.
+pub(crate) fn install_with_profile<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    profile: Option<&logical_generation::LogicalProfileRecord>,
+) -> Fixture {
     ensure_fastpath_epoch_installed(store);
+    seed_publication_policy_provenance(store, profile);
     set_state(
         store,
         execution_policy_key_for_profile(&protocol(), 4).unwrap(),
         StateMutation::Put(base_policy().encode().unwrap()),
     );
+    if let Some(record) = profile {
+        seed_row_provenance(
+            store,
+            record,
+            &execution_policy_key_for_profile(&protocol(), 4).unwrap(),
+        );
+    }
     let (origin, code) = publish_package(store, 1, 1, 0);
     let instance: InstanceRecord = InstanceRecord {
         context: protocol(),
@@ -488,6 +513,9 @@ pub(crate) fn install<S: StructuredDurableDomainStateStore>(store: &S) -> Fixtur
         paid_fee_policy_key(&protocol()).unwrap(),
         StateMutation::Put(encode_paid_fee_policy(&policy).unwrap()),
     );
+    if let Some(record) = profile {
+        seed_row_provenance(store, record, &paid_fee_policy_key(&protocol()).unwrap());
+    }
     Fixture {
         origin,
         code,
@@ -498,6 +526,89 @@ pub(crate) fn install<S: StructuredDurableDomainStateStore>(store: &S) -> Fixtur
         small,
         policy,
     }
+}
+
+/// Binds this fixture's store to the handoff-capable profile by installing the
+/// authenticated row a signed version-two genesis installs, and returns it.
+///
+/// The row's authenticity, its atomic installation and its byte-exact reopen
+/// verification are covered by the genesis tests; this helper exists so the paid
+/// and publication fixtures can exercise the profile without rebuilding a full
+/// signed genesis on their own chain.
+pub(crate) fn install_logical_profile<S: StructuredDurableDomainStateStore>(
+    store: &S,
+) -> logical_generation::LogicalProfileRecord {
+    let record: logical_generation::LogicalProfileRecord =
+        logical_generation::LogicalProfileRecord {
+            context: protocol(),
+            profile: logical_generation::CommitmentProfile::LogicalGenerationV2,
+            manifest_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x5c; 32]),
+            genesis_authority: sender(),
+            genesis_floor: protocol_types::ExecutionGeneration::genesis_floor(),
+        };
+    set_state(
+        store,
+        logical_generation::logical_profile_key(protocol().chain_id()).unwrap(),
+        StateMutation::Put(logical_generation::encode_logical_profile_record(&record).unwrap()),
+    );
+    record
+}
+
+/// Writes the authenticated provenance a handoff-capable store's earlier history
+/// would already carry for one existing row, bound to that row's exact current
+/// bytes at the profile's own genesis floor.
+fn seed_row_provenance<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    profile: &logical_generation::LogicalProfileRecord,
+    key: &[u8],
+) {
+    let hashes: HashSuiteResolver = resolver();
+    let value: Vec<u8> = store
+        .get_versioned_durable(&context(), domain(), key)
+        .unwrap()
+        .value()
+        .unwrap()
+        .to_vec();
+    let subject: logical_generation::LogicalSubject =
+        logical_generation::LogicalSubject::StateKey(key.to_vec());
+    let observation = logical_generation::LogicalObservation::StatePresent {
+        content_digest: logical_generation::content_digest(&hashes, protocol().epoch(), &value)
+            .unwrap(),
+    };
+    let record = logical_generation::LogicalProvenanceRecord {
+        subject: subject.clone(),
+        observed_epoch: protocol().epoch(),
+        generation: profile.genesis_floor,
+        observation,
+    };
+    let keys = logical_generation::LogicalKeySpace::new(profile, &hashes);
+    let bytes: Vec<u8> = logical_generation::encode_logical_provenance_record(&record).unwrap();
+    set_state(
+        store,
+        keys.provenance_key(&subject).unwrap(),
+        StateMutation::Put(bytes),
+    );
+}
+
+/// Installs the publication policy row and its provenance before the first
+/// publish, for a handoff-capable fixture only.
+fn seed_publication_policy_provenance<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    profile: Option<&logical_generation::LogicalProfileRecord>,
+) {
+    let Some(record) = profile else {
+        return;
+    };
+    let semantics: Digest32 = generic_object_result_semantics(&resolver(), &protocol()).unwrap();
+    let policy: publication::LocalPublicationPolicy =
+        publication::LocalPublicationPolicy::object_results(protocol(), semantics);
+    let key: Vec<u8> = publication::publication_policy_key_for_profile(&protocol(), 4).unwrap();
+    set_state(
+        store,
+        key.clone(),
+        StateMutation::Put(policy.encode().unwrap()),
+    );
+    seed_row_provenance(store, record, &key);
 }
 
 /// Mints one additional coin of the fixture's asset, owned by an arbitrary
@@ -1006,6 +1117,59 @@ pub(crate) fn memory_store() -> MemoryDurableStateStore {
 }
 
 // ── regressions ─────────────────────────────────────────────────────────
+
+/// DR-0154 across the real publication and paid paths on one handoff-capable
+/// store: a package published *after* the profile was bound carries its own
+/// authenticated provenance, so a later paid execution that consumes that
+/// package and its objects admits and commits instead of failing closed.
+#[test]
+fn a_post_profile_published_package_is_consumed_by_paid_execution() {
+    let store: MemoryDurableStateStore = memory_store();
+    let profile: logical_generation::LogicalProfileRecord = install_logical_profile(&store);
+    // Every package, instance, object and nonce below is produced by the
+    // ordinary publication and local-execution paths under the bound profile.
+    let fixture: Fixture = install_with_profile(&store, Some(&profile));
+    let engine: CountingEngine = CountingEngine::new();
+    let bytes: Vec<u8> = transfer_call(&fixture, 5, FIRST_PAID_NONCE);
+    let output: NodeOutput = execute(&store, &fixture, &engine, &bytes).unwrap();
+    assert_eq!(output.responses()[0].status(), NodeResponseStatus::Accepted);
+    assert_eq!(receipt(&output).status, PaidExecutionStatus::Success);
+    // The published package record really carries authenticated provenance, so
+    // the paid admission that loaded it verified an input rather than trusting
+    // an unauthenticated row.
+    let record_key: Vec<u8> = publication::publication_record_key(&fixture.origin).unwrap();
+    let hashes: HashSuiteResolver = resolver();
+    let keys = logical_generation::LogicalKeySpace::new(&profile, &hashes);
+    let subject = logical_generation::LogicalSubject::StateKey(record_key.clone());
+    let row = store
+        .get_versioned_durable(
+            &context(),
+            domain(),
+            &keys.provenance_key(&subject).unwrap(),
+        )
+        .unwrap();
+    let provenance =
+        logical_generation::decode_logical_provenance_record(row.value().unwrap()).unwrap();
+    assert_eq!(provenance.subject, subject);
+    assert!(provenance.generation.get() > profile.genesis_floor.get());
+    let published: Vec<u8> = store
+        .get_versioned_durable(&context(), domain(), &record_key)
+        .unwrap()
+        .value()
+        .unwrap()
+        .to_vec();
+    assert_eq!(
+        provenance.observation,
+        logical_generation::LogicalObservation::StatePresent {
+            content_digest: logical_generation::content_digest(
+                &hashes,
+                protocol().epoch(),
+                &published
+            )
+            .unwrap(),
+        }
+    );
+}
 
 #[test]
 fn successful_paid_call_charges_the_fee_and_advances_the_source_once() {

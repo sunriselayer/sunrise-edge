@@ -116,8 +116,22 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 | --- | --- | --- |
 | 1 | Generic certified network contract lifecycle | Merged as PR #228 on 2026-09-27 after the full repository gate, fresh exact-head Opus APPROVE and required CI: Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Independent ingress/security gates remain separate. |
 | 2 | Network economics and validator operations | Merged as PR #232 on 2026-09-27 with normal merge commit `86711be`, after fresh exact-head Opus APPROVE and the passing complete repository CI. Fixed-epoch four-namespace CLI evidence is implemented. Membership-dependent Deposit/Withdraw positives join delivery 3; economics/ingress security audits remain separate. |
-| 3 | Validator membership and epoch handoff | Design accepted after independent Opus review and corrections on 2026-09-27: [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Mandatory publication-before-apply, logical execution generations and ordered epoch control are not yet implemented. One integrated feature must cover real add/replace/recover/epoch operations, genuine Deposit/Withdraw, and rejection of incomplete/divergent replicas. |
+| 3 | Validator membership and epoch handoff | In progress under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Bounded portable storage merged as PR #237; logical-generation admission is an independent feature under review. Authenticated publication/control/cut/import, readiness/Seal/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation remain incomplete. |
 | 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
+
+**PR slicing policy, 2026-09-30:** deliveries describe integrated acceptance
+outcomes, not PR size. Implement dependency-ordered, independently reviewable
+functional capabilities, each with its relevant tests, architecture/TODO
+updates, complete repository gate, fresh exact-head Opus approval and required
+CI. A prerequisite may merge before the whole delivery, provided it does not
+authorize an unfinished transition. Preserve Draft PR #235 as the aggregate
+implementation source; do not merge its unfinished whole-delivery diff.
+PR #237 merged normally as `0f201eb` on 2026-09-30 after all of its gates.
+Subsequent boundaries follow actual dependencies: logical generations and
+provenance; publication/availability admission; Freeze/frontier/drain;
+certified terminal/candidate transport; authenticated cut/import; and
+readiness/Seal/activation. Keep Delivery 3 unchecked until the integrated
+criteria below actually pass, regardless of how many prerequisites merge.
 
 PostgreSQL remains the existing tested profile for delivery 1, not a mandatory
 protocol database. Lightweight authoritative profiles (Cloudflare SQLite-backed
@@ -199,6 +213,48 @@ The detailed existing evidence and remaining criteria follow:
   or exposed signatures. Fresh-genesis enforcement
   is required; existing pre-rule stores cannot silently receive this guarantee.
 
+- [ ] **Logical execution generation admission: independent feature PR**
+  ([DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md),
+  [logical execution generation](docs/architecture/logical-execution-generation.md)).
+  Adds the checked causal `ExecutionGeneration` type
+  (`crates/protocol-types/src/execution_generation.rs`) and
+  `crates/node-core/src/logical_generation.rs`'s `LogicalProfileRecord`
+  (`0x6480/v1`)/`LogicalProvenanceRecord` (`0x6481/v1`), bound only by a
+  fresh signed version-2 (`0x6416/v2`) genesis manifest. Wires
+  `admit_application`/`admit_generic_transition` through supported
+  application path that installs effects, a receipt, a nonce advance, or a
+  settlement against an already-installed profile: paid execution, local
+  execution, publication, bond lifecycle, fee-claim settlement, and the
+  generic durable-event path (satisfying the ordered bond/fee-claim
+  minimum-check substitution called for above). A historical store's
+  existing physical checkpoint/revision admission is unchanged. On branch
+  `codex/logical-generation-admission` (commits `837770e`, `83329d7`, `56c1cd8`,
+  `a095a62`, `fb034e3`), based on merged PR #237; Draft PR #238.
+  Logical-profile epoch proposal/vote and fresh activation explicitly refuse
+  with `EpochTransitionLogicalProfileUnsupported` before a signature or
+  mutation: next-epoch provenance is not implemented by this feature.
+  Activation first reconciles already-committed transition identity and the
+  outgoing epoch, so the new gate does not preempt committed replay.
+  Does not implement availability publication/ACK gates, Freeze/DrainSet/Seal
+  control, frontier/cut/import/readiness/activation, or any other Delivery 3
+  completion criterion above. Parent focused checks pass on `a095a62`:
+  5 checked-generation tests, 746 node-core library tests (5 ignored), and
+  the independent JavaScript fast-path vector generator. Opus then blocked
+  fresh Logical epoch activation without next-epoch provenance. The
+  unsupported-transition boundary was added, and parent-run epoch-transition
+  regressions pass (53 tests), including eligible Historical activation,
+  signed Logical refusal with snapshot-token invariance, and committed
+  activation replay before malformed-profile resolution. On 2026-09-30 the
+  complete parent-run `./scripts/check-all.sh` passed on code head `473bf24`,
+  with live disposable PostgreSQL and all required SIGKILL, backup/restore,
+  disk/WAL-full, connection-exhaustion and PgBouncer profiles, existing
+  network/CLI E2Es, independent vectors and Rust/WASM/edge-adapter checks.
+  Fresh read-only Opus approved the complete independent feature at
+  `1445827` and explicitly approved final code head `473bf24`. Every final
+  PR head, including documentation-only progress updates, must still have
+  latest-head approval and passing required CI before merge. This unchecked
+  item is not a completed merge or an integrated handoff gate.
+
 - [x] **Portable storage implementation: bounded reads and backend-enforced snapshot continuity**
   ([DR-0166](docs/architecture/decisions/0166-portable-candidate-snapshot.md),
   [portable reconstruction](docs/architecture/portable-reconstruction.md)).
@@ -237,10 +293,12 @@ The detailed existing evidence and remaining criteria follow:
   PgBouncer profiles, existing network/CLI E2Es, independent vectors,
   Rust/WASM/workerd and other edge-adapter checks. Fresh read-only Opus
   approved the entire independent feature at that same code head with no
-  blockers. This checked item records implementation and local validation;
-  merge still requires latest-head Opus approval and passing required CI
-  for PR #237, including any subsequent documentation-only update. It is
-  not Delivery 3 completion, authenticated cut or activation readiness.
+  blockers, then explicitly approved final documentation-only head
+  `b0d969b`. Required CI passed on that exact head (run `36695206854`),
+  and PR #237 merged normally on 2026-09-30 as `0f201eb`. Parent verified
+  a clean `main` equal to `origin/main` and remote feature branch removal.
+  This is not Delivery 3 completion, authenticated cut or activation
+  readiness.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).
