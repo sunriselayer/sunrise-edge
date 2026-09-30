@@ -1223,8 +1223,42 @@ fn committed_history_page_rejects_a_missing_request_header() {
     );
     assert_eq!(
         result.unwrap_err().to_string(),
-        "retained ordered outcome has no immutable request header"
+        "ordered committed history candidate has no request header"
     );
+}
+
+#[test]
+fn committed_history_page_rejects_a_header_with_wrong_kind_or_checkpoint() {
+    let (network, original, candidate) = completed_network([0xe9; 32], 0x7b);
+    let chain: ChainId = fixture::chain();
+    let header_key: Vec<u8> =
+        engine::ordered_request_header_key_for_tests(&chain, &candidate.request_id);
+    for (kind, checkpoint) in [
+        (OrderedOperationKind::DrainSet, candidate.created_checkpoint),
+        (candidate.kind, candidate.created_checkpoint + 1),
+    ] {
+        network.put(
+            0,
+            header_key.clone(),
+            StateMutation::Put(engine::encode_request_header_for_tests(
+                original.candidate_digest,
+                kind,
+                checkpoint,
+            )),
+        );
+        assert_eq!(
+            verify_stored_committed_history_page(
+                &network.stores[0],
+                &network.context,
+                &network.env(),
+                &VerifiedCommittedHistoryTip::genesis(&network.policy),
+                1,
+            )
+            .unwrap_err()
+            .to_string(),
+            "ordered committed history candidate disagrees with its request header"
+        );
+    }
 }
 
 #[test]
@@ -2300,6 +2334,35 @@ fn ordered_drain_set_requires_local_readiness_then_commits_once_on_four_replicas
     // The predicate only returns a caller-owned read set. A later signer or
     // cut installer must atomically assert it; even a byte-identical rewrite
     // of the observed state after derivation invalidates that snapshot.
+    let mut control_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    derive_candidate_free_terminal_into(
+        &network.stores[3],
+        &network.context,
+        &network.env(),
+        &mut control_reads,
+    )
+    .unwrap();
+    let control_key: Vec<u8> = b"terminal-cas-positive-control".to_vec();
+    control_reads.insert(control_key.clone(), network.revision(3, &control_key));
+    let control_assertions: Vec<StateReadAssertion> = control_reads
+        .into_iter()
+        .map(|(key, revision)| StateReadAssertion::new(key, revision).unwrap())
+        .collect();
+    let control_transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        network.domain(),
+        AtomicStateReadSet::new(control_assertions).unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(control_key.clone(), StateMutation::Put(vec![1])).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        network.stores[3].commit_durable(&network.context, control_transaction),
+        DurableCommitOutcome::Committed
+    );
+    assert_eq!(network.value(3, &control_key), Some(vec![1]));
+
     let mut fenced_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     derive_candidate_free_terminal_into(
         &network.stores[3],
@@ -2331,6 +2394,30 @@ fn ordered_drain_set_requires_local_readiness_then_commits_once_on_four_replicas
         DurableCommitOutcome::Rejected(_)
     ));
     assert!(network.value(3, &marker_key).is_none());
+
+    // The local record's height is not authority: changing it to another
+    // structurally legal post-Freeze height must fail against the signed
+    // DrainSet candidate and committed proof at that exact height.
+    let mut forged_record: DrainSetRecord = committed_drain_record;
+    forged_record.committed_at_block_height = identity.closure_height + 1;
+    assert!(forged_record.committed_at_block_height < 4);
+    network.put(
+        2,
+        key,
+        StateMutation::Put(encode_drain_set_record(&forged_record).unwrap()),
+    );
+    let mut forged_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    assert_eq!(
+        derive_candidate_free_terminal_into(
+            &network.stores[2],
+            &network.context,
+            &network.env(),
+            &mut forged_reads,
+        )
+        .unwrap_err()
+        .to_string(),
+        "committed DrainSet proof does not name its signed candidate at the recorded height"
+    );
 }
 
 /// DR-0157 post-DrainSet closure: once this epoch's one-per-epoch

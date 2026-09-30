@@ -70,6 +70,11 @@
 //! be enabled as a complete handoff. [`business_free_barrier`] composes the
 //! receipt-backed drain completion and suffix predicate into one local CAS
 //! marker, and fresh writers reject that marker. It is not a portable cut.
+//! [`terminal_anchor`] (DR-0165) additionally binds the local DrainSet row's
+//! claimed commit height to its exact signed candidate and archived committed
+//! proof, then derives an already certified candidate-free three-chain after
+//! that height under one caller-owned CAS read set. This still does not prove
+//! a portable state/artifact snapshot or authorize Seal or activation.
 use super::*;
 
 mod business_free_barrier;

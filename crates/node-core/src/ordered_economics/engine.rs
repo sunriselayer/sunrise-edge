@@ -505,7 +505,7 @@ pub(super) fn ordered_candidate_record_key(
     Ok(key)
 }
 
-fn ordered_request_header_key(
+pub(super) fn ordered_request_header_key(
     chain: &ChainId,
     request_id: &[u8; 32],
 ) -> Result<Vec<u8>, NodeCoreError> {
@@ -517,7 +517,10 @@ fn ordered_request_header_key(
 
 /// Key of one retained, completed ordered outcome, in the same reserved
 /// namespace as every other row here.
-fn ordered_outcome_key(chain: &ChainId, request_id: &[u8; 32]) -> Result<Vec<u8>, NodeCoreError> {
+pub(super) fn ordered_outcome_key(
+    chain: &ChainId,
+    request_id: &[u8; 32],
+) -> Result<Vec<u8>, NodeCoreError> {
     let mut key: Vec<u8> = prefixed_key(b"outcome/", chain)?;
     key.extend_from_slice(request_id);
     validate_transactional_state_key(&key)?;
@@ -705,10 +708,10 @@ pub(super) fn decode_applied_height(bytes: &[u8]) -> Result<u64, NodeCoreError> 
 /// checkpoint fails closed here, before any fresh proposal/vote metadata
 /// write (DR-0153's header-reuse rule).
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct RequestHeader {
-    candidate_digest: Digest32,
-    kind: OrderedOperationKind,
-    created_checkpoint: u64,
+pub(super) struct RequestHeader {
+    pub(super) candidate_digest: Digest32,
+    pub(super) kind: OrderedOperationKind,
+    pub(super) created_checkpoint: u64,
 }
 
 fn encode_request_header(header: &RequestHeader) -> Result<Vec<u8>, NodeCoreError> {
@@ -719,7 +722,7 @@ fn encode_request_header(header: &RequestHeader) -> Result<Vec<u8>, NodeCoreErro
     Ok(frame.finish()?)
 }
 
-fn decode_request_header(bytes: &[u8]) -> Result<RequestHeader, NodeCoreError> {
+pub(super) fn decode_request_header(bytes: &[u8]) -> Result<RequestHeader, NodeCoreError> {
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(REQUEST_HEADER_RECORD_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;

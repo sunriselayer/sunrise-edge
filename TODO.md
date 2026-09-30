@@ -671,20 +671,27 @@ The detailed existing evidence and remaining criteria follow:
   U14 follows [DR-0165](docs/architecture/decisions/0165-pre-seal-ordered-history-segment.md):
   a local read-only predicate now derives an already certified empty
   three-chain tip strictly after the **committed DrainSet** height, not the
-  earlier Freeze `closure_height`. It re-verifies drain completion, the
-  replica-local writer barrier, applied prefix and high/locked suffix, then
-  folds the exact consensus and proof revisions into a caller-owned CAS read
+  earlier Freeze `closure_height`. The local DrainSet height is cross-checked
+  against its signed candidate, exact intent, archived committed proof and
+  receipt-backed accepted outcome; a decodable local record alone is not
+  authority. It re-verifies drain completion, the replica-local writer
+  barrier, applied prefix and high/locked suffix, then folds the exact
+  consensus and proof revisions into a caller-owned CAS read
   set. The bounded committed-history page now also checks each named
-  candidate's canonical bytes and signature, request-header binding,
+  candidate's canonical bytes and signature, all request-header fields,
   retained outcome and original durable receipt, including a direct signed
   origin-proof check for a replay from an earlier page. Four-validator
   terminal and candidate-linkage tests exercise healthy continuation,
   malformed/missing/tombstoned records, altered outcome/receipt links, and
-  a stale CAS read set. This remains an **ordered-history segment**, not a
-  portable cut: cross-page snapshot/manifest binding, complete artifact and
-  business-state enumeration/replay, a signed cut decision, conditional
+  a stale CAS read set with a successful control commit. This remains an
+  **ordered-history segment**, not a portable cut: a certified in-flight
+  duplicate replay success fixture, cross-page snapshot/manifest binding,
+  complete artifact and business-state enumeration/replay, a signed cut
+  decision, conditional
   readiness, Seal, activation, fresh-genesis gating and independent
-  PostgreSQL E2E remain open. Neither the local barrier nor a source-local
+  PostgreSQL E2E remain open. The receipt lookup has no row-revision CAS
+  primitive and must be included in that later authenticated manifest.
+  Neither the local barrier nor a source-local
   committed counter is transferable authority.
 
 - [x] **Embedded DO contract host: bounded local implementation**

@@ -518,10 +518,14 @@ high/locked suffix also needs a direct certified empty control anchor.
 The pre-Seal terminal witness is an already certified, candidate-free
 three-chain whose committed block is **strictly after the committed DrainSet
 height**, not merely after the earlier Freeze height carried by
-`DrainUnionIdentity.closure_height`. Local derivation folds drain completion,
-the business-free barrier, applied state, high/locked suffix and exact proof
-row into one caller-owned CAS read set. The witness is not a signed cut claim:
-an importer must match it to an independently verified genesis-to-tip history
+`DrainUnionIdentity.closure_height`. The local DrainSet row's height must itself
+match the archived committed proof and accepted outcome with original receipt
+for its exact authenticated signed candidate and intent. Local derivation
+folds drain completion, the business-free barrier, applied state, high/locked
+suffix and exact proof row into one caller-owned CAS read set. The witness is
+not a signed cut claim: the receipt lookup has no row-revision CAS primitive,
+so its exact bytes also belong in the later authenticated manifest. An importer
+must match it to an independently verified genesis-to-tip history
 and complete business/artifact manifest before any readiness or serving step.
 Unknown ordered families fail closed.
 

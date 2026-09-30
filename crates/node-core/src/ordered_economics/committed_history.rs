@@ -101,15 +101,12 @@ pub struct VerifiedCommittedHistoryPage {
 /// retained outcome and the ORIGINAL durable request receipt that outcome
 /// carries -- not merely that some row exists under a name that looks right.
 ///
-/// [`engine::query_ordered_outcome`] already re-derives the immutable
-/// request-header binding and the original receipt cross-check (its own
-/// `require_consistent_completion`), so this adds exactly the two checks that
-/// depend on the committed block itself: that the retained candidate bytes
-/// really hash to the digest the signed and quorum-certified proposal named,
-/// that they authenticate purely under the pinned policy (outer/leg
-/// signatures, declared context), and that the retained outcome's own
-/// `block_height`/`block_digest` are consistent with the block under
-/// verification.
+/// [`engine::query_ordered_outcome`] already checks the header's digest and
+/// the original receipt (its own `require_consistent_completion`). This
+/// routine additionally hashes the exact retained candidate bytes, checks
+/// its signatures and pinned context, compares the header's operation kind
+/// and checkpoint, and binds the outcome's origin height and block digest to
+/// authenticated committed history.
 ///
 /// A committed candidate may legitimately recommit at a later height without
 /// re-executing (the existing replay-answers-from-retained-outcome path), so
@@ -147,6 +144,11 @@ fn verify_committed_candidate_linkage<S: StructuredDurableDomainStateStore>(
             "ordered committed history candidate bytes are malformed",
         )
     })?;
+    authenticate_candidate(env, &candidate).map_err(|_| {
+        OrderedEconomicsError::Prerequisite(
+            "ordered committed history candidate failed authentication",
+        )
+    })?;
     let recomputed: Digest32 =
         engine::candidate_digest(env.resolver, candidate.context.epoch(), candidate_bytes)?;
     if recomputed != digest {
@@ -154,11 +156,28 @@ fn verify_committed_candidate_linkage<S: StructuredDurableDomainStateStore>(
             "ordered committed history candidate bytes do not hash to the committed transaction digest",
         ));
     }
-    authenticate_candidate(env, &candidate).map_err(|_| {
-        OrderedEconomicsError::Prerequisite(
-            "ordered committed history candidate failed authentication",
-        )
-    })?;
+    let header_key: Vec<u8> = engine::ordered_request_header_key(&chain, &candidate.request_id)?;
+    let header_row: VersionedStateValue =
+        store.get_versioned_durable(context, env.policy.domain(), &header_key)?;
+    let header_bytes: &[u8] = header_row
+        .value()
+        .ok_or(OrderedEconomicsError::Prerequisite(
+            "ordered committed history candidate has no request header",
+        ))?;
+    let header: engine::RequestHeader =
+        engine::decode_request_header(header_bytes).map_err(|_| {
+            OrderedEconomicsError::Prerequisite(
+                "ordered committed history candidate request header is malformed",
+            )
+        })?;
+    if header.candidate_digest != digest
+        || header.kind != candidate.kind
+        || header.created_checkpoint != candidate.created_checkpoint
+    {
+        return Err(OrderedEconomicsError::Prerequisite(
+            "ordered committed history candidate disagrees with its request header",
+        ));
+    }
     let outcome: OrderedOutcome =
         query_ordered_outcome(store, context, env, &candidate.request_id)?.ok_or(
             OrderedEconomicsError::Prerequisite(

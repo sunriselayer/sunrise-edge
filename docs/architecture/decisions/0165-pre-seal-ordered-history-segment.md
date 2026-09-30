@@ -21,8 +21,11 @@ The existing key scanner supplies bounded pages, not a cross-page snapshot.
 ## Decision
 
 1. Derive a candidate-free terminal witness from an already committed block
-   strictly after the committed DrainSet height. Re-verify that block's
-   archived three-chain proof against the pinned outgoing validator set and
+   strictly after the committed DrainSet height. First bind the local
+   DrainSet row's claimed height to its exact authenticated candidate,
+   signed intent, archived committed proof and receipt-backed accepted outcome
+   at that height. Re-verify the terminal block's archived three-chain proof
+   against the pinned outgoing validator set and
    require the committed proposal and its direct child and grandchild to be
    candidate-free. Do not invent a new finality signature or accept a local
    committed-height counter as the proof.
