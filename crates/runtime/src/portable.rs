@@ -112,7 +112,7 @@ impl PortableSnapshotToken {
 
 /// A stale snapshot is a restart/refusal, never evidence that a missing row
 /// is absent or permission to stitch bytes from a newer source.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PortableSnapshotError {
     Read(DurableReadError),
     Changed,
@@ -913,6 +913,8 @@ impl DurablePortableSnapshotRepository for MemoryDurableStateStore {
         check_memory_snapshot(&data, context, domain, token)?;
         if data.outboxes.iter().any(|((row_domain, _), batch)| {
             *row_domain == *domain.as_bytes() && !batch.messages().is_empty()
+        }) || data.deliveries.iter().any(|((row_domain, _), delivery)| {
+            *row_domain == *domain.as_bytes() && (!delivery.completed || delivery.next_index != 0)
         }) {
             return Err(PortableSnapshotError::NonemptyOutbox);
         }

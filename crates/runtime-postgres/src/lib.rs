@@ -703,6 +703,8 @@ enum PreCommitFailure {
     InvalidPersistedState,
     SchemaMismatch,
     Unavailable,
+    SequenceOverflow,
+    NonemptyOutbox,
 }
 
 impl PreCommitFailure {
@@ -740,6 +742,8 @@ impl PreCommitFailure {
             Self::InvalidPersistedState => DurableReadError::InvalidPersistedState,
             Self::SchemaMismatch => DurableReadError::SchemaMismatch,
             Self::Serialization | Self::Unavailable => DurableReadError::Unavailable,
+            Self::SequenceOverflow => DurableReadError::InvalidPersistedState,
+            Self::NonemptyOutbox => DurableReadError::InvalidPersistedState,
         }
     }
 
@@ -753,6 +757,8 @@ impl PreCommitFailure {
             Self::InvalidPersistedState => DurableCommitRejection::InvalidPersistedState,
             Self::SchemaMismatch => DurableCommitRejection::SchemaMismatch,
             Self::Unavailable => DurableCommitRejection::UnavailableBeforeCommit,
+            Self::SequenceOverflow => DurableCommitRejection::CommitSequenceOverflow,
+            Self::NonemptyOutbox => DurableCommitRejection::InvalidPersistedState,
         }
     }
 
@@ -766,6 +772,8 @@ impl PreCommitFailure {
             Self::InvalidPersistedState => DurableOutboxClaimRejection::InvalidPersistedState,
             Self::SchemaMismatch => DurableOutboxClaimRejection::SchemaMismatch,
             Self::Unavailable => DurableOutboxClaimRejection::UnavailableBeforeCommit,
+            Self::SequenceOverflow => DurableOutboxClaimRejection::ArithmeticOverflow,
+            Self::NonemptyOutbox => DurableOutboxClaimRejection::InvalidPersistedState,
         }
     }
 
@@ -781,6 +789,8 @@ impl PreCommitFailure {
             }
             Self::SchemaMismatch => DurableOutboxAcknowledgementRejection::SchemaMismatch,
             Self::Unavailable => DurableOutboxAcknowledgementRejection::UnavailableBeforeCommit,
+            Self::SequenceOverflow => DurableOutboxAcknowledgementRejection::ArithmeticOverflow,
+            Self::NonemptyOutbox => DurableOutboxAcknowledgementRejection::InvalidPersistedState,
         }
     }
 }
@@ -825,7 +835,6 @@ fn set_local_timeouts(
 #[derive(Clone, Copy, Debug)]
 enum MetadataLockMode {
     None,
-    Share,
     Update,
 }
 
@@ -836,7 +845,6 @@ fn load_namespace_metadata(
 ) -> Result<PostgresSchemaMetadata, PreCommitFailure> {
     let suffix: &str = match lock_mode {
         MetadataLockMode::None => "",
-        MetadataLockMode::Share => " FOR SHARE",
         MetadataLockMode::Update => " FOR UPDATE",
     };
     let sql = format!(
@@ -1893,11 +1901,11 @@ fn allocate_commit_sequence(
     context: &DurableOperationContext,
     namespace: &PostgresNamespace,
     current: u64,
-) -> Result<u64, DurableCommitRejection> {
-    set_local_timeouts(transaction, context).map_err(PreCommitFailure::into_commit_rejection)?;
+) -> Result<u64, PreCommitFailure> {
+    set_local_timeouts(transaction, context)?;
     let next = current
         .checked_add(1)
-        .ok_or(DurableCommitRejection::CommitSequenceOverflow)?;
+        .ok_or(PreCommitFailure::SequenceOverflow)?;
     let updated = transaction
         .execute(
             "UPDATE sunrise_edge.storage_metadata
@@ -1912,9 +1920,9 @@ fn allocate_commit_sequence(
                 &&namespace.domain().as_bytes()[..],
             ],
         )
-        .map_err(|error| PreCommitFailure::from_database(&error).into_commit_rejection())?;
+        .map_err(|error| PreCommitFailure::from_database(&error))?;
     if updated != 1 {
-        return Err(DurableCommitRejection::SchemaMismatch);
+        return Err(PreCommitFailure::SchemaMismatch);
     }
     Ok(next)
 }
@@ -2383,6 +2391,7 @@ fn install_outbox_claim(
     now_unix_millis: u64,
     lease_id: DurableOutboxLeaseId,
     lease_expires_at_unix_millis: u64,
+    current_commit_sequence: u64,
 ) -> Result<DurableOutboxClaim, DurableOutboxClaimRejection> {
     if delivery.state_id != OUTBOX_DELIVERY_PENDING
         || delivery.available_at_unix_millis > now_unix_millis
@@ -2441,6 +2450,8 @@ fn install_outbox_claim(
         _ => return Err(DurableOutboxClaimRejection::InvalidPersistedState),
     }
 
+    allocate_commit_sequence(transaction, context, namespace, current_commit_sequence)
+        .map_err(PreCommitFailure::into_claim_rejection)?;
     let attempt_count = delivery
         .attempt_count
         .checked_add(1)
@@ -2810,7 +2821,7 @@ where
                 &self.namespace,
                 metadata.commit_sequence(),
             ) {
-                return DurableCommitOutcome::Rejected(reason);
+                return DurableCommitOutcome::Rejected(reason.into_commit_rejection());
             }
             if let Err(reason) = apply_state_mutations(
                 &mut transaction,
@@ -3042,7 +3053,9 @@ where
                 metadata.commit_sequence(),
             ) {
                 Ok(sequence) => sequence,
-                Err(reason) => return DurableCommitOutcome::Rejected(reason),
+                Err(reason) => {
+                    return DurableCommitOutcome::Rejected(reason.into_commit_rejection());
+                }
             };
             if let Some(state) = invocation.state()
                 && let Err(reason) = apply_state_mutations(
@@ -3166,7 +3179,7 @@ where
             let metadata = match load_namespace_metadata(
                 &mut transaction,
                 &self.namespace,
-                MetadataLockMode::Share,
+                MetadataLockMode::Update,
             ) {
                 Ok(metadata) => metadata,
                 Err(reason) => {
@@ -3233,6 +3246,7 @@ where
                 request.now_unix_millis(),
                 request.lease_id(),
                 request.lease_expires_at_unix_millis(),
+                metadata.commit_sequence(),
             ) {
                 Ok(claim) => claim,
                 Err(reason) => return DurableOutboxClaimOutcome::Rejected(reason),
@@ -3285,7 +3299,7 @@ where
             let metadata = match load_namespace_metadata(
                 &mut transaction,
                 &self.namespace,
-                MetadataLockMode::Share,
+                MetadataLockMode::Update,
             ) {
                 Ok(metadata) => metadata,
                 Err(reason) => {
@@ -3339,6 +3353,7 @@ where
                 request.now_unix_millis(),
                 request.lease_id(),
                 request.lease_expires_at_unix_millis(),
+                metadata.commit_sequence(),
             ) {
                 Ok(claim) => claim,
                 Err(reason) => return DurableOutboxClaimOutcome::Rejected(reason),
@@ -3397,7 +3412,7 @@ where
             let metadata = match load_namespace_metadata(
                 &mut transaction,
                 &self.namespace,
-                MetadataLockMode::Share,
+                MetadataLockMode::Update,
             ) {
                 Ok(metadata) => metadata,
                 Err(reason) => {
@@ -3507,6 +3522,16 @@ where
                 }
             };
             if let Err(reason) = set_local_timeouts(&mut transaction, context) {
+                return DurableOutboxAcknowledgementOutcome::Rejected(
+                    reason.into_acknowledgement_rejection(),
+                );
+            }
+            if let Err(reason) = allocate_commit_sequence(
+                &mut transaction,
+                context,
+                &self.namespace,
+                metadata.commit_sequence(),
+            ) {
                 return DurableOutboxAcknowledgementOutcome::Rejected(
                     reason.into_acknowledgement_rejection(),
                 );

@@ -5,12 +5,15 @@ use postgres::{Client, NoTls};
 use protocol_types::{AtomicityDomainId, ChainId, ValidatorId};
 use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
 use runtime::portable::{
-    DurableCollection, DurablePortableRepository, DurableRecordDescriptor, DurableRecordKey,
-    DurableRecordScan, conformance,
+    DurableCollection, DurablePortableRepository, DurablePortableSnapshotRepository,
+    DurableRecordChunkRequest, DurableRecordDescriptor, DurableRecordKey, DurableRecordScan,
+    PortableSnapshotError, PortableSnapshotToken, conformance,
 };
 use runtime::{
-    DurableOperationContext, DurableReadError, StorageCorrelationId, StorageDeadline,
-    WriterFenceGeneration,
+    AtomicStateMutationSet, AtomicStateReadSet, AtomicStateTransaction, DurableCommitOutcome,
+    DurableCommitRejection, DurableDomainStateStore, DurableOperationContext, DurableReadError,
+    StateMutation, StateMutationEntry, StateReadAssertion, StateRevision, StorageCorrelationId,
+    StorageDeadline, WriterFenceGeneration,
 };
 use runtime_postgres::{
     POSTGRES_SCHEMA_GENERATION, PostgresDurableStore, PostgresNamespace, PostgresPoolConfig,
@@ -207,4 +210,281 @@ fn postgres_portable_reads_survive_reconnect_and_reject_stale_authority() {
     admin.execute("DELETE FROM sunrise_edge.state_records WHERE chain_id_bytes = $1 AND validator_id = $2 AND atomicity_domain_id = $3 AND state_key = $4", &[&namespace.chain_id_bytes(), &&namespace.validator_id().as_bytes()[..], &&namespace.domain().as_bytes()[..], &oversized]).unwrap();
     assert_eq!(result, Err(DurableReadError::InvalidPersistedState));
     conformance::verify(&current, &context(second), namespace.domain(), &chain);
+}
+
+#[test]
+fn postgres_portable_snapshot_token_survives_reconnect_and_rejects_foreign_identity() {
+    let Some(url) = std::env::var_os(support::LIVE_POSTGRES_URL_ENV) else {
+        eprintln!(
+            "skipping live PostgreSQL snapshot token reconnect test: {} unset",
+            support::LIVE_POSTGRES_URL_ENV
+        );
+        return;
+    };
+    let url: String = url.into_string().expect("test URL is UTF-8");
+    let _lock: support::LiveTestLock = support::LiveTestLock::acquire();
+    let mut admin: Client = Client::connect(&url, NoTls).unwrap();
+    let database: String = admin
+        .query_one("SELECT current_database()", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        database, "sunrise_edge_test",
+        "refusing to write a non-test database"
+    );
+    apply_initial_schema(&mut admin).unwrap();
+    let nanos: u128 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let pid: u32 = std::process::id();
+    let chain_a: ChainId = ChainId::new(format!("portable-snap-a-{pid}-{nanos}")).unwrap();
+    let namespace_a: PostgresNamespace = PostgresNamespace::new(
+        &chain_a,
+        ValidatorId::new([0xb1; 32]),
+        AtomicityDomainId::new([0xb2; 32]).unwrap(),
+    )
+    .unwrap();
+    let fence_one: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+    let fence_two: WriterFenceGeneration = WriterFenceGeneration::new(2).unwrap();
+    bootstrap_namespace(
+        &mut admin,
+        &namespace_a,
+        POSTGRES_SCHEMA_GENERATION,
+        fence_one,
+    )
+    .unwrap();
+    let live: DurableOperationContext = context(fence_one);
+
+    let current: PostgresDurableStore<Manager> = store(pool(&url), namespace_a.clone());
+    conformance::seed(&current, &live, namespace_a.domain(), &chain_a);
+    let token: PortableSnapshotToken =
+        conformance::verify_snapshot(&current, &live, namespace_a.domain());
+    drop(current);
+
+    // A freshly built pool/store still honors the original token: the token
+    // is a database-observed fact, never process-local cache.
+    let reconnected: PostgresDurableStore<Manager> = store(pool(&url), namespace_a.clone());
+    assert!(
+        reconnected
+            .check_portable_outbox_empty_at(&live, namespace_a.domain(), &token)
+            .is_ok()
+    );
+    let scan: DurableRecordScan = DurableRecordScan::new(
+        DurableCollection::State,
+        None,
+        NonZeroUsize::new(128).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        reconnected
+            .scan_portable_keys_at(&live, namespace_a.domain(), &token, &scan)
+            .is_ok()
+    );
+
+    // A new row invalidates even the reconnected store's use of the token.
+    conformance::assert_snapshot_changed(&reconnected, &live, namespace_a.domain());
+
+    // A different namespace produces a token that never compares equal, even
+    // when every other observed field could coincide.
+    let chain_b: ChainId = ChainId::new(format!("portable-snap-b-{pid}-{nanos}")).unwrap();
+    let namespace_b: PostgresNamespace = PostgresNamespace::new(
+        &chain_b,
+        ValidatorId::new([0xb3; 32]),
+        AtomicityDomainId::new([0xb4; 32]).unwrap(),
+    )
+    .unwrap();
+    bootstrap_namespace(
+        &mut admin,
+        &namespace_b,
+        POSTGRES_SCHEMA_GENERATION,
+        fence_one,
+    )
+    .unwrap();
+    let other: PostgresDurableStore<Manager> = store(pool(&url), namespace_b.clone());
+    let token_foreign_namespace: PortableSnapshotToken = other
+        .begin_portable_snapshot(&live, namespace_b.domain())
+        .unwrap();
+    assert_ne!(token, token_foreign_namespace);
+    conformance::verify_snapshot_outbox_mutations(&other, &live, namespace_b.domain());
+
+    let current_token: PortableSnapshotToken = reconnected
+        .begin_portable_snapshot(&live, namespace_a.domain())
+        .unwrap();
+    let key: DurableRecordKey = DurableRecordKey::State(b"a-large".to_vec());
+    let descriptor: DurableRecordDescriptor = reconnected
+        .read_portable_descriptor_at(&live, namespace_a.domain(), &current_token, &key)
+        .unwrap()
+        .unwrap();
+    let chunk: DurableRecordChunkRequest =
+        DurableRecordChunkRequest::new(descriptor, 0, NonZeroUsize::new(8).unwrap()).unwrap();
+    // Preserve every other field, so rejection actually exercises identity
+    // comparison instead of a coincidental sequence mismatch.
+    let foreign_namespace: PortableSnapshotToken = PortableSnapshotToken::new(
+        token_foreign_namespace.namespace().to_vec(),
+        current_token.domain(),
+        current_token.writer_fence(),
+        current_token.mutation_sequence(),
+    )
+    .unwrap();
+
+    let token_foreign_domain: PortableSnapshotToken = PortableSnapshotToken::new(
+        token.namespace().to_vec(),
+        AtomicityDomainId::new([0xb5; 32]).unwrap(),
+        token.writer_fence(),
+        token.mutation_sequence(),
+    )
+    .unwrap();
+    assert_ne!(token, token_foreign_domain);
+    let foreign_domain: PortableSnapshotToken = PortableSnapshotToken::new(
+        current_token.namespace().to_vec(),
+        token_foreign_domain.domain(),
+        current_token.writer_fence(),
+        current_token.mutation_sequence(),
+    )
+    .unwrap();
+    for bad in [&foreign_namespace, &foreign_domain] {
+        assert_eq!(
+            reconnected.scan_portable_keys_at(&live, namespace_a.domain(), bad, &scan),
+            Err(PortableSnapshotError::Changed)
+        );
+        assert_eq!(
+            reconnected.read_portable_descriptor_at(&live, namespace_a.domain(), bad, &key),
+            Err(PortableSnapshotError::Changed)
+        );
+        assert_eq!(
+            reconnected.read_portable_chunk_at(&live, namespace_a.domain(), bad, &chunk),
+            Err(PortableSnapshotError::Changed)
+        );
+        assert_eq!(
+            reconnected.check_portable_outbox_empty_at(&live, namespace_a.domain(), bad),
+            Err(PortableSnapshotError::Changed)
+        );
+    }
+
+    assert_eq!(
+        advance_writer_fence(&mut admin, &namespace_a, fence_one, fence_two)
+            .unwrap()
+            .writer_fence(),
+        fence_two
+    );
+    let token_foreign_fence: PortableSnapshotToken = PortableSnapshotToken::new(
+        token.namespace().to_vec(),
+        namespace_a.domain(),
+        fence_two,
+        token.mutation_sequence(),
+    )
+    .unwrap();
+    assert_ne!(token, token_foreign_fence);
+    assert_eq!(
+        reconnected.scan_portable_keys_at(
+            &context(fence_two),
+            namespace_a.domain(),
+            &current_token,
+            &scan
+        ),
+        Err(PortableSnapshotError::Changed)
+    );
+    assert_eq!(
+        reconnected.scan_portable_keys_at(&live, namespace_a.domain(), &current_token, &scan),
+        Err(PortableSnapshotError::Read(
+            DurableReadError::WriterFenced {
+                active_generation: fence_two
+            }
+        ))
+    );
+}
+
+#[test]
+fn postgres_portable_commit_sequence_overflow_rejects_without_mutating_row_or_counter() {
+    let Some(url) = std::env::var_os(support::LIVE_POSTGRES_URL_ENV) else {
+        eprintln!(
+            "skipping live PostgreSQL commit-sequence overflow test: {} unset",
+            support::LIVE_POSTGRES_URL_ENV
+        );
+        return;
+    };
+    let url: String = url.into_string().expect("test URL is UTF-8");
+    let _lock: support::LiveTestLock = support::LiveTestLock::acquire();
+    let mut admin: Client = Client::connect(&url, NoTls).unwrap();
+    let database: String = admin
+        .query_one("SELECT current_database()", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        database, "sunrise_edge_test",
+        "refusing to write a non-test database"
+    );
+    apply_initial_schema(&mut admin).unwrap();
+    let nanos: u128 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let chain: ChainId =
+        ChainId::new(format!("portable-overflow-{}-{nanos}", std::process::id())).unwrap();
+    let namespace: PostgresNamespace = PostgresNamespace::new(
+        &chain,
+        ValidatorId::new([0xc1; 32]),
+        AtomicityDomainId::new([0xc2; 32]).unwrap(),
+    )
+    .unwrap();
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+    bootstrap_namespace(&mut admin, &namespace, POSTGRES_SCHEMA_GENERATION, fence).unwrap();
+    admin
+        .execute(
+            "UPDATE sunrise_edge.storage_metadata
+             SET commit_sequence = 18446744073709551615
+             WHERE chain_id_bytes = $1 AND validator_id = $2
+               AND atomicity_domain_id = $3",
+            &[
+                &namespace.chain_id_bytes(),
+                &&namespace.validator_id().as_bytes()[..],
+                &&namespace.domain().as_bytes()[..],
+            ],
+        )
+        .unwrap();
+
+    let current: PostgresDurableStore<Manager> = store(pool(&url), namespace.clone());
+    let live: DurableOperationContext = context(fence);
+    let overflow_key: Vec<u8> = b"overflow-key".to_vec();
+    let overflow_transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        namespace.domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(overflow_key.clone(), StateRevision::INITIAL).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(overflow_key.clone(), StateMutation::Put(vec![0x77])).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        current.commit_durable(&live, overflow_transaction),
+        DurableCommitOutcome::Rejected(DurableCommitRejection::CommitSequenceOverflow)
+    );
+    assert_eq!(
+        current
+            .read_portable_descriptor(
+                &live,
+                namespace.domain(),
+                &DurableRecordKey::State(overflow_key),
+            )
+            .unwrap(),
+        None
+    );
+    let commit_sequence_after: String = admin
+        .query_one(
+            "SELECT commit_sequence::TEXT FROM sunrise_edge.storage_metadata
+             WHERE chain_id_bytes = $1 AND validator_id = $2
+               AND atomicity_domain_id = $3",
+            &[
+                &namespace.chain_id_bytes(),
+                &&namespace.validator_id().as_bytes()[..],
+                &&namespace.domain().as_bytes()[..],
+            ],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(commit_sequence_after, "18446744073709551615");
 }

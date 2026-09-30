@@ -86,6 +86,90 @@ pub fn verify_snapshot<S: DurablePortableSnapshotRepository>(
     token
 }
 
+/// Every actual delivery write invalidates a token, while exact no-write
+/// retries do not. Empty completed batches are allowed; a nonempty batch
+/// remains refused after all messages have been acknowledged.
+pub fn verify_snapshot_outbox_mutations<S>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+) where
+    S: DurablePortableSnapshotRepository
+        + crate::outbox_guard::StructuredOutboxExclusionGuard
+        + crate::IndexedOutboxRepository,
+{
+    use crate::outbox_guard::conformance::{
+        assert_blocked_by_pending_message, assert_clear_after_empty_batch,
+    };
+    use crate::{
+        DurableOutboxAcknowledgement, DurableOutboxAcknowledgementOutcome,
+        DurableOutboxClaimOutcome, DurableOutboxLeaseId, OutboxRequestId,
+        RequestOutboxClaimRequest,
+    };
+    assert_clear_after_empty_batch(store, context, domain, 0xd1);
+    let empty: PortableSnapshotToken = store.begin_portable_snapshot(context, domain).unwrap();
+    store
+        .check_portable_outbox_empty_at(context, domain, &empty)
+        .unwrap();
+    let id: crate::DurableRequestId =
+        assert_blocked_by_pending_message(store, context, domain, 0xd2);
+    assert_eq!(
+        store.check_portable_outbox_empty_at(context, domain, &empty),
+        Err(PortableSnapshotError::Changed)
+    );
+    let before_claim: PortableSnapshotToken =
+        store.begin_portable_snapshot(context, domain).unwrap();
+    assert_eq!(
+        store.check_portable_outbox_empty_at(context, domain, &before_claim),
+        Err(PortableSnapshotError::NonemptyOutbox)
+    );
+    let outbox_id: OutboxRequestId = OutboxRequestId::new(*id.as_bytes()).unwrap();
+    let lease_id: DurableOutboxLeaseId = DurableOutboxLeaseId::new([0xd3; 32]).unwrap();
+    let claim_request: RequestOutboxClaimRequest =
+        RequestOutboxClaimRequest::new(domain, outbox_id, 10_000, lease_id, 11_000).unwrap();
+    assert!(matches!(
+        store.claim_request_outbox(context, claim_request.clone()),
+        DurableOutboxClaimOutcome::Claimed(_)
+    ));
+    let claimed: PortableSnapshotToken = store.begin_portable_snapshot(context, domain).unwrap();
+    assert_eq!(
+        claimed.mutation_sequence(),
+        before_claim.mutation_sequence().checked_add(1).unwrap()
+    );
+    assert!(matches!(
+        store.claim_request_outbox(context, claim_request),
+        DurableOutboxClaimOutcome::Claimed(_)
+    ));
+    assert_eq!(
+        claimed,
+        store.begin_portable_snapshot(context, domain).unwrap()
+    );
+    let ack: DurableOutboxAcknowledgement =
+        DurableOutboxAcknowledgement::new(domain, outbox_id, 0, lease_id);
+    assert_eq!(
+        store.acknowledge_outbox(context, ack.clone()),
+        DurableOutboxAcknowledgementOutcome::Acknowledged
+    );
+    let acknowledged: PortableSnapshotToken =
+        store.begin_portable_snapshot(context, domain).unwrap();
+    assert_eq!(
+        acknowledged.mutation_sequence(),
+        claimed.mutation_sequence().checked_add(1).unwrap()
+    );
+    assert_eq!(
+        store.acknowledge_outbox(context, ack),
+        DurableOutboxAcknowledgementOutcome::Acknowledged
+    );
+    assert_eq!(
+        acknowledged,
+        store.begin_portable_snapshot(context, domain).unwrap()
+    );
+    assert_eq!(
+        store.check_portable_outbox_empty_at(context, domain, &acknowledged),
+        Err(PortableSnapshotError::NonemptyOutbox)
+    );
+}
+
 /// A previously unseen key invalidates even reads of an unchanged row. This
 /// catches omission between pages, which per-row descriptor checks cannot.
 pub fn assert_snapshot_changed<S: DurablePortableSnapshotRepository>(

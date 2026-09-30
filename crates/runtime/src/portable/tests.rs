@@ -77,6 +77,37 @@ fn snapshot_shared_memory_conformance_detects_new_keys_between_pages() {
     conformance::assert_snapshot_changed(&store, &context(), domain());
 }
 
+#[test]
+fn snapshot_shared_memory_outbox_mutation_conformance() {
+    conformance::verify_snapshot_outbox_mutations(&store(), &context(), domain());
+}
+
+#[test]
+fn snapshot_refuses_corrupt_pending_empty_delivery() {
+    let source: MemoryDurableStateStore = store();
+    crate::outbox_guard::conformance::assert_clear_after_empty_batch(
+        &source,
+        &context(),
+        domain(),
+        0xf1,
+    );
+    source
+        .inner
+        .write()
+        .unwrap()
+        .deliveries
+        .get_mut(&(*domain().as_bytes(), [0xf1; 32]))
+        .unwrap()
+        .completed = false;
+    let token: PortableSnapshotToken = source
+        .begin_portable_snapshot(&context(), domain())
+        .unwrap();
+    assert_eq!(
+        source.check_portable_outbox_empty_at(&context(), domain(), &token),
+        Err(PortableSnapshotError::NonemptyOutbox)
+    );
+}
+
 fn write_snapshot_state(
     store: &MemoryDurableStateStore,
     key: &[u8],

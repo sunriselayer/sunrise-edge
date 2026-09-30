@@ -3,10 +3,11 @@
 
 use super::*;
 use runtime::portable::{
-    DurableCollection, DurablePayloadDescriptor, DurablePortableRepository, DurableRecordChunk,
-    DurableRecordChunkOutcome, DurableRecordChunkRequest, DurableRecordDescriptor,
-    DurableRecordKey, DurableRecordMetadata, DurableRecordPage, DurableRecordScan,
-    MAX_PORTABLE_CHAIN_ID_BYTES,
+    DurableCollection, DurablePayloadDescriptor, DurablePortableRepository,
+    DurablePortableSnapshotRepository, DurableRecordChunk, DurableRecordChunkOutcome,
+    DurableRecordChunkRequest, DurableRecordDescriptor, DurableRecordKey, DurableRecordMetadata,
+    DurableRecordPage, DurableRecordScan, MAX_PORTABLE_CHAIN_ID_BYTES, PortableSnapshotError,
+    PortableSnapshotToken,
 };
 use std::num::NonZeroUsize;
 
@@ -439,5 +440,155 @@ impl<B: SqlBackend> SqlDurableEngine<B> {
             Ok(value)
         })
         .map_err(PreCommitFailure::into_read_error)
+    }
+}
+
+/// Exact bounded local namespace identity: a one-byte chain-id length
+/// prefix (explicit framing over a variable-length field, never bare
+/// concatenation), the chain id itself, the 32-byte validator id, and the
+/// 32-byte atomicity domain. This is a local source-identity bound, not a
+/// protocol or cut identifier; it is never compared across replicas.
+fn portable_namespace_bytes(
+    namespace: &SqlDurableNamespace,
+) -> Result<Vec<u8>, runtime::RuntimeError> {
+    // `PROVIDER_PREFIX` distinguishes this backend's identity bytes from any
+    // other backend's, so two stores that happen to share the same
+    // chain/validator/domain roots (e.g. a PostgreSQL and a SQL-durable
+    // deployment mirroring the same namespace) never produce equal tokens.
+    const PROVIDER_PREFIX: &[u8] = b"sql/";
+    let chain_id: &[u8] = namespace.chain_id().as_str().as_bytes();
+    let length: u8 =
+        u8::try_from(chain_id.len()).map_err(|_| runtime::RuntimeError::InvalidStateScanPage)?;
+    let mut bytes: Vec<u8> =
+        Vec::with_capacity(PROVIDER_PREFIX.len() + 1 + chain_id.len() + 32 + 32);
+    bytes.extend_from_slice(PROVIDER_PREFIX);
+    bytes.push(length);
+    bytes.extend_from_slice(chain_id);
+    bytes.extend_from_slice(namespace.validator_id().as_bytes());
+    bytes.extend_from_slice(namespace.domain().as_bytes());
+    Ok(bytes)
+}
+
+impl<B: SqlBackend> SqlDurableEngine<B> {
+    fn portable_snapshot_read<T>(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+        read: impl FnOnce(&mut dyn SqlSession) -> Result<T, PreCommitFailure>,
+    ) -> Result<T, PortableSnapshotError> {
+        if !self.domain_is_bound(domain) {
+            return Err(PortableSnapshotError::Read(
+                DurableReadError::InvalidRequest(RuntimeError::AtomicityDomainMismatch),
+            ));
+        }
+        let namespace_bytes: Vec<u8> = portable_namespace_bytes(&self.namespace)?;
+        run_read(&self.backend, Self::budget(context), |session, now| {
+            check_deadline(context, now)?;
+            let metadata: NamespaceMetadata = schema::verify_namespace(session, &self.namespace)?;
+            validate_authority(&metadata, context, now)?;
+            if token
+                .check(
+                    &namespace_bytes,
+                    domain,
+                    metadata.writer_fence(),
+                    metadata.mutation_sequence(),
+                )
+                .is_err()
+            {
+                return Err(PreCommitFailure::Changed);
+            }
+            let value: T = read(session)?;
+            check_deadline_before_commit(session, context)?;
+            Ok(value)
+        })
+        .map_err(|failure| match failure {
+            PreCommitFailure::Changed => PortableSnapshotError::Changed,
+            PreCommitFailure::NonemptyOutbox => PortableSnapshotError::NonemptyOutbox,
+            other => PortableSnapshotError::Read(other.into_read_error()),
+        })
+    }
+}
+
+impl<B: SqlBackend> DurablePortableSnapshotRepository for SqlDurableEngine<B> {
+    fn begin_portable_snapshot(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<PortableSnapshotToken, PortableSnapshotError> {
+        if !self.domain_is_bound(domain) {
+            return Err(PortableSnapshotError::Read(
+                DurableReadError::InvalidRequest(RuntimeError::AtomicityDomainMismatch),
+            ));
+        }
+        let namespace_bytes: Vec<u8> = portable_namespace_bytes(&self.namespace)?;
+        let (writer_fence, mutation_sequence) =
+            run_read(&self.backend, Self::budget(context), |session, now| {
+                check_deadline(context, now)?;
+                let metadata: NamespaceMetadata =
+                    schema::verify_namespace(session, &self.namespace)?;
+                validate_authority(&metadata, context, now)?;
+                check_deadline_before_commit(session, context)?;
+                Ok((metadata.writer_fence(), metadata.mutation_sequence()))
+            })
+            .map_err(|failure| PortableSnapshotError::Read(failure.into_read_error()))?;
+        Ok(PortableSnapshotToken::new(
+            namespace_bytes,
+            domain,
+            writer_fence,
+            mutation_sequence,
+        )?)
+    }
+
+    fn scan_portable_keys_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+        scan: &DurableRecordScan,
+    ) -> Result<DurableRecordPage, PortableSnapshotError> {
+        self.portable_snapshot_read(context, domain, token, |session| key_page(session, scan))
+    }
+
+    fn read_portable_descriptor_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+        key: &DurableRecordKey,
+    ) -> Result<Option<DurableRecordDescriptor>, PortableSnapshotError> {
+        key.validate().map_err(|error| {
+            PortableSnapshotError::Read(DurableReadError::InvalidRequest(error))
+        })?;
+        self.portable_snapshot_read(context, domain, token, |session| {
+            descriptor(session, &self.namespace, key)
+        })
+    }
+
+    fn read_portable_chunk_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+        request: &DurableRecordChunkRequest,
+    ) -> Result<DurableRecordChunkOutcome, PortableSnapshotError> {
+        self.portable_snapshot_read(context, domain, token, |session| {
+            chunk(session, &self.namespace, request)
+        })
+    }
+
+    fn check_portable_outbox_empty_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+    ) -> Result<(), PortableSnapshotError> {
+        self.portable_snapshot_read(context, domain, token, |session| {
+            let inventory = super::outbox_guard::probe(session)?;
+            if inventory.blocks_exclusion() {
+                return Err(PreCommitFailure::NonemptyOutbox);
+            }
+            Ok(())
+        })
     }
 }
