@@ -61,6 +61,18 @@
 - [DR-0152: embedded Rust contract hosting in SQLite-backed DO](0152-durable-object-contract-host.md)
 - [DR-0153: ordered network economics](0153-ordered-network-economics.md)
 - [DR-0154: complete epoch handoff](0154-complete-epoch-handoff.md)
+- [DR-0155: epoch-end Freeze warrant](0155-epoch-end-freeze-warrant.md)
+- [DR-0156: frozen-frontier drain possession](0156-frozen-frontier-possession.md)
+- [DR-0157: frozen-frontier union readiness](0157-frozen-frontier-readiness.md)
+- [DR-0158: bounded drain network driver](0158-bounded-drain-network-driver.md)
+- [DR-0159: ordered DrainSet readiness boundary](0159-ordered-drainset.md)
+- [DR-0160: certified DrainSet member application](0160-certified-drain-application.md)
+- [DR-0161: bounded resumable drain-completion state machine](0161-bounded-drain-completion.md)
+- [DR-0162: business-free cut barrier before portable enumeration](0162-business-free-cut-barrier.md)
+- [DR-0163: committed DrainSet closes candidate voting](0163-committed-drain-set-closes-candidate-voting.md)
+- [DR-0164: durable committed history](0164-durable-committed-history.md)
+- [DR-0165: pre-Seal ordered-history segment](0165-pre-seal-ordered-history-segment.md)
+- [DR-0166: consistent portable candidate enumeration](0166-portable-candidate-snapshot.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

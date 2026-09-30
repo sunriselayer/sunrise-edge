@@ -66,6 +66,32 @@ advance the sender nonce, release locks or create an original user receipt.
 An honest retainer may hold a conflicting **partial** local prepare: verifying
 and storing a full certificate is not permission to overwrite that lock.
 
+The publication input is a versioned, canonical bundle, not a certificate
+plus a caller-chosen list of hashes. It contains the original signed intent,
+one verifying full certificate, the exact logical commitment witness, and a
+closed manifest of the bytes needed to replay that witness. The retainer
+strictly decodes every witness field and derives the required artifact set
+from its signed read, object and mutation operands and the transitive
+code/ABI/dependency closure. It verifies the content of every present state
+value, immutable object version, code/ABI record and referenced blob against
+the witness hashes and committed hash suite. A missing dependency,
+unknown artifact kind, contradictory version, duplicate key, unverified blob
+or claimed tombstone presented as absence refuses the ACK. Manifest entries
+are canonically ordered by kind and identity and include content digest and
+length; the availability identity signs the manifest digest. Transfer and
+verification are bounded and resumable, but an ACK is exposed only after the
+complete closure has been durably retained and rechecked.
+
+The full FastCertificate's quorum attests to the exact logical witness hash;
+it does not turn a retainer's own prepared lock or its local physical
+provenance rows into a portable proof. The retainer verifies the witness and
+bundle without re-running admission against local heads or locks, which may
+legitimately contain a conflicting partial prepare. The independently
+reconstructed cut later replays the authenticated history and checks the
+semantic provenance chain before the next set becomes eligible. Neither a
+bare certificate nor an unauthenticated local provenance row can substitute
+for this two-stage verification.
+
 Persist the publication record and exact ACK identity atomically under writer,
 epoch and admission-state CAS fences. Only a confirmed commit or exact
 reconciliation may expose the retained ACK. A failed or ambiguous write cannot
@@ -77,6 +103,10 @@ canonical domain. This identity excludes FastCertificate signer-subset bytes:
 verify and retain at least one full proof, retain its exact audit bytes, and
 return the same ACK for an equivalent valid proof. Do not fragment availability
 votes or permit unbounded proof-variant storage for the same operation.
+Before returning a retained ACK on retry, verify the saved context, request
+identity, original intent, witness, manifest and first full certificate, and
+re-read every retained artifact's exact bytes. A matching newly supplied proof
+cannot excuse a missing or corrupt retained dependency.
 
 `apply` and signerless recovery require the availability certificate in the
 open epoch. Application remains one atomic commit of original effects, exact
@@ -113,12 +143,34 @@ A proposal or operator request alone cannot freeze a replica. Check next-set
 eligibility through the existing bond, key, policy and power rules; bond value
 must not become voting power.
 
+HotStuff orders an authorized control decision; it does not make an arbitrary
+caller-supplied Freeze candidate warranted. Before voting, each honest replica
+must verify the same deterministic epoch-end warrant and the legal eligibility
+of the candidate's canonical, advisory next set, including the same set if it
+passes the ordinary checks. The handoff-capable signed genesis manifest binds a
+positive minimum ordered-block height for Freeze proposals. Validators compare
+that committed rule with the proposal's actual height; a local clock, timeout
+tick, caller-supplied threshold or HTTP request is never the warrant. They
+validate the next-epoch chain/protocol binding, set structure and voting power,
+then each member's committed Active bond, registered key and current economics
+policy before exposing a proposal or vote. At execution of the committed
+ordered block they check the actual height and eligibility again, since the
+intervening prefix may have changed them. A healthy ineligible set is a
+retained refusal with no closure; a missing or corrupt prerequisite stops
+application. See [DR-0155](decisions/0155-epoch-end-freeze-warrant.md).
+
 At each replica, commit the closed-admission marker with processing this
 ordered prefix. Stop new prepares, new retention ACKs, direct local/paid
 mutations and construction of fresh economic candidates. Publication commits
 racing this boundary must assert the admission-marker revision: either their
 full artifacts enter the frozen log before their ACK is exposed, or they fail
 without exposing a signature.
+
+The Freeze marker is a local CAS precondition for each replica's admission;
+it is not a signed business read in the FastVote execution commitment. Thus a
+certificate does not by itself attest that admission was open at every later
+replica. Fresh publication ACKs assert the marker revision in their atomic
+commit, and exact earlier ACK replay does not create a new signature.
 
 Still allow historical reads, exact completed replay, safe shared-engine
 progress and catch-up. Ordinary fresh apply stops; certificate-backed missing
@@ -128,14 +180,101 @@ mutation bypass.
 Derive a signed frontier from **all full certificates retained locally before
 closure**, including records whose availability ACKs were never aggregated or
 whose operation was never applied locally. Include the necessary ordered
-prefix/proof artifacts. Persist the immutable frontier descriptor before
-signing it. Enumerate it incrementally while publication stays closed.
+prefix/proof artifacts. Atomically persist the final descriptor with its
+signature before exposing the vote. Enumerate it incrementally while
+publication stays closed.
+
+The local frontier identity binds the chain, protocol, outgoing epoch, logical
+domain, committed Freeze request and height, entry count, and ordered digest.
+The accumulator seeds from that context and folds each retained availability
+identity in ascending request-ID order. A replica re-verifies each retained
+full certificate, signed intent, ACK and required artifact's actual bytes
+before moving a CAS-fenced cursor. Its final descriptor and vote commit in one
+row; an exact retry returns those bytes without signing again. The canonical
+identity, vote and accumulator frames are `0xD036`-`0xD038/v1` with a distinct
+`epoch-frozen-frontier-v1` signing domain. A bounded canonical `0xD039/v1`
+page carries an exclusive request-ID cursor, up to 128 ascending availability
+identities and an explicit terminal flag. The `0xE107` request and `0xE108`
+response envelopes transport an exact epoch/cursor/limit and the final signed
+vote plus page; the envelope itself is not authority. A remote verifier starts
+from the voted Freeze context, authenticates the registered signer, folds
+every consecutive page, and accepts the terminal page only when its count and
+digest equal the signed final descriptor. A missing, repeated, reordered,
+foreign or prematurely terminal page fails closed. An identity-only page never
+proves possession of its full certificate, original intent or artifact bytes;
+the verifier must fetch, independently verify and durably retain those before
+counting the signer toward DrainSet. A local cursor or signed descriptor alone
+is not a closed-range proof to another validator. DrainSet voters must verify
+all pages and their completeness independently before counting that signer.
+The certified-only `/v1/fastvote/frontier/advance` route performs one
+CAS-fenced local step and returns no vote until the final row is committed;
+`/v1/fastvote/frontier/page` reads only from that finalized row, re-verifying
+each selected retained publication and its exact artifact bytes. The Rust
+client checks the returned signature against its locally pinned outgoing set
+and configured endpoint identity. A caller must still compare the vote with
+the expected committed Freeze, keep it identical across all pages, and
+complete the terminal digest check; HTTP success alone never establishes a
+complete frontier or durable possession of its artifacts.
+The final frontier row contains one validator's own signature and is local
+signing state, not transferable authenticated business history. A future cut
+may carry the outgoing signer vote as an independently keyed and verified
+attestation, but must never copy that local row into another validator's
+identically named state key. The advance route is an intentional certified-host
+exception to user transaction authentication: it mutates only local cursor
+and final rows after the committed Freeze and deterministic local verification.
+It must not be exposed as a complete handoff or public signing service.
+Publication records, local ACKs and artifact rows are now keyed by chain,
+epoch and request ID. A later epoch scans only its own immutable publication
+family without deleting older authenticated history or treating an earlier
+epoch's proof as a current candidate. This key property alone does not enable
+activation. The active-epoch serving contract requires a lagging validator to
+finish before activation or use a separately designed, authenticated
+historical serving path. The historical path must pin the old committee and
+complete proof history independently; an untrusted epoch field cannot select
+it.
+The active-epoch retained-publication source accepts only a signed-frontier
+request ID and the locally pinned current epoch. Its store must carry the
+installed logical commitment profile, current outgoing set, complete retained
+publication and artifacts, and its own valid ACK. It is a read-only proof
+source even when the validator never prepared the operation. The requester
+independently verifies the complete bundle against its locally pinned
+committee and exact signed-frontier identity. A historical profile, missing
+or tombstoned ACK, or server-supplied identity cannot authorize the source.
+It does not by itself prove complete frontier pages, DrainSet readiness, or
+historical serving after activation.
+Before deploying the page route on an untrusted network, bound its per-request
+verification work by cumulative artifact bytes or require peer/operator
+authentication: a valid request can currently make the server re-verify the
+cursor plus up to 128 full publications. Executor concurrency alone does not
+bound that repeated CPU and storage-read cost.
 
 An untrusted coordinator proposes at least `q` power of verified frontier
 descriptors and all their pages. Select only complete, retrievable frontiers;
 unavailable or forged pages cannot count toward that quorum. Construct the
 union of full-certificate operation identities and authenticated dependency
 closure. Every verifier reconstructs this union, not just its digest/count.
+The selected descriptors must carry ascending, unique registered validator
+IDs, valid outgoing signatures and one exact locally committed Freeze identity;
+duplicate or mixed-Freeze power never counts. Each importer stores a verified
+full bundle and its exact artifacts in a separate post-Freeze drain namespace,
+with an atomic local possession marker. It does not call availability
+retention, create an ACK, or extend its own immutable `publication/` frontier.
+The imported proof and artifacts are authenticated cut history; the possession
+marker is local progress only. A marker counts toward a selected frontier
+only after that signer's consecutive pages reach their authenticated terminal
+count and digest. A new source may relay an imported proof only after
+independently rechecking its saved bytes. See
+[DR-0156](decisions/0156-frozen-frontier-possession.md).
+
+The importer's bounded per-signer progress must authenticate every consecutive
+page through the signer's terminal count and digest, then confirm each entry
+against a fully re-verified local proof. Only confirmed entries of the
+selected weighted quorum are folded into a deterministic union, one bounded
+step at a time. The separate proof store is not the union's member list; a
+local ready marker is written only after the whole union is reconstructed.
+The later DrainSet vote reads that marker under CAS. See
+[DR-0157](decisions/0157-frozen-frontier-readiness.md).
+
 Choose exactly one `DrainSet` by a normal outgoing ordered commit. Before
 exposing a vote for it, each voting replica must durably retain and verify
 **every union member's full certificate, original signed intent and replay
@@ -146,6 +285,8 @@ atomically before vote exposure. Thus the committed obligation is backed by
 `q` power of durable artifact retention even for a full certificate that
 previously existed on only one withholding/failing replica. With the assumed
 eventually responsive quorum, an honest intersection holder can supply it.
+The exact ordered-vote/CAS binding and initial roster bound are fixed in
+[DR-0159](decisions/0159-ordered-drainset.md).
 
 If any operation applied, an availability quorum retained its **full** proof
 and payload before application. That quorum intersects the selected frozen
@@ -190,6 +331,8 @@ Do not create a global original-user refusal receipt merely from one
 validator's alleged pending request: a Byzantine claim must not reserve an
 arbitrary request ID. A boundary refusal may be reported without pretending
 that an unauthenticated claim was an executed user transaction.
+The separate certified drain-application and exact lock-resolution rule is
+fixed in [DR-0160](decisions/0160-certified-drain-application.md).
 
 ### 3. Preserve shared-engine safety before sealing
 
@@ -332,7 +475,14 @@ fields as new semantic generation metadata.
 
 Define explicit runtime-neutral bounded repositories; the current key scanner
 does not enumerate the separate SQL receipt, object-head or object-version
-tables. Each collection has canonical keys, exact semantic projections and
+tables. The [portable reconstruction storage contract](portable-reconstruction.md)
+separates indexed keys, body-free descriptors and bounded payload ranges;
+its original per-record API provides no authenticated cut or cross-page snapshot
+by itself. [DR-0166](decisions/0166-portable-candidate-snapshot.md) defines a
+stronger provider-enforced local snapshot for consistent candidate enumeration.
+That token still proves neither authenticated replay closure nor serving
+authority; it belongs outside logical roots and cannot substitute for Seal.
+Each collection has canonical keys, exact semantic projections and
 complete range boundaries:
 
 - Code/ABI/blob content and authenticated publication/dependency provenance.
@@ -346,12 +496,61 @@ complete range boundaries:
 - Full-certificate publication artifacts, ordered committed business outcomes
   and the dependency/authority proofs required to replay them.
 
+The existing `fastpath/` namespace is not one homogeneous cache. Only
+`prepared/`, `lock/` and `nonce-lock/` are replica-local reservations.
+`certificate/`, `commitment-witness/`, `settlement/`, `fee-claim/`, `bond/`,
+`bond-transition/`, `evidence-consumed/`, `equivocation/`, `validators/`,
+`economics-policy/`, `transition/` and `epoch/` carry authenticated business
+or control history. The generic logical-generation provenance does not assign
+these separately verified records a second generation. The cut must instead
+enumerate, classify, retain and independently replay/verify every required
+history family, and derive its generation floor from the verified history. An
+unknown family under the reserved prefix is a cut refusal, not an implicit
+local-data exclusion.
+
+Likewise, `ordered-economics/header/` is an immutable **request-id binding**,
+not a consensus block header. `outcome/` retains business results, while
+`candidate/` retains the candidate body; none of these rows alone proves that
+the shared engine committed a block. The signed proposal/QC chain for every
+committed height must be retained separately as `committed-proof/` history
+before the engine prunes its short-lived cache. A cut must verify that history
+against the configured outgoing validator set, contiguous genesis ancestry,
+the original candidate bytes, request headers, outcomes and receipts, plus a
+separately authenticated terminal anchor. `state/` and `applied-height/` are
+local engine/progress rows, not substitutes for that proof. The inherited
+high/locked suffix also needs a direct certified empty control anchor.
+The pre-Seal terminal witness is an already certified, candidate-free
+three-chain whose committed block is **strictly after the committed DrainSet
+height**, not merely after the earlier Freeze height carried by
+`DrainUnionIdentity.closure_height`. The local DrainSet row's height must itself
+match the archived committed proof and accepted outcome with original receipt
+for its exact authenticated signed candidate and intent. Local derivation
+folds drain completion, the business-free barrier, applied state, high/locked
+suffix and exact proof row into one caller-owned CAS read set. The witness is
+not a signed cut claim: the receipt lookup has no row-revision CAS primitive,
+so its exact bytes also belong in the later authenticated manifest. An importer
+must match it to an independently verified genesis-to-tip history
+and complete business/artifact manifest before any readiness or serving step.
+Unknown ordered families fail closed.
+
 Use a closed key/schema classifier: unknown protocol rows cannot be silently
 skipped. Local prepare/vote/lock identity, writer/schema tokens, delivery cursors
 and import/hash progress are local metadata, not global business facts. Retain
 necessary historical proofs separately; normalized roots may ignore equivalent
 signature subsets but must not ignore signed execution operands, tombstones,
 nonce/claim generations or history that affects future authority.
+
+The initial handoff profile names outbox batches, messages, delivery and
+attempt rows as excluded families in each supported schema, including the
+legacy `outbox/` state-key prefix. Exclusion is conditional: verify that no
+nonempty or pending outbound obligation exists before freezing the cut or
+admitting an import; otherwise refuse the handoff. The currently certified,
+paid and ordered application paths emit no outbound messages. Never import
+replica-local leases or delivery attempts. If a future contract runtime emits
+messages, define cross-epoch delivery and prove deterministic reconstruction
+before enabling handoff for it; an old-epoch message rejected at new-epoch
+ingress must not be silently discarded. Empty-batch representations in SQL
+profiles must be normalized explicitly rather than equated by row shape.
 
 Use the committed protocol HashSuite and canonical framing, not a new
 cryptographic primitive. Pages bind collection, frozen frontier/cut identity,
@@ -386,6 +585,15 @@ Economics authority defined by historical code is not blindly rewritten to c.
 Keep TLS endpoint checks and locally pinned protocol-context validation distinct
 before signing. Transport callers, relays and supplied live-epoch hints remain
 untrusted. A retired key verifies history but authorizes no fresh work.
+
+Post-Freeze signer-page, proof-import, member-confirm and union-advance HTTP
+routes are internal validator/operator ingress, not public authorization.
+Canonical body limits and the native blocking executor bound one invocation's
+bytes and concurrency, but do not authenticate a caller or stop repeated
+expensive proof verification. A deployment reachable from an untrusted network
+must add authenticated peer/operator ingress and per-peer work/rate budgets
+before exposing these routes. A certified-only router excludes direct legacy
+mutations; it is not itself a peer-authentication mechanism.
 
 This is a fresh handoff-capable genesis/profile, not an optional request flag.
 A bare legacy certificate cannot reach a mutation fallback. Existing stores

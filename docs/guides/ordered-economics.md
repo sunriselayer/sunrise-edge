@@ -80,6 +80,59 @@ locally authenticated certified prefix was received. It does not prove every
 replica applied, authenticate a result signature or certify whole-store durability.
 Results distinguish acknowledgement, rejection, unreachability and skipped steps.
 
+## Construct a DrainSet candidate offline
+
+`economics drain-set-build` ([DR-0159](../architecture/decisions/0159-ordered-drainset.md))
+is the offline analogue of `candidate-wrap` for the one control kind
+`candidate-wrap` cannot handle: `DrainSet` carries no outer signature, so its
+candidate is assembled, never wrapped, from a locally supplied signed
+frontier-vote selection plus a saved
+[`fastvote-drain-local-ready`](fastvote-drain-local-ready.md) union-identity
+report. It never signs a vote, never trusts network-reported context, and
+never submits anything.
+
+```sh
+cargo run -p sunrise-edge-cli -- economics drain-set-build \
+  --drain-selection-manifest /secure/drain/selected-votes.txt \
+  --drain-union-identity /secure/drain/union-identity.bin \
+  --request-id "$request_id" --created-checkpoint "$checkpoint" \
+  --ordered-genesis-manifest genesis.bin \
+  --ordered-expected-genesis-digest "$genesis_digest" \
+  --expected-chain-id "$chain" --expected-protocol-version "$protocol" \
+  --expected-epoch "$epoch" --domain "$domain" \
+  --out drain-set.candidate
+
+cargo run -p sunrise-edge-cli -- economics network-submit \
+  --candidate drain-set.candidate --ordered-network peers.conf \
+  --ordered-genesis-manifest genesis.bin \
+  --ordered-expected-genesis-digest "$genesis_digest" \
+  --expected-chain-id "$chain" --expected-protocol-version "$protocol" \
+  --expected-epoch "$epoch" --domain "$domain" \
+  --deadline-seconds 90 --per-request-cap-seconds 10 --out drain-set
+```
+
+`--drain-selection-manifest` uses the exact same manifest grammar as
+`fastvote-drain-local-ready`: UTF-8, one already-signed
+`FrozenFrontierVote` file path per line. `--drain-union-identity` should be the
+exact canonical `DrainUnionIdentity` bytes saved by
+`fastvote-drain-local-ready --out-drain-union-identity` for that selection,
+not its human-readable output. The builder cannot prove the provenance of an
+arbitrary local file or another validator's readiness; every ordered voter
+rechecks its own durable ready marker before signing. The supplied identity's chain/protocol/
+epoch/domain are cross-checked against the independently pinned
+`--expected-*`/`--domain` flags; a mismatch fails closed as a report/context
+mismatch before any vote is even considered.
+
+`--request-id` is nonzero and `--created-checkpoint` is explicit; together they
+identify this ordered candidate's replay attempt. Neither is inferred from the report or
+the selection. The command reuses the exact same `authenticate_ordered_candidate`
+pure verification a validator applies before proposing/voting: canonical
+round-trip, structural intent checks, and full outgoing-quorum signature and
+power verification. Duplicate, non-ascending, foreign, or mixed-Freeze votes,
+insufficient quorum power, an invalid signature, a malformed vote or report
+file, or an `--out` path that already exists all fail closed before any
+output is written.
+
 ## Declared signerless recovery
 
 If submission was interrupted, do not invent a new request ID or nonce. A

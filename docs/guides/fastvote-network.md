@@ -49,7 +49,8 @@ activation floor (3): the ordinary CLI paid-call path queries `/v1/context`,
 which fails closed below that floor. On success the process prints one
 `complete=true mode=serving ... listen=<addr> manifest_digest=<digest>` line
 to stdout and then serves `certified_fastvote_router` until `ctrl-C`. Only
-`/v1/fastvote/prepare`, `/v1/fastvote/certificates`, liveness, and a handful
+the certified prepare, historical apply, publication source/retention and
+published-apply routes, liveness, and a handful
 of bounded read queries (context, fee policy, instance, code interface) are
 mounted -- no generic event-submission route exists on this router at all,
 regardless of configuration. `--listen` must be a loopback address; put your
@@ -123,8 +124,18 @@ cargo run -p sunrise-edge-cli -- contract paid-call \
   --fastvote-deadline-seconds 30 --fastvote-per-request-cap-seconds 10 \
   --fastvote-signed-intent-out /secure/signed-intent.bin \
   --fastvote-certificate-out /secure/certificate.bin \
+  --fastvote-availability-certificate-out /secure/availability.bin \
   --result-out /secure/result.bin
 ```
+
+The availability output shown above is required only when the locally
+authenticated genesis manifest selects the handoff-capable logical-generation
+profile. Omit it for a historical physical-checkpoint manifest: the CLI
+rejects a mismatched flag rather than switching profiles based on an endpoint
+response. With the logical profile, the operation is prepare → full
+certificate → source a complete retained bundle → retain it with an
+availability quorum → save the availability certificate → published apply.
+The source and retention steps do not themselves apply the transaction.
 
 `--endpoint` must exactly select an endpoint in the network configuration.
 Ordinary preparation reads (context, fee policy, objects, nonce, instance,
@@ -139,11 +150,14 @@ request cap is at most 300 seconds and no greater than the whole budget.
 These are resource ceilings, not network latency targets.
 
 `--fastvote-signed-intent-out` and `--fastvote-certificate-out` are mandatory;
+the logical profile additionally requires
+`--fastvote-availability-certificate-out`;
 `--result-out` is optional. All requested outputs must be distinct, unused
 paths in writable existing directories. The CLI reserves them all with
 `create_new` before the first prepare POST, retains the original handles,
 and strictly synchronizes files and parent directories. The signed intent
-is durable before prepare; the certificate is durable before apply. Existing
+is durable before prepare; the certificate is durable before publication;
+the availability certificate is durable before logical-profile apply. Existing
 files are never overwritten. A failure can leave reserved empty or partial
 files: preserve them, and recover the exact original bytes rather than
 re-signing or reserving a fresh nonce. Unix path-identity checks are tested;
@@ -188,6 +202,11 @@ network failure or a condition to retry with fresh signing.
 
 ## Replay from saved artifacts
 
+For an already frozen outgoing epoch, the separate
+[local DrainSet-readiness guide](fastvote-drain-local-ready.md) describes
+bounded frontier import on one validator. It is not a network activation
+procedure.
+
 `contract fastvote-replay` reads back exactly the saved bytes and resubmits
 them unchanged -- it never queries a fresh nonce, never re-signs, and never
 invents a new request ID. It accepts the same `--expected-*` and
@@ -203,8 +222,17 @@ cargo run -p sunrise-edge-cli -- contract fastvote-replay \
   --fastvote-deadline-seconds 30 --fastvote-per-request-cap-seconds 10 \
   --submission /secure/signed-intent.bin \
   --certificate /secure/certificate.bin \
+  --availability-certificate /secure/availability.bin \
   --result-out /secure/result-replay.bin
 ```
+
+The `--availability-certificate` input in this example is for the logical
+profile only. For a historical profile omit it. If the logical profile has a
+saved full certificate but no saved availability certificate, omit that input
+and provide `--fastvote-availability-certificate-out` at an unused path:
+replay sources and retains the exact original operation before apply. If both
+certificates are saved, replay performs no prepare or retention request and
+locally verifies their identity and signatures before published apply.
 
 An explicitly supplied `--certificate` must exist and contain a complete,
 valid canonical certificate; a missing, empty, truncated or corrupt file
@@ -214,7 +242,9 @@ omit `--certificate` and provide `--fastvote-certificate-out` with a new,
 unused path: replay collects and saves a certificate from the exact saved
 intent, then applies it. `--fastvote-signed-intent-out` is unsupported in
 replay, and `--fastvote-certificate-out` is unsupported when supplying
-`--certificate`. Optional `--result-out` must also be an unused path distinct
+`--certificate`. The availability input requires the saved full certificate,
+and its output flag is invalid when that availability input is supplied.
+Optional `--result-out` must also be an unused path distinct
 from all inputs and outputs, and saves exact success or charged-trap bytes.
 A result-output failure after acknowledgement requires exact replay, not
 fresh signing. Either way, the epoch pinned by
@@ -235,9 +265,11 @@ Received successful peer results must agree canonically before result or
 reference output is populated; that comparison is not a whole-store or
 network-wide durability proof.
 
-A quorum certificate (the `--fastvote-certificate-out` bytes) is a
+A FastCertificate (the `--fastvote-certificate-out` bytes) is a
 cryptographically formed proof that a quorum of pinned validators voted for
-the identical outcome; each per-peer apply acknowledgement printed
+the identical outcome. The logical profile's separate availability
+certificate proves a quorum signed retention of the exact publication
+identity, not that all peers applied it; each per-peer apply acknowledgement printed
 afterward is an unsigned, independent receipt from that one peer. Neither
 this guide's tooling nor the CLI's own output ever claims global durability,
 that every configured peer applied, or finality beyond what the printed,

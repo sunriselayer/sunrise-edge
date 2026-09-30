@@ -337,6 +337,8 @@ pub(crate) fn build_fixture() -> (
                 public_key: sender().to_vec(),
             }],
         },
+        commitment_profile: CommitmentProfile::PhysicalCheckpointV1,
+        minimum_freeze_block_height: 0,
         signature: [0; 64],
     };
     manifest.signature = key()
@@ -422,6 +424,312 @@ pub(crate) fn build_bonded_fixture() -> (
     manifest.objects.push(custody);
     resign_manifest(&mut manifest);
     (manifest, origin, instance_record, def_id, coin_id)
+}
+
+/// The custody fixture, re-bound to the handoff-capable profile and re-signed
+/// under that profile's own signature domain (DR-0154).
+pub(crate) fn logical_manifest_with_custody(object_id: ObjectId) -> GenesisManifest {
+    let mut manifest: GenesisManifest = manifest_with_custody(object_id);
+    manifest.commitment_profile = CommitmentProfile::LogicalGenerationV2;
+    manifest.minimum_freeze_block_height = 1;
+    resign_manifest(&mut manifest);
+    manifest
+}
+
+/// The bonded fixture, re-bound to the handoff-capable profile and re-signed
+/// under that profile's own signature domain (DR-0154).
+pub(crate) fn logical_bonded_manifest() -> GenesisManifest {
+    let (mut manifest, _, _, _, _) = build_bonded_fixture();
+    manifest.commitment_profile = CommitmentProfile::LogicalGenerationV2;
+    manifest.minimum_freeze_block_height = 1;
+    resign_manifest(&mut manifest);
+    manifest
+}
+
+/// Commits one raw state row, fenced at its exact observed revision.
+pub(crate) fn put_state(store: &MemoryDurableStateStore, key: &[u8], value: Vec<u8>) {
+    let observed: VersionedStateValue = store
+        .get_versioned_durable(&context(1), domain(), key)
+        .unwrap();
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(key.to_vec(), observed.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(key.to_vec(), StateMutation::Put(value)).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&context(1), transaction),
+        DurableCommitOutcome::Committed
+    );
+}
+
+/// The exact authenticated profile row a handoff-capable genesis installs.
+pub(crate) fn expected_profile_row(manifest: &GenesisManifest) -> Vec<u8> {
+    encode_logical_profile_record(&LogicalProfileRecord {
+        context: manifest.context().clone(),
+        profile: manifest.commitment_profile,
+        manifest_digest: genesis_manifest_commitment(&resolver(), manifest).unwrap(),
+        genesis_authority: manifest.genesis_authority,
+        genesis_floor: ExecutionGeneration::genesis_floor(),
+    })
+    .unwrap()
+}
+
+/// DR-0154: a handoff-capable genesis installs exactly one authenticated
+/// profile row atomically with its marker, and a reopen re-verifies that row
+/// byte for byte against the signed manifest.
+#[test]
+fn a_handoff_capable_genesis_installs_and_reverifies_its_signed_profile_row() {
+    let manifest: GenesisManifest = logical_bonded_manifest();
+    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let outcome =
+        install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap();
+    assert!(matches!(
+        outcome,
+        GenesisInstallOutcome::FreshInstall { .. }
+    ));
+    let key: Vec<u8> = logical_profile_key(&chain()).unwrap();
+    let observed = store
+        .get_versioned_durable(&context(1), domain(), &key)
+        .unwrap();
+    assert_eq!(
+        observed.value(),
+        Some(expected_profile_row(&manifest).as_slice())
+    );
+    let reopened =
+        install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap();
+    assert!(matches!(
+        reopened,
+        GenesisInstallOutcome::VerifiedExisting { .. }
+    ));
+}
+
+/// A profile row that appears under a historical genesis disagrees with that
+/// store's own signed manifest, so the reopen that re-verifies every installed
+/// record refuses it.
+#[test]
+fn reopen_refuses_a_profile_row_a_historical_manifest_never_bound() {
+    let (historical, _, _, _, _) = build_bonded_fixture();
+    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    install_genesis(&store, &context(1), domain(), &resolver(), &historical, 10).unwrap();
+    let key: Vec<u8> = logical_profile_key(&chain()).unwrap();
+    put_state(
+        &store,
+        &key,
+        expected_profile_row(&logical_bonded_manifest()),
+    );
+    assert!(matches!(
+        install_genesis(&store, &context(1), domain(), &resolver(), &historical, 10).unwrap_err(),
+        GenesisError::TamperedInstalledRecord("logical commitment profile")
+    ));
+}
+
+/// A historical genesis installs no profile row at all, so its exact installed
+/// state is unchanged by DR-0154.
+#[test]
+fn a_historical_genesis_keeps_no_profile_row() {
+    let (manifest, _, _, _, _) = build_bonded_fixture();
+    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap();
+    let key: Vec<u8> = logical_profile_key(&chain()).unwrap();
+    let observed = store
+        .get_versioned_durable(&context(1), domain(), &key)
+        .unwrap();
+    assert_eq!(observed.value(), None);
+    assert_eq!(observed.revision(), StateRevision::INITIAL);
+}
+
+/// Removing a handoff-capable store's own profile row does not make it look
+/// historical: the reopen that re-verifies every installed record refuses.
+#[test]
+fn reopen_refuses_a_handoff_capable_store_whose_profile_row_was_removed() {
+    let manifest: GenesisManifest = logical_bonded_manifest();
+    let store = MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap();
+    let key: Vec<u8> = logical_profile_key(&chain()).unwrap();
+    let observed: VersionedStateValue = store
+        .get_versioned_durable(&context(1), domain(), &key)
+        .unwrap();
+    let removal: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(key.clone(), StateMutation::Delete).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&context(1), removal),
+        DurableCommitOutcome::Committed
+    );
+    assert!(matches!(
+        install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap_err(),
+        GenesisError::TamperedInstalledRecord("logical commitment profile")
+    ));
+}
+
+/// A signature produced over a historical manifest does not verify against the
+/// handoff-capable payload, so it can never authorize the new profile even with
+/// every other signed field identical. This is the property the separate
+/// `genesis-manifest-v2` message family exists to guarantee.
+#[test]
+fn a_historical_signature_does_not_authorize_the_handoff_capable_profile() {
+    let (historical, _, _, _, _) = build_bonded_fixture();
+    let logical: GenesisManifest = logical_bonded_manifest();
+    assert_eq!(logical.genesis_authority, historical.genesis_authority);
+    let verifier: Ed25519Verifier =
+        Ed25519Verifier::from_verifying_key_bytes(&logical.genesis_authority).unwrap();
+    let logical_frame: Vec<u8> = genesis_manifest_signing_frame(&logical).unwrap();
+    assert!(
+        !verifier
+            .verify_framed(&logical_frame, &historical.signature)
+            .unwrap()
+    );
+    let historical_frame: Vec<u8> = genesis_manifest_signing_frame(&historical).unwrap();
+    assert!(
+        !verifier
+            .verify_framed(&historical_frame, &logical.signature)
+            .unwrap()
+    );
+}
+
+/// A version-two manifest frame must name the handoff-capable profile: the
+/// version and the declared tag are one closed pairing, so each profile has
+/// exactly one canonical encoding and neither version can carry the other's
+/// field set.
+#[test]
+fn a_version_two_manifest_frame_must_name_the_handoff_capable_profile() {
+    let logical: GenesisManifest = logical_bonded_manifest();
+    let bytes: Vec<u8> = encode_genesis_manifest(&logical).unwrap();
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(&bytes).unwrap();
+    let mut rebuilt: CanonicalStruct = CanonicalStruct::new(
+        GENESIS_MANIFEST_FRAME_TYPE,
+        GENESIS_MANIFEST_LOGICAL_VERSION,
+    );
+    for field_id in 1_u16..=8_u16 {
+        rebuilt
+            .field_bytes(field_id, frame.required_field(field_id).unwrap().to_vec())
+            .unwrap();
+    }
+    rebuilt
+        .field_u16(9, CommitmentProfile::PhysicalCheckpointV1.to_wire())
+        .unwrap();
+    rebuilt
+        .field_u64(10, logical.minimum_freeze_block_height)
+        .unwrap();
+    assert!(matches!(
+        decode_genesis_manifest(&rebuilt.finish().unwrap()).unwrap_err(),
+        GenesisError::Invalid("version-two genesis manifest must bind the handoff-capable profile")
+    ));
+}
+
+#[test]
+fn the_signed_handoff_freeze_height_changes_the_manifest_commitment() {
+    let mut one: GenesisManifest = logical_bonded_manifest();
+    let original_frame: Vec<u8> = genesis_manifest_signing_frame(&one).unwrap();
+    let original_digest: Digest32 = genesis_manifest_commitment(&resolver(), &one).unwrap();
+    one.minimum_freeze_block_height = 4;
+    assert_ne!(
+        original_frame,
+        genesis_manifest_signing_frame(&one).unwrap()
+    );
+    resign_manifest(&mut one);
+    assert_ne!(
+        original_digest,
+        genesis_manifest_commitment(&resolver(), &one).unwrap()
+    );
+    assert_eq!(
+        decode_genesis_manifest(&encode_genesis_manifest(&one).unwrap()).unwrap(),
+        one
+    );
+}
+
+#[test]
+fn the_handoff_manifest_requires_a_canonical_positive_freeze_height() {
+    let logical: GenesisManifest = logical_bonded_manifest();
+    let bytes: Vec<u8> = encode_genesis_manifest(&logical).unwrap();
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(&bytes).unwrap();
+    let mut without: CanonicalStruct = CanonicalStruct::new(
+        GENESIS_MANIFEST_FRAME_TYPE,
+        GENESIS_MANIFEST_LOGICAL_VERSION,
+    );
+    for field_id in 1_u16..=9_u16 {
+        without
+            .field_bytes(field_id, frame.required_field(field_id).unwrap().to_vec())
+            .unwrap();
+    }
+    assert!(decode_genesis_manifest(&without.finish().unwrap()).is_err());
+
+    for invalid_height in [vec![0; 8], vec![1]] {
+        let mut malformed: CanonicalStruct = CanonicalStruct::new(
+            GENESIS_MANIFEST_FRAME_TYPE,
+            GENESIS_MANIFEST_LOGICAL_VERSION,
+        );
+        for field_id in 1_u16..=9_u16 {
+            malformed
+                .field_bytes(field_id, frame.required_field(field_id).unwrap().to_vec())
+                .unwrap();
+        }
+        malformed.field_bytes(10, invalid_height).unwrap();
+        assert!(decode_genesis_manifest(&malformed.finish().unwrap()).is_err());
+    }
+    let mut zero: GenesisManifest = logical;
+    zero.minimum_freeze_block_height = 0;
+    assert!(encode_genesis_manifest(&zero).is_err());
+    assert!(genesis_manifest_signing_frame(&zero).is_err());
+}
+
+#[test]
+fn historical_manifest_rejects_an_in_memory_freeze_height_without_changing_its_wire_shape() {
+    let (mut historical, _, _, _, _) = build_bonded_fixture();
+    let original: Vec<u8> = encode_genesis_manifest(&historical).unwrap();
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(&original).unwrap();
+    assert_eq!(frame.version(), GENESIS_MANIFEST_VERSION);
+    frame
+        .require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8])
+        .unwrap();
+    historical.minimum_freeze_block_height = 1;
+    assert!(encode_genesis_manifest(&historical).is_err());
+    assert!(genesis_manifest_signing_frame(&historical).is_err());
+}
+
+/// The two profiles have two disjoint canonical encodings and two disjoint
+/// signature domains, so neither manifest can be reinterpreted as the other.
+#[test]
+fn the_two_manifest_profiles_do_not_share_bytes_or_a_signature_domain() {
+    let (historical, _, _, _, _) = build_bonded_fixture();
+    let logical: GenesisManifest = logical_bonded_manifest();
+    let historical_bytes: Vec<u8> = encode_genesis_manifest(&historical).unwrap();
+    let logical_bytes: Vec<u8> = encode_genesis_manifest(&logical).unwrap();
+    assert_ne!(historical_bytes, logical_bytes);
+    assert_eq!(
+        decode_genesis_manifest(&historical_bytes)
+            .unwrap()
+            .commitment_profile,
+        CommitmentProfile::PhysicalCheckpointV1
+    );
+    assert_eq!(
+        decode_genesis_manifest(&logical_bytes)
+            .unwrap()
+            .commitment_profile,
+        CommitmentProfile::LogicalGenerationV2
+    );
+    // The payload the authority signs differs, so a signature taken over one
+    // profile never authorizes the other.
+    assert_ne!(
+        genesis_manifest_signing_frame(&historical).unwrap(),
+        genesis_manifest_signing_frame(&logical).unwrap()
+    );
 }
 
 /// DR-0135: a signed genesis manifest may install a `ProtocolCustody` object

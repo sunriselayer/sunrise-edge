@@ -79,6 +79,20 @@ pub(crate) enum LockMode {
     /// Certificate apply: the exact original request must own every
     /// object/nonce lock it touches.
     OwnedByRequest,
+    /// U7 narrowly scoped drain application only
+    /// (`crate::fast_path::drain_apply`): the exact object/sender-epoch lock
+    /// this request's own admission touches may be absent, or held by a
+    /// *different* request's local partial prepare. DR-0154 §2 ("Drain
+    /// without speculative execution or rollback") proves this is always
+    /// safe to resolve: two conflicting full certificates cannot exist, so
+    /// any local partial prepare still holding the same object/nonce lock as
+    /// a genuinely drained full certificate can never itself be certified.
+    /// The caller must still independently verify the committed DrainSet and
+    /// this exact certificate before treating the observed conflict as
+    /// resolvable, and must delete only the exact conflicting lock atomically
+    /// with this request's own effects -- never a lock unrelated to this
+    /// request's own admitted inputs.
+    DrainResolve,
 }
 
 /// How one observed [`FastPathLockRecord`] relates to the fenced current
@@ -95,6 +109,24 @@ pub(crate) enum ObjectLockState {
     Reclaimable,
     /// [`LockMode::OwnedByRequest`] observed the exact expected owner.
     OwnedByThisRequest,
+    /// [`LockMode::DrainResolve`] observed a lock owned by a *different*
+    /// request id: a candidate conflicting local partial prepare. The caller
+    /// must independently verify this is the exact conflict its drain
+    /// application requires before resolving it.
+    ForeignConflict { owner_request_id: [u8; 32] },
+}
+
+/// How one observed [`FastPathNonceLockRecord`] relates to a mutation path,
+/// mirroring [`ObjectLockState`] for the sender/epoch nonce lock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NonceLockState {
+    /// No lock row exists.
+    Absent,
+    /// [`LockMode::OwnedByRequest`] observed the exact expected owner.
+    OwnedByThisRequest,
+    /// [`LockMode::DrainResolve`] observed a lock owned by a *different*
+    /// request id.
+    ForeignConflict { owner_request_id: [u8; 32] },
 }
 
 /// Reads, and (in [`LockMode::OwnedByRequest`]) validates ownership of, the
@@ -155,6 +187,22 @@ pub(crate) fn fence_object_lock<S: StructuredDurableDomainStateStore>(
         (LockMode::OwnedByRequest, None) => Err(NodeCoreError::PersistenceInvariant(
             "fast-path apply object lock absent",
         )),
+        (LockMode::DrainResolve, None) => Ok(ObjectLockState::Absent),
+        (LockMode::DrainResolve, Some(bytes)) => {
+            let lock: FastPathLockRecord = decode_fastpath_lock_record(bytes)?;
+            if &lock.object != object_ref || lock.locked_epoch != current_epoch {
+                return Err(NodeCoreError::PersistenceInvariant(
+                    "drain object lock does not match the exact certified input",
+                ));
+            }
+            if &lock.request_id == current_request_id {
+                Ok(ObjectLockState::OwnedByThisRequest)
+            } else {
+                Ok(ObjectLockState::ForeignConflict {
+                    owner_request_id: lock.request_id,
+                })
+            }
+        }
     }
 }
 
@@ -175,15 +223,15 @@ pub(crate) fn fence_sender_nonce_lock<S: StructuredDurableDomainStateStore>(
     expected_nonce: u64,
     mode: LockMode,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
-) -> Result<(), NodeCoreError> {
+) -> Result<NonceLockState, NodeCoreError> {
     let key: Vec<u8> = fastpath_nonce_lock_key(chain, sender, epoch)?;
     let observed: VersionedStateValue = read_and_fence(store, context, domain, key, reads)?;
     match (mode, observed.value()) {
-        (LockMode::Absent, None) => Ok(()),
+        (LockMode::Absent, None) => Ok(NonceLockState::Absent),
         (LockMode::Absent, Some(_)) => Err(NodeCoreError::PersistenceInvariant(
             "certified recovery requires absent nonce lock",
         )),
-        (LockMode::Fresh, None) => Ok(()),
+        (LockMode::Fresh, None) => Ok(NonceLockState::Absent),
         (LockMode::Fresh, Some(_)) => Err(NodeCoreError::PersistenceInvariant(
             "sender nonce locked by a pending fast path",
         )),
@@ -198,11 +246,27 @@ pub(crate) fn fence_sender_nonce_lock<S: StructuredDurableDomainStateStore>(
                     "fast-path apply does not own the exact nonce lock",
                 ));
             }
-            Ok(())
+            Ok(NonceLockState::OwnedByThisRequest)
         }
         (LockMode::OwnedByRequest, None) => Err(NodeCoreError::PersistenceInvariant(
             "fast-path apply nonce lock absent",
         )),
+        (LockMode::DrainResolve, None) => Ok(NonceLockState::Absent),
+        (LockMode::DrainResolve, Some(bytes)) => {
+            let lock: FastPathNonceLockRecord = decode_fastpath_nonce_lock_record(bytes)?;
+            if &lock.sender != sender || lock.epoch != epoch || lock.nonce != expected_nonce {
+                return Err(NodeCoreError::PersistenceInvariant(
+                    "drain nonce lock does not match the exact certified sender and nonce",
+                ));
+            }
+            if &lock.request_id == expected_request_id {
+                Ok(NonceLockState::OwnedByThisRequest)
+            } else {
+                Ok(NonceLockState::ForeignConflict {
+                    owner_request_id: lock.request_id,
+                })
+            }
+        }
     }
 }
 
@@ -235,6 +299,18 @@ pub(crate) fn fence_epoch_state<S: StructuredDurableDomainStateStore>(
 /// transaction epoch to be current. Historical policy selectors use
 /// [`fence_epoch_state`] directly: they still serialize against a transition
 /// without being reinterpreted as a transaction-epoch claim.
+///
+/// DR-0154: additionally requires admission to still be open for `chain`
+/// (see [`crate::ordered_economics::fence_admission_open`]). Every caller of
+/// this function -- fast-path prepare/apply, the direct paid path, local
+/// execution, every authenticated `SubmitTransaction` path that advances a
+/// nonce, and reservation-less generic durable events on a v2 store -- is
+/// exactly the set of "direct local/paid mutations" and "new prepares" a
+/// committed ordered-economics `Freeze` must stop. Local
+/// publication (`crate::publication`) calls [`fence_epoch_state`] directly
+/// rather than through this function (its `policy.context.epoch()` names a
+/// historical policy selector, not a transaction-epoch claim) and fences
+/// admission separately at its own call site for the same reason.
 pub(crate) fn fence_current_epoch<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
@@ -250,6 +326,14 @@ pub(crate) fn fence_current_epoch<S: StructuredDurableDomainStateStore>(
             actual: request_epoch,
         });
     }
+    crate::ordered_economics::fence_admission_open(
+        store,
+        context,
+        domain,
+        chain,
+        record.current_epoch,
+        reads,
+    )?;
     Ok(record)
 }
 

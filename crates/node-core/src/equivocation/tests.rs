@@ -393,6 +393,130 @@ fn submit_fast_vote_equivocation_evidence_succeeds_and_queries() {
 }
 
 #[test]
+fn freeze_fences_new_evidence_but_preserves_exact_replay() {
+    let store: MemoryDurableStateStore = memory_store();
+    let (signers, entries): (Vec<TestSigner>, Vec<FastPathValidatorEntry>) = four_validators();
+    let first_epoch: Epoch = Epoch::new(0);
+    install_test_environment(&store, first_epoch, &entries);
+    let certifier: FastPathCertifier = fast_certifier(first_epoch, &entries);
+    let first_a: FastVote = certifier
+        .cast_vote(digest(0x11), digest(0x12), digest(0x13), &signers[0])
+        .unwrap();
+    let first_b: FastVote = certifier
+        .cast_vote(digest(0x11), digest(0x14), digest(0x13), &signers[0])
+        .unwrap();
+    let first_a_bytes: Vec<u8> = encode_fast_vote(&first_a).unwrap();
+    let first_b_bytes: Vec<u8> = encode_fast_vote(&first_b).unwrap();
+    assert!(matches!(
+        submit_fast_vote_equivocation_evidence(
+            &store,
+            &context(),
+            domain(),
+            &resolver(),
+            &chain(),
+            protocol_version(),
+            &first_a_bytes,
+            &first_b_bytes,
+            1,
+        )
+        .unwrap(),
+        EquivocationEvidenceOutcome::Recorded(_)
+    ));
+
+    let closure_key: Vec<u8> =
+        crate::ordered_economics::admission_closure_key(&chain(), first_epoch).unwrap();
+    let closure: crate::ordered_economics::AdmissionClosureRecord =
+        crate::ordered_economics::AdmissionClosureRecord {
+            closed_epoch: first_epoch,
+            request_id: [0x51; 32],
+            closed_at_block_height: 1,
+        };
+    let closure_bytes: Vec<u8> =
+        crate::ordered_economics::encode_admission_closure_record(&closure).unwrap();
+    let closure_revision: StateRevision = store
+        .get_versioned_durable(&context(), domain(), &closure_key)
+        .unwrap()
+        .revision();
+    let closure_write: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(closure_key.clone(), closure_revision).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(closure_key, StateMutation::Put(closure_bytes)).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&context(), closure_write),
+        DurableCommitOutcome::Committed
+    );
+
+    // Exact retained evidence is still a read-only replay after Freeze.
+    assert!(matches!(
+        submit_fast_vote_equivocation_evidence(
+            &store,
+            &context(),
+            domain(),
+            &resolver(),
+            &chain(),
+            protocol_version(),
+            &first_a_bytes,
+            &first_b_bytes,
+            2,
+        )
+        .unwrap(),
+        EquivocationEvidenceOutcome::AlreadyRecorded(_)
+    ));
+
+    let second_a: FastVote = certifier
+        .cast_vote(digest(0x21), digest(0x22), digest(0x23), &signers[0])
+        .unwrap();
+    let second_b: FastVote = certifier
+        .cast_vote(digest(0x21), digest(0x24), digest(0x23), &signers[0])
+        .unwrap();
+    let second_a_bytes: Vec<u8> = encode_fast_vote(&second_a).unwrap();
+    let second_b_bytes: Vec<u8> = encode_fast_vote(&second_b).unwrap();
+    let second_evidence: consensus::FastVoteEquivocationEvidence =
+        consensus::build_fast_vote_equivocation_evidence(&second_a, &second_b).unwrap();
+    let second_identity: Vec<u8> =
+        fast_vote_evidence_normalized_identity(&second_evidence).unwrap();
+    let second_digest: Digest32 = resolver()
+        .hash_for_purpose(first_epoch, HashPurpose::NodeEvent, &second_identity)
+        .unwrap();
+    let second_key: Vec<u8> = fastpath_equivocation_evidence_key(
+        &chain(),
+        first_epoch,
+        *signers[0].validator_id.as_bytes(),
+        second_digest,
+    )
+    .unwrap();
+    assert!(
+        submit_fast_vote_equivocation_evidence(
+            &store,
+            &context(),
+            domain(),
+            &resolver(),
+            &chain(),
+            protocol_version(),
+            &second_a_bytes,
+            &second_b_bytes,
+            3,
+        )
+        .is_err()
+    );
+    assert!(
+        store
+            .get_versioned_durable(&context(), domain(), &second_key)
+            .unwrap()
+            .value()
+            .is_none()
+    );
+}
+
+#[test]
 fn submit_fast_vote_object_conflict_evidence_succeeds_and_queries() {
     let store: MemoryDurableStateStore = memory_store();
     let (signers, entries) = four_validators();
@@ -1839,6 +1963,33 @@ fn class_b_object_conflict_evidence_for_a_retired_validator_still_verifies_by_hi
     assert!(matches!(
         restart_outcome,
         GenesisInstallOutcome::VerifiedExisting { .. }
+    ));
+
+    // A different offense from the retired epoch may surface only after a
+    // real, restart-verified transition. Fresh submission is checked against
+    // the *serving* epoch's open admission while its signatures are still
+    // verified against the historical offense-epoch set. This does not
+    // mutate an in-progress frozen cut.
+    let late_a: FastVote = cert_0
+        .cast_vote(digest(0x71), digest(0x72), digest(0x73), &signers[0])
+        .unwrap();
+    let late_b: FastVote = cert_0
+        .cast_vote(digest(0x71), digest(0x74), digest(0x73), &signers[0])
+        .unwrap();
+    assert!(matches!(
+        submit_fast_vote_equivocation_evidence(
+            &reopened_store,
+            &context(),
+            domain(),
+            &resolver(),
+            &chain(),
+            protocol_version(),
+            &encode_fast_vote(&late_a).unwrap(),
+            &encode_fast_vote(&late_b).unwrap(),
+            12,
+        )
+        .unwrap(),
+        EquivocationEvidenceOutcome::Recorded(_)
     ));
 
     // 5. Query evidence by historical key, decode, re-run verify against historical epoch 0 set

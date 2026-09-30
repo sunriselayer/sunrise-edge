@@ -1,0 +1,518 @@
+use super::*;
+use crate::test_support::{TestCrypto, validator};
+use protocol_types::{HashAlgorithmId, HashSuite, HashSuiteSchedule};
+use validator_set::ValidatorInfo;
+
+fn fixture() -> (
+    HashSuiteResolver,
+    FrozenFrontierCertifier,
+    Vec<TestCrypto>,
+    AtomicityDomainId,
+) {
+    let chain_id: ChainId = ChainId::new("frontier-test").unwrap();
+    let protocol_version: ProtocolVersion = ProtocolVersion::new(4);
+    let epoch: Epoch = Epoch::new(8);
+    let resolver: HashSuiteResolver = HashSuiteResolver::new(
+        chain_id.clone(),
+        protocol_version,
+        vec![HashSuiteSchedule {
+            activation_epoch: Epoch::new(0),
+            suite: HashSuite::genesis(),
+        }],
+    )
+    .unwrap();
+    let members: Vec<ValidatorInfo> = (1..=4).map(validator).collect();
+    let set: ValidatorSet = ValidatorSet::new(epoch, members).unwrap();
+    let certifier: FrozenFrontierCertifier =
+        FrozenFrontierCertifier::new(chain_id, protocol_version, epoch, set).unwrap();
+    let signers: Vec<TestCrypto> = (1..=4)
+        .map(|byte| TestCrypto {
+            validator: ValidatorId::new([byte; 32]),
+        })
+        .collect();
+    let domain: AtomicityDomainId = AtomicityDomainId::new([9; 32]).unwrap();
+    (resolver, certifier, signers, domain)
+}
+
+fn operation(request_byte: u8, domain: AtomicityDomainId) -> AvailabilityIdentity {
+    AvailabilityIdentity {
+        chain_id: ChainId::new("frontier-test").unwrap(),
+        protocol_version: ProtocolVersion::new(4),
+        epoch: Epoch::new(8),
+        domain,
+        request_id: [request_byte; 32],
+        signed_intent_digest: Digest32::new(HashAlgorithmId::Sha2_256, [request_byte; 32]),
+        execution_commitment: Digest32::new(HashAlgorithmId::Sha2_256, [request_byte + 1; 32]),
+        semantic_artifacts_digest: Digest32::new(HashAlgorithmId::Sha2_256, [request_byte + 2; 32]),
+    }
+}
+
+fn empty(resolver: &HashSuiteResolver, domain: AtomicityDomainId) -> FrozenFrontierAccumulator {
+    FrozenFrontierAccumulator::new(
+        resolver,
+        ChainId::new("frontier-test").unwrap(),
+        ProtocolVersion::new(4),
+        Epoch::new(8),
+        domain,
+        [7; 32],
+        11,
+    )
+    .unwrap()
+}
+
+#[test]
+fn frontier_accumulates_in_pages_and_verifies_exact_order() {
+    let (resolver, _certifier, _signers, domain) = fixture();
+    let entries: Vec<AvailabilityIdentity> = vec![operation(1, domain), operation(2, domain)];
+    let mut first: FrozenFrontierAccumulator = empty(&resolver, domain);
+    first.push(&resolver, &entries[0]).unwrap();
+    let intermediate: FrozenFrontierAccumulator = first.clone();
+    first.push(&resolver, &entries[1]).unwrap();
+    let mut direct: FrozenFrontierAccumulator = empty(&resolver, domain);
+    for entry in &entries {
+        direct.push(&resolver, entry).unwrap();
+    }
+    assert_eq!(first, direct);
+    assert_eq!(intermediate.identity().entry_count, 1);
+    assert_eq!(first.identity().entry_count, 2);
+    verify_frozen_frontier(&resolver, first.identity(), &entries).unwrap();
+    assert!(verify_frozen_frontier(&resolver, first.identity(), &entries[..1]).is_err());
+    assert!(verify_frozen_frontier(&resolver, first.identity(), entries.iter().rev()).is_err());
+
+    let bytes: Vec<u8> = encode_frozen_frontier_identity(first.identity()).unwrap();
+    assert_eq!(
+        decode_frozen_frontier_identity(&bytes).unwrap(),
+        *first.identity()
+    );
+}
+
+#[test]
+fn frontier_rejects_duplicates_foreign_context_and_changed_closure() {
+    let (resolver, _certifier, _signers, domain) = fixture();
+    let first: AvailabilityIdentity = operation(1, domain);
+    let mut accumulator: FrozenFrontierAccumulator = empty(&resolver, domain);
+    accumulator.push(&resolver, &first).unwrap();
+    assert!(accumulator.push(&resolver, &first).is_err());
+    assert!(accumulator.push(&resolver, &operation(0, domain)).is_err());
+    let foreign_domain: AtomicityDomainId = AtomicityDomainId::new([10; 32]).unwrap();
+    assert!(
+        accumulator
+            .push(&resolver, &operation(2, foreign_domain))
+            .is_err()
+    );
+    let original: FrozenFrontierIdentity = accumulator.identity().clone();
+    let changed = FrozenFrontierIdentity {
+        closure_height: original.closure_height + 1,
+        ..original.clone()
+    };
+    assert_ne!(
+        encode_frozen_frontier_identity(&changed).unwrap(),
+        encode_frozen_frontier_identity(&original).unwrap()
+    );
+    assert!(verify_frozen_frontier(&resolver, &changed, [&first]).is_err());
+}
+
+#[test]
+fn frontier_vote_uses_distinct_context_and_registered_key() {
+    let (resolver, certifier, signers, domain) = fixture();
+    let mut accumulator: FrozenFrontierAccumulator = empty(&resolver, domain);
+    accumulator.push(&resolver, &operation(1, domain)).unwrap();
+    let identity: FrozenFrontierIdentity = accumulator.into_identity();
+    let vote: FrozenFrontierVote = certifier.cast_vote(identity.clone(), &signers[0]).unwrap();
+    certifier.verify_vote(&vote, &signers[0]).unwrap();
+    let bytes: Vec<u8> = encode_frozen_frontier_vote(&vote).unwrap();
+    assert_eq!(decode_frozen_frontier_vote(&bytes).unwrap(), vote);
+
+    let mut forged: FrozenFrontierVote = vote.clone();
+    forged.identity.closure_request_id = [8; 32];
+    assert!(certifier.verify_vote(&forged, &signers[0]).is_err());
+    let mut foreign: FrozenFrontierVote = vote.clone();
+    foreign.validator = ValidatorId::new([99; 32]);
+    assert!(certifier.verify_vote(&foreign, &signers[0]).is_err());
+    let wrong_epoch = FrozenFrontierIdentity {
+        epoch: Epoch::new(9),
+        ..identity
+    };
+    assert!(certifier.cast_vote(wrong_epoch, &signers[0]).is_err());
+}
+
+#[test]
+fn frozen_frontier_quorum_requires_one_signed_vote_per_ordered_member_and_exact_freeze() {
+    let (resolver, certifier, signers, domain) = fixture();
+    let identity: FrozenFrontierIdentity = empty(&resolver, domain).into_identity();
+    let votes: Vec<FrozenFrontierVote> = signers[..3]
+        .iter()
+        .map(|signer: &TestCrypto| certifier.cast_vote(identity.clone(), signer).unwrap())
+        .collect();
+    assert_eq!(
+        verify_frozen_frontier_quorum(&certifier, &votes, domain, [7; 32], 11, &signers[0])
+            .unwrap(),
+        3
+    );
+    assert!(
+        verify_frozen_frontier_quorum(&certifier, &votes[..2], domain, [7; 32], 11, &signers[0])
+            .is_err()
+    );
+    assert!(
+        verify_frozen_frontier_quorum(
+            &certifier,
+            &[votes[0].clone(), votes[0].clone(), votes[1].clone()],
+            domain,
+            [7; 32],
+            11,
+            &signers[0]
+        )
+        .is_err()
+    );
+    assert!(
+        verify_frozen_frontier_quorum(
+            &certifier,
+            &[votes[1].clone(), votes[0].clone(), votes[2].clone()],
+            domain,
+            [7; 32],
+            11,
+            &signers[0]
+        )
+        .is_err()
+    );
+    assert!(
+        verify_frozen_frontier_quorum(&certifier, &votes, domain, [8; 32], 11, &signers[0])
+            .is_err()
+    );
+    let changed: FrozenFrontierIdentity = FrozenFrontierIdentity {
+        closure_height: 12,
+        ..identity
+    };
+    let mut mixed: Vec<FrozenFrontierVote> = votes.clone();
+    mixed[2] = certifier.cast_vote(changed, &signers[2]).unwrap();
+    assert!(
+        verify_frozen_frontier_quorum(&certifier, &mixed, domain, [7; 32], 11, &signers[0])
+            .is_err()
+    );
+    let mut forged: Vec<FrozenFrontierVote> = votes;
+    forged[2].signature[0] ^= 1;
+    assert!(
+        verify_frozen_frontier_quorum(&certifier, &forged, domain, [7; 32], 11, &signers[0])
+            .is_err()
+    );
+}
+
+#[test]
+fn frozen_frontier_quorum_counts_registered_power_not_vote_count() {
+    let (resolver, _uniform, signers, domain) = fixture();
+    let epoch: Epoch = Epoch::new(8);
+    let mut members: Vec<ValidatorInfo> = (1..=4).map(validator).collect();
+    for (member, power) in members.iter_mut().zip([4_u64, 2, 1, 1]) {
+        member.voting_power = power;
+    }
+    let set: ValidatorSet = ValidatorSet::new(epoch, members).unwrap();
+    let certifier: FrozenFrontierCertifier = FrozenFrontierCertifier::new(
+        ChainId::new("frontier-test").unwrap(),
+        ProtocolVersion::new(4),
+        epoch,
+        set,
+    )
+    .unwrap();
+    let identity: FrozenFrontierIdentity = empty(&resolver, domain).into_identity();
+    let votes: Vec<FrozenFrontierVote> = signers[..2]
+        .iter()
+        .map(|signer: &TestCrypto| certifier.cast_vote(identity.clone(), signer).unwrap())
+        .collect();
+    assert!(
+        verify_frozen_frontier_quorum(&certifier, &votes[..1], domain, [7; 32], 11, &signers[0])
+            .is_err()
+    );
+    assert_eq!(
+        verify_frozen_frontier_quorum(&certifier, &votes, domain, [7; 32], 11, &signers[0])
+            .unwrap(),
+        6
+    );
+    let underpowered_three: Vec<FrozenFrontierVote> = signers[1..]
+        .iter()
+        .map(|signer: &TestCrypto| certifier.cast_vote(identity.clone(), signer).unwrap())
+        .collect();
+    assert!(
+        verify_frozen_frontier_quorum(
+            &certifier,
+            &underpowered_three,
+            domain,
+            [7; 32],
+            11,
+            &signers[0]
+        )
+        .is_err()
+    );
+    let mut foreign_vote: FrozenFrontierVote = votes[0].clone();
+    foreign_vote.validator = ValidatorId::new([99; 32]);
+    assert!(
+        verify_frozen_frontier_quorum(
+            &certifier,
+            &[foreign_vote],
+            domain,
+            [7; 32],
+            11,
+            &signers[0]
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn frontier_decode_rejects_type_mutation_and_excess() {
+    let (resolver, _certifier, _signers, domain) = fixture();
+    let identity: FrozenFrontierIdentity = empty(&resolver, domain).into_identity();
+    let bytes: Vec<u8> = encode_frozen_frontier_identity(&identity).unwrap();
+    let mut wrong_type: Vec<u8> = bytes.clone();
+    wrong_type[0] ^= 1;
+    assert!(decode_frozen_frontier_identity(&wrong_type).is_err());
+    assert!(decode_frozen_frontier_identity(&vec![0; MAX_FRONTIER_IDENTITY_BYTES + 1]).is_err());
+}
+
+#[test]
+fn signed_frontier_pages_require_exact_contiguous_terminal_reconstruction() {
+    let (resolver, certifier, signers, domain) = fixture();
+    let entries: Vec<AvailabilityIdentity> = vec![operation(1, domain), operation(2, domain)];
+    let mut accumulator: FrozenFrontierAccumulator = empty(&resolver, domain);
+    for entry in &entries {
+        accumulator.push(&resolver, entry).unwrap();
+    }
+    let vote: FrozenFrontierVote = certifier
+        .cast_vote(accumulator.into_identity(), &signers[0])
+        .unwrap();
+    let first: FrozenFrontierPage = FrozenFrontierPage {
+        after_request_id: None,
+        entries: vec![entries[0].clone()],
+        terminal: false,
+    };
+    let second: FrozenFrontierPage = FrozenFrontierPage {
+        after_request_id: Some(entries[0].request_id),
+        entries: vec![entries[1].clone()],
+        terminal: true,
+    };
+    for page in [&first, &second] {
+        let bytes: Vec<u8> = encode_frozen_frontier_page(page).unwrap();
+        assert_eq!(decode_frozen_frontier_page(&bytes).unwrap(), *page);
+    }
+    let mut verifier: FrozenFrontierPageVerifier =
+        FrozenFrontierPageVerifier::new(&resolver, &certifier, vote.clone(), &signers[0]).unwrap();
+    assert!(verifier.push_page(&resolver, &second).is_err());
+    verifier.push_page(&resolver, &first).unwrap();
+    assert!(verifier.push_page(&resolver, &first).is_err());
+    assert!(
+        FrozenFrontierPageVerifier::new(&resolver, &certifier, vote.clone(), &signers[0])
+            .unwrap()
+            .finish()
+            .is_err()
+    );
+    let omitted_last: FrozenFrontierPage = FrozenFrontierPage {
+        after_request_id: first.after_request_id,
+        entries: first.entries.clone(),
+        terminal: true,
+    };
+    let mut omission_verifier: FrozenFrontierPageVerifier =
+        FrozenFrontierPageVerifier::new(&resolver, &certifier, vote.clone(), &signers[0]).unwrap();
+    assert!(
+        omission_verifier
+            .push_page(&resolver, &omitted_last)
+            .is_err()
+    );
+    let duplicate: FrozenFrontierPage = FrozenFrontierPage {
+        after_request_id: Some(entries[0].request_id),
+        entries: vec![entries[0].clone()],
+        terminal: true,
+    };
+    assert!(encode_frozen_frontier_page(&duplicate).is_err());
+    verifier.push_page(&resolver, &second).unwrap();
+    assert_eq!(verifier.finish().unwrap(), vote);
+
+    let mut after_terminal: FrozenFrontierPageVerifier =
+        FrozenFrontierPageVerifier::new(&resolver, &certifier, vote.clone(), &signers[0]).unwrap();
+    after_terminal.push_page(&resolver, &first).unwrap();
+    after_terminal.push_page(&resolver, &second).unwrap();
+    assert!(after_terminal.push_page(&resolver, &second).is_err());
+
+    let one_entry_vote: FrozenFrontierVote = certifier
+        .cast_vote(
+            {
+                let mut one: FrozenFrontierAccumulator = empty(&resolver, domain);
+                one.push(&resolver, &entries[0]).unwrap();
+                one.into_identity()
+            },
+            &signers[0],
+        )
+        .unwrap();
+    let mut overcount: FrozenFrontierPageVerifier =
+        FrozenFrontierPageVerifier::new(&resolver, &certifier, one_entry_vote, &signers[0])
+            .unwrap();
+    assert!(
+        overcount
+            .push_page(
+                &resolver,
+                &FrozenFrontierPage {
+                    after_request_id: None,
+                    entries: entries.clone(),
+                    terminal: true,
+                }
+            )
+            .is_err()
+    );
+
+    let mut altered_vote: FrozenFrontierVote = vote.clone();
+    altered_vote.signature[0] ^= 1;
+    assert!(
+        FrozenFrontierPageVerifier::new(&resolver, &certifier, altered_vote, &signers[0]).is_err()
+    );
+}
+
+#[test]
+fn empty_frontier_page_vector_and_bounds_are_stable() {
+    let (resolver, certifier, signers, domain) = fixture();
+    let vote: FrozenFrontierVote = certifier
+        .cast_vote(empty(&resolver, domain).into_identity(), &signers[0])
+        .unwrap();
+    let page: FrozenFrontierPage = FrozenFrontierPage {
+        after_request_id: None,
+        entries: Vec::new(),
+        terminal: true,
+    };
+    let encoded: Vec<u8> = encode_frozen_frontier_page(&page).unwrap();
+    assert_eq!(
+        hex(&encoded),
+        "534e524539d00100030001000000000002000200000001000300020000000000"
+    );
+    assert_eq!(decode_frozen_frontier_page(&encoded).unwrap(), page);
+    let mut verifier: FrozenFrontierPageVerifier =
+        FrozenFrontierPageVerifier::new(&resolver, &certifier, vote.clone(), &signers[0]).unwrap();
+    verifier.push_page(&resolver, &page).unwrap();
+    assert_eq!(verifier.finish().unwrap(), vote);
+
+    let mut wrong_type: Vec<u8> = encoded.clone();
+    wrong_type[4] ^= 1;
+    assert!(decode_frozen_frontier_page(&wrong_type).is_err());
+    let mut wrong_flag: Vec<u8> = encoded.clone();
+    wrong_flag[22] = 2;
+    assert!(decode_frozen_frontier_page(&wrong_flag).is_err());
+    assert!(decode_frozen_frontier_page(&vec![0; MAX_FROZEN_FRONTIER_PAGE_BYTES + 1]).is_err());
+    let too_large: FrozenFrontierPage = FrozenFrontierPage {
+        after_request_id: None,
+        entries: vec![operation(1, domain); MAX_FROZEN_FRONTIER_PAGE_ENTRIES + 1],
+        terminal: true,
+    };
+    assert!(encode_frozen_frontier_page(&too_large).is_err());
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[test]
+fn frozen_frontier_identity_and_vote_vectors_are_stable() {
+    let (resolver, _certifier, _signers, domain) = fixture();
+    let identity: FrozenFrontierIdentity = FrozenFrontierIdentity {
+        entry_count: 2,
+        entries_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0xaa; 32]),
+        ..empty(&resolver, domain).into_identity()
+    };
+    let vote: FrozenFrontierVote = FrozenFrontierVote {
+        identity: identity.clone(),
+        validator: ValidatorId::new([1; 32]),
+        signature_scheme: SignatureSchemeId::Ed25519,
+        signature: vec![0x5a; 64],
+    };
+    assert_eq!(
+        hex(&encode_frozen_frontier_identity(&identity).unwrap()),
+        "534e524536d00100080001000d00000066726f6e746965722d74657374020004000000040000000300080000000800000000000000040020000000090909090909090909090909090909090909090909090909090909090909090905002000000007070707070707070707070707070707070707070707070707070707070707070600080000000b000000000000000700080000000200000000000000080038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    assert_eq!(
+        hex(&encode_frozen_frontier_vote(&vote).unwrap()),
+        "534e524537d0010004000100db000000534e524536d00100080001000d00000066726f6e746965722d74657374020004000000040000000300080000000800000000000000040020000000090909090909090909090909090909090909090909090909090909090909090905002000000007070707070707070707070707070707070707070707070707070707070707070600080000000b000000000000000700080000000200000000000000080038000000534e52450301010002000100020000000100020020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa020020000000010101010101010101010101010101010101010101010101010101010101010103000200000001000400400000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+    );
+}
+
+#[test]
+fn frozen_frontier_accumulator_seed_and_step_hashes_are_stable() {
+    let (resolver, _certifier, _signers, domain) = fixture();
+    let mut accumulator: FrozenFrontierAccumulator = empty(&resolver, domain);
+    assert_eq!(
+        hex(&accumulator.identity().entries_digest.bytes()),
+        "0b1c6153949437a5f2617e05a8849b8ae988778ac6e5aaf0ee17897b4212b7cc"
+    );
+    accumulator.push(&resolver, &operation(1, domain)).unwrap();
+    assert_eq!(
+        hex(&accumulator.identity().entries_digest.bytes()),
+        "eb08a9f7032f18bdb7d9c8cd898b46761189faa0da5f741e13ab4cd651114897"
+    );
+    accumulator.push(&resolver, &operation(2, domain)).unwrap();
+    assert_eq!(
+        hex(&accumulator.identity().entries_digest.bytes()),
+        "a7983d9b7dd79253338a97f1a629ea5795db854f6ba32f84cb9d2cff88dd3a41"
+    );
+}
+
+#[test]
+fn page_verifier_resumes_persisted_progress_and_rejects_foreign_or_overrun_state() {
+    let (resolver, certifier, signers, domain) = fixture();
+    let entries: Vec<AvailabilityIdentity> = vec![operation(1, domain), operation(2, domain)];
+    let mut full: FrozenFrontierAccumulator = empty(&resolver, domain);
+    for entry in &entries {
+        full.push(&resolver, entry).unwrap();
+    }
+    let vote: FrozenFrontierVote = certifier
+        .cast_vote(full.into_identity(), &signers[0])
+        .unwrap();
+
+    let mut partial: FrozenFrontierAccumulator = empty(&resolver, domain);
+    partial.push(&resolver, &entries[0]).unwrap();
+    let mut resumed: FrozenFrontierPageVerifier = FrozenFrontierPageVerifier::resume(
+        &resolver,
+        &certifier,
+        vote.clone(),
+        partial,
+        &signers[0],
+    )
+    .unwrap();
+    assert!(!resumed.is_terminal());
+    assert_eq!(resumed.accumulator().identity().entry_count, 1);
+    resumed
+        .push_page(
+            &resolver,
+            &FrozenFrontierPage {
+                after_request_id: Some(entries[0].request_id),
+                entries: vec![entries[1].clone()],
+                terminal: true,
+            },
+        )
+        .unwrap();
+    assert!(resumed.is_terminal());
+    assert_eq!(resumed.finish().unwrap(), vote);
+
+    let mut wrong_freeze: FrozenFrontierAccumulator = empty(&resolver, domain);
+    wrong_freeze.push(&resolver, &entries[0]).unwrap();
+    let changed_identity: FrozenFrontierIdentity = FrozenFrontierIdentity {
+        closure_height: 12,
+        ..wrong_freeze.identity().clone()
+    };
+    let mismatched_vote: FrozenFrontierVote = FrozenFrontierVote {
+        identity: changed_identity,
+        ..vote.clone()
+    };
+    assert!(
+        FrozenFrontierPageVerifier::resume(
+            &resolver,
+            &certifier,
+            mismatched_vote,
+            wrong_freeze,
+            &signers[0]
+        )
+        .is_err()
+    );
+
+    let mut overrun: FrozenFrontierAccumulator = empty(&resolver, domain);
+    overrun.push(&resolver, &entries[0]).unwrap();
+    overrun.push(&resolver, &entries[1]).unwrap();
+    overrun.push(&resolver, &operation(3, domain)).unwrap();
+    assert!(
+        FrozenFrontierPageVerifier::resume(&resolver, &certifier, vote, overrun, &signers[0])
+            .is_err()
+    );
+}

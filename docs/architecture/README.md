@@ -54,9 +54,20 @@ roadmap describes a later target state.
 - [Ordered network economics](ordered-economics.md) ([DR-0153](decisions/0153-ordered-network-economics.md)):
   shared HotStuff ordering distinct from owned FastVote, durable reservations,
   atomic economic/order effects and declared signerless recovery.
-- [Complete epoch handoff](epoch-handoff.md) ([DR-0154](decisions/0154-complete-epoch-handoff.md)):
+- [Complete epoch handoff](epoch-handoff.md) ([DR-0154](decisions/0154-complete-epoch-handoff.md),
+  [DR-0155](decisions/0155-epoch-end-freeze-warrant.md),
+  [DR-0156](decisions/0156-frozen-frontier-possession.md),
+  [DR-0157](decisions/0157-frozen-frontier-readiness.md),
+  [DR-0158](decisions/0158-bounded-drain-network-driver.md),
+  [DR-0159](decisions/0159-ordered-drainset.md),
+  [DR-0160](decisions/0160-certified-drain-application.md)):
   publication-before-apply, quorum-complete frozen frontiers, ordered epoch
   control, portable logical commitments and verified new-validator readiness.
+- [Portable reconstruction storage contract](portable-reconstruction.md):
+  body-free key/metadata enumeration, bounded payload ranges and the separate
+  protocol obligations for cut authentication and completeness;
+  [DR-0166](decisions/0166-portable-candidate-snapshot.md) defines the stronger
+  backend-enforced snapshot boundary for candidate enumeration, not cut authority.
 
 Production-oriented persistence requirements and the PostgreSQL mapping are
 separate operational references:

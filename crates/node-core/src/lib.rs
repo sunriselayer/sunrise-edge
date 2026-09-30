@@ -53,12 +53,14 @@ pub mod fee_effects;
 pub mod genesis;
 pub mod local_execution;
 pub mod local_instance_state;
+pub mod logical_generation;
 mod mutation_fence;
 mod object_snapshots;
 pub mod ordered_economics;
 pub mod paid_execution;
 pub mod phase2_authorization;
 pub mod phase3_authorization;
+pub mod portable_candidate;
 mod preinstalled_wasm;
 pub mod publication;
 mod query;
@@ -121,6 +123,23 @@ const NODE_DEDUP_RECORD_TYPE_ID: u16 = 0xE003;
 const NODE_OUTBOX_BATCH_TYPE_ID: u16 = 0xE004;
 const NODE_OUTBOX_DELIVERY_TYPE_ID: u16 = 0xE005;
 const ENCODING_VERSION: u16 = 1;
+
+/// Refusal text for [`NodeCoreError::LogicalProfileApplicationUnsupported`]
+/// (DR-0154): every real caller pairs a store's resolved commitment profile
+/// with evidence derived from that exact same binding, so this text must not
+/// claim an active quorum-availability-publication gate that does not exist
+/// yet.
+const APPLY_REFUSED_MESSAGE: &str =
+    "handoff profile: installed commitment profile and derived evidence disagree";
+
+/// Refusal text for [`NodeCoreError::LogicalProfileOutboxUnsupported`]
+/// (DR-0154): the handoff profile's portable cut/import contract only ever
+/// proves an *absent* outbox obligation is safe to exclude
+/// (`docs/architecture/epoch-handoff.md`'s "The initial handoff profile
+/// names outbox batches ... as excluded families"); no cross-epoch delivery
+/// or deterministic reconstruction proof exists yet for a nonempty one.
+const OUTBOX_REFUSED_MESSAGE: &str = "handoff profile: generic durable event produced a nonempty outbox obligation, which the \
+     handoff-capable profile cannot yet admit";
 
 /// Maximum UTF-8 byte length of a chain identifier accepted at node ingress.
 pub const MAX_CHAIN_ID_BYTES: usize = 128;
@@ -557,6 +576,41 @@ pub enum NodeCoreError {
         previous_created_checkpoint: u64,
         /// Checkpoint proposed for the new immutable version.
         attempted_created_checkpoint: u64,
+    },
+    /// An authenticated logical provenance row is missing, foreign or does not
+    /// match the observation it is bound to (DR-0154).
+    LogicalProvenance(&'static str),
+    /// A caller presented a resolved commitment profile and derived evidence
+    /// that this admission gate never observes from a well-formed path: a
+    /// [`InstalledCommitmentProfile::Logical`] with no derivation, or a
+    /// [`InstalledCommitmentProfile::Historical`] with one (DR-0154). Every
+    /// current production path pairs the two correctly, so this is a
+    /// defensive fail-closed refusal of an internal invariant violation, not
+    /// the mandatory quorum-availability-publication gate DR-0154 still has
+    /// to add: that gate does not exist yet, and this variant does not
+    /// implement or stand in for it.
+    ///
+    /// [`InstalledCommitmentProfile::Logical`]: logical_generation::InstalledCommitmentProfile::Logical
+    /// [`InstalledCommitmentProfile::Historical`]: logical_generation::InstalledCommitmentProfile::Historical
+    LogicalProfileApplicationUnsupported,
+    /// A generic durable event produced a nonempty outbox obligation while
+    /// this store is bound to the handoff-capable
+    /// [`logical_generation::CommitmentProfile::LogicalGenerationV2`] profile
+    /// (DR-0154). Historical stores are unaffected: this refusal exists only
+    /// because no cross-epoch outbox delivery/reconstruction proof exists
+    /// yet, not because outbound messages are otherwise invalid.
+    LogicalProfileOutboxUnsupported,
+    /// The authenticated causal generation has no representable successor.
+    ExecutionGenerationOverflow {
+        /// Authenticated floor the derivation started from.
+        floor: u64,
+    },
+    /// A mutated subject's authenticated generation would not advance.
+    ExecutionGenerationRegression {
+        /// Generation recorded on the existing provenance row.
+        previous: u64,
+        /// Generation this operation derived.
+        attempted: u64,
     },
     /// A governance-installed system-module registry or manifest operation failed.
     SystemModules(SystemModuleError),
@@ -1669,6 +1723,14 @@ impl fmt::Display for NodeCoreError {
                 f,
                 "derived created-object id {object_id} already has a current or tombstoned durable head"
             ),
+            Self::LogicalProvenance(reason) => write!(f, "logical provenance: {reason}"),
+            Self::LogicalProfileApplicationUnsupported => f.write_str(APPLY_REFUSED_MESSAGE),
+            Self::LogicalProfileOutboxUnsupported => f.write_str(OUTBOX_REFUSED_MESSAGE),
+            Self::ExecutionGenerationOverflow { floor } => write!(f, "generation overflow {floor}"),
+            Self::ExecutionGenerationRegression {
+                previous,
+                attempted,
+            } => write!(f, "generation regressed {previous} to {attempted}"),
         }
     }
 }
@@ -5368,6 +5430,51 @@ where
             dispatch.owner_address_policy,
         )?;
     }
+    // DR-0154: resolve this store's signed binding before any effect is
+    // translated, so the object monotonicity rule below is the one its own
+    // genesis actually bound. The fenced revision is folded into this same
+    // invocation's read set further down.
+    let mut logical_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let installed: logical_generation::InstalledCommitmentProfile =
+        logical_generation::fence_commitment_profile(
+            store,
+            context,
+            domain,
+            event.chain_id(),
+            &mut logical_reads,
+        )?;
+    // DR-0154 bounded safety fix: a reservation carries its own
+    // `fence_current_epoch` call above (which itself asserts admission
+    // still being open, `crate::ordered_economics::fence_admission_open`),
+    // but a generic non-transaction event has no reservation and therefore
+    // took no epoch/admission fence at all above -- "Generic non-transaction
+    // events have no sender-owned mutation authority to fence" was true only
+    // of the lock/nonce fences, not of the epoch/admission ones a
+    // handoff-capable store also requires. A historical store keeps its
+    // exact existing behavior: this store class never installs the
+    // `LogicalProfileRecord` this check is gated on, so
+    // `installed.logical()` is always `None` for it and this block never
+    // runs.
+    if reservation.is_none() && installed.logical().is_some() {
+        mutation_fence::fence_current_epoch(
+            store,
+            context,
+            domain,
+            event.chain_id(),
+            event.epoch(),
+            &mut logical_reads,
+        )?;
+    }
+    // DR-0154: the handoff-capable profile has no proven cross-epoch outbox
+    // delivery or deterministic-reconstruction guarantee yet (see
+    // `docs/architecture/epoch-handoff.md`'s outbox-exclusion rule), so a
+    // v2-bound store must fail closed on a nonempty outbox obligation from
+    // any generic durable event rather than silently admit one no drain/cut/
+    // import path can yet replay. Checked before any mutation is staged or
+    // committed. A historical store is unaffected, matching the guard above.
+    if installed.logical().is_some() && !transition.output.outbound_messages.is_empty() {
+        return Err(NodeCoreError::LogicalProfileOutboxUnsupported);
+    }
     let mutation_context: Option<authenticated_object_effects::TrustedObjectMutationContext<'_>> =
         created_checkpoint.map(|created_checkpoint: u64| {
             authenticated_object_effects::TrustedObjectMutationContext {
@@ -5376,6 +5483,10 @@ where
                 protocol_version: event.protocol_version(),
                 epoch: event.epoch(),
                 created_checkpoint,
+                minimum: logical_generation::ObjectMinimum::for_profile(
+                    &installed,
+                    created_checkpoint,
+                ),
             }
         });
     let object_mutations: Vec<DurableObjectMutationEntry> = match transition.effect_matching() {
@@ -5483,13 +5594,13 @@ where
     }) {
         return Err(NodeCoreError::ReservedStateAccess(mutation.key().to_vec()));
     }
-    if let Some(pending) = pending_nonce {
+    if let Some(pending) = pending_nonce.as_ref() {
         reads.push(StateReadAssertion::new(
             pending.key.clone(),
             pending.read_revision,
         )?);
         mutations.push(StateMutationEntry::new(
-            pending.key,
+            pending.key.clone(),
             StateMutation::Put(pending.record.encode()?),
         )?);
     }
@@ -5499,6 +5610,28 @@ where
     for key in reclaimed_lock_keys {
         mutations.push(StateMutationEntry::new(key, StateMutation::Delete)?);
     }
+    // DR-0154: the complete write set of this generic transition is now known,
+    // so derive its authenticated causal generation over every verified input
+    // and append the provenance rows this same atomic commit installs. A
+    // handoff-capable store refuses the transition without that evidence; a
+    // historical store keeps its exact existing behavior and writes no row.
+    // Placed after the reserved-namespace check above for the same reason the
+    // reclaimed fast-path keys are: these rows are protocol provenance the node
+    // itself derived, never state a caller's transition plan supplied.
+    logical_generation::admit_generic_transition(
+        store,
+        context,
+        domain,
+        resolver,
+        installed,
+        event.epoch(),
+        loaded_objects.head_reads(),
+        &object_mutations,
+        pending_nonce.as_ref(),
+        &logical_reads,
+        &mut mutations,
+        &mut reads,
+    )?;
     let state = DurableStateTransaction::new(domain, AtomicStateReadSet::new(reads)?, mutations)?;
     let objects = DurableObjectChanges::new(loaded_objects.into_reads(), object_mutations)?;
     let invocation =

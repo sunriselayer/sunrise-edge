@@ -4,7 +4,7 @@
 //! `node_core::fast_path::tests` and `apps/operator/tests` for that); they
 //! prove the *route table itself*: every direct/legacy mutating path is
 //! completely unmounted (a genuine 404, not an internally-gated 200/4xx),
-//! every required bounded read route and both FastVote routes are mounted,
+//! every required bounded read route and the current FastVote routes are mounted,
 //! and construction rejects a FastVote composition whose policy context
 //! disagrees with the native ingress context.
 use super::*;
@@ -17,6 +17,41 @@ use execution::paid_execution::{MIN_RESERVE_ALLOWANCE, MIN_SETTLE_ALLOWANCE, Pai
 use execution::publication::{PublicationContext, UnverifiedDependencyRef};
 use fees::GasSchedule;
 use protocol_types::{SignatureSchemeId, ValidatorId};
+
+#[test]
+fn frozen_frontier_wire_and_consensus_page_bounds_match() {
+    assert_eq!(
+        node_wire::MAX_FRONTIER_PAGE_BYTES,
+        consensus::MAX_FROZEN_FRONTIER_PAGE_BYTES
+    );
+    assert_eq!(
+        usize::from(node_wire::MAX_FRONTIER_PAGE_LIMIT),
+        consensus::MAX_FROZEN_FRONTIER_PAGE_ENTRIES
+    );
+}
+
+#[test]
+fn frontier_errors_separate_prerequisites_cursors_and_durable_corruption() {
+    use node_core::ordered_economics::FrozenFrontierError;
+
+    assert_eq!(
+        crate::fastvote::frontier_error_response(&FrozenFrontierError::NotReady("freeze pending"))
+            .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        crate::fastvote::frontier_error_response(&FrozenFrontierError::InvalidCursor(
+            "unknown cursor"
+        ))
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        crate::fastvote::frontier_error_response(&FrozenFrontierError::Invalid("tombstoned"))
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+}
 
 fn context() -> PublicationContext {
     PublicationContext::new(
@@ -197,7 +232,7 @@ async fn certified_router_still_serves_liveness_and_bounded_reads() {
 }
 
 #[tokio::test]
-async fn certified_router_mounts_both_fastvote_routes() {
+async fn certified_router_mounts_fastvote_and_publication_routes() {
     let app = certified_router();
     // Malformed bodies still prove the route exists: a 4xx response from the
     // handler, never the router's own 404.
@@ -208,6 +243,189 @@ async fn certified_router_mounts_both_fastvote_routes() {
     assert_ne!(
         dispatch(&app, "POST", FASTVOTE_CERTIFICATES_PATH, vec![0xAA]).await,
         StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        dispatch(&app, "POST", FASTVOTE_PUBLICATION_RETAIN_PATH, vec![0xAA]).await,
+        StatusCode::BAD_REQUEST,
+        "malformed publication must be rejected by its mounted handler"
+    );
+    assert_eq!(
+        dispatch(&app, "GET", FASTVOTE_PUBLICATION_RETAIN_PATH, Vec::new()).await,
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+    for path in [
+        FASTVOTE_PUBLICATION_SOURCE_PATH,
+        FASTVOTE_PUBLISHED_APPLY_PATH,
+        FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
+        node_wire::FASTVOTE_RETAINED_PUBLICATION_SOURCE_PATH,
+        node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
+        node_wire::FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
+        node_wire::FASTVOTE_DRAIN_UNION_ADVANCE_PATH,
+        node_wire::FASTVOTE_DRAIN_APPLY_PATH,
+    ] {
+        assert_eq!(
+            dispatch(&app, "POST", path, vec![0xAA]).await,
+            StatusCode::BAD_REQUEST,
+            "malformed request must reach the mounted {path} handler"
+        );
+        assert_eq!(
+            dispatch(&app, "GET", path, Vec::new()).await,
+            StatusCode::METHOD_NOT_ALLOWED
+        );
+    }
+    for (path, limit) in [
+        (
+            node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
+            node_wire::MAX_DRAIN_SIGNER_PAGE_REQUEST_BYTES,
+        ),
+        (
+            node_wire::FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
+            node_wire::MAX_DRAIN_MEMBER_CONFIRM_REQUEST_BYTES,
+        ),
+        (
+            node_wire::FASTVOTE_DRAIN_UNION_ADVANCE_PATH,
+            node_wire::MAX_DRAIN_UNION_ADVANCE_REQUEST_BYTES,
+        ),
+        (
+            node_wire::FASTVOTE_DRAIN_APPLY_PATH,
+            node_wire::MAX_DRAIN_MEMBER_APPLY_REQUEST_BYTES,
+        ),
+    ] {
+        assert_eq!(
+            dispatch(&app, "POST", path, vec![0xAA; limit + 1]).await,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "oversized {path} body must be rejected at ingress"
+        );
+    }
+    let import_path: String = format!("/v1/fastvote/drain/import/{}", "11".repeat(32));
+    assert_eq!(
+        dispatch(&app, "POST", &import_path, vec![0xAA]).await,
+        StatusCode::BAD_REQUEST,
+        "raw bundle import must be mounted only on the certified router"
+    );
+    assert_eq!(
+        dispatch(&app, "GET", &import_path, Vec::new()).await,
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+    assert_eq!(
+        dispatch(
+            &app,
+            "POST",
+            "/v1/fastvote/drain/import/not-hex",
+            vec![0xAA]
+        )
+        .await,
+        StatusCode::BAD_REQUEST,
+        "invalid validator selector must be rejected before storage"
+    );
+    assert_ne!(
+        dispatch(
+            &app,
+            "POST",
+            FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
+            Vec::new()
+        )
+        .await,
+        StatusCode::NOT_FOUND,
+    );
+    assert_eq!(
+        dispatch(
+            &app,
+            "POST",
+            FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
+            vec![0xAA]
+        )
+        .await,
+        StatusCode::BAD_REQUEST,
+    );
+    let stale_request: node_wire::FrozenFrontierPageRequest =
+        node_wire::FrozenFrontierPageRequest {
+            epoch: Epoch::new(config().epoch().get() + 1),
+            after_request_id: None,
+            limit: 1,
+        };
+    assert_eq!(
+        dispatch(
+            &app,
+            "POST",
+            FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
+            stale_request.encode().unwrap()
+        )
+        .await,
+        StatusCode::CONFLICT,
+    );
+    let stale_drain_page: node_wire::DrainSignerPageRequest = node_wire::DrainSignerPageRequest {
+        epoch: Epoch::new(config().epoch().get() + 1),
+        vote: vec![0xAA],
+        page: vec![0xBB],
+    };
+    assert_eq!(
+        dispatch(
+            &app,
+            "POST",
+            node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
+            stale_drain_page.encode().unwrap()
+        )
+        .await,
+        StatusCode::CONFLICT,
+        "untrusted page bytes must not bypass the pinned epoch"
+    );
+    let stale_drain_confirm: node_wire::DrainMemberConfirmRequest =
+        node_wire::DrainMemberConfirmRequest {
+            epoch: Epoch::new(config().epoch().get() + 1),
+            validator: ValidatorId::new([0x11; 32]),
+            request_id: [0x22; 32],
+        };
+    assert_eq!(
+        dispatch(
+            &app,
+            "POST",
+            node_wire::FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
+            stale_drain_confirm.encode().unwrap()
+        )
+        .await,
+        StatusCode::CONFLICT,
+    );
+    let absent_member: node_wire::DrainMemberApplyRequest = node_wire::DrainMemberApplyRequest {
+        epoch: config().epoch(),
+        member_request_id: [0x33; 32],
+    };
+    assert_eq!(
+        dispatch(
+            &app,
+            "POST",
+            node_wire::FASTVOTE_DRAIN_APPLY_PATH,
+            absent_member.encode().unwrap()
+        )
+        .await,
+        StatusCode::CONFLICT,
+        "a request id without locally retained certified drain authority cannot apply",
+    );
+    assert_eq!(
+        dispatch(
+            &app,
+            "GET",
+            FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
+            Vec::new()
+        )
+        .await,
+        StatusCode::METHOD_NOT_ALLOWED,
+    );
+    let stale_retained_source_request: node_wire::RetainedPublicationSourceRequest =
+        node_wire::RetainedPublicationSourceRequest {
+            epoch: Epoch::new(config().epoch().get() + 1),
+            request_id: [0x01; 32],
+        };
+    assert_eq!(
+        dispatch(
+            &app,
+            "POST",
+            node_wire::FASTVOTE_RETAINED_PUBLICATION_SOURCE_PATH,
+            stale_retained_source_request.encode().unwrap()
+        )
+        .await,
+        StatusCode::CONFLICT,
+        "a request pinned to a non-current epoch must be rejected before any storage read"
     );
 }
 

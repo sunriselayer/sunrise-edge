@@ -104,8 +104,40 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 | --- | --- | --- |
 | 1 | Generic certified network contract lifecycle | Merged as PR #228 on 2026-09-27 after the full repository gate, fresh exact-head Opus APPROVE and required CI: Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Independent ingress/security gates remain separate. |
 | 2 | Network economics and validator operations | Merged as PR #232 on 2026-09-27 with normal merge commit `86711be`, after fresh exact-head Opus APPROVE and the passing complete repository CI. Fixed-epoch four-namespace CLI evidence is implemented. Membership-dependent Deposit/Withdraw positives join delivery 3; economics/ingress security audits remain separate. |
-| 3 | Validator membership and epoch handoff | Design accepted after independent Opus review and corrections on 2026-09-27: [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Mandatory publication-before-apply, logical execution generations and ordered epoch control are not yet implemented. One integrated feature must cover real add/replace/recover/epoch operations, genuine Deposit/Withdraw, and rejection of incomplete/divergent replicas. |
+| 3 | Validator membership and epoch handoff | In progress in Draft PR #235 under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Logical generations, ordered Freeze, publication-before-apply, bounded DrainSet, certified ordered history and local candidate enumeration/transport have bounded evidence. A portable authenticated cut, complete causal scheduling, Seal, readiness/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation are not complete. |
 | 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
+
+**PR slicing policy, 2026-09-30:** these deliveries are integrated acceptance
+outcomes, not a requirement to collect an entire delivery into one PR. Split
+work into dependency-ordered, independently reviewable functional capabilities;
+each includes its implementation, relevant tests and documentation, then its
+own complete repository gate, exact-head Opus review and required CI. A bounded
+storage or consensus capability can merge before the complete handoff, provided
+it does not expose or authorize the unfinished transition. Keep Delivery 3
+unchecked until its integrated acceptance criteria actually pass. Preserve
+Draft PR #235 as the aggregate implementation source while extracting those
+feature PRs; do not merge its whole unfinished diff merely to shorten the queue.
+
+The first independently based extraction is Draft PR #237: bounded portable
+storage reads and backend-enforced snapshot continuity, with its own runtime
+conformance, persistent-store regressions and storage-only design. Subsequent
+PRs follow capability dependencies (logical execution generations and
+provenance; publication/availability apply gates; Freeze/frontier/drain;
+certified terminal and candidate transport; authenticated cut/import;
+readiness/Seal/activation), not a fixed PR-per-delivery quota. Gate each actual
+feature diff before merge and retain the integrated Delivery 3 criteria.
+During extraction, the required PostgreSQL backup/restore and resource-fault
+fixtures exposed stale structured-only sequence expectations: successful
+outbox claim and ACK now each advance the covered mutation sequence. Their
+expectations are corrected without relaxing rejected/replayed/fenced-write
+invariants; parent-run required-image backup/restore, connection-exhaustion,
+disk-full, WAL-full and PgBouncer rehearsals pass on the extracted branch.
+The extracted complete parent gate passed on code head `66f8f68` with all
+required PostgreSQL fault/recovery profiles, existing network/CLI E2Es,
+vectors and Rust/WASM/edge-adapter checks. Fresh Opus approved the entire
+independent feature at that head. Subsequent documentation-only updates still
+require latest-head approval and passing CI before PR #237 merges. This is
+not whole-aggregate validation or handoff completion.
 
 PostgreSQL remains the existing tested profile for delivery 1, not a mandatory
 protocol database. Lightweight authoritative profiles (Cloudflare SQLite-backed
@@ -178,14 +210,578 @@ The detailed existing evidence and remaining criteria follow:
   blindly rewritten to the live epoch. Acceptance includes a fresh namespace,
   genuine Unbond/remove/epoch advance/Withdraw, actual new-epoch paid user
   contracts and fee claims, restart/exact replay, retired-signer rejection,
-  missing/forged/divergent cut refusal and real stale-writer controls. No
-  Delivery 3 handoff runtime enforcement, completeness proof, activation or
-  integrated validation is claimed by the design review or this foundation
-  slice. Implement the same semantic
+  missing/forged/divergent cut refusal and real stale-writer controls. Neither
+  the design review nor the foundation slice establishes complete Delivery 3
+  handoff enforcement, completeness proof, activation or integrated validation.
+  Implement the same semantic
   execution-generation substitution in ordered bond/fee-claim minimum checks,
   not only fast-path commitments; checked overflow must refuse before mutation
   or exposed signatures. Fresh-genesis enforcement
   is required; existing pre-rule stores cannot silently receive this guarantee.
+  Implementation started on `codex/epoch-handoff` on 2026-09-28. The checked
+  `ExecutionGeneration` primitive and bounded availability identity/vote/
+  certificate library are integrated; protocol/consensus tests and independent
+  fixed-byte reconstruction pass. Opus approved the pure availability library,
+  not durable ACK retention or apply authority. Bounded portable reads across
+  memory, SQLite/shared SQL and PostgreSQL are integrated after an independent
+  Opus prerequisite review, followed by Sonnet's invariant/test refinements and
+  parent verification. Shared storage tests, real file reopen/fresh connection
+  reads and authority refusals pass; these do not prove a complete cut.
+  Referenced blob content now has bounded descriptor/range reads across
+  memory, the separate SQLite blob file and PostgreSQL. Independent Opus
+  review approved that bounded API with follow-up tests and wording changes;
+  parent made those changes and reran relevant tests, including a live
+  PostgreSQL fresh-connection and namespace-negative case.
+  Blob bytes still require protocol hash/provenance verification, and neither
+  these reads nor four-collection enumeration prove cut completeness.
+  The initial handoff profile now explicitly excludes outbox transport rows
+  only after proving there is no nonempty or pending outbound obligation;
+  future nonempty cross-epoch delivery remains a separate unsolved contract.
+  A bounded read-only outbox-family probe now exists in memory, SQLite and
+  PostgreSQL, with legacy-prefix refusal, file-backed reopen and live
+  PostgreSQL tests. It refuses even fully acknowledged nonempty batches in
+  this initial profile. The probe is not atomic with Freeze or cut creation;
+  no handoff admission gate is wired from it yet.
+  Signed v2 genesis now installs and re-verifies the commitment profile and
+  starting provenance; historical v1 bytes remain fixed. Paid, local,
+  publication, FastVote and economic admission paths derive checked causal
+  generations from verified state/object/nonce observations, fence the
+  provenance rows, and bind v2 prepare/commitment witnesses. Three-validator
+  v2 prepare/certify/apply passes despite one replica's divergent physical
+  revision; real signed-genesis bond deposit and consecutive positive fee
+  claims exercise the shared sender-nonce identity. The node-core suite,
+  workspace strict lint and independent fixed-byte reconstruction pass.
+  FastPath and ordered-economics business-history families are explicitly
+  distinguished from local reservations; a future cut still must enumerate
+  and independently verify that history. Opus reviewed the pre-integration
+  branch at `408a649` and blocked a merge: it lacked PR #234's reviewed
+  availability guards/vectors and still lacked the full Delivery 3 runtime
+  path. PR #234 merged normally on 2026-09-28; `codex/epoch-handoff` then
+  merged that foundation at `42adcbb`, retaining its zero-request-ID refusal
+  and independent vectors. This resolves the stale-foundation conflict, not
+  the feature-completion blocker.
+  Execution-free publication retention and the core availability-certificate
+  apply gate now exist with local tests. The HTTP source/retention/published-apply
+  routes and locally pinned Rust client/CLI quorum workflow are wired, with
+  focused tests for exact bundle/ACK collection, invalid-AC preflight, saved
+  AC-before-apply and exact three-artifact replay. A real multi-validator
+  PostgreSQL end-to-end run for this new profile is still outstanding.
+  Atomic outbox/Freeze gate, DrainSet/Seal, complete authenticated
+  import, readiness/activation and the network E2E are not complete. This
+  delivery stays unchecked. The full local `scripts/check-all.sh` gate passed
+  on 2026-09-28, but live PostgreSQL suites were skipped because
+  `SUNRISE_EDGE_TEST_POSTGRES_URL` is unset; no final feature approval,
+  feature PR merge or network activation is claimed. Before making Freeze live,
+  prove a legally eligible
+  same-set next-epoch Seal/readiness path under the stated quorum assumption;
+  an irreversible Freeze with no ready next set would otherwise strand the
+  network. This remains a design/implementation obligation, not a deployed
+  fallback or permission for operator-forced activation.
+  The Draft PR now contains an ordered `Freeze` marker and closed-epoch
+  admission fences, including fresh retention ACKs; exact earlier ACK replay
+  remains available. [DR-0155](docs/architecture/decisions/0155-epoch-end-freeze-warrant.md)
+  adds a positive minimum ordered Freeze height to the signed handoff-capable
+  genesis manifest and a canonical advisory next set to the candidate. Honest
+  leader/voter paths check the actual proposal height, live epoch and the
+  next set's committed bond/key/policy eligibility before signing; committed
+  execution rechecks these against staged CAS reads, retaining no-closure
+  refusal for healthy ineligibility and stopping on missing/corrupt rows.
+  Historical v1 manifests authorize no Freeze. This is still partial control:
+  the current devnet genesis fixture remains v1, the older standalone
+  epoch-transition API is now refused for v2-bound stores but remains the
+  historical v1 route, and
+  no DrainSet, verified cut, readiness, Seal or actual next-set activation is
+  complete. The ordered HTTP propose route still accepts caller-supplied
+  candidate bytes, but the signer-side warrant rejects an unwarranted Freeze.
+  Neither route is safe to expose as complete handoff until the remaining
+  gates close and independent multi-validator network validation passes.
+  The 2026-09-28 bundle clarification requires a full logical witness and
+  verified artifact closure before a retention ACK, including on a retainer
+  with a conflicting partial lock. A same-day follow-up slice in Draft PR #235
+  wires and tests that retention: `consensus::availability::bundle`
+  (`0xD033`-`0xD035/v1`) and `node_core::fast_path::publication`
+  (`0x6455`/`0x6456/v1`, in Draft PR #235, not yet merged) verify a real
+  quorum certificate, a witness matching its execution commitment, and every
+  declared artifact against its digest under
+  a hash suite trusted at or before the certifying epoch (with bounded
+  historical-resolver fallback for a rotated-away-from suite or protocol
+  version, never a bundle-declared epoch or algorithm), then durably retain
+  the publication record, artifact bytes and first ACK identity in one atomic
+  commit and sign only after. Replay rechecks the saved full certificate and
+  exact stored artifact bytes before returning the original ACK. The
+  publication, prepare-side and accepted-certificate `fastpath/` key families
+  are classified in `logical_generation::classify_fastpath_row`: publication,
+  publication artifacts and availability certificates are authenticated
+  history; availability ACKs are local signing-safety state; prepared witness
+  and artifacts are local preparation. Draft PR #235 now also has a
+  prepare-side durable witness/artifact closure before exposing its vote,
+  restart-safe bundle assembly from that retained material, and a v2-only
+  availability-certificate gate before fresh apply/recovery. The accepted
+  certificate bytes commit atomically with original effects and receipt.
+  The new certified-only HTTP source, retention and published-apply routes
+  are mounted. The Rust client verifies the signed local manifest profile,
+  sources a full bundle, forms a quorum from exact verified retention ACKs and
+  preflights published apply. The CLI durably saves the signed intent, full
+  certificate and availability certificate in that order before applying;
+  saved replay does not re-sign. Node-core passed 793 tests, including SQLite
+  close/reopen; native-http passed 123 tests, and client/CLI focused tests
+  passed. The full local repository gate also passed; it is not a real
+  multi-validator PostgreSQL E2E for the new profile. The Freeze fence remains
+  partial;
+  DrainSet/Seal and cut verification remain open. This does not satisfy
+  Delivery 3 acceptance; independent review of complete handoff is pending.
+  The 2026-09-29 continuation closes the reservation-less generic-event
+  admission/epoch fence and refuses nonempty generic outbox obligations under
+  v2. It also refuses the old standalone epoch-transition route for every
+  v2-bound store, including before and after Freeze. Historical v1 behavior
+  is unchanged. The new bounded local frozen-frontier accumulator uses
+  `0xD036`-`0xD038/v1` and a distinct signing domain; one step verifies one
+  retained full certificate, signed intent, ACK and exact artifact closure,
+  then CAS-commits a cursor. After the entire local publication prefix is
+  scanned, it commits a final descriptor and vote atomically; exact replay
+  returns the saved vote. Separate focused tests cover four independent stores
+  after a real ordered Freeze and a local retainer with two real certified
+  publications under a directly installed closure row, plus artifact
+  corruption, vectors and replay. That initial step was local evidence only;
+  it did not provide remote pages, quorum union, DrainSet, an authenticated
+  cut, readiness, Seal, activation or PostgreSQL network E2E. Neither a local
+  frontier signature nor this safety closure authorizes network activation.
+  A latent pre-activation key-scope defect was identified: chain/request-only
+  publication, ACK and artifact rows would make a later epoch's frontier
+  encounter an earlier publication and stop. Deleting historical rows was not
+  accepted as a workaround.
+  The 2026-09-29 continuation in Draft PR #235 now epoch-scopes those three
+  key families by `chain/epoch/request`, preserving prior rows. Focused tests
+  cover a retained prior-epoch publication followed by an empty next-epoch
+  frontier and independent same-request-ID rows. The same continuation adds
+  bounded `0xD039/v1` pages, `0xE107`/`0xE108` transport envelopes, a
+  verifier that accepts only a consecutive terminal stream matching one
+  registered signer's signed count/digest, a read path that rechecks each
+  retained proof and actual artifact bytes, certified-only advance/page
+  routes, and a locally pinned Rust client. Four-validator real-Freeze empty
+  pages and two real retained certified publications are covered by focused
+  core tests; the client tests cover signed response and endpoint/epoch
+  refusals. A review follow-up separated known missing Freeze/final state and
+  invalid caller cursors from other verification or storage failures at the
+  HTTP boundary; it added real retained-page streaming through
+  the signed terminal verifier and negative cursor, over-count, post-terminal,
+  signature and transport tests. The source currently serves only the active
+  outgoing epoch, so lagging peers need to complete before activation or a
+  separately authenticated historical-serving path. This is not quorum union:
+  a page has identities, not complete bundles, and no DrainSet voter yet
+  coordinates a complete verified union and durably retains every artifact.
+  No authenticated cut, readiness, Seal, activation or PostgreSQL
+  network handoff E2E is claimed by this slice.
+  The final local frontier vote row is deliberately classified as local
+  signing state, never as a shared cut-history row. Before untrusted network
+  deployment, bound the page route's cumulative re-verification work or
+  authenticate its callers; a 128-entry request can otherwise repeatedly
+  re-read large retained artifact closures. Distinguish corruption from
+  retryable CAS/storage failures in the HTTP error surface before relying on
+  it operationally.
+  `npm ci --prefix adapters/cloudflare-workers` and the full local
+  `scripts/check-all.sh` gate passed again on 2026-09-29 after the epoch-key,
+  page, HTTP and Rust-client continuation. The live PostgreSQL suites were
+  skipped because `SUNRISE_EDGE_TEST_POSTGRES_URL` is unset. This is not a
+  multi-validator PostgreSQL handoff E2E or a production-readiness claim.
+  A further 2026-09-29 Draft PR #235 slice adds a read-only, certified-only
+  source of full retained publications by pinned active epoch and frontier
+  request ID. It serves a validator's verified publication record and exact
+  artifact bytes even if that validator never prepared the request. The Rust
+  client independently checks the returned bundle, certificate, signed
+  intent and frontier identity; the core source also rechecks its local ACK.
+  Separate post-Freeze `drain-publication/`, `drain-publication-artifact/` and
+  local `drain-possession/` rows now allow one full bundle and its exact
+  witness-required closure to commit atomically without creating an ACK or
+  extending this validator's own frozen `publication/` frontier. Retry
+  re-verifies saved content, and tests compare the local frontier vote/pages
+  byte-for-byte before and after another publication is imported. A pure
+  quorum verifier rejects duplicate, unordered, forged, mixed-Freeze and
+  underpowered signed frontier votes, including weighted-set cases. See
+  [DR-0156](docs/architecture/decisions/0156-frozen-frontier-possession.md).
+  At that intermediate U2 stage this was a core import primitive, not an
+  end-to-end DrainSet voter: it still lacked a network import route,
+  completed-page/possession cursor and union readiness marker, as well as
+  relay from imported proof, ordered DrainSet decision, drain application,
+  authenticated cut, conditional next-set readiness, Seal and activation.
+  The source is active-epoch only, and its page and bundle re-verification
+  cost needs a network admission bound. Draft PR #235 remains open.
+  Follow-up adversarial tests cover the public route's installed
+  profile and live-epoch fences, missing and tombstoned local ACKs, wrong
+  validator identity, signed-intent/certificate/expected-identity mismatches,
+  imported-proof CAS races, and frontier quorum edge cases. A real four-host
+  SQLite/HTTP test obtains a quorum from three preparing validators, retains
+  the complete bundle on the fourth unprepared validator, then retrieves and
+  compares its exact bytes through the read-only retained-source route.
+  `npm ci --prefix adapters/cloudflare-workers` and the full
+  `scripts/check-all.sh` gate passed again after these follow-ups on
+  2026-09-29, with
+  five npm audit advisories reported by install (one moderate, four high).
+  Live PostgreSQL handoff E2E and independent final-head review remain open.
+  The next 2026-09-29 U3 continuation (see
+  [DR-0157](docs/architecture/decisions/0157-frozen-frontier-readiness.md))
+  adds bounded, CAS-fenced per-signer page staging and full-proof confirmation,
+  selection-specific weighted-quorum union progress and a local DrainSet-ready
+  marker. A real four-host loopback HTTP/file-backed SQLite test obtains three
+  signed one-entry frontiers, imports the full publication onto an unprepared
+  fourth host, confirms each signer, folds the deduplicated union and reads
+  ready bytes. The same test rejects a forged empty-frontier vote before it
+  can poison signer progress and rejects a stale confirm request ID. Focused
+  tests cover two-page progress, quorum selection, conflict, missing/tombstoned
+  proof or marker, pristine marker rebuild after same-epoch restore and
+  possession re-verification on every union step. No new ACK, signature,
+  application effect, fee, nonce or receipt is created by these steps. This
+  is local readiness only, not an ordered DrainSet decision or authenticated
+  cut. The HTTP body and concurrency bounds do not provide peer authentication
+  or per-peer rate/work limits: expose these new routes only behind trusted
+  validator/operator ingress until that control exists. The HTTP test installs
+  the already-committed Freeze row as a fixture; real ordered Freeze is covered
+  separately in node-core, not claimed by this HTTP test. An executable
+  network driver, exact retry/progress-read UX, PostgreSQL multi-validator
+  handoff, DrainSet/Seal, cut, conditional next-set readiness and activation
+  remain open. The post-fix `npm ci` and full `scripts/check-all.sh` gate passed
+  on 2026-09-29, and a fresh Opus review approved this local-readiness slice;
+  pushed-head CI for `1b06fac` passed. The next continuation closes the
+  same-epoch restore retry gap: an exact `import` can rebuild only a pristine
+  missing possession marker after re-verifying the saved proof and every
+  artifact in the same CAS. A tombstone still refuses. `confirm` checks the
+  caller's request ID inside its core CAS; the HTTP boundary separates
+  permanently invalid proof/page input (400), not-ready/CAS races (409),
+  backend unavailability (503), and indeterminate commits (503). The
+  DrainSet voter now has `verify_drain_ready_into` to fold the ready and
+  Freeze reads into its own future CAS. A full `0xE10C` union-request stable
+  vector is tested. Review follow-up added a competing artifact-revision
+  test for marker rebuild and corrected the durable-read error taxonomy.
+  Opus then identified a valid confirm arriving before its proof import as
+  misclassified permanent; the follow-up distinguishes a never-written proof
+  (409, retry after import) from a tombstoned proof or partial retained
+  artifact closure (invalid), with a real HTTP case. The nested import epoch
+  mismatch also retains its explicit re-pin label. Follow-up tests distinguish
+  a publication with a pristinely missing artifact from a not-yet-imported
+  proof, and a union whose already-confirmed entry lost its proof now stops
+  as corrupt state rather than returning a retryable not-ready response.
+  Writer-fenced drain storage is classified 503, consistent with the ordinary
+  node HTTP boundary.
+  A pinned Rust client and real HTTP/file-backed SQLite E2E now exercise
+  stage, full-bundle import, member confirm and union advance; the same E2E
+  independently compares the returned union digest. See
+  [DR-0158](docs/architecture/decisions/0158-bounded-drain-network-driver.md)
+  for the bounded driver contract. This U5 continuation adds a read-only
+  durable signer-progress route (`0xE10D`/`0xE10E`) behind the same profile,
+  epoch, outgoing-set and committed-Freeze fence, plus a pinned Rust driver
+  with a whole-run deadline, per-request/page caps and mutation-attempt budget.
+  A pristine signer is not-ready; tombstoned, malformed or foreign progress
+  fails closed. The pristine row has a distinct `drain-progress-pristine` 409;
+  other 409/CAS outcomes cannot reset its cursor, and corrupt saved progress
+  is reported as a host-storage failure. The stored running accumulator's
+  context and count are rechecked against the committed Freeze. The driver
+  resumes from the target's durable confirmed cursor
+  and exact staged page, independently verifies source votes and full
+  publication bundles, rereads signer progress after ambiguous stage/import/
+  confirm outcomes, and stops on an ambiguous union outcome because no union
+  progress-read route exists yet. The real four-validator HTTP/SQLite E2E now
+  stops after an import-only budget, reconstructs the client and resumes to
+  local readiness, checks a forged selection is rejected before mutation,
+  and compares the final union identity independently. It does not close and
+  reopen the target server or prove PostgreSQL failover. U6 adds the bounded
+  `contract fastvote-drain-local-ready` operator command using separately
+  pinned protocol/genesis context and per-peer TLS, including a selected
+  source quorum that need not include the driven target. CLI unit and
+  integration tests and changed-crate Clippy pass locally. It cannot form an
+  ordered decision or authorize activation. Trusted peer admission or a
+  cumulative work budget, PostgreSQL multi-validator handoff, complete
+  ordered DrainSet operator submission, Seal, cut, conditional next-set readiness
+  and activation remain open. The ordered DrainSet design is fixed in
+  [DR-0159](docs/architecture/decisions/0159-ordered-drainset.md). U6 now
+  implements its same-chain kind 6, canonical intent/record, exact selected
+  roster retention, pure outgoing-quorum authentication and post-Freeze
+  positive control-kind admission. Leader and voter ready-marker reads are
+  CAS-asserted in the same commit as their signed identity; execution repeats
+  readiness under staged commit. A real four-validator ordered Freeze →
+  empty-frontier DrainSet test checks lagging-replica stop/recovery, leader and
+  voter CAS races, identical record bytes, replay and duplicate refusal;
+  forged/weak/mixed/foreign selection cases and 256-roster frame bounds are
+  covered. These checks do not yet compose a nonempty business union into an
+  ordered DrainSet, prove a cut, Seal or activate an epoch. U7 adds the separate
+  certified drain-member application described in
+  [DR-0160](docs/architecture/decisions/0160-certified-drain-application.md):
+  it loads retained signed intent and full certificate, independently verifies
+  the committed DrainSet membership and local ready/proof closure, re-derives
+  the exact execution commitment, and atomically applies effects, fee, nonce,
+  receipt and settlement. A conflicting partial prepare's exact object/nonce
+  locks are removed only after prepared-record/provenance checks and with an
+  immutable local resolution audit. Ten focused tests cover the conflicting,
+  own-lock and no-lock cases, missing/mismatched authority, unrelated locks,
+  already-certified partial-prepare refusal, missing Freeze, and receipt-first
+  exact replay. The nonempty DrainSet fixture installs the
+  committed record directly after a genuine signed frontier/union; it is not
+  a full ordered-network E2E. U8 adds the locator-only canonical `0xE10F/v1`
+  certified HTTP route and Rust SDK call: the server reloads authority from
+  its own durable store, while the SDK verifies locally supplied signed bytes
+  and binds the returned result to them. The wire vector, no-DrainSet HTTP
+  refusal and SDK preflight/response-binding tests pass, as does changed-crate
+  Clippy. The offline `economics drain-set-build` CLI now constructs the
+  canonical candidate from a bounded signed-vote selection and canonical
+  union-identity file under a separate local genesis/context pin; the
+  `fastvote-drain-local-ready` command can save that identity only on its
+  successful outcome. The builder cannot prove a file's origin or local
+  readiness; each ordered voter must recheck its own durable marker. All
+  `sunrise-edge-cli` tests and changed-crate Clippy pass, but the full live
+  candidate-build → ordered-submit → drain-apply workflow is not tested.
+  This is not an authenticated public operator workflow. Post-restart
+  SQLite/PostgreSQL replay, CAS races, full operator/HTTP nonempty DrainSet composition,
+  bounded operator orchestration, ingress authentication/work budgets and the
+  complete Freeze to activation network sequence remain open. U7's first head
+  passed the complete local repository gate; Opus found no blocking issue but
+  requested stronger boundary assertions and negative tests. Those follow-ups
+  are implemented, with all 10 focused tests, changed-crate Clippy and a
+  second complete local repository gate passing. The combined route head
+  and CLI-integrated head passed the complete local repository gate. Opus
+  explicitly APPROVED the U7 follow-up and U8 delta only; neither that
+  review nor the local gate approves Delivery 3 or PR merge.
+  `npm ci` and complete `./scripts/check-all.sh` also passed locally on
+  2026-09-30, after installing the exact `wasm-bindgen-cli` version required
+  by the gate. Live PostgreSQL tests were skipped locally without
+  `SUNRISE_EDGE_TEST_POSTGRES_URL`. Opus explicitly APPROVED the U6 delta
+  through `8d29d25` while identifying a vote-time local-marker retention
+  precondition, externally selectable propose-route admission, missing
+  NoFreeze coverage and stale allocation/operator documentation. Follow-up
+  code/docs now CAS-fence the committed closure before classifying a
+  foreign selection, check record encodability before authenticating the
+  vote, test no-Freeze and wrong-Freeze refusal, and document the retention
+  and network-admission gates. The follow-up head `414e583` passed complete
+  local `./scripts/check-all.sh` and CI run #536, but has no subsequent Opus
+  approval. U6 approval is not Delivery 3 or PR merge approval. Draft PR #235
+  remains incomplete Delivery 3 and not merge-ready. U5's `npm ci`,
+  changed-crate Clippy and complete `./scripts/check-all.sh` passed on
+  2026-09-29. The install
+  reported five dependency audit advisories (one moderate, four high); no
+  forced upgrade was applied. Live PostgreSQL suites were skipped because
+  `SUNRISE_EDGE_TEST_POSTGRES_URL` is unset. Opus initially approved the U5
+  slice at `82a0a6e` and, after its read-classification and
+  accumulator-context findings were fixed, approved the complete U5 diff at
+  `411d237`. Neither review approves Delivery 3 or a merge. Exact-head CI
+  run #532 was canceled during repository validation when its configured
+  35-minute job limit elapsed; it did not pass. The job limit is raised to
+  60 minutes without skipping checks. Final-head CI remains a separate gate.
+  U9 now has a passing genuine nonempty four-validator node-core E2E: real
+  3-of-4 paid-transfer certification and retention precede ordered Freeze;
+  signed nonempty frontiers are reconstructed to the same local union on all
+  replicas; the real HotStuff chain commits DrainSet without direct record
+  insertion; and a replica that only prepared conflicting Y applies certified
+  X, resolves only Y's relevant locks, preserves an unrelated lock, refuses
+  foreign members and refuses a first apply when the actual selection-keyed
+  ready marker is corrupt. After completion, the exact replay succeeds despite
+  that same marker's corruption without re-execution or changes to the object
+  head, receipt, nonce, settlement or resolution audit.
+  The focused test, `npm ci` and the complete local repository gate passed
+  after U9 and the bounded union-enumerator refactor. Live PostgreSQL suites
+  were skipped locally without `SUNRISE_EDGE_TEST_POSTGRES_URL`. Narrow U7
+  boundary tests still use direct records for their own unit-level cases.
+  This does not yet provide an
+  all-member causal scheduler, drain-complete proof, portable cut, Seal,
+  next-set readiness, activation, PostgreSQL network E2E or authenticated
+  public ingress. Opus APPROVED the U9 and shared-enumerator delta through
+  `4a4bdba`, not PR #235 or Delivery 3.
+  U10 adds the bounded resumable drain-completion state machine described in
+  [DR-0161](docs/architecture/decisions/0161-bounded-drain-completion.md):
+  `ordered_economics::drain_completion` re-derives `selected_votes` from the
+  exact locally committed `DrainSetRecord`, reuses
+  `next_union_member_after`/`verify_drain_ready_into` unmodified, and
+  advances at most one canonical union member per call, only after a typed
+  original receipt exists for that member's request id and carries its exact
+  certified signed-intent digest (`AvailabilityIdentity::signed_intent_digest`,
+  bound to the certificate's own `tx_hash`). Progress stores a running
+  canonical accumulator identity. At the terminal step an exhausted scan is
+  insufficient: its independently accumulated count/digest must match the
+  committed and locally ready union. No physical storage counter is stored;
+  only then is the immutable local `drain-completion/` marker
+  persisted, CAS-fenced with the committed Freeze, epoch, set, record, ready
+  marker and progress. `verify_drain_complete_into` rechecks the committed
+  record, exact local ready union and completion marker while folding all
+  reads into a future Seal vote's atomic commit. Both new local rows use
+  `0x6461` and `0x6462` type IDs and are classified `LocalProgress` in
+  `logical_generation`. A two-member signed-frontier fixture with two
+  individually certified bundles and test-inserted receipts walks
+  resumability (advance, advance, complete, idempotent complete),
+  a missing-receipt stop, a mismatched-digest rejection that records no
+  progress, tombstoned progress/completion rows, and a tampered completion
+  marker caught by both advancement and read-only verification, plus a
+  skipped-member cursor that cannot falsely complete. This fixture does not
+  prove jointly honest certification or actual application of both members.
+  The real nonempty four-validator U9 test now additionally shows U10 refusing
+  before X has an original receipt, then advancing and completing after D's
+  certified X application generated that receipt. A ready-marker race rejects
+  a future Seal-like caller commit using `verify_drain_complete_into`'s CAS
+  reads. This does not provide an all-member causal scheduler that drives
+  repeated advance calls automatically, a portable cut, Seal, next-set
+  readiness, activation,
+  or a PostgreSQL/network multi-validator run; HTTP/CLI wiring is separately
+  out of scope for this slice. The U10 baseline `790aaf8` passed fifteen
+  focused tests, changed-crate Clippy, `npm ci` and the complete local
+  repository gate; Opus explicitly APPROVED that U10 delta, not PR #235 or
+  Delivery 3. The follow-up real-receipt/CAS test, changed-crate checks,
+  `npm ci` and the complete local repository gate passed at `83469b8`.
+  Opus explicitly APPROVED the follow-up U10 delta; GitHub repository checks
+  passed on the exact `83469b8` head in run
+  [#36628870111](https://github.com/sunriselayer/sunrise-edge/actions/runs/36628870111).
+  The local gate still skipped live PostgreSQL suites without
+  `SUNRISE_EDGE_TEST_POSTGRES_URL`. This is U10 evidence, not PR #235 or
+  Delivery 3 approval. The next integrated work follows
+  [DR-0162](docs/architecture/decisions/0162-business-free-cut-barrier.md):
+  prevent a proposal from receiving a business vote when its justification
+  newly commits Freeze, verify the complete high/locked inherited suffix and
+  completed drain, then install a CAS-fenced local business-free barrier.
+  A stable portable cut additionally requires a complete audit of every
+  cut-classified writer and an independent authenticated importer replay;
+  neither is implemented by a local barrier alone.
+  U11 now implements the local `0x6463/v1` barrier installer: it CAS-folds the
+  serving-epoch row, receipt-backed completed DrainSet, verified high/locked
+  suffix and virgin marker, then writes only the replica-local marker. Real
+  four-validator tests cover a business QC rejection, a control QC held until
+  its receipt/outcome enters the applied prefix, a
+  missing candidate body, no install before drain completion, idempotent
+  installation after completion, a state-revision race, fresh candidate
+  rejection and post-barrier empty progress. The follow-up review fixes also
+  authenticate the pre-vote Freeze preview before its read-only classification,
+  keep its committed output without emitting a business vote, reject a
+  not-yet-applied control candidate above the committed prefix, and exercise
+  the ordered-commit, fresh drain-retention and fresh drain-application writer
+  fences. Exact completed drain replay and retained publication replay stay
+  legal after the barrier. The direct evidence path also
+  fences new records while the current serving epoch is frozen, but still
+  admits new evidence about an old offense after actual activation. U11 is
+  not yet a portable cut or a completed Seal/activation path. U11's `npm ci`
+  and complete local repository gate passed, with live PostgreSQL suites
+  skipped because no disposable URL was configured. The implementation head
+  `47b3373` passed [required CI run #36641493126](https://github.com/sunriselayer/sunrise-edge/actions/runs/36641493126),
+  and a fresh read-only Opus tech-lead review explicitly APPROVED the U11
+  delta only. Neither result approves Draft PR #235 or Delivery 3. Before
+  portable enumeration/Seal, retain and independently verify the committed
+  proposal/QC history, establish a direct certified post-Freeze control anchor,
+  close post-DrainSet candidate voting, and handle an authenticated but dead
+  conflicting suffix without treating its candidate as a future committable
+  branch. Test the actual shared-engine safety properties under delayed and
+  adversarial delivery; a local high/locked suffix check alone is not a
+  network-level proof of global absence.
+  U12 follows [DR-0163](docs/architecture/decisions/0163-committed-drain-set-closes-candidate-voting.md):
+  the accepted committed `DrainSetRecord` now closes fresh signer proposals
+  and votes for every candidate kind, not just business. A proposal that
+  newly commits `DrainSet` through its justification takes an authenticated
+  signerless path before any candidate vote. The record revision is asserted
+  with the proposal/vote identity; exact completed replay and request-id
+  conflicts keep their existing precedence. A real four-validator test puts
+  the local barrier on only one replica and verifies the other three cannot
+  certify a later control candidate, while empty progress continues. Focused
+  CAS races cover proposal and vote signing. This is not yet a portable cut:
+  preserve and independently verify the committed proposal/QC history,
+  establish a certified empty post-DrainSet anchor, audit all remaining cut
+  writers, implement Seal/readiness/activation, and run adversarial and
+  independent-PostgreSQL network E2E before declaring Delivery 3 complete.
+  U13 follows [DR-0164](docs/architecture/decisions/0164-durable-committed-history.md):
+  the consensus engine now emits a separately verifiable `0xD017/v1`
+  three-chain proof for **every** newly committed height before pruning,
+  including empty windows, in both signing and observer paths. Ordered
+  economics archives those proofs with the original state/outcome/receipt in
+  one CAS-fenced commit and rejects a missing, duplicate or divergent
+  predecessor. A bounded independent page reader verifies the pinned
+  epoch's validator set signatures and QC power, proof linkage and a
+  contiguous genesis-to-declared-tip prefix; it does not authenticate the
+  declared terminal tip itself. Four-validator tests cover business/empty
+  commits, exact replay, corrupted archive rows, and atomic refusal when a
+  height already exists. A delayed certificate test covers multi-height
+  commitment and distinct proofs for each height; a separate signerless
+  node-core test archives and verifies four heights with three committed in
+  one event. The applied-height path now refuses an older unapplied prefix
+  and advances through the full empty suffix only after its single candidate
+  is resolved. This is **not** a portable
+  cut or complete importer: a signed terminal anchor, candidate/outcome/
+  receipt and full-artifact closure, post-DrainSet certified empty anchor,
+  bounded oversized catch-up behavior, epoch-scoped live engine keys,
+  an explicit fresh-genesis gate for stores predating this archive,
+  Seal/readiness/activation and independent PostgreSQL E2E remain open.
+  U14 follows [DR-0165](docs/architecture/decisions/0165-pre-seal-ordered-history-segment.md):
+  a local read-only predicate now derives an already certified empty
+  three-chain tip strictly after the **committed DrainSet** height, not the
+  earlier Freeze `closure_height`. The local DrainSet height is cross-checked
+  against its signed candidate, exact intent, archived committed proof and
+  receipt-backed accepted outcome; a decodable local record alone is not
+  authority. It re-verifies drain completion, the replica-local writer
+  barrier, applied prefix and high/locked suffix, then folds the exact
+  consensus and proof revisions into a caller-owned CAS read
+  set. The bounded committed-history page now also checks each named
+  candidate's canonical bytes and signature, all request-header fields,
+  retained outcome and original durable receipt, including a direct signed
+  origin-proof check for a replay from an earlier page. Four-validator
+  terminal and candidate-linkage tests exercise healthy continuation,
+  malformed/missing/tombstoned records, altered outcome/receipt links, and
+  a stale CAS read set with a successful control commit. This remains an
+  **ordered-history segment**, not a portable cut: a certified in-flight
+  duplicate replay success fixture, cross-page snapshot/manifest binding,
+  complete artifact and business-state enumeration/replay, a signed cut
+  decision, conditional
+  readiness, Seal, activation, fresh-genesis gating and independent
+  PostgreSQL E2E remain open. The receipt lookup has no row-revision CAS
+  primitive and must be included in that later authenticated manifest.
+  Neither the local barrier nor a source-local
+  committed counter is transferable authority.
+  U15 follows [DR-0166](docs/architecture/decisions/0166-portable-candidate-snapshot.md):
+  optional backend-enforced tokens pin a local source namespace/domain,
+  writer and checked mutation sequence. Memory, shared SQL/SQLite and
+  PostgreSQL compare them inside the same lock/read transaction as every
+  page, descriptor, chunk and outbox check. SQL stores persist a random
+  bootstrap source-instance ID; a different fresh DB cannot reuse a token
+  just because its logical namespace, fence and counter match. Covered writes
+  include legacy commits, objects, receipts, outbox claim/expiry/ACK; overflow
+  rejects atomically. Unsupported metadata shapes fail closed without repair.
+  The connected candidate driver binds the already verified real post-DrainSet
+  terminal, emits four fixed-order collections with bounded chunks and end
+  counts, and persists progress by its own CAS in a separate namespace/domain.
+  Closed classifiers retain original consensus/economic/publication history
+  and provenance, exclude named local reservations/progress, and refuse
+  unknown reserved families and legacy outbox rows. Six new canonical frames
+  have independent JavaScript/Rust fixed vectors. The incremental receiver
+  checks an externally pinned manifest, ordering, key/descriptor kinds,
+  chunk continuity, counts and root without advancing on a rejected item.
+  Candidate transport is **not an authenticated importer**. The root is not
+  yet a normalized logical root; retained legacy bodies can contain checkpoint
+  operands or valid QC subsets. Blob references do not prove content closure.
+  Source/control writes conservatively invalidate new continuation; this
+  requires a quiet source, not a handoff-liveness or throughput claim.
+  Exact previous-item replay serves saved bytes without reapplication;
+  indeterminate progress commits expose no success and require reconciliation.
+  The local progress transaction cannot atomically assert the source's U14
+  CAS set. Full signed-genesis/causal replay and dependency closure, a signed
+  cut decision, Seal, conditional next-set readiness, activation,
+  fresh-genesis gating and independent PostgreSQL network E2E remain next.
+  Draft PR #235 remains incomplete Delivery 3 and **must not be merged**.
+  Parent-run focused evidence covers all four real signed-genesis/DrainSet
+  memory replicas feeding this driver, with a separate file-backed SQLite
+  progress DB closed/reopened between every step, exact replay without CAS
+  rewrite, source mutation and progress-CAS conflicts, preserved receipt
+  bytes, large/empty/deleted records and successful pinned-root verification.
+  Dedicated unit cases exercise all-excluded 128-key continuation, lost
+  confirmation before/after real progress CAS and immutable receiver state
+  on foreign/gapped/reordered/truncated streams. Live PostgreSQL portable
+  reads exercise fresh connections, wrong source identity and atomic overflow;
+  SQLite tests include same-namespace/counter fresh files and reopen continuity.
+  These are local storage/transport tests, not independent PostgreSQL network
+  handoff, target import or activation evidence.
+  U15 validation on 2026-09-30: `npm ci --prefix adapters/cloudflare-workers`
+  succeeded, followed by `./scripts/check-all.sh` exiting 0 on code head
+  `7e49ea3e3041490d0969f068080e9e1f80d3833c` with a disposable live
+  PostgreSQL 18.6 URL and its container ID configured. This includes strict
+  workspace lint/tests, live PostgreSQL portable reads and SIGKILL/WAL recovery,
+  existing FastVote/ordered-economics/CLI PostgreSQL E2Es, independent candidate
+  vectors, the Rust/WASM build, actual workerd SQL/contract tests (10/15 passing),
+  and all other edge-adapter checks. The workerd contract fixtures exercise the
+  shared SQL bootstrap including its source-instance ID. Optional disk/WAL-full,
+  PgBouncer and backup/restore rehearsals were not configured; no capacity or
+  independent PostgreSQL handoff completion is claimed. Fresh read-only Opus
+  explicitly approved the U15 delta through that code head, **not PR #235 or
+  Delivery 3 completion**. Final pushed-head CI remains a separate gate.
+  `npm ci` reported six existing high-severity dependency advisories; no
+  dependency upgrade or audit remediation is claimed by this slice.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

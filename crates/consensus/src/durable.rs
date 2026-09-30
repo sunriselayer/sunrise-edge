@@ -11,10 +11,11 @@
 //! bounds so a round trip can never silently grow past them.
 
 use crate::{
-    CERTIFICATE_TYPE_ID, ChainedHotStuff, CommittedBlock, ConsensusError, ConsensusEvent,
-    ConsensusOutput, ConsensusProposal, ConsensusState, ConsensusVerifier, ConsensusVote,
-    ENCODING_VERSION, MAX_BLOCK_TRANSACTIONS_LIMIT, PROPOSAL_TYPE_ID, QuorumCertificate,
-    VOTE_PAYLOAD_TYPE_ID, VOTE_TYPE_ID, encode_proposal, encode_quorum_certificate, encode_vote,
+    CERTIFICATE_TYPE_ID, ChainedHotStuff, CommittedBlock, CommittedBlockProof, ConsensusError,
+    ConsensusEvent, ConsensusOutput, ConsensusProposal, ConsensusState, ConsensusVerifier,
+    ConsensusVote, ENCODING_VERSION, MAX_BLOCK_TRANSACTIONS_LIMIT, PROPOSAL_TYPE_ID,
+    QuorumCertificate, VOTE_PAYLOAD_TYPE_ID, VOTE_TYPE_ID, encode_proposal,
+    encode_quorum_certificate, encode_vote,
 };
 use canonical_encoding::{
     CanonicalDecodingError, CanonicalStruct, decode_canonical_frame, decode_digest32,
@@ -1277,6 +1278,7 @@ impl ChainedHotStuff {
         proposal: ConsensusProposal,
         verifier: &V,
         committed: &mut Vec<CommittedBlock>,
+        committed_proofs: &mut Vec<CommittedBlockProof>,
     ) -> Result<(), ConsensusError> {
         self.validate_proposal(&proposal, verifier)?;
         // The observer path treats its input as untrusted authenticated
@@ -1289,9 +1291,15 @@ impl ChainedHotStuff {
             .known_proposals
             .entry(digest)
             .or_insert_with(|| proposal.clone());
-        self.apply_certificate(state, proposal.justify.clone(), verifier, committed)?;
+        self.apply_certificate(
+            state,
+            proposal.justify.clone(),
+            verifier,
+            committed,
+            committed_proofs,
+        )?;
         if let Some(certificate) = state.certificates.get(&digest).cloned() {
-            self.apply_certificate(state, certificate, verifier, committed)?;
+            self.apply_certificate(state, certificate, verifier, committed, committed_proofs)?;
         }
         Ok(())
     }
@@ -1326,23 +1334,48 @@ impl ChainedHotStuff {
         let mut next = state.clone();
         let mut outbound = Vec::new();
         let mut committed = Vec::new();
+        let mut committed_proofs = Vec::new();
         match event {
             ConsensusEvent::Proposal(proposal) => {
-                self.process_observed_proposal(&mut next, proposal, verifier, &mut committed)?;
+                self.process_observed_proposal(
+                    &mut next,
+                    proposal,
+                    verifier,
+                    &mut committed,
+                    &mut committed_proofs,
+                )?;
             }
             ConsensusEvent::Vote(vote) => {
-                self.process_vote(&mut next, vote, verifier, &mut outbound, &mut committed)?;
+                self.process_vote(
+                    &mut next,
+                    vote,
+                    verifier,
+                    &mut outbound,
+                    &mut committed,
+                    &mut committed_proofs,
+                )?;
             }
             ConsensusEvent::Certificate(certificate) => {
-                self.apply_certificate(&mut next, certificate, verifier, &mut committed)?;
+                self.apply_certificate(
+                    &mut next,
+                    certificate,
+                    verifier,
+                    &mut committed,
+                    &mut committed_proofs,
+                )?;
             }
             ConsensusEvent::Tick { .. } => return Err(ConsensusError::UntrustedObserverTick),
         }
+        // `committed_proofs` is assembled from `next`'s known-proposal and
+        // certificate maps strictly before the `prune_state` call below, so
+        // every embedded ancestor proposal/certificate is still guaranteed
+        // present at the moment each proof is built (Delivery 3 Unit 13).
         self.prune_state(&mut next);
         Ok(ConsensusOutput {
             state: next,
             outbound_messages: outbound,
             committed_blocks: committed,
+            committed_proofs,
             view_advanced: false,
         })
     }

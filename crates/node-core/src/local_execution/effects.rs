@@ -40,6 +40,20 @@ pub(crate) fn translate<S: StructuredDurableDomainStateStore>(
     state: &mut Vec<StateMutationEntry>,
 ) -> AdmissionResult<Vec<DurableObjectMutationEntry>> {
     let call_context: &PublicationContext = view.context;
+    // DR-0154: resolve the object monotonicity rule this store's own signed
+    // genesis bound. `checkpoint` still stamps every new immutable version
+    // below, under both profiles; it stops gating admission only under the
+    // handoff-capable one, where the authenticated generation replaces it.
+    let minimum: logical_generation::ObjectMinimum = logical_generation::ObjectMinimum::for_profile(
+        &logical_generation::fence_commitment_profile(
+            store,
+            context,
+            domain,
+            call_context.chain_id(),
+            reads,
+        )?,
+        checkpoint,
+    );
     if view.created_authorities.len() > MAX_LOCAL_CREATED_OBJECTS as usize {
         return Err(LocalExecutionAdmissionError::Invalid("creation count"));
     }
@@ -104,7 +118,7 @@ pub(crate) fn translate<S: StructuredDurableDomainStateStore>(
                         )?
                     || new_object.type_hash != prior.object.type_hash
                     || new_object.schema_version != prior.object.schema_version
-                    || checkpoint < prior.created_checkpoint
+                    || !minimum.admits(prior.created_checkpoint)
                 {
                     return Err(LocalExecutionAdmissionError::Invalid(
                         "invalid object mutation",

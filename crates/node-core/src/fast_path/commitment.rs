@@ -37,7 +37,18 @@
 use super::*;
 
 const COMMITMENT_ENVELOPE_TYPE: u16 = 0x6424;
+/// Historical envelope version: signs physical state revisions, head revisions,
+/// the immutable creation checkpoint and the nonce row's own revision. Frozen:
+/// a historical store's certificates hash exactly as they always did.
 const ENCODING_VERSION: u16 = 1;
+/// Handoff-capable envelope version (DR-0154): signs semantic observations and
+/// the authenticated [`protocol_types::ExecutionGeneration`] with its complete
+/// verified dependency set, and signs no physical revision or creation
+/// checkpoint at all. Those remain local compare-and-swap and audit inputs,
+/// enforced by this same commit's read assertions, but they are per-node,
+/// per-attempt artifacts and so cannot be part of what a quorum signs across an
+/// epoch handoff.
+const LOGICAL_ENCODING_VERSION: u16 = 2;
 
 /// Bounds the number of items folded into any one length-prefixed list
 /// below; matches the ceilings admission itself already enforces
@@ -50,6 +61,37 @@ const MAX_COMMITMENT_LIST_ITEMS: usize = 4096;
 fn push_length_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
     out.extend_from_slice(bytes);
+}
+
+/// Which operand shape one envelope signs.
+///
+/// Both shapes cover the same authenticated content and differ only in what they
+/// refuse to sign: the logical shape omits every physical persistence coordinate
+/// (state revisions, object head revisions, the immutable creation checkpoint and
+/// the nonce row revision), because those are per-node, per-attempt local
+/// compare-and-swap artifacts. They stay enforced by this same commit's read
+/// assertions; they are simply not part of what a certificate attests to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shape {
+    /// Historical version one.
+    Physical,
+    /// Handoff-capable version two (DR-0154).
+    Logical,
+}
+
+impl Shape {
+    /// Returns the canonical envelope version this shape encodes as.
+    const fn version(self) -> u16 {
+        match self {
+            Self::Physical => ENCODING_VERSION,
+            Self::Logical => LOGICAL_ENCODING_VERSION,
+        }
+    }
+
+    /// True when physical persistence coordinates are part of the signed bytes.
+    const fn signs_coordinates(self) -> bool {
+        matches!(self, Self::Physical)
+    }
 }
 
 fn push_optional_bytes(out: &mut Vec<u8>, value: Option<&[u8]>) {
@@ -92,6 +134,7 @@ fn encode_created_authority(item: &CreatedObjectAuthority) -> Result<Vec<u8>, No
 
 fn encode_durable_object_version_record(
     version: &DurableObjectVersionRecord,
+    shape: Shape,
 ) -> Result<Vec<u8>, NodeCoreError> {
     let mut out: Vec<u8> = Vec::new();
     out.extend_from_slice(version.object_id().as_bytes());
@@ -104,7 +147,9 @@ fn encode_durable_object_version_record(
             .map_err(|_| NodeCoreError::PersistenceInvariant("invalid object version chain id"))?,
     );
     out.extend_from_slice(&version.provenance().protocol_version().get().to_be_bytes());
-    out.extend_from_slice(&version.created_checkpoint().to_be_bytes());
+    if shape.signs_coordinates() {
+        out.extend_from_slice(&version.created_checkpoint().to_be_bytes());
+    }
     match version.payload() {
         DurableObjectPayload::Inline(inline) => {
             out.push(0);
@@ -118,7 +163,9 @@ fn encode_durable_object_version_record(
     Ok(out)
 }
 
-fn encode_durable_object_head(head: &DurableObjectHead) -> Vec<u8> {
+/// Encodes one object head for the historical envelope, including its physical
+/// `head_revision`.
+fn encode_durable_object_head(head: &DurableObjectHead, shape: Shape) -> Vec<u8> {
     match head {
         DurableObjectHead::Absent => vec![0u8],
         DurableObjectHead::Tombstoned {
@@ -126,7 +173,9 @@ fn encode_durable_object_head(head: &DurableObjectHead) -> Vec<u8> {
             last_object_version,
         } => {
             let mut out: Vec<u8> = vec![1u8];
-            out.extend_from_slice(&head_revision.get().to_be_bytes());
+            if shape.signs_coordinates() {
+                out.extend_from_slice(&head_revision.get().to_be_bytes());
+            }
             out.extend_from_slice(&last_object_version.get().to_be_bytes());
             out
         }
@@ -138,7 +187,9 @@ fn encode_durable_object_head(head: &DurableObjectHead) -> Vec<u8> {
             routing_projection,
         } => {
             let mut out: Vec<u8> = vec![2u8];
-            out.extend_from_slice(&head_revision.get().to_be_bytes());
+            if shape.signs_coordinates() {
+                out.extend_from_slice(&head_revision.get().to_be_bytes());
+            }
             out.extend_from_slice(&object_version.get().to_be_bytes());
             out.extend_from_slice(&digest.bytes());
             push_optional_bytes(&mut out, owner_projection.bytes());
@@ -148,13 +199,16 @@ fn encode_durable_object_head(head: &DurableObjectHead) -> Vec<u8> {
     }
 }
 
-fn encode_head_read(item: &DurableObjectHeadRead) -> Result<Vec<u8>, NodeCoreError> {
+fn encode_head_read(item: &DurableObjectHeadRead, shape: Shape) -> Result<Vec<u8>, NodeCoreError> {
     let mut out: Vec<u8> = item.object_id().as_bytes().to_vec();
-    out.extend_from_slice(&encode_durable_object_head(item.expected()));
+    out.extend_from_slice(&encode_durable_object_head(item.expected(), shape));
     Ok(out)
 }
 
-fn encode_object_mutation(item: &DurableObjectMutationEntry) -> Result<Vec<u8>, NodeCoreError> {
+fn encode_object_mutation(
+    item: &DurableObjectMutationEntry,
+    shape: Shape,
+) -> Result<Vec<u8>, NodeCoreError> {
     let mut out: Vec<u8> = item.object_id().as_bytes().to_vec();
     match item.mutation() {
         DurableObjectMutation::Delete => out.push(0),
@@ -164,7 +218,10 @@ fn encode_object_mutation(item: &DurableObjectMutationEntry) -> Result<Vec<u8>, 
             routing_projection,
         } => {
             out.push(1);
-            push_length_prefixed(&mut out, &encode_durable_object_version_record(version)?);
+            push_length_prefixed(
+                &mut out,
+                &encode_durable_object_version_record(version, shape)?,
+            );
             push_optional_bytes(&mut out, owner_projection.bytes());
             push_optional_bytes(&mut out, routing_projection.bytes());
         }
@@ -174,7 +231,10 @@ fn encode_object_mutation(item: &DurableObjectMutationEntry) -> Result<Vec<u8>, 
             routing_projection,
         } => {
             out.push(2);
-            push_length_prefixed(&mut out, &encode_durable_object_version_record(version)?);
+            push_length_prefixed(
+                &mut out,
+                &encode_durable_object_version_record(version, shape)?,
+            );
             push_optional_bytes(&mut out, owner_projection.bytes());
             push_optional_bytes(&mut out, routing_projection.bytes());
         }
@@ -182,18 +242,86 @@ fn encode_object_mutation(item: &DurableObjectMutationEntry) -> Result<Vec<u8>, 
     Ok(out)
 }
 
-/// True for a state key that is fast-path bookkeeping excluded from the
-/// commitment. The ordinary sender-nonce row is intentionally carried by
-/// the three explicit nonce arguments instead of the generic read/mutation
-/// maps.
-fn is_excluded_from_commitment(key: &[u8]) -> bool {
-    key.starts_with(local_instance_state::FASTPATH_STATE_PREFIX)
+/// Historical commitments retain their exact namespace-wide exclusion.
+/// Logical commitments exclude only the known fast-path-owned families; an
+/// unknown future key must never silently become unsigned. Business-history
+/// families here are separately authenticated and mandatory in a handoff cut,
+/// not disposable bookkeeping. The ordinary sender nonce is carried by the
+/// three explicit nonce arguments instead of generic maps.
+fn is_excluded_from_mutation_commitment(key: &[u8], shape: Shape) -> bool {
+    (match shape {
+        Shape::Physical => key.starts_with(local_instance_state::FASTPATH_STATE_PREFIX),
+        Shape::Logical => logical_generation::classify_fastpath_row(key).is_some(),
+    }) || logical_generation::is_logical_profile_key(key)
 }
 
+// A provenance row read is only a CAS-fenced validation of its subject. The
+// signed logical read is the verified subject observation and generation, not
+// this metadata row's local revision. New provenance mutations remain signed
+// below, so this does not remove the resulting causal assertion. The ordered
+// Freeze marker is likewise a CAS-fenced control read, not an application
+// operand with a logical-generation observation. This exclusion is required
+// because `logical_generation::classify_ordered_row` makes the marker an
+// authenticated-history row outside generic provenance; no other ordered row
+// is silently excluded by this exception. The certificate does not attest
+// admission-open; each replica's local CAS fence supplies that guarantee.
+fn is_excluded_from_read_commitment(key: &[u8], shape: Shape) -> bool {
+    is_excluded_from_mutation_commitment(key, shape)
+        || (matches!(shape, Shape::Logical)
+            && (logical_generation::is_logical_provenance_key(key)
+                || key
+                    .strip_prefix(ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX)
+                    .is_some_and(|suffix: &[u8]| suffix.starts_with(b"freeze/"))))
+}
+
+/// Encodes one generic state read for the historical envelope: its exact
+/// physical revision.
 fn encode_state_read(key: &[u8], revision: StateRevision) -> Result<Vec<u8>, NodeCoreError> {
     let mut out: Vec<u8> = Vec::new();
     push_length_prefixed(&mut out, key);
     out.extend_from_slice(&revision.get().to_be_bytes());
+    Ok(out)
+}
+
+/// Encodes one generic state read for the handoff-capable envelope: the closed
+/// semantic observation this admission verified, plus that observation's own
+/// authenticated generation, and no physical revision at all.
+///
+/// A read the derivation never observed as a subject cannot be signed as one, so
+/// it is a refusal rather than a silently absent operand.
+fn encode_logical_state_read(
+    key: &[u8],
+    observed: Option<&logical_generation::ReadObservation>,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let seen: &logical_generation::ReadObservation = observed.ok_or(
+        NodeCoreError::LogicalProvenance("signed read has no verified logical observation"),
+    )?;
+    let mut out: Vec<u8> = Vec::new();
+    push_length_prefixed(&mut out, key);
+    push_length_prefixed(
+        &mut out,
+        &logical_generation::observation_operand(seen.observed),
+    );
+    match seen.generation {
+        None => out.push(0),
+        Some(generation) => {
+            out.push(1);
+            out.extend_from_slice(&generation.get().to_be_bytes());
+        }
+    }
+    Ok(out)
+}
+
+/// Encodes the complete verified dependency set for the handoff-capable
+/// envelope: every input subject, including the sender nonce, with the exact
+/// authenticated generation this derivation consumed.
+fn encode_dependency(
+    subject: &logical_generation::LogicalSubject,
+    generation: protocol_types::ExecutionGeneration,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut out: Vec<u8> = Vec::new();
+    push_length_prefixed(&mut out, &logical_generation::subject_operand(subject));
+    out.extend_from_slice(&generation.get().to_be_bytes());
     Ok(out)
 }
 
@@ -223,39 +351,71 @@ pub(super) fn encode_envelope(
     nonce_key: &[u8],
     nonce_revision: StateRevision,
     nonce_value: &[u8],
+    derived: Option<&logical_generation::LogicalDerivation>,
 ) -> Result<Vec<u8>, NodeCoreError> {
+    let shape: Shape = match derived {
+        None => Shape::Physical,
+        Some(_) => Shape::Logical,
+    };
     let filtered_reads: Vec<(&Vec<u8>, &StateRevision)> = reads
         .iter()
-        .filter(|(key, _)| !is_excluded_from_commitment(key))
+        .filter(|(key, _)| !is_excluded_from_read_commitment(key, shape))
         .collect();
     let filtered_mutations: Vec<&StateMutationEntry> = state_mutations
         .iter()
-        .filter(|entry| !is_excluded_from_commitment(entry.key()))
+        .filter(|entry| !is_excluded_from_mutation_commitment(entry.key(), shape))
         .collect();
 
     let mut envelope: CanonicalStruct =
-        CanonicalStruct::new(COMMITMENT_ENVELOPE_TYPE, ENCODING_VERSION);
+        CanonicalStruct::new(COMMITMENT_ENVELOPE_TYPE, shape.version());
     envelope.field_bytes(1, canonical_encoding::encode_digest32(&event_digest)?)?;
     envelope.field_bytes(2, result_bytes.to_vec())?;
     envelope.field_bytes(
         3,
         encode_list(created_authorities, encode_created_authority)?,
     )?;
-    envelope.field_bytes(4, encode_list(head_reads, encode_head_read)?)?;
-    envelope.field_bytes(5, encode_list(object_mutations, encode_object_mutation)?)?;
     envelope.field_bytes(
-        6,
-        encode_list(&filtered_reads, |(key, revision)| {
-            encode_state_read(key, **revision)
-        })?,
+        4,
+        encode_list(head_reads, |item| encode_head_read(item, shape))?,
     )?;
+    envelope.field_bytes(
+        5,
+        encode_list(object_mutations, |item| encode_object_mutation(item, shape))?,
+    )?;
+    match derived {
+        None => envelope.field_bytes(
+            6,
+            encode_list(&filtered_reads, |(key, revision)| {
+                encode_state_read(key, **revision)
+            })?,
+        )?,
+        Some(derivation) => envelope.field_bytes(
+            6,
+            encode_list(&filtered_reads, |(key, _)| {
+                encode_logical_state_read(key, derivation.read_observations().get(*key))
+            })?,
+        )?,
+    }
     envelope.field_bytes(
         7,
         encode_list(&filtered_mutations, |entry| encode_state_mutation(entry))?,
     )?;
     envelope.field_bytes(8, nonce_key.to_vec())?;
-    envelope.field_u64(9, nonce_revision.get())?;
+    if shape.signs_coordinates() {
+        envelope.field_u64(9, nonce_revision.get())?;
+    }
     envelope.field_bytes(10, nonce_value.to_vec())?;
+    if let Some(derivation) = derived {
+        envelope.field_u64(11, derivation.generation().get())?;
+        let dependencies: Vec<(&logical_generation::LogicalSubject, &_)> =
+            derivation.dependencies().iter().collect();
+        envelope.field_bytes(
+            12,
+            encode_list(&dependencies, |(subject, generation)| {
+                encode_dependency(subject, **generation)
+            })?,
+        )?;
+    }
     Ok(envelope.finish()?)
 }
 
@@ -266,7 +426,12 @@ pub(super) fn encode_envelope(
 /// independently derived [`crate::paid_execution::PaidAdmissionOutput`];
 /// byte-identical results from byte-identical admission is exactly the
 /// property a fast-path certificate's safety depends on.
-#[allow(clippy::too_many_arguments)]
+// DR-0154: `prepare` now always needs the envelope bytes too (to durably
+// retain a handoff-capable witness before voting), so this simpler
+// digest-only wrapper currently has no non-test caller; kept for its own
+// independent digest vector test and as the natural API for a future caller
+// that only needs the commitment, not the envelope.
+#[allow(clippy::too_many_arguments, dead_code)]
 pub(super) fn compute(
     resolver: &HashSuiteResolver,
     epoch: Epoch,
@@ -280,6 +445,7 @@ pub(super) fn compute(
     nonce_key: &[u8],
     nonce_revision: StateRevision,
     nonce_value: &[u8],
+    derived: Option<&logical_generation::LogicalDerivation>,
 ) -> Result<Digest32, NodeCoreError> {
     let (_, digest): (Vec<u8>, Digest32) = compute_with_envelope(
         resolver,
@@ -294,11 +460,12 @@ pub(super) fn compute(
         nonce_key,
         nonce_revision,
         nonce_value,
+        derived,
     )?;
     Ok(digest)
 }
 
-/// Identical to [`compute`], but also returns the exact canonical `0x6424/v1`
+/// Identical to [`compute`], but also returns the exact canonical `0x6424`
 /// envelope bytes the digest was computed over. [`crate::fast_path::apply`]
 /// uses this (instead of [`compute`]) so it can durably persist those exact
 /// bytes as a request-scoped commitment witness: a [`consensus::FastCertificate`]
@@ -324,6 +491,7 @@ pub(super) fn compute_with_envelope(
     nonce_key: &[u8],
     nonce_revision: StateRevision,
     nonce_value: &[u8],
+    derived: Option<&logical_generation::LogicalDerivation>,
 ) -> Result<(Vec<u8>, Digest32), NodeCoreError> {
     let bytes: Vec<u8> = encode_envelope(
         event_digest,
@@ -336,6 +504,7 @@ pub(super) fn compute_with_envelope(
         nonce_key,
         nonce_revision,
         nonce_value,
+        derived,
     )?;
     let digest: Digest32 = resolver
         .hash_for_purpose(epoch, HashPurpose::ExecutionEffects, &bytes)
@@ -358,15 +527,15 @@ pub(crate) struct DecodedCommitmentWitness {
 }
 
 /// Strictly and boundedly decodes a persisted commitment-witness row: the
-/// exact canonical `0x6424/v1` envelope [`compute_with_envelope`] produced at
+/// exact canonical `0x6424/v1` or `0x6424/v2` envelope [`compute_with_envelope`] produced at
 /// a successful [`crate::fast_path::apply`]. Unlike [`compute`]/
 /// [`compute_with_envelope`] (which build this frame from live
 /// [`crate::paid_execution::PaidAdmissionOutput`] components), this is the
 /// verifier-facing direction: decode ONLY, never re-derive.
 ///
-/// Requires the frame to be exactly type `0x6424` version `1` and to carry
-/// exactly fields `1..=10` (no fewer, no more) -- the same closed field set
-/// [`encode_envelope`] always writes. Fields 3..8 and 10 (the created
+/// Requires the frame to be type `0x6424` with the exact closed field set for
+/// its declared version: v1 has fields `1..=10`; v2 has 1..8 and 10..12.
+/// Fields 3..8 and 10 (the created
 /// authorities, durable head reads/mutations, state reads/mutations and
 /// nonce key/value lists) are bounded and extracted only as their own raw
 /// bytes: this witness's sole job is field 1 (event digest) and field 2
@@ -383,8 +552,20 @@ pub(crate) struct DecodedCommitmentWitness {
 pub(crate) fn decode_witness(bytes: &[u8]) -> Result<DecodedCommitmentWitness, NodeCoreError> {
     let frame = canonical_encoding::decode_canonical_frame(bytes)?;
     frame.require_type(COMMITMENT_ENVELOPE_TYPE)?;
-    frame.require_version(ENCODING_VERSION)?;
-    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10])?;
+    // A persisted witness is decoded under its own recorded version: a
+    // historical row keeps exactly fields 1..=10, a handoff-capable row omits
+    // the nonce revision (field 9) and adds the authenticated generation (11)
+    // and its verified dependency set (12). Neither field set is accepted for
+    // the other version, so a witness can never be reinterpreted under the
+    // profile it was not produced under.
+    let shape: Shape = if frame.version() == LOGICAL_ENCODING_VERSION {
+        frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12])?;
+        Shape::Logical
+    } else {
+        frame.require_version(ENCODING_VERSION)?;
+        frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10])?;
+        Shape::Physical
+    };
 
     let field1: &[u8] = frame.required_field(1)?;
     let field2: &[u8] = frame.required_field(2)?;
@@ -394,11 +575,10 @@ pub(crate) fn decode_witness(bytes: &[u8]) -> Result<DecodedCommitmentWitness, N
     let field6: &[u8] = frame.required_field(6)?;
     let field7: &[u8] = frame.required_field(7)?;
     let field8: &[u8] = frame.required_field(8)?;
-    let field9: u64 = frame.required_u64(9)?;
     let field10: &[u8] = frame.required_field(10)?;
 
     let mut rebuilt: CanonicalStruct =
-        CanonicalStruct::new(COMMITMENT_ENVELOPE_TYPE, ENCODING_VERSION);
+        CanonicalStruct::new(COMMITMENT_ENVELOPE_TYPE, shape.version());
     rebuilt.field_bytes(1, field1.to_vec())?;
     rebuilt.field_bytes(2, field2.to_vec())?;
     rebuilt.field_bytes(3, field3.to_vec())?;
@@ -407,8 +587,14 @@ pub(crate) fn decode_witness(bytes: &[u8]) -> Result<DecodedCommitmentWitness, N
     rebuilt.field_bytes(6, field6.to_vec())?;
     rebuilt.field_bytes(7, field7.to_vec())?;
     rebuilt.field_bytes(8, field8.to_vec())?;
-    rebuilt.field_u64(9, field9)?;
+    if shape.signs_coordinates() {
+        rebuilt.field_u64(9, frame.required_u64(9)?)?;
+    }
     rebuilt.field_bytes(10, field10.to_vec())?;
+    if shape == Shape::Logical {
+        rebuilt.field_u64(11, frame.required_u64(11)?)?;
+        rebuilt.field_bytes(12, frame.required_field(12)?.to_vec())?;
+    }
     if rebuilt.finish()? != bytes {
         return Err(NodeCoreError::PersistenceInvariant(
             "noncanonical fast-path commitment witness",
@@ -428,7 +614,64 @@ pub(crate) fn decode_witness(bytes: &[u8]) -> Result<DecodedCommitmentWitness, N
     })
 }
 
-/// Hashes already-persisted (or otherwise already-encoded) exact `0x6424/v1`
+/// The exact handoff-capable `0x6424/v2` operand lists a publication retainer
+/// needs in order to derive one operation's required replay-artifact closure.
+///
+/// The slices are the envelope's own raw field bytes, borrowed from the caller's
+/// verified witness buffer. They are deliberately *not* decoded here:
+/// [`super::publication::witness`] owns the list/operand decoders that mirror
+/// this module's encoders, and a round-trip test pins the two together.
+pub(super) struct LogicalWitnessOperands<'a> {
+    /// Field 1: the signed intent digest the certificate's `tx_hash` attests.
+    pub(super) event_digest: Digest32,
+    /// Field 4: `encode_head_read` list under [`Shape::Logical`].
+    pub(super) head_reads: &'a [u8],
+    /// Field 5: `encode_object_mutation` list under [`Shape::Logical`].
+    pub(super) object_mutations: &'a [u8],
+    /// Field 6: `encode_logical_state_read` list.
+    pub(super) state_reads: &'a [u8],
+    /// Field 12: `encode_dependency` list.
+    pub(super) dependencies: &'a [u8],
+}
+
+/// Strictly validates `bytes` as a handoff-capable `0x6424/v2` envelope and
+/// returns its raw operand lists.
+///
+/// A historical `0x6424/v1` witness is refused rather than reinterpreted: it
+/// signs per-node physical state/head/nonce revisions and an immutable creation
+/// checkpoint, so it is not portable replay material and can never back a
+/// publication bundle. Its own bytes stay verifiable under [`decode_witness`]
+/// exactly as before; nothing about v1 changes here.
+///
+/// Validation reuses [`decode_witness`] first, so the type id, the closed
+/// per-version field set and the byte-exact canonical re-encoding are all
+/// enforced before any field slice is handed out.
+pub(super) fn logical_witness_operands(
+    bytes: &[u8],
+) -> Result<LogicalWitnessOperands<'_>, NodeCoreError> {
+    let decoded: DecodedCommitmentWitness = decode_witness(bytes)?;
+    let frame = canonical_encoding::decode_canonical_frame(bytes)?;
+    frame.require_type(COMMITMENT_ENVELOPE_TYPE)?;
+    if frame.version() != LOGICAL_ENCODING_VERSION {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "fast-path commitment witness is not the handoff-capable v2 profile",
+        ));
+    }
+    Ok(LogicalWitnessOperands {
+        event_digest: decoded.event_digest,
+        head_reads: frame.required_field(4)?,
+        object_mutations: frame.required_field(5)?,
+        state_reads: frame.required_field(6)?,
+        dependencies: frame.required_field(12)?,
+    })
+}
+
+/// The per-list item ceiling every `0x6424` operand list is encoded under,
+/// re-exported so the mirrored decoders bound a declared count identically
+/// before allocating.
+pub(super) const MAX_WITNESS_LIST_ITEMS: usize = MAX_COMMITMENT_LIST_ITEMS;
+
+/// Hashes already-persisted (or otherwise already-encoded) exact `0x6424`
 /// envelope bytes under `HashPurpose::ExecutionEffects` at `epoch` -- the
 /// identical purpose and preimage [`compute`]/[`compute_with_envelope`] use,
 /// exposed separately so a later verifier holding only a persisted
@@ -448,4 +691,22 @@ pub(crate) fn hash_witness_bytes(
     resolver
         .hash_for_purpose(epoch, HashPurpose::ExecutionEffects, bytes)
         .map_err(NodeCoreError::Hashing)
+}
+
+#[cfg(test)]
+mod freeze_read_tests {
+    use super::*;
+
+    #[test]
+    fn ordered_freeze_fence_is_a_cas_read_not_a_signed_business_operand() {
+        let mut key: Vec<u8> = ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX.to_vec();
+        key.extend_from_slice(b"freeze/epoch-key");
+        assert!(is_excluded_from_read_commitment(&key, Shape::Logical));
+        assert!(!is_excluded_from_mutation_commitment(&key, Shape::Logical));
+        assert!(!is_excluded_from_read_commitment(&key, Shape::Physical));
+        let mut outcome: Vec<u8> =
+            ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX.to_vec();
+        outcome.extend_from_slice(b"outcome/request-key");
+        assert!(!is_excluded_from_read_commitment(&outcome, Shape::Logical));
+    }
 }

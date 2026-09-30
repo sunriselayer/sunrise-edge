@@ -65,7 +65,7 @@ fn require_row<S: StructuredDurableDomainStateStore>(
 /// A non-current epoch here is a *fence*, not a stale candidate: the profile
 /// pinned one epoch, and an epoch transition invalidates this whole profile
 /// rather than this one candidate. It therefore stops.
-fn require_live_authority<S: StructuredDurableDomainStateStore>(
+pub(crate) fn require_live_authority<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -150,6 +150,66 @@ fn require_leg_nonces<S: StructuredDurableDomainStateStore>(
     require_next_nonce(store, context, env, nonce.sender, nonce.first_nonce)
 }
 
+/// DR-0154/DR-0157: the sole gate deciding whether admission is still open,
+/// run before every kind's own preflight. A present [`super::AdmissionClosureRecord`]
+/// means an earlier candidate already committed `Freeze`:
+///
+/// * every business kind (every kind other than `Freeze`/`DrainSet`) is
+///   refused with [`OrderedRefusal::ClosedEpoch`] -- the deterministic,
+///   authenticated no-effect closed-epoch refusal DR-0154 requires for "an
+///   inherited economic candidate that commits after Freeze": no value or
+///   nonce movement, and the existing handler (which itself may separately
+///   call `crate::mutation_fence::fence_current_epoch` and observe the very
+///   same closed row) is never reached;
+/// * a second `Freeze` is refused with [`OrderedRefusal::AlreadyFrozen`]
+///   instead of re-installing or rewriting the closure record -- "In this
+///   initial profile a committed Freeze is a commitment to finish that
+///   epoch... There is no local unfreeze";
+/// * `DrainSet` is the one positive exception admitted post-Freeze --
+///   DR-0157's "Choose exactly one `DrainSet`" happens only after `Freeze`,
+///   so admission is a positive allowlist of exactly `{Freeze, DrainSet}`,
+///   never a blanket reopening of business.
+///
+/// Symmetrically, a `DrainSet` candidate committed while admission is still
+/// *open* (no committed `Freeze` yet) is refused with
+/// [`OrderedRefusal::NoFreeze`]: every replica decides this identically from
+/// the same absent closure row, exactly like [`OrderedRefusal::ClosedEpoch`]
+/// is decided from a present one.
+///
+/// This read goes through `store` (the caller's `staging` adapter during
+/// real execution), so it becomes a CAS assertion in the final commit exactly
+/// like every other row this module reads.
+fn require_admission_open<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+) -> Result<(), OrderedEconomicsError> {
+    let chain = env.policy.context().chain_id();
+    // A tombstoned or corrupt marker is a storage stop, never a deterministic
+    // ClosedEpoch/NoFreeze refusal that could advance the ordered applied
+    // prefix.
+    let closure = super::freeze::read_admission_closure(
+        store,
+        context,
+        env.policy.domain(),
+        chain,
+        env.policy.context().epoch(),
+    )?;
+    match (candidate.kind, closure.is_some()) {
+        (OrderedOperationKind::Freeze, true) => Err(OrderedEconomicsError::Refused(
+            OrderedRefusal::AlreadyFrozen,
+        )),
+        (OrderedOperationKind::Freeze, false) => Ok(()),
+        (OrderedOperationKind::DrainSet, true) => Ok(()),
+        (OrderedOperationKind::DrainSet, false) => {
+            Err(OrderedEconomicsError::Refused(OrderedRefusal::NoFreeze))
+        }
+        (_, true) => Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch)),
+        (_, false) => Ok(()),
+    }
+}
+
 /// Runs every typed business check this candidate's kind admits, against the
 /// current committed state, before the existing handler is invoked.
 pub(crate) fn preflight<S: StructuredDurableDomainStateStore>(
@@ -157,8 +217,10 @@ pub(crate) fn preflight<S: StructuredDurableDomainStateStore>(
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
+    block_height: u64,
 ) -> Result<(), OrderedEconomicsError> {
     require_live_authority(store, context, env)?;
+    require_admission_open(store, context, env, candidate)?;
     match candidate.kind {
         OrderedOperationKind::FeeClaim => preflight_fee_claim(store, context, env, candidate),
         OrderedOperationKind::BondLifecycle => {
@@ -170,6 +232,12 @@ pub(crate) fn preflight<S: StructuredDurableDomainStateStore>(
         // there is no stale predecessor to refuse. Its entire validity is
         // proven purely by `authenticate_candidate`.
         OrderedOperationKind::Evidence => Ok(()),
+        OrderedOperationKind::Freeze => {
+            super::freeze::require_freeze_warrant(store, context, env, candidate, block_height)
+        }
+        OrderedOperationKind::DrainSet => {
+            super::drain_set::preflight_drain_set(store, context, env, candidate)
+        }
     }
 }
 

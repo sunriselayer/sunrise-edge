@@ -600,11 +600,18 @@ fn postgres_disk_full_bounded_tablespace_enospc() {
         DurableOutboxClaimOutcome::NoDueWork
     );
 
+    // The baseline commit_durable already allocated one commit sequence
+    // (checked above), and the rejected fault attempt allocated none. Past
+    // that baseline of 1: the recovery commit_invocation (1 -> 2), the
+    // claim (2 -> 3), and the acknowledgement (3 -> 4) each allocate their
+    // own commit sequence in the same transaction as their write; the
+    // rejected replay and the trailing `NoDueWork` claim allocate none.
+    // Four in total, not one per successful operation group.
     assert_eq!(
         inspect_namespace(&mut client, &namespace)
             .unwrap()
             .unwrap()
             .commit_sequence(),
-        2
+        4
     );
 }

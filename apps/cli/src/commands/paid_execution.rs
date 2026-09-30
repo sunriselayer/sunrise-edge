@@ -210,8 +210,9 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     let network: Option<(
         Vec<FastVoteEndpoint<crate::net::CliTransport>>,
         FastPathCertifier,
+        sunrise_edge_client::CommitmentProfile,
     )> = if parsed.get("--fastvote-network").is_some() {
-        Some(super::fastvote_network::load_endpoints_and_certifier(
+        Some(super::fastvote_network::load_endpoints_and_profile(
             &parsed, &resolver, &context,
         )?)
     } else {
@@ -233,7 +234,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         None
     };
     let preparation_client: &Client<crate::net::CliTransport> =
-        if let Some((endpoints, _)) = &network {
+        if let Some((endpoints, _, _)) = &network {
             let selected: &str = parsed.require("--endpoint")?;
             super::fastvote_network::selected_preparation_client(endpoints, selected)?
         } else {
@@ -338,11 +339,13 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
             ),
             PaidApplication::Call(_) => (None, "unused", None),
         };
-    let result: PaidExecutionResult = if let Some((endpoints, certifier)) = &network {
+    let result: PaidExecutionResult = if let Some((endpoints, certifier, profile)) = &network {
         super::fastvote_network::run_network_submit(
             &parsed,
             endpoints,
             certifier,
+            *profile,
+            expected.domain(),
             &resolver,
             &signed,
             derived_path

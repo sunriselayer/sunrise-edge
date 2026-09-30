@@ -9,10 +9,13 @@ use crate::economics::{
 use crate::fast_path::records::FastPathBondState;
 use crate::paid_execution::tests::{
     CountingEngine, FIRST_PAID_NONCE, Fixture, PaidCall, base_policy, context, domain, entry,
-    install, memory_store, next_nonce, object_reference, paid_call_with_access, paid_instantiate,
-    paid_publish, protocol, publish_artifact, publish_artifact_reference, receipt, refund_account,
-    resolver, sender, sign_paid, trapping_mint_call,
+    install, install_logical_profile, install_with_profile, memory_store, next_nonce,
+    object_reference, paid_call_with_access, paid_instantiate, paid_publish, protocol,
+    publish_artifact, publish_artifact_reference, receipt, refund_account, resolver, sender,
+    sign_paid, trapping_mint_call,
 };
+use crate::publication::PublicationAdmissionError;
+use crate::publication::publication_record_key;
 use abi::AccessManifest;
 use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::call::CallIntent;
@@ -22,8 +25,6 @@ use execution::paid_execution::{
     ReservationAccessKind, paid_fee_policy_digest,
 };
 use fees::Amount;
-use publication::PublicationAdmissionError;
-use publication::publication_record_key;
 use runtime::{
     DurableCommitOutcome, DurableDomainStateStore, DurableInvocationTransaction,
     DurableObjectChanges, DurableObjectHeadRead, DurableObjectMutation, DurableObjectMutationEntry,
@@ -38,7 +39,7 @@ mod recovery;
 
 /// A real (non-mocked) Ed25519 `ConsensusSigner`, mirroring
 /// `consensus::fast_vote`'s own private test signer.
-struct TestSigner {
+pub(crate) struct TestSigner {
     validator_id: ValidatorId,
     signing_key: SigningKey,
 }
@@ -77,7 +78,7 @@ fn validator(seed: u8) -> (TestSigner, FastPathValidatorEntry) {
 /// Four equal-power validators: `ValidatorSet::quorum_threshold` for four
 /// validators of power one each is `4 - (4-1)/3 = 3`, so three votes form a
 /// certificate and one is never enough.
-fn four_validators() -> (Vec<TestSigner>, Vec<FastPathValidatorEntry>) {
+pub(crate) fn four_validators() -> (Vec<TestSigner>, Vec<FastPathValidatorEntry>) {
     let mut signers: Vec<TestSigner> = Vec::new();
     let mut entries: Vec<FastPathValidatorEntry> = Vec::new();
     for seed in [101u8, 102, 103, 104] {
@@ -847,6 +848,204 @@ fn independent_validators_derive_byte_identical_commitment_and_a_quorum_certific
             resource: *settlement.resource_id.expect("charged resource").value(),
         })
     );
+}
+
+/// The new signed envelope must survive a real prepare/certify/apply cycle,
+/// including a replica whose local CAS revision differs for the same semantic
+/// state. Provenance reads fence each local commit but are not a signed
+/// physical coordinate.
+#[test]
+fn logical_profile_validators_certify_and_apply_across_physical_revisions() {
+    let store_a: MemoryDurableStateStore = memory_store();
+    let store_b: MemoryDurableStateStore = memory_store();
+    let store_c: MemoryDurableStateStore = memory_store();
+    let profile_a: logical_generation::LogicalProfileRecord = install_logical_profile(&store_a);
+    let profile_b: logical_generation::LogicalProfileRecord = install_logical_profile(&store_b);
+    let profile_c: logical_generation::LogicalProfileRecord = install_logical_profile(&store_c);
+    let fixture_a: Fixture = install_with_profile(&store_a, Some(&profile_a));
+    let fixture_b: Fixture = install_with_profile(&store_b, Some(&profile_b));
+    let fixture_c: Fixture = install_with_profile(&store_c, Some(&profile_c));
+    let (signers, entries) = four_validators();
+    for store in [&store_a, &store_b, &store_c] {
+        install_validator_set(
+            store,
+            &context(),
+            domain(),
+            &resolver(),
+            protocol(),
+            entries.clone(),
+        )
+        .unwrap();
+    }
+
+    // Same signed fee-policy bytes and logical provenance; only B's local
+    // persistence revision changes. Such divergence is expected after import.
+    let policy_key: Vec<u8> = local_instance_state::paid_fee_policy_key(&protocol()).unwrap();
+    let observed = store_b
+        .get_versioned_durable(&context(), domain(), &policy_key)
+        .unwrap();
+    let policy_bytes: Vec<u8> = observed.value().unwrap().to_vec();
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(policy_key.clone(), observed.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(policy_key, StateMutation::Put(policy_bytes)).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store_b.commit_durable(&context(), transaction),
+        DurableCommitOutcome::Committed
+    );
+
+    let request: u8 = 0xd3;
+    let vote_a: FastVote =
+        prepare_transfer(&store_a, &fixture_a, &signers[0], request, FIRST_PAID_NONCE).unwrap();
+    let vote_b: FastVote =
+        prepare_transfer(&store_b, &fixture_b, &signers[1], request, FIRST_PAID_NONCE).unwrap();
+    let vote_c: FastVote =
+        prepare_transfer(&store_c, &fixture_c, &signers[2], request, FIRST_PAID_NONCE).unwrap();
+    assert_eq!(vote_a.tx_hash, vote_b.tx_hash);
+    assert_eq!(vote_a.execution_effects_hash, vote_b.execution_effects_hash);
+    assert_eq!(vote_a.execution_effects_hash, vote_c.execution_effects_hash);
+    let validator_set: ValidatorSet = ValidatorSet::new(
+        protocol().epoch(),
+        entries
+            .iter()
+            .map(|entry| ValidatorInfo {
+                id: entry.id,
+                voting_power: entry.voting_power,
+                signature_scheme: entry.signature_scheme,
+                public_key: entry.public_key.clone(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    let cert: consensus::FastPathCertifier = certifier(validator_set.clone());
+    let certificate: FastCertificate = cert
+        .try_form_certificate(
+            vote_a.tx_hash,
+            vote_a.execution_effects_hash,
+            vote_a.locked_objects_digest,
+            &[vote_a, vote_b, vote_c],
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .unwrap();
+    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+
+    // DR-0154: a handoff-capable apply now requires a verified
+    // `AvailabilityCertificate`. Assemble the canonical bundle purely from
+    // replica A's own prepared material (no apply has happened anywhere
+    // yet), then have all three replicas independently retain it and form
+    // the quorum availability certificate every apply below requires.
+    let bundle: PublicationBundle = crate::fast_path::publication::assemble_publication_bundle(
+        &store_a,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &transfer_bytes(&fixture_a, request, FIRST_PAID_NONCE),
+        &certificate_bytes,
+    )
+    .expect("assembling a bundle from prepared-only material, before any apply");
+    let bundle_bytes: Vec<u8> = consensus::bundle::encode_publication_bundle(&bundle).unwrap();
+    let availability_votes: Vec<consensus::AvailabilityVote> = [
+        (&store_a, &signers[0]),
+        (&store_b, &signers[1]),
+        (&store_c, &signers[2]),
+    ]
+    .into_iter()
+    .map(|(store, signer)| {
+        crate::fast_path::publication::retain_publication(
+            store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &bundle_bytes,
+            signer,
+        )
+        .unwrap()
+    })
+    .collect();
+    let availability_certifier: consensus::AvailabilityCertifier =
+        consensus::AvailabilityCertifier::new(
+            protocol().chain_id().clone(),
+            protocol().protocol_version(),
+            protocol().epoch(),
+            validator_set,
+        )
+        .unwrap();
+    let availability_certificate: consensus::AvailabilityCertificate = availability_certifier
+        .try_form_certificate(
+            &availability_votes[0].identity,
+            &availability_votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .expect("three equal-power ACKs already form quorum");
+    let availability_certificate_bytes: Vec<u8> =
+        consensus::encode_availability_certificate(&availability_certificate).unwrap();
+
+    for (store, fixture) in [
+        (&store_a, &fixture_a),
+        (&store_b, &fixture_b),
+        (&store_c, &fixture_c),
+    ] {
+        let signed_bytes: Vec<u8> = transfer_bytes(fixture, request, FIRST_PAID_NONCE);
+        let output: NodeOutput = fast_path::apply_after_publication(
+            store,
+            &MemoryBlobStore::default(),
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &base_policy(),
+            &fixture.policy,
+            &CountingEngine::new(),
+            &signed_bytes,
+            &certificate_bytes,
+            &availability_certificate_bytes,
+        )
+        .unwrap();
+        assert_eq!(receipt(&output).status, PaidExecutionStatus::Success);
+        assert_eq!(next_nonce(store), FIRST_PAID_NONCE + 1);
+        let witness_key: Vec<u8> = local_instance_state::fastpath_commitment_witness_key(
+            protocol().chain_id(),
+            &[request; 32],
+        )
+        .unwrap();
+        let witness = store
+            .get_versioned_durable(&context(), domain(), &witness_key)
+            .unwrap();
+        let witness_bytes: &[u8] = witness.value().unwrap();
+        let witness_frame = decode_canonical_frame(witness_bytes).unwrap();
+        assert_eq!(witness_frame.version(), 2);
+        let decoded: commitment::DecodedCommitmentWitness =
+            commitment::decode_witness(witness_bytes).unwrap();
+        let mut downgraded: Vec<u8> = witness_bytes.to_vec();
+        downgraded[6..8].copy_from_slice(&1u16.to_le_bytes());
+        assert!(commitment::decode_witness(&downgraded).is_err());
+        let mut padded: Vec<u8> = witness_bytes.to_vec();
+        padded.push(0);
+        assert!(commitment::decode_witness(&padded).is_err());
+        assert_eq!(
+            decoded.paid_execution_result.status,
+            PaidExecutionStatus::Success
+        );
+        assert_eq!(
+            commitment::hash_witness_bytes(&resolver(), protocol().epoch(), witness_bytes).unwrap(),
+            certificate.execution_effects_hash
+        );
+    }
 }
 
 /// Regression coverage for the durably bound `created_checkpoint`: `prepare`
@@ -3684,6 +3883,8 @@ fn fastpath_prepared_record_frame_0x641c_is_stable() {
         locked_objects,
         pending_nonce: 5,
         created_checkpoint: 6,
+        // Historical store: the frozen version-one bytes below must not move.
+        prepared_generation: None,
     };
     let bytes: Vec<u8> = records::encode_fastpath_prepared_record(&record).unwrap();
     assert_eq!(
@@ -3707,6 +3908,30 @@ fn fastpath_prepared_record_frame_0x641c_is_stable() {
     assert_eq!(
         hex(first_object_ref_bytes),
         "534e5245044001000300010030000000534e5245014001000100010020000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0200080000000100000000000000030038000000534e52450301010002000100020000000100020020000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    );
+}
+
+#[test]
+fn logical_prepared_record_frame_0x641c_v2_is_stable() {
+    let record: FastPathPreparedRecord = FastPathPreparedRecord {
+        context: vector_context(),
+        request_id: [0x66; 32],
+        signed_intent_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x77; 32]),
+        commitment: Digest32::new(HashAlgorithmId::Sha2_256, [0x88; 32]),
+        vote: vec![0x99],
+        locked_objects: Vec::new(),
+        pending_nonce: 5,
+        created_checkpoint: 6,
+        prepared_generation: Some(protocol_types::ExecutionGeneration::new(7)),
+    };
+    let bytes: Vec<u8> = records::encode_fastpath_prepared_record(&record).unwrap();
+    assert_eq!(
+        records::decode_fastpath_prepared_record(&bytes).unwrap(),
+        record
+    );
+    assert_eq!(
+        hex(&bytes),
+        "534e52451c640200090001003f000000534e52450163010003000100170000006472303133302d66617374706174682d766563746f72730200040000000300000003000800000009000000000000000200200000006666666666666666666666666666666666666666666666666666666666666666030038000000534e524503010100020001000200000001000200200000007777777777777777777777777777777777777777777777777777777777777777040038000000534e52450301010002000100020000000100020020000000888888888888888888888888888888888888888888888888888888888888888805000100000099060014000000534e524520640100010001000400000000000000070008000000050000000000000008000800000006000000000000000900080000000700000000000000"
     );
 }
 
@@ -4378,6 +4603,96 @@ fn fastpath_validator_set_record_frame_0x641f_is_stable() {
     );
 }
 
+/// One envelope input set, parameterized purely by physical coordinates.
+fn envelope_with_coordinates(
+    head_revision: u64,
+    state_revision: u64,
+    nonce_revision: u64,
+    derived: Option<&logical_generation::LogicalDerivation>,
+) -> Vec<u8> {
+    let object_id: ObjectId = ObjectId::new([0xc0; 32]);
+    let head_reads: Vec<DurableObjectHeadRead> = vec![DurableObjectHeadRead::new(
+        object_id,
+        DurableObjectHead::Tombstoned {
+            head_revision: runtime::ObjectHeadRevision::new(head_revision).unwrap(),
+            last_object_version: DurableObjectVersion::new(4).unwrap(),
+        },
+    )];
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    reads.insert(vec![0xc1; 3], StateRevision::new(state_revision));
+    commitment::encode_envelope(
+        Digest32::new(HashAlgorithmId::Sha2_256, [0xc2; 32]),
+        &[0xc3; 4],
+        &[],
+        &head_reads,
+        &[],
+        &reads,
+        &[],
+        &[0xc4; 4],
+        StateRevision::new(nonce_revision),
+        &[0xc5; 4],
+        derived,
+    )
+    .unwrap()
+}
+
+/// DR-0154: the handoff-capable envelope signs semantic observations and the
+/// authenticated generation, and no physical persistence coordinate at all, so
+/// two nodes whose local revisions differ still hash one logical transaction
+/// identically. The historical envelope keeps signing exactly those
+/// coordinates.
+#[test]
+fn the_handoff_capable_envelope_signs_no_physical_coordinate() {
+    let mut observations: BTreeMap<Vec<u8>, logical_generation::ReadObservation> = BTreeMap::new();
+    observations.insert(
+        vec![0xc1; 3],
+        logical_generation::ReadObservation {
+            observed: Some(logical_generation::LogicalObservation::StateDeleted),
+            generation: Some(protocol_types::ExecutionGeneration::new(4)),
+        },
+    );
+    let derived: logical_generation::LogicalDerivation = logical_generation::LogicalDerivation {
+        generation: protocol_types::ExecutionGeneration::new(5),
+        reads: observations,
+        inputs: BTreeMap::new(),
+    };
+    assert_eq!(
+        envelope_with_coordinates(1, 6, 9, Some(&derived)),
+        envelope_with_coordinates(77, 1234, 4321, Some(&derived))
+    );
+    assert_ne!(
+        envelope_with_coordinates(1, 6, 9, None),
+        envelope_with_coordinates(77, 1234, 4321, None)
+    );
+}
+
+#[test]
+fn logical_commitment_envelope_frame_0x6424_v2_is_stable() {
+    let mut observations: BTreeMap<Vec<u8>, logical_generation::ReadObservation> = BTreeMap::new();
+    observations.insert(
+        vec![0xc1; 3],
+        logical_generation::ReadObservation {
+            observed: Some(logical_generation::LogicalObservation::StateDeleted),
+            generation: Some(protocol_types::ExecutionGeneration::new(4)),
+        },
+    );
+    let derived: logical_generation::LogicalDerivation = logical_generation::LogicalDerivation {
+        generation: protocol_types::ExecutionGeneration::new(5),
+        reads: observations,
+        inputs: BTreeMap::new(),
+    };
+    let bytes: Vec<u8> = envelope_with_coordinates(77, 1234, 4321, Some(&derived));
+    assert_eq!(
+        hex(&bytes),
+        format!(
+            "{}{}{}",
+            "534e5245246402000b00010038000000534e52450301010002000100020000000100020020000000",
+            "c2".repeat(32),
+            "020004000000c3c3c3c3030004000000000000000400310000000000000100000029c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00100000000000000040500040000000000000006001e000000000000010000001600000003c1c1c100000002000201000000000000000407000400000000000000080004000000c4c4c4c40a0004000000c5c5c5c50b000800000005000000000000000c000400000000000000"
+        )
+    );
+}
+
 #[test]
 fn fastpath_commitment_envelope_frame_0x6424_is_stable() {
     // Created-authority items remain empty because their full nested
@@ -4412,6 +4727,9 @@ fn fastpath_commitment_envelope_frame_0x6424_is_stable() {
         &nonce_key,
         StateRevision::new(5),
         &nonce_value,
+        // Historical store: no logical derivation, so these exact frozen bytes
+        // must stay byte-identical under DR-0154.
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -4431,6 +4749,7 @@ fn fastpath_commitment_envelope_frame_0x6424_is_stable() {
         &nonce_key,
         StateRevision::new(5),
         &nonce_value,
+        None,
     )
     .unwrap();
     assert_eq!(digest.algorithm(), HashAlgorithmId::Sha2_256);
@@ -4438,4 +4757,809 @@ fn fastpath_commitment_envelope_frame_0x6424_is_stable() {
         hex(&digest.bytes()),
         "daf6fb51270cf45b82aac8b91b8719f50736fefc79e3bc285d149c1d0503a904"
     );
+}
+
+// --- DR-0154 publication-retention fixtures ---------------------------------
+//
+// Shared with `crate::fast_path::publication::tests`. Everything here builds a
+// *real* certified paid `Call`: three independent replicas prepare, a genuine
+// quorum certificate forms, and (for a handoff-capable/`logical` request) the
+// canonical publication bundle is assembled purely from one preparing
+// replica's own durably retained prepare-side material
+// (`publication::assemble_publication_bundle`) -- no replica ever applies
+// first. The historical (`v1`) fixture below still applies to obtain a real
+// `0x6424/v1` witness, since a physical-profile prepare retains no witness at
+// all (only a handoff-capable prepare does); that asymmetry is itself the
+// point of the v1 negative fixture.
+
+use consensus::bundle::{ArtifactManifest, LOGICAL_COMMITMENT_PROFILE, PublicationBundle};
+use runtime::{DurableObjectVersion, IndeterminateCommitReason};
+
+/// One replica that may retain publications: its own store, the identical
+/// installed fixture and its own registered signer.
+pub(crate) struct RetentionReplica {
+    pub(crate) store: MemoryDurableStateStore,
+    pub(super) fixture: Fixture,
+    pub(crate) signer: TestSigner,
+}
+
+impl RetentionReplica {
+    /// Prepares the shared transfer call on this replica, creating its local
+    /// nonce and object locks.
+    pub(super) fn prepare_transfer(&self, request: u8, nonce: u64) -> FastPathResult<FastVote> {
+        prepare_transfer(&self.store, &self.fixture, &self.signer, request, nonce)
+    }
+
+    /// Returns the current durable value of one exact key.
+    pub(crate) fn row(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.store
+            .get_versioned_durable(&context(), domain(), key)
+            .unwrap()
+            .value()
+            .map(<[u8]>::to_vec)
+    }
+
+    /// Writes one exact durable row under its observed revision. Test setup
+    /// only: no protocol path writes a foreign publication row.
+    pub(crate) fn put_row(&self, key: Vec<u8>, value: Vec<u8>) {
+        let observed: VersionedStateValue = self
+            .store
+            .get_versioned_durable(&context(), domain(), &key)
+            .unwrap();
+        let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+            domain(),
+            AtomicStateReadSet::new(vec![
+                StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
+            ])
+            .unwrap(),
+            AtomicStateMutationSet::new(vec![
+                StateMutationEntry::new(key, StateMutation::Put(value)).unwrap(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            self.store.commit_durable(&context(), transaction),
+            DurableCommitOutcome::Committed
+        );
+    }
+
+    /// Returns this replica's fast-path lock rows for the fixture's fee-source
+    /// object and its sender/epoch nonce lock.
+    pub(super) fn lock_rows(&self) -> Vec<Option<Vec<u8>>> {
+        let object_lock: Vec<u8> =
+            fastpath_lock_key(protocol().chain_id(), self.fixture.coin.id).unwrap();
+        let nonce_lock: Vec<u8> =
+            fastpath_nonce_lock_key(protocol().chain_id(), &sender(), protocol().epoch()).unwrap();
+        vec![self.row(&object_lock), self.row(&nonce_lock)]
+    }
+
+    /// Returns this replica's current head for the fixture's fee-source object.
+    pub(super) fn coin_head(&self) -> DurableObjectHead {
+        self.store
+            .get_object_head(&context(), domain(), self.fixture.coin.id)
+            .unwrap()
+    }
+
+    /// Returns any completed-request receipt under `request_id`.
+    pub(super) fn request_receipt(&self, request_id: [u8; 32]) -> Option<DurableRequestReceipt> {
+        self.store
+            .get_request_receipt(
+                &context(),
+                domain(),
+                DurableRequestId::new(request_id).unwrap(),
+            )
+            .unwrap()
+    }
+}
+
+fn retention_replica(logical: bool, signer_index: usize) -> RetentionReplica {
+    let store: MemoryDurableStateStore = memory_store();
+    let fixture: Fixture = if logical {
+        let profile: logical_generation::LogicalProfileRecord = install_logical_profile(&store);
+        install_with_profile(&store, Some(&profile))
+    } else {
+        install(&store)
+    };
+    let (mut signers, entries) = four_validators();
+    install_validator_set(
+        &store,
+        &context(),
+        domain(),
+        &resolver(),
+        protocol(),
+        entries,
+    )
+    .unwrap();
+    RetentionReplica {
+        store,
+        fixture,
+        signer: signers.swap_remove(signer_index),
+    }
+}
+
+/// A handoff-capable (`0x6424/v2`) replica, signing as the one validator that
+/// never participates in the quorums below, so retention is never confused
+/// with this replica's own fast-path vote.
+pub(crate) fn logical_replica() -> RetentionReplica {
+    retention_replica(true, 3)
+}
+
+/// A historical physical-profile (`0x6424/v1`) replica.
+pub(super) fn physical_replica() -> RetentionReplica {
+    retention_replica(false, 3)
+}
+
+/// Builds the shared transfer call's signed intent bytes.
+pub(super) fn transfer_bytes(fixture: &Fixture, request: u8, nonce: u64) -> Vec<u8> {
+    paid_call_with_access(
+        PaidCall {
+            fixture,
+            policy: &fixture.policy,
+            request,
+            nonce,
+            source: &fixture.coin,
+            entrypoint: "transfer",
+            arguments: public_standard_asset::transfer_arguments(&refund_account()).unwrap(),
+            access: vec![entry(&fixture.coin, objects::AccessMode::Write)],
+        },
+        ReservationAccessKind::Write,
+    )
+}
+
+/// Builds one complete, genuinely certified publication bundle for the shared
+/// transfer call, using the quorum formed by `subset`'s signers.
+pub(crate) fn transfer_bundle(
+    logical: bool,
+    request: u8,
+    nonce: u64,
+    subset: &[usize],
+) -> (PublicationBundle, FastCertificate) {
+    let replicas: Vec<RetentionReplica> = subset
+        .iter()
+        .map(|index| retention_replica(logical, *index))
+        .collect();
+    let votes: Vec<FastVote> = replicas
+        .iter()
+        .map(|replica| replica.prepare_transfer(request, nonce).unwrap())
+        .collect();
+    let certificate: FastCertificate = certifier(installed_validator_set())
+        .try_form_certificate(
+            votes[0].tx_hash,
+            votes[0].execution_effects_hash,
+            votes[0].locked_objects_digest,
+            &votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .expect("quorum reached");
+
+    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+    let bundle: PublicationBundle = if logical {
+        // Assembled purely from the first replica's own durably retained
+        // prepare-side material (its `prepare_transfer` call above already
+        // durably retained the witness and every required artifact, before
+        // that call's `FastVote` was ever returned): no replica applies
+        // anything here.
+        let assembler: &RetentionReplica = &replicas[0];
+        crate::fast_path::publication::assemble_publication_bundle(
+            &assembler.store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &transfer_bytes(&assembler.fixture, request, nonce),
+            &certificate_bytes,
+        )
+        .expect("assembling a bundle from prepared-only material, before any apply")
+    } else {
+        // A historical (`0x6424/v1`) prepare retains no prepare-side witness
+        // at all, so `assemble_publication_bundle` cannot be used here: this
+        // negative fixture applies once purely to obtain real `v1` witness
+        // bytes to feed into a bundle that `retain_publication` must then
+        // refuse on profile grounds -- proving the profile check runs before
+        // any closure derivation, not that v1 publication is supported.
+        let applier: &RetentionReplica = &replicas[0];
+        apply_transfer(
+            &applier.store,
+            &applier.fixture,
+            request,
+            nonce,
+            &certificate_bytes,
+        )
+        .unwrap();
+        let witness_key: Vec<u8> =
+            fastpath_commitment_witness_key(protocol().chain_id(), &[request; 32]).unwrap();
+        let witness: Vec<u8> = applier
+            .row(&witness_key)
+            .expect("apply persists the commitment witness");
+        PublicationBundle {
+            domain: domain(),
+            request_id: [request; 32],
+            commitment_profile: LOGICAL_COMMITMENT_PROFILE,
+            signed_intent: transfer_bytes(&applier.fixture, request, nonce),
+            certificate: certificate.clone(),
+            witness,
+            manifest: ArtifactManifest {
+                entries: Vec::new(),
+            },
+            contents: Vec::new(),
+        }
+    };
+
+    (bundle, certificate)
+}
+
+/// The default handoff-capable bundle: the quorum formed by signers 0/1/2.
+pub(crate) fn transfer_bundle_bytes(
+    request: u8,
+    nonce: u64,
+) -> (PublicationBundle, FastCertificate) {
+    transfer_bundle(true, request, nonce, &[0, 1, 2])
+}
+
+/// The same operation certified by a different, equally valid signer subset.
+pub(super) fn rebundle_with_other_subset(request: u8, nonce: u64) -> PublicationBundle {
+    transfer_bundle(true, request, nonce, &[1, 2, 3]).0
+}
+
+/// A historical physical-profile bundle, used to prove a `0x6424/v1` witness
+/// can never be retained as a publication.
+pub(super) fn physical_transfer_bundle_bytes(
+    request: u8,
+    nonce: u64,
+) -> (PublicationBundle, FastCertificate) {
+    transfer_bundle(false, request, nonce, &[0, 1, 2])
+}
+
+pub(crate) fn installed_validator_set() -> ValidatorSet {
+    let (_signers, entries) = four_validators();
+    ValidatorSet::new(
+        protocol().epoch(),
+        entries
+            .iter()
+            .map(|entry| ValidatorInfo {
+                id: entry.id,
+                voting_power: entry.voting_power,
+                signature_scheme: entry.signature_scheme,
+                public_key: entry.public_key.clone(),
+            })
+            .collect(),
+    )
+    .unwrap()
+}
+
+// --- DR-0154 apply-admission gate: prepare -> bundle -> ACKs -> AC -> apply -
+
+/// Retains `bundle_bytes` on fresh replicas at `subset` (each independently
+/// verifying and durably retaining the bundle -- none needs to have prepared
+/// this request itself) and forms the resulting quorum
+/// [`consensus::AvailabilityCertificate`].
+fn availability_certificate_bytes_for(bundle_bytes: &[u8], subset: &[usize]) -> Vec<u8> {
+    let votes: Vec<consensus::AvailabilityVote> = subset
+        .iter()
+        .map(|index| {
+            let replica: RetentionReplica = retention_replica(true, *index);
+            crate::fast_path::publication::retain_publication(
+                &replica.store,
+                &context(),
+                domain(),
+                &resolver(),
+                &[],
+                &protocol(),
+                bundle_bytes,
+                &replica.signer,
+            )
+            .unwrap()
+        })
+        .collect();
+    let certifier: consensus::AvailabilityCertifier = consensus::AvailabilityCertifier::new(
+        protocol().chain_id().clone(),
+        protocol().protocol_version(),
+        protocol().epoch(),
+        installed_validator_set(),
+    )
+    .unwrap();
+    let certificate: consensus::AvailabilityCertificate = certifier
+        .try_form_certificate(&votes[0].identity, &votes, &FastPathEd25519Verifier)
+        .unwrap()
+        .expect("three equal-power ACKs already form quorum");
+    consensus::encode_availability_certificate(&certificate).unwrap()
+}
+
+/// The complete real DR-0154 flow this slice implements: a genuine
+/// handoff-capable prepare on three independent replicas, a real
+/// [`FastCertificate`], a [`PublicationBundle`] assembled purely from one
+/// preparing replica's own durably retained material (no replica has applied
+/// anything at this point), three independent replicas retaining that bundle
+/// and forming a quorum [`consensus::AvailabilityCertificate`], and only then
+/// a successful apply -- both on a replica that prepared and, signerlessly,
+/// on a replica that never did.
+#[test]
+fn real_v2_prepare_bundle_three_acks_certificate_apply_succeeds_without_prior_apply() {
+    const REQUEST: u8 = 0x51;
+    let replicas: Vec<RetentionReplica> =
+        (0..3).map(|index| retention_replica(true, index)).collect();
+    let votes: Vec<FastVote> = replicas
+        .iter()
+        .map(|replica| replica.prepare_transfer(REQUEST, FIRST_PAID_NONCE).unwrap())
+        .collect();
+    let certificate: FastCertificate = certifier(installed_validator_set())
+        .try_form_certificate(
+            votes[0].tx_hash,
+            votes[0].execution_effects_hash,
+            votes[0].locked_objects_digest,
+            &votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .expect("three equal-power votes already form quorum");
+    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+    let signed_bytes: Vec<u8> = transfer_bytes(&replicas[0].fixture, REQUEST, FIRST_PAID_NONCE);
+
+    // No replica has applied anything yet: no certificate/settlement row
+    // exists on any of the three.
+    let certificate_key: Vec<u8> =
+        fastpath_certificate_key(protocol().chain_id(), &[REQUEST; 32]).unwrap();
+    for replica in &replicas {
+        assert_eq!(replica.row(&certificate_key), None);
+    }
+
+    // Assemble the canonical publication bundle purely from replica 0's own
+    // durably retained prepare-side material: read-only, no apply anywhere.
+    let bundle: PublicationBundle = crate::fast_path::publication::assemble_publication_bundle(
+        &replicas[0].store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &signed_bytes,
+        &certificate_bytes,
+    )
+    .expect("assembling a bundle from prepared-only material, before any apply");
+    let bundle_bytes: Vec<u8> = consensus::bundle::encode_publication_bundle(&bundle).unwrap();
+
+    // Three independent replicas retain the bundle and form the quorum
+    // availability certificate.
+    let availability_certificate_bytes: Vec<u8> =
+        availability_certificate_bytes_for(&bundle_bytes, &[0, 1, 2]);
+
+    // Apply on the replica that actually prepared.
+    let output: NodeOutput = fast_path::apply_after_publication(
+        &replicas[0].store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &replicas[0].fixture.policy,
+        &CountingEngine::new(),
+        &signed_bytes,
+        &certificate_bytes,
+        &availability_certificate_bytes,
+    )
+    .unwrap();
+    assert_eq!(receipt(&output).status, PaidExecutionStatus::Success);
+    assert!(replicas[0].row(&certificate_key).is_some());
+
+    // Signerless recovery succeeds identically on a fourth replica that
+    // never prepared this request at all.
+    let recovering: RetentionReplica = retention_replica(true, 3);
+    let recovering_signed_bytes: Vec<u8> =
+        transfer_bytes(&recovering.fixture, REQUEST, FIRST_PAID_NONCE);
+    let recovered: NodeOutput = fast_path::apply_with_recovery_after_publication(
+        &recovering.store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &recovering.fixture.policy,
+        &CountingEngine::new(),
+        &recovering_signed_bytes,
+        &certificate_bytes,
+        10,
+        &availability_certificate_bytes,
+    )
+    .unwrap();
+    assert_eq!(receipt(&recovered).status, PaidExecutionStatus::Success);
+}
+
+/// A handoff-capable apply through the *legacy* `apply` entry point (which
+/// never threads an availability certificate) is refused, and leaves every
+/// object lock, the sender/epoch nonce lock and the fee-source object head
+/// exactly as prepare left them: no certificate, settlement or commitment
+/// witness row is created either.
+#[test]
+fn apply_without_an_availability_certificate_refuses_and_leaves_state_and_locks_unchanged() {
+    const REQUEST: u8 = 0x52;
+    let replicas: Vec<RetentionReplica> =
+        (0..3).map(|index| retention_replica(true, index)).collect();
+    let votes: Vec<FastVote> = replicas
+        .iter()
+        .map(|replica| replica.prepare_transfer(REQUEST, FIRST_PAID_NONCE).unwrap())
+        .collect();
+    let certificate: FastCertificate = certifier(installed_validator_set())
+        .try_form_certificate(
+            votes[0].tx_hash,
+            votes[0].execution_effects_hash,
+            votes[0].locked_objects_digest,
+            &votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .expect("three equal-power votes already form quorum");
+    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+    let applier: &RetentionReplica = &replicas[0];
+    let before_locks: Vec<Option<Vec<u8>>> = applier.lock_rows();
+    let before_coin_head: DurableObjectHead = applier.coin_head();
+
+    let result = apply_transfer(
+        &applier.store,
+        &applier.fixture,
+        REQUEST,
+        FIRST_PAID_NONCE,
+        &certificate_bytes,
+    );
+    assert!(
+        matches!(result, Err(FastPathError::Invalid(_))),
+        "unexpected result: {result:?}"
+    );
+    assert_eq!(applier.lock_rows(), before_locks);
+    assert_eq!(applier.coin_head(), before_coin_head);
+    let certificate_key: Vec<u8> =
+        fastpath_certificate_key(protocol().chain_id(), &[REQUEST; 32]).unwrap();
+    assert_eq!(applier.row(&certificate_key), None);
+}
+
+/// An availability certificate that verifies but attests a *different*
+/// request id is refused just as fail-closed as no certificate at all, and
+/// changes nothing.
+#[test]
+fn apply_after_publication_with_a_mismatched_availability_certificate_refuses_and_leaves_state_and_locks_unchanged()
+ {
+    const REQUEST: u8 = 0x53;
+    const OTHER_REQUEST: u8 = 0x54;
+    let replicas: Vec<RetentionReplica> =
+        (0..3).map(|index| retention_replica(true, index)).collect();
+    let votes: Vec<FastVote> = replicas
+        .iter()
+        .map(|replica| replica.prepare_transfer(REQUEST, FIRST_PAID_NONCE).unwrap())
+        .collect();
+    let certificate: FastCertificate = certifier(installed_validator_set())
+        .try_form_certificate(
+            votes[0].tx_hash,
+            votes[0].execution_effects_hash,
+            votes[0].locked_objects_digest,
+            &votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .expect("three equal-power votes already form quorum");
+    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+
+    // A genuine, validly signed availability certificate -- but for a
+    // completely different operation on entirely independent replicas (own
+    // fresh stores and sender-nonce sequences), so it shares nothing with
+    // `REQUEST` except being certified under the same validator set/epoch.
+    let other_replicas: Vec<RetentionReplica> =
+        (0..3).map(|index| retention_replica(true, index)).collect();
+    let other_votes: Vec<FastVote> = other_replicas
+        .iter()
+        .map(|replica| {
+            replica
+                .prepare_transfer(OTHER_REQUEST, FIRST_PAID_NONCE)
+                .unwrap()
+        })
+        .collect();
+    let other_certificate: FastCertificate = certifier(installed_validator_set())
+        .try_form_certificate(
+            other_votes[0].tx_hash,
+            other_votes[0].execution_effects_hash,
+            other_votes[0].locked_objects_digest,
+            &other_votes,
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .expect("three equal-power votes already form quorum");
+    let other_certificate_bytes: Vec<u8> =
+        consensus::encode_fast_certificate(&other_certificate).unwrap();
+    let other_signed_bytes: Vec<u8> =
+        transfer_bytes(&other_replicas[0].fixture, OTHER_REQUEST, FIRST_PAID_NONCE);
+    let other_bundle: PublicationBundle =
+        crate::fast_path::publication::assemble_publication_bundle(
+            &other_replicas[0].store,
+            &context(),
+            domain(),
+            &resolver(),
+            &[],
+            &protocol(),
+            &other_signed_bytes,
+            &other_certificate_bytes,
+        )
+        .unwrap();
+    let other_bundle_bytes: Vec<u8> =
+        consensus::bundle::encode_publication_bundle(&other_bundle).unwrap();
+    let mismatched_availability_certificate_bytes: Vec<u8> = {
+        let votes: Vec<consensus::AvailabilityVote> = other_replicas
+            .iter()
+            .map(|replica| {
+                crate::fast_path::publication::retain_publication(
+                    &replica.store,
+                    &context(),
+                    domain(),
+                    &resolver(),
+                    &[],
+                    &protocol(),
+                    &other_bundle_bytes,
+                    &replica.signer,
+                )
+                .unwrap()
+            })
+            .collect();
+        let certifier: consensus::AvailabilityCertifier = consensus::AvailabilityCertifier::new(
+            protocol().chain_id().clone(),
+            protocol().protocol_version(),
+            protocol().epoch(),
+            installed_validator_set(),
+        )
+        .unwrap();
+        let certificate: consensus::AvailabilityCertificate = certifier
+            .try_form_certificate(&votes[0].identity, &votes, &FastPathEd25519Verifier)
+            .unwrap()
+            .expect("three equal-power ACKs already form quorum");
+        consensus::encode_availability_certificate(&certificate).unwrap()
+    };
+
+    let applier: &RetentionReplica = &replicas[0];
+    let before_locks: Vec<Option<Vec<u8>>> = applier.lock_rows();
+    let before_coin_head: DurableObjectHead = applier.coin_head();
+    let signed_bytes: Vec<u8> = transfer_bytes(&applier.fixture, REQUEST, FIRST_PAID_NONCE);
+
+    let result = fast_path::apply_after_publication(
+        &applier.store,
+        &MemoryBlobStore::default(),
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &applier.fixture.policy,
+        &CountingEngine::new(),
+        &signed_bytes,
+        &certificate_bytes,
+        &mismatched_availability_certificate_bytes,
+    );
+    assert!(
+        matches!(result, Err(FastPathError::Invalid(_))),
+        "unexpected result: {result:?}"
+    );
+    assert_eq!(applier.lock_rows(), before_locks);
+    assert_eq!(applier.coin_head(), before_coin_head);
+    let certificate_key: Vec<u8> =
+        fastpath_certificate_key(protocol().chain_id(), &[REQUEST; 32]).unwrap();
+    assert_eq!(applier.row(&certificate_key), None);
+}
+
+/// Historical (`0x6424/v1`) apply behavior is byte-identical to before this
+/// slice: the legacy `apply` entry point succeeds with no availability
+/// certificate at all, and `apply_after_publication` behaves exactly like
+/// `apply` for a v1 store (the certificate bytes are accepted but never
+/// required or inspected).
+#[test]
+fn v1_apply_remains_unchanged_and_requires_no_availability_certificate() {
+    const REQUEST: u8 = 0x55;
+    let replica: RetentionReplica = retention_replica(false, 0);
+    let vote_a: FastVote = replica.prepare_transfer(REQUEST, FIRST_PAID_NONCE).unwrap();
+    let replica_b: RetentionReplica = retention_replica(false, 1);
+    let vote_b: FastVote = replica_b
+        .prepare_transfer(REQUEST, FIRST_PAID_NONCE)
+        .unwrap();
+    let replica_c: RetentionReplica = retention_replica(false, 2);
+    let vote_c: FastVote = replica_c
+        .prepare_transfer(REQUEST, FIRST_PAID_NONCE)
+        .unwrap();
+    let certificate: FastCertificate = certifier(installed_validator_set())
+        .try_form_certificate(
+            vote_a.tx_hash,
+            vote_a.execution_effects_hash,
+            vote_a.locked_objects_digest,
+            &[vote_a, vote_b, vote_c],
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .expect("three equal-power votes already form quorum");
+    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+
+    let output: NodeOutput = apply_transfer(
+        &replica.store,
+        &replica.fixture,
+        REQUEST,
+        FIRST_PAID_NONCE,
+        &certificate_bytes,
+    )
+    .expect("v1 apply requires no availability certificate");
+    assert_eq!(receipt(&output).status, PaidExecutionStatus::Success);
+
+    // No prepared witness/artifact material exists for a v1 request: there
+    // is nothing to assemble a publication bundle from, by design.
+    let witness_key: Vec<u8> = crate::fast_path::prepared_material::fastpath_prepared_witness_key(
+        protocol().chain_id(),
+        &[REQUEST; 32],
+    )
+    .unwrap();
+    assert_eq!(replica.row(&witness_key), None);
+}
+
+/// [`publication::assemble_publication_bundle`] is read-only and
+/// restart-safe: it succeeds identically after closing and reopening one
+/// preparing replica's real SQLite-backed store, using only durably retained
+/// material -- no in-process state survives the reopen.
+#[test]
+fn assemble_publication_bundle_is_restart_safe_across_a_real_sqlite_reopen() {
+    let unique: u128 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory: std::path::PathBuf = std::env::temp_dir().join(format!(
+        "fastpath-assemble-restart-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    const REQUEST: u8 = 0x56;
+    let (signers, entries) = four_validators();
+    let file: ValidatorFiles = ValidatorFiles::new(&directory, 0, entries[0].id);
+    let (fixture, original_vote_a): (Fixture, FastVote) = {
+        let (store, _blob_store) = file.open();
+        let profile: logical_generation::LogicalProfileRecord = install_logical_profile(&store);
+        let fixture: Fixture = install_with_profile(&store, Some(&profile));
+        install_validator_set(
+            &store,
+            &context(),
+            domain(),
+            &resolver(),
+            protocol(),
+            entries.clone(),
+        )
+        .unwrap();
+        let vote: FastVote =
+            prepare_transfer(&store, &fixture, &signers[0], REQUEST, FIRST_PAID_NONCE).unwrap();
+        (fixture, vote)
+        // `store`/`_blob_store` dropped here: the SQLite connection closes.
+    };
+
+    let replica_b: RetentionReplica = retention_replica(true, 1);
+    let vote_b: FastVote = replica_b
+        .prepare_transfer(REQUEST, FIRST_PAID_NONCE)
+        .unwrap();
+    let replica_c: RetentionReplica = retention_replica(true, 2);
+    let vote_c: FastVote = replica_c
+        .prepare_transfer(REQUEST, FIRST_PAID_NONCE)
+        .unwrap();
+
+    // Reopen validator 0's real SQLite store from a fresh connection -- a
+    // process-restart proxy -- and confirm exact prepare replay returns the
+    // identical retained vote, exactly as a genuine restarted validator
+    // resubmitting the same request would observe.
+    let (reopened_store, reopened_blob_store) = file.open();
+    let signed_bytes: Vec<u8> = transfer_bytes(&fixture, REQUEST, FIRST_PAID_NONCE);
+    let vote_a: FastVote = prepare(
+        &reopened_store,
+        &reopened_blob_store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &base_policy(),
+        &fixture.policy,
+        &CountingEngine::new(),
+        &signers[0],
+        &signed_bytes,
+        10,
+    )
+    .expect("exact prepare replay after reopen returns the retained vote");
+    assert_eq!(vote_a, original_vote_a);
+    let certificate: FastCertificate = certifier(installed_validator_set())
+        .try_form_certificate(
+            vote_a.tx_hash,
+            vote_a.execution_effects_hash,
+            vote_a.locked_objects_digest,
+            &[vote_a, vote_b, vote_c],
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .expect("three equal-power votes already form quorum");
+    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+
+    let bundle: PublicationBundle = crate::fast_path::publication::assemble_publication_bundle(
+        &reopened_store,
+        &context(),
+        domain(),
+        &resolver(),
+        &[],
+        &protocol(),
+        &signed_bytes,
+        &certificate_bytes,
+    )
+    .expect("restart-safe assembly from a fresh SQLite connection");
+    assert_eq!(bundle.request_id, [REQUEST; 32]);
+    assert!(
+        !bundle.manifest.entries.is_empty(),
+        "the real fixture transfer has a nonempty required closure"
+    );
+}
+
+/// Delegates every read to a real store but reports every *state* commit as
+/// indeterminate, so retention can never expose a signature for an ambiguous
+/// write.
+pub(super) struct IndeterminateCommitStore {
+    inner: MemoryDurableStateStore,
+}
+
+impl IndeterminateCommitStore {
+    pub(super) const fn new(inner: MemoryDurableStateStore) -> Self {
+        Self { inner }
+    }
+}
+
+impl runtime::DurableDomainStateStore for IndeterminateCommitStore {
+    fn get_versioned_durable(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        key: &[u8],
+    ) -> Result<VersionedStateValue, DurableReadError> {
+        self.inner.get_versioned_durable(context, domain, key)
+    }
+    fn commit_durable(
+        &self,
+        _context: &DurableOperationContext,
+        _transaction: AtomicStateTransaction,
+    ) -> DurableCommitOutcome {
+        DurableCommitOutcome::Indeterminate(IndeterminateCommitReason::ConnectionLost)
+    }
+}
+
+impl StructuredDurableDomainStateStore for IndeterminateCommitStore {
+    fn get_object_head(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+    ) -> Result<DurableObjectHead, DurableReadError> {
+        self.inner.get_object_head(context, domain, object_id)
+    }
+    fn get_object_version(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+        object_version: DurableObjectVersion,
+    ) -> Result<Option<DurableObjectVersionRecord>, DurableReadError> {
+        self.inner
+            .get_object_version(context, domain, object_id, object_version)
+    }
+    fn get_request_receipt(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        request_id: DurableRequestId,
+    ) -> Result<Option<DurableRequestReceipt>, DurableReadError> {
+        self.inner.get_request_receipt(context, domain, request_id)
+    }
+    fn commit_invocation(
+        &self,
+        context: &DurableOperationContext,
+        transaction: DurableInvocationTransaction,
+    ) -> DurableCommitOutcome {
+        self.inner.commit_invocation(context, transaction)
+    }
 }

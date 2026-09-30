@@ -39,21 +39,91 @@
 //! own free-form invariant string can fall into and become a committed
 //! rejection. Every existing handler failure this module does not itself
 //! positively classify defaults to a stop.
+//!
+//! ## Epoch-handoff integration status
+//!
+//! A signed-genesis minimum height and a committed-eligibility check now
+//! warrant `Freeze` before proposal/vote and at ordered execution; successful
+//! `Freeze` closes admission for ordinary and ordered business mutations and
+//! fresh publication-retention ACKs. `DrainSet` is now integrated as a
+//! second closed-admission control command ([`drain_set`]): before honest
+//! proposal/vote it locally re-verifies exact drain-union readiness via
+//! [`drain_union::verify_drain_ready_into`] and folds every resulting
+//! revision assertion into the same durable commit as the signed
+//! proposal/vote; at committed execution it re-verifies readiness through the
+//! staging store and installs the one-per-epoch immutable
+//! [`drain_set::DrainSetRecord`]. [`drain_completion`] (DR-0161) adds a
+//! bounded resumable local state machine that advances at most one committed
+//! DrainSet member per call, requires a matching typed original receipt
+//! before ever recording a member as complete, and -- once every selected
+//! signer's confirmed entries are exhausted and the receipt-backed running
+//! union count and digest match the committed record -- persists an immutable
+//! local completion marker plus a read-only `verify_drain_complete_into` for
+//! a future Seal vote to fold into its own atomic commit.
+//! [`suffix_predicate::verify_business_free_suffix_into`] adds the
+//! complementary read-only check over the shared HotStuff engine itself: the
+//! committed prefix is fully applied and every certified `high_qc`/`locked_qc`
+//! ancestor above it is candidate-free. Even `Freeze`/`DrainSet` would create
+//! a late receipt/outcome if committed. This is still only one part of DR-0154. `Seal`,
+//! verified next-set readiness and activation, and retirement of the older
+//! standalone epoch-transition route must be integrated before this path can
+//! be enabled as a complete handoff. [`business_free_barrier`] composes the
+//! receipt-backed drain completion and suffix predicate into one local CAS
+//! marker, and fresh writers reject that marker. It is not a portable cut.
+//! [`terminal_anchor`] (DR-0165) additionally binds the local DrainSet row's
+//! claimed commit height to its exact signed candidate and archived committed
+//! proof, then derives an already certified candidate-free three-chain after
+//! that height under one caller-owned CAS read set. This still does not prove
+//! a portable state/artifact snapshot or authorize Seal or activation.
 use super::*;
 
+mod business_free_barrier;
 mod candidate;
-mod engine;
+mod committed_history;
+mod drain_completion;
+mod drain_set;
+mod drain_union;
+pub(crate) mod engine;
 mod evidence_submission;
+mod freeze;
+mod frontier;
 mod identity;
 mod policy;
 mod preflight;
 mod reservation;
 mod staging;
+mod suffix_predicate;
+mod terminal_anchor;
 
+pub use business_free_barrier::{
+    BusinessFreeBarrierError, advance_business_free_barrier, read_business_free_barrier,
+};
 pub use candidate::{
     MAX_ORDERED_CANDIDATE_INTENT_BYTES, OrderedCandidate, OrderedOperationKind,
     decode_ordered_candidate, encode_ordered_candidate,
 };
+pub use committed_history::{
+    MAX_COMMITTED_HISTORY_PAGE, VerifiedCommittedHistoryPage, VerifiedCommittedHistoryTip,
+    verify_stored_committed_history_page,
+};
+pub use drain_completion::{
+    DrainCompletionError, DrainCompletionStep, advance_drain_completion, drain_completion_key,
+    drain_completion_progress_key, verify_drain_complete, verify_drain_complete_into,
+};
+pub(crate) use drain_set::drain_set_record_key;
+pub use drain_set::{
+    DrainSetIntent, DrainSetRecord, decode_drain_set_intent, decode_drain_set_record,
+    encode_drain_set_intent, encode_drain_set_record,
+};
+pub use drain_union::{
+    DrainSignerError, DrainSignerProgress, DrainUnionStep, MAX_DRAIN_SIGNER_PAGE_ENTRIES,
+    MAX_DRAIN_UNION_SIGNERS, advance_drain_union, confirm_drain_signer_entry,
+    drain_signer_entry_key, drain_signer_progress_key, drain_union_progress_key,
+    drain_union_ready_key, import_staged_drain_publication, ingest_drain_signer_page,
+    read_drain_signer_progress, staged_drain_signer_identity, verify_drain_ready,
+    verify_drain_ready_into,
+};
+pub(crate) use engine::business_free_barrier_key;
 pub use engine::{
     OrderedEventOutput, OrderedOutcome, OrderedProposal, OrderedStatus,
     decode_ordered_event_output, decode_ordered_outcome, decode_ordered_proposal,
@@ -66,12 +136,26 @@ pub use evidence_submission::{
     MAX_ORDERED_EVIDENCE_SUBMISSION_BYTES, OrderedEvidenceSubmission,
     decode_ordered_evidence_submission, encode_ordered_evidence_submission,
 };
+pub use freeze::{
+    AdmissionClosureRecord, FreezeIntent, decode_admission_closure_record, decode_freeze_intent,
+    encode_admission_closure_record, encode_freeze_intent,
+};
+pub(crate) use freeze::{admission_closure_key, fence_admission_open};
+pub use frontier::{
+    FrozenFrontierError, FrozenFrontierStep, advance_frozen_frontier, read_frozen_frontier_page,
+};
 pub use policy::{
     ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE, OrderedEconomicsEnvironment, OrderedEconomicsPolicy,
     authenticate_candidate, ordered_economics_authority_anchor,
 };
 pub(crate) use reservation::OrderedLegAdmission;
 pub(crate) use staging::StagingStore;
+pub use suffix_predicate::{
+    SuffixPredicateError, verify_business_free_suffix, verify_business_free_suffix_into,
+};
+pub use terminal_anchor::{
+    CandidateFreeTerminalWitness, TerminalAnchorError, derive_candidate_free_terminal_into,
+};
 
 /// Maximum address-owned object inputs one admitted candidate may reserve.
 /// DR-0153's closed profile only ever reserves a bond deposit leg's single
@@ -82,11 +166,13 @@ pub(crate) const MAX_ORDERED_RESERVED_OBJECTS: usize = 2;
 /// One typed semantic refusal: a deterministic business outcome decided
 /// against a healthy, present, decodable committed row.
 ///
-/// Every variant is re-evaluable by any replica from the same committed
-/// state, moves no value, advances no sender nonce, and releases only the
-/// refused candidate's own reservations. Nothing that depends on a row being
-/// *absent*, tombstoned, undecodable or fenced is representable here: those
-/// are [`OrderedEconomicsError::Prerequisite`] stops.
+/// Business variants are re-evaluable by any replica from the same committed
+/// state. `ForeignDrainSet` additionally requires the same locally retained
+/// DrainSet-ready selection; a replica still importing that selection stops
+/// before deciding the refusal. Every variant moves no value, advances no
+/// sender nonce, and releases only the refused candidate's own reservations.
+/// Tombstoned, undecodable or fenced prerequisites are stops, not refusals;
+/// `NoFreeze` is the explicitly modeled initially absent closure exception.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrderedRefusal {
     /// The signed `expected_generation` does not equal the healthy committed
@@ -108,6 +194,36 @@ pub enum OrderedRefusal {
     /// This request id already carries a committed receipt over different
     /// canonical bytes (it was spent through another path).
     RequestCommittedElsewhere,
+    /// DR-0154: a business candidate (every kind other than
+    /// [`OrderedOperationKind::Freeze`] and [`OrderedOperationKind::DrainSet`]) committed after admission was
+    /// already closed by an earlier committed `Freeze`. The deterministic,
+    /// authenticated no-effect closed-epoch refusal: no value or nonce
+    /// movement, and the original retained outcome (if any) is untouched.
+    ClosedEpoch,
+    /// DR-0154: a second `Freeze` candidate committed after admission was
+    /// already closed by an earlier one. There is no unfreeze in this
+    /// profile, so a later `Freeze` is refused rather than re-applied.
+    AlreadyFrozen,
+    /// The committed Freeze candidate appeared below the signed genesis
+    /// minimum ordered proposal height.
+    PrematureFreeze,
+    /// The advisory next set was structurally valid, but a healthy committed
+    /// bond or resource policy no longer makes one of its members eligible.
+    IneligibleNextSet,
+    /// DR-0154/DR-0157: a `DrainSet` candidate committed before any `Freeze`
+    /// was committed for this epoch. Symmetric with [`Self::ClosedEpoch`]:
+    /// every replica decides this identically from the same absent closure
+    /// row.
+    NoFreeze,
+    /// DR-0154/DR-0157: a second `DrainSet` candidate committed after this
+    /// epoch's one-per-epoch immutable [`super::drain_set::DrainSetRecord`]
+    /// was already installed. There is no re-selection in this profile.
+    AlreadyDrained,
+    /// DR-0154/DR-0157: the committed `DrainSet` candidate's declared
+    /// [`consensus::DrainUnionIdentity`] disagrees with this replica's own
+    /// independently reconstructed, quorum-verified local ready union for the
+    /// exact same selected-signer roster and committed Freeze.
+    ForeignDrainSet,
 }
 
 impl OrderedRefusal {
@@ -121,6 +237,13 @@ impl OrderedRefusal {
             Self::StaleSenderNonce => 5,
             Self::ShareUnavailable => 6,
             Self::RequestCommittedElsewhere => 7,
+            Self::ClosedEpoch => 8,
+            Self::AlreadyFrozen => 9,
+            Self::PrematureFreeze => 10,
+            Self::IneligibleNextSet => 11,
+            Self::NoFreeze => 12,
+            Self::AlreadyDrained => 13,
+            Self::ForeignDrainSet => 14,
         }
     }
 
@@ -133,6 +256,13 @@ impl OrderedRefusal {
             5 => Ok(Self::StaleSenderNonce),
             6 => Ok(Self::ShareUnavailable),
             7 => Ok(Self::RequestCommittedElsewhere),
+            8 => Ok(Self::ClosedEpoch),
+            9 => Ok(Self::AlreadyFrozen),
+            10 => Ok(Self::PrematureFreeze),
+            11 => Ok(Self::IneligibleNextSet),
+            12 => Ok(Self::NoFreeze),
+            13 => Ok(Self::AlreadyDrained),
+            14 => Ok(Self::ForeignDrainSet),
             _ => Err(NodeCoreError::PersistenceInvariant(
                 "unknown ordered refusal tag",
             )),
@@ -151,6 +281,17 @@ impl OrderedRefusal {
             Self::ShareUnavailable => "claimed fee share is unavailable on the committed row",
             Self::RequestCommittedElsewhere => {
                 "request id already carries a different committed receipt"
+            }
+            Self::ClosedEpoch => {
+                "ordered candidate committed after admission was closed by a freeze"
+            }
+            Self::AlreadyFrozen => "admission is already closed by an earlier committed freeze",
+            Self::PrematureFreeze => "freeze precedes the signed epoch-end minimum height",
+            Self::IneligibleNextSet => "freeze advisory next set is no longer eligible",
+            Self::NoFreeze => "drain set committed before any freeze was committed",
+            Self::AlreadyDrained => "drain set already committed for this epoch",
+            Self::ForeignDrainSet => {
+                "drain set union identity disagrees with the local ready union"
             }
         }
     }

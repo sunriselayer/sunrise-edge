@@ -5,6 +5,9 @@
 use core::fmt;
 use std::error::Error;
 
+mod execution_generation;
+pub use execution_generation::{ExecutionGeneration, ExecutionGenerationOverflow};
+
 /// Validation errors for protocol identifiers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeError {

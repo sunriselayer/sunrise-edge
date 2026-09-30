@@ -8,6 +8,9 @@
 //! and rejection rules by construction, never two independently
 //! maintained copies.
 
+mod outbox_guard;
+mod portable;
+
 use crate::backend::{
     SqlBackend, SqlBackendError, SqlSession, SqlSessionError, SqlValue, TransactionBudget,
     TransactionDecision,
@@ -43,6 +46,9 @@ enum PreCommitFailure {
     SchemaMismatch,
     InvalidPersistedState,
     Unavailable,
+    MutationSequenceOverflow,
+    Changed,
+    NonemptyOutbox,
 }
 
 impl PreCommitFailure {
@@ -55,6 +61,9 @@ impl PreCommitFailure {
             Self::SchemaMismatch => DurableReadError::SchemaMismatch,
             Self::InvalidPersistedState => DurableReadError::InvalidPersistedState,
             Self::Unavailable => DurableReadError::Unavailable,
+            Self::MutationSequenceOverflow | Self::Changed | Self::NonemptyOutbox => {
+                DurableReadError::InvalidPersistedState
+            }
         }
     }
 
@@ -67,6 +76,8 @@ impl PreCommitFailure {
             Self::SchemaMismatch => DurableCommitRejection::SchemaMismatch,
             Self::InvalidPersistedState => DurableCommitRejection::InvalidPersistedState,
             Self::Unavailable => DurableCommitRejection::UnavailableBeforeCommit,
+            Self::MutationSequenceOverflow => DurableCommitRejection::CommitSequenceOverflow,
+            Self::Changed | Self::NonemptyOutbox => DurableCommitRejection::InvalidPersistedState,
         }
     }
 
@@ -79,6 +90,10 @@ impl PreCommitFailure {
             Self::SchemaMismatch => DurableOutboxClaimRejection::SchemaMismatch,
             Self::InvalidPersistedState => DurableOutboxClaimRejection::InvalidPersistedState,
             Self::Unavailable => DurableOutboxClaimRejection::UnavailableBeforeCommit,
+            Self::MutationSequenceOverflow => DurableOutboxClaimRejection::ArithmeticOverflow,
+            Self::Changed | Self::NonemptyOutbox => {
+                DurableOutboxClaimRejection::InvalidPersistedState
+            }
         }
     }
 
@@ -93,6 +108,12 @@ impl PreCommitFailure {
                 DurableOutboxAcknowledgementRejection::InvalidPersistedState
             }
             Self::Unavailable => DurableOutboxAcknowledgementRejection::UnavailableBeforeCommit,
+            Self::MutationSequenceOverflow => {
+                DurableOutboxAcknowledgementRejection::ArithmeticOverflow
+            }
+            Self::Changed | Self::NonemptyOutbox => {
+                DurableOutboxAcknowledgementRejection::InvalidPersistedState
+            }
         }
     }
 }
@@ -112,6 +133,8 @@ impl From<schema::SchemaError> for PreCommitFailure {
             | schema::SchemaError::InvalidPersistedMetadata => Self::SchemaMismatch,
             schema::SchemaError::ZeroWriterFence => Self::InvalidPersistedState,
             schema::SchemaError::WriterFenceMismatch { .. } => Self::InvalidPersistedState,
+            schema::SchemaError::MutationSequenceOverflow => Self::MutationSequenceOverflow,
+            schema::SchemaError::MutationSequenceConflict => Self::InvalidPersistedState,
         }
     }
 }
@@ -1354,6 +1377,8 @@ impl<B: SqlBackend> DurableDomainStateStore for SqlDurableEngine<B> {
                     validate_authority(&metadata, context, now)
                         .map_err(PreCommitFailure::into_commit_rejection)?;
                     validate_state_reads(session, transaction.reads())?;
+                    schema::advance_mutation_sequence(session, metadata.mutation_sequence())
+                        .map_err(|error| PreCommitFailure::from(error).into_commit_rejection())?;
                     apply_state_mutations(session, transaction.reads(), transaction.mutations())?;
                     check_deadline_before_commit(session, context)
                         .map_err(PreCommitFailure::into_commit_rejection)
@@ -1466,6 +1491,8 @@ impl<B: SqlBackend> StructuredDurableDomainStateStore for SqlDurableEngine<B> {
                         invocation.object_changes().reads(),
                     )?;
                     let prepared = prepare_object_mutations(session, invocation.object_changes())?;
+                    schema::advance_mutation_sequence(session, metadata.mutation_sequence())
+                        .map_err(|error| PreCommitFailure::from(error).into_commit_rejection())?;
                     if let Some(state) = invocation.state() {
                         apply_state_mutations(session, state.reads(), state.mutations())?;
                     }
@@ -1562,6 +1589,10 @@ impl<B: SqlBackend> IndexedOutboxRepository for SqlDurableEngine<B> {
                         {
                             return Ok(DurableOutboxClaimOutcome::NoDueWork);
                         }
+                        schema::advance_mutation_sequence(session, metadata.mutation_sequence())
+                            .map_err(|error| {
+                                PreCommitFailure::from(error).into_claim_rejection()
+                            })?;
                         let claim = install_outbox_claim(
                             session,
                             delivery,
@@ -1625,6 +1656,10 @@ impl<B: SqlBackend> IndexedOutboxRepository for SqlDurableEngine<B> {
                         else {
                             return Ok(DurableOutboxClaimOutcome::NoDueWork);
                         };
+                        schema::advance_mutation_sequence(session, metadata.mutation_sequence())
+                            .map_err(|error| {
+                                PreCommitFailure::from(error).into_claim_rejection()
+                            })?;
                         let claim = install_outbox_claim(
                             session,
                             delivery,
@@ -1739,6 +1774,9 @@ fn acknowledge_outbox_step(
     };
     if next_message_index > delivery.message_count {
         return reject(Rejection::InvalidPersistedState);
+    }
+    if let Err(error) = schema::advance_mutation_sequence(session, metadata.mutation_sequence()) {
+        return reject(PreCommitFailure::from(error).into_acknowledgement_rejection());
     }
     let attempt_updated = session.exec(
         "UPDATE durable_outbox_attempts SET status = ?1 WHERE lease_id = ?2 AND status = ?3",

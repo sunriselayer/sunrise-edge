@@ -23,16 +23,33 @@ use std::error::Error;
 use validator_set::{ValidatorSet, ValidatorSetError};
 
 mod availability;
+mod commit_proof;
 mod durable;
 mod epoch_transition;
 mod equivocation;
 mod fast_vote;
 #[cfg(test)]
 mod test_support;
+pub use availability::frontier::{
+    FrontierError, FrozenFrontierAccumulator, FrozenFrontierCertifier, FrozenFrontierIdentity,
+    FrozenFrontierPage, FrozenFrontierPageVerifier, FrozenFrontierVote,
+    MAX_FROZEN_FRONTIER_PAGE_BYTES, MAX_FROZEN_FRONTIER_PAGE_ENTRIES,
+    decode_frozen_frontier_identity, decode_frozen_frontier_page, decode_frozen_frontier_vote,
+    encode_frozen_frontier_identity, encode_frozen_frontier_page, encode_frozen_frontier_vote,
+    verify_frozen_frontier, verify_frozen_frontier_quorum,
+};
+pub use availability::union::{
+    DrainUnionAccumulator, DrainUnionIdentity, MAX_DRAIN_UNION_SIGNERS,
+    decode_drain_union_identity, encode_drain_union_identity,
+};
 pub use availability::{
-    AvailabilityCertificate, AvailabilityCertifier, AvailabilityIdentity, AvailabilityVote,
+    AvailabilityCertificate, AvailabilityCertifier, AvailabilityIdentity, AvailabilityVote, bundle,
     decode_availability_certificate, decode_availability_identity, decode_availability_vote,
     encode_availability_certificate, encode_availability_identity, encode_availability_vote,
+};
+pub use commit_proof::{
+    CommittedBlockProof, MAX_ENCODED_COMMITTED_BLOCK_PROOF_BYTES, decode_committed_block_proof,
+    encode_committed_block_proof,
 };
 pub use durable::{
     decode_consensus_state, decode_proposal, decode_quorum_certificate, decode_vote,
@@ -288,6 +305,23 @@ pub enum ConsensusError {
         /// Maximum permitted length in bytes.
         max: usize,
     },
+    /// A decoded [`CommittedBlockProof`] did not re-encode to the exact
+    /// input bytes.
+    NonCanonicalCommittedBlockProof,
+    /// A [`CommittedBlockProof`]'s embedded `committed`/`child`/`grandchild`
+    /// proposals or `grandchild_certificate` did not chain together exactly
+    /// as the three-chain commit rule requires (Delivery 3 Unit 13).
+    CommittedBlockProofChainMismatch(&'static str),
+    /// A [`CommittedBlockProof`]'s `committed` proposal did not match the
+    /// [`CommittedBlock`] it was presented to prove.
+    CommittedBlockProofIdentityMismatch,
+    /// [`ChainedHotStuff`] committed a block but could not assemble a
+    /// complete [`CommittedBlockProof`] for it from pre-prune state. This is
+    /// unreachable given the height/justify invariants
+    /// [`ChainedHotStuff::validate_proposal`] enforces on every admitted
+    /// proposal; treated as a hard error (fail closed) rather than ever
+    /// returning a commit with no proof.
+    MissingCommittedBlockProof,
 }
 
 impl fmt::Display for ConsensusError {
@@ -434,6 +468,20 @@ impl fmt::Display for ConsensusError {
             Self::EncodedFrameTooLarge { kind, actual, max } => write!(
                 f,
                 "encoded {kind} frame is {actual} bytes, maximum is {max}"
+            ),
+            Self::NonCanonicalCommittedBlockProof => {
+                write!(f, "committed block proof is not canonically encoded")
+            }
+            Self::CommittedBlockProofChainMismatch(reason) => {
+                write!(f, "committed block proof chain mismatch: {reason}")
+            }
+            Self::CommittedBlockProofIdentityMismatch => write!(
+                f,
+                "committed block proof does not prove the expected committed block"
+            ),
+            Self::MissingCommittedBlockProof => write!(
+                f,
+                "a newly committed block has no complete three-chain proof"
             ),
         }
     }
@@ -660,6 +708,13 @@ impl ConsensusState {
     pub fn known_proposal(&self, digest: &Digest32) -> Option<&ConsensusProposal> {
         self.known_proposals.get(digest)
     }
+
+    /// Whether this exact digest is retained as committed. The engine keeps
+    /// the current committed tip in this set even after pruning older heights.
+    #[must_use]
+    pub fn contains_committed(&self, digest: &Digest32) -> bool {
+        self.committed.contains(digest)
+    }
 }
 
 /// Result of one deterministic consensus transition.
@@ -671,6 +726,12 @@ pub struct ConsensusOutput {
     pub outbound_messages: Vec<ConsensusMessage>,
     /// Blocks newly committed by this transition.
     pub committed_blocks: Vec<CommittedBlock>,
+    /// A self-contained three-chain [`CommittedBlockProof`] for every entry
+    /// in `committed_blocks`, in the same order, each derived from state as
+    /// it stood immediately before pruning (Delivery 3 Unit 13). Populated
+    /// by both [`ConsensusEngine::on_event`] and
+    /// [`ChainedHotStuff::on_observer_event`].
+    pub committed_proofs: Vec<CommittedBlockProof>,
     /// Whether a validated tick advanced the local view.
     pub view_advanced: bool,
 }
@@ -820,6 +881,7 @@ impl ChainedHotStuff {
         &self.validator_set
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn process_proposal<S: ConsensusSigner, V: ConsensusVerifier>(
         &self,
         state: &mut ConsensusState,
@@ -828,14 +890,21 @@ impl ChainedHotStuff {
         verifier: &V,
         outbound: &mut Vec<ConsensusMessage>,
         committed: &mut Vec<CommittedBlock>,
+        committed_proofs: &mut Vec<CommittedBlockProof>,
     ) -> Result<(), ConsensusError> {
         self.validate_proposal(&proposal, verifier)?;
         let digest = self.proposal_digest(&proposal)?;
 
         if let Some(certificate) = state.certificates.get(&digest).cloned() {
             state.known_proposals.insert(digest, proposal.clone());
-            self.apply_certificate(state, proposal.justify, verifier, committed)?;
-            self.apply_certificate(state, certificate, verifier, committed)?;
+            self.apply_certificate(
+                state,
+                proposal.justify,
+                verifier,
+                committed,
+                committed_proofs,
+            )?;
+            self.apply_certificate(state, certificate, verifier, committed, committed_proofs)?;
             return Ok(());
         }
 
@@ -864,7 +933,13 @@ impl ChainedHotStuff {
         self.ensure_registered_scheme(signer.validator_id(), signer.signature_scheme())?;
 
         state.known_proposals.insert(digest, proposal.clone());
-        self.apply_certificate(state, proposal.justify.clone(), verifier, committed)?;
+        self.apply_certificate(
+            state,
+            proposal.justify.clone(),
+            verifier,
+            committed,
+            committed_proofs,
+        )?;
 
         let mut vote = ConsensusVote {
             chain_id: self.chain_id.clone(),
@@ -897,7 +972,7 @@ impl ChainedHotStuff {
         outbound.push(ConsensusMessage::Vote(vote));
 
         if let Some(qc) = self.try_form_certificate(state, digest)? {
-            self.apply_certificate(state, qc.clone(), verifier, committed)?;
+            self.apply_certificate(state, qc.clone(), verifier, committed, committed_proofs)?;
             outbound.push(ConsensusMessage::Certificate(qc));
         }
         Ok(())
@@ -910,6 +985,7 @@ impl ChainedHotStuff {
         verifier: &V,
         outbound: &mut Vec<ConsensusMessage>,
         committed: &mut Vec<CommittedBlock>,
+        committed_proofs: &mut Vec<CommittedBlockProof>,
     ) -> Result<(), ConsensusError> {
         self.validate_vote(&vote, verifier)?;
         self.ensure_bounded_future_view(state.current_view, vote.view)?;
@@ -934,7 +1010,7 @@ impl ChainedHotStuff {
         let digest = vote.proposal_digest;
         votes.insert(vote.validator, vote);
         if let Some(qc) = self.try_form_certificate(state, digest)? {
-            self.apply_certificate(state, qc.clone(), verifier, committed)?;
+            self.apply_certificate(state, qc.clone(), verifier, committed, committed_proofs)?;
             outbound.push(ConsensusMessage::Certificate(qc));
         }
         Ok(())
@@ -1150,6 +1226,7 @@ impl ChainedHotStuff {
         certificate: QuorumCertificate,
         verifier: &V,
         committed: &mut Vec<CommittedBlock>,
+        committed_proofs: &mut Vec<CommittedBlockProof>,
     ) -> Result<(), ConsensusError> {
         self.verify_certificate(&certificate, verifier)?;
         if certificate.view == 0 {
@@ -1194,14 +1271,42 @@ impl ChainedHotStuff {
         {
             return Ok(());
         }
-        self.commit_through(state, parent.justify.proposal_digest, committed)
+        self.commit_through(
+            state,
+            parent.justify.proposal_digest,
+            &parent,
+            &block,
+            &certificate,
+            committed,
+            committed_proofs,
+        )
     }
 
+    /// Commits every proposal from `state.committed_height + 1` up to and
+    /// including `target` (the grandparent of the just-certified
+    /// `grandchild`), walking backward through each proposal's own
+    /// `justify.proposal_digest` link -- which, because
+    /// [`Self::validate_proposal`] enforces `height == justify.height + 1`
+    /// on every admitted proposal, always decrements height by exactly one
+    /// per step. For every block this newly commits, also assembles its
+    /// [`CommittedBlockProof`]: `child` and `grandchild` are either another
+    /// entry of this same walked chain or, for the two newest committed
+    /// heights, `parent`/`grandchild` themselves; the certifying
+    /// `grandchild_certificate` is either another chain entry's own
+    /// `justify` (proposals embed the QC over their direct parent) or, for
+    /// the newest committed height, `grandchild_certificate` itself --
+    /// so no assumption is made that `grandchild_certificate` alone proves
+    /// every committed height in a multi-height commit.
+    #[allow(clippy::too_many_arguments)]
     fn commit_through(
         &self,
         state: &mut ConsensusState,
         target: Digest32,
+        parent: &ConsensusProposal,
+        grandchild: &ConsensusProposal,
+        grandchild_certificate: &QuorumCertificate,
         committed: &mut Vec<CommittedBlock>,
+        committed_proofs: &mut Vec<CommittedBlockProof>,
     ) -> Result<(), ConsensusError> {
         let mut chain = Vec::new();
         let mut cursor = target;
@@ -1213,7 +1318,7 @@ impl ChainedHotStuff {
             cursor = proposal.justify.proposal_digest;
         }
         chain.reverse();
-        for (digest, proposal) in chain {
+        for (index, (digest, proposal)) in chain.iter().enumerate() {
             if proposal.height
                 != state
                     .committed_height
@@ -1222,13 +1327,31 @@ impl ChainedHotStuff {
             {
                 return Ok(());
             }
-            if state.committed.insert(digest) {
+            if state.committed.insert(*digest) {
                 state.committed_height = proposal.height;
                 committed.push(CommittedBlock {
                     height: proposal.height,
                     view: proposal.view,
-                    digest,
-                    transactions: proposal.transactions,
+                    digest: *digest,
+                    transactions: proposal.transactions.clone(),
+                });
+                let child = commit_chain_ancestor(&chain, parent, grandchild, index + 1)
+                    .ok_or(ConsensusError::MissingCommittedBlockProof)?;
+                let proof_grandchild = commit_chain_ancestor(&chain, parent, grandchild, index + 2)
+                    .ok_or(ConsensusError::MissingCommittedBlockProof)?;
+                let proof_grandchild_certificate = commit_chain_ancestor_certificate(
+                    &chain,
+                    parent,
+                    grandchild,
+                    grandchild_certificate,
+                    index + 2,
+                )
+                .ok_or(ConsensusError::MissingCommittedBlockProof)?;
+                committed_proofs.push(CommittedBlockProof {
+                    committed: proposal.clone(),
+                    child,
+                    grandchild: proof_grandchild,
+                    grandchild_certificate: proof_grandchild_certificate,
                 });
             }
         }
@@ -1370,6 +1493,48 @@ impl ChainedHotStuff {
     }
 }
 
+/// Returns the proposal at `index` positions above `chain`'s first (oldest)
+/// entry, where `chain` is [`ChainedHotStuff::commit_through`]'s ascending
+/// walked sequence and `parent`/`grandchild` are its two newest ancestors,
+/// one and two positions past `chain`'s own last entry respectively.
+/// `None` only for an `index` past `grandchild`, which
+/// [`ChainedHotStuff::commit_through`] never requests.
+fn commit_chain_ancestor(
+    chain: &[(Digest32, ConsensusProposal)],
+    parent: &ConsensusProposal,
+    grandchild: &ConsensusProposal,
+    index: usize,
+) -> Option<ConsensusProposal> {
+    if index < chain.len() {
+        Some(chain[index].1.clone())
+    } else if index == chain.len() {
+        Some(parent.clone())
+    } else if index == chain.len() + 1 {
+        Some(grandchild.clone())
+    } else {
+        None
+    }
+}
+
+/// Returns the quorum certificate that certifies
+/// `commit_chain_ancestor(chain, parent, grandchild, index)`: either
+/// `grandchild_certificate` itself (when `index` names `grandchild`) or the
+/// next-higher ancestor's own `justify` field, since every admitted
+/// proposal's `justify` is exactly the QC over its direct parent.
+fn commit_chain_ancestor_certificate(
+    chain: &[(Digest32, ConsensusProposal)],
+    parent: &ConsensusProposal,
+    grandchild: &ConsensusProposal,
+    grandchild_certificate: &QuorumCertificate,
+    index: usize,
+) -> Option<QuorumCertificate> {
+    if index == chain.len() + 1 {
+        Some(grandchild_certificate.clone())
+    } else {
+        commit_chain_ancestor(chain, parent, grandchild, index + 1).map(|proposal| proposal.justify)
+    }
+}
+
 impl ConsensusEngine for ChainedHotStuff {
     fn protocol_id(&self) -> ConsensusProtocolId {
         self.parameters.protocol
@@ -1386,6 +1551,7 @@ impl ConsensusEngine for ChainedHotStuff {
         let mut next = state.clone();
         let mut outbound = Vec::new();
         let mut committed = Vec::new();
+        let mut committed_proofs = Vec::new();
         let mut view_advanced = false;
         match event {
             ConsensusEvent::Proposal(proposal) => self.process_proposal(
@@ -1395,12 +1561,24 @@ impl ConsensusEngine for ChainedHotStuff {
                 verifier,
                 &mut outbound,
                 &mut committed,
+                &mut committed_proofs,
             )?,
-            ConsensusEvent::Vote(vote) => {
-                self.process_vote(&mut next, vote, verifier, &mut outbound, &mut committed)?
-            }
+            ConsensusEvent::Vote(vote) => self.process_vote(
+                &mut next,
+                vote,
+                verifier,
+                &mut outbound,
+                &mut committed,
+                &mut committed_proofs,
+            )?,
             ConsensusEvent::Certificate(certificate) => {
-                self.apply_certificate(&mut next, certificate, verifier, &mut committed)?;
+                self.apply_certificate(
+                    &mut next,
+                    certificate,
+                    verifier,
+                    &mut committed,
+                    &mut committed_proofs,
+                )?;
             }
             ConsensusEvent::Tick { now_unix_millis } => {
                 if now_unix_millis >= next.view_deadline_unix_millis {
@@ -1415,11 +1593,16 @@ impl ConsensusEngine for ChainedHotStuff {
                 }
             }
         }
+        // `committed_proofs` is assembled from `next`'s known-proposal and
+        // certificate maps strictly before the `prune_state` call below, so
+        // every embedded ancestor proposal/certificate is still guaranteed
+        // present at the moment each proof is built (Delivery 3 Unit 13).
         self.prune_state(&mut next);
         Ok(ConsensusOutput {
             state: next,
             outbound_messages: outbound,
             committed_blocks: committed,
+            committed_proofs,
             view_advanced,
         })
     }

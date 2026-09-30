@@ -7,12 +7,18 @@ Accepted implementation direction, 2026-09-27. This record fixes the design for
 integrated membership/epoch delivery after independent design review and
 correction of the availability/drain/readiness gaps. The mechanism is specified
 in [Complete epoch handoff](../epoch-handoff.md). At acceptance, this was a
-design-only decision and did not activate a new runtime rule. The first independent
-implementation slice on 2026-09-28 allocates the availability wire family
-below, but still does not implement durable retention or apply admission. The
-complete design requires a new apply-admission rule and logical commitment,
-not a new quorum-applied finality rule. Implementation and validation status
-belong in [`TODO.md`](../../../TODO.md).
+design-only decision and did not activate a new runtime rule. Independent
+implementation slices on 2026-09-28 allocate the availability wire family and
+implement the handoff-capable logical commitment profile and a canonical
+publication bundle with one replica's durable `retain_publication` step,
+described below. Later Draft PR slices add prepare-side retained
+witness/artifacts, the v2 availability-certificate apply gate, certified-only
+HTTP source/retention/published-apply routes, Rust client/CLI aggregation,
+ordered Freeze, DrainSet and local drain/barrier progress. These slices do not
+constitute a portable cut, Seal or integrated epoch handoff. The complete
+design requires a publication-before-apply rule, not a new quorum-applied
+finality rule. Current implementation and validation status belong only in
+[`TODO.md`](../../../TODO.md).
 
 ## Context and reusable boundaries
 
@@ -69,6 +75,17 @@ possible application intersects an outgoing frozen quorum in an honest holder
 of its **full** artifacts. That holder need not know whether its ACK was
 aggregated into an availability certificate. Drain every verifying full
 certificate in the selected closed frontier, never merely partial prepares.
+
+Implementation clarification (2026-09-28): retention must accept a full
+certificate even if the retainer holds a conflicting partial local prepare.
+Its canonical publication bundle therefore supplies the complete logical
+commitment witness and all content-addressed replay artifacts; verification
+cannot re-run admission against local heads or overwrite the local lock.
+The quorum certificate authenticates the exact witness hash, while the
+retainer verifies the bundle's content and closed dependency manifest before
+an ACK. Local provenance rows alone are not transferable proofs. The later
+cut/import verifies the provenance chain by independently replaying the
+authenticated history. See the bundle rules in the linked design.
 
 This is an explicit apply-admission/latency change, not a new rule that
 discards minority applications, not an existing implemented guarantee and not
@@ -134,6 +151,48 @@ signer subsets bind the same certified payload identity. Never transplant a
 writer fence or trust an opaque SQL dump. Local prepare/vote/lock metadata is
 not a global state root, but its safety obligations cannot be forgotten merely
 because its bytes are excluded.
+
+Implementation clarification (2026-09-28): classify outbox batches/messages,
+delivery rows and attempt rows explicitly as known exclusions rather than
+letting a generic scanner skip them. The current certified, paid and ordered
+application paths do not emit outbox messages, and production state machines
+have no nonempty outbound projection. A fresh handoff profile must verify that
+there is no nonempty or pending outbox obligation, including in the legacy
+keyspace, before excluding those rows. It must fail closed on any such
+obligation. Delivery leases, errors and attempt counts are replica-local and
+must never be imported. Supporting nonempty outbound messages later requires
+a separate cross-epoch delivery policy and a deterministic reconstruction
+proof; replaying an old-epoch message into ingress that rejects the old epoch
+would silently lose it. The current handoff must not claim to support that.
+
+The `fastpath/` prefix is not a blanket local-data exclusion. Its
+`prepared/`, `lock/` and `nonce-lock/` families are local reservations;
+certificate/witness, settlement/claim, bond/transition/evidence,
+validator/economics policy and epoch/transition families are authenticated
+business or control history. They keep their existing independent signature,
+certificate and replay verification rather than acquiring a duplicate generic
+logical-generation provenance row. The portable cut must include and verify
+the required history families and derive its generation floor from verified
+history; unknown future families fail closed. Excluding them from the generic
+FastVote admission operand never authorizes omitting them from the cut.
+`ordered-economics/` is likewise not a homogeneous local cache: `header/`
+and `outcome/` retain original business history, while `state/`,
+`applied-height/` and `candidate/` carry consensus control/prerequisites.
+The cut must verify the former against receipts and certified prefix and
+retain enough of the latter to prove safety. Unknown families fail closed.
+
+Implementation clarification (2026-09-28): the publication-bundle retention
+slice adds three more `fastpath/` families to the same closed classifier
+(`node_core::logical_generation::classify_fastpath_row`). `publication/`
+embeds exactly a verified certificate/witness pair plus the manifest that
+closes over them, and `publication-artifact/` is the content-addressed,
+digest-verified replay bytes that manifest requires; both are portable
+business history a cut must enumerate, on the same footing as
+`certificate/`/`commitment-witness/`. `availability-ack/` is this replica's
+own local availability vote, exposed before any collective availability
+certificate aggregates it, and stays local signing-safety state rather than
+a transferable reservation or global cut fact. This does not itself
+define the DrainSet-stage cut/import contract for these families.
 
 Every page, collection and resumed step must bind to the same authenticated
 cut. Concurrent old-epoch mutation, omissions, additions, duplicates,
@@ -245,7 +304,7 @@ The 2026-09-28 stateless availability-library slice allocates canonical
 domain `fast-path-availability-v1`. The IDs were checked against existing
 canonical type IDs; no historical ID or byte encoding changes. This allocation
 does not activate a publication, retention, or apply-admission rule. Later
-epoch-control and durable-state IDs remain unallocated. The usable handoff
+epoch-control and remaining durable-state IDs remain unallocated. The usable handoff
 implementation must include
 the core, authenticated HTTP/SDK/CLI, genuine multi-validator E2E, stable and
 adversarial vectors, documentation and the full repository/independent-review
@@ -253,3 +312,53 @@ gates as one usable feature. PostgreSQL is a tested profile, not a protocol
 assumption. Operational independence, security audits and live startup remain
 separate; no deployment, real custody, performance, HA or provider
 certification is authorized or implied.
+
+A second 2026-09-28 slice implements the handoff-capable logical commitment
+profile itself, in
+[`crates/node-core/src/logical_generation.rs`](../../../crates/node-core/src/logical_generation.rs).
+It allocates `LogicalProfileRecord` `0x6480/v1` and `LogicalProvenanceRecord`
+`0x6481/v1`, derives the authenticated `ExecutionGeneration` operand from
+verified per-subject provenance instead of a physical creation checkpoint, and
+wires that derivation and admission through every live application path that
+installs effects, a receipt, a nonce advance or a settlement against an
+already-installed profile: paid execution, local execution, publication, bond
+lifecycle, fee-claim settlement, and the generic durable-event path, each
+gated through `logical_generation::admit_application` or
+`admit_generic_transition`. A store whose signed genesis binds the historical
+model keeps its exact existing physical admission, commitment and
+monotonicity rules unchanged. This does not implement Freeze/DrainSet/Seal
+control or the publication-before-apply gate this ADR requires: no
+cross-validator availability quorum is consulted before application, and the current
+`NodeCoreError::LogicalProfileApplicationUnsupported` refusal is a local,
+always-correctly-paired-by-construction invariant guard against a caller
+presenting a resolved profile and derived evidence that disagree, not an
+active gate on quorum availability publication. The complete design's
+apply-admission rule, described above, remains open.
+
+The 2026-09-28 publication-bundle slice adds `consensus::availability::bundle`
+(`ArtifactEntry` `0xD033/v1`, `ArtifactManifest` `0xD034/v1`,
+`PublicationBundle` `0xD035/v1`) and `node_core::fast_path::publication`
+(`FastPathPublicationRecord` `0x6455/v1`, `FastPathAvailabilityAckRecord`
+`0x6456/v1`, key families `fastpath/publication/`,
+`fastpath/publication-artifact/`, `fastpath/availability-ack/`; the latter
+three are now classified in `logical_generation::classify_fastpath_row` per
+the family classification above). `verify_publication_bundle` checks a real
+quorum certificate, a witness matching that certificate's execution
+commitment, and every artifact's actual bytes against their declared digest
+under a hash suite this chain's own schedule trusted for that purpose at or
+before the *certifying* epoch -- an authenticated, non-bundle-declared value
+-- optionally trying additional bounded historical resolvers so an artifact
+whose digest was produced under an earlier hash suite or protocol version
+still verifies without accepting a bundle-chosen algorithm or epoch.
+`retain_publication` re-derives the signed intent's event digest and request
+identity, requires the manifest to be exactly the closure the witness's
+signed operands demand, and persists the publication record, artifact bytes
+and first ACK identity in one atomic commit under the writer, epoch and
+validator-set fences. The later Draft PR slice retains the source's exact
+prepared witness and artifact closure before exposing a vote, reconstructs a
+bundle from those durable bytes, and makes a verifying availability
+certificate a v2-only fresh-apply and recovery precondition. The certified
+HTTP routes and locally pinned Rust client/CLI aggregation join those core
+steps. This does not implement Freeze/DrainSet/Seal, authenticated cut or
+readiness/activation, and it is not complete Delivery 3. Current validation
+and remaining acceptance evidence are recorded in `TODO.md`.

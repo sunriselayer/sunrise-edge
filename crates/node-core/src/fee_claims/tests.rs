@@ -4,6 +4,9 @@ use crate::genesis::{
     self,
     tests::{build_fixture, custody_object_entry, manifest_with_custody, resign_manifest},
 };
+use crate::logical_generation::{
+    self, CommitmentProfile, LogicalObservation, LogicalProfileRecord,
+};
 use abi::call_values::{CallValue, encode_call_value};
 use abi::{AccessEntry, AccessManifest};
 use ed25519_zebra::SigningKey;
@@ -51,7 +54,10 @@ struct ClaimEvidence {
     second_output: NodeOutput,
 }
 
-fn exercise_split_then_final<S: StructuredDurableDomainStateStore>(store: &S) -> ClaimEvidence {
+fn exercise_split_then_final<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    logical_profile: bool,
+) -> ClaimEvidence {
     let (_base_manifest, _origin, instance, def_id, coin_id) = build_fixture();
     let mut manifest: genesis::GenesisManifest = manifest_with_custody(ObjectId::new([0x94; 32]));
     let second_key: SigningKey = SigningKey::from([0x99; 32]);
@@ -80,6 +86,10 @@ fn exercise_split_then_final<S: StructuredDurableDomainStateStore>(store: &S) ->
         .validator_set
         .validators
         .sort_by_key(|entry| entry.id);
+    if logical_profile {
+        manifest.commitment_profile = CommitmentProfile::LogicalGenerationV2;
+        manifest.minimum_freeze_block_height = 1;
+    }
     resign_manifest(&mut manifest);
     genesis::install_genesis(
         store,
@@ -136,12 +146,65 @@ fn exercise_split_then_final<S: StructuredDurableDomainStateStore>(store: &S) ->
         vec![0x96],
     )
     .unwrap();
+    let setup_provenance: Option<runtime::DurableStateTransaction> = if logical_profile {
+        let profile_key: Vec<u8> =
+            logical_generation::logical_profile_key(&genesis::tests::chain()).unwrap();
+        let profile_row = store
+            .get_versioned_durable(
+                &genesis::tests::context(1),
+                genesis::tests::domain(),
+                &profile_key,
+            )
+            .unwrap();
+        let profile: LogicalProfileRecord =
+            logical_generation::decode_logical_profile_record(profile_row.value().unwrap())
+                .unwrap();
+        let hashes: HashSuiteResolver = genesis::tests::resolver();
+        let keys = logical_generation::LogicalKeySpace::new(&profile, &hashes);
+        let subject: logical_generation::LogicalSubject =
+            logical_generation::LogicalSubject::Object(coin_id);
+        let key: Vec<u8> = keys.provenance_key(&subject).unwrap();
+        let observed = store
+            .get_versioned_durable(&genesis::tests::context(1), genesis::tests::domain(), &key)
+            .unwrap();
+        let record: logical_generation::LogicalProvenanceRecord =
+            logical_generation::LogicalProvenanceRecord {
+                subject,
+                observed_epoch: genesis::tests::protocol().epoch(),
+                generation: protocol_types::ExecutionGeneration::new(1),
+                observation: LogicalObservation::ObjectLive {
+                    object_version: escrow.version,
+                    digest: escrow_ref.digest,
+                },
+            };
+        Some(
+            runtime::DurableStateTransaction::new(
+                genesis::tests::domain(),
+                AtomicStateReadSet::new(vec![
+                    StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
+                ])
+                .unwrap(),
+                vec![
+                    StateMutationEntry::new(
+                        key,
+                        StateMutation::Put(
+                            logical_generation::encode_logical_provenance_record(&record).unwrap(),
+                        ),
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap(),
+        )
+    } else {
+        None
+    };
     assert_eq!(
         store.commit_invocation(
             &genesis::tests::context(1),
             DurableInvocationTransaction::new(
                 genesis::tests::domain(),
-                None,
+                setup_provenance,
                 changes,
                 setup_receipt,
                 None,
@@ -493,7 +556,50 @@ fn exercise_split_then_final<S: StructuredDurableDomainStateStore>(store: &S) ->
 fn signed_split_then_final_fee_claims_use_real_wasm_and_conserve_escrow() {
     let store: MemoryDurableStateStore =
         MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
-    let _evidence: ClaimEvidence = exercise_split_then_final(&store);
+    let _evidence: ClaimEvidence = exercise_split_then_final(&store, false);
+}
+
+/// A real signed logical-genesis claim commits the sender nonce using the
+/// shared SenderNonce subject. The second positive claim reuses that same
+/// sender at its next nonce, so a generic StateKey provenance regression
+/// would fail before the second WASM leg can execute.
+#[test]
+fn logical_genesis_positive_claims_advance_one_authenticated_sender_nonce_chain() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let _evidence: ClaimEvidence = exercise_split_then_final(&store, true);
+    let profile_key: Vec<u8> =
+        logical_generation::logical_profile_key(&genesis::tests::chain()).unwrap();
+    let profile_row = store
+        .get_versioned_durable(
+            &genesis::tests::context(1),
+            genesis::tests::domain(),
+            &profile_key,
+        )
+        .unwrap();
+    let profile: LogicalProfileRecord =
+        logical_generation::decode_logical_profile_record(profile_row.value().unwrap()).unwrap();
+    let hashes: HashSuiteResolver = genesis::tests::resolver();
+    let keys = logical_generation::LogicalKeySpace::new(&profile, &hashes);
+    let subject: logical_generation::LogicalSubject =
+        logical_generation::LogicalSubject::SenderNonce {
+            sender: genesis::tests::sender(),
+            epoch: genesis::tests::protocol().epoch(),
+        };
+    let row = store
+        .get_versioned_durable(
+            &genesis::tests::context(1),
+            genesis::tests::domain(),
+            &keys.provenance_key(&subject).unwrap(),
+        )
+        .unwrap();
+    let provenance =
+        logical_generation::decode_logical_provenance_record(row.value().unwrap()).unwrap();
+    assert_eq!(provenance.subject, subject);
+    assert_eq!(
+        provenance.observation,
+        LogicalObservation::NonceNext { next_nonce: 2 }
+    );
 }
 
 #[test]
@@ -515,7 +621,7 @@ fn file_backed_sqlite_fee_claims_reopen_and_replay_without_reapplication() {
     let evidence: ClaimEvidence = {
         let store: SqliteDurableStore =
             SqliteDurableStore::open(&db_path, namespace.clone(), fence).unwrap();
-        exercise_split_then_final(&store)
+        exercise_split_then_final(&store, false)
     };
     {
         let reopened: SqliteDurableStore =

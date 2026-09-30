@@ -44,7 +44,9 @@ use objects::{
     AccessMode, Object, ObjectError, ObjectRef, Owner, ProtocolCustodyPurpose,
     ProtocolCustodyScope, decode_object, encode_object,
 };
-use protocol_types::{Digest32, Epoch, HashPurpose, SignatureSchemeId, ValidatorId};
+use protocol_types::{
+    Digest32, Epoch, ExecutionGeneration, HashPurpose, SignatureSchemeId, ValidatorId,
+};
 use runtime::{
     AtomicStateReadSet, AtomicityDomainId, DurableCommitOutcome, DurableCommitRejection,
     DurableInvocationError, DurableInvocationTransaction, DurableObjectChanges, DurableObjectHead,
@@ -73,6 +75,9 @@ use crate::fast_path::records::{
 };
 use crate::local_execution::LocalExecutionAdmissionError;
 use crate::local_instance_state;
+use crate::logical_generation::{
+    CommitmentProfile, LogicalProfileRecord, encode_logical_profile_record, logical_profile_key,
+};
 use crate::publication::{self, LocalPublicationPolicy, PublicationAdmissionError};
 use crate::{
     MAX_AUTHENTICATED_OBJECT_BODY_BYTES, NodeCoreError, NodeDedupRecord, RequestId,
@@ -84,11 +89,30 @@ pub mod tests;
 
 /// Canonical frame type of an encoded [`GenesisManifest`] (DR-0126).
 pub const GENESIS_MANIFEST_FRAME_TYPE: u16 = 0x6416;
-/// Canonical version of [`GenesisManifest`].
+/// Canonical version of a historical [`GenesisManifest`] (DR-0126).
+///
+/// Carries exactly fields 1 through 8 and binds
+/// [`CommitmentProfile::PhysicalCheckpointV1`] implicitly, by carrying no
+/// profile field at all. These bytes are frozen: a historical manifest encodes
+/// and verifies exactly as it always did.
 pub const GENESIS_MANIFEST_VERSION: u16 = 1;
+/// Canonical version of a handoff-capable [`GenesisManifest`] (DR-0154).
+///
+/// Adds field 9, the explicit [`CommitmentProfile`] wire tag, and field 10,
+/// the positive minimum ordered proposal height for Freeze. A version-2
+/// frame must bind [`CommitmentProfile::LogicalGenerationV2`]. These values
+/// are inside the genesis authority's signed payload, never node flags,
+/// caller arguments or inferences from observed state.
+pub const GENESIS_MANIFEST_LOGICAL_VERSION: u16 = 2;
 
 /// Signature-domain message family for a complete genesis manifest payload.
 pub const GENESIS_MANIFEST_SIGNATURE_MESSAGE_TYPE: &str = "genesis-manifest-v1";
+/// Signature-domain message family for a handoff-capable manifest payload.
+///
+/// Separated from [`GENESIS_MANIFEST_SIGNATURE_MESSAGE_TYPE`] so a signature
+/// over a historical manifest can never be replayed as authorization for the
+/// handoff-capable profile even if every other signed field were identical.
+pub const GENESIS_MANIFEST_LOGICAL_SIGNATURE_MESSAGE_TYPE: &str = "genesis-manifest-v2";
 
 /// Canonical frame type of an encoded [`GenesisInstallMarker`] (DR-0126).
 pub const GENESIS_INSTALL_MARKER_FRAME_TYPE: u16 = 0x6417;
@@ -147,7 +171,20 @@ pub struct GenesisManifest {
     pub objects: Vec<GenesisObjectEntry>,
     /// Static FastVote validator set for this genesis epoch.
     pub validator_set: FastPathValidatorSetRecord,
-    /// Ed25519 signature by `genesis_authority` over fields 1 through 7.
+    /// Commitment and admission model this genesis binds (DR-0154).
+    ///
+    /// [`CommitmentProfile::PhysicalCheckpointV1`] encodes frame `0x6416/v1`
+    /// with no profile field, exactly as every historical manifest does;
+    /// [`CommitmentProfile::LogicalGenerationV2`] encodes `0x6416/v2` with the
+    /// explicit tag in field 9, the minimum Freeze height in field 10, and
+    /// additionally installs the authenticated
+    /// [`LogicalProfileRecord`] row.
+    pub commitment_profile: CommitmentProfile,
+    /// Earliest ordered proposal block height at which Freeze may be
+    /// considered in any epoch. Signed field 10 of the handoff-capable v2
+    /// manifest. Historical v1 manifests require zero and cannot Freeze.
+    pub minimum_freeze_block_height: u64,
+    /// Ed25519 signature by `genesis_authority` over the canonical payload.
     pub signature: [u8; 64],
 }
 
@@ -156,6 +193,26 @@ impl GenesisManifest {
     #[must_use]
     pub fn context(&self) -> &PublicationContext {
         self.publication.request().artifact().context()
+    }
+
+    /// Returns the canonical frame version this manifest's profile encodes as.
+    #[must_use]
+    pub const fn encoding_version(&self) -> u16 {
+        match self.commitment_profile {
+            CommitmentProfile::PhysicalCheckpointV1 => GENESIS_MANIFEST_VERSION,
+            CommitmentProfile::LogicalGenerationV2 => GENESIS_MANIFEST_LOGICAL_VERSION,
+        }
+    }
+
+    /// Returns the signature-domain message family for this manifest's profile.
+    #[must_use]
+    pub const fn signature_message_type(&self) -> &'static str {
+        match self.commitment_profile {
+            CommitmentProfile::PhysicalCheckpointV1 => GENESIS_MANIFEST_SIGNATURE_MESSAGE_TYPE,
+            CommitmentProfile::LogicalGenerationV2 => {
+                GENESIS_MANIFEST_LOGICAL_SIGNATURE_MESSAGE_TYPE
+            }
+        }
     }
 }
 
@@ -489,8 +546,9 @@ pub fn decode_genesis_object_entries(
 }
 
 fn encode_genesis_manifest_payload(manifest: &GenesisManifest) -> Result<Vec<u8>, GenesisError> {
+    validate_manifest_epoch_end_rule(manifest)?;
     let mut frame: CanonicalStruct =
-        CanonicalStruct::new(GENESIS_MANIFEST_FRAME_TYPE, GENESIS_MANIFEST_VERSION);
+        CanonicalStruct::new(GENESIS_MANIFEST_FRAME_TYPE, manifest.encoding_version());
     frame.field_bytes(1, manifest.genesis_authority.to_vec())?;
     frame.field_bytes(2, encode_publication_submission(&manifest.publication)?)?;
     frame.field_bytes(3, encode_signed_local_execution(&manifest.initialization)?)?;
@@ -504,21 +562,30 @@ fn encode_genesis_manifest_payload(manifest: &GenesisManifest) -> Result<Vec<u8>
         7,
         encode_fastpath_validator_set_record(&manifest.validator_set)?,
     )?;
+    // Field 8 belongs to the outer frame's signature, so the signed profile tag
+    // takes field 9 and exists only inside a version-two payload.
+    if manifest.commitment_profile.is_logical() {
+        frame.field_u16(9, manifest.commitment_profile.to_wire())?;
+        frame.field_u64(10, manifest.minimum_freeze_block_height)?;
+    }
     Ok(frame.finish()?)
 }
 
 /// Returns the exact domain-separated bytes signed by the genesis authority.
 ///
-/// The payload is the canonical manifest frame containing fields 1 through 7;
-/// the outer stored frame adds the signature as field 8. This binds every
-/// initialized object, authority and validator without a circular signature.
+/// The payload is the canonical manifest frame containing fields 1 through 7
+/// plus, for a handoff-capable manifest, the profile tag in field 9 and
+/// minimum Freeze height in field 10; the outer
+/// stored frame adds the signature as field 8. This binds every initialized
+/// object, authority, validator and the commitment profile itself without a
+/// circular signature.
 pub fn genesis_manifest_signing_frame(manifest: &GenesisManifest) -> Result<Vec<u8>, GenesisError> {
     let context: &PublicationContext = manifest.context();
     let domain: SignatureDomain = SignatureDomain {
         chain_id: context.chain_id().clone(),
         protocol_version: context.protocol_version(),
         epoch: context.epoch(),
-        message_type: SignatureMessageType::new(GENESIS_MANIFEST_SIGNATURE_MESSAGE_TYPE)?,
+        message_type: SignatureMessageType::new(manifest.signature_message_type())?,
         signature_scheme_id: SignatureSchemeId::Ed25519,
     };
     Ok(frame_signature_message(
@@ -532,11 +599,15 @@ pub fn encode_genesis_manifest(manifest: &GenesisManifest) -> Result<Vec<u8>, Ge
     let payload: Vec<u8> = encode_genesis_manifest_payload(manifest)?;
     let decoded: CanonicalFrame<'_> = decode_canonical_frame(&payload)?;
     let mut frame: CanonicalStruct =
-        CanonicalStruct::new(GENESIS_MANIFEST_FRAME_TYPE, GENESIS_MANIFEST_VERSION);
+        CanonicalStruct::new(GENESIS_MANIFEST_FRAME_TYPE, manifest.encoding_version());
     for field_id in 1_u16..=7_u16 {
         frame.field_bytes(field_id, decoded.required_field(field_id)?)?;
     }
     frame.field_bytes(8, manifest.signature.to_vec())?;
+    if manifest.commitment_profile.is_logical() {
+        frame.field_u16(9, manifest.commitment_profile.to_wire())?;
+        frame.field_u64(10, manifest.minimum_freeze_block_height)?;
+    }
     let bytes: Vec<u8> = frame.finish()?;
     if bytes.len() > MAX_GENESIS_MANIFEST_BYTES {
         return Err(GenesisError::Limit("manifest bytes"));
@@ -544,15 +615,56 @@ pub fn encode_genesis_manifest(manifest: &GenesisManifest) -> Result<Vec<u8>, Ge
     Ok(bytes)
 }
 
-/// Strictly decodes canonical frame `0x6416/v1` ([`GenesisManifest`]).
+/// Resolves the signed commitment profile from a stored manifest frame.
+///
+/// The frame version selects the closed field set and the bound profile: a
+/// version-one frame carries exactly fields 1..=8 and binds the historical
+/// profile, a version-two frame carries exactly fields 1..=10 and must bind the
+/// handoff-capable profile. A version-one frame therefore cannot smuggle a
+/// profile tag, and a version-two frame cannot re-declare the historical
+/// profile, so each profile has exactly one canonical encoding.
+fn decode_manifest_profile(frame: &CanonicalFrame<'_>) -> Result<CommitmentProfile, GenesisError> {
+    if frame.version() == GENESIS_MANIFEST_LOGICAL_VERSION {
+        frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10])?;
+        let declared: CommitmentProfile =
+            CommitmentProfile::from_wire(frame.required_u16(9)?).map_err(GenesisError::NodeCore)?;
+        if !declared.is_logical() {
+            return Err(GenesisError::Invalid(
+                "version-two genesis manifest must bind the handoff-capable profile",
+            ));
+        }
+        return Ok(declared);
+    }
+    frame.require_version(GENESIS_MANIFEST_VERSION)?;
+    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8])?;
+    Ok(CommitmentProfile::PhysicalCheckpointV1)
+}
+
+fn validate_manifest_epoch_end_rule(manifest: &GenesisManifest) -> Result<(), GenesisError> {
+    match manifest.commitment_profile {
+        CommitmentProfile::PhysicalCheckpointV1 if manifest.minimum_freeze_block_height == 0 => {
+            Ok(())
+        }
+        CommitmentProfile::LogicalGenerationV2 if manifest.minimum_freeze_block_height != 0 => {
+            Ok(())
+        }
+        CommitmentProfile::PhysicalCheckpointV1 => Err(GenesisError::Invalid(
+            "historical genesis manifest cannot authorize freeze",
+        )),
+        CommitmentProfile::LogicalGenerationV2 => Err(GenesisError::Invalid(
+            "handoff genesis manifest requires a positive freeze height",
+        )),
+    }
+}
+
+/// Strictly decodes canonical manifest frame `0x6416`, version one or two.
 pub fn decode_genesis_manifest(bytes: &[u8]) -> Result<GenesisManifest, GenesisError> {
     if bytes.len() > MAX_GENESIS_MANIFEST_BYTES {
         return Err(GenesisError::Limit("manifest bytes"));
     }
     let frame: CanonicalFrame<'_> = decode_canonical_frame(bytes)?;
     frame.require_type(GENESIS_MANIFEST_FRAME_TYPE)?;
-    frame.require_version(GENESIS_MANIFEST_VERSION)?;
-    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8])?;
+    let commitment_profile: CommitmentProfile = decode_manifest_profile(&frame)?;
     let authority_bytes: &[u8] = frame.required_field(1)?;
     let genesis_authority: [u8; 32] = authority_bytes
         .try_into()
@@ -579,6 +691,12 @@ pub fn decode_genesis_manifest(bytes: &[u8]) -> Result<GenesisManifest, GenesisE
         economics_policy,
         objects,
         validator_set,
+        commitment_profile,
+        minimum_freeze_block_height: if commitment_profile.is_logical() {
+            frame.required_u64(10)?
+        } else {
+            0
+        },
         signature,
     };
     if encode_genesis_manifest(&manifest)? != bytes {
@@ -1174,6 +1292,29 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
 
     let manifest_key: Vec<u8> = genesis_manifest_key(manifest_context)?;
     let marker_key: Vec<u8> = genesis_marker_key(manifest_context)?;
+    // DR-0154: the signed profile binding materializes as exactly one
+    // authenticated chain-keyed row. A handoff-capable manifest installs it
+    // atomically with the marker and re-verifies it byte-for-byte on every
+    // reopen; a historical manifest installs nothing and requires the row to
+    // stay absent, so a forged row can never make a historical store look
+    // handoff-capable and a removed row can never make a handoff-capable store
+    // look historical.
+    let profile_key: Vec<u8> = logical_profile_key(manifest_context.chain_id())?;
+    let profile_record: Option<LogicalProfileRecord> = if manifest.commitment_profile.is_logical() {
+        Some(LogicalProfileRecord {
+            context: manifest_context.clone(),
+            profile: manifest.commitment_profile,
+            manifest_digest,
+            genesis_authority: manifest.genesis_authority,
+            genesis_floor: ExecutionGeneration::genesis_floor(),
+        })
+    } else {
+        None
+    };
+    let profile_bytes: Option<Vec<u8>> = match &profile_record {
+        None => None,
+        Some(record) => Some(encode_logical_profile_record(record)?),
+    };
     let publication_key: Vec<u8> =
         publication::publication_record_key(manifest.publication.request().artifact().origin())?;
     let instance_key: Vec<u8> = local_instance_state::instance_record_key(
@@ -1323,6 +1464,13 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
         // DR-0132 C1: verify the committed DR-0131 epoch record and, if it
         // has advanced past this manifest's own genesis epoch, the complete
         // transition audit chain (see `verify_fastpath_epoch_chain`).
+        verify_installed_profile(
+            store,
+            context,
+            domain,
+            &profile_key,
+            profile_bytes.as_deref(),
+        )?;
         verify_fastpath_epoch_chain(
             store,
             context,
@@ -1425,6 +1573,7 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             ("fastpath_economics_policy", &economics_policy_key),
             ("fastpath_validator_set", &validator_set_key),
             ("fastpath_epoch_record", &epoch_record_key),
+            ("logical_commitment_profile", &profile_key),
         ] {
             let obs: VersionedStateValue = store.get_versioned_durable(context, domain, key)?;
             if obs.value().is_some() || obs.revision() != StateRevision::INITIAL {
@@ -1518,6 +1667,21 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             )?);
         }
 
+        // A handoff-capable genesis installs its authenticated profile row in
+        // this same atomic commit, fenced pristine, so no store can ever serve
+        // one epoch under the new binding and the next under the old one. A
+        // historical genesis writes nothing here and keeps its exact bytes.
+        if let Some(bytes) = profile_bytes {
+            mutations.push(StateMutationEntry::new(
+                profile_key.clone(),
+                StateMutation::Put(bytes),
+            )?);
+            read_assertions.push(StateReadAssertion::new(
+                profile_key.clone(),
+                StateRevision::INITIAL,
+            )?);
+        }
+
         for entry in &manifest.objects {
             let auth_key: Vec<u8> = local_instance_state::object_authority_key(entry.object.id);
             let auth_bytes: Vec<u8> = encode_object_authority(&entry.authority)?;
@@ -1527,12 +1691,6 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             )?);
             read_assertions.push(StateReadAssertion::new(auth_key, StateRevision::INITIAL)?);
         }
-
-        let state_tx: DurableStateTransaction = DurableStateTransaction::new(
-            domain,
-            AtomicStateReadSet::new(read_assertions)?,
-            mutations,
-        )?;
 
         // Construct object changes.
         let mut head_reads: Vec<DurableObjectHeadRead> = Vec::with_capacity(manifest.objects.len());
@@ -1572,6 +1730,33 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             ));
         }
 
+        // DR-0154: a handoff-capable genesis installs authenticated provenance
+        // for every non-excluded row and every object it creates, at its own
+        // explicit floor, in this same atomic commit. Without it the new
+        // profile would be fail-closed but unusable: the store's first real
+        // operation would refuse for missing provenance on rows genesis itself
+        // wrote. A historical genesis writes none and keeps its exact bytes.
+        if let Some(record) = &profile_record {
+            let rows: Vec<StateMutationEntry> = crate::logical_generation::genesis_provenance(
+                record,
+                resolver,
+                manifest_context.epoch(),
+                &mutations,
+                &object_mutations,
+            )?;
+            for row in rows {
+                read_assertions.push(StateReadAssertion::new(
+                    row.key().to_vec(),
+                    StateRevision::INITIAL,
+                )?);
+                mutations.push(row);
+            }
+        }
+        let state_tx: DurableStateTransaction = DurableStateTransaction::new(
+            domain,
+            AtomicStateReadSet::new(read_assertions)?,
+            mutations,
+        )?;
         let object_changes: DurableObjectChanges =
             DurableObjectChanges::new(head_reads, object_mutations)?;
 
@@ -1603,6 +1788,31 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             }
         }
     }
+}
+
+/// Confirms a store's installed profile row is exactly what its own signed
+/// genesis manifest binds.
+///
+/// Both directions matter. A handoff-capable genesis must still carry byte for
+/// byte the row its signed manifest implies, so a removed or altered row can
+/// never let that store apply anything under historical physical rules. A
+/// historical genesis must carry no row at all, so a forged row can never make
+/// a historical store claim authenticated generations it never derived.
+fn verify_installed_profile<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    profile_key: &[u8],
+    expected: Option<&[u8]>,
+) -> Result<(), GenesisError> {
+    let observed: VersionedStateValue =
+        store.get_versioned_durable(context, domain, profile_key)?;
+    if observed.value() == expected {
+        return Ok(());
+    }
+    Err(GenesisError::TamperedInstalledRecord(
+        "logical commitment profile",
+    ))
 }
 
 /// Selects the trusted historical resolver whose own `(chain_id,

@@ -815,12 +815,18 @@ fn postgres_pgbouncer_transaction_pooling_rehearsal() {
         DurableOutboxClaimOutcome::NoDueWork
     );
 
+    // The recovery commit, the claim, and the acknowledgement each allocate
+    // their own commit sequence in the same transaction as their write,
+    // while the rejected replay and the trailing `NoDueWork` claim allocate
+    // none: recovery commit_invocation (0 -> 1), claim_request_outbox
+    // (1 -> 2), acknowledge_outbox (2 -> 3); three total past the baseline
+    // of zero proven above, not one for the whole recovery.
     assert_eq!(
         inspect_namespace(&mut direct_operator, &namespace)
             .unwrap()
             .unwrap()
             .commit_sequence(),
-        1
+        3
     );
 
     // Pool usability after the whole rehearsal: one further trivial adapter

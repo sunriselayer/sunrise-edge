@@ -12,6 +12,7 @@
 
 mod support;
 
+use consensus::bundle::encode_publication_bundle;
 use execution::local_execution::LocalExecutionPolicy;
 use execution::paid_execution::{PaidExecutionStatus, SignedPaidIntent, decode_signed_paid_intent};
 use hashing::HashSuiteResolver;
@@ -37,8 +38,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use sunrise_edge_client::{
-    Client, FastVoteEndpoint, LoopbackHttpTransport, Transport, apply_fastvote_to_all,
-    collect_fastvote_certificate, load_trusted_fastvote_genesis,
+    Client, DrainDriveBounds, DrainDriveOutcome, FastVoteEndpoint, LoopbackHttpTransport,
+    Transport, apply_fastvote_to_all, collect_fastvote_certificate, drive_drain_to_local_ready,
+    load_trusted_fastvote_genesis,
 };
 use support::genesis_fixture::{self, FastVoteGenesisFixture};
 
@@ -406,6 +408,103 @@ async fn fastvote_network_prepares_certifies_and_applies_a_real_transfer_over_re
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retained_only_validator_serves_the_exact_verified_publication_over_real_http() {
+    let unique: String = unique("retained-source");
+    let fixture: FastVoteGenesisFixture = genesis_fixture::build_logical_network_fixture(&unique);
+    let manifest: GenesisManifest = decode_genesis_manifest(&fixture.manifest_bytes).unwrap();
+    let owned: TempDir = owned_directory(&unique);
+    let mut hosts: Vec<ObservedHost> = Vec::with_capacity(fixture.validators.len());
+    for validator in &fixture.validators {
+        hosts.push(
+            spawn_observed_host(
+                &fixture,
+                &manifest,
+                &fixture.resolver,
+                validator.validator_id,
+                validator.signing_key,
+                &owned.0,
+                fixture.epoch,
+                false,
+            )
+            .await,
+        );
+    }
+    let endpoints: Vec<FastVoteEndpoint<LoopbackHttpTransport>> = hosts[..3]
+        .iter()
+        .zip(&fixture.validators[..3])
+        .enumerate()
+        .map(|(index, (host, validator))| FastVoteEndpoint {
+            validator_id: validator.validator_id,
+            endpoint_label: format!("prepared-{index}"),
+            client: Client::new(transport(host.addr)),
+        })
+        .collect();
+    let manifest_path: PathBuf = std::env::temp_dir().join(format!(
+        "sunrise-fastvote-retained-source-manifest-{unique}"
+    ));
+    fs::write(&manifest_path, &fixture.manifest_bytes).unwrap();
+    let _manifest_guard: FileGuard = scopeguard(manifest_path.clone());
+    let certifier = load_trusted_fastvote_genesis(
+        &manifest_path,
+        &fixture.resolver,
+        fixture.manifest_digest,
+        &fixture.context,
+    )
+    .unwrap();
+    let signed: SignedPaidIntent = decode_signed_paid_intent(&fixture.paid_intent_bytes).unwrap();
+    let deadline: Instant = Instant::now() + Duration::from_secs(30);
+    let (certificate, attempts) = collect_fastvote_certificate(
+        &endpoints,
+        &certifier,
+        &fixture.resolver,
+        &signed,
+        deadline,
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_eq!(attempts.len(), 3);
+    assert!(attempts.iter().all(|attempt| attempt.result.is_ok()));
+
+    let prepared_client: Client<LoopbackHttpTransport> = Client::new(transport(hosts[0].addr));
+    let (bundle, expected_identity) = prepared_client
+        .source_fastvote_publication(
+            &signed,
+            &certificate,
+            &certifier,
+            &fixture.resolver,
+            &[],
+            fixture.domain,
+            Some(deadline),
+        )
+        .unwrap();
+    let original_bytes: Vec<u8> = encode_publication_bundle(&bundle).unwrap();
+    let retained_client: Client<LoopbackHttpTransport> = Client::new(transport(hosts[3].addr));
+    let ack = retained_client
+        .retain_fastvote_publication(&original_bytes, Some(deadline))
+        .unwrap();
+    assert_eq!(ack.validator, fixture.validators[3].validator_id);
+    assert_eq!(ack.identity, expected_identity);
+
+    // Validator 3 was never included in the prepare round. The endpoint must
+    // reconstruct its own ACK-backed durable bytes, not depend on a local
+    // prepare cache or a caller-supplied signed intent/certificate.
+    let served = retained_client
+        .source_retained_fastvote_publication(
+            &certifier,
+            &fixture.resolver,
+            &[],
+            &expected_identity,
+            Some(deadline),
+        )
+        .unwrap();
+    assert_eq!(encode_publication_bundle(&served).unwrap(), original_bytes);
+
+    for host in hosts {
+        let _ = host.stop.send(());
+    }
+}
+
 /// Minimal RAII temp-file guard so the manifest file used only to exercise
 /// [`load_trusted_fastvote_genesis`] is removed even on an early panic.
 struct FileGuard(PathBuf);
@@ -416,6 +515,394 @@ impl Drop for FileGuard {
 }
 fn scopeguard(path: PathBuf) -> FileGuard {
     FileGuard(path)
+}
+
+/// Post-Freeze route E2E uses an exact committed closure fixture row. The
+/// ordered Freeze decision itself is covered in node-core's four-replica
+/// ordered-economics tests; this test exercises actual loopback HTTP and
+/// file-backed SQLite after that already-committed boundary.
+fn install_test_freeze(host: &ObservedHost, fixture: &FastVoteGenesisFixture) {
+    let mut key: Vec<u8> = b"se/instances/v1/ordered-economics/freeze/".to_vec();
+    key.extend(canonical_encoding::encode_chain_id(&fixture.chain_id).unwrap());
+    key.extend_from_slice(&fixture.epoch.get().to_be_bytes());
+    let closure: node_core::ordered_economics::AdmissionClosureRecord =
+        node_core::ordered_economics::AdmissionClosureRecord {
+            closed_epoch: fixture.epoch,
+            request_id: [0xF1; 32],
+            closed_at_block_height: 4,
+        };
+    support::durable_state::replace(
+        host.store.as_ref(),
+        &host.context,
+        fixture.domain,
+        key,
+        node_core::ordered_economics::encode_admission_closure_record(&closure).unwrap(),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn frozen_frontier_drain_reaches_local_ready_over_real_http_and_sqlite() {
+    let unique: String = unique("drain-ready-http");
+    let fixture: FastVoteGenesisFixture = genesis_fixture::build_logical_network_fixture(&unique);
+    let manifest: GenesisManifest = decode_genesis_manifest(&fixture.manifest_bytes).unwrap();
+    let owned: TempDir = owned_directory(&unique);
+    let mut hosts: Vec<ObservedHost> = Vec::with_capacity(fixture.validators.len());
+    for validator in &fixture.validators {
+        hosts.push(
+            spawn_observed_host(
+                &fixture,
+                &manifest,
+                &fixture.resolver,
+                validator.validator_id,
+                validator.signing_key,
+                &owned.0,
+                fixture.epoch,
+                false,
+            )
+            .await,
+        );
+    }
+    let infos: Vec<validator_set::ValidatorInfo> = manifest
+        .validator_set
+        .validators
+        .iter()
+        .map(|entry| validator_set::ValidatorInfo {
+            id: entry.id,
+            voting_power: entry.voting_power,
+            signature_scheme: entry.signature_scheme,
+            public_key: entry.public_key.clone(),
+        })
+        .collect();
+    let validators: validator_set::ValidatorSet =
+        validator_set::ValidatorSet::new(fixture.epoch, infos).unwrap();
+    let fast_certifier: consensus::FastPathCertifier = consensus::FastPathCertifier::new(
+        fixture.chain_id.clone(),
+        fixture.protocol_version,
+        fixture.epoch,
+        validators.clone(),
+    )
+    .unwrap();
+    let frontier_certifier: consensus::FrozenFrontierCertifier =
+        consensus::FrozenFrontierCertifier::new(
+            fixture.chain_id.clone(),
+            fixture.protocol_version,
+            fixture.epoch,
+            validators,
+        )
+        .unwrap();
+    let endpoints: Vec<FastVoteEndpoint<LoopbackHttpTransport>> = hosts[..3]
+        .iter()
+        .zip(&fixture.validators[..3])
+        .map(|(host, validator)| FastVoteEndpoint {
+            validator_id: validator.validator_id,
+            endpoint_label: host.addr.to_string(),
+            client: Client::new(transport(host.addr)),
+        })
+        .collect();
+    let signed: SignedPaidIntent = decode_signed_paid_intent(&fixture.paid_intent_bytes).unwrap();
+    let deadline: Instant = Instant::now() + Duration::from_secs(30);
+    let (certificate, attempts) = collect_fastvote_certificate(
+        &endpoints,
+        &fast_certifier,
+        &fixture.resolver,
+        &signed,
+        deadline,
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert!(attempts.iter().all(|attempt| attempt.result.is_ok()));
+    let source: Client<LoopbackHttpTransport> = Client::new(transport(hosts[0].addr));
+    let (bundle, expected_identity) = source
+        .source_fastvote_publication(
+            &signed,
+            &certificate,
+            &fast_certifier,
+            &fixture.resolver,
+            &[],
+            fixture.domain,
+            Some(deadline),
+        )
+        .unwrap();
+    let bundle_bytes: Vec<u8> = encode_publication_bundle(&bundle).unwrap();
+    for host in hosts.iter().take(3) {
+        let client: Client<LoopbackHttpTransport> = Client::new(transport(host.addr));
+        client
+            .retain_fastvote_publication(&bundle_bytes, Some(deadline))
+            .unwrap();
+    }
+    for host in &hosts {
+        install_test_freeze(host, &fixture);
+    }
+
+    let target: LoopbackHttpTransport = transport(hosts[3].addr);
+    let target_client: Client<LoopbackHttpTransport> = Client::new(transport(hosts[3].addr));
+    let expected_freeze: sunrise_edge_client::fastvote_drain_client::ExpectedDrainFreeze =
+        sunrise_edge_client::fastvote_drain_client::ExpectedDrainFreeze {
+            domain: fixture.domain,
+            closure_request_id: [0xF1; 32],
+            closure_height: 4,
+        };
+    let own_validator: ValidatorId = fixture.validators[3].validator_id;
+    let own_empty_vote: consensus::FrozenFrontierVote = target_client
+        .advance_frozen_frontier(&frontier_certifier, own_validator, Some(deadline))
+        .unwrap()
+        .expect("empty local frontier finalizes in one step");
+    let (_, own_empty_page): (consensus::FrozenFrontierVote, consensus::FrozenFrontierPage) =
+        target_client
+            .fetch_signed_frozen_frontier_page(
+                &node_wire::FrozenFrontierPageRequest {
+                    epoch: fixture.epoch,
+                    after_request_id: None,
+                    limit: 1,
+                },
+                &frontier_certifier,
+                own_validator,
+                Some(deadline),
+            )
+            .unwrap();
+    assert!(own_empty_page.entries.is_empty());
+    assert!(own_empty_page.terminal);
+    let mut forged_empty_vote: consensus::FrozenFrontierVote = own_empty_vote.clone();
+    forged_empty_vote.signature[0] ^= 1;
+    let forged = post(
+        &target,
+        node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
+        node_wire::NODE_EVENT_MEDIA_TYPE,
+        node_wire::DrainSignerPageRequest {
+            epoch: fixture.epoch,
+            vote: consensus::encode_frozen_frontier_vote(&forged_empty_vote).unwrap(),
+            page: consensus::encode_frozen_frontier_page(&own_empty_page).unwrap(),
+        }
+        .encode()
+        .unwrap(),
+    );
+    assert_eq!(
+        forged.status, 400,
+        "forged empty vote must not poison progress"
+    );
+    target_client
+        .stage_drain_signer_page(
+            &frontier_certifier,
+            own_validator,
+            expected_freeze,
+            &own_empty_vote,
+            &own_empty_page,
+            Some(deadline),
+        )
+        .unwrap();
+    let source_signer: ValidatorId = fixture.validators[0].validator_id;
+    let progress_request: node_wire::DrainSignerProgressRequest =
+        node_wire::DrainSignerProgressRequest {
+            epoch: fixture.epoch,
+            signer: source_signer,
+        };
+    let pristine_progress: sunrise_edge_client::WireResponse = post(
+        &target,
+        node_wire::FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH,
+        node_wire::NODE_EVENT_MEDIA_TYPE,
+        progress_request.encode().unwrap(),
+    );
+    assert_eq!(pristine_progress.status, 409);
+    assert_eq!(pristine_progress.body, b"drain-progress-pristine");
+    let wrong_epoch_progress: sunrise_edge_client::WireResponse = post(
+        &target,
+        node_wire::FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH,
+        node_wire::NODE_EVENT_MEDIA_TYPE,
+        node_wire::DrainSignerProgressRequest {
+            epoch: Epoch::new(fixture.epoch.get() + 1),
+            signer: source_signer,
+        }
+        .encode()
+        .unwrap(),
+    );
+    assert_eq!(wrong_epoch_progress.status, 409);
+    assert_eq!(wrong_epoch_progress.body, b"drain-epoch-repin-required");
+    let mut selected_votes: Vec<consensus::FrozenFrontierVote> = Vec::new();
+    for (index, (host, validator)) in hosts.iter().zip(&fixture.validators).take(3).enumerate() {
+        let client: Client<LoopbackHttpTransport> = Client::new(transport(host.addr));
+        let final_vote: consensus::FrozenFrontierVote = (0..4)
+            .find_map(|_| {
+                client
+                    .advance_frozen_frontier(
+                        &frontier_certifier,
+                        validator.validator_id,
+                        Some(deadline),
+                    )
+                    .unwrap()
+            })
+            .expect("one retained publication must finalize within four steps");
+        let (served_vote, page): (consensus::FrozenFrontierVote, consensus::FrozenFrontierPage) =
+            client
+                .fetch_signed_frozen_frontier_page(
+                    &node_wire::FrozenFrontierPageRequest {
+                        epoch: fixture.epoch,
+                        after_request_id: None,
+                        limit: 4,
+                    },
+                    &frontier_certifier,
+                    validator.validator_id,
+                    Some(deadline),
+                )
+                .unwrap();
+        assert_eq!(served_vote, final_vote);
+        assert!(page.terminal);
+        assert_eq!(page.entries, vec![expected_identity.clone()]);
+        if index == 0 {
+            // Start from a real persisted staged page, then let the bounded
+            // network driver continue after an import-only stop.
+            target_client
+                .stage_drain_signer_page(
+                    &frontier_certifier,
+                    validator.validator_id,
+                    expected_freeze,
+                    &final_vote,
+                    &page,
+                    Some(deadline),
+                )
+                .unwrap();
+            let stale_confirm: node_wire::DrainMemberConfirmRequest =
+                node_wire::DrainMemberConfirmRequest {
+                    epoch: fixture.epoch,
+                    validator: validator.validator_id,
+                    request_id: [0xE1; 32],
+                };
+            assert_eq!(
+                post(
+                    &target,
+                    node_wire::FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
+                    node_wire::NODE_EVENT_MEDIA_TYPE,
+                    stale_confirm.encode().unwrap(),
+                )
+                .status,
+                409
+            );
+            // The selected signers share this one request ID. Only the first
+            // signer is guaranteed to reach the target before any import.
+            let early_confirm: node_wire::DrainMemberConfirmRequest =
+                node_wire::DrainMemberConfirmRequest {
+                    epoch: fixture.epoch,
+                    validator: validator.validator_id,
+                    request_id: expected_identity.request_id,
+                };
+            assert_eq!(
+                post(
+                    &target,
+                    node_wire::FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
+                    node_wire::NODE_EVENT_MEDIA_TYPE,
+                    early_confirm.encode().unwrap(),
+                )
+                .status,
+                409,
+                "a valid confirm before import must remain retryable"
+            );
+        }
+        selected_votes.push(final_vote);
+    }
+    selected_votes.sort_by_key(|vote| vote.validator);
+    let bounds = |max_mutation_attempts: u32| DrainDriveBounds {
+        overall_deadline: deadline,
+        per_request_cap: Duration::from_secs(5),
+        page_limit: 4,
+        max_mutation_attempts,
+    };
+    let mut forged_selection: Vec<consensus::FrozenFrontierVote> = selected_votes.clone();
+    forged_selection[0].signature[0] ^= 1;
+    assert!(matches!(
+        drive_drain_to_local_ready(
+            &target_client,
+            &endpoints,
+            &forged_selection,
+            &fast_certifier,
+            &fixture.resolver,
+            &[],
+            expected_freeze,
+            bounds(20),
+        ),
+        Err(sunrise_edge_client::DrainDriveError::Frontier(_))
+    ));
+    assert_eq!(
+        drive_drain_to_local_ready(
+            &target_client,
+            &endpoints,
+            &selected_votes,
+            &fast_certifier,
+            &fixture.resolver,
+            &[],
+            expected_freeze,
+            bounds(1),
+        )
+        .unwrap(),
+        DrainDriveOutcome::Incomplete {
+            mutation_attempts: 1
+        },
+        "an import-only budget stop must be resumable"
+    );
+    // The driver carries no process-local cursor. Reconstruct its target
+    // client and recover from the SQLite-backed target's durable progress.
+    let resumed_target_client: Client<LoopbackHttpTransport> =
+        Client::new(transport(hosts[3].addr));
+    let identity: consensus::DrainUnionIdentity = match drive_drain_to_local_ready(
+        &resumed_target_client,
+        &endpoints,
+        &selected_votes,
+        &fast_certifier,
+        &fixture.resolver,
+        &[],
+        expected_freeze,
+        DrainDriveBounds {
+            page_limit: 2,
+            ..bounds(20)
+        },
+    )
+    .unwrap()
+    {
+        DrainDriveOutcome::LocallyReady { identity, .. } => identity,
+        DrainDriveOutcome::Incomplete { .. } => {
+            panic!("bounded driver did not reach local readiness")
+        }
+    };
+    assert_eq!(
+        drive_drain_to_local_ready(
+            &resumed_target_client,
+            &endpoints,
+            &selected_votes,
+            &fast_certifier,
+            &fixture.resolver,
+            &[],
+            expected_freeze,
+            bounds(1),
+        )
+        .unwrap(),
+        DrainDriveOutcome::LocallyReady {
+            identity: identity.clone(),
+            mutation_attempts: 1,
+        },
+        "a same-selection rerun must not re-import confirmed members"
+    );
+    assert_eq!(identity.member_count, 1);
+    assert_eq!(identity.closure_request_id, [0xF1; 32]);
+    let selected: Vec<(ValidatorId, consensus::FrozenFrontierIdentity)> = selected_votes
+        .iter()
+        .map(|vote| (vote.validator, vote.identity.clone()))
+        .collect();
+    let mut independent: consensus::DrainUnionAccumulator = consensus::DrainUnionAccumulator::new(
+        &fixture.resolver,
+        fixture.chain_id.clone(),
+        fixture.protocol_version,
+        fixture.epoch,
+        fixture.domain,
+        [0xF1; 32],
+        4,
+        &selected,
+    )
+    .unwrap();
+    independent
+        .push_member(&fixture.resolver, &expected_identity)
+        .unwrap();
+    assert_eq!(identity, independent.into_identity());
+    for host in hosts {
+        let _ = host.stop.send(());
+    }
 }
 
 fn raw_http_status(addr: std::net::SocketAddr, method: &str, path: &str) -> u16 {

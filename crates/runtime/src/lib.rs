@@ -5,6 +5,9 @@
 #[cfg(any(test, feature = "durable-conformance"))]
 pub mod conformance;
 
+pub mod outbox_guard;
+pub mod portable;
+
 use core::{fmt, mem::size_of};
 pub use objects::ObjectId;
 use objects::{
@@ -3466,6 +3469,8 @@ struct PreparedMemoryObjectMutation {
 
 #[derive(Debug)]
 struct MemoryDurableStoreData {
+    portable_namespace: Vec<u8>,
+    mutation_sequences: BTreeMap<[u8; 32], u64>,
     bound_domain: Option<AtomicityDomainId>,
     active_writer_fence: WriterFenceGeneration,
     now_unix_millis: u64,
@@ -3514,6 +3519,23 @@ pub struct MemoryDurableStateStore {
     inner: Arc<RwLock<MemoryDurableStoreData>>,
 }
 
+// Exhausting a fixture-local identity space disables optional snapshot support
+// (an empty namespace cannot form a token), never aliases another store or
+// panics in the otherwise infallible memory-store constructor.
+fn allocate_memory_portable_namespace(counter: &std::sync::atomic::AtomicU64) -> Vec<u8> {
+    let identity: u64 = match counter.fetch_update(
+        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,
+        |value: u64| value.checked_add(1),
+    ) {
+        Ok(identity) => identity,
+        Err(_) => return Vec::new(),
+    };
+    let mut namespace: Vec<u8> = b"memory-portable/".to_vec();
+    namespace.extend_from_slice(&identity.to_be_bytes());
+    namespace
+}
+
 impl MemoryDurableStateStore {
     /// Creates an empty fixture with one authoritative writer generation.
     #[must_use]
@@ -3538,8 +3560,15 @@ impl MemoryDurableStateStore {
         bound_domain: Option<AtomicityDomainId>,
         active_writer_fence: WriterFenceGeneration,
     ) -> Self {
+        // A fixture token must not be reusable on another store, even when
+        // domain, fence and sequence happen to be equal. Clones share this ID.
+        static NEXT_PORTABLE_STORE: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(1);
+        let portable_namespace: Vec<u8> = allocate_memory_portable_namespace(&NEXT_PORTABLE_STORE);
         Self {
             inner: Arc::new(RwLock::new(MemoryDurableStoreData {
+                portable_namespace,
+                mutation_sequences: BTreeMap::new(),
                 bound_domain,
                 active_writer_fence,
                 now_unix_millis: 0,
@@ -3892,9 +3921,20 @@ impl DurableDomainStateStore for MemoryDurableStateStore {
             Ok(revisions) => revisions,
             Err(reason) => return DurableCommitOutcome::Rejected(reason),
         };
+        let sequence: u64 = match memory_next_mutation_sequence(&data, transaction.domain()) {
+            Some(sequence) => sequence,
+            None => {
+                return DurableCommitOutcome::Rejected(
+                    DurableCommitRejection::CommitSequenceOverflow,
+                );
+            }
+        };
         let state = data.state_domains.entry(domain).or_default();
         match apply_memory_durable_mutations(state, transaction.mutations.mutations, revisions) {
-            Ok(()) => DurableCommitOutcome::Committed,
+            Ok(()) => {
+                data.mutation_sequences.insert(domain, sequence);
+                DurableCommitOutcome::Committed
+            }
             Err(reason) => DurableCommitOutcome::Rejected(reason),
         }
     }
@@ -4005,6 +4045,15 @@ impl StructuredDurableDomainStateStore for MemoryDurableStateStore {
                 completed: outbox.messages().is_empty(),
             });
 
+        let sequence: u64 = match memory_next_mutation_sequence(&data, transaction.domain()) {
+            Some(sequence) => sequence,
+            None => {
+                return DurableCommitOutcome::Rejected(
+                    DurableCommitRejection::CommitSequenceOverflow,
+                );
+            }
+        };
+
         if let Some(state_transaction) = transaction.state {
             let state = data.state_domains.entry(domain).or_default();
             if let Err(reason) = apply_memory_durable_mutations(
@@ -4023,8 +4072,20 @@ impl StructuredDurableDomainStateStore for MemoryDurableStateStore {
         if let Some(delivery) = delivery {
             data.deliveries.insert(request_key, delivery);
         }
+        data.mutation_sequences.insert(domain, sequence);
         DurableCommitOutcome::Committed
     }
+}
+
+fn memory_next_mutation_sequence(
+    data: &MemoryDurableStoreData,
+    domain: AtomicityDomainId,
+) -> Option<u64> {
+    data.mutation_sequences
+        .get(domain.as_bytes())
+        .copied()
+        .unwrap_or(0)
+        .checked_add(1)
 }
 
 impl DurableStateKeyScanner for MemoryDurableStateStore {
@@ -4152,6 +4213,11 @@ impl IndexedOutboxRepository for MemoryDurableStateStore {
                 Err(reason) => return DurableOutboxClaimOutcome::Rejected(reason),
             };
             if attempt.lease_expires_at_unix_millis <= request.now_unix_millis() {
+                let Some(sequence) = memory_next_mutation_sequence(&data, request.domain()) else {
+                    return DurableOutboxClaimOutcome::Rejected(
+                        DurableOutboxClaimRejection::ArithmeticOverflow,
+                    );
+                };
                 if let Some(attempt) = data.delivery_attempts.get_mut(&lease_key) {
                     attempt.status = MemoryOutboxAttemptStatus::Expired;
                 }
@@ -4160,6 +4226,8 @@ impl IndexedOutboxRepository for MemoryDurableStateStore {
                     delivery.active_lease = None;
                     delivery.available_at_unix_millis = 0;
                 }
+                data.mutation_sequences
+                    .insert(*request.domain().as_bytes(), sequence);
                 return DurableOutboxClaimOutcome::Rejected(
                     DurableOutboxClaimRejection::LeaseIdReuse,
                 );
@@ -4228,6 +4296,12 @@ impl IndexedOutboxRepository for MemoryDurableStateStore {
                 );
             }
         };
+
+        let Some(sequence) = memory_next_mutation_sequence(&data, request.domain()) else {
+            return DurableOutboxClaimOutcome::Rejected(
+                DurableOutboxClaimRejection::ArithmeticOverflow,
+            );
+        };
         if let Some((expired_lease, expires_at)) = delivery.active_lease {
             let expired_key = *expired_lease.as_bytes();
             let Some(expired_attempt) = data.delivery_attempts.get_mut(&expired_key) else {
@@ -4261,6 +4335,8 @@ impl IndexedOutboxRepository for MemoryDurableStateStore {
                 status: MemoryOutboxAttemptStatus::Claimed,
             },
         );
+        data.mutation_sequences
+            .insert(*request.domain().as_bytes(), sequence);
         DurableOutboxClaimOutcome::Claimed(claim)
     }
 
@@ -4295,6 +4371,11 @@ impl IndexedOutboxRepository for MemoryDurableStateStore {
                 Err(reason) => return DurableOutboxClaimOutcome::Rejected(reason),
             };
             if attempt.lease_expires_at_unix_millis <= request.now_unix_millis() {
+                let Some(sequence) = memory_next_mutation_sequence(&data, request.domain()) else {
+                    return DurableOutboxClaimOutcome::Rejected(
+                        DurableOutboxClaimRejection::ArithmeticOverflow,
+                    );
+                };
                 if let Some(attempt) = data.delivery_attempts.get_mut(&lease_key) {
                     attempt.status = MemoryOutboxAttemptStatus::Expired;
                 }
@@ -4303,6 +4384,8 @@ impl IndexedOutboxRepository for MemoryDurableStateStore {
                     delivery.active_lease = None;
                     delivery.available_at_unix_millis = 0;
                 }
+                data.mutation_sequences
+                    .insert(*request.domain().as_bytes(), sequence);
                 return DurableOutboxClaimOutcome::Rejected(
                     DurableOutboxClaimRejection::LeaseIdReuse,
                 );
@@ -4384,6 +4467,12 @@ impl IndexedOutboxRepository for MemoryDurableStateStore {
             }
         };
 
+        let Some(sequence) = memory_next_mutation_sequence(&data, request.domain()) else {
+            return DurableOutboxClaimOutcome::Rejected(
+                DurableOutboxClaimRejection::ArithmeticOverflow,
+            );
+        };
+
         if let Some((expired_lease, expires_at)) = delivery.active_lease {
             let expired_key = *expired_lease.as_bytes();
             let Some(expired_attempt) = data.delivery_attempts.get_mut(&expired_key) else {
@@ -4417,6 +4506,8 @@ impl IndexedOutboxRepository for MemoryDurableStateStore {
                 status: MemoryOutboxAttemptStatus::Claimed,
             },
         );
+        data.mutation_sequences
+            .insert(*request.domain().as_bytes(), sequence);
         DurableOutboxClaimOutcome::Claimed(claim)
     }
 
@@ -4509,6 +4600,12 @@ impl IndexedOutboxRepository for MemoryDurableStateStore {
             );
         }
 
+        let Some(sequence) = memory_next_mutation_sequence(&data, acknowledgement.domain()) else {
+            return DurableOutboxAcknowledgementOutcome::Rejected(
+                DurableOutboxAcknowledgementRejection::ArithmeticOverflow,
+            );
+        };
+
         delivery.next_index = next_index;
         delivery.active_lease = None;
         delivery.completed = next_index == message_count;
@@ -4517,6 +4614,8 @@ impl IndexedOutboxRepository for MemoryDurableStateStore {
         if let Some(attempt) = data.delivery_attempts.get_mut(&lease_key) {
             attempt.status = MemoryOutboxAttemptStatus::Acknowledged;
         }
+        data.mutation_sequences
+            .insert(*acknowledgement.domain().as_bytes(), sequence);
         DurableOutboxAcknowledgementOutcome::Acknowledged
     }
 }

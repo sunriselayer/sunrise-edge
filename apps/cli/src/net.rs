@@ -65,6 +65,7 @@ pub const fn tls_flag_specs() -> [FlagSpec; 2] {
 /// invocation constructs: the legacy loopback-only plaintext transport, or
 /// the remote TLS transport. `Client<CliTransport>` is therefore always
 /// exactly one concrete type, regardless of which mode a caller selected.
+#[derive(Clone)]
 pub enum CliTransport {
     /// Legacy plaintext loopback transport (no TLS flags supplied).
     Loopback(LoopbackHttpTransport),

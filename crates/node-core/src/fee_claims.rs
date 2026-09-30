@@ -1185,6 +1185,7 @@ where
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            None,
         );
     }
 
@@ -1232,6 +1233,7 @@ where
         executed.head_reads,
         executed.object_mutations,
         executed.state_mutations,
+        Some(&executed.nonce),
     )
 }
 
@@ -1256,6 +1258,7 @@ fn commit<S: StructuredDurableDomainStateStore>(
     head_reads: Vec<DurableObjectHeadRead>,
     object_mutations: Vec<DurableObjectMutationEntry>,
     mut state_mutations: Vec<StateMutationEntry>,
+    nonce: Option<&PendingSenderNonceWrite>,
 ) -> Result<NodeOutput, FeeClaimError> {
     let new_settlement_bytes: Vec<u8> = encode_fastpath_settlement_record(&new_settlement)?;
     // Hashed at the row's own (fixed, certificate) context epoch, exactly
@@ -1290,6 +1293,24 @@ fn commit<S: StructuredDurableDomainStateStore>(
         settlement_key,
         StateMutation::Put(new_settlement_bytes.clone()),
     )?);
+    // DR-0154: the per-generation claim row and the settlement row are the last
+    // state this claim writes, so the authenticated generation and the
+    // provenance rows covering both are derived here, over the complete write
+    // set, before the atomic commit. A handoff-capable store refuses the
+    // settlement without that evidence; a historical store is unaffected.
+    logical_generation::admit_application(
+        store,
+        context,
+        domain,
+        resolver,
+        new_settlement.context.chain_id(),
+        new_settlement.context.epoch(),
+        &head_reads,
+        &object_mutations,
+        nonce,
+        &mut state_mutations,
+        &mut reads,
+    )?;
     let assertions: Vec<StateReadAssertion> = reads
         .into_iter()
         .map(|(k, r)| StateReadAssertion::new(k, r))

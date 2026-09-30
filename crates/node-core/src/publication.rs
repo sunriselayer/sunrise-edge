@@ -611,11 +611,25 @@ pub fn handle_local_publication_with_history<S: StructuredDurableDomainStateStor
     // publication support is not narrowed to the current epoch. The epoch row
     // revision is nevertheless asserted by the publication commit, so it
     // cannot interleave with a Slice 2 transition.
-    mutation_fence::fence_epoch_state(
+    let current_epoch_record: local_instance_state::FastPathEpochRecord =
+        mutation_fence::fence_epoch_state(
+            store,
+            context,
+            domain,
+            policy.context.chain_id(),
+            &mut reads,
+        )?;
+    // DR-0154: local publication is a "direct local/paid mutation" a
+    // committed `Freeze` must stop, exactly like every `fence_current_epoch`
+    // caller -- but this function fences the historical-selector
+    // [`fence_epoch_state`] directly instead, so it fences admission
+    // separately here rather than through `fence_current_epoch`.
+    ordered_economics::fence_admission_open(
         store,
         context,
         domain,
         policy.context.chain_id(),
+        current_epoch_record.current_epoch,
         &mut reads,
     )?;
     // Honor a sender/epoch nonce a pending fast-path prepare already holds,
@@ -660,10 +674,33 @@ pub fn handle_local_publication_with_history<S: StructuredDurableDomainStateStor
         &mut reads,
     )?;
     insert_read(&mut reads, nonce.key.clone(), nonce.read_revision)?;
-    let mutations: Vec<StateMutationEntry> = vec![
+    let mut mutations: Vec<StateMutationEntry> = vec![
         StateMutationEntry::new(record_key, StateMutation::Put(bytes))?,
-        StateMutationEntry::new(nonce.key, StateMutation::Put(nonce.record.encode()?))?,
+        StateMutationEntry::new(
+            nonce.key.clone(),
+            StateMutation::Put(nonce.record.encode()?),
+        )?,
     ];
+    // DR-0154: a published package record and this publisher's nonce advance are
+    // ordinary verified inputs for every later paid execution against that
+    // package, so this commit derives its own authenticated causal generation
+    // and installs the provenance rows covering both. Without it a
+    // handoff-capable store could publish a package no later operation could
+    // ever verify. A handoff-capable store refuses the publication without that
+    // evidence; a historical store keeps its exact existing behavior.
+    crate::logical_generation::admit_application(
+        store,
+        context,
+        domain,
+        resolver,
+        policy.context.chain_id(),
+        policy.context.epoch(),
+        &[],
+        &[],
+        Some(&nonce),
+        &mut mutations,
+        &mut reads,
+    )?;
     let assertions: Vec<StateReadAssertion> = reads
         .into_iter()
         .map(|(key, revision): (Vec<u8>, StateRevision)| StateReadAssertion::new(key, revision))

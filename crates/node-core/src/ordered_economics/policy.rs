@@ -16,7 +16,10 @@ use bond_lifecycle::{
     bond_lifecycle_signing_frame, decode_signed_bond_lifecycle_intent,
 };
 use canonical_encoding::encode_digest32;
-use consensus::{ChainedHotStuff, ConsensusError, ConsensusParameters, ConsensusVerifier};
+use consensus::{
+    ChainedHotStuff, ConsensusError, ConsensusParameters, ConsensusVerifier,
+    FrozenFrontierCertifier, verify_frozen_frontier_quorum,
+};
 use crypto::{
     Ed25519OwnerAddressPolicy, Ed25519Verifier, SignatureVerifier, validate_ed25519_owner_address,
 };
@@ -27,6 +30,7 @@ use execution::local_execution::{
 use execution::publication::{PublicationContext, encode_publication_context};
 use fee_claims::codec::{FeeClaimOperation, SignedFeeClaimIntent, decode_signed_fee_claim_intent};
 use fee_claims::{fee_claim_intent_digest, fee_claim_signing_frame};
+use genesis::{GenesisManifest, genesis_manifest_commitment, genesis_manifest_signing_frame};
 use protocol_types::{SignatureSchemeId, ValidatorId};
 use validator_set::{ValidatorInfo, ValidatorSet};
 
@@ -35,17 +39,19 @@ use validator_set::{ValidatorInfo, ValidatorSet};
 /// frame is never persisted or transported, only hashed.
 pub const ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE: u16 = 0x6441;
 const ANCHOR_ENCODING_VERSION: u16 = 1;
+const HANDOFF_ANCHOR_ENCODING_VERSION: u16 = 2;
 
 /// Fixed logical-domain label separating this anchor from any other digest
 /// that might one day be derived over the same fields.
 const ANCHOR_DOMAIN_LABEL: &[u8] = b"se/ordered-economics/anchor/v1";
+const HANDOFF_ANCHOR_DOMAIN_LABEL: &[u8] = b"se/ordered-economics/anchor/v2";
 
 /// Derives the canonical consensus genesis anchor DR-0153 requires: a
 /// domain-separated digest binding the logical ordered-economics domain, the
 /// chain/protocol/epoch replay boundary, the atomicity domain, the
 /// independently pinned signed-genesis digest, the exact active
-/// validator-set identity, and the fixed [`ConsensusParameters::genesis`]
-/// this profile runs.
+/// validator-set identity, the fixed [`ConsensusParameters::genesis`] and,
+/// for a handoff-capable signed genesis, its positive Freeze height.
 ///
 /// The raw genesis-manifest digest alone is deliberately *not* the anchor: it
 /// binds none of the consensus identity, so two profiles differing only in
@@ -61,6 +67,7 @@ pub fn ordered_economics_authority_anchor(
     context: &PublicationContext,
     domain: AtomicityDomainId,
     genesis_digest: Digest32,
+    minimum_freeze_block_height: u64,
     validator_set: &ValidatorSet,
 ) -> Result<Digest32, OrderedEconomicsError> {
     if resolver.chain_id() != context.chain_id()
@@ -79,9 +86,23 @@ pub fn ordered_economics_authority_anchor(
     let set_digest: Digest32 = validator_set.digest(resolver).map_err(|_| {
         OrderedEconomicsError::Policy("ordered economics anchor validator set identity")
     })?;
-    let mut frame: CanonicalStruct =
-        CanonicalStruct::new(ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE, ANCHOR_ENCODING_VERSION);
-    frame.field_bytes(1, ANCHOR_DOMAIN_LABEL.to_vec())?;
+    let handoff_capable: bool = minimum_freeze_block_height != 0;
+    let mut frame: CanonicalStruct = CanonicalStruct::new(
+        ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE,
+        if handoff_capable {
+            HANDOFF_ANCHOR_ENCODING_VERSION
+        } else {
+            ANCHOR_ENCODING_VERSION
+        },
+    );
+    frame.field_bytes(
+        1,
+        if handoff_capable {
+            HANDOFF_ANCHOR_DOMAIN_LABEL.to_vec()
+        } else {
+            ANCHOR_DOMAIN_LABEL.to_vec()
+        },
+    )?;
     frame.field_bytes(
         2,
         encode_publication_context(context)
@@ -93,6 +114,9 @@ pub fn ordered_economics_authority_anchor(
     frame.field_u16(6, parameters.protocol.as_u16())?;
     frame.field_u32(7, parameters.max_block_transactions)?;
     frame.field_u64(8, parameters.view_timeout_millis)?;
+    if handoff_capable {
+        frame.field_u64(9, minimum_freeze_block_height)?;
+    }
     let preimage: Vec<u8> = frame.finish()?;
     Ok(resolver.hash_for_purpose(context.epoch(), HashPurpose::ProtocolConfig, &preimage)?)
 }
@@ -106,6 +130,7 @@ pub struct OrderedEconomicsPolicy {
     context: PublicationContext,
     domain: AtomicityDomainId,
     genesis_digest: Digest32,
+    minimum_freeze_block_height: u64,
     anchor: Digest32,
     engine: ChainedHotStuff,
     resolver: HashSuiteResolver,
@@ -113,21 +138,86 @@ pub struct OrderedEconomicsPolicy {
 
 impl OrderedEconomicsPolicy {
     /// Creates the canonical anchor for one fixed-epoch profile and the
-    /// existing [`ConsensusParameters::genesis`] engine around it. Fails
-    /// closed if `validator_set`/`resolver` do not match `context`'s chain,
-    /// protocol version and epoch.
+    /// existing [`ConsensusParameters::genesis`] engine around it. A supplied
+    /// signed genesis manifest must match the independently pinned digest,
+    /// context and initial validator set; only that path enables Freeze.
+    /// `None` preserves the historical fixed-epoch profile but cannot Freeze.
     pub fn new(
         context: PublicationContext,
         domain: AtomicityDomainId,
         genesis_digest: Digest32,
+        genesis_manifest: Option<&GenesisManifest>,
         validator_set: ValidatorSet,
         resolver: HashSuiteResolver,
     ) -> Result<Self, OrderedEconomicsError> {
+        let minimum_freeze_block_height: u64 = match genesis_manifest {
+            Some(manifest) => {
+                if manifest.context() != &context || manifest.validator_set.context != context {
+                    return Err(OrderedEconomicsError::Policy(
+                        "signed genesis manifest does not match ordered context",
+                    ));
+                }
+                let derived_digest: Digest32 = genesis_manifest_commitment(&resolver, manifest)
+                    .map_err(|_| {
+                        OrderedEconomicsError::Policy(
+                            "signed genesis manifest commitment is invalid",
+                        )
+                    })?;
+                if derived_digest != genesis_digest {
+                    return Err(OrderedEconomicsError::Policy(
+                        "signed genesis manifest does not match the pinned digest",
+                    ));
+                }
+                let frame: Vec<u8> = genesis_manifest_signing_frame(manifest).map_err(|_| {
+                    OrderedEconomicsError::Policy("signed genesis manifest frame is invalid")
+                })?;
+                let verifier: Ed25519Verifier =
+                    Ed25519Verifier::from_verifying_key_bytes(&manifest.genesis_authority)
+                        .map_err(|_| {
+                            OrderedEconomicsError::Policy(
+                                "signed genesis manifest authority is invalid",
+                            )
+                        })?;
+                if !verifier
+                    .verify_framed(&frame, &manifest.signature)
+                    .map_err(|_| {
+                        OrderedEconomicsError::Policy("signed genesis manifest verification failed")
+                    })?
+                {
+                    return Err(OrderedEconomicsError::Policy(
+                        "signed genesis manifest signature is invalid",
+                    ));
+                }
+                let signed_members: Vec<ValidatorInfo> = manifest
+                    .validator_set
+                    .validators
+                    .iter()
+                    .map(|entry| ValidatorInfo {
+                        id: entry.id,
+                        voting_power: entry.voting_power,
+                        signature_scheme: entry.signature_scheme,
+                        public_key: entry.public_key.clone(),
+                    })
+                    .collect();
+                let signed_set: ValidatorSet = ValidatorSet::new(context.epoch(), signed_members)
+                    .map_err(|_| {
+                    OrderedEconomicsError::Policy("signed genesis validator set is invalid")
+                })?;
+                if signed_set.validators() != validator_set.validators() {
+                    return Err(OrderedEconomicsError::Policy(
+                        "ordered validator set disagrees with signed genesis",
+                    ));
+                }
+                manifest.minimum_freeze_block_height
+            }
+            None => 0,
+        };
         let anchor: Digest32 = ordered_economics_authority_anchor(
             &resolver,
             &context,
             domain,
             genesis_digest,
+            minimum_freeze_block_height,
             &validator_set,
         )?;
         let engine: ChainedHotStuff = ChainedHotStuff::new(
@@ -144,6 +234,7 @@ impl OrderedEconomicsPolicy {
             context,
             domain,
             genesis_digest,
+            minimum_freeze_block_height,
             anchor,
             engine,
             resolver,
@@ -172,6 +263,13 @@ impl OrderedEconomicsPolicy {
     #[must_use]
     pub const fn genesis_digest(&self) -> Digest32 {
         self.genesis_digest
+    }
+
+    /// Minimum proposal height authorized by the signed genesis schedule.
+    /// Zero denotes a historical manifest and disables Freeze entirely.
+    #[must_use]
+    pub const fn minimum_freeze_block_height(&self) -> u64 {
+        self.minimum_freeze_block_height
     }
 
     /// Returns the derived canonical consensus genesis anchor actually used
@@ -435,7 +533,100 @@ fn authenticate_with_policy(
         OrderedOperationKind::BondLifecycle => authenticate_bond_lifecycle(env, candidate),
         OrderedOperationKind::BondSlash => authenticate_bond_slash(env, candidate),
         OrderedOperationKind::Evidence => authenticate_evidence(env, candidate),
+        OrderedOperationKind::Freeze => authenticate_freeze(env, candidate),
+        OrderedOperationKind::DrainSet => authenticate_drain_set(env, candidate),
     }
+}
+
+/// Purely validates the Freeze candidate's own bytes. The signed-genesis
+/// height and committed next-set state are checked separately before honest
+/// proposal/vote and again when the ordered block executes.
+fn authenticate_freeze(
+    env: &CandidateAuthentication<'_>,
+    candidate: &OrderedCandidate,
+) -> Result<(), OrderedEconomicsError> {
+    if env.policy.minimum_freeze_block_height() == 0 {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "freeze is not enabled by the signed genesis profile",
+        ));
+    }
+    let intent = super::freeze::decode_freeze_intent(&candidate.intent)
+        .map_err(|_| OrderedEconomicsError::Unauthenticated("invalid freeze candidate intent"))?;
+    if intent.context != candidate.context || intent.request_id != candidate.request_id {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "freeze candidate context or request id mismatch",
+        ));
+    }
+    Ok(())
+}
+
+/// Purely validates the DrainSet candidate's own bytes: its structural
+/// self-consistency (checked by [`super::drain_set::decode_drain_set_intent`]
+/// itself), its binding to the candidate's own context/request id, and the
+/// pinned outgoing quorum's own signatures and voting power over
+/// `intent.selected_votes` -- with zero storage reads. Every registered
+/// signer's key and voting power come from the pinned profile's own loaded
+/// [`validator_set::ValidatorSet`], never a storage read; this is exactly why
+/// [`FrozenFrontierCertifier`] and [`verify_frozen_frontier_quorum`] are
+/// stateless.
+///
+/// Whether this replica's own local drain-union reconstruction actually
+/// matches `intent.drain_union_identity` -- and whether `intent`'s declared
+/// committed-Freeze binding matches the *actually* committed one -- can only
+/// be proven through durable storage; see
+/// [`super::drain_set::require_drain_set_readiness`] and
+/// [`super::drain_set::preflight_drain_set`].
+fn authenticate_drain_set(
+    env: &CandidateAuthentication<'_>,
+    candidate: &OrderedCandidate,
+) -> Result<(), OrderedEconomicsError> {
+    let intent = super::drain_set::decode_drain_set_intent(&candidate.intent).map_err(|_| {
+        OrderedEconomicsError::Unauthenticated("invalid drain set candidate intent")
+    })?;
+    if intent.context != candidate.context || intent.request_id != candidate.request_id {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "drain set candidate context or request id mismatch",
+        ));
+    }
+    let identity = &intent.drain_union_identity;
+    let certifier: FrozenFrontierCertifier = FrozenFrontierCertifier::new(
+        env.policy.context().chain_id().clone(),
+        env.policy.context().protocol_version(),
+        env.policy.context().epoch(),
+        env.policy.engine().validator_set().clone(),
+    )
+    .map_err(|_| OrderedEconomicsError::Unauthenticated("drain set certifier context"))?;
+    verify_frozen_frontier_quorum(
+        &certifier,
+        &intent.selected_votes,
+        env.policy.domain(),
+        identity.closure_request_id,
+        identity.closure_height,
+        &Ed25519ConsensusVerifier,
+    )
+    .map_err(|_| OrderedEconomicsError::Unauthenticated("drain set frontier quorum"))?;
+    // Authentication must also prove that the immutable record this
+    // candidate would install can be encoded within the same frame ceiling.
+    // Otherwise a future wider signature scheme could pass the intent bound
+    // yet wedge committed execution on an oversized record.
+    let first_possible_height: u64 =
+        identity
+            .closure_height
+            .checked_add(1)
+            .ok_or(OrderedEconomicsError::Unauthenticated(
+                "drain set closure height overflow",
+            ))?;
+    let record: super::drain_set::DrainSetRecord = super::drain_set::DrainSetRecord {
+        closed_epoch: candidate.context.epoch(),
+        request_id: candidate.request_id,
+        committed_at_block_height: first_possible_height,
+        drain_union_identity: identity.clone(),
+        selected_votes: intent.selected_votes.clone(),
+    };
+    super::drain_set::encode_drain_set_record(&record).map_err(|_| {
+        OrderedEconomicsError::Unauthenticated("drain set record cannot be encoded")
+    })?;
+    Ok(())
 }
 
 fn authenticate_fee_claim(

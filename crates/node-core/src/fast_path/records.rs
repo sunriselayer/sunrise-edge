@@ -16,6 +16,7 @@ use bonds::{BondResourceId, decode_bond_resource_id, encode_bond_resource_id};
 use execution::local_execution::{
     ObjectAuthority, decode_object_authority, encode_object_authority,
 };
+use protocol_types::ExecutionGeneration;
 
 const FASTPATH_PREPARED_RECORD_TYPE: u16 = 0x641C;
 const FASTPATH_CERTIFICATE_RECORD_TYPE: u16 = 0x641D;
@@ -30,6 +31,11 @@ const FASTPATH_BOND_TRANSITION_RECORD_TYPE: u16 = 0x6431;
 const FASTPATH_BOND_TRANSITION_AUTHORIZATION_TYPE: u16 = 0x6433;
 const FASTPATH_FEE_SHARE_TYPE: u16 = 0x6435;
 const FASTPATH_FEE_SHARE_LIST_TYPE: u16 = 0x6436;
+/// Allocated from the `0x6454..=0x645D` block DR-0154's concurrently owned
+/// retention/control/cut work reserved (`0x6455`/`0x6456` are
+/// `super::publication`'s publication/ACK records, `0x6457` is
+/// `crate::ordered_economics::freeze`'s admission-closure record).
+const FASTPATH_AVAILABILITY_CERTIFICATE_RECORD_TYPE: u16 = 0x6458;
 const ENCODING_VERSION: u16 = 1;
 
 /// Bounds every nested fast-path record list. Locked-object and
@@ -126,9 +132,20 @@ pub struct FastPathPreparedRecord {
     /// certificate lands: `apply` uses this stored value rather than
     /// accepting one from its own caller.
     pub created_checkpoint: u64,
+    /// The exact authenticated [`ExecutionGeneration`] prepare derived and
+    /// voted on (DR-0154), present exactly when the store's signed genesis
+    /// bound the handoff-capable profile.
+    ///
+    /// Durably bound here for the same reason `created_checkpoint` is: apply
+    /// re-derives its own generation from its own verified inputs and requires
+    /// it to equal this one, so a certificate can never be applied under a
+    /// causal position different from the one its voters attested to. A
+    /// historical store records `None` and its frame bytes are unchanged.
+    pub prepared_generation: Option<ExecutionGeneration>,
 }
 
-/// Encodes Frame `0x641C/v1`.
+/// Encodes Frame `0x641C/v1` for historical stores or `0x641C/v2` when
+/// the signed genesis bound a logical generation.
 pub fn encode_fastpath_prepared_record(
     record: &FastPathPreparedRecord,
 ) -> Result<Vec<u8>, NodeCoreError> {
@@ -144,7 +161,14 @@ pub fn encode_fastpath_prepared_record(
         &objects,
         MAX_FASTPATH_LOCKED_OBJECTS,
     )?;
-    let mut frame: CanonicalStruct = CanonicalStruct::new(FASTPATH_PREPARED_RECORD_TYPE, 1);
+    // Version two exists exactly when the handoff-capable generation is
+    // present, so a historical prepared record keeps its frozen version-one
+    // bytes and neither version can carry the other's field set.
+    let version: u16 = match record.prepared_generation {
+        None => 1,
+        Some(_) => 2,
+    };
+    let mut frame: CanonicalStruct = CanonicalStruct::new(FASTPATH_PREPARED_RECORD_TYPE, version);
     frame.field_bytes(
         1,
         encode_publication_context(&record.context)
@@ -157,17 +181,27 @@ pub fn encode_fastpath_prepared_record(
     frame.field_bytes(6, objects_bytes)?;
     frame.field_u64(7, record.pending_nonce)?;
     frame.field_u64(8, record.created_checkpoint)?;
+    if let Some(generation) = record.prepared_generation {
+        frame.field_u64(9, generation.get())?;
+    }
     Ok(frame.finish()?)
 }
 
-/// Strictly decodes Frame `0x641C/v1`.
+/// Strictly decodes Frame `0x641C/v1` or `0x641C/v2`, retaining their
+/// disjoint closed field sets.
 pub fn decode_fastpath_prepared_record(
     bytes: &[u8],
 ) -> Result<FastPathPreparedRecord, NodeCoreError> {
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(FASTPATH_PREPARED_RECORD_TYPE)?;
-    frame.require_version(1)?;
-    frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8])?;
+    let prepared_generation: Option<ExecutionGeneration> = if frame.version() == 2 {
+        frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9])?;
+        Some(ExecutionGeneration::new(frame.required_u64(9)?))
+    } else {
+        frame.require_version(1)?;
+        frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8])?;
+        None
+    };
     let context: PublicationContext = decode_publication_context(frame.required_field(1)?)
         .map_err(|_| NodeCoreError::PersistenceInvariant("invalid prepared record context"))?;
     let request_id: [u8; 32] = frame
@@ -200,6 +234,7 @@ pub fn decode_fastpath_prepared_record(
         locked_objects,
         pending_nonce,
         created_checkpoint,
+        prepared_generation,
     };
     if encode_fastpath_prepared_record(&record)? != bytes {
         return Err(NodeCoreError::PersistenceInvariant(
@@ -1346,6 +1381,72 @@ pub fn decode_fastpath_validator_set_record(
     if encode_fastpath_validator_set_record(&record)? != bytes {
         return Err(NodeCoreError::PersistenceInvariant(
             "noncanonical fast-path validator set record",
+        ));
+    }
+    Ok(record)
+}
+
+/// DR-0154: the exact verified [`consensus::AvailabilityCertificate`] bytes
+/// [`super::apply_after_publication`]/[`super::apply_with_recovery_after_publication`]
+/// required and durably committed, atomically with the original
+/// effects/receipt, before applying one handoff-capable (`0x6424/v2`)
+/// request. A permanent audit record, mirroring [`FastPathCertificateRecord`]'s
+/// own shape for the underlying [`consensus::FastCertificate`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FastPathAvailabilityCertificateRecord {
+    /// Original signed intent's request id.
+    pub request_id: [u8; 32],
+    /// Exact `consensus::encode_availability_certificate` bytes accepted at
+    /// apply.
+    pub certificate: Vec<u8>,
+}
+
+/// One durably retained availability certificate, keyed by the original
+/// signed request id.
+pub fn fastpath_availability_certificate_key(
+    chain: &ChainId,
+    request_id: &[u8; 32],
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = local_instance_state::FASTPATH_STATE_PREFIX.to_vec();
+    key.extend_from_slice(b"availability-certificate/");
+    key.extend(canonical_encoding::encode_chain_id(chain)?);
+    key.extend_from_slice(request_id);
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+/// Encodes Frame `0x6458/v1`.
+pub fn encode_fastpath_availability_certificate_record(
+    record: &FastPathAvailabilityCertificateRecord,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut frame: CanonicalStruct = CanonicalStruct::new(
+        FASTPATH_AVAILABILITY_CERTIFICATE_RECORD_TYPE,
+        ENCODING_VERSION,
+    );
+    frame.field_bytes(1, record.request_id.to_vec())?;
+    frame.field_bytes(2, record.certificate.clone())?;
+    Ok(frame.finish()?)
+}
+
+/// Strictly decodes Frame `0x6458/v1`.
+pub fn decode_fastpath_availability_certificate_record(
+    bytes: &[u8],
+) -> Result<FastPathAvailabilityCertificateRecord, NodeCoreError> {
+    let frame = decode_canonical_frame(bytes)?;
+    frame.require_type(FASTPATH_AVAILABILITY_CERTIFICATE_RECORD_TYPE)?;
+    frame.require_version(ENCODING_VERSION)?;
+    frame.require_only_fields(&[1, 2])?;
+    let request_id: [u8; 32] = frame.required_field(1)?.try_into().map_err(|_| {
+        NodeCoreError::PersistenceInvariant("availability certificate record request id")
+    })?;
+    let certificate: Vec<u8> = frame.required_field(2)?.to_vec();
+    let record: FastPathAvailabilityCertificateRecord = FastPathAvailabilityCertificateRecord {
+        request_id,
+        certificate,
+    };
+    if encode_fastpath_availability_certificate_record(&record)? != bytes {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "noncanonical fast-path availability certificate record",
         ));
     }
     Ok(record)
