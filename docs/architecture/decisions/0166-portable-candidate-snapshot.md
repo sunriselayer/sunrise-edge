@@ -16,9 +16,10 @@ snapshot consistency or authority for all business state.
 Add a stronger optional runtime contract. A local token binds the exact
 namespace/domain, writer generation and a checked monotonic mutation sequence.
 Independently bootstrapped SQL stores also persist a 16-byte source instance
-identity (SQLite random bytes, PostgreSQL UUIDv4). Same namespace, writer and sequence must not accept
-another database's token. A cloned backup still needs operator refencing; the
-instance ID alone does not distinguish a byte-identical restore. The provider
+identity (SQLite random bytes, PostgreSQL UUIDv4). Same namespace, writer and
+sequence must not accept another database's token. A cloned backup still needs
+operator refencing; the instance ID alone does not distinguish a byte-identical
+restore. The provider
 advances that sequence in the same transaction as every write to
 the covered state/object/receipt/outbox collections. Old/legacy entry points
 must participate or the provider must refuse this contract. Guarded page,

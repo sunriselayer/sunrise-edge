@@ -735,7 +735,21 @@ The detailed existing evidence and remaining criteria follow:
   SQLite tests include same-namespace/counter fresh files and reopen continuity.
   These are local storage/transport tests, not independent PostgreSQL network
   handoff, target import or activation evidence.
-  U15 full repository/Opus/CI validation is still pending until recorded below.
+  U15 validation on 2026-09-30: `npm ci --prefix adapters/cloudflare-workers`
+  succeeded, followed by `./scripts/check-all.sh` exiting 0 on code head
+  `7e49ea3e3041490d0969f068080e9e1f80d3833c` with a disposable live
+  PostgreSQL 18.6 URL and its container ID configured. This includes strict
+  workspace lint/tests, live PostgreSQL portable reads and SIGKILL/WAL recovery,
+  existing FastVote/ordered-economics/CLI PostgreSQL E2Es, independent candidate
+  vectors, the Rust/WASM build, actual workerd SQL/contract tests (10/15 passing),
+  and all other edge-adapter checks. The workerd contract fixtures exercise the
+  shared SQL bootstrap including its source-instance ID. Optional disk/WAL-full,
+  PgBouncer and backup/restore rehearsals were not configured; no capacity or
+  independent PostgreSQL handoff completion is claimed. Fresh read-only Opus
+  explicitly approved the U15 delta through that code head, **not PR #235 or
+  Delivery 3 completion**. Final pushed-head CI remains a separate gate.
+  `npm ci` reported six existing high-severity dependency advisories; no
+  dependency upgrade or audit remediation is claimed by this slice.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

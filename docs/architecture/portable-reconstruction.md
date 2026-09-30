@@ -24,8 +24,9 @@ must refuse snapshot support rather than silently returning a weaker token.
 
 PostgreSQL reuses its namespace `commit_sequence`. Shared SQL persists the
 counter and a random 16-byte source-instance ID in metadata. PostgreSQL uses
-a per-bootstrap 16-byte UUIDv4 source-instance ID. Both read it in the same transaction
-as the fence/counter and data; neither silently upgrades an old metadata shape.
+a per-bootstrap 16-byte UUIDv4 source-instance ID. Both read it in the same
+transaction as the fence/counter and data; neither silently upgrades an old
+metadata shape.
 No PostgreSQL monitoring or cluster-admin privilege is needed for these reads.
 Copies/restores require separate operator writer-refencing: a copied source ID
 is not fresh identity. The memory fixture binds tokens to a unique store
