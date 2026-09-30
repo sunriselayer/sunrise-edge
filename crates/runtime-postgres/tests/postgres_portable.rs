@@ -44,6 +44,21 @@ impl Drop for RestoreNamespaceIdentity<'_> {
     }
 }
 
+struct RestoreSourceInstanceId<'a> {
+    admin: &'a mut Client,
+    namespace: &'a PostgresNamespace,
+    source_instance_id: Vec<u8>,
+}
+
+impl Drop for RestoreSourceInstanceId<'_> {
+    fn drop(&mut self) {
+        let _ = self.admin.execute(
+            "UPDATE sunrise_edge.storage_metadata SET source_instance_id = $4 WHERE chain_id_bytes = $1 AND validator_id = $2 AND atomicity_domain_id = $3",
+            &[&self.namespace.chain_id_bytes(), &&self.namespace.validator_id().as_bytes()[..], &&self.namespace.domain().as_bytes()[..], &self.source_instance_id],
+        );
+    }
+}
+
 fn pool(url: &str) -> Pool<Manager> {
     build_postgres_pool(
         url.parse().unwrap(),
@@ -487,4 +502,149 @@ fn postgres_portable_commit_sequence_overflow_rejects_without_mutating_row_or_co
         .unwrap()
         .get(0);
     assert_eq!(commit_sequence_after, "18446744073709551615");
+}
+
+#[test]
+fn postgres_portable_snapshot_rejects_token_after_source_instance_id_replaced_with_identical_sequence_and_fence()
+ {
+    let Some(url) = std::env::var_os(support::LIVE_POSTGRES_URL_ENV) else {
+        eprintln!(
+            "skipping live PostgreSQL source-instance-identity test: {} unset",
+            support::LIVE_POSTGRES_URL_ENV
+        );
+        return;
+    };
+    let url: String = url.into_string().expect("test URL is UTF-8");
+    let _lock: support::LiveTestLock = support::LiveTestLock::acquire();
+    let mut admin: Client = Client::connect(&url, NoTls).unwrap();
+    let database: String = admin
+        .query_one("SELECT current_database()", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        database, "sunrise_edge_test",
+        "refusing to write a non-test database"
+    );
+    apply_initial_schema(&mut admin).unwrap();
+    let nanos: u128 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let chain: ChainId =
+        ChainId::new(format!("portable-source-{}-{nanos}", std::process::id())).unwrap();
+    let namespace: PostgresNamespace = PostgresNamespace::new(
+        &chain,
+        ValidatorId::new([0xd1; 32]),
+        AtomicityDomainId::new([0xd2; 32]).unwrap(),
+    )
+    .unwrap();
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+    bootstrap_namespace(&mut admin, &namespace, POSTGRES_SCHEMA_GENERATION, fence).unwrap();
+    let current: PostgresDurableStore<Manager> = store(pool(&url), namespace.clone());
+    let live: DurableOperationContext = context(fence);
+    conformance::seed(&current, &live, namespace.domain(), &chain);
+    let token: PortableSnapshotToken =
+        conformance::verify_snapshot(&current, &live, namespace.domain());
+
+    let metadata_row = |admin: &mut Client| -> (Vec<u8>, String) {
+        let row = admin
+            .query_one(
+                "SELECT source_instance_id, commit_sequence::TEXT FROM sunrise_edge.storage_metadata
+                 WHERE chain_id_bytes = $1 AND validator_id = $2 AND atomicity_domain_id = $3",
+                &[
+                    &namespace.chain_id_bytes(),
+                    &&namespace.validator_id().as_bytes()[..],
+                    &&namespace.domain().as_bytes()[..],
+                ],
+            )
+            .unwrap();
+        (row.get(0), row.get(1))
+    };
+    let (original_source_instance_id, commit_sequence_before): (Vec<u8>, String) =
+        metadata_row(&mut admin);
+
+    // A fixed, deliberately different 16-byte value: the actual bootstrap
+    // value is a `gen_random_uuid()` byte string, so an equal fixed pattern
+    // is practically impossible.
+    let replaced_source_instance_id: Vec<u8> = vec![0x77; 16];
+    assert_ne!(original_source_instance_id, replaced_source_instance_id);
+    admin
+        .execute(
+            "UPDATE sunrise_edge.storage_metadata SET source_instance_id = $4
+             WHERE chain_id_bytes = $1 AND validator_id = $2 AND atomicity_domain_id = $3",
+            &[
+                &namespace.chain_id_bytes(),
+                &&namespace.validator_id().as_bytes()[..],
+                &&namespace.domain().as_bytes()[..],
+                &replaced_source_instance_id,
+            ],
+        )
+        .unwrap();
+    {
+        let _restore: RestoreSourceInstanceId<'_> = RestoreSourceInstanceId {
+            admin: &mut admin,
+            namespace: &namespace,
+            source_instance_id: original_source_instance_id,
+        };
+
+        // The writer fence and commit sequence are untouched: only the
+        // random source identity changed, but every guarded read still
+        // refuses the previously issued token, read inside the very same
+        // transaction as the replaced row.
+        let scan: DurableRecordScan = DurableRecordScan::new(
+            DurableCollection::State,
+            None,
+            NonZeroUsize::new(128).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            current.scan_portable_keys_at(&live, namespace.domain(), &token, &scan),
+            Err(PortableSnapshotError::Changed)
+        );
+        let key: DurableRecordKey = DurableRecordKey::State(b"a-large".to_vec());
+        assert_eq!(
+            current.read_portable_descriptor_at(&live, namespace.domain(), &token, &key),
+            Err(PortableSnapshotError::Changed)
+        );
+        let descriptor: DurableRecordDescriptor = current
+            .read_portable_descriptor(&live, namespace.domain(), &key)
+            .unwrap()
+            .unwrap();
+        let chunk: DurableRecordChunkRequest =
+            DurableRecordChunkRequest::new(descriptor, 0, NonZeroUsize::new(8).unwrap()).unwrap();
+        assert_eq!(
+            current.read_portable_chunk_at(&live, namespace.domain(), &token, &chunk),
+            Err(PortableSnapshotError::Changed)
+        );
+        assert_eq!(
+            current.check_portable_outbox_empty_at(&live, namespace.domain(), &token),
+            Err(PortableSnapshotError::Changed)
+        );
+
+        // Every business row and the fence/sequence pair are byte-for-byte
+        // unchanged: only the physical source identity moved.
+        conformance::verify(&current, &live, namespace.domain(), &chain);
+        let (_, commit_sequence_after): (Vec<u8>, String) = metadata_row(_restore.admin);
+        assert_eq!(commit_sequence_after, commit_sequence_before);
+        let replaced_token: PortableSnapshotToken = current
+            .begin_portable_snapshot(&live, namespace.domain())
+            .unwrap();
+        assert_eq!(replaced_token.writer_fence(), token.writer_fence());
+        assert_eq!(
+            replaced_token.mutation_sequence(),
+            token.mutation_sequence()
+        );
+        assert_ne!(replaced_token, token);
+    }
+
+    // Restoring the original source instance id (`RestoreSourceInstanceId`'s
+    // `Drop`) makes even a freshly reconnected pool/store honor the
+    // original token again: it is a database-observed fact, never a
+    // process-local cache.
+    let reconnected: PostgresDurableStore<Manager> = store(pool(&url), namespace.clone());
+    assert!(
+        reconnected
+            .check_portable_outbox_empty_at(&live, namespace.domain(), &token)
+            .is_ok()
+    );
 }

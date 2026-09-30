@@ -449,3 +449,83 @@ fn sqlite_portable_snapshot_refuses_old_metadata_shape_without_rewriting_it() {
     let column_count: i64 = admin.query_row("SELECT count(*) FROM pragma_table_info('durable_metadata') WHERE name = 'mutation_sequence'", [], |row| row.get(0)).unwrap();
     assert_eq!(column_count, 0);
 }
+
+/// Two independently bootstrapped SQLite files that happen to share every
+/// logical identity field (chain, validator, domain) and, after a fresh
+/// bootstrap, the very same writer fence and mutation sequence (both start
+/// at their initial values) must still never validate the same token: only
+/// the random per-file `source_instance_id` distinguishes them.
+#[test]
+fn sqlite_portable_snapshot_rejects_token_from_a_different_fresh_file_with_identical_namespace_and_counter()
+ {
+    let first_db: TestDatabase = TestDatabase::new();
+    let second_db: TestDatabase = TestDatabase::new();
+    let ns: SqliteNamespace = namespace("portable-fresh-file-identity", 0x51, 0x52);
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+    let first: SqliteDurableStore =
+        SqliteDurableStore::open(&first_db.path, ns.clone(), fence).unwrap();
+    let second: SqliteDurableStore =
+        SqliteDurableStore::open(&second_db.path, ns.clone(), fence).unwrap();
+    let live: DurableOperationContext = context(fence);
+    conformance::seed(&first, &live, ns.domain(), ns.chain_id());
+    conformance::seed(&second, &live, ns.domain(), ns.chain_id());
+    // Equal writes leave equal counters, but not equal physical sources.
+    let token_from_first: PortableSnapshotToken =
+        first.begin_portable_snapshot(&live, ns.domain()).unwrap();
+    assert_eq!(
+        token_from_first.mutation_sequence(),
+        second
+            .begin_portable_snapshot(&live, ns.domain())
+            .unwrap()
+            .mutation_sequence()
+    );
+    assert_ne!(
+        token_from_first,
+        second.begin_portable_snapshot(&live, ns.domain()).unwrap()
+    );
+    let scan: DurableRecordScan = DurableRecordScan::new(
+        DurableCollection::State,
+        None,
+        NonZeroUsize::new(1).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        second.scan_portable_keys_at(&live, ns.domain(), &token_from_first, &scan),
+        Err(PortableSnapshotError::Changed)
+    ));
+    assert!(matches!(
+        second.check_portable_outbox_empty_at(&live, ns.domain(), &token_from_first),
+        Err(PortableSnapshotError::Changed)
+    ));
+    let key: DurableRecordKey = DurableRecordKey::State(b"a-large".to_vec());
+    assert!(matches!(
+        second.read_portable_descriptor_at(&live, ns.domain(), &token_from_first, &key),
+        Err(PortableSnapshotError::Changed)
+    ));
+    let descriptor: DurableRecordDescriptor = second
+        .read_portable_descriptor(&live, ns.domain(), &key)
+        .unwrap()
+        .unwrap();
+    let request: DurableRecordChunkRequest =
+        DurableRecordChunkRequest::new(descriptor, 0, NonZeroUsize::new(8).unwrap()).unwrap();
+    assert!(matches!(
+        second.read_portable_chunk_at(&live, ns.domain(), &token_from_first, &request),
+        Err(PortableSnapshotError::Changed)
+    ));
+    // The same token still validates unchanged against its own source.
+    first
+        .check_portable_outbox_empty_at(&live, ns.domain(), &token_from_first)
+        .unwrap();
+    drop(first);
+    let reopened: SqliteDurableStore =
+        SqliteDurableStore::open_existing(&first_db.path, ns.clone()).unwrap();
+    assert_eq!(
+        token_from_first,
+        reopened
+            .begin_portable_snapshot(&live, ns.domain())
+            .unwrap()
+    );
+    reopened
+        .check_portable_outbox_empty_at(&live, ns.domain(), &token_from_first)
+        .unwrap();
+}

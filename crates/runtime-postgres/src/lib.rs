@@ -338,6 +338,13 @@ pub struct PostgresSchemaMetadata {
     schema_generation: SchemaGeneration,
     writer_fence: WriterFenceGeneration,
     commit_sequence: u64,
+    /// A random 16-byte identity persisted once at trusted bootstrap. It
+    /// distinguishes two independently bootstrapped stores that otherwise
+    /// share the same chain/validator/domain namespace tuple, so a portable
+    /// snapshot token can never validate against the wrong physical source.
+    /// It never substitutes for an operator restore/failover writer-refencing
+    /// procedure.
+    source_instance_id: [u8; 16],
 }
 
 impl PostgresSchemaMetadata {
@@ -357,6 +364,12 @@ impl PostgresSchemaMetadata {
     #[must_use]
     pub const fn commit_sequence(self) -> u64 {
         self.commit_sequence
+    }
+
+    /// Returns the random bootstrap-time source instance identity.
+    #[must_use]
+    pub const fn source_instance_id(self) -> [u8; 16] {
+        self.source_instance_id
     }
 }
 
@@ -537,6 +550,7 @@ pub fn bootstrap_namespace(
              validator_id,
              atomicity_domain_id,
              schema_identity,
+             source_instance_id,
              schema_generation,
              migration_phase_id,
              compatibility_min_generation,
@@ -545,6 +559,7 @@ pub fn bootstrap_namespace(
              commit_sequence
          ) VALUES (
              $1, $2, $3, $4,
+             decode(replace(gen_random_uuid()::text, '-', ''), 'hex'),
              CAST(CAST($5 AS TEXT) AS NUMERIC), $6,
              CAST(CAST($5 AS TEXT) AS NUMERIC), CAST(CAST($5 AS TEXT) AS NUMERIC),
              CAST(CAST($7 AS TEXT) AS NUMERIC), 0
@@ -646,6 +661,7 @@ pub fn inspect_namespace(
     let row = client.query_opt(
         "SELECT
              schema_identity,
+             source_instance_id,
              schema_generation::TEXT,
              compatibility_min_generation::TEXT,
              compatibility_max_generation::TEXT,
@@ -666,10 +682,14 @@ pub fn inspect_namespace(
         return Ok(None);
     };
     let identity: Vec<u8> = row.get(0);
-    let generation = parse_u64("schema_generation", row.get(1))?;
-    let minimum = parse_u64("compatibility_min_generation", row.get(2))?;
-    let maximum = parse_u64("compatibility_max_generation", row.get(3))?;
-    let migration_phase: i16 = row.get(4);
+    let source_instance_id_bytes: Vec<u8> = row.get(1);
+    let source_instance_id: [u8; 16] = source_instance_id_bytes
+        .try_into()
+        .map_err(|_| PostgresSchemaError::SchemaMismatch)?;
+    let generation = parse_u64("schema_generation", row.get(2))?;
+    let minimum = parse_u64("compatibility_min_generation", row.get(3))?;
+    let maximum = parse_u64("compatibility_max_generation", row.get(4))?;
+    let migration_phase: i16 = row.get(5);
     if identity.as_slice() != POSTGRES_SCHEMA_IDENTITY
         || generation != POSTGRES_SCHEMA_GENERATION.get()
         || minimum != generation
@@ -678,14 +698,15 @@ pub fn inspect_namespace(
     {
         return Err(PostgresSchemaError::SchemaMismatch);
     }
-    let writer_fence_value = parse_u64("writer_fence_generation", row.get(5))?;
+    let writer_fence_value = parse_u64("writer_fence_generation", row.get(6))?;
     let writer_fence = WriterFenceGeneration::new(writer_fence_value)
         .ok_or(PostgresSchemaError::ZeroWriterFence)?;
-    let commit_sequence = parse_u64("commit_sequence", row.get(6))?;
+    let commit_sequence = parse_u64("commit_sequence", row.get(7))?;
     Ok(Some(PostgresSchemaMetadata {
         schema_generation: POSTGRES_SCHEMA_GENERATION,
         writer_fence,
         commit_sequence,
+        source_instance_id,
     }))
 }
 
@@ -850,6 +871,7 @@ fn load_namespace_metadata(
     let sql = format!(
         "SELECT
              schema_identity,
+             source_instance_id,
              schema_generation::TEXT,
              compatibility_min_generation::TEXT,
              compatibility_max_generation::TEXT,
@@ -875,11 +897,17 @@ fn load_namespace_metadata(
     let identity: Vec<u8> = row
         .try_get(0)
         .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
-    let generation = parse_database_u64(&row, 1)?;
-    let minimum = parse_database_u64(&row, 2)?;
-    let maximum = parse_database_u64(&row, 3)?;
+    let source_instance_id_bytes: Vec<u8> = row
+        .try_get(1)
+        .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
+    let source_instance_id: [u8; 16] = source_instance_id_bytes
+        .try_into()
+        .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
+    let generation = parse_database_u64(&row, 2)?;
+    let minimum = parse_database_u64(&row, 3)?;
+    let maximum = parse_database_u64(&row, 4)?;
     let migration_phase: i16 = row
-        .try_get(4)
+        .try_get(5)
         .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
     if identity.as_slice() != POSTGRES_SCHEMA_IDENTITY
         || generation != POSTGRES_SCHEMA_GENERATION.get()
@@ -889,12 +917,13 @@ fn load_namespace_metadata(
     {
         return Err(PreCommitFailure::SchemaMismatch);
     }
-    let writer_fence = WriterFenceGeneration::new(parse_database_u64(&row, 5)?)
+    let writer_fence = WriterFenceGeneration::new(parse_database_u64(&row, 6)?)
         .ok_or(PreCommitFailure::InvalidPersistedState)?;
     Ok(PostgresSchemaMetadata {
         schema_generation: POSTGRES_SCHEMA_GENERATION,
         writer_fence,
-        commit_sequence: parse_database_u64(&row, 6)?,
+        commit_sequence: parse_database_u64(&row, 7)?,
+        source_instance_id,
     })
 }
 
@@ -2383,6 +2412,7 @@ fn reconcile_outbox_claim(
     .map_err(|_| DurableOutboxClaimRejection::InvalidPersistedState)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn install_outbox_claim(
     transaction: &mut postgres::Transaction<'_>,
     context: &DurableOperationContext,
