@@ -179,7 +179,7 @@ pub fn inspect_legacy_outbox_prefix<S: StateKeyScanner>(
     store: &S,
     layout: &PersistenceLayout,
 ) -> Result<LegacyOutboxInventory, RuntimeError> {
-    let scan = StateKeyScan::new(layout.outbox_prefix(), None, NonZeroUsize::new(1).unwrap())?;
+    let scan: StateKeyScan = StateKeyScan::new(layout.outbox_prefix(), None, NonZeroUsize::MIN)?;
     let page = store.scan_keys(&scan)?;
     Ok(LegacyOutboxInventory {
         any_key_present: !page.keys().is_empty(),

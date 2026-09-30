@@ -2,7 +2,7 @@
 //! restore or network activation evidence.
 
 use postgres::{Client, NoTls};
-use protocol_types::{AtomicityDomainId, ChainId, ValidatorId};
+use protocol_types::{AtomicityDomainId, ChainId, Digest32, HashAlgorithmId, ValidatorId};
 use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
 use runtime::portable::{
     DurableCollection, DurablePortableRepository, DurablePortableSnapshotRepository,
@@ -10,10 +10,14 @@ use runtime::portable::{
     PortableSnapshotError, PortableSnapshotToken, conformance,
 };
 use runtime::{
-    AtomicStateMutationSet, AtomicStateReadSet, AtomicStateTransaction, DurableCommitOutcome,
-    DurableCommitRejection, DurableDomainStateStore, DurableOperationContext, DurableReadError,
-    StateMutation, StateMutationEntry, StateReadAssertion, StateRevision, StorageCorrelationId,
-    StorageDeadline, WriterFenceGeneration,
+    AtomicStateMutationSet, AtomicStateReadSet, AtomicStateTransaction, DueOutboxClaimRequest,
+    DurableCommitOutcome, DurableCommitRejection, DurableDomainStateStore,
+    DurableInvocationTransaction, DurableObjectChanges, DurableOperationContext,
+    DurableOutboxBatch, DurableOutboxClaimOutcome, DurableOutboxClaimRejection,
+    DurableOutboxLeaseId, DurableOutboxMessage, DurableReadError, DurableRequestReceipt,
+    IndexedOutboxRepository, OutboxRequestId, StateMutation, StateMutationEntry,
+    StateReadAssertion, StateRevision, StorageCorrelationId, StorageDeadline,
+    StructuredDurableDomainStateStore, WriterFenceGeneration,
 };
 use runtime_postgres::{
     POSTGRES_SCHEMA_GENERATION, PostgresDurableStore, PostgresNamespace, PostgresPoolConfig,
@@ -95,6 +99,38 @@ fn context(fence: WriterFenceGeneration) -> DurableOperationContext {
         StorageDeadline::new(now.checked_add(120_000).unwrap()).unwrap(),
         StorageCorrelationId::new([0xef; 16]).unwrap(),
     )
+}
+
+/// Commits one outbox-bearing invocation with one message so a test can
+/// claim it and observe the checked outbox-empty guard.
+fn commit_outbox_batch(
+    store: &PostgresDurableStore<Manager>,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    request_id: OutboxRequestId,
+) {
+    let event_digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x71; 32]);
+    let receipt: DurableRequestReceipt =
+        DurableRequestReceipt::new(request_id, event_digest, vec![0x72]).unwrap();
+    let message: DurableOutboxMessage = DurableOutboxMessage::new(
+        Digest32::new(HashAlgorithmId::Sha3_256, [0x73; 32]),
+        vec![0x74],
+    )
+    .unwrap();
+    let outbox: DurableOutboxBatch =
+        DurableOutboxBatch::new(request_id, event_digest, vec![message]).unwrap();
+    let invocation: DurableInvocationTransaction = DurableInvocationTransaction::new(
+        domain,
+        None,
+        DurableObjectChanges::empty(),
+        receipt,
+        Some(outbox),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_invocation(context, invocation),
+        DurableCommitOutcome::Committed
+    );
 }
 
 #[test]
@@ -647,4 +683,128 @@ fn postgres_portable_snapshot_rejects_token_after_source_instance_id_replaced_wi
             .check_portable_outbox_empty_at(&live, namespace.domain(), &token)
             .is_ok()
     );
+}
+
+/// Exact live-lease replay of `claim_due_outbox` leaves the token unchanged.
+/// Reusing the same lease id once it has expired is refused without
+/// mutating any row here (this backend rolls that attempt back), so it is
+/// also a no-write retry from the token's perspective. Only a genuine
+/// reclaim under a *new* lease id on the now-expired delivery — which marks
+/// the stale attempt expired and installs the fresh claim — is a real write
+/// that advances the sequence and invalidates the earlier token. Mirrors
+/// `runtime::portable::tests::snapshot_tracks_claim_ack_and_expiration_and_refuses_completed_nonempty_outbox`,
+/// except that Memory backend additionally records the expiry inline even
+/// while rejecting a same-lease reuse; PostgreSQL does not commit that
+/// rejected transaction, so that specific rejection does not invalidate a
+/// token here.
+#[test]
+fn postgres_portable_snapshot_tracks_outbox_claim_replay_and_expiry_reclaim() {
+    let Some(url) = std::env::var_os(support::LIVE_POSTGRES_URL_ENV) else {
+        eprintln!(
+            "skipping live PostgreSQL outbox claim replay/reclaim test: {} unset",
+            support::LIVE_POSTGRES_URL_ENV
+        );
+        return;
+    };
+    let url: String = url.into_string().expect("test URL is UTF-8");
+    let _lock: support::LiveTestLock = support::LiveTestLock::acquire();
+    let mut admin: Client = Client::connect(&url, NoTls).unwrap();
+    let database: String = admin
+        .query_one("SELECT current_database()", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        database, "sunrise_edge_test",
+        "refusing to write a non-test database"
+    );
+    apply_initial_schema(&mut admin).unwrap();
+    let nanos: u128 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let chain: ChainId = ChainId::new(format!(
+        "portable-claim-expiry-{}-{nanos}",
+        std::process::id()
+    ))
+    .unwrap();
+    let namespace: PostgresNamespace = PostgresNamespace::new(
+        &chain,
+        ValidatorId::new([0xe1; 32]),
+        AtomicityDomainId::new([0xe2; 32]).unwrap(),
+    )
+    .unwrap();
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+    bootstrap_namespace(&mut admin, &namespace, POSTGRES_SCHEMA_GENERATION, fence).unwrap();
+    let current: PostgresDurableStore<Manager> = store(pool(&url), namespace.clone());
+    let live: DurableOperationContext = context(fence);
+    let request_id: OutboxRequestId = OutboxRequestId::new([0x78; 32]).unwrap();
+    commit_outbox_batch(&current, &live, namespace.domain(), request_id);
+
+    let before: PortableSnapshotToken = current
+        .begin_portable_snapshot(&live, namespace.domain())
+        .unwrap();
+    let lease_a: DurableOutboxLeaseId = DurableOutboxLeaseId::new([0x79; 32]).unwrap();
+    let claim_a: DueOutboxClaimRequest =
+        DueOutboxClaimRequest::new(namespace.domain(), 0, lease_a, 1_000).unwrap();
+    assert!(matches!(
+        current.claim_due_outbox(&live, claim_a),
+        DurableOutboxClaimOutcome::Claimed(_)
+    ));
+    let claimed: PortableSnapshotToken = current
+        .begin_portable_snapshot(&live, namespace.domain())
+        .unwrap();
+    assert_eq!(
+        claimed.mutation_sequence(),
+        before.mutation_sequence().checked_add(1).unwrap()
+    );
+
+    // Exact live-lease replay: identical request reads the retained claim
+    // again without any further write.
+    assert!(matches!(
+        current.claim_due_outbox(&live, claim_a),
+        DurableOutboxClaimOutcome::Claimed(_)
+    ));
+    assert_eq!(
+        claimed,
+        current
+            .begin_portable_snapshot(&live, namespace.domain())
+            .unwrap()
+    );
+
+    // Reusing lease A once its window has elapsed is refused; no row is
+    // mutated for this rejection, so the token also survives this retry.
+    let reused_expired: DueOutboxClaimRequest =
+        DueOutboxClaimRequest::new(namespace.domain(), 1_000, lease_a, 2_000).unwrap();
+    assert!(matches!(
+        current.claim_due_outbox(&live, reused_expired),
+        DurableOutboxClaimOutcome::Rejected(DurableOutboxClaimRejection::LeaseIdReuse)
+    ));
+    assert_eq!(
+        claimed,
+        current
+            .begin_portable_snapshot(&live, namespace.domain())
+            .unwrap()
+    );
+
+    // A genuine reclaim under a new lease id on the now-expired delivery
+    // marks the stale attempt expired and installs the new claim: the real
+    // write, which advances the sequence and invalidates the prior token.
+    let lease_b: DurableOutboxLeaseId = DurableOutboxLeaseId::new([0x7a; 32]).unwrap();
+    let reclaim: DueOutboxClaimRequest =
+        DueOutboxClaimRequest::new(namespace.domain(), 1_000, lease_b, 2_000).unwrap();
+    assert!(matches!(
+        current.claim_due_outbox(&live, reclaim),
+        DurableOutboxClaimOutcome::Claimed(_)
+    ));
+    let reclaimed: PortableSnapshotToken = current
+        .begin_portable_snapshot(&live, namespace.domain())
+        .unwrap();
+    assert_eq!(
+        reclaimed.mutation_sequence(),
+        claimed.mutation_sequence().checked_add(1).unwrap()
+    );
+    assert!(matches!(
+        current.check_portable_outbox_empty_at(&live, namespace.domain(), &claimed),
+        Err(PortableSnapshotError::Changed)
+    ));
 }
