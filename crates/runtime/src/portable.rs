@@ -13,11 +13,11 @@ use crate::{
     DurableObjectVersionRecord, DurableOperationContext, DurableReadError, DurableRequestId,
     MAX_DURABLE_INLINE_OBJECT_BYTES, MAX_DURABLE_RECEIPT_BYTES, MAX_STATE_VALUE_BYTES,
     MemoryDurableStateStore, MemoryDurableStoreData, ObjectId, RuntimeError, StateRevision,
-    StructuredDurableDomainStateStore, read_memory_object_head,
+    StructuredDurableDomainStateStore, WriterFenceGeneration, read_memory_object_head,
     validate_memory_durable_read_authority, validate_memory_durable_read_domain,
     validate_state_key,
 };
-use protocol_types::{AtomicityDomainId, Digest32, WriterFenceGeneration};
+use protocol_types::{AtomicityDomainId, Digest32};
 use std::error::Error;
 use std::fmt;
 use std::num::NonZeroUsize;
@@ -639,6 +639,98 @@ fn memory_descriptor(
         .transpose()
 }
 
+fn memory_page(
+    data: &MemoryDurableStoreData,
+    domain: AtomicityDomainId,
+    scan: &DurableRecordScan,
+) -> Result<DurableRecordPage, DurableReadError> {
+    if scan
+        .after()
+        .is_some_and(|after| after.collection() != scan.collection())
+    {
+        return Err(DurableReadError::InvalidPersistedState);
+    }
+    let domain_bytes: [u8; 32] = *domain.as_bytes();
+    let count: usize = scan.limit.get() + 1;
+    let keys: Vec<DurableRecordKey> = match scan.collection {
+        DurableCollection::State => match data.state_domains.get(&domain_bytes) {
+            None => Vec::new(),
+            Some(state) => {
+                let start: Bound<Vec<u8>> = match &scan.after {
+                    None => Bound::Unbounded,
+                    Some(DurableRecordKey::State(key)) => Bound::Excluded(key.clone()),
+                    Some(_) => return Err(DurableReadError::InvalidPersistedState),
+                };
+                state
+                    .range((start, Bound::Unbounded))
+                    .take(count)
+                    .map(|(key, _)| DurableRecordKey::State(key.clone()))
+                    .collect()
+            }
+        },
+        DurableCollection::Receipts => {
+            let start: Bound<([u8; 32], [u8; 32])> = match &scan.after {
+                None => Bound::Included((domain_bytes, [0; 32])),
+                Some(DurableRecordKey::Receipt(id)) => {
+                    Bound::Excluded((domain_bytes, *id.as_bytes()))
+                }
+                Some(_) => return Err(DurableReadError::InvalidPersistedState),
+            };
+            data.receipts
+                .range((start, Bound::Included((domain_bytes, [0xff; 32]))))
+                .take(count)
+                .map(|((_, id), _)| {
+                    DurableRequestId::new(*id)
+                        .map(DurableRecordKey::Receipt)
+                        .map_err(|_| DurableReadError::InvalidPersistedState)
+                })
+                .collect::<Result<Vec<DurableRecordKey>, DurableReadError>>()?
+        }
+        DurableCollection::ObjectHeads => {
+            let start: Bound<([u8; 32], ObjectId)> = match &scan.after {
+                None => Bound::Included((domain_bytes, ObjectId::new([0; 32]))),
+                Some(DurableRecordKey::ObjectHead(id)) => Bound::Excluded((domain_bytes, *id)),
+                Some(_) => return Err(DurableReadError::InvalidPersistedState),
+            };
+            data.object_heads
+                .range((
+                    start,
+                    Bound::Included((domain_bytes, ObjectId::new([0xff; 32]))),
+                ))
+                .take(count)
+                .map(|((_, id), _)| DurableRecordKey::ObjectHead(*id))
+                .collect()
+        }
+        DurableCollection::ObjectVersions => {
+            let start: Bound<([u8; 32], ObjectId, DurableObjectVersion)> = match &scan.after {
+                None => Bound::Included((
+                    domain_bytes,
+                    ObjectId::new([0; 32]),
+                    DurableObjectVersion::FIRST,
+                )),
+                Some(DurableRecordKey::ObjectVersion(id, version)) => {
+                    Bound::Excluded((domain_bytes, *id, *version))
+                }
+                Some(_) => return Err(DurableReadError::InvalidPersistedState),
+            };
+            data.object_versions
+                .range((
+                    start,
+                    Bound::Included((
+                        domain_bytes,
+                        ObjectId::new([0xff; 32]),
+                        DurableObjectVersion::MAX,
+                    )),
+                ))
+                .take(count)
+                .map(|((_, id, version), _)| DurableRecordKey::ObjectVersion(*id, *version))
+                .collect()
+        }
+    };
+    DurableRecordPage::from_ordered_candidates(scan, keys)
+        .map_err(|_| DurableReadError::InvalidPersistedState)
+}
+
 impl DurablePortableRepository for MemoryDurableStateStore {
     fn scan_portable_keys(
         &self,
@@ -646,97 +738,13 @@ impl DurablePortableRepository for MemoryDurableStateStore {
         domain: AtomicityDomainId,
         scan: &DurableRecordScan,
     ) -> Result<DurableRecordPage, DurableReadError> {
-        if scan
-            .after()
-            .is_some_and(|after| after.collection() != scan.collection())
-        {
-            return Err(DurableReadError::InvalidPersistedState);
-        }
         let data = self
             .inner
             .read()
             .map_err(|_| DurableReadError::Unavailable)?;
         validate_memory_durable_read_domain(&data, domain)?;
         validate_memory_durable_read_authority(&data, context)?;
-        let domain_bytes: [u8; 32] = *domain.as_bytes();
-        let count: usize = scan.limit.get() + 1;
-        let keys: Vec<DurableRecordKey> = match scan.collection {
-            DurableCollection::State => match data.state_domains.get(&domain_bytes) {
-                None => Vec::new(),
-                Some(state) => {
-                    let start: Bound<Vec<u8>> = match &scan.after {
-                        None => Bound::Unbounded,
-                        Some(DurableRecordKey::State(key)) => Bound::Excluded(key.clone()),
-                        Some(_) => return Err(DurableReadError::InvalidPersistedState),
-                    };
-                    state
-                        .range((start, Bound::Unbounded))
-                        .take(count)
-                        .map(|(key, _)| DurableRecordKey::State(key.clone()))
-                        .collect()
-                }
-            },
-            DurableCollection::Receipts => {
-                let start: Bound<([u8; 32], [u8; 32])> = match &scan.after {
-                    None => Bound::Included((domain_bytes, [0; 32])),
-                    Some(DurableRecordKey::Receipt(id)) => {
-                        Bound::Excluded((domain_bytes, *id.as_bytes()))
-                    }
-                    Some(_) => return Err(DurableReadError::InvalidPersistedState),
-                };
-                data.receipts
-                    .range((start, Bound::Included((domain_bytes, [0xff; 32]))))
-                    .take(count)
-                    .map(|((_, id), _)| {
-                        DurableRequestId::new(*id)
-                            .map(DurableRecordKey::Receipt)
-                            .map_err(|_| DurableReadError::InvalidPersistedState)
-                    })
-                    .collect::<Result<Vec<DurableRecordKey>, DurableReadError>>()?
-            }
-            DurableCollection::ObjectHeads => {
-                let start: Bound<([u8; 32], ObjectId)> = match &scan.after {
-                    None => Bound::Included((domain_bytes, ObjectId::new([0; 32]))),
-                    Some(DurableRecordKey::ObjectHead(id)) => Bound::Excluded((domain_bytes, *id)),
-                    Some(_) => return Err(DurableReadError::InvalidPersistedState),
-                };
-                data.object_heads
-                    .range((
-                        start,
-                        Bound::Included((domain_bytes, ObjectId::new([0xff; 32]))),
-                    ))
-                    .take(count)
-                    .map(|((_, id), _)| DurableRecordKey::ObjectHead(*id))
-                    .collect()
-            }
-            DurableCollection::ObjectVersions => {
-                let start: Bound<([u8; 32], ObjectId, DurableObjectVersion)> = match &scan.after {
-                    None => Bound::Included((
-                        domain_bytes,
-                        ObjectId::new([0; 32]),
-                        DurableObjectVersion::FIRST,
-                    )),
-                    Some(DurableRecordKey::ObjectVersion(id, version)) => {
-                        Bound::Excluded((domain_bytes, *id, *version))
-                    }
-                    Some(_) => return Err(DurableReadError::InvalidPersistedState),
-                };
-                data.object_versions
-                    .range((
-                        start,
-                        Bound::Included((
-                            domain_bytes,
-                            ObjectId::new([0xff; 32]),
-                            DurableObjectVersion::MAX,
-                        )),
-                    ))
-                    .take(count)
-                    .map(|((_, id, version), _)| DurableRecordKey::ObjectVersion(*id, *version))
-                    .collect()
-            }
-        };
-        DurableRecordPage::from_ordered_candidates(scan, keys)
-            .map_err(|_| DurableReadError::InvalidPersistedState)
+        memory_page(&data, domain, scan)
     }
 
     fn read_portable_descriptor(
@@ -767,35 +775,148 @@ impl DurablePortableRepository for MemoryDurableStateStore {
             .map_err(|_| DurableReadError::Unavailable)?;
         validate_memory_durable_read_domain(&data, domain)?;
         validate_memory_durable_read_authority(&data, context)?;
-        let key: &DurableRecordKey = request.descriptor.key();
-        if memory_descriptor(&data, domain, key)?.as_ref() != Some(&request.descriptor) {
-            return Ok(DurableRecordChunkOutcome::Changed);
+        memory_chunk(&data, domain, request)
+    }
+}
+
+fn memory_chunk(
+    data: &MemoryDurableStoreData,
+    domain: AtomicityDomainId,
+    request: &DurableRecordChunkRequest,
+) -> Result<DurableRecordChunkOutcome, DurableReadError> {
+    let key: &DurableRecordKey = request.descriptor.key();
+    if memory_descriptor(data, domain, key)?.as_ref() != Some(&request.descriptor) {
+        return Ok(DurableRecordChunkOutcome::Changed);
+    }
+    let domain_bytes: [u8; 32] = *domain.as_bytes();
+    let bytes: Option<&[u8]> = match key {
+        DurableRecordKey::State(key) => data
+            .state_domains
+            .get(&domain_bytes)
+            .and_then(|state| state.get(key))
+            .and_then(|row| row.value.as_deref()),
+        DurableRecordKey::Receipt(id) => data
+            .receipts
+            .get(&(domain_bytes, *id.as_bytes()))
+            .map(|receipt| receipt.canonical_bytes()),
+        DurableRecordKey::ObjectVersion(id, version) => data
+            .object_versions
+            .get(&(domain_bytes, *id, *version))
+            .and_then(|row| row.payload().inline())
+            .map(|inline| inline.canonical_bytes()),
+        DurableRecordKey::ObjectHead(_) => None,
+    };
+    let bytes: Vec<u8> = bytes
+        .and_then(|bytes| bytes.get(request.range()))
+        .ok_or(DurableReadError::InvalidPersistedState)?
+        .to_vec();
+    DurableRecordChunk::new(request.clone(), bytes)
+        .map(|chunk| DurableRecordChunkOutcome::Chunk(Box::new(chunk)))
+        .map_err(|_| DurableReadError::InvalidPersistedState)
+}
+
+fn memory_sequence(data: &MemoryDurableStoreData, domain: AtomicityDomainId) -> u64 {
+    data.mutation_sequences
+        .get(domain.as_bytes())
+        .copied()
+        .unwrap_or(0)
+}
+
+fn check_memory_snapshot(
+    data: &MemoryDurableStoreData,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    token: &PortableSnapshotToken,
+) -> Result<(), PortableSnapshotError> {
+    validate_memory_durable_read_domain(data, domain)?;
+    validate_memory_durable_read_authority(data, context)?;
+    token.check(
+        &data.portable_namespace,
+        domain,
+        data.active_writer_fence,
+        memory_sequence(data, domain),
+    )
+}
+
+impl DurablePortableSnapshotRepository for MemoryDurableStateStore {
+    fn begin_portable_snapshot(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<PortableSnapshotToken, PortableSnapshotError> {
+        let data = self
+            .inner
+            .read()
+            .map_err(|_| DurableReadError::Unavailable)?;
+        validate_memory_durable_read_domain(&data, domain)?;
+        validate_memory_durable_read_authority(&data, context)?;
+        Ok(PortableSnapshotToken::new(
+            data.portable_namespace.clone(),
+            domain,
+            data.active_writer_fence,
+            memory_sequence(&data, domain),
+        )?)
+    }
+    fn scan_portable_keys_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+        scan: &DurableRecordScan,
+    ) -> Result<DurableRecordPage, PortableSnapshotError> {
+        let data = self
+            .inner
+            .read()
+            .map_err(|_| DurableReadError::Unavailable)?;
+        check_memory_snapshot(&data, context, domain, token)?;
+        Ok(memory_page(&data, domain, scan)?)
+    }
+    fn read_portable_descriptor_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+        key: &DurableRecordKey,
+    ) -> Result<Option<DurableRecordDescriptor>, PortableSnapshotError> {
+        key.validate()?;
+        let data = self
+            .inner
+            .read()
+            .map_err(|_| DurableReadError::Unavailable)?;
+        check_memory_snapshot(&data, context, domain, token)?;
+        Ok(memory_descriptor(&data, domain, key)?)
+    }
+    fn read_portable_chunk_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+        request: &DurableRecordChunkRequest,
+    ) -> Result<DurableRecordChunkOutcome, PortableSnapshotError> {
+        let data = self
+            .inner
+            .read()
+            .map_err(|_| DurableReadError::Unavailable)?;
+        check_memory_snapshot(&data, context, domain, token)?;
+        Ok(memory_chunk(&data, domain, request)?)
+    }
+    fn check_portable_outbox_empty_at(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        token: &PortableSnapshotToken,
+    ) -> Result<(), PortableSnapshotError> {
+        let data = self
+            .inner
+            .read()
+            .map_err(|_| DurableReadError::Unavailable)?;
+        check_memory_snapshot(&data, context, domain, token)?;
+        if data.outboxes.iter().any(|((row_domain, _), batch)| {
+            *row_domain == *domain.as_bytes() && !batch.messages().is_empty()
+        }) {
+            return Err(PortableSnapshotError::NonemptyOutbox);
         }
-        let domain_bytes: [u8; 32] = *domain.as_bytes();
-        let bytes: Option<&[u8]> = match key {
-            DurableRecordKey::State(key) => data
-                .state_domains
-                .get(&domain_bytes)
-                .and_then(|state| state.get(key))
-                .and_then(|row| row.value.as_deref()),
-            DurableRecordKey::Receipt(id) => data
-                .receipts
-                .get(&(domain_bytes, *id.as_bytes()))
-                .map(|receipt| receipt.canonical_bytes()),
-            DurableRecordKey::ObjectVersion(id, version) => data
-                .object_versions
-                .get(&(domain_bytes, *id, *version))
-                .and_then(|row| row.payload().inline())
-                .map(|inline| inline.canonical_bytes()),
-            DurableRecordKey::ObjectHead(_) => None,
-        };
-        let bytes: Vec<u8> = bytes
-            .and_then(|bytes| bytes.get(request.range()))
-            .ok_or(DurableReadError::InvalidPersistedState)?
-            .to_vec();
-        DurableRecordChunk::new(request.clone(), bytes)
-            .map(|chunk| DurableRecordChunkOutcome::Chunk(Box::new(chunk)))
-            .map_err(|_| DurableReadError::InvalidPersistedState)
+        Ok(())
     }
 }
 
