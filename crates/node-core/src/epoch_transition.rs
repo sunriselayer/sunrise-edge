@@ -792,8 +792,8 @@ pub fn activate<S: StructuredDurableDomainStateStore>(
     // 4b. This independent admission feature does not implement next-epoch
     //     logical provenance. Refuse fresh Logical activation before any
     //     policy derivation or mutation, but preserve committed identity
-    //     reconciliation above. Keep the profile reads in the eventual CAS
-    //     set for the supported Historical branch.
+    //     reconciliation above. Historical resolution intentionally adds no
+    //     profile read, preserving that branch's existing CAS set.
     if matches!(
         logical_generation::fence_commitment_profile(
             store,

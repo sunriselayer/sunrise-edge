@@ -789,6 +789,11 @@ fn decode_installed_profile(
 /// Derives `G = 1 + max(floor, every verified input generation)` from already
 /// verified, already CAS-fenced observations.
 ///
+/// Callers must declare a tracked subject's previous semantic value as a
+/// verified input when overwriting it. Folding does not invent dependencies
+/// from blind writes; a nonadvancing provenance write refuses rather than
+/// silently repairing the generation.
+///
 /// A present input without matching authenticated provenance fails closed, and
 /// overflow is a typed refusal before any signature or commit.
 #[allow(clippy::too_many_arguments)]
