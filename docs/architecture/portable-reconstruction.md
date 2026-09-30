@@ -100,7 +100,9 @@ SQL-durable schema (SQLite/DO) generates 16 raw random bytes
 (`randomblob(16)`, not UUID-formatted) once at bootstrap; the in-memory
 store allocates a process-local monotonic counter value, unique across fresh
 stores within one process; clones share the same store identity. It is not
-persisted. This
+persisted. Memory tokens are process-local only: they must not be used for
+cross-process continuation or restore, and the counter is not a cross-process
+source identity. This
 distinguishes two *independently bootstrapped* namespace rows that would
 otherwise share the same chain/validator/domain tuple.
 

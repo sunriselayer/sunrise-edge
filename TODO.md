@@ -199,7 +199,7 @@ The detailed existing evidence and remaining criteria follow:
   or exposed signatures. Fresh-genesis enforcement
   is required; existing pre-rule stores cannot silently receive this guarantee.
 
-- [ ] **Portable storage reads and backend-enforced snapshot continuity**
+- [x] **Portable storage implementation: bounded reads and backend-enforced snapshot continuity**
   ([DR-0166](docs/architecture/decisions/0166-portable-candidate-snapshot.md),
   [portable reconstruction](docs/architecture/portable-reconstruction.md)).
   Bounded keyset/descriptor/chunk reads over the four closed structured
@@ -230,10 +230,17 @@ The detailed existing evidence and remaining criteria follow:
   disk-full, WAL-full and PgBouncer rehearsals. Additional SQLite and
   PostgreSQL expiry/reclaim tests distinguish actual committed mutation from
   no-write claim replay; SQLite missing-source-column refusal also preserves
-  the old metadata shape. Opus approved the complete original extraction
-  at `c130cde` with no blockers, conditional on the full gate and CI. The
-  complete repository gate, fresh final-head review and required CI remain
-  separate pending gates until verified; this is not Delivery 3 completion.
+  the old metadata shape. On 2026-09-30 the complete parent-run
+  `./scripts/check-all.sh` passed on code head
+  `66f8f68dc9dc4b80387b08e1c54234ecc5399d44`, with live disposable PostgreSQL,
+  required SIGKILL, backup/restore, disk/WAL-full, connection-exhaustion and
+  PgBouncer profiles, existing network/CLI E2Es, independent vectors,
+  Rust/WASM/workerd and other edge-adapter checks. Fresh read-only Opus
+  approved the entire independent feature at that same code head with no
+  blockers. This checked item records implementation and local validation;
+  merge still requires latest-head Opus approval and passing required CI
+  for PR #237, including any subsequent documentation-only update. It is
+  not Delivery 3 completion, authenticated cut or activation readiness.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).
