@@ -161,8 +161,11 @@ It is now Draft PR #239, with independent code head `e1d85a6` and parent-run
 four-host Logical PostgreSQL/compiled-CLI lifecycle acceptance: all 11
 requests, execution-free retention on a missed-prepare fourth validator,
 source material fetched after real host restart, canonical results and exact
-global history convergence. Its complete required local gate and CI are being
-run separately. A fresh exact-head Opus attempt reported the weekly usage
+global history convergence. Its complete parent local gate now passes on
+`e1d85a6`, including all required live PostgreSQL fault/recovery profiles,
+network/CLI E2Es, independent vectors and Rust/WASM/all edge-adapter checks.
+Its final validation-record update is TODO-only; required exact-head CI is
+still separate. A fresh exact-head Opus attempt reported the weekly usage
 limit; the extraction remains unmerged until actual approval and green CI.
 These facts do not validate this aggregate's later Freeze/cut/activation code.
 
