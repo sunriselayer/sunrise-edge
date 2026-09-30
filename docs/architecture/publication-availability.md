@@ -14,6 +14,12 @@ epoch handoff, Freeze, DrainSet, Seal or next-set activation.
    returning its vote. A later source request reconstructs those durable
    bytes with a supplied, independently verified FastCertificate; it does not
    execute the contract again or fabricate missing prepare material.
+   Aggregate transaction capacity is checked before Logical signing; a
+   later signer rejection or rejected commit cannot leave a separate material
+   write. Indeterminate completion exposes no new vote; exact reconciliation
+   verifies the retained witness and artifact bytes before returning it.
+   Conflicting or corrupt destination material is never overwritten or
+   repaired from current application state.
 2. Each retainer verifies the full certificate against its own committed
    committee and serving context, authenticates the original signed intent,
    checks the witness commitment and requires the manifest to equal the exact

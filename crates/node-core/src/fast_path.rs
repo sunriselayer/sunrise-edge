@@ -641,13 +641,14 @@ pub(crate) fn install_validator_set<S: StructuredDurableDomainStateStore>(
 /// [`consensus::FastVote`] for `(signed_intent_digest, commitment)`; exact
 /// replay of the same request id and signed bytes returns the identical
 /// stored vote without re-executing anything. A conflicting replay, an
-/// `Instantiate`/`Publish` application, or an input locked by a different
-/// request id all fail closed and write nothing.
+/// input locked by a different request id all fail closed and write nothing.
 ///
 /// `created_checkpoint` feeds the staged commitment this call votes on, and
 /// is durably bound into the prepared record so [`apply`] later re-admits
 /// against this exact same value rather than one supplied fresh by its own
-/// caller, however far checkpoint progress has moved since.
+/// caller, however far checkpoint progress has moved since. This physical
+/// operand is historical-profile behavior; Logical prepare signs its verified
+/// semantic execution generation instead, with revisions used only for CAS.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare<S, E, C>(
     store: &S,
@@ -764,6 +765,11 @@ where
                 validator_set,
             )?;
             certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+            if existing.prepared_generation.is_some() {
+                prepared_material::verify_prepared_material(
+                    store, context, domain, resolver, history, &existing,
+                )?;
+            }
             return Ok(vote);
         }
     }
@@ -841,14 +847,14 @@ where
         admission.logical.derived.as_ref(),
     )?;
 
-    // DR-0154: for a handoff-capable admission, durably retain the exact
-    // witness this vote is about to attest, and every replay artifact its
-    // signed operands require, *before* any lock is staged or the vote is
-    // cast -- never merely the digest `commitment` above carries. A v1
-    // admission (`derived.is_none()`) retains nothing here, byte-identical to
-    // this function's historical behavior.
-    if admission.logical.derived.is_some() {
-        prepared_material::retain_prepared_material(
+    // DR-0154: stage the exact witness and verified closure with destination
+    // CAS assertions. They join the prepared record and locks in one commit;
+    // another prepare cannot overwrite an exposed vote's backing material.
+    let logical_prepare: bool = admission.logical.derived.is_some();
+    let mut material_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let mut material_mutations: Vec<StateMutationEntry> = Vec::new();
+    if logical_prepare {
+        prepared_material::stage_prepared_material(
             store,
             blob_store,
             context,
@@ -858,6 +864,8 @@ where
             &original_request_id,
             intent_context.epoch(),
             &witness_bytes,
+            &mut material_reads,
+            &mut material_mutations,
         )?;
     }
 
@@ -868,8 +876,6 @@ where
         intent_context.epoch(),
         &admission.locked_objects,
     )?;
-    let vote: FastVote =
-        certifier.cast_vote(event_digest, commitment, locked_objects_digest, signer)?;
     // Defense-in-depth against a misconfigured or rotated local signing key:
     // `cast_vote` only checks that `signer`'s (validator_id, scheme) pair is
     // registered in the committed set (`ensure_registered_scheme`); it never
@@ -881,14 +887,38 @@ where
     // exact-replay branch above already re-verifies its stored vote on every
     // call; this makes the fresh branch verify exactly once, before it, so
     // neither branch can ever durably commit an unverifiable vote.
-    certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+    let cast_verified_vote = || -> FastPathResult<FastVote> {
+        let vote: FastVote =
+            certifier.cast_vote(event_digest, commitment, locked_objects_digest, signer)?;
+        certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+        Ok(vote)
+    };
+    // The installed committee permits only Ed25519. Its verified signatures
+    // occupy exactly 64 bytes, so a placeholder gives the complete Logical
+    // transaction's exact encoded size without calling the signer. Historical
+    // prepare keeps its existing signing order and canonical bytes.
+    let mut vote: FastVote = if logical_prepare {
+        FastVote {
+            chain_id: chain.clone(),
+            protocol_version: intent_context.protocol_version(),
+            epoch: intent_context.epoch(),
+            tx_hash: event_digest,
+            execution_effects_hash: commitment,
+            validator: signer.validator_id(),
+            signature_scheme: signer.signature_scheme(),
+            locked_objects_digest,
+            signature: vec![0; 64],
+        }
+    } else {
+        cast_verified_vote()?
+    };
     let vote_bytes: Vec<u8> = consensus::encode_fast_vote(&vote)?;
 
     let nonce: PendingSenderNonceWrite = admission.nonce_write.ok_or(FastPathError::Invalid(
         "fast-path prepare always reserves a fresh nonce",
     ))?;
 
-    let prepared_record: FastPathPreparedRecord = FastPathPreparedRecord {
+    let mut prepared_record: FastPathPreparedRecord = FastPathPreparedRecord {
         context: intent_context.clone(),
         request_id: original_request_id,
         signed_intent_digest: event_digest,
@@ -920,7 +950,15 @@ where
     reads.extend(fence_reads);
     reads.insert(nonce.key.clone(), nonce.read_revision);
     reads.insert(prepared_key.clone(), observed_prepared.revision());
-    let mut mutations: Vec<StateMutationEntry> = Vec::new();
+    for (key, revision) in material_reads {
+        if reads
+            .insert(key, revision)
+            .is_some_and(|existing: StateRevision| existing != revision)
+        {
+            return Err(NodeCoreError::StateConflict.into());
+        }
+    }
+    let mut mutations: Vec<StateMutationEntry> = material_mutations;
     let nonce_lock_key: Vec<u8> = fastpath_nonce_lock_key(&chain, &sender, intent_context.epoch())?;
     let nonce_lock: FastPathNonceLockRecord = FastPathNonceLockRecord {
         request_id: original_request_id,
@@ -944,8 +982,9 @@ where
             StateMutation::Put(encode_fastpath_lock_record(&lock)?),
         )?);
     }
+    let prepared_mutation_index: usize = mutations.len();
     mutations.push(StateMutationEntry::new(
-        prepared_key,
+        prepared_key.clone(),
         StateMutation::Put(prepared_bytes),
     )?);
 
@@ -953,8 +992,7 @@ where
         .into_iter()
         .map(|(key, revision)| StateReadAssertion::new(key, revision))
         .collect::<Result<_, RuntimeError>>()?;
-    let state: DurableStateTransaction =
-        DurableStateTransaction::new(domain, AtomicStateReadSet::new(assertions)?, mutations)?;
+    let read_set: AtomicStateReadSet = AtomicStateReadSet::new(assertions)?;
 
     let synthetic_id: [u8; 32] = fastpath_synthetic_prepare_request_id(
         resolver,
@@ -969,13 +1007,38 @@ where
         commitment,
         synthetic_receipt_payload.encode()?,
     )?;
-    let transaction: DurableInvocationTransaction = DurableInvocationTransaction::new(
-        domain,
-        Some(state),
-        DurableObjectChanges::new(admission.head_reads, Vec::new())?,
-        receipt,
-        None,
-    )?;
+    let objects: DurableObjectChanges =
+        DurableObjectChanges::new(admission.head_reads, Vec::new())?;
+    let build_transaction =
+        |mutations: Vec<StateMutationEntry>| -> FastPathResult<DurableInvocationTransaction> {
+            let state: DurableStateTransaction =
+                DurableStateTransaction::new(domain, read_set.clone(), mutations)?;
+            Ok(DurableInvocationTransaction::new(
+                domain,
+                Some(state),
+                objects.clone(),
+                receipt.clone(),
+                None,
+            )?)
+        };
+    if logical_prepare {
+        // Check every existing state/object/envelope capacity limit before a
+        // signature is computed. This placeholder transaction is never sent
+        // to storage; only the subsequently verified vote may be committed.
+        let preflight: DurableInvocationTransaction = build_transaction(mutations.clone())?;
+        drop(preflight);
+        vote = cast_verified_vote()?;
+        let vote_bytes: Vec<u8> = consensus::encode_fast_vote(&vote)?;
+        if vote_bytes.len() != prepared_record.vote.len() {
+            return invalid("fast-path prepare vote capacity mismatch");
+        }
+        prepared_record.vote = vote_bytes;
+        mutations[prepared_mutation_index] = StateMutationEntry::new(
+            prepared_key,
+            StateMutation::Put(records::encode_fastpath_prepared_record(&prepared_record)?),
+        )?;
+    }
+    let transaction: DurableInvocationTransaction = build_transaction(mutations)?;
     match store.commit_invocation(context, transaction) {
         DurableCommitOutcome::Committed => Ok(vote),
         DurableCommitOutcome::Rejected(

@@ -5,20 +5,12 @@
 //! durably retain the exact logical commitment witness it is about to vote
 //! on, and every content-addressed replay artifact that witness's signed
 //! read/object/mutation operands require, **before** it exposes a
-//! [`consensus::FastVote`] -- not merely a digest. [`retain_prepared_material`]
-//! is that step, called from [`super::prepare`] after the witness envelope is
-//! computed and before any object/nonce lock is staged or the vote is cast.
-//!
-//! # Why this is a separate atomic commit, at a separate key family
-//!
-//! It commits independently of [`super::prepare`]'s own lock/nonce/prepared-
-//! record commit, and strictly *before* it (never after): a crash between the
-//! two leaves at most a harmless orphaned witness/artifact row (deterministic
-//! from admission and safely rewritten byte-identical by a retry), never a
-//! cast vote whose backing material was not actually retained. It also keeps
-//! this closure's own bound
-//! ([`super::publication::MAX_RETAINED_ARTIFACTS`]) from competing with
-//! admission's own staged-mutation budget inside one transaction.
+//! [`consensus::FastVote`] -- not merely a digest. [`stage_prepared_material`]
+//! verifies and stages that material in the same invocation transaction as
+//! the prepared record and every object/nonce lock. No separate commit may
+//! overwrite the witness backing a concurrently committed vote, and a failed
+//! prepare exposes no partially retained material. The complete transaction
+//! must fit the existing store bounds before signing.
 //!
 //! It writes under its own `fastpath/prepared-witness/` and
 //! `fastpath/prepared-artifact/` key families, deliberately distinct from
@@ -66,8 +58,8 @@ pub(crate) fn fastpath_prepared_witness_key(
 
 /// One durably retained prepare-side replay artifact, content-addressed by
 /// its kind and verified content digest so an identical artifact required by
-/// two different requests (or two different identities within one witness)
-/// shares one storage row.
+/// different identities within one witness shares one storage row within
+/// that request.
 pub(crate) fn fastpath_prepared_artifact_key(
     chain: &ChainId,
     request_id: &[u8; 32],
@@ -148,14 +140,13 @@ fn fetch_artifact_content<S: StructuredDurableDomainStateStore>(
 /// Derives the required replay-artifact closure from `witness_bytes` (the
 /// exact `0x6424/v2` envelope [`super::prepare`] is about to vote on),
 /// refuses a closure over [`MAX_RETAINED_ARTIFACTS`] before anything is
-/// staged, fetches and re-verifies every artifact's actual bytes, and
-/// durably retains the witness and every artifact in one atomic commit.
+/// staged, fetches and re-verifies every artifact's actual bytes, and stages
+/// the witness and every artifact with destination revision assertions.
 ///
-/// Called from [`super::prepare`] strictly before any object/nonce lock is
-/// staged and before the [`consensus::FastVote`] is cast: this is the
-/// "before exposing a `FastVote`" ordering `epoch-handoff.md` requires.
+/// Existing destination bytes must match exactly. The caller commits these
+/// rows only with the prepared record and locks, never independently.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn retain_prepared_material<S: StructuredDurableDomainStateStore>(
+pub(crate) fn stage_prepared_material<S: StructuredDurableDomainStateStore>(
     store: &S,
     blob_store: &dyn BlobStore,
     context: &DurableOperationContext,
@@ -165,8 +156,10 @@ pub(crate) fn retain_prepared_material<S: StructuredDurableDomainStateStore>(
     request_id: &[u8; 32],
     epoch: Epoch,
     witness_bytes: &[u8],
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+    mutations: &mut Vec<StateMutationEntry>,
 ) -> FastPathResult<()> {
-    let (_event_digest, required) =
+    let (_event_digest, required): (Digest32, publication::RequiredArtifacts) =
         required_artifacts(witness_bytes).map_err(FastPathError::Publication)?;
     if required.len() > MAX_RETAINED_ARTIFACTS {
         return Err(FastPathError::Publication(
@@ -198,44 +191,88 @@ pub(crate) fn retain_prepared_material<S: StructuredDurableDomainStateStore>(
         staged.insert(key, content);
     }
 
-    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
-    let mut mutations: Vec<StateMutationEntry> = Vec::new();
+    let witness_key: Vec<u8> = fastpath_prepared_witness_key(chain, request_id)?;
+    staged.insert(witness_key, witness_bytes.to_vec());
     for (key, content) in staged {
         let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
-        reads.insert(key.clone(), observed.revision());
-        mutations.push(StateMutationEntry::new(key, StateMutation::Put(content))?);
+        if observed
+            .value()
+            .is_some_and(|existing: &[u8]| existing != content)
+        {
+            return invalid("fast-path retained prepare material mismatch");
+        }
+        if reads
+            .insert(key.clone(), observed.revision())
+            .is_some_and(|revision: StateRevision| revision != observed.revision())
+        {
+            return Err(NodeCoreError::StateConflict.into());
+        }
+        if observed.value().is_none() {
+            mutations.push(StateMutationEntry::new(key, StateMutation::Put(content))?);
+        }
     }
-    let witness_key: Vec<u8> = fastpath_prepared_witness_key(chain, request_id)?;
-    let observed_witness: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &witness_key)?;
-    reads.insert(witness_key.clone(), observed_witness.revision());
-    mutations.push(StateMutationEntry::new(
-        witness_key,
-        StateMutation::Put(witness_bytes.to_vec()),
-    )?);
+    Ok(())
+}
 
-    let assertions: Vec<StateReadAssertion> = reads
-        .into_iter()
-        .map(|(key, revision)| StateReadAssertion::new(key, revision))
-        .collect::<Result<_, RuntimeError>>()?;
-    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
-        domain,
-        AtomicStateReadSet::new(assertions)?,
-        AtomicStateMutationSet::new(mutations)?,
-    )?;
-    match store.commit_durable(context, transaction) {
-        DurableCommitOutcome::Committed => Ok(()),
-        DurableCommitOutcome::Rejected(
-            DurableCommitRejection::Conflict { .. }
-            | DurableCommitRejection::RequestAlreadyCommitted,
-        ) => Err(NodeCoreError::StateConflict.into()),
-        DurableCommitOutcome::Rejected(reason) => {
-            Err(NodeCoreError::DurableCommitRejected(reason).into())
+/// Re-verifies the complete retained closure before replay exposes a Logical
+/// vote. A missing or corrupt row fails closed; replay never repairs it from
+/// current state, which may already have advanced since prepare.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn verify_prepared_material<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    prepared: &FastPathPreparedRecord,
+) -> FastPathResult<()> {
+    let witness_key: Vec<u8> =
+        fastpath_prepared_witness_key(prepared.context.chain_id(), &prepared.request_id)?;
+    let witness: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &witness_key)?;
+    let witness_bytes: &[u8] = witness.value().ok_or(FastPathError::Invalid(
+        "fast-path retained prepare witness is absent",
+    ))?;
+    if commitment::hash_witness_bytes(resolver, prepared.context.epoch(), witness_bytes)?
+        != prepared.commitment
+    {
+        return invalid("fast-path retained prepare witness commitment mismatch");
+    }
+    let (event_digest, required): (Digest32, publication::RequiredArtifacts) =
+        required_artifacts(witness_bytes)?;
+    if event_digest != prepared.signed_intent_digest {
+        return invalid("fast-path retained prepare witness intent mismatch");
+    }
+    if required.len() > MAX_RETAINED_ARTIFACTS {
+        return Err(PublicationRetentionError::ClosureTooLarge {
+            actual: required.len(),
+            max: MAX_RETAINED_ARTIFACTS,
         }
-        DurableCommitOutcome::Indeterminate(reason) => {
-            Err(NodeCoreError::DurableCommitIndeterminate(reason).into())
+        .into());
+    }
+    for ((kind_tag, _identity), digest) in required.iter() {
+        let kind: ArtifactKind =
+            ArtifactKind::from_u16(*kind_tag).map_err(PublicationRetentionError::Bundle)?;
+        let key: Vec<u8> = fastpath_prepared_artifact_key(
+            prepared.context.chain_id(),
+            &prepared.request_id,
+            kind,
+            digest,
+        )?;
+        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        let content: &[u8] = observed.value().ok_or(FastPathError::Invalid(
+            "fast-path retained prepare artifact is absent",
+        ))?;
+        let matches: bool = std::iter::once(resolver).chain(history).any(|candidate| {
+            candidate
+                .hash_for_purpose(prepared.context.epoch(), kind.hash_purpose(), content)
+                .is_ok_and(|computed: Digest32| computed.bytes() == *digest)
+        });
+        if !matches {
+            return invalid("fast-path retained prepare artifact digest mismatch");
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
