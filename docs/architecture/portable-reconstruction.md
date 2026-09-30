@@ -23,8 +23,8 @@ not advance it. A schema or legacy writer that cannot supply these guarantees
 must refuse snapshot support rather than silently returning a weaker token.
 
 PostgreSQL reuses its namespace `commit_sequence`. Shared SQL persists the
-counter and a random 16-byte source-instance ID in metadata. PostgreSQL also
-persists a per-bootstrap source-instance ID. Both read it in the same transaction
+counter and a random 16-byte source-instance ID in metadata. PostgreSQL uses
+a per-bootstrap 16-byte UUIDv4 source-instance ID. Both read it in the same transaction
 as the fence/counter and data; neither silently upgrades an old metadata shape.
 No PostgreSQL monitoring or cluster-admin privilege is needed for these reads.
 Copies/restores require separate operator writer-refencing: a copied source ID
@@ -124,6 +124,14 @@ replay its saved exact item without source I/O or a new write. A changed source
 refuses new items; previously emitted bytes remain a historical observation.
 Unknown commit confirmation returns `Indeterminate`, not presumed success or
 an automatic retry. Impossible persisted cursor combinations fail closed.
+
+If a source changes, the existing progress row cannot restart under that same
+identity and token: `begin` refuses with `Conflict`. Preserve or abandon those
+old candidate bytes as a historical observation, and use a freshly bootstrapped
+separate progress store for a new attempt after verifying the current terminal.
+There is no automatic retirement/cleanup API. Never reset source counters,
+delete source history or reinterpret the stale candidate as a usable cut to
+force continuation.
 
 The closed classifier retains original receipts, candidates, committed proofs,
 publication artifacts, economic history and logical provenance. It excludes

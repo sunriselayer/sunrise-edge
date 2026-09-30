@@ -333,7 +333,7 @@ fn commit_item<Progress: StructuredDurableDomainStateStore>(
     )?;
     match &item.boundary {
         PortableCandidateBoundary::Row(row) => {
-            let collection_index: usize = progress.collection_index as usize;
+            let collection_index: usize = usize::from(progress.collection_index);
             if row.chunk_is_last {
                 progress.row_counts[collection_index] =
                     progress.row_counts[collection_index].checked_add(1).ok_or(
@@ -348,12 +348,11 @@ fn commit_item<Progress: StructuredDurableDomainStateStore>(
                 progress.next_chunk_offset = 0;
             } else {
                 progress.next_row_index = item.row_index;
-                progress.next_chunk_offset = row
-                    .chunk_offset
-                    .checked_add(row.chunk_bytes.len() as u64)
-                    .ok_or(PortableCandidateError::Invalid(
-                        "portable candidate chunk offset overflow",
-                    ))?;
+                let chunk_length: u64 = u64::try_from(row.chunk_bytes.len())
+                    .map_err(|_| PortableCandidateError::Invalid("chunk length out of range"))?;
+                progress.next_chunk_offset = row.chunk_offset.checked_add(chunk_length).ok_or(
+                    PortableCandidateError::Invalid("portable candidate chunk offset overflow"),
+                )?;
             }
             progress.skip_scan_after.clear();
         }
@@ -421,6 +420,11 @@ where
             "portable candidate progress identity mismatch",
         ));
     }
+    if progress_domain == progress.source_domain {
+        return Err(PortableCandidateError::Invalid(
+            "progress must remain outside its source domain",
+        ));
+    }
     let total_collections: u16 = u16::try_from(PORTABLE_CANDIDATE_COLLECTION_ORDER.len())
         .map_err(|_| PortableCandidateError::Invalid("collection count out of range"))?;
 
@@ -467,7 +471,7 @@ where
     let protocol_version: ProtocolVersion = identity.drain_identity.protocol_version;
     let epoch: Epoch = identity.drain_identity.epoch;
     let collection: DurableCollection =
-        PORTABLE_CANDIDATE_COLLECTION_ORDER[progress.collection_index as usize];
+        PORTABLE_CANDIDATE_COLLECTION_ORDER[usize::from(progress.collection_index)];
 
     let decoded_last: Option<PortableCandidateTransferItem> = if progress.item_count > 0 {
         Some(decode_portable_candidate_transfer_item(
@@ -569,7 +573,7 @@ where
             Ok(PortableCandidateAdvanceOutcome::Continue)
         }
         ScanOutcome::Exhausted => {
-            let row_count: u64 = progress.row_counts[progress.collection_index as usize];
+            let row_count: u64 = progress.row_counts[usize::from(progress.collection_index)];
             let end_item: PortableCandidateTransferItem = PortableCandidateTransferItem {
                 identity_digest,
                 collection,

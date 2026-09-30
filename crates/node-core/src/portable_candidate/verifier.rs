@@ -111,13 +111,13 @@ impl PortableCandidateVerifier {
                 "portable candidate item identity does not match the pinned manifest",
             ));
         }
-        if self.collection_index as usize >= PORTABLE_CANDIDATE_COLLECTION_ORDER.len() {
+        if usize::from(self.collection_index) >= PORTABLE_CANDIDATE_COLLECTION_ORDER.len() {
             return Err(PortableCandidateVerifierError::Invalid(
                 "portable candidate item arrived after the pinned manifest's last collection",
             ));
         }
         let expected_collection: DurableCollection =
-            PORTABLE_CANDIDATE_COLLECTION_ORDER[self.collection_index as usize];
+            PORTABLE_CANDIDATE_COLLECTION_ORDER[usize::from(self.collection_index)];
         if item.collection != expected_collection {
             return Err(PortableCandidateVerifierError::Invalid(
                 "portable candidate item names the wrong collection",
@@ -228,12 +228,12 @@ impl PortableCandidateVerifier {
                     }
                 }
                 if row.chunk_is_last {
-                    next_row_counts[self.collection_index as usize] = next_row_counts
-                        [self.collection_index as usize]
-                        .checked_add(1)
-                        .ok_or(PortableCandidateVerifierError::Invalid(
-                            "portable candidate row count overflow",
-                        ))?;
+                    next_row_counts[usize::from(self.collection_index)] = next_row_counts
+                        [usize::from(self.collection_index)]
+                    .checked_add(1)
+                    .ok_or(PortableCandidateVerifierError::Invalid(
+                        "portable candidate row count overflow",
+                    ))?;
                     next_expected_row_index = item.row_index.checked_add(1).ok_or(
                         PortableCandidateVerifierError::Invalid(
                             "portable candidate row index overflow",
@@ -242,12 +242,14 @@ impl PortableCandidateVerifier {
                     next_pending_row = None;
                     next_last_key = Some(row.key.clone());
                 } else {
-                    let next_offset: u64 = row
-                        .chunk_offset
-                        .checked_add(row.chunk_bytes.len() as u64)
-                        .ok_or(PortableCandidateVerifierError::Invalid(
+                    let chunk_length: u64 = u64::try_from(row.chunk_bytes.len()).map_err(|_| {
+                        PortableCandidateVerifierError::Invalid("chunk length out of range")
+                    })?;
+                    let next_offset: u64 = row.chunk_offset.checked_add(chunk_length).ok_or(
+                        PortableCandidateVerifierError::Invalid(
                             "portable candidate chunk offset overflow",
-                        ))?;
+                        ),
+                    )?;
                     next_pending_row = Some(PendingRow {
                         key: row.key.clone(),
                         descriptor: row.descriptor.clone(),
@@ -268,7 +270,7 @@ impl PortableCandidateVerifier {
                         "portable candidate collection end disagrees with its counted rows",
                     ));
                 }
-                if *row_count != self.manifest.row_counts[self.collection_index as usize] {
+                if *row_count != self.manifest.row_counts[usize::from(self.collection_index)] {
                     return Err(PortableCandidateVerifierError::Invalid(
                         "portable candidate collection end disagrees with the pinned manifest count",
                     ));
@@ -300,7 +302,7 @@ impl PortableCandidateVerifier {
         )?;
 
         let complete: bool =
-            next_collection_index as usize == PORTABLE_CANDIDATE_COLLECTION_ORDER.len();
+            usize::from(next_collection_index) == PORTABLE_CANDIDATE_COLLECTION_ORDER.len();
         if complete {
             if next_row_counts != self.manifest.row_counts {
                 return Err(PortableCandidateVerifierError::Invalid(

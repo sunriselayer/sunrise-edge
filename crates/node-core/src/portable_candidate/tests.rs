@@ -268,6 +268,62 @@ fn progress_vector() -> PortableCandidateProgress {
 }
 
 #[test]
+fn advance_refuses_a_progress_domain_alias_even_when_stores_are_physically_distinct() {
+    let mut progress: PortableCandidateProgress = progress_vector();
+    let domain: AtomicityDomainId = progress.source_domain;
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+    let context: DurableOperationContext = DurableOperationContext::new(
+        fence,
+        runtime::StorageDeadline::new(u64::MAX).unwrap(),
+        runtime::StorageCorrelationId::new([1; 16]).unwrap(),
+    );
+    let source: MemoryDurableStateStore = MemoryDurableStateStore::new_bound(domain, fence);
+    let store: MemoryDurableStateStore = MemoryDurableStateStore::new_bound(domain, fence);
+    let token: PortableSnapshotToken = source.begin_portable_snapshot(&context, domain).unwrap();
+    progress.source_namespace = token.namespace().to_vec();
+    progress.source_mutation_sequence = token.mutation_sequence();
+    progress.item_count = 0;
+    progress.next_row_index = 0;
+    progress.last_item_bytes.clear();
+    progress.row_counts = [0; 4];
+    progress.running_hash_step = progress.identity_digest;
+    let key: Vec<u8> = progress::portable_candidate_progress_key(&progress.identity_digest);
+    driver::persist_progress(
+        &store,
+        &context,
+        domain,
+        &key,
+        StateRevision::INITIAL,
+        &progress,
+    )
+    .unwrap();
+    let before: VersionedStateValue = store.get_versioned_durable(&context, domain, &key).unwrap();
+    assert!(matches!(
+        advance_portable_candidate_transfer(
+            &source,
+            &context,
+            &resolver(),
+            &identity(),
+            &store,
+            &context,
+            domain,
+            0
+        ),
+        Err(PortableCandidateError::Invalid(
+            "progress must remain outside its source domain"
+        ))
+    ));
+    assert_eq!(
+        store.get_versioned_durable(&context, domain, &key).unwrap(),
+        before
+    );
+    assert_eq!(
+        source.begin_portable_snapshot(&context, domain).unwrap(),
+        token
+    );
+}
+
+#[test]
 fn excluded_pages_persist_a_bounded_skip_cursor_without_emitting_or_hashing_an_item() {
     let mut progress: PortableCandidateProgress = progress_vector();
     let domain: AtomicityDomainId = AtomicityDomainId::new([0x21; 32]).unwrap();

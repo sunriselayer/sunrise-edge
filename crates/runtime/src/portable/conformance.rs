@@ -128,7 +128,7 @@ pub fn verify_snapshot_outbox_mutations<S>(
     let claim_request: RequestOutboxClaimRequest =
         RequestOutboxClaimRequest::new(domain, outbox_id, 10_000, lease_id, 11_000).unwrap();
     assert!(matches!(
-        store.claim_request_outbox(context, claim_request.clone()),
+        store.claim_request_outbox(context, claim_request),
         DurableOutboxClaimOutcome::Claimed(_)
     ));
     let claimed: PortableSnapshotToken = store.begin_portable_snapshot(context, domain).unwrap();
@@ -147,7 +147,7 @@ pub fn verify_snapshot_outbox_mutations<S>(
     let ack: DurableOutboxAcknowledgement =
         DurableOutboxAcknowledgement::new(domain, outbox_id, 0, lease_id);
     assert_eq!(
-        store.acknowledge_outbox(context, ack.clone()),
+        store.acknowledge_outbox(context, ack),
         DurableOutboxAcknowledgementOutcome::Acknowledged
     );
     let acknowledged: PortableSnapshotToken =
