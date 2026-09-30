@@ -107,6 +107,34 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 | 3 | Validator membership and epoch handoff | In progress in Draft PR #235 under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Logical generations, ordered Freeze, publication-before-apply, bounded DrainSet, certified ordered history and local candidate enumeration/transport have bounded evidence. A portable authenticated cut, complete causal scheduling, Seal, readiness/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation are not complete. |
 | 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
 
+**PR slicing policy, 2026-09-30:** these deliveries are integrated acceptance
+outcomes, not a requirement to collect an entire delivery into one PR. Split
+work into dependency-ordered, independently reviewable functional capabilities;
+each includes its implementation, relevant tests and documentation, then its
+own complete repository gate, exact-head Opus review and required CI. A bounded
+storage or consensus capability can merge before the complete handoff, provided
+it does not expose or authorize the unfinished transition. Keep Delivery 3
+unchecked until its integrated acceptance criteria actually pass. Preserve
+Draft PR #235 as the aggregate implementation source while extracting those
+feature PRs; do not merge its whole unfinished diff merely to shorten the queue.
+
+The first independently based extraction is Draft PR #237: bounded portable
+storage reads and backend-enforced snapshot continuity, with its own runtime
+conformance, persistent-store regressions and storage-only design. Subsequent
+PRs follow capability dependencies (logical execution generations and
+provenance; publication/availability apply gates; Freeze/frontier/drain;
+certified terminal and candidate transport; authenticated cut/import;
+readiness/Seal/activation), not a fixed PR-per-delivery quota. Gate each actual
+feature diff before merge and retain the integrated Delivery 3 criteria.
+During extraction, the required PostgreSQL backup/restore and resource-fault
+fixtures exposed stale structured-only sequence expectations: successful
+outbox claim and ACK now each advance the covered mutation sequence. Their
+expectations are corrected without relaxing rejected/replayed/fenced-write
+invariants; parent-run required-image backup/restore, connection-exhaustion,
+disk-full, WAL-full and PgBouncer rehearsals pass on the extracted branch.
+The extracted full gate, latest-head Opus review and CI remain separate gates;
+this is not whole-aggregate validation or handoff completion.
+
 PostgreSQL remains the existing tested profile for delivery 1, not a mandatory
 protocol database. Lightweight authoritative profiles (Cloudflare SQLite-backed
 DO and separately verified native SQLite) are not production-certified
