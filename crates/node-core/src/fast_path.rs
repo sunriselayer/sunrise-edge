@@ -108,6 +108,10 @@ use protocol_types::{SignatureSchemeId, ValidatorId};
 use validator_set::{ValidatorInfo, ValidatorSet, ValidatorSetError};
 
 pub(crate) mod commitment;
+/// Explicit application of a verified member of the committed DrainSet.
+pub mod drain_apply;
+/// Full-certificate retention and relay after the committed Freeze.
+pub mod drain_publication;
 /// DR-0154 handoff-capable prepare-side retention: the exact logical
 /// commitment witness and every required replay artifact, durably retained
 /// before a [`consensus::FastVote`] is ever exposed.
@@ -124,7 +128,7 @@ mod commitment_witness_tests;
 #[cfg(test)]
 mod soak_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use records::{
     FastPathBondRecord, FastPathCertificateRecord, FastPathFeeShare, FastPathPreparedRecord,
@@ -459,14 +463,12 @@ fn require_prepared_generation(
 /// [`docs/architecture/epoch-handoff.md`](../../../docs/architecture/epoch-handoff.md),
 /// "Execution-free publication".
 ///
-/// This slice can construct only [`Self::Certified`], from a verified
-/// [`AvailabilityCertificate`]. A future `DrainSet`-derived authority (the
-/// outgoing engine's own closed-frontier drain decision, covering a request
-/// whose availability ACKs were retained but never aggregated into a
-/// certificate before Freeze) is a distinct variant to be proven and wired
-/// separately -- this type deliberately carries no "skip", "local-only" or
-/// force variant, so a v2 apply can never bypass the availability
-/// requirement by construction.
+/// Ordinary application constructs only [`Self::Certified`], from a
+/// verified [`AvailabilityCertificate`]. The distinct post-Freeze
+/// [`drain_apply::apply_drain_member`] reconstructs a committed DrainSet
+/// member and full retained proof without weakening this authority type.
+/// It deliberately carries no "skip", "local-only" or force variant, so
+/// ordinary v2 application cannot bypass the availability requirement.
 #[derive(Debug)]
 pub enum PublicationAuthority {
     /// A verified quorum [`AvailabilityCertificate`] bound to this exact

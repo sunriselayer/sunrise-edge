@@ -43,6 +43,8 @@ use runtime::{
 use validator_set::{ValidatorInfo, ValidatorSet};
 
 const REPLICAS: usize = 4;
+#[path = "tests/drain_boundaries.rs"]
+mod drain_boundaries;
 #[path = "tests/freeze_boundaries.rs"]
 mod freeze_boundaries;
 /// The trusted local clock value the operator installs genesis with. Never a

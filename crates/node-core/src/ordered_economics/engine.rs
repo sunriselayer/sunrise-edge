@@ -1107,6 +1107,18 @@ fn execute_candidate<S: StructuredDurableDomainStateStore>(
             candidate.request_id,
             node_failure,
         ),
+        OrderedOperationKind::DrainSet => dispatch(
+            drain_set::handle_drain_set_ordered(
+                staging,
+                context,
+                domain,
+                env.policy.context().chain_id(),
+                candidate,
+                block_height,
+            ),
+            candidate.request_id,
+            node_failure,
+        ),
     }
 }
 
@@ -1358,6 +1370,61 @@ fn admit_candidate_for_signer<S: StructuredDurableDomainStateStore>(
     candidate: &OrderedCandidate,
     proposal_height: u64,
 ) -> Result<AdmittedCandidate, OrderedEconomicsError> {
+    // Post-DrainSet liveness gate, strictly stronger than (and checked before)
+    // the Freeze-only gate below: once a healthy accepted `DrainSet` has
+    // committed for this chain/epoch, an honest leader/replica never again
+    // places or votes for *any* fresh candidate-bearing proposal -- `Freeze`
+    // and `DrainSet` themselves included, unlike the business-only exemption
+    // below. This reuses the exact durable one-per-epoch `DrainSetRecord` a
+    // committed, accepted `DrainSet` installs; a *refused* `DrainSet` installs
+    // nothing, so it never trips this gate. Assert the observed row revision
+    // with either the proposal or vote commit: unlike the business-only
+    // Freeze gate, this also protects control proposals that do not run an
+    // authoritative closed-epoch preflight before signing.
+    let drain_key: Vec<u8> = drain_set::drain_set_record_key(
+        env.policy.context().chain_id(),
+        env.policy.context().epoch(),
+    )?;
+    let (drain_record, drain_revision): (Option<drain_set::DrainSetRecord>, StateRevision) =
+        drain_set::read_drain_set_record_with_revision(
+            store,
+            context,
+            env.policy.domain(),
+            env.policy.context().chain_id(),
+            env.policy.context().epoch(),
+        )?;
+    if drain_record.is_some() {
+        // The closure forbids a new candidate signature, not exact replay of
+        // an outcome already committed before it. Preserve the original
+        // request-header conflict precedence, then let the bounded read-only
+        // outcome query verify its immutable header and receipt. None of
+        // these reads touches local readiness, reservations or fresh rows.
+        let bytes: Vec<u8> = encode_ordered_candidate(candidate)?;
+        let digest: Digest32 = candidate_digest(env.resolver, candidate.context.epoch(), &bytes)?;
+        let header_key: Vec<u8> =
+            ordered_request_header_key(env.policy.context().chain_id(), &candidate.request_id)?;
+        let header_row: VersionedStateValue =
+            store.get_versioned_durable(context, env.policy.domain(), &header_key)?;
+        require_virgin_absence(&header_row, "ordered request header row was deleted")?;
+        if let Some(existing_bytes) = header_row.value() {
+            let existing: RequestHeader = decode_request_header(existing_bytes)?;
+            if existing.candidate_digest != digest
+                || existing.kind != candidate.kind
+                || existing.created_checkpoint != candidate.created_checkpoint
+            {
+                return Err(OrderedEconomicsError::RequestHeaderConflict);
+            }
+        }
+        if let Some(outcome) = query_ordered_outcome(store, context, env, &candidate.request_id)? {
+            if outcome.candidate_digest != digest {
+                return Err(OrderedEconomicsError::RequestHeaderConflict);
+            }
+            return Err(OrderedEconomicsError::AlreadyCompleted(Box::new(outcome)));
+        }
+        return Err(OrderedEconomicsError::Refused(
+            OrderedRefusal::AlreadyDrained,
+        ));
+    }
     // DR-0154 liveness gate, additive to (not a substitute for) `preflight`'s
     // own authoritative closed-epoch refusal at commit time: an honest
     // leader/replica never even places or votes for a *fresh* business
@@ -1376,14 +1443,26 @@ fn admit_candidate_for_signer<S: StructuredDurableDomainStateStore>(
     // signing identity: a concurrent Freeze cannot expose a fresh vote.
     match admit_candidate(store, context, env, candidate, true)? {
         Admission::Fresh(mut admitted) => {
+            admitted.reads.insert(drain_key, drain_revision);
             let staging: StagingStore<'_, S> = StagingStore::new(store);
-            if candidate.kind != OrderedOperationKind::Freeze
-                && freeze::read_authorized_closure(&staging, context, env)?.is_some()
+            if !matches!(
+                candidate.kind,
+                OrderedOperationKind::Freeze | OrderedOperationKind::DrainSet
+            ) && freeze::read_authorized_closure(&staging, context, env)?.is_some()
             {
                 return Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch));
             }
             if candidate.kind == OrderedOperationKind::Freeze {
                 freeze::require_freeze_warrant(&staging, context, env, candidate, proposal_height)?;
+            }
+            if candidate.kind == OrderedOperationKind::DrainSet {
+                drain_set::require_drain_set_readiness(
+                    &staging,
+                    context,
+                    env,
+                    candidate,
+                    &mut admitted.reads,
+                )?;
             }
             for (key, revision) in staging.observed_reads() {
                 if admitted
@@ -2074,14 +2153,10 @@ where
         }
     };
 
-    // A verified justification may commit Freeze during this very event.
-    // Process that observation without exposing a vote for its own business
+    // A verified justification may commit Freeze or DrainSet in this event.
+    // Process that observation without exposing a vote for its own fresh
     // payload. The persisted prefix and inherited consensus locks remain intact.
-    if proposal
-        .candidate
-        .as_ref()
-        .is_some_and(|candidate| candidate.kind != OrderedOperationKind::Freeze)
-    {
+    if proposal.candidate.as_ref().is_some() {
         let preview: ConsensusOutput = env
             .policy
             .engine()
@@ -2101,6 +2176,7 @@ where
             return Err(stop("Freeze preview exceeds committed candidate bound"));
         }
         let mut commits_freeze: bool = false;
+        let mut commits_drain_set: bool = false;
         for block in &preview.committed_blocks {
             if block.transactions.len() > 1 {
                 return Err(stop("Freeze preview violates the candidate profile"));
@@ -2125,18 +2201,20 @@ where
                 authenticate_candidate(env, &committed)
                     .map_err(|_| stop("Freeze preview candidate authentication failed"))?;
                 commits_freeze |= committed.kind == OrderedOperationKind::Freeze;
+                commits_drain_set |= committed.kind == OrderedOperationKind::DrainSet;
             }
         }
-        if commits_freeze {
+        if commits_freeze || commits_drain_set {
             let observed: OrderedEventOutput = observe_proposal(store, context, env, proposal)?;
-            if freeze::read_admission_closure(
-                store,
-                context,
-                env.policy.domain(),
-                env.policy.context().chain_id(),
-                env.policy.context().epoch(),
-            )?
-            .is_none()
+            if commits_freeze
+                && freeze::read_admission_closure(
+                    store,
+                    context,
+                    env.policy.domain(),
+                    env.policy.context().chain_id(),
+                    env.policy.context().epoch(),
+                )?
+                .is_none()
             {
                 return Err(stop("Freeze preview changed before observation; retry"));
             }

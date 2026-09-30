@@ -176,14 +176,17 @@ fn require_admission_open<S: StructuredDurableDomainStateStore>(
     candidate: &OrderedCandidate,
 ) -> Result<(), OrderedEconomicsError> {
     let closure = super::freeze::read_authorized_closure(store, context, env)?;
-    if closure.is_some() {
-        let refusal = match candidate.kind {
-            OrderedOperationKind::Freeze => OrderedRefusal::AlreadyFrozen,
-            _ => OrderedRefusal::ClosedEpoch,
-        };
-        return Err(OrderedEconomicsError::Refused(refusal));
+    match (candidate.kind, closure.is_some()) {
+        (OrderedOperationKind::Freeze, true) => Err(OrderedEconomicsError::Refused(
+            OrderedRefusal::AlreadyFrozen,
+        )),
+        (OrderedOperationKind::DrainSet, true) => Ok(()),
+        (OrderedOperationKind::DrainSet, false) => {
+            Err(OrderedEconomicsError::Refused(OrderedRefusal::NoFreeze))
+        }
+        (_, true) => Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch)),
+        (_, false) => Ok(()),
     }
-    Ok(())
 }
 
 /// Runs every typed business check this candidate's kind admits, against the
@@ -210,6 +213,9 @@ pub(crate) fn preflight<S: StructuredDurableDomainStateStore>(
         OrderedOperationKind::Evidence => Ok(()),
         OrderedOperationKind::Freeze => {
             super::freeze::require_freeze_warrant(store, context, env, candidate, block_height)
+        }
+        OrderedOperationKind::DrainSet => {
+            super::drain_set::preflight_drain_set(store, context, env, candidate)
         }
     }
 }
