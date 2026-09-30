@@ -668,6 +668,24 @@ The detailed existing evidence and remaining criteria follow:
   bounded oversized catch-up behavior, epoch-scoped live engine keys,
   an explicit fresh-genesis gate for stores predating this archive,
   Seal/readiness/activation and independent PostgreSQL E2E remain open.
+  U14 follows [DR-0165](docs/architecture/decisions/0165-pre-seal-ordered-history-segment.md):
+  a local read-only predicate now derives an already certified empty
+  three-chain tip strictly after the **committed DrainSet** height, not the
+  earlier Freeze `closure_height`. It re-verifies drain completion, the
+  replica-local writer barrier, applied prefix and high/locked suffix, then
+  folds the exact consensus and proof revisions into a caller-owned CAS read
+  set. The bounded committed-history page now also checks each named
+  candidate's canonical bytes and signature, request-header binding,
+  retained outcome and original durable receipt, including a direct signed
+  origin-proof check for a replay from an earlier page. Four-validator
+  terminal and candidate-linkage tests exercise healthy continuation,
+  malformed/missing/tombstoned records, altered outcome/receipt links, and
+  a stale CAS read set. This remains an **ordered-history segment**, not a
+  portable cut: cross-page snapshot/manifest binding, complete artifact and
+  business-state enumeration/replay, a signed cut decision, conditional
+  readiness, Seal, activation, fresh-genesis gating and independent
+  PostgreSQL E2E remain open. Neither the local barrier nor a source-local
+  committed counter is transferable authority.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).

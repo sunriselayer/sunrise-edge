@@ -2101,6 +2101,8 @@ fn ordered_drain_set_requires_local_readiness_then_commits_once_on_four_replicas
     network.round(7, None);
     network.round(8, None);
     network.round(9, None);
+    let committed_drain_record: DrainSetRecord =
+        decode_drain_set_record(original_bytes.as_deref().unwrap()).unwrap();
 
     // The barrier is a separate local step: the committed DrainSet alone is
     // not enough. Each independent replica must finish its own receipt-backed
@@ -2109,6 +2111,18 @@ fn ordered_drain_set_requires_local_readiness_then_commits_once_on_four_replicas
     let barrier_key: Vec<u8> =
         business_free_barrier_key(expected.chain_id(), expected.epoch()).unwrap();
     for replica in 0..REPLICAS {
+        let mut premature_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+        assert!(matches!(
+            derive_candidate_free_terminal_into(
+                &network.stores[replica],
+                &network.context,
+                &network.env(),
+                &mut premature_reads,
+            ),
+            Err(TerminalAnchorError::Drain(DrainCompletionError::NotReady(
+                _
+            )))
+        ));
         assert!(matches!(
             advance_business_free_barrier(
                 &network.stores[replica],
@@ -2169,6 +2183,45 @@ fn ordered_drain_set_requires_local_readiness_then_commits_once_on_four_replicas
             identity
         );
         assert_eq!(network.revision(replica, &barrier_key), installed_revision);
+
+        let mut terminal_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+        let terminal: CandidateFreeTerminalWitness = derive_candidate_free_terminal_into(
+            &network.stores[replica],
+            &network.context,
+            &network.env(),
+            &mut terminal_reads,
+        )
+        .unwrap();
+        assert_eq!(terminal.drain_identity(), &identity);
+        assert!(terminal.height() > committed_drain_record.committed_at_block_height);
+        assert!(terminal.proof().committed.transactions.is_empty());
+        assert!(terminal.proof().child.transactions.is_empty());
+        assert!(terminal.proof().grandchild.transactions.is_empty());
+        assert_eq!(terminal.height(), 7);
+        let verified: VerifiedCommittedHistoryPage = verify_stored_committed_history_page(
+            &network.stores[replica],
+            &network.context,
+            &network.env(),
+            &VerifiedCommittedHistoryTip::genesis(&network.policy),
+            usize::try_from(terminal.height()).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            verified
+                .tip
+                .matches_declared_tip(terminal.height(), terminal.digest())
+        );
+        assert_eq!(terminal_reads.get(&barrier_key), Some(&installed_revision));
+        let proof_key: Vec<u8> = engine::ordered_committed_proof_key(
+            expected.chain_id(),
+            expected.epoch(),
+            terminal.height(),
+        )
+        .unwrap();
+        assert_eq!(
+            terminal_reads.get(&proof_key),
+            Some(&network.revision(replica, &proof_key))
+        );
     }
     let third: OrderedCandidate = OrderedCandidate {
         request_id: [0xA5; 32],
@@ -2213,6 +2266,71 @@ fn ordered_drain_set_requires_local_readiness_then_commits_once_on_four_replicas
             .unwrap(),
         identity
     );
+    let mut after_tombstone: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    assert!(matches!(
+        derive_candidate_free_terminal_into(
+            &network.stores[0],
+            &network.context,
+            &network.env(),
+            &mut after_tombstone,
+        ),
+        Err(TerminalAnchorError::Drain(_))
+    ));
+
+    let tip_height: u64 = query_status(&network.stores[1], &network.context, &network.env())
+        .unwrap()
+        .committed_height;
+    let proof_key: Vec<u8> =
+        engine::ordered_committed_proof_key(expected.chain_id(), expected.epoch(), tip_height)
+            .unwrap();
+    network.put(1, proof_key, StateMutation::Put(vec![0xff]));
+    let mut malformed_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    assert_eq!(
+        derive_candidate_free_terminal_into(
+            &network.stores[1],
+            &network.context,
+            &network.env(),
+            &mut malformed_reads,
+        )
+        .unwrap_err()
+        .to_string(),
+        "terminal committed proof is malformed"
+    );
+
+    // The predicate only returns a caller-owned read set. A later signer or
+    // cut installer must atomically assert it; even a byte-identical rewrite
+    // of the observed state after derivation invalidates that snapshot.
+    let mut fenced_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    derive_candidate_free_terminal_into(
+        &network.stores[3],
+        &network.context,
+        &network.env(),
+        &mut fenced_reads,
+    )
+    .unwrap();
+    let state_key: Vec<u8> = engine::ordered_state_key(expected.chain_id()).unwrap();
+    let state_bytes: Vec<u8> = network.value(3, &state_key).unwrap();
+    network.put(3, state_key, StateMutation::Put(state_bytes));
+    let marker_key: Vec<u8> = b"terminal-cas-probe".to_vec();
+    fenced_reads.insert(marker_key.clone(), network.revision(3, &marker_key));
+    let assertions: Vec<StateReadAssertion> = fenced_reads
+        .into_iter()
+        .map(|(key, revision)| StateReadAssertion::new(key, revision).unwrap())
+        .collect();
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        network.domain(),
+        AtomicStateReadSet::new(assertions).unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(marker_key.clone(), StateMutation::Put(vec![1])).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        network.stores[3].commit_durable(&network.context, transaction),
+        DurableCommitOutcome::Rejected(_)
+    ));
+    assert!(network.value(3, &marker_key).is_none());
 }
 
 /// DR-0157 post-DrainSet closure: once this epoch's one-per-epoch

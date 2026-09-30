@@ -515,6 +515,14 @@ the original candidate bytes, request headers, outcomes and receipts, plus a
 separately authenticated terminal anchor. `state/` and `applied-height/` are
 local engine/progress rows, not substitutes for that proof. The inherited
 high/locked suffix also needs a direct certified empty control anchor.
+The pre-Seal terminal witness is an already certified, candidate-free
+three-chain whose committed block is **strictly after the committed DrainSet
+height**, not merely after the earlier Freeze height carried by
+`DrainUnionIdentity.closure_height`. Local derivation folds drain completion,
+the business-free barrier, applied state, high/locked suffix and exact proof
+row into one caller-owned CAS read set. The witness is not a signed cut claim:
+an importer must match it to an independently verified genesis-to-tip history
+and complete business/artifact manifest before any readiness or serving step.
 Unknown ordered families fail closed.
 
 Use a closed key/schema classifier: unknown protocol rows cannot be silently

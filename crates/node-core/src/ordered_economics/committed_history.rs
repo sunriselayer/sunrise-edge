@@ -229,9 +229,9 @@ fn verify_committed_candidate_linkage<S: StructuredDurableDomainStateStore>(
 /// branch cannot be accepted by trusting a source-local committed counter.
 /// Every candidate-bearing block is additionally bound to its exact retained
 /// candidate bytes, request-id header, retained outcome and original durable
-/// request receipt; see [`verify_committed_candidate_linkage`] for exactly
-/// what that proves and the one gap it cannot close from a bounded page
-/// alone.
+/// request receipt; see [`verify_committed_candidate_linkage`] for the exact
+/// scope. Separately read pages are not one atomic snapshot and must still
+/// be bound to a later authenticated manifest before import authorization.
 pub fn verify_stored_committed_history_page<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
