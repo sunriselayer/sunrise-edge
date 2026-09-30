@@ -349,7 +349,7 @@ where
 /// prefix (explicit framing over a variable-length field, never bare
 /// concatenation), the chain id itself (bounded to
 /// [`MAX_PORTABLE_CHAIN_ID_BYTES`]), the 32-byte validator id, the 32-byte
-/// atomicity domain, and the 16-byte random `source_instance_id` persisted
+/// atomicity domain, and the 16-byte UUIDv4 `source_instance_id` persisted
 /// at trusted bootstrap and read inside the same guarded transaction as the
 /// writer fence/commit sequence. That last field distinguishes two
 /// independently bootstrapped rows that otherwise share the same

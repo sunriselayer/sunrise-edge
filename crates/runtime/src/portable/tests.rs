@@ -8,6 +8,31 @@ use protocol_types::HashAlgorithmId;
 fn domain() -> AtomicityDomainId {
     AtomicityDomainId::new([1; 32]).unwrap()
 }
+
+#[test]
+fn exhausted_memory_identity_allocator_disables_snapshot_support_without_wrapping_or_panicking() {
+    let counter: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX - 1);
+    let last: Vec<u8> = crate::allocate_memory_portable_namespace(&counter);
+    assert!(!last.is_empty());
+    let exhausted: Vec<u8> = crate::allocate_memory_portable_namespace(&counter);
+    assert!(exhausted.is_empty());
+    assert!(crate::allocate_memory_portable_namespace(&counter).is_empty());
+    assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), u64::MAX);
+    let source: MemoryDurableStateStore = store();
+    let token: PortableSnapshotToken = source
+        .begin_portable_snapshot(&context(), domain())
+        .unwrap();
+    source.inner.write().unwrap().portable_namespace = exhausted;
+    assert!(
+        source
+            .begin_portable_snapshot(&context(), domain())
+            .is_err()
+    );
+    assert_eq!(
+        source.check_portable_outbox_empty_at(&context(), domain(), &token),
+        Err(PortableSnapshotError::Changed)
+    );
+}
 fn context() -> DurableOperationContext {
     DurableOperationContext::new(
         WriterFenceGeneration::new(1).unwrap(),
@@ -302,7 +327,7 @@ fn snapshot_tracks_claim_ack_and_expiration_and_refuses_completed_nonempty_outbo
     let claim: crate::DueOutboxClaimRequest =
         crate::DueOutboxClaimRequest::new(domain(), 0, lease, 10).unwrap();
     assert!(matches!(
-        source.claim_due_outbox(&context(), claim.clone()),
+        source.claim_due_outbox(&context(), claim),
         crate::DurableOutboxClaimOutcome::Claimed(_)
     ));
     let claimed: PortableSnapshotToken = source
@@ -359,7 +384,7 @@ fn snapshot_tracks_claim_ack_and_expiration_and_refuses_completed_nonempty_outbo
         .begin_portable_snapshot(&context(), domain())
         .unwrap();
     assert!(matches!(
-        source.acknowledge_outbox(&context(), acknowledged.clone()),
+        source.acknowledge_outbox(&context(), acknowledged),
         crate::DurableOutboxAcknowledgementOutcome::Acknowledged
     ));
     let after_ack: PortableSnapshotToken = source

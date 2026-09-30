@@ -61,6 +61,9 @@ pub const INITIAL_MIGRATION_SQL: &str = include_str!("../migrations/0001_initial
 /// This crate ships no migration from `v2` to `v3`: an existing `v2` (or
 /// `v1`) database fails closed with `SchemaMismatch` rather than being
 /// silently accepted, exactly as `v1` failed closed under `v2`.
+/// DR-0166 also redefines this unreleased shape in place with a per-bootstrap
+/// UUIDv4 source-instance ID. A pre-production v3 table missing that column
+/// fails closed on inspection/use; no automatic repair or backfill is shipped.
 pub const POSTGRES_SCHEMA_IDENTITY: [u8; 32] = *b"sunrise-edge/postgres/schema/v3\0";
 
 /// First supported schema generation.
@@ -338,7 +341,7 @@ pub struct PostgresSchemaMetadata {
     schema_generation: SchemaGeneration,
     writer_fence: WriterFenceGeneration,
     commit_sequence: u64,
-    /// A random 16-byte identity persisted once at trusted bootstrap. It
+    /// A 16-byte UUIDv4 identity persisted once at trusted bootstrap. It
     /// distinguishes two independently bootstrapped stores that otherwise
     /// share the same chain/validator/domain namespace tuple, so a portable
     /// snapshot token can never validate against the wrong physical source.

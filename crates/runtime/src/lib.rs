@@ -3519,6 +3519,23 @@ pub struct MemoryDurableStateStore {
     inner: Arc<RwLock<MemoryDurableStoreData>>,
 }
 
+// Exhausting a fixture-local identity space disables optional snapshot support
+// (an empty namespace cannot form a token), never aliases another store or
+// panics in the otherwise infallible memory-store constructor.
+fn allocate_memory_portable_namespace(counter: &std::sync::atomic::AtomicU64) -> Vec<u8> {
+    let identity: u64 = match counter.fetch_update(
+        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,
+        |value: u64| value.checked_add(1),
+    ) {
+        Ok(identity) => identity,
+        Err(_) => return Vec::new(),
+    };
+    let mut namespace: Vec<u8> = b"memory-portable/".to_vec();
+    namespace.extend_from_slice(&identity.to_be_bytes());
+    namespace
+}
+
 impl MemoryDurableStateStore {
     /// Creates an empty fixture with one authoritative writer generation.
     #[must_use]
@@ -3547,15 +3564,7 @@ impl MemoryDurableStateStore {
         // domain, fence and sequence happen to be equal. Clones share this ID.
         static NEXT_PORTABLE_STORE: std::sync::atomic::AtomicU64 =
             std::sync::atomic::AtomicU64::new(1);
-        let identity: u64 = NEXT_PORTABLE_STORE
-            .fetch_update(
-                std::sync::atomic::Ordering::Relaxed,
-                std::sync::atomic::Ordering::Relaxed,
-                |value: u64| value.checked_add(1),
-            )
-            .expect("memory fixture store identity exhausted");
-        let mut portable_namespace: Vec<u8> = b"memory-portable/".to_vec();
-        portable_namespace.extend_from_slice(&identity.to_be_bytes());
+        let portable_namespace: Vec<u8> = allocate_memory_portable_namespace(&NEXT_PORTABLE_STORE);
         Self {
             inner: Arc::new(RwLock::new(MemoryDurableStoreData {
                 portable_namespace,

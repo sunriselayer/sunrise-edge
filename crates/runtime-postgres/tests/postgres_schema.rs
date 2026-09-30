@@ -1090,11 +1090,12 @@ fn postgres_schema_and_durable_store_conformance() {
     let zero_domain = [0_u8; 32];
     let zero_domain_insert = client.execute(
         "INSERT INTO sunrise_edge.storage_metadata (
-             chain_id_bytes, validator_id, atomicity_domain_id, schema_identity,
+             chain_id_bytes, validator_id, atomicity_domain_id, schema_identity, source_instance_id,
              schema_generation, migration_phase_id, compatibility_min_generation,
              compatibility_max_generation, writer_fence_generation, commit_sequence
          ) SELECT
-             $1, $2, $3, schema_identity, 1, 5, 1, 1, 1, 0
+             $1, $2, $3, schema_identity,
+             decode(replace(gen_random_uuid()::text, '-', ''), 'hex'), 1, 5, 1, 1, 1, 0
          FROM sunrise_edge.schema_migrations WHERE migration_id = 1",
         &[
             &b"zero-domain".as_slice(),
