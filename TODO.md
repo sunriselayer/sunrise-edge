@@ -229,7 +229,7 @@ The detailed existing evidence and remaining criteria follow:
   minimum-check substitution called for above). A historical store's
   existing physical checkpoint/revision admission is unchanged. On branch
   `codex/logical-generation-admission` (commits `837770e`, `83329d7`, `56c1cd8`,
-  `a095a62`), based on merged PR #237; no PR number yet.
+  `a095a62`), based on merged PR #237; Draft PR #238.
   Logical-profile epoch proposal/vote and fresh activation explicitly refuse
   with `EpochTransitionLogicalProfileUnsupported` before a signature or
   mutation: next-epoch provenance is not implemented by this feature.
