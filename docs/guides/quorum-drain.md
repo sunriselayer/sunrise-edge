@@ -102,6 +102,10 @@ cargo run -p sunrise-edge-cli -- contract fastvote-drain-member \
 The wire request is only a member locator. The host loads committed authority,
 verifies its full proof and re-derives normal paid execution. Missing causal
 prerequisites refuse; union request-ID order does not prescribe execution.
+Before a member or import POST, the SDK independently verifies the complete
+witness-required artifact closure using the same pure verifier as core
+retention. Valid certificate signatures and matching supplied content hashes
+alone do not establish that closure.
 Repeat the same command for exact original replay without a second fee charge.
 An existing result must match exactly; it cannot be replaced by peer data.
 

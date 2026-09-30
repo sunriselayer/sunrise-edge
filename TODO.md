@@ -339,7 +339,11 @@ The detailed existing evidence and remaining criteria follow:
   and its audit with ordinary generic paid effects/receipt/nonce/fees/provenance.
   Core, native HTTP, Rust SDK and compiled CLI are connected. SDK/CLI verify
   the original supplied signed intent and complete result against the retained
-  certificate/witness; saved files are immutable. Fresh member results are
+  certificate/witness; saved files are immutable. SDK source and import paths
+  use the same pure required-artifact closure verification as core
+  retention. Paired omissions, empty or surplus closures refuse before member
+  or import POST; quorum-signed genuine prepared-witness regressions cover it.
+  Fresh member results are
   privately staged and atomically published without replacement only when
   complete and authenticated. Failure permits the identical signed-intent and
   output-path retry; ignored crash-orphan siblings never become authority.
