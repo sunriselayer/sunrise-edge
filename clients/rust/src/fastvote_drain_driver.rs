@@ -394,8 +394,7 @@ mod tests {
     use super::*;
     use crate::transport::{TransportError, WireRequest, WireResponse};
     use consensus::bundle::{
-        ArtifactManifest, LOGICAL_COMMITMENT_PROFILE, encode_publication_bundle,
-        verify_publication_bundle,
+        LOGICAL_COMMITMENT_PROFILE, encode_publication_bundle, verify_publication_bundle,
     };
     use consensus::{ConsensusSigner, DrainUnionAccumulator, FrozenFrontierAccumulator};
     use ed25519_zebra::{SigningKey, VerificationKey};
@@ -499,7 +498,12 @@ mod tests {
     #[test]
     fn successive_one_step_runs_resume_cached_descriptor_and_imported_relay_without_original_holder()
      {
-        let signed = crate::fastvote_drain_client::tests::signed_drain_member();
+        // Reuse a real prepare's witness/artifacts. This transport scheduling
+        // fixture signs that unchanged business witness with its own four-key
+        // test committee; it is not a four-replica execution acceptance test.
+        let prepared: crate::fastvote_drain_client::closure_tests::MemberFixture =
+            crate::fastvote_drain_client::closure_tests::member_fixture();
+        let signed: execution::paid_execution::SignedPaidIntent = prepared.signed;
         let context = signed.intent.context.clone();
         let resolver: HashSuiteResolver = HashSuiteResolver::new(
             context.chain_id().clone(),
@@ -551,7 +555,7 @@ mod tests {
         .unwrap();
         let tx_hash: Digest32 =
             execution::paid_execution::paid_invocation_digest(&resolver, &signed).unwrap();
-        let witness: Vec<u8> = vec![0x64, 0x24, 0x02];
+        let witness: Vec<u8> = prepared.bundle.witness;
         let effect_hash: Digest32 = resolver
             .hash_for_purpose(context.epoch(), HashPurpose::ExecutionEffects, &witness)
             .unwrap();
@@ -583,10 +587,8 @@ mod tests {
             signed_intent: execution::paid_execution::encode_signed_paid_intent(&signed).unwrap(),
             certificate,
             witness,
-            manifest: ArtifactManifest {
-                entries: Vec::new(),
-            },
-            contents: Vec::new(),
+            manifest: prepared.bundle.manifest,
+            contents: prepared.bundle.contents,
         };
         let identity: AvailabilityIdentity = verify_publication_bundle(
             &bundle,

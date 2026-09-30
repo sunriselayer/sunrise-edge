@@ -201,24 +201,51 @@ fn verify_bundle(
     validators: &ValidatorSet,
     bundle: &PublicationBundle,
 ) -> DrainResult<AvailabilityIdentity> {
-    if bundle.domain != domain {
-        return Err(PublicationRetentionError::ForeignDomain);
-    }
-    if bundle.certificate.chain_id != *expected.chain_id()
-        || bundle.certificate.protocol_version != expected.protocol_version()
-        || bundle.certificate.epoch != expected.epoch()
-    {
-        return Err(PublicationRetentionError::ContextMismatch);
-    }
     let certifier: consensus::FastPathCertifier = consensus::FastPathCertifier::new(
         expected.chain_id().clone(),
         expected.protocol_version(),
         expected.epoch(),
         validators.clone(),
     )?;
+    verify_drain_publication_bundle(resolver, history, expected, domain, &certifier, bundle)
+}
+
+/// Pure, bounded verification of one complete post-Freeze publication under
+/// independently supplied context, domain and outgoing-committee pins.
+/// Authenticates the exact intent/certificate/witness bindings and derives
+/// the required replay-artifact closure from the signed witness operands;
+/// supplied matching artifact digests alone do not establish completeness.
+///
+/// This does not read or write storage, execute, sign or create an ACK. Its
+/// result proves bundle validity, not committed Freeze/DrainSet membership,
+/// durable possession or permission to apply a member. Store-fenced callers
+/// must continue to establish those authorities separately.
+pub fn verify_drain_publication_bundle(
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    domain: AtomicityDomainId,
+    certifier: &consensus::FastPathCertifier,
+    bundle: &PublicationBundle,
+) -> DrainResult<AvailabilityIdentity> {
+    if history.len() > crate::publication::MAX_PUBLICATION_HISTORY {
+        return Err(NodeCoreError::PersistenceInvariant("resolver history bound").into());
+    }
+    if bundle.domain != domain {
+        return Err(PublicationRetentionError::ForeignDomain);
+    }
+    if certifier.chain_id() != expected.chain_id()
+        || certifier.protocol_version() != expected.protocol_version()
+        || certifier.epoch() != expected.epoch()
+        || bundle.certificate.chain_id != *expected.chain_id()
+        || bundle.certificate.protocol_version != expected.protocol_version()
+        || bundle.certificate.epoch != expected.epoch()
+    {
+        return Err(PublicationRetentionError::ContextMismatch);
+    }
     let verified: VerifiedPublicationBundle = verify_publication_bundle(
         bundle,
-        &certifier,
+        certifier,
         &FastPathEd25519Verifier,
         resolver,
         history,

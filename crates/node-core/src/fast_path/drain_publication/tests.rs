@@ -8,12 +8,151 @@ use crate::ordered_economics::{
     encode_admission_closure_record, read_frozen_frontier_page,
 };
 use crate::paid_execution::tests::{FIRST_PAID_NONCE, context, domain, protocol, resolver};
-use consensus::bundle::encode_publication_bundle;
+use consensus::bundle::{ArtifactKind, encode_publication_bundle};
 use consensus::{AvailabilityVote, FrozenFrontierPage, FrozenFrontierVote};
 use runtime::{DurableDomainStateStore, MemoryDurableStateStore};
 use std::{cell::Cell, num::NonZeroUsize};
 
 const REQUEST: u8 = 0xE4;
+
+#[test]
+fn pure_bundle_verifier_requires_exact_closure_of_genuine_certified_witness() {
+    let (bundle, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    let certifier: consensus::FastPathCertifier = consensus::FastPathCertifier::new(
+        protocol().chain_id().clone(),
+        protocol().protocol_version(),
+        protocol().epoch(),
+        installed_validator_set(),
+    )
+    .unwrap();
+    assert!(!bundle.manifest.entries.is_empty());
+    let complete: AvailabilityIdentity = verify_drain_publication_bundle(
+        &resolver(),
+        &[],
+        &protocol(),
+        domain(),
+        &certifier,
+        &bundle,
+    )
+    .unwrap();
+    assert_eq!(complete, identity(&bundle));
+    for corruption in 0u8..3 {
+        let mut changed: PublicationBundle = bundle.clone();
+        if corruption == 0 {
+            changed.manifest.entries.remove(0);
+            changed.contents.remove(0);
+        } else if corruption == 1 {
+            changed.manifest.entries.clear();
+            changed.contents.clear();
+        } else {
+            let content: Vec<u8> = b"unrequired replay body".to_vec();
+            changed.manifest.entries.push(ArtifactEntry {
+                kind: ArtifactKind::ObjectBody,
+                identity: vec![0xFF; 40],
+                content_digest: resolver()
+                    .hash_for_purpose(protocol().epoch(), HashPurpose::Object, &content)
+                    .unwrap(),
+                content_length: u32::try_from(content.len()).unwrap(),
+            });
+            changed.contents.push(content);
+        }
+        assert_eq!(changed.certificate, bundle.certificate);
+        assert_eq!(changed.witness, bundle.witness);
+        // Demonstrate the lower-layer verifier's documented boundary: the
+        // genuine certificate and every supplied content still authenticate.
+        verify_publication_bundle(
+            &changed,
+            &certifier,
+            &FastPathEd25519Verifier,
+            &resolver(),
+            &[],
+        )
+        .unwrap();
+        let refused: PublicationRetentionError = verify_drain_publication_bundle(
+            &resolver(),
+            &[],
+            &protocol(),
+            domain(),
+            &certifier,
+            &changed,
+        )
+        .unwrap_err();
+        if corruption < 2 {
+            assert!(matches!(
+                refused,
+                PublicationRetentionError::MissingRequiredArtifact { .. }
+            ));
+        } else {
+            assert!(matches!(
+                refused,
+                PublicationRetentionError::UnrequiredArtifact { .. }
+            ));
+        }
+    }
+}
+
+#[test]
+fn pure_bundle_verifier_refuses_mismatched_certifier_context_and_unbounded_history() {
+    let (bundle, _) = transfer_bundle_bytes(REQUEST, FIRST_PAID_NONCE);
+    for mismatch in 0u8..3 {
+        let chain: ChainId = if mismatch == 0 {
+            ChainId::new("foreign-drain-verifier").unwrap()
+        } else {
+            protocol().chain_id().clone()
+        };
+        let version: ProtocolVersion = if mismatch == 1 {
+            ProtocolVersion::new(protocol().protocol_version().get().checked_add(1).unwrap())
+        } else {
+            protocol().protocol_version()
+        };
+        let epoch: Epoch = if mismatch == 2 {
+            Epoch::new(protocol().epoch().get().checked_add(1).unwrap())
+        } else {
+            protocol().epoch()
+        };
+        let set: ValidatorSet =
+            ValidatorSet::new(epoch, installed_validator_set().validators().to_vec()).unwrap();
+        let certifier: consensus::FastPathCertifier =
+            consensus::FastPathCertifier::new(chain, version, epoch, set).unwrap();
+        assert!(matches!(
+            verify_drain_publication_bundle(
+                &resolver(),
+                &[],
+                &protocol(),
+                domain(),
+                &certifier,
+                &bundle
+            ),
+            Err(PublicationRetentionError::ContextMismatch)
+        ));
+    }
+    let certifier: consensus::FastPathCertifier = consensus::FastPathCertifier::new(
+        protocol().chain_id().clone(),
+        protocol().protocol_version(),
+        protocol().epoch(),
+        installed_validator_set(),
+    )
+    .unwrap();
+    let history: Vec<HashSuiteResolver> = vec![
+        resolver();
+        crate::publication::MAX_PUBLICATION_HISTORY
+            .checked_add(1)
+            .unwrap()
+    ];
+    assert!(matches!(
+        verify_drain_publication_bundle(
+            &resolver(),
+            &history,
+            &protocol(),
+            domain(),
+            &certifier,
+            &bundle
+        ),
+        Err(PublicationRetentionError::Node(
+            NodeCoreError::PersistenceInvariant("resolver history bound")
+        ))
+    ));
+}
 
 #[test]
 fn ambiguous_import_withholds_completion_and_exact_retry_reverifies_without_writes() {

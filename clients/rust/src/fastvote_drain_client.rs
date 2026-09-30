@@ -8,7 +8,7 @@
 
 use std::time::Instant;
 
-use consensus::bundle::{PublicationBundle, encode_publication_bundle, verify_publication_bundle};
+use consensus::bundle::{PublicationBundle, encode_publication_bundle};
 use consensus::{
     AvailabilityIdentity, DrainUnionIdentity, FastPathCertifier, FrozenFrontierAccumulator,
     FrozenFrontierCertifier, FrozenFrontierIdentity, FrozenFrontierPage, FrozenFrontierVote,
@@ -22,6 +22,7 @@ use execution::paid_execution::{
 };
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
+use node_core::fast_path::drain_publication::verify_drain_publication_bundle;
 use node_core::ordered_economics::DrainSignerProgress;
 use node_wire::{
     DrainMemberApplyRequest, DrainMemberConfirmRequest, DrainSignerPageRequest,
@@ -246,13 +247,7 @@ impl<T: Transport> Client<T> {
                 "retained member differs from exact signed input or domain",
             ));
         }
-        verify_publication_bundle(
-            &bundle,
-            certifier,
-            &FastPathEd25519Verifier,
-            resolver,
-            history,
-        )?;
+        verify_drain_publication_bundle(resolver, history, expected, domain, certifier, &bundle)?;
         let tx_hash: protocol_types::Digest32 = paid_invocation_digest(resolver, signed)?;
         if bundle.certificate.tx_hash != tx_hash {
             return Err(ClientError::DrainMismatch(
@@ -429,23 +424,24 @@ impl<T: Transport> Client<T> {
                 "source signer is absent from the pinned outgoing set",
             ));
         }
-        let verified = verify_publication_bundle(
-            bundle,
-            certifier,
-            &FastPathEd25519Verifier,
-            resolver,
-            history,
-        )?;
-        if verified.identity != *expected_identity {
-            return Err(ClientError::DrainMismatch(
-                "bundle differs from signed frontier member",
-            ));
-        }
         let expected_context: PublicationContext = PublicationContext::new(
             certifier.chain_id().clone(),
             certifier.protocol_version(),
             certifier.epoch(),
         )?;
+        let identity: AvailabilityIdentity = verify_drain_publication_bundle(
+            resolver,
+            history,
+            &expected_context,
+            expected_identity.domain,
+            certifier,
+            bundle,
+        )?;
+        if identity != *expected_identity {
+            return Err(ClientError::DrainMismatch(
+                "bundle differs from signed frontier member",
+            ));
+        }
         authenticate_paid_intent(resolver, &expected_context, &bundle.signed_intent)?;
         let signed = decode_signed_paid_intent(&bundle.signed_intent)?;
         let signed_digest = paid_invocation_digest(resolver, &signed)?;
@@ -565,6 +561,9 @@ impl<T: Transport> Client<T> {
         Ok(Some(identity))
     }
 }
+
+#[cfg(test)]
+pub(crate) mod closure_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {

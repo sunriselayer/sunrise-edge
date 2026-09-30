@@ -314,11 +314,18 @@ mod tests {
                 encode_paid_execution_result(&fixture.result(status)).unwrap(),
             )
             .unwrap();
-        for field in [3u16, 4, 5, 6, 7, 8, 10] {
+        for field in [3u16, 7, 8, 10] {
             witness.field_bytes(field, Vec::new()).unwrap();
         }
+        // Synthetic response-binding fixture, not an admission witness: its
+        // replay closure is explicitly empty under the strict list schema.
+        // Genuine required-artifact omissions are covered by SDK/core tests.
+        for field in [4u16, 5, 6, 12] {
+            witness
+                .field_bytes(field, 0u32.to_be_bytes().to_vec())
+                .unwrap();
+        }
         witness.field_u64(11, 1).unwrap();
-        witness.field_bytes(12, Vec::new()).unwrap();
         let bytes: Vec<u8> = witness.finish().unwrap();
         let effect_hash: Digest32 = fixture
             .resolver

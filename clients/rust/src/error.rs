@@ -199,6 +199,8 @@ pub enum ClientError {
     DrainMismatch(&'static str),
     /// A canonical publication bundle failed decoding or independent verification.
     FastVotePublicationBundle(consensus::bundle::PublicationBundleError),
+    /// Complete drain publication intent/witness/artifact-closure verification failed.
+    DrainPublicationVerification(Box<node_core::fast_path::publication::PublicationRetentionError>),
     /// A validly framed publication claim did not match this exact local request.
     FastVotePublicationMismatch(&'static str),
     /// A returned `FastVote`, `FastCertificate`, or certificate-formation
@@ -335,6 +337,9 @@ impl fmt::Display for ClientError {
             Self::FastVotePublicationBundle(error) => {
                 write!(f, "FastVote publication bundle error: {error}")
             }
+            Self::DrainPublicationVerification(error) => {
+                write!(f, "drain publication verification error: {error}")
+            }
             Self::FastVotePublicationMismatch(reason) => {
                 write!(f, "FastVote publication does not match the local request: {reason}")
             }
@@ -401,6 +406,7 @@ impl Error for ClientError {
             Self::FrozenFrontier(error) => Some(error),
             Self::FrozenFrontierMismatch(_) => None,
             Self::FastVotePublicationBundle(error) => Some(error),
+            Self::DrainPublicationVerification(error) => Some(error.as_ref()),
             Self::FastVotePublicationMismatch(_) => None,
             Self::FastVoteConsensus(error) => Some(error),
             Self::FastVoteEndpointIdentityMismatch { .. }
@@ -527,6 +533,12 @@ impl From<consensus::FrontierError> for ClientError {
 impl From<consensus::bundle::PublicationBundleError> for ClientError {
     fn from(value: consensus::bundle::PublicationBundleError) -> Self {
         Self::FastVotePublicationBundle(value)
+    }
+}
+
+impl From<node_core::fast_path::publication::PublicationRetentionError> for ClientError {
+    fn from(value: node_core::fast_path::publication::PublicationRetentionError) -> Self {
+        Self::DrainPublicationVerification(Box::new(value))
     }
 }
 
