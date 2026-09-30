@@ -339,7 +339,11 @@ The detailed existing evidence and remaining criteria follow:
   and its audit with ordinary generic paid effects/receipt/nonce/fees/provenance.
   Core, native HTTP, Rust SDK and compiled CLI are connected. SDK/CLI verify
   the original supplied signed intent and complete result against the retained
-  certificate/witness; saved files are immutable. Bounded cap-one runs progress
+  certificate/witness; saved files are immutable. Fresh member results are
+  privately staged and atomically published without replacement only when
+  complete and authenticated. Failure permits the identical signed-intent and
+  output-path retry; ignored crash-orphan siblings never become authority.
+  Bounded cap-one runs progress
   across fresh invocations, and staged/complete pages need no original endpoint.
   Targeted core/consensus and all surface tests/Clippy passed. Parent's actual
   four-namespace PostgreSQL/compiled-CLI

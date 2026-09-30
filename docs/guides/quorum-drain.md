@@ -105,6 +105,15 @@ prerequisites refuse; union request-ID order does not prescribe execution.
 Repeat the same command for exact original replay without a second fee charge.
 An existing result must match exactly; it cannot be replaced by peer data.
 
+For a fresh result, the CLI holds a private sibling file and publishes the
+complete authenticated HTTP envelope only after file and directory sync,
+using a no-replacement hard link. The output filesystem must support hard
+links and directory sync. Not-ready, transport or verification failures leave
+no final result, so rerun the identical signed intent and output path. A crash
+can leave a `.sunrise-drain-member-*.pending` sibling; it is never read as
+replay authority. Existing empty, partial, symlink or different final files
+remain untouched and are refused rather than repaired from peer data.
+
 For reproducible evidence, build the actual CLI/host and run the ignored
 `contract_lifecycle_pg_drainset_member_drain_binary_cli_e2e` through
 `scripts/check-fastvote-pg.sh` with a disposable PostgreSQL URL. It shares the

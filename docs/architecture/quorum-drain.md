@@ -102,7 +102,11 @@ The CLI separates signed genesis/protocol/domain/Freeze pins from per-peer
 TLS identities. It supports bounded local readiness, an offline DrainSet
 candidate builder using the existing ordered submission/recovery commands,
 and explicit member apply/replay. Saved union/result bytes are immutable and
-retries require equality. A staged page or complete signer resumes without
+retries require equality. A fresh member result is staged privately and synced
+before atomic no-replacement publication; failed attempts leave no final
+authority and crash-orphan siblings are ignored. This CLI persistence requires
+filesystem hard links and directory synchronization.
+A staged page or complete signer resumes without
 contacting that original signer; an unstaged page still requires authenticated
 descriptor material from that signer. Artifact-source substitution alone
 cannot reconstruct an unavailable page or authorize omitted membership.
