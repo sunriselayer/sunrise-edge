@@ -5417,7 +5417,8 @@ fn assemble_publication_bundle_is_restart_safe_across_a_real_sqlite_reopen() {
     const REQUEST: u8 = 0x56;
     let (signers, entries) = four_validators();
     let file: ValidatorFiles = ValidatorFiles::new(&directory, 0, entries[0].id);
-    let (fixture, original_vote_a): (Fixture, FastVote) = {
+    type RetainedMaterialRows = Vec<(Vec<u8>, Vec<u8>)>;
+    let (fixture, original_vote_a, original_material): (Fixture, FastVote, RetainedMaterialRows) = {
         let (store, _blob_store) = file.open();
         let profile: logical_generation::LogicalProfileRecord = install_logical_profile(&store);
         let fixture: Fixture = install_with_profile(&store, Some(&profile));
@@ -5432,7 +5433,36 @@ fn assemble_publication_bundle_is_restart_safe_across_a_real_sqlite_reopen() {
         .unwrap();
         let vote: FastVote =
             prepare_transfer(&store, &fixture, &signers[0], REQUEST, FIRST_PAID_NONCE).unwrap();
-        (fixture, vote)
+        let witness_key: Vec<u8> =
+            prepared_material::fastpath_prepared_witness_key(protocol().chain_id(), &[REQUEST; 32])
+                .unwrap();
+        let witness_bytes: Vec<u8> = store
+            .get_versioned_durable(&context(), domain(), &witness_key)
+            .unwrap()
+            .value()
+            .unwrap()
+            .to_vec();
+        let (_, required): (Digest32, publication::RequiredArtifacts) =
+            publication::witness::required_artifacts(&witness_bytes).unwrap();
+        let mut material: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+        material.insert(witness_key, witness_bytes);
+        for ((kind_tag, _identity), digest) in required.iter() {
+            let key: Vec<u8> = prepared_material::fastpath_prepared_artifact_key(
+                protocol().chain_id(),
+                &[REQUEST; 32],
+                consensus::bundle::ArtifactKind::from_u16(*kind_tag).unwrap(),
+                digest,
+            )
+            .unwrap();
+            let bytes: Vec<u8> = store
+                .get_versioned_durable(&context(), domain(), &key)
+                .unwrap()
+                .value()
+                .unwrap()
+                .to_vec();
+            material.insert(key, bytes);
+        }
+        (fixture, vote, material.into_iter().collect())
         // `store`/`_blob_store` dropped here: the SQLite connection closes.
     };
 
@@ -5451,6 +5481,7 @@ fn assemble_publication_bundle_is_restart_safe_across_a_real_sqlite_reopen() {
     // resubmitting the same request would observe.
     let (reopened_store, reopened_blob_store) = file.open();
     let signed_bytes: Vec<u8> = transfer_bytes(&fixture, REQUEST, FIRST_PAID_NONCE);
+    let replay_engine: CountingEngine = CountingEngine::new();
     let vote_a: FastVote = prepare(
         &reopened_store,
         &reopened_blob_store,
@@ -5461,13 +5492,24 @@ fn assemble_publication_bundle_is_restart_safe_across_a_real_sqlite_reopen() {
         &protocol(),
         &base_policy(),
         &fixture.policy,
-        &CountingEngine::new(),
+        &replay_engine,
         &signers[0],
         &signed_bytes,
         10,
     )
     .expect("exact prepare replay after reopen returns the retained vote");
     assert_eq!(vote_a, original_vote_a);
+    assert_eq!(replay_engine.calls.get(), 0);
+    for (key, original_bytes) in &original_material {
+        assert_eq!(
+            reopened_store
+                .get_versioned_durable(&context(), domain(), key)
+                .unwrap()
+                .value(),
+            Some(original_bytes.as_slice()),
+            "exact prepare replay preserves every retained byte after restart"
+        );
+    }
     let certificate: FastCertificate = certifier(installed_validator_set())
         .try_form_certificate(
             vote_a.tx_hash,

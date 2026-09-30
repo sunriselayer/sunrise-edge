@@ -123,7 +123,10 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 outcomes, not PR size. Implement dependency-ordered, independently reviewable
 functional capabilities, each with its relevant tests, architecture/TODO
 updates, complete repository gate, fresh exact-head Opus approval and required
-CI. A prerequisite may merge before the whole delivery, provided it does not
+CI. On 2026-09-30 the user explicitly authorized fresh independent Codex
+subagents while Opus is unavailable; their explicit exact-head approval may
+substitute for that review gate, but must never be described as Opus approval.
+A prerequisite may merge before the whole delivery, provided it does not
 authorize an unfinished transition. Preserve Draft PR #235 as the aggregate
 implementation source; do not merge its unfinished whole-delivery diff.
 PR #237 merged normally as `0f201eb` on 2026-09-30 after all of its gates.
@@ -288,10 +291,23 @@ The detailed existing evidence and remaining criteria follow:
   live disposable PostgreSQL and required SIGKILL, backup/restore, disk/WAL-full,
   connection-exhaustion and PgBouncer profiles, existing network/CLI E2Es,
   independent vectors and Rust/WASM/all edge-adapter checks. The final
-  validation-record update is TODO-only; fresh exact-final-head Opus approval
-  and required CI remain merge gates. A fresh read-only Opus attempt on
-  `e1d85a6` reported its weekly usage limit; no fallback reviewer is
-  an Opus approval. Freeze/frontier/drain/cut/import/readiness/Seal/activation,
+  validation-record update `9cc1e1b` is TODO-only. A fresh read-only Opus
+  attempt on `e1d85a6` reported its weekly usage limit. Following the user's
+  explicit Codex substitution, an independent complete-diff review of
+  `9cc1e1b` found a P1 prepare/material atomicity blocker: a stale concurrent
+  prepare can overwrite the witness of an already exposed vote before its
+  own prepared/lock commit rejects. The separate material commit also leaves
+  rows on later signer/final-commit refusal. The corrected implementation
+  stages the complete material with prepared records/locks in one transaction,
+  checks aggregate capacity before Logical signing, refuses destination byte
+  mismatches and independently verifies retained material on exact replay.
+  Focused verification passes: 145 FastVote tests with three existing live
+  PostgreSQL/soak tests ignored, node-core all-target/all-feature Clippy,
+  formatting and diff checks. Regression evidence includes both deterministic
+  conflicting-prepare schedules, signer rejection, rejected and applied/unapplied
+  indeterminate commits, corrupt replay refusal and real SQLite reopen.
+  The complete repository rerun, fresh exact-final-head independent approval
+  and passing required CI remain merge gates. Freeze/frontier/drain/cut/import/readiness/Seal/activation,
   next-epoch provenance and complete Delivery 3 remain separate and unchecked.
 
 - [ ] **Ordered Freeze and immutable frontier export: next independent functional capability**
