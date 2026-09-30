@@ -12,6 +12,9 @@
 //! recovery remains `contract_lifecycle_catch_up_pg_e2e`'s separate job.
 mod support;
 
+#[path = "support/frozen_frontier_acceptance.rs"]
+mod frozen_frontier_acceptance;
+
 use abi::package_types::PackageOrigin;
 use consensus::bundle::encode_publication_bundle;
 use consensus::{
@@ -58,6 +61,7 @@ use support::paid_calls::{
 
 type AdminPool = Pool<PostgresConnectionManager<postgres::NoTls>>;
 type Store = PostgresDurableStore<PostgresConnectionManager<postgres::NoTls>>;
+type HostSpawner = fn(&Path, &str, &str, &str, &str, &Path, &str, &Path, &str) -> HostProcess;
 
 const PUBLISH_ORIGIN_SEED: [u8; 32] = [0x61; 32];
 
@@ -297,16 +301,22 @@ fn recover_logical_lifecycle(
 #[test]
 #[ignore = "run through scripts/check-fastvote-pg.sh"]
 fn contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator_e2e() {
-    contract_lifecycle_pg_e2e_case(false);
+    contract_lifecycle_pg_e2e_case(false, false);
 }
 
 #[test]
 #[ignore = "run through scripts/check-fastvote-pg.sh"]
 fn contract_lifecycle_pg_logical_publish_instantiate_call_and_asset_verbs_multivalidator_e2e() {
-    contract_lifecycle_pg_e2e_case(true);
+    contract_lifecycle_pg_e2e_case(true, false);
 }
 
-fn contract_lifecycle_pg_e2e_case(logical: bool) {
+#[test]
+#[ignore = "run through scripts/check-fastvote-pg.sh"]
+fn contract_lifecycle_pg_ordered_freeze_and_frontier_binary_cli_e2e() {
+    contract_lifecycle_pg_e2e_case(true, true);
+}
+
+fn contract_lifecycle_pg_e2e_case(logical: bool, frozen_frontier: bool) {
     let database_url_option = support::live_postgres_url();
     if database_url_option.is_none() {
         return;
@@ -321,14 +331,22 @@ fn contract_lifecycle_pg_e2e_case(logical: bool) {
     let dsn: String = proxied_dsn(&original_config, proxy.local_addr().port());
     let unique: String = format!(
         "lifecycle-{}-{}-{}",
-        if logical { "logical" } else { "hist" },
+        if frozen_frontier {
+            "frozen"
+        } else if logical {
+            "logical"
+        } else {
+            "hist"
+        },
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     );
-    let fixture: FastVoteGenesisFixture = if logical {
+    let fixture: FastVoteGenesisFixture = if frozen_frontier {
+        genesis_fixture::build_frozen_frontier_network_fixture(&unique)
+    } else if logical {
         genesis_fixture::build_logical_network_fixture(&unique)
     } else {
         genesis_fixture::build_network_fixture(&unique)
@@ -372,7 +390,12 @@ fn contract_lifecycle_pg_e2e_case(logical: bool) {
         namespace_init(&cli_context, validator_id_hex, &domain_hex);
         install_genesis(&cli_context, validator_id_hex, &domain_hex, true);
     });
-    let host0 = spawn_host(
+    let spawn_profile: HostSpawner = if frozen_frontier {
+        support::host::spawn_ordered_host
+    } else {
+        spawn_host
+    };
+    let host0 = spawn_profile(
         &ca_path,
         &dsn,
         &chain_id,
@@ -383,7 +406,7 @@ fn contract_lifecycle_pg_e2e_case(logical: bool) {
         &key_path_0,
         "127.0.0.1:0",
     );
-    let host1 = spawn_host(
+    let host1 = spawn_profile(
         &ca_path,
         &dsn,
         &chain_id,
@@ -394,7 +417,7 @@ fn contract_lifecycle_pg_e2e_case(logical: bool) {
         &key_path_1,
         "127.0.0.1:0",
     );
-    let host2 = spawn_host(
+    let host2 = spawn_profile(
         &ca_path,
         &dsn,
         &chain_id,
@@ -918,7 +941,7 @@ fn contract_lifecycle_pg_e2e_case(logical: bool) {
 
         // Kill actual host processes and restart them.
         drop(hosts);
-        let host0 = spawn_host(
+        let host0 = spawn_profile(
             &ca_path,
             &dsn,
             &chain_id,
@@ -929,7 +952,7 @@ fn contract_lifecycle_pg_e2e_case(logical: bool) {
             &key_path_0,
             "127.0.0.1:0",
         );
-        let host1 = spawn_host(
+        let host1 = spawn_profile(
             &ca_path,
             &dsn,
             &chain_id,
@@ -940,7 +963,7 @@ fn contract_lifecycle_pg_e2e_case(logical: bool) {
             &key_path_1,
             "127.0.0.1:0",
         );
-        let host2 = spawn_host(
+        let host2 = spawn_profile(
             &ca_path,
             &dsn,
             &chain_id,
@@ -981,7 +1004,7 @@ fn contract_lifecycle_pg_e2e_case(logical: bool) {
         );
         let (follower_key, _follower_key_guard) =
             write_signing_key_file(&fixture.validators[3].seed);
-        let follower: HostProcess = spawn_host(
+        let follower: HostProcess = spawn_profile(
             &ca_path,
             &dsn,
             &chain_id,
@@ -1012,8 +1035,29 @@ fn contract_lifecycle_pg_e2e_case(logical: bool) {
             snapshot_before_replay,
             "sourcing old bundles after restart must remain read-only"
         );
-        drop(follower);
-        drop(restarted_hosts);
+        if frozen_frontier {
+            frozen_frontier_acceptance::run(
+                &fixture,
+                &pool,
+                &namespaces,
+                &data_dir,
+                &ca_path,
+                &dsn,
+                &manifest_path,
+                &digest_hex,
+                &network_config_path,
+                &validator_hex,
+                [&key_path_0, &key_path_1, &key_path_2, &follower_key],
+                restarted_hosts,
+                follower,
+                &ids,
+                &requests,
+                &publications,
+            );
+        } else {
+            drop(follower);
+            drop(restarted_hosts);
+        }
     } else {
         drop(hosts);
     }

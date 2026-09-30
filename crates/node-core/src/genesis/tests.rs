@@ -35,6 +35,7 @@ use runtime::{
 };
 use runtime_sqlite::{SqliteDurableStore, SqliteNamespace};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 use super::*;
 use crate::economics::{FastPathEconomicsPolicy, FastPathEconomicsResourcePolicy};
@@ -135,6 +136,22 @@ pub(crate) fn build_fixture() -> (
     ObjectId,
     ObjectId,
 ) {
+    build_fixture_for_context(protocol(), resolver())
+}
+
+pub(crate) fn build_fixture_for_context(
+    pinned_context: PublicationContext,
+    pinned_resolver: HashSuiteResolver,
+) -> (
+    GenesisManifest,
+    PackageOrigin,
+    InstanceRecord,
+    ObjectId,
+    ObjectId,
+) {
+    let protocol = || pinned_context.clone();
+    let resolver = || pinned_resolver.clone();
+    let chain = || pinned_context.chain_id().clone();
     let origin = PackageOrigin::unverified(chain(), sender(), [1; 32]).unwrap();
     let package = public_standard_asset::build_package(&origin).unwrap();
     let semantics = generic_object_result_semantics(&resolver(), &protocol()).unwrap();
@@ -338,6 +355,7 @@ pub(crate) fn build_fixture() -> (
             }],
         },
         commitment_profile: CommitmentProfile::PhysicalCheckpointV1,
+        minimum_freeze_block_height: 0,
         signature: [0; 64],
     };
     manifest.signature = key()
@@ -430,6 +448,7 @@ pub(crate) fn build_bonded_fixture() -> (
 pub(crate) fn logical_manifest_with_custody(object_id: ObjectId) -> GenesisManifest {
     let mut manifest: GenesisManifest = manifest_with_custody(object_id);
     manifest.commitment_profile = CommitmentProfile::LogicalGenerationV2;
+    manifest.minimum_freeze_block_height = 0;
     resign_manifest(&mut manifest);
     manifest
 }
@@ -439,6 +458,14 @@ pub(crate) fn logical_manifest_with_custody(object_id: ObjectId) -> GenesisManif
 pub(crate) fn logical_bonded_manifest() -> GenesisManifest {
     let (mut manifest, _, _, _, _) = build_bonded_fixture();
     manifest.commitment_profile = CommitmentProfile::LogicalGenerationV2;
+    manifest.minimum_freeze_block_height = 0;
+    resign_manifest(&mut manifest);
+    manifest
+}
+
+pub(crate) fn freeze_bonded_manifest() -> GenesisManifest {
+    let mut manifest: GenesisManifest = logical_bonded_manifest();
+    manifest.minimum_freeze_block_height = 1;
     resign_manifest(&mut manifest);
     manifest
 }
@@ -474,6 +501,7 @@ pub(crate) fn expected_profile_row(manifest: &GenesisManifest) -> Vec<u8> {
         manifest_digest: genesis_manifest_commitment(&resolver(), manifest).unwrap(),
         genesis_authority: manifest.genesis_authority,
         genesis_floor: ExecutionGeneration::genesis_floor(),
+        minimum_freeze_block_height: manifest.minimum_freeze_block_height,
     })
     .unwrap()
 }
@@ -627,6 +655,77 @@ fn a_version_two_manifest_frame_must_name_the_handoff_capable_profile() {
     ));
 }
 
+#[test]
+fn the_signed_handoff_freeze_height_changes_the_manifest_commitment() {
+    let mut one: GenesisManifest = freeze_bonded_manifest();
+    let original_frame: Vec<u8> = genesis_manifest_signing_frame(&one).unwrap();
+    let original_digest: Digest32 = genesis_manifest_commitment(&resolver(), &one).unwrap();
+    one.minimum_freeze_block_height = 4;
+    assert_ne!(
+        original_frame,
+        genesis_manifest_signing_frame(&one).unwrap()
+    );
+    resign_manifest(&mut one);
+    assert_ne!(
+        original_digest,
+        genesis_manifest_commitment(&resolver(), &one).unwrap()
+    );
+    assert_eq!(
+        decode_genesis_manifest(&encode_genesis_manifest(&one).unwrap()).unwrap(),
+        one
+    );
+}
+
+#[test]
+fn the_handoff_manifest_requires_a_canonical_positive_freeze_height() {
+    let logical: GenesisManifest = freeze_bonded_manifest();
+    let bytes: Vec<u8> = encode_genesis_manifest(&logical).unwrap();
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(&bytes).unwrap();
+    let mut without: CanonicalStruct =
+        CanonicalStruct::new(GENESIS_MANIFEST_FRAME_TYPE, GENESIS_MANIFEST_FREEZE_VERSION);
+    for field_id in 1_u16..=9_u16 {
+        without
+            .field_bytes(field_id, frame.required_field(field_id).unwrap().to_vec())
+            .unwrap();
+    }
+    assert!(decode_genesis_manifest(&without.finish().unwrap()).is_err());
+
+    for invalid_height in [vec![0; 8], vec![1]] {
+        let mut malformed: CanonicalStruct =
+            CanonicalStruct::new(GENESIS_MANIFEST_FRAME_TYPE, GENESIS_MANIFEST_FREEZE_VERSION);
+        for field_id in 1_u16..=9_u16 {
+            malformed
+                .field_bytes(field_id, frame.required_field(field_id).unwrap().to_vec())
+                .unwrap();
+        }
+        malformed.field_bytes(10, invalid_height).unwrap();
+        assert!(decode_genesis_manifest(&malformed.finish().unwrap()).is_err());
+    }
+    let mut zero: GenesisManifest = logical;
+    zero.minimum_freeze_block_height = 0;
+    resign_manifest(&mut zero);
+    let legacy: Vec<u8> = encode_genesis_manifest(&zero).unwrap();
+    assert_eq!(
+        decode_canonical_frame(&legacy).unwrap().version(),
+        GENESIS_MANIFEST_LOGICAL_VERSION
+    );
+    assert_eq!(decode_genesis_manifest(&legacy).unwrap(), zero);
+}
+
+#[test]
+fn historical_manifest_rejects_an_in_memory_freeze_height_without_changing_its_wire_shape() {
+    let (mut historical, _, _, _, _) = build_bonded_fixture();
+    let original: Vec<u8> = encode_genesis_manifest(&historical).unwrap();
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(&original).unwrap();
+    assert_eq!(frame.version(), GENESIS_MANIFEST_VERSION);
+    frame
+        .require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8])
+        .unwrap();
+    historical.minimum_freeze_block_height = 1;
+    assert!(encode_genesis_manifest(&historical).is_err());
+    assert!(genesis_manifest_signing_frame(&historical).is_err());
+}
+
 /// The two profiles have two disjoint canonical encodings and two disjoint
 /// signature domains, so neither manifest can be reinterpreted as the other.
 #[test]
@@ -653,6 +752,133 @@ fn the_two_manifest_profiles_do_not_share_bytes_or_a_signature_domain() {
     assert_ne!(
         genesis_manifest_signing_frame(&historical).unwrap(),
         genesis_manifest_signing_frame(&logical).unwrap()
+    );
+}
+
+#[test]
+fn legacy_manifest_field_sets_and_domains_are_exact_and_do_not_enable_freeze() {
+    let (historical, _, _, _, _) = build_bonded_fixture();
+    let logical: GenesisManifest = logical_bonded_manifest();
+    for (manifest, version, domain_label, last_field) in [
+        (&historical, 1_u16, "genesis-manifest-v1", 8_u16),
+        (&logical, 2_u16, "genesis-manifest-v2", 9_u16),
+    ] {
+        assert_eq!(manifest.minimum_freeze_block_height, 0);
+        assert_eq!(manifest.signature_message_type(), domain_label);
+        let bytes: Vec<u8> = encode_genesis_manifest(manifest).unwrap();
+        let decoded: CanonicalFrame<'_> = decode_canonical_frame(&bytes).unwrap();
+        assert_eq!(decoded.version(), version);
+        decoded
+            .require_only_fields(&(1_u16..=last_field).collect::<Vec<u16>>())
+            .unwrap();
+        // Independently reconstruct the original outer frame, with no new
+        // field or reinterpretation of either released version.
+        let mut exact: CanonicalStruct = CanonicalStruct::new(GENESIS_MANIFEST_FRAME_TYPE, version);
+        for field in 1_u16..=last_field {
+            exact
+                .field_bytes(field, decoded.required_field(field).unwrap())
+                .unwrap();
+        }
+        assert_eq!(bytes, exact.finish().unwrap());
+        assert_eq!(decode_genesis_manifest(&bytes).unwrap(), *manifest);
+    }
+}
+
+#[test]
+fn a_version_two_signature_never_authorizes_a_positive_version_three_schedule() {
+    let legacy: GenesisManifest = logical_bonded_manifest();
+    let freeze: GenesisManifest = freeze_bonded_manifest();
+    assert_eq!(freeze.encoding_version(), 3);
+    assert_eq!(freeze.signature_message_type(), "genesis-manifest-v3");
+    let verifier: Ed25519Verifier =
+        Ed25519Verifier::from_verifying_key_bytes(&freeze.genesis_authority).unwrap();
+    assert!(
+        !verifier
+            .verify_framed(
+                &genesis_manifest_signing_frame(&freeze).unwrap(),
+                &legacy.signature
+            )
+            .unwrap()
+    );
+    assert!(
+        !verifier
+            .verify_framed(
+                &genesis_manifest_signing_frame(&legacy).unwrap(),
+                &freeze.signature
+            )
+            .unwrap()
+    );
+}
+
+#[test]
+fn fresh_v3_profile_downgrade_and_missing_manifest_fail_on_resolve_and_reopen() {
+    let manifest: GenesisManifest = freeze_bonded_manifest();
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap();
+    let key: Vec<u8> = logical_profile_key(&chain()).unwrap();
+    let bytes: Vec<u8> = store
+        .get_versioned_durable(&context(1), domain(), &key)
+        .unwrap()
+        .value()
+        .unwrap()
+        .to_vec();
+    let mut record: LogicalProfileRecord =
+        crate::logical_generation::decode_logical_profile_record(&bytes).unwrap();
+    assert_eq!(decode_canonical_frame(&bytes).unwrap().version(), 2);
+    record.minimum_freeze_block_height = 0;
+    put_state(
+        &store,
+        &key,
+        encode_logical_profile_record(&record).unwrap(),
+    );
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    assert!(
+        crate::logical_generation::fence_commitment_profile(
+            &store,
+            &context(1),
+            domain(),
+            &chain(),
+            &mut reads
+        )
+        .is_err()
+    );
+    assert!(matches!(
+        install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10),
+        Err(GenesisError::TamperedInstalledRecord(
+            "logical commitment profile"
+        ))
+    ));
+    put_state(&store, &key, bytes);
+    let manifest_key: Vec<u8> = genesis_manifest_key(manifest.context()).unwrap();
+    let observed: VersionedStateValue = store
+        .get_versioned_durable(&context(1), domain(), &manifest_key)
+        .unwrap();
+    let deletion: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(manifest_key.clone(), observed.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(manifest_key, StateMutation::Delete).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&context(1), deletion),
+        DurableCommitOutcome::Committed
+    );
+    assert!(
+        crate::logical_generation::fence_commitment_profile(
+            &store,
+            &context(1),
+            domain(),
+            &chain(),
+            &mut BTreeMap::new()
+        )
+        .is_err()
     );
 }
 

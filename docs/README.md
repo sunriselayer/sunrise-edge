@@ -18,6 +18,7 @@ detailed design, operator guides, and specialist references live here.
 - [Developer product surfaces](architecture/product-surfaces.md)
 - [FastVote HTTP network](architecture/fastvote-network.md)
 - [Ordered network economics](architecture/ordered-economics.md)
+- [Ordered Freeze and immutable frontiers](architecture/frozen-frontier.md)
 - [Architecture decision records](architecture/decisions/README.md)
 
 ## Smart contracts
@@ -37,6 +38,7 @@ detailed design, operator guides, and specialist references live here.
 - [Closed PostgreSQL FastVote operator rehearsal](operations/fastvote-pg-rehearsal.md)
 - [Certified-only FastVote HTTP network and CLI quorum client](guides/fastvote-network.md)
 - [Ordered economics submission and signerless recovery](guides/ordered-economics.md)
+- [Ordered Freeze and resumable signed frontier export](guides/frozen-frontier.md)
 - [Embedded Cloudflare validator](guides/cloudflare-validator.md)
 - [Recover missed certified calls](guides/fastvote-catch-up.md)
 - [Certified PostgreSQL load and recovery measurements](operations/postgres-certified-load.md)

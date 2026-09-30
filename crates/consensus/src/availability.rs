@@ -63,6 +63,15 @@ use validator_set::ValidatorSet;
 /// operation; this parent module keeps the identity/vote/certificate codec
 /// itself free of any bundle dependency.
 pub mod bundle;
+pub mod frontier;
+pub use frontier::{
+    FrontierError, FrozenFrontierAccumulator, FrozenFrontierCertifier, FrozenFrontierIdentity,
+    FrozenFrontierPage, FrozenFrontierPageVerifier, FrozenFrontierVote,
+    MAX_FROZEN_FRONTIER_PAGE_BYTES, MAX_FROZEN_FRONTIER_PAGE_ENTRIES,
+    decode_frozen_frontier_identity, decode_frozen_frontier_page, decode_frozen_frontier_vote,
+    encode_frozen_frontier_identity, encode_frozen_frontier_page, encode_frozen_frontier_vote,
+    verify_frozen_frontier,
+};
 
 const AVAILABILITY_IDENTITY_TYPE_ID: u16 = 0xD030;
 const AVAILABILITY_VOTE_TYPE_ID: u16 = 0xD031;

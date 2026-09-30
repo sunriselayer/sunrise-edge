@@ -351,9 +351,26 @@ pub(super) fn configure_peer_transport(
 /// Builds one [`FastVoteEndpoint`] per configured peer and rejects a config
 /// that mixes loopback-plaintext and remote-TLS peers in one cohort, before
 /// any of them is dialed.
-fn build_endpoints(
+pub(super) fn build_endpoints(
     peers: &[PeerConfig],
     profile: CommitmentProfile,
+) -> Result<Vec<FastVoteEndpoint<CliTransport>>, CliError> {
+    build_endpoints_with_bound(peers, profile, None)
+}
+
+pub(super) fn build_frontier_endpoints(
+    peers: &[PeerConfig],
+) -> Result<Vec<FastVoteEndpoint<CliTransport>>, CliError> {
+    let maximum: NonZeroUsize =
+        NonZeroUsize::new(sunrise_edge_client::MAX_FRONTIER_PAGE_RESPONSE_BYTES)
+            .ok_or_else(|| invalid("zero frontier response bound"))?;
+    build_endpoints_with_bound(peers, CommitmentProfile::LogicalGenerationV2, Some(maximum))
+}
+
+fn build_endpoints_with_bound(
+    peers: &[PeerConfig],
+    profile: CommitmentProfile,
+    response_bound: Option<NonZeroUsize>,
 ) -> Result<Vec<FastVoteEndpoint<CliTransport>>, CliError> {
     let mut endpoints: Vec<FastVoteEndpoint<CliTransport>> = Vec::with_capacity(peers.len());
     let mut saw_loopback = false;
@@ -369,6 +386,9 @@ fn build_endpoints(
                 NonZeroUsize::new(MAX_ENCODED_BUNDLE_BYTES)
                     .ok_or_else(|| invalid("zero publication bundle bound"))?,
             );
+        }
+        if let Some(maximum) = response_bound {
+            transport = transport.with_max_response_body_bytes(maximum);
         }
         endpoints.push(FastVoteEndpoint {
             validator_id: peer.validator_id,

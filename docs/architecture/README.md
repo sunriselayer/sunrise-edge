@@ -71,6 +71,10 @@ roadmap describes a later target state.
   independent durable/blob/outbox reads and an optional backend-enforced
   snapshot-continuity contract for one quiet source; source-local storage
   metadata only, with no cut/import/readiness/Seal/activation claim.
+- [Ordered Freeze and immutable frontier extraction](frozen-frontier.md)
+  ([DR-0167](decisions/0167-frozen-frontier-extraction-boundary.md)):
+  the fresh signed-profile boundary for the next core/HTTP/SDK/CLI capability;
+  no local unfreeze, drain authority or new-epoch activation is implied.
 
 Production-oriented persistence requirements and the PostgreSQL mapping are
 separate operational references:

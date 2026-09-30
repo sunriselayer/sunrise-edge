@@ -545,7 +545,42 @@ pub(crate) fn install_logical_profile<S: StructuredDurableDomainStateStore>(
             manifest_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x5c; 32]),
             genesis_authority: sender(),
             genesis_floor: protocol_types::ExecutionGeneration::genesis_floor(),
+            minimum_freeze_block_height: 0,
         };
+    set_state(
+        store,
+        logical_generation::logical_profile_key(protocol().chain_id()).unwrap(),
+        StateMutation::Put(logical_generation::encode_logical_profile_record(&record).unwrap()),
+    );
+    record
+}
+
+/// A fresh Freeze-authorized test profile uses an independently signed v3
+/// manifest, not a mutable minimum knob. The paid fixture installs its own
+/// business state afterwards; complete manifest installation is exercised by
+/// ordered-economics and real compiled-CLI acceptance tests.
+pub(crate) fn install_freeze_profile<S: StructuredDurableDomainStateStore>(
+    store: &S,
+) -> logical_generation::LogicalProfileRecord {
+    let (mut manifest, _, _, _, _) =
+        genesis::tests::build_fixture_for_context(protocol(), resolver());
+    manifest.commitment_profile = logical_generation::CommitmentProfile::LogicalGenerationV2;
+    manifest.minimum_freeze_block_height = 1;
+    genesis::tests::resign_manifest(&mut manifest);
+    let record: logical_generation::LogicalProfileRecord =
+        logical_generation::LogicalProfileRecord {
+            context: protocol(),
+            profile: manifest.commitment_profile,
+            manifest_digest: genesis::genesis_manifest_commitment(&resolver(), &manifest).unwrap(),
+            genesis_authority: manifest.genesis_authority,
+            genesis_floor: protocol_types::ExecutionGeneration::genesis_floor(),
+            minimum_freeze_block_height: manifest.minimum_freeze_block_height,
+        };
+    set_state(
+        store,
+        genesis::genesis_manifest_key(&protocol()).unwrap(),
+        StateMutation::Put(genesis::encode_genesis_manifest(&manifest).unwrap()),
+    );
     set_state(
         store,
         logical_generation::logical_profile_key(protocol().chain_id()).unwrap(),

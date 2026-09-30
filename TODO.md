@@ -116,7 +116,7 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 | --- | --- | --- |
 | 1 | Generic certified network contract lifecycle | Merged as PR #228 on 2026-09-27 after the full repository gate, fresh exact-head Opus APPROVE and required CI: Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Independent ingress/security gates remain separate. |
 | 2 | Network economics and validator operations | Merged as PR #232 on 2026-09-27 with normal merge commit `86711be`, after fresh exact-head Opus APPROVE and the passing complete repository CI. Fixed-epoch four-namespace CLI evidence is implemented. Membership-dependent Deposit/Withdraw positives join delivery 3; economics/ingress security audits remain separate. |
-| 3 | Validator membership and epoch handoff | In progress under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Bounded portable storage and logical-generation admission merged as PR #237/#238; publication/availability-before-apply is the next independent capability. Freeze/control/cut/import, readiness/Seal/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation remain incomplete. |
+| 3 | Validator membership and epoch handoff | In progress under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Bounded portable storage, logical-generation admission and publication/availability-before-apply merged as PR #237/#238/#239; ordered Freeze and immutable frontier export are the next independent capability. DrainSet/drain/cut/import, readiness/Seal/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation remain incomplete. |
 | 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
 
 **PR slicing policy, 2026-09-30:** deliveries describe integrated acceptance
@@ -262,61 +262,66 @@ The detailed existing evidence and remaining criteria follow:
   remote feature branch removal. This checkbox is the bounded capability,
   not an integrated handoff gate.
 
-- [ ] **Publication-before-apply availability: independent functional capability**
+- [x] **Publication-before-apply availability: independent functional capability**
   ([DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md),
   [publication availability](docs/architecture/publication-availability.md)).
-  Draft PR #239 on `codex/availability-apply-admission`, based on merged PR #238,
-  extracts full certificate/intent/witness/artifact retention, exact ACK
-  replay, prepared source assembly, strict availability quorum and proof-gated
-  Logical FastVote apply/recovery. Includes bounded native HTTP, Rust SDK
-  and CLI proof persistence/saved replay, not just types or an internal gate.
+  PR #239 on `codex/availability-apply-admission` extracts complete
+  certificate/intent/witness/artifact retention, exact ACK replay, prepared
+  source assembly, strict availability quorum and proof-gated Logical
+  FastVote apply/recovery through native HTTP, Rust SDK and compiled CLI.
+  Prepared material, records and locks commit atomically; capacity is checked
+  before signing and exact replay verifies retained bytes without repair.
   Retention changes no original receipt, nonce, object or reservation;
-  application commits the proof with effects/fees/receipt/nonce, and completed
-  exact replay precedes fresh admission. Historical v1 bytes and behavior stay
-  separate. Parent initial focused checks pass on extracted code `5d74205`:
-  1,396 tests across consensus, node-core, node-wire, native-http, Rust SDK
-  and CLI (five existing node-core tests ignored). Parent-run actual
-  Logical-profile PostgreSQL/compiled-CLI acceptance now passes: paid Publish,
-  Instantiate, generic Call, all Standard Asset verbs and a charged trap;
-  corrupt and valid-but-wrong-request availability proofs refused with every
-  online replica unchanged; canonical saved-result byte equality and same-boot
-  and real host-restart replay without reapplication. A fourth host kept
-  offline through all 11 requests sources complete bundles from a restarted
-  peer, retains them without changing objects/publications/receipts/nonce,
-  and recovers each saved request without preparing or signing an execution
-  vote. All application and global authenticated history rows converge;
-  only the closed replica-local reservation/signing-safety families differ.
-  Workspace all-target/all-feature Clippy passes. On 2026-09-30 the complete
-  parent-run `./scripts/check-all.sh` passes on code head `e1d85a6`, including
-  live disposable PostgreSQL and required SIGKILL, backup/restore, disk/WAL-full,
-  connection-exhaustion and PgBouncer profiles, existing network/CLI E2Es,
-  independent vectors and Rust/WASM/all edge-adapter checks. The final
-  validation-record update `9cc1e1b` is TODO-only. A fresh read-only Opus
-  attempt on `e1d85a6` reported its weekly usage limit. Following the user's
-  explicit Codex substitution, an independent complete-diff review of
-  `9cc1e1b` found a P1 prepare/material atomicity blocker: a stale concurrent
-  prepare can overwrite the witness of an already exposed vote before its
-  own prepared/lock commit rejects. The separate material commit also leaves
-  rows on later signer/final-commit refusal. The corrected implementation
-  stages the complete material with prepared records/locks in one transaction,
-  checks aggregate capacity before Logical signing, refuses destination byte
-  mismatches and independently verifies retained material on exact replay.
-  Focused verification passes: 145 FastVote tests with three existing live
-  PostgreSQL/soak tests ignored, node-core all-target/all-feature Clippy,
-  formatting and diff checks. Regression evidence includes both deterministic
-  conflicting-prepare schedules, signer rejection, rejected and applied/unapplied
-  indeterminate commits, corrupt replay refusal and real SQLite reopen.
-  A new complete-diff Codex reviewer explicitly approved exact corrected
-  code `3f725e1` against merged #238. The additional hash/history and bundle
-  capacity hypotheses were withdrawn after verifying current fixed-epoch
-  reachability and actual WASM gas limits; no speculative fixes were retained.
-  GitHub run `36718236021` reached the final edge-adapter checks but was
-  canceled at the existing 35-minute job deadline, not a test assertion.
-  The CI job budget is raised to55minutes without skipping any gate or
-  changing operation deadlines. Complete local validation is still running;
-  the final CI/TODO-only update requires independent exact-head approval and
-  passing required CI before merge. Freeze/frontier/drain/cut/import/readiness/Seal/activation,
-  next-epoch provenance and complete Delivery 3 remain separate and unchecked.
+  application commits proof, effects, fees, receipt and nonce together.
+  Historical v1 behavior stays separate. Actual four-namespace PostgreSQL
+  acceptance covers the ordinary 11-request contract/Standard Asset/trap
+  lifecycle, invalid-proof no-ops, exact saved results, real host restart and
+  a fourth validator recovering every request without execution votes.
+  On 2026-09-30 the complete parent `./scripts/check-all.sh` passes on runtime
+  code `3f725e1`: all Rust targets, required live PostgreSQL fault profiles,
+  network/compiled-CLI E2Es, independent vectors and Rust/WASM/all adapters.
+  Final `da7409d` changes only CI/TODO metadata and has explicit independent
+  Codex APPROVE under the user's Opus-unavailable substitution. Run
+  `36718236021` exceeded the old 35-minute job budget at final adapter checks;
+  the replacement budget is 55 minutes without removing checks or changing
+  operation deadlines. Required CI run `36722741173` passed on exact approved
+  head `da7409d`; PR #239 merged normally as `c923d631` on 2026-09-30.
+  Parent verified clean `main == origin/main` and that the remote feature
+  branch was automatically removed. The local feature checkout is retained.
+  Freeze/frontier/drain/cut/import/readiness/Seal/activation, next-epoch
+  provenance and complete Delivery 3 remain separate and unchecked.
+
+- [ ] **Ordered Freeze and immutable frontier export: next independent functional capability**
+  ([DR-0167](docs/architecture/decisions/0167-frozen-frontier-extraction-boundary.md),
+  [architecture](docs/architecture/frozen-frontier.md),
+  [operator workflow](docs/guides/frozen-frontier.md)). On 2026-09-30 the
+  selected extraction is implemented on `codex/freeze-frontier-drain`:
+  explicit fresh signed-v3 minimum-height authority, proposal/vote and
+  committed advisory next-set eligibility, atomic admission closure,
+  Freeze/retention CAS fencing and same-event justified closure, complete
+  bounded full-publication verification, durable scan progress/final votes,
+  native HTTP/Rust SDK and compiled CLI immutable paged export/resume.
+  Keep existing v1/v2 bytes, installed-profile behavior and publication
+  addresses unchanged; unsupported foreign/corrupt history fails closed.
+  The acceptance fixture extends the ordinary real four-namespace contract
+  lifecycle with actual ordered Freeze, a retained full certificate never
+  applied locally and only one unaggregated ACK, partial cursor/host restart,
+  bounded CLI page resume, exact saved signature/page replay and no-overwrite
+  corruption refusals. Parent actual four-namespace PostgreSQL/compiled-CLI
+  acceptance passed, including fresh HTTP export after the second host restart
+  and full same-store revision/byte comparisons. Seven portable-artifact
+  verification tests and 34 raw TCP/TLS transport tests passed; the shared
+  parser now accepts legitimate bodyless HTTP 204 without weakening ordinary
+  exact-length framing. Existing test-store portable/outbox delegation now
+  preserves I/O counters and exact backend fence/domain/Changed results,
+  with three regressions and operator all-target/all-feature Clippy passing.
+  Merging requires the complete repository gate, independent exact-head
+  approval and CI. This checkbox covers
+  frozen progress/export only, not safe live rollover: fresh Logical
+  activation remains refused and there is no unfreeze. Quorum-retained
+  frontier union, ordered DrainSet and certificate-backed drain application
+  are next; cut/import, readiness, Seal, activation and integrated Delivery 3
+  acceptance remain unchecked. The aggregate PR #235 stays unmerged.
 
 - [x] **Portable storage implementation: bounded reads and backend-enforced snapshot continuity**
   ([DR-0166](docs/architecture/decisions/0166-portable-candidate-snapshot.md),

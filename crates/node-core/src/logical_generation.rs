@@ -70,6 +70,8 @@ mod tests;
 pub const LOGICAL_PROFILE_RECORD_FRAME_TYPE: u16 = 0x6480;
 /// Canonical version of [`LogicalProfileRecord`].
 pub const LOGICAL_PROFILE_RECORD_VERSION: u16 = 1;
+/// Fresh v3 genesis authorization, with a positive signed Freeze minimum.
+pub const LOGICAL_PROFILE_FREEZE_RECORD_VERSION: u16 = 2;
 
 /// Canonical frame type of an encoded [`LogicalProvenanceRecord`].
 pub const LOGICAL_PROVENANCE_RECORD_FRAME_TYPE: u16 = 0x6481;
@@ -174,6 +176,8 @@ pub struct LogicalProfileRecord {
     pub genesis_authority: [u8; 32],
     /// Explicit authenticated genesis generation floor.
     pub genesis_floor: ExecutionGeneration,
+    /// Signed-genesis-derived Freeze minimum, zero for the exact v1 profile.
+    pub minimum_freeze_block_height: u64,
 }
 
 const PROFILE_CONTEXT: &str = "invalid logical profile context";
@@ -201,6 +205,17 @@ fn profile_fields(frame: &CanonicalFrame<'_>) -> Result<LogicalProfileRecord, No
         manifest_digest: decode_digest32(frame.required_field(3)?)?,
         genesis_authority: authority,
         genesis_floor: ExecutionGeneration::new(frame.required_u64(5)?),
+        minimum_freeze_block_height: if frame.version() == LOGICAL_PROFILE_FREEZE_RECORD_VERSION {
+            let minimum: u64 = frame.required_u64(6)?;
+            if minimum == 0 {
+                return Err(invariant(
+                    "Freeze profile requires a positive minimum height",
+                ));
+            }
+            minimum
+        } else {
+            0
+        },
     })
 }
 
@@ -246,8 +261,12 @@ pub(crate) struct LogicalWrite {
 pub fn decode_logical_profile_record(bytes: &[u8]) -> Result<LogicalProfileRecord, NodeCoreError> {
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(LOGICAL_PROFILE_RECORD_FRAME_TYPE)?;
-    frame.require_version(LOGICAL_PROFILE_RECORD_VERSION)?;
-    frame.require_only_fields(&[1, 2, 3, 4, 5])?;
+    if frame.version() == LOGICAL_PROFILE_FREEZE_RECORD_VERSION {
+        frame.require_only_fields(&[1, 2, 3, 4, 5, 6])?;
+    } else {
+        frame.require_version(LOGICAL_PROFILE_RECORD_VERSION)?;
+        frame.require_only_fields(&[1, 2, 3, 4, 5])?;
+    }
     let record: LogicalProfileRecord = profile_fields(&frame)?;
     let canonical: bool = encode_logical_profile_record(&record)? == bytes;
     if canonical {
@@ -680,8 +699,11 @@ pub enum OrderedRowClass {
     /// Consensus state, applied height and retained candidate material needed
     /// to prove the committed prefix and safe inherited suffix.
     ConsensusControl,
-    /// Immutable original request header and completed outcome history.
+    /// Immutable request/outcome history and committed epoch-control markers.
     AuthenticatedOutcomeHistory,
+    /// CAS-fenced local progress and local final signatures. Neither is a
+    /// transferable business fact or an authority to activate the next epoch.
+    LocalProgress,
 }
 
 /// Closed classifier for the ordered-economics families defined by its engine.
@@ -690,7 +712,8 @@ pub fn classify_ordered_row(key: &[u8]) -> Option<OrderedRowClass> {
     let suffix: &[u8] =
         key.strip_prefix(ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX)?;
     const CONTROL: [&[u8]; 3] = [b"state/", b"applied-height/", b"candidate/"];
-    const HISTORY: [&[u8]; 2] = [b"header/", b"outcome/"];
+    const HISTORY: [&[u8]; 3] = [b"header/", b"outcome/", b"freeze/"];
+    const LOCAL_PROGRESS: [&[u8]; 2] = [b"frontier-progress/", b"frontier/"];
     if CONTROL
         .iter()
         .any(|prefix: &&[u8]| suffix.starts_with(prefix))
@@ -702,6 +725,12 @@ pub fn classify_ordered_row(key: &[u8]) -> Option<OrderedRowClass> {
         .any(|prefix: &&[u8]| suffix.starts_with(prefix))
     {
         return Some(OrderedRowClass::AuthenticatedOutcomeHistory);
+    }
+    if LOCAL_PROGRESS
+        .iter()
+        .any(|prefix: &&[u8]| suffix.starts_with(prefix))
+    {
+        return Some(OrderedRowClass::LocalProgress);
     }
     None
 }
@@ -1785,6 +1814,7 @@ pub(crate) fn fence_commitment_profile<S: StructuredDurableDomainStateStore>(
     }
     if let Some(bytes) = seen.value() {
         let record: LogicalProfileRecord = decode_installed_profile(bytes, chain)?;
+        verify_installed_genesis_binding(store, context, domain, &record, bytes)?;
         reads.insert(key, seen.revision());
         return Ok(InstalledCommitmentProfile::Logical(record));
     }
@@ -1792,6 +1822,73 @@ pub(crate) fn fence_commitment_profile<S: StructuredDurableDomainStateStore>(
         return Ok(InstalledCommitmentProfile::Historical);
     }
     Err(provenance_error("logical profile row was removed"))
+}
+
+/// Reconciles a real installed profile with its immutable signed genesis.
+/// Legacy in-process fixtures may carry a v1 profile without a manifest;
+/// a Freeze-authorized profile never permits that absence or a tombstone.
+fn verify_installed_genesis_binding<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    record: &LogicalProfileRecord,
+    profile_bytes: &[u8],
+) -> Result<(), NodeCoreError> {
+    let key: Vec<u8> = crate::genesis::genesis_manifest_key(&record.context)
+        .map_err(|_| provenance_error("logical profile genesis key"))?;
+    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let Some(bytes) = observed.value() else {
+        if record.minimum_freeze_block_height == 0 && observed.revision() == StateRevision::INITIAL
+        {
+            return Ok(());
+        }
+        return Err(provenance_error(
+            "logical profile signed genesis is missing",
+        ));
+    };
+    let manifest: crate::genesis::GenesisManifest = crate::genesis::decode_genesis_manifest(bytes)
+        .map_err(|_| provenance_error("logical profile signed genesis is malformed"))?;
+    if manifest.context() != &record.context
+        || manifest.commitment_profile != record.profile
+        || manifest.genesis_authority != record.genesis_authority
+        || !hashing::verify_digest(
+            &record.manifest_digest,
+            HashPurpose::ProtocolConfig,
+            record.context.protocol_version(),
+            record.context.chain_id(),
+            bytes,
+        )?
+    {
+        return Err(provenance_error(
+            "logical profile signed genesis binding differs",
+        ));
+    }
+    let signed: Vec<u8> = crate::genesis::genesis_manifest_signing_frame(&manifest)
+        .map_err(|_| provenance_error("logical profile genesis signing frame"))?;
+    let verifier: crypto::Ed25519Verifier =
+        crypto::Ed25519Verifier::from_verifying_key_bytes(&record.genesis_authority)
+            .map_err(|_| provenance_error("logical profile genesis authority"))?;
+    if !crypto::SignatureVerifier::verify_framed(&verifier, &signed, &manifest.signature)
+        .map_err(|_| provenance_error("logical profile genesis signature"))?
+    {
+        return Err(provenance_error(
+            "logical profile genesis signature differs",
+        ));
+    }
+    let expected: LogicalProfileRecord = LogicalProfileRecord {
+        context: record.context.clone(),
+        profile: manifest.commitment_profile,
+        manifest_digest: record.manifest_digest,
+        genesis_authority: manifest.genesis_authority,
+        genesis_floor: ExecutionGeneration::genesis_floor(),
+        minimum_freeze_block_height: manifest.minimum_freeze_block_height,
+    };
+    if encode_logical_profile_record(&expected)? != profile_bytes {
+        return Err(provenance_error(
+            "logical profile bytes differ from signed genesis",
+        ));
+    }
+    Ok(())
 }
 
 fn fence_read<S: StructuredDurableDomainStateStore>(
@@ -1814,16 +1911,26 @@ fn fence_read<S: StructuredDurableDomainStateStore>(
 pub fn encode_logical_profile_record(
     record: &LogicalProfileRecord,
 ) -> Result<Vec<u8>, NodeCoreError> {
+    if record.minimum_freeze_block_height != 0 && !record.profile.is_logical() {
+        return Err(invariant("Freeze profile requires LogicalGenerationV2"));
+    }
     let context: Vec<u8> = encode_publication_context(&record.context)
         .map_err(|_| NodeCoreError::PersistenceInvariant(PROFILE_CONTEXT))?;
     let mut frame: CanonicalStruct = CanonicalStruct::new(
         LOGICAL_PROFILE_RECORD_FRAME_TYPE,
-        LOGICAL_PROFILE_RECORD_VERSION,
+        if record.minimum_freeze_block_height == 0 {
+            LOGICAL_PROFILE_RECORD_VERSION
+        } else {
+            LOGICAL_PROFILE_FREEZE_RECORD_VERSION
+        },
     );
     frame.field_bytes(1, context)?;
     frame.field_u16(2, record.profile.to_wire())?;
     frame.field_bytes(3, encode_digest32(&record.manifest_digest)?)?;
     frame.field_bytes(4, record.genesis_authority.to_vec())?;
     frame.field_u64(5, record.genesis_floor.get())?;
+    if record.minimum_freeze_block_height != 0 {
+        frame.field_u64(6, record.minimum_freeze_block_height)?;
+    }
     Ok(frame.finish()?)
 }

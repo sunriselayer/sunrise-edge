@@ -979,13 +979,11 @@ fn authenticate_submit_transaction_event_happy_path_authenticates_transaction() 
     assert_eq!(resolved.domain(), domain(0xD7));
     assert_eq!(machine.calls.load(Ordering::SeqCst), 1);
     // Sender nonce, committed epoch, fast-path nonce lock, the machine's one
-    // application state key, and the DR-0154 commitment-profile row. The last
-    // one is read exactly once per transition: this store's signed binding
-    // decides both whether the physical creation-checkpoint minimum still
-    // governs and whether an authenticated generation must be derived, and it
-    // is found absent here, so a historical store adds this single read and
-    // nothing else -- no extra assertion, no provenance write.
-    assert_eq!(store.state_reads.load(Ordering::SeqCst), 5);
+    // application state key, and two observations of the profile binding:
+    // application derivation and Freeze authorization. This historical
+    // fixture has no profile row, so neither observation adds a CAS assertion
+    // or provenance mutation, and no admission-closure row is read at all.
+    assert_eq!(store.state_reads.load(Ordering::SeqCst), 6);
     let commits = store.commits.lock().unwrap();
     assert_eq!(commits.len(), 1);
     let state = commits[0].state().unwrap();
