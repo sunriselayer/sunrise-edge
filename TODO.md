@@ -206,7 +206,7 @@ The detailed existing evidence and remaining criteria follow:
   collections (state, receipts, object heads, object versions) and bounded
   content-addressed blob range reads are implemented for memory, SQL-durable
   (SQLite/DO) and PostgreSQL on branch `codex/portable-store-snapshot`,
-  which bases directly on `origin/main`. PR #235 is preserved as the
+  in PR #237, which bases directly on `origin/main`. PR #235 is preserved as the
   integration source this work originated from, not a required merge
   target: an independently complete, feature-sized PR may merge to `main`
   on its own after the full repository gate, exact-head Opus review and CI.
@@ -220,14 +220,20 @@ The detailed existing evidence and remaining criteria follow:
   backend read snapshot. This is source-local storage-consistency evidence
   only, not authenticated cut/import/readiness/Seal/activation, and does not
   by itself close Delivery 3's "complete bounded portable enumeration"
-  criterion above. This slice also fixed a stale PostgreSQL
-  backup-restore-rehearsal test expectation (a successful outbox claim,
+  criterion above. This slice also fixed stale PostgreSQL
+  backup/restore and four resource-fault fixture expectations (a successful outbox claim,
   acknowledgement and fresh structured commit each advance the mutation
   sequence by one, not one total across all three). Parent verified the four
   runtime libraries build independently of the integration branch, and ran
   the real disposable PostgreSQL backup/restore rehearsal with the required
-  pinned-image configuration. The complete repository gate, exact-head Opus
-  review and required CI are separate pending gates until recorded below.
+  pinned-image configuration, plus required-image connection-exhaustion,
+  disk-full, WAL-full and PgBouncer rehearsals. Additional SQLite and
+  PostgreSQL expiry/reclaim tests distinguish actual committed mutation from
+  no-write claim replay; SQLite missing-source-column refusal also preserves
+  the old metadata shape. Opus approved the complete original extraction
+  at `c130cde` with no blockers, conditional on the full gate and CI. The
+  complete repository gate, fresh final-head review and required CI remain
+  separate pending gates until verified; this is not Delivery 3 completion.
 
 - [x] **Embedded DO contract host: bounded local implementation**
   ([DR-0152](docs/architecture/decisions/0152-durable-object-contract-host.md)).
