@@ -450,6 +450,123 @@ fn sqlite_portable_snapshot_refuses_old_metadata_shape_without_rewriting_it() {
     assert_eq!(column_count, 0);
 }
 
+#[test]
+fn sqlite_portable_snapshot_refuses_metadata_missing_source_instance_id_column() {
+    let db: TestDatabase = TestDatabase::new();
+    let ns: SqliteNamespace = namespace("snapshot-missing-source-instance", 0xe7, 0xe8);
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+    drop(SqliteDurableStore::open(&db.path, ns.clone(), fence).unwrap());
+    let admin: Connection = Connection::open(&db.path).unwrap();
+    admin
+        .execute(
+            "ALTER TABLE durable_metadata DROP COLUMN source_instance_id",
+            [],
+        )
+        .unwrap();
+    let identity_before: Vec<u8> = admin
+        .query_row("SELECT schema_identity FROM durable_metadata", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(SqliteDurableStore::open_existing(&db.path, ns.clone()).is_err());
+    assert!(SqliteDurableStore::open(&db.path, ns, fence).is_err());
+    let column_count: i64 = admin
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('durable_metadata') WHERE name = 'source_instance_id'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(column_count, 0);
+    let identity_after: Vec<u8> = admin
+        .query_row("SELECT schema_identity FROM durable_metadata", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(identity_after, identity_before);
+}
+
+/// Exact live-lease replay of `claim_due_outbox` leaves the token unchanged.
+/// Reusing the same lease id once it has expired is refused without
+/// mutating any row here (this backend rolls that attempt back), so it is
+/// also a no-write retry from the token's perspective. Only a genuine
+/// reclaim under a *new* lease id on the now-expired delivery — which marks
+/// the stale attempt expired and installs the fresh claim — is a real write
+/// that advances the sequence and invalidates the earlier token. Mirrors
+/// `runtime::portable::tests::snapshot_tracks_claim_ack_and_expiration_and_refuses_completed_nonempty_outbox`,
+/// except that Memory backend additionally records the expiry inline even
+/// while rejecting a same-lease reuse; SQLite (via `runtime-sql-durable`)
+/// does not, so that specific rejection does not invalidate a token here.
+#[test]
+fn sqlite_portable_snapshot_tracks_outbox_claim_replay_and_expiry_reclaim() {
+    let db: TestDatabase = TestDatabase::new();
+    let ns: SqliteNamespace = namespace("snapshot-claim-expiry", 0xe5, 0xe6);
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
+    let store: SqliteDurableStore = SqliteDurableStore::open(&db.path, ns.clone(), fence).unwrap();
+    let live: DurableOperationContext = context(fence);
+    let request_id: OutboxRequestId = OutboxRequestId::new([0x78; 32]).unwrap();
+    commit_outbox_batch(&store, &live, ns.domain(), request_id);
+
+    let before: PortableSnapshotToken = store.begin_portable_snapshot(&live, ns.domain()).unwrap();
+    let lease_a: DurableOutboxLeaseId = DurableOutboxLeaseId::new([0x79; 32]).unwrap();
+    let claim_a: DueOutboxClaimRequest =
+        DueOutboxClaimRequest::new(ns.domain(), 0, lease_a, 1_000).unwrap();
+    assert!(matches!(
+        store.claim_due_outbox(&live, claim_a),
+        DurableOutboxClaimOutcome::Claimed(_)
+    ));
+    let claimed: PortableSnapshotToken = store.begin_portable_snapshot(&live, ns.domain()).unwrap();
+    assert_eq!(
+        claimed.mutation_sequence(),
+        before.mutation_sequence().checked_add(1).unwrap()
+    );
+
+    // Exact live-lease replay: identical request reads the retained claim
+    // again without any further write.
+    assert!(matches!(
+        store.claim_due_outbox(&live, claim_a),
+        DurableOutboxClaimOutcome::Claimed(_)
+    ));
+    assert_eq!(
+        claimed,
+        store.begin_portable_snapshot(&live, ns.domain()).unwrap()
+    );
+
+    // Reusing lease A once its window has elapsed is refused; no row is
+    // mutated for this rejection, so the token also survives this retry.
+    let reused_expired: DueOutboxClaimRequest =
+        DueOutboxClaimRequest::new(ns.domain(), 1_000, lease_a, 2_000).unwrap();
+    assert!(matches!(
+        store.claim_due_outbox(&live, reused_expired),
+        DurableOutboxClaimOutcome::Rejected(DurableOutboxClaimRejection::LeaseIdReuse)
+    ));
+    assert_eq!(
+        claimed,
+        store.begin_portable_snapshot(&live, ns.domain()).unwrap()
+    );
+
+    // A genuine reclaim under a new lease id on the now-expired delivery
+    // marks the stale attempt expired and installs the new claim: the real
+    // write, which advances the sequence and invalidates the prior token.
+    let lease_b: DurableOutboxLeaseId = DurableOutboxLeaseId::new([0x7a; 32]).unwrap();
+    let reclaim: DueOutboxClaimRequest =
+        DueOutboxClaimRequest::new(ns.domain(), 1_000, lease_b, 2_000).unwrap();
+    assert!(matches!(
+        store.claim_due_outbox(&live, reclaim),
+        DurableOutboxClaimOutcome::Claimed(_)
+    ));
+    let reclaimed: PortableSnapshotToken =
+        store.begin_portable_snapshot(&live, ns.domain()).unwrap();
+    assert_eq!(
+        reclaimed.mutation_sequence(),
+        claimed.mutation_sequence().checked_add(1).unwrap()
+    );
+    assert!(matches!(
+        store.check_portable_outbox_empty_at(&live, ns.domain(), &claimed),
+        Err(PortableSnapshotError::Changed)
+    ));
+}
+
 /// Two independently bootstrapped SQLite files that happen to share every
 /// logical identity field (chain, validator, domain) and, after a fresh
 /// bootstrap, the very same writer fence and mutation sequence (both start
