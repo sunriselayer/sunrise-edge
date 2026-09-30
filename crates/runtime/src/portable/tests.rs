@@ -1,5 +1,8 @@
 use super::*;
-use crate::{StorageCorrelationId, StorageDeadline, StoredStateValue, WriterFenceGeneration};
+use crate::{
+    DurableDomainStateStore, IndexedOutboxRepository, StorageCorrelationId, StorageDeadline,
+    StoredStateValue, WriterFenceGeneration,
+};
 use protocol_types::HashAlgorithmId;
 
 fn domain() -> AtomicityDomainId {
@@ -63,6 +66,292 @@ fn portable_repository_shared_memory_conformance() {
     conformance::verify(&store, &context(), domain(), &chain);
     conformance::assert_changed(&store, &context(), domain());
     conformance::verify(&store, &context(), domain(), &chain);
+}
+
+#[test]
+fn snapshot_shared_memory_conformance_detects_new_keys_between_pages() {
+    let store: MemoryDurableStateStore = store();
+    let chain: protocol_types::ChainId = protocol_types::ChainId::new("snapshot-memory").unwrap();
+    conformance::seed(&store, &context(), domain(), &chain);
+    conformance::verify_snapshot(&store, &context(), domain());
+    conformance::assert_snapshot_changed(&store, &context(), domain());
+}
+
+fn write_snapshot_state(
+    store: &MemoryDurableStateStore,
+    key: &[u8],
+    revision: StateRevision,
+) -> crate::DurableCommitOutcome {
+    let transaction: crate::AtomicStateTransaction = crate::AtomicStateTransaction::new(
+        domain(),
+        crate::AtomicStateReadSet::new(vec![
+            crate::StateReadAssertion::new(key.to_vec(), revision).unwrap(),
+        ])
+        .unwrap(),
+        crate::AtomicStateMutationSet::new(vec![
+            crate::StateMutationEntry::new(key.to_vec(), crate::StateMutation::Put(vec![2]))
+                .unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    store.commit_durable(&context(), transaction)
+}
+
+#[test]
+fn snapshot_rejects_other_instance_domain_writer_deadline_and_sequence() {
+    let source: MemoryDurableStateStore = store();
+    let token: PortableSnapshotToken = source
+        .begin_portable_snapshot(&context(), domain())
+        .unwrap();
+    let request: DurableRecordScan = scan(DurableCollection::State, None, 1);
+    assert!(matches!(
+        store().scan_portable_keys_at(&context(), domain(), &token, &request),
+        Err(PortableSnapshotError::Changed)
+    ));
+    let foreign: AtomicityDomainId = AtomicityDomainId::new([2; 32]).unwrap();
+    assert!(matches!(
+        source.scan_portable_keys_at(&context(), foreign, &token, &request),
+        Err(PortableSnapshotError::Read(_))
+    ));
+    let forged: PortableSnapshotToken = PortableSnapshotToken::new(
+        token.namespace().to_vec(),
+        foreign,
+        token.writer_fence(),
+        token.mutation_sequence(),
+    )
+    .unwrap();
+    assert!(matches!(
+        source.scan_portable_keys_at(&context(), domain(), &forged, &request),
+        Err(PortableSnapshotError::Changed)
+    ));
+    source.set_active_writer_fence(WriterFenceGeneration::new(2).unwrap());
+    assert!(matches!(
+        source.begin_portable_snapshot(&context(), domain()),
+        Err(PortableSnapshotError::Read(
+            DurableReadError::WriterFenced { .. }
+        ))
+    ));
+    let new_context: DurableOperationContext = DurableOperationContext::new(
+        WriterFenceGeneration::new(2).unwrap(),
+        context().deadline(),
+        context().correlation_id(),
+    );
+    assert!(matches!(
+        source.scan_portable_keys_at(&new_context, domain(), &token, &request),
+        Err(PortableSnapshotError::Changed)
+    ));
+    source.set_time(100);
+    assert!(matches!(
+        source.begin_portable_snapshot(&new_context, domain()),
+        Err(PortableSnapshotError::Read(
+            DurableReadError::DeadlineExceeded
+        ))
+    ));
+}
+
+#[test]
+fn snapshot_conflict_and_overflow_leave_sequence_and_business_rows_unchanged() {
+    let source: MemoryDurableStateStore = store();
+    assert!(matches!(
+        write_snapshot_state(&source, b"key", StateRevision::INITIAL),
+        crate::DurableCommitOutcome::Committed
+    ));
+    let token: PortableSnapshotToken = source
+        .begin_portable_snapshot(&context(), domain())
+        .unwrap();
+    assert!(matches!(
+        write_snapshot_state(&source, b"key", StateRevision::INITIAL),
+        crate::DurableCommitOutcome::Rejected(crate::DurableCommitRejection::Conflict { .. })
+    ));
+    assert_eq!(
+        token,
+        source
+            .begin_portable_snapshot(&context(), domain())
+            .unwrap()
+    );
+    source
+        .inner
+        .write()
+        .unwrap()
+        .mutation_sequences
+        .insert(*domain().as_bytes(), u64::MAX);
+    let before: PortableSnapshotToken = source
+        .begin_portable_snapshot(&context(), domain())
+        .unwrap();
+    assert!(matches!(
+        write_snapshot_state(&source, b"new", StateRevision::INITIAL),
+        crate::DurableCommitOutcome::Rejected(
+            crate::DurableCommitRejection::CommitSequenceOverflow
+        )
+    ));
+    assert_eq!(
+        before,
+        source
+            .begin_portable_snapshot(&context(), domain())
+            .unwrap()
+    );
+    assert!(
+        source
+            .get_versioned_durable(&context(), domain(), b"new")
+            .unwrap()
+            .value()
+            .is_none()
+    );
+}
+
+fn snapshot_outbox_invocation(
+    request_byte: u8,
+    nonempty: bool,
+) -> crate::DurableInvocationTransaction {
+    let request: DurableRequestId = DurableRequestId::new([request_byte; 32]).unwrap();
+    let digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [3; 32]);
+    let messages: Vec<crate::DurableOutboxMessage> = if nonempty {
+        vec![crate::DurableOutboxMessage::new(digest, vec![4]).unwrap()]
+    } else {
+        Vec::new()
+    };
+    crate::DurableInvocationTransaction::new(
+        domain(),
+        None,
+        crate::DurableObjectChanges::empty(),
+        crate::DurableRequestReceipt::new(request, digest, vec![5]).unwrap(),
+        Some(crate::DurableOutboxBatch::new(request, digest, messages).unwrap()),
+    )
+    .unwrap()
+}
+
+#[test]
+fn snapshot_receipt_only_and_empty_outbox_commits_advance_atomically() {
+    let source: MemoryDurableStateStore = store();
+    let before: PortableSnapshotToken = source
+        .begin_portable_snapshot(&context(), domain())
+        .unwrap();
+    let invocation: crate::DurableInvocationTransaction = snapshot_outbox_invocation(8, false);
+    assert!(matches!(
+        source.commit_invocation(&context(), invocation.clone()),
+        crate::DurableCommitOutcome::Committed
+    ));
+    let after: PortableSnapshotToken = source
+        .begin_portable_snapshot(&context(), domain())
+        .unwrap();
+    assert_eq!(after.mutation_sequence(), before.mutation_sequence() + 1);
+    source
+        .check_portable_outbox_empty_at(&context(), domain(), &after)
+        .unwrap();
+    assert!(matches!(
+        source.commit_invocation(&context(), invocation),
+        crate::DurableCommitOutcome::Rejected(
+            crate::DurableCommitRejection::RequestAlreadyCommitted
+        )
+    ));
+    assert_eq!(
+        after,
+        source
+            .begin_portable_snapshot(&context(), domain())
+            .unwrap()
+    );
+}
+
+#[test]
+fn snapshot_tracks_claim_ack_and_expiration_and_refuses_completed_nonempty_outbox() {
+    let source: MemoryDurableStateStore = store();
+    assert!(matches!(
+        source.commit_invocation(&context(), snapshot_outbox_invocation(9, true)),
+        crate::DurableCommitOutcome::Committed
+    ));
+    let before: PortableSnapshotToken = source
+        .begin_portable_snapshot(&context(), domain())
+        .unwrap();
+    assert!(matches!(
+        source.check_portable_outbox_empty_at(&context(), domain(), &before),
+        Err(PortableSnapshotError::NonemptyOutbox)
+    ));
+    let lease: crate::DurableOutboxLeaseId = crate::DurableOutboxLeaseId::new([1; 32]).unwrap();
+    let claim: crate::DueOutboxClaimRequest =
+        crate::DueOutboxClaimRequest::new(domain(), 0, lease, 10).unwrap();
+    assert!(matches!(
+        source.claim_due_outbox(&context(), claim.clone()),
+        crate::DurableOutboxClaimOutcome::Claimed(_)
+    ));
+    let claimed: PortableSnapshotToken = source
+        .begin_portable_snapshot(&context(), domain())
+        .unwrap();
+    assert_eq!(claimed.mutation_sequence(), before.mutation_sequence() + 1);
+    // Exact live-lease replay reads retained bytes without advancing sequence.
+    assert!(matches!(
+        source.claim_due_outbox(&context(), claim),
+        crate::DurableOutboxClaimOutcome::Claimed(_)
+    ));
+    assert_eq!(
+        claimed,
+        source
+            .begin_portable_snapshot(&context(), domain())
+            .unwrap()
+    );
+    // Existing lease expiry reconciliation mutates attempt/delivery rows even
+    // when it refuses lease reuse. That mutation must also invalidate a token.
+    let expired: crate::DueOutboxClaimRequest =
+        crate::DueOutboxClaimRequest::new(domain(), 10, lease, 20).unwrap();
+    assert!(matches!(
+        source.claim_due_outbox(&context(), expired),
+        crate::DurableOutboxClaimOutcome::Rejected(
+            crate::DurableOutboxClaimRejection::LeaseIdReuse
+        )
+    ));
+    let expiry: PortableSnapshotToken = source
+        .begin_portable_snapshot(&context(), domain())
+        .unwrap();
+    assert_eq!(expiry.mutation_sequence(), claimed.mutation_sequence() + 1);
+    let next_lease: crate::DurableOutboxLeaseId =
+        crate::DurableOutboxLeaseId::new([2; 32]).unwrap();
+    let exact: crate::RequestOutboxClaimRequest = crate::RequestOutboxClaimRequest::new(
+        domain(),
+        crate::OutboxRequestId::new([9; 32]).unwrap(),
+        10,
+        next_lease,
+        20,
+    )
+    .unwrap();
+    assert!(matches!(
+        source.claim_request_outbox(&context(), exact),
+        crate::DurableOutboxClaimOutcome::Claimed(_)
+    ));
+    let acknowledged: crate::DurableOutboxAcknowledgement =
+        crate::DurableOutboxAcknowledgement::new(
+            domain(),
+            crate::OutboxRequestId::new([9; 32]).unwrap(),
+            0,
+            next_lease,
+        );
+    let before_ack: PortableSnapshotToken = source
+        .begin_portable_snapshot(&context(), domain())
+        .unwrap();
+    assert!(matches!(
+        source.acknowledge_outbox(&context(), acknowledged.clone()),
+        crate::DurableOutboxAcknowledgementOutcome::Acknowledged
+    ));
+    let after_ack: PortableSnapshotToken = source
+        .begin_portable_snapshot(&context(), domain())
+        .unwrap();
+    assert_eq!(
+        after_ack.mutation_sequence(),
+        before_ack.mutation_sequence() + 1
+    );
+    assert!(matches!(
+        source.acknowledge_outbox(&context(), acknowledged),
+        crate::DurableOutboxAcknowledgementOutcome::Acknowledged
+    ));
+    assert_eq!(
+        after_ack,
+        source
+            .begin_portable_snapshot(&context(), domain())
+            .unwrap()
+    );
+    assert!(matches!(
+        source.check_portable_outbox_empty_at(&context(), domain(), &after_ack),
+        Err(PortableSnapshotError::NonemptyOutbox)
+    ));
 }
 
 #[test]

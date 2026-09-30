@@ -12,6 +12,143 @@ use crate::{
 use objects::{Address, Object, Owner};
 use protocol_types::{ChainId, HashAlgorithmId, ProtocolVersion};
 
+/// Verifies that every collection uses one backend-enforced source token.
+/// Reuse on independently bootstrapped memory/SQLite/PostgreSQL namespaces.
+pub fn verify_snapshot<S: DurablePortableSnapshotRepository>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+) -> PortableSnapshotToken {
+    let token: PortableSnapshotToken = store.begin_portable_snapshot(context, domain).unwrap();
+    store
+        .check_portable_outbox_empty_at(context, domain, &token)
+        .unwrap();
+    for collection in [
+        DurableCollection::State,
+        DurableCollection::Receipts,
+        DurableCollection::ObjectHeads,
+        DurableCollection::ObjectVersions,
+    ] {
+        let mut after: Option<DurableRecordKey> = None;
+        loop {
+            let scan: DurableRecordScan =
+                DurableRecordScan::new(collection, after.clone(), NonZeroUsize::new(2).unwrap())
+                    .unwrap();
+            let page: DurableRecordPage = store
+                .scan_portable_keys_at(context, domain, &token, &scan)
+                .unwrap();
+            assert_eq!(
+                page,
+                store.scan_portable_keys(context, domain, &scan).unwrap()
+            );
+            for key in page.keys() {
+                let descriptor: DurableRecordDescriptor = store
+                    .read_portable_descriptor_at(context, domain, &token, key)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    Some(descriptor.clone()),
+                    store
+                        .read_portable_descriptor(context, domain, key)
+                        .unwrap()
+                );
+                if let Some(length) = descriptor.payload_length() {
+                    // Both ends of a large legal value are guarded. Existing
+                    // conformance::verify covers all intervening payloads.
+                    for offset in [0, length.saturating_sub(1)] {
+                        let request: DurableRecordChunkRequest = DurableRecordChunkRequest::new(
+                            descriptor.clone(),
+                            offset,
+                            NonZeroUsize::new(256).unwrap(),
+                        )
+                        .unwrap();
+                        assert_eq!(
+                            store
+                                .read_portable_chunk_at(context, domain, &token, &request)
+                                .unwrap(),
+                            store
+                                .read_portable_chunk(context, domain, &request)
+                                .unwrap()
+                        );
+                    }
+                }
+            }
+            match page.continuation() {
+                Some(next) => after = Some(next.clone()),
+                None => break,
+            }
+        }
+    }
+    assert_eq!(
+        token,
+        store.begin_portable_snapshot(context, domain).unwrap()
+    );
+    token
+}
+
+/// A previously unseen key invalidates even reads of an unchanged row. This
+/// catches omission between pages, which per-row descriptor checks cannot.
+pub fn assert_snapshot_changed<S: DurablePortableSnapshotRepository>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+) {
+    let token: PortableSnapshotToken = store.begin_portable_snapshot(context, domain).unwrap();
+    let key: DurableRecordKey = DurableRecordKey::State(b"a-large".to_vec());
+    let descriptor: DurableRecordDescriptor = store
+        .read_portable_descriptor_at(context, domain, &token, &key)
+        .unwrap()
+        .unwrap();
+    let chunk: DurableRecordChunkRequest =
+        DurableRecordChunkRequest::new(descriptor, 0, NonZeroUsize::new(256).unwrap()).unwrap();
+    let new_key: Vec<u8> = b"z-snapshot-new".to_vec();
+    let write: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain,
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(new_key.clone(), StateRevision::INITIAL).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(new_key, StateMutation::Put(vec![1])).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        store.commit_durable(context, write),
+        DurableCommitOutcome::Committed
+    ));
+    let scan: DurableRecordScan = DurableRecordScan::new(
+        DurableCollection::State,
+        None,
+        NonZeroUsize::new(2).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        store.scan_portable_keys_at(context, domain, &token, &scan),
+        Err(PortableSnapshotError::Changed)
+    ));
+    assert!(matches!(
+        store.read_portable_descriptor_at(context, domain, &token, &key),
+        Err(PortableSnapshotError::Changed)
+    ));
+    assert!(matches!(
+        store.read_portable_chunk_at(context, domain, &token, &chunk),
+        Err(PortableSnapshotError::Changed)
+    ));
+    assert!(matches!(
+        store.check_portable_outbox_empty_at(context, domain, &token),
+        Err(PortableSnapshotError::Changed)
+    ));
+    assert!(
+        store
+            .begin_portable_snapshot(context, domain)
+            .unwrap()
+            .mutation_sequence()
+            > token.mutation_sequence()
+    );
+}
+
 fn digest(byte: u8) -> Digest32 {
     Digest32::new(HashAlgorithmId::Sha2_256, [byte; 32])
 }

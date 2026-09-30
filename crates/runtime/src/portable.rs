@@ -124,7 +124,7 @@ pub enum PortableSnapshotError {
 impl fmt::Display for PortableSnapshotError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Read(error) => error.fmt(f),
+            Self::Read(error) => write!(f, "portable storage read refused: {error:?}"),
             Self::Changed => f.write_str("portable source snapshot changed"),
             Self::NonemptyOutbox => f.write_str("portable source has a nonempty outbox"),
         }
