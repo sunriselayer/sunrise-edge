@@ -157,6 +157,14 @@ or an implemented next-set activation. The next standalone feature is
 publication-before-apply availability on `codex/availability-apply-admission`;
 it has its own retained material, quorum/apply, HTTP/SDK/CLI and validation
 boundary, and does not merge this whole aggregate or activate handoff.
+It is now Draft PR #239, with independent code head `e1d85a6` and parent-run
+four-host Logical PostgreSQL/compiled-CLI lifecycle acceptance: all 11
+requests, execution-free retention on a missed-prepare fourth validator,
+source material fetched after real host restart, canonical results and exact
+global history convergence. Its complete required local gate and CI are being
+run separately. A fresh exact-head Opus attempt reported the weekly usage
+limit; the extraction remains unmerged until actual approval and green CI.
+These facts do not validate this aggregate's later Freeze/cut/activation code.
 
 PostgreSQL remains the existing tested profile for delivery 1, not a mandatory
 protocol database. Lightweight authoritative profiles (Cloudflare SQLite-backed
