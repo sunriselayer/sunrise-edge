@@ -219,9 +219,10 @@ pub fn decode_drain_set_intent(bytes: &[u8]) -> Result<DrainSetIntent, NodeCoreE
 /// duplicate/re-selection with [`OrderedRefusal::AlreadyDrained`]. It carries
 /// the exact locally reconstructed union identity that candidate's readiness
 /// re-verification proved, retained for audit; never re-derived from
-/// anything else. This is local progress and audit history, never a signed or
-/// transferable cut fact: it authorizes no drain application, cut, Seal or
-/// activation.
+/// anything else. Together with complete local readiness and freshly verified
+/// member proof, this committed record authorizes explicit certified member
+/// application. It is never a transferable cut fact and supplies no authority
+/// for cut, Seal or activation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DrainSetRecord {
     /// The epoch this DrainSet was chosen for.

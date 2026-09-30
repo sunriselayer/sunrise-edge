@@ -68,6 +68,13 @@ require_exact_test contract_lifecycle_pg_ordered_freeze_and_frontier_binary_cli_
 cargo test --quiet -p sunrise-edge-operator --test contract_lifecycle_pg_e2e \
   -- --ignored --exact contract_lifecycle_pg_ordered_freeze_and_frontier_binary_cli_e2e
 
+# Quorum-retained full proofs, real ordered DrainSet, interrupted recipient
+# import, original-holder failure, imported-proof relay and exact member drain.
+require_exact_test contract_lifecycle_pg_drainset_member_drain_binary_cli_e2e \
+  -p sunrise-edge-operator --test contract_lifecycle_pg_e2e
+cargo test --quiet -p sunrise-edge-operator --test contract_lifecycle_pg_e2e \
+  -- --ignored --exact contract_lifecycle_pg_drainset_member_drain_binary_cli_e2e
+
 require_exact_test certified_catch_up_pg_missed_prepare_binary_cli_e2e \
   -p sunrise-edge-operator --test certified_catch_up_pg_e2e
 cargo test --quiet -p sunrise-edge-operator --test certified_catch_up_pg_e2e \

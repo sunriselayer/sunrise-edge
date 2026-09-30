@@ -43,6 +43,7 @@ node scripts/paid-execution-vectors.mjs
 node scripts/fast-vote-vectors.mjs
 node scripts/availability-vectors.mjs
 node scripts/frozen-frontier-vectors.mjs
+node scripts/drainset-vectors.mjs
 node scripts/fast-path-vectors.mjs
 node scripts/fastvote-apply-request-vectors.mjs
 node scripts/fastvote-published-apply-vectors.mjs

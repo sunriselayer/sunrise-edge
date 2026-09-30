@@ -116,7 +116,7 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 | --- | --- | --- |
 | 1 | Generic certified network contract lifecycle | Merged as PR #228 on 2026-09-27 after the full repository gate, fresh exact-head Opus APPROVE and required CI: Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Independent ingress/security gates remain separate. |
 | 2 | Network economics and validator operations | Merged as PR #232 on 2026-09-27 with normal merge commit `86711be`, after fresh exact-head Opus APPROVE and the passing complete repository CI. Fixed-epoch four-namespace CLI evidence is implemented. Membership-dependent Deposit/Withdraw positives join delivery 3; economics/ingress security audits remain separate. |
-| 3 | Validator membership and epoch handoff | In progress under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Bounded portable storage, logical-generation admission and publication/availability-before-apply merged as PR #237/#238/#239; ordered Freeze and immutable frontier export are the next independent capability. DrainSet/drain/cut/import, readiness/Seal/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation remain incomplete. |
+| 3 | Validator membership and epoch handoff | In progress under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Bounded portable storage, logical-generation admission, publication/availability-before-apply and ordered Freeze/immutable frontier export merged as PR #237/#238/#239/#242. Quorum-retained DrainSet/member drain is implemented and has targeted real PostgreSQL/compiled-CLI acceptance below. Authenticated cut/import is next; readiness/Seal/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation remain incomplete. |
 | 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
 
 **PR slicing policy, 2026-09-30:** deliveries describe integrated acceptance
@@ -291,11 +291,11 @@ The detailed existing evidence and remaining criteria follow:
   Freeze/frontier/drain/cut/import/readiness/Seal/activation, next-epoch
   provenance and complete Delivery 3 remain separate and unchecked.
 
-- [ ] **Ordered Freeze and immutable frontier export: next independent functional capability**
+- [x] **Ordered Freeze and immutable frontier export: independent functional capability**
   ([DR-0167](docs/architecture/decisions/0167-frozen-frontier-extraction-boundary.md),
   [architecture](docs/architecture/frozen-frontier.md),
   [operator workflow](docs/guides/frozen-frontier.md)). On 2026-09-30 the
-  selected extraction is implemented on `codex/freeze-frontier-drain`:
+  selected extraction merged as PR #242 with normal merge `27de74a`:
   explicit fresh signed-v3 minimum-height authority, proposal/vote and
   committed advisory next-set eligibility, atomic admission closure,
   Freeze/retention CAS fencing and same-event justified closure, complete
@@ -315,13 +315,51 @@ The detailed existing evidence and remaining criteria follow:
   exact-length framing. Existing test-store portable/outbox delegation now
   preserves I/O counters and exact backend fence/domain/Changed results,
   with three regressions and operator all-target/all-feature Clippy passing.
-  Merging requires the complete repository gate, independent exact-head
-  approval and CI. This checkbox covers
+  The complete parent `./scripts/check-all.sh` passed on exact head
+  `0ab0c43`, including all required PostgreSQL fault profiles and adapter
+  checks. Fresh independent Codex review explicitly approved that head while
+  Opus was unavailable; required CI run `36730997734` also passed. Parent
+  verified clean synchronized `main` and removal of the remote feature branch.
+  This checkbox covers
   frozen progress/export only, not safe live rollover: fresh Logical
-  activation remains refused and there is no unfreeze. Quorum-retained
-  frontier union, ordered DrainSet and certificate-backed drain application
-  are next; cut/import, readiness, Seal, activation and integrated Delivery 3
-  acceptance remain unchecked. The aggregate PR #235 stays unmerged.
+  activation remains refused and there is no unfreeze. The separately scoped
+  DR-0168 capability is recorded below; cut/import, readiness, Seal, activation
+  and integrated Delivery 3 acceptance remain unchecked. The aggregate PR #235
+  stays unmerged.
+
+- [x] **Quorum-retained DrainSet and certified member drain: implemented functional capability**
+  ([DR-0168](docs/architecture/decisions/0168-quorum-retained-drainset-and-member-drain.md)).
+  Implemented on 2026-10-01 with complete strictly weighted-quorum frontier
+  page verification, deterministic union reconstruction, immutable verified
+  full proof/artifact retention and ordinary shared-chain DrainSet vote/commit.
+  Imported-proof relay is independent of selected descriptor signers and does
+  not synthesize original publications/ACKs. Explicit certified-member
+  apply/replay uses a private narrow permit, verifies the displaced partial's
+  genuine saved vote and exact inputs, and atomically fences conflict resolution
+  and its audit with ordinary generic paid effects/receipt/nonce/fees/provenance.
+  Core, native HTTP, Rust SDK and compiled CLI are connected. SDK/CLI verify
+  the original supplied signed intent and complete result against the retained
+  certificate/witness; saved files are immutable. Bounded cap-one runs progress
+  across fresh invocations, and staged/complete pages need no original endpoint.
+  Targeted core/consensus and all surface tests/Clippy passed. Parent's actual
+  four-namespace PostgreSQL/compiled-CLI
+  `contract_lifecycle_pg_drainset_member_drain_binary_cli_e2e` passed, including
+  real pre-Freeze conflicting D prepare, ordinary DrainSet commitment by A/B/C,
+  recipient interruption/reopen, failure of the original sole holder A, relay
+  from B's imported proof without an original ACK, signerless ordered recovery
+  on D and missing-member application. Other reservation rows and the displaced
+  prepare remain exact; the partial request gains no synthetic receipt.
+  The original trap payload and complete HTTP replay are bound to its durable
+  receipt. Same-boot and real post-restart success/trap replay, a fresh HTTP
+  output after restart and conflicting request-ID reuse compare complete
+  same-replica application and safety rows/revisions without reapplication.
+  Request-ID union order is not causal scheduling or complete-drain proof.
+  Merge policy still requires the full repository gate, fresh exact-head
+  independent approval and required CI; targeted acceptance is not a release.
+  Trusted earlier local CAS/immutable material does not protect arbitrary
+  canonically valid DB-admin alteration; per-member capacity refusals and
+  missing unstaged descriptor pages remain explicit limitations.
+  Cut/import/readiness/Seal/activation and integrated Delivery 3 stay unchecked.
 
 - [x] **Portable storage implementation: bounded reads and backend-enforced snapshot continuity**
   ([DR-0166](docs/architecture/decisions/0166-portable-candidate-snapshot.md),

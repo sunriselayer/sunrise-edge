@@ -1,6 +1,9 @@
 //! Actual ordered Freeze and immutable frontier acceptance, sharing the
 //! parent test's ordinary contract lifecycle rather than copying its harness.
 
+#[path = "drainset_acceptance.rs"]
+mod drainset_acceptance;
+
 use super::{AdminPool, HostProcess, Store, publication_client, replay_flags, store};
 use crate::support::cli::{edge_cli_command, read_context, to_hex};
 use crate::support::durable_state::{convergence_snapshot, execution_snapshot};
@@ -484,13 +487,14 @@ pub fn run(
     ids: &BTreeSet<ObjectId>,
     requests: &[[u8; 32]],
     publications: &[PackageOrigin],
+    member_drain: bool,
 ) {
     assert_eq!(requests.len(), 11);
     hosts.push(follower);
     write_network_config(network, fixture, &hosts);
     let mut all_requests: Vec<[u8; 32]> = requests.to_vec();
     all_requests.push(UNAPPLIED_REQUEST);
-    let (unapplied, _certificate, unapplied_identity, bundle_bytes) = retain_unapplied_publication(
+    let (unapplied, certificate, unapplied_identity, bundle_bytes) = retain_unapplied_publication(
         fixture,
         pool,
         namespaces,
@@ -500,6 +504,10 @@ pub fn run(
         &all_requests,
         publications,
     );
+    if member_drain {
+        drainset_acceptance::prepare_conflicting_partial(fixture, &hosts[3], &unapplied);
+        all_requests.push(drainset_acceptance::CONFLICTING_REQUEST);
+    }
     let application_before: Vec<String> =
         application_snapshots(fixture, pool, namespaces, ids, &all_requests, publications);
 
@@ -926,5 +934,29 @@ pub fn run(
         all_snapshots(fixture, pool, namespaces, ids, &all_requests, publications),
         finalized
     );
-    drop(hosts);
+    if member_drain {
+        drainset_acceptance::run(
+            fixture,
+            pool,
+            namespaces,
+            data_dir,
+            ca_path,
+            dsn,
+            manifest_path,
+            digest_hex,
+            network,
+            validator_hex,
+            key_paths,
+            hosts,
+            ids,
+            &all_requests,
+            publications,
+            height,
+            &unapplied,
+            &certificate,
+            &unapplied_identity,
+        );
+    } else {
+        drop(hosts);
+    }
 }

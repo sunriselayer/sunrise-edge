@@ -1,9 +1,10 @@
 //! Bounded, locally pinned transport for DR-0168 post-Freeze member drain.
 //!
-//! These calls only stage/confirm local possession and union progress. An HTTP
-//! response is not an ordered DrainSet decision, a portable cut, or permission
-//! to activate the next epoch. The endpoint rechecks the committed Freeze;
-//! this client additionally checks signatures and exact response identities.
+//! Progress calls stage/confirm local possession and reconstruct its union;
+//! explicit member application additionally requires the host's committed
+//! DrainSet. An HTTP response is not an ordered DrainSet decision, a portable
+//! cut, or permission to activate the next epoch. The endpoint rechecks its
+//! authority; this client checks signatures and exact response identities.
 
 use std::time::Instant;
 

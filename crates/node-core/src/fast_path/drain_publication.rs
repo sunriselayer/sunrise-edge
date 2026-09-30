@@ -72,8 +72,9 @@ pub fn drain_publication_artifact_key(
     Ok(key)
 }
 
-/// Local progress marker. It is not an availability ACK or a transferable
-/// business record; a future DrainSet voter must re-read the proof itself.
+/// Local progress marker, not an availability ACK or transferable business
+/// record. Confirmation and union steps freshly verify its complete proof;
+/// DrainSet voting fences immutable completed local progress and readiness.
 pub fn drain_possession_key(
     chain: &ChainId,
     epoch: Epoch,
@@ -611,7 +612,7 @@ pub fn retain_drain_publication<S: StructuredDurableDomainStateStore>(
 }
 
 /// Read-only check of an imported marker plus all exact stored proof bytes.
-/// A future frontier-page progress step must call this for every entry before
+/// Frontier-page confirmation verifies this material for every entry before
 /// it can make that entry locally complete.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_drain_possession<S: StructuredDurableDomainStateStore>(
