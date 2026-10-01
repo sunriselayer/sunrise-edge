@@ -19,6 +19,8 @@ use runtime::{
     DurableObjectHead, DurableObjectPayload, DurableObjectVersion, DurableObjectVersionRecord,
 };
 
+mod business_reconstruction;
+
 struct CausalFixture {
     network: Network,
     manifest: GenesisManifest,
@@ -196,6 +198,29 @@ fn certify_and_apply_paid(
     signed_bytes: &[u8],
     checkpoint: u64,
 ) -> CertifiedPaidMaterial {
+    certify_paid_with_subsets(
+        fixture,
+        signed_bytes,
+        checkpoint,
+        &[0, 1, 2, 3],
+        &[0, 1, 2, 3],
+        &[0, 1, 2, 3],
+        true,
+    )
+}
+
+// Subsets contain genuine independently executed votes, not newly signed
+// supplied commitments. Retention and application may legitimately carry
+// different quorums for the identical certified execution subject.
+fn certify_paid_with_subsets(
+    fixture: &CausalFixture,
+    signed_bytes: &[u8],
+    checkpoint: u64,
+    publication_signers: &[usize],
+    execution_signers: &[usize],
+    availability_signers: &[usize],
+    apply: bool,
+) -> CertifiedPaidMaterial {
     let network: &Network = &fixture.network;
     let fee_policy: &PaidFeePolicy = &fixture.manifest.fee_policy;
     // Every vote is independently derived through the actual paid WASM
@@ -228,17 +253,27 @@ fn certify_and_apply_paid(
         set.clone(),
     )
     .unwrap();
-    let certificate: consensus::FastCertificate = certifier
-        .try_form_certificate(
-            votes[0].tx_hash,
-            votes[0].execution_effects_hash,
-            votes[0].locked_objects_digest,
-            &votes,
-            &crate::fast_path::FastPathEd25519Verifier,
-        )
-        .unwrap()
-        .unwrap();
-    let certificate_bytes: Vec<u8> = consensus::encode_fast_certificate(&certificate).unwrap();
+    let certificate_for = |subset: &[usize]| -> consensus::FastCertificate {
+        let selected: Vec<consensus::FastVote> = subset
+            .iter()
+            .map(|index: &usize| votes[*index].clone())
+            .collect();
+        certifier
+            .try_form_certificate(
+                votes[0].tx_hash,
+                votes[0].execution_effects_hash,
+                votes[0].locked_objects_digest,
+                &selected,
+                &crate::fast_path::FastPathEd25519Verifier,
+            )
+            .unwrap()
+            .unwrap()
+    };
+    let publication_certificate: consensus::FastCertificate = certificate_for(publication_signers);
+    let publication_certificate_bytes: Vec<u8> =
+        consensus::encode_fast_certificate(&publication_certificate).unwrap();
+    let certificate_bytes: Vec<u8> =
+        consensus::encode_fast_certificate(&certificate_for(execution_signers)).unwrap();
     let bundle: PublicationBundle = crate::fast_path::publication::assemble_publication_bundle(
         &network.stores[0],
         &network.context,
@@ -247,7 +282,7 @@ fn certify_and_apply_paid(
         &network.history,
         &fixture::protocol(),
         signed_bytes,
-        &certificate_bytes,
+        &publication_certificate_bytes,
     )
     .unwrap();
     assert_eq!(
@@ -289,7 +324,10 @@ fn certify_and_apply_paid(
     let availability: consensus::AvailabilityCertificate = availability_certifier
         .try_form_certificate(
             &acknowledgements[0].identity,
-            &acknowledgements,
+            &availability_signers
+                .iter()
+                .map(|index: &usize| acknowledgements[*index].clone())
+                .collect::<Vec<consensus::AvailabilityVote>>(),
             &crate::fast_path::FastPathEd25519Verifier,
         )
         .unwrap()
@@ -299,7 +337,7 @@ fn certify_and_apply_paid(
     let (_, result): (Digest32, PaidExecutionResult) =
         crate::fast_path::publication::decode_certified_execution_witness(&bundle.witness).unwrap();
     assert_eq!(result.status, PaidExecutionStatus::Success);
-    for replica in 0..REPLICAS {
+    for replica in (0..REPLICAS).filter(|_| apply) {
         let output: NodeOutput = crate::fast_path::apply_after_publication(
             &network.stores[replica],
             &network.blobs,
