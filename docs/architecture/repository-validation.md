@@ -41,6 +41,12 @@ The ordinary-test lane excludes only `runtime-postgres`; all its other package
 targets and features remain covered. This deliberate bounded duplication does
 not duplicate the required ignored-selector dispatch.
 
+New workspace packages are automatically included in the ordinary-test lane;
+only `runtime-postgres` is excluded there. Repeat the resolved-feature
+comparison whenever workspace membership or dependencies change. The selected
+anchors are not permanent proof that every later workspace still has the same
+native feature union.
+
 ## Isolation and required result
 
 Each live CI lane owns an independent runner and disposable PostgreSQL service.

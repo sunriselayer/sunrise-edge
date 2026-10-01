@@ -73,3 +73,31 @@ diagnosis; it must not become an allowed failure or a skipped gate.
 
 This is CI orchestration only. It does not complete Delivery 3, persistent
 incoming-validator import, readiness/Seal/activation or production auditing.
+
+## Integration decision, 2026-10-01
+
+PR #241 concurrently replaced the previous complete CI entrypoint with only
+Rust formatting, Clippy and workspace tests under a 25-minute job budget. The
+user explicitly selected this decision's complete nine-lane policy when the
+two workflow changes conflicted. Preserve the merged claim crate, dependencies,
+custody-purpose encoding and genesis admission; resolve the workflow overlap
+without discarding that separate functionality or removing live/fault/provider
+checks.
+
+Workspace membership and dependency changes require a fresh resolved-feature
+comparison and combined-head validation. A successful run before this merge
+does not establish the changed workspace's feature parity or acceptance.
+
+## Historical execution evidence
+
+Run `36849428430` at `039174e1dd2a3feef13caef0f7c8bb88fe2976a2` completed all
+nine lanes and the final required `check` successfully. Creation-to-completion
+elapsed time was 50 minutes 10 seconds; the longest job, business audit, took
+49 minutes 26 seconds, including its genuine test in 2871.49 seconds. This is a
+complete result, unlike the earlier incomplete 120-minute timeout, not a speedup
+ratio between two comparable successful runs.
+
+Summed job elapsed occupancy was 126 minutes 18 seconds. That is not a billed
+runner-cost measurement or evidence of cost savings. The subsequent main
+integration is a different immutable head and requires its own complete
+validation. Current acceptance remains tracked only in `TODO.md`.

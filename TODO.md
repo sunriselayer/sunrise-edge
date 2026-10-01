@@ -5350,9 +5350,17 @@ Phase 17 prerequisites:
   selectors and success-only final `check`. Node 22.23.2 mock coverage/failure
   tests and workflow syntax validation passed; native resolved feature unions
   match the former workspace configuration, with bounded storage-lane anchors.
-- [ ] DR-0171 final acceptance: run complete exact-head CI and obtain
-  independent approval. Runtime assertions/fault gates remain required;
-  measured speedup and runner cost are not yet established. See
+- [x] DR-0171 pre-integration CI evidence: exact `039174e` run `36849428430`
+  passed all nine lanes and final `check` in 50m10s; audit job 49m26s.
+  Summed job elapsed occupancy was 126m18s, not billed cost. The earlier
+  120-minute timeout was incomplete, not a comparable successful benchmark.
+- [ ] DR-0171 combined-head final acceptance: retain PR #241's claim package,
+  dependencies, custody purpose and genesis admission while resolving CI to
+  the complete nine-lane policy explicitly selected by the user. Recheck native
+  feature unions, run the complete local gate and fresh exact-head CI, then
+  obtain independent approval. The pre-integration result is not a pass for
+  this changed workspace. Runtime assertions/fault gates remain required;
+  billed runner cost and cost savings are not established. See
   [design](docs/architecture/repository-validation.md) and
   [decision](docs/architecture/decisions/0171-partitioned-repository-validation.md).
 - reviewed weekly dependency/action update proposals (implemented As-Is)
