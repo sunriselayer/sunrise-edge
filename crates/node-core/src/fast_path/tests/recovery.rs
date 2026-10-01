@@ -505,6 +505,13 @@ struct ReceiptOnlyStore<'a> {
     inner: &'a MemoryDurableStateStore,
 }
 impl DurableDomainStateStore for ReceiptOnlyStore<'_> {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
+        self.inner.get_namespace_lifecycle(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         _: &DurableOperationContext,
@@ -812,6 +819,13 @@ struct InsertAtCommit<'a> {
     value: Vec<u8>,
 }
 impl DurableDomainStateStore for InsertAtCommit<'_> {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
+        self.inner.get_namespace_lifecycle(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,

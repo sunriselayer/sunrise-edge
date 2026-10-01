@@ -47,18 +47,20 @@ use std::{error::Error, fmt, path::Path};
 pub type SqliteNamespace = SqlDurableNamespace;
 
 /// Stable identity of the local-only structured SQLite schema, generation
-/// one, shared with every other SQL durable host.
+/// two, using the shared v3 SQL durable origin/progress layout.
 pub const SQLITE_STRUCTURED_SCHEMA_IDENTITY: &[u8] =
     runtime_sql_durable::SQL_DURABLE_SCHEMA_IDENTITY;
 
 const STRUCTURED_APPLICATION_ID: i64 = 0x5352_4453;
-const STRUCTURED_SCHEMA_VERSION: i64 = 1;
+const STRUCTURED_SCHEMA_VERSION: i64 = 2;
 const STRUCTURED_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Fail-closed errors opening, bootstrapping, or operating a structured
 /// SQLite database outside the request-path traits.
 #[derive(Debug)]
 pub enum SqliteDurableStoreError {
+    /// Local file reservation failed; no existing file is replaced.
+    File(std::io::Error),
     /// SQLite rejected an operation.
     Database(rusqlite::Error),
     /// The database could not enter WAL mode.
@@ -76,6 +78,10 @@ pub enum SqliteDurableStoreError {
     NamespaceMismatch,
     /// The namespace metadata row is missing or malformed.
     InvalidPersistedMetadata,
+    /// The permanent origin does not permit ordinary serving/bootstrap.
+    InactiveNamespace,
+    /// The import-only namespace is bound to different immutable material.
+    ImportBindingMismatch,
     /// A persisted writer fence was zero.
     ZeroWriterFence,
     /// The expected writer fence was no longer active when advancing it.
@@ -104,6 +110,7 @@ pub enum SqliteDurableStoreError {
 impl fmt::Display for SqliteDurableStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::File(error) => write!(f, "SQLite file operation failed: {error}"),
             Self::Database(error) => write!(f, "SQLite operation failed: {error}"),
             Self::UnsupportedJournalMode(mode) => {
                 write!(f, "SQLite journal mode is {mode}, expected wal")
@@ -128,6 +135,8 @@ impl fmt::Display for SqliteDurableStoreError {
             Self::InvalidPersistedMetadata => {
                 f.write_str("SQLite structured metadata row is missing or malformed")
             }
+            Self::InactiveNamespace => f.write_str("SQLite namespace is permanently import-only"),
+            Self::ImportBindingMismatch => f.write_str("SQLite import binding differs"),
             Self::ZeroWriterFence => f.write_str("SQLite writer fence must be non-zero"),
             Self::WriterFenceMismatch { expected, actual } => write!(
                 f,
@@ -151,6 +160,7 @@ impl fmt::Display for SqliteDurableStoreError {
 impl Error for SqliteDurableStoreError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::File(error) => Some(error),
             Self::Database(error) => Some(error),
             _ => None,
         }
@@ -170,6 +180,7 @@ impl From<schema::SchemaError> for SqliteDurableStoreError {
             schema::SchemaError::SchemaIdentityMismatch => Self::SchemaIdentityMismatch,
             schema::SchemaError::NamespaceMismatch => Self::NamespaceMismatch,
             schema::SchemaError::InvalidPersistedMetadata => Self::InvalidPersistedMetadata,
+            schema::SchemaError::InactiveNamespace => Self::InactiveNamespace,
             schema::SchemaError::ZeroWriterFence => Self::ZeroWriterFence,
             schema::SchemaError::WriterFenceMismatch { expected, actual } => {
                 Self::WriterFenceMismatch { expected, actual }
@@ -251,7 +262,11 @@ impl SqliteDurableStore {
         }
         let backend = NativeSqlBackend::new(connection);
         run_operator_step(&backend, |session, _now| {
-            schema::verify_namespace(session, &namespace)
+            let metadata = schema::verify_namespace(session, &namespace)?;
+            if !metadata.lifecycle().is_ordinary() {
+                return Err(schema::SchemaError::InactiveNamespace);
+            }
+            Ok(metadata)
         })?;
         Ok(Self {
             engine: SqlDurableEngine::new(backend, namespace),
@@ -318,7 +333,11 @@ impl SqliteDurableStore {
         let backend = NativeSqlBackend::new(connection);
         run_operator_step(&backend, |session, _now| {
             if already_claimed {
-                return schema::verify_namespace(session, &namespace);
+                let metadata = schema::verify_namespace(session, &namespace)?;
+                if !metadata.lifecycle().is_ordinary() {
+                    return Err(schema::SchemaError::InactiveNamespace);
+                }
+                return Ok(metadata);
             }
             session
                 .exec(
@@ -389,6 +408,13 @@ impl SqliteDurableStore {
 }
 
 impl DurableDomainStateStore for SqliteDurableStore {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, DurableReadError> {
+        self.engine.get_namespace_lifecycle(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -406,6 +432,9 @@ impl DurableDomainStateStore for SqliteDurableStore {
         self.engine.commit_durable(context, transaction)
     }
 }
+
+mod inactive_import;
+pub use inactive_import::SqliteImportTarget;
 
 impl StructuredDurableDomainStateStore for SqliteDurableStore {
     fn get_object_head(

@@ -1518,6 +1518,7 @@ dependencies = [
 name = "runtime"
 version = "0.1.0"
 dependencies = [
+ "canonical-encoding",
  "hashing",
  "objects",
  "protocol-types",

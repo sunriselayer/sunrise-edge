@@ -12,22 +12,20 @@
 
 use crate::backend::{SqlSession, SqlSessionError, SqlValue};
 use protocol_types::{ChainId, ValidatorId};
-use runtime::{AtomicityDomainId, WriterFenceGeneration};
+use runtime::inactive_import::{
+    decode_import_binding, decode_import_progress, encode_import_binding,
+};
+use runtime::{AtomicityDomainId, ImportBinding, NamespaceLifecycle, WriterFenceGeneration};
 use std::fmt;
 
 /// Stable identity of the shared structured SQL schema.
 ///
 /// A future additive migration bumps this identity together with any new
 /// column; a database claimed by an unsupported identity fails closed
-/// rather than being silently reinterpreted. `v2` adds the checked
-/// `mutation_sequence` column bumped at every write chokepoint (see
-/// [`advance_mutation_sequence`]); a `v1` database fails closed, including
-/// when its older metadata table has no mutation-sequence column. `v2` is
-/// redefined in place (not advanced) to add the `source_instance_id`
-/// column: this schema generation is unreleased, so a pre-production shape
-/// missing the column fails closed on the next read rather than being
-/// migrated.
-pub const SQL_DURABLE_SCHEMA_IDENTITY: &[u8] = b"sunrise-edge/sqlite/structured/schema/v2";
+/// rather than being silently reinterpreted. `v3` requires an explicit,
+/// immutable origin/binding and separate import progress. Older initialized
+/// shapes are unsupported; opening never migrates, resets or repairs them.
+pub const SQL_DURABLE_SCHEMA_IDENTITY: &[u8] = b"sunrise-edge/sqlite/structured/schema/v3";
 
 pub(crate) const OBJECT_HEAD_STATUS_CURRENT: i64 = 1;
 pub(crate) const OBJECT_HEAD_STATUS_TOMBSTONED: i64 = 2;
@@ -112,7 +110,17 @@ pub const TABLE_STATEMENTS: &[&str] = &[
          domain BLOB NOT NULL CHECK(length(domain) = 32),
          writer_fence BLOB NOT NULL CHECK(length(writer_fence) = 8),
          mutation_sequence BLOB NOT NULL CHECK(length(mutation_sequence) = 8),
-         source_instance_id BLOB NOT NULL CHECK(length(source_instance_id) = 16)
+         source_instance_id BLOB NOT NULL CHECK(length(source_instance_id) = 16),
+         namespace_origin INTEGER NOT NULL CHECK(namespace_origin IN (1, 2)),
+         import_binding BLOB NULL CHECK(import_binding IS NULL OR (typeof(import_binding) = 'blob' AND length(import_binding) <= 16384)),
+         CHECK((namespace_origin = 1 AND import_binding IS NULL)
+            OR (namespace_origin = 2 AND import_binding IS NOT NULL))
+     )",
+    "CREATE TABLE IF NOT EXISTS durable_import_progress (
+         id INTEGER PRIMARY KEY CHECK(id = 1),
+         phase INTEGER NOT NULL CHECK(phase IN (0, 1, 2)),
+         progress BLOB NULL CHECK(progress IS NULL OR (typeof(progress) = 'blob' AND length(progress) <= 16384)),
+         CHECK((phase = 0 AND progress IS NULL) OR (phase IN (1, 2) AND progress IS NOT NULL))
      )",
     "CREATE TABLE IF NOT EXISTS durable_state (
          key BLOB PRIMARY KEY NOT NULL,
@@ -194,6 +202,8 @@ pub enum SchemaError {
     NamespaceMismatch,
     /// The namespace metadata row is missing or malformed.
     InvalidPersistedMetadata,
+    /// A normal bootstrap/open attempted to serve an import-only namespace.
+    InactiveNamespace,
     /// A persisted writer fence was zero.
     ZeroWriterFence,
     /// The expected writer fence was no longer active when advancing it.
@@ -222,6 +232,7 @@ impl fmt::Display for SchemaError {
             Self::InvalidPersistedMetadata => {
                 f.write_str("SQL structured metadata row is missing or malformed")
             }
+            Self::InactiveNamespace => f.write_str("SQL namespace is permanently import-only"),
             Self::ZeroWriterFence => f.write_str("SQL writer fence must be non-zero"),
             Self::WriterFenceMismatch { expected, actual } => write!(
                 f,
@@ -247,7 +258,7 @@ impl From<SqlSessionError> for SchemaError {
 
 /// The one persisted fact every commit/read must revalidate: the active
 /// writer generation, plus this database's random bootstrap-time identity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NamespaceMetadata {
     writer_fence: WriterFenceGeneration,
     mutation_sequence: u64,
@@ -260,6 +271,7 @@ pub struct NamespaceMetadata {
     /// writer: an operator restore or failover still requires its own
     /// writer-refencing procedure, not this identity.
     source_instance_id: [u8; 16],
+    lifecycle: NamespaceLifecycle,
 }
 
 impl NamespaceMetadata {
@@ -279,6 +291,12 @@ impl NamespaceMetadata {
     #[must_use]
     pub const fn source_instance_id(&self) -> [u8; 16] {
         self.source_instance_id
+    }
+
+    /// Returns the explicit origin and closed installation state.
+    #[must_use]
+    pub const fn lifecycle(&self) -> &NamespaceLifecycle {
+        &self.lifecycle
     }
 }
 
@@ -302,7 +320,8 @@ pub fn verify_namespace(
 ) -> Result<NamespaceMetadata, SchemaError> {
     let rows = session.exec(
         "SELECT schema_identity, chain_id, validator_id, domain, writer_fence, mutation_sequence,
-                source_instance_id
+                source_instance_id, namespace_origin,
+                CASE WHEN import_binding IS NULL OR length(import_binding) <= 16384 THEN import_binding ELSE NULL END
          FROM durable_metadata WHERE id = 1",
         &[],
     )?;
@@ -331,10 +350,49 @@ pub fn verify_namespace(
     let source_instance_id: [u8; 16] = source_instance_id_bytes
         .try_into()
         .map_err(|_| SchemaError::InvalidPersistedMetadata)?;
+    let origin: i64 = row.integer(7).map_err(SqlSessionError::from)?;
+    let binding_bytes: Option<&[u8]> = row.opt_blob(8).map_err(SqlSessionError::from)?;
+    let progress_rows = session.exec("SELECT phase, CASE WHEN progress IS NULL OR length(progress) <= 16384 THEN progress ELSE NULL END FROM durable_import_progress WHERE id = 1", &[])?;
+    let progress_row = progress_rows.one()?;
+    let lifecycle: NamespaceLifecycle = match (origin, binding_bytes, progress_row) {
+        (1, None, None) => NamespaceLifecycle::Ordinary,
+        (2, Some(bytes), Some(progress_row)) => {
+            let binding: ImportBinding =
+                decode_import_binding(bytes).map_err(|_| SchemaError::InvalidPersistedMetadata)?;
+            if binding.domain != namespace.domain()
+                || &binding.context.chain_id != namespace.chain_id()
+            {
+                return Err(SchemaError::NamespaceMismatch);
+            }
+            let phase: i64 = progress_row.integer(0).map_err(SqlSessionError::from)?;
+            let progress: Option<&[u8]> =
+                progress_row.opt_blob(1).map_err(SqlSessionError::from)?;
+            match (phase, progress) {
+                (0, None) if mutation_sequence == 0 => NamespaceLifecycle::FreshImport(binding),
+                (1 | 2, Some(bytes)) => {
+                    let progress = decode_import_progress(bytes)
+                        .map_err(|_| SchemaError::InvalidPersistedMetadata)?;
+                    if progress.next_ordinal > binding.row_count
+                        || (phase == 2 && progress.next_ordinal != binding.row_count)
+                    {
+                        return Err(SchemaError::InvalidPersistedMetadata);
+                    }
+                    if phase == 1 {
+                        NamespaceLifecycle::Importing { binding, progress }
+                    } else {
+                        NamespaceLifecycle::CompleteInactive { binding, progress }
+                    }
+                }
+                _ => return Err(SchemaError::InvalidPersistedMetadata),
+            }
+        }
+        _ => return Err(SchemaError::InvalidPersistedMetadata),
+    };
     Ok(NamespaceMetadata {
         writer_fence,
         mutation_sequence,
         source_instance_id,
+        lifecycle,
     })
 }
 
@@ -358,7 +416,11 @@ pub fn bootstrap_namespace(
         &[],
     )?;
     if existing.one()?.is_some() {
-        return verify_namespace(session, namespace);
+        let metadata: NamespaceMetadata = verify_namespace(session, namespace)?;
+        if !metadata.lifecycle().is_ordinary() {
+            return Err(SchemaError::InactiveNamespace);
+        }
+        return Ok(metadata);
     }
     let surviving = session.exec(
         "SELECT name FROM sqlite_schema WHERE name GLOB 'durable_*' LIMIT 1",
@@ -371,8 +433,8 @@ pub fn bootstrap_namespace(
     session.exec(
         "INSERT OR IGNORE INTO durable_metadata
              (id, schema_identity, chain_id, validator_id, domain, writer_fence,
-              mutation_sequence, source_instance_id)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, randomblob(16))",
+              mutation_sequence, source_instance_id, namespace_origin, import_binding)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, randomblob(16), 1, NULL)",
         &[
             SqlValue::Blob(SQL_DURABLE_SCHEMA_IDENTITY.to_vec()),
             SqlValue::Text(namespace.chain_id().as_str().to_owned()),
@@ -381,6 +443,49 @@ pub fn bootstrap_namespace(
             SqlValue::Blob(encode_u64(initial_writer_fence.get()).to_vec()),
             SqlValue::Blob(encode_u64(0).to_vec()),
         ],
+    )?;
+    verify_namespace(session, namespace)
+}
+
+/// Initializes only a genuinely fresh, dedicated import target. Unlike an
+/// ordinary bootstrap this refuses every surviving structured table, even
+/// if its binding would match. Resume uses verification, never bootstrap.
+pub fn bootstrap_import_namespace(
+    session: &mut dyn SqlSession,
+    namespace: &SqlDurableNamespace,
+    own_writer_fence: WriterFenceGeneration,
+    binding: &ImportBinding,
+) -> Result<NamespaceMetadata, SchemaError> {
+    if binding.domain != namespace.domain() || &binding.context.chain_id != namespace.chain_id() {
+        return Err(SchemaError::NamespaceMismatch);
+    }
+    let bytes: Vec<u8> =
+        encode_import_binding(binding).map_err(|_| SchemaError::InvalidPersistedMetadata)?;
+    let surviving = session.exec(
+        "SELECT name FROM sqlite_schema WHERE name GLOB 'durable_*' LIMIT 1",
+        &[],
+    )?;
+    if surviving.one()?.is_some() {
+        return Err(SchemaError::InvalidPersistedMetadata);
+    }
+    ensure_schema(session)?;
+    session.exec(
+        "INSERT INTO durable_metadata (id, schema_identity, chain_id, validator_id, domain,
+             writer_fence, mutation_sequence, source_instance_id, namespace_origin, import_binding)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, randomblob(16), 2, ?7)",
+        &[
+            SqlValue::Blob(SQL_DURABLE_SCHEMA_IDENTITY.to_vec()),
+            SqlValue::Text(namespace.chain_id().as_str().to_owned()),
+            SqlValue::Blob(namespace.validator_id().as_bytes().to_vec()),
+            SqlValue::Blob(namespace.domain().as_bytes().to_vec()),
+            SqlValue::Blob(encode_u64(own_writer_fence.get()).to_vec()),
+            SqlValue::Blob(encode_u64(0).to_vec()),
+            SqlValue::Blob(bytes),
+        ],
+    )?;
+    session.exec(
+        "INSERT INTO durable_import_progress (id, phase, progress) VALUES (1, 0, NULL)",
+        &[],
     )?;
     verify_namespace(session, namespace)
 }

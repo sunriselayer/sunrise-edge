@@ -854,6 +854,13 @@ struct ActivateBetweenEpochReadsStore {
     served_stale: std::cell::Cell<bool>,
 }
 impl runtime::DurableDomainStateStore for ActivateBetweenEpochReadsStore {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
+        self.inner.get_namespace_lifecycle(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -3974,6 +3981,13 @@ impl IndeterminateOnceActivateStore {
     }
 }
 impl runtime::DurableDomainStateStore for IndeterminateOnceActivateStore {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
+        self.inner.get_namespace_lifecycle(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -4416,6 +4430,13 @@ struct FeePolicyRaceStore {
     raced: std::cell::Cell<bool>,
 }
 impl runtime::DurableDomainStateStore for FeePolicyRaceStore {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
+        self.inner.get_namespace_lifecycle(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -4634,6 +4655,13 @@ struct BarrierGatedActivateStore {
     barrier: std::sync::Arc<std::sync::Barrier>,
 }
 impl runtime::DurableDomainStateStore for BarrierGatedActivateStore {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
+        self.inner.get_namespace_lifecycle(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -4821,6 +4849,13 @@ struct ActivateWinsPaidRaceStore {
 }
 
 impl runtime::DurableDomainStateStore for ActivateWinsPaidRaceStore {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
+        self.inner.get_namespace_lifecycle(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,

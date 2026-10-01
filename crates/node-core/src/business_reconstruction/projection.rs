@@ -78,6 +78,14 @@ struct CapturedStateView<'a> {
 }
 
 impl DurableDomainStateStore for CapturedStateView<'_> {
+    fn get_namespace_lifecycle(
+        &self,
+        _: &DurableOperationContext,
+        _: AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, DurableReadError> {
+        // Captured comparison rows have no persisted namespace authority.
+        Err(DurableReadError::InvalidPersistedState)
+    }
     fn get_versioned_durable(
         &self,
         _operation: &DurableOperationContext,

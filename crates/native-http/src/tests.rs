@@ -1368,6 +1368,14 @@ impl StateStore for ScriptedIndexedStore {
 }
 
 impl DurableDomainStateStore for ScriptedIndexedStore {
+    fn get_namespace_lifecycle(
+        &self,
+        _: &DurableOperationContext,
+        _: AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, DurableReadError> {
+        self.storage_calls.fetch_add(1, Ordering::SeqCst);
+        Err(DurableReadError::Unavailable)
+    }
     fn get_versioned_durable(
         &self,
         _context: &DurableOperationContext,
@@ -1474,6 +1482,13 @@ impl IndeterminateRequestClaimStore {
 }
 
 impl DurableDomainStateStore for IndeterminateRequestClaimStore {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
+        self.inner.get_namespace_lifecycle(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -1569,6 +1584,13 @@ impl CancelOnFirstReceiptReadStore {
 }
 
 impl DurableDomainStateStore for CancelOnFirstReceiptReadStore {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
+        self.inner.get_namespace_lifecycle(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,

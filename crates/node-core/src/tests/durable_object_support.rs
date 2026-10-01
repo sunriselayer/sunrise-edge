@@ -50,6 +50,7 @@ impl TransactionalNodeStateMachine for IdempotentMachine {
 type ScriptedStateReads = BTreeMap<Vec<u8>, (StateRevision, Option<Vec<u8>>)>;
 
 struct ScriptedDurableStore {
+    lifecycle: runtime::NamespaceLifecycle,
     receipt: Mutex<Option<DurableRequestReceipt>>,
     commits: Mutex<Vec<DurableInvocationTransaction>>,
     state_reads: AtomicUsize,
@@ -63,6 +64,7 @@ struct ScriptedDurableStore {
 impl ScriptedDurableStore {
     fn new(commit_outcome: DurableCommitOutcome) -> Self {
         let store: Self = Self {
+            lifecycle: runtime::NamespaceLifecycle::Ordinary,
             receipt: Mutex::new(None),
             commits: Mutex::new(Vec::new()),
             state_reads: AtomicUsize::new(0),
@@ -111,6 +113,14 @@ impl ScriptedDurableStore {
 }
 
 impl DurableDomainStateStore for ScriptedDurableStore {
+    fn get_namespace_lifecycle(
+        &self,
+        _: &DurableOperationContext,
+        _: AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, DurableReadError> {
+        // An explicitly constructed ordinary test fixture, not a wrapper.
+        Ok(self.lifecycle.clone())
+    }
     fn get_versioned_durable(
         &self,
         _context: &DurableOperationContext,
