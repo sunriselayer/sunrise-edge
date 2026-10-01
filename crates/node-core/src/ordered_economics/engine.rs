@@ -1796,6 +1796,37 @@ fn admit_candidate<S: StructuredDurableDomainStateStore>(
     }))
 }
 
+/// Read-only normal-admission barrier query over the isolated reconstruction
+/// store. It uses the owning completed-first admission and complete preflight
+/// at the certified block height, never an untrusted source outcome. A refused
+/// or completed Freeze must not move later Owned replay targets. The caller
+/// still executes the ordinary owner after resolving authenticated dependency
+/// closure; this boolean grants no application or closure-bypass capability.
+pub(crate) fn reconstruction_freeze_barrier_needed(
+    store: &runtime::MemoryDurableStateStore,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+    block_height: u64,
+) -> Result<bool, OrderedEconomicsError> {
+    if candidate.kind != OrderedOperationKind::Freeze {
+        return Ok(false);
+    }
+    if !env.policy.is_causal() {
+        return Err(stop(
+            "business reconstruction requires pinned causal genesis",
+        ));
+    }
+    if let Admission::Completed(_) = admit_candidate(store, context, env, candidate, false)? {
+        return Ok(false);
+    }
+    match preflight::preflight(store, context, env, candidate, block_height) {
+        Ok(()) => Ok(true),
+        Err(OrderedEconomicsError::Refused(_)) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 /// Read-only scheduling query over the isolated reconstruction store. Exact
 /// completed reconciliation precedes every fresh prerequisite, just as in the
 /// owning execution path. The shared owning prefix preserves live authority,
