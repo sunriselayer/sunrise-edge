@@ -466,7 +466,21 @@ fn ordered_applied_height_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError>
     prefixed_key(b"applied-height/", chain)
 }
 
-fn ordered_candidate_record_key(
+/// Immutable per-height proof key. This new family does not alter any
+/// existing candidate, publication, ACK or artifact key.
+pub(super) fn ordered_committed_proof_key(
+    chain: &ChainId,
+    epoch: Epoch,
+    height: u64,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = prefixed_key(b"committed-proof/", chain)?;
+    key.extend_from_slice(&epoch.get().to_be_bytes());
+    key.extend_from_slice(&height.to_be_bytes());
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+pub(super) fn ordered_candidate_record_key(
     chain: &ChainId,
     digest: Digest32,
 ) -> Result<Vec<u8>, NodeCoreError> {
@@ -476,7 +490,7 @@ fn ordered_candidate_record_key(
     Ok(key)
 }
 
-fn ordered_request_header_key(
+pub(super) fn ordered_request_header_key(
     chain: &ChainId,
     request_id: &[u8; 32],
 ) -> Result<Vec<u8>, NodeCoreError> {
@@ -488,7 +502,10 @@ fn ordered_request_header_key(
 
 /// Key of one retained, completed ordered outcome, in the same reserved
 /// namespace as every other row here.
-fn ordered_outcome_key(chain: &ChainId, request_id: &[u8; 32]) -> Result<Vec<u8>, NodeCoreError> {
+pub(super) fn ordered_outcome_key(
+    chain: &ChainId,
+    request_id: &[u8; 32],
+) -> Result<Vec<u8>, NodeCoreError> {
     let mut key: Vec<u8> = prefixed_key(b"outcome/", chain)?;
     key.extend_from_slice(request_id);
     validate_transactional_state_key(&key)?;
@@ -508,7 +525,7 @@ fn encode_retained_outcome(outcome: &OrderedOutcome) -> Result<Vec<u8>, NodeCore
 }
 
 /// Strictly decodes frame `0x644F/v1`.
-fn decode_retained_outcome(bytes: &[u8]) -> Result<OrderedOutcome, NodeCoreError> {
+pub(super) fn decode_retained_outcome(bytes: &[u8]) -> Result<OrderedOutcome, NodeCoreError> {
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(ORDERED_OUTCOME_RECORD_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;
@@ -676,13 +693,13 @@ fn decode_applied_height(bytes: &[u8]) -> Result<u64, NodeCoreError> {
 /// checkpoint fails closed here, before any fresh proposal/vote metadata
 /// write (DR-0153's header-reuse rule).
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct RequestHeader {
-    candidate_digest: Digest32,
-    kind: OrderedOperationKind,
-    created_checkpoint: u64,
+pub(super) struct RequestHeader {
+    pub(super) candidate_digest: Digest32,
+    pub(super) kind: OrderedOperationKind,
+    pub(super) created_checkpoint: u64,
 }
 
-fn encode_request_header(header: &RequestHeader) -> Result<Vec<u8>, NodeCoreError> {
+pub(super) fn encode_request_header(header: &RequestHeader) -> Result<Vec<u8>, NodeCoreError> {
     let mut frame = CanonicalStruct::new(REQUEST_HEADER_RECORD_TYPE, ENCODING_VERSION);
     frame.field_bytes(1, encode_digest32(&header.candidate_digest)?)?;
     frame.field_u16(2, header.kind.to_wire())?;
@@ -690,7 +707,7 @@ fn encode_request_header(header: &RequestHeader) -> Result<Vec<u8>, NodeCoreErro
     Ok(frame.finish()?)
 }
 
-fn decode_request_header(bytes: &[u8]) -> Result<RequestHeader, NodeCoreError> {
+pub(super) fn decode_request_header(bytes: &[u8]) -> Result<RequestHeader, NodeCoreError> {
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(REQUEST_HEADER_RECORD_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;
@@ -926,7 +943,7 @@ pub fn install_ordered_genesis<S: StructuredDurableDomainStateStore>(
 /// Reads the highest committed height whose economic effects (if any) are
 /// already durably applied. Absent means genesis, matching
 /// [`ConsensusState::committed_height`]'s own zero start.
-fn load_applied_height<S: StructuredDurableDomainStateStore>(
+pub(super) fn load_applied_height<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -1543,6 +1560,72 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
     writes.read(loaded.key.clone(), loaded.revision)?;
     writes.read(applied_height_key.clone(), applied_height_revision)?;
 
+    // Capture/archive every committed height, including empty and replay
+    // windows, in the same CAS as the original receipt and application effects.
+    // Older missing archives do not alter historical ordering admission.
+    // Export refuses them; no proof is fabricated or silently backfilled.
+    if consensus_output.committed_proofs.len() != consensus_output.committed_blocks.len() {
+        return Err(stop("ordered consensus omitted a committed proof"));
+    }
+    let mut prior_height: u64 = loaded.state.committed_height;
+    let mut prior_digest: Option<Digest32> = None;
+    let mut prior_view: Option<u64> = None;
+    for (block, proof) in consensus_output
+        .committed_blocks
+        .iter()
+        .zip(consensus_output.committed_proofs.iter())
+    {
+        let verified: CommittedBlock =
+            super::ordered_history::verified_committed_block(env.policy, proof)?;
+        if verified != *block
+            || block.height
+                != prior_height
+                    .checked_add(1)
+                    .ok_or(stop("ordered committed proof height overflow"))?
+        {
+            return Err(stop("ordered committed proof is not contiguous"));
+        }
+        if prior_digest.is_none() {
+            if prior_height == 0 {
+                prior_digest = Some(env.policy.anchor());
+                prior_view = Some(0);
+            } else {
+                let digest: Digest32 = proof.committed.justify.proposal_digest;
+                let previous: &ConsensusProposal = loaded
+                    .state
+                    .known_proposal(&digest)
+                    .ok_or(stop("ordered committed predecessor is unavailable"))?;
+                if previous.height != prior_height || !loaded.state.contains_committed(&digest) {
+                    return Err(stop(
+                        "ordered committed predecessor disagrees with local prefix",
+                    ));
+                }
+                prior_digest = Some(digest);
+                prior_view = Some(previous.view);
+            }
+        }
+        if proof.committed.justify.height != prior_height
+            || Some(proof.committed.justify.proposal_digest) != prior_digest
+            || Some(proof.committed.justify.view) != prior_view
+        {
+            return Err(stop("ordered committed proof does not extend predecessor"));
+        }
+        let key: Vec<u8> =
+            ordered_committed_proof_key(&chain, env.policy.context().epoch(), block.height)?;
+        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        if observed.value().is_some() || observed.revision() != StateRevision::INITIAL {
+            return Err(stop(
+                "ordered committed proof height already exists or was deleted",
+            ));
+        }
+        let bytes: Vec<u8> = consensus::encode_committed_block_proof(proof)
+            .map_err(|_| stop("ordered committed proof does not encode within capacity"))?;
+        writes.mutate(key, observed.revision(), StateMutation::Put(bytes))?;
+        prior_height = block.height;
+        prior_digest = Some(block.digest);
+        prior_view = Some(block.view);
+    }
+
     let next_state_bytes = encode_consensus_state(&next_state)
         .map_err(|_| stop("ordered consensus state does not encode"))?;
     let stored_state_bytes = encode_consensus_state(&loaded.state)
@@ -1602,6 +1685,10 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
     }
 
     let mut new_applied_height = applied_height;
+    let batch_applied_height: u64 = consensus_output
+        .committed_blocks
+        .last()
+        .map_or(applied_height, |block| block.height);
     let mut committed_outcome: Option<OrderedOutcome> = None;
     let mut business: Option<DurableInvocationTransaction> = None;
 
@@ -1638,10 +1725,10 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
                 ));
             }
             writes.read(outcome_row.key, outcome_row.revision)?;
-            if block.height != applied_height {
+            if batch_applied_height != applied_height {
                 writes.record_mutation(
                     applied_height_key,
-                    StateMutation::Put(encode_applied_height(block.height)?),
+                    StateMutation::Put(encode_applied_height(batch_applied_height)?),
                 )?;
             }
             let output = OrderedEventOutput {
@@ -1806,7 +1893,10 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
         for write in release {
             writes.apply(write)?;
         }
-        new_applied_height = block.height;
+        // Exactly one economic block was fully processed; every other
+        // newly committed block has been verified empty. Mark its followers
+        // applied in this same archive/effects CAS, never after a stop.
+        new_applied_height = batch_applied_height;
     } else if let Some(block) = consensus_output
         .committed_blocks
         .iter()
@@ -1881,7 +1971,9 @@ fn transactions_for(
 
 /// Requires the closed profile's transaction shape: zero digests, or exactly
 /// one at an economic-bearing height.
-fn require_profile_shape(proposal: &ConsensusProposal) -> Result<(), OrderedEconomicsError> {
+pub(super) fn require_profile_shape(
+    proposal: &ConsensusProposal,
+) -> Result<(), OrderedEconomicsError> {
     let economic_height: bool = proposal.height % 3 == 1;
     match (proposal.transactions.len(), economic_height) {
         (0, _) | (1, true) => Ok(()),

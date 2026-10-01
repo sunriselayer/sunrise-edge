@@ -47,6 +47,8 @@ const REPLICAS: usize = 4;
 mod drain_boundaries;
 #[path = "tests/freeze_boundaries.rs"]
 mod freeze_boundaries;
+#[path = "tests/ordered_history.rs"]
+mod ordered_history_tests;
 /// The trusted local clock value the operator installs genesis with. Never a
 /// remote timestamp and never a storage deadline.
 const TRUSTED_NOW_MILLIS: u64 = 1_700_000_000_000;

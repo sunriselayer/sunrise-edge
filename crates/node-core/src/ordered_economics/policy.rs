@@ -126,6 +126,7 @@ pub fn ordered_economics_authority_anchor(
 /// and independently pinned genesis digest every ordered-economics operation
 /// must match. Historical cross-epoch workflows stay out of scope for this
 /// profile.
+#[derive(Clone)]
 pub struct OrderedEconomicsPolicy {
     context: PublicationContext,
     domain: AtomicityDomainId,
@@ -309,6 +310,15 @@ impl OrderedEconomicsPolicy {
     ) -> Result<Digest32, OrderedEconomicsError> {
         let bytes: Vec<u8> = encode_ordered_candidate(candidate)?;
         super::engine::candidate_digest(&self.resolver, candidate.context.epoch(), &bytes)
+    }
+
+    pub(super) fn history_component_digest(
+        &self,
+        bytes: &[u8],
+    ) -> Result<Digest32, OrderedEconomicsError> {
+        Ok(self
+            .resolver
+            .hash_for_purpose(self.context.epoch(), HashPurpose::NodeEvent, bytes)?)
     }
 }
 
