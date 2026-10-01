@@ -1,0 +1,156 @@
+# DR-0170: Causal business reconstruction and semantic audit
+
+Date: 2026-10-01 (Asia/Singapore)
+
+Status: accepted design; implementation and release evidence belong in TODO.md.
+
+## Context
+
+DR-0169 authenticates original candidates and their shared ordering. Its QCs
+do not sign the source's outcome, receipt or business state. An exporter can
+provide mutually consistent companions without independently proving execution.
+DR-0154 therefore still requires causal reconstruction from verified genesis.
+
+The genuine production-path regression
+`identical_logical_owned_material_and_ordered_proof_do_not_pin_original_nonce_refusal`
+demonstrates two legitimate histories with identical signed v3 genesis,
+complete owned v2 publications, availability certificates and ordered
+proposals/QCs. A nonce-1 FeeClaim committed before an independent nonce-0
+owned application originally refuses; the same candidate committed afterward
+succeeds. Both ordering exports verify. This is an ambiguity between two
+histories, not evidence of same-run signature equivocation.
+
+A separate source trace identifies an original-request collision: zero-leg
+Unbond, ZeroShare, Evidence and control operations need no owned input/nonce
+reservation. An unrelated owned operation can use the same external request
+ID. Distinct admission records allow both certificates; the shared original
+receipt key prevents a second local application but cannot reconcile the two
+possible first applications. A receipt-absence read alone does not prevent
+later occupancy. This trace is not described as an executed regression.
+
+The user requested a larger usable feature, including independent business
+reconstruction, real-store comparison and CLI acceptance rather than another
+transport-only prerequisite. Independent design review approved the closed
+profile below after rejecting underspecified generalized read reservations
+and an extra execution-result consensus round.
+
+## Decision
+
+### Signed causal admission profile
+
+Introduce `CommitmentProfile::CausalAdmission`, canonical profile tag 3,
+authorized only by fresh signed genesis v4 and `genesis-manifest-v4`.
+It preserves logical generation derivation and witness v2. The signed
+positive minimum Freeze height remains mandatory. Existing manifest profiles,
+transactions, candidates, certificates, witnesses and receipts retain their
+exact historical layouts and interpretations; no missing history is backfilled.
+
+Under this profile, the high bit of an external 32-byte original request ID
+names its certified lane: 0 for owned paid Publish/Instantiate/Call, 1 for
+ordered operations. Existing internal synthetic-ID exclusions still apply.
+All six current ordered kinds enforce Ordered; standalone paid authentication,
+prepare, retention, apply, recovery and drain verification enforce Owned.
+Embedded ordered execution legs keep their original Ordered ID and private
+ordered authority; they are not standalone owned paid requests.
+
+The caller cannot choose the rule with a boolean. Pure verification receives
+a privately constructed profile from verified, locally pinned genesis.
+Mutating admission fences the installed binding; reopen verifies the exact
+manifest/profile association. Missing, replaced or downgraded bindings stop.
+Wrong-lane fresh input fails before signature, reservation or metadata.
+Authenticated bootstrap is an internal genesis operation, not a public bypass.
+Alternate direct business writers refuse fresh causal-profile work unless
+entered through the appropriate genuine private certified capability.
+Exact completed replay remains receipt-first and preserves the original bytes.
+
+### Ordered admission and interleaving
+
+Before exposing an ordered signature, validate the exact committed first
+sender nonce, checked consecutive range, and each reserved address-owned
+source's full reference, body, owner and authority. Fence these observations
+atomically with the existing precise FastVote reservations and signing state.
+Missing/future inputs stop for authenticated recovery, not an invented refusal.
+
+Process a justification's newly committed predecessor progress before fresh
+admission, using bounded signerless steps. Otherwise a valid successor can be
+blocked by the prerequisite that its own justification commits. Maintain the
+at-most-one-business-operation-per-durable-invocation rule and never expose
+signatures/results after rejected or indeterminate persistence.
+
+Do not reserve protocol custody, settlement/bond generations or a global
+business sequence. The authenticated ordered prefix determines competing
+claims and genuine stale refusals. Initial escrow/settlement and immutable
+executable prerequisites come from authenticated owned producers. Evidence,
+bond transitions, closure and DrainSet have their existing closed derivations.
+The rule covers the current six operations, not arbitrary future shared code.
+
+### Private reconstruction and closed comparison
+
+Initialize a private overlay from locally verified signed genesis. Authenticate
+each complete owned publication and its required artifact closure, verify
+original ordered events, and independently execute existing deterministic
+handlers in causal order. Source effects/outcomes/receipts are comparison
+targets, never executable authority.
+
+Resolve exact subject, semantic observation/version and authenticated producer
+identity. Generation alone is not unique. Account for ordered admission
+dependencies even when execution subsequently early-refuses. Never sort
+request IDs or apply every owned producer before all ordered operations.
+Reject contradictions, missing producers, cycles, deletion-to-absence
+substitution and unsupported business schemas. Recompute checked generations.
+Equivalent valid quorum subsets identify one producer; fee shares derive from
+the full authenticated committee, not the proof's selected signers.
+
+Compare the complete semantic projection of state, original receipts, object
+heads/versions/deletions and referenced blobs, including code/ABI/dependency/
+instance/authority closure, nonces, escrow/claims, bonds/transitions, evidence/
+consumption and epoch control. Project by owning schema. Preserve candidate-
+bound checkpoints and fields inside signed/hash-linked rows. Exclude physical
+CAS revisions, writer fences and unsigned creation coordinates only where
+the signed logical profile explicitly makes them local. Known local signing
+and reservation records are not transferred as business facts, but unknown
+reserved records never inherit an exclusion just by prefix.
+
+Use one backend-enforced portable snapshot token for real-store comparison.
+Bound each descriptor/chunk/operation and saved step without an invented total
+history ceiling. Every resumed file is immutable and reverified against its
+locally pinned identity. Missing material, changed snapshots and incomplete
+enumeration fail closed. Audit does not mutate the real source.
+
+## Alternatives and tradeoffs
+
+An additional result quorum can split across honest owned progress and wedge
+immutable votes. A generalized execution envelope requires complete read/
+absence fencing and safe abandoned-proposal supersession. Neither was proven
+necessary for the closed current operation set.
+
+A universal request-binding reservation avoids a lane bit, but needs partial-
+admission arbitration and recovery rules. Disjoint lanes spend one ID bit and
+require profile-aware clients, without adding that mutable locking protocol.
+The namespace is protocol-wide, not a Standard Asset privilege.
+
+## Boundaries and acceptance
+
+The audit proves equality to supplied authenticated fixed material and one
+source-local consistent snapshot. It does not prove network freshness, a
+complete cut, persistent import, incoming-validator inactivity, readiness,
+Seal, epoch activation or Delivery 3 completion. Legacy archives remain useful
+ordering proofs but do not acquire the new reconstruction guarantee.
+
+Integrated acceptance covers all lane entrypoints and synthetic exclusions;
+genuine future-nonce recovery and justified-prefix successor admission;
+contract lifecycle, charged traps, zero charge and replay; positive/zero-share
+and competing claims; reachable bond/evidence/slash operations; Freeze/DrainSet
+and inherited refusals; field-aware corruption and missing/cyclic material;
+real PostgreSQL close/reopen and read-only comparisons; compiled CLI saved
+material interruption/resumption. Final release additionally requires the full
+repository gate, independent explicit exact-head approval and required CI.
+
+No general reservation cancellation, force unlock, rollback of minority
+applications or historical state overwrite is introduced. Unresolved partial
+locks remain declared stops unless an existing narrowly authenticated drain
+operation resolves precisely that conflict.
+
+See [business reconstruction](../business-reconstruction.md),
+[ordering history](../ordered-history.md) and
+[complete handoff](0154-complete-epoch-handoff.md).

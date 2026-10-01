@@ -1,0 +1,95 @@
+# Causal business reconstruction and semantic audit
+
+[DR-0170](decisions/0170-causal-business-reconstruction.md) specifies the
+accepted boundary. Implementation progress and gate results belong in
+[TODO.md](../../TODO.md), not this contract or the repository README.
+
+## Authority
+
+Ordering QCs prove original candidate identity and ancestry, not execution
+companions. Business reconstruction requires the fresh signed causal-admission
+profile, a locally pinned genesis commitment and committee, complete verified
+owned material, and contiguous authenticated original ordered events.
+
+The profile keeps v2 logical witnesses but separates external original IDs:
+high bit 0 is Owned, high bit 1 is Ordered. Internal synthetic receipts remain
+excluded. All original producer, retention, apply, recovery and observer paths
+enforce the appropriate lane before fresh work. Embedded economic legs use
+the Ordered original identity, not standalone owned classification.
+Genesis/profile verification produces a private trusted capability; raw enum
+tags, client flags, decoded certificates and source rows do not.
+
+Ordered signing additionally proves the exact committed first nonce and full
+reserved address-owned inputs in the same fenced commit as its vote. Missing
+prerequisites cause recovery stops. Justified predecessor progress is processed
+before successor admission. Settlement/bond generations and protocol custody
+stay governed by shared order, preserving competing-candidate concurrency.
+
+## Reconstruction
+
+The private overlay has no real-source write handle, signer or import permit.
+It starts from verified genesis and uses the same deterministic execution as
+normal owned/ordered application. A strict typed owned-witness decoder returns
+untrusted operands only; crypto/context/closure verification and independent
+execution must establish their authority before use.
+
+An exact subject/observation producer index resolves dependencies, including
+nonce and address-owned prerequisites required at ordered admission even for
+later no-effect refusals. It distinguishes pristine absence from deletion and
+checked logical generations from local CAS revisions. Duplicate certificate
+subsets cannot double-apply a producer. Contradictory producers, missing
+material, impossible dependency cycles and unrecognized schemas stop.
+
+Keep original ordered events in certified order and process owned producers
+only where their verified dependencies permit. Request-ID sorting and an
+all-owned-first replay are invalid. Recommits retain the first occurrence and
+exact original receipt/outcome; they do not repeat business effects.
+
+Compare independently produced complete result/effects and receipt bytes
+against source companions. A canonical, internally consistent source result
+can still fail business verification. A refusal cannot be synthesized from
+missing code, bodies, authority, nonce or evidence.
+
+## Real-store comparison
+
+Enumerate all four closed portable collections under one backend-enforced
+snapshot token: State, Receipts, ObjectHeads and ObjectVersions. Resolve and
+hash the full referenced blob closure with bounded reads. Unreferenced blob
+garbage is not an authenticated business fact; physical blob-set equivalence
+requires a separate enumeration/continuity contract.
+
+Project each fact using its owning schema:
+
+- Exact application bytes and verified logical observations/generations.
+- Immutable code/ABI/dependencies, instances and object authorities.
+- Object identity, version, digest, payload, owner/routing and deletion history.
+- Sender nonce and exact original receipt identity/bytes.
+- Verified escrow/shares/claims, bonds/transitions, evidence and consumption.
+- Verified original ordered identity, closure and DrainSet control.
+
+Preserve checkpoint fields that belong to signed candidates or hash-linked
+business records. Exclude physical revisions, writer fences and unsigned
+object creation coordinates only through explicit field-aware projections.
+Normalize equivalent proof subsets only after independently verifying their
+same producer identity; do not discard economically deciding fields.
+
+Exactly recognized local reservation/signing/progress records confer no
+business authority. Unknown reserved keys/versions fail closed, including
+malformed keys hidden beneath a familiar prefix. Any unexplained business row,
+receipt, head/version, tombstone or referenced artifact defeats equality.
+
+The source remains unchanged. A changed token, stale writer, incomplete page,
+corrupt chunk, missing closure or different fixed target refuses comparison;
+none is permission to seal or repair the source.
+
+## Product and scope
+
+Saved material and CLI resumption pin local genesis/profile/domain and fixed
+history identity, use bounded immutable components, and reverify the saved
+prefix. Reports distinguish verified material, snapshot continuity and semantic
+equality. They do not label a fixed target the latest network state.
+
+This is an audit/reconstruction boundary, not persistent cut/import, incoming
+validator installation, readiness, Seal or activation. Legacy profiles keep
+their original interpretations and receive no fabricated causal guarantee.
+Ledger, UI, load targets and other deferred gates remain independent.

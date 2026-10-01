@@ -84,6 +84,10 @@ roadmap describes a later target state.
   full per-height commit witnesses, contiguous genesis-to-target verification
   and bounded saved export; source completion companions are not an
   independently reconstructed business cut or import authority.
+- [Causal business reconstruction and semantic audit](business-reconstruction.md)
+  ([DR-0170](decisions/0170-causal-business-reconstruction.md)):
+  signed causal admission, disjoint external request lanes, private verified
+  execution and closed real-store comparison; no persistent import or activation.
 
 Production-oriented persistence requirements and the PostgreSQL mapping are
 separate operational references:

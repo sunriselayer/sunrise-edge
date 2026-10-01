@@ -116,7 +116,7 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 | --- | --- | --- |
 | 1 | Generic certified network contract lifecycle | Merged as PR #228 on 2026-09-27 after the full repository gate, fresh exact-head Opus APPROVE and required CI: Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Independent ingress/security gates remain separate. |
 | 2 | Network economics and validator operations | Merged as PR #232 on 2026-09-27 with normal merge commit `86711be`, after fresh exact-head Opus APPROVE and the passing complete repository CI. Fixed-epoch four-namespace CLI evidence is implemented. Membership-dependent Deposit/Withdraw positives join delivery 3; economics/ingress security audits remain separate. |
-| 3 | Validator membership and epoch handoff | In progress under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Bounded portable storage, logical-generation admission, publication/availability-before-apply and ordered Freeze/immutable frontier export merged as PR #237/#238/#239/#242. Quorum-retained DrainSet/member drain and authenticated ordering-history export have implementation and targeted real PostgreSQL/compiled-CLI acceptance below. Business reconstruction/cut/import is next; readiness/Seal/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation remain incomplete. |
+| 3 | Validator membership and epoch handoff | In progress under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Bounded portable storage, logical-generation admission, publication/availability-before-apply and ordered Freeze/immutable frontier export merged as PR #237/#238/#239/#242. Quorum-retained DrainSet/member drain is implemented; authenticated ordering-history export merged as PR #244 with the full gate, independent exact-head approval and required CI. Authenticated causal business reconstruction and closed semantic comparison are next, followed by cut/import; readiness/Seal/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation remain incomplete. |
 | 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
 
 **PR slicing policy, 2026-09-30:** deliveries describe integrated acceptance
@@ -388,16 +388,53 @@ The detailed existing evidence and remaining criteria follow:
   target-conflict refusal, all twelve namespace-table row/revision comparisons,
   stale-writer refusal and a genuine fresh-rival positive control. Canonical
   Rust/JavaScript layout checks and adversarial core/HTTP/SDK/file tests are
-  implemented. Subsequent changes, including the automatic reuse of existing
-  handler receipt-digest functions, still require the full repository gate,
-  fresh exact-head independent approval and same-head required CI before merge;
-  this targeted acceptance is not a release or complete operational validation.
+  implemented. PR #244 merged normally as `f2b33d0` on 2026-10-01 after
+  `npm ci`, the complete repository gate, fresh independent Codex APPROVE
+  and required CI on final head `5b47b11`. The full gate included the actual
+  PostgreSQL/compiled-CLI history acceptance and competing-claim replay gates.
+  Opus was unavailable; the authorized substitute is not described as Opus
+  approval. This capability is not a release or complete operational validation.
   Do not fabricate missing pruned history, introduce a local Seal-like barrier,
   or label the target the latest network state. Authenticated business cut/import
   still requires closed semantic projections, causal owned/economic reconstruction
   from verified genesis, full result/effects and artifact-closure comparison,
   authenticated generation floor and a core/store inactive incoming-validator
   guard. Readiness/Seal/activation and integrated Delivery 3 remain unchecked.
+
+- [ ] **Causal business reconstruction and real-store audit: one integrated capability**
+  ([DR-0170](docs/architecture/decisions/0170-causal-business-reconstruction.md),
+  [business reconstruction](docs/architecture/business-reconstruction.md)).
+  The accepted design binds strengthened causal admission and disjoint owned/
+  ordered external request lanes to fresh signed genesis v4. Existing witnesses,
+  candidates, receipts and historical profile interpretations remain unchanged.
+  A genuine focused core regression passed: identical signed v3 genesis, full
+  owned v2 material and ordered proofs permit nonce-refused versus successful
+  original FeeClaim histories. It is a counterexample, not a protocol fix or
+  same-run equivocation result. An independent source trace also finds a
+  zero-leg ordered/owned original-request collision; no executed collision
+  regression is claimed yet.
+  Complete the following in one functional PR rather than merging a decoder
+  or transport-only substitute:
+  - [ ] Trusted profile install/reopen and all lane/direct-writer enforcement,
+    including synthetic exclusions and ordered embedded legs.
+  - [ ] Fenced pre-vote nonce/owned-input validation after bounded justified
+    predecessor processing, preserving shared economic concurrency.
+  - [ ] Private verified-genesis causal execution of all current owned/ordered
+    operations, original results/receipts, producer uniqueness and checked
+    logical generations; source companions never become execution authority.
+  - [ ] Closed field-aware comparison of all business state, heads/versions/
+    tombstones, original receipts and referenced artifact closure under one
+    source snapshot, with unexplained/unknown business material refused.
+  - [ ] Rust SDK/compiled CLI bounded immutable saved material, interruption/
+    resumption and truthful fixed-material audit results.
+  - [ ] Genuine real PostgreSQL close/reopen/replay, all current economics/
+    contract/control cases, corruption/missing/cyclic material negatives,
+    equivalent certificate-subset controls and source-row immutability.
+  - [ ] `npm ci`, complete repository gate, independent explicit final-head
+    approval and required CI before normal merge.
+  No persistent import, inactive incoming-validator guard, complete cut,
+  readiness, Seal, activation, force unlock or general partial cancellation
+  is claimed by this capability. Those remain separate Delivery 3 work.
 
 - [x] **Portable storage implementation: bounded reads and backend-enforced snapshot continuity**
   ([DR-0166](docs/architecture/decisions/0166-portable-candidate-snapshot.md),
