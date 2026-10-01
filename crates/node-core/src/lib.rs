@@ -44,6 +44,7 @@ use system_modules::{ModuleId, SystemModule, SystemModuleError};
 pub mod admission_profile;
 mod authenticated_object_effects;
 pub mod bond_lifecycle;
+pub mod business_reconstruction;
 mod durable_reconciliation;
 pub mod economics;
 pub mod epoch_transition;

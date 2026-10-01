@@ -53,6 +53,7 @@
 //! integrated before this path can be enabled as a complete handoff.
 use super::*;
 
+pub(crate) mod audit_projection;
 mod candidate;
 mod drain_set;
 mod drain_union;

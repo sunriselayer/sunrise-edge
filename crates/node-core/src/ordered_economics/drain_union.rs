@@ -248,12 +248,12 @@ pub fn drain_union_ready_key(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SignerProgressRecord {
-    vote: FrozenFrontierVote,
-    confirmed_identity: FrozenFrontierIdentity,
-    confirmed_last_request_id: Option<[u8; 32]>,
-    staged_page: Option<FrozenFrontierPage>,
-    complete: bool,
+pub(super) struct SignerProgressRecord {
+    pub(super) vote: FrozenFrontierVote,
+    pub(super) confirmed_identity: FrozenFrontierIdentity,
+    pub(super) confirmed_last_request_id: Option<[u8; 32]>,
+    pub(super) staged_page: Option<FrozenFrontierPage>,
+    pub(super) complete: bool,
 }
 
 fn encode_signer_progress(record: &SignerProgressRecord) -> Result<Vec<u8>, DrainSignerError> {
@@ -285,7 +285,9 @@ fn encode_signer_progress(record: &SignerProgressRecord) -> Result<Vec<u8>, Drai
     Ok(frame.finish()?)
 }
 
-fn decode_signer_progress(input: &[u8]) -> Result<SignerProgressRecord, DrainSignerError> {
+pub(super) fn decode_signer_progress(
+    input: &[u8],
+) -> Result<SignerProgressRecord, DrainSignerError> {
     let frame = decode_canonical_frame(input)?;
     frame.require_type(SIGNER_PROGRESS_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;
@@ -954,18 +956,18 @@ pub fn read_drain_signer_progress<S: StructuredDurableDomainStateStore>(
 /// and the stored votes let a reader recheck signatures/content without
 /// trusting the key match alone.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct UnionProgressRecord {
-    selection_digest: Digest32,
-    identity: DrainUnionIdentity,
-    selected_votes: Vec<FrozenFrontierVote>,
-    last_request_id: Option<[u8; 32]>,
+pub(super) struct UnionProgressRecord {
+    pub(super) selection_digest: Digest32,
+    pub(super) identity: DrainUnionIdentity,
+    pub(super) selected_votes: Vec<FrozenFrontierVote>,
+    pub(super) last_request_id: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct UnionReadyRecord {
-    selection_digest: Digest32,
-    identity: DrainUnionIdentity,
-    selected_votes: Vec<FrozenFrontierVote>,
+pub(super) struct UnionReadyRecord {
+    pub(super) selection_digest: Digest32,
+    pub(super) identity: DrainUnionIdentity,
+    pub(super) selected_votes: Vec<FrozenFrontierVote>,
 }
 
 fn encode_vote_list(
@@ -1022,7 +1024,7 @@ fn encode_union_progress(record: &UnionProgressRecord) -> Result<Vec<u8>, DrainS
     Ok(frame.finish()?)
 }
 
-fn decode_union_progress(input: &[u8]) -> Result<UnionProgressRecord, DrainSignerError> {
+pub(super) fn decode_union_progress(input: &[u8]) -> Result<UnionProgressRecord, DrainSignerError> {
     let frame = decode_canonical_frame(input)?;
     frame.require_type(UNION_PROGRESS_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;
@@ -1062,7 +1064,7 @@ fn encode_union_ready(record: &UnionReadyRecord) -> Result<Vec<u8>, DrainSignerE
     Ok(frame.finish()?)
 }
 
-fn decode_union_ready(input: &[u8]) -> Result<UnionReadyRecord, DrainSignerError> {
+pub(super) fn decode_union_ready(input: &[u8]) -> Result<UnionReadyRecord, DrainSignerError> {
     let frame = decode_canonical_frame(input)?;
     frame.require_type(UNION_READY_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;
