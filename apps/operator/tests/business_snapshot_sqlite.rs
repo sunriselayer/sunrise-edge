@@ -459,6 +459,13 @@ impl<'a> ObservedSource<'a> {
 
 // Production capture may read, never call any durable or blob write seam.
 impl DurableDomainStateStore for ObservedSource<'_> {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
+        self.fixture.store.get_namespace_lifecycle(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,

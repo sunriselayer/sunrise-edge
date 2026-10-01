@@ -87,6 +87,13 @@ impl<'a, S: StructuredDurableDomainStateStore> StagingStore<'a, S> {
 }
 
 impl<'a, S: StructuredDurableDomainStateStore> DurableDomainStateStore for StagingStore<'a, S> {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
+        self.inner.get_namespace_lifecycle(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
