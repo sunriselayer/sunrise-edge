@@ -505,8 +505,9 @@ pub fn bond_lifecycle_intent_digest(
 /// cryptographically valid, differently-produced) signature byte string
 /// over an identical intent is treated as a conflicting replay -- not a
 /// silently accepted duplicate -- since [`durable_reconciliation::reconcile_receipt`]
-/// requires an exact digest match against the stored receipt.
-fn bond_lifecycle_receipt_digest(
+/// requires an exact digest match against the stored receipt. Ordered history
+/// links an accepted operation's original receipt through this same function.
+pub(crate) fn bond_lifecycle_receipt_digest(
     resolver: &HashSuiteResolver,
     context: &PublicationContext,
     signed_bytes: &[u8],

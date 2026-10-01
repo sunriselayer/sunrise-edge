@@ -223,8 +223,9 @@ pub fn fee_claim_intent_digest(
 /// Digest of the exact canonical *signed* envelope bytes (intent and
 /// signature together): the receipt/replay idempotency key, kept distinct
 /// from the signing digest exactly like
-/// [`crate::bond_lifecycle::bond_lifecycle_receipt_digest`].
-fn fee_claim_receipt_digest(
+/// [`crate::bond_lifecycle::bond_lifecycle_receipt_digest`]. Ordered history
+/// links an accepted claim's original receipt through this same function.
+pub(crate) fn fee_claim_receipt_digest(
     resolver: &HashSuiteResolver,
     context: &PublicationContext,
     signed_bytes: &[u8],

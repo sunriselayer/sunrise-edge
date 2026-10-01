@@ -440,6 +440,41 @@ fn original_deterministic_refusal_receipt_is_retained_and_linked() {
 }
 
 #[test]
+fn accepted_fee_claim_receipt_event_is_derived_through_the_claim_handler() {
+    // History links an accepted completion's original receipt through the
+    // committing handler's own receipt digest. The real ordered fee-claim
+    // handler keys it by the signed claim envelope, never the candidate.
+    let network: Network = setup();
+    network.install_ordered();
+    let settlement: FastPathSettlementRecord = seed_charged_settlement(&network, [0xca; 32]);
+    let next: FastPathSettlementRecord =
+        predicted_claim_row(&settlement, network.bond.validator_id);
+    let candidate: OrderedCandidate =
+        zero_share_claim_candidate(&network, &settlement, &next, [0xcb; 32]);
+    network.round(1, Some(&candidate));
+    network.round(2, None);
+    network.round(3, None);
+    let candidate_digest: Digest32 = network.policy.candidate_digest(&candidate).unwrap();
+    let expected: Digest32 = network
+        .policy
+        .accepted_receipt_digest(&candidate, candidate_digest)
+        .unwrap();
+    assert_ne!(expected, candidate_digest);
+    let request_id: DurableRequestId = DurableRequestId::new(candidate.request_id).unwrap();
+    for store in &network.stores {
+        let receipt: DurableRequestReceipt = store
+            .get_request_receipt(&network.context, network.domain(), request_id)
+            .unwrap()
+            .unwrap();
+        let record: NodeDedupRecord = NodeDedupRecord::decode(receipt.canonical_bytes()).unwrap();
+        let status: NodeResponseStatus = record.responses()[0].status();
+        assert_eq!(status, NodeResponseStatus::Accepted);
+        assert_eq!(record.event_digest(), expected);
+        assert_eq!(receipt.event_digest(), expected);
+    }
+}
+
+#[test]
 fn mutually_consistent_large_companions_are_not_certified_execution_truth() {
     let (network, _): (Network, OrderedCandidate) = completed_logical_network();
     let identity: OrderedHistoryIdentity =

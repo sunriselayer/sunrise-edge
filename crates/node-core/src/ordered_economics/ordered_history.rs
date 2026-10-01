@@ -342,22 +342,18 @@ fn verify_completion_companions(
     {
         return Err(invalid("ordered history completion companion mismatch"));
     }
-    // Refusal wrappers/evidence/controls use the candidate digest. Accepted
-    // economic handlers keep the exact existing signed-envelope event digest.
+    // Every retained refusal is the orchestrator's own receipt over the
+    // candidate digest. An acceptance keeps the receipt its committing handler
+    // wrote, so derive that handler's own receipt digest rather than reuse the
+    // transfer-integrity component digest of the intent bytes.
     let rejected: bool = receipt
         .responses()
         .iter()
         .any(|response| response.status() == NodeResponseStatus::Rejected);
-    let event_digest: Digest32 = if rejected
-        || matches!(
-            candidate.kind,
-            OrderedOperationKind::Evidence
-                | OrderedOperationKind::Freeze
-                | OrderedOperationKind::DrainSet
-        ) {
+    let event_digest: Digest32 = if rejected {
         digest
     } else {
-        ordered_history_component_digest(policy, &candidate.intent)?
+        policy.accepted_receipt_digest(&candidate, digest)?
     };
     if receipt.event_digest() != event_digest {
         return Err(invalid("ordered history original receipt event mismatch"));
