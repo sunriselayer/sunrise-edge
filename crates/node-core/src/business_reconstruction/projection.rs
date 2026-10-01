@@ -59,6 +59,7 @@ enum SemanticRecord {
 
 type SemanticProjection = BTreeMap<DurableRecordKey, SemanticRecord>;
 type StateRows<'a> = BTreeMap<Vec<u8>, &'a SourceSnapshotRecord>;
+type LocalFastpathRows = (BTreeMap<Vec<u8>, ()>, BTreeMap<[u8; 32], Digest32>);
 
 /// A non-mutating view used exclusively to validate source-local backing rows.
 /// It cannot commit, and is never passed to any business execution handler.
@@ -160,7 +161,7 @@ fn exact_tail<'a>(
 fn local_fastpath_rows(
     overlay: &BusinessReconstructionOverlay<'_>,
     records: &[SourceSnapshotRecord],
-) -> Result<(BTreeMap<Vec<u8>, ()>, BTreeMap<[u8; 32], Digest32>), BusinessReconstructionError> {
+) -> Result<LocalFastpathRows, BusinessReconstructionError> {
     let plan = &overlay.plan;
     let chain = plan.genesis.context().chain_id();
     let encoded_chain: Vec<u8> =

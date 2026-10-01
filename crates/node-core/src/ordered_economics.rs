@@ -122,8 +122,7 @@ pub use policy::{
     authenticate_candidate, ordered_economics_authority_anchor,
 };
 pub(crate) use reservation::{
-    OrderedCausalRequirements, OrderedLegAdmission, OrderedNonceLockHeld,
-    ordered_causal_requirements,
+    OrderedCausalRequirements, OrderedLegAdmission, ordered_causal_requirements,
 };
 pub(crate) use staging::StagingStore;
 
