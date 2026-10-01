@@ -65,6 +65,8 @@ pub enum DrainSetControlProofError {
     Incomplete(&'static str),
     /// Owning schema or trusted-profile validation failed.
     Node(Box<NodeCoreError>),
+    /// The exact locally pinned genesis commitment could not be recomputed.
+    Genesis(Box<crate::GenesisError>),
     /// A selected stream failed its real signature/terminal verification.
     Frontier(Box<consensus::FrontierError>),
     /// An ordinary private drain handler refused or could not commit.
@@ -81,6 +83,7 @@ impl fmt::Display for DrainSetControlProofError {
             Self::Invalid(reason) => write!(formatter, "control proof refused: {reason}"),
             Self::Incomplete(reason) => write!(formatter, "control proof incomplete: {reason}"),
             Self::Node(error) => error.fmt(formatter),
+            Self::Genesis(error) => error.fmt(formatter),
             Self::Frontier(error) => error.fmt(formatter),
             Self::Drain(error) => error.fmt(formatter),
             Self::Ordered(error) => error.fmt(formatter),
@@ -93,6 +96,7 @@ impl Error for DrainSetControlProofError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Node(error) => Some(error.as_ref()),
+            Self::Genesis(error) => Some(error.as_ref()),
             Self::Frontier(error) => Some(error.as_ref()),
             Self::Drain(error) => Some(error.as_ref()),
             Self::Ordered(error) => Some(error.as_ref()),
@@ -105,6 +109,11 @@ impl Error for DrainSetControlProofError {
 impl From<NodeCoreError> for DrainSetControlProofError {
     fn from(error: NodeCoreError) -> Self {
         Self::Node(Box::new(error))
+    }
+}
+impl From<crate::GenesisError> for DrainSetControlProofError {
+    fn from(error: crate::GenesisError) -> Self {
+        Self::Genesis(Box::new(error))
     }
 }
 impl From<consensus::FrontierError> for DrainSetControlProofError {
@@ -630,4 +639,71 @@ pub(super) fn prepare_drain_control(
     Err(DrainSetControlProofError::Incomplete(
         "private union did not reach exact terminal",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pages_from_entries;
+    use consensus::{
+        AvailabilityIdentity, FrozenFrontierPage, MAX_FROZEN_FRONTIER_PAGE_BYTES,
+        MAX_FROZEN_FRONTIER_PAGE_ENTRIES, decode_frozen_frontier_page, encode_frozen_frontier_page,
+    };
+    use protocol_types::{
+        AtomicityDomainId, ChainId, Digest32, Epoch, HashAlgorithmId, ProtocolVersion,
+    };
+
+    // Codec/partition fixture only: these claims provide no signature, source
+    // completeness, retained bundle, or independent execution authority.
+    fn identity(index: u64) -> AvailabilityIdentity {
+        let mut request_id: [u8; 32] = [0; 32];
+        request_id[24..].copy_from_slice(&index.to_be_bytes());
+        let digest: Digest32 = Digest32::new(HashAlgorithmId::Blake3_256, [0x91; 32]);
+        AvailabilityIdentity {
+            chain_id: ChainId::new("bounded-control-pages").unwrap(),
+            protocol_version: ProtocolVersion::new(1),
+            epoch: Epoch::new(3),
+            domain: AtomicityDomainId::new([0x92; 32]).unwrap(),
+            request_id,
+            signed_intent_digest: digest,
+            execution_commitment: digest,
+            semantic_artifacts_digest: digest,
+        }
+    }
+
+    #[test]
+    fn source_entry_partition_is_bounded_consecutive_and_has_one_exact_terminal() {
+        let length: usize = 2 * MAX_FROZEN_FRONTIER_PAGE_ENTRIES + 1;
+        let entries: Vec<AvailabilityIdentity> =
+            (1..=u64::try_from(length).unwrap()).map(identity).collect();
+        let pages: Vec<FrozenFrontierPage> = pages_from_entries(&entries).unwrap();
+        assert_eq!(pages.len(), 3);
+        let mut previous: Option<[u8; 32]> = None;
+        let mut restored: Vec<AvailabilityIdentity> = Vec::new();
+        for (index, page) in pages.iter().enumerate() {
+            assert_eq!(page.after_request_id, previous);
+            assert!(page.entries.len() <= MAX_FROZEN_FRONTIER_PAGE_ENTRIES);
+            assert_eq!(page.terminal, index + 1 == pages.len());
+            let bytes: Vec<u8> = encode_frozen_frontier_page(page).unwrap();
+            assert!(bytes.len() <= MAX_FROZEN_FRONTIER_PAGE_BYTES);
+            assert_eq!(decode_frozen_frontier_page(&bytes).unwrap(), *page);
+            previous = page.entries.last().map(|entry| entry.request_id);
+            restored.extend_from_slice(&page.entries);
+        }
+        assert_eq!(restored, entries);
+    }
+
+    #[test]
+    fn empty_source_frontier_still_requires_one_seed_terminal_page() {
+        let pages: Vec<FrozenFrontierPage> = pages_from_entries(&[]).unwrap();
+        assert_eq!(
+            pages,
+            vec![FrozenFrontierPage {
+                after_request_id: None,
+                entries: Vec::new(),
+                terminal: true,
+            }]
+        );
+        let bytes: Vec<u8> = encode_frozen_frontier_page(&pages[0]).unwrap();
+        assert_eq!(decode_frozen_frontier_page(&bytes).unwrap(), pages[0]);
+    }
 }
