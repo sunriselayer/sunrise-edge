@@ -119,6 +119,20 @@ retained but unapplied material; never blanket-ignore a publication prefix.
 Application and availability certificate carriers may have different valid
 signer subsets, but must authenticate the same execution/publication identity.
 
+DrainSet reconstruction also receives explicit untrusted control-proof material,
+bound to each authenticated original candidate digest and its exact selected
+signed frontier votes. Reconstruct every selected entry stream from its seed
+and require its signed terminal count and digest; source running digests,
+progress, possession and ready flags are never replay authority. In the private
+overlay, use the existing verified page ingestion, full-publication import,
+entry confirmation and bounded union handlers to derive readiness, then run
+the unchanged owning ordered handler and compare its original result/receipt.
+Retention of unapplied material is not business application. Deterministic
+pre-readiness refusals keep their owning preflight precedence. Missing or
+contradictory required proof closure stops; an ordering QC cannot replace it.
+Saved control pages share the fixed genesis/history/source-token binding and
+immutable bounded-file/resumption contract with owned publication material.
+
 Compare the complete semantic projection of state, original receipts, object
 heads/versions/deletions and referenced blobs, including code/ABI/dependency/
 instance/authority closure, nonces, escrow/claims, bonds/transitions, evidence/

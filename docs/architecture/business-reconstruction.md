@@ -48,6 +48,15 @@ checked logical generations from local CAS revisions. Duplicate certificate
 subsets cannot double-apply a producer. Contradictory producers, missing
 material, impossible dependency cycles and unrecognized schemas stop.
 
+Accepted DrainSet controls additionally need the exact selected signed frontier
+entry streams and their complete retained publication closure. These are
+untrusted proof inputs bound to the original candidate, not copied source
+ready/progress rows. Reverify each stream from its seed to the signed terminal
+count/digest and privately run ordinary page ingestion, retention import,
+confirmation and bounded union derivation before the owning control handler.
+NoFreeze, AlreadyDrained and other pre-readiness refusals retain their normal
+precedence. Proof retention does not authorize an owned application.
+
 Keep original ordered events in certified order and process owned producers
 only where their verified dependencies permit. Request-ID sorting and an
 all-owned-first replay are invalid. Recommits retain the first occurrence and
