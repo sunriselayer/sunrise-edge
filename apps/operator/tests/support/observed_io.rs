@@ -91,6 +91,14 @@ impl<T: BlobStore> BlobStore for Observed<T> {
     }
 }
 impl<T: DurableDomainStateStore> DurableDomainStateStore for Observed<T> {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
+        self.read();
+        self.inner.get_namespace_lifecycle(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,

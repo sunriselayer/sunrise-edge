@@ -165,6 +165,53 @@ fn remaining_fee_source(fixture: &CausalFixture) -> Object {
     current_object(&fixture.network, 0, fixture.manifest.objects[1].object.id)
 }
 
+/// Three additional genuine normal-AV producers for the bounded inactive
+/// import/resume fixture. No supplied effect, receipt or producer row is used.
+pub(super) fn generic_import_prefix(fixture: &CausalFixture) -> Vec<CertifiedPaidMaterial> {
+    let network: &Network = &fixture.network;
+    let artifact: CodeArtifact = generic_artifact(fixture);
+    let code: UnverifiedDependencyRef = UnverifiedDependencyRef::new(
+        artifact.origin().clone(),
+        1,
+        fixture::protocol(),
+        artifact_commitment(&network.resolver, &fixture::protocol(), &artifact).unwrap(),
+    )
+    .unwrap();
+    let publish: Vec<u8> = paid_application(
+        fixture,
+        [0x63; 32],
+        0,
+        &remaining_fee_source(fixture),
+        PaidApplication::Publish(artifact),
+    );
+    let published: CertifiedPaidMaterial = certify_and_apply_paid(fixture, &publish, 11);
+    let instance: InstanceRecord = InstanceRecord {
+        context: fixture::protocol(),
+        creator: *network.signers[0].id.as_bytes(),
+        seed: [0x71; 32],
+        code,
+        revision: 1,
+        initializer: "init".into(),
+    };
+    let instantiate: Vec<u8> = paid_application(
+        fixture,
+        [0x64; 32],
+        1,
+        &remaining_fee_source(fixture),
+        PaidApplication::Instantiate(contract_call(fixture, &instance, [0x64; 32], 1, "init")),
+    );
+    let instantiated: CertifiedPaidMaterial = certify_and_apply_paid(fixture, &instantiate, 12);
+    let call: Vec<u8> = paid_application(
+        fixture,
+        [0x65; 32],
+        2,
+        &remaining_fee_source(fixture),
+        PaidApplication::Call(contract_call(fixture, &instance, [0x65; 32], 2, "call")),
+    );
+    let called: CertifiedPaidMaterial = certify_and_apply_paid(fixture, &call, 13);
+    vec![published, instantiated, called]
+}
+
 fn freeze_and_drain(fixture: &CausalFixture, materials: &[CertifiedPaidMaterial]) {
     let network: &Network = &fixture.network;
     let freeze: OrderedCandidate = freeze_candidate(FREEZE_REQUEST);

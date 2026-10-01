@@ -3767,6 +3767,10 @@ fn node_error_response(error: &NodeCoreError) -> Response {
         return transaction_auth_error_response(error);
     }
     let (status, code) = match error {
+        NodeCoreError::InactiveImportNamespace => (
+            StatusCode::CONFLICT,
+            "inactive-import-namespace",
+        ),
         NodeCoreError::UnauthenticatedTransactionSubmission => (
             StatusCode::NOT_IMPLEMENTED,
             "submit-transaction-requires-authenticated-route",

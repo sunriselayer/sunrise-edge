@@ -347,6 +347,16 @@ where
                     return error_response(StatusCode::BAD_REQUEST, "invalid-frontier-page-limit");
                 }
             };
+            // A live protocol response must not expose cached signing output
+            // from any import-origin namespace. Historical proof readers stay
+            // independently usable without this live-response capability.
+            if let Err(error) = node_core::require_ordinary_namespace(
+                state.components.store.as_ref(),
+                &context,
+                domain,
+            ) {
+                return node_error_response(&error);
+            }
             let (vote, page) = match read_frozen_frontier_page(
                 state.components.store.as_ref(),
                 &context,

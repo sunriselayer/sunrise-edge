@@ -640,6 +640,7 @@ where
     S: StructuredDurableDomainStateStore,
     C: ConsensusSigner,
 {
+    mutation_fence::require_ordinary_namespace(store, context, domain)?;
     let mut fence_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     let epoch_record: FastPathEpochRecord =
         mutation_fence::fence_epoch_state(store, context, domain, chain, &mut fence_reads)?;
@@ -802,6 +803,7 @@ pub fn activate<S: StructuredDurableDomainStateStore>(
             ConsensusError::ContextMismatch,
         ));
     }
+    mutation_fence::require_ordinary_namespace(store, context, domain)?;
 
     // 2. Fence the committed epoch record.
     let mut fence_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();

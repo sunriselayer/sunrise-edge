@@ -454,7 +454,7 @@ impl<B: SqlBackend> SqlDurableEngine<B> {
 /// validate against a different store's bytes. This is a local
 /// source-identity bound, not a protocol or cut identifier; it is never
 /// compared across replicas.
-fn portable_namespace_bytes(
+pub(super) fn portable_namespace_bytes(
     namespace: &SqlDurableNamespace,
     source_instance_id: &[u8; 16],
 ) -> Result<Vec<u8>, runtime::RuntimeError> {

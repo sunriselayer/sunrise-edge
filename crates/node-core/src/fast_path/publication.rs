@@ -644,6 +644,7 @@ where
     {
         return Err(PublicationRetentionError::ContextMismatch);
     }
+    mutation_fence::require_ordinary_namespace(store, context, domain)?;
 
     // Fence the committed epoch record and the active validator set. Unlike
     // a fresh admission, a matching retained ACK may still be replayed after

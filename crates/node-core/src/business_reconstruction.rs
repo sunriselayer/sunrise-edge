@@ -3,11 +3,13 @@
 //! Source rows and ordered-history completion companions are comparison data,
 //! never replay authority. The only replay target owned by this module is a
 //! fresh `MemoryDurableStateStore` initialized from locally pinned genesis.
-//! This module intentionally exposes no import, activation, or readiness API.
+//! Inactive installation is a separate opaque private-plan capability. Neither
+//! reconstruction nor installation grants activation or readiness authority.
 
 pub mod control;
 pub mod cut;
 mod dependency_graph;
+pub mod inactive_import;
 mod projection;
 
 pub use control::{

@@ -19,6 +19,7 @@ CREATE TABLE sunrise_edge.storage_metadata (
         ),
     schema_identity BYTEA NOT NULL CHECK (octet_length(schema_identity) = 32),
     source_instance_id BYTEA NOT NULL CHECK (octet_length(source_instance_id) = 16),
+    namespace_origin SMALLINT NOT NULL CHECK (namespace_origin = 1),
     schema_generation NUMERIC(20, 0) NOT NULL
         CHECK (schema_generation BETWEEN 1 AND 18446744073709551615),
     migration_phase_id SMALLINT NOT NULL CHECK (migration_phase_id BETWEEN 1 AND 5),

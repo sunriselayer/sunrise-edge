@@ -10,8 +10,18 @@ use crate::business_reconstruction::cut::{
     encode_business_cut_chunk, encode_business_cut_page, verify_saved_business_cut,
 };
 
-fn completed_source() -> FrozenCompletionSource {
-    let source: FrozenCompletionSource = frozen_completion_source(DrainScenario::Accepted);
+pub(super) fn completed_source() -> FrozenCompletionSource {
+    finish_source(frozen_completion_source(DrainScenario::Accepted))
+}
+
+pub(super) fn completed_source_with_generic_prefix() -> FrozenCompletionSource {
+    finish_source(frozen_completion_source_with_prefix(
+        DrainScenario::Accepted,
+        true,
+    ))
+}
+
+fn finish_source(source: FrozenCompletionSource) -> FrozenCompletionSource {
     let network: &Network = &source.fixture.network;
     for replica in 0..REPLICAS {
         let result: NodeOutput = crate::fast_path::drain_apply::apply_drain_member(

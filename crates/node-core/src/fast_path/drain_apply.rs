@@ -497,6 +497,7 @@ where
     {
         return Ok(output);
     }
+    crate::mutation_fence::require_ordinary_namespace(store, context, domain)?;
     // Fresh work needs the complete committed DrainSet authority. A completed
     // exact replay is receipt-first and must not be re-blocked by a later
     // epoch transition or by a now-stale local ready marker.

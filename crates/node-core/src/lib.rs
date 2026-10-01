@@ -45,6 +45,7 @@ pub mod admission_profile;
 mod authenticated_object_effects;
 pub mod bond_lifecycle;
 pub mod business_reconstruction;
+pub use mutation_fence::require_ordinary_namespace;
 mod durable_reconciliation;
 pub mod economics;
 pub mod epoch_transition;
@@ -300,6 +301,9 @@ pub enum NodeCoreError {
     RequestIdReuse,
     /// Persisted deduplication/outbox state violated an invariant.
     PersistenceInvariant(&'static str),
+    /// A permanently import-only namespace cannot admit live work or expose
+    /// protocol signatures. Exact original business receipts remain readable.
+    InactiveImportNamespace,
     /// No persisted outbox exists for the requested invocation.
     OutboxNotFound,
     /// Another delivery attempt owns an unexpired lease.
@@ -1204,6 +1208,9 @@ impl fmt::Display for NodeCoreError {
             }
             Self::PersistenceInvariant(reason) => {
                 write!(f, "persisted node invocation invariant failed: {reason}")
+            }
+            Self::InactiveImportNamespace => {
+                f.write_str("inactive import namespace cannot admit live work")
             }
             Self::OutboxNotFound => f.write_str("outbox batch was not found"),
             Self::OutboxLeaseActive {
@@ -5225,6 +5232,7 @@ where
     )? {
         return Ok(output);
     }
+    mutation_fence::require_ordinary_namespace(store, context, domain)?;
 
     // Fresh causal stores admit business only through private certified paths.
     // These legacy generic/direct entrypoints have no such capability. Never

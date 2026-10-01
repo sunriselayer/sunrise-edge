@@ -8,6 +8,7 @@ license.workspace = true
 durable-conformance = ["dep:hashing"]
 
 [dependencies]
+canonical-encoding.workspace = true
 hashing = { workspace = true, optional = true }
 objects.workspace = true
 protocol-types.workspace = true

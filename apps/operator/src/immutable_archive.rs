@@ -43,6 +43,43 @@ impl ImmutableArchive {
         Self::open_mode(root, false)
     }
 
+    /// A destination must not add files to this exact input inventory.
+    /// Check regular ancestors and their held identities, including Unix
+    /// directory aliases; a string prefix alone is not a placement guard.
+    pub(crate) fn require_output_outside(&self, path: &Path) -> io::Result<()> {
+        self.ensure_attached()?;
+        let absolute: PathBuf = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(path)
+        };
+        let parent: &Path = absolute
+            .parent()
+            .ok_or_else(|| invalid("destination database has no parent directory"))?;
+        let parent: PathBuf = Self::directory_path(parent)?;
+        if parent.starts_with(&self.root) {
+            return Err(invalid(
+                "destination database must be outside pinned input archive",
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let source: std::fs::Metadata = self.directory.metadata()?;
+            for ancestor in parent.ancestors() {
+                let directory: File = File::open(ancestor)?;
+                Self::ensure_directory_attached(ancestor, &directory)?;
+                let held: std::fs::Metadata = directory.metadata()?;
+                if (held.dev(), held.ino()) == (source.dev(), source.ino()) {
+                    return Err(invalid(
+                        "destination database must be outside pinned input archive",
+                    ));
+                }
+            }
+        }
+        self.ensure_attached()
+    }
+
     fn open_mode(root: &Path, writable: bool) -> io::Result<Self> {
         let root: PathBuf = Self::directory_path(root)?;
         let before: std::fs::Metadata = std::fs::symlink_metadata(&root)?;

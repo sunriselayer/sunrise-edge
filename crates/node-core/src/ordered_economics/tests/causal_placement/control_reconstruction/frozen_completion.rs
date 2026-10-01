@@ -22,6 +22,12 @@ mod preseal_cut;
 #[path = "frozen_completion/preseal_cut_contracts.rs"]
 mod preseal_cut_contracts;
 
+#[path = "frozen_completion/inactive_business_import.rs"]
+mod inactive_business_import;
+
+#[path = "frozen_completion/inactive_business_import_faults.rs"]
+mod inactive_business_import_faults;
+
 struct ObservedPaidEngine<'a> {
     inner: &'a dyn PaidContractEngine,
     calls: Cell<usize>,
@@ -151,13 +157,30 @@ fn certify_without_aggregate_av(
 }
 
 fn frozen_completion_source(scenario: DrainScenario) -> FrozenCompletionSource {
+    frozen_completion_source_with_prefix(scenario, false)
+}
+
+fn frozen_completion_source_with_prefix(
+    scenario: DrainScenario,
+    generic_prefix: bool,
+) -> FrozenCompletionSource {
     let fixture: CausalFixture = fresh_fixture();
+    let prefix: Vec<CertifiedPaidMaterial> = if generic_prefix {
+        preseal_cut_contracts::generic_import_prefix(&fixture)
+    } else {
+        Vec::new()
+    };
+    let coin: Object = if generic_prefix {
+        current_object(&fixture.network, 0, fixture.manifest.objects[1].object.id)
+    } else {
+        fixture.manifest.objects[1].object.clone()
+    };
     let signed: Vec<u8> = paid_transfer(
         &fixture,
         0,
-        &fixture.manifest.objects[1].object,
+        &coin,
         PAID_REQUEST,
-        0,
+        u64::try_from(prefix.len()).unwrap(),
     );
     let retention_replicas: &[usize] = if matches!(scenario, DrainScenario::Nonmember) {
         &[0]
@@ -186,7 +209,7 @@ fn frozen_completion_source(scenario: DrainScenario) -> FrozenCompletionSource {
     let count: usize = if matches!(scenario, DrainScenario::Nonmember) {
         1
     } else {
-        2
+        2 + prefix.len()
     };
     let mut selected: Vec<(FrozenFrontierVote, FrozenFrontierPage)> = Vec::new();
     for replica in sources {
@@ -228,7 +251,11 @@ fn frozen_completion_source(scenario: DrainScenario) -> FrozenCompletionSource {
         selected.push(pair);
     }
     selected.sort_by_key(|(vote, _)| vote.validator);
-    let bundles: [&[u8]; 2] = [paid.bundle.as_slice(), retained.bundle.as_slice()];
+    let mut bundles: Vec<&[u8]> = prefix
+        .iter()
+        .map(|material| material.bundle.as_slice())
+        .collect();
+    bundles.extend([paid.bundle.as_slice(), retained.bundle.as_slice()]);
     let mut ready: Option<DrainUnionIdentity> = None;
     for replica in 0..REPLICAS {
         let actual: DrainUnionIdentity = derive_ready(network, replica, &selected, &bundles);

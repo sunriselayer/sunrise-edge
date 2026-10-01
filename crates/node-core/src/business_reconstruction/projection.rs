@@ -78,6 +78,14 @@ struct CapturedStateView<'a> {
 }
 
 impl DurableDomainStateStore for CapturedStateView<'_> {
+    fn get_namespace_lifecycle(
+        &self,
+        _: &DurableOperationContext,
+        _: AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, DurableReadError> {
+        // Captured comparison rows have no persisted namespace authority.
+        Err(DurableReadError::InvalidPersistedState)
+    }
     fn get_versioned_durable(
         &self,
         _operation: &DurableOperationContext,
@@ -894,4 +902,31 @@ pub(super) fn independently_derived_projection(
         &retention,
         false,
     )
+}
+
+/// Selects original owner-validated private rows for inactive installation.
+/// Comparison projection is used ONLY as a closed natural-key membership
+/// registry: its normalized subjects are never decoded or installed. Exact
+/// verified private retention closure is preserved; local signing identities,
+/// ACKs, reservations, cursors and live consensus safety rows are omitted only
+/// by the same owning validation used by the complete source audit.
+pub(super) fn private_import_snapshot(
+    overlay: &BusinessReconstructionOverlay<'_>,
+) -> Result<SourceBusinessSnapshot, BusinessReconstructionError> {
+    if !overlay.reconstruction_complete {
+        return Err(invalid("private import reconstruction is incomplete"));
+    }
+    let mut snapshot: SourceBusinessSnapshot = capture_overlay(overlay)?;
+    let retention: BTreeSet<Vec<u8>> = private_retention_keys(overlay, &snapshot)?;
+    let projection: SemanticProjection = independently_derived_projection(overlay)?;
+    snapshot.records.retain(|row| {
+        projection.contains_key(row.descriptor.key())
+            || matches!(row.descriptor.key(), DurableRecordKey::State(key) if retention.contains(key))
+    });
+    let bounds = super::referenced_blob_bounds(&snapshot)?;
+    snapshot
+        .referenced_blobs
+        .retain(|digest, _| bounds.contains_key(digest));
+    snapshot.validate()?;
+    Ok(snapshot)
 }

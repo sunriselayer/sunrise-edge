@@ -464,6 +464,22 @@ pub(super) fn verify_saved(
     plan: BusinessReconstructionPlan<'_>,
     saved: &SavedBusinessCut,
 ) -> Result<VerifiedBusinessCut, BusinessCutError> {
+    verify_saved_with_overlay(plan, saved).map(|(cut, _, _)| cut)
+}
+
+/// The only raw installation source: an independently executed private store
+/// retained after complete cut and exact package equality, never decoded
+/// SemanticRecord comparison bytes or caller-supplied rows.
+pub(in crate::business_reconstruction) type VerifiedSavedReconstruction<'a> = (
+    VerifiedBusinessCut,
+    BusinessReconstructionOverlay<'a>,
+    BTreeMap<[u8; 32], Vec<u8>>,
+);
+
+pub(in crate::business_reconstruction) fn verify_saved_with_overlay<'a>(
+    plan: BusinessReconstructionPlan<'a>,
+    saved: &SavedBusinessCut,
+) -> Result<VerifiedSavedReconstruction<'a>, BusinessCutError> {
     encode_business_cut_identity(&saved.identity)?;
     encode_business_cut_package(&saved.package)?;
     if saved.identity.context != *plan.genesis.context()
@@ -509,7 +525,7 @@ pub(super) fn verify_saved(
             "saved complete export differs from independently derived business cut",
         ));
     }
-    Ok(expected)
+    Ok((expected, overlay, carriers))
 }
 
 /// Preserve the actual application's proof subset separately from the

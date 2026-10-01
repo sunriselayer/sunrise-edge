@@ -5,8 +5,13 @@
 #[cfg(any(test, feature = "durable-conformance"))]
 pub mod conformance;
 
+pub mod inactive_import;
 pub mod outbox_guard;
 pub mod portable;
+pub use inactive_import::{
+    ImportBatch, ImportBinding, ImportContext, ImportObjectHead, ImportProgress, ImportRow,
+    InactiveImportRepository, NamespaceLifecycle,
+};
 
 use core::{fmt, mem::size_of};
 pub use objects::ObjectId;
@@ -119,6 +124,8 @@ pub enum RuntimeError {
         /// The digest whose stored content disagreed with the attempted put.
         digest: Digest32,
     },
+    /// A bounded import request has an invalid shape or progress relation.
+    InvalidImportRequest,
 }
 
 impl fmt::Display for RuntimeError {
@@ -192,6 +199,7 @@ impl fmt::Display for RuntimeError {
                     "blob digest {digest} is already stored under different content"
                 )
             }
+            Self::InvalidImportRequest => write!(f, "invalid inactive import request"),
         }
     }
 }
@@ -2629,6 +2637,12 @@ pub enum AtomicStateWriteResult {
 /// commit result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DurableCommitRejection {
+    /// Ordinary writes cannot mutate a permanently import-only namespace.
+    InactiveNamespace,
+    /// The immutable import binding differs from this operation.
+    ImportBindingMismatch,
+    /// The exact expected import progress or row contents differed.
+    ImportConflict,
     /// The complete read set no longer matched and no mutation was applied.
     Conflict {
         /// First conflicting key in canonical key order.
@@ -2850,6 +2864,13 @@ pub trait DomainTransactionalStateStore {
 /// context comes from trusted deployment composition. Neither may be selected
 /// by an untrusted transport request.
 pub trait DurableDomainStateStore {
+    /// Reads explicit namespace origin under the current fence and deadline.
+    /// There is deliberately no default ordinary/active implementation.
+    fn get_namespace_lifecycle(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<NamespaceLifecycle, DurableReadError>;
     /// Reads one exact key under the invocation's fence and deadline.
     fn get_versioned_durable(
         &self,
@@ -3469,6 +3490,7 @@ struct PreparedMemoryObjectMutation {
 
 #[derive(Debug)]
 struct MemoryDurableStoreData {
+    lifecycle: NamespaceLifecycle,
     portable_namespace: Vec<u8>,
     mutation_sequences: BTreeMap<[u8; 32], u64>,
     bound_domain: Option<AtomicityDomainId>,
@@ -3567,6 +3589,7 @@ impl MemoryDurableStateStore {
         let portable_namespace: Vec<u8> = allocate_memory_portable_namespace(&NEXT_PORTABLE_STORE);
         Self {
             inner: Arc::new(RwLock::new(MemoryDurableStoreData {
+                lifecycle: NamespaceLifecycle::Ordinary,
                 portable_namespace,
                 mutation_sequences: BTreeMap::new(),
                 bound_domain,
@@ -3878,6 +3901,19 @@ fn apply_memory_object_mutations(
 }
 
 impl DurableDomainStateStore for MemoryDurableStateStore {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<NamespaceLifecycle, DurableReadError> {
+        let data = self
+            .inner
+            .read()
+            .map_err(|_| DurableReadError::Unavailable)?;
+        validate_memory_durable_read_domain(&data, domain)?;
+        validate_memory_durable_read_authority(&data, context)?;
+        Ok(data.lifecycle.clone())
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -3911,6 +3947,9 @@ impl DurableDomainStateStore for MemoryDurableStateStore {
         }
         if let Err(reason) = validate_memory_durable_commit_authority(&data, context) {
             return DurableCommitOutcome::Rejected(reason);
+        }
+        if !data.lifecycle.is_ordinary() {
+            return DurableCommitOutcome::Rejected(DurableCommitRejection::InactiveNamespace);
         }
         let domain = *transaction.domain.as_bytes();
         let state = data.state_domains.get(&domain);
@@ -4006,6 +4045,9 @@ impl StructuredDurableDomainStateStore for MemoryDurableStateStore {
             return DurableCommitOutcome::Rejected(reason);
         }
 
+        if !data.lifecycle.is_ordinary() {
+            return DurableCommitOutcome::Rejected(DurableCommitRejection::InactiveNamespace);
+        }
         let domain = *transaction.domain.as_bytes();
         let request_key = (domain, *transaction.receipt.request_id.as_bytes());
         if data.receipts.contains_key(&request_key) {

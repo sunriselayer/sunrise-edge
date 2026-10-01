@@ -54,17 +54,11 @@ pub const INITIAL_MIGRATION_SQL: &str = include_str!("../migrations/0001_initial
 
 /// Stable identity of the normalized PostgreSQL schema generation one.
 ///
-/// This is `v3`: generation one is redefined in place (not advanced) to add
-/// the namespace-scoped [`blob`] table, an authorized pre-production
-/// bootstrap-only change (following the same `v1`->`v2` precedent, see
-/// `docs/architecture/decisions/0058-0075-postgres-conformance.md` DR-0068).
-/// This crate ships no migration from `v2` to `v3`: an existing `v2` (or
-/// `v1`) database fails closed with `SchemaMismatch` rather than being
-/// silently accepted, exactly as `v1` failed closed under `v2`.
-/// DR-0166 also redefines this unreleased shape in place with a per-bootstrap
-/// UUIDv4 source-instance ID. A pre-production v3 table missing that column
-/// fails closed on inspection/use; no automatic repair or backfill is shipped.
-pub const POSTGRES_SCHEMA_IDENTITY: [u8; 32] = *b"sunrise-edge/postgres/schema/v3\0";
+/// `v4` requires an explicitly initialized Ordinary namespace origin alongside
+/// the local source identity and fence. Import bootstrap is unsupported here.
+/// Older initialized shapes fail closed; no migration, repair or backfill is
+/// shipped for this unreleased schema.
+pub const POSTGRES_SCHEMA_IDENTITY: [u8; 32] = *b"sunrise-edge/postgres/schema/v4\0";
 
 /// First supported schema generation.
 pub const POSTGRES_SCHEMA_GENERATION: SchemaGeneration = SchemaGeneration(NonZeroU64::MIN);
@@ -559,13 +553,14 @@ pub fn bootstrap_namespace(
              compatibility_min_generation,
              compatibility_max_generation,
              writer_fence_generation,
-             commit_sequence
+             commit_sequence,
+             namespace_origin
          ) VALUES (
              $1, $2, $3, $4,
              decode(replace(gen_random_uuid()::text, '-', ''), 'hex'),
              CAST(CAST($5 AS TEXT) AS NUMERIC), $6,
              CAST(CAST($5 AS TEXT) AS NUMERIC), CAST(CAST($5 AS TEXT) AS NUMERIC),
-             CAST(CAST($7 AS TEXT) AS NUMERIC), 0
+             CAST(CAST($7 AS TEXT) AS NUMERIC), 0, 1
          )
          ON CONFLICT (chain_id_bytes, validator_id, atomicity_domain_id) DO NOTHING",
         &[
@@ -670,7 +665,8 @@ pub fn inspect_namespace(
              compatibility_max_generation::TEXT,
              migration_phase_id,
              writer_fence_generation::TEXT,
-             commit_sequence::TEXT
+             commit_sequence::TEXT,
+             namespace_origin
          FROM sunrise_edge.storage_metadata
          WHERE chain_id_bytes = $1
            AND validator_id = $2
@@ -693,11 +689,15 @@ pub fn inspect_namespace(
     let minimum = parse_u64("compatibility_min_generation", row.get(3))?;
     let maximum = parse_u64("compatibility_max_generation", row.get(4))?;
     let migration_phase: i16 = row.get(5);
+    let origin: i16 = row
+        .try_get(8)
+        .map_err(|_| PostgresSchemaError::SchemaMismatch)?;
     if identity.as_slice() != POSTGRES_SCHEMA_IDENTITY
         || generation != POSTGRES_SCHEMA_GENERATION.get()
         || minimum != generation
         || maximum != generation
         || migration_phase != MIGRATION_PHASE_ACTIVE
+        || origin != 1
     {
         return Err(PostgresSchemaError::SchemaMismatch);
     }
@@ -880,7 +880,8 @@ fn load_namespace_metadata(
              compatibility_max_generation::TEXT,
              migration_phase_id,
              writer_fence_generation::TEXT,
-             commit_sequence::TEXT
+             commit_sequence::TEXT,
+             namespace_origin
          FROM sunrise_edge.storage_metadata
          WHERE chain_id_bytes = $1
            AND validator_id = $2
@@ -912,11 +913,15 @@ fn load_namespace_metadata(
     let migration_phase: i16 = row
         .try_get(5)
         .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
+    let origin: i16 = row
+        .try_get(8)
+        .map_err(|_| PreCommitFailure::InvalidPersistedState)?;
     if identity.as_slice() != POSTGRES_SCHEMA_IDENTITY
         || generation != POSTGRES_SCHEMA_GENERATION.get()
         || minimum != generation
         || maximum != generation
         || migration_phase != MIGRATION_PHASE_ACTIVE
+        || origin != 1
     {
         return Err(PreCommitFailure::SchemaMismatch);
     }
@@ -2763,6 +2768,39 @@ impl<M> DurableDomainStateStore for PostgresDurableStore<M>
 where
     M: ManageConnection<Connection = Client, Error = postgres::Error> + 'static,
 {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, DurableReadError> {
+        if !self.domain_is_bound(domain) {
+            return Err(DurableReadError::InvalidRequest(
+                runtime::RuntimeError::AtomicityDomainMismatch,
+            ));
+        }
+        let mut client = self
+            .acquire(context)
+            .map_err(PreCommitFailure::into_read_error)?;
+        let mut transaction = client
+            .build_transaction()
+            .isolation_level(IsolationLevel::Serializable)
+            .read_only(true)
+            .start()
+            .map_err(|error| PreCommitFailure::from_database(&error).into_read_error())?;
+        set_local_timeouts(&mut transaction, context).map_err(PreCommitFailure::into_read_error)?;
+        // load_namespace_metadata checks the mandatory explicit Ordinary origin
+        // alongside schema/context. PG import bootstrap is unsupported.
+        let metadata =
+            load_namespace_metadata(&mut transaction, &self.namespace, MetadataLockMode::None)
+                .map_err(PreCommitFailure::into_read_error)?;
+        validate_operation_authority(metadata, context)
+            .map_err(PreCommitFailure::into_read_error)?;
+        transaction
+            .rollback()
+            .map_err(|error| PreCommitFailure::from_database(&error).into_read_error())?;
+        remaining_deadline(context).map_err(PreCommitFailure::into_read_error)?;
+        Ok(runtime::NamespaceLifecycle::Ordinary)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -3680,7 +3718,7 @@ mod tests {
     fn schema_identity_is_exact_and_generation_is_non_zero() {
         assert_eq!(
             POSTGRES_SCHEMA_IDENTITY,
-            *b"sunrise-edge/postgres/schema/v3\0"
+            *b"sunrise-edge/postgres/schema/v4\0"
         );
         assert_eq!(POSTGRES_SCHEMA_IDENTITY.len(), 32);
         assert_eq!(POSTGRES_SCHEMA_GENERATION.get(), 1);

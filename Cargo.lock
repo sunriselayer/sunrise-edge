@@ -1097,6 +1097,7 @@ dependencies = [
  "runtime",
  "runtime-postgres",
  "runtime-sqlite",
+ "rusqlite",
  "sha2 0.11.0",
  "standard-assets",
  "system-modules",
@@ -1518,6 +1519,7 @@ dependencies = [
 name = "runtime"
 version = "0.1.0"
 dependencies = [
+ "canonical-encoding",
  "hashing",
  "objects",
  "protocol-types",

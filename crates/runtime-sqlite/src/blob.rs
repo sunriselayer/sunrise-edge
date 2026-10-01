@@ -20,6 +20,7 @@
 //! lock. This module defines no delete or garbage-collection operation;
 //! GC/checkpoint manifest work that would reclaim blobs remains deferred.
 
+use crate::native_files;
 use protocol_types::Digest32;
 use runtime::portable::{
     PortableBlobChunk, PortableBlobChunkOutcome, PortableBlobChunkRequest, PortableBlobDescriptor,
@@ -52,6 +53,8 @@ pub const SQLITE_BLOB_SCHEMA_IDENTITY: &[u8] = b"sunrise-edge/sqlite/blob/schema
 /// from the [`RuntimeError`] surface [`BlobStore`] methods return.
 #[derive(Debug)]
 pub enum SqliteBlobStoreError {
+    /// Import file ownership failed; no existing path is replaced.
+    File(std::io::Error),
     /// SQLite rejected an operation.
     Database(rusqlite::Error),
     /// The database could not enter WAL mode.
@@ -73,6 +76,7 @@ pub enum SqliteBlobStoreError {
 impl fmt::Display for SqliteBlobStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::File(error) => write!(f, "SQLite blob file operation failed: {error}"),
             Self::Database(error) => write!(f, "SQLite operation failed: {error}"),
             Self::UnsupportedJournalMode(mode) => {
                 write!(f, "SQLite journal mode is {mode}, expected wal")
@@ -102,6 +106,7 @@ impl fmt::Display for SqliteBlobStoreError {
 impl Error for SqliteBlobStoreError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::File(error) => Some(error),
             Self::Database(error) => Some(error),
             _ => None,
         }
@@ -126,6 +131,61 @@ pub struct SqliteBlobStore {
 }
 
 impl SqliteBlobStore {
+    /// Creates only a new regular import artifact file. Existing files,
+    /// including initialized source stores, are never overwritten or repaired.
+    pub fn create_new(path: impl AsRef<Path>) -> Result<Self, SqliteBlobStoreError> {
+        let path: &Path = path.as_ref();
+        let held = native_files::create_new(path).map_err(SqliteBlobStoreError::File)?;
+        let mut connection: Connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        configure_writable(&connection)?;
+        native_files::check_attached(path, &held).map_err(SqliteBlobStoreError::File)?;
+        let journal: String =
+            connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
+        if !journal.eq_ignore_ascii_case("wal") {
+            return Err(SqliteBlobStoreError::UnsupportedJournalMode(journal));
+        }
+        initialize_blob_schema(&mut connection)?;
+        verify_writable_shape(&connection)?;
+        native_files::sync_created(path, &held).map_err(SqliteBlobStoreError::File)?;
+        Ok(Self {
+            connection: Mutex::new(connection),
+        })
+    }
+
+    /// Opens an initialized writable destination without creating a file,
+    /// schema or lost marker. Source `open_existing` remains read-only.
+    pub fn open_existing_writable(path: impl AsRef<Path>) -> Result<Self, SqliteBlobStoreError> {
+        let path: &Path = path.as_ref();
+        let held = native_files::open_existing(path).map_err(SqliteBlobStoreError::File)?;
+        let connection: Connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        configure_writable(&connection)?;
+        let application: i64 =
+            connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
+        if application != BLOB_APPLICATION_ID {
+            return Err(SqliteBlobStoreError::ApplicationId(application));
+        }
+        let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if version != BLOB_SCHEMA_VERSION {
+            return Err(SqliteBlobStoreError::SchemaVersion(version));
+        }
+        let journal: String = connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        if !journal.eq_ignore_ascii_case("wal") {
+            return Err(SqliteBlobStoreError::UnsupportedJournalMode(journal));
+        }
+        verify_schema_identity(&connection)?;
+        verify_writable_shape(&connection)?;
+        native_files::check_attached(path, &held).map_err(SqliteBlobStoreError::File)?;
+        Ok(Self {
+            connection: Mutex::new(connection),
+        })
+    }
+
     /// Opens an already initialized blob file without creating or seeding it.
     pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, SqliteBlobStoreError> {
         let connection: Connection = Connection::open_with_flags(
@@ -178,15 +238,30 @@ impl SqliteBlobStore {
     }
 }
 
+fn configure_writable(connection: &Connection) -> Result<(), SqliteBlobStoreError> {
+    connection.busy_timeout(BLOB_BUSY_TIMEOUT)?;
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    connection.pragma_update(None, "trusted_schema", "OFF")?;
+    connection.pragma_update(None, "synchronous", "FULL")?;
+    Ok(())
+}
+fn verify_writable_shape(connection: &Connection) -> Result<(), SqliteBlobStoreError> {
+    connection.prepare("SELECT digest_algorithm, digest_bytes, content FROM blobs LIMIT 0")?;
+    Ok(())
+}
+
 impl BlobStore for SqliteBlobStore {
     fn put_blob(&self, digest: Digest32, bytes: Vec<u8>) -> Result<(), RuntimeError> {
         let mut connection = self.connection().map_err(runtime_failure)?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(database_failure)?;
-        let existing: Option<Vec<u8>> = transaction
+        // An external descriptor observation can race another connection's
+        // insertion. Recheck length under this writer transaction before
+        // allocating any existing payload; the supplied bytes bound the read.
+        let existing_length: Option<i64> = transaction
             .query_row(
-                "SELECT content FROM blobs WHERE digest_algorithm = ?1 AND digest_bytes = ?2",
+                "SELECT length(content) FROM blobs WHERE digest_algorithm = ?1 AND digest_bytes = ?2",
                 params![
                     i64::from(digest.algorithm().as_u16()),
                     digest.bytes().as_slice(),
@@ -195,14 +270,30 @@ impl BlobStore for SqliteBlobStore {
             )
             .optional()
             .map_err(database_failure)?;
-        match existing {
-            Some(content) if content == bytes => {
+        match existing_length {
+            Some(length) => {
+                let length: usize =
+                    usize::try_from(length).map_err(|_| RuntimeError::InvalidPersistedState)?;
+                if length != bytes.len() {
+                    transaction.rollback().map_err(database_failure)?;
+                    return Err(RuntimeError::BlobDigestConflict { digest });
+                }
+                let content: Vec<u8> = transaction
+                    .query_row(
+                        "SELECT content FROM blobs WHERE digest_algorithm = ?1 AND digest_bytes = ?2",
+                        params![
+                            i64::from(digest.algorithm().as_u16()),
+                            digest.bytes().as_slice(),
+                        ],
+                        |row| row.get(0),
+                    )
+                    .map_err(database_failure)?;
                 transaction.rollback().map_err(database_failure)?;
-                Ok(())
-            }
-            Some(_) => {
-                transaction.rollback().map_err(database_failure)?;
-                Err(RuntimeError::BlobDigestConflict { digest })
+                if content == bytes {
+                    Ok(())
+                } else {
+                    Err(RuntimeError::BlobDigestConflict { digest })
+                }
             }
             None => {
                 transaction
@@ -458,6 +549,99 @@ mod tests {
     }
 
     #[test]
+    fn inactive_import_blob_create_and_writable_reopen_never_repair_or_overwrite() {
+        let database: TestDatabase = TestDatabase::new();
+        assert!(SqliteBlobStore::open_existing_writable(&database.path).is_err());
+        assert!(!database.path.exists());
+        let store: SqliteBlobStore = SqliteBlobStore::create_new(&database.path).unwrap();
+        store.put_blob(digest(7), vec![1, 2, 3]).unwrap();
+        assert!(SqliteBlobStore::create_new(&database.path).is_err());
+        drop(store);
+        let reopened: SqliteBlobStore =
+            SqliteBlobStore::open_existing_writable(&database.path).unwrap();
+        assert_eq!(reopened.get_blob(&digest(7)).unwrap(), Some(vec![1, 2, 3]));
+        reopened.put_blob(digest(8), vec![4, 5, 6]).unwrap();
+        assert_eq!(
+            reopened.put_blob(digest(7), vec![9]),
+            Err(RuntimeError::BlobDigestConflict { digest: digest(7) })
+        );
+        drop(reopened);
+        let source: SqliteBlobStore = SqliteBlobStore::open_existing(&database.path).unwrap();
+        assert!(
+            source.put_blob(digest(9), vec![7]).is_err(),
+            "existing source API stays read-only"
+        );
+        drop(source);
+        let connection: Connection = Connection::open(&database.path).unwrap();
+        connection.execute("DELETE FROM blob_metadata", []).unwrap();
+        assert!(SqliteBlobStore::open_existing_writable(&database.path).is_err());
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM blob_metadata", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM blobs", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        connection.execute("DROP TABLE blob_metadata", []).unwrap();
+        assert!(SqliteBlobStore::open_existing_writable(&database.path).is_err());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_schema WHERE name = 'blob_metadata'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inactive_import_blob_symlinks_refuse_and_preserve_referenced_file() {
+        let database: TestDatabase = TestDatabase::new();
+        let link: TestDatabase = TestDatabase::new();
+        let store: SqliteBlobStore = SqliteBlobStore::create_new(&database.path).unwrap();
+        store.put_blob(digest(7), vec![1, 2, 3]).unwrap();
+        drop(store);
+        std::os::unix::fs::symlink(&database.path, &link.path).unwrap();
+        assert!(SqliteBlobStore::create_new(&link.path).is_err());
+        assert!(SqliteBlobStore::open_existing_writable(&link.path).is_err());
+        assert_eq!(
+            SqliteBlobStore::open_existing(&database.path)
+                .unwrap()
+                .get_blob(&digest(7))
+                .unwrap(),
+            Some(vec![1, 2, 3])
+        );
+    }
+
+    #[test]
+    fn inactive_import_blob_missing_payload_table_is_not_recreated() {
+        let database: TestDatabase = TestDatabase::new();
+        drop(SqliteBlobStore::create_new(&database.path).unwrap());
+        let connection: Connection = Connection::open(&database.path).unwrap();
+        connection.execute("DROP TABLE blobs", []).unwrap();
+        assert!(SqliteBlobStore::open_existing_writable(&database.path).is_err());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_schema WHERE name = 'blobs'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
     fn put_and_get_survive_reopen() {
         let database = TestDatabase::new();
         let content_digest = digest(0x01);
@@ -528,6 +712,113 @@ mod tests {
             }
         );
         assert_eq!(store.get_blob(&content_digest).unwrap(), Some(vec![1, 1]));
+    }
+
+    #[test]
+    fn put_rechecks_raced_length_inside_transaction_with_two_writable_handles() {
+        let database: TestDatabase = TestDatabase::new();
+        let target: SqliteBlobStore = SqliteBlobStore::create_new(&database.path).unwrap();
+        let other: SqliteBlobStore =
+            SqliteBlobStore::open_existing_writable(&database.path).unwrap();
+        let oversized: Digest32 = digest(0x71);
+        assert_eq!(
+            target.read_portable_blob_descriptor(&oversized).unwrap(),
+            None
+        );
+        // Deterministic race: another handle inserts after descriptor absence
+        // was observed, before put starts its own writer transaction. SQLite
+        // creates the legal generic blob without allocating it in Rust.
+        let large_length: usize = 32 * 1024 * 1024 + 1;
+        other
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO blobs (digest_algorithm, digest_bytes, content)
+                 VALUES (?1, ?2, zeroblob(?3))",
+                params![
+                    i64::from(oversized.algorithm().as_u16()),
+                    oversized.bytes().as_slice(),
+                    i64::try_from(large_length).unwrap(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            target.put_blob(oversized, vec![1, 2, 3]),
+            Err(RuntimeError::BlobDigestConflict { digest: oversized })
+        );
+        let descriptor: PortableBlobDescriptor = other
+            .read_portable_blob_descriptor(&oversized)
+            .unwrap()
+            .unwrap();
+        assert_eq!(descriptor.length(), large_length);
+        let request: PortableBlobChunkRequest =
+            PortableBlobChunkRequest::new(descriptor, 0, std::num::NonZeroUsize::new(3).unwrap())
+                .unwrap();
+        let observed: PortableBlobChunkOutcome = other.read_portable_blob_chunk(&request).unwrap();
+        let PortableBlobChunkOutcome::Chunk(chunk) = observed else {
+            panic!("raced blob was modified or lost");
+        };
+        assert_eq!(chunk.bytes(), &[0, 0, 0]);
+
+        let same_length: Digest32 = digest(0x72);
+        assert_eq!(
+            target.read_portable_blob_descriptor(&same_length).unwrap(),
+            None
+        );
+        other.put_blob(same_length, vec![4, 5, 6]).unwrap();
+        assert_eq!(
+            target.put_blob(same_length, vec![7, 8, 9]),
+            Err(RuntimeError::BlobDigestConflict {
+                digest: same_length
+            })
+        );
+        target.put_blob(same_length, vec![4, 5, 6]).unwrap();
+        assert_eq!(other.get_blob(&same_length).unwrap(), Some(vec![4, 5, 6]));
+    }
+
+    #[test]
+    fn put_refuses_equal_length_corrupt_content_without_repair() {
+        let database: TestDatabase = TestDatabase::new();
+        let target: SqliteBlobStore = SqliteBlobStore::create_new(&database.path).unwrap();
+        let other: SqliteBlobStore =
+            SqliteBlobStore::open_existing_writable(&database.path).unwrap();
+        let content_digest: Digest32 = digest(0x73);
+        target.put_blob(content_digest, vec![1, 2, 3]).unwrap();
+        let before: PortableBlobDescriptor = target
+            .read_portable_blob_descriptor(&content_digest)
+            .unwrap()
+            .unwrap();
+        assert_eq!(before.length(), 3);
+        other
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE blobs SET content = 'abc'
+                 WHERE digest_algorithm = ?1 AND digest_bytes = ?2",
+                params![
+                    i64::from(content_digest.algorithm().as_u16()),
+                    content_digest.bytes().as_slice(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            target.put_blob(content_digest, vec![1, 2, 3]),
+            Err(RuntimeError::DurableStoreUnavailable)
+        );
+        let retained: (String, String) = other
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT typeof(content), content FROM blobs
+                 WHERE digest_algorithm = ?1 AND digest_bytes = ?2",
+                params![
+                    i64::from(content_digest.algorithm().as_u16()),
+                    content_digest.bytes().as_slice(),
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(retained, ("text".to_owned(), "abc".to_owned()));
     }
 
     #[test]

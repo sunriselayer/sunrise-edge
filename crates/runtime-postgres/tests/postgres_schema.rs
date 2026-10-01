@@ -1092,10 +1092,10 @@ fn postgres_schema_and_durable_store_conformance() {
         "INSERT INTO sunrise_edge.storage_metadata (
              chain_id_bytes, validator_id, atomicity_domain_id, schema_identity, source_instance_id,
              schema_generation, migration_phase_id, compatibility_min_generation,
-             compatibility_max_generation, writer_fence_generation, commit_sequence
+             compatibility_max_generation, writer_fence_generation, commit_sequence, namespace_origin
          ) SELECT
              $1, $2, $3, schema_identity,
-             decode(replace(gen_random_uuid()::text, '-', ''), 'hex'), 1, 5, 1, 1, 1, 0
+             decode(replace(gen_random_uuid()::text, '-', ''), 'hex'), 1, 5, 1, 1, 1, 0, 1
          FROM sunrise_edge.schema_migrations WHERE migration_id = 1",
         &[
             &b"zero-domain".as_slice(),
@@ -1216,6 +1216,64 @@ fn postgres_schema_and_durable_store_conformance() {
         initial_fence,
         StorageDeadline::new(now_millis + 60_000).unwrap(),
         StorageCorrelationId::new([0x61; 16]).unwrap(),
+    );
+    assert_eq!(
+        store
+            .get_namespace_lifecycle(&context, namespace.domain())
+            .unwrap(),
+        runtime::NamespaceLifecycle::Ordinary
+    );
+    assert!(matches!(
+        store.get_namespace_lifecycle(&context, AtomicityDomainId::new([0x93; 32]).unwrap()),
+        Err(DurableReadError::InvalidRequest(_))
+    ));
+    let stale_lifecycle_context: DurableOperationContext = DurableOperationContext::new(
+        WriterFenceGeneration::new(6).unwrap(),
+        context.deadline(),
+        context.correlation_id(),
+    );
+    assert!(matches!(
+        store.get_namespace_lifecycle(&stale_lifecycle_context, namespace.domain()),
+        Err(DurableReadError::WriterFenced { .. })
+    ));
+    let origin: i16 = client
+        .query_one(
+            "SELECT namespace_origin FROM sunrise_edge.storage_metadata
+        WHERE chain_id_bytes = $1 AND validator_id = $2 AND atomicity_domain_id = $3",
+            &[
+                &namespace.chain_id_bytes(),
+                &&namespace.validator_id().as_bytes()[..],
+                &&namespace.domain().as_bytes()[..],
+            ],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        origin, 1,
+        "Ordinary origin is explicitly initialized, not an adapter default"
+    );
+    client.batch_execute("ALTER TABLE sunrise_edge.storage_metadata RENAME COLUMN namespace_origin TO temporarily_missing_origin").unwrap();
+    assert!(
+        store
+            .get_namespace_lifecycle(&context, namespace.domain())
+            .is_err()
+    );
+    assert!(
+        bootstrap_namespace(
+            &mut client,
+            &namespace,
+            POSTGRES_SCHEMA_GENERATION,
+            initial_fence
+        )
+        .is_err(),
+        "missing new origin is never backfilled by bootstrap"
+    );
+    client.batch_execute("ALTER TABLE sunrise_edge.storage_metadata RENAME COLUMN temporarily_missing_origin TO namespace_origin").unwrap();
+    assert_eq!(
+        store
+            .get_namespace_lifecycle(&context, namespace.domain())
+            .unwrap(),
+        runtime::NamespaceLifecycle::Ordinary
     );
     let state_key = b"application/state".to_vec();
     let missing = store

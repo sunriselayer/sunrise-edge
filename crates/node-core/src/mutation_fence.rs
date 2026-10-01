@@ -46,6 +46,28 @@ use local_instance_state::{
 };
 #[cfg(test)]
 use local_instance_state::{encode_fastpath_epoch_record, encode_fastpath_lock_record};
+use runtime::DurableDomainStateStore;
+
+/// Entry-specific live admission guard. The backend validates the current
+/// writer fence, deadline and immutable origin on this read, and rechecks it
+/// atomically on every ordinary commit. Ordinary is a storage-origin check,
+/// NOT proof of membership, readiness or active serving authority. A host can
+/// use this before exposing a live cached protocol response; shared historical
+/// inspection remains legal. Exact original business receipt reconciliation
+/// runs before this check on business mutation routes.
+pub fn require_ordinary_namespace<S: DurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+) -> Result<(), NodeCoreError> {
+    if !store
+        .get_namespace_lifecycle(context, domain)?
+        .is_ordinary()
+    {
+        return Err(NodeCoreError::InactiveImportNamespace);
+    }
+    Ok(())
+}
 
 /// Reads one durable value and records its revision as a CAS precondition,
 /// exactly like `local_execution::read_state`, but returning [`NodeCoreError`]
@@ -81,6 +103,7 @@ pub(crate) fn fence_direct_or_ordered_writer<S: StructuredDurableDomainStateStor
     ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<(), NodeCoreError> {
+    require_ordinary_namespace(store, context, domain)?;
     match ordered {
         Some(admission) if &admission.request_id == request_id => {
             fence_installed_external_request_lane(

@@ -15,12 +15,14 @@
 //! crate does not make network filesystems or serverless ephemeral disks durable.
 
 mod blob;
+mod native_files;
 mod rusqlite_backend;
 mod structured;
 
 pub use blob::{SQLITE_BLOB_SCHEMA_IDENTITY, SqliteBlobStore, SqliteBlobStoreError};
 pub use structured::{
-    SQLITE_STRUCTURED_SCHEMA_IDENTITY, SqliteDurableStore, SqliteDurableStoreError, SqliteNamespace,
+    SQLITE_STRUCTURED_SCHEMA_IDENTITY, SqliteDurableStore, SqliteDurableStoreError,
+    SqliteImportTarget, SqliteNamespace,
 };
 
 use runtime::{

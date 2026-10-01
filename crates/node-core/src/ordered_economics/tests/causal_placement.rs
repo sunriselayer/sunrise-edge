@@ -1739,6 +1739,13 @@ struct PaidHeadRaceStore<'a> {
 }
 
 impl DurableDomainStateStore for PaidHeadRaceStore<'_> {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
+        self.fixture.network.stores[self.replica].get_namespace_lifecycle(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,

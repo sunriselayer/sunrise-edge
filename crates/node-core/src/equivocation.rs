@@ -404,6 +404,7 @@ fn commit_new_evidence<S: StructuredDurableDomainStateStore>(
     // function and remains legal; fresh submission can resume after the next
     // epoch activates. Fence the current epoch and its admission closure in
     // the same commit as the evidence row, not the offense epoch's closure.
+    mutation_fence::require_ordinary_namespace(store, context, domain)?;
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     reads.insert(key.clone(), observed_revision);
     match ordered {

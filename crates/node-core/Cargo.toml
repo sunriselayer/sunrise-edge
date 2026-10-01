@@ -23,6 +23,7 @@ validator-set.workspace = true
 [dev-dependencies]
 sha2.workspace = true
 runtime-sqlite.workspace = true
+rusqlite.workspace = true
 runtime-postgres.workspace = true
 postgres.workspace = true
 r2d2_postgres.workspace = true

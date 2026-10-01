@@ -2839,6 +2839,13 @@ impl IndeterminateOnceApplyStore {
     }
 }
 impl runtime::DurableDomainStateStore for IndeterminateOnceApplyStore {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
+        self.inner.get_namespace_lifecycle(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -5104,6 +5111,13 @@ pub(crate) struct AmbiguousCommitStore<'a> {
 }
 
 impl runtime::DurableDomainStateStore for AmbiguousCommitStore<'_> {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
+        self.inner.get_namespace_lifecycle(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -5702,6 +5716,13 @@ impl IndeterminateCommitStore {
 }
 
 impl runtime::DurableDomainStateStore for IndeterminateCommitStore {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, runtime::DurableReadError> {
+        self.inner.get_namespace_lifecycle(context, domain)
+    }
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,

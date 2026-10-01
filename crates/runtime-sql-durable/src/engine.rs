@@ -8,6 +8,7 @@
 //! and rejection rules by construction, never two independently
 //! maintained copies.
 
+mod inactive_import;
 mod outbox_guard;
 mod portable;
 
@@ -135,6 +136,7 @@ impl From<schema::SchemaError> for PreCommitFailure {
             schema::SchemaError::WriterFenceMismatch { .. } => Self::InvalidPersistedState,
             schema::SchemaError::MutationSequenceOverflow => Self::MutationSequenceOverflow,
             schema::SchemaError::MutationSequenceConflict => Self::InvalidPersistedState,
+            schema::SchemaError::InactiveNamespace => Self::InvalidPersistedState,
         }
     }
 }
@@ -1334,6 +1336,24 @@ impl<B: SqlBackend> SqlDurableEngine<B> {
 }
 
 impl<B: SqlBackend> DurableDomainStateStore for SqlDurableEngine<B> {
+    fn get_namespace_lifecycle(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::NamespaceLifecycle, DurableReadError> {
+        if !self.domain_is_bound(domain) {
+            return Err(DurableReadError::InvalidRequest(
+                RuntimeError::AtomicityDomainMismatch,
+            ));
+        }
+        run_read(&self.backend, Self::budget(context), |session, now| {
+            let metadata = schema::verify_namespace(session, &self.namespace)?;
+            validate_authority(&metadata, context, now)?;
+            Ok(metadata.lifecycle().clone())
+        })
+        .map_err(PreCommitFailure::into_read_error)
+    }
+
     fn get_versioned_durable(
         &self,
         context: &DurableOperationContext,
@@ -1376,6 +1396,9 @@ impl<B: SqlBackend> DurableDomainStateStore for SqlDurableEngine<B> {
                         .map_err(|error| PreCommitFailure::from(error).into_commit_rejection())?;
                     validate_authority(&metadata, context, now)
                         .map_err(PreCommitFailure::into_commit_rejection)?;
+                    if !metadata.lifecycle().is_ordinary() {
+                        return Err(DurableCommitRejection::InactiveNamespace);
+                    }
                     validate_state_reads(session, transaction.reads())?;
                     schema::advance_mutation_sequence(session, metadata.mutation_sequence())
                         .map_err(|error| PreCommitFailure::from(error).into_commit_rejection())?;
@@ -1476,6 +1499,9 @@ impl<B: SqlBackend> StructuredDurableDomainStateStore for SqlDurableEngine<B> {
                         .map_err(|error| PreCommitFailure::from(error).into_commit_rejection())?;
                     validate_authority(&metadata, context, now)
                         .map_err(PreCommitFailure::into_commit_rejection)?;
+                    if !metadata.lifecycle().is_ordinary() {
+                        return Err(DurableCommitRejection::InactiveNamespace);
+                    }
                     let receipt = invocation.receipt();
                     if receipt_exists(session, receipt.request_id())
                         .map_err(PreCommitFailure::into_commit_rejection)?

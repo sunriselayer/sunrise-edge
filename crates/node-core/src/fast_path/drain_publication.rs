@@ -546,6 +546,7 @@ pub fn retain_drain_publication<S: StructuredDurableDomainStateStore>(
         return Err(NodeCoreError::PersistenceInvariant("resolver history bound").into());
     }
     let bundle: PublicationBundle = decode_publication_bundle(bundle_bytes)?;
+    crate::mutation_fence::require_ordinary_namespace(store, context, domain)?;
     let chain: ChainId = expected.chain_id().clone();
     let epoch: Epoch = expected.epoch();
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
