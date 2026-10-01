@@ -127,6 +127,10 @@ pub enum CommitmentProfile {
     /// observations plus an authenticated [`ExecutionGeneration`], and semantic
     /// monotonicity is that generation.
     LogicalGenerationV2,
+    /// Fresh signed-v4 genesis: logical generations plus disjoint external
+    /// request lanes and certified causal business admission. Historical
+    /// logical witnesses keep their exact version-two interpretation.
+    CausalAdmission,
 }
 
 impl CommitmentProfile {
@@ -136,13 +140,14 @@ impl CommitmentProfile {
         match self {
             Self::PhysicalCheckpointV1 => 1,
             Self::LogicalGenerationV2 => 2,
+            Self::CausalAdmission => 3,
         }
     }
 
     /// True when this profile derives, signs and enforces logical generations.
     #[must_use]
     pub const fn is_logical(self) -> bool {
-        matches!(self, Self::LogicalGenerationV2)
+        matches!(self, Self::LogicalGenerationV2 | Self::CausalAdmission)
     }
 
     /// Strictly decodes a wire tag; an unknown tag fails closed.
@@ -152,6 +157,9 @@ impl CommitmentProfile {
         }
         if value == 2 {
             return Ok(Self::LogicalGenerationV2);
+        }
+        if value == 3 {
+            return Ok(Self::CausalAdmission);
         }
         Err(NodeCoreError::PersistenceInvariant(
             "unknown commitment profile tag",
@@ -1900,6 +1908,27 @@ fn verify_installed_genesis_binding<S: StructuredDurableDomainStateStore>(
             "logical profile bytes differ from signed genesis",
         ));
     }
+    if record.profile == CommitmentProfile::CausalAdmission {
+        let marker_key: Vec<u8> = crate::genesis::genesis_marker_key(&record.context)
+            .map_err(|_| provenance_error("causal profile genesis marker key"))?;
+        let marker_row: VersionedStateValue =
+            store.get_versioned_durable(context, domain, &marker_key)?;
+        let marker: crate::genesis::GenesisInstallMarker =
+            crate::genesis::decode_genesis_install_marker(
+                marker_row
+                    .value()
+                    .ok_or(provenance_error("causal profile genesis marker is missing"))?,
+            )
+            .map_err(|_| provenance_error("causal profile genesis marker is malformed"))?;
+        if marker.context != record.context
+            || marker.manifest_digest != record.manifest_digest
+            || marker.genesis_authority != record.genesis_authority
+        {
+            return Err(provenance_error(
+                "causal profile genesis marker binding differs",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1925,6 +1954,13 @@ pub fn encode_logical_profile_record(
 ) -> Result<Vec<u8>, NodeCoreError> {
     if record.minimum_freeze_block_height != 0 && !record.profile.is_logical() {
         return Err(invariant("Freeze profile requires LogicalGenerationV2"));
+    }
+    if record.profile == CommitmentProfile::CausalAdmission
+        && record.minimum_freeze_block_height == 0
+    {
+        return Err(invariant(
+            "causal admission requires a positive Freeze height",
+        ));
     }
     let context: Vec<u8> = encode_publication_context(&record.context)
         .map_err(|_| NodeCoreError::PersistenceInvariant(PROFILE_CONTEXT))?;

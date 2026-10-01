@@ -470,6 +470,130 @@ pub(crate) fn freeze_bonded_manifest() -> GenesisManifest {
     manifest
 }
 
+pub(crate) fn causal_bonded_manifest() -> GenesisManifest {
+    let mut manifest: GenesisManifest = freeze_bonded_manifest();
+    manifest.commitment_profile = CommitmentProfile::CausalAdmission;
+    resign_manifest(&mut manifest);
+    manifest
+}
+
+#[test]
+fn fresh_v4_binds_causal_profile_positive_freeze_height_and_separate_signature_domain() {
+    let causal: GenesisManifest = causal_bonded_manifest();
+    let bytes: Vec<u8> = encode_genesis_manifest(&causal).unwrap();
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(&bytes).unwrap();
+    assert_eq!(frame.version(), GENESIS_MANIFEST_CAUSAL_VERSION);
+    frame
+        .require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+        .unwrap();
+    assert_eq!(frame.required_u16(9).unwrap(), 3);
+    assert!(frame.required_u64(10).unwrap() > 0);
+    assert_eq!(causal.signature_message_type(), "genesis-manifest-v4");
+    assert_eq!(decode_genesis_manifest(&bytes).unwrap(), causal);
+    let verifier: Ed25519Verifier =
+        Ed25519Verifier::from_verifying_key_bytes(&causal.genesis_authority).unwrap();
+    for legacy in [logical_bonded_manifest(), freeze_bonded_manifest()] {
+        assert!(
+            !verifier
+                .verify_framed(
+                    &genesis_manifest_signing_frame(&causal).unwrap(),
+                    &legacy.signature
+                )
+                .unwrap()
+        );
+        assert!(
+            !verifier
+                .verify_framed(
+                    &genesis_manifest_signing_frame(&legacy).unwrap(),
+                    &causal.signature
+                )
+                .unwrap()
+        );
+    }
+    for version in [
+        GENESIS_MANIFEST_LOGICAL_VERSION,
+        GENESIS_MANIFEST_FREEZE_VERSION,
+    ] {
+        let mut relabeled: CanonicalStruct =
+            CanonicalStruct::new(GENESIS_MANIFEST_FRAME_TYPE, version);
+        for field_id in 1_u16..=9 {
+            relabeled
+                .field_bytes(field_id, frame.required_field(field_id).unwrap())
+                .unwrap();
+        }
+        if version == GENESIS_MANIFEST_FREEZE_VERSION {
+            relabeled
+                .field_bytes(10, frame.required_field(10).unwrap())
+                .unwrap();
+        }
+        assert!(decode_genesis_manifest(&relabeled.finish().unwrap()).is_err());
+    }
+    let mut zero: GenesisManifest = causal;
+    zero.minimum_freeze_block_height = 0;
+    assert!(encode_genesis_manifest(&zero).is_err());
+    assert!(genesis_manifest_signing_frame(&zero).is_err());
+}
+
+#[test]
+fn fresh_v4_install_reopen_and_no_implicit_upgrade_preserve_installed_bytes() {
+    let manifest: GenesisManifest = causal_bonded_manifest();
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    assert!(matches!(
+        install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap(),
+        GenesisInstallOutcome::FreshInstall { .. }
+    ));
+    let key: Vec<u8> = logical_profile_key(&chain()).unwrap();
+    let before: VersionedStateValue = store
+        .get_versioned_durable(&context(1), domain(), &key)
+        .unwrap();
+    assert_eq!(
+        before.value(),
+        Some(expected_profile_row(&manifest).as_slice())
+    );
+    assert_eq!(
+        decode_canonical_frame(before.value().unwrap())
+            .unwrap()
+            .version(),
+        2
+    );
+    assert!(matches!(
+        install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 99).unwrap(),
+        GenesisInstallOutcome::VerifiedExisting { .. }
+    ));
+    assert_eq!(
+        store
+            .get_versioned_durable(&context(1), domain(), &key)
+            .unwrap(),
+        before
+    );
+    for legacy in [logical_bonded_manifest(), freeze_bonded_manifest()] {
+        let historical: MemoryDurableStateStore =
+            MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+        install_genesis(&historical, &context(1), domain(), &resolver(), &legacy, 10).unwrap();
+        let old: VersionedStateValue = historical
+            .get_versioned_durable(&context(1), domain(), &key)
+            .unwrap();
+        assert!(
+            install_genesis(
+                &historical,
+                &context(1),
+                domain(),
+                &resolver(),
+                &manifest,
+                10
+            )
+            .is_err()
+        );
+        assert_eq!(
+            historical
+                .get_versioned_durable(&context(1), domain(), &key)
+                .unwrap(),
+            old
+        );
+    }
+}
+
 /// Commits one raw state row, fenced at its exact observed revision.
 pub(crate) fn put_state(store: &MemoryDurableStateStore, key: &[u8], value: Vec<u8>) {
     let observed: VersionedStateValue = store

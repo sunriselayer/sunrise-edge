@@ -41,6 +41,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use system_modules::{ModuleId, SystemModule, SystemModuleError};
 
+pub mod admission_profile;
 mod authenticated_object_effects;
 pub mod bond_lifecycle;
 mod durable_reconciliation;

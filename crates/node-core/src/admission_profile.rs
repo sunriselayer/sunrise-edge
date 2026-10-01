@@ -1,0 +1,389 @@
+//! Signed-genesis external-request lanes and fresh direct-writer boundary.
+//!
+//! The profile tag alone is descriptive, not authority. Pure authentication
+//! accepts only [`VerifiedAdmissionProfile`], constructed by verifying a locally
+//! pinned signed genesis. Mutating paths additionally fence that installed
+//! binding. These configuration CAS reads are not business witness operands:
+//! local install-marker checkpoints must never change a certified commitment.
+use std::collections::BTreeMap;
+
+use crypto::{
+    Ed25519OwnerAddressPolicy, Ed25519Verifier, SignatureVerifier, validate_ed25519_owner_address,
+};
+use execution::publication::PublicationContext;
+use hashing::HashSuiteResolver;
+use protocol_types::{Digest32, HashPurpose};
+use runtime::{
+    AtomicityDomainId, DurableOperationContext, StateRevision, StructuredDurableDomainStateStore,
+    VersionedStateValue,
+};
+
+use crate::NodeCoreError;
+use crate::genesis::{
+    GenesisInstallMarker, GenesisManifest, decode_genesis_install_marker, decode_genesis_manifest,
+    encode_genesis_manifest, genesis_manifest_commitment, genesis_manifest_key,
+    genesis_manifest_signing_frame, genesis_marker_key,
+};
+use crate::logical_generation::{
+    CommitmentProfile, InstalledCommitmentProfile, LogicalProfileRecord, fence_commitment_profile,
+    logical_profile_key,
+};
+
+#[cfg(test)]
+mod tests;
+
+/// Disjoint original external request identities in the fresh causal profile.
+/// Internal synthetic prepare identities remain excluded in both lanes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalRequestLane {
+    /// Standalone owned paid intent: the most significant bit is zero.
+    Owned,
+    /// Ordered candidate, including embedded legs: the bit is one.
+    Ordered,
+}
+
+/// A privately constructed signed-genesis profile, rooted in a local digest pin.
+///
+/// This is not an execution certificate or bootstrap-effects proof. Its context
+/// is the original genesis context, not a caller-selected current epoch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedAdmissionProfile {
+    profile: CommitmentProfile,
+    context: PublicationContext,
+    genesis_digest: Digest32,
+    genesis_authority: [u8; 32],
+    minimum_freeze_block_height: u64,
+}
+
+impl VerifiedAdmissionProfile {
+    /// Verifies bounded canonical manifest bytes, the local digest pin and the
+    /// authority's profile-specific signature. The pin must be trusted local
+    /// composition; accepting a peer-selected pin does not establish trust.
+    pub fn from_pinned_genesis(
+        resolver: &HashSuiteResolver,
+        manifest: &GenesisManifest,
+        pinned_digest: Digest32,
+    ) -> Result<Self, NodeCoreError> {
+        if manifest.context().chain_id() != resolver.chain_id()
+            || manifest.context().protocol_version() != resolver.protocol_version()
+        {
+            return Err(invalid("admission profile resolver context differs"));
+        }
+        let bytes: Vec<u8> = encode_genesis_manifest(manifest)
+            .map_err(|_| invalid("admission profile genesis encoding"))?;
+        let decoded: GenesisManifest = decode_genesis_manifest(&bytes)
+            .map_err(|_| invalid("admission profile genesis decoding"))?;
+        if decoded != *manifest
+            || genesis_manifest_commitment(resolver, manifest)
+                .map_err(|_| invalid("admission profile genesis digest"))?
+                != pinned_digest
+        {
+            return Err(invalid("admission profile genesis pin differs"));
+        }
+        verify_signature(manifest)?;
+        Ok(Self::from_verified_manifest(manifest, pinned_digest))
+    }
+
+    fn from_verified_manifest(manifest: &GenesisManifest, digest: Digest32) -> Self {
+        Self {
+            profile: manifest.commitment_profile,
+            context: manifest.context().clone(),
+            genesis_digest: digest,
+            genesis_authority: manifest.genesis_authority,
+            minimum_freeze_block_height: manifest.minimum_freeze_block_height,
+        }
+    }
+
+    fn from_verified_record(record: &LogicalProfileRecord) -> Self {
+        Self {
+            profile: record.profile,
+            context: record.context.clone(),
+            genesis_digest: record.manifest_digest,
+            genesis_authority: record.genesis_authority,
+            minimum_freeze_block_height: record.minimum_freeze_block_height,
+        }
+    }
+
+    /// Returns the authenticated descriptive profile, not mutation authority.
+    #[must_use]
+    pub const fn commitment_profile(&self) -> CommitmentProfile {
+        self.profile
+    }
+
+    /// Returns the original locally pinned genesis context.
+    #[must_use]
+    pub const fn context(&self) -> &PublicationContext {
+        &self.context
+    }
+
+    /// Returns the exact signed manifest digest this profile was verified from.
+    #[must_use]
+    pub const fn genesis_digest(&self) -> Digest32 {
+        self.genesis_digest
+    }
+
+    /// Whether the authenticated genesis explicitly selects causal admission.
+    #[must_use]
+    pub const fn is_causal(&self) -> bool {
+        matches!(self.profile, CommitmentProfile::CausalAdmission)
+    }
+}
+
+/// Pure bounded lane validation under authenticated genesis authority.
+/// Historical profiles retain their old ID interpretation; synthetic IDs
+/// remain invalid even when the namespace bit matches the requested lane.
+pub fn require_external_request_lane(
+    profile: &VerifiedAdmissionProfile,
+    lane: ExternalRequestLane,
+    request_id: &[u8; 32],
+) -> Result<(), NodeCoreError> {
+    crate::local_instance_state::reject_reserved_request_id(request_id).map_err(invalid)?;
+    if request_id == &[0; 32] {
+        return Err(invalid("zero external request id"));
+    }
+    if profile.is_causal()
+        && ((request_id[0] & 0x80 != 0) != matches!(lane, ExternalRequestLane::Ordered))
+    {
+        return Err(invalid(
+            "external request id is in the wrong admission lane",
+        ));
+    }
+    Ok(())
+}
+
+/// Fences the installed profile and rejects wrong-lane fresh admission.
+/// `expected` is trusted composition, never decoded request context. A present
+/// profile supplies its original genesis root independently of the live epoch.
+pub(crate) fn fence_installed_external_request_lane<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    expected: &PublicationContext,
+    request_id: &[u8; 32],
+    lane: ExternalRequestLane,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<(), NodeCoreError> {
+    if let Some(profile) = resolve_installed(store, context, domain, expected, reads)? {
+        require_external_request_lane(&profile, lane, request_id)?;
+    } else {
+        crate::local_instance_state::reject_reserved_request_id(request_id).map_err(invalid)?;
+    }
+    Ok(())
+}
+
+/// Reconciles a private locally pinned profile with its installed association.
+/// Call before nonce/object work and merge `reads` into the admission's CAS.
+pub(crate) fn fence_verified_admission_profile<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    expected: &VerifiedAdmissionProfile,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<(), NodeCoreError> {
+    let installed: Option<VerifiedAdmissionProfile> =
+        resolve_installed(store, context, domain, expected.context(), reads)?;
+    if installed.as_ref() != Some(expected) {
+        return Err(invalid(
+            "installed admission profile differs from pinned genesis",
+        ));
+    }
+    // Legacy logical test fixtures can intentionally omit their signed
+    // manifest. A caller carrying a real genesis pin never gets that exception.
+    fence_manifest_and_marker(store, context, domain, expected, reads)
+}
+
+/// Refuses fresh untracked/direct business writers in the causal profile.
+/// Exact completed receipt reconciliation must precede this check. No caller
+/// boolean, decoded certificate or stored tag supplies a certified bypass.
+pub(crate) fn require_historical_direct_writer<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    expected: &PublicationContext,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<(), NodeCoreError> {
+    if resolve_installed(store, context, domain, expected, reads)?
+        .is_some_and(|profile| profile.is_causal())
+    {
+        return Err(invalid(
+            "causal admission requires a certified business path",
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_installed<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    expected: &PublicationContext,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<Option<VerifiedAdmissionProfile>, NodeCoreError> {
+    let installed: InstalledCommitmentProfile =
+        fence_commitment_profile(store, context, domain, expected.chain_id(), reads)?;
+    if let Some(record) = installed.logical() {
+        if record.context.protocol_version() != expected.protocol_version() {
+            return Err(invalid("installed admission profile protocol differs"));
+        }
+        let verified: VerifiedAdmissionProfile =
+            VerifiedAdmissionProfile::from_verified_record(record);
+        if verified.is_causal() {
+            fence_manifest_and_marker(store, context, domain, &verified, reads)?;
+        }
+        return Ok(Some(verified));
+    }
+    // A pristine missing profile is not by itself proof of a historical
+    // store. Consult the trusted root's immutable manifest and marker too.
+    let manifest_key: Vec<u8> =
+        genesis_manifest_key(expected).map_err(|_| invalid("admission profile genesis key"))?;
+    let marker_key: Vec<u8> =
+        genesis_marker_key(expected).map_err(|_| invalid("admission profile marker key"))?;
+    let manifest_row: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &manifest_key)?;
+    let marker_row: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &marker_key)?;
+    if manifest_row.value().is_none()
+        && marker_row.value().is_none()
+        && manifest_row.revision() == StateRevision::INITIAL
+        && marker_row.revision() == StateRevision::INITIAL
+    {
+        // Preserve pre-genesis historical fixtures and their exact witnesses.
+        return Ok(None);
+    }
+    let manifest: GenesisManifest = decode_genesis_manifest(
+        manifest_row
+            .value()
+            .ok_or(invalid("installed admission genesis is missing"))?,
+    )
+    .map_err(|_| invalid("installed admission genesis is malformed"))?;
+    if manifest.context() != expected
+        || manifest.commitment_profile != CommitmentProfile::PhysicalCheckpointV1
+    {
+        return Err(invalid(
+            "installed signed genesis requires its missing profile",
+        ));
+    }
+    verify_signature(&manifest)?;
+    let marker: GenesisInstallMarker = decode_genesis_install_marker(
+        marker_row
+            .value()
+            .ok_or(invalid("installed admission marker is missing"))?,
+    )
+    .map_err(|_| invalid("installed admission marker is malformed"))?;
+    let verified: VerifiedAdmissionProfile =
+        VerifiedAdmissionProfile::from_verified_manifest(&manifest, marker.manifest_digest);
+    verify_marker_and_manifest(
+        &verified,
+        &manifest,
+        &marker,
+        manifest_row.value().unwrap_or_default(),
+    )?;
+    // Historical signed binding bytes and witness read operands are frozen.
+    Ok(Some(verified))
+}
+
+fn fence_manifest_and_marker<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    expected: &VerifiedAdmissionProfile,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<(), NodeCoreError> {
+    let manifest_key: Vec<u8> = genesis_manifest_key(expected.context())
+        .map_err(|_| invalid("admission profile genesis key"))?;
+    let marker_key: Vec<u8> = genesis_marker_key(expected.context())
+        .map_err(|_| invalid("admission profile marker key"))?;
+    let manifest_row: VersionedStateValue =
+        fence_read(store, context, domain, manifest_key, reads)?;
+    let marker_row: VersionedStateValue = fence_read(store, context, domain, marker_key, reads)?;
+    let bytes: &[u8] = manifest_row
+        .value()
+        .ok_or(invalid("installed admission genesis is missing"))?;
+    let manifest: GenesisManifest = decode_genesis_manifest(bytes)
+        .map_err(|_| invalid("installed admission genesis is malformed"))?;
+    let marker: GenesisInstallMarker = decode_genesis_install_marker(
+        marker_row
+            .value()
+            .ok_or(invalid("installed admission marker is missing"))?,
+    )
+    .map_err(|_| invalid("installed admission marker is malformed"))?;
+    verify_marker_and_manifest(expected, &manifest, &marker, bytes)?;
+    verify_signature(&manifest)?;
+    // Historical genesis has no logical row, but a token-pinned composition
+    // still fences its absence without altering any signed business operand.
+    if !expected.profile.is_logical() {
+        let key: Vec<u8> = logical_profile_key(expected.context().chain_id())?;
+        let row: VersionedStateValue = fence_read(store, context, domain, key, reads)?;
+        if row.value().is_some() || row.revision() != StateRevision::INITIAL {
+            return Err(invalid("historical admission profile is not pristine"));
+        }
+    }
+    Ok(())
+}
+
+fn verify_marker_and_manifest(
+    expected: &VerifiedAdmissionProfile,
+    manifest: &GenesisManifest,
+    marker: &GenesisInstallMarker,
+    bytes: &[u8],
+) -> Result<(), NodeCoreError> {
+    if VerifiedAdmissionProfile::from_verified_manifest(manifest, expected.genesis_digest)
+        != *expected
+        || marker.context != expected.context
+        || marker.manifest_digest != expected.genesis_digest
+        || marker.genesis_authority != expected.genesis_authority
+        || !hashing::verify_digest(
+            &expected.genesis_digest,
+            HashPurpose::ProtocolConfig,
+            expected.context.protocol_version(),
+            expected.context.chain_id(),
+            bytes,
+        )?
+    {
+        return Err(invalid("installed admission genesis association differs"));
+    }
+    Ok(())
+}
+
+fn verify_signature(manifest: &GenesisManifest) -> Result<(), NodeCoreError> {
+    if manifest.genesis_authority == [0; 32] {
+        return Err(invalid("admission genesis authority is zero"));
+    }
+    validate_ed25519_owner_address(
+        &manifest.genesis_authority,
+        Ed25519OwnerAddressPolicy::CanonicalPrimeOrder,
+    )
+    .map_err(|_| invalid("admission genesis authority is invalid"))?;
+    let verifier: Ed25519Verifier =
+        Ed25519Verifier::from_verifying_key_bytes(&manifest.genesis_authority)
+            .map_err(|_| invalid("admission genesis authority is invalid"))?;
+    let signed: Vec<u8> = genesis_manifest_signing_frame(manifest)
+        .map_err(|_| invalid("admission genesis signing frame"))?;
+    if !verifier
+        .verify_framed(&signed, &manifest.signature)
+        .map_err(|_| invalid("admission genesis signature is invalid"))?
+    {
+        return Err(invalid("admission genesis signature is invalid"));
+    }
+    Ok(())
+}
+
+fn fence_read<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    key: Vec<u8>,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<VersionedStateValue, NodeCoreError> {
+    let seen: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    if let Some(previous) = reads.insert(key, seen.revision())
+        && previous != seen.revision()
+    {
+        return Err(NodeCoreError::StateConflict);
+    }
+    Ok(seen)
+}
+
+const fn invalid(message: &'static str) -> NodeCoreError {
+    NodeCoreError::PersistenceInvariant(message)
+}

@@ -108,6 +108,10 @@ pub const GENESIS_MANIFEST_LOGICAL_VERSION: u16 = 2;
 /// Preserves the historical version-one and logical version-two bytes.
 pub const GENESIS_MANIFEST_FREEZE_VERSION: u16 = 3;
 
+/// Fresh genesis binding causal admission and disjoint external request lanes.
+/// It retains the existing field layout while selecting the new profile tag.
+pub const GENESIS_MANIFEST_CAUSAL_VERSION: u16 = 4;
+
 /// Signature-domain message family for a complete genesis manifest payload.
 pub const GENESIS_MANIFEST_SIGNATURE_MESSAGE_TYPE: &str = "genesis-manifest-v1";
 /// Signature-domain message family for a handoff-capable manifest payload.
@@ -119,6 +123,9 @@ pub const GENESIS_MANIFEST_LOGICAL_SIGNATURE_MESSAGE_TYPE: &str = "genesis-manif
 
 /// Signature family for the explicitly authorized version-three Freeze rule.
 pub const GENESIS_MANIFEST_FREEZE_SIGNATURE_MESSAGE_TYPE: &str = "genesis-manifest-v3";
+
+/// Separate signature family for the fresh causal-admission profile.
+pub const GENESIS_MANIFEST_CAUSAL_SIGNATURE_MESSAGE_TYPE: &str = "genesis-manifest-v4";
 
 /// Canonical frame type of an encoded [`GenesisInstallMarker`] (DR-0126).
 pub const GENESIS_INSTALL_MARKER_FRAME_TYPE: u16 = 0x6417;
@@ -185,8 +192,9 @@ pub struct GenesisManifest {
     /// explicit tag in field 9 and additionally installs the authenticated
     /// [`LogicalProfileRecord`] row.
     pub commitment_profile: CommitmentProfile,
-    /// Positive signed field 10 only in a fresh `0x6416/v3` logical manifest.
-    /// Zero preserves version one or two and grants no Freeze authority.
+    /// Positive signed field 10 in a fresh `0x6416/v3` or `0x6416/v4` manifest.
+    /// Zero preserves version one or two and grants no Freeze authority;
+    /// the causal-admission profile always requires a positive value.
     pub minimum_freeze_block_height: u64,
     /// Ed25519 signature by `genesis_authority` over fields 1 through 7 of a
     /// historical (`0x6416/v1`) manifest, or over fields 1 through 7 plus the
@@ -211,6 +219,7 @@ impl GenesisManifest {
                 GENESIS_MANIFEST_FREEZE_VERSION
             }
             CommitmentProfile::LogicalGenerationV2 => GENESIS_MANIFEST_LOGICAL_VERSION,
+            CommitmentProfile::CausalAdmission => GENESIS_MANIFEST_CAUSAL_VERSION,
         }
     }
 
@@ -225,6 +234,7 @@ impl GenesisManifest {
             CommitmentProfile::LogicalGenerationV2 => {
                 GENESIS_MANIFEST_LOGICAL_SIGNATURE_MESSAGE_TYPE
             }
+            CommitmentProfile::CausalAdmission => GENESIS_MANIFEST_CAUSAL_SIGNATURE_MESSAGE_TYPE,
         }
     }
 }
@@ -559,6 +569,13 @@ pub fn decode_genesis_object_entries(
 }
 
 fn encode_genesis_manifest_payload(manifest: &GenesisManifest) -> Result<Vec<u8>, GenesisError> {
+    if manifest.commitment_profile == CommitmentProfile::CausalAdmission
+        && manifest.minimum_freeze_block_height == 0
+    {
+        return Err(GenesisError::Invalid(
+            "causal admission genesis requires positive Freeze height",
+        ));
+    }
     if !manifest.commitment_profile.is_logical() && manifest.minimum_freeze_block_height != 0 {
         return Err(GenesisError::Invalid(
             "historical genesis cannot authorize Freeze",
@@ -580,11 +597,11 @@ fn encode_genesis_manifest_payload(manifest: &GenesisManifest) -> Result<Vec<u8>
         encode_fastpath_validator_set_record(&manifest.validator_set)?,
     )?;
     // Field 8 belongs to the outer frame's signature, so the signed profile tag
-    // takes field 9 and exists only inside a version-two payload.
+    // takes field 9 in logical versions two through four.
     if manifest.commitment_profile.is_logical() {
         frame.field_u16(9, manifest.commitment_profile.to_wire())?;
     }
-    if manifest.encoding_version() == GENESIS_MANIFEST_FREEZE_VERSION {
+    if manifest.minimum_freeze_block_height != 0 {
         frame.field_u64(10, manifest.minimum_freeze_block_height)?;
     }
     Ok(frame.finish()?)
@@ -625,7 +642,7 @@ pub fn encode_genesis_manifest(manifest: &GenesisManifest) -> Result<Vec<u8>, Ge
     if manifest.commitment_profile.is_logical() {
         frame.field_u16(9, manifest.commitment_profile.to_wire())?;
     }
-    if manifest.encoding_version() == GENESIS_MANIFEST_FREEZE_VERSION {
+    if manifest.minimum_freeze_block_height != 0 {
         frame.field_u64(10, manifest.minimum_freeze_block_height)?;
     }
     let bytes: Vec<u8> = frame.finish()?;
@@ -646,12 +663,17 @@ pub fn encode_genesis_manifest(manifest: &GenesisManifest) -> Result<Vec<u8>, Ge
 fn decode_manifest_profile(frame: &CanonicalFrame<'_>) -> Result<CommitmentProfile, GenesisError> {
     if frame.version() == GENESIS_MANIFEST_LOGICAL_VERSION
         || frame.version() == GENESIS_MANIFEST_FREEZE_VERSION
+        || frame.version() == GENESIS_MANIFEST_CAUSAL_VERSION
     {
-        if frame.version() == GENESIS_MANIFEST_FREEZE_VERSION {
+        if frame.version() >= GENESIS_MANIFEST_FREEZE_VERSION {
             frame.require_only_fields(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10])?;
             if frame.required_u64(10)? == 0 {
                 return Err(GenesisError::Invalid(
-                    "version-three genesis requires positive Freeze height",
+                    if frame.version() == GENESIS_MANIFEST_CAUSAL_VERSION {
+                        "causal admission genesis requires positive Freeze height"
+                    } else {
+                        "version-three genesis requires positive Freeze height"
+                    },
                 ));
             }
         } else {
@@ -659,9 +681,18 @@ fn decode_manifest_profile(frame: &CanonicalFrame<'_>) -> Result<CommitmentProfi
         }
         let declared: CommitmentProfile =
             CommitmentProfile::from_wire(frame.required_u16(9)?).map_err(GenesisError::NodeCore)?;
-        if !declared.is_logical() {
+        let expected: CommitmentProfile = if frame.version() == GENESIS_MANIFEST_CAUSAL_VERSION {
+            CommitmentProfile::CausalAdmission
+        } else {
+            CommitmentProfile::LogicalGenerationV2
+        };
+        if declared != expected {
             return Err(GenesisError::Invalid(
-                "version-two genesis manifest must bind the handoff-capable profile",
+                if frame.version() == GENESIS_MANIFEST_CAUSAL_VERSION {
+                    "version-four genesis must bind the causal admission profile"
+                } else {
+                    "version-two genesis manifest must bind the handoff-capable profile"
+                },
             ));
         }
         return Ok(declared);
@@ -671,7 +702,7 @@ fn decode_manifest_profile(frame: &CanonicalFrame<'_>) -> Result<CommitmentProfi
     Ok(CommitmentProfile::PhysicalCheckpointV1)
 }
 
-/// Strictly decodes canonical manifest frame `0x6416`, version one or two.
+/// Strictly decodes canonical manifest frame `0x6416`, versions one through four.
 pub fn decode_genesis_manifest(bytes: &[u8]) -> Result<GenesisManifest, GenesisError> {
     if bytes.len() > MAX_GENESIS_MANIFEST_BYTES {
         return Err(GenesisError::Limit("manifest bytes"));
@@ -706,7 +737,7 @@ pub fn decode_genesis_manifest(bytes: &[u8]) -> Result<GenesisManifest, GenesisE
         objects,
         validator_set,
         commitment_profile,
-        minimum_freeze_block_height: if frame.version() == GENESIS_MANIFEST_FREEZE_VERSION {
+        minimum_freeze_block_height: if frame.version() >= GENESIS_MANIFEST_FREEZE_VERSION {
             frame.required_u64(10)?
         } else {
             0
