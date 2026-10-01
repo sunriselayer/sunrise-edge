@@ -34,10 +34,10 @@ fn required_state(
             "required privately reconstructed cut state is absent",
         ))
 }
-fn component<'a>(
-    material: &'a OrderedHistoryHeightMaterial,
+fn component(
+    material: &OrderedHistoryHeightMaterial,
     kind: OrderedHistoryComponentKind,
-) -> Result<&'a [u8], BusinessCutError> {
+) -> Result<&[u8], BusinessCutError> {
     material
         .components
         .iter()
