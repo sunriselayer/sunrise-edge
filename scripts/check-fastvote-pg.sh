@@ -86,7 +86,7 @@ cargo build --quiet -p sunrise-edge-operator --bin business_audit_pg
 require_exact_test business_audit_pg_genuine_causal_history_reopen_and_corruption_e2e \
   -p sunrise-edge-operator --test business_audit_pg_e2e
 cargo test --quiet -p sunrise-edge-operator --test business_audit_pg_e2e \
-  -- --ignored --exact business_audit_pg_genuine_causal_history_reopen_and_corruption_e2e
+  -- --ignored --exact business_audit_pg_genuine_causal_history_reopen_and_corruption_e2e --nocapture
 
 require_exact_test certified_catch_up_pg_missed_prepare_binary_cli_e2e \
   -p sunrise-edge-operator --test certified_catch_up_pg_e2e

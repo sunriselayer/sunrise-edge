@@ -321,6 +321,7 @@ fn business_audit_pg_genuine_causal_history_reopen_and_corruption_e2e() {
     let Some(url) = support::live_postgres_url() else {
         return;
     };
+    eprintln!("business-audit-e2e stage=fixture event=start");
     let _lock: support::LiveTestLock = support::LiveTestLock::acquire();
     let config: Config = Config::from_str(&url).unwrap();
     let backend: std::net::SocketAddr =
@@ -709,6 +710,7 @@ fn business_audit_pg_genuine_causal_history_reopen_and_corruption_e2e() {
         keys: &keys,
         dir: &dir,
     };
+    eprintln!("business-audit-e2e stage=fixture event=end");
     acceptance::commit_freeze_and_drainset(&harness, &hosts);
     acceptance::run(&harness, &mut hosts);
 }

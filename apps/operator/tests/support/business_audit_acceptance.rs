@@ -254,6 +254,7 @@ impl Harness<'_> {
 /// business receipt or runtime Standard Asset shortcut is involved.
 #[allow(clippy::too_many_lines)]
 pub(super) fn commit_freeze_and_drainset(harness: &Harness<'_>, _hosts: &[HostProcess]) {
+    eprintln!("business-audit-e2e stage=ordered-closure event=start");
     let fixture: &FastVoteGenesisFixture = harness.fixture;
     let manifest: node_core::GenesisManifest =
         node_core::decode_genesis_manifest(&fixture.manifest_bytes).unwrap();
@@ -435,6 +436,7 @@ pub(super) fn commit_freeze_and_drainset(harness: &Harness<'_>, _hosts: &[HostPr
         ),
         "commit genuine DrainSet",
     );
+    eprintln!("business-audit-e2e stage=ordered-closure event=end");
 }
 
 fn files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
@@ -816,6 +818,7 @@ fn replace_and_refuse(
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn run(harness: &Harness<'_>, hosts: &mut Vec<HostProcess>) {
+    eprintln!("business-audit-e2e stage=ordered-export event=start");
     let archive: PathBuf = harness.dir.join("ordered-history");
     require_success(
         harness.history(&archive, None),
@@ -859,6 +862,8 @@ pub(super) fn run(harness: &Harness<'_>, hosts: &mut Vec<HostProcess>) {
         files(&archive) == completed,
         "completed ordering archive is immutable"
     );
+    eprintln!("business-audit-e2e stage=ordered-export event=end");
+    eprintln!("business-audit-e2e stage=cache-resume event=start");
     let incomplete: PathBuf = harness.dir.join("truncated-history");
     clone_directory(&archive, &incomplete);
     fs::remove_file(incomplete.join("complete")).unwrap();
@@ -924,6 +929,8 @@ pub(super) fn run(harness: &Harness<'_>, hosts: &mut Vec<HostProcess>) {
             "audit resume preserves synced immutable original cache bytes"
         );
     }
+    eprintln!("business-audit-e2e stage=cache-resume event=end");
+    eprintln!("business-audit-e2e stage=completed-audit-replay event=start");
     semantic_equal(harness.audit(&archive, &audit, 1, harness.fixture.manifest_digest));
     let audit_files: BTreeMap<PathBuf, Vec<u8>> = files(&audit);
     let report: Vec<u8> = fs::read(audit.join("complete")).unwrap();
@@ -934,9 +941,11 @@ pub(super) fn run(harness: &Harness<'_>, hosts: &mut Vec<HostProcess>) {
         files(&audit) == audit_files,
         "completed same-source replay must not overwrite cache or completion"
     );
+    eprintln!("business-audit-e2e stage=completed-audit-replay event=end");
 
     // A real reopen changes the writer token, even when every business byte
     // is unchanged. Old cache refuses; fresh HTTP export is byte-identical.
+    eprintln!("business-audit-e2e stage=restarted-fresh-audit event=start");
     harness.reopen_source(hosts);
     let refused: Output = harness.audit(&archive, &audit, 64, harness.fixture.manifest_digest);
     assert!(!refused.status.success());
@@ -966,6 +975,8 @@ pub(super) fn run(harness: &Harness<'_>, hosts: &mut Vec<HostProcess>) {
         harness.fixture.manifest_digest,
     ));
     replay_completed_publish(harness);
+    eprintln!("business-audit-e2e stage=restarted-fresh-audit event=end");
+    eprintln!("business-audit-e2e stage=pin-cache-refusals event=start");
     let mut wrong_pin: [u8; 32] = harness.fixture.manifest_digest;
     wrong_pin[0] ^= 1;
     let wrong: PathBuf = harness.dir.join("wrong-pin");
@@ -1032,6 +1043,8 @@ pub(super) fn run(harness: &Harness<'_>, hosts: &mut Vec<HostProcess>) {
             .success()
     );
     assert_eq!(files(&corrupt_control_cache), corrupt_control_before);
+    eprintln!("business-audit-e2e stage=pin-cache-refusals event=end");
+    eprintln!("business-audit-e2e stage=forged-companions event=start");
     let forged: PathBuf = harness.dir.join("forged-companions");
     forge_refusal_companions(
         harness,
@@ -1055,9 +1068,11 @@ pub(super) fn run(harness: &Harness<'_>, hosts: &mut Vec<HostProcess>) {
         &forged_drain,
         "forged-drain-refusal-must-not-hide-needed-control",
     );
+    eprintln!("business-audit-e2e stage=forged-companions event=end");
 
     // Canonically valid but fabricated nonce. A fresh out-dir intentionally
     // avoids conflating independent semantic refusal with token mismatch.
+    eprintln!("business-audit-e2e stage=source-fact-refusals event=start");
     let source: Store = store(harness.pool, &harness.namespaces[0]);
     let nonce_key: Vec<u8> = runtime::PersistenceLayout::new(
         harness.fixture.chain_id.clone(),
@@ -1176,6 +1191,8 @@ pub(super) fn run(harness: &Harness<'_>, hosts: &mut Vec<HostProcess>) {
         consensus::encode_availability_identity(&wrong_selected_identity).unwrap(),
         "canonical-selected-entry-not-original-signed-terminal",
     );
+    eprintln!("business-audit-e2e stage=source-fact-refusals event=end");
+    eprintln!("business-audit-e2e stage=withheld-material-final-recheck event=start");
     for (label, key) in [
         (
             "missing-publication",
@@ -1247,6 +1264,7 @@ pub(super) fn run(harness: &Harness<'_>, hosts: &mut Vec<HostProcess>) {
         .unwrap(),
     );
     harness.refuse(&archive, "unknown-reserved-source-row");
+    eprintln!("business-audit-e2e stage=withheld-material-final-recheck event=end");
 }
 
 fn replay_completed_publish(harness: &Harness<'_>) {
