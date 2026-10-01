@@ -73,8 +73,6 @@ impl Harness<'_> {
             &fixture.protocol_version.get().to_string(),
             "--expected-epoch",
             &fixture.epoch.get().to_string(),
-            "--expected-hash-suite-id",
-            "1",
             "--expected-domain",
             &fixture.domain.to_string(),
             "--fastvote-deadline-seconds",
@@ -85,6 +83,15 @@ impl Harness<'_> {
         .into_iter()
         .map(OsString::from)
         .collect();
+        // Frontier actions deliberately have a narrower flag grammar: their
+        // hash schedule is derived from the pinned genesis, not this scalar.
+        if !action.starts_with("fastvote-frontier-") {
+            args.extend(
+                ["--expected-hash-suite-id", "1"]
+                    .into_iter()
+                    .map(OsString::from),
+            );
+        }
         args.extend(extra.iter().map(OsString::from));
         cli::edge_cli_command(args).output().unwrap()
     }
@@ -315,7 +322,7 @@ pub(super) fn commit_freeze_and_drainset(harness: &Harness<'_>, _hosts: &[HostPr
             ),
             "complete bounded authenticated frontier",
         );
-        assert!(complete.contains("frontier=complete"));
+        assert!(complete.contains("frontier=finalized"));
         let decoded: consensus::FrozenFrontierVote =
             consensus::decode_frozen_frontier_vote(&fs::read(&vote).unwrap()).unwrap();
         assert_eq!(decoded.identity.entry_count, OWNED_PUBLICATIONS as u64);
