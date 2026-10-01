@@ -19,6 +19,12 @@ the Ordered original identity, not standalone owned classification.
 Genesis/profile verification produces a private trusted capability; raw enum
 tags, client flags, decoded certificates and source rows do not.
 
+Fresh causal genesis fixes the initial hash-linked bond checkpoint at 0, so
+the same signed manifest seeds the same business bytes at different local
+installation coordinates. Marker/initial epoch/physical creation coordinates
+remain local. Never normalize a bond or transition checkpoint to repair a
+source mismatch: it participates in subsequent signed row digests.
+
 Ordered signing additionally proves the exact committed first nonce and full
 reserved address-owned inputs in the same fenced commit as its vote. Missing
 prerequisites cause recovery stops. Justified predecessor progress is processed

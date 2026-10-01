@@ -63,6 +63,18 @@ Alternate direct business writers refuse fresh causal-profile work unless
 entered through the appropriate genuine private certified capability.
 Exact completed replay remains receipt-first and preserves the original bytes.
 
+Fresh causal genesis derives initial business state independently of the
+caller's unsigned local installation coordinate. In particular, every initial
+bond's hash-linked `committed_at_checkpoint` is the deterministic genesis
+coordinate 0. Its later transition checkpoints remain exact signed/hash-linked
+business facts. Only installation marker, initial epoch activation and physical
+object-version creation coordinates may use the caller's local checkpoint.
+Otherwise the same signed genesis would seed different bond digests, and a
+later signed Replace could not be independently reconstructed. Historical
+profiles retain their existing interpretation; an earlier development causal
+namespace using a different initial business coordinate is not silently
+normalized, overwritten or accepted as a valid reconstruction source.
+
 ### Ordered admission and interleaving
 
 Before exposing an ordered signature, validate the exact committed first
