@@ -6,6 +6,7 @@ pub mod contract;
 mod fastvote_frontier;
 mod fastvote_network;
 mod local_execution;
+mod network_artifacts;
 pub mod next_nonce;
 pub mod object;
 pub mod ordered_economics_network;

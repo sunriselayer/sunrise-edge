@@ -63,6 +63,7 @@ pub mod fastvote_frontier_client;
 pub mod fastvote_publication_client;
 pub mod key;
 pub mod local_execution_client;
+mod local_genesis;
 pub mod ordered_economics_client;
 pub mod ordered_history_archive;
 pub mod ordered_history_client;
