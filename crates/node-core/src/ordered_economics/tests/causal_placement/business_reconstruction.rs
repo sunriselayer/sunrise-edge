@@ -678,11 +678,11 @@ fn genuine_unapplied_publication_compares_but_orphan_availability_ack_refuses() 
     let mut orphan_overlay: BusinessReconstructionOverlay<'_> =
         BusinessReconstructionOverlay::new(reconstruction_plan(&fixture, &identity)).unwrap();
     orphan_overlay.reconstruct(&orphan_owned, &history).unwrap();
-    assert_eq!(
+    assert!(matches!(
         orphan_overlay.compare_source(&orphan),
         Err(BusinessReconstructionError::Invalid(
             "local availability key/identity differs"
         ))
-    );
+    ));
     assert_eq!(snapshot(network), source);
 }
