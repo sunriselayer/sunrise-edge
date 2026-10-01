@@ -140,7 +140,7 @@ fn genuine_control_source() -> GenuineControlSource {
             &fixture::protocol(),
             network.signers[source].id,
             None,
-            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(2).unwrap(),
         )
         .unwrap();
         assert!(pair.1.terminal);
