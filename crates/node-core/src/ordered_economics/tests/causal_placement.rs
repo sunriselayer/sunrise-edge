@@ -3,6 +3,7 @@
 //! inputs/order but different original business outcomes. This is not a claim
 //! of same-run signature equivocation. It preserves the counterexample, not a fix.
 use super::*;
+use crate::ordered_economics::reservation::OrderedNonceLockHeld;
 use canonical_encoding::decode_canonical_frame;
 use consensus::bundle::PublicationBundle;
 use execution::call::{CallIntent, InstanceTarget};
