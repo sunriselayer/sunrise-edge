@@ -16,6 +16,7 @@ detailed design, operator guides, and specialist references live here.
 - [Runtime and ingress](architecture/runtime-and-ingress.md)
 - [Persistence architecture](architecture/persistence.md)
 - [Developer product surfaces](architecture/product-surfaces.md)
+- [Implementation structure and refactoring boundaries](architecture/implementation-structure.md)
 - [FastVote HTTP network](architecture/fastvote-network.md)
 - [Ordered network economics](architecture/ordered-economics.md)
 - [Ordered Freeze and immutable frontiers](architecture/frozen-frontier.md)

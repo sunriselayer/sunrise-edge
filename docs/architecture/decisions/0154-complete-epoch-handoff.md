@@ -14,7 +14,10 @@ publication bundle with one replica's durable `retain_publication` step,
 described below. A later 2026-09-28 Draft PR slice adds prepare-side retained
 witness/artifacts, the v2 availability-certificate apply gate, certified-only
 HTTP source/retention/published-apply routes and Rust client/CLI aggregation.
-Freeze/DrainSet/Seal and integrated epoch handoff remain unimplemented.
+At that draft's date, Freeze/DrainSet/Seal and integrated epoch handoff were
+unimplemented. Later accepted capability records include DR-0167/0168; this
+dated account is not their current implementation status. Consult TODO for
+the remaining complete cut/import/readiness/Seal/activation gate.
 The complete design requires a
 publication-before-apply rule, not a new quorum-applied finality rule.
 Implementation and validation status belong in [`TODO.md`](../../../TODO.md).
