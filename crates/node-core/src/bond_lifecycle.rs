@@ -935,6 +935,15 @@ where
 
     // 6. current epoch fence.
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    mutation_fence::fence_direct_or_ordered_writer(
+        store,
+        context,
+        domain,
+        expected,
+        &signed.intent.request_id,
+        ordered,
+        &mut reads,
+    )?;
     let epoch_record: local_instance_state::FastPathEpochRecord =
         mutation_fence::fence_current_epoch(
             store,

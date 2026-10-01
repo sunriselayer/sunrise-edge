@@ -123,6 +123,11 @@ fn require_next_nonce<S: StructuredDurableDomainStateStore>(
         sender,
     )?;
     if observed != nonce {
+        if env.policy.is_causal() {
+            return Err(OrderedEconomicsError::Prerequisite(
+                "ordered committed nonce prerequisite is unavailable; verified recovery required",
+            ));
+        }
         return Err(OrderedEconomicsError::Refused(
             OrderedRefusal::StaleSenderNonce,
         ));

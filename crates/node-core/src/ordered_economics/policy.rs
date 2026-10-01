@@ -10,6 +10,9 @@
 //! [`super::OrderedEconomicsError::Unauthenticated`] be a deterministic
 //! retained rejection rather than a stop.
 use super::*;
+use crate::admission_profile::{
+    ExternalRequestLane, VerifiedAdmissionProfile, require_external_request_lane,
+};
 use bond_lifecycle::slash::{decode_slash_intent, slash_receipt_digest};
 use bond_lifecycle::{
     BondLifecycleOperation, SignedBondLifecycleIntent, bond_lifecycle_intent_digest,
@@ -132,6 +135,7 @@ pub struct OrderedEconomicsPolicy {
     context: PublicationContext,
     domain: AtomicityDomainId,
     genesis_digest: Digest32,
+    admission_profile: Option<VerifiedAdmissionProfile>,
     minimum_freeze_block_height: u64,
     anchor: Digest32,
     engine: ChainedHotStuff,
@@ -152,6 +156,11 @@ impl OrderedEconomicsPolicy {
         validator_set: ValidatorSet,
         resolver: HashSuiteResolver,
     ) -> Result<Self, OrderedEconomicsError> {
+        let admission_profile: Option<VerifiedAdmissionProfile> = genesis_manifest
+            .map(|manifest| {
+                VerifiedAdmissionProfile::from_pinned_genesis(&resolver, manifest, genesis_digest)
+            })
+            .transpose()?;
         let minimum_freeze_block_height: u64 = match genesis_manifest {
             Some(manifest) => {
                 if manifest.context() != &context || manifest.validator_set.context != context {
@@ -236,6 +245,7 @@ impl OrderedEconomicsPolicy {
             context,
             domain,
             genesis_digest,
+            admission_profile,
             minimum_freeze_block_height,
             anchor,
             engine,
@@ -265,6 +275,22 @@ impl OrderedEconomicsPolicy {
     #[must_use]
     pub const fn genesis_digest(&self) -> Digest32 {
         self.genesis_digest
+    }
+
+    /// Independently verified signed-genesis admission authority, when the
+    /// caller supplied the pinned manifest. A manifest-free policy can only
+    /// mutate a historical installed profile.
+    #[must_use]
+    pub const fn admission_profile(&self) -> Option<&VerifiedAdmissionProfile> {
+        self.admission_profile.as_ref()
+    }
+
+    /// Whether fresh ordered signatures require committed causal prerequisites.
+    #[must_use]
+    pub fn is_causal(&self) -> bool {
+        self.admission_profile
+            .as_ref()
+            .is_some_and(VerifiedAdmissionProfile::is_causal)
     }
 
     /// Minimum proposal height authorized by the signed genesis schedule.
@@ -574,6 +600,14 @@ fn authenticate_with_policy(
         return Err(OrderedEconomicsError::Unauthenticated(
             "ordered candidate context does not match the pinned policy",
         ));
+    }
+    if let Some(profile) = env.policy.admission_profile() {
+        require_external_request_lane(profile, ExternalRequestLane::Ordered, &candidate.request_id)
+            .map_err(|_| {
+                OrderedEconomicsError::Unauthenticated(
+                    "ordered candidate request id is outside the verified external lane",
+                )
+            })?;
     }
     // The canonical candidate bytes must round-trip exactly: a caller that
     // built this value in memory has not yet proven it encodes canonically,

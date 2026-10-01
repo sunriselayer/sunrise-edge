@@ -27,7 +27,7 @@
 //! protocol-custody object by construction, and the existing handler proves
 //! that with its own custody capability.
 use super::*;
-use canonical_encoding::encode_chain_id;
+use canonical_encoding::{encode_chain_id, encode_digest32};
 use execution::local_execution::{AuthenticatedLocalExecutionIntent, authenticate_local_execution};
 use fee_claims::codec::{FeeClaimOperation, decode_signed_fee_claim_intent};
 use local_instance_state::{
@@ -35,6 +35,7 @@ use local_instance_state::{
     decode_fastpath_nonce_lock_record, encode_fastpath_lock_record,
     encode_fastpath_nonce_lock_record, fastpath_lock_key, fastpath_nonce_lock_key,
 };
+use runtime::DurableObjectHeadRead;
 
 const ORDERED_RESERVATION_RECORD_TYPE: u16 = 0x644A;
 const ENCODING_VERSION: u16 = 1;
@@ -129,6 +130,207 @@ impl OrderedLegAdmission<'_> {
         held.covers(sender, epoch, nonce)
             .then_some(held.first_nonce)
     }
+}
+
+/// Internal bookkeeping identity only. Its typed receipt carries no business
+/// output and never represents completion of the original Ordered request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OrderedAdmissionStage {
+    LeaderProposal = 1,
+    Vote = 2,
+}
+
+/// Pure authenticated selectors for isolated causal reconstruction. These
+/// are required producer observations, never authority to seed source rows.
+pub(crate) struct OrderedCausalRequirements {
+    pub(crate) objects: Vec<ObjectRef>,
+    pub(crate) nonce: Option<OrderedNonceLockHeld>,
+    pub(crate) legs: Vec<AuthenticatedLocalExecutionIntent>,
+    pub(crate) fee_escrow_request_id: Option<[u8; 32]>,
+}
+
+pub(crate) fn ordered_causal_requirements(
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+) -> Result<OrderedCausalRequirements, OrderedEconomicsError> {
+    authenticate_candidate(env, candidate)?;
+    let plan: OrderedReservationPlan = reservation_plan(env, candidate)?;
+    let mut legs: Vec<Vec<u8>> = Vec::new();
+    let mut fee_escrow_request_id: Option<[u8; 32]> = None;
+    match candidate.kind {
+        OrderedOperationKind::FeeClaim => {
+            let signed = decode_signed_fee_claim_intent(&candidate.intent).map_err(|_| {
+                OrderedEconomicsError::Unauthenticated("invalid fee claim candidate")
+            })?;
+            fee_escrow_request_id = Some(signed.intent.escrow_request_id);
+            match signed.intent.operation {
+                FeeClaimOperation::ZeroShare => {}
+                FeeClaimOperation::Split { leg, .. } | FeeClaimOperation::FinalTransfer { leg } => {
+                    legs.push(leg)
+                }
+            }
+        }
+        OrderedOperationKind::BondLifecycle => {
+            let signed = bond_lifecycle::decode_signed_bond_lifecycle_intent(&candidate.intent)
+                .map_err(|_| OrderedEconomicsError::Unauthenticated("invalid bond candidate"))?;
+            legs.extend(
+                policy::bond_lifecycle_legs(&signed.intent.operation)
+                    .into_iter()
+                    .map(<[u8]>::to_vec),
+            );
+        }
+        OrderedOperationKind::BondSlash => {
+            let intent = bond_lifecycle::slash::decode_slash_intent(&candidate.intent)
+                .map_err(|_| OrderedEconomicsError::Unauthenticated("invalid slash candidate"))?;
+            legs.push(intent.leg);
+        }
+        OrderedOperationKind::Evidence
+        | OrderedOperationKind::Freeze
+        | OrderedOperationKind::DrainSet => {}
+    }
+    let authenticated: Vec<AuthenticatedLocalExecutionIntent> = legs
+        .into_iter()
+        .map(|bytes| {
+            authenticate_local_execution(env.resolver, env.leg_policy, &bytes).map_err(|_| {
+                OrderedEconomicsError::Unauthenticated("invalid causal prerequisite leg")
+            })
+        })
+        .collect::<Result<Vec<_>, OrderedEconomicsError>>()?;
+    Ok(OrderedCausalRequirements {
+        objects: plan.objects,
+        nonce: plan.nonce,
+        legs: authenticated,
+        fee_escrow_request_id,
+    })
+}
+
+/// Distinct from the unchanged owned prepare derivation. All suffix fields
+/// have fixed widths; the resolver supplies the trusted chain/protocol hash
+/// domain and the epoch is also explicit, not only suite selection.
+pub(crate) fn ordered_admission_request_id(
+    resolver: &HashSuiteResolver,
+    epoch: Epoch,
+    original: &[u8; 32],
+    candidate_digest: Digest32,
+    stage: OrderedAdmissionStage,
+    view: u64,
+) -> Result<[u8; 32], NodeCoreError> {
+    let mut preimage: Vec<u8> = b"se-ordered-admission-receipt-v1".to_vec();
+    preimage.extend_from_slice(&epoch.get().to_be_bytes());
+    preimage.extend_from_slice(original);
+    preimage.extend(encode_digest32(&candidate_digest)?);
+    preimage.push(stage as u8);
+    preimage.extend_from_slice(&view.to_be_bytes());
+    let digest: Digest32 = resolver.hash_for_purpose(epoch, HashPurpose::NodeEvent, &preimage)?;
+    let tag: &[u8; 8] = &local_instance_state::FASTPATH_SYNTHETIC_REQUEST_ID_TAG;
+    let mut request_id: [u8; 32] = [0; 32];
+    request_id[..tag.len()].copy_from_slice(tag);
+    request_id[tag.len()..].copy_from_slice(&digest.bytes()[tag.len()..]);
+    Ok(request_id)
+}
+
+/// Captures exact committed cross-lane admission prerequisites, never effects.
+/// Missing, future or incompatible observations stop before reservations or
+/// signatures. Prefix-derived custody/economics are deliberately not locked.
+pub(crate) fn verify_causal_prerequisites<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+    plan: &OrderedReservationPlan,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+    head_reads: &mut Vec<DurableObjectHeadRead>,
+) -> Result<(), OrderedEconomicsError> {
+    if let Some(nonce) = plan.nonce {
+        let layout: PersistenceLayout = PersistenceLayout::new(
+            env.policy.context().chain_id().clone(),
+            env.policy.context().protocol_version(),
+        );
+        let pending: PendingSenderNonceWrite = durable_reconciliation::reserve_sender_nonce_range(
+            store, context, env.policy.domain(), &layout,
+            SenderNonceReservation {
+                sender: nonce.sender, epoch: nonce.epoch, nonce: nonce.first_nonce,
+            }, nonce.count,
+        ).map_err(|error| match error {
+            NodeCoreError::SenderNonceMismatch { .. } => OrderedEconomicsError::Prerequisite(
+                "ordered admission requires the exact committed next nonce; verified recovery required",
+            ),
+            other => OrderedEconomicsError::Node(other),
+        })?;
+        if reads
+            .insert(pending.key, pending.read_revision)
+            .is_some_and(|previous| previous != pending.read_revision)
+        {
+            return Err(NodeCoreError::StateConflict.into());
+        }
+    }
+    match candidate.kind {
+        OrderedOperationKind::FeeClaim => {
+            let signed = decode_signed_fee_claim_intent(&candidate.intent).map_err(|_| {
+                OrderedEconomicsError::Unauthenticated("invalid fee claim candidate intent")
+            })?;
+            // Owned leg bytes below are borrowed from this local decoded
+            // value, so perform their verification inside this branch.
+            match &signed.intent.operation {
+                FeeClaimOperation::ZeroShare => {}
+                FeeClaimOperation::Split { leg, .. } | FeeClaimOperation::FinalTransfer { leg } => {
+                    verify_causal_leg(store, context, env, leg, plan, reads, head_reads)?;
+                }
+            }
+        }
+        OrderedOperationKind::BondLifecycle => {
+            let signed = bond_lifecycle::decode_signed_bond_lifecycle_intent(&candidate.intent)
+                .map_err(|_| {
+                    OrderedEconomicsError::Unauthenticated("invalid bond lifecycle candidate")
+                })?;
+            for leg in policy::bond_lifecycle_legs(&signed.intent.operation) {
+                verify_causal_leg(store, context, env, leg, plan, reads, head_reads)?;
+            }
+        }
+        OrderedOperationKind::BondSlash => {
+            let intent = bond_lifecycle::slash::decode_slash_intent(&candidate.intent)
+                .map_err(|_| OrderedEconomicsError::Unauthenticated("invalid slash candidate"))?;
+            verify_causal_leg(store, context, env, &intent.leg, plan, reads, head_reads)?;
+        }
+        OrderedOperationKind::Evidence
+        | OrderedOperationKind::Freeze
+        | OrderedOperationKind::DrainSet => {}
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_causal_leg<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    bytes: &[u8],
+    plan: &OrderedReservationPlan,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+    head_reads: &mut Vec<DurableObjectHeadRead>,
+) -> Result<(), OrderedEconomicsError> {
+    let leg: AuthenticatedLocalExecutionIntent =
+        authenticate_local_execution(env.resolver, env.leg_policy, bytes)
+            .map_err(|_| OrderedEconomicsError::Unauthenticated("invalid ordered candidate leg"))?;
+    let reserved: Vec<ObjectRef> = plan
+        .objects
+        .iter()
+        .filter(|reference| {
+            leg.intent()
+                .call
+                .access
+                .entries
+                .iter()
+                .any(|entry| &entry.object_ref == *reference)
+        })
+        .cloned()
+        .collect();
+    crate::local_execution::verify_ordered_leg_prerequisites(
+        store, env.blobs, context, env.policy.domain(), env.resolver, env.history,
+        env.leg_policy, &leg, &reserved, reads, head_reads,
+    ).map_err(|_| OrderedEconomicsError::Prerequisite(
+        "ordered admission requires verified exact executable/source material; recovery required",
+    ))
 }
 
 /// Purely derives the exact reservation set one candidate needs.
@@ -406,6 +608,7 @@ pub(crate) fn acquire_reservations<S: StructuredDurableDomainStateStore>(
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
     plan: &OrderedReservationPlan,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<Vec<PendingWrite>, OrderedEconomicsError> {
     let chain: &ChainId = env.policy.context().chain_id();
     let domain: AtomicityDomainId = env.policy.domain();
@@ -413,6 +616,7 @@ pub(crate) fn acquire_reservations<S: StructuredDurableDomainStateStore>(
     let record_key: Vec<u8> = ordered_reservation_key(chain, &candidate.request_id)?;
     let observed_record: VersionedStateValue =
         store.get_versioned_durable(context, domain, &record_key)?;
+    reads.insert(record_key.clone(), observed_record.revision());
     if let Some(bytes) = observed_record.value() {
         let retained: OrderedReservationPlan = decode_ordered_reservation(bytes)?;
         if retained != *plan {
@@ -422,7 +626,7 @@ pub(crate) fn acquire_reservations<S: StructuredDurableDomainStateStore>(
         }
         // Exact retained admission: prove every lock is still held by this
         // exact request, then write nothing.
-        verify_retained_reservations(store, context, env, candidate, plan)?;
+        verify_retained_reservations(store, context, env, candidate, plan, reads)?;
         return Ok(Vec::new());
     }
     if plan.is_empty() {
@@ -494,6 +698,7 @@ fn verify_retained_reservations<S: StructuredDurableDomainStateStore>(
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
     plan: &OrderedReservationPlan,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<(), OrderedEconomicsError> {
     let chain: &ChainId = env.policy.context().chain_id();
     let domain: AtomicityDomainId = env.policy.domain();
@@ -501,6 +706,7 @@ fn verify_retained_reservations<S: StructuredDurableDomainStateStore>(
     for object_ref in &plan.objects {
         let key: Vec<u8> = fastpath_lock_key(chain, object_ref.id)?;
         let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        reads.insert(key, observed.revision());
         let bytes: &[u8] = observed.value().ok_or(OrderedEconomicsError::Prerequisite(
             "retained ordered object reservation is absent",
         ))?;
@@ -517,6 +723,7 @@ fn verify_retained_reservations<S: StructuredDurableDomainStateStore>(
     if let Some(nonce) = &plan.nonce {
         let key: Vec<u8> = fastpath_nonce_lock_key(chain, &nonce.sender, nonce.epoch)?;
         let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        reads.insert(key, observed.revision());
         let bytes: &[u8] = observed.value().ok_or(OrderedEconomicsError::Prerequisite(
             "retained ordered nonce reservation is absent",
         ))?;

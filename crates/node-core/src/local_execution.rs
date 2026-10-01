@@ -253,6 +253,14 @@ pub fn handle_local_execution<
     {
         return Ok(output);
     }
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    crate::admission_profile::require_historical_direct_writer(
+        store,
+        context,
+        domain,
+        policy.context(),
+        &mut reads,
+    )?;
     let layout: PersistenceLayout = PersistenceLayout::new(
         call.context.chain_id().clone(),
         call.context.protocol_version(),
@@ -268,7 +276,6 @@ pub fn handle_local_execution<
             nonce: call.nonce,
         },
     )?;
-    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     let mut head_reads: Vec<DurableObjectHeadRead> = Vec::new();
     let mut mutations: Vec<StateMutationEntry> = Vec::new();
     let leg: AdmittedLeg = admit_and_execute_leg(
@@ -404,6 +411,271 @@ pub(crate) enum CustodyEffectMode<'a> {
     },
 }
 
+/// Read-only authenticated executable/instance closure shared by admission
+/// and execution. No nonce reservation, object effect, VM invocation or write.
+struct LegPrerequisites {
+    instance: InstanceRecord,
+    instance_key: Vec<u8>,
+    interface: VerifiedPublicationInterface,
+    scopes: Vec<ResolvedExecutionScope>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn admit_leg_prerequisites<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    policy: &LocalExecutionPolicy,
+    authenticated: &AuthenticatedLocalExecutionIntent,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> AdmissionResult<LegPrerequisites> {
+    let intent: &LocalExecutionIntent = authenticated.intent();
+    let call = &intent.call;
+    let observed: VersionedStateValue = read_state(
+        store,
+        context,
+        domain,
+        execution_policy_key_for_profile(policy.context(), policy.profile())?,
+        reads,
+    )?;
+    if observed.value() != Some(policy.encode()?.as_slice()) {
+        return Err(LocalExecutionAdmissionError::Invalid(
+            "execution policy absent or different",
+        ));
+    }
+    let mut publication_budget: publication::PublicationLoadBudget =
+        publication::PublicationLoadBudget::default();
+    let loaded: VerifiedDurablePublication = publication::load_verified_publication_with_budget(
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        call.code.origin(),
+        &mut publication_budget,
+    )?
+    .ok_or(LocalExecutionAdmissionError::Invalid("code absent"))?;
+    validate_closure(resolver, history, &loaded.interface)?;
+    if !reference_matches(&call.code, &loaded.interface) {
+        return Err(LocalExecutionAdmissionError::Invalid("exact code mismatch"));
+    }
+    for assertion in loaded.reads {
+        if let Some(old) = reads.insert(assertion.key().to_vec(), assertion.expected_revision())
+            && old != assertion.expected_revision()
+        {
+            return Err(NodeCoreError::StateConflict.into());
+        }
+    }
+    let interface: VerifiedPublicationInterface = loaded.interface;
+    let instance_key: Vec<u8> = instance_record_key(
+        call.context.chain_id(),
+        &call.instance.creator,
+        &call.instance.seed,
+    )?;
+    let instance_observed: VersionedStateValue =
+        read_state(store, context, domain, instance_key.clone(), reads)?;
+    let instance: InstanceRecord = match intent.mode {
+        LocalExecutionMode::Instantiate => {
+            if instance_observed.value().is_some()
+                || instance_observed.revision() != StateRevision::INITIAL
+            {
+                return Err(LocalExecutionAdmissionError::Invalid(
+                    "instance already reserved",
+                ));
+            }
+            InstanceRecord {
+                context: call.context.clone(),
+                creator: call.sender,
+                seed: call.instance.seed,
+                code: call.code.clone(),
+                revision: 1,
+                initializer: call.entrypoint.clone(),
+            }
+        }
+        LocalExecutionMode::Call => decode_instance_record(
+            instance_observed
+                .value()
+                .ok_or(LocalExecutionAdmissionError::Invalid("instance absent"))?,
+        )?,
+    };
+    let instance_resolver: &HashSuiteResolver =
+        original_resolver(resolver, history, &instance.context)?;
+    if instance.code != call.code
+        || instance.context.protocol_version() != call.context.protocol_version()
+        || instance.context.epoch() > call.context.epoch()
+        || instance.context.chain_id() != call.context.chain_id()
+        || instance_target(instance_resolver, &instance)? != call.instance
+        || interface
+            .executable_abi(call.code.origin())
+            .and_then(|a| a.initializer.as_ref())
+            != Some(&instance.initializer)
+    {
+        return Err(LocalExecutionAdmissionError::Invalid(
+            "instance authority mismatch",
+        ));
+    }
+    // Historical records remain readable and exact receipts remain replayable;
+    // this immutable execution profile does not activate cross-version migration.
+    if std::iter::once(interface.candidate())
+        .chain(interface.dependencies())
+        .any(|candidate| {
+            candidate.artifact().context().protocol_version() != call.context.protocol_version()
+        })
+    {
+        return Err(LocalExecutionAdmissionError::Invalid(
+            "cross-version execution requires explicit migration",
+        ));
+    }
+    let scopes: Vec<ResolvedExecutionScope> = scopes::admit(
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        policy,
+        authenticated,
+        ResolvedExecutionScope {
+            instance: instance.clone(),
+            target: call.instance.clone(),
+            interface: interface.clone(),
+        },
+        reads,
+        &mut publication_budget,
+    )?;
+    Ok(LegPrerequisites {
+        instance,
+        instance_key,
+        interface,
+        scopes,
+    })
+}
+
+/// Verifies all immutable executable prerequisites and each exact reserved
+/// sender-owned source without executing a leg. Custody is deliberately not
+/// loaded or locked: its state and legitimate stale refusals derive from the
+/// committed ordered prefix. Exact typed head assertions join signing CAS.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn verify_ordered_leg_prerequisites<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    blobs: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    policy: &LocalExecutionPolicy,
+    authenticated: &AuthenticatedLocalExecutionIntent,
+    reserved: &[ObjectRef],
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+    head_reads: &mut Vec<DurableObjectHeadRead>,
+) -> AdmissionResult<()> {
+    let material: LegPrerequisites = admit_leg_prerequisites(
+        store,
+        context,
+        domain,
+        resolver,
+        history,
+        policy,
+        authenticated,
+        reads,
+    )?;
+    let binding = bind_local_execution(authenticated, &material.interface)?;
+    let call = &authenticated.intent().call;
+    let mut inputs: Vec<ScopedResolvedObject> = Vec::new();
+    let mut object_resolvers: BTreeMap<ObjectId, &HashSuiteResolver> = BTreeMap::new();
+    let mut ordered_resolvers: Vec<&HashSuiteResolver> = Vec::new();
+    let mut total_bytes: usize = 0;
+    for (entry, parameter) in call.access.entries.iter().zip(binding.objects()) {
+        if !reserved
+            .iter()
+            .any(|reference| reference == &entry.object_ref)
+        {
+            continue;
+        }
+        let snapshot: object_snapshots::ObjectSnapshot = object_snapshots::load_object_snapshot(
+            store,
+            blobs,
+            context,
+            domain,
+            call.context.chain_id(),
+            &entry.object_ref,
+            &mut total_bytes,
+        )?;
+        if snapshot.object.owner != Owner::Address(Address::new(call.sender)) {
+            return Err(LocalExecutionAdmissionError::Invalid(
+                "ordered reserved input is not sender address-owned",
+            ));
+        }
+        let authority_row: VersionedStateValue = read_state(
+            store,
+            context,
+            domain,
+            object_authority_key(snapshot.object.id),
+            reads,
+        )?;
+        let authority: ObjectAuthority = decode_object_authority(authority_row.value().ok_or(
+            LocalExecutionAdmissionError::Invalid("ordered reserved input authority absent"),
+        )?)?;
+        let scope: &ResolvedExecutionScope = scopes::for_authority(&material.scopes, &authority)?;
+        validate_authority(&authority, &scope.instance, &scope.target, &scope.interface)?;
+        if authority.object_id != snapshot.object.id || &authority.ty != parameter.ty() {
+            return Err(LocalExecutionAdmissionError::Invalid(
+                "ordered reserved input authority type",
+            ));
+        }
+        let original: &HashSuiteResolver = object_snapshots::historical_resolver_for_provenance(
+            resolver,
+            history,
+            snapshot.object.id,
+            &snapshot.provenance,
+        )?;
+        ordered_resolvers.push(original);
+        object_resolvers.insert(snapshot.object.id, original);
+        head_reads.push(DurableObjectHeadRead::new(
+            snapshot.object.id,
+            snapshot.head,
+        ));
+        inputs.push(ScopedResolvedObject {
+            resolved: ResolvedObject {
+                object: snapshot.object,
+                mode: entry.mode,
+            },
+            authority,
+        });
+    }
+    if reserved.is_empty() {
+        return Ok(());
+    }
+    // The closed deposit/reactivate/Replace deposit shape is exactly one
+    // write input. Never accept a partial signed-input body verification.
+    if inputs.len() != reserved.len() || inputs.len() != call.access.entries.len() {
+        return Err(LocalExecutionAdmissionError::Invalid(
+            "ordered reserved input shape",
+        ));
+    }
+    let resolved: Vec<ResolvedObject> = inputs.iter().map(|input| input.resolved.clone()).collect();
+    execution::publication::validate_object_input_bodies(
+        &binding,
+        resolver,
+        &ordered_resolvers,
+        call.context.epoch(),
+        &call.access,
+        &resolved,
+    )
+    .map_err(|_| LocalExecutionAdmissionError::Invalid("ordered reserved input body mismatch"))?;
+    scopes::validate_inputs(
+        &call.context,
+        &call.access,
+        &authenticated.intent().authorizations,
+        &material.scopes,
+        &inputs,
+        resolver,
+        &object_resolvers,
+    )?;
+    Ok(())
+}
+
 /// Authenticates-adjacent admission shared by ordinary zero-fee local
 /// execution and every DR-0137 `bond_lifecycle` leg: policy check, durable
 /// publication closure, instance authority, scope admission, per-input
@@ -512,104 +784,7 @@ pub(crate) fn admit_and_execute_leg<
         nonce_lock_mode,
         reads,
     )?;
-    let observed: VersionedStateValue = read_state(
-        store,
-        context,
-        domain,
-        execution_policy_key_for_profile(policy.context(), policy.profile())?,
-        reads,
-    )?;
-    if observed.value() != Some(policy.encode()?.as_slice()) {
-        return Err(LocalExecutionAdmissionError::Invalid(
-            "execution policy absent or different",
-        ));
-    }
-    let mut publication_budget: publication::PublicationLoadBudget =
-        publication::PublicationLoadBudget::default();
-    let loaded: VerifiedDurablePublication = publication::load_verified_publication_with_budget(
-        store,
-        context,
-        domain,
-        resolver,
-        history,
-        call.code.origin(),
-        &mut publication_budget,
-    )?
-    .ok_or(LocalExecutionAdmissionError::Invalid("code absent"))?;
-    validate_closure(resolver, history, &loaded.interface)?;
-    if !reference_matches(&call.code, &loaded.interface) {
-        return Err(LocalExecutionAdmissionError::Invalid("exact code mismatch"));
-    }
-    for assertion in loaded.reads {
-        if let Some(old) = reads.insert(assertion.key().to_vec(), assertion.expected_revision())
-            && old != assertion.expected_revision()
-        {
-            return Err(NodeCoreError::StateConflict.into());
-        }
-    }
-    let interface: VerifiedPublicationInterface = loaded.interface;
-    let binding = bind_local_execution(authenticated, &interface)?;
-    let instance_key: Vec<u8> = instance_record_key(
-        call.context.chain_id(),
-        &call.instance.creator,
-        &call.instance.seed,
-    )?;
-    let instance_observed: VersionedStateValue =
-        read_state(store, context, domain, instance_key.clone(), reads)?;
-    let instance: InstanceRecord = match intent.mode {
-        LocalExecutionMode::Instantiate => {
-            if instance_observed.value().is_some()
-                || instance_observed.revision() != StateRevision::INITIAL
-            {
-                return Err(LocalExecutionAdmissionError::Invalid(
-                    "instance already reserved",
-                ));
-            }
-            InstanceRecord {
-                context: call.context.clone(),
-                creator: call.sender,
-                seed: call.instance.seed,
-                code: call.code.clone(),
-                revision: 1,
-                initializer: call.entrypoint.clone(),
-            }
-        }
-        LocalExecutionMode::Call => decode_instance_record(
-            instance_observed
-                .value()
-                .ok_or(LocalExecutionAdmissionError::Invalid("instance absent"))?,
-        )?,
-    };
-    let instance_resolver: &HashSuiteResolver =
-        original_resolver(resolver, history, &instance.context)?;
-    if instance.code != call.code
-        || instance.context.protocol_version() != call.context.protocol_version()
-        || instance.context.epoch() > call.context.epoch()
-        || instance.context.chain_id() != call.context.chain_id()
-        || instance_target(instance_resolver, &instance)? != call.instance
-        || interface
-            .executable_abi(call.code.origin())
-            .and_then(|a| a.initializer.as_ref())
-            != Some(&instance.initializer)
-    {
-        return Err(LocalExecutionAdmissionError::Invalid(
-            "instance authority mismatch",
-        ));
-    }
-    let mut inputs: Vec<ScopedResolvedObject> = Vec::new();
-    // Historical records remain readable and exact receipts remain replayable;
-    // this immutable execution profile does not activate cross-version migration.
-    if std::iter::once(interface.candidate())
-        .chain(interface.dependencies())
-        .any(|candidate| {
-            candidate.artifact().context().protocol_version() != call.context.protocol_version()
-        })
-    {
-        return Err(LocalExecutionAdmissionError::Invalid(
-            "cross-version execution requires explicit migration",
-        ));
-    }
-    let scopes: Vec<ResolvedExecutionScope> = scopes::admit(
+    let prerequisites: LegPrerequisites = admit_leg_prerequisites(
         store,
         context,
         domain,
@@ -617,14 +792,16 @@ pub(crate) fn admit_and_execute_leg<
         history,
         policy,
         authenticated,
-        ResolvedExecutionScope {
-            instance: instance.clone(),
-            target: call.instance.clone(),
-            interface: interface.clone(),
-        },
         reads,
-        &mut publication_budget,
     )?;
+    let instance: InstanceRecord = prerequisites.instance;
+    let instance_key: Vec<u8> = prerequisites.instance_key;
+    let interface: VerifiedPublicationInterface = prerequisites.interface;
+    let scopes: Vec<ResolvedExecutionScope> = prerequisites.scopes;
+    let binding = bind_local_execution(authenticated, &interface)?;
+    let instance_resolver: &HashSuiteResolver =
+        original_resolver(resolver, history, &instance.context)?;
+    let mut inputs: Vec<ScopedResolvedObject> = Vec::new();
     let mut snapshots: BTreeMap<ObjectId, object_snapshots::ObjectSnapshot> = BTreeMap::new();
     let mut total_bytes: usize = 0;
     let mut object_resolvers: BTreeMap<ObjectId, &HashSuiteResolver> = BTreeMap::new();

@@ -120,7 +120,10 @@ pub use policy::{
     ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE, OrderedEconomicsEnvironment, OrderedEconomicsPolicy,
     authenticate_candidate, ordered_economics_authority_anchor,
 };
-pub(crate) use reservation::OrderedLegAdmission;
+pub(crate) use reservation::{
+    OrderedCausalRequirements, OrderedLegAdmission, OrderedNonceLockHeld,
+    ordered_causal_requirements,
+};
 pub(crate) use staging::StagingStore;
 
 /// Maximum address-owned object inputs one admitted candidate may reserve.
