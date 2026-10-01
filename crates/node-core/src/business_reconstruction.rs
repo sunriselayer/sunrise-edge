@@ -1289,10 +1289,14 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                     "ordered event independent reconstruction failed",
                 )
             })?;
-            if outcome.is_some() {
-                ordered_originals = ordered_originals
-                    .checked_add(1)
-                    .ok_or(invalid("ordered reconstruction counter overflow"))?;
+            if let Some(outcome) = outcome {
+                // A later certified recommit preserves the original height
+                // and receipt. It is not another business application.
+                if outcome.block_height == material.descriptor.height {
+                    ordered_originals = ordered_originals
+                        .checked_add(1)
+                        .ok_or(invalid("ordered reconstruction counter overflow"))?;
+                }
             } else {
                 empty_heights = empty_heights
                     .checked_add(1)
