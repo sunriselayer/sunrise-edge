@@ -5345,11 +5345,14 @@ Phase 17 prerequisites:
 - AWS adapter wrapper and API Gateway HTTP API v2 mapping (implemented As-Is)
 - cross-provider local ingress fixture matrix (implemented As-Is)
 - repository-wide pinned local/CI validation gate (implemented As-Is)
-- [ ] DR-0171 CI partition acceptance: implement the closed complete dispatch
-  set with isolated live lanes, prove unique coverage and fail-closed final
-  `check`, then run the complete final-head CI and obtain independent approval.
-  Runtime assertions/fault gates remain required; measured speedup and runner
-  cost are not yet established. See
+- [x] DR-0171 closed CI dispatch implementation: nine independent lanes,
+  five isolated PG services, complete serial local default, 19 required ignored
+  selectors and success-only final `check`. Node 22.23.2 mock coverage/failure
+  tests and workflow syntax validation passed; native resolved feature unions
+  match the former workspace configuration, with bounded storage-lane anchors.
+- [ ] DR-0171 final acceptance: run complete exact-head CI and obtain
+  independent approval. Runtime assertions/fault gates remain required;
+  measured speedup and runner cost are not yet established. See
   [design](docs/architecture/repository-validation.md) and
   [decision](docs/architecture/decisions/0171-partitioned-repository-validation.md).
 - reviewed weekly dependency/action update proposals (implemented As-Is)
