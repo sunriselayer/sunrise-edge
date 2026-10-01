@@ -182,6 +182,67 @@ fn genuine_control_source() -> GenuineControlSource {
     }
 }
 
+fn assert_ordinary_owned_recovery_stays_closed(source: &GenuineControlSource) {
+    let network: &Network = &source.fixture.network;
+    let (identity, history): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
+        complete_history(network);
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    // This store is created only from the exact pinned signed genesis and
+    // actual independently verified committed Freeze history, never copied
+    // source Ready/progress, objects, nonce rows or application receipts.
+    genesis::install_genesis(
+        &store,
+        &network.context,
+        network.domain(),
+        &network.resolver,
+        &source.fixture.manifest,
+        0,
+    )
+    .unwrap();
+    install_ordered_genesis(&store, &network.context, &network.env(), TRUSTED_NOW_MILLIS).unwrap();
+    let mut verifier: OrderedHistoryVerifier =
+        OrderedHistoryVerifier::new(network.policy.clone(), identity).unwrap();
+    for material in history.iter().take(3) {
+        let _derived: Option<OrderedOutcome> = engine::reconstruct_ordered_history_height(
+            &store,
+            &network.context,
+            &network.env(),
+            &mut verifier,
+            material,
+        )
+        .unwrap();
+    }
+    assert_eq!(verifier.height(), 3);
+    let bundle: PublicationBundle =
+        consensus::bundle::decode_publication_bundle(&source.paid.bundle).unwrap();
+    let error: crate::fast_path::FastPathError =
+        crate::fast_path::apply_with_recovery_after_publication(
+            &store,
+            &network.blobs,
+            &network.context,
+            network.domain(),
+            &network.resolver,
+            &network.history,
+            &fixture::protocol(),
+            &network.leg_policy,
+            &source.fixture.manifest.fee_policy,
+            &network.engine,
+            &bundle.signed_intent,
+            &source.paid.certificate,
+            11,
+            &source.paid.availability_certificate,
+        )
+        .expect_err("a certified recovery is not permission to bypass committed Freeze");
+    assert!(matches!(
+        error,
+        crate::fast_path::FastPathError::Node(NodeCoreError::PersistenceInvariant(
+            "admission closed by a committed ordered-economics epoch freeze"
+        ))
+    ));
+    eprintln!("typed ordinary recovery cause: {error:?}");
+}
+
 #[test]
 fn genuine_control_history_needs_complete_selected_proof_and_reconstructs_without_source_rows() {
     let source: GenuineControlSource = genuine_control_source();
@@ -245,6 +306,7 @@ fn genuine_control_history_needs_complete_selected_proof_and_reconstructs_withou
 #[test]
 fn control_query_preserves_completed_and_earlier_refusals_and_actual_wrong_union() {
     let source: GenuineControlSource = genuine_control_source();
+    assert_ordinary_owned_recovery_stays_closed(&source);
     let completed: &Network = &source.fixture.network;
     let mut fresh: OrderedCandidate = source.candidate.clone();
     let mut intent: DrainSetIntent = decode_drain_set_intent(&fresh.intent).unwrap();
