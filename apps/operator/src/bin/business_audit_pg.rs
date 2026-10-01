@@ -291,7 +291,7 @@ fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
         admission_profile: &profile,
         genesis: &manifest,
         pinned_genesis_digest: genesis_digest,
-        operation_context: operation.clone(),
+        operation_context: operation,
         domain,
         resolver: &resolver,
         resolver_history: &[],
@@ -344,7 +344,7 @@ fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
     }
     let mut overlay = BusinessReconstructionOverlay::new(plan)?;
     let _execution = overlay.reconstruct_with_control_material(&owned, &ordered, &controls)?;
-    let _comparison = overlay.compare_source(&snapshot)?;
+    overlay.compare_source(&snapshot)?;
     source.check_portable_outbox_empty_at(&operation, domain, &snapshot.token)?;
     let report = format!(
         "audit=semantic-equal\ngenesis={}\nordered_height={}\nordered_digest={}\nowned_publications={}\ncontrol_selections={}\nsource_records={}\nsource_sequence={}\nsource_writer={}\nmeaning=fixed-source-snapshot-only-not-network-freshness-cut-import-readiness-seal-or-activation\n",
