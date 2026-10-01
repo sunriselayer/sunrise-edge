@@ -645,7 +645,7 @@ where
     let network: Option<(
         Vec<FastVoteEndpoint<CliTransport>>,
         FastPathCertifier,
-        sunrise_edge_client::CommitmentProfile,
+        sunrise_edge_client::VerifiedAdmissionProfile,
     )> = if parsed.get("--fastvote-network").is_some() {
         Some(super::fastvote_network::load_endpoints_and_profile(
             &parsed,
@@ -764,12 +764,13 @@ where
         )?;
         let signed_bytes: Vec<u8> = encode_signed_paid_intent(&signed).map_err(failure)?;
         let record_bytes: Vec<u8> = encode_instance_record(&record).map_err(failure)?;
-        let result: PaidExecutionResult = if let Some((endpoints, certifier, profile)) = &network {
+        let result: PaidExecutionResult = if let Some((endpoints, certifier, admission)) = &network
+        {
             super::fastvote_network::run_network_submit(
                 &parsed,
                 endpoints,
                 certifier,
-                *profile,
+                admission,
                 expected.domain(),
                 &resolver,
                 &signed,
@@ -885,12 +886,12 @@ where
         Vec::new(),
     )?;
     let signed_bytes: Vec<u8> = encode_signed_paid_intent(&signed).map_err(failure)?;
-    let result: PaidExecutionResult = if let Some((endpoints, certifier, profile)) = &network {
+    let result: PaidExecutionResult = if let Some((endpoints, certifier, admission)) = &network {
         super::fastvote_network::run_network_submit(
             &parsed,
             endpoints,
             certifier,
-            *profile,
+            admission,
             expected.domain(),
             &resolver,
             &signed,

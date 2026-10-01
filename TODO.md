@@ -436,6 +436,13 @@ The detailed existing evidence and remaining criteria follow:
   Two control-page codecs, three heap-dependency controls (including a 100,000-
   node chain on a 64 KiB stack), four SDK causal tests and strict all-target/
   all-feature Clippy for core/operator/client/CLI also pass at that source.
+  The first full gate then refused seven malformed CLI transport fixtures;
+  their canonical list/nonce operands were corrected without weakening the
+  production verifier or race/retry assertions. The combined all-feature CLI
+  suite passes all 196 tests, and strict all-target/all-feature CLI Clippy
+  passes. Fresh and saved submission/replay use the retained authenticated
+  profile and shared owning rule; zero/wrong-lane/synthetic IDs refuse before
+  seed I/O, artifact reservation or connection, with saved bytes unchanged.
   No complete fresh four-namespace PostgreSQL acceptance pass is claimed yet.
   Final whole-repository checks,
   independent final-head review and required CI remain pending.

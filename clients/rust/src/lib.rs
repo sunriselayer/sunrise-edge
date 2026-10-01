@@ -125,6 +125,9 @@ pub use consensus::{
     decode_frozen_frontier_page, decode_frozen_frontier_vote, encode_frozen_frontier_page,
     encode_frozen_frontier_vote,
 };
+pub use node_core::admission_profile::{
+    ExternalRequestLane, VerifiedAdmissionProfile, require_external_request_lane,
+};
 pub use node_core::fast_path::FastPathEd25519Verifier;
 pub use node_core::fast_path::records::{
     FastPathValidatorSetRecord, decode_fastpath_validator_set_record,

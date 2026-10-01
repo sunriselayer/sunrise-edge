@@ -210,7 +210,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     let network: Option<(
         Vec<FastVoteEndpoint<crate::net::CliTransport>>,
         FastPathCertifier,
-        sunrise_edge_client::CommitmentProfile,
+        sunrise_edge_client::VerifiedAdmissionProfile,
     )> = if parsed.get("--fastvote-network").is_some() {
         Some(super::fastvote_network::load_endpoints_and_profile(
             &parsed, &resolver, &context,
@@ -339,12 +339,12 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
             ),
             PaidApplication::Call(_) => (None, "unused", None),
         };
-    let result: PaidExecutionResult = if let Some((endpoints, certifier, profile)) = &network {
+    let result: PaidExecutionResult = if let Some((endpoints, certifier, admission)) = &network {
         super::fastvote_network::run_network_submit(
             &parsed,
             endpoints,
             certifier,
-            *profile,
+            admission,
             expected.domain(),
             &resolver,
             &signed,

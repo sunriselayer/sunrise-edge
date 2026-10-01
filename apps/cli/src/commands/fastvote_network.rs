@@ -50,18 +50,18 @@ use std::{
 
 use protocol_types::AtomicityDomainId;
 use sunrise_edge_client::{
-    AvailabilityCertificate, Client, CommitmentProfile, FastCertificate, FastPathCertifier,
-    FastVoteEndpoint, FastVoteNetworkError, FastVoteQuorumError, FrozenFrontierVote,
-    MAX_ENCODED_BUNDLE_BYTES, MAX_FASTVOTE_NETWORK_ENDPOINTS, PaidApplication, PaidExecutionResult,
-    PaidExecutionStatus, SignedPaidIntent, Transport, ValidatorId, apply_fastvote_to_all,
-    apply_published_fastvote_to_all,
+    AvailabilityCertificate, Client, CommitmentProfile, ExternalRequestLane, FastCertificate,
+    FastPathCertifier, FastVoteEndpoint, FastVoteNetworkError, FastVoteQuorumError,
+    FrozenFrontierVote, MAX_ENCODED_BUNDLE_BYTES, MAX_FASTVOTE_NETWORK_ENDPOINTS, PaidApplication,
+    PaidExecutionResult, PaidExecutionStatus, SignedPaidIntent, Transport, ValidatorId,
+    VerifiedAdmissionProfile, apply_fastvote_to_all, apply_published_fastvote_to_all,
     call::CallIntent,
     collect_fastvote_availability_certificate, collect_fastvote_certificate,
     decode_availability_certificate, decode_fast_certificate, decode_frozen_frontier_vote,
     decode_signed_paid_intent, encode_availability_certificate, encode_fast_certificate,
     encode_signed_paid_intent, load_trusted_fastvote_genesis_with_profile,
     local_execution::{encode_instance_record, instance_target},
-    local_publication_resolver, validate_fastvote_endpoints,
+    local_publication_resolver, require_external_request_lane, validate_fastvote_endpoints,
 };
 
 use crate::{
@@ -517,7 +517,7 @@ pub(super) fn load_drain_endpoints_and_certifier(
 }
 
 /// Loads one locally authenticated manifest and returns its committee and
-/// signed commitment profile together, before the caller signs anything.
+/// authenticated admission capability together, before the caller signs anything.
 pub(super) fn load_endpoints_and_profile(
     parsed: &ParsedArgs,
     resolver: &sunrise_edge_client::HashSuiteResolver,
@@ -526,7 +526,7 @@ pub(super) fn load_endpoints_and_profile(
     (
         Vec<FastVoteEndpoint<CliTransport>>,
         FastPathCertifier,
-        CommitmentProfile,
+        VerifiedAdmissionProfile,
     ),
     CliError,
 > {
@@ -558,9 +558,10 @@ pub(super) fn load_endpoints_and_profile(
     }
     let endpoints: Vec<FastVoteEndpoint<CliTransport>> =
         build_endpoints(&peers, trusted.commitment_profile)?;
+    let admission: VerifiedAdmissionProfile = trusted.admission_profile().clone();
     let certifier: FastPathCertifier = trusted.certifier;
     validate_fastvote_endpoints(&endpoints, &certifier).map_err(failure)?;
-    Ok((endpoints, certifier, trusted.commitment_profile))
+    Ok((endpoints, certifier, admission))
 }
 
 pub(super) fn parse_deadline(parsed: &ParsedArgs) -> Result<OperationBudget, CliError> {
@@ -672,22 +673,13 @@ fn print_repin_diagnostic(error: &impl std::fmt::Display) {
     }
 }
 
-fn require_owned_lane(profile: CommitmentProfile, request: &[u8; 32]) -> Result<(), CliError> {
-    // This private CLI value comes from the same locally verified manifest as
-    // the committee. It is not a command-line profile flag or remote claim.
-    if profile == CommitmentProfile::CausalAdmission {
-        if request[0] & 0x80 != 0 {
-            return Err(invalid(
-                "causal admission requires an Owned request id (high bit 0)",
-            ));
-        }
-        if sunrise_edge_client::is_reserved_paid_request_id(request) {
-            return Err(invalid(
-                "internal synthetic request ids are not external Owned ids",
-            ));
-        }
-    }
-    Ok(())
+fn require_owned_lane(
+    admission: &VerifiedAdmissionProfile,
+    request: &[u8; 32],
+) -> Result<(), CliError> {
+    // Use the same owning rule as the SDK and node, under the authenticated
+    // capability retained from the local genesis pin, never a profile tag.
+    require_external_request_lane(admission, ExternalRequestLane::Owned, request).map_err(failure)
 }
 
 /// Runs the network prepare/quorum/apply flow for an already-built, already
@@ -699,14 +691,15 @@ pub(super) fn run_network_submit<T: Transport>(
     parsed: &ParsedArgs,
     endpoints: &[FastVoteEndpoint<T>],
     certifier: &FastPathCertifier,
-    profile: CommitmentProfile,
+    admission: &VerifiedAdmissionProfile,
     domain: AtomicityDomainId,
     resolver: &sunrise_edge_client::HashSuiteResolver,
     signed: &SignedPaidIntent,
     derived: Option<(&str, &'static str, &[u8])>,
     budget: OperationBudget,
 ) -> Result<PaidExecutionResult, CliError> {
-    require_owned_lane(profile, &signed.intent.request_id)?;
+    require_owned_lane(admission, &signed.intent.request_id)?;
+    let profile: CommitmentProfile = admission.commitment_profile();
     let signed_intent_out = parsed.require("--fastvote-signed-intent-out")?;
     let certificate_out = parsed.require("--fastvote-certificate-out")?;
     let OperationBudget {
@@ -1103,8 +1096,10 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
     .map_err(failure)?;
     let derived: Option<DerivedReference<'_>> =
         recompute_derived_reference(&parsed, &resolver, &context, &signed.intent.application)?;
-    let (endpoints, certifier, profile) = load_endpoints_and_profile(&parsed, &resolver, &context)?;
-    require_owned_lane(profile, &signed.intent.request_id)?;
+    let (endpoints, certifier, admission) =
+        load_endpoints_and_profile(&parsed, &resolver, &context)?;
+    require_owned_lane(&admission, &signed.intent.request_id)?;
+    let profile: CommitmentProfile = admission.commitment_profile();
     if !profile.is_logical()
         && (availability_certificate.is_some()
             || parsed
@@ -1124,7 +1119,7 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
         &parsed,
         &endpoints,
         &certifier,
-        profile,
+        &admission,
         expected.domain(),
         &resolver,
         &signed,
@@ -1218,7 +1213,7 @@ fn replay_loaded<T: Transport>(
     parsed: &ParsedArgs,
     endpoints: &[FastVoteEndpoint<T>],
     certifier: &FastPathCertifier,
-    profile: CommitmentProfile,
+    admission: &VerifiedAdmissionProfile,
     domain: AtomicityDomainId,
     resolver: &sunrise_edge_client::HashSuiteResolver,
     signed: &SignedPaidIntent,
@@ -1227,6 +1222,8 @@ fn replay_loaded<T: Transport>(
     derived: Option<DerivedReference<'_>>,
     budget: OperationBudget,
 ) -> Result<PaidExecutionResult, CliError> {
+    require_owned_lane(admission, &signed.intent.request_id)?;
+    let profile: CommitmentProfile = admission.commitment_profile();
     let submission_path: &str = parsed.require("--submission")?;
 
     let OperationBudget {
