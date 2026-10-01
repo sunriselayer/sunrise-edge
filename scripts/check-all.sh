@@ -116,10 +116,11 @@ case "$group" in
       done
     fi
     if ! ci_require_postgres; then exit 0; fi
-    # Native feature-anchor packages preserve the former workspace union;
+    # Native feature-anchor packages preserve the current workspace union;
     # their ordinary tests repeat here rather than weakening storage features.
     cargo test -p runtime-postgres -p sunrise-edge-operator \
-      -p sunrise-edge-cloudflare-validator --all-targets --all-features \
+      -p sunrise-edge-cloudflare-validator -p sunrise-claim \
+      --all-targets --all-features \
       --features sunrise-edge-cli/usb-hid
     ;;
   pg-lifecycle|pg-drain-history|pg-business-audit)

@@ -263,7 +263,7 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')&&args.includes(pro
       if (tool === "cargo" && args.includes("--list")) return [];
       if (tool === "cargo" && args[0] === "test" && !args.includes("--ignored")) {
         if (args.includes("--workspace")) return args.includes("--exclude") ? ["rust-tests"] : ["rust-tests", "pg-storage"];
-        assert.deepEqual(args, ["test", "-p", "runtime-postgres", "-p", "sunrise-edge-operator", "-p", "sunrise-edge-cloudflare-validator", "--all-targets", "--all-features", "--features", "sunrise-edge-cli/usb-hid"]);
+        assert.deepEqual(args, ["test", "-p", "runtime-postgres", "-p", "sunrise-edge-operator", "-p", "sunrise-edge-cloudflare-validator", "-p", "sunrise-claim", "--all-targets", "--all-features", "--features", "sunrise-edge-cli/usb-hid"]);
         return ["pg-storage"];
       }
       if (tool === "bash" && args[0] === "scripts/check-fastvote-pg.sh") return [];
@@ -271,6 +271,14 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')&&args.includes(pro
     }).sort();
   }
   assert.deepEqual(gateEvents(full), gateEvents(union));
+  const storageEvent = lanes.get("pg-storage")[0];
+  for (const anchor of ["runtime-postgres", "sunrise-edge-operator", "sunrise-edge-cloudflare-validator", "sunrise-claim"]) {
+    const withoutAnchor = storageEvent.args.slice();
+    const index = withoutAnchor.indexOf(anchor);
+    assert(index > 0 && withoutAnchor[index - 1] === "-p");
+    withoutAnchor.splice(index - 1, 2);
+    assert.throws(() => gateEvents([{ ...storageEvent, args: withoutAnchor }]));
+  }
   assert.deepEqual(lanes.get("rust-tests")[0].args, ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"]);
   for (const group of ["pg-lifecycle", "pg-drain-history", "pg-business-audit", "pg-recovery-economics"]) {
     assert(lanes.get(group).some(({ tool, args }) => tool === "cargo" && args.includes("build") && args.includes("sunrise-edge-cli")));
