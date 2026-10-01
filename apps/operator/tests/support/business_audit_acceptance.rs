@@ -495,6 +495,8 @@ pub(super) fn recover_retained_fixture(harness: &Harness<'_>, through_pin: [u8; 
     };
     use protocol_types::Digest32;
 
+    const CHUNK_BYTES: u32 = 1024;
+
     fn persist_new(path: &Path, bytes: &[u8]) {
         use std::io::Write;
         let mut file: fs::File = fs::OpenOptions::new()
@@ -540,7 +542,6 @@ pub(super) fn recover_retained_fixture(harness: &Harness<'_>, through_pin: [u8; 
     fs::create_dir(&archive).unwrap();
     let identity_bytes: Vec<u8> = encode_ordered_history_identity(&identity).unwrap();
     persist_new(&archive.join("identity.bin"), &identity_bytes);
-    const CHUNK_BYTES: u32 = 1024;
     persist_new(&archive.join("chunk-size.bin"), &CHUNK_BYTES.to_be_bytes());
     for height in 1..=identity.through_height {
         let descriptor: OrderedHistoryHeightDescriptor = read_ordered_history_height_descriptor(
