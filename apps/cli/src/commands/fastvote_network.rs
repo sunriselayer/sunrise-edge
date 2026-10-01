@@ -681,7 +681,7 @@ fn require_owned_lane(profile: CommitmentProfile, request: &[u8; 32]) -> Result<
                 "causal admission requires an Owned request id (high bit 0)",
             ));
         }
-        if node_core::local_instance_state::is_reserved_paid_request_id(request) {
+        if sunrise_edge_client::is_reserved_paid_request_id(request) {
             return Err(invalid(
                 "internal synthetic request ids are not external Owned ids",
             ));

@@ -129,6 +129,7 @@ pub use node_core::fast_path::FastPathEd25519Verifier;
 pub use node_core::fast_path::records::{
     FastPathValidatorSetRecord, decode_fastpath_validator_set_record,
 };
+pub use node_core::local_instance_state::is_reserved_paid_request_id;
 pub use node_core::logical_generation::CommitmentProfile;
 pub use node_wire::MAX_FASTVOTE_AVAILABILITY_CERTIFICATE_BYTES;
 pub use node_wire::{
