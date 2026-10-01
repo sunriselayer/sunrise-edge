@@ -154,6 +154,7 @@ pub fn require_external_request_lane(
 /// Fences the installed profile and rejects wrong-lane fresh admission.
 /// `expected` is trusted composition, never decoded request context. A present
 /// profile supplies its original genesis root independently of the live epoch.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn fence_installed_external_request_lane<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
@@ -180,9 +181,12 @@ pub(crate) fn fence_verified_admission_profile<S: StructuredDurableDomainStateSt
     expected: &VerifiedAdmissionProfile,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<(), NodeCoreError> {
-    let installed: Option<VerifiedAdmissionProfile> =
-        resolve_installed(store, context, domain, expected.context(), reads)?;
-    if installed.as_ref() != Some(expected) {
+    let installed: InstalledCommitmentProfile =
+        fence_commitment_profile(store, context, domain, expected.context().chain_id(), reads)?;
+    if match installed.logical() {
+        Some(record) => VerifiedAdmissionProfile::from_verified_record(record) != *expected,
+        None => expected.profile.is_logical(),
+    } {
         return Err(invalid(
             "installed admission profile differs from pinned genesis",
         ));
@@ -219,6 +223,11 @@ fn resolve_installed<S: StructuredDurableDomainStateStore>(
     expected: &PublicationContext,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<Option<VerifiedAdmissionProfile>, NodeCoreError> {
+    // Even a pristine slot is an admission dependency: a concurrent fresh
+    // v4 install must reject this legacy writer's final CAS, not let it
+    // execute under one interpretation and commit under another.
+    let profile_key: Vec<u8> = logical_profile_key(expected.chain_id())?;
+    fence_read(store, context, domain, profile_key, reads)?;
     let installed: InstalledCommitmentProfile =
         fence_commitment_profile(store, context, domain, expected.chain_id(), reads)?;
     if let Some(record) = installed.logical() {
@@ -228,7 +237,12 @@ fn resolve_installed<S: StructuredDurableDomainStateStore>(
         let verified: VerifiedAdmissionProfile =
             VerifiedAdmissionProfile::from_verified_record(record);
         if verified.is_causal() {
-            fence_manifest_and_marker(store, context, domain, &verified, reads)?;
+            fence_verified_admission_profile(store, context, domain, &verified, reads)?;
+        } else {
+            // The old v1 logical fixture exception permits an absent manifest
+            // at the record's own root. It must not let a forged/downshifted
+            // row redirect this composition away from an installed v4 root.
+            refuse_conflicting_composition_root(store, context, domain, expected, record, reads)?;
         }
         return Ok(Some(verified));
     }
@@ -239,15 +253,15 @@ fn resolve_installed<S: StructuredDurableDomainStateStore>(
     let marker_key: Vec<u8> =
         genesis_marker_key(expected).map_err(|_| invalid("admission profile marker key"))?;
     let manifest_row: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &manifest_key)?;
-    let marker_row: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &marker_key)?;
+        fence_read(store, context, domain, manifest_key, reads)?;
+    let marker_row: VersionedStateValue = fence_read(store, context, domain, marker_key, reads)?;
     if manifest_row.value().is_none()
         && marker_row.value().is_none()
         && manifest_row.revision() == StateRevision::INITIAL
         && marker_row.revision() == StateRevision::INITIAL
     {
-        // Preserve pre-genesis historical fixtures and their exact witnesses.
+        // Preserve the historical interpretation. Absence CAS remains only
+        // local admission configuration, never a signed witness operand.
         return Ok(None);
     }
     let manifest: GenesisManifest = decode_genesis_manifest(
@@ -278,8 +292,61 @@ fn resolve_installed<S: StructuredDurableDomainStateStore>(
         &marker,
         manifest_row.value().unwrap_or_default(),
     )?;
-    // Historical signed binding bytes and witness read operands are frozen.
+    // Historical signed binding bytes and witness read operands are frozen;
+    // the independent configuration reads still join the local commit CAS.
     Ok(Some(verified))
+}
+
+fn refuse_conflicting_composition_root<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    expected: &PublicationContext,
+    record: &LogicalProfileRecord,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<(), NodeCoreError> {
+    let manifest_key: Vec<u8> =
+        genesis_manifest_key(expected).map_err(|_| invalid("admission profile genesis key"))?;
+    let marker_key: Vec<u8> =
+        genesis_marker_key(expected).map_err(|_| invalid("admission profile marker key"))?;
+    let manifest_row: VersionedStateValue =
+        fence_read(store, context, domain, manifest_key, reads)?;
+    let marker_row: VersionedStateValue = fence_read(store, context, domain, marker_key, reads)?;
+    if record.context != *expected {
+        let original_manifest_key: Vec<u8> = genesis_manifest_key(&record.context)
+            .map_err(|_| invalid("admission profile genesis key"))?;
+        let original_marker_key: Vec<u8> = genesis_marker_key(&record.context)
+            .map_err(|_| invalid("admission profile marker key"))?;
+        fence_read(store, context, domain, original_manifest_key, reads)?;
+        fence_read(store, context, domain, original_marker_key, reads)?;
+    }
+    if let Some(bytes) = manifest_row.value() {
+        let manifest: GenesisManifest = decode_genesis_manifest(bytes)
+            .map_err(|_| invalid("installed admission genesis is malformed"))?;
+        if manifest.context() != expected
+            || manifest.commitment_profile != record.profile
+            || manifest.minimum_freeze_block_height != record.minimum_freeze_block_height
+            || manifest.genesis_authority != record.genesis_authority
+            || manifest.context() != &record.context
+            || !hashing::verify_digest(
+                &record.manifest_digest,
+                HashPurpose::ProtocolConfig,
+                expected.protocol_version(),
+                expected.chain_id(),
+                bytes,
+            )?
+        {
+            return Err(invalid(
+                "installed admission profile redirects the trusted genesis root",
+            ));
+        }
+    } else if marker_row.value().is_some()
+        || marker_row.revision() != StateRevision::INITIAL
+        || manifest_row.revision() != StateRevision::INITIAL
+    {
+        return Err(invalid("installed admission genesis is missing"));
+    }
+    Ok(())
 }
 
 fn fence_manifest_and_marker<S: StructuredDurableDomainStateStore>(

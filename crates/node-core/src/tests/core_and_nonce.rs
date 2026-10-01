@@ -978,12 +978,11 @@ fn authenticate_submit_transaction_event_happy_path_authenticates_transaction() 
 
     assert_eq!(resolved.domain(), domain(0xD7));
     assert_eq!(machine.calls.load(Ordering::SeqCst), 1);
-    // Sender nonce, committed epoch, fast-path nonce lock, the machine's one
-    // application state key, and two observations of the profile binding:
-    // application derivation and Freeze authorization. This historical
-    // fixture has no profile row, so neither observation adds a CAS assertion
-    // or provenance mutation, and no admission-closure row is read at all.
-    assert_eq!(store.state_reads.load(Ordering::SeqCst), 6);
+    // The six historical nonce/application/Freeze observations plus five
+    // direct admission configuration reads. The absent profile/root slots
+    // join only the commit CAS; they do not become provenance mutations or
+    // signed business operands, and no admission-closure row is read.
+    assert_eq!(store.state_reads.load(Ordering::SeqCst), 11);
     let commits = store.commits.lock().unwrap();
     assert_eq!(commits.len(), 1);
     let state = commits[0].state().unwrap();
@@ -1491,10 +1490,9 @@ fn stale_nonce_on_fresh_request_id_rejects_before_app_state_read_transition_or_c
     );
     assert_eq!(machine.calls.load(Ordering::SeqCst), 0);
     assert!(store.commits.lock().unwrap().is_empty());
-    // Only the sender-nonce record is read before the mismatch is
-    // detected; the machine's declared application state key is never
-    // touched.
-    assert_eq!(store.state_reads.load(Ordering::SeqCst), 1);
+    // Five admission configuration observations precede the sender nonce.
+    // The machine's declared application state key is never touched.
+    assert_eq!(store.state_reads.load(Ordering::SeqCst), 6);
 }
 
 #[test]
@@ -2105,12 +2103,13 @@ fn app_plan_at_max_atomic_state_writes_exceeds_reserved_nonce_capacity() {
     assert_eq!(store.state_reads.load(Ordering::SeqCst), 0);
     assert!(store.commits.lock().unwrap().is_empty());
 
-    // The identical plan is accepted by the generic durable caller, which
-    // passes no reservation and therefore does not reserve nonce write
-    // capacity.
+    // A generic caller reserves no nonce write, but the unchanged total read
+    // bound includes four configuration CAS slots: epoch, profile, manifest
+    // and marker. The maximum fitting application plan still succeeds.
     let generic_store = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+    let maximum_application_reads: usize = MAX_ATOMIC_STATE_READS - 4;
     let generic_machine = WideMachine {
-        count: MAX_ATOMIC_STATE_WRITES,
+        count: maximum_application_reads,
     };
     let output = handle_resolved_durable_idempotent_event(
         &generic_store,
@@ -2123,6 +2122,36 @@ fn app_plan_at_max_atomic_state_writes_exceeds_reserved_nonce_capacity() {
     )
     .unwrap();
     assert_eq!(output.output().responses().len(), 1);
+    assert_eq!(
+        generic_store.commits.lock().unwrap()[0]
+            .state()
+            .unwrap()
+            .reads()
+            .len(),
+        MAX_ATOMIC_STATE_READS
+    );
+
+    let oversized_store = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+    let oversized_machine = WideMachine {
+        count: maximum_application_reads + 1,
+    };
+    assert_eq!(
+        handle_resolved_durable_idempotent_event(
+            &oversized_store,
+            &durable_context(),
+            &placement(0xEC, 7),
+            &config,
+            &resolver("sunrise-test"),
+            event("sunrise-test", request(0xCE)),
+            &oversized_machine,
+        ),
+        Err(NodeCoreError::TooManyStateAccesses {
+            count: maximum_application_reads + 1,
+            maximum: maximum_application_reads,
+        })
+    );
+    assert_eq!(oversized_store.state_reads.load(Ordering::SeqCst), 5);
+    assert!(oversized_store.commits.lock().unwrap().is_empty());
 }
 
 #[test]

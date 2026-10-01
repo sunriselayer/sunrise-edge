@@ -210,7 +210,7 @@ fn missing_pristine_profile_never_hides_installed_v4_genesis_or_marker() {
 
 #[test]
 fn v4_downshifted_fake_missing_manifest_or_marker_refuses_on_admission_and_reopen() {
-    for corruption in [0_u8, 1, 2, 3, 4] {
+    for corruption in [0_u8, 1, 2, 3, 4, 5] {
         let (store, manifest, verified) = installed();
         let profile_key: Vec<u8> = logical_profile_key(verified.context().chain_id()).unwrap();
         let key: Vec<u8> = match corruption {
@@ -221,6 +221,24 @@ fn v4_downshifted_fake_missing_manifest_or_marker_refuses_on_admission_and_reope
         let mutation: StateMutation = match corruption {
             0 => StateMutation::Put(expected_profile_row(&freeze_bonded_manifest())),
             1 => StateMutation::Put(vec![1, 2, 3]),
+            5 => {
+                let mut redirect: LogicalProfileRecord =
+                    crate::logical_generation::decode_logical_profile_record(
+                        &expected_profile_row(&manifest),
+                    )
+                    .unwrap();
+                redirect.profile = CommitmentProfile::LogicalGenerationV2;
+                redirect.minimum_freeze_block_height = 0;
+                redirect.context = PublicationContext::new(
+                    verified.context().chain_id().clone(),
+                    verified.context().protocol_version(),
+                    protocol_types::Epoch::new(99),
+                )
+                .unwrap();
+                StateMutation::Put(
+                    crate::logical_generation::encode_logical_profile_record(&redirect).unwrap(),
+                )
+            }
             _ => StateMutation::Delete,
         };
         let seen: VersionedStateValue = store
@@ -285,6 +303,7 @@ fn changing_an_observed_genesis_marker_is_a_real_cas_conflict() {
         &key,
         crate::genesis::encode_genesis_install_marker(&marker).unwrap(),
     );
+    reads.insert(b"test/causal-cas".to_vec(), StateRevision::INITIAL);
     let assertions: Vec<StateReadAssertion> = reads
         .into_iter()
         .map(|(key, revision)| StateReadAssertion::new(key, revision).unwrap())
@@ -309,5 +328,54 @@ fn changing_an_observed_genesis_marker_is_a_real_cas_conflict() {
             .unwrap()
             .value()
             .is_none()
+    );
+}
+
+#[test]
+fn captured_pristine_profile_and_roots_cannot_race_a_genuine_v4_install() {
+    let manifest: GenesisManifest = causal_bonded_manifest();
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    require_historical_direct_writer(
+        &store,
+        &context(1),
+        domain(),
+        manifest.context(),
+        &mut reads,
+    )
+    .unwrap();
+    assert_eq!(reads.len(), 3);
+    assert!(
+        reads
+            .values()
+            .all(|revision| *revision == StateRevision::INITIAL)
+    );
+    install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap();
+    let key: Vec<u8> = b"test/untracked-install-race".to_vec();
+    reads.insert(key.clone(), StateRevision::INITIAL);
+    let assertions: Vec<StateReadAssertion> = reads
+        .into_iter()
+        .map(|(key, revision)| StateReadAssertion::new(key, revision).unwrap())
+        .collect();
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+        domain(),
+        AtomicStateReadSet::new(assertions).unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(key.clone(), StateMutation::Put(vec![1])).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        store.commit_durable(&context(1), transaction),
+        DurableCommitOutcome::Rejected(_)
+    ));
+    assert_eq!(
+        store
+            .get_versioned_durable(&context(1), domain(), &key)
+            .unwrap()
+            .revision(),
+        StateRevision::INITIAL
     );
 }

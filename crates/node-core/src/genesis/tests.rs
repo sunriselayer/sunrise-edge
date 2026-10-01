@@ -558,7 +558,7 @@ fn fresh_v4_install_reopen_and_no_implicit_upgrade_preserve_installed_bytes() {
         2
     );
     assert!(matches!(
-        install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 99).unwrap(),
+        install_genesis(&store, &context(1), domain(), &resolver(), &manifest, 10).unwrap(),
         GenesisInstallOutcome::VerifiedExisting { .. }
     ));
     assert_eq!(

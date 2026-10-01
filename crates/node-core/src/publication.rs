@@ -585,6 +585,26 @@ pub fn handle_local_publication_with_history<S: StructuredDurableDomainStateStor
     {
         return Ok(output);
     }
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let current_epoch_record: local_instance_state::FastPathEpochRecord =
+        mutation_fence::fence_epoch_state(
+            store,
+            context,
+            domain,
+            policy.context.chain_id(),
+            &mut reads,
+        )?;
+    // A signed publication policy authenticates context, but supplies no
+    // certified business capability. Exact bootstrap/completed replay above
+    // remains available; a fresh causal store cannot use this legacy writer.
+    let mut direct_profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    crate::admission_profile::require_historical_direct_writer(
+        store,
+        context,
+        domain,
+        policy.context(),
+        &mut direct_profile_reads,
+    )?;
     let layout: PersistenceLayout = PersistenceLayout::new(
         policy.context.chain_id().clone(),
         policy.context.protocol_version(),
@@ -600,7 +620,6 @@ pub fn handle_local_publication_with_history<S: StructuredDurableDomainStateStor
             nonce: submission.request().nonce(),
         },
     )?;
-    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     // DR-0131: serialize this mutation against an epoch transition while
     // preserving the historical-policy meaning of `policy.context.epoch()`.
     // Unlike a transaction's own current-epoch binding
@@ -611,14 +630,6 @@ pub fn handle_local_publication_with_history<S: StructuredDurableDomainStateStor
     // publication support is not narrowed to the current epoch. The epoch row
     // revision is nevertheless asserted by the publication commit, so it
     // cannot interleave with a Slice 2 transition.
-    let current_epoch_record: local_instance_state::FastPathEpochRecord =
-        mutation_fence::fence_epoch_state(
-            store,
-            context,
-            domain,
-            policy.context.chain_id(),
-            &mut reads,
-        )?;
     // DR-0154: local publication is a "direct local/paid mutation" a
     // committed `Freeze` must stop, exactly like every `fence_current_epoch`
     // caller -- but this function fences the historical-selector
@@ -701,6 +712,9 @@ pub fn handle_local_publication_with_history<S: StructuredDurableDomainStateStor
         &mut mutations,
         &mut reads,
     )?;
+    for (key, revision) in direct_profile_reads {
+        insert_read(&mut reads, key, revision)?;
+    }
     let assertions: Vec<StateReadAssertion> = reads
         .into_iter()
         .map(|(key, revision): (Vec<u8>, StateRevision)| StateReadAssertion::new(key, revision))

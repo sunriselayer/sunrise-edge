@@ -5215,9 +5215,57 @@ where
         return Ok(output);
     }
 
-    // A new request reads only the sender-nonce record, before any
-    // application state, so a stale or replayed nonce fails before any app
-    // state read, transition, or commit attempt.
+    // Fresh causal stores admit business only through private certified paths.
+    // These legacy generic/direct entrypoints have no such capability. Never
+    // let a request-selected epoch choose the missing-genesis fallback slot:
+    // chain/version are the trusted resolver, epoch the installed state. With
+    // activation deferred this is the initial composition root; a present
+    // profile always supplies its own original genesis root independently.
+    let mut direct_profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let epoch_key: Vec<u8> = local_instance_state::fastpath_epoch_record_key(resolver.chain_id())?;
+    let epoch_row: VersionedStateValue =
+        store.get_versioned_durable(context, domain, &epoch_key)?;
+    let installed_epoch: Epoch = match epoch_row.value() {
+        Some(bytes) => local_instance_state::decode_fastpath_epoch_record(bytes)?.current_epoch,
+        None if epoch_row.revision() == StateRevision::INITIAL => Epoch::new(0),
+        None => {
+            return Err(NodeCoreError::PersistenceInvariant(
+                "direct admission epoch was removed",
+            ));
+        }
+    };
+    direct_profile_reads.insert(epoch_key, epoch_row.revision());
+    let direct_context: execution::publication::PublicationContext =
+        execution::publication::PublicationContext::new(
+            resolver.chain_id().clone(),
+            resolver.protocol_version(),
+            installed_epoch,
+        )
+        .map_err(|_| NodeCoreError::PersistenceInvariant("direct admission context"))?;
+    admission_profile::require_historical_direct_writer(
+        store,
+        context,
+        domain,
+        &direct_context,
+        &mut direct_profile_reads,
+    )?;
+
+    // The runtime's total bound is unchanged. Configuration assertions use
+    // real slots too, so refuse an oversized application plan before any
+    // nonce/application read or execution instead of overflowing at commit.
+    let reserved_reads: usize = direct_profile_reads
+        .len()
+        .saturating_add(usize::from(reservation.is_some()));
+    let maximum_application_reads: usize = MAX_ATOMIC_STATE_READS.saturating_sub(reserved_reads);
+    if plan.accesses().len() > maximum_application_reads {
+        return Err(NodeCoreError::TooManyStateAccesses {
+            count: plan.accesses().len(),
+            maximum: maximum_application_reads,
+        });
+    }
+
+    // After configuration authentication, the sender nonce is checked before
+    // any application state, transition, or commit attempt.
     let pending_nonce = match reservation {
         Some(reservation) => Some(durable_reconciliation::reserve_sender_nonce(
             store,
@@ -5623,6 +5671,17 @@ where
         &mut mutations,
         &mut reads,
     )?;
+    // These physical configuration observations are not logical business
+    // inputs. Merge only after generation/provenance derivation is complete.
+    for (key, revision) in direct_profile_reads {
+        if let Some(previous) = reads.iter().find(|read| read.key() == key.as_slice()) {
+            if previous.expected_revision() != revision {
+                return Err(NodeCoreError::StateConflict);
+            }
+        } else {
+            reads.push(StateReadAssertion::new(key, revision)?);
+        }
+    }
     let state = DurableStateTransaction::new(domain, AtomicStateReadSet::new(reads)?, mutations)?;
     let objects = DurableObjectChanges::new(loaded_objects.into_reads(), object_mutations)?;
     let invocation =

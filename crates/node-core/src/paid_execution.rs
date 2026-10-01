@@ -49,6 +49,10 @@
 //! compose a route and bootstrap must install the exact policies. This module
 //! installs no route or policy.
 use super::*;
+use crate::admission_profile::{
+    ExternalRequestLane, VerifiedAdmissionProfile, fence_installed_external_request_lane,
+    require_external_request_lane, require_historical_direct_writer,
+};
 use execution::call_authorization::MAX_EXECUTION_SCOPES;
 use execution::execution_scopes::{
     required_scope_instances, validate_authorization_target_scopes, validate_execution_scope_set,
@@ -468,6 +472,10 @@ pub(crate) struct PaidAdmissionOutput {
     /// row (the caller's own responsibility). Includes one fast-path lock
     /// key read per locked input, in every [`NonceMode`] variant.
     pub(crate) reads: BTreeMap<Vec<u8>, StateRevision>,
+    /// Installed admission configuration CAS fences, deliberately separate
+    /// from signed business operands and logical dependencies. Every committing
+    /// caller merges these only after computing/verifying the existing witness.
+    pub(crate) admission_profile_reads: BTreeMap<Vec<u8>, StateRevision>,
     pub(crate) head_reads: Vec<DurableObjectHeadRead>,
     /// State mutations other than the sender-nonce write and any fast-path
     /// lock write: the instantiate/publication record and every created
@@ -626,28 +634,10 @@ pub(crate) fn build_paid_admission<
 ) -> PaidResult<PaidAdmissionOutput> {
     let intent: &PaidIntent = authenticated.intent();
     let current_request_id: [u8; 32] = intent.request_id;
-    // 3. Sender nonce freshness. Prepare only asserts this row and installs a
-    //    separate nonce lock; direct commit and certificate apply commit the
-    //    returned next-nonce write.
-    let layout: PersistenceLayout = PersistenceLayout::new(
-        intent.context.chain_id().clone(),
-        intent.context.protocol_version(),
-    );
-    let nonce_write: Option<PendingSenderNonceWrite> =
-        Some(durable_reconciliation::reserve_sender_nonce(
-            store,
-            context,
-            domain,
-            &layout,
-            SenderNonceReservation {
-                sender: intent.sender,
-                epoch: intent.context.epoch(),
-                nonce: intent.nonce,
-            },
-        )?);
-    // 4. Installed profile-four base policy and installed paid fee policy, as
-    //    exact stored bytes. A missing or different value fails closed.
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    if intent.context != *base_policy.context() || intent.context != fee_policy.context {
+        return Err(PaidExecutionError::ContextMismatch.into());
+    }
     // DR-0131: CAS-fence the committed epoch record and reject a request
     // bound to a non-current epoch before any lock, execution, or mutation.
     // DrainApply is the sole post-Freeze business application mode. Its
@@ -680,6 +670,40 @@ pub(crate) fn build_paid_admission<
             &mut reads,
         )?;
     }
+    // Fresh signed-v4 admission checks the original Owned identity before
+    // nonce/reservation/object work in every mode, including supplied certified
+    // recovery and post-Freeze drain material. Context above is trusted policy
+    // composition; the request cannot select another missing genesis slot.
+    let mut admission_profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    fence_installed_external_request_lane(
+        store,
+        context,
+        domain,
+        base_policy.context(),
+        &current_request_id,
+        ExternalRequestLane::Owned,
+        &mut admission_profile_reads,
+    )?;
+    // Sender nonce freshness. Prepare only asserts this row and installs a
+    // separate lock; direct commit and certificate apply commit the next nonce.
+    let layout: PersistenceLayout = PersistenceLayout::new(
+        intent.context.chain_id().clone(),
+        intent.context.protocol_version(),
+    );
+    let nonce_write: Option<PendingSenderNonceWrite> =
+        Some(durable_reconciliation::reserve_sender_nonce(
+            store,
+            context,
+            domain,
+            &layout,
+            SenderNonceReservation {
+                sender: intent.sender,
+                epoch: intent.context.epoch(),
+                nonce: intent.nonce,
+            },
+        )?);
+    // Installed profile-four base policy and installed paid fee policy, as
+    // exact stored bytes. A missing or different value fails closed.
     let mut drain_resolved_locks: Vec<DrainLockResolution> = Vec::new();
     // DR-0132 §3.D: a stale (strictly older epoch) object lock observed under
     // `NonceMode::Fresh` is reclaimed by emitting a `Delete` for it into
@@ -1341,6 +1365,7 @@ pub(crate) fn build_paid_admission<
         result_bytes,
         success,
         reads,
+        admission_profile_reads,
         head_reads,
         state_mutations,
         object_mutations,
@@ -1369,6 +1394,9 @@ pub fn preflight_paid_execution<S: StructuredDurableDomainStateStore>(
 /// Authenticates one paid invocation and derives its stable replay identity
 /// without consulting runtime identity, clock, storage, policy, code, object,
 /// or blob state.
+/// This historical helper alone grants no fresh causal-profile lane guarantee;
+/// profile-aware clients use [`authenticate_paid_execution_with_profile`]. Every
+/// mutating owned path independently fences its installed admission profile.
 pub fn authenticate_paid_execution(
     resolver: &HashSuiteResolver,
     expected: &PublicationContext,
@@ -1381,6 +1409,30 @@ pub fn authenticate_paid_execution(
         event_digest,
         request_id,
     })
+}
+
+/// Pure paid authentication and Owned-lane checking under a locally verified
+/// signed genesis profile. The runtime context may differ from the original
+/// genesis epoch, but its chain and protocol must match the trusted profile.
+pub fn authenticate_paid_execution_with_profile(
+    resolver: &HashSuiteResolver,
+    expected: &PublicationContext,
+    profile: &VerifiedAdmissionProfile,
+    signed_bytes: &[u8],
+) -> PaidResult<AuthenticatedPaidExecution> {
+    if expected.chain_id() != profile.context().chain_id()
+        || expected.protocol_version() != profile.context().protocol_version()
+    {
+        return Err(PaidExecutionError::ContextMismatch.into());
+    }
+    let authenticated: AuthenticatedPaidExecution =
+        authenticate_paid_execution(resolver, expected, signed_bytes)?;
+    require_external_request_lane(
+        profile,
+        ExternalRequestLane::Owned,
+        authenticated.request_id.as_bytes(),
+    )?;
+    Ok(authenticated)
 }
 
 /// Reconciles an already authenticated paid invocation against its exact
@@ -1439,7 +1491,20 @@ pub fn handle_preflighted_paid_execution<
         event_digest,
         request_id,
     } = authenticated;
-    let admission: PaidAdmissionOutput = build_paid_admission(
+    if let Some(output) =
+        durable_reconciliation::reconcile_receipt(store, context, domain, request_id, event_digest)?
+    {
+        return Ok(output);
+    }
+    let mut direct_profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    require_historical_direct_writer(
+        store,
+        context,
+        domain,
+        base_policy.context(),
+        &mut direct_profile_reads,
+    )?;
+    let mut admission: PaidAdmissionOutput = build_paid_admission(
         store,
         blob_store,
         context,
@@ -1455,6 +1520,15 @@ pub fn handle_preflighted_paid_execution<
         created_checkpoint,
         NonceMode::Fresh,
     )?;
+    for (key, revision) in direct_profile_reads {
+        if admission
+            .admission_profile_reads
+            .insert(key, revision)
+            .is_some_and(|existing: StateRevision| existing != revision)
+        {
+            return Err(NodeCoreError::StateConflict.into());
+        }
+    }
     commit_direct_paid_admission(store, context, domain, request_id, event_digest, admission)
 }
 
@@ -1512,6 +1586,7 @@ fn commit_direct_paid_admission<S: StructuredDurableDomainStateStore>(
         result_bytes,
         success,
         mut reads,
+        admission_profile_reads,
         head_reads,
         mut state_mutations,
         object_mutations,
@@ -1519,6 +1594,14 @@ fn commit_direct_paid_admission<S: StructuredDurableDomainStateStore>(
         logical,
         ..
     } = admission;
+    for (key, revision) in admission_profile_reads {
+        if reads
+            .insert(key, revision)
+            .is_some_and(|existing: StateRevision| existing != revision)
+        {
+            return Err(NodeCoreError::StateConflict.into());
+        }
+    }
     // DR-0154: a handoff-capable store applies this direct paid commit only
     // with the authenticated generation this very admission derived; a
     // historical store applies exactly as it always did. Neither can present

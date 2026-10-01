@@ -634,6 +634,7 @@ where
         result_bytes,
         success,
         reads: admission_reads,
+        admission_profile_reads,
         head_reads,
         state_mutations: mut mutations,
         object_mutations,
@@ -678,6 +679,7 @@ where
     }
 
     let mut tx_reads: BTreeMap<Vec<u8>, StateRevision> = admission_reads;
+    merge_apply_reads(&mut tx_reads, admission_profile_reads)?;
     merge_apply_reads(&mut tx_reads, fence_reads)?;
     merge_apply_reads(&mut tx_reads, drain_reads)?;
     verify_partial_prepare_conflicts(
