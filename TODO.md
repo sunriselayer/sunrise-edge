@@ -1,6 +1,6 @@
 # Current delivery roadmap
 
-**2026-10-01: one integrated implementation and refactoring queue.**
+**2026-10-02: one integrated implementation and refactoring queue.**
 [DR-0173](docs/architecture/decisions/0173-integrated-implementation-refactoring.md)
 integrates the remaining functions with responsibility-oriented cleanup.
 Do not finish a repository-wide rewrite before resuming feature delivery.
@@ -17,7 +17,9 @@ Only this file owns current status, sequencing and deferred work.
 | Generic paid contracts and Standard Asset | DR-0121–0128 implement Publish/Instantiate/Call, ordinary contract-defined fees and asset create/transfer/split/merge/mint/burn; no Standard Asset privilege in node-core |
 | Delivery 1: certified network contract lifecycle | PR #228 merged on 2026-09-27 after the full gate, fresh exact-head Opus approval and CI; paid lifecycle, assets, replay and declared catch-up, not complete state handoff |
 | Delivery 2: fixed-epoch ordered economics | PR #232 merged on 2026-09-27; shared ordering for claims, bonds and evidence/slash/reactivation, with four-namespace CLI evidence. Genuine membership-dependent Deposit/Withdraw positives remain in Delivery 3 |
-| Delivery 3 prerequisites | PR #237/#238/#239/#242/#244/#245 merged: portable reads, logical generations, publication-before-apply, Freeze/frontiers, quorum-retained DrainSet/member drain, ordered history, initial causal reconstruction and closed source comparison. Complete drained-source reconstruction/cut/import/readiness/Seal/activation remain open |
+| Delivery 3 prerequisites | PR #237/#238/#239/#242/#244/#245/#250 merged: portable reads, logical generations, publication-before-apply, Freeze/frontiers, quorum-retained DrainSet/member drain, ordered history and genuine frozen-member source reconstruction. Persistent import/readiness/Seal/activation remain open |
+| Authenticated pre-Seal business cut | Complete core derivation, immutable SQLite export/resumption and source-free independent saved verification implemented in the current feature PR; focused genuine, codec/vector and operator acceptance pass. Final full gate, independent exact-head review and hosted CI remain merge conditions, not import or activation evidence |
+| Shared artifact/configuration primitives | PR #249 merged: bounded local genesis and held-handle artifact I/O, with authority/error semantics retained by the callers |
 | Required validation | PR #247 implements DR-0172: four unconditional DB-free lanes. PostgreSQL integration/fault acceptance is retained and explicitly selected, not run on every PR |
 
 FastVote remains incomplete: validator-set changes, slashing and reward/claim
@@ -35,11 +37,10 @@ HTTP/SDK/CLI, tests and documentation; do not split merely by codec or file.
 
 | Order | Remaining outcome | Refactoring included where needed | Acceptance boundary |
 | --- | --- | --- | --- |
-| 1 | Complete authenticated drained-state reconstruction and cut export | Separate reconstruction material/catalog/scheduling/projection; make ordered replay reuse the owning candidate execution; separate drain stream/retention/union responsibilities | Genuine frozen member completion without aggregate availability certificate; all four business collections and artifact closure; pre-Seal cut binding and bounded verified export. No fabricated proof, skipped applied history, source write or self-referential cut |
-| 2 | Persistent verified import into a fresh inactive validator | Explicit import state and core authority guard; narrow runtime repository/transaction seams and shared SQL engine owners | Own writer fence, verified provenance/generation floor, resumable chunks and durable completeness. Staging grants no active serving, fresh business admission or consensus signing; verified import/replay has its own private authority. No foreign fence copy or reset of active history |
-| 3 | Conditional readiness, ordered Seal and authenticated activation | Separate epoch-control authority, transition identity and epoch-scoped ordered commit assembly; separate immutable genesis pins from verified serving context | Correctable pre-Seal candidates, ready eligible next quorum, business-free inherited suffix, unique post-Seal target, atomic policy/provenance rollover and retained old history. No timeout unfreeze or force activation |
-| 4 | Usable add/replace/recover/epoch lifecycle | Share bounded artifact I/O and pin/config primitives in SDK/CLI; keep ingress/authentication, transport and core decisions separate | Real A/B/C/D → A/B/C/E flow: Deposit E, Unbond absent D, verified import/replacement, new-epoch paid contracts/claims, advance to genuine unlock epoch, Withdraw D; restart/replay, retired-key, early withdrawal and stale-writer negatives |
-| 5 | Delivery 4: independent audit and initial-network startup | Only deployment-facing composition/dispatch cleanup needed for the chosen profile; reuse capability tests rather than copy PG-only fixtures | Explicit reviewed initial-network activation profile, independently controlled stores, executable auth/TLS/startup/recovery instructions, separate economics and ingress audits and remediation before live exposure |
+| 1 | Persistent verified import into a fresh inactive validator | Explicit import state and core authority guard; narrow runtime repository/transaction seams and shared SQL engine owners | Own writer fence, verified provenance/generation floor, resumable chunks and durable completeness. Staging grants no active serving, fresh business admission or consensus signing; verified import/replay has its own private authority. No foreign fence copy or reset of active history |
+| 2 | Conditional readiness, ordered Seal and authenticated activation | Separate epoch-control authority, transition identity and epoch-scoped ordered commit assembly; separate immutable genesis pins from verified serving context | Correctable pre-Seal candidates, ready eligible next quorum, business-free inherited suffix, unique post-Seal target, atomic policy/provenance rollover and retained old history. No timeout unfreeze or force activation |
+| 3 | Usable add/replace/recover/epoch lifecycle | Share bounded artifact I/O and pin/config primitives in SDK/CLI; keep ingress/authentication, transport and core decisions separate | Real A/B/C/D → A/B/C/E flow: Deposit E, Unbond absent D, verified import/replacement, new-epoch paid contracts/claims, advance to genuine unlock epoch, Withdraw D; restart/replay, retired-key, early withdrawal and stale-writer negatives |
+| 4 | Delivery 4: independent audit and initial-network startup | Only deployment-facing composition/dispatch cleanup needed for the chosen profile; reuse capability tests rather than copy PG-only fixtures | Explicit reviewed initial-network activation profile, independently controlled stores, executable auth/TLS/startup/recovery instructions, separate economics and ingress audits and remediation before live exposure |
 
 - [x] **Frozen-member source reconstruction gap:**
   [DR-0174](docs/architecture/decisions/0174-frozen-member-business-reconstruction.md)
@@ -51,11 +52,17 @@ HTTP/SDK/CLI, tests and documentation; do not split merely by codec or file.
   tests cover full certificate variants, missing/foreign/incomplete/tombstoned
   material, and actual SQLite close/reopen/exact replay/fencing. This is not
   complete-drain, cut/import or activation evidence.
-- [ ] **Next feature:** derive/export a complete authenticated pre-Seal business
-  cut, proving every selected member's original completion, all four semantic
-  collections and artifact closure. Independently verify bounded immutable
-  saved output; no source write, fabricated proof or self-referential root.
-- [ ] **Then:** verified persistent import with a durable inactive-state guard
+- [x] **Authenticated pre-Seal business cut:**
+  [DR-0175](docs/architecture/decisions/0175-first-epoch-preseal-business-cut.md)
+  implements every selected member's original completion, all four semantic
+  collections, exact authority/proof companions and artifact closure. Callable
+  `business_cut` exports and independently verifies bounded immutable output.
+  Genuine tests cover paid generic Publish/Instantiate/Call, charged traps,
+  merge/transfer and accepted/refused economics, complete original receipts,
+  immutable/deleted object history and authenticated floor. Real SQLite,
+  executable corruption/refusal checks and four actual SIGKILL/resume points
+  pass. No source write, fabricated proof, import or serving authority.
+- [ ] **Next feature:** verified persistent import with a durable inactive-state guard
   at the core/store authority boundary, not merely a hidden HTTP route.
 - [ ] **Then:** readiness/Seal and activation/serving rollover. These may be
   separate usable PRs if the intermediate boundary remains fail-closed.
@@ -456,7 +463,8 @@ The detailed existing evidence and remaining criteria follow:
     file-backed SQLite is independently initialized/executed, closed/reopened
     and exact-replayed without reapplication; a superseded writer is refused
     before paid execution, and a current writer positively reconstructs all
-    semantic facts without source mutation. Complete cut/import remains open.
+    semantic facts without source mutation. DR-0175's complete cut is recorded
+    in the active baseline above; persistent import remains open.
 
 - [x] **Portable storage implementation: bounded reads and backend-enforced snapshot continuity**
   ([DR-0166](docs/architecture/decisions/0166-portable-candidate-snapshot.md),

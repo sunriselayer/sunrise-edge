@@ -73,6 +73,13 @@ component identity. Both must remain fixed during resumption. Complete output
 contains all seven terminal streams, including empty streams, and every bounded
 proof/body component. A saved cursor or `complete` file is never sufficient.
 
+The output reserves one staging directory, `.cut-staging-v1`, for crash-safe
+publication. It may contain only regular files with the closed staging-name
+format; links, subdirectories and unknown names refuse. Interrupted staging
+files are never adopted as completed components or deleted by resumption.
+Resume allocates fresh staging files and verifies the immutable final inventory.
+`verify-saved` is read-only and does not create this directory or publish files.
+
 A changed source token, missing or surplus file, altered transfer settings,
 foreign proof, corrupt/truncated chunk or inconsistent original outcome refuses.
 Do not delete identity/progress files to bypass the refusal. After legitimate
