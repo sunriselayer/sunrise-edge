@@ -25,8 +25,9 @@ impl TrustedFastVoteGenesis {
     fn require_owned_preflight(
         &self,
         signed: &SignedPaidIntent,
-    ) -> Result<(), FastVoteNetworkError> {
-        self.require_owned_request_id(&signed.intent.request_id)?;
+    ) -> Result<(), Box<ClientError>> {
+        self.require_owned_request_id(&signed.intent.request_id)
+            .map_err(Box::new)?;
         let context = self.admission_profile().context();
         if signed.intent.context != *context
             || self.commitment_profile != self.admission_profile().commitment_profile()
@@ -35,7 +36,7 @@ impl TrustedFastVoteGenesis {
             || self.certifier.protocol_version() != context.protocol_version()
             || self.certifier.epoch() != context.epoch()
         {
-            return Err(ClientError::PublicationTrustMismatch.into());
+            return Err(Box::new(ClientError::PublicationTrustMismatch));
         }
         Ok(())
     }
@@ -50,7 +51,8 @@ impl TrustedFastVoteGenesis {
         overall_deadline: Instant,
         per_request_cap: Duration,
     ) -> Result<(FastCertificate, Vec<FastVoteAttempt>), FastVoteQuorumError> {
-        self.require_owned_preflight(signed)?;
+        self.require_owned_preflight(signed)
+            .map_err(|cause: Box<ClientError>| FastVoteNetworkError::from(*cause))?;
         collect_fastvote_certificate(
             endpoints,
             &self.certifier,
@@ -74,7 +76,8 @@ impl TrustedFastVoteGenesis {
         overall_deadline: Instant,
         per_request_cap: Duration,
     ) -> Result<FastVotePublishedRound, FastVotePublicationError> {
-        self.require_owned_preflight(signed)?;
+        self.require_owned_preflight(signed)
+            .map_err(|cause: Box<ClientError>| FastVoteNetworkError::from(*cause))?;
         collect_fastvote_availability_certificate(
             endpoints,
             &self.certifier,
@@ -101,7 +104,8 @@ impl TrustedFastVoteGenesis {
         overall_deadline: Instant,
         per_request_cap: Duration,
     ) -> Result<Vec<FastVoteApplyAttempt>, FastVoteNetworkError> {
-        self.require_owned_preflight(signed)?;
+        self.require_owned_preflight(signed)
+            .map_err(|cause: Box<ClientError>| FastVoteNetworkError::from(*cause))?;
         apply_published_fastvote_to_all(
             endpoints,
             &self.certifier,
