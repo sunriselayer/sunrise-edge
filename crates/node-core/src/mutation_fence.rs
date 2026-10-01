@@ -46,6 +46,7 @@ use local_instance_state::{
 };
 #[cfg(test)]
 use local_instance_state::{encode_fastpath_epoch_record, encode_fastpath_lock_record};
+use runtime::DurableDomainStateStore;
 
 /// Entry-specific live admission guard. The backend validates the current
 /// writer fence, deadline and immutable origin on this read, and rechecks it

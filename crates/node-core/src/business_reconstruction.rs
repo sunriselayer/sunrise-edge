@@ -8,8 +8,8 @@
 
 pub mod control;
 pub mod cut;
-pub mod inactive_import;
 mod dependency_graph;
+pub mod inactive_import;
 mod projection;
 
 pub use control::{

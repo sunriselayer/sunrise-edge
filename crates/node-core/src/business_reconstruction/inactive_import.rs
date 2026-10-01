@@ -21,7 +21,8 @@ use runtime::inactive_import::{
     MAX_IMPORT_METADATA_BYTES, NamespaceLifecycle, encode_import_progress,
 };
 use runtime::portable::{
-    DurablePayloadDescriptor, DurableRecordKey, DurableRecordMetadata, PortableBlobRepository,
+    DurablePayloadDescriptor, DurableRecordKey, DurableRecordMetadata, MAX_PORTABLE_CHUNK_BYTES,
+    PortableBlobChunkOutcome, PortableBlobChunkRequest, PortableBlobRepository,
     PortableSnapshotToken,
 };
 use runtime::{
@@ -29,7 +30,12 @@ use runtime::{
     DurableObjectPayload, DurableObjectVersionRecord, DurableOperationContext, DurableReadError,
     DurableRequestReceipt, IndeterminateCommitReason, RuntimeError,
 };
-use std::{collections::BTreeMap, error::Error, fmt, num::NonZeroUsize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt,
+    num::NonZeroUsize,
+};
 
 /// Successfully performed local storage work, never an activation permit.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,8 +104,10 @@ impl VerifiedImportPlan {
         Ok(lifecycle)
     }
 
-    /// Installs only authenticated immutable bodies, then at most the supplied
-    /// number of NEW bounded row batches. Resume verifies exact progress; an
+    /// Installs only the next batch's authenticated immutable body closure,
+    /// then at most the supplied number of NEW bounded row batches. Each
+    /// batch's rows plus distinct required bodies fit a 64 MiB work budget.
+    /// Resume verifies exact progress; an
     /// ambiguous commit is reconciled under a fresh destination-local fence.
     /// Before completion every row and referenced body is enumerated again and
     /// compared with this private plan, then finish fences that snapshot.
@@ -153,20 +161,31 @@ impl VerifiedImportPlan {
                 "inactive completion is not the complete plan prefix",
             ));
         }
-        // This read happens before any body publication, including after a
-        // reopen. Source writer generation/token are never used here.
-        self.lifecycle(destination, operation)?;
-        for (digest, bytes) in &self.blobs {
-            match destination_blobs.get_blob(digest)? {
-                Some(existing) if existing == *bytes => {}
-                Some(_) => return Err(invalid("destination immutable body conflicts")),
-                None => destination_blobs.put_blob(*digest, bytes.clone())?,
-            }
-        }
+        // A matching cursor alone does not authenticate already installed rows.
+        // Refuse corruption before NEW body/row side effects on every resume;
+        // history reverification is deliberately outside the new-work budget.
+        self.verify_prefix(
+            destination,
+            destination_blobs,
+            operation,
+            progress.next_ordinal,
+        )?;
         while index < self.batches.len() && new_batches < max_new_batches.get() {
             let batch: &ImportBatch = &self.batches[index];
             if batch.expected() != &progress {
                 return Err(invalid("verified batch does not follow exact progress"));
+            }
+            // A limit of one cannot eagerly publish later batches' bodies.
+            // The configured destination fence is checked before publication;
+            // a later raced commit may leave only an unreachable orphan.
+            for digest in required_blobs(batch.rows()) {
+                self.lifecycle(destination, operation)?;
+                let bytes: &Vec<u8> = self.blobs.get(&digest).ok_or(invalid(
+                    "verified batch required body is absent from private closure",
+                ))?;
+                if !verify_destination_blob(destination_blobs, digest, bytes)? {
+                    destination_blobs.put_blob(digest, bytes.clone())?;
+                }
             }
             match destination.commit_import_batch(operation, self.binding.domain, batch) {
                 DurableCommitOutcome::Committed => {}
@@ -269,6 +288,14 @@ impl VerifiedImportPlan {
             .rows
             .get(..count)
             .ok_or(invalid("import ordinal range"))?;
+        for digest in required_blobs(expected) {
+            let bytes: &Vec<u8> = self.blobs.get(&digest).ok_or(invalid(
+                "verified prefix required body is absent from private closure",
+            ))?;
+            if !verify_destination_blob(destination_blobs, digest, bytes)? {
+                return Err(invalid("destination required immutable body is missing"));
+            }
+        }
         let snapshot: SourceBusinessSnapshot = cut::capture_import_target(
             destination,
             destination_blobs,
@@ -376,8 +403,15 @@ pub fn verify_saved_business_import(
         last_batch_digest: None,
         accumulator: hash(resolver, &context, &progress_seed(binding.plan_digest)?)?,
     };
-    let batches: Vec<ImportBatch> =
-        batches(resolver, &context, &binding, &initial, &rows, &descriptors)?;
+    let batches: Vec<ImportBatch> = batches(
+        resolver,
+        &context,
+        &binding,
+        &initial,
+        &rows,
+        &descriptors,
+        &snapshot.referenced_blobs,
+    )?;
     Ok(VerifiedImportPlan {
         binding,
         initial,
@@ -510,6 +544,7 @@ fn raw_row(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn batches(
     resolver: &HashSuiteResolver,
     context: &PublicationContext,
@@ -517,6 +552,7 @@ fn batches(
     initial: &ImportProgress,
     rows: &[ImportRow],
     descriptors: &[Vec<u8>],
+    blobs: &BTreeMap<Digest32, Vec<u8>>,
 ) -> Result<Vec<ImportBatch>, BusinessImportError> {
     let mut result: Vec<ImportBatch> = Vec::new();
     let mut start: usize = 0;
@@ -524,15 +560,36 @@ fn batches(
     while start < rows.len() {
         let mut end: usize = start;
         let mut bytes: usize = MAX_IMPORT_METADATA_BYTES;
+        let mut work_bytes: usize = MAX_IMPORT_METADATA_BYTES;
+        let mut needed_bodies: BTreeSet<Digest32> = BTreeSet::new();
         let mut row_root: Digest32 = expected.accumulator;
         while end < rows.len() && end - start < MAX_IMPORT_BATCH_ROWS {
             let next_bytes: usize = bytes
                 .checked_add(rows[end].represented_bytes()?)
                 .ok_or(invalid("import represented bytes overflow"))?;
-            if next_bytes > MAX_IMPORT_BATCH_BYTES {
+            let mut next_work_bytes: usize = work_bytes
+                .checked_add(rows[end].represented_bytes()?)
+                .ok_or(invalid("import new-work bytes overflow"))?;
+            let next_body: Option<Digest32> = required_blob(&rows[end]);
+            if let Some(digest) = next_body
+                && !needed_bodies.contains(&digest)
+            {
+                let length: usize = blobs
+                    .get(&digest)
+                    .ok_or(invalid("private version body closure is incomplete"))?
+                    .len();
+                next_work_bytes = next_work_bytes
+                    .checked_add(length)
+                    .ok_or(invalid("import body work bytes overflow"))?;
+            }
+            if next_bytes > MAX_IMPORT_BATCH_BYTES || next_work_bytes > MAX_IMPORT_BATCH_BYTES {
                 break;
             }
             bytes = next_bytes;
+            work_bytes = next_work_bytes;
+            if let Some(digest) = next_body {
+                needed_bodies.insert(digest);
+            }
             row_root = hash(
                 resolver,
                 context,
@@ -571,6 +628,67 @@ fn batches(
         start = end;
     }
     Ok(result)
+}
+
+/// Only an owning immutable ObjectVersion BlobReference creates a required
+/// body. State/protocol bytes are never scanned for arbitrary digest patterns.
+fn required_blob(row: &ImportRow) -> Option<Digest32> {
+    match row {
+        ImportRow::ObjectVersion(version) => match version.payload() {
+            DurableObjectPayload::BlobReference(digest) => Some(*digest),
+            DurableObjectPayload::Inline(_) => None,
+        },
+        _ => None,
+    }
+}
+
+fn required_blobs(rows: &[ImportRow]) -> BTreeSet<Digest32> {
+    rows.iter().filter_map(required_blob).collect()
+}
+
+/// Never call BlobStore::get_blob on resumed storage: a corrupt SQL value can
+/// have arbitrary length. Validate the private exact length before even one
+/// bounded range, and compare each range against independently verified bytes.
+fn verify_destination_blob<B: PortableBlobRepository>(
+    destination: &B,
+    digest: Digest32,
+    expected: &[u8],
+) -> Result<bool, BusinessImportError> {
+    let Some(descriptor) = destination.read_portable_blob_descriptor(&digest)? else {
+        return Ok(false);
+    };
+    if descriptor.digest() != digest || descriptor.length() != expected.len() {
+        return Err(invalid("destination immutable body descriptor conflicts"));
+    }
+    let mut offset: usize = 0;
+    loop {
+        let count: usize = MAX_PORTABLE_CHUNK_BYTES.min(expected.len() - offset);
+        let request: PortableBlobChunkRequest = PortableBlobChunkRequest::new(
+            descriptor,
+            offset,
+            NonZeroUsize::new(count.max(1)).ok_or(invalid("import body chunk capacity"))?,
+        )?;
+        let PortableBlobChunkOutcome::Chunk(chunk) =
+            destination.read_portable_blob_chunk(&request)?
+        else {
+            return Err(invalid(
+                "destination immutable body changed during bounded read",
+            ));
+        };
+        let end: usize = offset
+            .checked_add(count)
+            .ok_or(invalid("import body range overflow"))?;
+        if chunk.request() != &request
+            || chunk.bytes() != &expected[offset..end]
+            || chunk.is_last() != (end == expected.len())
+        {
+            return Err(invalid("destination immutable body conflicts"));
+        }
+        offset = end;
+        if chunk.is_last() {
+            return Ok(true);
+        }
+    }
 }
 
 // Swept 0x64C2..0x64C8/v1. Runtime owns C0/C1. These small integrity frames
@@ -841,3 +959,6 @@ impl From<canonical_encoding::CanonicalEncodingError> for BusinessImportError {
         Self::Encoding(value)
     }
 }
+
+#[cfg(test)]
+mod tests;
