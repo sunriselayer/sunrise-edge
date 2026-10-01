@@ -121,7 +121,7 @@ fn captured_blob<B: PortableBlobRepository>(
 
 // No allowlist or hand-selected source business rows: scan all four complete
 // collections, including local tombstones and original/synthetic receipts.
-fn captured_source<S: DurablePortableSnapshotRepository, B: PortableBlobRepository>(
+pub(super) fn captured_source<S: DurablePortableSnapshotRepository, B: PortableBlobRepository>(
     store: &S,
     blobs: &B,
     operation: &DurableOperationContext,
