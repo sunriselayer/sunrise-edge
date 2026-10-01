@@ -1945,7 +1945,7 @@ struct VerifiedPublicationSemantic {
 }
 
 /// Refusal while pinning, reconstructing, or comparing business history.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum BusinessReconstructionError {
     /// Closed-profile, authority, causal placement, or projection violation.
     Invalid(&'static str),
