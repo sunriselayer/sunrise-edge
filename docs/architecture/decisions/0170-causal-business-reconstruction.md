@@ -77,6 +77,19 @@ blocked by the prerequisite that its own justification commits. Maintain the
 at-most-one-business-operation-per-durable-invocation rule and never expose
 signatures/results after rejected or indeterminate persistence.
 
+The existing structured commit contract requires a receipt to atomically
+assert object heads. Head-reading proposal/vote admission therefore uses an
+internal bookkeeping receipt, with no business/object mutations or outbox.
+Use the already reserved synthetic namespace and existing receipt/dedup
+layouts, but a distinct `se-ordered-admission-receipt-v1` hash preimage binding
+epoch, original request, candidate, stage and view under the trusted chain/
+protocol hash context. Do not reuse the owned prepare's identity. Exact stage
+replay reconciles its retained signing identity without another write.
+Bookkeeping is not original completion. Empty infrastructure steps need no
+synthetic receipt when there are no object-head assertions. A business
+predecessor receipt and a fresh admission receipt are never merged by dropping
+one; bounded predecessor processing finishes before the new signing step.
+
 Do not reserve protocol custody, settlement/bond generations or a global
 business sequence. The authenticated ordered prefix determines competing
 claims and genuine stale refusals. Initial escrow/settlement and immutable
