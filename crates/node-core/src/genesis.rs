@@ -1158,7 +1158,8 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
                     ));
                 }
                 match scope.purpose {
-                    objects::ProtocolCustodyPurpose::BondCollateral => {}
+                    objects::ProtocolCustodyPurpose::BondCollateral
+                    | objects::ProtocolCustodyPurpose::SunriseMigration => {}
                     objects::ProtocolCustodyPurpose::FeeEscrow
                     | objects::ProtocolCustodyPurpose::ForfeitedCollateral => {
                         return Err(GenesisError::Invalid(

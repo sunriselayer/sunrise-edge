@@ -275,6 +275,12 @@ pub enum ProtocolCustodyPurpose {
     /// Fully forfeited validator collateral retained for a later explicit
     /// disposal policy.
     ForfeitedCollateral,
+    /// Shutdown RISE held for a Cosmos-signature claim.
+    ///
+    /// A higher layer interprets the scope resource as the RISE asset id.
+    /// The coin has no signing key. Only a claim that proves a frozen ledger
+    /// leaf may move it.
+    SunriseMigration,
 }
 
 impl ProtocolCustodyPurpose {
@@ -283,6 +289,7 @@ impl ProtocolCustodyPurpose {
             Self::BondCollateral => 1,
             Self::FeeEscrow => 2,
             Self::ForfeitedCollateral => 3,
+            Self::SunriseMigration => 4,
         }
     }
 }
@@ -544,6 +551,7 @@ fn decode_protocol_custody_scope(input: &[u8]) -> Result<ProtocolCustodyScope, O
         1 => ProtocolCustodyPurpose::BondCollateral,
         2 => ProtocolCustodyPurpose::FeeEscrow,
         3 => ProtocolCustodyPurpose::ForfeitedCollateral,
+        4 => ProtocolCustodyPurpose::SunriseMigration,
         other => return Err(ObjectError::UnknownProtocolCustodyPurpose(other)),
     };
     let chain_id: ChainId = ChainId::new(frame.required_str(2)?.to_owned())
@@ -746,10 +754,11 @@ mod tests {
 
     #[test]
     fn every_protocol_custody_purpose_round_trips_with_a_distinct_tag() {
-        let purposes: [ProtocolCustodyPurpose; 3] = [
+        let purposes: [ProtocolCustodyPurpose; 4] = [
             ProtocolCustodyPurpose::BondCollateral,
             ProtocolCustodyPurpose::FeeEscrow,
             ProtocolCustodyPurpose::ForfeitedCollateral,
+            ProtocolCustodyPurpose::SunriseMigration,
         ];
         let mut encoded: Vec<Vec<u8>> = Vec::with_capacity(purposes.len());
         for purpose in purposes {
