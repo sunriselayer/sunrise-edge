@@ -1840,6 +1840,65 @@ fn memory_runtime_wires_components() {
     );
 }
 
+#[test]
+fn composed_runtime_wires_all_supplied_components_via_root_api() {
+    let state_store: crate::MemoryStateStore = crate::MemoryStateStore::default();
+    state_store.put(b"composition".to_vec(), vec![1]).unwrap();
+    let blob_store: crate::MemoryBlobStore = crate::MemoryBlobStore::default();
+    let digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x02; 32]);
+    blob_store.put_blob(digest, vec![2, 3]).unwrap();
+    let validator_id: crate::ValidatorId = crate::ValidatorId::new([0xBB; 32]);
+    let signer: crate::MemorySigner = crate::MemorySigner::new(validator_id);
+    let transport: crate::MemoryTransport = crate::MemoryTransport::default();
+    transport.send(vec![4, 5]).unwrap();
+    let clock: crate::ManualClock = crate::ManualClock::new(123);
+    let scheduler: crate::MemoryScheduler = crate::MemoryScheduler::default();
+    scheduler.schedule(100, vec![6, 7]).unwrap();
+    scheduler.schedule(200, vec![8, 9]).unwrap();
+
+    let runtime: crate::ComposedRuntime<
+        crate::MemoryStateStore,
+        crate::MemoryBlobStore,
+        crate::MemorySigner,
+        crate::MemoryTransport,
+        crate::ManualClock,
+        crate::MemoryScheduler,
+    > = crate::ComposedRuntime::new(state_store, blob_store, signer, transport, clock, scheduler);
+
+    assert_eq!(
+        runtime.state_store().get(b"composition").unwrap(),
+        Some(vec![1])
+    );
+    assert_eq!(
+        runtime.blob_store().get_blob(&digest).unwrap(),
+        Some(vec![2, 3])
+    );
+    assert_eq!(runtime.signer().validator_id(), validator_id);
+    let payload: [u8; 2] = [10, 11];
+    let mut expected_signature: Vec<u8> = validator_id.as_bytes().to_vec();
+    expected_signature.extend_from_slice(&payload);
+    assert_eq!(runtime.signer().sign(&payload).unwrap(), expected_signature);
+    assert_eq!(
+        runtime.transport().drain_outbound().unwrap(),
+        vec![vec![4, 5]]
+    );
+    assert_eq!(runtime.clock().now_unix_millis().unwrap(), 123);
+    assert_eq!(
+        runtime.scheduler().drain_ready(123).unwrap(),
+        vec![ScheduledPayload {
+            at_unix_millis: 100,
+            payload: vec![6, 7]
+        }]
+    );
+    assert_eq!(
+        runtime.scheduler().drain_ready(200).unwrap(),
+        vec![ScheduledPayload {
+            at_unix_millis: 200,
+            payload: vec![8, 9]
+        }]
+    );
+}
+
 /// Storing byte-identical content under a digest already present is an
 /// idempotent no-op success, matching a retried or duplicate publication
 /// of the same immutable version.

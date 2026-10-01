@@ -13,7 +13,7 @@ Every PR and main update runs these four unconditional lanes:
 | --- | --- |
 | `lint` | Workspace/orphan-file formatting, all-target/all-feature Clippy, independent dispatch/mutation contracts and diff hygiene |
 | `rust-tests` | All nonignored workspace targets/features except `runtime-postgres`, including core/SDK/CLI, memory and file-backed SQLite tests, plus the exact SQLite inventory fixture |
-| `portable-tools` | All fourteen independent vectors, DB-free soak CLI argument tests and all four Deno/Vercel/Supabase/AWS adapter suites |
+| `portable-tools` | All independent protocol vectors, DB-free soak CLI argument tests and all four Deno/Vercel/Supabase/AWS adapter suites |
 | `cloudflare` | Pinned release WASM and canonical oracle, locked npm dependencies and the complete type/lint/workerd suite |
 
 Run the same complete required set locally:
