@@ -881,7 +881,14 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
     if !manifest_verifier.verify_framed(&manifest_signing_frame, &manifest.signature)? {
         return Err(GenesisError::Invalid("invalid genesis manifest signature"));
     }
-    crate::mutation_fence::require_ordinary_namespace(store, context, domain)?;
+    // Preserve the installer's typed storage-read contract at this earlier
+    // origin check. Inactive-origin and all other core errors stay distinct.
+    crate::mutation_fence::require_ordinary_namespace(store, context, domain).map_err(
+        |error: NodeCoreError| match error {
+            NodeCoreError::DurableRead(read_error) => GenesisError::DurableRead(read_error),
+            other => GenesisError::NodeCore(other),
+        },
+    )?;
 
     // 3. Context and genesis authority consistency checks.
     let manifest_context: &PublicationContext = manifest.context();

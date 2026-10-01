@@ -22,7 +22,10 @@ use runtime::{
     Clock, DurableOperationContext, StorageCorrelationId, StorageDeadline, SystemClock,
     WriterFenceGeneration,
 };
-use std::{error::Error, path::PathBuf};
+use std::{
+    error::Error,
+    path::{Path, PathBuf},
+};
 use sunrise_edge_client::ordered_history_archive::read_verified_ordered_history_archive;
 use validator_set::{ValidatorInfo, ValidatorSet};
 
@@ -51,6 +54,10 @@ pub(crate) struct BusinessPinInputs {
 }
 
 impl BusinessPinInputs {
+    pub(crate) fn history_root(&self) -> &Path {
+        &self.history_root
+    }
+
     pub(crate) fn parse(flags: &mut FlagSet) -> Result<Self, Box<dyn Error>> {
         let chain: ChainId = ChainId::new(flags.one("--chain-id")?)?;
         let protocol: ProtocolVersion = ProtocolVersion::new(u32::try_from(bounded(
