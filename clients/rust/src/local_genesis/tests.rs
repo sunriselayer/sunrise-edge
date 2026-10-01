@@ -116,14 +116,10 @@ fn pinned_genesis_preserves_verification_order_and_public_error_mappings() {
         load_trusted_fastvote_genesis(&path, &resolver, wrong_digest, &wrong_context),
         Err(FastVoteGenesisTrustError::CommitmentMismatch)
     ));
+    let domain: protocol_types::AtomicityDomainId =
+        protocol_types::AtomicityDomainId::new([0x55; 32]).unwrap();
     assert!(matches!(
-        load_trusted_ordered_policy(
-            &path,
-            &resolver,
-            wrong_digest,
-            &wrong_context,
-            protocol_types::AtomicityDomainId::new([0x55; 32]),
-        ),
+        load_trusted_ordered_policy(&path, &resolver, wrong_digest, &wrong_context, domain),
         Err(OrderedGenesisTrustError::CommitmentMismatch)
     ));
     assert!(matches!(
