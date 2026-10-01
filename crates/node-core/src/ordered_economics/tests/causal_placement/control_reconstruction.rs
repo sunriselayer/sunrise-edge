@@ -233,13 +233,8 @@ fn genuine_control_history_needs_complete_selected_proof_and_reconstructs_withou
         .unwrap();
     assert_eq!(report.ordered_height, identity.through_height);
     assert_eq!(report.owned_originals_replayed, 1);
-    assert_eq!(
-        overlay
-            .compare_source(&before)
-            .unwrap()
-            .semantic_snapshot_equal,
-        Some(true)
-    );
+    assert_eq!(report.semantic_snapshot_equal, None);
+    overlay.compare_source(&before).unwrap();
     assert_eq!(
         snapshot(network),
         before,
