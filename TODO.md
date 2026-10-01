@@ -84,10 +84,12 @@ deployed-provider authority.
   and the [readiness contract](docs/architecture/conditional-readiness-seal.md)
   refine a readiness-only first implementation: freshly reverified separate
   CompleteInactive staging for retained A/B/C and incoming E, exact post-drain
-  eligibility and protected append-only retention initialized with a new target.
-  Closed schemas/preimages, key binding and bounded ledger/token semantics need
-  independent design acceptance before code; existing targets are not lazily
-  upgraded. This is Proposed work, not implementation or a passed gate.
+  eligibility and bounded protected per-identity retention after full fresh
+  verification. Nonexclusive readiness needs no whole signing ledger or global
+  no-resign rule; unique ordered/post-Seal protections remain unchanged. Closed
+  schemas/preimages, key binding and token/slot CAS semantics need independent
+  acceptance before code. Missing mandatory target metadata is never repaired.
+  This is Proposed work, not implementation or a passed gate.
 - [ ] **After readiness:** separately reviewed ordered Seal and activation/
   serving rollover. Phase-aware high/locked traversal and Seal companion
   ownership remain pre-code gates; no singleton lock from an uncommitted Seal.

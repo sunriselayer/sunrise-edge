@@ -31,9 +31,10 @@ Before either new signing or retained replay, one closed core operation must:
    normalized comparison subjects and completion flags are not constructors.
 2. Require exact CompleteInactive origin, immutable binding and completed
    progress, then verify the destination under a current local snapshot token.
-   Completely verify the protected ledger and indexes before any new signing.
-   Retained retries perform the same verification and return the original
-   without re-signing.
+   Read the exact bounded retained slot. Present records undergo strict
+   linkage/signature verification; retries perform the same target verification
+   and return those original bytes without re-signing. Absence is only absence
+   of a cached record, never proof that the key has never signed.
 3. Derive successor eligibility from those same reconstructed post-drain facts.
    Require checked adjacent epoch, 1..256 members, unique registered IDs and
    keys, the existing Ed25519-only activation scheme, positive weights and
@@ -70,7 +71,7 @@ Exclude exact proof-package/raw-plan variants, local coordinates/revisions,
 snapshot tokens, writer generations and future Seal identity. Equivalent valid
 full-proof subsets must share one semantic cut/set subject. Local retention
 instead binds the exact package/plan, immutable destination binding, completed
-progress and first-retention observation. Equivalent packages may use different
+progress and the retained record's creation observation. Equivalent packages may use different
 fresh local bindings; they cannot rebind an existing target.
 
 Readiness is nonexclusive before Seal: a corrected eligible set for the same
@@ -79,54 +80,60 @@ epoch singleton or global candidate cap. A different business/control cut
 requires an independently verified saved cut and fresh immutable import binding,
 never mutation, reset or deletion of the prior origin.
 
-## Mandatory protected append-only ledger
+## Bounded protected per-identity retention
 
-A readiness-capable import target must atomically initialize its mandatory
-protected ledger anchor with the **fresh namespace initialization**, before any
-readiness operation. Earlier initialized targets without it are unsupported
-for readiness: refuse and freshly reimport into another staging target. Never
-lazily initialize, automatically upgrade, repair or infer a virgin ledger from
-absent records. This proposal allocates no schema version or capability registry.
+Retain one bounded closed record keyed by the full semantic identity and signer.
+Mandatory namespace lifecycle, immutable binding, completed progress and exact
+store/schema validation remain authoritative. Missing or corrupt target metadata
+never becomes a fresh target, readiness capability or ordinary-host fallback.
+This proposal allocates no schema version, repair path or capability registry.
 
-The protected anchor/head and entries bind the destination-local identity,
-checked contiguous ordinal/count and hash chain. Keep an immutable
-identity-plus-signer index with exact ledger correspondence. Any deleted or
-tombstoned index is invalid, not unused identity. No separate deletion,
-tombstone-management or pruning API is needed for this append-only capability.
-Verify complete continuity from the initialized anchor to the observed head,
-with exact index/entry correspondence. Missing anchor/head/entry/index, ordinal
-gaps, conflicting bytes, invalid links or malformed metadata refuse before
-signing. No reset/delete/pruning operation is introduced.
+Present records must match the local import identity and exact semantic subject,
+registered signer and verified signature. Malformed/conflicting records and any
+known tombstone refuse; do not overwrite or repair. This capability introduces
+no reset/delete/pruning or tombstone-management operation.
 
 A closed storage-only retention transaction atomically validates CompleteInactive,
 exact binding/completed progress, the **fresh verified target token**, current
-domain/fence/deadline and expected ledger head/count/root with the verified
-index-inventory observation. These ledger observations join retention CAS
-alongside the fresh destination observation. It appends one bounded signed
-record and index/head changes, or compares an exact retained record. Protected
+domain/fence/deadline and exact retained-slot observation. It inserts one bounded
+signed record into an absent slot or compares the original retained record.
+Concurrent changes require fresh verification/reconciliation, not overwrite. Protected
 writes advance the covered local snapshot sequence. Readiness metadata stays
 outside business roots and installed raw inventory through its exact owning
 schema, never a blanket prefix exclusion or ordinary transaction bypass.
 
-Ordinary CAS/fencing detects stale writers and malformed/deleted protected
-records, not a mutually consistent rollback of the entire database. Detecting
-that rollback needs an independent anchor and is not guaranteed here; this
-proposal adds no external hardware or anchoring service.
+No mandatory whole-ledger/head/index walk or global sign-once invariant is
+needed for this nonexclusive readiness assertion. Deterministic Ed25519 over
+the same framed subject produces the same public vote; another fresh imported
+namespace is already permitted to produce it. Certificates count the registered
+signer once. Repeating a valid assertion neither adds power nor selects a unique
+pre-Seal target. A global audit/no-resign history would be a separate requirement.
+
+This reasoning does not apply to unique ordered votes or post-Seal transition
+targets: losing their signing history may permit contradictory authority and
+their existing protections stay unchanged. Ordinary CAS/fencing also does not
+detect a mutually consistent whole-database rollback without an independent
+anchor; no external hardware/anchoring guarantee is introduced here.
 
 ## Retry, restart and uncertainty
 
-The first-retention observation is immutable record evidence, not the token a
-later retry must reuse. A retry freshly verifies the entire import and ledger,
+The record's creation observation is immutable while that record is present,
+not the token a later retry must reuse. A retry freshly verifies the entire import,
 obtains a current token and atomically validates it. It then returns the same
 retained signature without re-signing, preserving the original observation.
 Never require equality between old observation and current token, and never
 ignore a stale current token because an entry appears identical.
 
+An absent cached record may permit new signing only after all fresh target,
+eligibility and actual-key checks succeed. It does not prove virgin key history.
+Recreation must not claim preservation of an unknown historical first observation;
+it records this retention's observation. Normal present-record replay stays exact
+and non-signing. Known tombstones or conflicting present records still refuse.
+
 An ambiguous retention acknowledgement exposes no newly computed signature.
-Fresh fenced reconciliation must prove the exact durable identity, original
-record/signature and consistent ledger before returning it. A genuinely absent
-entry may authorize new signing only after complete anchored-ledger verification;
-a missing record alone proves nothing. Conflicts never overwrite or repair.
+Fresh fenced reconciliation must observe the exact durable identity and retained
+record/signature before returning it. Absence or rejection alone never justifies
+exposing an unretained signature. Conflicts never overwrite or repair.
 
 ## Proposed bounds and explicit costs
 
@@ -137,7 +144,7 @@ a missing record alone proves nothing. Conflicts never overwrite or repair.
 | Readiness vote | 4 KiB |
 | Certificate | 1 MiB, at most 256 distinct votes |
 | New signing/retention per call | At most one new signature and one 16 KiB record |
-| Protected ledger page | At most 64 entries and 1 MiB |
+| Retained slot read/CAS | One exact record, at most 16 KiB including framing |
 
 Validate byte/count bounds before allocation and framing. Votes/certificates
 bind the semantic subject/set identity; exact closed layouts and signature
@@ -147,13 +154,10 @@ not member count or the outgoing committee's threshold.
 
 Legal total history and number of candidates remain unbounded. Public inputs
 use bounded references/components, not a whole-history or arbitrary candidate
-vector. Ledger pages/continuations bind namespace, exact import/readiness identity,
-signer, observed ledger head and current snapshot/fence. Head changes or missing,
-gapped or orphan index material invalidate continuation: never silently adopt a
-suffix or infer virgin signing authority. A partial walk never authorizes signing.
-Full private reconstruction and a complete ledger walk have explicit linear
-cost; this is not a constant-memory,
-constant-time or bounded-total-history claim.
+vector. Retention uses exact identity lookup, not a scan over all prior candidates.
+Existing saved-cut/import readers retain their bounded page/chunk contracts.
+Full private reconstruction and destination comparison retain explicit linear
+cost; this is not a constant-memory, constant-time or bounded-total-history claim.
 
 ## Subsequent Seal boundary, still unresolved
 
@@ -199,15 +203,16 @@ Required future evidence includes:
   retaining multiple identities; adjacent-epoch overflow, duplicate IDs/keys,
   zero/overflow weights, ineligible bond/resource, wrong key/scheme and foreign
   pins producing no signature. Verify actual signatures and weighted quorum.
-- Missing/deleted ledger anchor/head/entry/index, orphan indexes, tombstones, gaps/corrupt links,
-  foreign/reordered continuations and stale verification token/fence refusal.
-  Exercise multiple ledger pages and initialized old-target refusal without repair.
+- Missing/corrupt mandatory target metadata, wrong/conflicting present records,
+  known tombstones and stale verification token/fence refusal. Absent-cache
+  recreation must fully reverify and preserve identical public vote bytes without
+  claiming old local observations. Duplicate votes never add quorum power.
 - Real SQLite restart/exact retry with no re-signing, both ambiguous-retention
   directions and fresh reconciliation. Ordinary/live signer counters stay zero;
   only privately authorized readiness signs, and original business replay stays exact.
 
-Before code, review closed frames/preimages, exact fresh anchor/entry/index and
-first-observation schema, token/ledger traversal semantics and key-bound signer
+Before code, review closed frames/preimages, exact retained-record/creation-
+observation schema, token/slot CAS semantics and key-bound signer
 adapter; perform the canonical namespace sweep and independent vectors then.
 Future Seal traversal/companion review remains separate and unresolved.
 
