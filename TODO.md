@@ -18,7 +18,7 @@ Only this file owns current status, sequencing and deferred work.
 | Delivery 1: certified network contract lifecycle | PR #228 merged on 2026-09-27 after the full gate, fresh exact-head Opus approval and CI; paid lifecycle, assets, replay and declared catch-up, not complete state handoff |
 | Delivery 2: fixed-epoch ordered economics | PR #232 merged on 2026-09-27; shared ordering for claims, bonds and evidence/slash/reactivation, with four-namespace CLI evidence. Genuine membership-dependent Deposit/Withdraw positives remain in Delivery 3 |
 | Delivery 3 prerequisites | PR #237/#238/#239/#242/#244/#245/#250 merged: portable reads, logical generations, publication-before-apply, Freeze/frontiers, quorum-retained DrainSet/member drain, ordered history and genuine frozen-member source reconstruction. Persistent import/readiness/Seal/activation remain open |
-| Authenticated pre-Seal business cut | Complete core derivation, immutable SQLite export/resumption and source-free independent saved verification implemented in the current feature PR; focused genuine, codec/vector and operator acceptance pass. Final full gate, independent exact-head review and hosted CI remain merge conditions, not import or activation evidence |
+| Authenticated pre-Seal business cut | PR #251 merged normally on 2026-10-02 after the full local gate, independent exact-head approval and required CI. Complete core derivation, immutable SQLite export/resumption and source-free independent saved verification; not import or activation evidence |
 | Shared artifact/configuration primitives | PR #249 merged: bounded local genesis and held-handle artifact I/O, with authority/error semantics retained by the callers |
 | Required validation | PR #247 implements DR-0172: four unconditional DB-free lanes. PostgreSQL integration/fault acceptance is retained and explicitly selected, not run on every PR |
 
@@ -62,8 +62,18 @@ HTTP/SDK/CLI, tests and documentation; do not split merely by codec or file.
   immutable/deleted object history and authenticated floor. Real SQLite,
   executable corruption/refusal checks and four actual SIGKILL/resume points
   pass. No source write, fabricated proof, import or serving authority.
-- [ ] **Next feature:** verified persistent import with a durable inactive-state guard
-  at the core/store authority boundary, not merely a hidden HTTP route.
+- [ ] **Current feature:**
+  [DR-0176](docs/architecture/decisions/0176-verified-inactive-business-import.md)
+  implements private raw-plan installation with permanent FreshImport,
+  Importing and CompleteInactive origin, bounded atomic batches and own writer
+  fencing. Callable SQLite create/resume, original receipt-first replay and
+  core/store/HTTP fresh-and-cached live authority guards are implemented.
+  Parent-run genuine >128-row partial import/reopen/completion, exact original
+  Publish/Instantiate/Call and drain receipts, real commit-reply-loss/fence
+  cases, independent vectors, bounded body corruption and compiled operator
+  checks pass. Final full gate, independent immutable-head review, required CI
+  and explicitly selected complete PG acceptance remain merge conditions.
+  Import does not provide readiness, Seal, activation or a deployed provider.
 - [ ] **Then:** readiness/Seal and activation/serving rollover. These may be
   separate usable PRs if the intermediate boundary remains fail-closed.
 - [ ] **Then:** integrated membership/recovery acceptance through real compiled

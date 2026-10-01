@@ -66,6 +66,14 @@ private rows. Restore actual independently verified full Fast/availability
 carriers through their owning encoders, not a normalized producer subject or
 invented availability certificate.
 
+The installed raw plan is not a physical clone of redundant source retention
+aliases. Under DR-0170, independently verified normal/DrainSet carriers may use
+different valid quorum subsets for one producer. An owning private handler may
+retain the selected full carrier, with every noncertificate field and artifact
+byte unchanged. Preserve the exported original proof carriers and the separately
+verified actual application carrier; never normalize a signed witness or ignore
+a publication prefix to obtain equality.
+
 Keep exact original business/control receipts, nonces, economics, code/instances,
 immutable object versions/deletions, object heads, authenticated provenance and
 required historical ordering/control material. Exclude signing identities,
@@ -96,12 +104,20 @@ references, versions before heads, and original receipts after their material.
 At most 128 rows and 64 MiB represented bytes enter one batch, preserving each
 owning legal bound, including a legal 32 MiB body. Bound new batches per call,
 not total legal history or reverification cost.
+Core additionally counts represented rows and distinct required body bytes
+together against 64 MiB of new work; publish only the selected batch's body
+closure. Verify resumed bodies against private exact-length descriptors and
+bounded ranges of at most 1 MiB, never an unrestricted body read.
 
 Every batch atomically checks exact binding, current fence/deadline and expected
 progress, installs absent rows or verifies identical retry rows, and advances
 progress with the same commit. Conflict does not overwrite. Indeterminate
 commit requires fresh fenced reconciliation of exact batch identity/contents;
 no cursor advance based on an uncertain acknowledgement or blind retry success.
+Before any new body publication or row batch, independently verify the entire
+installed prefix under the current fence, including the empty initial prefix.
+Corrupt installed material must refuse without advancing or installing later
+material, even when the reported cursor is a valid plan boundary.
 
 Before CompleteInactive, core completely enumerates all destination rows and
 referenced immutable bodies and compares them against its private raw plan.

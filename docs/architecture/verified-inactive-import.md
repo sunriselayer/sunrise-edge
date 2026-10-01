@@ -59,6 +59,14 @@ from its independent private reconstruction and validates every owning
 key/schema. It restores actual verified Fast/availability carriers through
 their owning codecs, not normalized certificate subjects or invented AV rows.
 
+This installs the exact private raw plan, not a physical clone of every redundant
+source retention alias. Independently verified normal and DrainSet carriers may
+use different valid quorum subsets for the same producer. The owning private
+handler may retain the selected verified carrier; all other fields and artifact
+bytes remain exact. The exported package retains the original selected proof
+carriers, and the actual application carrier and original receipts are preserved
+separately. Do not normalize a signed witness or exempt a whole State prefix.
+
 The closed inventory contains State values/tombstones, immutable object
 versions, live/deleted heads and exact original receipts, plus their referenced
 immutable bodies. It preserves code and instances, nonces/economics, logical
