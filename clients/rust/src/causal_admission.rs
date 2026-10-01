@@ -22,10 +22,7 @@ use crate::fastvote_publication_client::{
 use crate::{ClientError, Transport};
 
 impl TrustedFastVoteGenesis {
-    fn require_owned_preflight(
-        &self,
-        signed: &SignedPaidIntent,
-    ) -> Result<(), Box<ClientError>> {
+    fn require_owned_preflight(&self, signed: &SignedPaidIntent) -> Result<(), Box<ClientError>> {
         self.require_owned_request_id(&signed.intent.request_id)
             .map_err(Box::new)?;
         let context = self.admission_profile().context();
