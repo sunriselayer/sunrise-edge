@@ -144,6 +144,11 @@ pre-readiness refusals keep their owning preflight precedence. Missing or
 contradictory required proof closure stops; an ordering QC cannot replace it.
 Saved control pages share the fixed genesis/history/source-token binding and
 immutable bounded-file/resumption contract with owned publication material.
+An unsigned Accepted companion may select material to collect, never execution
+or readiness authority. A forged refusal that hides needed material stops at
+independently required readiness; a forged acceptance cannot replace the
+owning handler or exact companion comparison. Honest pre-readiness refusals
+therefore need no invented successful-control proof closure.
 
 Compare the complete semantic projection of state, original receipts, object
 heads/versions/deletions and referenced blobs, including code/ABI/dependency/
