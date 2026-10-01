@@ -17,6 +17,10 @@ use crate::local_instance_state::{
     fastpath_lock_key, fastpath_nonce_lock_key, fastpath_prepared_record_key,
     fastpath_synthetic_prepare_request_id, is_reserved_paid_request_id,
 };
+use crate::logical_generation::{
+    LogicalKeySpace, LogicalObservation, LogicalSubject, decode_logical_profile_record,
+    decode_logical_provenance_record, encode_logical_provenance_record, logical_profile_key,
+};
 use canonical_encoding::encode_chain_id;
 use consensus::{
     AvailabilityCertifier, FastPathCertifier, decode_availability_identity,
@@ -503,6 +507,109 @@ fn normalized_state(
     Ok(Some(bytes.to_vec()))
 }
 
+/// Reprojects only the genesis marker's initial logical provenance digest,
+/// because that digest covers a marker field that is local to each install.
+/// The original observation is first checked against the exact source marker;
+/// every later logical generation and all other subjects remain byte-exact.
+fn normalized_genesis_marker_provenance(
+    overlay: &BusinessReconstructionOverlay<'_>,
+    snapshot: &SourceBusinessSnapshot,
+    key: &[u8],
+    bytes: &[u8],
+) -> Result<Option<Vec<u8>>, BusinessReconstructionError> {
+    if !crate::logical_generation::is_logical_provenance_key(key)
+        || crate::logical_generation::is_logical_profile_key(key)
+    {
+        return Ok(None);
+    }
+    let mut record = decode_logical_provenance_record(bytes)
+        .map_err(|_| invalid("logical provenance projection schema"))?;
+    let expected_context = overlay.plan.genesis.context();
+    let marker_key = genesis_marker_key(expected_context)
+        .map_err(|_| invalid("genesis marker provenance key"))?;
+    let LogicalSubject::StateKey(subject_key) = &record.subject else {
+        return Ok(None);
+    };
+    if subject_key != &marker_key {
+        return Ok(None);
+    }
+
+    let profile_key = logical_profile_key(expected_context.chain_id())
+        .map_err(|_| invalid("logical profile projection key"))?;
+    let rows: StateRows<'_> = state_rows(&snapshot.records);
+    let profile_bytes = rows
+        .get(&profile_key)
+        .and_then(|row| row.value.as_deref())
+        .ok_or(invalid("genesis marker provenance has no profile row"))?;
+    let profile = decode_logical_profile_record(profile_bytes)
+        .map_err(|_| invalid("logical profile projection schema"))?;
+    if profile.context != *expected_context
+        || profile.profile != overlay.plan.admission_profile.commitment_profile()
+        || profile.manifest_digest != overlay.plan.pinned_genesis_digest
+        || profile.genesis_authority != overlay.plan.genesis.genesis_authority
+        || profile.genesis_floor != protocol_types::ExecutionGeneration::genesis_floor()
+        || profile.minimum_freeze_block_height != overlay.plan.genesis.minimum_freeze_block_height
+    {
+        return Err(invalid("logical profile differs from pinned genesis"));
+    }
+    let keyspace: LogicalKeySpace<'_> = LogicalKeySpace::new(&profile, overlay.plan.resolver);
+    let canonical_provenance_key: Vec<u8> = keyspace
+        .provenance_key(&record.subject)
+        .map_err(|_| invalid("logical provenance canonical key"))?;
+    if canonical_provenance_key != key {
+        return Err(invalid("logical provenance key and subject differ"));
+    }
+    if record.observed_epoch != expected_context.epoch()
+        || record.generation != profile.genesis_floor
+    {
+        return Err(invalid(
+            "genesis marker provenance is not its initial generation",
+        ));
+    }
+
+    let marker_bytes = rows
+        .get(&marker_key)
+        .and_then(|row| row.value.as_deref())
+        .ok_or(invalid("genesis marker provenance has no marker row"))?;
+    let marker = decode_genesis_install_marker(marker_bytes)
+        .map_err(|_| invalid("genesis marker provenance marker schema"))?;
+    if marker.context != *expected_context
+        || marker.manifest_digest != overlay.plan.pinned_genesis_digest
+        || marker.genesis_authority != overlay.plan.genesis.genesis_authority
+    {
+        return Err(invalid("genesis marker provenance marker pin differs"));
+    }
+    let normalized_marker_bytes = normalized_state(overlay, &marker_key, Some(marker_bytes))?
+        .ok_or(invalid("normalized genesis marker is absent"))?;
+    let source_marker_digest = crate::logical_generation::content_digest(
+        overlay.plan.resolver,
+        record.observed_epoch,
+        marker_bytes,
+    )
+    .map_err(|_| invalid("source genesis marker digest"))?;
+    if record.observation
+        != (LogicalObservation::StatePresent {
+            content_digest: source_marker_digest,
+        })
+    {
+        return Err(invalid(
+            "genesis marker provenance does not bind the source marker",
+        ));
+    }
+    let projected_marker_digest = crate::logical_generation::content_digest(
+        overlay.plan.resolver,
+        record.observed_epoch,
+        &normalized_marker_bytes,
+    )
+    .map_err(|_| invalid("projected genesis marker digest"))?;
+    record.observation = LogicalObservation::StatePresent {
+        content_digest: projected_marker_digest,
+    };
+    encode_logical_provenance_record(&record)
+        .map(Some)
+        .map_err(|_| invalid("normalized genesis marker provenance encoding"))
+}
+
 fn project(
     overlay: &BusinessReconstructionOverlay<'_>,
     snapshot: &SourceBusinessSnapshot,
@@ -547,7 +654,16 @@ fn project(
                     }
                     SemanticRecord::State(Some(subject.clone()))
                 } else {
-                    SemanticRecord::State(normalized_state(overlay, key, row.value.as_deref())?)
+                    let normalized_provenance = match row.value.as_deref() {
+                        Some(bytes) => {
+                            normalized_genesis_marker_provenance(overlay, snapshot, key, bytes)?
+                        }
+                        None => None,
+                    };
+                    SemanticRecord::State(match normalized_provenance {
+                        Some(bytes) => Some(bytes),
+                        None => normalized_state(overlay, key, row.value.as_deref())?,
+                    })
                 }
             }
             (

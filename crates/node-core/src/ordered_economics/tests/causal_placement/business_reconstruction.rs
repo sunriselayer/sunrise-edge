@@ -7,6 +7,10 @@ use crate::business_reconstruction::{
     BusinessReconstructionReport, OwnedPublicationMaterial, SourceBusinessSnapshot,
     SourceSnapshotRecord, owned_material_from_source_snapshot, referenced_blob_bounds,
 };
+use crate::logical_generation::{
+    LogicalObservation, LogicalProvenanceRecord, LogicalSubject, decode_logical_provenance_record,
+    encode_logical_provenance_record,
+};
 use consensus::bundle::{ArtifactEntry, ArtifactKind};
 use runtime::portable::{
     DurableCollection, DurablePortableSnapshotRepository, DurableRecordChunkOutcome,
@@ -29,7 +33,7 @@ pub(super) fn reconstruction_plan<'a>(
         admission_profile: network.policy.admission_profile().unwrap(),
         genesis: &fixture.manifest,
         pinned_genesis_digest: network.policy.genesis_digest(),
-        operation_context: network.context.clone(),
+        operation_context: network.context,
         domain: network.domain(),
         resolver: &network.resolver,
         resolver_history: &network.history,
@@ -183,6 +187,33 @@ pub(super) fn snapshot(network: &Network) -> SourceBusinessSnapshot {
         &network.context,
         network.domain(),
     )
+}
+
+fn changed_marker_provenance(
+    source: &SourceBusinessSnapshot,
+    marker_key: &[u8],
+    update: impl FnOnce(&mut LogicalProvenanceRecord),
+) -> SourceBusinessSnapshot {
+    let mut altered: SourceBusinessSnapshot = source.clone();
+    let row: &mut SourceSnapshotRecord = altered
+        .records
+        .iter_mut()
+        .find(|row| {
+            matches!(row.descriptor.key(), DurableRecordKey::State(key)
+                if key.starts_with(crate::logical_generation::LOGICAL_STATE_PREFIX))
+                && row.value.as_deref().is_some_and(|bytes| {
+                    decode_logical_provenance_record(bytes).is_ok_and(|record| {
+                        record.subject == LogicalSubject::StateKey(marker_key.to_vec())
+                    })
+                })
+        })
+        .expect("genesis marker provenance row");
+    let mut provenance: LogicalProvenanceRecord =
+        decode_logical_provenance_record(row.value.as_deref().expect("marker provenance value"))
+            .expect("canonical marker provenance");
+    update(&mut provenance);
+    row.value = Some(encode_logical_provenance_record(&provenance).unwrap());
+    altered
 }
 
 pub(super) fn complete_history(
@@ -380,10 +411,6 @@ fn claim_source(
         }
         assert_eq!(receipt(&fixture.network, 0, CLAIM), Some(original));
         for view in 5..=6 {
-            fixture.network.round(view, None);
-        }
-    } else {
-        for view in 4..=6 {
             fixture.network.round(view, None);
         }
     }
@@ -817,4 +844,68 @@ fn genuine_unapplied_publication_compares_but_orphan_availability_ack_refuses() 
         ))
     ));
     assert_eq!(snapshot(network), source);
+}
+
+#[test]
+fn genesis_marker_provenance_projection_rejects_noninitial_or_unbound_rows() {
+    let fixture: CausalFixture = fresh_fixture();
+    let source: SourceBusinessSnapshot = snapshot(&fixture.network);
+    let (identity, history): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
+        complete_history(&fixture.network);
+    let marker_key: Vec<u8> =
+        crate::genesis::genesis_marker_key(fixture.manifest.context()).unwrap();
+    let mut overlay: BusinessReconstructionOverlay<'_> =
+        BusinessReconstructionOverlay::new(reconstruction_plan(&fixture, &identity)).unwrap();
+    overlay.reconstruct(&[], &history).unwrap();
+    overlay.compare_source(&source).unwrap();
+
+    let incorrect_observation: SourceBusinessSnapshot =
+        changed_marker_provenance(&source, &marker_key, |record| match record.observation {
+            LogicalObservation::StatePresent { content_digest } => {
+                let mut digest: [u8; 32] = content_digest.bytes();
+                digest[0] ^= 1;
+                record.observation = LogicalObservation::StatePresent {
+                    content_digest: Digest32::new(content_digest.algorithm(), digest),
+                };
+            }
+            _ => panic!("genesis marker provenance must bind a present state"),
+        });
+    assert!(overlay.compare_source(&incorrect_observation).is_err());
+
+    let incorrect_generation: SourceBusinessSnapshot =
+        changed_marker_provenance(&source, &marker_key, |record| {
+            record.generation = protocol_types::ExecutionGeneration::new(1);
+        });
+    assert!(overlay.compare_source(&incorrect_generation).is_err());
+
+    let incorrect_epoch: SourceBusinessSnapshot =
+        changed_marker_provenance(&source, &marker_key, |record| {
+            record.observed_epoch =
+                protocol_types::Epoch::new(record.observed_epoch.get().saturating_add(1));
+        });
+    assert!(overlay.compare_source(&incorrect_epoch).is_err());
+
+    let mut missing: SourceBusinessSnapshot = source.clone();
+    missing.records.retain(|row| {
+        !row.value.as_deref().is_some_and(|bytes| {
+            decode_logical_provenance_record(bytes)
+                .is_ok_and(|record| record.subject == LogicalSubject::StateKey(marker_key.clone()))
+        })
+    });
+    assert!(overlay.compare_source(&missing).is_err());
+
+    let mut tombstoned: SourceBusinessSnapshot = source.clone();
+    let row: &mut SourceSnapshotRecord = tombstoned
+        .records
+        .iter_mut()
+        .find(|row| {
+            row.value.as_deref().is_some_and(|bytes| {
+                decode_logical_provenance_record(bytes).is_ok_and(|record| {
+                    record.subject == LogicalSubject::StateKey(marker_key.clone())
+                })
+            })
+        })
+        .expect("genesis marker provenance row");
+    row.value = None;
+    assert!(overlay.compare_source(&tombstoned).is_err());
 }
