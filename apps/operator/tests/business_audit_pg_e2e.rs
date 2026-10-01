@@ -510,7 +510,30 @@ fn business_audit_pg_genuine_causal_history_reopen_and_corruption_e2e() {
         zero.charged.is_none(),
         "genuine quoted-fee refusal must charge nothing"
     );
-    assert_ne!(zero.status, PaidExecutionStatus::Success);
+    assert_eq!(zero.status, PaidExecutionStatus::ReservationFailed);
+    assert!(zero.effects.object_effects.is_empty());
+    let wrong_lane_call: NetworkCall<'_> = NetworkCall {
+        fee_source: fixture.fee_coin,
+        ..zero_call
+    };
+    let before_wrong_lane: Vec<Snapshot> = snapshots(&pool, &namespaces);
+    paid_calls::run_asset_verb_expect_rejected(
+        &wrong_lane_call,
+        "transfer",
+        &[
+            ("--coin", fixture.fee_coin.to_string()),
+            ("--recipient", cli::to_hex(&fixture.sender)),
+        ],
+        &dir,
+        [0x81; 32],
+        6,
+        "wrong-owned-lane",
+    );
+    assert_eq!(
+        snapshots(&pool, &namespaces),
+        before_wrong_lane,
+        "wrong Owned lane must refuse before any source/observer row, nonce, reservation, vote or receipt"
+    );
 
     // Distinct claimants share an old logical settlement generation, not a
     // sender nonce. Both previews use only genuine installed/material state.
