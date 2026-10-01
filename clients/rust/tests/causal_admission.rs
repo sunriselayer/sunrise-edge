@@ -89,14 +89,14 @@ fn pinned() -> (
 
 #[test]
 fn signed_v4_client_pin_refuses_ordered_or_synthetic_owned_ids_before_io() {
-    let (_path, trusted, resolver, manifest) = pinned();
+    let (_path, mut trusted, resolver, manifest) = pinned();
     assert!(trusted.admission_profile().is_causal());
     assert!(trusted.require_owned_request_id(&[1; 32]).is_ok());
     assert!(trusted.require_owned_request_id(&[0x81; 32]).is_err());
     let mut synthetic: [u8; 32] = [1; 32];
     synthetic[..8].copy_from_slice(b"SE:FPv1:");
     assert!(trusted.require_owned_request_id(&synthetic).is_err());
-    let signed: SignedPaidIntent = SignedPaidIntent {
+    let mut signed: SignedPaidIntent = SignedPaidIntent {
         intent: PaidIntent {
             context: manifest.context().clone(),
             request_id: [0x81; 32],
@@ -140,6 +140,36 @@ fn signed_v4_client_pin_refuses_ordered_or_synthetic_owned_ids_before_io() {
     assert!(matches!(
         error,
         FastVoteQuorumError::Network(FastVoteNetworkError::Preflight(ClientError::NodeCore(_)))
+    ));
+
+    signed.intent.request_id = [1; 32];
+    let mut members: Vec<validator_set::ValidatorInfo> =
+        trusted.certifier.validator_set().validators().to_vec();
+    members[0].voting_power =
+        protocol_types::VotingPower::new(members[0].voting_power.get().checked_add(1).unwrap());
+    let altered: validator_set::ValidatorSet =
+        validator_set::ValidatorSet::new(Epoch::new(0), members).unwrap();
+    trusted.certifier = consensus::FastPathCertifier::new(
+        trusted.certifier.chain_id().clone(),
+        trusted.certifier.protocol_version(),
+        trusted.certifier.epoch(),
+        altered,
+    )
+    .unwrap();
+    let error: FastVoteQuorumError = trusted
+        .collect_owned_certificate(
+            &endpoints,
+            &resolver,
+            &signed,
+            Instant::now() + Duration::from_secs(10),
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        FastVoteQuorumError::Network(FastVoteNetworkError::Preflight(
+            ClientError::PublicationTrustMismatch
+        ))
     ));
 }
 
