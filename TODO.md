@@ -401,81 +401,56 @@ The detailed existing evidence and remaining criteria follow:
   authenticated generation floor and a core/store inactive incoming-validator
   guard. Readiness/Seal/activation and integrated Delivery 3 remain unchecked.
 
-- [ ] **Causal business reconstruction and real-store audit: one integrated capability**
+- [x] **Initial causal business reconstruction and real-store audit**
   ([DR-0170](docs/architecture/decisions/0170-causal-business-reconstruction.md),
-  [business reconstruction](docs/architecture/business-reconstruction.md)).
-  The accepted design binds strengthened causal admission and disjoint owned/
-  ordered external request lanes to fresh signed genesis v4. Existing witnesses,
-  candidates, receipts and historical profile interpretations remain unchanged.
-  A genuine focused core regression passed: identical signed v3 genesis, full
-  owned v2 material and ordered proofs permit nonce-refused versus successful
-  original FeeClaim histories. It is a counterexample, not a protocol fix or
-  same-run equivocation result. An independent source trace also finds a
-  zero-leg ordered/owned original-request collision; no executed collision
-  regression is claimed yet.
-  Integrated branch source now includes trusted admission, private causal
-  execution, complete semantic projection and the read-only PostgreSQL CLI.
-  Earlier core compile/strict Clippy and compiled operator/CLI builds passed.
-  Genuine four-namespace PostgreSQL execution reached DrainSet, fixed-history
-  export and actual source restart, but complete private replay refused. Its
-  genuine genesis-coordinate and provenance failures were repaired: install/
-  reopen and five focused business reconstruction controls now pass, including
-  real signed Replace and equivalent valid certificate subsets. New genuine
-  DrainSet controls exposed a remaining scheduler failure: an applied Owned
-  target without an earlier ordered dependency was left until after Freeze,
-  where normal recovery correctly refuses closed admission. That chronology
-  was repaired with an accepted-only owning-preflight barrier. Symmetric carrier
-  comparison now independently verifies each side's complete bundles and exact
-  keys; selected members bind full identity rather than input-array position.
-  All three genuine Freeze/DrainSet reconstruction controls pass at `85185e7`,
-  whose source/test tree matches integration `65afc39` (four documentation
-  files differ). They include full semantic equality with reversed two-member
-  input, exactly one applied and one retained-but-unapplied publication,
-  missing/corrupt selected-member refusal, completed/premature/AlreadyFrozen
-  precedence and a forged Refused companion that cannot hide required closure.
-  Two control-page codecs, three heap-dependency controls (including a 100,000-
-  node chain on a 64 KiB stack), four SDK causal tests and strict all-target/
-  all-feature Clippy for core/operator/client/CLI also pass at that source.
-  The first full gate then refused seven malformed CLI transport fixtures;
-  their canonical list/nonce operands were corrected without weakening the
-  production verifier or race/retry assertions. The combined all-feature CLI
-  suite passes all 196 tests, and strict all-target/all-feature CLI Clippy
-  passes. Fresh and saved submission/replay use the retained authenticated
-  profile and shared owning rule; zero/wrong-lane/synthetic IDs refuse before
-  seed I/O, artifact reservation or connection, with saved bytes unchanged.
-  No complete fresh four-namespace PostgreSQL acceptance pass is claimed yet.
-  Final whole-repository checks,
-  independent final-head review and required CI remain pending.
-  `npm ci` passed on 2026-10-01 but
-  reported six inherited high-severity development-tool dependency advisories;
-  no dependency upgrade or vulnerability remediation is claimed by this slice.
-  Complete the following in one functional PR rather than merging a decoder
-  or transport-only substitute:
-  - [ ] Trusted profile install/reopen and all lane/direct-writer enforcement,
-    including synthetic exclusions and ordered embedded legs.
-  - [ ] Fenced pre-vote nonce/owned-input validation after bounded justified
+  [business reconstruction](docs/architecture/business-reconstruction.md),
+  [operator guide](docs/guides/business-audit.md)).
+  One integrated capability: fresh signed genesis v4 authorizes causal
+  admission, private verified-genesis execution reconstructs supported
+  histories, and `business_audit_pg` compares one authenticated fixed source
+  observation without importing source rows or advancing its writer fence.
+  Existing Transaction/witness/receipt bytes and historical profile lane
+  interpretation remain unchanged; the legacy ambiguity counterexample and
+  rationale are recorded in DR-0170, not an independent-execution guarantee.
+  - [x] Trusted install/reopen, disjoint Owned/Ordered lanes, synthetic/zero
+    exclusions, ordered embedded legs and fresh direct-writer fencing.
+  - [x] Fenced pre-vote nonce/owned-input observations after bounded justified
     predecessor processing, preserving shared economic concurrency.
-  - [ ] Private verified-genesis causal execution of all current owned/ordered
-    operations, original results/receipts, producer uniqueness and checked
-    logical generations; source companions never become execution authority.
-  - [ ] Closed field-aware comparison of all business state, heads/versions/
-    tombstones, original receipts and referenced artifact closure under one
-    source snapshot, with unexplained/unknown business material refused.
-  - [ ] Rust SDK/compiled CLI bounded immutable saved material, interruption/
-    resumption and truthful fixed-material audit results.
-  - [ ] Genuine real PostgreSQL close/reopen/replay, all current economics/
-    contract/control cases, corruption/missing/cyclic material negatives,
-    equivalent certificate-subset controls and source-row immutability.
-  - [ ] `npm ci`, complete repository gate, independent explicit final-head
-    approval and required CI before normal merge.
+  - [x] Private causal execution of supported Owned publications and ordered
+    operations, original results/receipts, unique producers and checked logical
+    generations; source companions never become execution authority.
+  - [x] Closed field-aware comparison of State, Receipts, ObjectHeads,
+    ObjectVersions and referenced artifact closure under one source token;
+    unknown/unexplained business facts fail closed.
+  - [x] SDK/compiled CLI immutable bounded saved material, interrupted-cache
+    continuation, full seed-to-terminal reverification and separate local
+    protocol/genesis and TLS pins. Invalid IDs refuse before seed I/O,
+    artifact reservation or connection; exact saved input bytes stay unchanged.
+  - [x] Genuine four-namespace PostgreSQL lifecycle/economics/control
+    close/reopen/replay and compiled-CLI audit, plus corruption/missing/cyclic
+    material negatives, certificate-subset controls and source-row immutability.
+
+  Executed acceptance on 2026-10-01 at `d0b8f9c`: core 958 tests and all
+  three genuine Freeze/DrainSet reconstruction controls passed; CLI 196 tests
+  passed. The mandatory fresh four-namespace PostgreSQL business-audit E2E
+  passed in 1962.34 seconds, including actual restart, immutable cache resume,
+  corruption/withheld-material refusal and all four source snapshots unchanged.
+  Heap traversal also passed a 100,000-node chain on a 64 KiB stack. Test-only
+  transport fixtures use canonical operands; no production verification or
+  race/retry assertion was weakened. `npm ci` and strict all-target/all-feature
+  workspace Clippy passed. The unchanged dependency lock still reports six
+  inherited high-severity development-tool advisories; no remediation is
+  claimed. Before a normal merge, the complete repository gate, independent
+  explicit final-head approval and required final-head CI must also pass.
+
   No persistent import, inactive incoming-validator guard, complete cut,
   readiness, Seal, activation, force unlock or general partial cancellation
-  is claimed by this capability. Those remain separate Delivery 3 work.
-  The initial audit also requires an availability certificate for each applied
-  Owned target. Legitimate frozen `apply_drain_member` completion without an
-  aggregate availability certificate is not yet reconstructible by this audit
-  and must refuse equality, not be treated as an unapplied publication. Close
-  that source-family gap before claiming complete drained-state cut/import.
+  is claimed. Those remain separate Delivery 3 work. Applied Owned targets
+  currently require the normal aggregate-availability completion tuple.
+  - [ ] Support legitimate frozen `apply_drain_member` completion without an
+    aggregate availability certificate before complete drained-state cut/import.
+    The initial audit refuses equality for this source family, never treats it
+    as an unapplied publication and never synthesizes missing proof.
 
 - [x] **Portable storage implementation: bounded reads and backend-enforced snapshot continuity**
   ([DR-0166](docs/architecture/decisions/0166-portable-candidate-snapshot.md),
