@@ -801,6 +801,7 @@ struct Preamble<'a, S: StructuredDurableDomainStateStore, E: LocalContractEngine
     bond: FastPathBondRecord,
     validator_set: ValidatorSet,
     reads: BTreeMap<Vec<u8>, StateRevision>,
+    admission_profile_reads: BTreeMap<Vec<u8>, StateRevision>,
     /// DR-0154: the store's resolved signed binding, fenced once alongside the
     /// committed bond row. Every leg derives its object monotonicity rule from
     /// this rather than assuming the historical physical checkpoint.
@@ -934,6 +935,16 @@ where
     }
 
     // 6. current epoch fence.
+    let mut admission_profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    mutation_fence::fence_direct_or_ordered_writer(
+        store,
+        context,
+        domain,
+        expected,
+        &signed.intent.request_id,
+        ordered,
+        &mut admission_profile_reads,
+    )?;
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     let epoch_record: local_instance_state::FastPathEpochRecord =
         mutation_fence::fence_current_epoch(
@@ -1071,6 +1082,7 @@ where
         bond,
         validator_set,
         reads,
+        admission_profile_reads,
         profile,
         ordered,
     };
@@ -1121,6 +1133,7 @@ where
         bond: previous_bond,
         created_checkpoint,
         reads,
+        admission_profile_reads,
         ..
     } = preamble;
     let expected_next_row_digest: Digest32 = signed.intent.expected_next_row_digest;
@@ -1137,6 +1150,7 @@ where
         previous_bond,
         created_checkpoint,
         reads,
+        admission_profile_reads,
         signed.intent.context.clone(),
         operation,
         BondTransitionAuthorization::ValidatorEnvelope {
@@ -1180,6 +1194,7 @@ fn commit_bond_transition<S: StructuredDurableDomainStateStore>(
     previous_bond: FastPathBondRecord,
     created_checkpoint: u64,
     mut reads: BTreeMap<Vec<u8>, StateRevision>,
+    admission_profile_reads: BTreeMap<Vec<u8>, StateRevision>,
     transition_context: PublicationContext,
     operation: FastPathBondLifecycleOperation,
     authorization: BondTransitionAuthorization,
@@ -1263,6 +1278,7 @@ fn commit_bond_transition<S: StructuredDurableDomainStateStore>(
         &mut state_mutations,
         &mut reads,
     )?;
+    mutation_fence::merge_configuration_reads(&mut reads, admission_profile_reads)?;
     let assertions: Vec<StateReadAssertion> = reads
         .into_iter()
         .map(|(k, r)| StateReadAssertion::new(k, r))

@@ -248,12 +248,12 @@ pub fn drain_union_ready_key(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SignerProgressRecord {
-    vote: FrozenFrontierVote,
-    confirmed_identity: FrozenFrontierIdentity,
-    confirmed_last_request_id: Option<[u8; 32]>,
-    staged_page: Option<FrozenFrontierPage>,
-    complete: bool,
+pub(super) struct SignerProgressRecord {
+    pub(super) vote: FrozenFrontierVote,
+    pub(super) confirmed_identity: FrozenFrontierIdentity,
+    pub(super) confirmed_last_request_id: Option<[u8; 32]>,
+    pub(super) staged_page: Option<FrozenFrontierPage>,
+    pub(super) complete: bool,
 }
 
 fn encode_signer_progress(record: &SignerProgressRecord) -> Result<Vec<u8>, DrainSignerError> {
@@ -285,7 +285,9 @@ fn encode_signer_progress(record: &SignerProgressRecord) -> Result<Vec<u8>, Drai
     Ok(frame.finish()?)
 }
 
-fn decode_signer_progress(input: &[u8]) -> Result<SignerProgressRecord, DrainSignerError> {
+pub(super) fn decode_signer_progress(
+    input: &[u8],
+) -> Result<SignerProgressRecord, DrainSignerError> {
     let frame = decode_canonical_frame(input)?;
     frame.require_type(SIGNER_PROGRESS_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;
@@ -318,6 +320,39 @@ fn decode_signer_progress(input: &[u8]) -> Result<SignerProgressRecord, DrainSig
         return Err(DrainSignerError::Invalid("noncanonical signer progress"));
     }
     Ok(record)
+}
+
+/// Checks only the owner's local progress invariants. This does not authenticate
+/// the unsigned running digest or prove any publication's retained closure.
+/// Callers must independently verify the vote and its pinned Freeze context.
+pub(super) fn validate_signer_progress_consistency(
+    resolver: &HashSuiteResolver,
+    record: &SignerProgressRecord,
+) -> Result<(), DrainSignerError> {
+    let signed: &FrozenFrontierIdentity = &record.vote.identity;
+    let confirmed: &FrozenFrontierIdentity = &record.confirmed_identity;
+    if confirmed.chain_id != signed.chain_id
+        || confirmed.protocol_version != signed.protocol_version
+        || confirmed.epoch != signed.epoch
+        || confirmed.domain != signed.domain
+        || confirmed.closure_request_id != signed.closure_request_id
+        || confirmed.closure_height != signed.closure_height
+        || confirmed.entry_count > signed.entry_count
+        || (record.complete && (record.staged_page.is_some() || confirmed != signed))
+    {
+        return Err(DrainSignerError::Invalid(
+            "signer progress accumulator context mismatch",
+        ));
+    }
+    // Resume checks count/cursor pairing, hash-suite context and the exact
+    // empty seed. A nonempty running digest remains local bookkeeping, not
+    // an independently authenticated derivation from all confirmed entries.
+    FrozenFrontierAccumulator::resume(
+        resolver,
+        record.confirmed_identity.clone(),
+        record.confirmed_last_request_id,
+    )?;
+    Ok(())
 }
 
 fn put_read(
@@ -905,19 +940,7 @@ pub fn read_drain_signer_progress<S: StructuredDurableDomainStateStore>(
             "signer progress context mismatch",
         ));
     }
-    if record.confirmed_identity.chain_id != drain.fence.chain
-        || record.confirmed_identity.protocol_version != expected.protocol_version()
-        || record.confirmed_identity.epoch != drain.fence.epoch
-        || record.confirmed_identity.domain != domain
-        || record.confirmed_identity.closure_request_id != drain.fence.closure_request_id
-        || record.confirmed_identity.closure_height != drain.fence.closure_height
-        || record.confirmed_identity.entry_count > record.vote.identity.entry_count
-        || (record.complete && record.staged_page.is_some())
-    {
-        return Err(DrainSignerError::Invalid(
-            "signer progress accumulator context mismatch",
-        ));
-    }
+    validate_signer_progress_consistency(resolver, &record)?;
     let certifier: FrozenFrontierCertifier = FrozenFrontierCertifier::new(
         drain.fence.chain.clone(),
         expected.protocol_version(),
@@ -925,16 +948,6 @@ pub fn read_drain_signer_progress<S: StructuredDurableDomainStateStore>(
         drain.fence.validators.clone(),
     )?;
     certifier.verify_vote(&record.vote, &FastPathEd25519Verifier)?;
-    // Independent self-consistency re-check of the persisted running
-    // accumulator: `resume` re-derives the empty-seed digest for a zero
-    // cursor and otherwise checks the identity/cursor pairing and hash-suite
-    // context. A full digest replay would require every already-confirmed
-    // entry, which this bounded read never re-scans.
-    FrozenFrontierAccumulator::resume(
-        resolver,
-        record.confirmed_identity.clone(),
-        record.confirmed_last_request_id,
-    )?;
     Ok(DrainSignerProgress {
         signer,
         vote: record.vote,
@@ -954,18 +967,18 @@ pub fn read_drain_signer_progress<S: StructuredDurableDomainStateStore>(
 /// and the stored votes let a reader recheck signatures/content without
 /// trusting the key match alone.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct UnionProgressRecord {
-    selection_digest: Digest32,
-    identity: DrainUnionIdentity,
-    selected_votes: Vec<FrozenFrontierVote>,
-    last_request_id: Option<[u8; 32]>,
+pub(super) struct UnionProgressRecord {
+    pub(super) selection_digest: Digest32,
+    pub(super) identity: DrainUnionIdentity,
+    pub(super) selected_votes: Vec<FrozenFrontierVote>,
+    pub(super) last_request_id: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct UnionReadyRecord {
-    selection_digest: Digest32,
-    identity: DrainUnionIdentity,
-    selected_votes: Vec<FrozenFrontierVote>,
+pub(super) struct UnionReadyRecord {
+    pub(super) selection_digest: Digest32,
+    pub(super) identity: DrainUnionIdentity,
+    pub(super) selected_votes: Vec<FrozenFrontierVote>,
 }
 
 fn encode_vote_list(
@@ -1022,7 +1035,7 @@ fn encode_union_progress(record: &UnionProgressRecord) -> Result<Vec<u8>, DrainS
     Ok(frame.finish()?)
 }
 
-fn decode_union_progress(input: &[u8]) -> Result<UnionProgressRecord, DrainSignerError> {
+pub(super) fn decode_union_progress(input: &[u8]) -> Result<UnionProgressRecord, DrainSignerError> {
     let frame = decode_canonical_frame(input)?;
     frame.require_type(UNION_PROGRESS_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;
@@ -1062,7 +1075,7 @@ fn encode_union_ready(record: &UnionReadyRecord) -> Result<Vec<u8>, DrainSignerE
     Ok(frame.finish()?)
 }
 
-fn decode_union_ready(input: &[u8]) -> Result<UnionReadyRecord, DrainSignerError> {
+pub(super) fn decode_union_ready(input: &[u8]) -> Result<UnionReadyRecord, DrainSignerError> {
     let frame = decode_canonical_frame(input)?;
     frame.require_type(UNION_READY_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;

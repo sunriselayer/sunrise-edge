@@ -506,11 +506,12 @@ node-core deployment, including platform-generated rejection and timeout paths.
 
 ## 39. Repository validation gate
 
-The repository pins Rust 1.97.1, Node.js 22.20.0 in CI, and Deno 2.9.4. One
-`scripts/check-all.sh` entrypoint runs Rust formatting, all-feature clippy and
-tests, Cloudflare type/lint/workerd validation, all four portable provider
-adapter suites, and whitespace checks. GitHub Actions installs the locked npm
-dependencies and executes the same script on pull requests and main.
+The repository pins Rust 1.97.1, Node.js 22.20.0 in CI, and Deno 2.9.4.
+[`Repository validation`](repository-validation.md) defines the complete serial
+local entrypoint, isolated parallel CI lanes and the success-only required
+`check` result. The partition preserves Rust formatting/all-feature tests and
+Clippy, live PostgreSQL/fault acceptance, independent vectors, Cloudflare
+type/lint/workerd validation, all four portable adapter suites and hygiene.
 
 This is an As-Is regression gate, not release provenance. Production still
 requires reviewed periodic updates to the pinned action revisions, dependency

@@ -79,7 +79,9 @@ fn synthetic_witness_with_state_reads(
         &[],
         b"synthetic-nonce-key",
         StateRevision::new(1),
-        b"synthetic-nonce-value",
+        &crate::SenderNonceRecord::new([0x31; 32], protocol().epoch(), FIRST_PAID_NONCE + 1)
+            .encode()
+            .unwrap(),
         Some(&derived),
     )
     .unwrap();

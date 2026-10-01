@@ -820,6 +820,16 @@ where
         ));
     }
 
+    crate::admission_profile::fence_installed_external_request_lane(
+        store,
+        context,
+        domain,
+        expected,
+        &bundle.request_id,
+        crate::admission_profile::ExternalRequestLane::Owned,
+        &mut reads,
+    )?;
+
     // A fresh ACK races atomically with the committed Freeze marker. Exact
     // earlier ACK replay above remains available; a new ACK after closure
     // fails without exposing a signature or changing publication rows.
@@ -948,6 +958,17 @@ where
     }
     let chain: ChainId = expected.chain_id().clone();
     let request_id: [u8; 32] = authenticated.intent().request_id;
+
+    let mut profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    crate::admission_profile::fence_installed_external_request_lane(
+        store,
+        context,
+        domain,
+        expected,
+        &request_id,
+        crate::admission_profile::ExternalRequestLane::Owned,
+        &mut profile_reads,
+    )?;
 
     let prepared_key: Vec<u8> = fastpath_prepared_record_key(&chain, &request_id)?;
     let observed_prepared: VersionedStateValue =
@@ -1116,6 +1137,21 @@ pub(crate) fn verify_retained_publication<S: DurablePortableRepository>(
             "frozen publication context or request id",
         ));
     }
+    let (authenticated, event_digest, _request) =
+        authenticate_and_identify(resolver, expected, &record.signed_intent)?;
+    if authenticated.intent().request_id != *request_id {
+        return Err(PublicationRetentionError::RequestIdMismatch);
+    }
+    let mut profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    crate::admission_profile::fence_installed_external_request_lane(
+        store,
+        context,
+        domain,
+        expected,
+        request_id,
+        crate::admission_profile::ExternalRequestLane::Owned,
+        &mut profile_reads,
+    )?;
     let manifest: ArtifactManifest = decode_artifact_manifest(&record.manifest)?;
     let descriptors: Vec<DurableRecordDescriptor> =
         frozen_artifact_descriptors(store, context, domain, &chain, request_id, &manifest)?;
@@ -1151,16 +1187,8 @@ pub(crate) fn verify_retained_publication<S: DurablePortableRepository>(
         resolver,
         history,
     )?;
-    let (authenticated, event_digest, _request) =
-        authenticate_and_identify(resolver, expected, &bundle.signed_intent)?;
     if event_digest != bundle.certificate.tx_hash {
         return Err(PublicationRetentionError::SignedIntentDigestMismatch);
-    }
-    if authenticated.intent().request_id != *request_id {
-        return Err(PublicationRetentionError::RequestIdMismatch);
-    }
-    if authenticated.intent().context != *expected {
-        return Err(PublicationRetentionError::ContextMismatch);
     }
     let (witness_event_digest, required): (Digest32, RequiredArtifacts) =
         witness::required_artifacts(&bundle.witness)?;

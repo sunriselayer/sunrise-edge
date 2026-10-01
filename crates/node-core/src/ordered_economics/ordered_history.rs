@@ -404,6 +404,7 @@ fn verify_completion_companions(
 /// Memory grows by one fixed-size request/origin/fingerprint entry per unique
 /// candidate, not by its result bytes. Callers must provision this linear
 /// index; there is no arbitrary protocol ceiling on total history length.
+#[derive(Clone)]
 pub struct OrderedHistoryVerifier {
     policy: OrderedEconomicsPolicy,
     identity: OrderedHistoryIdentity,
@@ -435,6 +436,21 @@ impl OrderedHistoryVerifier {
     #[must_use]
     pub const fn height(&self) -> u64 {
         self.height
+    }
+
+    pub(crate) fn require_pinned_policy(
+        &self,
+        policy: &OrderedEconomicsPolicy,
+    ) -> Result<(), OrderedEconomicsError> {
+        self.identity.validate(policy)?;
+        if self.policy.anchor() != policy.anchor()
+            || self.policy.admission_profile() != policy.admission_profile()
+        {
+            return Err(invalid(
+                "ordered reconstruction verifier has a different pinned policy",
+            ));
+        }
+        Ok(())
     }
 
     pub fn verify_next_height(

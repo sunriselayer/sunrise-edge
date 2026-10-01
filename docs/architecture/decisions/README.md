@@ -65,6 +65,8 @@
 - [DR-0167: ordered Freeze and immutable frontier extraction](0167-frozen-frontier-extraction-boundary.md)
 - [DR-0168: quorum-retained DrainSet and certified member drain](0168-quorum-retained-drainset-and-member-drain.md)
 - [DR-0169: authenticated ordered-history archive and export](0169-authenticated-ordered-history-export.md)
+- [DR-0170: causal business reconstruction and semantic audit](0170-causal-business-reconstruction.md)
+- [DR-0171: partitioned complete repository validation](0171-partitioned-repository-validation.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

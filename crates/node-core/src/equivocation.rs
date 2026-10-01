@@ -394,6 +394,8 @@ fn commit_new_evidence<S: StructuredDurableDomainStateStore>(
     checkpoint: u64,
     evidence_bytes: Vec<u8>,
     conflict_digest: Digest32,
+    expected: &execution::publication::PublicationContext,
+    ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
 ) -> EqResult<EquivocationEvidenceOutcome<FastPathEquivocationEvidenceRecord>> {
     // Evidence may concern an old validator epoch, but a *new* evidence row
     // belongs to the currently serving epoch's ordered history. Once that
@@ -404,6 +406,20 @@ fn commit_new_evidence<S: StructuredDurableDomainStateStore>(
     // the same commit as the evidence row, not the offense epoch's closure.
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     reads.insert(key.clone(), observed_revision);
+    match ordered {
+        Some(admission) => mutation_fence::fence_direct_or_ordered_writer(
+            store,
+            context,
+            domain,
+            expected,
+            &admission.request_id,
+            Some(admission),
+            &mut reads,
+        )?,
+        None => crate::admission_profile::require_historical_direct_writer(
+            store, context, domain, expected, &mut reads,
+        )?,
+    }
     let installed =
         logical_generation::fence_commitment_profile(store, context, domain, chain, &mut reads)?;
     if installed
@@ -621,6 +637,37 @@ pub fn submit_fast_vote_equivocation_evidence<S: StructuredDurableDomainStateSto
     statement_b: &[u8],
     checkpoint: u64,
 ) -> EqResult<EquivocationEvidenceOutcome<FastPathEquivocationEvidenceRecord>> {
+    submit_fast_vote_equivocation_evidence_ordered(
+        store,
+        context,
+        domain,
+        resolver,
+        chain,
+        protocol_version,
+        statement_a,
+        statement_b,
+        checkpoint,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn submit_fast_vote_equivocation_evidence_ordered<
+    S: StructuredDurableDomainStateStore,
+>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    chain: &ChainId,
+    protocol_version: ProtocolVersion,
+    statement_a: &[u8],
+    statement_b: &[u8],
+    checkpoint: u64,
+    expected: Option<&execution::publication::PublicationContext>,
+    ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
+) -> EqResult<EquivocationEvidenceOutcome<FastPathEquivocationEvidenceRecord>> {
     require_resolver_context(resolver, chain, protocol_version)?;
     let a: FastVote = consensus::decode_fast_vote(statement_a)?;
     let b: FastVote = consensus::decode_fast_vote(statement_b)?;
@@ -672,6 +719,12 @@ pub fn submit_fast_vote_equivocation_evidence<S: StructuredDurableDomainStateSto
         checkpoint,
         evidence_bytes,
         conflict_digest,
+        expected.unwrap_or(&execution::publication::PublicationContext::new(
+            chain.clone(),
+            protocol_version,
+            evidence.epoch,
+        )?),
+        ordered,
     )
 }
 
@@ -697,6 +750,41 @@ pub fn submit_fast_vote_object_conflict_evidence<S: StructuredDurableDomainState
     preimage_a: &[u8],
     preimage_b: &[u8],
     checkpoint: u64,
+) -> EqResult<EquivocationEvidenceOutcome<FastPathEquivocationEvidenceRecord>> {
+    submit_fast_vote_object_conflict_evidence_ordered(
+        store,
+        context,
+        domain,
+        resolver,
+        chain,
+        protocol_version,
+        statement_a,
+        statement_b,
+        preimage_a,
+        preimage_b,
+        checkpoint,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn submit_fast_vote_object_conflict_evidence_ordered<
+    S: StructuredDurableDomainStateStore,
+>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    chain: &ChainId,
+    protocol_version: ProtocolVersion,
+    statement_a: &[u8],
+    statement_b: &[u8],
+    preimage_a: &[u8],
+    preimage_b: &[u8],
+    checkpoint: u64,
+    expected: Option<&execution::publication::PublicationContext>,
+    ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
 ) -> EqResult<EquivocationEvidenceOutcome<FastPathEquivocationEvidenceRecord>> {
     require_resolver_context(resolver, chain, protocol_version)?;
     let a: FastVote = consensus::decode_fast_vote(statement_a)?;
@@ -772,6 +860,12 @@ pub fn submit_fast_vote_object_conflict_evidence<S: StructuredDurableDomainState
         checkpoint,
         evidence_bytes,
         conflict_digest,
+        expected.unwrap_or(&execution::publication::PublicationContext::new(
+            chain.clone(),
+            protocol_version,
+            evidence.epoch,
+        )?),
+        ordered,
     )
 }
 
@@ -790,6 +884,37 @@ pub fn submit_epoch_transition_equivocation_evidence<S: StructuredDurableDomainS
     statement_a: &[u8],
     statement_b: &[u8],
     checkpoint: u64,
+) -> EqResult<EquivocationEvidenceOutcome<FastPathEquivocationEvidenceRecord>> {
+    submit_epoch_transition_equivocation_evidence_ordered(
+        store,
+        context,
+        domain,
+        resolver,
+        chain,
+        protocol_version,
+        statement_a,
+        statement_b,
+        checkpoint,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn submit_epoch_transition_equivocation_evidence_ordered<
+    S: StructuredDurableDomainStateStore,
+>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    chain: &ChainId,
+    protocol_version: ProtocolVersion,
+    statement_a: &[u8],
+    statement_b: &[u8],
+    checkpoint: u64,
+    expected: Option<&execution::publication::PublicationContext>,
+    ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
 ) -> EqResult<EquivocationEvidenceOutcome<FastPathEquivocationEvidenceRecord>> {
     require_resolver_context(resolver, chain, protocol_version)?;
     let a: EpochTransitionVote = consensus::decode_epoch_transition_vote(statement_a)?;
@@ -843,6 +968,12 @@ pub fn submit_epoch_transition_equivocation_evidence<S: StructuredDurableDomainS
         checkpoint,
         evidence_bytes,
         conflict_digest,
+        expected.unwrap_or(&execution::publication::PublicationContext::new(
+            chain.clone(),
+            protocol_version,
+            evidence.epoch,
+        )?),
+        ordered,
     )
 }
 

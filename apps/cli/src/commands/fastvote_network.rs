@@ -50,18 +50,18 @@ use std::{
 
 use protocol_types::AtomicityDomainId;
 use sunrise_edge_client::{
-    AvailabilityCertificate, Client, CommitmentProfile, FastCertificate, FastPathCertifier,
-    FastVoteEndpoint, FastVoteNetworkError, FastVoteQuorumError, FrozenFrontierVote,
-    MAX_ENCODED_BUNDLE_BYTES, MAX_FASTVOTE_NETWORK_ENDPOINTS, PaidApplication, PaidExecutionResult,
-    PaidExecutionStatus, SignedPaidIntent, Transport, ValidatorId, apply_fastvote_to_all,
-    apply_published_fastvote_to_all,
+    AvailabilityCertificate, Client, CommitmentProfile, ExternalRequestLane, FastCertificate,
+    FastPathCertifier, FastVoteEndpoint, FastVoteNetworkError, FastVoteQuorumError,
+    FrozenFrontierVote, MAX_ENCODED_BUNDLE_BYTES, MAX_FASTVOTE_NETWORK_ENDPOINTS, PaidApplication,
+    PaidExecutionResult, PaidExecutionStatus, SignedPaidIntent, Transport, ValidatorId,
+    VerifiedAdmissionProfile, apply_fastvote_to_all, apply_published_fastvote_to_all,
     call::CallIntent,
     collect_fastvote_availability_certificate, collect_fastvote_certificate,
     decode_availability_certificate, decode_fast_certificate, decode_frozen_frontier_vote,
     decode_signed_paid_intent, encode_availability_certificate, encode_fast_certificate,
     encode_signed_paid_intent, load_trusted_fastvote_genesis_with_profile,
     local_execution::{encode_instance_record, instance_target},
-    local_publication_resolver, validate_fastvote_endpoints,
+    local_publication_resolver, require_external_request_lane, validate_fastvote_endpoints,
 };
 
 use crate::{
@@ -481,8 +481,8 @@ pub(super) fn load_endpoints_and_certifier(
     Ok((endpoints, certifier))
 }
 
-/// Drain authority is available only in a locally authenticated signed-v3
-/// genesis. The signed minimum is not inferred from an endpoint response.
+/// Drain authority is available only in locally authenticated signed genesis
+/// that explicitly warrants Freeze. It is not inferred from an endpoint.
 pub(super) fn load_drain_endpoints_and_certifier(
     parsed: &ParsedArgs,
     resolver: &sunrise_edge_client::HashSuiteResolver,
@@ -500,11 +500,9 @@ pub(super) fn load_drain_endpoints_and_certifier(
             context,
         )
         .map_err(failure)?;
-    if trusted.commitment_profile != CommitmentProfile::LogicalGenerationV2
-        || trusted.minimum_freeze_block_height == 0
-    {
+    if !trusted.commitment_profile.is_logical() || trusted.minimum_freeze_block_height == 0 {
         return Err(invalid(
-            "drain requires a locally pinned fresh signed-v3 genesis",
+            "drain requires locally pinned signed genesis authorizing Freeze",
         ));
     }
     let peers: Vec<PeerConfig> = parse_network_config(parsed.require("--fastvote-network")?)?;
@@ -519,7 +517,7 @@ pub(super) fn load_drain_endpoints_and_certifier(
 }
 
 /// Loads one locally authenticated manifest and returns its committee and
-/// signed commitment profile together, before the caller signs anything.
+/// authenticated admission capability together, before the caller signs anything.
 pub(super) fn load_endpoints_and_profile(
     parsed: &ParsedArgs,
     resolver: &sunrise_edge_client::HashSuiteResolver,
@@ -528,7 +526,7 @@ pub(super) fn load_endpoints_and_profile(
     (
         Vec<FastVoteEndpoint<CliTransport>>,
         FastPathCertifier,
-        CommitmentProfile,
+        VerifiedAdmissionProfile,
     ),
     CliError,
 > {
@@ -552,11 +550,18 @@ pub(super) fn load_endpoints_and_profile(
         context,
     )
     .map_err(failure)?;
+    if let Some(value) = parsed.get("--request-id") {
+        let request: [u8; 32] = decode_hex_32("--request-id", value)?;
+        trusted
+            .require_owned_request_id(&request)
+            .map_err(failure)?;
+    }
     let endpoints: Vec<FastVoteEndpoint<CliTransport>> =
         build_endpoints(&peers, trusted.commitment_profile)?;
+    let admission: VerifiedAdmissionProfile = trusted.admission_profile().clone();
     let certifier: FastPathCertifier = trusted.certifier;
     validate_fastvote_endpoints(&endpoints, &certifier).map_err(failure)?;
-    Ok((endpoints, certifier, trusted.commitment_profile))
+    Ok((endpoints, certifier, admission))
 }
 
 pub(super) fn parse_deadline(parsed: &ParsedArgs) -> Result<OperationBudget, CliError> {
@@ -668,28 +673,33 @@ fn print_repin_diagnostic(error: &impl std::fmt::Display) {
     }
 }
 
+fn require_owned_lane(
+    admission: &VerifiedAdmissionProfile,
+    request: &[u8; 32],
+) -> Result<(), CliError> {
+    // Use the same owning rule as the SDK and node, under the authenticated
+    // capability retained from the local genesis pin, never a profile tag.
+    require_external_request_lane(admission, ExternalRequestLane::Owned, request).map_err(failure)
+}
+
 /// Runs the network prepare/quorum/apply flow for an already-built, already
-/// signed ordinary paid `Publish`, `Instantiate` or `Call` (DR-0151 widens
-/// this beyond DR-0148's `Call`-only scope). Persists the mandatory
-/// signed-intent and certificate artifacts, plus any requested
-/// dependency-ref/instance-ref output, all reserved via `create_new` before
-/// the first mutating POST. The dependency-ref/instance-ref bytes are
-/// written only after a verified `Success` acknowledgement -- a charged
-/// `ApplicationFailed` (or any other non-`Success`) result keeps its exact
-/// `PaidExecutionResult` output but leaves the reserved reference file
-/// empty, since no usable published/instantiated reference exists yet.
+/// signed ordinary paid `Publish`, `Instantiate` or `Call`. Persists signed
+/// intent and certificate artifacts before the first mutating POST. Derived
+/// references are written only after an independently verified Success.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_network_submit<T: Transport>(
     parsed: &ParsedArgs,
     endpoints: &[FastVoteEndpoint<T>],
     certifier: &FastPathCertifier,
-    profile: CommitmentProfile,
+    admission: &VerifiedAdmissionProfile,
     domain: AtomicityDomainId,
     resolver: &sunrise_edge_client::HashSuiteResolver,
     signed: &SignedPaidIntent,
     derived: Option<(&str, &'static str, &[u8])>,
     budget: OperationBudget,
 ) -> Result<PaidExecutionResult, CliError> {
+    require_owned_lane(admission, &signed.intent.request_id)?;
+    let profile: CommitmentProfile = admission.commitment_profile();
     let signed_intent_out = parsed.require("--fastvote-signed-intent-out")?;
     let certificate_out = parsed.require("--fastvote-certificate-out")?;
     let OperationBudget {
@@ -1086,7 +1096,10 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
     .map_err(failure)?;
     let derived: Option<DerivedReference<'_>> =
         recompute_derived_reference(&parsed, &resolver, &context, &signed.intent.application)?;
-    let (endpoints, certifier, profile) = load_endpoints_and_profile(&parsed, &resolver, &context)?;
+    let (endpoints, certifier, admission) =
+        load_endpoints_and_profile(&parsed, &resolver, &context)?;
+    require_owned_lane(&admission, &signed.intent.request_id)?;
+    let profile: CommitmentProfile = admission.commitment_profile();
     if !profile.is_logical()
         && (availability_certificate.is_some()
             || parsed
@@ -1106,7 +1119,7 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
         &parsed,
         &endpoints,
         &certifier,
-        profile,
+        &admission,
         expected.domain(),
         &resolver,
         &signed,
@@ -1200,7 +1213,7 @@ fn replay_loaded<T: Transport>(
     parsed: &ParsedArgs,
     endpoints: &[FastVoteEndpoint<T>],
     certifier: &FastPathCertifier,
-    profile: CommitmentProfile,
+    admission: &VerifiedAdmissionProfile,
     domain: AtomicityDomainId,
     resolver: &sunrise_edge_client::HashSuiteResolver,
     signed: &SignedPaidIntent,
@@ -1209,6 +1222,8 @@ fn replay_loaded<T: Transport>(
     derived: Option<DerivedReference<'_>>,
     budget: OperationBudget,
 ) -> Result<PaidExecutionResult, CliError> {
+    require_owned_lane(admission, &signed.intent.request_id)?;
+    let profile: CommitmentProfile = admission.commitment_profile();
     let submission_path: &str = parsed.require("--submission")?;
 
     let OperationBudget {

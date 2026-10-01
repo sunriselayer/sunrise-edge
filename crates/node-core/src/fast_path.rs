@@ -787,6 +787,16 @@ where
         return invalid("paid intent already finalized outside the fast path");
     }
 
+    crate::admission_profile::fence_installed_external_request_lane(
+        store,
+        context,
+        domain,
+        expected,
+        &original_request_id,
+        crate::admission_profile::ExternalRequestLane::Owned,
+        &mut fence_reads,
+    )?;
+
     let validator_set: ValidatorSet = load_validator_set(
         store,
         context,
@@ -949,7 +959,8 @@ where
     // application effects) fed only the commitment above and is discarded
     // here: prepare never applies them.
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = admission.reads;
-    reads.extend(fence_reads);
+    merge_apply_reads(&mut reads, admission.admission_profile_reads)?;
+    merge_apply_reads(&mut reads, fence_reads)?;
     reads.insert(nonce.key.clone(), nonce.read_revision);
     reads.insert(prepared_key.clone(), observed_prepared.revision());
     for (key, revision) in material_reads {
@@ -1339,6 +1350,16 @@ where
             &mut fence_reads,
         )?;
 
+    crate::admission_profile::fence_installed_external_request_lane(
+        store,
+        context,
+        domain,
+        expected,
+        &original_request_id,
+        crate::admission_profile::ExternalRequestLane::Owned,
+        &mut fence_reads,
+    )?;
+
     let prepared_key: Vec<u8> = fastpath_prepared_record_key(&chain, &original_request_id)?;
     let observed_prepared: VersionedStateValue =
         store.get_versioned_durable(context, domain, &prepared_key)?;
@@ -1534,6 +1555,7 @@ where
         result_bytes,
         success,
         reads: admission_reads,
+        admission_profile_reads,
         head_reads,
         state_mutations: mut mutations,
         object_mutations,
@@ -1543,6 +1565,7 @@ where
     } = admission;
 
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = admission_reads;
+    merge_apply_reads(&mut reads, admission_profile_reads)?;
     merge_apply_reads(&mut reads, fence_reads)?;
 
     let nonce: PendingSenderNonceWrite = nonce_write.ok_or(FastPathError::Invalid(

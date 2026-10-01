@@ -40,8 +40,18 @@
 
 use super::super::commitment;
 use super::{ArtifactKind, PublicationRetentionError, RequiredArtifacts};
-use crate::logical_generation::{self, LogicalObservation};
-use protocol_types::{Digest32, HashAlgorithmId};
+use crate::logical_generation::LogicalSubject;
+use execution::{
+    local_execution::{CreatedObjectAuthority, decode_object_authority},
+    paid_execution::{PaidExecutionResult, encode_paid_execution_result},
+};
+use objects::ObjectId;
+use protocol_types::{Digest32, Epoch, ExecutionGeneration, ProtocolVersion};
+use runtime::{
+    DurableObjectOwnerProjection, DurableObjectRoutingProjection, MAX_DURABLE_INLINE_OBJECT_BYTES,
+    MAX_DURABLE_OBJECT_PROJECTION_BYTES, MAX_STATE_KEY_BYTES, MAX_STATE_VALUE_BYTES, StateMutation,
+};
+use std::cmp::Ordering;
 
 /// A bounded forward-only reader over one operand buffer.
 ///
@@ -89,6 +99,11 @@ impl<'a> Cursor<'a> {
         Ok(u32::from_be_bytes(bytes))
     }
 
+    fn take_u16(&mut self) -> Result<u16, PublicationRetentionError> {
+        let bytes: [u8; 2] = self.take(2)?.try_into().map_err(|_| self.malformed())?;
+        Ok(u16::from_be_bytes(bytes))
+    }
+
     fn take_u64(&mut self) -> Result<u64, PublicationRetentionError> {
         let bytes: [u8; 8] = self.take(8)?.try_into().map_err(|_| self.malformed())?;
         Ok(u64::from_be_bytes(bytes))
@@ -104,19 +119,16 @@ impl<'a> Cursor<'a> {
         self.take(length)
     }
 
-    /// Reads one `push_optional_bytes` value and discards it: owner/routing
-    /// projections are body-free routing metadata, never replay artifacts.
-    fn skip_optional_bytes(&mut self) -> Result<(), PublicationRetentionError> {
+    fn take_optional_bytes(&mut self) -> Result<Option<&'a [u8]>, PublicationRetentionError> {
         match self.take_u8()? {
-            0 => Ok(()),
-            1 => {
-                let _ = self.take_length_prefixed()?;
-                Ok(())
-            }
+            0 => Ok(None),
+            1 => Ok(Some(self.take_length_prefixed()?)),
             _ => Err(self.malformed()),
         }
     }
 
+    /// Reads one `push_optional_bytes` value, preserving absent versus present
+    /// empty bytes. Owner/routing projections are not replay artifacts.
     fn finish(self) -> Result<(), PublicationRetentionError> {
         if self.offset == self.bytes.len() {
             Ok(())
@@ -142,264 +154,608 @@ fn take_list_count(cursor: &mut Cursor<'_>) -> Result<usize, PublicationRetentio
     Ok(count)
 }
 
-/// The exact `(tag, total operand length)` shape one observation variant
-/// encodes as, derived at runtime from `logical_generation`'s own encoder so
-/// this decoder never restates that module's private tag constants.
-fn observation_shape(observation: LogicalObservation) -> (u16, usize) {
-    let operand: Vec<u8> = logical_generation::observation_operand(Some(observation));
-    let tag: u16 = u16::from_be_bytes([
-        operand.first().copied().unwrap_or_default(),
-        operand.get(1).copied().unwrap_or_default(),
-    ]);
-    (tag, operand.len())
+/// Untrusted, fully decoded fields of an existing logical-generation v2
+/// commitment witness. This value is data only: callers must separately
+/// authenticate the witness against a certificate, context and artifact
+/// closure before assigning any authority to its operands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DecodedLogicalWitness {
+    pub(crate) event_digest: Digest32,
+    pub(crate) paid_execution_result_bytes: Vec<u8>,
+    pub(crate) paid_execution_result: PaidExecutionResult,
+    pub(crate) created_authorities: Vec<CreatedObjectAuthority>,
+    pub(crate) head_reads: Vec<DecodedObjectHeadRead>,
+    pub(crate) object_mutations: Vec<DecodedObjectMutation>,
+    pub(crate) state_reads: Vec<DecodedStateRead>,
+    pub(crate) state_mutations: Vec<DecodedStateMutation>,
+    pub(crate) nonce: DecodedNonceOperand,
+    pub(crate) generation: ExecutionGeneration,
+    pub(crate) dependencies: Vec<DecodedDependency>,
 }
 
-/// A placeholder digest used only to measure an operand's encoded shape. The
-/// operand encoder writes a `Digest32`'s raw bytes and never its algorithm, so
-/// any value produces the same length.
-fn shape_digest() -> Digest32 {
-    Digest32::new(HashAlgorithmId::Sha2_256, [0u8; 32])
+/// A semantic object-head input. V2 intentionally has no physical head revision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DecodedObjectHeadRead {
+    pub(crate) object_id: ObjectId,
+    pub(crate) observation: DecodedObjectHeadObservation,
 }
 
-/// The closed set of observation shapes a signed generic state read may carry.
-///
-/// A read operand whose tag is outside this set, or whose length disagrees
-/// with its tag's fixed shape, is a refusal: an unknown observation must never
-/// be skipped as "not an artifact".
-fn classify_observation(operand: &[u8]) -> Result<ObservedRead, PublicationRetentionError> {
-    if operand == [0u8] {
-        return Ok(ObservedRead::NeverWritten);
-    }
-    let (present_tag, present_len) = observation_shape(LogicalObservation::StatePresent {
-        content_digest: shape_digest(),
-    });
-    let (deleted_tag, deleted_len) = observation_shape(LogicalObservation::StateDeleted);
-    if operand.len() < 2 {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DecodedObjectHeadObservation {
+    Absent,
+    Tombstoned {
+        last_object_version: u64,
+    },
+    Current {
+        object_version: u64,
+        digest: [u8; 32],
+        owner_projection: DurableObjectOwnerProjection,
+        routing_projection: DurableObjectRoutingProjection,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DecodedObjectMutation {
+    pub(crate) object_id: ObjectId,
+    pub(crate) mutation: DecodedObjectMutationKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DecodedObjectMutationKind {
+    Delete,
+    Create {
+        version: DecodedObjectVersion,
+        owner_projection: DurableObjectOwnerProjection,
+        routing_projection: DurableObjectRoutingProjection,
+    },
+    Update {
+        version: DecodedObjectVersion,
+        owner_projection: DurableObjectOwnerProjection,
+        routing_projection: DurableObjectRoutingProjection,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DecodedObjectVersion {
+    pub(crate) object_id: ObjectId,
+    pub(crate) object_version: u64,
+    pub(crate) digest: [u8; 32],
+    pub(crate) schema_version: u32,
+    pub(crate) chain_id: protocol_types::ChainId,
+    pub(crate) protocol_version: ProtocolVersion,
+    pub(crate) payload: DecodedObjectPayload,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DecodedObjectPayload {
+    InlineCanonicalObject(Vec<u8>),
+    BlobReference([u8; 32]),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DecodedStateRead {
+    pub(crate) key: Vec<u8>,
+    pub(crate) observation: DecodedStateObservation,
+    pub(crate) generation: Option<ExecutionGeneration>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DecodedStateObservation {
+    NeverWritten,
+    Present { content_digest: [u8; 32] },
+    Deleted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DecodedStateMutation {
+    pub(crate) key: Vec<u8>,
+    pub(crate) mutation: StateMutation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DecodedNonceOperand {
+    pub(crate) key: Vec<u8>,
+    pub(crate) sender: [u8; 32],
+    pub(crate) epoch: Epoch,
+    pub(crate) next_nonce: u64,
+    pub(crate) canonical_value: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DecodedDependency {
+    pub(crate) subject: LogicalSubject,
+    pub(crate) generation: ExecutionGeneration,
+}
+
+/// Strictly decodes every operand of the existing `0x6424/v2` frame. It adds
+/// no trust by itself: authentication of the certificate-bound witness and
+/// independent execution belong to the consuming verification path.
+pub(crate) fn decode_logical_witness(
+    witness: &[u8],
+) -> Result<DecodedLogicalWitness, PublicationRetentionError> {
+    if witness.len() > MAX_STATE_VALUE_BYTES {
         return Err(PublicationRetentionError::MalformedWitnessOperand(
-            "state read observation",
+            "witness bound",
         ));
     }
-    let tag: u16 = u16::from_be_bytes([operand[0], operand[1]]);
-    if tag == present_tag {
-        if operand.len() != present_len {
-            return Err(PublicationRetentionError::MalformedWitnessOperand(
-                "state read observation",
-            ));
-        }
-        let digest: [u8; 32] = operand[2..present_len].try_into().map_err(|_| {
-            PublicationRetentionError::MalformedWitnessOperand("state read observation")
-        })?;
-        return Ok(ObservedRead::Present { digest });
+    let operands =
+        commitment::logical_witness_operands(witness).map_err(PublicationRetentionError::Node)?;
+    let frame = canonical_encoding::decode_canonical_frame(witness)
+        .map_err(|_| PublicationRetentionError::MalformedWitnessOperand("witness frame"))?;
+    let decoded = commitment::decode_witness(witness).map_err(PublicationRetentionError::Node)?;
+    let paid_execution_result_bytes = frame
+        .required_field(2)
+        .map_err(|_| PublicationRetentionError::MalformedWitnessOperand("paid result"))?
+        .to_vec();
+    if encode_paid_execution_result(&decoded.paid_execution_result)
+        .map_err(|_| PublicationRetentionError::MalformedWitnessOperand("paid result"))?
+        != paid_execution_result_bytes
+    {
+        return Err(PublicationRetentionError::MalformedWitnessOperand(
+            "paid result canonical bytes",
+        ));
     }
-    if tag == deleted_tag {
-        if operand.len() != deleted_len {
-            return Err(PublicationRetentionError::MalformedWitnessOperand(
-                "state read observation",
-            ));
-        }
-        return Ok(ObservedRead::Deleted);
+    let created_authorities =
+        decode_created_authorities(frame.required_field(3).map_err(|_| {
+            PublicationRetentionError::MalformedWitnessOperand("created authorities")
+        })?)?;
+    let head_reads = decode_head_reads(operands.head_reads)?;
+    let object_mutations = decode_object_mutations(operands.object_mutations)?;
+    let state_reads = decode_state_reads(operands.state_reads)?;
+    let state_mutations = decode_state_mutations(
+        frame
+            .required_field(7)
+            .map_err(|_| PublicationRetentionError::MalformedWitnessOperand("state mutations"))?,
+    )?;
+    let nonce_key = frame
+        .required_field(8)
+        .map_err(|_| PublicationRetentionError::MalformedWitnessOperand("nonce key"))?;
+    if nonce_key.is_empty() || nonce_key.len() > MAX_STATE_KEY_BYTES {
+        return Err(PublicationRetentionError::MalformedWitnessOperand(
+            "nonce key",
+        ));
     }
-    // An object or nonce observation cannot legally be paired with a generic
-    // state-key subject (`logical_generation::require_pairing`), and an
-    // unrecognized tag is unknown future material. Both fail closed.
-    Err(PublicationRetentionError::UnsupportedReadObservation(tag))
+    let canonical_nonce = frame
+        .required_field(10)
+        .map_err(|_| PublicationRetentionError::MalformedWitnessOperand("nonce value"))?;
+    let nonce_record = crate::SenderNonceRecord::decode(canonical_nonce)
+        .map_err(PublicationRetentionError::Node)?;
+    let nonce = DecodedNonceOperand {
+        key: nonce_key.to_vec(),
+        sender: nonce_record.sender,
+        epoch: nonce_record.epoch,
+        next_nonce: nonce_record.next_nonce,
+        canonical_value: canonical_nonce.to_vec(),
+    };
+    let generation = ExecutionGeneration::new(
+        frame
+            .required_u64(11)
+            .map_err(|_| PublicationRetentionError::MalformedWitnessOperand("generation"))?,
+    );
+    let dependencies = decode_dependencies(operands.dependencies)?;
+    Ok(DecodedLogicalWitness {
+        event_digest: operands.event_digest,
+        paid_execution_result_bytes,
+        paid_execution_result: decoded.paid_execution_result,
+        created_authorities,
+        head_reads,
+        object_mutations,
+        state_reads,
+        state_mutations,
+        nonce,
+        generation,
+        dependencies,
+    })
 }
 
-/// What one signed generic state read observed.
-enum ObservedRead {
-    /// Present value bound by its content digest: a required artifact.
-    Present {
-        /// Raw content digest bytes of the exact canonical stored value.
-        digest: [u8; 32],
-    },
-    /// Tombstone: authenticated, and explicitly not absence. No artifact.
-    Deleted,
-    /// Never-written subject. No artifact.
-    NeverWritten,
-}
-
-/// Derives the complete required replay-artifact closure from one verified
-/// `0x6424/v2` witness, together with the signed intent digest that envelope
-/// carries.
-///
-/// Refuses a historical `0x6424/v1` witness, any malformed or trailing operand
-/// byte, an over-bound list, an unknown observation or payload tag, and two
-/// required entries that name the same `(kind, identity)` with different
-/// content digests.
+/// Derives the publication closure from the shared typed decoder, so source
+/// artifact discovery cannot drift into a second operand parser.
 pub(crate) fn required_artifacts(
     witness: &[u8],
 ) -> Result<(Digest32, RequiredArtifacts), PublicationRetentionError> {
-    let operands =
-        commitment::logical_witness_operands(witness).map_err(PublicationRetentionError::Node)?;
-    let mut required: RequiredArtifacts = RequiredArtifacts::default();
-
-    decode_state_reads(operands.state_reads, &mut required)?;
-    decode_head_reads(operands.head_reads, &mut required)?;
-    decode_object_mutations(operands.object_mutations, &mut required)?;
-    validate_dependencies(operands.dependencies)?;
-
-    Ok((operands.event_digest, required))
-}
-
-fn decode_state_reads(
-    bytes: &[u8],
-    required: &mut RequiredArtifacts,
-) -> Result<(), PublicationRetentionError> {
-    let mut cursor: Cursor<'_> = Cursor::new(bytes, "state reads");
-    let count: usize = take_list_count(&mut cursor)?;
-    for _ in 0..count {
-        let item: &[u8] = cursor.take_length_prefixed()?;
-        let mut entry: Cursor<'_> = Cursor::new(item, "state read");
-        let key: &[u8] = entry.take_length_prefixed()?;
-        let operand: &[u8] = entry.take_length_prefixed()?;
-        match entry.take_u8()? {
-            0 => {}
-            1 => {
-                let _ = entry.take_u64()?;
-            }
-            _ => {
-                return Err(PublicationRetentionError::MalformedWitnessOperand(
-                    "state read generation",
-                ));
-            }
-        }
-        entry.finish()?;
-        if let ObservedRead::Present { digest } = classify_observation(operand)? {
-            required.insert(ArtifactKind::StateValue, key.to_vec(), digest)?;
+    let decoded = decode_logical_witness(witness)?;
+    let mut required = RequiredArtifacts::default();
+    for read in &decoded.state_reads {
+        if let DecodedStateObservation::Present { content_digest } = &read.observation {
+            required.insert(ArtifactKind::StateValue, read.key.clone(), *content_digest)?;
         }
     }
-    cursor.finish()
+    for read in &decoded.head_reads {
+        if let DecodedObjectHeadObservation::Current {
+            object_version,
+            digest,
+            ..
+        } = &read.observation
+        {
+            required.insert(
+                ArtifactKind::ObjectBody,
+                object_body_identity(*read.object_id.as_bytes(), *object_version),
+                *digest,
+            )?;
+        }
+    }
+    for mutation in &decoded.object_mutations {
+        let version = match &mutation.mutation {
+            DecodedObjectMutationKind::Delete => None,
+            DecodedObjectMutationKind::Create { version, .. }
+            | DecodedObjectMutationKind::Update { version, .. } => Some(version),
+        };
+        if let Some(DecodedObjectVersion {
+            object_version,
+            digest,
+            payload: DecodedObjectPayload::BlobReference(_),
+            ..
+        }) = version
+        {
+            required.insert(
+                ArtifactKind::ObjectBody,
+                object_body_identity(*mutation.object_id.as_bytes(), *object_version),
+                *digest,
+            )?;
+        }
+    }
+    Ok((decoded.event_digest, required))
+}
+
+fn validate_key(key: &[u8], what: &'static str) -> Result<(), PublicationRetentionError> {
+    if key.is_empty() || key.len() > MAX_STATE_KEY_BYTES {
+        Err(PublicationRetentionError::MalformedWitnessOperand(what))
+    } else {
+        Ok(())
+    }
+}
+
+fn decode_created_authorities(
+    bytes: &[u8],
+) -> Result<Vec<CreatedObjectAuthority>, PublicationRetentionError> {
+    let mut cursor = Cursor::new(bytes, "created authorities");
+    let count = take_list_count(&mut cursor)?;
+    let mut result = Vec::with_capacity(count);
+    let mut previous: Option<u32> = None;
+    for _ in 0..count {
+        let item = cursor.take_length_prefixed()?;
+        let mut entry = Cursor::new(item, "created authority");
+        let creation_ordinal = entry.take_u32()?;
+        if previous.is_some_and(|value| creation_ordinal <= value) {
+            return Err(entry.malformed());
+        }
+        previous = Some(creation_ordinal);
+        let authority = decode_object_authority(entry.take_length_prefixed()?)
+            .map_err(|_| PublicationRetentionError::MalformedWitnessOperand("created authority"))?;
+        entry.finish()?;
+        result.push(CreatedObjectAuthority {
+            creation_ordinal,
+            authority,
+        });
+    }
+    cursor.finish()?;
+    Ok(result)
 }
 
 fn decode_head_reads(
     bytes: &[u8],
-    required: &mut RequiredArtifacts,
-) -> Result<(), PublicationRetentionError> {
-    let mut cursor: Cursor<'_> = Cursor::new(bytes, "object head reads");
-    let count: usize = take_list_count(&mut cursor)?;
+) -> Result<Vec<DecodedObjectHeadRead>, PublicationRetentionError> {
+    let mut cursor = Cursor::new(bytes, "object head reads");
+    let count = take_list_count(&mut cursor)?;
+    let mut result = Vec::with_capacity(count);
     for _ in 0..count {
-        let item: &[u8] = cursor.take_length_prefixed()?;
-        let mut entry: Cursor<'_> = Cursor::new(item, "object head read");
-        let object_id: [u8; 32] = entry.take_digest_bytes()?;
-        match entry.take_u8()? {
-            // Absent: no artifact, and never confusable with a tombstone.
-            0 => {}
-            // Tombstoned: the last logical version is signed; there is no body
-            // to replay.
-            1 => {
-                let _ = entry.take_u64()?;
-            }
-            // Current: the exact input object body is a required artifact.
+        let mut entry = Cursor::new(cursor.take_length_prefixed()?, "object head read");
+        let object_id = ObjectId::new(entry.take_digest_bytes()?);
+        let observation = match entry.take_u8()? {
+            0 => DecodedObjectHeadObservation::Absent,
+            1 => DecodedObjectHeadObservation::Tombstoned {
+                last_object_version: require_nonzero(entry.take_u64()?, "head object version")?,
+            },
             2 => {
-                let object_version: u64 = entry.take_u64()?;
-                let digest: [u8; 32] = entry.take_digest_bytes()?;
-                entry.skip_optional_bytes()?;
-                entry.skip_optional_bytes()?;
-                required.insert(
-                    ArtifactKind::ObjectBody,
-                    object_body_identity(object_id, object_version),
+                let object_version = require_nonzero(entry.take_u64()?, "head object version")?;
+                let digest = entry.take_digest_bytes()?;
+                let owner_bytes = entry.take_optional_bytes()?.map(ToOwned::to_owned);
+                let routing_bytes = entry.take_optional_bytes()?.map(ToOwned::to_owned);
+                if owner_bytes
+                    .as_ref()
+                    .is_some_and(|value| value.len() > MAX_DURABLE_OBJECT_PROJECTION_BYTES)
+                    || routing_bytes
+                        .as_ref()
+                        .is_some_and(|value| value.len() > MAX_DURABLE_OBJECT_PROJECTION_BYTES)
+                {
+                    return Err(entry.malformed());
+                }
+                let owner_projection =
+                    DurableObjectOwnerProjection::from_canonical_bytes(owner_bytes)
+                        .map_err(|_| entry.malformed())?;
+                let routing_projection = DurableObjectRoutingProjection::new(routing_bytes)
+                    .map_err(|_| entry.malformed())?;
+                DecodedObjectHeadObservation::Current {
+                    object_version,
                     digest,
-                )?;
+                    owner_projection,
+                    routing_projection,
+                }
             }
             _ => {
                 return Err(PublicationRetentionError::MalformedWitnessOperand(
                     "object head read",
                 ));
             }
-        }
+        };
         entry.finish()?;
+        result.push(DecodedObjectHeadRead {
+            object_id,
+            observation,
+        });
     }
-    cursor.finish()
+    cursor.finish()?;
+    Ok(result)
 }
 
 fn decode_object_mutations(
     bytes: &[u8],
-    required: &mut RequiredArtifacts,
-) -> Result<(), PublicationRetentionError> {
-    let mut cursor: Cursor<'_> = Cursor::new(bytes, "object mutations");
-    let count: usize = take_list_count(&mut cursor)?;
+) -> Result<Vec<DecodedObjectMutation>, PublicationRetentionError> {
+    let mut cursor = Cursor::new(bytes, "object mutations");
+    let count = take_list_count(&mut cursor)?;
+    let mut result = Vec::with_capacity(count);
     for _ in 0..count {
-        let item: &[u8] = cursor.take_length_prefixed()?;
-        let mut entry: Cursor<'_> = Cursor::new(item, "object mutation");
-        let _object_id: [u8; 32] = entry.take_digest_bytes()?;
-        match entry.take_u8()? {
-            // Delete: no body.
-            0 => {}
-            // Create or Update: a blob-backed staged version's bytes are not
-            // in the witness and must be supplied; an inline one already is.
-            1 | 2 => {
-                let version: &[u8] = entry.take_length_prefixed()?;
-                entry.skip_optional_bytes()?;
-                entry.skip_optional_bytes()?;
-                decode_version_record(version, required)?;
+        let mut entry = Cursor::new(cursor.take_length_prefixed()?, "object mutation");
+        let object_id = ObjectId::new(entry.take_digest_bytes()?);
+        let mutation = match entry.take_u8()? {
+            0 => DecodedObjectMutationKind::Delete,
+            tag @ (1 | 2) => {
+                let version = decode_version_record(entry.take_length_prefixed()?)?;
+                if version.object_id != object_id {
+                    return Err(entry.malformed());
+                }
+                let owner_bytes = entry.take_optional_bytes()?.map(ToOwned::to_owned);
+                let routing_bytes = entry.take_optional_bytes()?.map(ToOwned::to_owned);
+                let owner_projection =
+                    DurableObjectOwnerProjection::from_canonical_bytes(owner_bytes)
+                        .map_err(|_| entry.malformed())?;
+                let routing_projection = DurableObjectRoutingProjection::new(routing_bytes)
+                    .map_err(|_| entry.malformed())?;
+                if tag == 1 {
+                    DecodedObjectMutationKind::Create {
+                        version,
+                        owner_projection,
+                        routing_projection,
+                    }
+                } else {
+                    DecodedObjectMutationKind::Update {
+                        version,
+                        owner_projection,
+                        routing_projection,
+                    }
+                }
             }
             _ => {
                 return Err(PublicationRetentionError::MalformedWitnessOperand(
                     "object mutation",
                 ));
             }
-        }
+        };
         entry.finish()?;
+        result.push(DecodedObjectMutation {
+            object_id,
+            mutation,
+        });
     }
-    cursor.finish()
+    cursor.finish()?;
+    Ok(result)
 }
 
-fn decode_version_record(
-    bytes: &[u8],
-    required: &mut RequiredArtifacts,
-) -> Result<(), PublicationRetentionError> {
-    let mut cursor: Cursor<'_> = Cursor::new(bytes, "object version record");
-    let object_id: [u8; 32] = cursor.take_digest_bytes()?;
-    let object_version: u64 = cursor.take_u64()?;
-    let digest: [u8; 32] = cursor.take_digest_bytes()?;
-    // schema version, chain id, protocol version: signed provenance this
-    // decoder does not need, but must consume exactly.
-    let _schema_version: u32 = cursor.take_u32()?;
-    let _chain_id: &[u8] = cursor.take_length_prefixed()?;
-    let _protocol_version: u32 = cursor.take_u32()?;
-    match cursor.take_u8()? {
+fn decode_version_record(bytes: &[u8]) -> Result<DecodedObjectVersion, PublicationRetentionError> {
+    let mut cursor = Cursor::new(bytes, "object version record");
+    let object_id = ObjectId::new(cursor.take_digest_bytes()?);
+    let object_version = require_nonzero(cursor.take_u64()?, "object version")?;
+    let digest = cursor.take_digest_bytes()?;
+    let schema_version = cursor.take_u32()?;
+    let chain_id_bytes = cursor.take_length_prefixed()?;
+    let chain_id_frame = canonical_encoding::decode_canonical_frame(chain_id_bytes)
+        .map_err(|_| cursor.malformed())?;
+    chain_id_frame
+        .require_type(0x0105)
+        .map_err(|_| cursor.malformed())?;
+    chain_id_frame
+        .require_version(1)
+        .map_err(|_| cursor.malformed())?;
+    chain_id_frame
+        .require_only_fields(&[1])
+        .map_err(|_| cursor.malformed())?;
+    let chain_id_value = chain_id_frame
+        .required_str(1)
+        .map_err(|_| cursor.malformed())?;
+    let chain_id = protocol_types::ChainId::new(chain_id_value).map_err(|_| cursor.malformed())?;
+    if canonical_encoding::encode_chain_id(&chain_id).map_err(|_| cursor.malformed())?
+        != chain_id_bytes
+    {
+        return Err(cursor.malformed());
+    }
+    let protocol_version = ProtocolVersion::new(cursor.take_u32()?);
+    let payload = match cursor.take_u8()? {
         0 => {
-            let _inline: &[u8] = cursor.take_length_prefixed()?;
+            let bytes = cursor.take_length_prefixed()?.to_vec();
+            if bytes.len() > MAX_DURABLE_INLINE_OBJECT_BYTES {
+                return Err(cursor.malformed());
+            }
+            let object = objects::decode_object(&bytes).map_err(|_| cursor.malformed())?;
+            if objects::encode_object(&object).map_err(|_| cursor.malformed())? != bytes
+                || object.id != object_id
+                || object.version != object_version
+                || object.schema_version != schema_version
+            {
+                return Err(cursor.malformed());
+            }
+            DecodedObjectPayload::InlineCanonicalObject(bytes)
         }
         1 => {
-            let blob_digest: [u8; 32] = cursor.take_digest_bytes()?;
+            let blob_digest = cursor.take_digest_bytes()?;
             if blob_digest != digest {
                 return Err(PublicationRetentionError::MalformedWitnessOperand(
                     "blob-backed object version digest",
                 ));
             }
-            required.insert(
-                ArtifactKind::ObjectBody,
-                object_body_identity(object_id, object_version),
-                digest,
-            )?;
+            DecodedObjectPayload::BlobReference(blob_digest)
         }
         _ => {
             return Err(PublicationRetentionError::MalformedWitnessOperand(
                 "object version payload",
             ));
         }
-    }
-    cursor.finish()
+    };
+    cursor.finish()?;
+    Ok(DecodedObjectVersion {
+        object_id,
+        object_version,
+        digest,
+        schema_version,
+        chain_id,
+        protocol_version,
+        payload,
+    })
 }
 
-/// Structurally validates the signed dependency list: bounded count and one
-/// exactly consumed `(subject operand, generation)` pair per item.
-///
-/// Dependencies carry authenticated causal generations, not content, so they
-/// contribute no artifacts. They are still decoded rather than skipped: a
-/// malformed or over-bound list must refuse the ACK, not pass unexamined.
-fn validate_dependencies(bytes: &[u8]) -> Result<(), PublicationRetentionError> {
-    let mut cursor: Cursor<'_> = Cursor::new(bytes, "dependencies");
-    let count: usize = take_list_count(&mut cursor)?;
+fn decode_state_reads(bytes: &[u8]) -> Result<Vec<DecodedStateRead>, PublicationRetentionError> {
+    let mut cursor = Cursor::new(bytes, "state reads");
+    let count = take_list_count(&mut cursor)?;
+    let mut result = Vec::with_capacity(count);
+    let mut previous: Option<Vec<u8>> = None;
     for _ in 0..count {
-        let item: &[u8] = cursor.take_length_prefixed()?;
-        let mut entry: Cursor<'_> = Cursor::new(item, "dependency");
-        let _subject: &[u8] = entry.take_length_prefixed()?;
-        let _generation: u64 = entry.take_u64()?;
+        let mut entry = Cursor::new(cursor.take_length_prefixed()?, "state read");
+        let key = entry.take_length_prefixed()?.to_vec();
+        validate_key(&key, "state read key")?;
+        if previous.as_ref().is_some_and(|value| value >= &key) {
+            return Err(entry.malformed());
+        }
+        previous = Some(key.clone());
+        let observation_bytes = entry.take_length_prefixed()?;
+        let observation = decode_state_observation(observation_bytes)?;
+        let generation = match entry.take_u8()? {
+            0 => None,
+            1 => Some(ExecutionGeneration::new(entry.take_u64()?)),
+            _ => {
+                return Err(PublicationRetentionError::MalformedWitnessOperand(
+                    "state read generation",
+                ));
+            }
+        };
+        if matches!(observation, DecodedStateObservation::NeverWritten) != generation.is_none() {
+            return Err(PublicationRetentionError::MalformedWitnessOperand(
+                "state read generation/observation pairing",
+            ));
+        }
         entry.finish()?;
+        result.push(DecodedStateRead {
+            key,
+            observation,
+            generation,
+        });
     }
-    cursor.finish()
+    cursor.finish()?;
+    Ok(result)
+}
+
+fn decode_state_observation(
+    bytes: &[u8],
+) -> Result<DecodedStateObservation, PublicationRetentionError> {
+    if bytes == [0] {
+        return Ok(DecodedStateObservation::NeverWritten);
+    }
+    let mut cursor = Cursor::new(bytes, "state read observation");
+    let tag = cursor.take_u16()?;
+    let observation = match tag {
+        1 => DecodedStateObservation::Present {
+            content_digest: cursor.take_digest_bytes()?,
+        },
+        2 => DecodedStateObservation::Deleted,
+        other => return Err(PublicationRetentionError::UnsupportedReadObservation(other)),
+    };
+    cursor.finish()?;
+    Ok(observation)
+}
+
+fn decode_state_mutations(
+    bytes: &[u8],
+) -> Result<Vec<DecodedStateMutation>, PublicationRetentionError> {
+    let mut cursor = Cursor::new(bytes, "state mutations");
+    let count = take_list_count(&mut cursor)?;
+    let mut result = Vec::with_capacity(count);
+    for _ in 0..count {
+        let mut entry = Cursor::new(cursor.take_length_prefixed()?, "state mutation");
+        let key = entry.take_length_prefixed()?.to_vec();
+        validate_key(&key, "state mutation key")?;
+        let mutation = match entry.take_u8()? {
+            0 => StateMutation::Assert,
+            1 => {
+                let value = entry.take_length_prefixed()?.to_vec();
+                if value.len() > MAX_STATE_VALUE_BYTES {
+                    return Err(entry.malformed());
+                }
+                StateMutation::Put(value)
+            }
+            2 => StateMutation::Delete,
+            _ => {
+                return Err(PublicationRetentionError::MalformedWitnessOperand(
+                    "state mutation",
+                ));
+            }
+        };
+        entry.finish()?;
+        result.push(DecodedStateMutation { key, mutation });
+    }
+    cursor.finish()?;
+    Ok(result)
+}
+
+fn decode_dependencies(bytes: &[u8]) -> Result<Vec<DecodedDependency>, PublicationRetentionError> {
+    let mut cursor = Cursor::new(bytes, "dependencies");
+    let count = take_list_count(&mut cursor)?;
+    let mut result = Vec::with_capacity(count);
+    let mut previous: Option<LogicalSubject> = None;
+    for _ in 0..count {
+        let mut entry = Cursor::new(cursor.take_length_prefixed()?, "dependency");
+        let subject = decode_subject(entry.take_length_prefixed()?)?;
+        if previous
+            .as_ref()
+            .is_some_and(|value| value.cmp(&subject) != Ordering::Less)
+        {
+            return Err(entry.malformed());
+        }
+        previous = Some(subject.clone());
+        let generation = ExecutionGeneration::new(entry.take_u64()?);
+        entry.finish()?;
+        result.push(DecodedDependency {
+            subject,
+            generation,
+        });
+    }
+    cursor.finish()?;
+    Ok(result)
+}
+
+fn decode_subject(bytes: &[u8]) -> Result<LogicalSubject, PublicationRetentionError> {
+    let mut cursor = Cursor::new(bytes, "dependency subject");
+    let subject = match cursor.take_u8()? {
+        1 => {
+            let key = cursor.take_length_prefixed()?.to_vec();
+            validate_key(&key, "dependency state key")?;
+            LogicalSubject::StateKey(key)
+        }
+        2 => LogicalSubject::Object(ObjectId::new(cursor.take_digest_bytes()?)),
+        3 => {
+            let sender = cursor.take_digest_bytes()?;
+            let epoch = Epoch::new(cursor.take_u64()?);
+            LogicalSubject::SenderNonce { sender, epoch }
+        }
+        _ => return Err(cursor.malformed()),
+    };
+    cursor.finish()?;
+    Ok(subject)
+}
+
+fn require_nonzero(value: u64, what: &'static str) -> Result<u64, PublicationRetentionError> {
+    if value == 0 {
+        Err(PublicationRetentionError::MalformedWitnessOperand(what))
+    } else {
+        Ok(value)
+    }
 }
 
 /// The stable manifest identity of one immutable object body: its 32-byte
@@ -409,3 +765,6 @@ pub(crate) fn object_body_identity(object_id: [u8; 32], object_version: u64) -> 
     identity.extend_from_slice(&object_version.to_be_bytes());
     identity
 }
+
+#[cfg(test)]
+mod tests;

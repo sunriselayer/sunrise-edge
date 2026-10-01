@@ -25,7 +25,8 @@ fn durable_idempotent_handler_builds_typed_sections_and_replays_receipt() {
     let invocation = &commits[0];
     let state = invocation.state().unwrap();
     assert_eq!(state.domain(), domain(0xC1));
-    assert_eq!(state.reads().len(), 1);
+    // The application key plus committed epoch and exact profile/root slots.
+    assert_eq!(state.reads().len(), 5);
     assert_eq!(state.mutations().len(), 1);
     assert!(invocation.objects().is_empty());
     let receipt = invocation.receipt().clone();
@@ -59,11 +60,11 @@ fn durable_idempotent_handler_builds_typed_sections_and_replays_receipt() {
     assert_eq!(replay.output().responses(), first.output().responses());
     assert!(replay.output().outbound_messages().is_empty());
     assert_eq!(machine.calls.load(Ordering::SeqCst), 1);
-    // The plan's one application key plus the DR-0154 commitment-profile row,
-    // read exactly once per transition. It is absent here, so this historical
-    // store adds no read assertion and no provenance write: the committed read
-    // set above is still exactly the plan's own single key.
-    assert_eq!(store.state_reads.load(Ordering::SeqCst), 2);
+    // One application read, its DR-0154 binding observation, and five direct
+    // admission reads (epoch, profile CAS observation and reconciliation,
+    // manifest, marker). Exact replay reads no configuration or application
+    // state and creates no provenance or business mutation.
+    assert_eq!(store.state_reads.load(Ordering::SeqCst), 7);
     assert_eq!(store.commits.lock().unwrap().len(), 1);
 
     assert_eq!(
@@ -265,7 +266,7 @@ fn durable_idempotent_handler_asserts_read_only_state_and_hides_ambiguity() {
     );
     let commits = store.commits.lock().unwrap();
     let state = commits[0].state().unwrap();
-    assert_eq!(state.reads().len(), 1);
+    assert_eq!(state.reads().len(), 5);
     assert!(state.mutations().is_empty());
     assert!(commits[0].outbox().is_none());
 }

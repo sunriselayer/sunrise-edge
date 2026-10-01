@@ -35,6 +35,7 @@ use runtime::{
 use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore, SqliteNamespace};
 use std::cell::Cell;
 
+mod causal;
 mod recovery;
 
 /// A real (non-mocked) Ed25519 `ConsensusSigner`, mirroring

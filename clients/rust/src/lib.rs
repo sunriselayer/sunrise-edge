@@ -52,6 +52,7 @@
 //! verifies whatever signature comes back before producing output, preserving
 //! the local signing path and this crate's vendor independence.
 
+pub mod causal_admission;
 pub mod client;
 pub mod context;
 pub mod error;
@@ -63,6 +64,7 @@ pub mod fastvote_publication_client;
 pub mod key;
 pub mod local_execution_client;
 pub mod ordered_economics_client;
+pub mod ordered_history_archive;
 pub mod ordered_history_client;
 pub mod paid_execution_client;
 pub mod publication_client;
@@ -123,10 +125,14 @@ pub use consensus::{
     decode_frozen_frontier_page, decode_frozen_frontier_vote, encode_frozen_frontier_page,
     encode_frozen_frontier_vote,
 };
+pub use node_core::admission_profile::{
+    ExternalRequestLane, VerifiedAdmissionProfile, require_external_request_lane,
+};
 pub use node_core::fast_path::FastPathEd25519Verifier;
 pub use node_core::fast_path::records::{
     FastPathValidatorSetRecord, decode_fastpath_validator_set_record,
 };
+pub use node_core::local_instance_state::is_reserved_paid_request_id;
 pub use node_core::logical_generation::CommitmentProfile;
 pub use node_wire::MAX_FASTVOTE_AVAILABILITY_CERTIFICATE_BYTES;
 pub use node_wire::{

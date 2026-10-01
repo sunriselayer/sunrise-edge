@@ -138,13 +138,32 @@ fn profile_record_round_trips_and_rejects_an_unknown_model_tag() {
         harness.profile
     );
     assert!(CommitmentProfile::from_wire(0).is_err());
-    assert!(CommitmentProfile::from_wire(3).is_err());
+    assert!(CommitmentProfile::from_wire(4).is_err());
+    assert_eq!(
+        CommitmentProfile::from_wire(3).unwrap(),
+        CommitmentProfile::CausalAdmission
+    );
     assert_eq!(
         CommitmentProfile::from_wire(1).unwrap(),
         CommitmentProfile::PhysicalCheckpointV1
     );
     assert!(!CommitmentProfile::PhysicalCheckpointV1.is_logical());
     assert!(CommitmentProfile::LogicalGenerationV2.is_logical());
+    assert!(CommitmentProfile::CausalAdmission.is_logical());
+}
+
+#[test]
+fn causal_profile_uses_existing_v2_record_shape_but_never_zero_minimum() {
+    let harness: Harness = Harness::new(0);
+    let mut profile: LogicalProfileRecord = harness.profile;
+    profile.profile = CommitmentProfile::CausalAdmission;
+    assert!(encode_logical_profile_record(&profile).is_err());
+    profile.minimum_freeze_block_height = 3;
+    let bytes: Vec<u8> = encode_logical_profile_record(&profile).unwrap();
+    let frame: CanonicalFrame<'_> = decode_canonical_frame(&bytes).unwrap();
+    assert_eq!(frame.version(), LOGICAL_PROFILE_FREEZE_RECORD_VERSION);
+    frame.require_only_fields(&[1, 2, 3, 4, 5, 6]).unwrap();
+    assert_eq!(decode_logical_profile_record(&bytes).unwrap(), profile);
 }
 
 #[test]

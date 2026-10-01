@@ -220,6 +220,9 @@ fn verify_bundle(
 /// result proves bundle validity, not committed Freeze/DrainSet membership,
 /// durable possession or permission to apply a member. Store-fenced callers
 /// must continue to establish those authorities separately.
+/// This legacy pure helper does not establish a fresh causal-profile lane
+/// guarantee. Use [`verify_drain_publication_bundle_with_profile`] when the
+/// locally pinned signed genesis selects causal admission.
 pub fn verify_drain_publication_bundle(
     resolver: &HashSuiteResolver,
     history: &[HashSuiteResolver],
@@ -273,6 +276,36 @@ pub fn verify_drain_publication_bundle(
     }
     required.require_closed(&bundle.manifest)?;
     Ok(verified.identity)
+}
+
+/// Bounded complete original-material verification plus Owned-lane validation
+/// under a private locally verified genesis profile. This remains verification,
+/// not Freeze/DrainSet membership, possession or business-application authority.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_drain_publication_bundle_with_profile(
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    profile: &crate::admission_profile::VerifiedAdmissionProfile,
+    domain: AtomicityDomainId,
+    certifier: &consensus::FastPathCertifier,
+    bundle: &PublicationBundle,
+) -> DrainResult<AvailabilityIdentity> {
+    if expected.chain_id() != profile.context().chain_id()
+        || expected.protocol_version() != profile.context().protocol_version()
+    {
+        return Err(PublicationRetentionError::ContextMismatch);
+    }
+    // Authenticate the supplied original before treating its request identity
+    // as a lane operand. A decoded certificate never constructs a capability.
+    let (authenticated, _, _) =
+        authenticate_and_identify(resolver, expected, &bundle.signed_intent)?;
+    crate::admission_profile::require_external_request_lane(
+        profile,
+        crate::admission_profile::ExternalRequestLane::Owned,
+        &authenticated.intent().request_id,
+    )?;
+    verify_drain_publication_bundle(resolver, history, expected, domain, certifier, bundle)
 }
 
 /// Reconstructs a fully verifying bundle from this replica's original
@@ -362,6 +395,15 @@ where
             &mut reads,
         )?
     };
+    crate::admission_profile::fence_installed_external_request_lane(
+        store,
+        context,
+        domain,
+        expected,
+        &request_id,
+        crate::admission_profile::ExternalRequestLane::Owned,
+        &mut reads,
+    )?;
     let manifest: ArtifactManifest = decode_artifact_manifest(&record.manifest)?;
     if manifest.entries.len() > MAX_RETAINED_ARTIFACTS {
         return Err(PublicationRetentionError::ClosureTooLarge {
@@ -516,6 +558,15 @@ pub fn retain_drain_publication<S: StructuredDurableDomainStateStore>(
             "drain bundle differs from frontier entry",
         ));
     }
+    crate::admission_profile::fence_installed_external_request_lane(
+        store,
+        context,
+        domain,
+        expected,
+        &bundle.request_id,
+        crate::admission_profile::ExternalRequestLane::Owned,
+        &mut reads,
+    )?;
     let identity_bytes: Vec<u8> = encode_availability_identity(&identity)?;
     let publication_key: Vec<u8> = drain_publication_key(&chain, epoch, &bundle.request_id)?;
     let possession_key: Vec<u8> = drain_possession_key(&chain, epoch, &bundle.request_id)?;
@@ -711,6 +762,20 @@ fn verify_drain_proof_into<S: StructuredDurableDomainStateStore>(
             "drain publication context or request id",
         ));
     }
+    let (authenticated, _, _) =
+        authenticate_and_identify(resolver, expected, &record.signed_intent)?;
+    if authenticated.intent().request_id != request_id {
+        return Err(PublicationRetentionError::RequestIdMismatch);
+    }
+    crate::admission_profile::fence_installed_external_request_lane(
+        store,
+        context,
+        domain,
+        expected,
+        &request_id,
+        crate::admission_profile::ExternalRequestLane::Owned,
+        reads,
+    )?;
     let manifest: ArtifactManifest = decode_artifact_manifest(&record.manifest)?;
     if manifest.entries.len() > MAX_RETAINED_ARTIFACTS {
         return Err(PublicationRetentionError::ClosureTooLarge {

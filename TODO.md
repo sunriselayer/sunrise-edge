@@ -116,7 +116,7 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 | --- | --- | --- |
 | 1 | Generic certified network contract lifecycle | Merged as PR #228 on 2026-09-27 after the full repository gate, fresh exact-head Opus APPROVE and required CI: Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Independent ingress/security gates remain separate. |
 | 2 | Network economics and validator operations | Merged as PR #232 on 2026-09-27 with normal merge commit `86711be`, after fresh exact-head Opus APPROVE and the passing complete repository CI. Fixed-epoch four-namespace CLI evidence is implemented. Membership-dependent Deposit/Withdraw positives join delivery 3; economics/ingress security audits remain separate. |
-| 3 | Validator membership and epoch handoff | In progress under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Bounded portable storage, logical-generation admission, publication/availability-before-apply and ordered Freeze/immutable frontier export merged as PR #237/#238/#239/#242. Quorum-retained DrainSet/member drain and authenticated ordering-history export have implementation and targeted real PostgreSQL/compiled-CLI acceptance below. Business reconstruction/cut/import is next; readiness/Seal/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation remain incomplete. |
+| 3 | Validator membership and epoch handoff | In progress under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Bounded portable storage, logical-generation admission, publication/availability-before-apply and ordered Freeze/immutable frontier export merged as PR #237/#238/#239/#242. Quorum-retained DrainSet/member drain is implemented; authenticated ordering-history export merged as PR #244 with the full gate, independent exact-head approval and required CI. Authenticated causal business reconstruction and closed semantic comparison are next, followed by cut/import; readiness/Seal/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation remain incomplete. |
 | 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
 
 **PR slicing policy, 2026-09-30:** deliveries describe integrated acceptance
@@ -388,16 +388,69 @@ The detailed existing evidence and remaining criteria follow:
   target-conflict refusal, all twelve namespace-table row/revision comparisons,
   stale-writer refusal and a genuine fresh-rival positive control. Canonical
   Rust/JavaScript layout checks and adversarial core/HTTP/SDK/file tests are
-  implemented. Subsequent changes, including the automatic reuse of existing
-  handler receipt-digest functions, still require the full repository gate,
-  fresh exact-head independent approval and same-head required CI before merge;
-  this targeted acceptance is not a release or complete operational validation.
+  implemented. PR #244 merged normally as `f2b33d0` on 2026-10-01 after
+  `npm ci`, the complete repository gate, fresh independent Codex APPROVE
+  and required CI on final head `5b47b11`. The full gate included the actual
+  PostgreSQL/compiled-CLI history acceptance and competing-claim replay gates.
+  Opus was unavailable; the authorized substitute is not described as Opus
+  approval. This capability is not a release or complete operational validation.
   Do not fabricate missing pruned history, introduce a local Seal-like barrier,
   or label the target the latest network state. Authenticated business cut/import
   still requires closed semantic projections, causal owned/economic reconstruction
   from verified genesis, full result/effects and artifact-closure comparison,
   authenticated generation floor and a core/store inactive incoming-validator
   guard. Readiness/Seal/activation and integrated Delivery 3 remain unchecked.
+
+- [x] **Initial causal business reconstruction and real-store audit**
+  ([DR-0170](docs/architecture/decisions/0170-causal-business-reconstruction.md),
+  [business reconstruction](docs/architecture/business-reconstruction.md),
+  [operator guide](docs/guides/business-audit.md)).
+  One integrated capability: fresh signed genesis v4 authorizes causal
+  admission, private verified-genesis execution reconstructs supported
+  histories, and `business_audit_pg` compares one authenticated fixed source
+  observation without importing source rows or advancing its writer fence.
+  Existing Transaction/witness/receipt bytes and historical profile lane
+  interpretation remain unchanged; the legacy ambiguity counterexample and
+  rationale are recorded in DR-0170, not an independent-execution guarantee.
+  - [x] Trusted install/reopen, disjoint Owned/Ordered lanes, synthetic/zero
+    exclusions, ordered embedded legs and fresh direct-writer fencing.
+  - [x] Fenced pre-vote nonce/owned-input observations after bounded justified
+    predecessor processing, preserving shared economic concurrency.
+  - [x] Private causal execution of supported Owned publications and ordered
+    operations, original results/receipts, unique producers and checked logical
+    generations; source companions never become execution authority.
+  - [x] Closed field-aware comparison of State, Receipts, ObjectHeads,
+    ObjectVersions and referenced artifact closure under one source token;
+    unknown/unexplained business facts fail closed.
+  - [x] SDK/compiled CLI immutable bounded saved material, interrupted-cache
+    continuation, full seed-to-terminal reverification and separate local
+    protocol/genesis and TLS pins. Invalid IDs refuse before seed I/O,
+    artifact reservation or connection; exact saved input bytes stay unchanged.
+  - [x] Genuine four-namespace PostgreSQL lifecycle/economics/control
+    close/reopen/replay and compiled-CLI audit, plus corruption/missing/cyclic
+    material negatives, certificate-subset controls and source-row immutability.
+
+  Executed acceptance on 2026-10-01 at `d0b8f9c`: core 958 tests and all
+  three genuine Freeze/DrainSet reconstruction controls passed; CLI 196 tests
+  passed. The mandatory fresh four-namespace PostgreSQL business-audit E2E
+  passed in 1962.34 seconds, including actual restart, immutable cache resume,
+  corruption/withheld-material refusal and all four source snapshots unchanged.
+  Heap traversal also passed a 100,000-node chain on a 64 KiB stack. Test-only
+  transport fixtures use canonical operands; no production verification or
+  race/retry assertion was weakened. `npm ci` and strict all-target/all-feature
+  workspace Clippy passed. The unchanged dependency lock still reports six
+  inherited high-severity development-tool advisories; no remediation is
+  claimed. Before a normal merge, the complete repository gate, independent
+  explicit final-head approval and required final-head CI must also pass.
+
+  No persistent import, inactive incoming-validator guard, complete cut,
+  readiness, Seal, activation, force unlock or general partial cancellation
+  is claimed. Those remain separate Delivery 3 work. Applied Owned targets
+  currently require the normal aggregate-availability completion tuple.
+  - [ ] Support legitimate frozen `apply_drain_member` completion without an
+    aggregate availability certificate before complete drained-state cut/import.
+    The initial audit refuses equality for this source family, never treats it
+    as an unapplied publication and never synthesizes missing proof.
 
 - [x] **Portable storage implementation: bounded reads and backend-enforced snapshot continuity**
   ([DR-0166](docs/architecture/decisions/0166-portable-candidate-snapshot.md),
@@ -5292,6 +5345,29 @@ Phase 17 prerequisites:
 - AWS adapter wrapper and API Gateway HTTP API v2 mapping (implemented As-Is)
 - cross-provider local ingress fixture matrix (implemented As-Is)
 - repository-wide pinned local/CI validation gate (implemented As-Is)
+- [x] DR-0171 closed CI dispatch implementation: nine independent lanes,
+  five isolated PG services, complete serial local default, 19 required ignored
+  selectors and success-only final `check`. Node 22.23.2 mock coverage/failure
+  tests and workflow syntax validation passed; native resolved feature unions
+  match the former workspace configuration, with bounded storage-lane anchors.
+- [x] DR-0171 pre-integration CI evidence: exact `039174e` run `36849428430`
+  passed all nine lanes and final `check` in 50m10s; audit job 49m26s.
+  Summed job elapsed occupancy was 126m18s, not billed cost. The earlier
+  120-minute timeout was incomplete, not a comparable successful benchmark.
+- [ ] DR-0171 combined-head final acceptance: retain PR #241's claim package,
+  dependencies, custody purpose and genesis admission while resolving CI to
+  the complete nine-lane policy explicitly selected by the user. Recheck native
+  feature unions, run the complete local gate and fresh exact-head CI, then
+  obtain independent approval. The pre-integration result is not a pass for
+  this changed workspace. Runtime assertions/fault gates remain required;
+  billed runner cost and cost savings are not established. See
+  [design](docs/architecture/repository-validation.md) and
+  [decision](docs/architecture/decisions/0171-partitioned-repository-validation.md).
+- [x] Combined native dependency-feature parity: 212 workspace/ordinary-lane
+  packages and 210 storage-lane packages, with no differing selected feature
+  unions. Add the claim package as a bounded storage anchor and regression-test
+  that no required anchor may disappear; prior selected crypto feature gaps
+  are fixed without dropping tests or changing assertion profiles.
 - reviewed weekly dependency/action update proposals (implemented As-Is)
 
 Phase 17 shared ingress As-Is scope:
@@ -5312,7 +5388,9 @@ Phase 17 shared ingress As-Is scope:
 - liveness、unknown path、method、media parameter、content encoding、content-lengthの同一fixtureを
   5 provider consumerで実行する。これはlocal drift検出であり実gateway/runtime conformanceではない。
 - Rust 1.97.1、Node 22.20.0、Deno 2.9.4を固定したcheck script/CIがRust全featureと全adapterを
-  一括実行する。CI actionもverified upstream tagのcommit SHAへ固定するが、provenance、SBOM、
+  complete gate setとして実行する。DR-0171では同じcoverageを独立CI laneへ分割するが、
+  final-head acceptanceは上記completion gateで追跡する。CI actionもverified upstream tagの
+  commit SHAへ固定するが、provenance、SBOM、
   reproducibility、real provider testは未完了である。
 - DependabotはCargo、Cloudflare npm、GitHub Actionsを週次確認し上限付きPRを作るがauto-mergeしない。
   changelog/互換性/repository gateを人がreviewする運用の強制、provenance検証、緊急更新SLAは未完了である。

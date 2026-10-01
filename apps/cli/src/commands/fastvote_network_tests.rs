@@ -6,6 +6,265 @@ use crypto::SignatureSigner;
 use std::cell::RefCell;
 use sunrise_edge_client::*;
 
+#[test]
+fn causal_paid_command_rejects_invalid_request_ids_before_seed_io_or_artifacts() {
+    use std::net::TcpListener;
+    for mut request in [[0; 32], [0x81; 32], [0x41; 32]] {
+        if request[0] == 0x41 {
+            request[..8].copy_from_slice(b"SE:FPv1:");
+        }
+        let mut fixture: Fixture = Fixture::new();
+        fixture.manifest.commitment_profile = CommitmentProfile::CausalAdmission;
+        fixture.manifest.minimum_freeze_block_height = 1;
+        let genesis_signer: LocalSigner =
+            LocalSigner::from_seed(sunrise_edge_devnet::DEVNET_PAID_GENESIS_SEED);
+        fixture.manifest.signature = genesis_signer
+            .sign_framed(
+                &node_core::genesis::genesis_manifest_signing_frame(&fixture.manifest).unwrap(),
+            )
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let listener: TcpListener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint: String = listener.local_addr().unwrap().to_string();
+        let config: String = fixture.path("network");
+        let manifest: String = fixture.path("manifest");
+        std::fs::write(
+            &config,
+            format!(
+                "{} {endpoint} - -\n",
+                encode_hex(&fixture.manifest.genesis_authority),
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &manifest,
+            node_core::encode_genesis_manifest(&fixture.manifest).unwrap(),
+        )
+        .unwrap();
+        let commitment: String = encode_hex(
+            &node_core::genesis_manifest_commitment(&fixture.resolver, &fixture.manifest)
+                .unwrap()
+                .bytes(),
+        );
+        let seed: String = fixture.path("deliberately-missing-seed");
+        let intent: String = fixture.path("intent");
+        let certificate: String = fixture.path("certificate");
+        let availability: String = fixture.path("availability");
+        let request: String = encode_hex(&request);
+        let domain: String = encode_hex(&[0x44; 32]);
+        let error: String = super::super::paid_execution::run(
+            "paid-call",
+            [
+                "--endpoint",
+                &endpoint,
+                "--seed-file",
+                &seed,
+                "--fastvote-network",
+                &config,
+                "--fastvote-genesis-manifest",
+                &manifest,
+                "--fastvote-expected-genesis-digest",
+                &commitment,
+                "--fastvote-signed-intent-out",
+                &intent,
+                "--fastvote-certificate-out",
+                &certificate,
+                "--fastvote-availability-certificate-out",
+                &availability,
+                "--request-id",
+                &request,
+                "--expected-chain-id",
+                "cli-network-boundaries",
+                "--expected-protocol-version",
+                "3",
+                "--expected-epoch",
+                "0",
+                "--expected-hash-suite-id",
+                "1",
+                "--expected-domain",
+                &domain,
+            ]
+            .into_iter()
+            .map(OsString::from),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("lane") || error.contains("reserved") || error.contains("zero"),
+            "the locally pinned gate must precede missing-seed loading: {error}"
+        );
+        assert!(!Path::new(&intent).exists());
+        assert!(!Path::new(&certificate).exists());
+        assert!(!Path::new(&availability).exists());
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}
+
+#[test]
+fn causal_saved_submission_refuses_invalid_request_ids_before_output_reservation_or_network() {
+    for mut request in [[0; 32], [0x81; 32], [0x41; 32]] {
+        if request[0] == 0x41 {
+            request[..8].copy_from_slice(b"SE:FPv1:");
+        }
+        let mut fixture: Fixture = Fixture::new();
+        fixture.signed.intent.request_id = request;
+        let parsed: ParsedArgs = fixture.parsed(&[]);
+        let endpoints: Vec<FastVoteEndpoint<FakeTransport>> = Vec::new();
+        let budget: OperationBudget = OperationBudget {
+            deadline: Instant::now() + Duration::from_secs(10),
+            per_request_cap: Duration::from_secs(1),
+        };
+        let error: String = run_network_submit(
+            &parsed,
+            &endpoints,
+            &fixture.certifier,
+            &fixture.admission_profile(CommitmentProfile::CausalAdmission),
+            fixture.expected.domain(),
+            &fixture.resolver,
+            &fixture.signed,
+            None,
+            budget,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("lane") || error.contains("reserved") || error.contains("zero"),
+            "lane error must precede even required output flag validation: {error}"
+        );
+    }
+}
+
+#[test]
+fn causal_saved_replay_refuses_invalid_ids_without_outputs_or_connections() {
+    use std::net::TcpListener;
+
+    for mut request in [[0; 32], [0x81; 32], [0x41; 32]] {
+        if request[0] == 0x41 {
+            request[..8].copy_from_slice(b"SE:FPv1:");
+        }
+        let mut fixture: Fixture = Fixture::new();
+        fixture.signed.intent.request_id = request;
+        let PaidApplication::Call(call) = &mut fixture.signed.intent.application else {
+            panic!("the fixture must be an ordinary paid Call");
+        };
+        call.request_id = request;
+        fixture.signed.signature = fixture
+            .signer
+            .sign_framed(
+                &execution::paid_execution::paid_intent_signing_frame(
+                    &fixture.signed.intent.context,
+                    &fixture.signed.intent,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let signed_bytes: Vec<u8> = encode_signed_paid_intent(&fixture.signed).unwrap();
+        let submission: String = fixture.path("saved-intent");
+        std::fs::write(&submission, &signed_bytes).unwrap();
+        let manifest: node_core::genesis::GenesisManifest =
+            fixture.signed_genesis(CommitmentProfile::CausalAdmission);
+        let manifest_path: String = fixture.path("manifest");
+        std::fs::write(
+            &manifest_path,
+            node_core::encode_genesis_manifest(&manifest).unwrap(),
+        )
+        .unwrap();
+        let commitment: String = encode_hex(
+            &node_core::genesis_manifest_commitment(&fixture.resolver, &manifest)
+                .unwrap()
+                .bytes(),
+        );
+        let listener: TcpListener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint: String = listener.local_addr().unwrap().to_string();
+        let config: String = fixture.path("network");
+        std::fs::write(
+            &config,
+            format!(
+                "{} {endpoint} - -\n",
+                encode_hex(&manifest.genesis_authority)
+            ),
+        )
+        .unwrap();
+        let certificate: String = fixture.path("certificate");
+        let availability: String = fixture.path("availability");
+        let result: String = fixture.path("result");
+        let domain: String = encode_hex(&[0x44; 32]);
+        let error: String = run_replay(
+            [
+                "--submission",
+                &submission,
+                "--fastvote-network",
+                &config,
+                "--fastvote-genesis-manifest",
+                &manifest_path,
+                "--fastvote-expected-genesis-digest",
+                &commitment,
+                "--fastvote-certificate-out",
+                &certificate,
+                "--fastvote-availability-certificate-out",
+                &availability,
+                "--result-out",
+                &result,
+                "--expected-chain-id",
+                "cli-network-boundaries",
+                "--expected-protocol-version",
+                "3",
+                "--expected-epoch",
+                "0",
+                "--expected-hash-suite-id",
+                "1",
+                "--expected-domain",
+                &domain,
+            ]
+            .into_iter()
+            .map(OsString::from),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("lane") || error.contains("reserved") || error.contains("zero"),
+            "{error}"
+        );
+        for output in [&certificate, &availability, &result] {
+            assert!(
+                !Path::new(output).exists(),
+                "invalid admission must not reserve {output}"
+            );
+        }
+        assert_eq!(std::fs::read(&submission).unwrap(), signed_bytes);
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}
+
+#[test]
+fn pinned_cli_owned_rule_preserves_historical_lanes_and_rejects_zero_everywhere() {
+    let fixture: Fixture = Fixture::new();
+    for profile in [
+        CommitmentProfile::PhysicalCheckpointV1,
+        CommitmentProfile::LogicalGenerationV2,
+        CommitmentProfile::CausalAdmission,
+    ] {
+        let admission: VerifiedAdmissionProfile = fixture.admission_profile(profile);
+        assert!(require_owned_lane(&admission, &[1; 32]).is_ok());
+        assert!(require_owned_lane(&admission, &[0; 32]).is_err());
+        assert_eq!(
+            require_owned_lane(&admission, &[0x81; 32]).is_err(),
+            profile == CommitmentProfile::CausalAdmission
+        );
+    }
+}
+
 pub(super) struct Fixture {
     pub(super) directory: PathBuf,
     pub(super) expected: ExpectedProtocolContext,
@@ -122,6 +381,27 @@ impl Fixture {
             record,
         }
     }
+    fn signed_genesis(&self, profile: CommitmentProfile) -> node_core::genesis::GenesisManifest {
+        let mut manifest: node_core::genesis::GenesisManifest = self.manifest.clone();
+        manifest.commitment_profile = profile;
+        manifest.minimum_freeze_block_height = u64::from(profile.is_logical());
+        let genesis_signer: LocalSigner =
+            LocalSigner::from_seed(sunrise_edge_devnet::DEVNET_PAID_GENESIS_SEED);
+        manifest.signature = genesis_signer
+            .sign_framed(&node_core::genesis::genesis_manifest_signing_frame(&manifest).unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        manifest
+    }
+
+    fn admission_profile(&self, profile: CommitmentProfile) -> VerifiedAdmissionProfile {
+        let manifest: node_core::genesis::GenesisManifest = self.signed_genesis(profile);
+        let pin: Digest32 =
+            node_core::genesis_manifest_commitment(&self.resolver, &manifest).unwrap();
+        VerifiedAdmissionProfile::from_pinned_genesis(&self.resolver, &manifest, pin).unwrap()
+    }
+
     pub(super) fn path(&self, name: &str) -> String {
         self.directory.join(name).to_str().unwrap().to_owned()
     }
@@ -396,7 +676,7 @@ fn logical_network_submit_persists_ac_before_published_apply_and_saved_replay_us
             &parsed,
             &endpoints,
             &fixture.certifier,
-            CommitmentProfile::LogicalGenerationV2,
+            &fixture.admission_profile(CommitmentProfile::LogicalGenerationV2),
             fixture.expected.domain(),
             &fixture.resolver,
             &fixture.signed,
@@ -451,7 +731,7 @@ fn logical_network_submit_persists_ac_before_published_apply_and_saved_replay_us
             &replay,
             &[replay_endpoint],
             &fixture.certifier,
-            CommitmentProfile::LogicalGenerationV2,
+            &fixture.admission_profile(CommitmentProfile::LogicalGenerationV2),
             fixture.expected.domain(),
             &fixture.resolver,
             &fixture.signed,
@@ -827,7 +1107,7 @@ fn network_submission_persists_exact_success_and_charged_trap_results() {
                 &parsed,
                 &endpoints,
                 &fixture.certifier,
-                CommitmentProfile::PhysicalCheckpointV1,
+                &fixture.admission_profile(CommitmentProfile::PhysicalCheckpointV1),
                 fixture.expected.domain(),
                 &fixture.resolver,
                 &fixture.signed,
@@ -909,7 +1189,7 @@ fn network_apply_rejects_divergent_successful_acknowledgements_across_peers() {
         &parsed,
         &endpoints,
         &fixture.certifier,
-        CommitmentProfile::PhysicalCheckpointV1,
+        &fixture.admission_profile(CommitmentProfile::PhysicalCheckpointV1),
         fixture.expected.domain(),
         &fixture.resolver,
         &fixture.signed,
@@ -1014,7 +1294,7 @@ fn all_network_outputs_reserve_before_any_post_existing_unwritable_or_alias() {
                 &parsed,
                 &endpoints,
                 &fixture.certifier,
-                CommitmentProfile::PhysicalCheckpointV1,
+                &fixture.admission_profile(CommitmentProfile::PhysicalCheckpointV1),
                 fixture.expected.domain(),
                 &fixture.resolver,
                 &fixture.signed,
@@ -1082,7 +1362,7 @@ fn replay_reserves_result_before_prepare_or_apply_and_detects_input_aliases() {
                     &parsed,
                     &endpoints,
                     &fixture.certifier,
-                    CommitmentProfile::PhysicalCheckpointV1,
+                    &fixture.admission_profile(CommitmentProfile::PhysicalCheckpointV1),
                     fixture.expected.domain(),
                     &fixture.resolver,
                     &fixture.signed,
@@ -1210,7 +1490,7 @@ fn reservation_failure_keeps_prior_reserved_files_and_never_posts() {
             &parsed,
             &endpoints,
             &fixture.certifier,
-            CommitmentProfile::PhysicalCheckpointV1,
+            &fixture.admission_profile(CommitmentProfile::PhysicalCheckpointV1),
             fixture.expected.domain(),
             &fixture.resolver,
             &fixture.signed,
@@ -1363,7 +1643,7 @@ fn unwritable_and_symlink_aliased_outputs_refuse_before_prepare() {
                 &parsed,
                 &endpoints,
                 &fixture.certifier,
-                CommitmentProfile::PhysicalCheckpointV1,
+                &fixture.admission_profile(CommitmentProfile::PhysicalCheckpointV1),
                 fixture.expected.domain(),
                 &fixture.resolver,
                 &fixture.signed,
@@ -1405,7 +1685,7 @@ fn replay_collect_and_saved_certificate_modes_persist_success_and_trap_bytes() {
                 &parsed,
                 &endpoints,
                 &fixture.certifier,
-                CommitmentProfile::PhysicalCheckpointV1,
+                &fixture.admission_profile(CommitmentProfile::PhysicalCheckpointV1),
                 fixture.expected.domain(),
                 &fixture.resolver,
                 &fixture.signed,
@@ -1442,7 +1722,7 @@ fn replay_collect_and_saved_certificate_modes_persist_success_and_trap_bytes() {
                 &parsed,
                 &endpoints,
                 &fixture.certifier,
-                CommitmentProfile::PhysicalCheckpointV1,
+                &fixture.admission_profile(CommitmentProfile::PhysicalCheckpointV1),
                 fixture.expected.domain(),
                 &fixture.resolver,
                 &fixture.signed,
@@ -1722,7 +2002,7 @@ fn replay_recovers_the_exact_dependency_reference_after_a_successful_publish_app
         &parsed,
         &endpoints,
         &fixture.certifier,
-        CommitmentProfile::PhysicalCheckpointV1,
+        &fixture.admission_profile(CommitmentProfile::PhysicalCheckpointV1),
         fixture.expected.domain(),
         &fixture.resolver,
         &signed,
@@ -1792,7 +2072,7 @@ fn replay_recovers_the_exact_instance_reference_via_a_supplied_certificate() {
         &parsed,
         &endpoints,
         &fixture.certifier,
-        CommitmentProfile::PhysicalCheckpointV1,
+        &fixture.admission_profile(CommitmentProfile::PhysicalCheckpointV1),
         fixture.expected.domain(),
         &fixture.resolver,
         &signed,
@@ -1893,7 +2173,7 @@ fn replay_instance_reference_output_aliasing_the_submission_makes_zero_posts() {
             &parsed,
             &endpoints,
             &fixture.certifier,
-            CommitmentProfile::PhysicalCheckpointV1,
+            &fixture.admission_profile(CommitmentProfile::PhysicalCheckpointV1),
             fixture.expected.domain(),
             &fixture.resolver,
             &signed,
@@ -1957,7 +2237,7 @@ fn replay_charged_failure_persists_the_result_but_leaves_the_reference_empty() {
         &parsed,
         &endpoints,
         &fixture.certifier,
-        CommitmentProfile::PhysicalCheckpointV1,
+        &fixture.admission_profile(CommitmentProfile::PhysicalCheckpointV1),
         fixture.expected.domain(),
         &fixture.resolver,
         &signed,

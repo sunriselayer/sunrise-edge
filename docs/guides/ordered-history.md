@@ -3,9 +3,11 @@
 This is a read-only native HTTP/Rust CLI workflow under
 [DR-0169](../architecture/decisions/0169-authenticated-ordered-history-export.md).
 It verifies consensus order and signed candidates from locally trusted
-signed-v3 LogicalGenerationV2 genesis. Original outcomes and receipts are
+handoff-capable signed genesis. Original outcomes and receipts are
 consistency-checked source companions, not independently executed business
 results. It does not import state or authorize handoff, Seal or activation.
+For independent business execution and PostgreSQL snapshot comparison under
+the causal-admission profile, use the separate [business audit](business-audit.md).
 
 Use the [ordered-network configuration](ordered-economics.md) with a locally
 configured expected genesis digest, chain, protocol, epoch and atomicity

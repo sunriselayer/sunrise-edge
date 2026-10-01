@@ -35,6 +35,10 @@
 //! on) and stays in `crate::fast_path::load_validator_set`, strictly
 //! additive to [`fence_current_epoch`].
 use super::*;
+use crate::admission_profile::{
+    ExternalRequestLane, fence_installed_external_request_lane, require_historical_direct_writer,
+};
+use execution::publication::PublicationContext;
 use local_instance_state::{
     FastPathEpochRecord, FastPathLockRecord, FastPathNonceLockRecord, decode_fastpath_epoch_record,
     decode_fastpath_lock_record, decode_fastpath_nonce_lock_record, fastpath_epoch_record_key,
@@ -61,6 +65,56 @@ fn read_and_fence<S: StructuredDurableDomainStateStore>(
         return Err(NodeCoreError::StateConflict);
     }
     Ok(value)
+}
+
+/// Denies an untracked public business writer in the fresh causal profile.
+/// Only the ordered engine's private, exact committed-operation capability
+/// can admit an embedded economics leg. This does not grant lock reuse: the
+/// separate object and nonce fences still check every precise reservation.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn fence_direct_or_ordered_writer<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    expected: &PublicationContext,
+    request_id: &[u8; 32],
+    ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<(), NodeCoreError> {
+    match ordered {
+        Some(admission) if &admission.request_id == request_id => {
+            fence_installed_external_request_lane(
+                store,
+                context,
+                domain,
+                expected,
+                request_id,
+                ExternalRequestLane::Ordered,
+                reads,
+            )
+        }
+        Some(_) => Err(NodeCoreError::PersistenceInvariant(
+            "ordered writer capability does not name this request",
+        )),
+        None => require_historical_direct_writer(store, context, domain, expected, reads),
+    }
+}
+
+/// Physical profile/root/marker fences are configuration CAS, never logical
+/// business operands. Merge only after generation/effect derivation succeeds.
+pub(crate) fn merge_configuration_reads(
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+    additional: BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<(), NodeCoreError> {
+    for (key, revision) in additional {
+        if reads
+            .insert(key, revision)
+            .is_some_and(|previous| previous != revision)
+        {
+            return Err(NodeCoreError::StateConflict);
+        }
+    }
+    Ok(())
 }
 
 /// How a mutation path relates to a [`FastPathLockRecord`]/

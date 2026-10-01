@@ -109,15 +109,15 @@ impl From<CanonicalDecodingError> for FrozenFrontierError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct FrontierCursor {
-    identity: FrozenFrontierIdentity,
-    last_request_id: [u8; 32],
+pub(super) struct FrontierCursor {
+    pub(super) identity: FrozenFrontierIdentity,
+    pub(super) last_request_id: [u8; 32],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct FinalFrontier {
-    identity: FrozenFrontierIdentity,
-    vote: FrozenFrontierVote,
+pub(super) struct FinalFrontier {
+    pub(super) identity: FrozenFrontierIdentity,
+    pub(super) vote: FrozenFrontierVote,
 }
 
 pub(super) fn key(
@@ -143,7 +143,7 @@ fn encode_cursor(cursor: &FrontierCursor) -> Result<Vec<u8>, FrozenFrontierError
     Ok(frame.finish()?)
 }
 
-fn decode_cursor(input: &[u8]) -> Result<FrontierCursor, FrozenFrontierError> {
+pub(super) fn decode_cursor(input: &[u8]) -> Result<FrontierCursor, FrozenFrontierError> {
     let frame = decode_canonical_frame(input)?;
     frame.require_type(FRONTIER_CURSOR_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;
@@ -174,7 +174,7 @@ fn encode_final(record: &FinalFrontier) -> Result<Vec<u8>, FrozenFrontierError> 
     Ok(frame.finish()?)
 }
 
-fn decode_final(input: &[u8]) -> Result<FinalFrontier, FrozenFrontierError> {
+pub(super) fn decode_final(input: &[u8]) -> Result<FinalFrontier, FrozenFrontierError> {
     let frame = decode_canonical_frame(input)?;
     frame.require_type(FRONTIER_FINAL_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;

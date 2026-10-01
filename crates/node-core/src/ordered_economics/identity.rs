@@ -225,6 +225,52 @@ pub(crate) fn reconcile_leader_proposal<S: StructuredDurableDomainStateStore>(
     }
 }
 
+/// The existing proposal digest includes its signature. A capacity probe
+/// cannot predict that digest without calling the real signer. Reconcile all
+/// unsigned fields instead, then independently re-verify the retained signed
+/// proposal and its stored digest. No wire/preimage/layout changes are made.
+pub(crate) fn reconcile_unsigned_leader_proposal<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    unsigned: &ConsensusProposal,
+) -> Result<(Vec<u8>, StateRevision, RetainedIdentity<ConsensusProposal>), OrderedEconomicsError> {
+    let key: Vec<u8> = ordered_leader_record_key(env.policy.context().chain_id(), unsigned.view)?;
+    let observed: VersionedStateValue =
+        store.get_versioned_durable(context, env.policy.domain(), &key)?;
+    match observed.value() {
+        None if observed.revision() == StateRevision::INITIAL => {
+            Ok((key, observed.revision(), RetainedIdentity::Absent))
+        }
+        None => Err(invalid("retained causal ordered leader identity was deleted").into()),
+        Some(bytes) => {
+            let (record, retained): (LeaderProposalRecord, ConsensusProposal) =
+                decode_leader_proposal_record(bytes)?;
+            let mut comparable: ConsensusProposal = unsigned.clone();
+            comparable.signature = retained.signature.clone();
+            if comparable != retained {
+                return Err(OrderedEconomicsError::Prerequisite(
+                    "this leader already signed a different proposal in this view",
+                ));
+            }
+            env.policy
+                .engine()
+                .verify_proposal(&retained, &super::policy::Ed25519ConsensusVerifier)
+                .map_err(|_| invalid("retained causal leader proposal signature differs"))?;
+            if env
+                .policy
+                .engine()
+                .proposal_digest(&retained)
+                .map_err(|_| invalid("retained causal leader digest"))?
+                != record.proposal_digest
+            {
+                return Err(invalid("retained causal leader identity digest differs").into());
+            }
+            Ok((key, observed.revision(), RetainedIdentity::Exact(retained)))
+        }
+    }
+}
+
 /// Reads the retained local vote record for `view` plus the durable
 /// highest-voted-view watermark, and decides whether this replica may vote
 /// for `digest` in `view`.

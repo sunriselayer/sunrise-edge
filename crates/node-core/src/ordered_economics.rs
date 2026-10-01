@@ -53,6 +53,7 @@
 //! integrated before this path can be enabled as a complete handoff.
 use super::*;
 
+pub(crate) mod audit_projection;
 mod candidate;
 mod drain_set;
 mod drain_union;
@@ -120,7 +121,9 @@ pub use policy::{
     ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE, OrderedEconomicsEnvironment, OrderedEconomicsPolicy,
     authenticate_candidate, ordered_economics_authority_anchor,
 };
-pub(crate) use reservation::OrderedLegAdmission;
+pub(crate) use reservation::{
+    OrderedCausalRequirements, OrderedLegAdmission, ordered_causal_requirements,
+};
 pub(crate) use staging::StagingStore;
 
 /// Maximum address-owned object inputs one admitted candidate may reserve.
