@@ -47,7 +47,7 @@ use std::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum SemanticRecord {
+pub(super) enum SemanticRecord {
     State(Option<Vec<u8>>),
     Receipt(Digest32, Vec<u8>),
     Head {
@@ -66,7 +66,7 @@ enum SemanticRecord {
     },
 }
 
-type SemanticProjection = BTreeMap<DurableRecordKey, SemanticRecord>;
+pub(super) type SemanticProjection = BTreeMap<DurableRecordKey, SemanticRecord>;
 type StateRows<'a> = BTreeMap<Vec<u8>, &'a SourceSnapshotRecord>;
 type LocalFastpathRows = (BTreeMap<Vec<u8>, ()>, BTreeMap<[u8; 32], Digest32>);
 
@@ -858,4 +858,40 @@ pub(super) fn compare_source(
         ));
     }
     Ok(())
+}
+
+/// Derives exactly the audit's expected facts from private replay. This does
+/// not accept source rows, change audit equality, or expose the private store.
+pub(super) fn independently_derived_projection(
+    overlay: &BusinessReconstructionOverlay<'_>,
+) -> Result<SemanticProjection, BusinessReconstructionError> {
+    if !overlay.reconstruction_complete {
+        return Err(invalid("private reconstruction is incomplete"));
+    }
+    let reconstructed: SourceBusinessSnapshot = capture_overlay(overlay)?;
+    let catalog: &[VerifiedPublicationSemantic] = overlay
+        .publication_catalog
+        .as_deref()
+        .ok_or(invalid("verified publication catalog is absent"))?;
+    let publications: AuthenticatedPublicationProjection = AuthenticatedPublicationProjection {
+        retention_keys: BTreeSet::new(),
+        normalized_state: super::normalize_private_carriers(
+            &overlay.store,
+            catalog,
+            &overlay.plan,
+        )?,
+        identities: catalog
+            .iter()
+            .map(|item| (item.request_id, item.identity.clone()))
+            .collect(),
+    };
+    let retention: BTreeSet<Vec<u8>> = private_retention_keys(overlay, &reconstructed)?;
+    project(
+        overlay,
+        &reconstructed,
+        &state_rows(&reconstructed.records),
+        &publications,
+        &retention,
+        false,
+    )
 }

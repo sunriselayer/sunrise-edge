@@ -465,13 +465,13 @@ fn ordered_state_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError> {
     prefixed_key(b"state/", chain)
 }
 
-fn ordered_applied_height_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError> {
+pub(crate) fn ordered_applied_height_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError> {
     prefixed_key(b"applied-height/", chain)
 }
 
 /// Immutable per-height proof key. This new family does not alter any
 /// existing candidate, publication, ACK or artifact key.
-pub(super) fn ordered_committed_proof_key(
+pub(crate) fn ordered_committed_proof_key(
     chain: &ChainId,
     epoch: Epoch,
     height: u64,
@@ -483,7 +483,7 @@ pub(super) fn ordered_committed_proof_key(
     Ok(key)
 }
 
-pub(super) fn ordered_candidate_record_key(
+pub(crate) fn ordered_candidate_record_key(
     chain: &ChainId,
     digest: Digest32,
 ) -> Result<Vec<u8>, NodeCoreError> {
@@ -493,7 +493,7 @@ pub(super) fn ordered_candidate_record_key(
     Ok(key)
 }
 
-pub(super) fn ordered_request_header_key(
+pub(crate) fn ordered_request_header_key(
     chain: &ChainId,
     request_id: &[u8; 32],
 ) -> Result<Vec<u8>, NodeCoreError> {
@@ -505,7 +505,7 @@ pub(super) fn ordered_request_header_key(
 
 /// Key of one retained, completed ordered outcome, in the same reserved
 /// namespace as every other row here.
-pub(super) fn ordered_outcome_key(
+pub(crate) fn ordered_outcome_key(
     chain: &ChainId,
     request_id: &[u8; 32],
 ) -> Result<Vec<u8>, NodeCoreError> {

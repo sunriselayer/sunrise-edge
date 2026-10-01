@@ -6,6 +6,7 @@
 //! This module intentionally exposes no import, activation, or readiness API.
 
 pub mod control;
+pub mod cut;
 mod dependency_graph;
 mod projection;
 

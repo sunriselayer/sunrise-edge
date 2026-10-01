@@ -96,6 +96,10 @@ roadmap describes a later target state.
 - [Frozen member business reconstruction](decisions/0174-frozen-member-business-reconstruction.md):
   independently replayed committed Freeze/DrainSet and narrow member execution
   for a completed source without aggregate availability; not complete cut/import.
+- [First-epoch pre-Seal business cut](first-epoch-business-cut.md)
+  ([DR-0175](decisions/0175-first-epoch-preseal-business-cut.md)):
+  private complete-drain derivation, separate semantic/package identity and
+  bounded independently reverified saved export; not import, Seal or activation.
 - [Repository validation](repository-validation.md)
   ([DR-0172](decisions/0172-storage-neutral-required-validation.md)):
   four required storage-neutral lanes and separately selected complete PG

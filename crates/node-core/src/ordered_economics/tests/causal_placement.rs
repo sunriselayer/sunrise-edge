@@ -225,6 +225,31 @@ fn certify_paid_with_subsets(
     availability_signers: &[usize],
     apply: bool,
 ) -> CertifiedPaidMaterial {
+    certify_paid_with_expected_status(
+        fixture,
+        signed_bytes,
+        checkpoint,
+        publication_signers,
+        execution_signers,
+        availability_signers,
+        apply,
+        PaidExecutionStatus::Success,
+    )
+}
+
+// Keep genuine quorum subsets and the expected trap status explicit in this
+// test-only execution fixture rather than weakening existing success controls.
+#[allow(clippy::too_many_arguments)]
+fn certify_paid_with_expected_status(
+    fixture: &CausalFixture,
+    signed_bytes: &[u8],
+    checkpoint: u64,
+    publication_signers: &[usize],
+    execution_signers: &[usize],
+    availability_signers: &[usize],
+    apply: bool,
+    expected_status: PaidExecutionStatus,
+) -> CertifiedPaidMaterial {
     let network: &Network = &fixture.network;
     let fee_policy: &PaidFeePolicy = &fixture.manifest.fee_policy;
     // Every vote is independently derived through the actual paid WASM
@@ -340,7 +365,11 @@ fn certify_paid_with_subsets(
         consensus::encode_availability_certificate(&availability).unwrap();
     let (_, result): (Digest32, PaidExecutionResult) =
         crate::fast_path::publication::decode_certified_execution_witness(&bundle.witness).unwrap();
-    assert_eq!(result.status, PaidExecutionStatus::Success);
+    assert_eq!(
+        result.status, expected_status,
+        "genuine paid request {:?} at checkpoint {checkpoint}: {:?}",
+        result.request_id, result.effects.status
+    );
     for replica in (0..REPLICAS).filter(|_| apply) {
         let output: NodeOutput = crate::fast_path::apply_after_publication(
             &network.stores[replica],

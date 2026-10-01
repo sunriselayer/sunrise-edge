@@ -16,6 +16,12 @@ use runtime_sqlite::{SqliteBlobStore, SqliteDurableStore, SqliteNamespace};
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "frozen_completion/preseal_cut.rs"]
+mod preseal_cut;
+
+#[path = "frozen_completion/preseal_cut_contracts.rs"]
+mod preseal_cut_contracts;
+
 struct ObservedPaidEngine<'a> {
     inner: &'a dyn PaidContractEngine,
     calls: Cell<usize>,

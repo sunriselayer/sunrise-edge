@@ -287,7 +287,7 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     "call-value", "call-intent", "publication-submission", "local-execution",
     "call-authorization", "paid-execution", "fast-vote", "availability",
     "frozen-frontier", "drainset", "fast-path", "fastvote-apply-request",
-    "fastvote-published-apply", "ordered-history",
+    "fastvote-published-apply", "ordered-history", "business-cut",
   ].map((name) => `scripts/${name}-vectors.mjs`));
   assert.deepEqual(full.filter(({ tool }) => tool === "rustfmt").map(({ args }) => args), [[
     "--edition", "2024", "--check",
