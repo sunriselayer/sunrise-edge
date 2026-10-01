@@ -63,6 +63,7 @@ pub mod fastvote_publication_client;
 pub mod key;
 pub mod local_execution_client;
 pub mod ordered_economics_client;
+pub mod ordered_history_client;
 pub mod paid_execution_client;
 pub mod publication_client;
 pub mod support;
@@ -180,6 +181,7 @@ pub use node_core::ordered_economics as ordered_economics_core;
 pub use node_core::publication::local_publication_profile_semantics;
 pub use node_core::{NodeCoreError, NodeResponse, NodeResponseStatus, RequestId};
 pub use node_wire::ordered_economics;
+pub use node_wire::ordered_history as ordered_history_wire;
 pub use node_wire::{
     FASTVOTE_CERTIFICATES_PATH, FASTVOTE_PREPARE_PATH, FASTVOTE_PUBLICATION_RETAIN_PATH,
     FASTVOTE_PUBLICATION_SOURCE_PATH, FASTVOTE_PUBLISHED_APPLY_PATH, FastVoteApplyRequest,

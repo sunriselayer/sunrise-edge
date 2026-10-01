@@ -20,6 +20,7 @@ pub mod fastvote_frontier;
 pub mod fastvote_published;
 pub mod fastvote_retained_publication;
 pub mod ordered_economics;
+pub mod ordered_history;
 
 pub use fastvote_drain::{
     DRAIN_MEMBER_APPLY_REQUEST_TYPE_ID, DRAIN_MEMBER_CONFIRM_REQUEST_TYPE_ID,
@@ -52,6 +53,14 @@ pub use fastvote_published::{
     FASTVOTE_PUBLISHED_APPLY_PATH, FASTVOTE_PUBLISHED_APPLY_REQUEST_TYPE_ID,
     FastVotePublishedApplyRequest, FastVotePublishedApplyRequestError,
     MAX_FASTVOTE_AVAILABILITY_CERTIFICATE_BYTES, MAX_FASTVOTE_PUBLISHED_APPLY_REQUEST_BYTES,
+};
+pub use ordered_history::{
+    MAX_ORDERED_HISTORY_CHUNK_RESPONSE_BYTES, MAX_ORDERED_HISTORY_COMPONENT_REQUEST_BYTES,
+    MAX_ORDERED_HISTORY_HEIGHT_REQUEST_BYTES, ORDERED_HISTORY_CHUNK_RESPONSE_TYPE_ID,
+    ORDERED_HISTORY_COMPONENT_PATH, ORDERED_HISTORY_COMPONENT_REQUEST_TYPE_ID,
+    ORDERED_HISTORY_HEIGHT_PATH, ORDERED_HISTORY_HEIGHT_REQUEST_TYPE_ID,
+    ORDERED_HISTORY_SUMMARY_PATH, OrderedHistoryChunkResponse, OrderedHistoryComponentRequest,
+    OrderedHistoryHeightRequest, OrderedHistoryWireError,
 };
 
 use canonical_encoding::{

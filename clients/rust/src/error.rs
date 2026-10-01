@@ -190,6 +190,10 @@ pub enum ClientError {
     DrainWire(node_wire::DrainWireError),
     /// A bounded retained-publication source locator failed framing.
     RetainedPublicationSourceRequestWire(node_wire::RetainedPublicationSourceRequestError),
+    /// A bounded ordered-history request/response failed canonical framing.
+    OrderedHistoryWire(node_wire::OrderedHistoryWireError),
+    /// An ordered-history response disagreed with the locally pinned request.
+    OrderedHistoryMismatch(&'static str),
     /// A signed frozen-frontier vote or page failed independent verification.
     FrozenFrontier(consensus::FrontierError),
     /// A well-formed frontier response disagreed with the requested endpoint,
@@ -329,6 +333,8 @@ impl fmt::Display for ClientError {
             Self::FrozenFrontierWire(error) => write!(f, "frozen frontier wire error: {error}"),
             Self::DrainWire(error) => write!(f, "drain wire error: {error}"),
             Self::RetainedPublicationSourceRequestWire(error) => write!(f, "retained publication source wire error: {error}"),
+            Self::OrderedHistoryWire(error) => write!(f, "ordered history wire error: {error}"),
+            Self::OrderedHistoryMismatch(reason) => write!(f, "ordered history response mismatch: {reason}"),
             Self::DrainMismatch(reason) => write!(f, "drain response mismatch: {reason}"),
             Self::FrozenFrontier(error) => write!(f, "frozen frontier proof error: {error}"),
             Self::FrozenFrontierMismatch(reason) => {
@@ -402,6 +408,8 @@ impl Error for ClientError {
             Self::FrozenFrontierWire(error) => Some(error),
             Self::DrainWire(error) => Some(error),
             Self::RetainedPublicationSourceRequestWire(error) => Some(error),
+            Self::OrderedHistoryWire(error) => Some(error),
+            Self::OrderedHistoryMismatch(_) => None,
             Self::DrainMismatch(_) => None,
             Self::FrozenFrontier(error) => Some(error),
             Self::FrozenFrontierMismatch(_) => None,
