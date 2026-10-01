@@ -28,6 +28,7 @@ members = [
     "crates/node-wire",
     "crates/native-http",
     "crates/signing-view",
+    "crates/sunrise-claim",
     "apps/devnet",
     "apps/operator",
     "apps/cli",
