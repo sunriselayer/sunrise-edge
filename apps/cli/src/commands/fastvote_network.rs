@@ -481,8 +481,8 @@ pub(super) fn load_endpoints_and_certifier(
     Ok((endpoints, certifier))
 }
 
-/// Drain authority is available only in a locally authenticated signed-v3
-/// genesis. The signed minimum is not inferred from an endpoint response.
+/// Drain authority is available only in locally authenticated signed genesis
+/// that explicitly warrants Freeze. It is not inferred from an endpoint.
 pub(super) fn load_drain_endpoints_and_certifier(
     parsed: &ParsedArgs,
     resolver: &sunrise_edge_client::HashSuiteResolver,
@@ -500,11 +500,9 @@ pub(super) fn load_drain_endpoints_and_certifier(
             context,
         )
         .map_err(failure)?;
-    if trusted.commitment_profile != CommitmentProfile::LogicalGenerationV2
-        || trusted.minimum_freeze_block_height == 0
-    {
+    if !trusted.commitment_profile.is_logical() || trusted.minimum_freeze_block_height == 0 {
         return Err(invalid(
-            "drain requires a locally pinned fresh signed-v3 genesis",
+            "drain requires locally pinned signed genesis authorizing Freeze",
         ));
     }
     let peers: Vec<PeerConfig> = parse_network_config(parsed.require("--fastvote-network")?)?;
@@ -552,6 +550,12 @@ pub(super) fn load_endpoints_and_profile(
         context,
     )
     .map_err(failure)?;
+    if let Some(value) = parsed.get("--request-id") {
+        let request: [u8; 32] = decode_hex_32("--request-id", value)?;
+        trusted
+            .require_owned_request_id(&request)
+            .map_err(failure)?;
+    }
     let endpoints: Vec<FastVoteEndpoint<CliTransport>> =
         build_endpoints(&peers, trusted.commitment_profile)?;
     let certifier: FastPathCertifier = trusted.certifier;
@@ -668,16 +672,28 @@ fn print_repin_diagnostic(error: &impl std::fmt::Display) {
     }
 }
 
+fn require_owned_lane(profile: CommitmentProfile, request: &[u8; 32]) -> Result<(), CliError> {
+    // This private CLI value comes from the same locally verified manifest as
+    // the committee. It is not a command-line profile flag or remote claim.
+    if profile == CommitmentProfile::CausalAdmission {
+        if request[0] & 0x80 != 0 {
+            return Err(invalid(
+                "causal admission requires an Owned request id (high bit 0)",
+            ));
+        }
+        if node_core::local_instance_state::is_reserved_paid_request_id(request) {
+            return Err(invalid(
+                "internal synthetic request ids are not external Owned ids",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Runs the network prepare/quorum/apply flow for an already-built, already
-/// signed ordinary paid `Publish`, `Instantiate` or `Call` (DR-0151 widens
-/// this beyond DR-0148's `Call`-only scope). Persists the mandatory
-/// signed-intent and certificate artifacts, plus any requested
-/// dependency-ref/instance-ref output, all reserved via `create_new` before
-/// the first mutating POST. The dependency-ref/instance-ref bytes are
-/// written only after a verified `Success` acknowledgement -- a charged
-/// `ApplicationFailed` (or any other non-`Success`) result keeps its exact
-/// `PaidExecutionResult` output but leaves the reserved reference file
-/// empty, since no usable published/instantiated reference exists yet.
+/// signed ordinary paid `Publish`, `Instantiate` or `Call`. Persists signed
+/// intent and certificate artifacts before the first mutating POST. Derived
+/// references are written only after an independently verified Success.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_network_submit<T: Transport>(
     parsed: &ParsedArgs,
@@ -690,6 +706,7 @@ pub(super) fn run_network_submit<T: Transport>(
     derived: Option<(&str, &'static str, &[u8])>,
     budget: OperationBudget,
 ) -> Result<PaidExecutionResult, CliError> {
+    require_owned_lane(profile, &signed.intent.request_id)?;
     let signed_intent_out = parsed.require("--fastvote-signed-intent-out")?;
     let certificate_out = parsed.require("--fastvote-certificate-out")?;
     let OperationBudget {
@@ -1087,6 +1104,7 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
     let derived: Option<DerivedReference<'_>> =
         recompute_derived_reference(&parsed, &resolver, &context, &signed.intent.application)?;
     let (endpoints, certifier, profile) = load_endpoints_and_profile(&parsed, &resolver, &context)?;
+    require_owned_lane(profile, &signed.intent.request_id)?;
     if !profile.is_logical()
         && (availability_certificate.is_some()
             || parsed

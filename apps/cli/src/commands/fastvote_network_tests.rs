@@ -6,6 +6,139 @@ use crypto::SignatureSigner;
 use std::cell::RefCell;
 use sunrise_edge_client::*;
 
+#[test]
+fn causal_paid_command_rejects_wrong_and_synthetic_lanes_before_seed_io_or_artifacts() {
+    use std::net::TcpListener;
+    for mut request in [[0x81; 32], [0x41; 32]] {
+        if request[0] == 0x41 {
+            request[..8].copy_from_slice(b"SE:FPv1:");
+        }
+        let mut fixture: Fixture = Fixture::new();
+        fixture.manifest.commitment_profile = CommitmentProfile::CausalAdmission;
+        fixture.manifest.minimum_freeze_block_height = 1;
+        let genesis_signer: LocalSigner =
+            LocalSigner::from_seed(sunrise_edge_devnet::DEVNET_PAID_GENESIS_SEED);
+        fixture.manifest.signature = genesis_signer
+            .sign_framed(
+                &node_core::genesis::genesis_manifest_signing_frame(&fixture.manifest).unwrap(),
+            )
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let listener: TcpListener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint: String = listener.local_addr().unwrap().to_string();
+        let config: String = fixture.path("network");
+        let manifest: String = fixture.path("manifest");
+        std::fs::write(
+            &config,
+            format!(
+                "{} {endpoint} - -\n",
+                encode_hex(&fixture.manifest.genesis_authority),
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &manifest,
+            node_core::encode_genesis_manifest(&fixture.manifest).unwrap(),
+        )
+        .unwrap();
+        let commitment: String = encode_hex(
+            &node_core::genesis_manifest_commitment(&fixture.resolver, &fixture.manifest)
+                .unwrap()
+                .bytes(),
+        );
+        let seed: String = fixture.path("deliberately-missing-seed");
+        let intent: String = fixture.path("intent");
+        let certificate: String = fixture.path("certificate");
+        let availability: String = fixture.path("availability");
+        let request: String = encode_hex(&request);
+        let domain: String = encode_hex(&[0x44; 32]);
+        let error: String = super::super::paid_execution::run(
+            "paid-call",
+            [
+                "--endpoint",
+                &endpoint,
+                "--seed-file",
+                &seed,
+                "--fastvote-network",
+                &config,
+                "--fastvote-genesis-manifest",
+                &manifest,
+                "--fastvote-expected-genesis-digest",
+                &commitment,
+                "--fastvote-signed-intent-out",
+                &intent,
+                "--fastvote-certificate-out",
+                &certificate,
+                "--fastvote-availability-certificate-out",
+                &availability,
+                "--request-id",
+                &request,
+                "--expected-chain-id",
+                "cli-network-boundaries",
+                "--expected-protocol-version",
+                "3",
+                "--expected-epoch",
+                "0",
+                "--expected-hash-suite-id",
+                "1",
+                "--expected-domain",
+                &domain,
+            ]
+            .into_iter()
+            .map(OsString::from),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("lane") || error.contains("reserved"),
+            "the locally pinned gate must precede missing-seed loading: {error}"
+        );
+        assert!(!Path::new(&intent).exists());
+        assert!(!Path::new(&certificate).exists());
+        assert!(!Path::new(&availability).exists());
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}
+
+#[test]
+fn causal_saved_submission_refuses_lane_before_output_reservation_or_network() {
+    for mut request in [[0x81; 32], [0x41; 32]] {
+        if request[0] == 0x41 {
+            request[..8].copy_from_slice(b"SE:FPv1:");
+        }
+        let mut fixture: Fixture = Fixture::new();
+        fixture.signed.intent.request_id = request;
+        let parsed: ParsedArgs = fixture.parsed(&[]);
+        let endpoints: Vec<FastVoteEndpoint<FakeTransport>> = Vec::new();
+        let budget: OperationBudget = OperationBudget {
+            deadline: Instant::now() + Duration::from_secs(10),
+            per_request_cap: Duration::from_secs(1),
+        };
+        let error: String = run_network_submit(
+            &parsed,
+            &endpoints,
+            &fixture.certifier,
+            CommitmentProfile::CausalAdmission,
+            fixture.expected.domain(),
+            &fixture.resolver,
+            &fixture.signed,
+            None,
+            budget,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("Owned") || error.contains("synthetic"),
+            "lane error must precede even required output flag validation: {error}"
+        );
+    }
+}
+
 pub(super) struct Fixture {
     pub(super) directory: PathBuf,
     pub(super) expected: ExpectedProtocolContext,

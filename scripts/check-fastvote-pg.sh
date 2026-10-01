@@ -79,6 +79,15 @@ require_exact_test contract_lifecycle_pg_drainset_member_and_ordered_history_bin
 cargo test --quiet -p sunrise-edge-operator --test contract_lifecycle_pg_e2e \
   -- --ignored --exact contract_lifecycle_pg_drainset_member_and_ordered_history_binary_cli_e2e
 
+# DR-0170: genuine signed-v4 histories, private independent business replay,
+# real source-local snapshot capture and immutable compiled-CLI continuation.
+# This is semantic audit only, never cut/import, Seal or activation authority.
+cargo build --quiet -p sunrise-edge-operator --bin business_audit_pg
+require_exact_test business_audit_pg_genuine_causal_history_reopen_and_corruption_e2e \
+  -p sunrise-edge-operator --test business_audit_pg_e2e
+cargo test --quiet -p sunrise-edge-operator --test business_audit_pg_e2e \
+  -- --ignored --exact business_audit_pg_genuine_causal_history_reopen_and_corruption_e2e
+
 require_exact_test certified_catch_up_pg_missed_prepare_binary_cli_e2e \
   -p sunrise-edge-operator --test certified_catch_up_pg_e2e
 cargo test --quiet -p sunrise-edge-operator --test certified_catch_up_pg_e2e \

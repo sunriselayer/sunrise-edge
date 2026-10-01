@@ -76,6 +76,9 @@ use execution::paid_execution::{
 };
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
+use node_core::admission_profile::{
+    ExternalRequestLane, VerifiedAdmissionProfile, require_external_request_lane,
+};
 use node_core::fast_path::FastPathEd25519Verifier;
 use node_core::fast_path::records::FastPathValidatorSetRecord;
 use node_core::genesis::{
@@ -187,8 +190,28 @@ pub struct TrustedFastVoteGenesis {
     pub certifier: FastPathCertifier,
     /// Signed commitment profile selecting the mandatory publication gate.
     pub commitment_profile: CommitmentProfile,
-    /// Signed v3 Freeze warrant; zero preserves the released v1/v2 policy.
+    /// Signed Freeze warrant; zero preserves the historical v1/v2 policy.
     pub minimum_freeze_block_height: u64,
+    admission_profile: VerifiedAdmissionProfile,
+    pinned_validator_set: ValidatorSet,
+}
+
+impl TrustedFastVoteGenesis {
+    /// The lane rule is rooted in the exact locally pinned signed manifest,
+    /// not a freely constructed profile tag or any endpoint response.
+    pub fn admission_profile(&self) -> &VerifiedAdmissionProfile {
+        &self.admission_profile
+    }
+
+    /// Run before creating a signature or sending a standalone paid request.
+    pub fn require_owned_request_id(&self, request: &[u8; 32]) -> Result<(), ClientError> {
+        require_external_request_lane(&self.admission_profile, ExternalRequestLane::Owned, request)
+            .map_err(ClientError::NodeCore)
+    }
+
+    pub(crate) fn committee_matches_pin(&self) -> bool {
+        self.certifier.validator_set() == &self.pinned_validator_set
+    }
 }
 
 /// Like [`load_trusted_fastvote_genesis`], returning the authenticated profile
@@ -224,7 +247,11 @@ pub fn load_trusted_fastvote_genesis_with_profile(
         return Err(FastVoteGenesisTrustError::InvalidSignature);
     }
     let commitment_profile: CommitmentProfile = manifest.commitment_profile;
+    let admission_profile: VerifiedAdmissionProfile =
+        VerifiedAdmissionProfile::from_pinned_genesis(resolver, &manifest, digest)
+            .map_err(|_| FastVoteGenesisTrustError::InvalidSignature)?;
     validator_set_from_record(&manifest.validator_set, expected_context).and_then(|validator_set| {
+        let pinned_validator_set: ValidatorSet = validator_set.clone();
         let certifier: FastPathCertifier = FastPathCertifier::new(
             expected_context.chain_id().clone(),
             expected_context.protocol_version(),
@@ -236,6 +263,8 @@ pub fn load_trusted_fastvote_genesis_with_profile(
             certifier,
             commitment_profile,
             minimum_freeze_block_height: manifest.minimum_freeze_block_height,
+            admission_profile,
+            pinned_validator_set,
         })
     })
 }

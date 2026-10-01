@@ -23,6 +23,7 @@ r2d2_postgres.workspace = true
 runtime.workspace = true
 runtime-postgres.workspace = true
 rustls.workspace = true
+sunrise-edge-client.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal"] }
 validator-set.workspace = true
 

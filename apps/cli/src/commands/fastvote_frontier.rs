@@ -19,8 +19,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 use sunrise_edge_client::{
-    AtomicityDomainId, ChainId, Client, CommitmentProfile, Epoch, FastPathEd25519Verifier,
-    FastVoteEndpoint, FrozenFrontierCertifier, FrozenFrontierPage, FrozenFrontierPageRequest,
+    AtomicityDomainId, ChainId, Client, Epoch, FastPathEd25519Verifier, FastVoteEndpoint,
+    FrozenFrontierCertifier, FrozenFrontierPage, FrozenFrontierPageRequest,
     FrozenFrontierPageResponse, FrozenFrontierPageVerifier, FrozenFrontierVote, HashSuite,
     HashSuiteResolver, HashSuiteSchedule, MAX_FRONTIER_PAGE_LIMIT,
     MAX_FRONTIER_PAGE_RESPONSE_BYTES, MAX_FRONTIER_VOTE_BYTES, ProtocolVersion, ValidatorId,
@@ -114,11 +114,9 @@ fn load(parsed: &ParsedArgs) -> Result<Inputs, CliError> {
         &context,
     )
     .map_err(failure)?;
-    if trusted.commitment_profile != CommitmentProfile::LogicalGenerationV2
-        || trusted.minimum_freeze_block_height == 0
-    {
+    if !trusted.commitment_profile.is_logical() || trusted.minimum_freeze_block_height == 0 {
         return Err(invalid(
-            "frozen frontier requires a locally pinned fresh signed-v3 genesis",
+            "frozen frontier requires locally pinned signed genesis authorizing Freeze",
         ));
     }
     let peers = parse_network_config(parsed.require("--fastvote-network")?)?;

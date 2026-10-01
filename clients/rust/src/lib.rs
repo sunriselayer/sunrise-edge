@@ -52,6 +52,7 @@
 //! verifies whatever signature comes back before producing output, preserving
 //! the local signing path and this crate's vendor independence.
 
+pub mod causal_admission;
 pub mod client;
 pub mod context;
 pub mod error;
@@ -63,6 +64,7 @@ pub mod fastvote_publication_client;
 pub mod key;
 pub mod local_execution_client;
 pub mod ordered_economics_client;
+pub mod ordered_history_archive;
 pub mod ordered_history_client;
 pub mod paid_execution_client;
 pub mod publication_client;
