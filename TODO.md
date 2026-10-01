@@ -41,12 +41,20 @@ HTTP/SDK/CLI, tests and documentation; do not split merely by codec or file.
 | 4 | Usable add/replace/recover/epoch lifecycle | Share bounded artifact I/O and pin/config primitives in SDK/CLI; keep ingress/authentication, transport and core decisions separate | Real A/B/C/D → A/B/C/E flow: Deposit E, Unbond absent D, verified import/replacement, new-epoch paid contracts/claims, advance to genuine unlock epoch, Withdraw D; restart/replay, retired-key, early withdrawal and stale-writer negatives |
 | 5 | Delivery 4: independent audit and initial-network startup | Only deployment-facing composition/dispatch cleanup needed for the chosen profile; reuse capability tests rather than copy PG-only fixtures | Explicit reviewed initial-network activation profile, independently controlled stores, executable auth/TLS/startup/recovery instructions, separate economics and ingress audits and remediation before live exposure |
 
-- [ ] **Next feature:** close the no-aggregate-availability frozen-member source
-  gap and derive/export a complete authenticated pre-Seal business cut.
-  Extend the existing narrowly verified `apply_drain_member` authority;
-  ordinary open-epoch apply keeps its availability gate. Retained-but-unapplied
-  publications stay unapplied. Unknown or contradictory material stops.
-  This is the blocker recorded by DR-0170, not another standalone codec PR.
+- [x] **Frozen-member source reconstruction gap:**
+  [DR-0174](docs/architecture/decisions/0174-frozen-member-business-reconstruction.md)
+  extends private causal replay through the existing narrowly verified
+  `apply_drain_member` owner after independently accepted Freeze/DrainSet and
+  rebuilt signed stream/possession/union. A genuine completed source without
+  aggregate availability reconstructs; normal apply keeps its availability
+  gate, and retained-but-unapplied publications stay unapplied. Five focused
+  tests cover full certificate variants, missing/foreign/incomplete/tombstoned
+  material, and actual SQLite close/reopen/exact replay/fencing. This is not
+  complete-drain, cut/import or activation evidence.
+- [ ] **Next feature:** derive/export a complete authenticated pre-Seal business
+  cut, proving every selected member's original completion, all four semantic
+  collections and artifact closure. Independently verify bounded immutable
+  saved output; no source write, fabricated proof or self-referential root.
 - [ ] **Then:** verified persistent import with a durable inactive-state guard
   at the core/store authority boundary, not merely a hidden HTTP route.
 - [ ] **Then:** readiness/Seal and activation/serving rollover. These may be
@@ -432,12 +440,19 @@ The detailed existing evidence and remaining criteria follow:
 
   No persistent import, inactive incoming-validator guard, complete cut,
   readiness, Seal, activation, force unlock or general partial cancellation
-  is claimed. Those remain separate Delivery 3 work. Applied Owned targets
-  currently require the normal aggregate-availability completion tuple.
-  - [ ] Support legitimate frozen `apply_drain_member` completion without an
-    aggregate availability certificate before complete drained-state cut/import.
-    The initial audit refuses equality for this source family, never treats it
-    as an unapplied publication and never synthesizes missing proof.
+  is claimed. Those remain separate Delivery 3 work. The initial audit required
+  the normal aggregate-availability completion tuple; DR-0174 extends that
+  source-family boundary without weakening ordinary apply.
+  - [x] Legitimate frozen `apply_drain_member` completion without aggregate
+    availability now reconstructs through independently committed controls.
+    Full original completion companions remain comparison targets; source
+    application hints, possession/ready flags and an uncommitted DrainSet are
+    not authority. Exact equivalent full certificate subsets normalize only
+    after verification, and an absent availability row stays absent. Real
+    file-backed SQLite is independently initialized/executed, closed/reopened
+    and exact-replayed without reapplication; a superseded writer is refused
+    before paid execution, and a current writer positively reconstructs all
+    semantic facts without source mutation. Complete cut/import remains open.
 
 - [x] **Portable storage implementation: bounded reads and backend-enforced snapshot continuity**
   ([DR-0166](docs/architecture/decisions/0166-portable-candidate-snapshot.md),

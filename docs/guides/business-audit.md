@@ -16,7 +16,8 @@ repairs source rows, imports state or signs a protocol vote. See the
 - A complete [ordered-history export](ordered-history.md) for the source's fixed
   applied tip, including every bounded proof/candidate/result/receipt component.
 - A quiescent existing source namespace with complete retained publication and
-  availability material, referenced object bodies and an empty outbox.
+  normal availability or committed frozen-member authority, referenced object
+  bodies and an empty outbox.
 - A PostgreSQL account allowed to read the source tables and namespace metadata.
   TLS trust is configured separately from protocol trust. The operator requires
   TLS and does not accept an insecure plaintext fallback.
@@ -106,12 +107,15 @@ signed checkpoints and hash-linked bond history are not normalized. Development
 namespaces whose initial bond used a different business checkpoint are not
 silently repaired or accepted under the fresh profile.
 
-Applied Owned targets currently need a complete normal completion tuple with
-an aggregate availability certificate. The legitimate frozen member-application
-path can finish without that certificate; such a source is not yet supported
-by this audit and refuses equality. Do not synthesize an availability proof
-or interpret that completed member as retained-but-unapplied. Supporting it is
-required before claiming a complete drained-state cut/import.
+Normal applied Owned targets need a complete completion tuple with an aggregate
+availability certificate. A legitimate frozen member completion instead needs
+its full certificate, witness, settlement and original receipt plus the exact
+independently reconstructed committed Freeze/DrainSet and selected member
+closure. The audit replays that carrier through `apply_drain_member`, not
+ordinary open-epoch recovery. A saved empty availability component remains
+empty; do not synthesize a proof or relabel completed work as unapplied.
+Missing control authority or an incomplete tuple refuses. Unapplied retained
+material remains unapplied; successful audit is not a complete-drain assertion.
 
 This result proves equality at one fixed source snapshot. It is not proof that
 the source is the newest network state, nor a persistent cut, incoming-validator
