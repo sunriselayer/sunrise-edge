@@ -113,6 +113,11 @@ Reject contradictions, missing producers, cycles, deletion-to-absence
 substitution and unsupported business schemas. Recompute checked generations.
 Equivalent valid quorum subsets identify one producer; fee shares derive from
 the full authenticated committee, not the proof's selected signers.
+Normal and DrainSet retention are independently verified carriers of that same
+producer. Account for their exact keys and full artifact closure, including
+retained but unapplied material; never blanket-ignore a publication prefix.
+Application and availability certificate carriers may have different valid
+signer subsets, but must authenticate the same execution/publication identity.
 
 Compare the complete semantic projection of state, original receipts, object
 heads/versions/deletions and referenced blobs, including code/ABI/dependency/

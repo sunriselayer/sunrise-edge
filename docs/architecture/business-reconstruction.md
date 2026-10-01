@@ -70,6 +70,9 @@ Project each fact using its owning schema:
 Preserve checkpoint fields that belong to signed candidates or hash-linked
 business records. Exclude physical revisions, writer fences and unsigned
 object creation coordinates only through explicit field-aware projections.
+Genesis installation and its initial epoch activation normalize their unsigned
+local installation coordinates only after the exact manifest/committee pin
+matches. Post-genesis transition checkpoints are never normalized this way.
 Normalize equivalent proof subsets only after independently verifying their
 same producer identity; do not discard economically deciding fields.
 
@@ -93,3 +96,6 @@ This is an audit/reconstruction boundary, not persistent cut/import, incoming
 validator installation, readiness, Seal or activation. Legacy profiles keep
 their original interpretations and receive no fabricated causal guarantee.
 Ledger, UI, load targets and other deferred gates remain independent.
+
+See the [read-only PostgreSQL operator guide](../guides/business-audit.md) for
+fixed-observation collection, immutable resumption and refusal behavior.
