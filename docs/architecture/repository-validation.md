@@ -1,82 +1,95 @@
 # Repository validation
 
-The validation contract is one complete set of checks, not one runner or one
-database. [`DR-0171`](decisions/0171-partitioned-repository-validation.md)
-separates independent checks without reducing their coverage.
+Persistence is a capability contract, not a PostgreSQL requirement. There are
+two explicit validation profiles. [DR-0172](decisions/0172-storage-neutral-required-validation.md)
+supersedes [DR-0171](decisions/0171-partitioned-repository-validation.md)'s
+every-PR PG policy while retaining its complete tests.
 
-## Entrypoints and coverage
+## Required storage-neutral checks
 
-`npm ci --prefix adapters/cloudflare-workers` followed by
-`./scripts/check-all.sh` remains the complete serial local entrypoint. CI
-dispatches the same closed gate set in independent lanes. Unknown lane names
-are errors. A live lane must refuse to run in CI without its PostgreSQL URL;
-DB-free checks do not need an artificial database to run.
+Every PR and main update runs these four unconditional lanes:
 
 | Lane | Required coverage |
 | --- | --- |
-| Formatting and lint | Workspace and explicit orphan-file formatting, all-target/all-feature Clippy, dispatch coverage checks and whitespace hygiene |
-| Ordinary Rust tests | All nonignored workspace targets/features except the separately executed `runtime-postgres` package, plus the complete SQLite inventory fixture and operator check |
-| PostgreSQL storage | All `runtime-postgres` targets/features, existing operator/Cloudflare feature anchors, and required crash, data-disk-full, WAL-full, connection-exhaustion, backup/restore and PgBouncer configurations |
-| PostgreSQL lifecycle | Genuine FastVote, credential isolation, compiled CLI, physical/logical contract lifecycle and Freeze/frontier checks |
-| PostgreSQL drain and history | The entire genuine DrainSet/member/ordered-history fixture and compiled CLI acceptance |
-| PostgreSQL business audit | The entire genuine causal reconstruction, cache/resume, reopen and corruption-refusal acceptance |
-| PostgreSQL recovery and economics | Remaining certified catch-up, offline/ordered economics and capacity regressions, complete PG inventory, and both bounded smoke phases |
-| Portable checks | Every independent JavaScript vector check, the DB-free soak CLI self-test and all four portable adapter suites |
-| Cloudflare checks | Pinned release WASM build and oracle generation, locked npm installation and the complete adapter type/lint/workerd suite |
+| `lint` | Workspace/orphan-file formatting, all-target/all-feature Clippy, independent dispatch/mutation contracts and diff hygiene |
+| `rust-tests` | All nonignored workspace targets/features except `runtime-postgres`, including core/SDK/CLI, memory and file-backed SQLite tests, plus the exact SQLite inventory fixture |
+| `portable-tools` | All fourteen independent vectors, DB-free soak CLI argument tests and all four Deno/Vercel/Supabase/AWS adapter suites |
+| `cloudflare` | Pinned release WASM and canonical oracle, locked npm dependencies and the complete type/lint/workerd suite |
 
-The ordinary-test partition must not silently remove a previously live
-PostgreSQL-dependent test. Package selection preserves all-target/all-feature
-coverage. Exact ignored-test discovery guards remain in place; a misspelled
-selector must not become a green run of zero tests. The dispatch regression
-checks bind the workflow lanes to the complete local entrypoint and verify
-unique membership of required gates and ignored selectors.
+Run the same complete required set locally:
 
-The storage lane also selects the existing `sunrise-edge-operator` and
-`sunrise-edge-cloudflare-validator` packages, `sunrise-claim`, and the
-`sunrise-edge-cli/usb-hid` feature. Their ordinary tests intentionally repeat:
-resolved native dependency graphs showed that a PG-only selection reduced
-Tokio, futures, libc, smallvec and zeroize features. These anchors preserve the
-workspace feature union without a new binary-execution framework or dependency.
-The claim anchor preserves the additional crypto feature union introduced by
-that workspace package; its ordinary tests also repeat deliberately.
-The ordinary-test lane excludes only `runtime-postgres`; all its other package
-targets and features remain covered. This deliberate bounded duplication does
-not duplicate the required ignored-selector dispatch.
+```bash
+npm ci --prefix adapters/cloudflare-workers
+./scripts/check-all.sh
+```
 
-New workspace packages are automatically included in the ordinary-test lane;
-only `runtime-postgres` is excluded there. Repeat the resolved-feature
-comparison whenever workspace membership or dependencies change. The selected
-anchors are not permanent proof that every later workspace still has the same
-native feature union.
+No database service is required. The default refuses supplied PG URL/fault
+configuration: select the explicit PG/full profile instead of accidentally
+claiming a partial PG run. Common cryptographic, paid execution, causal replay,
+Freeze/DrainSet and authority controls still run. SQLite reopen/fencing and
+real four-validator SQLite HTTP tests are not replaced by mocks. All PG targets
+still compile under full-workspace Clippy.
 
-## Isolation and required result
+The required workflow has no path filters or conditional/tolerated failures.
+Stable `check` runs with `always()` and accepts explicit success from exactly
+these four dependencies. Missing, failed, cancelled, skipped and unknown
+results are errors.
 
-Each live CI lane owns an independent runner and disposable PostgreSQL service.
-No lane stops, fills or exhausts another lane's database. Build targets and
-generated validator artifacts are runner-local. Runtime source, canonical
-bytes, assertions, operation deadlines and debug assertions do not change.
+## Explicit PostgreSQL acceptance
 
-The final required check retains the name `check`. It runs after every lane,
-including unsuccessful dependencies, and accepts only an explicit `success`
-for every required dependency. Missing, failed, cancelled and skipped results
-must refuse. This is deliberately stricter than treating a skipped dependent
-job as completion; see the official [job dependency documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idneeds)
-and [needs result context](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#needs-context).
+The separate `postgres checks` workflow is manually dispatched for the selected
+branch/tag. Its independent `postgres-check` requires all five lanes:
 
-No path-based test skipping, permitted failure, release-profile substitution,
-new cache dependency or nightly-only displacement is part of this partition.
-Every pull request and main update still requires the complete regression set.
-Per-lane job budgets are finite and separate from unchanged operation deadlines.
+| Lane | Retained acceptance |
+| --- | --- |
+| `pg-storage` | Runtime PG targets/features and all six real crash/disk/WAL/connection/backup/PgBouncer configurations |
+| `pg-lifecycle` | Genuine credential-isolated FastVote and compiled-CLI contract lifecycle/Freeze/frontier |
+| `pg-drain-history` | Genuine complete DrainSet/member/ordered-history CLI acceptance |
+| `pg-business-audit` | Genuine causal audit, cache continuation, reopen and corruption/source-fact refusals |
+| `pg-recovery-economics` | Catch-up, ordered economics/capacity, PG inventory and both bounded recovery smoke phases |
 
-## Evidence boundary
+Each live lane owns a separate runner/disposable PG service. Faults cannot
+strike another lane's DB. Assertions, fixture sizes, operation deadlines,
+debug assertions, tool/action/image pins and storage semantics are unchanged.
+PG storage preserves the existing operator/Cloudflare/claim feature anchors
+and CLI USB-HID; their ordinary tests intentionally repeat to preserve native
+feature unions. Repeat feature comparisons if dependencies/membership change.
 
-Parallelization removes serial waiting; it does not prove a test is unstalled,
-reduce the work inside one fixture, or establish a throughput/recovery SLO.
-The actual slowest lane and total runner cost must be measured after execution.
-Static dispatch checks are not a substitute for running the real lanes.
+All nineteen ignored fixtures remain accounted for: one required SQLite case
+and eighteen explicit PG cases. Exact discovery guards reject a misspelled or
+zero-test selector. Independent dispatch baselines verify the four-lane
+default and the retained full suite rather than comparing two reduced lists.
 
-This regression gate is not release provenance or production readiness.
-Dependency/toolchain provenance, SBOMs, reproducible releases, protected review
-policy, real-provider conformance and independent security review remain
-separate obligations. Current implementation and acceptance status belong only
-in [`TODO.md`](../../TODO.md).
+To run the previous complete serial extended suite, explicitly configure a
+disposable PG URL and the desired real fault configuration, then run:
+
+```bash
+./scripts/check-all.sh --full
+```
+
+Missing URL makes `--full`, every PG group, and explicit PG inventory/smoke
+entrypoints fail before checks, even outside CI. An unrun or unconfigured PG
+suite is never successful acceptance. Report which real fault flags/images
+were supplied; a URL alone is not evidence that all fault rehearsals ran.
+
+PG implementation/dependency changes and PG deployment/release claims need
+fresh full PG evidence at the selected source identity. Common `check`
+success does not supply it. Protocol/CLI changes need focused integration
+verification proportional to impact; the PG lifecycle/cache/restart scenarios
+are valuable composition checks, not redundant SQLite unit tests.
+
+## Evidence and provider boundaries
+
+Record executed source identity, actual completion, selected profile and
+unrun checks in reviews. Parallelization/fewer default jobs alone do not prove
+a measured wall-clock or billed-cost improvement. This frequency change
+explicitly removes automatic whole-PG integration on every PR.
+
+Local DO workerd tests do not certify a real Cloudflare deployment. D1 is not
+implemented by changing CI. Every supported durable profile still needs its
+own atomicity, ambiguity, fencing, replay/restart and blob/outbox conformance.
+No provider DB/replica becomes quorum authority.
+
+Readiness, cut/import, Seal/activation, Delivery 3, production provenance and
+security review remain distinct. Current status belongs in
+[`TODO.md`](../../TODO.md), not README or this architecture reference.

@@ -6,8 +6,12 @@ set -euo pipefail
 # reader test, against one disposable loopback `sunrise_edge_test` service.
 # A completed run is evidence, not a network-capacity or soak certification.
 
-project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+script_directory="${BASH_SOURCE[0]%/*}"
+if [[ "$script_directory" == "${BASH_SOURCE[0]}" ]]; then script_directory=.; fi
+project_root="$(cd "$script_directory/.." && pwd)"
 cd "$project_root"
+# shellcheck source=scripts/ci-gates.sh
+source "$project_root/scripts/ci-gates.sh"
 
 # ---- --self-test-cli: fast, DB-free regression check of this script's own
 # argument/bounds validation. Never touches PostgreSQL or cargo. Kept first
@@ -62,7 +66,7 @@ run_cli_self_tests() {
     SUNRISE_EDGE_SOAK_CLAIM_WRITERS=2 SUNRISE_EDGE_SOAK_MAX_CLAIM_RATE_PER_SEC=8 \
     SUNRISE_EDGE_SOAK_DURATION_SECONDS=10 SUNRISE_EDGE_SOAK_WALL_DEADLINE_SECONDS=20 \
     SUNRISE_EDGE_SOAK_RECOVERY_CYCLES=1 SUNRISE_EDGE_SOAK_CONFIRM_DISPOSABLE=1 -- --run
-  self_test_case "--smoke with no PG URL configured cleanly skips" 0 -- --smoke
+  self_test_case "--smoke with no PG URL configured errors locally" 1 -- --smoke
   self_test_case "--smoke with no PG URL configured errors under GITHUB_ACTIONS" 1 \
     GITHUB_ACTIONS=true -- --smoke
   self_test_case "--run with valid bounded vars and no PG URL configured errors, never skips" 1 \
@@ -90,7 +94,7 @@ fi
 # ---- argument and (for --run) bounds/confirmation validation happens
 # before the PG-URL gate below: an invalid invocation must fail closed
 # regardless of whether a live PostgreSQL service happens to be configured,
-# never silently "succeed" via the unset-PG-URL skip path. ----
+# never silently "succeed" with an unconfigured PostgreSQL target. ----
 mode=""
 for arg in "$@"; do
   case "$arg" in
@@ -108,7 +112,7 @@ for arg in "$@"; do
   esac
 done
 if [[ -z "$mode" ]]; then
-  echo "usage: $(basename "$0") --smoke|--run" >&2
+  echo "usage: check-postgres-soak.sh --smoke|--run" >&2
   exit 1
 fi
 
@@ -159,23 +163,9 @@ if [[ "$mode" == "run" ]]; then
   require_bounded_int SUNRISE_EDGE_SOAK_RECOVERY_CYCLES "$SUNRISE_EDGE_SOAK_RECOVERY_CYCLES" 1 32
 fi
 
-# Mirrors check-all.sh's own top-of-file rule: CI must exercise this against
-# the live PostgreSQL service; local checks may run without one and skip.
-# Reached only once the invocation itself is already known to be valid. Only
-# `--smoke` may skip locally: a manual `--run` is a deliberate, explicit
-# long-run invocation and an unconfigured target is always a hard error.
-if [[ -z "${SUNRISE_EDGE_TEST_POSTGRES_URL:-}" ]]; then
-  if [[ "$mode" == "run" ]]; then
-    echo "--run requires SUNRISE_EDGE_TEST_POSTGRES_URL to be set to a disposable loopback PostgreSQL service" >&2
-    exit 1
-  fi
-  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-    echo "CI requires SUNRISE_EDGE_TEST_POSTGRES_URL for the PostgreSQL certified load/recovery harness" >&2
-    exit 1
-  fi
-  echo "skipping PostgreSQL certified load/recovery harness: SUNRISE_EDGE_TEST_POSTGRES_URL is unset"
-  exit 0
-fi
+# Explicit smoke/run validation never succeeds without a disposable PG target.
+# Argument/bounds validation above still precedes this prerequisite.
+ci_require_postgres
 
 if [[ "$mode" == "smoke" ]]; then
   # Fixed, bounded CI/quick-check profile. Deliberately overrides any

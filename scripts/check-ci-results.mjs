@@ -2,18 +2,25 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const registry = fileURLToPath(new URL("./ci-gates.sh", import.meta.url));
-export const requiredGateGroups = execFileSync(
-  "bash",
-  ["-c", 'source "$1"; ci_gate_groups', "ci-gate-registry", registry],
-  { encoding: "utf8" },
-).trim().split("\n");
+function readProfile(profile) {
+  return Object.freeze(execFileSync(
+    "bash",
+    ["-c", 'source "$1"; ci_gate_groups "$2"', "ci-gate-registry", registry, profile],
+    { encoding: "utf8" },
+  ).trim().split("\n"));
+}
+export const requiredGateGroups = readProfile("required");
+export const postgresGateGroups = readProfile("postgres");
 
-export function requireSuccessfulGateResults(needs) {
+export function requireSuccessfulGateResults(needs, profile = "required") {
+  const groups = profile === "required" ? requiredGateGroups
+    : profile === "postgres" ? postgresGateGroups : null;
+  if (groups === null) throw new Error("Unknown repository gate profile");
   if (needs === null || typeof needs !== "object" || Array.isArray(needs)) {
     throw new Error("Repository gate dependencies must be an object");
   }
   const names = Object.keys(needs).sort();
-  const required = [...requiredGateGroups].sort();
+  const required = [...groups].sort();
   if (names.length !== required.length || names.some((name, i) => name !== required[i])) {
     throw new Error("Repository gate dependency membership is incomplete or unknown");
   }
@@ -24,11 +31,20 @@ export function requireSuccessfulGateResults(needs) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    requireSuccessfulGateResults(JSON.parse(process.env.CI_NEEDS_JSON ?? ""));
-    console.log("All required repository gates succeeded");
+    const args = process.argv.slice(2);
+    let profile = "required";
+    if (args.length !== 0) {
+      if (args.length !== 2 || args[0] !== "--profile") {
+        throw new Error("Malformed repository gate profile arguments");
+      }
+      profile = args[1];
+    }
+    requireSuccessfulGateResults(JSON.parse(process.env.CI_NEEDS_JSON ?? ""), profile);
+    console.log(profile === "required" ? "All required repository gates succeeded"
+      : "All explicit PostgreSQL gates succeeded");
   } catch {
     // Never print arbitrary dependency outputs or input JSON.
-    console.error("Required repository gates are missing, unknown or unsuccessful");
+    console.error("Repository gate profile or dependencies are missing, unknown or unsuccessful");
     process.exitCode = 1;
   }
 }

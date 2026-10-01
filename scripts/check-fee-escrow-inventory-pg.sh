@@ -1,19 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+script_directory="${BASH_SOURCE[0]%/*}"
+if [[ "$script_directory" == "${BASH_SOURCE[0]}" ]]; then script_directory=.; fi
+project_root="$(cd "$script_directory/.." && pwd)"
 cd "$project_root"
 
-# Mirrors check-all.sh's own top-of-file rule: CI must exercise this against
-# the live PostgreSQL service; local checks may run without one and skip.
-if [[ -z "${SUNRISE_EDGE_TEST_POSTGRES_URL:-}" ]]; then
-  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-    echo "CI requires SUNRISE_EDGE_TEST_POSTGRES_URL for the PostgreSQL fee-escrow inventory operator E2E" >&2
-    exit 1
-  fi
-  echo "skipping PostgreSQL fee-escrow inventory operator E2E: SUNRISE_EDGE_TEST_POSTGRES_URL is unset"
-  exit 0
-fi
+# shellcheck source=scripts/ci-gates.sh
+source "$project_root/scripts/ci-gates.sh"
+ci_require_postgres
 
 require_exact_test() {
   local test_name="$1"

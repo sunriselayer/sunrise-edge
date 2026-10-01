@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Closed repository gate membership. Sourcing this file never runs a gate.
+readonly CI_REQUIRED_GROUPS=(lint rust-tests portable-tools cloudflare)
+readonly CI_POSTGRES_GROUPS=(
+  pg-storage pg-lifecycle pg-drain-history pg-business-audit pg-recovery-economics
+)
 readonly CI_GATE_GROUPS=(
   lint rust-tests pg-storage pg-lifecycle pg-drain-history pg-business-audit
   pg-recovery-economics portable-tools cloudflare
@@ -33,7 +37,15 @@ readonly CI_AUXILIARY_IGNORED_CASES=(
 )
 
 ci_gate_groups() {
-  printf '%s\n' "${CI_GATE_GROUPS[@]}"
+  if [[ "$#" -gt 1 ]]; then
+    echo 'unknown repository gate profile' >&2
+    return 1
+  fi
+  case "${1-required}" in
+    required) printf '%s\n' "${CI_REQUIRED_GROUPS[@]}" ;;
+    postgres) printf '%s\n' "${CI_POSTGRES_GROUPS[@]}" ;;
+    *) echo 'unknown repository gate profile' >&2; return 1 ;;
+  esac
 }
 
 ci_group_is_known() {
@@ -50,12 +62,18 @@ ci_require_postgres() {
   if [[ -n "${SUNRISE_EDGE_TEST_POSTGRES_URL:-}" ]]; then
     return 0
   fi
-  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-    echo 'CI requires SUNRISE_EDGE_TEST_POSTGRES_URL for live PostgreSQL gates' >&2
+  echo 'explicit PostgreSQL gates require SUNRISE_EDGE_TEST_POSTGRES_URL' >&2
+  exit 1
+}
+
+ci_require_storage_neutral() {
+  local variable
+  # Reject even empty/unknown test-PG settings instead of inheriting a partial
+  # database profile. Explicit --full and PG groups select that profile.
+  for variable in ${!SUNRISE_EDGE_TEST_POSTGRES_@}; do
+    echo 'required gates refuse PostgreSQL configuration; select --full or a PG group' >&2
     exit 1
-  fi
-  echo 'skipping live PostgreSQL gate: SUNRISE_EDGE_TEST_POSTGRES_URL is unset'
-  return 1
+  done
 }
 
 ci_require_exact_ignored_test() {

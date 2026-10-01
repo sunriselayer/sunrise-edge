@@ -80,13 +80,17 @@ cargo build --workspace
 cargo test --workspace --all-targets
 ```
 
-Install the Cloudflare test dependencies once, then run the complete repository
-gate before submitting a change:
+Install the Cloudflare test dependencies once, then run the complete required
+storage-neutral gate before submitting a change (no PostgreSQL service needed):
 
 ```bash
 npm ci --prefix adapters/cloudflare-workers
 ./scripts/check-all.sh
 ```
+
+PG-specific acceptance is explicit, not a requirement for every host. See
+the [validation profiles](docs/architecture/repository-validation.md) for
+the retained `./scripts/check-all.sh --full` suite and disposable DB setup.
 
 To work on one crate while iterating:
 

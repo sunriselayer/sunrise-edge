@@ -6,11 +6,16 @@ use super::*;
 use crate::business_reconstruction::{
     BusinessReconstructionError, BusinessReconstructionOverlay, BusinessReconstructionPlan,
     BusinessReconstructionReport, DrainSetControlMaterial, DrainSetControlProofError,
-    OwnedPublicationMaterial, SourceBusinessSnapshot, drain_control_material_from_source_snapshot,
-    owned_material_from_source_snapshot,
+    OwnedPublicationMaterial, SourceBusinessSnapshot, SourceSnapshotRecord,
+    drain_control_material_from_source_snapshot, owned_material_from_source_snapshot,
 };
+use crate::ordered_economics::frontier;
 use canonical_encoding::CanonicalStruct;
-use consensus::{DrainUnionIdentity, FrozenFrontierPage, FrozenFrontierVote};
+use consensus::{
+    DrainUnionIdentity, FrozenFrontierAccumulator, FrozenFrontierCertifier, FrozenFrontierPage,
+    FrozenFrontierVote,
+};
+use runtime::portable::{DurableRecordDescriptor, DurableRecordKey, DurableRecordMetadata};
 use std::num::NonZeroUsize;
 
 const PAID_REQUEST: [u8; 32] = [0x6a; 32];
@@ -379,6 +384,360 @@ fn genuine_control_history_needs_complete_selected_proof_and_reconstructs_withou
         before,
         "every row/revision/token is source-read-only"
     );
+    assert_canonical_source_fact_corruptions_refuse_without_writes(&source, &before, &overlay);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SourceFactMutation {
+    Nonce,
+    Bond,
+    Receipt,
+    HeadOwner,
+    SelectedFrontier,
+    UnknownReservedRow,
+    UnknownReservedTombstone,
+}
+
+fn replace_snapshot_state(snapshot: &mut SourceBusinessSnapshot, key: Vec<u8>, value: Vec<u8>) {
+    let row: &mut SourceSnapshotRecord = snapshot
+        .records
+        .iter_mut()
+        .find(|row| row.descriptor.key() == &DurableRecordKey::State(key.clone()))
+        .unwrap();
+    let original: SourceSnapshotRecord = row.clone();
+    assert_ne!(original.value.as_deref(), Some(value.as_slice()));
+    let DurableRecordMetadata::State { revision, .. } = row.descriptor.metadata() else {
+        panic!("a state key has state metadata");
+    };
+    row.descriptor = DurableRecordDescriptor::new(
+        DurableRecordKey::State(key),
+        DurableRecordMetadata::State {
+            revision: *revision,
+            value_length: Some(value.len()),
+        },
+    )
+    .unwrap();
+    row.value = Some(value);
+    assert_ne!(*row, original);
+}
+
+fn altered_source_fact(
+    source: &GenuineControlSource,
+    before: &SourceBusinessSnapshot,
+    mutation: SourceFactMutation,
+) -> SourceBusinessSnapshot {
+    let network: &Network = &source.fixture.network;
+    let mut altered: SourceBusinessSnapshot = before.clone();
+    match mutation {
+        SourceFactMutation::Nonce => {
+            let key: Vec<u8> = runtime::PersistenceLayout::new(
+                fixture::chain(),
+                fixture::protocol().protocol_version(),
+            )
+            .sender_nonce_key(
+                *network.signers[0].id.as_bytes(),
+                fixture::protocol().epoch(),
+            );
+            let bytes: &[u8] = before
+                .records
+                .iter()
+                .find(|row| row.descriptor.key() == &DurableRecordKey::State(key.clone()))
+                .unwrap()
+                .value
+                .as_deref()
+                .unwrap();
+            let frame = decode_canonical_frame(bytes).unwrap();
+            frame.require_type(0xE006).unwrap();
+            frame.require_version(1).unwrap();
+            frame.require_only_fields(&[1, 2, 3]).unwrap();
+            let mut changed: CanonicalStruct = CanonicalStruct::new(0xE006, 1);
+            changed
+                .field_bytes(1, frame.required_field(1).unwrap().to_vec())
+                .unwrap();
+            changed
+                .field_u64(2, frame.required_u64(2).unwrap())
+                .unwrap();
+            changed
+                .field_u64(3, frame.required_u64(3).unwrap().checked_add(1).unwrap())
+                .unwrap();
+            let value: Vec<u8> = changed.finish().unwrap();
+            assert_eq!(
+                decode_canonical_frame(&value)
+                    .unwrap()
+                    .required_u64(3)
+                    .unwrap(),
+                2
+            );
+            replace_snapshot_state(&mut altered, key, value);
+        }
+        SourceFactMutation::Bond => {
+            let key: Vec<u8> =
+                fastpath_bond_record_key(&fixture::chain(), &network.signers[0].id).unwrap();
+            let bytes: &[u8] = before
+                .records
+                .iter()
+                .find(|row| row.descriptor.key() == &DurableRecordKey::State(key.clone()))
+                .unwrap()
+                .value
+                .as_deref()
+                .unwrap();
+            let mut bond: FastPathBondRecord = decode_fastpath_bond_record(bytes).unwrap();
+            bond.generation = bond.generation.checked_add(1).unwrap();
+            let value: Vec<u8> = encode_fastpath_bond_record(&bond).unwrap();
+            assert_eq!(decode_fastpath_bond_record(&value).unwrap(), bond);
+            replace_snapshot_state(&mut altered, key, value);
+        }
+        SourceFactMutation::Receipt => {
+            let row: &mut SourceSnapshotRecord = altered
+                .records
+                .iter_mut()
+                .find(|row| matches!(row.descriptor.key(), DurableRecordKey::Receipt(id) if id.as_bytes() == &PAID_REQUEST))
+                .unwrap();
+            let original_row: SourceSnapshotRecord = row.clone();
+            let original: crate::NodeDedupRecord =
+                crate::NodeDedupRecord::decode(row.value.as_deref().unwrap()).unwrap();
+            assert_eq!(original.responses().len(), 1);
+            assert_eq!(
+                original.responses()[0].status(),
+                crate::NodeResponseStatus::Accepted
+            );
+            let response: crate::NodeResponse = crate::NodeResponse::new(
+                original.request_id(),
+                crate::NodeResponseStatus::Rejected,
+                original.responses()[0].payload().map(<[u8]>::to_vec),
+            )
+            .unwrap();
+            let changed: crate::NodeDedupRecord = crate::NodeDedupRecord::new(
+                original.request_id(),
+                original.event_digest(),
+                vec![response],
+            )
+            .unwrap();
+            let value: Vec<u8> = changed.encode().unwrap();
+            assert_eq!(crate::NodeDedupRecord::decode(&value).unwrap(), changed);
+            assert_ne!(original_row.value.as_deref(), Some(value.as_slice()));
+            row.descriptor = DurableRecordDescriptor::new(
+                row.descriptor.key().clone(),
+                DurableRecordMetadata::Receipt {
+                    event_digest: original.event_digest(),
+                    length: NonZeroUsize::new(value.len()).unwrap(),
+                },
+            )
+            .unwrap();
+            row.value = Some(value);
+            assert_ne!(*row, original_row);
+        }
+        SourceFactMutation::HeadOwner => {
+            let row: &mut SourceSnapshotRecord = altered
+                .records
+                .iter_mut()
+                .find(|row| {
+                    row.descriptor.key()
+                        == &DurableRecordKey::ObjectHead(
+                            source.fixture.manifest.objects[1].object.id,
+                        )
+                })
+                .unwrap();
+            let original_row: SourceSnapshotRecord = row.clone();
+            let DurableRecordMetadata::ObjectHead(mut head) = row.descriptor.metadata().clone()
+            else {
+                panic!("an object head has typed metadata");
+            };
+            let DurableObjectHead::Current {
+                owner_projection, ..
+            } = &mut head
+            else {
+                panic!("the paid transfer retains a current source head");
+            };
+            let other_owner: Owner =
+                Owner::Address(Address::new(*network.signers[1].id.as_bytes()));
+            let changed: runtime::DurableObjectOwnerProjection =
+                runtime::DurableObjectOwnerProjection::from_owner(other_owner.clone()).unwrap();
+            assert_ne!(*owner_projection, changed);
+            assert_eq!(
+                objects::decode_owner(changed.bytes().unwrap()).unwrap(),
+                other_owner
+            );
+            *owner_projection = changed;
+            row.descriptor = DurableRecordDescriptor::new(
+                row.descriptor.key().clone(),
+                DurableRecordMetadata::ObjectHead(head),
+            )
+            .unwrap();
+            assert_ne!(row.descriptor, original_row.descriptor);
+        }
+        SourceFactMutation::SelectedFrontier => {
+            // Unsigned drain-signer-entry rows are local progress, not semantic
+            // facts. Corrupt the selected signed descriptor's digest instead.
+            let key: Vec<u8> =
+                frontier::key(&fixture::chain(), fixture::protocol().epoch(), b"frontier/")
+                    .unwrap();
+            let bytes: &[u8] = before
+                .records
+                .iter()
+                .find(|row| row.descriptor.key() == &DurableRecordKey::State(key.clone()))
+                .unwrap()
+                .value
+                .as_deref()
+                .unwrap();
+            let original: frontier::FinalFrontier = frontier::decode_final(bytes).unwrap();
+            let selected: &(FrozenFrontierVote, FrozenFrontierPage) = source
+                .selected
+                .iter()
+                .find(|(vote, _)| vote.validator == original.vote.validator)
+                .unwrap();
+            assert_eq!(original.vote, selected.0);
+            let mut entries: Vec<consensus::AvailabilityIdentity> = selected.1.entries.clone();
+            let other_digest: Digest32 = entries
+                .iter()
+                .find(|entry| entry.request_id == UNAPPLIED_REQUEST)
+                .unwrap()
+                .semantic_artifacts_digest;
+            let entry: &mut consensus::AvailabilityIdentity = entries
+                .iter_mut()
+                .find(|entry| entry.request_id == PAID_REQUEST)
+                .unwrap();
+            assert_ne!(entry.semantic_artifacts_digest, other_digest);
+            entry.semantic_artifacts_digest = other_digest;
+            assert_ne!(entries, selected.1.entries);
+            // Rehash a complete, bounded alternative stream with the production
+            // accumulator. The digest is genuine; the retained signature still
+            // authenticates only the original stream, never this changed one.
+            let mut accumulator: FrozenFrontierAccumulator = FrozenFrontierAccumulator::new(
+                &network.resolver,
+                original.identity.chain_id.clone(),
+                original.identity.protocol_version,
+                original.identity.epoch,
+                original.identity.domain,
+                original.identity.closure_request_id,
+                original.identity.closure_height,
+            )
+            .unwrap();
+            for entry in &entries {
+                accumulator.push(&network.resolver, entry).unwrap();
+            }
+            let mut changed: frontier::FinalFrontier = original.clone();
+            changed.identity = accumulator.into_identity();
+            changed.vote.identity = changed.identity.clone();
+            assert_eq!(changed.identity.entry_count, original.identity.entry_count);
+            assert_ne!(
+                changed.identity.entries_digest,
+                original.identity.entries_digest
+            );
+            let frame: canonical_encoding::CanonicalFrame<'_> =
+                decode_canonical_frame(bytes).unwrap();
+            let mut encoded: CanonicalStruct =
+                CanonicalStruct::new(frame.type_id(), frame.version());
+            encoded
+                .field_bytes(
+                    1,
+                    consensus::encode_frozen_frontier_identity(&changed.identity).unwrap(),
+                )
+                .unwrap();
+            encoded
+                .field_bytes(
+                    2,
+                    consensus::encode_frozen_frontier_vote(&changed.vote).unwrap(),
+                )
+                .unwrap();
+            let value: Vec<u8> = encoded.finish().unwrap();
+            assert_ne!(bytes, value.as_slice());
+            assert_eq!(frontier::decode_final(&value).unwrap(), changed);
+            let certifier: FrozenFrontierCertifier = FrozenFrontierCertifier::new(
+                original.identity.chain_id.clone(),
+                original.identity.protocol_version,
+                original.identity.epoch,
+                network.policy.engine().validator_set().clone(),
+            )
+            .unwrap();
+            certifier
+                .verify_vote(&original.vote, &policy::Ed25519ConsensusVerifier)
+                .unwrap();
+            assert!(matches!(
+                certifier.verify_vote(&changed.vote, &policy::Ed25519ConsensusVerifier),
+                Err(consensus::FrontierError::Consensus(consensus::ConsensusError::InvalidSignature(validator)))
+                    if validator == original.vote.validator
+            ));
+            replace_snapshot_state(&mut altered, key, value);
+        }
+        SourceFactMutation::UnknownReservedRow | SourceFactMutation::UnknownReservedTombstone => {
+            let value: Vec<u8> =
+                encode_ordered_refusal_payload(OrderedRefusal::IneligibleState).unwrap();
+            decode_canonical_frame(&value).unwrap();
+            let value: Option<Vec<u8>> = match mutation {
+                SourceFactMutation::UnknownReservedRow => Some(value),
+                SourceFactMutation::UnknownReservedTombstone => None,
+                _ => unreachable!(),
+            };
+            let key: DurableRecordKey = DurableRecordKey::State(
+                b"se/instances/v1/fastpath/unrecognized-business-v999".to_vec(),
+            );
+            assert!(
+                !before
+                    .records
+                    .iter()
+                    .any(|row| row.descriptor.key() == &key)
+            );
+            altered.records.push(SourceSnapshotRecord {
+                descriptor: DurableRecordDescriptor::new(
+                    key,
+                    DurableRecordMetadata::State {
+                        revision: runtime::StateRevision::new(1),
+                        value_length: value.as_ref().map(Vec::len),
+                    },
+                )
+                .unwrap(),
+                value,
+            });
+        }
+    }
+    assert_ne!(altered.records, before.records);
+    assert_eq!(altered.token, before.token);
+    assert_eq!(altered.referenced_blobs, before.referenced_blobs);
+    assert_ne!(altered, *before);
+    // Descriptor lengths, original receipt identity/digest and body closure all
+    // remain valid. Refusal must come from business/proof checks, not decoding.
+    altered.validate().unwrap();
+    altered
+}
+
+fn assert_canonical_source_fact_corruptions_refuse_without_writes(
+    source: &GenuineControlSource,
+    before: &SourceBusinessSnapshot,
+    overlay: &BusinessReconstructionOverlay<'_>,
+) {
+    let network: &Network = &source.fixture.network;
+    overlay.compare_source(before).unwrap();
+    for mutation in [
+        SourceFactMutation::Nonce,
+        SourceFactMutation::Bond,
+        SourceFactMutation::Receipt,
+        SourceFactMutation::HeadOwner,
+        SourceFactMutation::SelectedFrontier,
+        SourceFactMutation::UnknownReservedRow,
+        SourceFactMutation::UnknownReservedTombstone,
+    ] {
+        let altered: SourceBusinessSnapshot = altered_source_fact(source, before, mutation);
+        let comparison: Result<(), BusinessReconstructionError> = overlay.compare_source(&altered);
+        assert!(
+            matches!(&comparison, Err(BusinessReconstructionError::Invalid(_))),
+            "canonical {mutation:?} must not inherit semantic equality"
+        );
+        if matches!(mutation, SourceFactMutation::SelectedFrontier) {
+            assert!(matches!(
+                comparison,
+                Err(BusinessReconstructionError::Invalid(
+                    "source local ordered key/schema/proof differs"
+                ))
+            ));
+        }
+        overlay.compare_source(before).unwrap();
+        assert_eq!(
+            snapshot(network),
+            *before,
+            "{mutation:?} comparison never writes its genuine source"
+        );
+    }
 }
 
 #[test]

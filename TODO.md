@@ -116,7 +116,7 @@ delivery 1 before Cloudflare DO implementation on 2026-09-27:
 | --- | --- | --- |
 | 1 | Generic certified network contract lifecycle | Merged as PR #228 on 2026-09-27 after the full repository gate, fresh exact-head Opus APPROVE and required CI: Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Independent ingress/security gates remain separate. |
 | 2 | Network economics and validator operations | Merged as PR #232 on 2026-09-27 with normal merge commit `86711be`, after fresh exact-head Opus APPROVE and the passing complete repository CI. Fixed-epoch four-namespace CLI evidence is implemented. Membership-dependent Deposit/Withdraw positives join delivery 3; economics/ingress security audits remain separate. |
-| 3 | Validator membership and epoch handoff | In progress under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Bounded portable storage, logical-generation admission, publication/availability-before-apply and ordered Freeze/immutable frontier export merged as PR #237/#238/#239/#242. Quorum-retained DrainSet/member drain is implemented; authenticated ordering-history export merged as PR #244 with the full gate, independent exact-head approval and required CI. Authenticated causal business reconstruction and closed semantic comparison are next, followed by cut/import; readiness/Seal/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation remain incomplete. |
+| 3 | Validator membership and epoch handoff | In progress under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Bounded portable storage, logical-generation admission, publication/availability-before-apply and ordered Freeze/immutable frontier export merged as PR #237/#238/#239/#242. Quorum-retained DrainSet/member drain is implemented; authenticated ordering-history export merged as PR #244 with the full gate, independent exact-head approval and required CI. Initial causal business reconstruction and closed semantic comparison merged as PR #245 with independent approval and complete validation; its no-aggregate-AV frozen-member limitation remains explicit. Complete drained-state cut/import is next; readiness/Seal/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation remain incomplete. |
 | 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
 
 **PR slicing policy, 2026-09-30:** deliveries describe integrated acceptance
@@ -440,8 +440,11 @@ The detailed existing evidence and remaining criteria follow:
   race/retry assertion was weakened. `npm ci` and strict all-target/all-feature
   workspace Clippy passed. The unchanged dependency lock still reports six
   inherited high-severity development-tool advisories; no remediation is
-  claimed. Before a normal merge, the complete repository gate, independent
-  explicit final-head approval and required final-head CI must also pass.
+  claimed. PR #245 subsequently merged normally as `6860771` after literal
+  `982b4fb` full local success, head-bound identical-tree complete CI success
+  and explicit independent Codex fallback APPROVE. The final genuine local
+  audit passed in 1869.79s and CI audit in 2876.92s; earlier results remain
+  historical, not substituted for the combined final acceptance.
 
   No persistent import, inactive incoming-validator guard, complete cut,
   readiness, Seal, activation, force unlock or general partial cancellation
@@ -5345,8 +5348,8 @@ Phase 17 prerequisites:
 - AWS adapter wrapper and API Gateway HTTP API v2 mapping (implemented As-Is)
 - cross-provider local ingress fixture matrix (implemented As-Is)
 - repository-wide pinned local/CI validation gate (implemented As-Is)
-- [x] DR-0171 closed CI dispatch implementation: nine independent lanes,
-  five isolated PG services, complete serial local default, 19 required ignored
+- [x] Historical DR-0171 closed CI dispatch implementation: nine independent lanes,
+  five isolated PG services, the original complete serial local default, 19 required ignored
   selectors and success-only final `check`. Node 22.23.2 mock coverage/failure
   tests and workflow syntax validation passed; native resolved feature unions
   match the former workspace configuration, with bounded storage-lane anchors.
@@ -5354,15 +5357,24 @@ Phase 17 prerequisites:
   passed all nine lanes and final `check` in 50m10s; audit job 49m26s.
   Summed job elapsed occupancy was 126m18s, not billed cost. The earlier
   120-minute timeout was incomplete, not a comparable successful benchmark.
-- [ ] DR-0171 combined-head final acceptance: retain PR #241's claim package,
-  dependencies, custody purpose and genesis admission while resolving CI to
-  the complete nine-lane policy explicitly selected by the user. Recheck native
-  feature unions, run the complete local gate and fresh exact-head CI, then
-  obtain independent approval. The pre-integration result is not a pass for
-  this changed workspace. Runtime assertions/fault gates remain required;
-  billed runner cost and cost savings are not established. See
-  [design](docs/architecture/repository-validation.md) and
-  [decision](docs/architecture/decisions/0171-partitioned-repository-validation.md).
+- [x] DR-0171 combined-head acceptance: PR #245 merged normally as
+  `6860771`. Literal `982b4fb` passed the complete serial local gate with
+  all six real PG fault configurations and fresh independent Codex APPROVE.
+  Head-bound CI `36863568902` passed all nine lanes plus `check` in 49m41s,
+  using the independently verified identical-tree PR test merge; audit job
+  49m24s. PR #241's claim package, custody/genesis semantics and native feature
+  parity are preserved. These are actual passes, not the earlier partial run
+  or billed-cost proof. DR-0172 now supersedes that every-PR execution policy.
+- [x] DR-0172 storage-neutral required CI implementation: four unconditional DB-free lanes
+  and a success-only `check`; retain the five complete PG lanes behind explicit
+  dispatch and `--full`, never count absent prerequisites as PG success.
+  Direct SQLite production-snapshot controls passed both tests; seven canonical
+  source-corruption controls passed inside the existing genuine core fixture,
+  without duplicating its expensive setup. Node 22 dispatch/mutation contracts,
+  Bash/Node syntax and workflow syntax checks passed. PG-specific changes/deployment still require
+  selected-source PG acceptance; D1 and real-provider readiness remain open.
+  See [design](docs/architecture/repository-validation.md) and
+  [decision](docs/architecture/decisions/0172-storage-neutral-required-validation.md).
 - [x] Combined native dependency-feature parity: 212 workspace/ordinary-lane
   packages and 210 storage-lane packages, with no differing selected feature
   unions. Add the claim package as a bounded storage anchor and regression-test
@@ -5387,9 +5399,9 @@ Phase 17 shared ingress As-Is scope:
   AWS HTTP API v2 mapper testであり、real provider deployment conformanceはまだ完了していない。
 - liveness、unknown path、method、media parameter、content encoding、content-lengthの同一fixtureを
   5 provider consumerで実行する。これはlocal drift検出であり実gateway/runtime conformanceではない。
-- Rust 1.97.1、Node 22.20.0、Deno 2.9.4を固定したcheck script/CIがRust全featureと全adapterを
-  complete gate setとして実行する。DR-0171では同じcoverageを独立CI laneへ分割するが、
-  final-head acceptanceは上記completion gateで追跡する。CI actionもverified upstream tagの
+- Rust 1.97.1、Node 22.20.0、Deno 2.9.4を固定したrequired check script/CIがRust共通テストと全adapterを
+  実行する。DR-0172ではPGを必須のdatabase productにせず、全PG統合・障害検証は明示選択した
+  deployment profileのacceptanceとして維持する。CI actionもverified upstream tagの
   commit SHAへ固定するが、provenance、SBOM、
   reproducibility、real provider testは未完了である。
 - DependabotはCargo、Cloudflare npm、GitHub Actionsを週次確認し上限付きPRを作るがauto-mergeしない。

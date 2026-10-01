@@ -1,20 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+script_directory="${BASH_SOURCE[0]%/*}"
+if [[ "$script_directory" == "${BASH_SOURCE[0]}" ]]; then script_directory=.; fi
+project_root="$(cd "$script_directory/.." && pwd)"
 cd "$project_root"
 
 # shellcheck source=scripts/ci-gates.sh
 source "$project_root/scripts/ci-gates.sh"
 
-group=all
-if [[ "$#" -ne 0 ]]; then
+group=required
+if [[ "$#" -eq 1 && "$1" == '--full' ]]; then
+  group=full
+elif [[ "$#" -ne 0 ]]; then
   if [[ "$#" -ne 2 || "$1" != '--group' ]] || ! ci_group_is_known "$2"; then
-    echo 'usage: check-all.sh [--group <known repository gate>]' >&2
+    echo 'usage: check-all.sh [--full | --group <known repository gate>]' >&2
     exit 1
   fi
   group="$2"
 fi
+case "$group" in
+  full|pg-*) ci_require_postgres ;;
+  *) ci_require_storage_neutral ;;
+esac
 
 check_rust_style() {
   cargo fmt --all -- --check
@@ -69,12 +77,20 @@ check_deno_adapters() {
 }
 
 case "$group" in
-  all)
-    # Keep the complete local gate serial and in its original order. CI may
-    # dispatch closed lanes, but a default run never becomes a partial run.
-    if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-      ci_require_postgres
-    fi
+  required)
+    node scripts/test-ci-gates.mjs
+    check_rust_style
+    cargo test --workspace --all-targets --all-features --exclude runtime-postgres
+    check_sqlite_inventory
+    bash scripts/check-postgres-soak.sh --self-test-cli
+    check_vectors
+    bash scripts/build-cloudflare-validator.sh
+    npm --prefix adapters/cloudflare-workers run check
+    check_deno_adapters
+    git diff --check
+    ;;
+  full)
+    # Explicit extended validation preserves the former complete serial order.
     node scripts/test-ci-gates.mjs
     check_rust_style
     cargo test --workspace --all-targets --all-features
@@ -99,23 +115,6 @@ case "$group" in
     check_sqlite_inventory
     ;;
   pg-storage)
-    # Explicit fault configuration must not silently skip even outside CI.
-    if [[ -z "${SUNRISE_EDGE_TEST_POSTGRES_URL:-}" ]]; then
-      for fault_var in \
-        SUNRISE_EDGE_TEST_POSTGRES_CONTAINER_ID SUNRISE_EDGE_TEST_POSTGRES_CRASH_REQUIRED \
-        SUNRISE_EDGE_TEST_POSTGRES_DISK_FULL_IMAGE SUNRISE_EDGE_TEST_POSTGRES_DISK_FULL_REQUIRED \
-        SUNRISE_EDGE_TEST_POSTGRES_WAL_FULL_IMAGE SUNRISE_EDGE_TEST_POSTGRES_WAL_FULL_REQUIRED \
-        SUNRISE_EDGE_TEST_POSTGRES_CONNECTION_EXHAUSTION_IMAGE SUNRISE_EDGE_TEST_POSTGRES_CONNECTION_EXHAUSTION_REQUIRED \
-        SUNRISE_EDGE_TEST_POSTGRES_BACKUP_RESTORE_IMAGE SUNRISE_EDGE_TEST_POSTGRES_BACKUP_RESTORE_REQUIRED \
-        SUNRISE_EDGE_TEST_POSTGRES_PGBOUNCER_POSTGRES_IMAGE SUNRISE_EDGE_TEST_POSTGRES_PGBOUNCER_IMAGE \
-        SUNRISE_EDGE_TEST_POSTGRES_PGBOUNCER_REQUIRED; do
-        if [[ -v "$fault_var" ]]; then
-          echo 'configured PostgreSQL faults require a disposable live PostgreSQL URL' >&2
-          exit 1
-        fi
-      done
-    fi
-    if ! ci_require_postgres; then exit 0; fi
     # Native feature-anchor packages preserve the current workspace union;
     # their ordinary tests repeat here rather than weakening storage features.
     cargo test -p runtime-postgres -p sunrise-edge-operator \
@@ -124,11 +123,9 @@ case "$group" in
       --features sunrise-edge-cli/usb-hid
     ;;
   pg-lifecycle|pg-drain-history|pg-business-audit)
-    if ! ci_require_postgres; then exit 0; fi
     bash scripts/check-fastvote-pg.sh --group "$group"
     ;;
   pg-recovery-economics)
-    if ! ci_require_postgres; then exit 0; fi
     bash scripts/check-fee-escrow-inventory-pg.sh
     bash scripts/check-fastvote-pg.sh --group "$group"
     # Keep producer, handoff and recovery together under their existing deadline.

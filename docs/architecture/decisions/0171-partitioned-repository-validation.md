@@ -5,6 +5,11 @@ Date: 2026-10-01 (Asia/Singapore)
 Status: Accepted design. Execution evidence and work status are tracked in
 [`TODO.md`](../../../TODO.md).
 
+The every-PR PG requirement and default full-suite policy were superseded by
+[DR-0172](0172-storage-neutral-required-validation.md) on 2026-10-01 at the
+user's request. The rationale and evidence below remain historical; retained
+full PG tests and their assertions were not deleted or weakened.
+
 ## Context
 
 The user requested CI refactoring after the single validation job repeatedly
