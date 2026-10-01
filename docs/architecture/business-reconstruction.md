@@ -101,6 +101,12 @@ object creation coordinates only through explicit field-aware projections.
 Genesis installation and its initial epoch activation normalize their unsigned
 local installation coordinates only after the exact manifest/committee pin
 matches. Post-genesis transition checkpoints are never normalized this way.
+For the exact initial genesis-marker provenance subject, require the canonical
+key, genesis-floor generation and observed epoch, and rederive its content
+digest from the actual pinned marker before projecting the normalized marker
+digest. The same restriction applies if the initial epoch has such a genesis
+subject. All other provenance fields and post-genesis observations remain
+exact; malformed or mismatched provenance never inherits this exception.
 Normalize equivalent proof subsets only after independently verifying their
 same producer identity; do not discard economically deciding fields.
 

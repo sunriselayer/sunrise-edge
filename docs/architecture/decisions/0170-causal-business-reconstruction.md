@@ -75,6 +75,19 @@ profiles retain their existing interpretation; an earlier development causal
 namespace using a different initial business coordinate is not silently
 normalized, overwritten or accepted as a valid reconstruction source.
 
+The semantic projection also accounts for an initial logical provenance row
+whose subject is exactly the genesis install marker (or initial epoch row, if
+the owning genesis schema produces such a subject). First require the exact
+genesis-floor generation, observed genesis epoch, canonical subject/key and
+`StatePresent` digest independently recomputed from that snapshot's actual
+owning row. Validate the row's full genesis/committee binding, then project
+only the digest of its explicitly normalized local installation coordinate.
+Preserve subject, generation and epoch. This is not a provenance-prefix
+exclusion or permission to normalize a post-genesis observation, signed
+witness, bond, transition or candidate digest. Malformed, foreign, tombstoned
+or mismatched source provenance must still refuse; source bytes are not
+changed or used to seed private execution.
+
 ### Ordered admission and interleaving
 
 Before exposing an ordered signature, validate the exact committed first
