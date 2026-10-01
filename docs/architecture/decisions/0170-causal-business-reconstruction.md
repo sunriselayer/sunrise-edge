@@ -181,15 +181,16 @@ stops; retained but unapplied publications remain unexecuted. The same
 ordinary handler subsequently closes admission and must reproduce the exact
 source companions. No live closure fence is weakened for audit replay.
 
-The initial audit supports applied Owned targets with a verified aggregate
+The initial audit supported applied Owned targets with a verified aggregate
 availability certificate and the complete normal completion tuple. Existing
 `apply_drain_member` can legitimately apply a committed member after Freeze
 without that aggregate certificate; this is not made impossible by the audit
-profile. Such a source is currently unsupported by this reconstruction and
-fails closed, rather than being interpreted as an unapplied publication or
-supplied with a fabricated certificate. Complete drained-state cut/import
-must separately close this source-family gap through the existing narrowly
-authenticated member authority.
+profile. The original boundary refused such a source rather than interpreting
+it as unapplied or fabricating a certificate.
+[DR-0174](0174-frozen-member-business-reconstruction.md) extends reconstruction
+through that existing narrow member authority after independently replayed
+committed controls and verified local union possession. This extension does
+not assert complete drain, cut, import or activation.
 
 Compare the complete semantic projection of state, original receipts, object
 heads/versions/deletions and referenced blobs, including code/ABI/dependency/

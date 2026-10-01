@@ -79,8 +79,9 @@ use validator_set::{ValidatorInfo, ValidatorSet};
 pub struct OwnedPublicationMaterial {
     /// Exact original signed intent, certificate, witness, manifest and bodies.
     pub bundle: PublicationBundle,
-    /// Exact source-retained quorum certificate, if the source says application
-    /// committed. Absence is valid for a publication retained before apply.
+    /// Exact source-retained availability quorum certificate for an ordinary
+    /// application. Absence also permits a completed frozen member, but only
+    /// the independently committed DrainSet can authorize its replay.
     pub availability_certificate: Option<Vec<u8>>,
     /// Comparison-target hint derived from source certificate/receipt rows; it
     /// is never authority to apply or accept an outcome.
@@ -534,17 +535,34 @@ pub fn owned_material_from_source_snapshot(
             .records
             .iter()
             .find(|row| row.descriptor.key() == &receipt_key);
-        let completion_presence: [bool; 5] = [
+        let completion_presence: [bool; 4] = [
             state.contains_key(&certificate_key),
             state.contains_key(&witness_key),
             state.contains_key(&settlement_key),
-            state.contains_key(&availability_key),
             receipt.is_some_and(|row| row.value.is_some()),
         ];
         let applied: bool = completion_presence.iter().all(|present| *present);
-        if completion_presence.iter().any(|present| *present) && !applied {
+        let has_availability: bool = state.contains_key(&availability_key);
+        let completion_keys: [&Vec<u8>; 4] = [
+            &certificate_key,
+            &witness_key,
+            &settlement_key,
+            &availability_key,
+        ];
+        if snapshot.records.iter().any(|row| {
+            matches!(row.descriptor.key(), DurableRecordKey::State(key)
+                if completion_keys.contains(&key) && row.value.is_none())
+        }) {
+            return Err(invalid("owned application companion is tombstoned"));
+        }
+        if (completion_presence.iter().any(|present| *present) || has_availability) && !applied {
             return Err(invalid(
                 "owned application records are only partially retained",
+            ));
+        }
+        if applied && !has_availability && drain_record.is_none() {
+            return Err(invalid(
+                "completed publication without availability has no frozen carrier",
             ));
         }
         let availability_certificate: Option<Vec<u8>> = if applied {
@@ -581,21 +599,26 @@ pub fn owned_material_from_source_snapshot(
             {
                 return Err(invalid("applied settlement linkage differs"));
             }
-            let availability_record: FastPathAvailabilityCertificateRecord =
-                decode_fastpath_availability_certificate_record(state[&availability_key])
-                    .map_err(|_| invalid("availability certificate record malformed"))?;
-            if availability_record.request_id != request_id {
-                return Err(invalid("availability certificate request linkage differs"));
-            }
-            let certificate: AvailabilityCertificate =
-                decode_availability_certificate(&availability_record.certificate)
-                    .map_err(|_| invalid("availability certificate malformed"))?;
-            if certificate.identity != verified.identity {
-                return Err(invalid("availability certificate identity differs"));
-            }
-            availability_certifier
-                .verify_certificate(&certificate, &verifier)
-                .map_err(|_| invalid("availability certificate authentication failed"))?;
+            let availability_bytes: Option<Vec<u8>> = if has_availability {
+                let availability_record: FastPathAvailabilityCertificateRecord =
+                    decode_fastpath_availability_certificate_record(state[&availability_key])
+                        .map_err(|_| invalid("availability certificate record malformed"))?;
+                if availability_record.request_id != request_id {
+                    return Err(invalid("availability certificate request linkage differs"));
+                }
+                let certificate: AvailabilityCertificate =
+                    decode_availability_certificate(&availability_record.certificate)
+                        .map_err(|_| invalid("availability certificate malformed"))?;
+                if certificate.identity != verified.identity {
+                    return Err(invalid("availability certificate identity differs"));
+                }
+                availability_certifier
+                    .verify_certificate(&certificate, &verifier)
+                    .map_err(|_| invalid("availability certificate authentication failed"))?;
+                Some(availability_record.certificate)
+            } else {
+                None
+            };
             let original_receipt: &SourceSnapshotRecord = receipt.unwrap();
             let DurableRecordKey::Receipt(original_id) = original_receipt.descriptor.key() else {
                 return Err(invalid("original receipt key shape changed"));
@@ -611,7 +634,7 @@ pub fn owned_material_from_source_snapshot(
             {
                 return Err(invalid("original receipt linkage differs from publication"));
             }
-            Some(availability_record.certificate)
+            availability_bytes
         } else {
             None
         };
@@ -1319,17 +1342,20 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                     if barrier {
                         // A fresh, independently preflight-accepted Freeze is
                         // the last ordinary-admission point. Only the existing
-                        // authenticated application-presence targets cross
-                        // this boundary; retained-but-unapplied publications
-                        // never enter this set. Their signed witness dependency
+                        // authenticated ordinary completion targets cross
+                        // this boundary; no-AV frozen completions and retained-
+                        // but-unapplied publications never enter this set.
+                        // Their signed witness dependency
                         // closure still determines execution order, after every
                         // earlier certified ordered event has been replayed.
                         let remaining_applied_targets: BTreeSet<usize> = owned
                             .iter()
                             .enumerate()
                             .filter_map(|(index, item)| {
-                                (item.source_application_present && !applied_owned.contains(&index))
-                                    .then_some(index)
+                                (item.source_application_present
+                                    && item.availability_certificate.is_some()
+                                    && !applied_owned.contains(&index))
+                                .then_some(index)
                             })
                             .collect();
                         let closure: BTreeSet<usize> =
@@ -1521,8 +1547,8 @@ impl<'a> BusinessReconstructionOverlay<'a> {
             if !request_ids.insert(bundle.request_id)
                 || bundle.domain != self.plan.domain
                 || bundle.commitment_profile != LOGICAL_COMMITMENT_PROFILE
-                || material.source_application_present
-                    != material.availability_certificate.is_some()
+                || (material.availability_certificate.is_some()
+                    && !material.source_application_present)
             {
                 return Err(invalid(
                     "owned material identity or application marker mismatch",
@@ -1735,8 +1761,7 @@ fn require_applied_producer(
     let work: &OwnedWork<'_> = works
         .get(index)
         .ok_or(invalid("owned producer index is outside the catalog"))?;
-    if !work.material.source_application_present || work.material.availability_certificate.is_none()
-    {
+    if !work.material.source_application_present {
         return Err(BusinessReconstructionError::Incomplete(
             "required owned producer has no retained application completion",
         ));
@@ -1809,35 +1834,56 @@ fn apply_owned_closure(
             if !owned_material_is_ready(overlay, work.material)? {
                 continue;
             }
-            let availability: &[u8] = work.material.availability_certificate.as_deref().ok_or(
-                BusinessReconstructionError::Incomplete(
-                    "owned application has no availability certificate",
-                ),
-            )?;
-            let certificate: Vec<u8> =
-                encode_fast_certificate(&work.material.bundle.certificate)
-                    .map_err(|_| invalid("owned FastCertificate encoding failed"))?;
-            crate::fast_path::apply_with_recovery_after_publication(
-                &overlay.store,
-                &overlay.blobs,
-                &overlay.plan.operation_context,
-                overlay.plan.domain,
-                overlay.plan.resolver,
-                overlay.plan.resolver_history,
-                overlay.plan.genesis.context(),
-                overlay.plan.paid_base_policy,
-                &overlay.plan.genesis.fee_policy,
-                overlay.plan.paid_engine,
-                &work.material.bundle.signed_intent,
-                &certificate,
-                work.material.recovery_created_checkpoint,
-                availability,
-            )
-            .map_err(|_| {
-                BusinessReconstructionError::Execution(
-                    "independent owned operation application failed",
+            if let Some(availability) = work.material.availability_certificate.as_deref() {
+                let certificate: Vec<u8> =
+                    encode_fast_certificate(&work.material.bundle.certificate)
+                        .map_err(|_| invalid("owned FastCertificate encoding failed"))?;
+                crate::fast_path::apply_with_recovery_after_publication(
+                    &overlay.store,
+                    &overlay.blobs,
+                    &overlay.plan.operation_context,
+                    overlay.plan.domain,
+                    overlay.plan.resolver,
+                    overlay.plan.resolver_history,
+                    overlay.plan.genesis.context(),
+                    overlay.plan.paid_base_policy,
+                    &overlay.plan.genesis.fee_policy,
+                    overlay.plan.paid_engine,
+                    &work.material.bundle.signed_intent,
+                    &certificate,
+                    work.material.recovery_created_checkpoint,
+                    availability,
                 )
-            })?;
+                .map_err(|_| {
+                    BusinessReconstructionError::Execution(
+                        "independent owned operation application failed",
+                    )
+                })?;
+            } else {
+                // No-AV completion is not ordinary publication authority. The
+                // owning handler reads only privately reconstructed committed
+                // Freeze/DrainSet, exact selected membership and full retained
+                // proof; it refuses before paid execution if any is absent.
+                crate::fast_path::drain_apply::apply_drain_member(
+                    &overlay.store,
+                    &overlay.blobs,
+                    &overlay.plan.operation_context,
+                    overlay.plan.domain,
+                    overlay.plan.resolver,
+                    overlay.plan.resolver_history,
+                    overlay.plan.genesis.context(),
+                    overlay.plan.paid_base_policy,
+                    &overlay.plan.genesis.fee_policy,
+                    overlay.plan.paid_engine,
+                    work.material.bundle.request_id,
+                    work.material.recovery_created_checkpoint,
+                )
+                .map_err(|_| {
+                    BusinessReconstructionError::Execution(
+                        "independent frozen member application failed",
+                    )
+                })?;
+            }
             applied.insert(index);
             pending.remove(&index);
             advanced = true;
@@ -2264,6 +2310,20 @@ fn normalize_carrier_rows(
         {
             return Err(invalid("application certificate subject differs"));
         }
+        let mut fast_subject: Vec<u8> = encode_availability_identity(&item.identity)
+            .map_err(|_| invalid("certificate subject encoding failed"))?;
+        fast_subject.extend_from_slice(&fast_certificate.tx_hash.bytes());
+        fast_subject.extend_from_slice(&fast_certificate.execution_effects_hash.bytes());
+        fast_subject.extend_from_slice(&fast_certificate.locked_objects_digest.bytes());
+        normalized.insert(certificate_key, fast_subject);
+        let Some(expected_identity) = item.availability_identity.as_ref() else {
+            if availability_row.0 {
+                return Err(invalid(
+                    "frozen completion has an unexpected availability carrier",
+                ));
+            }
+            continue;
+        };
         let availability_bytes: &[u8] = availability_row
             .1
             .as_deref()
@@ -2283,20 +2343,11 @@ fn normalize_carrier_rows(
         availability
             .verify_certificate(&certificate, &verifier)
             .map_err(|_| invalid("availability certificate proof is invalid"))?;
-        let expected_identity: &AvailabilityIdentity = item.availability_identity.as_ref().ok_or(
-            invalid("applied publication has no authenticated AV identity"),
-        )?;
         if &certificate.identity != expected_identity || expected_identity != &item.identity {
             return Err(invalid("availability carrier subject differs"));
         }
-        let mut fast_subject: Vec<u8> = encode_availability_identity(&item.identity)
-            .map_err(|_| invalid("certificate subject encoding failed"))?;
-        fast_subject.extend_from_slice(&fast_certificate.tx_hash.bytes());
-        fast_subject.extend_from_slice(&fast_certificate.execution_effects_hash.bytes());
-        fast_subject.extend_from_slice(&fast_certificate.locked_objects_digest.bytes());
         let availability_subject: Vec<u8> = encode_availability_identity(&certificate.identity)
             .map_err(|_| invalid("availability subject encoding failed"))?;
-        normalized.insert(certificate_key, fast_subject);
         normalized.insert(availability_key, availability_subject);
     }
     Ok(normalized)
