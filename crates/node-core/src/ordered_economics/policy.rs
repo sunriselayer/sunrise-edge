@@ -159,6 +159,11 @@ impl OrderedEconomicsPolicy {
         let admission_profile: Option<VerifiedAdmissionProfile> = genesis_manifest
             .map(|manifest| {
                 VerifiedAdmissionProfile::from_pinned_genesis(&resolver, manifest, genesis_digest)
+                    .map_err(|_| {
+                        OrderedEconomicsError::Policy(
+                            "signed genesis admission profile verification failed",
+                        )
+                    })
             })
             .transpose()?;
         let minimum_freeze_block_height: u64 = match genesis_manifest {

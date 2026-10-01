@@ -37,7 +37,7 @@ use consensus::{
     decode_proposal, decode_quorum_certificate, encode_consensus_state, encode_proposal,
     encode_quorum_certificate,
 };
-use runtime::{DurableCommitOutcome, DurableObjectHeadRead};
+use runtime::{DurableCommitOutcome, DurableDomainStateStore, DurableObjectHeadRead};
 
 /// Reserved under [`crate::local_instance_state::INSTANCE_STATE_PREFIX`], so
 /// every existing enforcement point that already calls
@@ -2655,14 +2655,8 @@ where
         .engine()
         .proposal_digest(&preview)
         .map_err(consensus_to_node)?;
-    let (key, revision, retained) = identity::reconcile_leader_proposal(
-        store,
-        context,
-        env,
-        preview.view,
-        signer.validator_id(),
-        digest,
-    )?;
+    let (key, revision, retained) =
+        identity::reconcile_unsigned_leader_proposal(store, context, env, &preview)?;
     if let RetainedIdentity::Exact(retained) = retained {
         if let Some(candidate) = candidate {
             require_admission_receipt(
@@ -2709,16 +2703,16 @@ where
         .engine()
         .propose(&loaded.state, transactions, signer)
         .map_err(consensus_to_node)?;
-    if env
+    let mut comparable: ConsensusProposal = proposal.clone();
+    comparable.signature = preview.signature.clone();
+    if comparable != preview || proposal.signature.len() != preview.signature.len() {
+        return Err(stop("ordered proposal differs from capacity probe"));
+    }
+    let digest: Digest32 = env
         .policy
         .engine()
         .proposal_digest(&proposal)
-        .map_err(consensus_to_node)?
-        != digest
-        || proposal.signature.len() != preview.signature.len()
-    {
-        return Err(stop("ordered proposal differs from capacity probe"));
-    }
+        .map_err(consensus_to_node)?;
     env.policy
         .engine()
         .verify_proposal(&proposal, &Ed25519ConsensusVerifier)
@@ -3301,6 +3295,14 @@ pub(crate) fn admission_closure_key_for_tests(chain: &ChainId, epoch: Epoch) -> 
 #[cfg(test)]
 pub(crate) fn encode_retained_outcome_for_tests(outcome: &OrderedOutcome) -> Vec<u8> {
     encode_retained_outcome(outcome).unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn refusal_output_for_tests(
+    request_id: [u8; 32],
+    refusal: OrderedRefusal,
+) -> NodeOutput {
+    refusal_output(request_id, refusal).unwrap()
 }
 
 /// Builds one request-header row for a corruption regression: a header whose

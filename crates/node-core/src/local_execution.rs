@@ -253,14 +253,15 @@ pub fn handle_local_execution<
     {
         return Ok(output);
     }
-    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let mut admission_profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     crate::admission_profile::require_historical_direct_writer(
         store,
         context,
         domain,
         policy.context(),
-        &mut reads,
+        &mut admission_profile_reads,
     )?;
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     let layout: PersistenceLayout = PersistenceLayout::new(
         call.context.chain_id().clone(),
         call.context.protocol_version(),
@@ -330,6 +331,7 @@ pub fn handle_local_execution<
         &mut mutations,
         &mut reads,
     )?;
+    mutation_fence::merge_configuration_reads(&mut reads, admission_profile_reads)?;
     let assertions: Vec<StateReadAssertion> = reads
         .into_iter()
         .map(|(k, r)| StateReadAssertion::new(k, r))

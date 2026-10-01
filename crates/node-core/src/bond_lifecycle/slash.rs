@@ -407,7 +407,7 @@ where
     }
 
     // 6. current epoch fence.
-    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let mut admission_profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     mutation_fence::fence_direct_or_ordered_writer(
         store,
         context,
@@ -415,8 +415,9 @@ where
         expected,
         &intent.request_id,
         ordered,
-        &mut reads,
+        &mut admission_profile_reads,
     )?;
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     mutation_fence::fence_current_epoch(
         store,
         context,
@@ -821,6 +822,7 @@ where
         bond,
         created_checkpoint,
         reads,
+        admission_profile_reads,
         intent.context.clone(),
         FastPathBondLifecycleOperation::Slash,
         BondTransitionAuthorization::ConsumedEvidence {

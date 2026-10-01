@@ -1053,7 +1053,7 @@ where
     }
 
     // 6. current epoch fence.
-    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let mut admission_profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     mutation_fence::fence_direct_or_ordered_writer(
         store,
         context,
@@ -1061,8 +1061,9 @@ where
         expected,
         &signed.intent.request_id,
         ordered,
-        &mut reads,
+        &mut admission_profile_reads,
     )?;
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     mutation_fence::fence_current_epoch(
         store,
         context,
@@ -1189,6 +1190,7 @@ where
             settlement_key,
             settlement_row_revision,
             reads,
+            admission_profile_reads,
             new_settlement,
             signed.intent.expected_next_row_digest,
             signed_bytes,
@@ -1237,6 +1239,7 @@ where
         settlement_key,
         settlement_row_revision,
         reads,
+        admission_profile_reads,
         executed.next_settlement,
         signed.intent.expected_next_row_digest,
         signed_bytes,
@@ -1262,6 +1265,7 @@ fn commit<S: StructuredDurableDomainStateStore>(
     settlement_key: Vec<u8>,
     settlement_row_revision: StateRevision,
     mut reads: BTreeMap<Vec<u8>, StateRevision>,
+    admission_profile_reads: BTreeMap<Vec<u8>, StateRevision>,
     new_settlement: FastPathSettlementRecord,
     expected_next_row_digest: Digest32,
     signed_bytes: &[u8],
@@ -1321,6 +1325,7 @@ fn commit<S: StructuredDurableDomainStateStore>(
         &mut state_mutations,
         &mut reads,
     )?;
+    mutation_fence::merge_configuration_reads(&mut reads, admission_profile_reads)?;
     let assertions: Vec<StateReadAssertion> = reads
         .into_iter()
         .map(|(k, r)| StateReadAssertion::new(k, r))

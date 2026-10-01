@@ -100,6 +100,23 @@ pub(crate) fn fence_direct_or_ordered_writer<S: StructuredDurableDomainStateStor
     }
 }
 
+/// Physical profile/root/marker fences are configuration CAS, never logical
+/// business operands. Merge only after generation/effect derivation succeeds.
+pub(crate) fn merge_configuration_reads(
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+    additional: BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<(), NodeCoreError> {
+    for (key, revision) in additional {
+        if reads
+            .insert(key, revision)
+            .is_some_and(|previous| previous != revision)
+        {
+            return Err(NodeCoreError::StateConflict);
+        }
+    }
+    Ok(())
+}
+
 /// How a mutation path relates to a [`FastPathLockRecord`]/
 /// [`FastPathNonceLockRecord`] it observes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
