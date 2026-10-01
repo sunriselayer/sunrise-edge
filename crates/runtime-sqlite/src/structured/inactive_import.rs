@@ -198,6 +198,15 @@ impl DurableStateKeyScanner for SqliteImportTarget {
         self.store.scan_durable_keys(context, domain, scan)
     }
 }
+impl StructuredOutboxExclusionGuard for SqliteImportTarget {
+    fn inspect_outbox_exclusion(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<StructuredOutboxInventory, DurableReadError> {
+        self.store.inspect_outbox_exclusion(context, domain)
+    }
+}
 impl DurablePortableRepository for SqliteImportTarget {
     fn scan_portable_keys(
         &self,
