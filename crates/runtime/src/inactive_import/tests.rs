@@ -1,6 +1,7 @@
 use super::*;
 use crate::portable::DurablePortableSnapshotRepository;
-use protocol_types::HashAlgorithmId;
+use hashing::{BuiltinHashFunction, HashFunction};
+use protocol_types::{HashAlgorithmId, HashPurpose};
 
 fn digest(byte: u8) -> Digest32 {
     Digest32::new(HashAlgorithmId::Sha2_256, [byte; 32])
@@ -66,6 +67,75 @@ fn ordinary_write(domain: AtomicityDomainId) -> AtomicStateTransaction {
         .unwrap(),
     )
     .unwrap()
+}
+
+fn assert_node_event_vector(bytes: &[u8], expected_hex: &str) {
+    assert_eq!(expected_hex.len(), 64);
+    let expected: [u8; 32] = std::array::from_fn(|offset| {
+        u8::from_str_radix(&expected_hex[offset * 2..offset * 2 + 2], 16).unwrap()
+    });
+    let chain: ChainId = ChainId::new("cut-vector").unwrap();
+    let hash: BuiltinHashFunction = BuiltinHashFunction::new(HashAlgorithmId::Sha2_256);
+    let actual: Digest32 = hash
+        .hash(
+            HashPurpose::NodeEvent,
+            ProtocolVersion::new(1),
+            &chain,
+            bytes,
+        )
+        .unwrap();
+    assert_eq!(actual.bytes(), expected);
+}
+
+#[test]
+fn inactive_import_persistence_frames_match_independent_node_vectors() {
+    // Synthetic storage frames, not an authenticated import plan or permit.
+    // Independently pinned by scripts/business-import-vectors.mjs.
+    let pin: ImportBinding = ImportBinding {
+        context: ImportContext {
+            chain_id: ChainId::new("cut-vector").unwrap(),
+            protocol_version: ProtocolVersion::new(1),
+            epoch: Epoch::new(2),
+        },
+        domain: AtomicityDomainId::new([0x11; 32]).unwrap(),
+        genesis_digest: digest(0x22),
+        validator_set_digest: digest(0x22),
+        cut_digest: digest(0x22),
+        package_digest: digest(0x22),
+        plan_digest: digest(0x22),
+        row_count: 3,
+        blob_count: 2,
+        generation_floor: ExecutionGeneration::new(7),
+    };
+    let binding_bytes: Vec<u8> = encode_import_binding(&pin).unwrap();
+    assert_eq!(decode_import_binding(&binding_bytes).unwrap(), pin);
+    assert_node_event_vector(
+        &binding_bytes,
+        "10d26677f6bb5df07aa0f3f69982b69abfba650c1e367ce6491e6a5cae4f0039",
+    );
+    let fresh: ImportProgress = ImportProgress {
+        next_ordinal: 0,
+        last_batch_digest: None,
+        accumulator: digest(0x22),
+    };
+    let fresh_bytes: Vec<u8> = encode_import_progress(&fresh).unwrap();
+    assert_eq!(decode_import_progress(&fresh_bytes).unwrap(), fresh);
+    assert_node_event_vector(
+        &fresh_bytes,
+        "24f8039cde4c8d125efc3e7e6d73fbbe56819a2c0d59a046ea8f57c8ee0767b9",
+    );
+    let applied: ImportProgress = ImportProgress {
+        next_ordinal: 3,
+        last_batch_digest: Some(digest(0x33)),
+        accumulator: digest(0x22),
+    };
+    let applied_bytes: Vec<u8> = encode_import_progress(&applied).unwrap();
+    assert_eq!(decode_import_progress(&applied_bytes).unwrap(), applied);
+    assert_node_event_vector(
+        &applied_bytes,
+        "bbd5e8e8cb58b2cd745a71beb6b353f3efe0caf20ac2dbc1619f13079dbf0ec7",
+    );
+    assert_ne!(fresh_bytes, applied_bytes);
 }
 
 #[test]
