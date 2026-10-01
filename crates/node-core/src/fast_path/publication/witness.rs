@@ -268,7 +268,8 @@ pub(crate) struct DecodedDependency {
 }
 
 /// Strictly decodes every operand of the existing `0x6424/v2` frame. It adds
-/// no trust: QCs authenticate the candidate identity, not these result bytes.
+/// no trust by itself: authentication of the certificate-bound witness and
+/// independent execution belong to the consuming verification path.
 pub(crate) fn decode_logical_witness(
     witness: &[u8],
 ) -> Result<DecodedLogicalWitness, PublicationRetentionError> {
