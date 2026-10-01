@@ -407,6 +407,16 @@ pub fn verify_business_cut_archive(
     plan: BusinessReconstructionPlan<'_>,
     archive: &ImmutableArchive,
 ) -> Result<VerifiedBusinessCut, CutArchiveError> {
+    let saved: SavedBusinessCut = read_business_cut_archive(&plan, archive)?;
+    verify_saved_business_cut(plan, &saved).map_err(CutArchiveError::from)
+}
+
+/// Parses and verifies exact bounded transport, not business authority.
+/// Import must independently execute it through its opaque core plan factory.
+pub(crate) fn read_business_cut_archive(
+    plan: &BusinessReconstructionPlan<'_>,
+    archive: &ImmutableArchive,
+) -> Result<SavedBusinessCut, CutArchiveError> {
     let identity: BusinessCutIdentity = decode_business_cut_identity(
         &archive.read("identity.bin", MAX_BUSINESS_CUT_DESCRIPTOR_BYTES)?,
     )?;
@@ -504,7 +514,7 @@ pub fn verify_business_cut_archive(
         package,
         components,
     };
-    verify_saved_business_cut(plan, &saved).map_err(CutArchiveError::from)
+    Ok(saved)
 }
 
 #[cfg(test)]

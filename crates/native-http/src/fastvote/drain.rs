@@ -867,6 +867,15 @@ where
             if state.components.is_cancelled() {
                 return cancelled_before_storage_response();
             }
+            // This is live protocol progress, not an unrestricted historical
+            // archive: its cached frontier vote is signing output.
+            if let Err(error) = node_core::require_ordinary_namespace(
+                state.components.store.as_ref(),
+                &context,
+                domain,
+            ) {
+                return node_error_response(&error);
+            }
             let progress: DrainSignerProgress = match read_drain_signer_progress(
                 state.components.store.as_ref(),
                 &context,

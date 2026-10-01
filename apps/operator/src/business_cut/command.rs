@@ -3,31 +3,15 @@
 
 use crate::{
     business_cut::{CutArchiveLimits, export_source_business_cut, verify_business_cut_archive},
-    common::{FlagSet, load_trusted_genesis_manifest, parse_hash_suite, parse_hex_32},
+    business_pins::{BusinessPinInputs, BusinessPins, bounded, hex, private_operation},
+    common::{FlagSet, parse_hex_32},
     immutable_archive::ImmutableArchive,
     source_sqlite::ExistingSqliteSource,
 };
-use execution::{
-    LocalWasmExecutionEngine, local_execution::LocalExecutionPolicy,
-    publication::PublicationContext,
-};
-use hashing::HashSuiteResolver;
-use node_core::admission_profile::VerifiedAdmissionProfile;
 use node_core::business_reconstruction::BusinessReconstructionPlan;
-use node_core::ordered_economics::{
-    OrderedEconomicsPolicy, OrderedHistoryHeightMaterial, OrderedHistoryIdentity,
-};
-use node_core::{GenesisManifest, genesis_manifest_commitment};
-use protocol_types::{
-    AtomicityDomainId, ChainId, Epoch, HashSuiteSchedule, ProtocolVersion, ValidatorId,
-};
-use runtime::{
-    Clock, DurableOperationContext, StorageCorrelationId, StorageDeadline, SystemClock,
-    WriterFenceGeneration,
-};
+use protocol_types::ValidatorId;
+use runtime::DurableOperationContext;
 use std::{error::Error, ffi::OsString, path::PathBuf};
-use sunrise_edge_client::ordered_history_archive::read_verified_ordered_history_archive;
-use validator_set::{ValidatorInfo, ValidatorSet};
 
 const FLAGS: &[&str] = &[
     "--chain-id",
@@ -57,34 +41,6 @@ struct ExportInputs {
     limits: CutArchiveLimits,
 }
 
-fn bounded(value: &str, minimum: u64, maximum: u64) -> Result<u64, Box<dyn Error>> {
-    let parsed: u64 = value.parse()?;
-    if !(minimum..=maximum).contains(&parsed) {
-        return Err("integer outside operator bound".into());
-    }
-    Ok(parsed)
-}
-fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte: &u8| format!("{byte:02x}"))
-        .collect()
-}
-
-fn offline_operation() -> Result<DurableOperationContext, Box<dyn Error>> {
-    // This fence exists only in the private reconstruction memory store.
-    let fence: WriterFenceGeneration = WriterFenceGeneration::new(1).ok_or("zero private fence")?;
-    let deadline: u64 = SystemClock
-        .now_unix_millis()?
-        .checked_add(3_600_000)
-        .ok_or("private deadline overflow")?;
-    Ok(DurableOperationContext::new(
-        fence,
-        StorageDeadline::new(deadline).ok_or("invalid private deadline")?,
-        StorageCorrelationId::new([0xB9; 16]).ok_or("invalid private correlation")?,
-    ))
-}
-
 /// Runs the same pinned local composition as the `business_cut` executable.
 /// Verification has no database, signing, transport or installation authority.
 pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>> {
@@ -103,31 +59,7 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         _ => return Err("unknown business cut mode; use --help".into()),
     };
     let mut flags: FlagSet = FlagSet::parse(values, FLAGS, &[])?;
-    let chain: ChainId = ChainId::new(flags.one("--chain-id")?)?;
-    let protocol: ProtocolVersion = ProtocolVersion::new(u32::try_from(bounded(
-        &flags.one("--protocol-version")?,
-        1,
-        u64::from(u32::MAX),
-    )?)?);
-    let epoch: Epoch = Epoch::new(bounded(&flags.one("--epoch")?, 0, u64::MAX)?);
-    let domain: AtomicityDomainId =
-        AtomicityDomainId::new(parse_hex_32(&flags.one("--domain")?, "--domain")?)?;
-    let suite_inputs: Vec<String> = flags.many("--suite");
-    if suite_inputs.is_empty() || suite_inputs.len() > 64 {
-        return Err("one to 64 explicit suite entries required".into());
-    }
-    let schedule: Vec<HashSuiteSchedule> = suite_inputs
-        .iter()
-        .map(|value: &String| parse_hash_suite(value))
-        .collect::<Result<Vec<HashSuiteSchedule>, String>>()?;
-    let resolver: HashSuiteResolver = HashSuiteResolver::new(chain.clone(), protocol, schedule)?;
-    let context: PublicationContext = PublicationContext::new(chain.clone(), protocol, epoch)?;
-    let genesis_file: PathBuf = flags.one("--genesis-manifest")?.into();
-    let genesis_pin: [u8; 32] = parse_hex_32(
-        &flags.one("--expected-genesis-digest")?,
-        "--expected-genesis-digest",
-    )?;
-    let history_root: PathBuf = flags.one("--ordered-history-dir")?.into();
+    let pin_inputs: BusinessPinInputs = BusinessPinInputs::parse(&mut flags)?;
     let output: PathBuf = flags.one("--out-dir")?.into();
     let export_inputs: Option<ExportInputs> = if exporting {
         let state: PathBuf = flags.one("--state-db")?.into();
@@ -176,53 +108,22 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     };
     // Mode-irrelevant source, TLS and signing inputs are never silently ignored.
     flags.finish()?;
-    let manifest: GenesisManifest =
-        load_trusted_genesis_manifest(&genesis_file, &resolver, genesis_pin, &context)?;
-    let digest = genesis_manifest_commitment(&resolver, &manifest)?;
-    let profile: VerifiedAdmissionProfile =
-        VerifiedAdmissionProfile::from_pinned_genesis(&resolver, &manifest, digest)?;
-    if !profile.is_causal() {
-        return Err("business cut requires signed causal-admission genesis".into());
-    }
-    let validators: Vec<ValidatorInfo> = manifest
-        .validator_set
-        .validators
-        .iter()
-        .map(|member| ValidatorInfo {
-            id: member.id,
-            voting_power: member.voting_power,
-            signature_scheme: member.signature_scheme,
-            public_key: member.public_key.clone(),
-        })
-        .collect();
-    let set: ValidatorSet = ValidatorSet::new(epoch, validators)?;
-    let policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::new(
-        context.clone(),
-        domain,
-        digest,
-        Some(&manifest),
-        set,
-        resolver.clone(),
-    )?;
-    let (identity, ordered): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
-        read_verified_ordered_history_archive(&policy, &history_root)?;
+    let pins: BusinessPins = pin_inputs.load()?;
     let archive: ImmutableArchive = if exporting {
         ImmutableArchive::open(&output)?
     } else {
         ImmutableArchive::open_read_only(&output)?
     };
-    let base_policy: LocalExecutionPolicy = LocalExecutionPolicy::generic_object_results(context);
-    let engine: LocalWasmExecutionEngine = LocalWasmExecutionEngine::new();
     let source: Option<ExistingSqliteSource> = if let Some(inputs) = &export_inputs {
-        if policy.registered_validator(inputs.validator).is_none() {
+        if pins.policy.registered_validator(inputs.validator).is_none() {
             return Err("source validator is absent from pinned genesis".into());
         }
         Some(ExistingSqliteSource::open(
             &inputs.state,
             &inputs.blobs,
-            chain,
+            pins.context.chain_id().clone(),
             inputs.validator,
-            domain,
+            pins.domain,
             inputs.timeout,
         )?)
     } else {
@@ -230,29 +131,15 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     };
     let operation: DurableOperationContext = match &source {
         Some(source) => source.operation,
-        None => offline_operation()?,
+        None => private_operation()?,
     };
-    let plan: BusinessReconstructionPlan<'_> = BusinessReconstructionPlan {
-        admission_profile: &profile,
-        genesis: &manifest,
-        pinned_genesis_digest: digest,
-        operation_context: operation,
-        domain,
-        resolver: &resolver,
-        resolver_history: &[],
-        ordered_policy: &policy,
-        ordered_history_identity: &identity,
-        ordered_leg_policy: &base_policy,
-        ordered_engine: &engine,
-        paid_base_policy: &base_policy,
-        paid_engine: &engine,
-    };
+    let plan: BusinessReconstructionPlan<'_> = pins.plan(operation);
     if let (Some(source), Some(inputs)) = (&source, export_inputs) {
         let progress = export_source_business_cut(
             plan,
             &source.durable,
             &source.blobs,
-            &ordered,
+            &pins.ordered,
             &archive,
             inputs.limits,
         )?;

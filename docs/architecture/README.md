@@ -100,6 +100,10 @@ roadmap describes a later target state.
   ([DR-0175](decisions/0175-first-epoch-preseal-business-cut.md)):
   private complete-drain derivation, separate semantic/package identity and
   bounded independently reverified saved export; not import, Seal or activation.
+- [Verified inactive business import](verified-inactive-import.md)
+  ([DR-0176](decisions/0176-verified-inactive-business-import.md)):
+  private raw-plan derivation, permanent import origin, atomic bounded storage
+  and core/live-response guards; no readiness, Seal or activation authority.
 - [Repository validation](repository-validation.md)
   ([DR-0172](decisions/0172-storage-neutral-required-validation.md)):
   four required storage-neutral lanes and separately selected complete PG
