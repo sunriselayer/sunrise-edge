@@ -72,6 +72,7 @@
 - [DR-0174: independently reconstructed frozen member completion](0174-frozen-member-business-reconstruction.md)
 - [DR-0175: first-epoch pre-Seal business cut and verified bounded export](0175-first-epoch-preseal-business-cut.md)
 - [DR-0176: verified business state in a permanently import-only namespace](0176-verified-inactive-business-import.md)
+- [DR-0177: conditional readiness and ordered Seal (Proposed, readiness-only first)](0177-conditional-readiness-and-ordered-seal.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

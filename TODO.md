@@ -62,20 +62,35 @@ HTTP/SDK/CLI, tests and documentation; do not split merely by codec or file.
   immutable/deleted object history and authenticated floor. Real SQLite,
   executable corruption/refusal checks and four actual SIGKILL/resume points
   pass. No source write, fabricated proof, import or serving authority.
-- [ ] **Current feature:**
-  [DR-0176](docs/architecture/decisions/0176-verified-inactive-business-import.md)
-  implements private raw-plan installation with permanent FreshImport,
-  Importing and CompleteInactive origin, bounded atomic batches and own writer
-  fencing. Callable SQLite create/resume, original receipt-first replay and
-  core/store/HTTP fresh-and-cached live authority guards are implemented.
-  Parent-run genuine >128-row partial import/reopen/completion, exact original
-  Publish/Instantiate/Call and drain receipts, real commit-reply-loss/fence
-  cases, independent vectors, bounded body corruption and compiled operator
-  checks pass. Final full gate, independent immutable-head review, required CI
-  and explicitly selected complete PG acceptance remain merge conditions.
-  Import does not provide readiness, Seal, activation or a deployed provider.
-- [ ] **Then:** readiness/Seal and activation/serving rollover. These may be
-  separate usable PRs if the intermediate boundary remains fail-closed.
+
+**Implemented inactive import capability:**
+[DR-0176](docs/architecture/decisions/0176-verified-inactive-business-import.md)
+implements private raw-plan installation with permanent FreshImport, Importing
+and CompleteInactive origin, bounded atomic batches and own writer fencing.
+Callable SQLite create/resume, original receipt-first replay and core/store/HTTP
+fresh-and-cached live authority guards are implemented. Genuine >128-row partial
+import/reopen/completion, exact original Publish/Instantiate/Call and drain
+receipts, real commit-reply-loss/fence cases, independent vectors, bounded body
+corruption and compiled operator checks pass. The complete local npm ci and
+check-all.sh gate passed at 491c3388; independent exact-source review approved
+that head. [PR #252](https://github.com/sunriselayer/sunrise-edge/pull/252)
+records the feature/gate evidence. Hosted required CI and selected complete PG
+acceptance must actually pass before merge; this local evidence does not claim
+either result or a merge. Import provides no readiness, Seal, activation or
+deployed-provider authority.
+
+- [ ] **Pre-code next feature design:**
+  [Proposed DR-0177](docs/architecture/decisions/0177-conditional-readiness-and-ordered-seal.md)
+  and the [readiness contract](docs/architecture/conditional-readiness-seal.md)
+  refine a readiness-only first implementation: freshly reverified separate
+  CompleteInactive staging for retained A/B/C and incoming E, exact post-drain
+  eligibility and protected append-only retention initialized with a new target.
+  Closed schemas/preimages, key binding and bounded ledger/token semantics need
+  independent design acceptance before code; existing targets are not lazily
+  upgraded. This is Proposed work, not implementation or a passed gate.
+- [ ] **After readiness:** separately reviewed ordered Seal and activation/
+  serving rollover. Phase-aware high/locked traversal and Seal companion
+  ownership remain pre-code gates; no singleton lock from an uncommitted Seal.
 - [ ] **Then:** integrated membership/recovery acceptance through real compiled
   CLI and authenticated hosts; keep Delivery 3 unchecked until it passes.
 - [ ] **Before live exposure:** close the independently scoped economics and

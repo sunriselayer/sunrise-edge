@@ -104,6 +104,10 @@ roadmap describes a later target state.
   ([DR-0176](decisions/0176-verified-inactive-business-import.md)):
   private raw-plan derivation, permanent import origin, atomic bounded storage
   and core/live-response guards; no readiness, Seal or activation authority.
+- [Conditional readiness and ordered Seal](conditional-readiness-seal.md)
+  ([Proposed DR-0177](decisions/0177-conditional-readiness-and-ordered-seal.md)):
+  pre-code readiness-only contract, fresh staging and protected append-only
+  retention; Seal traversal and activation remain subsequent design work.
 - [Repository validation](repository-validation.md)
   ([DR-0172](decisions/0172-storage-neutral-required-validation.md)):
   four required storage-neutral lanes and separately selected complete PG
