@@ -73,7 +73,19 @@ fn digest(chain: &ChainId, purpose: HashPurpose, bytes: &[u8]) -> Digest32 {
         .unwrap()
 }
 
-fn receipt(chain: &ChainId, id: u8, payload: Vec<u8>) -> DurableRequestReceipt {
+fn receipt(chain: &ChainId, id: u8, data: Vec<u8>) -> DurableRequestReceipt {
+    // Even opaque fixture data must be inside a canonical response payload.
+    // Reuse the production Object codec instead of raw bytes or a test-only frame.
+    let object: Object = Object {
+        id: ObjectId::new([id; 32]),
+        version: 1,
+        owner: Owner::Address(Address::new([0x91; 32])),
+        type_hash: digest(chain, HashPurpose::Object, b"receipt-payload-type"),
+        schema_version: 1,
+        data,
+    };
+    let payload: Vec<u8> = objects::encode_object(&object).unwrap();
+    assert_eq!(objects::decode_object(&payload).unwrap(), object);
     let request: RequestId = RequestId::new([id; 32]).unwrap();
     let event: Digest32 = digest(chain, HashPurpose::NodeEvent, &[id]);
     let response: NodeResponse =
