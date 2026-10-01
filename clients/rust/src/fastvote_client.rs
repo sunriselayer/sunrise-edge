@@ -76,23 +76,27 @@ use execution::paid_execution::{
 };
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
+use node_core::RequestId;
 use node_core::admission_profile::{
     ExternalRequestLane, VerifiedAdmissionProfile, require_external_request_lane,
 };
 use node_core::fast_path::FastPathEd25519Verifier;
-use node_core::fast_path::records::FastPathValidatorSetRecord;
-use node_core::genesis::{
-    GenesisManifest, decode_genesis_manifest, genesis_manifest_commitment,
-    genesis_manifest_signing_frame,
-};
+use node_core::genesis::GenesisManifest;
 use node_core::logical_generation::CommitmentProfile;
-use node_core::{MAX_GENESIS_MANIFEST_BYTES, RequestId};
 use node_wire::{FASTVOTE_CERTIFICATES_PATH, FASTVOTE_PREPARE_PATH, FastVoteApplyRequest};
-use protocol_types::{Digest32, SignatureSchemeId, ValidatorId};
-use validator_set::{ValidatorInfo, ValidatorSet};
+use protocol_types::{Digest32, ValidatorId};
+use validator_set::ValidatorSet;
+
+#[cfg(test)]
+use protocol_types::SignatureSchemeId;
+#[cfg(test)]
+use validator_set::ValidatorInfo;
 
 use crate::client::expect_success;
 use crate::error::ClientError;
+use crate::local_genesis::{
+    LocalGenesisError, PinnedGenesis, load_pinned_genesis, validator_set_from_record,
+};
 use crate::transport::{Method, Transport, WireRequest};
 use crate::{Client, NODE_RESULT_MEDIA_TYPE};
 use node_wire::{HttpNodeResult, NODE_EVENT_MEDIA_TYPE};
@@ -114,7 +118,7 @@ pub const MAX_FASTVOTE_PER_REQUEST_CAP: Duration = Duration::from_secs(300);
 #[derive(Debug)]
 pub enum FastVoteGenesisTrustError {
     /// The manifest file could not be read or exceeded
-    /// [`MAX_GENESIS_MANIFEST_BYTES`].
+    /// [`node_core::MAX_GENESIS_MANIFEST_BYTES`].
     Io(std::io::Error),
     /// The manifest bytes were not a valid canonical genesis manifest.
     Decode(node_core::genesis::GenesisError),
@@ -156,6 +160,18 @@ impl Error for FastVoteGenesisTrustError {
             Self::Io(error) => Some(error),
             Self::Decode(error) => Some(error),
             _ => None,
+        }
+    }
+}
+
+impl From<LocalGenesisError> for FastVoteGenesisTrustError {
+    fn from(error: LocalGenesisError) -> Self {
+        match error {
+            LocalGenesisError::Io(error) => Self::Io(error),
+            LocalGenesisError::Decode(error) => Self::Decode(error),
+            LocalGenesisError::CommitmentMismatch => Self::CommitmentMismatch,
+            LocalGenesisError::ContextMismatch => Self::ContextMismatch,
+            LocalGenesisError::InvalidSignature => Self::InvalidSignature,
         }
     }
 }
@@ -223,34 +239,21 @@ pub fn load_trusted_fastvote_genesis_with_profile(
     expected_digest: [u8; 32],
     expected_context: &PublicationContext,
 ) -> Result<TrustedFastVoteGenesis, FastVoteGenesisTrustError> {
-    let bytes = read_bounded(manifest_path, MAX_GENESIS_MANIFEST_BYTES)
-        .map_err(FastVoteGenesisTrustError::Io)?;
-    let manifest: GenesisManifest =
-        decode_genesis_manifest(&bytes).map_err(FastVoteGenesisTrustError::Decode)?;
-    let digest: Digest32 = genesis_manifest_commitment(resolver, &manifest)
-        .map_err(FastVoteGenesisTrustError::Decode)?;
-    if digest.bytes() != expected_digest {
-        return Err(FastVoteGenesisTrustError::CommitmentMismatch);
-    }
-    if manifest.context() != expected_context {
-        return Err(FastVoteGenesisTrustError::ContextMismatch);
-    }
-    let verifier = crypto::Ed25519Verifier::from_verifying_key_bytes(&manifest.genesis_authority)
-        .map_err(|_| FastVoteGenesisTrustError::InvalidSignature)?;
-    let frame =
-        genesis_manifest_signing_frame(&manifest).map_err(FastVoteGenesisTrustError::Decode)?;
-    use crypto::SignatureVerifier;
-    let valid = verifier
-        .verify_framed(&frame, &manifest.signature)
-        .map_err(|_| FastVoteGenesisTrustError::InvalidSignature)?;
-    if !valid {
-        return Err(FastVoteGenesisTrustError::InvalidSignature);
-    }
+    let pinned: PinnedGenesis =
+        load_pinned_genesis(manifest_path, resolver, expected_digest, expected_context)
+            .map_err(FastVoteGenesisTrustError::from)?;
+    let manifest: &GenesisManifest = &pinned.manifest;
     let commitment_profile: CommitmentProfile = manifest.commitment_profile;
     let admission_profile: VerifiedAdmissionProfile =
-        VerifiedAdmissionProfile::from_pinned_genesis(resolver, &manifest, digest)
+        VerifiedAdmissionProfile::from_pinned_genesis(resolver, manifest, pinned.digest)
             .map_err(|_| FastVoteGenesisTrustError::InvalidSignature)?;
-    validator_set_from_record(&manifest.validator_set, expected_context).and_then(|validator_set| {
+    validator_set_from_record(
+        &manifest.validator_set,
+        expected_context,
+        "FastVote phase 1 supports only Ed25519 validators",
+    )
+    .map_err(FastVoteGenesisTrustError::InvalidValidatorSet)
+    .and_then(|validator_set| {
         let pinned_validator_set: ValidatorSet = validator_set.clone();
         let certifier: FastPathCertifier = FastPathCertifier::new(
             expected_context.chain_id().clone(),
@@ -267,50 +270,6 @@ pub fn load_trusted_fastvote_genesis_with_profile(
             pinned_validator_set,
         })
     })
-}
-
-#[allow(clippy::result_large_err)]
-fn validator_set_from_record(
-    record: &FastPathValidatorSetRecord,
-    expected_context: &PublicationContext,
-) -> Result<ValidatorSet, FastVoteGenesisTrustError> {
-    if &record.context != expected_context {
-        return Err(FastVoteGenesisTrustError::InvalidValidatorSet(
-            "validator set record context mismatch".to_string(),
-        ));
-    }
-    let mut info: Vec<ValidatorInfo> = Vec::with_capacity(record.validators.len());
-    for validator in &record.validators {
-        if validator.signature_scheme != SignatureSchemeId::Ed25519 {
-            return Err(FastVoteGenesisTrustError::InvalidValidatorSet(
-                "FastVote phase 1 supports only Ed25519 validators".to_string(),
-            ));
-        }
-        info.push(ValidatorInfo {
-            id: validator.id,
-            voting_power: validator.voting_power,
-            signature_scheme: validator.signature_scheme,
-            public_key: validator.public_key.clone(),
-        });
-    }
-    ValidatorSet::new(expected_context.epoch(), info)
-        .map_err(|error| FastVoteGenesisTrustError::InvalidValidatorSet(error.to_string()))
-}
-
-pub(crate) fn read_bounded(path: &std::path::Path, maximum: usize) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path)?;
-    let cap = u64::try_from(maximum).unwrap_or(u64::MAX);
-    let mut buffer = Vec::new();
-    file.by_ref()
-        .take(cap.saturating_add(1))
-        .read_to_end(&mut buffer)?;
-    if buffer.len() > maximum {
-        return Err(std::io::Error::other(
-            "genesis manifest exceeds the maximum accepted size",
-        ));
-    }
-    Ok(buffer)
 }
 
 /// One caller-configured FastVote validator endpoint: a fixed,
