@@ -361,6 +361,7 @@ fn history_command(
     directory: &Path,
     cap: &str,
     pins: Option<(u64, protocol_types::Digest32)>,
+    chunk_bytes: u32,
 ) -> Output {
     let mut extra: Vec<String> = vec![
         "--target-validator-id".to_owned(),
@@ -370,7 +371,7 @@ fn history_command(
         "--history-max-heights".to_owned(),
         cap.to_owned(),
         "--history-chunk-bytes".to_owned(),
-        "1024".to_owned(),
+        chunk_bytes.to_string(),
     ];
     if let Some((height, digest)) = pins {
         extra.extend([
@@ -425,6 +426,15 @@ fn saved_material(
         decode_ordered_history_height_descriptor,
     };
     let height_dir: PathBuf = directory.join(format!("height-{height:020}"));
+    let setting: [u8; 4] = fs::read(directory.join("chunk-size.bin"))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let chunk_bytes: usize = usize::try_from(u32::from_be_bytes(setting)).unwrap();
+    assert!(
+        chunk_bytes > 0
+            && chunk_bytes <= node_core::ordered_economics::MAX_ORDERED_HISTORY_CHUNK_BYTES
+    );
     let descriptor: OrderedHistoryHeightDescriptor = decode_ordered_history_height_descriptor(
         &fs::read(height_dir.join("descriptor.bin")).unwrap(),
     )
@@ -450,7 +460,12 @@ fn saved_material(
                     format!("chunk-{:020}.bin", bytes.len())
                 );
                 let chunk: Vec<u8> = fs::read(entry).unwrap();
-                assert!(!chunk.is_empty() && chunk.len() <= 1024);
+                let remaining: usize = usize::try_from(reference.length)
+                    .unwrap()
+                    .checked_sub(bytes.len())
+                    .expect("saved chunks cannot exceed the descriptor length");
+                assert!(!chunk.is_empty());
+                assert_eq!(chunk.len(), chunk_bytes.min(remaining));
                 bytes.extend(chunk);
             }
             assert_eq!(bytes.len() as u64, reference.length);
@@ -550,11 +565,17 @@ pub(super) fn run(
     fs::write(&network, format!("{source_id} {} - -\n", source.addr)).unwrap();
     let directory: PathBuf = temp_file(data_dir, "ordered-history-export");
     let before: SqlSnapshot = sql_snapshots(pool, namespaces);
-    let partial: Output =
-        history_command(fixture, &network, genesis, source_id, &directory, "1", None);
+    let partial: Output = history_command(
+        fixture, &network, genesis, source_id, &directory, "1", None, 1024,
+    );
     require_success(
         partial,
         "bounded history invocation reports a genuine partial prefix",
+    );
+    assert_eq!(
+        fs::read(directory.join("chunk-size.bin")).unwrap(),
+        1024_u32.to_be_bytes(),
+        "partial/restarted exports retain the deliberately small chunk setting"
     );
     let fixed: OrderedHistoryIdentity = verify_saved(&policy, &directory, false);
     assert!(fixed.through_height >= 10);
@@ -604,7 +625,9 @@ pub(super) fn run(
     let after_restart: SqlSnapshot = sql_snapshots(pool, namespaces);
     for _ in 0..64 {
         require_success(
-            history_command(fixture, &network, genesis, source_id, &directory, "1", None),
+            history_command(
+                fixture, &network, genesis, source_id, &directory, "1", None, 1024,
+            ),
             "compiled CLI resumes the original fixed target after real source restart / progress",
         );
         if directory.join("complete").exists() {
@@ -622,7 +645,9 @@ pub(super) fn run(
     assert_eq!(sql_snapshots(pool, namespaces), after_restart);
     let completed: BTreeMap<PathBuf, Vec<u8>> = files(&directory);
     require_success(
-        history_command(fixture, &network, genesis, source_id, &directory, "1", None),
+        history_command(
+            fixture, &network, genesis, source_id, &directory, "1", None, 1024,
+        ),
         "same-boot completed CLI resume re-verifies immutable saved material",
     );
     assert_eq!(files(&directory), completed);
@@ -639,6 +664,7 @@ pub(super) fn run(
             fixed.through_height.checked_add(1).unwrap(),
             fixed.through_digest,
         )),
+        1024,
     );
     assert!(
         !mismatch.status.success(),
@@ -661,8 +687,9 @@ pub(super) fn run(
     bad[0] ^= 1;
     fs::write(chunk, bad).unwrap();
     let corrupt_files: BTreeMap<PathBuf, Vec<u8>> = files(&tampered);
-    let corrupt: Output =
-        history_command(fixture, &network, genesis, source_id, &tampered, "64", None);
+    let corrupt: Output = history_command(
+        fixture, &network, genesis, source_id, &tampered, "64", None, 1024,
+    );
     assert!(
         !corrupt.status.success(),
         "changed saved canonical proof must refuse"
@@ -702,7 +729,7 @@ pub(super) fn run(
     let stale_dir: PathBuf = temp_file(data_dir, "history-stale-source");
     assert!(
         !history_command(
-            fixture, &network, genesis, source_id, &stale_dir, "64", None
+            fixture, &network, genesis, source_id, &stale_dir, "64", None, 1024
         )
         .status
         .success()
@@ -711,9 +738,26 @@ pub(super) fn run(
     assert_eq!(sql_snapshots(pool, namespaces), after_fence);
     fs::write(&network, format!("{source_id} {} - -\n", rival.addr)).unwrap();
     let fresh: PathBuf = temp_file(data_dir, "history-fresh-source");
+    // The separate fresh-source positive control uses the real CLI's normal
+    // one-MiB transfer size. Tiny chunks and fixed-target interruption/resume
+    // remain exercised above without turning this control into a load test
+    // or increasing any production/test operation deadline.
     require_success(
-        history_command(fixture, &network, genesis, source_id, &fresh, "64", None),
+        history_command(
+            fixture,
+            &network,
+            genesis,
+            source_id,
+            &fresh,
+            "64",
+            None,
+            1024 * 1024,
+        ),
         "newly fenced active host serves genuine fresh HTTP history after restart",
+    );
+    assert_eq!(
+        fs::read(fresh.join("chunk-size.bin")).unwrap(),
+        (1024_u32 * 1024).to_be_bytes()
     );
     let newer: OrderedHistoryIdentity = verify_saved(&policy, &fresh, true);
     assert!(newer.through_height > fixed.through_height);
