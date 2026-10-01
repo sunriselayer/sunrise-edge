@@ -239,12 +239,12 @@ fn local_fastpath_rows(
             let (_, required) = publication::witness::required_artifacts(witness)
                 .map_err(|_| invalid("prepared witness operand schema"))?;
             excluded.insert(witness_key, ());
-            for ((kind, _identity), digest) in required {
-                let kind = consensus::bundle::ArtifactKind::from_u16(kind)
+            for ((kind, _identity), digest) in required.iter() {
+                let kind = consensus::bundle::ArtifactKind::from_u16(*kind)
                     .map_err(|_| invalid("prepared artifact kind"))?;
                 excluded.insert(
                     prepared_material::fastpath_prepared_artifact_key(
-                        chain, &request, kind, &digest,
+                        chain, &request, kind, digest,
                     )
                     .map_err(|_| invalid("prepared artifact key"))?,
                     (),

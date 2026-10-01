@@ -448,13 +448,13 @@ pub(crate) fn validate_local_rows(
                     drain_union::drain_union_progress_key(
                         policy.context().chain_id(),
                         policy.context().epoch(),
-                        selection,
+                        &selection,
                     )
                 } else {
                     drain_union::drain_union_ready_key(
                         policy.context().chain_id(),
                         policy.context().epoch(),
-                        selection,
+                        &selection,
                     )
                 }
                 .map_err(|_| invalid("local union key"))?;
