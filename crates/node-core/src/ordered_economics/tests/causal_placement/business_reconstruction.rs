@@ -245,6 +245,7 @@ fn complete_history(
 
 fn claim_source(
     vary_quorums: bool,
+    pending_recommit: bool,
 ) -> (CausalFixture, [CertifiedPaidMaterial; 2], OrderedCandidate) {
     let fixture: CausalFixture = fresh_fixture();
     let escrow_intent: Vec<u8> =
@@ -280,10 +281,43 @@ fn claim_source(
     };
     let (candidate, expected): (OrderedCandidate, FastPathSettlementRecord) =
         positive_claim(&fixture, ESCROW, CLAIM);
-    for view in 1..=3 {
-        fixture
-            .network
-            .round(view, (view == 1).then_some(&candidate));
+    if pending_recommit {
+        // Form two genuine ordered QCs while the original candidate has not
+        // yet been applied. Applying the QCs in order records the original
+        // result at height 1 and a certified recommit at height 2.
+        let (_, first, _): (Vec<OrderedEventOutput>, QuorumCertificate, OrderedProposal) =
+            fixture.network.certify(1, Some(&candidate));
+        let (_, second, _): (Vec<OrderedEventOutput>, QuorumCertificate, OrderedProposal) =
+            fixture.network.certify(2, Some(&candidate));
+        for replica in 0..REPLICAS {
+            assert!(receipt(&fixture.network, replica, CLAIM).is_none());
+            process_certificate(
+                &fixture.network.stores[replica],
+                &fixture.network.context,
+                &fixture.network.env(),
+                &first,
+            )
+            .unwrap();
+            let original: DurableRequestReceipt =
+                receipt(&fixture.network, replica, CLAIM).unwrap();
+            process_certificate(
+                &fixture.network.stores[replica],
+                &fixture.network.context,
+                &fixture.network.env(),
+                &second,
+            )
+            .unwrap();
+            assert_eq!(receipt(&fixture.network, replica, CLAIM), Some(original));
+        }
+        for view in 3..=4 {
+            fixture.network.round(view, None);
+        }
+    } else {
+        for view in 1..=3 {
+            fixture
+                .network
+                .round(view, (view == 1).then_some(&candidate));
+        }
     }
     for replica in 0..REPLICAS {
         assert_eq!(nonce(&fixture.network, replica), 2);
@@ -328,17 +362,14 @@ fn availability_subset(network: &Network, request: [u8; 32], signers: &[usize]) 
 
 #[test]
 fn reconstructs_two_genuine_owned_producers_and_positive_claim_with_closed_source_comparison() {
-    let (fixture, materials, candidate): (
+    let (fixture, materials, _candidate): (
         CausalFixture,
         [CertifiedPaidMaterial; 2],
         OrderedCandidate,
-    ) = claim_source(false);
+    ) = claim_source(false, true);
     let network: &Network = &fixture.network;
     let original: DurableRequestReceipt = receipt(network, 0, CLAIM).unwrap();
     let after_first: FastPathSettlementRecord = settlement(network, 0, ESCROW);
-    for view in 4..=6 {
-        network.round(view, (view == 4).then_some(&candidate));
-    }
     assert_eq!(receipt(network, 0, CLAIM).unwrap(), original);
     assert_eq!(settlement(network, 0, ESCROW), after_first);
     assert_eq!(nonce(network, 0), 2);
@@ -380,7 +411,7 @@ fn reconstructs_two_genuine_owned_producers_and_positive_claim_with_closed_sourc
     assert_eq!(report.empty_ordered_heights, 2);
     assert!(
         history
-            .last()
+            .get(1)
             .unwrap()
             .components
             .iter()
@@ -471,7 +502,7 @@ fn reconstructs_two_genuine_owned_producers_and_positive_claim_with_closed_sourc
 #[test]
 fn equivalent_real_quorums_and_normal_drain_aliases_compare_equal_after_independent_replay() {
     let (fixture, materials, _): (CausalFixture, [CertifiedPaidMaterial; 2], OrderedCandidate) =
-        claim_source(true);
+        claim_source(true, false);
     let network: &Network = &fixture.network;
     let freeze: OrderedCandidate = freeze_candidate([0xdb; 32]);
     for view in 4..=6 {
@@ -589,6 +620,39 @@ fn equivalent_real_quorums_and_normal_drain_aliases_compare_equal_after_independ
         );
     }
     assert_eq!(snapshot(network), alias_source);
+}
+
+#[test]
+fn signed_v4_genesis_install_checkpoint_does_not_change_first_bond_transition() {
+    let fixture: CausalFixture = fresh_fixture();
+    let network: &Network = &fixture.network;
+
+    // This genuine signed-v4 source fixture installs at checkpoint 10. The
+    // independently reconstructed private store installs the same signed
+    // genesis at checkpoint 0. Installation coordinates are local markers;
+    // the business genesis bond generation must be deterministic across both.
+    assert_eq!(network.bond.committed_at_checkpoint, 0);
+    let request: [u8; 32] = [0xec; 32];
+    let (candidate, expected): (OrderedCandidate, FastPathBondRecord) =
+        replacement(&fixture, request);
+    for view in 1..=3 {
+        network.round(view, (view == 1).then_some(&candidate));
+    }
+    assert_eq!(network.committed_bond(0), expected);
+
+    let source: SourceBusinessSnapshot = snapshot(network);
+    let (identity, history): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
+        complete_history(network);
+    assert_eq!(identity.through_height, 1);
+    let owned: Vec<OwnedPublicationMaterial> =
+        owned_material_from_source_snapshot(&source, &reconstruction_plan(&fixture, &identity))
+            .unwrap();
+    let mut overlay: BusinessReconstructionOverlay<'_> =
+        BusinessReconstructionOverlay::new(reconstruction_plan(&fixture, &identity)).unwrap();
+    let report: BusinessReconstructionReport = overlay.reconstruct(&owned, &history).unwrap();
+    assert_eq!(report.ordered_originals_replayed, 1);
+    overlay.compare_source(&source).unwrap();
+    assert_eq!(snapshot(network), source);
 }
 
 #[test]
