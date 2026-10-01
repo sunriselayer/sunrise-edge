@@ -335,12 +335,12 @@ fn publish_source_cut(
     if !existing.is_subset(&expected) {
         return Err(invalid("archive contains surplus or foreign components"));
     }
-    if existing.contains("complete") {
-        if missing || archive.read("complete", MAX_BUSINESS_CUT_DESCRIPTOR_BYTES)? != complete {
-            return Err(invalid(
-                "saved completion marker differs or hides incomplete material",
-            ));
-        }
+    if existing.contains("complete")
+        && (missing || archive.read("complete", MAX_BUSINESS_CUT_DESCRIPTOR_BYTES)? != complete)
+    {
+        return Err(invalid(
+            "saved completion marker differs or hides incomplete material",
+        ));
     }
     let mut newly_saved_files: usize = 0;
     let saved_all: bool = visit_cut_files(cut, resolver, limits, |name: String, bytes: &[u8]| {
