@@ -45,12 +45,33 @@ use std::{
 };
 use support::cli::{self, CliContext};
 use support::genesis_fixture::FastVoteGenesisFixture;
-use support::host::{self, HostProcess, TempDir};
+use support::host::{self, HostProcess};
 use support::paid_calls::{self, NetworkCall};
 
 type AdminPool = Pool<PostgresConnectionManager<NoTls>>;
 type Store = PostgresDurableStore<PostgresConnectionManager<NoTls>>;
 type Snapshot = support::durable_state::PostgresRowsSnapshot;
+
+/// Preserve only this test's exclusively created directory on failure. Hosts
+/// still terminate through their independent guards; retained files contain
+/// disposable fixture material, never production signing keys or credentials.
+struct BusinessAuditDirectory {
+    path: PathBuf,
+    preserve_on_success: bool,
+}
+
+impl Drop for BusinessAuditDirectory {
+    fn drop(&mut self) {
+        if std::thread::panicking() || self.preserve_on_success {
+            eprintln!(
+                "business-audit diagnostic artifacts preserved: {}",
+                self.path.display()
+            );
+        } else {
+            let _ignored: std::io::Result<()> = fs::remove_dir_all(&self.path);
+        }
+    }
+}
 
 fn store(pool: &AdminPool, namespace: &PostgresNamespace) -> Store {
     PostgresDurableStore::new(
@@ -321,7 +342,10 @@ fn business_audit_pg_genuine_causal_history_reopen_and_corruption_e2e() {
     let fixture: FastVoteGenesisFixture = network;
     let dir: PathBuf = std::env::temp_dir().join(format!("sunrise-edge-{unique}"));
     fs::create_dir(&dir).unwrap();
-    let _owned: TempDir = TempDir(dir.clone());
+    let _owned: BusinessAuditDirectory = BusinessAuditDirectory {
+        path: dir.clone(),
+        preserve_on_success: false,
+    };
     let ca: PathBuf = dir.join("ca.der");
     let genesis: PathBuf = dir.join("genesis.v4");
     let seed: PathBuf = dir.join("sender.seed");
@@ -687,4 +711,89 @@ fn business_audit_pg_genuine_causal_history_reopen_and_corruption_e2e() {
     };
     acceptance::commit_freeze_and_drainset(&harness, &hosts);
     acceptance::run(&harness, &mut hosts);
+}
+
+/// Diagnostic only: recover authentic materials from an already completed
+/// disposable fixture without installing genesis, advancing a writer fence,
+/// reopening hosts, or repeating its lifecycle. This is never a substitute
+/// for the mandatory fresh end-to-end acceptance above.
+#[test]
+#[ignore = "requires exact previous disposable fixture unique/genesis/through-digest pins and live PostgreSQL"]
+fn business_audit_pg_readonly_retained_fixture_diagnostic() {
+    let unique: String = std::env::var("SUNRISE_EDGE_BUSINESS_AUDIT_RECOVER_UNIQUE")
+        .expect("explicit previous disposable fixture unique required");
+    let suffix: &str = unique
+        .strip_prefix("business-audit-")
+        .expect("only this test's disposable fixture namespace is allowed");
+    assert!(!suffix.is_empty() && suffix.len() <= 40 && suffix.bytes().all(|b| b.is_ascii_digit()));
+    let genesis_text: String = std::env::var("SUNRISE_EDGE_BUSINESS_AUDIT_RECOVER_GENESIS_DIGEST")
+        .expect("explicit previous signed genesis pin required");
+    let through_text: String = std::env::var("SUNRISE_EDGE_BUSINESS_AUDIT_RECOVER_THROUGH_DIGEST")
+        .expect("explicit previous fixed height-31 digest required");
+    let genesis_pin: [u8; 32] = sunrise_edge_operator::common::parse_hex_32(
+        &genesis_text,
+        "SUNRISE_EDGE_BUSINESS_AUDIT_RECOVER_GENESIS_DIGEST",
+    )
+    .unwrap();
+    let through_pin: [u8; 32] = sunrise_edge_operator::common::parse_hex_32(
+        &through_text,
+        "SUNRISE_EDGE_BUSINESS_AUDIT_RECOVER_THROUGH_DIGEST",
+    )
+    .unwrap();
+    let url: String = std::env::var(support::LIVE_POSTGRES_URL_ENV)
+        .expect("diagnostic requires explicit disposable PostgreSQL URL");
+    let config: Config = Config::from_str(&url).unwrap();
+    let backend: std::net::SocketAddr =
+        cli::single_tcp_backend_addr(&config, support::LIVE_POSTGRES_URL_ENV);
+    let (proxy, _connector, ca_der) = support::tls_relay::TlsPassthroughProxy::spawn(backend);
+    let dsn: String = cli::proxied_dsn(&config, proxy.local_addr().port());
+    let mut fixture: FastVoteGenesisFixture = causal::build(&unique).network;
+    let _funded: node_core::GenesisObjectEntry = bond::fund_source(&mut fixture);
+    assert_eq!(
+        fixture.manifest_digest, genesis_pin,
+        "original signed genesis must match exactly"
+    );
+    let pool: AdminPool = cli::admin_pool(&config);
+    let namespaces: Vec<PostgresNamespace> = fixture
+        .validators
+        .iter()
+        .map(|validator| {
+            PostgresNamespace::new(&fixture.chain_id, validator.validator_id, fixture.domain)
+                .unwrap()
+        })
+        .collect();
+    let before: Vec<Snapshot> = snapshots(&pool, &namespaces);
+    let stamp: u128 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir: PathBuf =
+        std::env::temp_dir().join(format!("sunrise-edge-{unique}-readonly-recovery-{stamp}"));
+    fs::create_dir(&dir).unwrap();
+    let _owned: BusinessAuditDirectory = BusinessAuditDirectory {
+        path: dir.clone(),
+        preserve_on_success: true,
+    };
+    let ca: PathBuf = dir.join("ca.der");
+    let genesis: PathBuf = dir.join("genesis.v4");
+    let network: PathBuf = dir.join("unused-network.conf");
+    host::write_new(&ca, &ca_der);
+    host::write_new(&genesis, &fixture.manifest_bytes);
+    let harness: acceptance::Harness<'_> = acceptance::Harness {
+        fixture: &fixture,
+        pool: &pool,
+        namespaces: &namespaces,
+        ca: &ca,
+        dsn: &dsn,
+        genesis: &genesis,
+        network: &network,
+        keys: &[],
+        dir: &dir,
+    };
+    acceptance::recover_retained_fixture(&harness, through_pin);
+    assert_eq!(
+        snapshots(&pool, &namespaces),
+        before,
+        "diagnostic must preserve every PG row/revision/sequence/fence across all four namespaces"
+    );
 }

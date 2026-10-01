@@ -481,6 +481,152 @@ fn semantic_equal(output: Output) -> String {
     report
 }
 
+/// Recreate only immutable archive files from the original namespace's real
+/// retained proofs. No live host, genesis installation, or source-row copy is
+/// used to grant reconstruction authority. The SDK re-verifies the complete
+/// pinned prefix before the separate compiled audit sees these files.
+#[allow(clippy::too_many_lines)]
+pub(super) fn recover_retained_fixture(harness: &Harness<'_>, through_pin: [u8; 32]) {
+    use node_core::ordered_economics::{
+        OrderedEconomicsEnvironment, OrderedHistoryHeightDescriptor, OrderedHistorySummary,
+        encode_ordered_history_height_descriptor, encode_ordered_history_identity,
+        ordered_history_descriptor_digest, query_ordered_history_summary,
+        read_ordered_history_component_chunk, read_ordered_history_height_descriptor,
+    };
+    use protocol_types::Digest32;
+
+    fn persist_new(path: &Path, bytes: &[u8]) {
+        use std::io::Write;
+        let mut file: fs::File = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .unwrap();
+        file.write_all(bytes).unwrap();
+        file.sync_all().unwrap();
+    }
+
+    let policy: OrderedEconomicsPolicy = harness.ordered_policy();
+    let leg_policy: LocalExecutionPolicy =
+        LocalExecutionPolicy::generic_object_results(harness.fixture.context.clone());
+    let engine: execution::LocalWasmExecutionEngine = execution::LocalWasmExecutionEngine::new();
+    let source: Store = store(harness.pool, &harness.namespaces[0]);
+    let blobs: PostgresBlobStore<PostgresConnectionManager<NoTls>> =
+        PostgresBlobStore::new(harness.pool.clone(), harness.namespaces[0].clone()).unwrap();
+    let operation: runtime::DurableOperationContext =
+        cli::read_context(harness.pool, &harness.namespaces[0]);
+    let environment: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
+        policy: &policy,
+        resolver: &harness.fixture.resolver,
+        history: &[],
+        leg_policy: &leg_policy,
+        engine: &engine,
+        blobs: &blobs,
+    };
+    let before: Vec<Snapshot> = harness.snapshot();
+    let summary: OrderedHistorySummary =
+        query_ordered_history_summary(&source, &operation, &environment).unwrap();
+    let identity: OrderedHistoryIdentity = summary.identity;
+    assert_eq!(
+        identity.through_height, 31,
+        "only the exact previous fixed prefix is recovered"
+    );
+    assert_eq!(
+        identity.through_digest.bytes(),
+        through_pin,
+        "original authenticated target must match exactly"
+    );
+    let archive: PathBuf = harness.dir.join("ordered-history");
+    fs::create_dir(&archive).unwrap();
+    let identity_bytes: Vec<u8> = encode_ordered_history_identity(&identity).unwrap();
+    persist_new(&archive.join("identity.bin"), &identity_bytes);
+    const CHUNK_BYTES: u32 = 1024;
+    persist_new(&archive.join("chunk-size.bin"), &CHUNK_BYTES.to_be_bytes());
+    for height in 1..=identity.through_height {
+        let descriptor: OrderedHistoryHeightDescriptor = read_ordered_history_height_descriptor(
+            &source,
+            &operation,
+            &environment,
+            &identity,
+            height,
+        )
+        .unwrap();
+        let digest: Digest32 = ordered_history_descriptor_digest(&policy, &descriptor).unwrap();
+        let height_dir: PathBuf = archive.join(format!("height-{height:020}"));
+        fs::create_dir(&height_dir).unwrap();
+        persist_new(
+            &height_dir.join("descriptor.bin"),
+            &encode_ordered_history_height_descriptor(&descriptor).unwrap(),
+        );
+        for reference in &descriptor.components {
+            assert!(reference.length <= u64::try_from(reference.kind.max_bytes()).unwrap());
+            let component_dir: PathBuf =
+                height_dir.join(format!("component-{:02}", reference.kind as u16));
+            fs::create_dir(&component_dir).unwrap();
+            let mut offset: u64 = 0;
+            while offset < reference.length {
+                let bytes: Vec<u8> = read_ordered_history_component_chunk(
+                    &source,
+                    &operation,
+                    &environment,
+                    &identity,
+                    height,
+                    digest,
+                    reference.kind,
+                    offset,
+                    CHUNK_BYTES,
+                )
+                .unwrap();
+                let count: u64 = u64::from(CHUNK_BYTES).min(reference.length - offset);
+                assert_eq!(u64::try_from(bytes.len()).unwrap(), count);
+                persist_new(
+                    &component_dir.join(format!("chunk-{offset:020}.bin")),
+                    &bytes,
+                );
+                offset = offset.checked_add(count).unwrap();
+            }
+            fs::File::open(&component_dir).unwrap().sync_all().unwrap();
+        }
+        fs::File::open(&height_dir).unwrap().sync_all().unwrap();
+    }
+    persist_new(&archive.join("complete"), &identity_bytes);
+    fs::File::open(&archive).unwrap().sync_all().unwrap();
+    let (verified, materials): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
+        verified_archive(harness, &archive);
+    assert_eq!(verified, identity);
+    for material in &materials {
+        if let Some((_, bytes)) = material
+            .components
+            .iter()
+            .find(|(kind, _)| *kind == OrderedHistoryComponentKind::Candidate)
+        {
+            let candidate: OrderedCandidate =
+                node_core::ordered_economics::decode_ordered_candidate(bytes).unwrap();
+            eprintln!(
+                "recovered genuine ordered height={} kind={:?} request={}",
+                material.descriptor.height,
+                candidate.kind,
+                cli::to_hex(&candidate.request_id)
+            );
+        }
+    }
+    assert_eq!(
+        harness.snapshot(),
+        before,
+        "read-only retained proof export cannot alter any source row or fence"
+    );
+    let output: Output = harness.audit(
+        &archive,
+        &harness.dir.join("audit-recovered"),
+        64,
+        harness.fixture.manifest_digest,
+    );
+    let report: String = semantic_equal(output);
+    eprintln!(
+        "read-only retained-fixture diagnostic only; fresh lifecycle acceptance remains required: {report}"
+    );
+}
+
 /// Corrupt both unsigned completion companions consistently, and rehash their
 /// transfer descriptors. The independent ordering verifier must still accept
 /// the unchanged genuine QCs/candidates; private business replay must refuse the
