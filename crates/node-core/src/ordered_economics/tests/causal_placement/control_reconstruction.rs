@@ -23,6 +23,9 @@ const UNAPPLIED_REQUEST: [u8; 32] = [0x6b; 32];
 const FREEZE_REQUEST: [u8; 32] = [0xcb; 32];
 const DRAIN_REQUEST: [u8; 32] = [0xcc; 32];
 
+#[path = "control_reconstruction/frozen_completion.rs"]
+mod frozen_completion;
+
 struct GenuineControlSource {
     fixture: CausalFixture,
     paid: CertifiedPaidMaterial,
