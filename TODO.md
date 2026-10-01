@@ -424,11 +424,20 @@ The detailed existing evidence and remaining criteria follow:
   DrainSet controls exposed a remaining scheduler failure: an applied Owned
   target without an earlier ordered dependency was left until after Freeze,
   where normal recovery correctly refuses closed admission. That chronology
-  was repaired with an accepted-only owning-preflight barrier. Genuine private
-  replay now succeeds with exactly one applied and one retained-but-unapplied
-  publication; the final closed source/private comparison still differs and
-  is under diagnosis. No complete four-namespace acceptance pass is claimed.
-  Two control-page codec cases pass. Final whole-repository checks,
+  was repaired with an accepted-only owning-preflight barrier. Symmetric carrier
+  comparison now independently verifies each side's complete bundles and exact
+  keys; selected members bind full identity rather than input-array position.
+  All three genuine Freeze/DrainSet reconstruction controls pass at `85185e7`,
+  whose source/test tree matches integration `65afc39` (four documentation
+  files differ). They include full semantic equality with reversed two-member
+  input, exactly one applied and one retained-but-unapplied publication,
+  missing/corrupt selected-member refusal, completed/premature/AlreadyFrozen
+  precedence and a forged Refused companion that cannot hide required closure.
+  Two control-page codecs, three heap-dependency controls (including a 100,000-
+  node chain on a 64 KiB stack), four SDK causal tests and strict all-target/
+  all-feature Clippy for core/operator/client/CLI also pass at that source.
+  No complete fresh four-namespace PostgreSQL acceptance pass is claimed yet.
+  Final whole-repository checks,
   independent final-head review and required CI remain pending.
   `npm ci` passed on 2026-10-01 but
   reported six inherited high-severity development-tool dependency advisories;
