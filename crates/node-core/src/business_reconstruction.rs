@@ -29,9 +29,9 @@ use crate::logical_generation::{
     decode_logical_profile_record, decode_logical_provenance_record, logical_profile_key,
 };
 use crate::ordered_economics::{
-    OrderedEconomicsEnvironment, OrderedEconomicsPolicy, OrderedHistoryComponentKind,
-    OrderedHistoryHeightMaterial, OrderedHistoryIdentity, OrderedHistoryVerifier,
-    decode_ordered_candidate,
+    OrderedEconomicsEnvironment, OrderedEconomicsError, OrderedEconomicsPolicy,
+    OrderedHistoryComponentKind, OrderedHistoryHeightMaterial, OrderedHistoryIdentity,
+    OrderedHistoryVerifier, decode_ordered_candidate,
 };
 use crate::{MAX_AUTHENTICATED_OBJECT_BODY_BYTES, genesis};
 use canonical_encoding::{CanonicalStruct, decode_canonical_frame};
@@ -1284,10 +1284,9 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                 &mut verifier,
                 material,
             )
-            .map_err(|_| {
-                BusinessReconstructionError::Execution(
-                    "ordered event independent reconstruction failed",
-                )
+            .map_err(|source| BusinessReconstructionError::OrderedHistory {
+                height: material.descriptor.height,
+                source,
             })?;
             if let Some(outcome) = outcome {
                 // A later certified recommit preserves the original height
@@ -1954,6 +1953,15 @@ pub enum BusinessReconstructionError {
     Duplicate(&'static str),
     /// Authenticated or deterministic existing execution refused.
     Execution(&'static str),
+    /// Independent ordered execution or companion verification failed at a
+    /// pinned proof height. The cause is typed and contains no candidate or
+    /// artifact bytes.
+    OrderedHistory {
+        /// Exact fixed-history height under independent reconstruction.
+        height: u64,
+        /// Existing core error category and static/canonical reason.
+        source: OrderedEconomicsError,
+    },
     /// Source data cannot be proven complete under the captured token.
     Incomplete(&'static str),
 }
@@ -1964,12 +1972,25 @@ impl fmt::Display for BusinessReconstructionError {
             Self::Invalid(reason) => write!(f, "business reconstruction refused: {reason}"),
             Self::Duplicate(reason) => write!(f, "business reconstruction duplicate: {reason}"),
             Self::Execution(reason) => write!(f, "business reconstruction execution: {reason}"),
+            Self::OrderedHistory { height, source } => write!(
+                f,
+                "business reconstruction ordered height {height}: {source}"
+            ),
             Self::Incomplete(reason) => write!(f, "business reconstruction incomplete: {reason}"),
         }
     }
 }
 
-impl Error for BusinessReconstructionError {}
+impl Error for BusinessReconstructionError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::OrderedHistory { source, .. } => Some(source),
+            Self::Invalid(_) | Self::Duplicate(_) | Self::Execution(_) | Self::Incomplete(_) => {
+                None
+            }
+        }
+    }
+}
 
 const fn invalid(reason: &'static str) -> BusinessReconstructionError {
     BusinessReconstructionError::Invalid(reason)
