@@ -1,26 +1,38 @@
-//! DR-0169 routing/admission tests. The small signed manifest pins a real
-//! committee for empty ordered windows; it does not install or claim a paid
-//! application genesis. Full economic/control histories use the real PG
-//! operator fixture, not a duplicate asset fixture in this adapter crate.
+//! DR-0169 routing/admission tests. A production-validated signed-v3 genesis
+//! pins a real bonded committee and matching generic fee ABI. These adapter
+//! tests drive only empty ordered windows; full economic/control histories
+//! remain in the real PG operator fixture.
 use super::*;
 use crate::ordered_economics::{OrderedEconomicsState, certified_ordered_economics_router};
+use abi::call_values::{CallValue, encode_call_value};
+use abi::package_types::{PackageOrigin, ScopedTypeArg, ScopedTypeTag, derive_scoped_type_id};
+use bonds::{BondResourceConfig, BondResourceId};
 use consensus::{ConsensusMessage, ConsensusSigner, ConsensusVote, QuorumCertificate};
 use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::call::CallIntent;
 use execution::local_execution::{
     InstanceRecord, LocalExecutionIntent, LocalExecutionMode, LocalExecutionPolicy,
-    SignedLocalExecutionIntent, instance_target, local_execution_signing_frame,
+    ObjectAuthority, SignedLocalExecutionIntent, generic_object_result_semantics, instance_target,
+    local_execution_signing_frame,
 };
-use execution::publication::{PublicationContext, UnverifiedDependencyRef};
+use execution::paid_execution::{MIN_RESERVE_ALLOWANCE, MIN_SETTLE_ALLOWANCE, PaidFeePolicy};
+use execution::publication::{
+    ArtifactParts, CodeArtifact, PublicationContext, PublicationRequest, PublicationSubmission,
+    UnverifiedDependencyRef, artifact_commitment, publication_submission_signing_frame,
+};
+use fees::{Amount, GasSchedule};
+use node_core::economics::{FastPathEconomicsPolicy, FastPathEconomicsResourcePolicy};
 use node_core::fast_path::{
     FastPathEd25519Verifier, FastPathValidatorEntry, FastPathValidatorSetRecord,
 };
 use node_core::genesis::{
-    GenesisManifest, genesis_manifest_commitment, genesis_manifest_signing_frame,
+    GenesisInstallOutcome, GenesisManifest, GenesisObjectEntry, genesis_manifest_commitment,
+    genesis_manifest_signing_frame, install_genesis,
 };
 use node_core::logical_generation::CommitmentProfile;
 use node_core::ordered_economics::*;
 use node_wire::ordered_history::*;
+use objects::{ProtocolCustodyPurpose, ProtocolCustodyScope};
 use std::collections::BTreeSet;
 use validator_set::{ValidatorInfo, ValidatorSet};
 
@@ -124,6 +136,28 @@ impl DurableDomainStateStore for TrackedStore {
 }
 
 impl StructuredDurableDomainStateStore for TrackedStore {
+    fn get_object_head(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+    ) -> Result<DurableObjectHead, DurableReadError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.contexts.lock().unwrap().push(*context);
+        self.inner.get_object_head(context, domain, object_id)
+    }
+    fn get_object_version(
+        &self,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        object_id: ObjectId,
+        object_version: DurableObjectVersion,
+    ) -> Result<Option<DurableObjectVersionRecord>, DurableReadError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.contexts.lock().unwrap().push(*context);
+        self.inner
+            .get_object_version(context, domain, object_id, object_version)
+    }
     fn get_request_receipt(
         &self,
         context: &DurableOperationContext,
@@ -140,6 +174,11 @@ impl StructuredDurableDomainStateStore for TrackedStore {
         transaction: DurableInvocationTransaction,
     ) -> DurableCommitOutcome {
         self.writes.fetch_add(1, Ordering::SeqCst);
+        if let Some(state) = transaction.state() {
+            for mutation in state.mutations() {
+                self.keys.lock().unwrap().insert(mutation.key().to_vec());
+            }
+        }
         self.inner.commit_invocation(context, transaction)
     }
 }
@@ -170,22 +209,48 @@ impl Fixture {
             signature_scheme: SignatureSchemeId::Ed25519,
             public_key: signer.validator_id().as_bytes().to_vec(),
         };
-        let publication = local_execution_http::publication(1, 0);
-        let fee_policy = fastvote_router::fastvote_fee_policy();
-        let code: UnverifiedDependencyRef = UnverifiedDependencyRef::new(
-            publication.request().artifact().origin().clone(),
-            1,
-            context.clone(),
-            *publication.request().artifact_digest(),
+        let sender: [u8; 32] = *signer.validator_id().as_bytes();
+        let origin: PackageOrigin =
+            PackageOrigin::unverified(context.chain_id().clone(), sender, [0xec; 32]).unwrap();
+        let package: public_standard_asset::StandardAssetPackage =
+            public_standard_asset::build_package(&origin).unwrap();
+        let artifact: CodeArtifact = CodeArtifact::new(ArtifactParts {
+            context: context.clone(),
+            origin: origin.clone(),
+            revision: 1,
+            wasm_profile: public_standard_asset::REQUIRED_WASM_PROFILE,
+            semantics: generic_object_result_semantics(&resolver(), &context).unwrap(),
+            wasm: package.wasm,
+            unverified_abi: package.encoded_abi,
+            exports: package.exports,
+            unverified_dependencies: Vec::new(),
+        })
+        .unwrap();
+        let artifact_digest: Digest32 =
+            artifact_commitment(&resolver(), &context, &artifact).unwrap();
+        let publication_frame: Vec<u8> =
+            publication_submission_signing_frame(&resolver(), &context, &artifact, 0, [0xec; 32])
+                .unwrap();
+        let publication: PublicationSubmission = PublicationSubmission::new(
+            [0xec; 32],
+            PublicationRequest::new(
+                artifact,
+                0,
+                artifact_digest,
+                signer.key.sign(&publication_frame).into(),
+            ),
         )
         .unwrap();
-        // An initializer belongs to its signing creator, not the unrelated
-        // fee-policy helper's instance. Derive the target through the real
-        // record commitment so both creator and exact record identity agree.
+        let code: UnverifiedDependencyRef =
+            UnverifiedDependencyRef::new(origin.clone(), 1, context.clone(), artifact_digest)
+                .unwrap();
+        // All roles pin this signed creator, exact profile-4 code, and the
+        // production-derived instance target. Shape-only fee fixtures cannot
+        // authenticate a signed genesis or its actual fee ABI.
         let initializer: InstanceRecord = InstanceRecord {
             context: context.clone(),
-            creator: *signer.validator_id().as_bytes(),
-            seed: [0xee; 32],
+            creator: sender,
+            seed: [0xed; 32],
             code: code.clone(),
             revision: 1,
             initializer: "init".to_owned(),
@@ -198,9 +263,9 @@ impl Fixture {
             call: CallIntent {
                 context: context.clone(),
                 request_id: [0xee; 32],
-                sender: *signer.validator_id().as_bytes(),
+                sender,
                 nonce: 0,
-                code,
+                code: code.clone(),
                 instance: instance_target(&resolver(), &initializer).unwrap(),
                 entrypoint: "init".to_owned(),
                 type_arguments: Vec::new(),
@@ -208,7 +273,7 @@ impl Fixture {
                     entries: Vec::new(),
                 },
                 arguments: Vec::new(),
-                gas_limit: 100_000,
+                gas_limit: 500_000,
             },
             authorizations: Vec::new(),
         };
@@ -217,16 +282,130 @@ impl Fixture {
             intent,
             signature: signer.key.sign(&frame).into(),
         };
+        let definition_id: ObjectId = ObjectId::new([0xe8; 32]);
+        let bond_id: ObjectId = ObjectId::new([0xe9; 32]);
+        let definition_type: ScopedTypeTag =
+            public_standard_asset::definition_type_tag(&origin).unwrap();
+        let coin_type: ScopedTypeTag =
+            public_standard_asset::coin_type_tag(&origin, &definition_id).unwrap();
+        let (resource_domain, resource): (u16, [u8; 32]) = match coin_type.args() {
+            [ScopedTypeArg::Opaque { domain, value }] => (*domain, *value),
+            _ => panic!("fixture fee type must declare one opaque resource"),
+        };
+        let resource_id: BondResourceId = BondResourceId::new(resource_domain, resource).unwrap();
+        let fee_policy: PaidFeePolicy = PaidFeePolicy {
+            context: context.clone(),
+            base_policy_digest: initialization.intent.policy_digest,
+            instance: initialization.intent.call.instance.clone(),
+            code: code.clone(),
+            reserve_entrypoint: "reserve".to_owned(),
+            reserve_all_entrypoint: "reserve_all".to_owned(),
+            settle_entrypoint: "settle".to_owned(),
+            type_arguments: vec![public_standard_asset::asset_type_argument(&definition_id)],
+            asset_type: coin_type.clone(),
+            reservation_type: public_standard_asset::reservation_type_tag(&origin, &definition_id)
+                .unwrap(),
+            schema: public_standard_asset::SCHEMA_VERSION,
+            fee_recipient: sender,
+            gas_schedule: GasSchedule {
+                base_fee: 100,
+                execution_price: 1,
+                read_price: 0,
+                write_price: 0,
+                storage_price: 0,
+                system_module_price: 0,
+            },
+            conversion_divisor: 1_000,
+            reserve_allowance: MIN_RESERVE_ALLOWANCE,
+            settle_allowance: MIN_SETTLE_ALLOWANCE,
+            calls: 8,
+            handles: 16,
+            creations: 4,
+            events: 16,
+            memory_bytes: 8 * 1024 * 1024,
+            output_bytes: 1024 * 1024,
+            publish_artifact_byte_price: 1,
+            publish_closure_node_price: 1,
+        };
+        let economics_policy: FastPathEconomicsPolicy = FastPathEconomicsPolicy {
+            context: context.clone(),
+            resources: vec![FastPathEconomicsResourcePolicy {
+                resource_id,
+                context: context.clone(),
+                instance: initialization.intent.call.instance.clone(),
+                code: code.clone(),
+                ty: coin_type.clone(),
+                schema: public_standard_asset::SCHEMA_VERSION,
+                split_entrypoint: "split".to_owned(),
+                transfer_entrypoint: "transfer".to_owned(),
+                bond: Some(BondResourceConfig {
+                    resource_id,
+                    min_bond: Amount::new(100),
+                    enabled: true,
+                    unbonding_epochs: 7,
+                    max_validator_exposure: None,
+                }),
+                fee_escrow: true,
+            }],
+        };
+        let objects: Vec<GenesisObjectEntry> = vec![
+            GenesisObjectEntry {
+                object: Object {
+                    id: definition_id,
+                    version: 1,
+                    owner: Owner::Address(Address::new(sender)),
+                    type_hash: derive_scoped_type_id(
+                        &resolver(),
+                        context.epoch(),
+                        &definition_type,
+                    )
+                    .unwrap(),
+                    schema_version: public_standard_asset::SCHEMA_VERSION,
+                    data: public_standard_asset::definition_body().unwrap(),
+                },
+                authority: ObjectAuthority {
+                    object_id: definition_id,
+                    instance_context: context.clone(),
+                    instance: initialization.intent.call.instance.clone(),
+                    code: code.clone(),
+                    ty: definition_type,
+                },
+            },
+            GenesisObjectEntry {
+                object: Object {
+                    id: bond_id,
+                    version: 1,
+                    owner: Owner::ProtocolCustody(ProtocolCustodyScope {
+                        purpose: ProtocolCustodyPurpose::BondCollateral,
+                        chain_id: context.chain_id().clone(),
+                        subject: sender,
+                        resource,
+                    }),
+                    type_hash: derive_scoped_type_id(&resolver(), context.epoch(), &coin_type)
+                        .unwrap(),
+                    schema_version: public_standard_asset::SCHEMA_VERSION,
+                    data: encode_call_value(
+                        &public_standard_asset::coin_body_layout(),
+                        &CallValue::U64(100),
+                    )
+                    .unwrap(),
+                },
+                authority: ObjectAuthority {
+                    object_id: bond_id,
+                    instance_context: context.clone(),
+                    instance: initialization.intent.call.instance.clone(),
+                    code,
+                    ty: coin_type,
+                },
+            },
+        ];
         let mut manifest: GenesisManifest = GenesisManifest {
-            genesis_authority: *signer.validator_id().as_bytes(),
+            genesis_authority: sender,
             publication,
             initialization,
             fee_policy,
-            economics_policy: node_core::economics::FastPathEconomicsPolicy {
-                context: context.clone(),
-                resources: Vec::new(),
-            },
-            objects: Vec::new(),
+            economics_policy,
+            objects,
             validator_set: FastPathValidatorSetRecord {
                 context: context.clone(),
                 validators: vec![entry.clone()],
@@ -258,8 +437,38 @@ impl Fixture {
             resolver(),
         )
         .unwrap();
+        let store: Arc<TrackedStore> = Arc::new(TrackedStore::new(domain));
+        let operation: DurableOperationContext =
+            live_operation_context(WriterFenceGeneration::new(3).unwrap(), 0xe3);
+        assert!(matches!(
+            install_genesis(
+                store.as_ref(),
+                &operation,
+                domain,
+                &resolver(),
+                &manifest,
+                0
+            )
+            .unwrap(),
+            GenesisInstallOutcome::FreshInstall { .. }
+        ));
+        assert!(matches!(
+            install_genesis(
+                store.as_ref(),
+                &operation,
+                domain,
+                &resolver(),
+                &manifest,
+                0
+            )
+            .unwrap(),
+            GenesisInstallOutcome::VerifiedExisting { .. }
+        ));
+        store.reset_reads();
+        store.writes.store(0, Ordering::SeqCst);
+        sign_calls.store(0, Ordering::SeqCst);
         Self {
-            store: Arc::new(TrackedStore::new(domain)),
+            store,
             policy,
             identities: Arc::new(CountingIndexedIdentities::default()),
             clock: Arc::new(CountingClock::new(10_000)),
@@ -806,6 +1015,8 @@ async fn history_cancellation_and_shared_admission_never_reach_store() {
         StatusCode::SERVICE_UNAVAILABLE
     );
     assert_eq!(fixture.store.reads.load(Ordering::SeqCst), 0);
+    let identity_calls: usize = fixture.identities.calls.load(Ordering::SeqCst);
+    let clock_calls: usize = fixture.clock.calls.load(Ordering::SeqCst);
     let permit = fixture.executor.try_acquire().unwrap();
     let app: Router = fixture.app();
     let response: Response = dispatch(
@@ -817,12 +1028,35 @@ async fn history_cancellation_and_shared_admission_never_reach_store() {
         NODE_EVENT_MEDIA_TYPE,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+    // Exhausted shared admission preserves the adapter's existing 429
+    // contract. A cancellation or a fenced storage stop is separately 503.
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        to_bytes(response.into_body(), 128).await.unwrap(),
+        "blocking-capacity-exhausted"
+    );
     drop(permit);
     assert_eq!(fixture.store.reads.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.store.writes.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.sign_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        fixture.identities.calls.load(Ordering::SeqCst),
+        identity_calls
+    );
+    assert_eq!(fixture.clock.calls.load(Ordering::SeqCst), clock_calls);
+    fixture.complete_empty_history();
+    response_bytes(
+        dispatch(
+            &fixture.app(),
+            "GET",
+            ORDERED_HISTORY_SUMMARY_PATH,
+            Vec::new(),
+            None,
+            NODE_EVENT_MEDIA_TYPE,
+        )
+        .await,
+    )
+    .await;
 }
 
 #[tokio::test]

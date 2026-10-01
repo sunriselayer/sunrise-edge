@@ -27,8 +27,10 @@ validator-set.workspace = true
 
 [dev-dependencies]
 abi.workspace = true
+bonds.workspace = true
 crypto.workspace = true
 ed25519-zebra.workspace = true
+public-standard-asset = { path = "../../contracts/standard-asset" }
 runtime-sqlite.workspace = true
 standard-assets.workspace = true
 system-modules.workspace = true
