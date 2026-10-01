@@ -147,6 +147,18 @@ admission arbitration and recovery rules. Disjoint lanes spend one ID bit and
 require profile-aware clients, without adding that mutable locking protocol.
 The namespace is protocol-wide, not a Standard Asset privilege.
 
+Authenticated configuration reads consume real slots in the unchanged 4,096
+atomic-read bound. This intentionally reduces the maximum application plan
+for the historical generic durable handler from 4,096 to 4,092 keys: four
+slots fence epoch, profile, manifest and its marker. An authenticated sender
+nonce consumes another slot, and other lifecycle assertions can reduce the
+remaining capacity further. `NodeStateAccessPlan::new` validates structural
+plan size only; handler admission must also fit these protocol assertions.
+This is an operational capacity change, including for historical profiles,
+not a change to historical canonical bytes. The unreleased protocol does not
+preserve the old maximum by skipping authentication or increasing the runtime
+bound. Oversized plans fail before application reads, execution or commit.
+
 ## Boundaries and acceptance
 
 The audit proves equality to supplied authenticated fixed material and one

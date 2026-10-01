@@ -3005,6 +3005,16 @@ pub struct NodeStateAccessPlan {
 
 impl NodeStateAccessPlan {
     /// Validates and sorts an event-specific state access plan.
+    ///
+    /// This is the structural application-plan bound, not a guarantee that
+    /// every plan fits a durable invocation. The handler also reserves read
+    /// assertions for its authenticated genesis/profile/epoch binding and,
+    /// where applicable, sender nonce and lifecycle locks. Those assertions
+    /// share the unchanged runtime atomic read limit with application keys.
+    /// A plan that leaves insufficient room is rejected before application
+    /// reads or execution; callers must account for the selected handler's
+    /// protocol overhead rather than treating all 4,096 slots as application
+    /// capacity.
     pub fn new(mut accesses: Vec<NodeStateAccess>) -> Result<Self, NodeCoreError> {
         if accesses.is_empty() {
             return Err(NodeCoreError::EmptyStateAccessPlan);

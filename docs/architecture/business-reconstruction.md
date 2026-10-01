@@ -25,6 +25,14 @@ prerequisites cause recovery stops. Justified predecessor progress is processed
 before successor admission. Settlement/bond generations and protocol custody
 stay governed by shared order, preserving competing-candidate concurrency.
 
+Configuration and lifecycle CAS assertions share the runtime's 4,096 atomic
+read slots with application keys. The generic historical durable handler now
+allows at most 4,092 application keys; authenticated nonce and lock assertions
+consume additional slots. A structurally valid `NodeStateAccessPlan` is not an
+executable-capacity promise. Oversized plans refuse before application reads
+or execution. This deliberate operational change does not alter historical
+canonical encodings; see the capacity tradeoff in DR-0170.
+
 ## Reconstruction
 
 The private overlay has no real-source write handle, signer or import permit.
