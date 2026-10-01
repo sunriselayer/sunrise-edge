@@ -5,7 +5,13 @@
 //! fresh `MemoryDurableStateStore` initialized from locally pinned genesis.
 //! This module intentionally exposes no import, activation, or readiness API.
 
+pub mod control;
 mod projection;
+
+pub use control::{
+    DrainSetControlMaterial, DrainSetControlProofError, DrainSetSignerFrontierMaterial,
+    drain_control_material_from_source_snapshot,
+};
 
 use crate::NodeDedupRecord;
 use crate::admission_profile::VerifiedAdmissionProfile;
@@ -1114,9 +1120,23 @@ impl<'a> BusinessReconstructionOverlay<'a> {
         owned: &[OwnedPublicationMaterial],
         ordered: &[OrderedHistoryHeightMaterial],
     ) -> Result<BusinessReconstructionReport, BusinessReconstructionError> {
+        self.reconstruct_with_control_material(owned, ordered, &[])
+    }
+
+    /// Replays with explicit source-captured DrainSet signer proof material.
+    /// Controls only reconstruct ordinary local readiness in the private
+    /// overlay; they do not confer execution or import authority.
+    pub fn reconstruct_with_control_material(
+        &mut self,
+        owned: &[OwnedPublicationMaterial],
+        ordered: &[OrderedHistoryHeightMaterial],
+        controls: &[DrainSetControlMaterial],
+    ) -> Result<BusinessReconstructionReport, BusinessReconstructionError> {
         if self.reconstruction_started {
             return Err(invalid("overlay reconstruction was already attempted"));
         }
+        control::validate_control_inputs(&self.plan, ordered, controls)
+            .map_err(BusinessReconstructionError::ControlProof)?;
         self.reconstruction_started = true;
         let semantic_catalog: Vec<VerifiedPublicationSemantic> =
             self.validate_owned_inputs(owned)?;
@@ -1229,6 +1249,7 @@ impl<'a> BusinessReconstructionOverlay<'a> {
         .map_err(|_| invalid("ordered history verifier pin refused"))?;
         let mut ordered_originals: usize = 0;
         let mut empty_heights: usize = 0;
+        let mut consumed_controls: BTreeSet<Digest32> = BTreeSet::new();
 
         for material in ordered {
             if material.descriptor.identity != *self.plan.ordered_history_identity {
@@ -1267,6 +1288,16 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                 )?;
                 let closure: BTreeSet<usize> = dependency_closure(&roots, &works)?;
                 apply_owned_closure(self, &works, &closure, &mut applied_owned)?;
+                control::prepare_drain_control(
+                    self,
+                    &candidate,
+                    material.descriptor.height,
+                    controls,
+                    owned,
+                    &semantic_catalog,
+                    &mut consumed_controls,
+                )
+                .map_err(BusinessReconstructionError::ControlProof)?;
             }
 
             let environment: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
@@ -1962,6 +1993,9 @@ pub enum BusinessReconstructionError {
         /// Existing core error category and static/canonical reason.
         source: OrderedEconomicsError,
     },
+    /// Optional DrainSet control material failed strict binding or could not
+    /// produce independently required private readiness.
+    ControlProof(DrainSetControlProofError),
     /// Source data cannot be proven complete under the captured token.
     Incomplete(&'static str),
 }
@@ -1976,6 +2010,9 @@ impl fmt::Display for BusinessReconstructionError {
                 f,
                 "business reconstruction ordered height {height}: {source}"
             ),
+            Self::ControlProof(source) => {
+                write!(f, "business reconstruction control proof: {source}")
+            }
             Self::Incomplete(reason) => write!(f, "business reconstruction incomplete: {reason}"),
         }
     }
@@ -1985,6 +2022,7 @@ impl Error for BusinessReconstructionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::OrderedHistory { source, .. } => Some(source),
+            Self::ControlProof(source) => Some(source),
             Self::Invalid(_) | Self::Duplicate(_) | Self::Execution(_) | Self::Incomplete(_) => {
                 None
             }

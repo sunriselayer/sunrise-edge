@@ -20,7 +20,7 @@ const ESCROW: [u8; 32] = [0x6e; 32];
 const NONCE_PRODUCER: [u8; 32] = [0x6f; 32];
 const CLAIM: [u8; 32] = [0xda; 32];
 
-fn reconstruction_plan<'a>(
+pub(super) fn reconstruction_plan<'a>(
     fixture: &'a CausalFixture,
     identity: &'a OrderedHistoryIdentity,
 ) -> BusinessReconstructionPlan<'a> {
@@ -176,7 +176,7 @@ fn captured_source<S: DurablePortableSnapshotRepository, B: PortableBlobReposito
     snapshot
 }
 
-fn snapshot(network: &Network) -> SourceBusinessSnapshot {
+pub(super) fn snapshot(network: &Network) -> SourceBusinessSnapshot {
     captured_source(
         &network.stores[0],
         &network.blobs,
@@ -185,7 +185,7 @@ fn snapshot(network: &Network) -> SourceBusinessSnapshot {
     )
 }
 
-fn complete_history(
+pub(super) fn complete_history(
     network: &Network,
 ) -> (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) {
     let identity: OrderedHistoryIdentity =
