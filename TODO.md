@@ -413,6 +413,13 @@ The detailed existing evidence and remaining criteria follow:
   same-run equivocation result. An independent source trace also finds a
   zero-leg ordered/owned original-request collision; no executed collision
   regression is claimed yet.
+  Integrated branch source now includes trusted admission, private causal
+  execution, complete semantic projection and the read-only PostgreSQL CLI.
+  Core compile/strict Clippy and compiled operator/CLI builds passed; genuine
+  PostgreSQL acceptance, final whole-repository checks, independent final-head
+  review and required CI remain pending. `npm ci` passed on 2026-10-01 but
+  reported six inherited high-severity development-tool dependency advisories;
+  no dependency upgrade or vulnerability remediation is claimed by this slice.
   Complete the following in one functional PR rather than merging a decoder
   or transport-only substitute:
   - [ ] Trusted profile install/reopen and all lane/direct-writer enforcement,
