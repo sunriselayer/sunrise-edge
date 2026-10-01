@@ -53,6 +53,9 @@ later no-effect refusals. It distinguishes pristine absence from deletion and
 checked logical generations from local CAS revisions. Duplicate certificate
 subsets cannot double-apply a producer. Contradictory producers, missing
 material, impossible dependency cycles and unrecognized schemas stop.
+Traverse the authenticated producer graph with an explicit heap-backed stack,
+not native recursion. A deep legitimate nonce chain must not abort audit or
+be rejected by an invented total-history depth limit.
 
 DrainSet controls that reach readiness validation additionally need the exact
 selected signed frontier entry streams and their complete retained publication

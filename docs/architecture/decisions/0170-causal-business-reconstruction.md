@@ -136,6 +136,8 @@ dependencies even when execution subsequently early-refuses. Never sort
 request IDs or apply every owned producer before all ordered operations.
 Reject contradictions, missing producers, cycles, deletion-to-absence
 substitution and unsupported business schemas. Recompute checked generations.
+Use heap-backed cycle-detecting dependency traversal: per-witness bounds do
+not justify native recursion or an arbitrary total-history depth ceiling.
 Equivalent valid quorum subsets identify one producer; fee shares derive from
 the full authenticated committee, not the proof's selected signers.
 Normal and DrainSet retention are independently verified carriers of that same

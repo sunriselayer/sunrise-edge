@@ -424,7 +424,10 @@ The detailed existing evidence and remaining criteria follow:
   DrainSet controls exposed a remaining scheduler failure: an applied Owned
   target without an earlier ordered dependency was left until after Freeze,
   where normal recovery correctly refuses closed admission. That chronology
-  is under repair; no complete four-namespace acceptance pass is claimed.
+  was repaired with an accepted-only owning-preflight barrier. Genuine private
+  replay now succeeds with exactly one applied and one retained-but-unapplied
+  publication; the final closed source/private comparison still differs and
+  is under diagnosis. No complete four-namespace acceptance pass is claimed.
   Two control-page codec cases pass. Final whole-repository checks,
   independent final-head review and required CI remain pending.
   `npm ci` passed on 2026-10-01 but
