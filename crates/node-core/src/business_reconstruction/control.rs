@@ -11,6 +11,7 @@ use super::{
     ReconstructionEd25519Verifier, SourceBusinessSnapshot, SourceSnapshotRecord,
     VerifiedPublicationSemantic,
 };
+use crate::NodeCoreError;
 use crate::admission_profile::{ExternalRequestLane, require_external_request_lane};
 use crate::ordered_economics::{
     DrainSetIntent, DrainSignerError, DrainUnionStep, OrderedCandidate,
@@ -20,7 +21,6 @@ use crate::ordered_economics::{
     decode_ordered_candidate, drain_signer_entry_key, import_staged_drain_publication,
     ingest_drain_signer_page, staged_drain_signer_identity,
 };
-use crate::{NodeCoreError, NodeDedupRecord, NodeResponseStatus};
 use consensus::bundle::{PublicationBundleError, encode_publication_bundle};
 use consensus::{
     AvailabilityIdentity, FrozenFrontierCertifier, FrozenFrontierPage, FrozenFrontierPageVerifier,
@@ -112,6 +112,11 @@ impl From<consensus::FrontierError> for DrainSetControlProofError {
         Self::Frontier(Box::new(error))
     }
 }
+impl From<consensus::ConsensusError> for DrainSetControlProofError {
+    fn from(error: consensus::ConsensusError) -> Self {
+        Self::Frontier(Box::new(consensus::FrontierError::from(error)))
+    }
+}
 impl From<DrainSignerError> for DrainSetControlProofError {
     fn from(error: DrainSignerError) -> Self {
         Self::Drain(Box::new(error))
@@ -129,7 +134,7 @@ impl From<PublicationBundleError> for DrainSetControlProofError {
 }
 
 type ControlResult<T> = Result<T, DrainSetControlProofError>;
-type CandidateCatalogue = BTreeMap<Digest32, (OrderedCandidate, bool)>;
+type CandidateCatalogue = BTreeMap<Digest32, OrderedCandidate>;
 
 fn candidate_digest(
     plan: &BusinessReconstructionPlan<'_>,
@@ -173,9 +178,8 @@ fn component(
         ))
 }
 
-/// Authentication covers order/candidate only. The accepted status is an
-/// untrusted collection-target hint: hiding needed closure with a forged
-/// refusal fails the independently executed readiness check, never succeeds.
+/// Authentication covers order/candidate only. Original result companions do
+/// not decide whether control closure is collected or independently required.
 fn authenticated_control_candidates(
     plan: &BusinessReconstructionPlan<'_>,
     ordered: &[OrderedHistoryHeightMaterial],
@@ -201,17 +205,11 @@ fn authenticated_control_candidates(
                 "control original candidate digest differs from proof",
             ));
         }
-        let receipt: NodeDedupRecord = NodeDedupRecord::decode(component(
-            material,
-            OrderedHistoryComponentKind::OriginalReceipt,
-        )?)?;
-        let accepted_hint: bool = receipt.responses().len() == 1
-            && receipt.responses()[0].status() == NodeResponseStatus::Accepted;
         match candidates.entry(digest) {
             Entry::Vacant(entry) => {
-                entry.insert((candidate, accepted_hint));
+                entry.insert(candidate);
             }
-            Entry::Occupied(entry) if entry.get() == &(candidate, accepted_hint) => {}
+            Entry::Occupied(entry) if entry.get() == &candidate => {}
             Entry::Occupied(_) => {
                 return Err(DrainSetControlProofError::Invalid(
                     "control recommit differs from its exact original candidate",
@@ -281,65 +279,83 @@ pub fn drain_control_material_from_source_snapshot(
         })
         .collect();
     let mut controls: Vec<DrainSetControlMaterial> = Vec::new();
-    for (digest, (candidate, accepted_hint)) in candidates {
-        if !accepted_hint {
-            continue;
+    for candidate in candidates.values() {
+        // The source may legitimately have refused before checking readiness
+        // (NoFreeze, a foreign selection, or an exact completed replay). Only
+        // complete authenticated streams are optional proof inputs. Absence
+        // here grants no authority: private owning preflight later requires
+        // every needed stream, and semantic comparison still checks source
+        // rows rather than blessing malformed/unrecognized control records.
+        if let Ok(control) = available_control_from_source_rows(&state, plan, candidate) {
+            controls.push(control);
         }
-        let intent: DrainSetIntent = decode_drain_set_intent(&candidate.intent)?;
-        let mut frontiers: Vec<DrainSetSignerFrontierMaterial> =
-            Vec::with_capacity(intent.selected_votes.len());
-        for vote in &intent.selected_votes {
-            let mut prefix: Vec<u8> = drain_signer_entry_key(
+    }
+    Ok(controls)
+}
+
+fn available_control_from_source_rows(
+    state: &BTreeMap<Vec<u8>, &SourceSnapshotRecord>,
+    plan: &BusinessReconstructionPlan<'_>,
+    candidate: &OrderedCandidate,
+) -> ControlResult<DrainSetControlMaterial> {
+    let intent: DrainSetIntent = decode_drain_set_intent(&candidate.intent)?;
+    let mut frontiers: Vec<DrainSetSignerFrontierMaterial> =
+        Vec::with_capacity(intent.selected_votes.len());
+    for vote in &intent.selected_votes {
+        let mut prefix: Vec<u8> = drain_signer_entry_key(
+            plan.genesis.context().chain_id(),
+            plan.genesis.context().epoch(),
+            vote.validator,
+            &[1; 32],
+        )?;
+        prefix.truncate(
+            prefix
+                .len()
+                .checked_sub(32)
+                .ok_or(DrainSetControlProofError::Invalid(
+                    "control signer-entry prefix underflow",
+                ))?,
+        );
+        let mut entries: Vec<AvailabilityIdentity> = Vec::new();
+        for (key, record) in state.range(prefix.clone()..) {
+            if !key.starts_with(&prefix) {
+                break;
+            }
+            let bytes: &[u8] =
+                record
+                    .value
+                    .as_deref()
+                    .ok_or(DrainSetControlProofError::Incomplete(
+                        "selected signer entry is tombstoned",
+                    ))?;
+            let identity: AvailabilityIdentity = decode_availability_identity(bytes)?;
+            if drain_signer_entry_key(
                 plan.genesis.context().chain_id(),
                 plan.genesis.context().epoch(),
                 vote.validator,
-                &[1; 32],
-            )?;
-            prefix.truncate(prefix.len().checked_sub(32).ok_or(
-                DrainSetControlProofError::Invalid("control signer-entry prefix underflow"),
-            )?);
-            let mut entries: Vec<AvailabilityIdentity> = Vec::new();
-            for (key, record) in state.range(prefix.clone()..) {
-                if !key.starts_with(&prefix) {
-                    break;
-                }
-                let bytes: &[u8] =
-                    record
-                        .value
-                        .as_deref()
-                        .ok_or(DrainSetControlProofError::Incomplete(
-                            "selected signer entry is tombstoned",
-                        ))?;
-                let identity: AvailabilityIdentity = decode_availability_identity(bytes)?;
-                if drain_signer_entry_key(
-                    plan.genesis.context().chain_id(),
-                    plan.genesis.context().epoch(),
-                    vote.validator,
-                    &identity.request_id,
-                )?
-                .as_slice()
-                    != key.as_slice()
-                {
-                    return Err(DrainSetControlProofError::Invalid(
-                        "selected signer-entry key differs from identity",
-                    ));
-                }
-                entries.push(identity);
+                &identity.request_id,
+            )?
+            .as_slice()
+                != key.as_slice()
+            {
+                return Err(DrainSetControlProofError::Invalid(
+                    "selected signer-entry key differs from identity",
+                ));
             }
-            frontiers.push(DrainSetSignerFrontierMaterial {
-                signer: vote.validator,
-                pages: pages_from_entries(&entries)?,
-            });
+            entries.push(identity);
         }
-        let control: DrainSetControlMaterial = DrainSetControlMaterial {
-            candidate_digest: digest,
-            selected_votes: intent.selected_votes,
-            signer_frontiers: frontiers,
-        };
-        validate_bound_control(plan, &candidate, &control)?;
-        controls.push(control);
+        frontiers.push(DrainSetSignerFrontierMaterial {
+            signer: vote.validator,
+            pages: pages_from_entries(&entries)?,
+        });
     }
-    Ok(controls)
+    let control: DrainSetControlMaterial = DrainSetControlMaterial {
+        candidate_digest: candidate_digest(plan, candidate)?,
+        selected_votes: intent.selected_votes,
+        signer_frontiers: frontiers,
+    };
+    validate_bound_control(plan, candidate, &control)?;
+    Ok(control)
 }
 
 fn validate_bound_control(
@@ -429,7 +445,7 @@ pub(super) fn validate_control_inputs(
                 "duplicate control original selection",
             ));
         }
-        let (candidate, _) =
+        let candidate: &OrderedCandidate =
             candidates
                 .get(&control.candidate_digest)
                 .ok_or(DrainSetControlProofError::Invalid(
@@ -568,7 +584,6 @@ pub(super) fn prepare_drain_control(
             }
         }
     }
-    let intent: DrainSetIntent = decode_drain_set_intent(&candidate.intent)?;
     let mut expected_count: u64 = 0;
     for _ in 0..=unique_members.len() {
         match advance_drain_union(
@@ -594,16 +609,19 @@ pub(super) fn prepare_drain_control(
                 }
             }
             DrainUnionStep::Ready(identity) => {
-                if *identity != intent.drain_union_identity
-                    || identity.member_count
-                        != u64::try_from(unique_members.len()).map_err(|_| {
-                            DrainSetControlProofError::Invalid("control unique count overflow")
-                        })?
+                if identity.member_count
+                    != u64::try_from(unique_members.len()).map_err(|_| {
+                        DrainSetControlProofError::Invalid("control unique count overflow")
+                    })?
                 {
                     return Err(DrainSetControlProofError::Invalid(
-                        "private ready union differs from original candidate",
+                        "private ready union differs from authenticated stream count",
                     ));
                 }
+                // The candidate may legitimately claim a wrong union and be
+                // refused. Readiness is derived from actual selected streams;
+                // the ordinary owning handler, not this scheduler, compares
+                // the candidate claim and produces its original response.
                 consumed.insert(digest);
                 return Ok(());
             }
