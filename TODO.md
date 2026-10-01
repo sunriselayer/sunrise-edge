@@ -415,9 +415,13 @@ The detailed existing evidence and remaining criteria follow:
   regression is claimed yet.
   Integrated branch source now includes trusted admission, private causal
   execution, complete semantic projection and the read-only PostgreSQL CLI.
-  Core compile/strict Clippy and compiled operator/CLI builds passed; genuine
-  PostgreSQL acceptance, final whole-repository checks, independent final-head
-  review and required CI remain pending. `npm ci` passed on 2026-10-01 but
+  Earlier core compile/strict Clippy and compiled operator/CLI builds passed.
+  Genuine four-namespace PostgreSQL execution reached DrainSet, fixed-history
+  export and actual source restart, but complete private replay refused; new
+  focused Memory controls also exposed semantic-comparison and fixture issues.
+  These are under repair, not passed acceptance. Final whole-repository checks,
+  independent final-head review and required CI remain pending.
+  `npm ci` passed on 2026-10-01 but
   reported six inherited high-severity development-tool dependency advisories;
   no dependency upgrade or vulnerability remediation is claimed by this slice.
   Complete the following in one functional PR rather than merging a decoder
