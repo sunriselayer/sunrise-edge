@@ -1,153 +1,136 @@
 # Current delivery roadmap
 
-**2026-09-07: deliver usable features, not another sequence of standalone
-codec/validator/witness PRs.** The CLI Developer MVP and initial scoped audit
-remediation are existing baselines, not a completed generic contract platform.
-The public-contract foundations (DR-0112–DR-0120) and opt-in local durable code
-publication (DR-0121), opt-in independent local instance execution (DR-0122),
-and unified signed contract calls (DR-0123) are implemented and locally validated.
-The internal Standard Asset package, paid execution engine, signed atomic
-genesis installation, public paid CLI/HTTP activation, and migration of all five
-asset commands away from the deleted preinstalled/native fee path are
-implemented and locally validated under DR-0127. The generic-contract gate is
-closed. DR-0128 adds arbitrary Standard Asset creation as an ordinary paid
-instance plus immediate mint/transfer use. Its complete repository gate,
-focused Codex Security delta scan, and fresh Opus tech-lead review have passed.
-DR-0129 phase 0 added the owned-object `FastVote`/`FastCertificate`
-canonical types, wire codec, and signature/quorum aggregation library in
-`crates/consensus`. DR-0130 phase 1 now adds the local `node-core`
-certified-execution boundary: signed paid-intent preparation, durable
-object/nonce locks, complete staged-commit commitment, static signed-genesis
-validator-set verification, and atomic certificate apply. It deliberately
-adds no HTTP/CLI or other externally reachable FastVote ingress. FastVote is
-delivered across four phases (see the
-[FastVote Certified Execution Gate](#fastvote-certified-execution-gate)):
-phase 0 (DR-0129, done); phase 1, owned-object certified execution — signed
-paid intent authentication, exact replay reconciliation, nonce/policy/
-object/ABI validation, deterministic paid execution, a canonical commitment
-over the complete staged commit, durable exclusive owned-object version
-locks, quorum certificate verification, and atomic certificate apply
-(implemented and locally validated in
-[DR-0130](docs/architecture/decisions/0130-owned-object-certified-execution.md));
-phase 2, validator lifecycle, implemented as four
-slices (epoch/validator-set transitions, equivocation evidence,
-multi-validator fault/restart tests; slice 1, general mutation
-authorization/fencing, implemented in
-[DR-0131](docs/architecture/decisions/0131-fastvote-validator-lifecycle.md),
-which also fixes slices 2-4's safety contract, including the key
-transition safety proof; slice 2, epoch transition, implemented in
-[DR-0132](docs/architecture/decisions/0132-fastvote-epoch-transition.md);
-slice 3, equivocation evidence, implemented and locally validated in
-[DR-0133](docs/architecture/decisions/0133-fastvote-equivocation-evidence.md);
-slice 4's authorization/ingress boundary is implemented in
-[DR-0134](docs/architecture/decisions/0134-fastvote-authorization-boundary.md),
-including its companion code and review gate); and phase 3,
-economics/security completion. DR-0135 implements the non-signable protocol
-custody prerequisite, DR-0136 implements typed, positive genesis bond
-commitments derived through authenticated generic executable ABI metadata,
-DR-0137 unit 2 implements the closed post-genesis whole-object bond
-lifecycle (Deposit/Replace/Unbond/Withdraw), and DR-0137 unit 3 implements
-one-time evidence-driven forfeiture, jail/reactivation and next-set
-eligibility coupling. Unit 4 commits the certified fee object into
-request-scoped escrow and persists deterministic active-validator entitlements.
-DR-0137–DR-0140 also implement signed claim execution, distribution and
-payout verification. **FastVote is complete only after phase 3.** Phase 1
-permits a closed local developer rehearsal, not multi-validator protocol-v3
-live activation; the hard activation constraints below still apply.
+**2026-10-01: one integrated implementation and refactoring queue.**
+[DR-0173](docs/architecture/decisions/0173-integrated-implementation-refactoring.md)
+integrates the remaining functions with responsibility-oriented cleanup.
+Do not finish a repository-wide rewrite before resuming feature delivery.
+The stable target boundaries are in
+[implementation structure](docs/architecture/implementation-structure.md);
+the [code map](docs/development/code-map.md) locates their current owners.
+Only this file owns current status, sequencing and deferred work.
 
-**2026-09-30: feature-sized PR policy.** Use independently complete,
-single-capability PRs rather than one large PR. Independent work bases on
-`origin/main`; dependent feature PRs may stack on their prerequisites. An
-earlier aggregate integration PR (for example PR #235) may be preserved as
-the source these slices originated from, but it is not a required merge
-target. Deliveries above are acceptance gates for a whole capability, not
-merge gates: an independently complete, feature-sized PR may merge to
-`main` on its own after the full repository gate, exact-head Opus review
-and CI, without the delivery it contributes to being complete. Each
-stacked PR states its own owned paths, exact implemented scope and pending
-verification.
+## Established baseline
 
-| Order | Deliverable | Completion evidence | Status |
+| Capability | Evidence and boundary |
+| --- | --- |
+| CLI Developer MVP and initial scoped audit remediation | Existing local developer baseline, not a public-network or mainnet release |
+| Generic paid contracts and Standard Asset | DR-0121–0128 implement Publish/Instantiate/Call, ordinary contract-defined fees and asset create/transfer/split/merge/mint/burn; no Standard Asset privilege in node-core |
+| Delivery 1: certified network contract lifecycle | PR #228 merged on 2026-09-27 after the full gate, fresh exact-head Opus approval and CI; paid lifecycle, assets, replay and declared catch-up, not complete state handoff |
+| Delivery 2: fixed-epoch ordered economics | PR #232 merged on 2026-09-27; shared ordering for claims, bonds and evidence/slash/reactivation, with four-namespace CLI evidence. Genuine membership-dependent Deposit/Withdraw positives remain in Delivery 3 |
+| Delivery 3 prerequisites | PR #237/#238/#239/#242/#244/#245 merged: portable reads, logical generations, publication-before-apply, Freeze/frontiers, quorum-retained DrainSet/member drain, ordered history, initial causal reconstruction and closed source comparison. Complete drained-source reconstruction/cut/import/readiness/Seal/activation remain open |
+| Required validation | PR #247 implements DR-0172: four unconditional DB-free lanes. PostgreSQL integration/fault acceptance is retained and explicitly selected, not run on every PR |
+
+FastVote remains incomplete: validator-set changes, slashing and reward/claim
+distribution are completion criteria, not optional production deferrals.
+Fixed-epoch economics implements much of that work; complete membership and
+epoch handoff plus independent security gates still remain.
+
+## Functional critical path with embedded refactoring
+
+The order below supersedes the old chronological slice lists as the active
+queue. Detailed gate checklists and historical evidence remain below.
+A row is an integrated outcome, not a requirement to put the whole row in
+one PR. Ship a coherent callable feature with its relevant core/store,
+HTTP/SDK/CLI, tests and documentation; do not split merely by codec or file.
+
+| Order | Remaining outcome | Refactoring included where needed | Acceptance boundary |
 | --- | --- | --- | --- |
-| 1 | Durable local code publication | CLI publish/query; immutable code/ABI/exact dependencies; authenticated admission; origin absence; shared nonce and receipt atomicity (no outgoing message); real SQLite restart/replay/conflict/fencing | Implemented and locally validated (DR-0121); fee-free opt-in local storage only |
-| 2 | Run independently instantiated user contracts | CLI instantiate/call; instance isolation; defining-code/type/owner/revision authority; bounded host object operations and typed cross-contract calls; rollback/replay E2E | Local instance execution and unified signed contract calls implemented and locally validated (DR-0122/0123); zero-fee opt-in only |
-| 3 | Standard Asset and fees through the public facilities | Existing asset operations use the same contract/host path; explicitly signed fee consent and committed settlement contract; remove trusted-only policies and native Coin-body rewriting; success/trap/replay parity | Implemented and validated (DR-0126/DR-0127); complete repository gate and fresh Opus tech-lead review passed |
-| 4 | Arbitrary asset creation and focused delta audit | CLI creation and supply/capability lifecycle needed for initial asset use; security review of the added generic contract surface and remediation | Implemented and validated (DR-0128); focused Codex Security scan found 0 reportable findings and fresh Opus review approved |
-| 5 | FastVote and multi-validator integration (4 phases; see [gate](#fastvote-certified-execution-gate)) | Owned-object certification across independent validator invocations, certificate publication, duplicate/reordered delivery, quorum/configuration changes, restart and fault evidence | **Phases 0-2 implemented and locally validated; Phase 3 remains open.** DR-0135–DR-0140 implement custody, bonds, forfeiture, signed fee claims and payout verification. DR-0142/0143 add offline SQLite and PostgreSQL certified inventory. DR-0144/0145 exercise four CLI validators, separate test databases and bounded PostgreSQL claim/reopen regressions. DR-0148's certified-only HTTP host and Rust CLI quorum/replay flow are implemented and validated; PR #223 merged as `12a08c6` after fresh exact-head Opus approval and passing CI. Authenticated lifecycle operator surfaces, owned-state/settlement handoff and activation-bound catch-up remain separate functional work. Independent Phase 3 and new-ingress security gates remain open; no live activation or deployment is authorized. Per [DR-0147](docs/architecture/decisions/0147-function-first-network-delivery.md), representative sustained load/soak/capacity certification and adopted throughput/recovery SLOs are post-launch hardening, not a Phase 3 prerequisite. FastVote overall is incomplete. |
+| 1 | Complete authenticated drained-state reconstruction and cut export | Separate reconstruction material/catalog/scheduling/projection; make ordered replay reuse the owning candidate execution; separate drain stream/retention/union responsibilities | Genuine frozen member completion without aggregate availability certificate; all four business collections and artifact closure; pre-Seal cut binding and bounded verified export. No fabricated proof, skipped applied history, source write or self-referential cut |
+| 2 | Persistent verified import into a fresh inactive validator | Explicit import state and core authority guard; narrow runtime repository/transaction seams and shared SQL engine owners | Own writer fence, verified provenance/generation floor, resumable chunks and durable completeness. Staging grants no active serving, fresh business admission or consensus signing; verified import/replay has its own private authority. No foreign fence copy or reset of active history |
+| 3 | Conditional readiness, ordered Seal and authenticated activation | Separate epoch-control authority, transition identity and epoch-scoped ordered commit assembly; separate immutable genesis pins from verified serving context | Correctable pre-Seal candidates, ready eligible next quorum, business-free inherited suffix, unique post-Seal target, atomic policy/provenance rollover and retained old history. No timeout unfreeze or force activation |
+| 4 | Usable add/replace/recover/epoch lifecycle | Share bounded artifact I/O and pin/config primitives in SDK/CLI; keep ingress/authentication, transport and core decisions separate | Real A/B/C/D → A/B/C/E flow: Deposit E, Unbond absent D, verified import/replacement, new-epoch paid contracts/claims, advance to genuine unlock epoch, Withdraw D; restart/replay, retired-key, early withdrawal and stale-writer negatives |
+| 5 | Delivery 4: independent audit and initial-network startup | Only deployment-facing composition/dispatch cleanup needed for the chosen profile; reuse capability tests rather than copy PG-only fixtures | Explicit reviewed initial-network activation profile, independently controlled stores, executable auth/TLS/startup/recovery instructions, separate economics and ingress audits and remediation before live exposure |
 
-Deliverables 1–3 close the [Generic Contract Publication Gate](#generic-contract-publication-gate).
-Asset creation was the final focused delta before FastVote/multi-validator
-integration. DR-0129 phase 0 supplied its canonical-types/codec foundation;
-DR-0130 phase 1 supplies local certified execution without adding external
-ingress. DR-0131 fixes phase 2's architecture and implements slice 1
-(general mutation authorization/fencing); DR-0132 fixes and implements
-slice 2's design (epoch transition); DR-0133 implements and locally validates
-slice 3 (equivocation evidence); DR-0134 implements slice 4's authorization and
-closed-ingress boundary, closing Phase 2. DR-0135 implements the non-signable
-protocol-custody prerequisite for Phase 3; DR-0136 binds that custody to an
-authenticated executable-ABI value observation and a durable genesis bond
-record without importing Standard Asset into node-core runtime code; DR-0137
-unit 2 adds the closed `bond_lifecycle` execution boundary that authorizes
-the first post-genesis custody mutations (whole-object deposit, replacement,
-unbond and withdrawal) through the same generic contract-effect validation
-discipline, also without a Standard Asset exception. Standard
-Asset remains a dev fixture, and the generic fee layer retains its transitive
-`AssetId` dependency. Phase 3
-economics/security completion remains open.
-Contract
-upgrades/migrations remain a separate explicit
-capability after the initial immutable-code flow, not a prerequisite for
-claiming that first flow. Production recovery/HA/provider certification,
-Ledger, TypeScript, explorer, wallet, Unique Asset and multisig remain
-separate deferred gates below; none is deleted or silently treated as
-complete by this ordering.
+- [ ] **Next feature:** close the no-aggregate-availability frozen-member source
+  gap and derive/export a complete authenticated pre-Seal business cut.
+  Extend the existing narrowly verified `apply_drain_member` authority;
+  ordinary open-epoch apply keeps its availability gate. Retained-but-unapplied
+  publications stay unapplied. Unknown or contradictory material stops.
+  This is the blocker recorded by DR-0170, not another standalone codec PR.
+- [ ] **Then:** verified persistent import with a durable inactive-state guard
+  at the core/store authority boundary, not merely a hidden HTTP route.
+- [ ] **Then:** readiness/Seal and activation/serving rollover. These may be
+  separate usable PRs if the intermediate boundary remains fail-closed.
+- [ ] **Then:** integrated membership/recovery acceptance through real compiled
+  CLI and authenticated hosts; keep Delivery 3 unchecked until it passes.
+- [ ] **Before live exposure:** close the independently scoped economics and
+  ingress security gates and the selected initial-network release profile.
+  This plan does not introduce or approve such a profile, waive S4/S5, or
+  authorize protocol-v3 live activation.
 
-**Active network functional delivery, with separate release gates (DR-0147/0151):**
-The completed economics core supports implementing and testing the opt-in
-network surface while independent reviews remain open; it does not authorize
-live exposure before those reviews pass. Functional work to make FastVote
-usable is prioritized ahead of load testing; peak TPS,
-concurrent-user and recovery targets remain undecided and are deferred to
-post-launch hardening. [DR-0151](docs/architecture/decisions/0151-integrated-network-delivery-and-lightweight-stores.md)
-groups the remaining work into usable integrated deliveries. The user selected
-delivery 1 before Cloudflare DO implementation on 2026-09-27:
+## Parallel cleanup and preparation
 
-| Order | Integrated outcome | Remaining acceptance |
-| --- | --- | --- |
-| 1 | Generic certified network contract lifecycle | Merged as PR #228 on 2026-09-27 after the full repository gate, fresh exact-head Opus APPROVE and required CI: Publish → Instantiate → Call, Standard Asset create and existing verbs, fees, exact replay and declared ordered recovery. Independent ingress/security gates remain separate. |
-| 2 | Network economics and validator operations | Merged as PR #232 on 2026-09-27 with normal merge commit `86711be`, after fresh exact-head Opus APPROVE and the passing complete repository CI. Fixed-epoch four-namespace CLI evidence is implemented. Membership-dependent Deposit/Withdraw positives join delivery 3; economics/ingress security audits remain separate. |
-| 3 | Validator membership and epoch handoff | In progress under [epoch handoff](docs/architecture/epoch-handoff.md) and [DR-0154](docs/architecture/decisions/0154-complete-epoch-handoff.md). Bounded portable storage, logical-generation admission, publication/availability-before-apply and ordered Freeze/immutable frontier export merged as PR #237/#238/#239/#242. Quorum-retained DrainSet/member drain is implemented; authenticated ordering-history export merged as PR #244 with the full gate, independent exact-head approval and required CI. Initial causal business reconstruction and closed semantic comparison merged as PR #245 with independent approval and complete validation; its no-aggregate-AV frozen-member limitation remains explicit. Complete drained-state cut/import is next; readiness/Seal/activation and integrated add/replace/recover/epoch/Deposit/Withdraw validation remain incomplete. |
-| 4 | Independent audit and initial-network startup | Independently controlled stores, executable auth/TLS/config/startup walkthrough and functional restart/replay evidence; separate economics and ingress security reviews/remediation |
+Choose a parallel item only when it has a disjoint owner and no dependency on
+unfinished authority semantics. It must not delay the critical path or become
+a prerequisite merely because a file is long. Mechanical moves are separate
+reviewable commits; semantic changes stay with their owning feature.
 
-**PR slicing policy, 2026-09-30:** deliveries describe integrated acceptance
-outcomes, not PR size. Implement dependency-ordered, independently reviewable
-functional capabilities, each with its relevant tests, architecture/TODO
-updates, complete repository gate, fresh exact-head Opus approval and required
-CI. On 2026-09-30 the user explicitly authorized fresh independent Codex
-subagents while Opus is unavailable; their explicit exact-head approval may
-substitute for that review gate, but must never be described as Opus approval.
-A prerequisite may merge before the whole delivery, provided it does not
-authorize an unfinished transition. Preserve Draft PR #235 as the aggregate
-implementation source; do not merge its unfinished whole-delivery diff.
-PR #237 merged normally as `0f201eb` on 2026-09-30 after all of its gates.
-PR #238 merged normally as `cf941fea` after exact final-head Opus approval
-and passing required CI; `main` was verified clean and equal to `origin/main`.
-Subsequent boundaries follow actual dependencies: logical generations and
-provenance; publication/availability admission; Freeze/frontier/drain;
-authenticated per-height ordering-history export; authenticated cut/import; and
-readiness/Seal/activation. Keep Delivery 3 unchecked until the integrated
-criteria below actually pass, regardless of how many prerequisites merge.
+- [ ] **Runtime/core organization:** extract runtime operation/transaction/
+  object/receipt/outbox traits and memory implementations, and node-core
+  error/event/invocation/outbox plumbing, within the existing crates with
+  public reexports. Keep memory stores available to production reconstruction.
+- [ ] **Bounded artifact and configuration primitives:** SDK bounded file
+  reads/local signed-genesis pin verification and CLI reserved artifact I/O.
+  Preserve distinct offline/network workflow authority, exact saved bytes,
+  pre-reservation, held handles and file/parent synchronization.
+- [ ] **Test ownership alongside affected modules:** reuse signed fixtures
+  and backend conformance inputs, separate module unit tests from real HTTP,
+  compiled CLI and provider acceptance, retain positive controls independent
+  of the negative under test. Do not replace actual restart/fencing/atomicity
+  evidence with mocks or rename a source-local snapshot test as cut/import.
+- [ ] **Audit/startup preparation:** map changed attack surfaces and assemble
+  executable configuration/key/TLS/recovery instructions while Delivery 3
+  proceeds. Tech-lead approval is not the independent security audit.
+- [ ] **Selected store/host parity:** keep PostgreSQL optional and assess the
+  actual capabilities of each advertised profile. Native SQLite and embedded
+  DO local contract/restart/replay evidence do not certify real deployment.
+  D1 remains unimplemented; its adapter needs explicit design and conformance
+  if selected, not a mandatory detour before membership features.
 
-PostgreSQL remains the existing tested profile for delivery 1, not a mandatory
-protocol database. Lightweight authoritative profiles (Cloudflare SQLite-backed
-DO and separately verified native SQLite) are not production-certified
-deployment targets. The embedded DO host now has actual local contract,
-restart and replay evidence, not merely relay or counter tests. Prioritize
-the remaining network functions over more PostgreSQL-only operational work.
-Preserve one transactional
-validator domain initially; per-object/sender/contract databases require a
-separate cross-store commit/visibility design. Provider migration and profile
-conformance do not waive any current safety or independent security gate.
+Concrete source seams, intended module owners and non-goals are in
+[implementation structure](docs/architecture/implementation-structure.md).
+This list schedules them; that document is not a second progress tracker.
+
+## Deferred without losing the completion gates
+
+Do not put these ahead of the remaining initial-network functions:
+repository-wide crate churn or a universal handler/store framework; removing
+all SDK-to-core dependencies before serving-epoch authority is settled;
+PostgreSQL-only HA/PITR expansion; sustained load/soak/capacity and SLO adoption;
+Ledger/real-device signing; TypeScript/explorer/wallet; Unique Asset; multisig;
+contract upgrades/migrations and full production provider certification.
+Production/mainnet gates remain stricter than a separately reviewed bounded
+initial-network profile. Neither profile is completed by this plan.
+
+## Delivery and validation rules
+
+Use independently reviewable feature-sized PRs, normally based on
+`origin/main`; dependent PRs may stack on their explicit prerequisites.
+Preserve Draft PR #235 as extraction material, not an unfinished aggregate
+merge target; unrelated PR #246 is outside this queue. A prerequisite may
+merge without the whole delivery being complete if it authorizes no unfinished
+transition. Recheck current main/PR state before each assignment.
+
+Run focused checks during iteration, then the complete required
+`npm ci --prefix adapters/cloudflare-workers` and
+`./scripts/check-all.sh`, fresh explicit exact-head tech-lead approval and
+required CI before merge. On 2026-09-30 the user authorized independent Codex
+subagents while Opus is unavailable; do not describe their approval as Opus.
+Use normal merge commits, never squash or rebase, and verify clean
+`HEAD == origin/main` after updating main.
+
+Per DR-0172, PG implementation/dependency changes and PG deployment/release
+claims additionally need fresh selected-source complete PG acceptance.
+Generic protocol changes need focused integration proportional to their
+impact, using the affected real profile; DB-free success alone is not provider
+qualification. Do not restore heavy PG-every-PR CI through a refactoring task.
+
+Preserve canonical bytes/type IDs/domains, deterministic effects, receipt-first
+replay, bounded work, ownership/custody authority, atomic business/receipt/
+nonce/publication/settlement writes and writer fencing. Extract modules, not
+new authorization paths or Standard Asset-specific exceptions. One validator
+initially owns one transactional domain; multiple per-object databases require
+a separately reviewed cross-store commit/visibility design.
 
 The detailed existing evidence and remaining criteria follow:
 
@@ -209,13 +192,14 @@ The detailed existing evidence and remaining criteria follow:
   blindly rewritten to the live epoch. Acceptance includes a fresh namespace,
   genuine Unbond/remove/epoch advance/Withdraw, actual new-epoch paid user
   contracts and fee claims, restart/exact replay, retired-signer rejection,
-  missing/forged/divergent cut refusal and real stale-writer controls. No
-  Delivery 3 handoff runtime enforcement, completeness proof, activation or
-  integrated validation is claimed by the design review or this foundation
-  slice. Implement the same semantic
-  execution-generation substitution in ordered bond/fee-claim minimum checks,
-  not only fast-path commitments; checked overflow must refuse before mutation
-  or exposed signatures. Fresh-genesis enforcement
+  missing/forged/divergent cut refusal and real stale-writer controls. The
+  initial design review/stateless foundation did not implement those rules;
+  later checked capabilities below supply partial runtime enforcement, not
+  complete cut/import, activation or integrated Delivery 3 acceptance.
+  Logical-generation admission below implements the same semantic substitution
+  in ordered bond/fee-claim minimum checks, not only fast-path commitments;
+  checked overflow must refuse before mutation or exposed signatures.
+  Fresh-genesis enforcement
   is required; existing pre-rule stores cannot silently receive this guarantee.
 
 - [x] **Logical execution generation admission: independent feature PR**
@@ -598,9 +582,10 @@ The detailed existing evidence and remaining criteria follow:
     network, production, or custody authorization. Filesystem tests establish
     strict synchronization/error handling on Unix, not power-loss recovery
     or validated support for other platforms.
-- [ ] expose the already-implemented bond/epoch/equivocation/reward/claim
-  lifecycle through explicit authenticated operator/network surfaces where
-  needed;
+- [x] expose fixed-epoch bond/equivocation/reward/claim operations through
+  authenticated ordered network surfaces (Delivery 2, DR-0153, PR #232).
+  Genuine membership-dependent Deposit/Withdraw, complete handoff and epoch
+  activation remain the separate unchecked Delivery 3 gate above.
   - [x] [DR-0149](docs/architecture/decisions/0149-offline-signed-fee-claims.md):
     offline single-namespace PostgreSQL escrow listing/inspection, generic
     signed claim preparation, apply/exact replay and independent persisted
@@ -619,9 +604,11 @@ The detailed existing evidence and remaining criteria follow:
     CI; implementation agents do not replace that review. Direct network
     claim mutation is excluded: local generation CAS does not order shared-
     escrow claims across validators, and fence recovery alone does not
-    authorize live re-entry after local claim mutations. Online ordering/
-    certification, settlement/state handoff, independent security gates and
-    the remaining bond/epoch/equivocation surfaces stay open.
+    authorize live re-entry after local claim mutations. This is the dated
+    offline scope: DR-0153/PR #232 subsequently implement fixed-epoch online
+    ordering/certification and the corresponding surfaces. Complete state/
+    settlement handoff, membership-dependent operations and independent
+    security gates remain open.
 - [ ] owned-state and settlement handoff correctness, activation-bound state
   verification, and validator catch-up before live epoch/set changes or
   validator replacement/activation. Local epoch CAS and lock-reclamation
@@ -656,17 +643,20 @@ The detailed existing evidence and remaining criteria follow:
     `./scripts/check-all.sh` passed, including required live PostgreSQL fault
     cases, exact compiled-CLI catch-up execution, stable vectors and all
     adapters. Merge requires fresh exact-final-head Opus approval and required
-    CI. This covers only declared certified Calls with exact local prerequisites;
-    full history/state completeness, definition import, shared settlement
-    ordering and activation-bound handoff remain open. Independent Phase 3
+    CI. This DR-0150 evidence covers only declared certified Calls with exact
+    local prerequisites. DR-0151/PR #228 subsequently add declared certified
+    Publish/Instantiate recovery, and DR-0153/PR #232 add shared settlement
+    ordering. Full history/state completeness and activation-bound handoff
+    remain open. Independent Phase 3
     and ingress security gates remain open; no public deployment, real custody
     or production/mainnet readiness is claimed.
 - [ ] bounded independent-validator functional start/restart/replay/
   authorization evidence, a documented deployment/configuration walkthrough,
   and a focused security review, before exposing this ingress.
 
-This network functional delivery has its own separate design, authentication
-and security/audit gate; it does not fold into Phase 3 completion.
+This network functional delivery has its own design, authentication and
+security/audit gate; it does not itself close Phase 3. The current roadmap
+above is the execution order; dated evidence below is not another queue.
 Representative sustained load/soak/capacity certification and adopting
 throughput/recovery SLOs remain post-launch hardening, not a prerequisite
 for either. No target numbers are adopted.
@@ -2760,14 +2750,16 @@ statements such as “body validation remains open” are not the live work queu
   grants no execution right. This completed local flow does not itself close fee
   parity, upgrades or public-network readiness; detailed regression and validation
   evidence lives with the decision records.
-- [ ] **Standard Asset/fee parity:** replace trusted-only asset and fee
-  paths with the ordinary public package and explicitly signed, committed and
-  bounded fee settlement defined by
+- [x] **Standard Asset/fee parity:** DR-0126/0127 replace trusted-only asset
+  and fee paths with the ordinary public package and explicitly signed,
+  committed and bounded fee settlement defined by
   [DR-0124](docs/architecture/decisions/0124-contract-fee-reservations.md).
   The public package, paid engine and internal fenced durable admission are
   implemented and locally validated without a grandfathered admission exception.
   The same Coin may fund fees and application work; a separate Coin is optional.
-  Calibrated installation and external activation remain open.
+  Calibrated local installation and paid CLI/HTTP activation were completed
+  by DR-0126/0127; certified network use is completed by Delivery 1. This is
+  not complete handoff or public-network/production activation evidence.
   - [x] Generic bounded typed frame returns, profile-4 object metadata and ordered
     optional result handles, independent phase budgets, monotonic counters,
     savepoints and the private three-phase coordinator are implemented. Real-WASM
@@ -2857,13 +2849,16 @@ statements such as “body validation remains open” are not the live work queu
     request-ID conflict invariance and writer fencing without a node-core asset
     branch. Complete repository gate、focused Codex Security scan、fresh Opus
     tech-lead reviewまで通過済みである。
-  - [ ] Complete activation evidence and fresh combined review. Existing evidence
+  - [x] Complete local paid activation evidence and combined review under
+    DR-0126/0127. The detailed completed criteria and later Delivery 1 record
+    repository, tech-lead and certified-network validation. Existing evidence
     now covers canonical vectors, same-source/transferred-source behavior, phase
     exhaustion and traps, charged/zero-charge receipts, exact replay, request
     conflict, SQLite restart/fencing, full CLI/HTTP paid activation, and a permanent
-    independent JavaScript reconstruction of `0x6415/v1`. Still required are the
-    fresh combined review, service-backed PostgreSQL fault evidence and the full
-    public gate.
+    independent JavaScript reconstruction of `0x6415/v1`. Independent new-
+    ingress/economics audits, complete handoff and selected public-network
+    release authorization remain separate gates; PG acceptance follows DR-0172,
+    not an obsolete every-PR requirement.
   Public admission additionally requires analysis of fresh-request unpaid
   phase-failure abuse; this local replacement is not a readiness claim.
 
@@ -3136,8 +3131,9 @@ allowance、governed fee-asset admission、Unique Asset v1の実装は後続slic
 
 ## FastVote Certified Execution Gate
 
-FastVote/multi-validator integration (roadmap item 5) is delivered across
-four phases. This gate is the live status tracker for all four; it does not
+FastVote/multi-validator integration has four historical phases. This detailed
+gate retains their criteria/evidence; the current roadmap above is the only
+active execution order. It does not
 replace or loosen the hard activation constraint recorded in the "Generic
 Contract Publication Gate", "CLI-First Node Production Gate", and
 `docs/architecture/core-protocol.md` section 8, which independently keeps
@@ -3145,6 +3141,13 @@ protocol version 3 live activation blocked until `FastVote`/`FastCertificate`,
 certificate publication, and every other externally accepted event family's
 authenticated/authorized ingress are implemented, atomically composed, and
 S4/S5 plus independent security/release gates are complete.
+
+This is the complete production activation constraint, not a claim that the
+implemented certificate/ordering families are still absent. A bounded initial-
+network profile must be separately specified and reviewed before exposure;
+the current functional/refactoring plan neither creates it nor waives this
+constraint. Ledger and other deferred release work stay recorded in their
+own gates rather than becoming current handoff implementation prerequisites.
 
 **FastVote is complete only after phase 3.** Phase 1's static signed genesis
 set permits a closed local developer rehearsal, not an externally reachable
@@ -4065,8 +4068,9 @@ CLI framing and vote/certificate handling into helper-only changes.
   writer-generation reads. A rejected operation may still advance its
   explicitly claimed fence; that is not application-state mutation.
   A shared disposable database in this test does not prove separate validator
-  administrative control; the first network requires independent PostgreSQL
-  authorities and credentials.
+  administrative control; the first network requires independent store
+  authorities and credentials under its selected, verified profile. PG is
+  optional under DR-0151/0172, not a mandatory protocol database.
 - [ ] Document an executable operator walkthrough and pass the full repository
   gate plus focused security and fresh tech-lead reviews. Prior-main Phase 3
   tech-lead review passed, but its independent security gate remains open; per
@@ -4120,9 +4124,10 @@ TypeScript client・explorer・wallet（criteria 7-9）はSoftware Production Ga
   「Phase 15 As-Is scope」参照）。fee（S3のbounded uniform ordinary-asset fee
   composition、DR-0087）とmodule/object effect（additive owned-effects
   entrypointおよびpreinstalled-WASM entrypoint）はimplemented As-Isだが、
-  FastCertificate、certificate publication、他event familyのauthorized
-  ingress、S4/S5、独立security/release gateは引き続き未実装の前提であり、この
-  gate単独でprotocol version 3を有効化してよいことにはならない。
+  この列挙はDR-0095当時のproduction制約である。FastVote/certificate publicationと
+  fixed-epoch certified ingressは後続DR-0129–0153で実装されたが、complete handoff、
+  受理するすべてのfamilyの認証・認可、S4/S5と独立security/release gateの完了を
+  意味しない。このgateや統合計画単独でprotocol version 3を有効化してはならない。
 - `SubmitTransaction`以外の外部から受理されるnode-event family（特にcertificate、
   protocol upgrade、validator-set change）について、live activation前に
   `SubmitTransaction`と同等のauthenticated/authorized ingressを要求する既存の
@@ -4573,6 +4578,15 @@ Phase 15 prerequisites:
 
 Phase 15 As-Is scope:
 
+**Historical route/evidence scope, clarified 2026-10-01:** this section mixes
+dated generic/legacy native-route behavior with successive persistence and
+authentication implementations. It is not a current whole-node inventory.
+Later accepted generic-contract, FastVote/ordered-network and SQL-durable
+capabilities supersede its old absence claims; consult the current roadmap,
+owning architecture and code map for those boundaries. Retain the unfinished
+production, security and activation criteria, not an assumption that every
+function named as missing at the time is still unimplemented.
+
 - NodeEventはchain_id、protocol_version、epoch、non-zero request_id、closed event kind、
   bounded canonical payloadを持つ。
 - node-coreはcontextをstate read前に検証し、1 event / 1 explicit state valueをpureな
@@ -4659,9 +4673,9 @@ Phase 15 As-Is scope:
   publish済みblobをunreachableなcontent-addressed orphanとして残すのみ）。
   現在到達可能なのはUpdateのみで、Create effectは引き続きfail-closed/deferredである。ただし将来の
   Create実装が同じpersistence policyを迂回しないようstagingは両mutation variantを処理する。
-  durable provider
-  `BlobStore`（PostgreSQL/Cloudflare/AWS等、local file-backed SQLite blob storeを除く）と
-  GC/checkpoint manifestは引き続き未実装。
+  この経路の記録時点ではdurable providerの`BlobStore`とGC/checkpoint manifestは
+  未実装だった。後続の`runtime-postgres::blob::PostgresBlobStore`は実装済みであり、
+  providerごとのproduction qualificationやGC/checkpoint gateの完了とは区別する。
   memoryとPostgreSQLはstate/object/receipt/outboxを同一atomic boundaryで実装済みである。authenticated
   structured durable pathはsigned read-only manifestをexact head/immutable inline versionからloadし、verified
   senderに対するtyped owner authorizationと完全なhead assertionを同一commitへ接続した（implemented As-Is）。
@@ -4767,9 +4781,9 @@ Phase 15 As-Is scope:
   As-Is（下記bullet）。persistent sender nonceもimplemented As-Is（下記bullet）。
   fee（S3のuniform asset fee slice、DR-0087）とmodule/object effects（additive
   owned-effects entrypointおよびpreinstalled-WASM entrypoint）は現在implemented
-  As-Isだが、FastCertificateとCLI-First Node Production GateのS4/S5・independent
-  security reviewは引き続き未実装であり、protocol version 3のlive activationは
-  禁止したままである。
+  As-Isという記録である。後続DR-0129以降のFastCertificate/certified executionは
+  実装済みだが、CLI-First Node Production GateのS4/S5と独立security/release gateを
+  完了したことにはならず、protocol version 3のlive activationは承認していない。
 - `execution::decode_transaction`はexecution::Transaction v1の厳密な
   standalone canonical decoderを追加した：type id/encoding version 1を要求し、
   field 1-10と12を必須、field 11（`fee_payment`）のみoptionalとして
@@ -4914,7 +4928,9 @@ Phase 15 As-Is scope:
   HTTPとblocking admissionを共有する。single-lock memory repositoryはinitial delivery、stable due order、lease expiry、
   same-lease reconciliation、retained attempt history、later progress後のdelayed ackを検証する
   （native/memory/PostgreSQL implemented As-Is）。
-  PostgreSQL以外のdurable adapter、transport-aware deadline/cancellation、real scheduler bindingは未実装である。
+  この記録時点ではPostgreSQL以外のdurable adapter、transport-aware deadline/cancellation、
+  real scheduler bindingは未実装だった。後続のSQLite/shared SQL engineはindexed outboxを
+  実装しDO hostも同じengineを使うが、実providerの運用・scheduler qualificationを意味しない。
 - runtimeのnon-default `durable-conformance` test supportは同じblack-box caseをmemoryとPostgreSQLで実行し、
   deadline exact boundaryのread/commit/claim/ack definite rejection、complete-read write skew、concurrent
   absent-key create、tombstone ABA、definite contention outcome、retained outbox lease、writer-fence handoffを
@@ -5543,6 +5559,9 @@ architecture上の矛盾を発見した場合は、
 
 
 # 67. Highest Priority
+
+以下は長期の設計原則であり、現在の実装順序や初回networkの追加必須機能の
+リストではない。実装とrefactoringの優先順位は冒頭のcurrent roadmapに一本化する。
 
 architectureの中心に置くもの:
 

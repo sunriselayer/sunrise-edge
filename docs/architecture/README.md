@@ -20,6 +20,11 @@ roadmap describes a later target state.
   state boundary.
 - [Developer product surfaces](product-surfaces.md): sections 42–46, covering
   the devnet, query API, Rust client, CLI, and signing host boundary.
+- [Implementation structure](implementation-structure.md)
+  ([DR-0173](decisions/0173-integrated-implementation-refactoring.md)):
+  responsibility-oriented core/runtime/store/host/SDK boundaries, concrete
+  extraction seams and behavior-preserving refactor acceptance; scheduling
+  remains in TODO.
 - [Generic contract architecture](generic-contracts.md): common execution and
   authority, type/instance/object separation, upgrades, migration and durable
   verification obligations.
