@@ -632,6 +632,7 @@ pub(crate) fn build_paid_admission<
     created_checkpoint: u64,
     nonce_mode: NonceMode,
 ) -> PaidResult<PaidAdmissionOutput> {
+    mutation_fence::require_ordinary_namespace(store, context, domain)?;
     let intent: &PaidIntent = authenticated.intent();
     let current_request_id: [u8; 32] = intent.request_id;
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
@@ -1454,6 +1455,7 @@ pub fn reconcile_authenticated_paid_execution<S: StructuredDurableDomainStateSto
     {
         return Ok(PaidExecutionPreflight::Replayed { request_id, output });
     }
+    mutation_fence::require_ordinary_namespace(store, context, domain)?;
     Ok(PaidExecutionPreflight::Fresh(Box::new(
         FreshPaidExecution { authenticated },
     )))
@@ -1496,6 +1498,7 @@ pub fn handle_preflighted_paid_execution<
     {
         return Ok(output);
     }
+    mutation_fence::require_ordinary_namespace(store, context, domain)?;
     let mut direct_profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     require_historical_direct_writer(
         store,

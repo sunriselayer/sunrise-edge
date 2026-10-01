@@ -677,6 +677,7 @@ where
     }
     let (authenticated, event_digest, request_id) =
         authenticate_and_identify(resolver, expected, signed_bytes)?;
+    mutation_fence::require_ordinary_namespace(store, context, domain)?;
     let chain: ChainId = authenticated.intent().context.chain_id().clone();
     let intent_context: PublicationContext = authenticated.intent().context.clone();
     let original_request_id: [u8; 32] = authenticated.intent().request_id;
@@ -1309,6 +1310,7 @@ where
     {
         return Ok(output);
     }
+    mutation_fence::require_ordinary_namespace(store, context, domain)?;
 
     // Historical committed requests reconcile above. Fresh work must also
     // match the trusted, fixed execution-policy epoch, even when the live

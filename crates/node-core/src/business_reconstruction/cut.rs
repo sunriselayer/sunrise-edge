@@ -22,7 +22,7 @@ use std::{collections::BTreeMap, error::Error, fmt, num::NonZeroUsize};
 
 mod codec;
 mod derive;
-mod proof;
+pub(super) mod proof;
 mod source;
 #[cfg(test)]
 mod tests;
@@ -273,6 +273,20 @@ pub fn verify_saved_business_cut(
     saved: &SavedBusinessCut,
 ) -> Result<VerifiedBusinessCut, BusinessCutError> {
     proof::verify_saved(plan, saved)
+}
+
+/// Private capture seam shared with inactive target verification. This is not
+/// a constructor from source claims and does not grant live authority.
+pub(super) fn capture_import_target<
+    S: DurablePortableSnapshotRepository,
+    B: PortableBlobRepository,
+>(
+    store: &S,
+    blobs: &B,
+    operation: &runtime::DurableOperationContext,
+    domain: AtomicityDomainId,
+) -> Result<super::SourceBusinessSnapshot, BusinessCutError> {
+    source::capture(store, blobs, operation, domain)
 }
 
 /// NodeEvent-purpose digest under the pinned committed suite. This authenticates

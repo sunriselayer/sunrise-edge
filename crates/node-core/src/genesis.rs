@@ -881,6 +881,7 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
     if !manifest_verifier.verify_framed(&manifest_signing_frame, &manifest.signature)? {
         return Err(GenesisError::Invalid("invalid genesis manifest signature"));
     }
+    crate::mutation_fence::require_ordinary_namespace(store, context, domain)?;
 
     // 3. Context and genesis authority consistency checks.
     let manifest_context: &PublicationContext = manifest.context();

@@ -487,6 +487,7 @@ pub fn ingest_drain_signer_page<S: StructuredDurableDomainStateStore>(
     vote: FrozenFrontierVote,
     page: FrozenFrontierPage,
 ) -> Result<(), DrainSignerError> {
+    crate::mutation_fence::require_ordinary_namespace(store, context, domain)?;
     let mut drain: DrainContext = fence_drain_context(store, context, domain, resolver, expected)?;
     if vote.identity.chain_id != drain.fence.chain
         || vote.identity.protocol_version != expected.protocol_version()
@@ -709,6 +710,7 @@ pub fn confirm_drain_signer_entry<S: StructuredDurableDomainStateStore>(
     signer: ValidatorId,
     expected_request_id: [u8; 32],
 ) -> Result<AvailabilityIdentity, DrainSignerError> {
+    crate::mutation_fence::require_ordinary_namespace(store, context, domain)?;
     let mut drain: DrainContext = fence_drain_context(store, context, domain, resolver, expected)?;
     let progress_key: Vec<u8> =
         drain_signer_progress_key(&drain.fence.chain, drain.fence.epoch, signer)?;
@@ -860,6 +862,7 @@ pub fn import_staged_drain_publication<S: StructuredDurableDomainStateStore>(
     signer: ValidatorId,
     bundle_bytes: &[u8],
 ) -> Result<AvailabilityIdentity, DrainSignerError> {
+    crate::mutation_fence::require_ordinary_namespace(store, context, domain)?;
     let expected_identity: AvailabilityIdentity =
         staged_drain_signer_identity(store, context, domain, expected, signer)?;
     Ok(retain_drain_publication(
@@ -1229,6 +1232,7 @@ pub fn advance_drain_union<S: DurablePortableRepository + StructuredDurableDomai
     expected: &PublicationContext,
     selected_votes: &[FrozenFrontierVote],
 ) -> Result<DrainUnionStep, DrainSignerError> {
+    crate::mutation_fence::require_ordinary_namespace(store, context, domain)?;
     let mut drain: DrainContext = fence_drain_context(store, context, domain, resolver, expected)?;
     verify_selection(&drain.fence, expected, domain, selected_votes)?;
     require_selected_signers_complete(store, context, domain, &mut drain, selected_votes)?;

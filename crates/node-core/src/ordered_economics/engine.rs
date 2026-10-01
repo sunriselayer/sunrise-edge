@@ -999,6 +999,7 @@ pub fn install_ordered_genesis<S: StructuredDurableDomainStateStore>(
     env: &OrderedEconomicsEnvironment<'_>,
     now_unix_millis: u64,
 ) -> Result<(), OrderedEconomicsError> {
+    crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
     let key = ordered_state_key(env.policy.context().chain_id())?;
     let domain = env.policy.domain();
     let observed = store.get_versioned_durable(context, domain, &key)?;
@@ -2579,6 +2580,7 @@ where
     if let Some(candidate) = candidate {
         authenticate_candidate(env, candidate)?;
     }
+    crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
     if env.policy.is_causal() {
         return propose_causal(store, context, env, candidate, signer);
     }
@@ -2873,6 +2875,7 @@ where
     if let Some(candidate) = &proposal.candidate {
         authenticate_candidate(env, candidate)?;
     }
+    crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
     let mut loaded = load_state(store, context, env)?;
     let digest = env
         .policy
@@ -3209,6 +3212,7 @@ pub fn process_certificate<S: StructuredDurableDomainStateStore>(
         .map_err(|_| {
             OrderedEconomicsError::Unauthenticated("ordered certificate failed verification")
         })?;
+    crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
     let loaded = load_state(store, context, env)?;
     let output = env
         .policy
@@ -3240,6 +3244,7 @@ pub fn observe_proposal<S: StructuredDurableDomainStateStore>(
     if let Some(candidate) = &proposal.candidate {
         authenticate_candidate(env, candidate)?;
     }
+    crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
     let loaded = load_state(store, context, env)?;
     let admitted = match &proposal.candidate {
         Some(candidate) => {
@@ -3317,6 +3322,7 @@ where
     S: StructuredDurableDomainStateStore,
     C: ConsensusSigner,
 {
+    crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
     let loaded = load_state(store, context, env)?;
     let mut profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     fence_policy(store, context, env, &mut profile_reads)?;

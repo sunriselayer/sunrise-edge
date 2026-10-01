@@ -585,6 +585,7 @@ pub fn handle_local_publication_with_history<S: StructuredDurableDomainStateStor
     {
         return Ok(output);
     }
+    mutation_fence::require_ordinary_namespace(store, context, domain)?;
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     let current_epoch_record: local_instance_state::FastPathEpochRecord =
         mutation_fence::fence_epoch_state(

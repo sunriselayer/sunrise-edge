@@ -266,6 +266,7 @@ where
     S: DurablePortableRepository + StructuredOutboxExclusionGuard,
     C: ConsensusSigner,
 {
+    mutation_fence::require_ordinary_namespace(store, context, domain)?;
     let chain: ChainId = expected.chain_id().clone();
     let epoch: Epoch = expected.epoch();
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();

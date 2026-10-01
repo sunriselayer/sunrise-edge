@@ -253,6 +253,7 @@ pub fn handle_local_execution<
     {
         return Ok(output);
     }
+    mutation_fence::require_ordinary_namespace(store, context, domain)?;
     let mut admission_profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     crate::admission_profile::require_historical_direct_writer(
         store,
@@ -727,6 +728,7 @@ pub(crate) fn admit_and_execute_leg<
     state_mutations: &mut Vec<StateMutationEntry>,
     ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
 ) -> AdmissionResult<AdmittedLeg> {
+    mutation_fence::require_ordinary_namespace(store, context, domain)?;
     if protocol_custody.is_none()
         && matches!(
             &custody_effect_mode,
