@@ -281,42 +281,110 @@ fn claim_source(
     };
     let (candidate, expected): (OrderedCandidate, FastPathSettlementRecord) =
         positive_claim(&fixture, ESCROW, CLAIM);
+    for view in 1..=3 {
+        fixture
+            .network
+            .round(view, (view == 1).then_some(&candidate));
+    }
     if pending_recommit {
-        // Form two genuine ordered QCs while the original candidate has not
-        // yet been applied. Applying the QCs in order records the original
-        // result at height 1 and a certified recommit at height 2.
-        let (_, first, _): (Vec<OrderedEventOutput>, QuorumCertificate, OrderedProposal) =
-            fixture.network.certify(1, Some(&candidate));
-        let (_, second, _): (Vec<OrderedEventOutput>, QuorumCertificate, OrderedProposal) =
-            fixture.network.certify(2, Some(&candidate));
-        for replica in 0..REPLICAS {
-            assert!(receipt(&fixture.network, replica, CLAIM).is_none());
-            process_certificate(
-                &fixture.network.stores[replica],
+        // The ordinary ordered proposer correctly refuses a completed
+        // request. Mirror the established delayed-observer path instead:
+        // generate a real signed consensus proposal/QC for the same
+        // candidate after h1, observe it at every replica, then apply its QC
+        // and assert the original receipt is retained byte-for-byte.
+        use consensus::{ConsensusEngine, ConsensusEvent};
+
+        let original: DurableRequestReceipt = receipt(&fixture.network, 0, CLAIM).unwrap();
+        let leader: usize = fixture.network.leader_index(4);
+        let state: consensus::ConsensusState = consensus::decode_consensus_state(
+            &fixture
+                .network
+                .value(
+                    leader,
+                    &crate::ordered_economics::engine::ordered_state_key_for_tests(
+                        &fixture::chain(),
+                    ),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        let digest: Digest32 = fixture.network.policy.candidate_digest(&candidate).unwrap();
+        let proposal: consensus::ConsensusProposal = fixture
+            .network
+            .policy
+            .engine()
+            .propose(&state, vec![digest], &fixture.network.signers[leader])
+            .unwrap();
+        let ordered: OrderedProposal = OrderedProposal {
+            proposal: proposal.clone(),
+            candidate: Some(candidate.clone()),
+        };
+        for store in &fixture.network.stores {
+            observe_proposal(
+                store,
                 &fixture.network.context,
                 &fixture.network.env(),
-                &first,
+                &ordered,
             )
             .unwrap();
-            let original: DurableRequestReceipt =
-                receipt(&fixture.network, replica, CLAIM).unwrap();
-            process_certificate(
-                &fixture.network.stores[replica],
-                &fixture.network.context,
-                &fixture.network.env(),
-                &second,
-            )
-            .unwrap();
-            assert_eq!(receipt(&fixture.network, replica, CLAIM), Some(original));
         }
-        for view in 3..=4 {
+        let genesis: consensus::ConsensusState = fixture
+            .network
+            .policy
+            .engine()
+            .genesis_state(TRUSTED_NOW_MILLIS);
+        let votes: Vec<ConsensusVote> = fixture
+            .network
+            .signers
+            .iter()
+            .map(|signer| {
+                fixture
+                    .network
+                    .policy
+                    .engine()
+                    .on_event(
+                        &genesis,
+                        ConsensusEvent::Proposal(proposal.clone()),
+                        signer,
+                        &super::super::super::policy::Ed25519ConsensusVerifier,
+                    )
+                    .unwrap()
+                    .outbound_messages
+                    .into_iter()
+                    .find_map(|message| match message {
+                        ConsensusMessage::Vote(vote) => Some(vote),
+                        _ => None,
+                    })
+                    .unwrap()
+            })
+            .collect();
+        let certificate: QuorumCertificate = fixture
+            .network
+            .policy
+            .engine()
+            .certificate_from_votes(
+                &proposal,
+                &votes,
+                &super::super::super::policy::Ed25519ConsensusVerifier,
+            )
+            .unwrap()
+            .unwrap();
+        for store in &fixture.network.stores {
+            process_certificate(
+                store,
+                &fixture.network.context,
+                &fixture.network.env(),
+                &certificate,
+            )
+            .unwrap();
+        }
+        assert_eq!(receipt(&fixture.network, 0, CLAIM), Some(original));
+        for view in 5..=6 {
             fixture.network.round(view, None);
         }
     } else {
-        for view in 1..=3 {
-            fixture
-                .network
-                .round(view, (view == 1).then_some(&candidate));
+        for view in 4..=6 {
+            fixture.network.round(view, None);
         }
     }
     for replica in 0..REPLICAS {
@@ -411,7 +479,7 @@ fn reconstructs_two_genuine_owned_producers_and_positive_claim_with_closed_sourc
     assert_eq!(report.empty_ordered_heights, 2);
     assert!(
         history
-            .get(1)
+            .get(3)
             .unwrap()
             .components
             .iter()
