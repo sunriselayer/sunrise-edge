@@ -173,11 +173,21 @@ npm ci --prefix adapters/cloudflare-workers
 ./scripts/check-all.sh
 ```
 
-The repository check includes Rust formatting, all-feature clippy and tests,
+The required storage-neutral check includes Rust formatting, full-workspace
+all-feature Clippy and nonignored all-feature tests except `runtime-postgres`,
 Cloudflare type/lint/workerd tests, Deno/Vercel/Supabase/AWS adapter checks, and
 `git diff --check`. Run the targeted command while iterating, then the complete
 script before handoff. Do not omit provider checks because a change appears to
 touch only the shared Web layer.
+
+PostgreSQL is an optional deployment profile, not a protocol assumption.
+DR-0172 separates its retained full integration/fault suite from ordinary
+required validation. For PG implementation/dependency changes or a PG
+deployment claim, configure the disposable live prerequisites and run
+`./scripts/check-all.sh --full` (or the separate complete PG workflow) before
+acceptance. Missing configuration must fail, not count as a successful skip.
+Record the selected source/profile and actual fault flags. Never claim PG,
+D1 or real-provider readiness from the DB-free required gate.
 
 Dependabot proposes weekly Cargo, Cloudflare npm, and GitHub Actions updates.
 Never auto-merge those PRs. Review changelogs and compatibility impact, retain

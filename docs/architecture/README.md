@@ -89,9 +89,9 @@ roadmap describes a later target state.
   signed causal admission, disjoint external request lanes, private verified
   execution and closed real-store comparison; no persistent import or activation.
 - [Repository validation](repository-validation.md)
-  ([DR-0171](decisions/0171-partitioned-repository-validation.md)):
-  one complete local gate set, independent isolated CI lanes and a fail-closed
-  final required check; no reduction of runtime or fault coverage.
+  ([DR-0172](decisions/0172-storage-neutral-required-validation.md)):
+  four required storage-neutral lanes and separately selected complete PG
+  acceptance, each with a success-only result; no mandatory database product.
 
 Production-oriented persistence requirements and the PostgreSQL mapping are
 separate operational references:

@@ -67,6 +67,7 @@
 - [DR-0169: authenticated ordered-history archive and export](0169-authenticated-ordered-history-export.md)
 - [DR-0170: causal business reconstruction and semantic audit](0170-causal-business-reconstruction.md)
 - [DR-0171: partitioned complete repository validation](0171-partitioned-repository-validation.md)
+- [DR-0172: storage-neutral required validation and explicit PG acceptance](0172-storage-neutral-required-validation.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong
