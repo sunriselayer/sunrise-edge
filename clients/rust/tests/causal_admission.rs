@@ -117,7 +117,9 @@ fn signed_v4_client_pin_refuses_ordered_or_synthetic_owned_ids_before_io() {
                 max_fee: fees::Amount::new(1),
                 refund_recipient: manifest.genesis_authority,
             },
-            application: PaidApplication::Publish(manifest.publication),
+            application: PaidApplication::Publish(
+                manifest.publication.request().artifact().clone(),
+            ),
             gas_limit: 1,
             authorizations: Vec::new(),
         },
@@ -145,8 +147,7 @@ fn signed_v4_client_pin_refuses_ordered_or_synthetic_owned_ids_before_io() {
     signed.intent.request_id = [1; 32];
     let mut members: Vec<validator_set::ValidatorInfo> =
         trusted.certifier.validator_set().validators().to_vec();
-    members[0].voting_power =
-        protocol_types::VotingPower::new(members[0].voting_power.get().checked_add(1).unwrap());
+    members[0].voting_power = members[0].voting_power.checked_add(1).unwrap();
     let altered: validator_set::ValidatorSet =
         validator_set::ValidatorSet::new(Epoch::new(0), members).unwrap();
     trusted.certifier = consensus::FastPathCertifier::new(
