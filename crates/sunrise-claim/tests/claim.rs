@@ -137,6 +137,33 @@ fn a_leaf_after_the_snapshot_is_rejected() {
 }
 
 #[test]
+fn uvrise_is_added_to_rise_one_to_one() {
+    let holder = encode_sunrise(&[0x11; 20]);
+    let raw = format!(
+        r#"{{"snapshot_unix":1000,"claims":[{{"owner":"{holder}","asset":"uvrise","amount":"40","claimable_at":1000,"payout":"edge"}},{{"owner":"{holder}","asset":"rise","amount":"9","claimable_at":1000,"payout":"edge"}},{{"owner":"{holder}","asset":"uvrise","amount":"2","claimable_at":5000,"payout":"edge"}}]}}"#
+    )
+    .into_bytes();
+    let (_, leaves) = ledger_leaves(&raw).unwrap();
+    assert_eq!(
+        leaves,
+        vec![
+            Leaf {
+                claimant: [0x11; 20],
+                asset: "rise".into(),
+                claimable_at: 1000,
+                amount: 49,
+            },
+            Leaf {
+                claimant: [0x11; 20],
+                asset: "rise".into(),
+                claimable_at: 5000,
+                amount: 2,
+            },
+        ]
+    );
+}
+
+#[test]
 fn the_staking_contract_rise_is_not_a_second_strise_claim() {
     let holder = encode_sunrise(&[0x11; 20]);
     let raw = format!(

@@ -1,8 +1,9 @@
 //! Sunrise RISE claims against a frozen shutdown ledger.
 //!
-//! The Sunrise chain stops on 5 October 2026. This crate aggregates `rise`
-//! rows from that ledger into a Merkle tree, checks a Keplr ADR-036 signature,
-//! and decides whether a custody balance may move to a 32-byte Edge address.
+//! The Sunrise chain stops on 5 October 2026. This crate aggregates `rise`,
+//! stRISE, and `uvrise` rows from that ledger into a Merkle tree, checks a
+//! Keplr ADR-036 signature, and decides whether a custody balance may move
+//! to a 32-byte Edge address.
 //! USDC and IBC assets are not claimed here.
 //!
 //! A leaf is one claimant and one `claimable_at`. Rows that share both are
@@ -67,10 +68,12 @@ const STRISE: &str =
 /// Builds one leaf per claimant, asset, and unlock time.
 ///
 /// `rise` and `usdrise` stay on Edge. Unwrapped USDN and Noble USDC are added
-/// to `usdrise`, and stRISE is added to `rise`. The wrapper contract's own USDN
-/// and the staking contract's own RISE are skipped, because they back those
-/// balances. Eureka WBTC, WETH, and USDT are Cosmos Hub denoms. Other IBC
-/// denoms are settled on the chain named in [`payout_route`].
+/// to `usdrise`. stRISE and `uvrise` are added to `rise`. `uvrise` is not backed
+/// by a separate RISE balance, so its integer amount is copied one-for-one with
+/// no decimal conversion. The wrapper contract's own USDN and the staking
+/// contract's own RISE are skipped, because they back USDrise and stRISE.
+/// Eureka WBTC, WETH, and USDT are Cosmos Hub denoms. Other IBC denoms are
+/// settled on the chain named in [`payout_route`].
 pub fn ledger_leaves(raw: &[u8]) -> Result<(u64, Vec<Leaf>), ClaimError> {
     let file: ClaimsFile =
         serde_json::from_slice(raw).map_err(|err| ClaimError::Ledger(err.to_string()))?;
@@ -81,7 +84,7 @@ pub fn ledger_leaves(raw: &[u8]) -> Result<(u64, Vec<Leaf>), ClaimError> {
         }
         let asset = if is_usdrise_source(&row.asset) {
             "usdrise".to_string()
-        } else if is_strise(&row.asset) {
+        } else if is_strise(&row.asset) || is_vrise(&row.asset) {
             "rise".to_string()
         } else {
             row.asset.clone()
@@ -124,6 +127,14 @@ fn is_usdrise_source(asset: &str) -> bool {
 
 fn is_strise(asset: &str) -> bool {
     asset == STRISE || asset == "strise"
+}
+
+/// Vote-escrowed RISE. The claims file names it `uvrise`.
+///
+/// There is no contract balance to skip. The same claimant and unlock time
+/// are summed with ordinary `rise` using the ledger integer as-is.
+fn is_vrise(asset: &str) -> bool {
+    asset == "uvrise"
 }
 
 fn is_wrapper_usdn(owner: &str, asset: &str) -> bool {
