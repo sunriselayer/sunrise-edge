@@ -69,6 +69,7 @@
 - [DR-0171: partitioned complete repository validation](0171-partitioned-repository-validation.md)
 - [DR-0172: storage-neutral required validation and explicit PG acceptance](0172-storage-neutral-required-validation.md)
 - [DR-0173: integrated functional delivery and implementation refactoring](0173-integrated-implementation-refactoring.md)
+- [DR-0174: independently reconstructed frozen member completion](0174-frozen-member-business-reconstruction.md)
 
 Each record states whether it is accepted or only proposed; proposals are not
 implementation approval. Work status and remaining completion criteria belong

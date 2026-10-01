@@ -93,6 +93,9 @@ roadmap describes a later target state.
   ([DR-0170](decisions/0170-causal-business-reconstruction.md)):
   signed causal admission, disjoint external request lanes, private verified
   execution and closed real-store comparison; no persistent import or activation.
+- [Frozen member business reconstruction](decisions/0174-frozen-member-business-reconstruction.md):
+  independently replayed committed Freeze/DrainSet and narrow member execution
+  for a completed source without aggregate availability; not complete cut/import.
 - [Repository validation](repository-validation.md)
   ([DR-0172](decisions/0172-storage-neutral-required-validation.md)):
   four required storage-neutral lanes and separately selected complete PG

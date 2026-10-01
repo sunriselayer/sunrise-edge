@@ -84,12 +84,17 @@ certified height to establish this barrier. Refused, foreign, ineligible or
 completed/recommitted Freeze does not move later Owned work. Never weaken the
 live closure fence or execute retained-but-unapplied material to finish audit.
 
-Applied targets in this initial audit require the complete normal completion
-tuple, including a verified aggregate availability certificate. A legitimate
-frozen `apply_drain_member` completion without that certificate is currently
-unsupported and must refuse equality. This is a remaining drained-state
-cut/import requirement, not a claim that post-Freeze member application is
-invalid or permission to invent its missing availability proof.
+Normal applied targets require the complete normal completion tuple, including
+a verified aggregate availability certificate. [DR-0174](decisions/0174-frozen-member-business-reconstruction.md)
+adds the distinct legitimate frozen completion carrier: full certificate,
+witness, settlement and original receipt, without an invented availability
+row. Replay defers that target until independently accepted Freeze and
+DrainSet plus the rebuilt selected stream/possession/union authorize the
+existing `apply_drain_member` owner. It still rederives ordinary paid effects,
+fees, receipt, nonce and logical provenance. Missing or contradictory control
+authority stops; ordinary open-epoch apply keeps its availability gate.
+Retention alone remains unapplied. Supporting this carrier is not proof that
+every union member has drained or that a complete cut has been derived.
 
 Compare independently produced complete result/effects and receipt bytes
 against source companions. A canonical, internally consistent source result
