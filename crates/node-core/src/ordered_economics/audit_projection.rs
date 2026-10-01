@@ -116,6 +116,41 @@ fn validate_selection(
     Ok(())
 }
 
+fn signer_progress_for_exclusion(
+    resolver: &HashSuiteResolver,
+    bytes: &[u8],
+) -> Result<drain_union::SignerProgressRecord, NodeCoreError> {
+    let record: drain_union::SignerProgressRecord = drain_union::decode_signer_progress(bytes)
+        .map_err(|_| invalid("drain signer progress schema"))?;
+    drain_union::validate_signer_progress_consistency(resolver, &record)
+        .map_err(|_| invalid("drain signer progress consistency differs"))?;
+    Ok(record)
+}
+
+fn union_progress_for_exclusion(
+    resolver: &HashSuiteResolver,
+    bytes: &[u8],
+) -> Result<drain_union::UnionProgressRecord, NodeCoreError> {
+    let record: drain_union::UnionProgressRecord = drain_union::decode_union_progress(bytes)
+        .map_err(|_| invalid("local union progress schema"))?;
+    let selected: Vec<(ValidatorId, FrozenFrontierIdentity)> = record
+        .selected_votes
+        .iter()
+        .map(|vote| (vote.validator, vote.identity.clone()))
+        .collect();
+    // This is the owner's consistency check only, not authority for a remote
+    // running digest. Signature/quorum/Freeze validation still follows before
+    // exclusion, and no source progress is installed into reconstruction.
+    DrainUnionAccumulator::resume(
+        resolver,
+        record.identity.clone(),
+        record.last_request_id,
+        &selected,
+    )
+    .map_err(|_| invalid("local union progress consistency differs"))?;
+    Ok(record)
+}
+
 /// All source-local exclusions are typed, exact-key checked and inert. The
 /// reconstructed key set identifies which immutable admission header/candidate
 /// actually belongs to the independently certified committed prefix.
@@ -342,8 +377,7 @@ pub(crate) fn validate_local_rows(
             let closure = closure
                 .as_ref()
                 .ok_or(invalid("signer progress has no committed Freeze"))?;
-            let record = drain_union::decode_signer_progress(present(row)?)
-                .map_err(|_| invalid("drain signer progress schema"))?;
+            let record = signer_progress_for_exclusion(resolver, present(row)?)?;
             validate_frontier(policy, closure, &record.vote.identity)?;
             validate_frontier(policy, closure, &record.confirmed_identity)?;
             let certifier: FrozenFrontierCertifier = FrozenFrontierCertifier::new(
@@ -427,8 +461,7 @@ pub(crate) fn validate_local_rows(
                     .as_ref()
                     .ok_or(invalid("union has no committed Freeze"))?;
                 let (identity, selection, votes) = if progress.is_some() {
-                    let record = drain_union::decode_union_progress(present(row)?)
-                        .map_err(|_| invalid("local union progress schema"))?;
+                    let record = union_progress_for_exclusion(resolver, present(row)?)?;
                     (
                         record.identity,
                         record.selection_digest,
@@ -519,7 +552,289 @@ pub(crate) fn validate_local_rows(
 
 #[cfg(test)]
 mod tests {
-    use super::tail;
+    use super::drain_union::{SignerProgressRecord, UnionProgressRecord};
+    use super::{signer_progress_for_exclusion, tail, union_progress_for_exclusion};
+    use canonical_encoding::{CanonicalStruct, encode_digest32};
+    use consensus::{
+        AvailabilityIdentity, ConsensusSigner, DrainUnionAccumulator, FrozenFrontierAccumulator,
+        FrozenFrontierCertifier, FrozenFrontierIdentity, FrozenFrontierPage, FrozenFrontierVote,
+        encode_drain_union_identity, encode_frozen_frontier_identity, encode_frozen_frontier_page,
+        encode_frozen_frontier_vote,
+    };
+    use ed25519_zebra::{SigningKey, VerificationKey};
+    use hashing::HashSuiteResolver;
+    use protocol_types::{
+        ChainId, Digest32, Epoch, HashPurpose, HashSuite, HashSuiteSchedule, ProtocolVersion,
+        SignatureSchemeId, ValidatorId,
+    };
+    use runtime::AtomicityDomainId;
+    use validator_set::{ValidatorInfo, ValidatorSet};
+
+    struct ProgressSigner {
+        id: ValidatorId,
+        key: SigningKey,
+    }
+
+    impl ConsensusSigner for ProgressSigner {
+        fn validator_id(&self) -> ValidatorId {
+            self.id
+        }
+
+        fn signature_scheme(&self) -> SignatureSchemeId {
+            SignatureSchemeId::Ed25519
+        }
+
+        fn sign_framed(&self, framed: &[u8]) -> Result<Vec<u8>, String> {
+            let signature: [u8; 64] = self.key.sign(framed).into();
+            Ok(signature.to_vec())
+        }
+    }
+
+    // Real registered Ed25519 signature, but only a local-schema fixture: the
+    // unsigned publication selector below is not certified business material.
+    fn progress_fixture() -> (
+        HashSuiteResolver,
+        FrozenFrontierIdentity,
+        FrozenFrontierVote,
+        AvailabilityIdentity,
+    ) {
+        let chain: ChainId = ChainId::new("audit-progress-consistency").unwrap();
+        let version: ProtocolVersion = ProtocolVersion::new(4);
+        let epoch: Epoch = Epoch::new(0);
+        let resolver: HashSuiteResolver = HashSuiteResolver::new(
+            chain.clone(),
+            version,
+            vec![HashSuiteSchedule {
+                activation_epoch: epoch,
+                suite: HashSuite::genesis(),
+            }],
+        )
+        .unwrap();
+        let domain: AtomicityDomainId = AtomicityDomainId::new([9; 32]).unwrap();
+        let key: SigningKey = SigningKey::from([0x41; 32]);
+        let public: [u8; 32] = VerificationKey::from(&key).into();
+        let signer: ProgressSigner = ProgressSigner {
+            id: ValidatorId::new(public),
+            key,
+        };
+        let validators: ValidatorSet = ValidatorSet::new(
+            epoch,
+            vec![ValidatorInfo {
+                id: signer.id,
+                voting_power: 1,
+                signature_scheme: SignatureSchemeId::Ed25519,
+                public_key: public.to_vec(),
+            }],
+        )
+        .unwrap();
+        let certifier: FrozenFrontierCertifier =
+            FrozenFrontierCertifier::new(chain.clone(), version, epoch, validators).unwrap();
+        let digest: Digest32 = resolver
+            .hash_for_purpose(epoch, HashPurpose::ExecutionEffects, b"inert selector")
+            .unwrap();
+        let member: AvailabilityIdentity = AvailabilityIdentity {
+            chain_id: chain.clone(),
+            protocol_version: version,
+            epoch,
+            domain,
+            request_id: [1; 32],
+            signed_intent_digest: digest,
+            execution_commitment: digest,
+            semantic_artifacts_digest: digest,
+        };
+        let mut frontier: FrozenFrontierAccumulator =
+            FrozenFrontierAccumulator::new(&resolver, chain, version, epoch, domain, [0x81; 32], 5)
+                .unwrap();
+        let seed: FrozenFrontierIdentity = frontier.identity().clone();
+        frontier.push(&resolver, &member).unwrap();
+        let vote: FrozenFrontierVote = certifier
+            .cast_vote(frontier.into_identity(), &signer)
+            .unwrap();
+        certifier
+            .verify_vote(&vote, &super::Ed25519ConsensusVerifier)
+            .unwrap();
+        (resolver, seed, vote, member)
+    }
+
+    fn signer_bytes(record: &super::drain_union::SignerProgressRecord) -> Vec<u8> {
+        // Independent framing lets the negative cases remain canonical even
+        // when they violate the owner's separate persisted-state invariants.
+        let mut frame: CanonicalStruct = CanonicalStruct::new(0x645B, 1);
+        frame
+            .field_bytes(1, encode_frozen_frontier_vote(&record.vote).unwrap())
+            .unwrap();
+        frame
+            .field_bytes(
+                2,
+                encode_frozen_frontier_identity(&record.confirmed_identity).unwrap(),
+            )
+            .unwrap();
+        frame
+            .field_bytes(
+                3,
+                record
+                    .confirmed_last_request_id
+                    .map_or_else(Vec::new, |id| id.to_vec()),
+            )
+            .unwrap();
+        frame
+            .field_bytes(
+                4,
+                record
+                    .staged_page
+                    .as_ref()
+                    .map_or_else(Vec::new, |page| encode_frozen_frontier_page(page).unwrap()),
+            )
+            .unwrap();
+        frame.field_u16(5, u16::from(record.complete)).unwrap();
+        frame.finish().unwrap()
+    }
+
+    fn union_bytes(record: &super::drain_union::UnionProgressRecord) -> Vec<u8> {
+        let mut frame: CanonicalStruct = CanonicalStruct::new(0x645C, 1);
+        frame
+            .field_bytes(1, encode_drain_union_identity(&record.identity).unwrap())
+            .unwrap();
+        frame
+            .field_bytes(
+                2,
+                record
+                    .last_request_id
+                    .map_or_else(Vec::new, |id| id.to_vec()),
+            )
+            .unwrap();
+        frame
+            .field_bytes(3, encode_digest32(&record.selection_digest).unwrap())
+            .unwrap();
+        assert_eq!(
+            record.selected_votes.len(),
+            1,
+            "bounded one-signer schema fixture"
+        );
+        frame.field_u16(4, 1).unwrap();
+        frame
+            .field_bytes(
+                5,
+                encode_frozen_frontier_vote(&record.selected_votes[0]).unwrap(),
+            )
+            .unwrap();
+        frame.finish().unwrap()
+    }
+
+    #[test]
+    fn malformed_signer_count_cursor_and_staged_progress_refuse_exclusion() {
+        let (resolver, seed, vote, member) = progress_fixture();
+        let pending: super::drain_union::SignerProgressRecord =
+            super::drain_union::SignerProgressRecord {
+                vote: vote.clone(),
+                confirmed_identity: seed,
+                confirmed_last_request_id: None,
+                staged_page: Some(FrozenFrontierPage {
+                    after_request_id: None,
+                    entries: vec![member.clone()],
+                    terminal: true,
+                }),
+                complete: false,
+            };
+        assert!(signer_progress_for_exclusion(&resolver, &signer_bytes(&pending)).is_ok());
+        let complete: super::drain_union::SignerProgressRecord =
+            super::drain_union::SignerProgressRecord {
+                vote: vote.clone(),
+                confirmed_identity: vote.identity.clone(),
+                confirmed_last_request_id: Some(member.request_id),
+                staged_page: None,
+                complete: true,
+            };
+        assert!(signer_progress_for_exclusion(&resolver, &signer_bytes(&complete)).is_ok());
+
+        let mut too_many: SignerProgressRecord = complete.clone();
+        too_many.complete = false;
+        too_many.confirmed_identity.entry_count = too_many
+            .confirmed_identity
+            .entry_count
+            .checked_add(1)
+            .unwrap();
+        let mut zero_with_cursor: SignerProgressRecord = pending.clone();
+        zero_with_cursor.confirmed_last_request_id = Some(member.request_id);
+        let mut nonzero_without_cursor: SignerProgressRecord = complete.clone();
+        nonzero_without_cursor.confirmed_last_request_id = None;
+        let mut complete_with_staged: SignerProgressRecord = complete.clone();
+        complete_with_staged.staged_page = Some(FrozenFrontierPage {
+            after_request_id: Some(member.request_id),
+            entries: Vec::new(),
+            terminal: true,
+        });
+        let mut changed_empty_seed: SignerProgressRecord = pending;
+        changed_empty_seed.confirmed_identity.entries_digest = member.execution_commitment;
+        for malformed in [
+            too_many,
+            zero_with_cursor,
+            nonzero_without_cursor,
+            complete_with_staged,
+            changed_empty_seed,
+        ] {
+            let bytes: Vec<u8> = signer_bytes(&malformed);
+            assert!(super::drain_union::decode_signer_progress(&bytes).is_ok());
+            // This is the production gate run before the excluded-key insert.
+            assert!(signer_progress_for_exclusion(&resolver, &bytes).is_err());
+        }
+    }
+
+    #[test]
+    fn malformed_union_count_cursor_and_empty_seed_refuse_exclusion() {
+        let (resolver, _seed, vote, member) = progress_fixture();
+        let selected: Vec<(ValidatorId, FrozenFrontierIdentity)> =
+            vec![(vote.validator, vote.identity.clone())];
+        let mut union: DrainUnionAccumulator = DrainUnionAccumulator::new(
+            &resolver,
+            vote.identity.chain_id.clone(),
+            vote.identity.protocol_version,
+            vote.identity.epoch,
+            vote.identity.domain,
+            vote.identity.closure_request_id,
+            vote.identity.closure_height,
+            &selected,
+        )
+        .unwrap();
+        let empty: super::drain_union::UnionProgressRecord =
+            super::drain_union::UnionProgressRecord {
+                selection_digest: union.identity().entries_digest,
+                identity: union.identity().clone(),
+                selected_votes: vec![vote],
+                last_request_id: None,
+            };
+        assert!(union_progress_for_exclusion(&resolver, &union_bytes(&empty)).is_ok());
+        union.push_member(&resolver, &member).unwrap();
+        let nonempty: super::drain_union::UnionProgressRecord =
+            super::drain_union::UnionProgressRecord {
+                identity: union.into_identity(),
+                last_request_id: Some(member.request_id),
+                ..empty.clone()
+            };
+        assert!(union_progress_for_exclusion(&resolver, &union_bytes(&nonempty)).is_ok());
+        let mut zero_with_cursor: UnionProgressRecord = empty.clone();
+        zero_with_cursor.last_request_id = Some(member.request_id);
+        let mut nonzero_without_cursor: UnionProgressRecord = nonempty;
+        nonzero_without_cursor.last_request_id = None;
+        let mut changed_empty_seed: UnionProgressRecord = empty.clone();
+        changed_empty_seed.identity.entries_digest = member.execution_commitment;
+        let mut changed_signer_count: UnionProgressRecord = empty;
+        changed_signer_count.identity.signer_count = changed_signer_count
+            .identity
+            .signer_count
+            .checked_add(1)
+            .unwrap();
+        for malformed in [
+            zero_with_cursor,
+            nonzero_without_cursor,
+            changed_empty_seed,
+            changed_signer_count,
+        ] {
+            let bytes: Vec<u8> = union_bytes(&malformed);
+            assert!(super::drain_union::decode_union_progress(&bytes).is_ok());
+            assert!(union_progress_for_exclusion(&resolver, &bytes).is_err());
+        }
+    }
 
     #[test]
     fn local_bookkeeping_key_parser_never_ignores_unknown_suffix_or_chain() {

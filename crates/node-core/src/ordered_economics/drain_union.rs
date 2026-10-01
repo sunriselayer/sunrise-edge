@@ -322,6 +322,39 @@ pub(super) fn decode_signer_progress(
     Ok(record)
 }
 
+/// Checks only the owner's local progress invariants. This does not authenticate
+/// the unsigned running digest or prove any publication's retained closure.
+/// Callers must independently verify the vote and its pinned Freeze context.
+pub(super) fn validate_signer_progress_consistency(
+    resolver: &HashSuiteResolver,
+    record: &SignerProgressRecord,
+) -> Result<(), DrainSignerError> {
+    let signed: &FrozenFrontierIdentity = &record.vote.identity;
+    let confirmed: &FrozenFrontierIdentity = &record.confirmed_identity;
+    if confirmed.chain_id != signed.chain_id
+        || confirmed.protocol_version != signed.protocol_version
+        || confirmed.epoch != signed.epoch
+        || confirmed.domain != signed.domain
+        || confirmed.closure_request_id != signed.closure_request_id
+        || confirmed.closure_height != signed.closure_height
+        || confirmed.entry_count > signed.entry_count
+        || (record.complete && (record.staged_page.is_some() || confirmed != signed))
+    {
+        return Err(DrainSignerError::Invalid(
+            "signer progress accumulator context mismatch",
+        ));
+    }
+    // Resume checks count/cursor pairing, hash-suite context and the exact
+    // empty seed. A nonempty running digest remains local bookkeeping, not
+    // an independently authenticated derivation from all confirmed entries.
+    FrozenFrontierAccumulator::resume(
+        resolver,
+        record.confirmed_identity.clone(),
+        record.confirmed_last_request_id,
+    )?;
+    Ok(())
+}
+
 fn put_read(
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
     key: Vec<u8>,
@@ -907,19 +940,7 @@ pub fn read_drain_signer_progress<S: StructuredDurableDomainStateStore>(
             "signer progress context mismatch",
         ));
     }
-    if record.confirmed_identity.chain_id != drain.fence.chain
-        || record.confirmed_identity.protocol_version != expected.protocol_version()
-        || record.confirmed_identity.epoch != drain.fence.epoch
-        || record.confirmed_identity.domain != domain
-        || record.confirmed_identity.closure_request_id != drain.fence.closure_request_id
-        || record.confirmed_identity.closure_height != drain.fence.closure_height
-        || record.confirmed_identity.entry_count > record.vote.identity.entry_count
-        || (record.complete && record.staged_page.is_some())
-    {
-        return Err(DrainSignerError::Invalid(
-            "signer progress accumulator context mismatch",
-        ));
-    }
+    validate_signer_progress_consistency(resolver, &record)?;
     let certifier: FrozenFrontierCertifier = FrozenFrontierCertifier::new(
         drain.fence.chain.clone(),
         expected.protocol_version(),
@@ -927,16 +948,6 @@ pub fn read_drain_signer_progress<S: StructuredDurableDomainStateStore>(
         drain.fence.validators.clone(),
     )?;
     certifier.verify_vote(&record.vote, &FastPathEd25519Verifier)?;
-    // Independent self-consistency re-check of the persisted running
-    // accumulator: `resume` re-derives the empty-seed digest for a zero
-    // cursor and otherwise checks the identity/cursor pairing and hash-suite
-    // context. A full digest replay would require every already-confirmed
-    // entry, which this bounded read never re-scans.
-    FrozenFrontierAccumulator::resume(
-        resolver,
-        record.confirmed_identity.clone(),
-        record.confirmed_last_request_id,
-    )?;
     Ok(DrainSignerProgress {
         signer,
         vote: record.vote,
