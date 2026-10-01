@@ -1317,7 +1317,7 @@ impl<'a> BusinessReconstructionOverlay<'a> {
             )
             .map_err(|source| BusinessReconstructionError::OrderedHistory {
                 height: material.descriptor.height,
-                source,
+                source: Box::new(source),
             })?;
             if let Some(outcome) = outcome {
                 // A later certified recommit preserves the original height
@@ -1991,7 +1991,7 @@ pub enum BusinessReconstructionError {
         /// Exact fixed-history height under independent reconstruction.
         height: u64,
         /// Existing core error category and static/canonical reason.
-        source: OrderedEconomicsError,
+        source: Box<OrderedEconomicsError>,
     },
     /// Optional DrainSet control material failed strict binding or could not
     /// produce independently required private readiness.
@@ -2021,7 +2021,7 @@ impl fmt::Display for BusinessReconstructionError {
 impl Error for BusinessReconstructionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::OrderedHistory { source, .. } => Some(source),
+            Self::OrderedHistory { source, .. } => Some(source.as_ref()),
             Self::ControlProof(source) => Some(source),
             Self::Invalid(_) | Self::Duplicate(_) | Self::Execution(_) | Self::Incomplete(_) => {
                 None
