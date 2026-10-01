@@ -8,8 +8,8 @@ use consensus::{ConsensusMessage, ConsensusSigner, ConsensusVote, QuorumCertific
 use ed25519_zebra::{SigningKey, VerificationKey};
 use execution::call::CallIntent;
 use execution::local_execution::{
-    LocalExecutionIntent, LocalExecutionMode, LocalExecutionPolicy, SignedLocalExecutionIntent,
-    local_execution_signing_frame,
+    InstanceRecord, LocalExecutionIntent, LocalExecutionMode, LocalExecutionPolicy,
+    SignedLocalExecutionIntent, instance_target, local_execution_signing_frame,
 };
 use execution::publication::{PublicationContext, UnverifiedDependencyRef};
 use node_core::fast_path::{
@@ -179,6 +179,17 @@ impl Fixture {
             *publication.request().artifact_digest(),
         )
         .unwrap();
+        // An initializer belongs to its signing creator, not the unrelated
+        // fee-policy helper's instance. Derive the target through the real
+        // record commitment so both creator and exact record identity agree.
+        let initializer: InstanceRecord = InstanceRecord {
+            context: context.clone(),
+            creator: *signer.validator_id().as_bytes(),
+            seed: [0xee; 32],
+            code: code.clone(),
+            revision: 1,
+            initializer: "init".to_owned(),
+        };
         let intent: LocalExecutionIntent = LocalExecutionIntent {
             mode: LocalExecutionMode::Instantiate,
             policy_digest: LocalExecutionPolicy::generic_object_results(context.clone())
@@ -190,7 +201,7 @@ impl Fixture {
                 sender: *signer.validator_id().as_bytes(),
                 nonce: 0,
                 code,
-                instance: fee_policy.instance.clone(),
+                instance: instance_target(&resolver(), &initializer).unwrap(),
                 entrypoint: "init".to_owned(),
                 type_arguments: Vec::new(),
                 access: AccessManifest {
