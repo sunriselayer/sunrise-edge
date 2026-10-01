@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+script_directory="${BASH_SOURCE[0]%/*}"
+if [[ "$script_directory" == "${BASH_SOURCE[0]}" ]]; then script_directory=.; fi
+project_root="$(cd "$script_directory/.." && pwd)"
 cd "$project_root"
 # shellcheck source=scripts/ci-gates.sh
 source "$project_root/scripts/ci-gates.sh"
@@ -17,7 +19,7 @@ if [[ "$#" -ne 0 ]]; then
     *) echo 'unknown PostgreSQL protocol gate' >&2; exit 1 ;;
   esac
 fi
-if ! ci_require_postgres; then exit 0; fi
+ci_require_postgres
 
 cli_built=false
 for row in "${CI_FASTVOTE_PG_CASES[@]}"; do

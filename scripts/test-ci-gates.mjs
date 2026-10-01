@@ -4,20 +4,33 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { requiredGateGroups, requireSuccessfulGateResults } from "./check-ci-results.mjs";
+import { requiredGateGroups, postgresGateGroups, requireSuccessfulGateResults } from "./check-ci-results.mjs";
 
 // This is a DB/compiler-free contract test, not a replacement for any real gate.
 const root = fileURLToPath(new URL("../", import.meta.url));
 const registry = join(root, "scripts/ci-gates.sh");
+const requiredGroups = ["lint", "rust-tests", "portable-tools", "cloudflare"];
+const postgresGroups = ["pg-storage", "pg-lifecycle", "pg-drain-history", "pg-business-audit", "pg-recovery-economics"];
 const groups = [
   "lint", "rust-tests", "pg-storage", "pg-lifecycle", "pg-drain-history",
   "pg-business-audit", "pg-recovery-economics", "portable-tools", "cloudflare",
 ];
-assert.deepEqual(requiredGateGroups, groups);
+assert.deepEqual(requiredGateGroups, requiredGroups);
+assert.deepEqual(postgresGateGroups, postgresGroups);
 function registryRows(array) {
   return execFileSync("bash", [
     "-c", `source "$1"; printf '%s\\n' "\${${array}[@]}"`, "ci-gate-registry", registry,
   ], { encoding: "utf8" }).trim().split("\n").map((row) => row.split("|"));
+}
+assert.deepEqual(registryRows("CI_REQUIRED_GROUPS").flat(), requiredGroups);
+assert.deepEqual(registryRows("CI_POSTGRES_GROUPS").flat(), postgresGroups);
+assert.deepEqual(registryRows("CI_GATE_GROUPS").flat(), groups);
+assert.deepEqual([...requiredGroups, ...postgresGroups].sort(), [...groups].sort());
+for (const args of [["unknown"], [""], ["full"], ["required", "extra"]]) {
+  const result = spawnSync("/bin/bash", ["-c", 'source "$1"; shift; ci_gate_groups "$@"', "ci-gate-registry", registry, ...args], { encoding: "utf8" });
+  assert.ifError(result.error);
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "");
 }
 const cases = registryRows("CI_FASTVOTE_PG_CASES");
 const auxiliary = registryRows("CI_AUXILIARY_IGNORED_CASES");
@@ -51,6 +64,8 @@ assert.deepEqual(auxiliary.map((row) => row[2]), [
 ]);
 assert.deepEqual(auxiliary.map((row) => row[0]), ["rust-tests", ...Array(4).fill("pg-recovery-economics")]);
 assert.equal(new Set([...expectedCases, ...auxiliary.map((row) => row[2])]).size, 19);
+assert.equal(auxiliary.filter((row) => requiredGroups.includes(row[0])).length, 1);
+assert.equal(cases.length + auxiliary.filter((row) => postgresGroups.includes(row[0])).length, 18);
 for (const [group, pkg, target, name, capture] of cases) {
   assert(groups.includes(group));
   assert.equal(pkg, target === "--lib" ? "node-core" : "sunrise-edge-operator");
@@ -75,99 +90,137 @@ for (const invariant of [
 
 const image = "postgres:18.6-alpine3.24@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2";
 const faults = ["CRASH", "DISK_FULL", "WAL_FULL", "CONNECTION_EXHAUSTION", "BACKUP_RESTORE", "PGBOUNCER"];
-function checkWorkflow(text) {
+function checkWorkflow(text, profile) {
+  assert(profile === "required" || profile === "postgres");
+  const pg = profile === "postgres";
+  const members = pg ? postgresGroups : requiredGroups;
+  const finalName = pg ? "postgres-check" : "check";
+  assert.equal(text.slice(0, text.indexOf("\npermissions:")), pg
+    ? "name: postgres checks\n\non:\n  workflow_dispatch:\n"
+    : "name: repository checks\n\non:\n  pull_request:\n  push:\n    branches:\n      - main\n");
   assert(text.includes("\njobs:\n"));
   const jobText = text.slice(text.indexOf("\njobs:\n") + "\njobs:\n".length);
   const declarations = [...jobText.matchAll(/^  ([a-z][a-z0-9-]*):\n/gm)];
-  assert.deepEqual(declarations.map((entry) => entry[1]), [...groups, "check"]);
+  assert.deepEqual(declarations.map((entry) => entry[1]), [...members, finalName]);
   const jobs = new Map(declarations.map((entry, i) => [
     entry[1], jobText.slice(entry.index, declarations[i + 1]?.index ?? jobText.length),
   ]));
-  const check = jobs.get("check");
+  const check = jobs.get(finalName);
   assert.deepEqual(check.split("\n").filter((line) => /^\s+(?:-\s+)?if\s*:/.test(line)), [
     "    if: ${{ always() }}",
   ]);
-  assert.deepEqual([...check.matchAll(/^      - ([a-z][a-z0-9-]*)$/gm)].map((entry) => entry[1]), groups);
+  assert.deepEqual([...check.matchAll(/^      - ([a-z][a-z0-9-]*)$/gm)].map((entry) => entry[1]), members);
   assert(check.includes("CI_NEEDS_JSON: ${{ toJSON(needs) }}"));
   assert.deepEqual(check.split("\n").filter((line) => line.includes("scripts/check-ci-results.mjs")), [
-    "        run: node scripts/check-ci-results.mjs",
+    `        run: node scripts/check-ci-results.mjs${pg ? " --profile postgres" : ""}`,
   ]);
   assert(!/continue-on-error:|paths:|paths-ignore:/.test(text));
-  for (const name of groups) {
+  if (!pg) assert(!/services:|SUNRISE_EDGE_TEST_POSTGRES_|pg-/.test(text));
+  for (const name of members) {
     const job = jobs.get(name);
     assert(!/^\s+(?:-\s+)?if\s*:/m.test(job));
     assert.deepEqual(job.split("\n").filter((line) => line.includes("scripts/check-all.sh")), [
       `        run: ./scripts/check-all.sh --group ${name}`,
     ]);
-    assert.equal(/services:/.test(job), name.startsWith("pg-"));
-    assert.equal(/SUNRISE_EDGE_TEST_POSTGRES_URL:/.test(job), name.startsWith("pg-"));
-    if (name.startsWith("pg-")) assert(job.includes(`image: ${image}`));
+    assert.equal(/services:/.test(job), pg);
+    assert.equal(/SUNRISE_EDGE_TEST_POSTGRES_URL:/.test(job), pg);
+    assert.equal([...job.matchAll(/^    timeout-minutes: (\d+)$/gm)].map((match) => Number(match[1])).join(),
+      String(name === "pg-business-audit" ? 90 : name === "lint" || name === "portable-tools" ? 45 : 60));
+    if (pg) assert(job.includes(`image: ${image}`));
     for (const fault of faults) {
       assert.equal(job.includes(`SUNRISE_EDGE_TEST_POSTGRES_${fault}_REQUIRED: "1"`), name === "pg-storage");
     }
   }
-  assert(jobs.get("pg-storage").includes("SUNRISE_EDGE_TEST_POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}"));
-  assert(jobs.get("pg-storage").includes("ghcr.io/icoretech/pgbouncer-docker:1.25.2@sha256:53dc42879de6b87efed6ad239558cfa6fef6f08c5fa4acc109da5f5af1868b89"));
-  for (const fault of ["DISK_FULL", "WAL_FULL", "CONNECTION_EXHAUSTION", "BACKUP_RESTORE", "PGBOUNCER_POSTGRES"]) {
-    assert(jobs.get("pg-storage").includes(`SUNRISE_EDGE_TEST_POSTGRES_${fault}_IMAGE: ${image}`));
+  if (pg) {
+    assert(jobs.get("pg-storage").includes("SUNRISE_EDGE_TEST_POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}"));
+    assert(jobs.get("pg-storage").includes("ghcr.io/icoretech/pgbouncer-docker:1.25.2@sha256:53dc42879de6b87efed6ad239558cfa6fef6f08c5fa4acc109da5f5af1868b89"));
+    for (const fault of ["DISK_FULL", "WAL_FULL", "CONNECTION_EXHAUSTION", "BACKUP_RESTORE", "PGBOUNCER_POSTGRES"]) {
+      assert(jobs.get("pg-storage").includes(`SUNRISE_EDGE_TEST_POSTGRES_${fault}_IMAGE: ${image}`));
+    }
   }
   for (const value of [
     "CARGO_INCREMENTAL: \"0\"", "CARGO_PROFILE_DEV_DEBUG: \"0\"", "CARGO_PROFILE_TEST_DEBUG: \"0\"",
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
-    "denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed",
-    "node-version: 22.20.0", "deno-version: 2.9.4",
-    "cargo install wasm-bindgen-cli --version 0.2.127 --locked",
-    "npm ci --prefix adapters/cloudflare-workers",
+    "node-version: 22.20.0",
   ]) assert(text.includes(value));
+  if (!pg) for (const value of [
+    "denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed", "deno-version: 2.9.4",
+    "cargo install wasm-bindgen-cli --version 0.2.127 --locked", "npm ci --prefix adapters/cloudflare-workers",
+  ]) assert(text.includes(value));
+  return jobs;
 }
-const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
-checkWorkflow(workflow);
-for (const mutation of [
-  workflow.replace("      - pg-lifecycle\n", ""),
-  workflow.replace("  pg-lifecycle:\n", "  unknown-group:\n"),
-  workflow.replace("if: ${{ always() }}", "if: ${{ success() }}"),
-  workflow.replace('SUNRISE_EDGE_TEST_POSTGRES_CRASH_REQUIRED: "1"', 'SUNRISE_EDGE_TEST_POSTGRES_CRASH_REQUIRED: "0"'),
-]) assert.throws(() => checkWorkflow(mutation));
-for (const name of groups) {
-  const gate = `        run: ./scripts/check-all.sh --group ${name}`;
-  for (const replacement of [
-    `        if: false\n${gate}`, `${gate} || true`, `${gate} ; true`, `${gate}\n${gate}`,
-  ]) assert.throws(() => checkWorkflow(workflow.replace(gate, replacement)));
-  assert.throws(() => checkWorkflow(workflow.replace(`  ${name}:\n`, `  ${name}:\n    if: false\n`)));
-}
-const fanInGate = "        run: node scripts/check-ci-results.mjs";
-for (const replacement of [
-  `        if: false\n${fanInGate}`, `${fanInGate} || true`, `${fanInGate} ; true`, `${fanInGate}\n${fanInGate}`,
-]) assert.throws(() => checkWorkflow(workflow.replace(fanInGate, replacement)));
-
-const success = Object.fromEntries(groups.map((group) => [group, { result: "success" }]));
-requireSuccessfulGateResults(success);
-for (const group of groups) {
-  for (const result of ["failure", "cancelled", "skipped", "", "unknown", undefined]) {
-    assert.throws(() => requireSuccessfulGateResults({ ...success, [group]: { result } }));
+const profiles = [["required", requiredGroups, ".github/workflows/ci.yml"], ["postgres", postgresGroups, ".github/workflows/postgres.yml"]];
+for (const [profile, members, path] of profiles) {
+  const workflow = readFileSync(join(root, path), "utf8");
+  checkWorkflow(workflow, profile);
+  for (const mutation of [
+    workflow.replace(`      - ${members[0]}\n`, ""),
+    workflow.replace(`  ${members[0]}:\n`, "  unknown-group:\n"),
+    workflow.replace("if: ${{ always() }}", "if: ${{ success() }}"),
+    workflow.replace("on:\n", "on:\n  schedule:\n    - cron: '0 0 * * *'\n"),
+    workflow.replace("jobs:\n", "jobs:\n  path-skipped:\n    if: false\n"),
+  ]) assert.throws(() => checkWorkflow(mutation, profile));
+  for (const name of members) {
+    const gate = `        run: ./scripts/check-all.sh --group ${name}`;
+    for (const replacement of [
+      `        if: false\n${gate}`, `${gate} || true`, `${gate} ; true`, `${gate}\n${gate}`,
+    ]) assert.throws(() => checkWorkflow(workflow.replace(gate, replacement), profile));
+    assert.throws(() => checkWorkflow(workflow.replace(`  ${name}:\n`, `  ${name}:\n    if: false\n`), profile));
   }
-  const missing = { ...success };
-  delete missing[group];
-  assert.throws(() => requireSuccessfulGateResults(missing));
-}
-for (const bad of [null, [], "success", {}, { ...success, unknown: { result: "success" } }]) {
-  assert.throws(() => requireSuccessfulGateResults(bad));
-}
-for (const [json, status] of [
-  [JSON.stringify(success), 0],
-  [JSON.stringify({ ...success, lint: { result: "failure" } }), 1],
-  [JSON.stringify({ ...success, lint: { result: "cancelled" } }), 1],
-  [JSON.stringify({ ...success, lint: { result: "skipped" } }), 1],
-  [JSON.stringify({ ...success, lint: {} }), 1],
-  [JSON.stringify({ ...success, unknown: { result: "success" } }), 1],
-  ["{}", 1], ["not-json", 1], ["", 1],
-]) {
-  const result = spawnSync(process.execPath, [join(root, "scripts/check-ci-results.mjs")], {
-    encoding: "utf8", env: { PATH: "/usr/bin:/bin", CI_NEEDS_JSON: json },
-  });
-  assert.ifError(result.error);
-  assert.equal(result.status, status, result.stderr);
+  const fanInGate = `        run: node scripts/check-ci-results.mjs${profile === "postgres" ? " --profile postgres" : ""}`;
+  for (const replacement of [
+    `        if: false\n${fanInGate}`, `${fanInGate} || true`, `${fanInGate} ; true`, `${fanInGate}\n${fanInGate}`,
+    `${fanInGate} --profile unknown`,
+  ]) assert.throws(() => checkWorkflow(workflow.replace(fanInGate, replacement), profile));
+  if (profile === "postgres") {
+    assert.throws(() => checkWorkflow(workflow.replace('SUNRISE_EDGE_TEST_POSTGRES_CRASH_REQUIRED: "1"', 'SUNRISE_EDGE_TEST_POSTGRES_CRASH_REQUIRED: "0"'), profile));
+    assert.throws(() => checkWorkflow(workflow.replace("  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request:\n"), profile));
+    assert.throws(() => checkWorkflow(workflow.replace(" --profile postgres", ""), profile));
+  } else {
+    for (const extra of ["  SUNRISE_EDGE_TEST_POSTGRES_URL: unused\n", "  services:\n    postgres: unused\n"]) {
+      assert.throws(() => checkWorkflow(workflow.replace("env:\n", `env:\n${extra}`), profile));
+    }
+  }
+
+  const success = Object.fromEntries(members.map((group) => [group, { result: "success" }]));
+  requireSuccessfulGateResults(success, profile);
+  if (profile === "required") requireSuccessfulGateResults(success);
+  for (const group of members) {
+    for (const result of ["failure", "cancelled", "skipped", "", "unknown", undefined]) {
+      assert.throws(() => requireSuccessfulGateResults({ ...success, [group]: { result } }, profile));
+    }
+    const missing = { ...success };
+    delete missing[group];
+    assert.throws(() => requireSuccessfulGateResults(missing, profile));
+  }
+  for (const bad of [null, [], "success", {}, { ...success, unknown: { result: "success" } },
+    Object.fromEntries(groups.map((group) => [group, { result: "success" }]))]) {
+    assert.throws(() => requireSuccessfulGateResults(bad, profile));
+  }
+  function resultCommand(json, status, args) {
+    const result = spawnSync(process.execPath, [join(root, "scripts/check-ci-results.mjs"), ...args], {
+      encoding: "utf8", env: { PATH: "/usr/bin:/bin", CI_NEEDS_JSON: json },
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, status, result.stderr);
+  }
+  const profileArgs = profile === "required" ? [] : ["--profile", "postgres"];
+  for (const [json, status] of [
+    [JSON.stringify(success), 0],
+    ...["failure", "cancelled", "skipped", undefined].map((result) => [JSON.stringify({ ...success, [members[0]]: { result } }), 1]),
+    [JSON.stringify({ ...success, unknown: { result: "success" } }), 1],
+    ["{}", 1], ["not-json", 1], ["", 1],
+  ]) resultCommand(json, status, profileArgs);
+  resultCommand(JSON.stringify(success), 0, ["--profile", profile]);
+  const other = profile === "required" ? "postgres" : "required";
+  resultCommand(JSON.stringify(success), 1, ["--profile", other]);
+  for (const args of [["--profile"], ["--profile", "unknown"], ["--profile", ""], ["--profile", "full"], ["--full"], ["--profile", profile, "extra"]]) {
+    resultCommand(JSON.stringify(success), 1, args);
+  }
+  for (const unknown of ["unknown", "full", "__proto__", null]) {
+    assert.throws(() => requireSuccessfulGateResults(success, unknown));
+  }
 }
 
 // PATH-only command doubles let the actual shell dispatch run without invoking
@@ -176,14 +229,18 @@ const directory = mkdtempSync(join(tmpdir(), "sunrise-edge-ci-dispatch-"));
 const logPath = join(directory, "commands.jsonl");
 const realBash = "/bin/bash";
 try {
-  for (const tool of ["cargo", "rustfmt", "git", "node", "npm", "deno", "bash"]) {
+  for (const tool of ["cargo", "rustfmt", "git", "node", "npm", "deno", "bash", "dirname", "basename"]) {
     const body = `#!${process.execPath}
-const {appendFileSync}=require('node:fs');
+const {appendFileSync,writeFileSync}=require('node:fs');
+const {join}=require('node:path');
 const {spawnSync}=require('node:child_process');
 const tool=${JSON.stringify(tool)},args=process.argv.slice(2);
 appendFileSync(process.env.CI_MOCK_LOG,JSON.stringify({tool,args,cwd:process.cwd()})+'\\n');
 if(process.env.CI_MOCK_FAIL_TOOL===tool)process.exit(17);
-if(tool==='bash'&&args[0]==='scripts/check-fastvote-pg.sh'){
+const script=args[0]?.split('/').at(-1);
+if(tool==='bash'&&(['check-fastvote-pg.sh','check-fee-escrow-inventory-pg.sh'].includes(script)
+ ||(script==='check-postgres-soak.sh'&&!(args.length===2&&args[1]==='--self-test-cli'))
+ ||(args[0]==='-c'&&args[1]==='run_phases'))){
  const child=spawnSync(${JSON.stringify(realBash)},args,{stdio:'inherit',env:process.env});
  process.exit(child.status??1);
 }
@@ -192,6 +249,15 @@ if(tool==='cargo'&&args[0]==='test'&&args.includes('--ignored')&&args.includes('
  if(name!==process.env.CI_MOCK_MISSING_TEST)console.log(name+': test');
 }
 if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')&&args.includes(process.env.CI_MOCK_FAIL_TEST))process.exit(18);
+// Only shell-dispatch sentinels, never authentic fixture material/test bodies.
+if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
+ if(args.includes('fee_claims::tests::certified_multi_escrow_inventory::export_certified_operator_fixture_postgres')){
+  writeFileSync(join(process.env.SUNRISE_EDGE_ESCROW_FIXTURE_DIR,'validator_id.hex'),'0'.repeat(64)+'\\n');
+ }
+ if(args.includes('fast_path::soak_tests::live_postgres_certified_load_exports_recovery_handoff')){
+  writeFileSync(join(process.env.SUNRISE_EDGE_SOAK_DIR,'handoff.kv'),'mock dispatch sentinel only\\n');
+ }
+}
 `;
     writeFileSync(join(directory, tool), body, { flag: "wx", mode: 0o755 });
   }
@@ -201,7 +267,7 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')&&args.includes(pro
       cwd: root, encoding: "utf8", timeout: 30_000,
       env: {
         PATH: `${directory}:/usr/bin:/bin`, CI_MOCK_LOG: logPath,
-        GITHUB_ACTIONS: "true", SUNRISE_EDGE_TEST_POSTGRES_URL: "mock-only",
+        GITHUB_ACTIONS: "true",
         ...overrides,
       },
     });
@@ -210,8 +276,10 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')&&args.includes(pro
     return { ...result, log: text ? text.split("\n").map((row) => JSON.parse(row)) : [] };
   }
   function passed(run) { assert.equal(run.status, 0, run.stderr); return run.log; }
-  const full = passed(run("scripts/check-all.sh"));
-  const lanes = new Map(groups.map((group) => [group, passed(run("scripts/check-all.sh", ["--group", group]))]));
+  const pgEnvironment = { SUNRISE_EDGE_TEST_POSTGRES_URL: "mock-only" };
+  const required = passed(run("scripts/check-all.sh"));
+  const full = passed(run("scripts/check-all.sh", ["--full"], pgEnvironment));
+  const lanes = new Map(groups.map((group) => [group, passed(run("scripts/check-all.sh", ["--group", group], postgresGroups.includes(group) ? pgEnvironment : {}))]));
   const union = [...lanes.values()].flat();
   // An independent baseline stops deleting a gate from BOTH dispatch modes
   // from turning the union comparison below into a misleading success.
@@ -230,7 +298,7 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')&&args.includes(pro
   ]]);
   assert.deepEqual(full.filter(({ tool }) => tool === "deno").map(({ args, cwd }) => [args, relative(root, cwd)]),
     ["deno", "vercel", "supabase-edge", "aws-lambda"].map((name) => [["task", "check"], `adapters/${name}`]));
-  assert.deepEqual(full.filter(({ tool }) => tool === "bash").map(({ args }) => args), [
+  assert.deepEqual(full.filter(({ tool, args }) => tool === "bash" && args[0].startsWith("scripts/")).map(({ args }) => args), [
     ["scripts/check-fee-escrow-inventory.sh"], ["scripts/check-fee-escrow-inventory-pg.sh"],
     ["scripts/check-fastvote-pg.sh"], ["scripts/check-postgres-soak.sh", "--self-test-cli"],
     ["scripts/check-postgres-soak.sh", "--smoke"], ["scripts/build-cloudflare-validator.sh"],
@@ -244,8 +312,23 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')&&args.includes(pro
     return log.filter(({ tool, args }) => tool === "cargo" && args[0] === "test" && args.includes("--ignored") && !args.includes("--list"));
   }
   const fullIgnored = ignoredExecutions(full);
-  assert.deepEqual(fullIgnored.map(({ args }) => args[args.indexOf("--") - 1]), expectedCases);
-  assert.deepEqual(ignoredExecutions(union).map(({ args }) => args[args.indexOf("--") - 1]), expectedCases);
+  function ignoredName({ args }) {
+    return args.find((arg) => [...expectedCases, ...auxiliary.map((row) => row[2])].includes(arg));
+  }
+  const expectedPgOrder = [...auxiliary.slice(1, 3).map((row) => row[2]), ...expectedCases, ...auxiliary.slice(3).map((row) => row[2])];
+  assert.deepEqual(fullIgnored.map(ignoredName), expectedPgOrder);
+  assert.deepEqual(ignoredExecutions(union).map(ignoredName).sort(), [...expectedPgOrder].sort());
+  for (const log of [full, union]) {
+    assert.deepEqual(ignoredExecutions(log).map(ignoredName).filter((name) => expectedCases.includes(name)), expectedCases);
+  }
+  assert.equal(ignoredExecutions(required).length, 0);
+  assert.deepEqual(required.filter(({ tool, args }) => tool === "bash").map(({ args }) => args), [
+    ["scripts/check-fee-escrow-inventory.sh"], ["scripts/check-postgres-soak.sh", "--self-test-cli"], ["scripts/build-cloudflare-validator.sh"],
+  ]);
+  assert.deepEqual(required.filter(({ tool, args }) => tool === "cargo" && args[0] === "test").map(({ args }) => args), [
+    ["test", "--workspace", "--all-targets", "--all-features", "--exclude", "runtime-postgres"],
+    ["test", "--quiet", "-p", "node-core", "--lib", auxiliary[0][2], "--", "--ignored", "--list"],
+  ]);
   for (const [group, pkg, target, name, capture] of cases) {
     const log = lanes.get(group);
     const checks = log.filter(({ tool, args }) => tool === "cargo" && args.includes(name));
@@ -257,20 +340,38 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')&&args.includes(pro
     assert.equal(checks[1].args.includes("--nocapture"), capture === "yes");
     assert(target === "--lib" ? checks[1].args.includes("--lib") : checks[1].args.includes(target));
   }
+  for (const [group, , name] of auxiliary) {
+    const checks = lanes.get(group).filter(({ tool, args }) => tool === "cargo" && args.includes(name));
+    assert.equal(checks.length, group === "rust-tests" ? 1 : 2, `${name} must retain its discovery/owning script`);
+    assert(checks[0].args.includes("--list"));
+    if (group !== "rust-tests") assert(checks[1].args.includes("--ignored") && checks[1].args.includes("--exact"));
+  }
   function gateEvents(log) {
     return log.flatMap(({ tool, args, cwd }) => {
       if (tool === "cargo" && args[0] === "build") return [];
       if (tool === "cargo" && args.includes("--list")) return [];
       if (tool === "cargo" && args[0] === "test" && !args.includes("--ignored")) {
-        if (args.includes("--workspace")) return args.includes("--exclude") ? ["rust-tests"] : ["rust-tests", "pg-storage"];
+        if (args.includes("--workspace")) {
+          assert.deepEqual(args, ["test", "--workspace", "--all-targets", "--all-features", ...(args.includes("--exclude") ? ["--exclude", "runtime-postgres"] : [])]);
+          return args.includes("--exclude") ? ["rust-tests"] : ["rust-tests", "pg-storage"];
+        }
         assert.deepEqual(args, ["test", "-p", "runtime-postgres", "-p", "sunrise-edge-operator", "-p", "sunrise-edge-cloudflare-validator", "-p", "sunrise-claim", "--all-targets", "--all-features", "--features", "sunrise-edge-cli/usb-hid"]);
         return ["pg-storage"];
       }
       if (tool === "bash" && args[0] === "scripts/check-fastvote-pg.sh") return [];
+      if (tool === "bash" && args[0] === "-c" && args[1] === "run_phases") return [];
       return [JSON.stringify([tool, args, tool === "deno" ? relative(root, cwd) : ""])];
     }).sort();
   }
   assert.deepEqual(gateEvents(full), gateEvents(union));
+  assert.deepEqual(gateEvents(required), gateEvents(requiredGroups.flatMap((group) => lanes.get(group))));
+  const commonFull = full.filter(({ tool, args }) => !(
+    (tool === "cargo" && args.some((arg) => expectedPgOrder.includes(arg))) ||
+    (tool === "bash" && (args[0] === "scripts/check-fee-escrow-inventory-pg.sh" || args[0] === "scripts/check-fastvote-pg.sh" ||
+      (args[0] === "scripts/check-postgres-soak.sh" && args[1] === "--smoke") || args[0] === "-c"))
+  )).map((event) => event.tool === "cargo" && event.args[0] === "test" && event.args.includes("--workspace")
+    ? { ...event, args: [...event.args, "--exclude", "runtime-postgres"] } : event);
+  assert.deepEqual(gateEvents(required), gateEvents(commonFull));
   const storageEvent = lanes.get("pg-storage")[0];
   for (const anchor of ["runtime-postgres", "sunrise-edge-operator", "sunrise-edge-cloudflare-validator", "sunrise-claim"]) {
     const withoutAnchor = storageEvent.args.slice();
@@ -285,53 +386,77 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')&&args.includes(pro
   }
   assert(lanes.get("pg-business-audit").some(({ tool, args }) => tool === "cargo" && args.includes("build") && args.includes("business_audit_pg")));
   for (const script of ["scripts/check-all.sh", "scripts/check-fastvote-pg.sh"]) {
-    for (const args of [["--group", "unknown"], ["--group"], ["--group", "all"], ["--group", "pg-lifecycle", "extra"]]) {
-      const failed = run(script, args, { SUNRISE_EDGE_TEST_POSTGRES_URL: "" });
+    for (const args of [["--group", "unknown"], ["--group"], ["--group", "all"], ["--group", ""], ["--group", "required"],
+      ["--group", "full"], ["--group", "pg-lifecycle", "extra"], ["--full", "extra"], ["--full", "--group", "pg-storage"], ["--unknown"]]) {
+      const failed = run(script, args, pgEnvironment);
       assert.notEqual(failed.status, 0);
       assert.equal(failed.log.length, 0);
     }
   }
-  for (const group of ["pg-storage", "pg-lifecycle", "pg-drain-history", "pg-business-audit", "pg-recovery-economics"]) {
-    const failed = run("scripts/check-all.sh", ["--group", group], { SUNRISE_EDGE_TEST_POSTGRES_URL: "" });
-    assert.notEqual(failed.status, 0);
-    assert.equal(failed.log.length, 0);
-    assert.equal(run("scripts/check-all.sh", ["--group", group], { SUNRISE_EDGE_TEST_POSTGRES_URL: "", GITHUB_ACTIONS: "" }).status, 0);
+  const pgRequests = [
+    ["scripts/check-all.sh", ["--full"]],
+    ...postgresGroups.map((group) => ["scripts/check-all.sh", ["--group", group]]),
+    ["scripts/check-fastvote-pg.sh", []],
+    ...postgresGroups.filter((group) => group !== "pg-storage").map((group) => ["scripts/check-fastvote-pg.sh", ["--group", group]]),
+    ["scripts/check-fee-escrow-inventory-pg.sh", []], ["scripts/check-postgres-soak.sh", ["--smoke"]],
+  ];
+  for (const [script, args] of pgRequests) {
+    for (const actions of ["true", ""]) {
+      const failed = run(script, args, { GITHUB_ACTIONS: actions });
+      assert.notEqual(failed.status, 0);
+      assert.equal(failed.log.length, 0);
+    }
   }
   for (const fault of faults) {
     for (const value of ["1", "", "0", "invalid"]) {
-      const failed = run("scripts/check-all.sh", ["--group", "pg-storage"], {
-        SUNRISE_EDGE_TEST_POSTGRES_URL: "", GITHUB_ACTIONS: "",
-        [`SUNRISE_EDGE_TEST_POSTGRES_${fault}_REQUIRED`]: value,
-      });
-      assert.notEqual(failed.status, 0);
-      assert.equal(failed.log.length, 0);
+      for (const args of [[], ["--group", "pg-storage"]]) {
+        const failed = run("scripts/check-all.sh", args, {
+          GITHUB_ACTIONS: "", [`SUNRISE_EDGE_TEST_POSTGRES_${fault}_REQUIRED`]: value,
+        });
+        assert.notEqual(failed.status, 0);
+        assert.equal(failed.log.length, 0);
+      }
     }
   }
-  const absent = run("scripts/check-all.sh", [], { SUNRISE_EDGE_TEST_POSTGRES_URL: "" });
-  assert.notEqual(absent.status, 0);
-  assert.equal(absent.log.length, 0);
-  for (const group of ["lint", "rust-tests", "portable-tools", "cloudflare"]) {
-    passed(run("scripts/check-all.sh", ["--group", group], { SUNRISE_EDGE_TEST_POSTGRES_URL: "" }));
+  for (const args of [[], ...requiredGroups.map((group) => ["--group", group])]) {
+    for (const override of [pgEnvironment, { SUNRISE_EDGE_TEST_POSTGRES_URL: "" }, { SUNRISE_EDGE_TEST_POSTGRES_CONTAINER_ID: "" },
+      { SUNRISE_EDGE_TEST_POSTGRES_DISK_FULL_IMAGE: "mock-only" }, { SUNRISE_EDGE_TEST_POSTGRES_UNKNOWN_SETTING: "1" }]) {
+      const refused = run("scripts/check-all.sh", args, override);
+      assert.notEqual(refused.status, 0);
+      assert.equal(refused.log.length, 0);
+    }
   }
   for (const name of expectedCases) {
     const group = cases.find((row) => row[3] === name)[0];
-    const missing = run("scripts/check-all.sh", ["--group", group], { CI_MOCK_MISSING_TEST: name });
+    const missing = run("scripts/check-all.sh", ["--group", group], { ...pgEnvironment, CI_MOCK_MISSING_TEST: name });
     assert.notEqual(missing.status, 0);
     assert(!ignoredExecutions(missing.log).some(({ args }) => args.includes(name)));
-    assert.notEqual(run("scripts/check-all.sh", ["--group", group], { CI_MOCK_FAIL_TEST: name }).status, 0);
+    assert.notEqual(run("scripts/check-all.sh", ["--group", group], { ...pgEnvironment, CI_MOCK_FAIL_TEST: name }).status, 0);
   }
-  const failedFull = run("scripts/check-all.sh", [], { CI_MOCK_FAIL_TOOL: "cargo" });
-  assert.notEqual(failedFull.status, 0);
-  assert(!failedFull.log.some(({ tool, args }) => tool === "bash" && args.includes("scripts/check-fee-escrow-inventory.sh")));
+  for (const [group, , name] of auxiliary.slice(1)) {
+    const missing = run("scripts/check-all.sh", ["--group", group], { ...pgEnvironment, CI_MOCK_MISSING_TEST: name });
+    assert.notEqual(missing.status, 0);
+    assert(!ignoredExecutions(missing.log).some((event) => ignoredName(event) === name));
+    assert.notEqual(run("scripts/check-all.sh", ["--group", group], { ...pgEnvironment, CI_MOCK_FAIL_TEST: name }).status, 0);
+  }
+  for (const args of [[], ["--full"]]) {
+    const failed = run("scripts/check-all.sh", args, { ...(args.length ? pgEnvironment : {}), CI_MOCK_FAIL_TOOL: "cargo" });
+    assert.notEqual(failed.status, 0);
+    assert(!failed.log.some(({ tool, args }) => tool === "bash" && args.includes("scripts/check-fee-escrow-inventory.sh")));
+  }
   for (const [group, tool] of [
     ["rust-tests", "cargo"], ["pg-storage", "cargo"], ["lint", "rustfmt"],
     ["portable-tools", "node"], ["portable-tools", "deno"],
     ["cloudflare", "bash"], ["cloudflare", "npm"],
-  ]) assert.notEqual(run("scripts/check-all.sh", ["--group", group], { CI_MOCK_FAIL_TOOL: tool }).status, 0);
+  ]) assert.notEqual(run("scripts/check-all.sh", ["--group", group], { ...(postgresGroups.includes(group) ? pgEnvironment : {}), CI_MOCK_FAIL_TOOL: tool }).status, 0);
   const missingSqlite = run("scripts/check-all.sh", ["--group", "rust-tests"], { CI_MOCK_MISSING_TEST: auxiliary[0][2] });
   assert.notEqual(missingSqlite.status, 0);
   assert(!missingSqlite.log.some(({ tool }) => tool === "bash"));
+  const selfTest = run("scripts/check-postgres-soak.sh", ["--self-test-cli"]);
+  assert.equal(selfTest.status, 0, selfTest.stderr);
+  assert(selfTest.stdout.includes("all CLI self-test cases passed"));
+  assert.equal(selfTest.log.filter(({ tool }) => tool === "cargo").length, 0);
 } finally {
   rmSync(directory, { recursive: true, force: true });
 }
-console.log("CI gate contract passed: 9 lanes, 19 required ignored selectors, complete serial coverage and fail-closed dispatch/results");
+console.log("CI gate contract passed: 4 required lanes, 5 explicit PostgreSQL lanes, 19 retained ignored selectors, complete required/full coverage and fail-closed dispatch/results");
