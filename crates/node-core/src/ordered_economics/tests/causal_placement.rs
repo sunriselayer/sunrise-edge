@@ -19,6 +19,7 @@ use runtime::{
     DurableObjectHead, DurableObjectPayload, DurableObjectVersion, DurableObjectVersionRecord,
 };
 
+#[path = "causal_placement/business_reconstruction.rs"]
 mod business_reconstruction;
 
 struct CausalFixture {
