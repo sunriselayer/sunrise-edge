@@ -4,7 +4,9 @@
 
 use super::{
     AuthenticatedPublicationProjection, BusinessReconstructionError, BusinessReconstructionOverlay,
-    ReconstructionEd25519Verifier, SourceBusinessSnapshot, SourceSnapshotRecord, invalid,
+    OwnedPublicationMaterial, ReconstructionEd25519Verifier, SourceBusinessSnapshot,
+    SourceSnapshotRecord, VerifiedPublicationSemantic, invalid,
+    owned_material_from_source_snapshot, source_retention_keys,
 };
 use crate::NodeDedupRecord;
 use crate::fast_path::{prepared_material, publication, records};
@@ -39,7 +41,10 @@ use runtime::{
     DurableRequestId, DurableRequestReceipt, StateRevision, StructuredDurableDomainStateStore,
     VersionedStateValue,
 };
-use std::{collections::BTreeMap, num::NonZeroUsize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroUsize,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SemanticRecord {
@@ -615,6 +620,7 @@ fn project(
     snapshot: &SourceBusinessSnapshot,
     reconstructed_state: &StateRows<'_>,
     publications: &AuthenticatedPublicationProjection,
+    retention_keys: &BTreeSet<Vec<u8>>,
     is_source: bool,
 ) -> Result<SemanticProjection, BusinessReconstructionError> {
     snapshot.validate()?;
@@ -642,10 +648,11 @@ fn project(
                 if local_rows.contains_key(key) || ordered.excluded.contains(key) {
                     continue;
                 }
-                if is_source && publications.retention_keys.contains(key) {
-                    // Every exact key and complete body was independently
-                    // authenticated against the replay catalog. Aliases are
-                    // carriers, not permission to ignore this namespace.
+                if retention_keys.contains(key) {
+                    // Each side's exact key and complete body was independently
+                    // authenticated against the same replay catalog. Ordinary
+                    // control import may create private DrainSet aliases;
+                    // neither side gains a namespace-prefix exclusion.
                     continue;
                 }
                 if let Some(subject) = publications.normalized_state.get(key) {
@@ -785,6 +792,38 @@ fn project(
     Ok(projected)
 }
 
+/// Ordinary private control import creates authenticated retention carriers,
+/// not business effects. Authenticate every complete private carrier bundle
+/// against the same replay catalog before deriving its exact exclusion keys.
+/// The private subset may omit unselected retained source publications; it
+/// cannot introduce another subject or change any full certified material.
+fn private_retention_keys(
+    overlay: &BusinessReconstructionOverlay<'_>,
+    reconstructed: &SourceBusinessSnapshot,
+) -> Result<BTreeSet<Vec<u8>>, BusinessReconstructionError> {
+    let material: Vec<OwnedPublicationMaterial> =
+        owned_material_from_source_snapshot(reconstructed, &overlay.plan)?;
+    let private_catalog: Vec<VerifiedPublicationSemantic> =
+        overlay.validate_owned_inputs(&material)?;
+    let verified_catalog: &[VerifiedPublicationSemantic] =
+        overlay
+            .publication_catalog
+            .as_deref()
+            .ok_or(invalid("verified publication catalog is absent"))?;
+    let members: BTreeMap<[u8; 32], &VerifiedPublicationSemantic> = verified_catalog
+        .iter()
+        .map(|item| (item.request_id, item))
+        .collect();
+    for item in &private_catalog {
+        if members.get(&item.request_id).copied() != Some(item) {
+            return Err(invalid(
+                "private retained publication differs from verified replay catalog",
+            ));
+        }
+    }
+    source_retention_keys(reconstructed, &material, &overlay.plan)
+}
+
 pub(super) fn compare_source(
     overlay: &BusinessReconstructionOverlay<'_>,
     source: &SourceBusinessSnapshot,
@@ -795,14 +834,22 @@ pub(super) fn compare_source(
     let publications: AuthenticatedPublicationProjection =
         overlay.authenticated_publication_projection(source)?;
     let reconstructed: SourceBusinessSnapshot = capture_overlay(overlay)?;
+    let private_retention: BTreeSet<Vec<u8>> = private_retention_keys(overlay, &reconstructed)?;
     let reconstructed_state: StateRows<'_> = state_rows(&reconstructed.records);
-    let actual: SemanticProjection =
-        project(overlay, source, &reconstructed_state, &publications, true)?;
+    let actual: SemanticProjection = project(
+        overlay,
+        source,
+        &reconstructed_state,
+        &publications,
+        &publications.retention_keys,
+        true,
+    )?;
     let expected: SemanticProjection = project(
         overlay,
         &reconstructed,
         &reconstructed_state,
         &publications,
+        &private_retention,
         false,
     )?;
     if actual != expected {

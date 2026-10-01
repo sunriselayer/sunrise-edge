@@ -514,16 +514,22 @@ pub(super) fn prepare_drain_control(
             "independently required DrainSet control closure is missing",
         ))?;
     validate_bound_control(plan, candidate, control)?;
-    if catalog.len() != owned.len() {
+    let members: BTreeMap<[u8; 32], &AvailabilityIdentity> = catalog
+        .iter()
+        .map(|member| (member.identity.request_id, &member.identity))
+        .collect();
+    let publications: BTreeMap<[u8; 32], &OwnedPublicationMaterial> = owned
+        .iter()
+        .map(|material| (material.bundle.request_id, material))
+        .collect();
+    if members.len() != catalog.len()
+        || publications.len() != owned.len()
+        || members.keys().ne(publications.keys())
+    {
         return Err(DrainSetControlProofError::Invalid(
-            "publication catalogue position differs",
+            "publication catalogue identities differ",
         ));
     }
-    let members: BTreeMap<[u8; 32], usize> = catalog
-        .iter()
-        .enumerate()
-        .map(|(index, member)| (member.identity.request_id, index))
-        .collect();
     let mut unique_members: BTreeSet<[u8; 32]> = BTreeSet::new();
     for (vote, frontier) in control.selected_votes.iter().zip(&control.signer_frontiers) {
         for page in &frontier.pages {
@@ -550,15 +556,24 @@ pub(super) fn prepare_drain_control(
                         "private staged identity differs",
                     ));
                 }
-                let index: usize = *members.get(&staged.request_id).ok_or(
-                    DrainSetControlProofError::Incomplete("selected full publication is missing"),
-                )?;
-                if catalog[index].identity != staged {
+                let member: &AvailabilityIdentity = members
+                    .get(&staged.request_id)
+                    .copied()
+                    .ok_or(DrainSetControlProofError::Incomplete(
+                        "selected full publication is missing",
+                    ))?;
+                if *member != staged {
                     return Err(DrainSetControlProofError::Invalid(
                         "selected full publication identity conflicts with catalogue",
                     ));
                 }
-                let bundle: Vec<u8> = encode_publication_bundle(&owned[index].bundle)?;
+                let material: &OwnedPublicationMaterial = publications
+                    .get(&staged.request_id)
+                    .copied()
+                    .ok_or(DrainSetControlProofError::Incomplete(
+                        "selected full publication material is missing",
+                    ))?;
+                let bundle: Vec<u8> = encode_publication_bundle(&material.bundle)?;
                 let imported: AvailabilityIdentity = import_staged_drain_publication(
                     &overlay.store,
                     &plan.operation_context,

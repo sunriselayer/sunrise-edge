@@ -290,7 +290,7 @@ fn genuine_control_history_needs_complete_selected_proof_and_reconstructs_withou
         complete_history(network);
     let before: SourceBusinessSnapshot = snapshot(network);
     let plan: BusinessReconstructionPlan<'_> = reconstruction_plan(&source.fixture, &identity);
-    let owned: Vec<OwnedPublicationMaterial> =
+    let mut owned: Vec<OwnedPublicationMaterial> =
         owned_material_from_source_snapshot(&before, &plan).unwrap();
     let controls: Vec<DrainSetControlMaterial> =
         drain_control_material_from_source_snapshot(&before, &plan, &history).unwrap();
@@ -325,6 +325,30 @@ fn genuine_control_history_needs_complete_selected_proof_and_reconstructs_withou
             DrainSetControlProofError::Incomplete(_)
         ))
     ));
+    let one_member: Vec<OwnedPublicationMaterial> = owned
+        .iter()
+        .filter(|material| material.bundle.request_id != UNAPPLIED_REQUEST)
+        .cloned()
+        .collect();
+    assert_eq!(one_member.len(), 1);
+    let mut missing_member: BusinessReconstructionOverlay<'_> =
+        BusinessReconstructionOverlay::new(reconstruction_plan(&source.fixture, &identity))
+            .unwrap();
+    assert!(matches!(
+        missing_member.reconstruct_with_control_material(&one_member, &history, &controls),
+        Err(BusinessReconstructionError::ControlProof(
+            DrainSetControlProofError::Incomplete(_)
+        ))
+    ));
+    let mut corrupt_member: Vec<OwnedPublicationMaterial> = owned.clone();
+    corrupt_member[1].bundle.contents[0][0] ^= 1;
+    let mut bad_member: BusinessReconstructionOverlay<'_> =
+        BusinessReconstructionOverlay::new(reconstruction_plan(&source.fixture, &identity))
+            .unwrap();
+    assert!(matches!(
+        bad_member.reconstruct_with_control_material(&corrupt_member, &history, &controls),
+        Err(BusinessReconstructionError::Invalid(_))
+    ));
     let mut corrupt: Vec<DrainSetControlMaterial> = controls.clone();
     corrupt[0].signer_frontiers[0].pages.clear();
     let mut missing_terminal: BusinessReconstructionOverlay<'_> =
@@ -335,6 +359,11 @@ fn genuine_control_history_needs_complete_selected_proof_and_reconstructs_withou
         Err(BusinessReconstructionError::ControlProof(_))
     ));
 
+    // The public input sequence is not the sorted verified catalog's index
+    // space. Exact full identity lookup must work independently of this order.
+    owned.reverse();
+    assert_eq!(owned[0].bundle.request_id, UNAPPLIED_REQUEST);
+    assert_eq!(owned[1].bundle.request_id, PAID_REQUEST);
     let mut overlay: BusinessReconstructionOverlay<'_> =
         BusinessReconstructionOverlay::new(plan).unwrap();
     let report: BusinessReconstructionReport = overlay
