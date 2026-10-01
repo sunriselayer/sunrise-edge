@@ -84,14 +84,21 @@ function checkWorkflow(text) {
     entry[1], jobText.slice(entry.index, declarations[i + 1]?.index ?? jobText.length),
   ]));
   const check = jobs.get("check");
-  assert(check.includes("if: ${{ always() }}"));
+  assert.deepEqual(check.split("\n").filter((line) => /^\s+(?:-\s+)?if\s*:/.test(line)), [
+    "    if: ${{ always() }}",
+  ]);
   assert.deepEqual([...check.matchAll(/^      - ([a-z][a-z0-9-]*)$/gm)].map((entry) => entry[1]), groups);
   assert(check.includes("CI_NEEDS_JSON: ${{ toJSON(needs) }}"));
-  assert(check.includes("run: node scripts/check-ci-results.mjs"));
+  assert.deepEqual(check.split("\n").filter((line) => line.includes("scripts/check-ci-results.mjs")), [
+    "        run: node scripts/check-ci-results.mjs",
+  ]);
   assert(!/continue-on-error:|paths:|paths-ignore:/.test(text));
   for (const name of groups) {
     const job = jobs.get(name);
-    assert(job.includes(`run: ./scripts/check-all.sh --group ${name}`));
+    assert(!/^\s+(?:-\s+)?if\s*:/m.test(job));
+    assert.deepEqual(job.split("\n").filter((line) => line.includes("scripts/check-all.sh")), [
+      `        run: ./scripts/check-all.sh --group ${name}`,
+    ]);
     assert.equal(/services:/.test(job), name.startsWith("pg-"));
     assert.equal(/SUNRISE_EDGE_TEST_POSTGRES_URL:/.test(job), name.startsWith("pg-"));
     if (name.startsWith("pg-")) assert(job.includes(`image: ${image}`));
@@ -122,6 +129,17 @@ for (const mutation of [
   workflow.replace("if: ${{ always() }}", "if: ${{ success() }}"),
   workflow.replace('SUNRISE_EDGE_TEST_POSTGRES_CRASH_REQUIRED: "1"', 'SUNRISE_EDGE_TEST_POSTGRES_CRASH_REQUIRED: "0"'),
 ]) assert.throws(() => checkWorkflow(mutation));
+for (const name of groups) {
+  const gate = `        run: ./scripts/check-all.sh --group ${name}`;
+  for (const replacement of [
+    `        if: false\n${gate}`, `${gate} || true`, `${gate} ; true`, `${gate}\n${gate}`,
+  ]) assert.throws(() => checkWorkflow(workflow.replace(gate, replacement)));
+  assert.throws(() => checkWorkflow(workflow.replace(`  ${name}:\n`, `  ${name}:\n    if: false\n`)));
+}
+const fanInGate = "        run: node scripts/check-ci-results.mjs";
+for (const replacement of [
+  `        if: false\n${fanInGate}`, `${fanInGate} || true`, `${fanInGate} ; true`, `${fanInGate}\n${fanInGate}`,
+]) assert.throws(() => checkWorkflow(workflow.replace(fanInGate, replacement)));
 
 const success = Object.fromEntries(groups.map((group) => [group, { result: "success" }]));
 requireSuccessfulGateResults(success);
