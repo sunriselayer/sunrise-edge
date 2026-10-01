@@ -54,8 +54,9 @@ checked logical generations from local CAS revisions. Duplicate certificate
 subsets cannot double-apply a producer. Contradictory producers, missing
 material, impossible dependency cycles and unrecognized schemas stop.
 
-Accepted DrainSet controls additionally need the exact selected signed frontier
-entry streams and their complete retained publication closure. These are
+DrainSet controls that reach readiness validation additionally need the exact
+selected signed frontier entry streams and their complete retained publication
+closure, even if the owning handler later refuses a wrong claimed union. These are
 untrusted proof inputs bound to the original candidate, not copied source
 ready/progress rows. Reverify each stream from its seed to the signed terminal
 count/digest and privately run ordinary page ingestion, retention import,
