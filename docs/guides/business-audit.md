@@ -40,7 +40,8 @@ cargo build --release -p sunrise-edge-operator --bin business_audit_pg
   --out-dir ./business-audit-observation \
   --page-size 128 \
   --timeout-seconds 300 \
-  --max-new-publications 1
+  --max-new-publications 1 \
+  --max-new-control-pages 1
 ```
 
 Each `--suite` uses
@@ -53,9 +54,11 @@ If builds use `CARGO_TARGET_DIR`, run the corresponding release binary there.
 ## Bounded collection and immutable resume
 
 `--max-new-publications` limits newly cached complete publications per invocation
-to one through 4096. It is not a maximum allowed history length. A partial result
-prints `audit=partial` and explicitly makes no semantic-equality claim. Repeat the
-same command and output directory to continue collecting the same observation.
+to one through 4096. `--max-new-control-pages` independently limits newly cached
+DrainSet signer-frontier pages to one through 4096. Neither is a maximum allowed
+history length. A partial result prints `audit=partial` and explicitly makes no
+semantic-equality claim. Repeat the same command and output directory to continue
+collecting the same observation.
 
 The directory contains a source token, fixed ordered identity and immutable
 publication bundles, availability proofs and comparison-target metadata. Every
@@ -64,6 +67,16 @@ reverifies the saved ordered prefix and all cached material. A saved cursor,
 metadata bit or completion file never authorizes execution or skips verification.
 Files are published only after complete writes and synchronization; changed
 saved bytes refuse instead of being overwritten.
+
+Each DrainSet control selection retains the exact authenticated candidate's
+signed frontier votes and bounded pages. Every selected stream is verified from
+its seed through its signed terminal count and digest on every invocation. The
+private store derives readiness through the ordinary drain handlers and full
+retained publication bundles, never from a source ready marker or progress row.
+Original Accepted/Refused companions are comparison targets, not authority to
+omit proof material that private execution requires. Missing needed streams or
+publications stop reconstruction; a legitimate early refusal remains an early
+refusal without requiring unrelated control material.
 
 The token binds the source namespace instance, writer fence and mutation
 sequence. A restart that changes the writer fence, or any intervening source
@@ -86,6 +99,12 @@ creation/installation coordinates are not protocol business facts. Signed
 candidate checkpoints, hash-linked economic transitions and original result
 bytes remain exact. Unknown reserved keys, malformed progress, extra or missing
 business rows, corrupt artifacts and inconsistent companions refuse the audit.
+
+Fresh causal-admission genesis deterministically starts business bond records at
+checkpoint zero, regardless of the local installation checkpoint. Subsequent
+signed checkpoints and hash-linked bond history are not normalized. Development
+namespaces whose initial bond used a different business checkpoint are not
+silently repaired or accepted under the fresh profile.
 
 This result proves equality at one fixed source snapshot. It is not proof that
 the source is the newest network state, nor a persistent cut, incoming-validator
