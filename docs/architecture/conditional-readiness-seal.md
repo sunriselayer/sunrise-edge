@@ -31,11 +31,14 @@ Before either new signing or retained replay, one closed core operation must:
    normalized comparison subjects and completion flags are not constructors.
 2. Require exact CompleteInactive origin, immutable binding and completed
    progress, then verify the destination under a current local snapshot token.
-   Completely verify the protected ledger and indexes before any new signing;
-   retained retry instead verifies and returns the original without re-signing.
+   Completely verify the protected ledger and indexes before any new signing.
+   Retained retries perform the same verification and return the original
+   without re-signing.
 3. Derive successor eligibility from those same reconstructed post-drain facts.
    Require checked adjacent epoch, 1..256 members, unique registered IDs and
-   keys, supported schemes, positive weights and checked total power. Reuse
+   keys, the existing Ed25519-only activation scheme, positive weights and
+   checked total power. Require canonical 32-byte public keys and 64-byte
+   signatures under the locally pinned verification profile. Reuse
    structural activation-set checks and the existing committed bond/resource
    predicate: Active bonds, valid lifecycle/slashability, matching registered
    key/scheme and enabled resource/minimum/exposure policy. Bond amount does
@@ -60,6 +63,8 @@ epoch/set, logical domain, exact semantic cut and checked adjacent-epoch
 successor-set identity. Its canonical set digest binds the separately supplied
 bounded full set. Sign with a **distinct readiness purpose at the outgoing
 epoch**, never an ordinary vote, availability ACK or transition-vote purpose.
+The closed signed payload also binds the registered signer ID and scheme;
+certificate assembly cannot relabel a signature as another member or purpose.
 
 Exclude exact proof-package/raw-plan variants, local coordinates/revisions,
 snapshot tokens, writer generations and future Seal identity. Equivalent valid
@@ -84,8 +89,10 @@ lazily initialize, automatically upgrade, repair or infer a virgin ledger from
 absent records. This proposal allocates no schema version or capability registry.
 
 The protected anchor/head and entries bind the destination-local identity,
-checked contiguous ordinal/count and hash chain. Keep an identity-plus-signer index and
-its history/tombstones; a deleted index or tombstone is not unused identity.
+checked contiguous ordinal/count and hash chain. Keep an immutable
+identity-plus-signer index with exact ledger correspondence. Any deleted or
+tombstoned index is invalid, not unused identity. No separate deletion,
+tombstone-management or pruning API is needed for this append-only capability.
 Verify complete continuity from the initialized anchor to the observed head,
 with exact index/entry correspondence. Missing anchor/head/entry/index, ordinal
 gaps, conflicting bytes, invalid links or malformed metadata refuse before

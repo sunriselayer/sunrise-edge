@@ -30,8 +30,10 @@ marker and a remote signature prove neither membership nor key ownership.
 FreshImport/Importing and ordinary/live cached signatures remain guarded.
 
 Core privately reconstructs the exact cut/raw plan and post-drain eligibility.
-Require checked adjacent epoch, 1..256 unique registered members/keys, supported
-schemes, positive weights and checked totals. Reuse existing structural and
+Require checked adjacent epoch, 1..256 unique registered members/keys, the
+existing Ed25519-only activation scheme, positive weights and checked totals.
+Require canonical key/signature lengths under the locally pinned profile.
+Reuse existing structural and
 bond/resource rules, not bond-selected power or an irrevocable Freeze advisory
 set. Match the actual signer's identity/key/scheme before signing; verify the
 signature under that registered key before any durable exposure.
@@ -40,6 +42,7 @@ The semantic subject binds genesis/outgoing authority, chain/protocol/domain,
 semantic cut and exact adjacent-epoch next-set identity. Use a distinct readiness
 signing purpose at the outgoing epoch. Exclude exact package/plan variants,
 local tokens/fences and future Seal; equivalent valid proof subsets agree.
+The closed signed payload binds the registered signer ID and scheme as well.
 Local retention separately binds exact immutable import/package/plan/progress
 and first-retention observation. Corrected sets are nonexclusive; another
 business/control cut needs another verified saved cut and fresh binding.
@@ -52,8 +55,10 @@ it fail readiness and may be freshly reimported, never automatically upgraded,
 lazily initialized or repaired. No general capability registry or schema-version
 allocation is proposed here.
 
-Append-only ordinal/count/hash-chain entries and identity-plus-signer indexes
-preserve history/tombstones. Verify complete bounded-page continuity; missing,
+Append-only ordinal/count/hash-chain entries and immutable identity-plus-signer
+indexes preserve exact correspondence. A deleted or tombstoned index is invalid;
+no separate tombstone-management or pruning API is introduced. Verify complete
+bounded-page continuity; missing,
 deleted, gapped or conflicting records are not proof of virgin absence.
 Keep metadata outside business roots through its exact owner, not a prefix drop.
 

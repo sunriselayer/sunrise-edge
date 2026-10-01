@@ -17,7 +17,7 @@ Only this file owns current status, sequencing and deferred work.
 | Generic paid contracts and Standard Asset | DR-0121–0128 implement Publish/Instantiate/Call, ordinary contract-defined fees and asset create/transfer/split/merge/mint/burn; no Standard Asset privilege in node-core |
 | Delivery 1: certified network contract lifecycle | PR #228 merged on 2026-09-27 after the full gate, fresh exact-head Opus approval and CI; paid lifecycle, assets, replay and declared catch-up, not complete state handoff |
 | Delivery 2: fixed-epoch ordered economics | PR #232 merged on 2026-09-27; shared ordering for claims, bonds and evidence/slash/reactivation, with four-namespace CLI evidence. Genuine membership-dependent Deposit/Withdraw positives remain in Delivery 3 |
-| Delivery 3 prerequisites | PR #237/#238/#239/#242/#244/#245/#250 merged: portable reads, logical generations, publication-before-apply, Freeze/frontiers, quorum-retained DrainSet/member drain, ordered history and genuine frozen-member source reconstruction. Persistent import/readiness/Seal/activation remain open |
+| Delivery 3 prerequisites | PR #237/#238/#239/#242/#244/#245/#250 merged: portable reads, logical generations, publication-before-apply, Freeze/frontiers, quorum-retained DrainSet/member drain, ordered history and genuine frozen-member source reconstruction. Persistent inactive import is implemented below; readiness/Seal/activation remain open |
 | Authenticated pre-Seal business cut | PR #251 merged normally on 2026-10-02 after the full local gate, independent exact-head approval and required CI. Complete core derivation, immutable SQLite export/resumption and source-free independent saved verification; not import or activation evidence |
 | Shared artifact/configuration primitives | PR #249 merged: bounded local genesis and held-handle artifact I/O, with authority/error semantics retained by the callers |
 | Required validation | PR #247 implements DR-0172: four unconditional DB-free lanes. PostgreSQL integration/fault acceptance is retained and explicitly selected, not run on every PR |
@@ -37,7 +37,7 @@ HTTP/SDK/CLI, tests and documentation; do not split merely by codec or file.
 
 | Order | Remaining outcome | Refactoring included where needed | Acceptance boundary |
 | --- | --- | --- | --- |
-| 1 | Persistent verified import into a fresh inactive validator | Explicit import state and core authority guard; narrow runtime repository/transaction seams and shared SQL engine owners | Own writer fence, verified provenance/generation floor, resumable chunks and durable completeness. Staging grants no active serving, fresh business admission or consensus signing; verified import/replay has its own private authority. No foreign fence copy or reset of active history |
+| 1 | Implemented persistent verified import; merge evidence is tracked in PR #252 below | Explicit import state and core authority guard; narrow runtime repository/transaction seams and shared SQL engine owners | Own writer fence, verified provenance/generation floor, resumable chunks and durable completeness. Staging grants no active serving, fresh business admission or consensus signing; verified import/replay has its own private authority. No foreign fence copy or reset of active history |
 | 2 | Conditional readiness, ordered Seal and authenticated activation | Separate epoch-control authority, transition identity and epoch-scoped ordered commit assembly; separate immutable genesis pins from verified serving context | Correctable pre-Seal candidates, ready eligible next quorum, business-free inherited suffix, unique post-Seal target, atomic policy/provenance rollover and retained old history. No timeout unfreeze or force activation |
 | 3 | Usable add/replace/recover/epoch lifecycle | Share bounded artifact I/O and pin/config primitives in SDK/CLI; keep ingress/authentication, transport and core decisions separate | Real A/B/C/D → A/B/C/E flow: Deposit E, Unbond absent D, verified import/replacement, new-epoch paid contracts/claims, advance to genuine unlock epoch, Withdraw D; restart/replay, retired-key, early withdrawal and stale-writer negatives |
 | 4 | Delivery 4: independent audit and initial-network startup | Only deployment-facing composition/dispatch cleanup needed for the chosen profile; reuse capability tests rather than copy PG-only fixtures | Explicit reviewed initial-network activation profile, independently controlled stores, executable auth/TLS/startup/recovery instructions, separate economics and ingress audits and remediation before live exposure |
@@ -109,10 +109,11 @@ reviewable commits; semantic changes stay with their owning feature.
   object/receipt/outbox traits and memory implementations, and node-core
   error/event/invocation/outbox plumbing, within the existing crates with
   public reexports. Keep memory stores available to production reconstruction.
-  Operation context and runtime composition are now separate private owners
-  with the same root API and unchanged implementation bodies. A typed wiring
-  test covers all six supplied components. This first extraction is under
-  required-gate and independent-review verification; transaction/object/
+  Operation context and runtime composition are separate private owners with
+  the same root API and unchanged implementation bodies. A typed wiring test
+  covers all six supplied components; all 74 runtime tests and independent
+  exact-source review pass. [PR #253](https://github.com/sunriselayer/sunrise-edge/pull/253)
+  tracks its required full local/hosted gates before merge. Transaction/object/
   receipt/outbox/memory and node-core cleanup remain separate unfinished work.
 - [x] **Bounded artifact and configuration primitives:** SDK local-genesis
   verification and committee conversion now share `local_genesis`; CLI
