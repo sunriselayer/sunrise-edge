@@ -79,6 +79,11 @@ roadmap describes a later target state.
   ([DR-0168](decisions/0168-quorum-retained-drainset-and-member-drain.md)):
   complete selected frontier union, pre-vote full proof possession, imported
   proof relay and explicit committed-member application; no cut or activation.
+- [Authenticated ordered-history export](ordered-history.md)
+  ([DR-0169](decisions/0169-authenticated-ordered-history-export.md)):
+  full per-height commit witnesses, contiguous genesis-to-target verification
+  and bounded saved export; source completion companions are not an
+  independently reconstructed business cut or import authority.
 
 Production-oriented persistence requirements and the PostgreSQL mapping are
 separate operational references:

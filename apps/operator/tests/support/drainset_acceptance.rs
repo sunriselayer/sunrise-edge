@@ -757,6 +757,18 @@ pub(super) fn run(
         all_snapshots(fixture, pool, namespaces, ids, requests, publications),
         after_apply
     );
-    drop(restarted);
+    super::ordered_history_acceptance::run(
+        fixture,
+        pool,
+        namespaces,
+        data_dir,
+        ca_path,
+        dsn,
+        genesis,
+        digest,
+        key_paths[3],
+        &hosts,
+        restarted,
+    );
     drop(hosts);
 }
