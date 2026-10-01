@@ -7,6 +7,7 @@ use consensus::{CommittedBlock, CommittedBlockProof, decode_committed_block_proo
 use execution::publication::{
     PublicationContext, decode_publication_context, encode_publication_context,
 };
+use std::collections::BTreeMap;
 
 mod codec;
 mod source;
@@ -225,7 +226,14 @@ fn component(
 fn verify_material(
     policy: &OrderedEconomicsPolicy,
     material: &OrderedHistoryHeightMaterial,
-) -> Result<(CommittedBlock, CommittedBlockProof), OrderedEconomicsError> {
+) -> Result<
+    (
+        CommittedBlock,
+        CommittedBlockProof,
+        Option<CompletionFingerprint>,
+    ),
+    OrderedEconomicsError,
+> {
     use OrderedHistoryComponentKind as Kind;
     let descriptor: &OrderedHistoryHeightDescriptor = &material.descriptor;
     descriptor.identity.validate(policy)?;
@@ -254,23 +262,51 @@ fn verify_material(
             "ordered history descriptor disagrees with commit proof",
         ));
     }
-    if block.transactions.is_empty() {
+    let completion: Option<CompletionFingerprint> = if block.transactions.is_empty() {
         if material.components.len() != 1 {
             return Err(invalid(
                 "empty ordered history height has surplus components",
             ));
         }
+        None
     } else {
-        verify_completion_companions(policy, material, &block)?;
-    }
-    Ok((block, proof))
+        Some(verify_completion_companions(policy, material, &block)?)
+    };
+    Ok((block, proof, completion))
+}
+
+/// Fixed-size metadata only; canonical result bytes are not retained in the
+/// streaming verifier. The fingerprints enforce source companion continuity,
+/// never independently authenticate their business effects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CompletionFingerprint {
+    request_id: [u8; 32],
+    origin_height: u64,
+    origin_digest: Digest32,
+    candidate: Digest32,
+    header: Digest32,
+    outcome: Digest32,
+    receipt: Digest32,
+}
+
+fn component_fingerprint(
+    material: &OrderedHistoryHeightMaterial,
+    kind: OrderedHistoryComponentKind,
+) -> Result<Digest32, OrderedEconomicsError> {
+    material
+        .descriptor
+        .components
+        .iter()
+        .find(|reference| reference.kind == kind)
+        .map(|reference| reference.digest)
+        .ok_or(invalid("ordered history completion fingerprint missing"))
 }
 
 fn verify_completion_companions(
     policy: &OrderedEconomicsPolicy,
     material: &OrderedHistoryHeightMaterial,
     block: &CommittedBlock,
-) -> Result<(), OrderedEconomicsError> {
+) -> Result<CompletionFingerprint, OrderedEconomicsError> {
     use OrderedHistoryComponentKind as Kind;
     let candidate_bytes: &[u8] = component(material, Kind::Candidate)?;
     let candidate: OrderedCandidate = decode_ordered_candidate(candidate_bytes)?;
@@ -355,12 +391,23 @@ fn verify_completion_companions(
             return Err(invalid("ordered history replay origin proof mismatch"));
         }
     }
-    Ok(())
+    Ok(CompletionFingerprint {
+        request_id: candidate.request_id,
+        origin_height: outcome.block_height,
+        origin_digest: outcome.block_digest,
+        candidate: component_fingerprint(material, Kind::Candidate)?,
+        header: component_fingerprint(material, Kind::RequestHeader)?,
+        outcome: component_fingerprint(material, Kind::RetainedOutcome)?,
+        receipt: component_fingerprint(material, Kind::OriginalReceipt)?,
+    })
 }
 
 /// Pure bounded streaming verifier. No store, VM, signer, clock or active membership.
 /// Restart must replay independently checked saved material; no cursor decoder
 /// can manufacture verified authority from a supplied height.
+/// Memory grows by one fixed-size request/origin/fingerprint entry per unique
+/// candidate, not by its result bytes. Callers must provision this linear
+/// index; there is no arbitrary protocol ceiling on total history length.
 pub struct OrderedHistoryVerifier {
     policy: OrderedEconomicsPolicy,
     identity: OrderedHistoryIdentity,
@@ -368,6 +415,7 @@ pub struct OrderedHistoryVerifier {
     view: u64,
     digest: Digest32,
     empty_three_chain: bool,
+    completions: BTreeMap<[u8; 32], CompletionFingerprint>,
 }
 
 impl OrderedHistoryVerifier {
@@ -384,6 +432,7 @@ impl OrderedHistoryVerifier {
             view: 0,
             digest,
             empty_three_chain: false,
+            completions: BTreeMap::new(),
         })
     }
 
@@ -407,8 +456,11 @@ impl OrderedHistoryVerifier {
                 "ordered history gap, duplicate, reordering or changed target",
             ));
         }
-        let (block, proof): (CommittedBlock, CommittedBlockProof) =
-            verify_material(&self.policy, material)?;
+        let (block, proof, completion): (
+            CommittedBlock,
+            CommittedBlockProof,
+            Option<CompletionFingerprint>,
+        ) = verify_material(&self.policy, material)?;
         if proof.committed.justify.height != self.height
             || proof.committed.justify.view != self.view
             || proof.committed.justify.proposal_digest != self.digest
@@ -420,6 +472,30 @@ impl OrderedHistoryVerifier {
                 || block.view != self.identity.through_view)
         {
             return Err(invalid("ordered history fixed target mismatch"));
+        }
+        if let Some(completion) = &completion {
+            match self.completions.get(&completion.request_id) {
+                Some(original) if original != completion => {
+                    return Err(invalid(
+                        "ordered history recommit changed original companions or origin",
+                    ));
+                }
+                None if completion.origin_height != block.height
+                    || completion.origin_digest != block.digest =>
+                {
+                    return Err(invalid(
+                        "ordered history first occurrence is not its completion origin",
+                    ));
+                }
+                _ => {}
+            }
+        }
+        // No fallible verification may follow these updates: a rejected
+        // height cannot poison the first-seen index or advance the cursor.
+        if let Some(completion) = completion {
+            self.completions
+                .entry(completion.request_id)
+                .or_insert(completion);
         }
         self.height = block.height;
         self.view = block.view;

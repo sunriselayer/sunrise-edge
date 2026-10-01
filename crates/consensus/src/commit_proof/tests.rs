@@ -146,6 +146,22 @@ fn truncated_proof_bytes_are_rejected_before_parsing() {
     let bytes = encode_committed_block_proof(&proof).unwrap();
     let truncated = &bytes[..bytes.len() - 1];
     assert!(decode_committed_block_proof(truncated).is_err());
+
+    for header_offset in [4usize, 6] {
+        let mut wrong_header: Vec<u8> = bytes.clone();
+        wrong_header[header_offset] ^= 1;
+        assert!(decode_committed_block_proof(&wrong_header).is_err());
+    }
+    let decoded = canonical_encoding::decode_canonical_frame(&bytes).unwrap();
+    let mut extra: canonical_encoding::CanonicalStruct =
+        canonical_encoding::CanonicalStruct::new(0xD017, 1);
+    for field in 1..=4 {
+        extra
+            .field_bytes(field, decoded.required_field(field).unwrap().to_vec())
+            .unwrap();
+    }
+    extra.field_u16(5, 1).unwrap();
+    assert!(decode_committed_block_proof(&extra.finish().unwrap()).is_err());
 }
 
 #[test]

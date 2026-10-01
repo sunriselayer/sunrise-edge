@@ -171,7 +171,7 @@ fn local_app_profiles(enabled: bool, general: bool) -> Router {
     )
     .unwrap()
 }
-fn publication(profile: u32, nonce: u64) -> PublicationSubmission {
+pub(super) fn publication(profile: u32, nonce: u64) -> PublicationSubmission {
     let key = SigningKey::from([7; 32]);
     let publisher: [u8; 32] = VerificationKey::from(&key).into();
     let origin =

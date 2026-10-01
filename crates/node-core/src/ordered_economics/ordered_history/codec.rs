@@ -178,3 +178,147 @@ pub fn decode_ordered_history_summary(
     }
     Ok(value)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol_types::{ChainId, Epoch, HashAlgorithmId, ProtocolVersion};
+
+    fn literal(hex: &str) -> Vec<u8> {
+        hex.as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    }
+
+    fn independent_identity() -> (OrderedHistoryIdentity, Vec<u8>) {
+        let digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x33; 32]);
+        let value: OrderedHistoryIdentity = OrderedHistoryIdentity {
+            context: PublicationContext::new(
+                ChainId::new("h").unwrap(),
+                ProtocolVersion::new(1),
+                Epoch::new(2),
+            )
+            .unwrap(),
+            domain: AtomicityDomainId::new([0x11; 32]).unwrap(),
+            genesis_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x22; 32]),
+            anchor: digest,
+            through_height: 3,
+            through_view: 7,
+            through_digest: digest,
+        };
+        // Independent field table; no new-frame production encoder supplies
+        // expected bytes. Existing context/digest primitives keep their frozen codecs.
+        let mut expected: CanonicalStruct = CanonicalStruct::new(0x6490, 1);
+        expected
+            .field_bytes(1, encode_publication_context(&value.context).unwrap())
+            .unwrap();
+        expected.field_bytes(2, vec![0x11; 32]).unwrap();
+        expected
+            .field_bytes(3, encode_digest32(&value.genesis_digest).unwrap())
+            .unwrap();
+        expected
+            .field_bytes(4, encode_digest32(&digest).unwrap())
+            .unwrap();
+        expected.field_u64(5, 3).unwrap();
+        expected.field_u64(6, 7).unwrap();
+        expected
+            .field_bytes(7, encode_digest32(&digest).unwrap())
+            .unwrap();
+        (value, expected.finish().unwrap())
+    }
+
+    fn extra_field(bytes: &[u8], type_id: u16, fields: &[u16]) -> Vec<u8> {
+        let decoded = decode_canonical_frame(bytes).unwrap();
+        let mut expected: CanonicalStruct = CanonicalStruct::new(type_id, 1);
+        for field in fields {
+            expected
+                .field_bytes(*field, decoded.required_field(*field).unwrap().to_vec())
+                .unwrap();
+        }
+        expected.field_u16(99, 1).unwrap();
+        expected.finish().unwrap()
+    }
+
+    fn closed<T>(
+        bytes: &[u8],
+        type_id: u16,
+        fields: &[u16],
+        decode: fn(&[u8]) -> Result<T, OrderedEconomicsError>,
+    ) {
+        assert!(decode(&bytes[..bytes.len() - 1]).is_err());
+        for offset in [4usize, 6] {
+            let mut changed: Vec<u8> = bytes.to_vec();
+            changed[offset] ^= 1;
+            assert!(decode(&changed).is_err());
+        }
+        assert!(decode(&extra_field(bytes, type_id, fields)).is_err());
+    }
+
+    #[test]
+    fn component_descriptor_and_summary_have_independent_stable_layouts() {
+        let (identity, identity_bytes): (OrderedHistoryIdentity, Vec<u8>) = independent_identity();
+        let reference: OrderedHistoryComponentRef = OrderedHistoryComponentRef {
+            kind: OrderedHistoryComponentKind::CommitProof,
+            length: 5,
+            digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x44; 32]),
+        };
+        let component_bytes: Vec<u8> = literal(
+            "534e524591640100030001000200000001000200080000000500000000000000030038000000534e524503010100020001000200000001000200200000004444444444444444444444444444444444444444444444444444444444444444",
+        );
+        assert_eq!(component_bytes.len(), 94);
+        assert_eq!(encode_component(&reference).unwrap(), component_bytes);
+        assert_eq!(decode_component(&component_bytes).unwrap(), reference);
+        let descriptor: OrderedHistoryHeightDescriptor = OrderedHistoryHeightDescriptor {
+            identity: identity.clone(),
+            height: 1,
+            view: 2,
+            block_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x55; 32]),
+            components: vec![reference],
+        };
+        let mut expected: CanonicalStruct = CanonicalStruct::new(0x6492, 1);
+        expected.field_bytes(1, identity_bytes.clone()).unwrap();
+        expected.field_u64(2, 1).unwrap();
+        expected.field_u64(3, 2).unwrap();
+        expected
+            .field_bytes(4, encode_digest32(&descriptor.block_digest).unwrap())
+            .unwrap();
+        expected.field_u16(5, 1).unwrap();
+        expected.field_bytes(6, component_bytes.clone()).unwrap();
+        let descriptor_bytes: Vec<u8> = expected.finish().unwrap();
+        assert_eq!(
+            encode_ordered_history_height_descriptor(&descriptor).unwrap(),
+            descriptor_bytes
+        );
+        assert_eq!(
+            decode_ordered_history_height_descriptor(&descriptor_bytes).unwrap(),
+            descriptor
+        );
+        let summary: OrderedHistorySummary = OrderedHistorySummary { identity };
+        let mut expected: CanonicalStruct = CanonicalStruct::new(0x6493, 1);
+        expected.field_bytes(1, identity_bytes.clone()).unwrap();
+        let summary_bytes: Vec<u8> = expected.finish().unwrap();
+        assert_eq!(
+            encode_ordered_history_summary(&summary).unwrap(),
+            summary_bytes
+        );
+        assert_eq!(
+            decode_ordered_history_summary(&summary_bytes).unwrap(),
+            summary
+        );
+        closed(
+            &identity_bytes,
+            0x6490,
+            &[1, 2, 3, 4, 5, 6, 7],
+            decode_ordered_history_identity,
+        );
+        closed(&component_bytes, 0x6491, &[1, 2, 3], decode_component);
+        closed(
+            &descriptor_bytes,
+            0x6492,
+            &[1, 2, 3, 4, 5, 6],
+            decode_ordered_history_height_descriptor,
+        );
+        closed(&summary_bytes, 0x6493, &[1], decode_ordered_history_summary);
+    }
+}

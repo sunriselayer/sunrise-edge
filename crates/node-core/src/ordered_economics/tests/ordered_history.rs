@@ -672,6 +672,47 @@ fn delayed_observer_with_one_economic_batch(replay: bool) {
             missing.components.pop();
             missing.descriptor.components.pop();
             assert!(verifier.verify_next_height(&missing).is_err());
+
+            // A real recommit proof cannot turn the already observed h1
+            // application into a new h4 origin by changing unsigned metadata.
+            let mut moved: OrderedHistoryHeightMaterial = data.clone();
+            let mut outcome: OrderedOutcome =
+                engine::decode_retained_outcome(&moved.components[3].1).unwrap();
+            outcome.block_height = height;
+            outcome.block_digest = moved.descriptor.block_digest;
+            moved.components[3].1 = engine::encode_retained_outcome_for_tests(&outcome);
+            moved.components.pop();
+            refresh_descriptor(&destination.policy, &mut moved);
+            assert!(verifier.verify_next_height(&moved).is_err());
+            assert_eq!(verifier.height(), 3);
+
+            // Even keeping the authentic origin proof, two mutually matching
+            // changed companions must not overwrite the h1 fingerprints.
+            let mut changed: OrderedHistoryHeightMaterial = data.clone();
+            let original: NodeDedupRecord =
+                NodeDedupRecord::decode(&changed.components[4].1).unwrap();
+            let mut payload: CanonicalStruct = CanonicalStruct::new(0x0105, 1);
+            payload.field_u64(1, 999).unwrap();
+            let response: NodeResponse = NodeResponse::new(
+                original.request_id(),
+                NodeResponseStatus::Accepted,
+                Some(payload.finish().unwrap()),
+            )
+            .unwrap();
+            let receipt: NodeDedupRecord = NodeDedupRecord::new(
+                original.request_id(),
+                original.event_digest(),
+                vec![response.clone()],
+            )
+            .unwrap();
+            let mut outcome: OrderedOutcome =
+                engine::decode_retained_outcome(&changed.components[3].1).unwrap();
+            outcome.output = NodeOutput::new(vec![response], Vec::new()).unwrap();
+            changed.components[3].1 = engine::encode_retained_outcome_for_tests(&outcome);
+            changed.components[4].1 = receipt.encode().unwrap();
+            refresh_descriptor(&destination.policy, &mut changed);
+            assert!(verifier.verify_next_height(&changed).is_err());
+            assert_eq!(verifier.height(), 3);
         }
         verifier.verify_next_height(&data).unwrap();
     }

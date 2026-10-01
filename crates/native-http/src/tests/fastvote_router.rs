@@ -62,7 +62,7 @@ fn context() -> PublicationContext {
     .unwrap()
 }
 
-fn fastvote_fee_policy() -> PaidFeePolicy {
+pub(super) fn fastvote_fee_policy() -> PaidFeePolicy {
     let publisher: [u8; 32] = [0x51; 32];
     let origin: abi::package_types::PackageOrigin = abi::package_types::PackageOrigin::unverified(
         config().chain_id().clone(),
