@@ -6,6 +6,7 @@
 //! This module intentionally exposes no import, activation, or readiness API.
 
 pub mod control;
+mod dependency_graph;
 mod projection;
 
 pub use control::{
@@ -1770,35 +1771,12 @@ fn dependency_closure(
     roots: &BTreeSet<usize>,
     works: &[OwnedWork<'_>],
 ) -> Result<BTreeSet<usize>, BusinessReconstructionError> {
-    fn visit(
-        index: usize,
-        works: &[OwnedWork<'_>],
-        visiting: &mut BTreeSet<usize>,
-        visited: &mut BTreeSet<usize>,
-    ) -> Result<(), BusinessReconstructionError> {
-        if visited.contains(&index) {
-            return Ok(());
-        }
-        if !visiting.insert(index) {
-            return Err(invalid("owned producer dependency cycle"));
-        }
+    dependency_graph::closure(roots, |index: usize| {
         let work: &OwnedWork<'_> = works
             .get(index)
             .ok_or(invalid("owned dependency index is outside the catalog"))?;
-        for dependency in &work.dependencies {
-            visit(*dependency, works, visiting, visited)?;
-        }
-        visiting.remove(&index);
-        visited.insert(index);
-        Ok(())
-    }
-
-    let mut visiting: BTreeSet<usize> = BTreeSet::new();
-    let mut visited: BTreeSet<usize> = BTreeSet::new();
-    for root in roots {
-        visit(*root, works, &mut visiting, &mut visited)?;
-    }
-    Ok(visited)
+        Ok(work.dependencies.as_slice())
+    })
 }
 
 fn apply_owned_closure(
