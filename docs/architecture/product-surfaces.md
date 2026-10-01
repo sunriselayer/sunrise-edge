@@ -287,13 +287,18 @@ The initial transport is synchronous and deliberately local-development-only.
 A small transport trait permits deterministic tests; the provided HTTP/1.1
 implementation (`LoopbackHttpTransport`) connects only to an explicit loopback
 address, opens one bounded `TcpStream` per request, applies connect/read/write
-timeouts and header/body limits, requires an exact `Content-Length`, and
+timeouts and header/body limits, requires an exact `Content-Length` except
+for bodyless HTTP 204, and
 rejects transfer encoding, ambiguous lengths, truncated or trailing bodies,
 unexpected content types, and non-loopback targets. It provides no TLS,
 authentication, proxy, redirect, persistent connection, async runtime, or
 production remote-node claim. (A separate, later-added `RemoteTlsHttpTransport`
 lifts the loopback-only and no-TLS restrictions within S1's documented
 bounds — see [DR-0085](decisions/0081-0087-cli-first-roadmap.md) — without changing this transport's own scope.)
+Both transports complete HTTP 204 at the header boundary, require absent
+Content-Length, reject already-buffered payload, and drop their one-shot
+connection without waiting for EOF or inspecting later bytes. Other statuses
+retain their exact-length, truncation and bounded trailing-byte checks.
 
 `/v1/context` remains authoritative for chain, epoch, protocol-version, hash-
 suite, authentication-profile, signature-scheme, binding, and atomicity-domain

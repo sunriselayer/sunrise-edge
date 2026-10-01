@@ -168,6 +168,7 @@ fn logical_profile_for(chain: &str) -> LogicalProfileRecord {
         manifest_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x6d; 32]),
         genesis_authority: [0x6e; 32],
         genesis_floor: protocol_types::ExecutionGeneration::genesis_floor(),
+        minimum_freeze_block_height: 0,
     }
 }
 

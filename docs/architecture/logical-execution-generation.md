@@ -49,8 +49,10 @@ without reading the full epoch-handoff design.
     fee-claim settlement (`fee_claims.rs`), and the generic durable-event path
     (`lib.rs`). FastVote's v2 preparation additionally binds semantic
     observations and the derived generation into its commitment/witness;
-    physical revisions remain local CAS evidence. Its certified apply path reaches admission through
-    these same handlers, so it is covered, not separately gated.
+    physical revisions remain local CAS evidence. Its certified apply path
+    reaches logical admission through these same handlers. The separate
+    [publication-availability capability](publication-availability.md) also
+    requires quorum retention before a fresh Logical FastVote application.
   - A fresh handoff-capable genesis installs its first provenance rows
     directly through `genesis_provenance`, the one by-construction exception:
     no profile row exists yet for the gate to resolve against.
@@ -72,18 +74,23 @@ without reading the full epoch-handoff design.
 
 This slice does not implement, and must not be read as implementing, any of:
 
-- Availability publication or ACK quorum gates before apply.
+- Availability publication or ACK quorum gates are a separate composition,
+  implemented for fresh Logical FastVote by
+  [publication availability](publication-availability.md), not supplied by
+  the generation primitive or local provenance checks themselves.
 - Freeze, DrainSet, Seal, or any ordered epoch-control state machine.
 - Frontier closure, cut derivation, or portable-collection enumeration.
 - Import/readiness verification for a joining or recovering validator.
 - Logical-profile transition votes, next-epoch provenance and activation of
   a next validator set, or any Delivery 3 completion claim.
 
-No cross-validator availability quorum is consulted before an admitted
-generation is applied. The current refusal errors are single-node,
-always-correctly-paired-by-construction guards, not an active availability
-gate. See [DR-0154](decisions/0154-complete-epoch-handoff.md) for the full
-design these remaining pieces belong to.
+The generation/provenance gate alone consults no cross-validator availability
+quorum. Its refusal errors are single-node, always-correctly-paired-by-
+construction guards, not availability authority. The separately composed
+Logical FastVote apply gate does require a verified availability certificate;
+direct local development handlers do not acquire public-network authority
+merely by deriving a generation. See
+[DR-0154](decisions/0154-complete-epoch-handoff.md) for the full design.
 
 ## Compatibility
 

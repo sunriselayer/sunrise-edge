@@ -36,6 +36,15 @@ where
     if action == "fastvote-catch-up" {
         return super::fastvote_network::catch_up::run(args);
     }
+    if action == "fastvote-drain-local-ready" {
+        return super::fastvote_network::drain_local_ready::run(args);
+    }
+    if action == "fastvote-drain-member" {
+        return super::fastvote_network::drain_member::run(args);
+    }
+    if action == "fastvote-frontier-advance" || action == "fastvote-frontier-export" {
+        return super::fastvote_frontier::run(action, args);
+    }
     if action != "validate" {
         return Err(CliError::UnknownContractAction(action.to_owned()));
     }

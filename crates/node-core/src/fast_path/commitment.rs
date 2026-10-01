@@ -258,10 +258,17 @@ fn is_excluded_from_mutation_commitment(key: &[u8], shape: Shape) -> bool {
 // A provenance row read is only a CAS-fenced validation of its subject. The
 // signed logical read is the verified subject observation and generation, not
 // this metadata row's local revision. New provenance mutations remain signed
-// below, so this does not remove the resulting causal assertion.
+// below, so this does not remove the resulting causal assertion. The ordered
+// Freeze marker is likewise a CAS-fenced control read, not an application
+// operand with a logical-generation observation; no other ordered row is
+// silently excluded by this exception.
 fn is_excluded_from_read_commitment(key: &[u8], shape: Shape) -> bool {
     is_excluded_from_mutation_commitment(key, shape)
-        || (matches!(shape, Shape::Logical) && logical_generation::is_logical_provenance_key(key))
+        || (matches!(shape, Shape::Logical)
+            && (logical_generation::is_logical_provenance_key(key)
+                || key
+                    .strip_prefix(ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX)
+                    .is_some_and(|suffix: &[u8]| suffix.starts_with(b"freeze/"))))
 }
 
 /// Encodes one generic state read for the historical envelope: its exact
@@ -416,7 +423,12 @@ pub(super) fn encode_envelope(
 /// independently derived [`crate::paid_execution::PaidAdmissionOutput`];
 /// byte-identical results from byte-identical admission is exactly the
 /// property a fast-path certificate's safety depends on.
-#[allow(clippy::too_many_arguments)]
+// DR-0154: `prepare` now always needs the envelope bytes too (to durably
+// retain a handoff-capable witness before voting), so this simpler
+// digest-only wrapper currently has no non-test caller; kept for its own
+// independent digest vector test and as the natural API for a future caller
+// that only needs the commitment, not the envelope.
+#[allow(clippy::too_many_arguments, dead_code)]
 pub(super) fn compute(
     resolver: &HashSuiteResolver,
     epoch: Epoch,
@@ -599,6 +611,63 @@ pub(crate) fn decode_witness(bytes: &[u8]) -> Result<DecodedCommitmentWitness, N
     })
 }
 
+/// The exact handoff-capable `0x6424/v2` operand lists a publication retainer
+/// needs in order to derive one operation's required replay-artifact closure.
+///
+/// The slices are the envelope's own raw field bytes, borrowed from the caller's
+/// verified witness buffer. They are deliberately *not* decoded here:
+/// [`super::publication::witness`] owns the list/operand decoders that mirror
+/// this module's encoders, and a round-trip test pins the two together.
+pub(super) struct LogicalWitnessOperands<'a> {
+    /// Field 1: the signed intent digest the certificate's `tx_hash` attests.
+    pub(super) event_digest: Digest32,
+    /// Field 4: `encode_head_read` list under [`Shape::Logical`].
+    pub(super) head_reads: &'a [u8],
+    /// Field 5: `encode_object_mutation` list under [`Shape::Logical`].
+    pub(super) object_mutations: &'a [u8],
+    /// Field 6: `encode_logical_state_read` list.
+    pub(super) state_reads: &'a [u8],
+    /// Field 12: `encode_dependency` list.
+    pub(super) dependencies: &'a [u8],
+}
+
+/// Strictly validates `bytes` as a handoff-capable `0x6424/v2` envelope and
+/// returns its raw operand lists.
+///
+/// A historical `0x6424/v1` witness is refused rather than reinterpreted: it
+/// signs per-node physical state/head/nonce revisions and an immutable creation
+/// checkpoint, so it is not portable replay material and can never back a
+/// publication bundle. Its own bytes stay verifiable under [`decode_witness`]
+/// exactly as before; nothing about v1 changes here.
+///
+/// Validation reuses [`decode_witness`] first, so the type id, the closed
+/// per-version field set and the byte-exact canonical re-encoding are all
+/// enforced before any field slice is handed out.
+pub(super) fn logical_witness_operands(
+    bytes: &[u8],
+) -> Result<LogicalWitnessOperands<'_>, NodeCoreError> {
+    let decoded: DecodedCommitmentWitness = decode_witness(bytes)?;
+    let frame = canonical_encoding::decode_canonical_frame(bytes)?;
+    frame.require_type(COMMITMENT_ENVELOPE_TYPE)?;
+    if frame.version() != LOGICAL_ENCODING_VERSION {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "fast-path commitment witness is not the handoff-capable v2 profile",
+        ));
+    }
+    Ok(LogicalWitnessOperands {
+        event_digest: decoded.event_digest,
+        head_reads: frame.required_field(4)?,
+        object_mutations: frame.required_field(5)?,
+        state_reads: frame.required_field(6)?,
+        dependencies: frame.required_field(12)?,
+    })
+}
+
+/// The per-list item ceiling every `0x6424` operand list is encoded under,
+/// re-exported so the mirrored decoders bound a declared count identically
+/// before allocating.
+pub(super) const MAX_WITNESS_LIST_ITEMS: usize = MAX_COMMITMENT_LIST_ITEMS;
+
 /// Hashes already-persisted (or otherwise already-encoded) exact `0x6424`
 /// envelope bytes under `HashPurpose::ExecutionEffects` at `epoch` -- the
 /// identical purpose and preimage [`compute`]/[`compute_with_envelope`] use,
@@ -619,4 +688,22 @@ pub(crate) fn hash_witness_bytes(
     resolver
         .hash_for_purpose(epoch, HashPurpose::ExecutionEffects, bytes)
         .map_err(NodeCoreError::Hashing)
+}
+
+#[cfg(test)]
+mod freeze_read_tests {
+    use super::*;
+
+    #[test]
+    fn ordered_freeze_fence_is_a_cas_read_not_a_signed_business_operand() {
+        let mut key: Vec<u8> = ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX.to_vec();
+        key.extend_from_slice(b"freeze/epoch-key");
+        assert!(is_excluded_from_read_commitment(&key, Shape::Logical));
+        assert!(!is_excluded_from_mutation_commitment(&key, Shape::Logical));
+        assert!(!is_excluded_from_read_commitment(&key, Shape::Physical));
+        let mut outcome: Vec<u8> =
+            ordered_economics::engine::ORDERED_ECONOMICS_STATE_PREFIX.to_vec();
+        outcome.extend_from_slice(b"outcome/request-key");
+        assert!(!is_excluded_from_read_commitment(&outcome, Shape::Logical));
+    }
 }

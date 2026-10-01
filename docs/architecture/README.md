@@ -62,11 +62,28 @@ roadmap describes a later target state.
   genesis commitment-profile binding, and per-subject provenance admission
   wired through every live application path; explicit As-Is/To-Be boundary
   against the rest of DR-0154's design.
+- [Publication-before-apply availability](publication-availability.md)
+  (DR-0154 capability): exact prepared artifacts, execution-free durable
+  full-certificate retention, quorum ACKs and proof-gated Logical apply;
+  bounded native HTTP, Rust SDK and saved CLI replay, without epoch handoff.
 - [Portable storage reconstruction reads](portable-reconstruction.md)
   ([DR-0166](decisions/0166-portable-candidate-snapshot.md)): bounded
   independent durable/blob/outbox reads and an optional backend-enforced
   snapshot-continuity contract for one quiet source; source-local storage
   metadata only, with no cut/import/readiness/Seal/activation claim.
+- [Ordered Freeze and immutable frontier extraction](frozen-frontier.md)
+  ([DR-0167](decisions/0167-frozen-frontier-extraction-boundary.md)):
+  the fresh signed-profile boundary for the next core/HTTP/SDK/CLI capability;
+  no local unfreeze, drain authority or new-epoch activation is implied.
+- [Quorum-retained DrainSet and member drain](quorum-drain.md)
+  ([DR-0168](decisions/0168-quorum-retained-drainset-and-member-drain.md)):
+  complete selected frontier union, pre-vote full proof possession, imported
+  proof relay and explicit committed-member application; no cut or activation.
+- [Authenticated ordered-history export](ordered-history.md)
+  ([DR-0169](decisions/0169-authenticated-ordered-history-export.md)):
+  full per-height commit witnesses, contiguous genesis-to-target verification
+  and bounded saved export; source completion companions are not an
+  independently reconstructed business cut or import authority.
 
 Production-oriented persistence requirements and the PostgreSQL mapping are
 separate operational references:

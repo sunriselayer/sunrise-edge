@@ -466,7 +466,21 @@ fn ordered_applied_height_key(chain: &ChainId) -> Result<Vec<u8>, NodeCoreError>
     prefixed_key(b"applied-height/", chain)
 }
 
-fn ordered_candidate_record_key(
+/// Immutable per-height proof key. This new family does not alter any
+/// existing candidate, publication, ACK or artifact key.
+pub(super) fn ordered_committed_proof_key(
+    chain: &ChainId,
+    epoch: Epoch,
+    height: u64,
+) -> Result<Vec<u8>, NodeCoreError> {
+    let mut key: Vec<u8> = prefixed_key(b"committed-proof/", chain)?;
+    key.extend_from_slice(&epoch.get().to_be_bytes());
+    key.extend_from_slice(&height.to_be_bytes());
+    validate_transactional_state_key(&key)?;
+    Ok(key)
+}
+
+pub(super) fn ordered_candidate_record_key(
     chain: &ChainId,
     digest: Digest32,
 ) -> Result<Vec<u8>, NodeCoreError> {
@@ -476,7 +490,7 @@ fn ordered_candidate_record_key(
     Ok(key)
 }
 
-fn ordered_request_header_key(
+pub(super) fn ordered_request_header_key(
     chain: &ChainId,
     request_id: &[u8; 32],
 ) -> Result<Vec<u8>, NodeCoreError> {
@@ -488,7 +502,10 @@ fn ordered_request_header_key(
 
 /// Key of one retained, completed ordered outcome, in the same reserved
 /// namespace as every other row here.
-fn ordered_outcome_key(chain: &ChainId, request_id: &[u8; 32]) -> Result<Vec<u8>, NodeCoreError> {
+pub(super) fn ordered_outcome_key(
+    chain: &ChainId,
+    request_id: &[u8; 32],
+) -> Result<Vec<u8>, NodeCoreError> {
     let mut key: Vec<u8> = prefixed_key(b"outcome/", chain)?;
     key.extend_from_slice(request_id);
     validate_transactional_state_key(&key)?;
@@ -508,7 +525,7 @@ fn encode_retained_outcome(outcome: &OrderedOutcome) -> Result<Vec<u8>, NodeCore
 }
 
 /// Strictly decodes frame `0x644F/v1`.
-fn decode_retained_outcome(bytes: &[u8]) -> Result<OrderedOutcome, NodeCoreError> {
+pub(super) fn decode_retained_outcome(bytes: &[u8]) -> Result<OrderedOutcome, NodeCoreError> {
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(ORDERED_OUTCOME_RECORD_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;
@@ -676,13 +693,13 @@ fn decode_applied_height(bytes: &[u8]) -> Result<u64, NodeCoreError> {
 /// checkpoint fails closed here, before any fresh proposal/vote metadata
 /// write (DR-0153's header-reuse rule).
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct RequestHeader {
-    candidate_digest: Digest32,
-    kind: OrderedOperationKind,
-    created_checkpoint: u64,
+pub(super) struct RequestHeader {
+    pub(super) candidate_digest: Digest32,
+    pub(super) kind: OrderedOperationKind,
+    pub(super) created_checkpoint: u64,
 }
 
-fn encode_request_header(header: &RequestHeader) -> Result<Vec<u8>, NodeCoreError> {
+pub(super) fn encode_request_header(header: &RequestHeader) -> Result<Vec<u8>, NodeCoreError> {
     let mut frame = CanonicalStruct::new(REQUEST_HEADER_RECORD_TYPE, ENCODING_VERSION);
     frame.field_bytes(1, encode_digest32(&header.candidate_digest)?)?;
     frame.field_u16(2, header.kind.to_wire())?;
@@ -690,7 +707,7 @@ fn encode_request_header(header: &RequestHeader) -> Result<Vec<u8>, NodeCoreErro
     Ok(frame.finish()?)
 }
 
-fn decode_request_header(bytes: &[u8]) -> Result<RequestHeader, NodeCoreError> {
+pub(super) fn decode_request_header(bytes: &[u8]) -> Result<RequestHeader, NodeCoreError> {
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(REQUEST_HEADER_RECORD_TYPE)?;
     frame.require_version(ENCODING_VERSION)?;
@@ -926,7 +943,7 @@ pub fn install_ordered_genesis<S: StructuredDurableDomainStateStore>(
 /// Reads the highest committed height whose economic effects (if any) are
 /// already durably applied. Absent means genesis, matching
 /// [`ConsensusState::committed_height`]'s own zero start.
-fn load_applied_height<S: StructuredDurableDomainStateStore>(
+pub(super) fn load_applied_height<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -1028,11 +1045,12 @@ fn execute_candidate<S: StructuredDurableDomainStateStore>(
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
     admission: Option<&OrderedLegAdmission<'_>>,
+    block_height: u64,
 ) -> LegOutcome {
     if let Err(error) = authenticate_candidate(env, candidate) {
         return disposition(candidate.request_id, error);
     }
-    if let Err(error) = preflight::preflight(staging, context, env, candidate) {
+    if let Err(error) = preflight::preflight(staging, context, env, candidate, block_height) {
         return disposition(candidate.request_id, error);
     }
     let domain = env.policy.domain();
@@ -1094,6 +1112,30 @@ fn execute_candidate<S: StructuredDurableDomainStateStore>(
         OrderedOperationKind::Evidence => {
             execute_evidence_candidate(staging, context, domain, env, candidate)
         }
+        OrderedOperationKind::Freeze => dispatch(
+            freeze::handle_freeze_ordered(
+                staging,
+                context,
+                domain,
+                env.policy.context().chain_id(),
+                candidate,
+                block_height,
+            ),
+            candidate.request_id,
+            node_failure,
+        ),
+        OrderedOperationKind::DrainSet => dispatch(
+            drain_set::handle_drain_set_ordered(
+                staging,
+                context,
+                domain,
+                env.policy.context().chain_id(),
+                candidate,
+                block_height,
+            ),
+            candidate.request_id,
+            node_failure,
+        ),
     }
 }
 
@@ -1212,6 +1254,7 @@ fn execute_evidence_candidate<S: StructuredDurableDomainStateStore>(
 /// Everything one newly admitted candidate contributes to the single commit.
 struct AdmittedCandidate {
     digest: Digest32,
+    reads: BTreeMap<Vec<u8>, StateRevision>,
     writes: Vec<PendingWrite>,
 }
 
@@ -1327,7 +1370,11 @@ fn admit_candidate<S: StructuredDurableDomainStateStore>(
             store, context, env, candidate, &plan,
         )?);
     }
-    Ok(Admission::Fresh(AdmittedCandidate { digest, writes }))
+    Ok(Admission::Fresh(AdmittedCandidate {
+        digest,
+        reads: BTreeMap::new(),
+        writes,
+    }))
 }
 
 /// Reconciles one candidate for a **signing** caller: a completed request is
@@ -1338,9 +1385,113 @@ fn admit_candidate_for_signer<S: StructuredDurableDomainStateStore>(
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
+    proposal_height: u64,
 ) -> Result<AdmittedCandidate, OrderedEconomicsError> {
+    // Post-DrainSet liveness gate, strictly stronger than (and checked before)
+    // the Freeze-only gate below: once a healthy accepted `DrainSet` has
+    // committed for this chain/epoch, an honest leader/replica never again
+    // places or votes for *any* fresh candidate-bearing proposal -- `Freeze`
+    // and `DrainSet` themselves included, unlike the business-only exemption
+    // below. This reuses the exact durable one-per-epoch `DrainSetRecord` a
+    // committed, accepted `DrainSet` installs; a *refused* `DrainSet` installs
+    // nothing, so it never trips this gate. Assert the observed row revision
+    // with either the proposal or vote commit: unlike the business-only
+    // Freeze gate, this also protects control proposals that do not run an
+    // authoritative closed-epoch preflight before signing.
+    let drain_key: Vec<u8> = drain_set::drain_set_record_key(
+        env.policy.context().chain_id(),
+        env.policy.context().epoch(),
+    )?;
+    let (drain_record, drain_revision): (Option<drain_set::DrainSetRecord>, StateRevision) =
+        drain_set::read_drain_set_record_with_revision(
+            store,
+            context,
+            env.policy.domain(),
+            env.policy.context().chain_id(),
+            env.policy.context().epoch(),
+        )?;
+    if drain_record.is_some() {
+        // The closure forbids a new candidate signature, not exact replay of
+        // an outcome already committed before it. Preserve the original
+        // request-header conflict precedence, then let the bounded read-only
+        // outcome query verify its immutable header and receipt. None of
+        // these reads touches local readiness, reservations or fresh rows.
+        let bytes: Vec<u8> = encode_ordered_candidate(candidate)?;
+        let digest: Digest32 = candidate_digest(env.resolver, candidate.context.epoch(), &bytes)?;
+        let header_key: Vec<u8> =
+            ordered_request_header_key(env.policy.context().chain_id(), &candidate.request_id)?;
+        let header_row: VersionedStateValue =
+            store.get_versioned_durable(context, env.policy.domain(), &header_key)?;
+        require_virgin_absence(&header_row, "ordered request header row was deleted")?;
+        if let Some(existing_bytes) = header_row.value() {
+            let existing: RequestHeader = decode_request_header(existing_bytes)?;
+            if existing.candidate_digest != digest
+                || existing.kind != candidate.kind
+                || existing.created_checkpoint != candidate.created_checkpoint
+            {
+                return Err(OrderedEconomicsError::RequestHeaderConflict);
+            }
+        }
+        if let Some(outcome) = query_ordered_outcome(store, context, env, &candidate.request_id)? {
+            if outcome.candidate_digest != digest {
+                return Err(OrderedEconomicsError::RequestHeaderConflict);
+            }
+            return Err(OrderedEconomicsError::AlreadyCompleted(Box::new(outcome)));
+        }
+        return Err(OrderedEconomicsError::Refused(
+            OrderedRefusal::AlreadyDrained,
+        ));
+    }
+    // DR-0154 liveness gate, additive to (not a substitute for) `preflight`'s
+    // own authoritative closed-epoch refusal at commit time: an honest
+    // leader/replica never even places or votes for a *fresh* business
+    // candidate once a `Freeze` has committed, "Stop new ... construction of
+    // fresh economic candidates" / "an honest replica emits no fresh vote for
+    // a proposal whose own payload carries business." A `Freeze` candidate
+    // itself is exempt -- a second one is still admissible here and resolves
+    // to `AlreadyFrozen` at preflight. This check is deliberately confined to
+    // this signer-only entry point (`propose`/`process_proposal`), never
+    // `observe_proposal`'s plain `admit_candidate(..., reserve: false)` call:
+    // declared, signerless recovery must still be able to record and replay
+    // an authentic pre-freeze business proposal's bytes during catch-up, so
+    // its own already-justified inherited suffix can reach the deterministic
+    // closed-epoch refusal at commit time instead of never being recorded at
+    // all. Closure and warrant observations join the same CAS batch as the
+    // signing identity: a concurrent Freeze cannot expose a fresh vote.
     match admit_candidate(store, context, env, candidate, true)? {
-        Admission::Fresh(admitted) => Ok(admitted),
+        Admission::Fresh(mut admitted) => {
+            admitted.reads.insert(drain_key, drain_revision);
+            let staging: StagingStore<'_, S> = StagingStore::new(store);
+            if !matches!(
+                candidate.kind,
+                OrderedOperationKind::Freeze | OrderedOperationKind::DrainSet
+            ) && freeze::read_authorized_closure(&staging, context, env)?.is_some()
+            {
+                return Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch));
+            }
+            if candidate.kind == OrderedOperationKind::Freeze {
+                freeze::require_freeze_warrant(&staging, context, env, candidate, proposal_height)?;
+            }
+            if candidate.kind == OrderedOperationKind::DrainSet {
+                drain_set::require_drain_set_readiness(
+                    &staging,
+                    context,
+                    env,
+                    candidate,
+                    &mut admitted.reads,
+                )?;
+            }
+            for (key, revision) in staging.observed_reads() {
+                if admitted
+                    .reads
+                    .insert(key, revision)
+                    .is_some_and(|prior| prior != revision)
+                {
+                    return Err(NodeCoreError::StateConflict.into());
+                }
+            }
+            Ok(admitted)
+        }
         Admission::Completed(outcome) => Err(OrderedEconomicsError::AlreadyCompleted(outcome)),
     }
 }
@@ -1409,6 +1560,72 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
     writes.read(loaded.key.clone(), loaded.revision)?;
     writes.read(applied_height_key.clone(), applied_height_revision)?;
 
+    // Capture/archive every committed height, including empty and replay
+    // windows, in the same CAS as the original receipt and application effects.
+    // Older missing archives do not alter historical ordering admission.
+    // Export refuses them; no proof is fabricated or silently backfilled.
+    if consensus_output.committed_proofs.len() != consensus_output.committed_blocks.len() {
+        return Err(stop("ordered consensus omitted a committed proof"));
+    }
+    let mut prior_height: u64 = loaded.state.committed_height;
+    let mut prior_digest: Option<Digest32> = None;
+    let mut prior_view: Option<u64> = None;
+    for (block, proof) in consensus_output
+        .committed_blocks
+        .iter()
+        .zip(consensus_output.committed_proofs.iter())
+    {
+        let verified: CommittedBlock =
+            super::ordered_history::verified_committed_block(env.policy, proof)?;
+        if verified != *block
+            || block.height
+                != prior_height
+                    .checked_add(1)
+                    .ok_or(stop("ordered committed proof height overflow"))?
+        {
+            return Err(stop("ordered committed proof is not contiguous"));
+        }
+        if prior_digest.is_none() {
+            if prior_height == 0 {
+                prior_digest = Some(env.policy.anchor());
+                prior_view = Some(0);
+            } else {
+                let digest: Digest32 = proof.committed.justify.proposal_digest;
+                let previous: &ConsensusProposal = loaded
+                    .state
+                    .known_proposal(&digest)
+                    .ok_or(stop("ordered committed predecessor is unavailable"))?;
+                if previous.height != prior_height || !loaded.state.contains_committed(&digest) {
+                    return Err(stop(
+                        "ordered committed predecessor disagrees with local prefix",
+                    ));
+                }
+                prior_digest = Some(digest);
+                prior_view = Some(previous.view);
+            }
+        }
+        if proof.committed.justify.height != prior_height
+            || Some(proof.committed.justify.proposal_digest) != prior_digest
+            || Some(proof.committed.justify.view) != prior_view
+        {
+            return Err(stop("ordered committed proof does not extend predecessor"));
+        }
+        let key: Vec<u8> =
+            ordered_committed_proof_key(&chain, env.policy.context().epoch(), block.height)?;
+        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        if observed.value().is_some() || observed.revision() != StateRevision::INITIAL {
+            return Err(stop(
+                "ordered committed proof height already exists or was deleted",
+            ));
+        }
+        let bytes: Vec<u8> = consensus::encode_committed_block_proof(proof)
+            .map_err(|_| stop("ordered committed proof does not encode within capacity"))?;
+        writes.mutate(key, observed.revision(), StateMutation::Put(bytes))?;
+        prior_height = block.height;
+        prior_digest = Some(block.digest);
+        prior_view = Some(block.view);
+    }
+
     let next_state_bytes = encode_consensus_state(&next_state)
         .map_err(|_| stop("ordered consensus state does not encode"))?;
     let stored_state_bytes = encode_consensus_state(&loaded.state)
@@ -1418,6 +1635,9 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
     }
 
     if let Some(admitted) = &admitted {
+        for (key, revision) in &admitted.reads {
+            writes.read(key.clone(), *revision)?;
+        }
         for write in &admitted.writes {
             writes.apply(write.clone())?;
         }
@@ -1465,6 +1685,10 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
     }
 
     let mut new_applied_height = applied_height;
+    let batch_applied_height: u64 = consensus_output
+        .committed_blocks
+        .last()
+        .map_or(applied_height, |block| block.height);
     let mut committed_outcome: Option<OrderedOutcome> = None;
     let mut business: Option<DurableInvocationTransaction> = None;
 
@@ -1501,10 +1725,10 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
                 ));
             }
             writes.read(outcome_row.key, outcome_row.revision)?;
-            if block.height != applied_height {
+            if batch_applied_height != applied_height {
                 writes.record_mutation(
                     applied_height_key,
-                    StateMutation::Put(encode_applied_height(block.height)?),
+                    StateMutation::Put(encode_applied_height(batch_applied_height)?),
                 )?;
             }
             let output = OrderedEventOutput {
@@ -1531,7 +1755,14 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
             nonce: plan.nonce,
         });
         let staging: StagingStore<'_, S> = StagingStore::new(store);
-        let outcome = execute_candidate(&staging, context, env, &candidate, admission.as_ref());
+        let outcome = execute_candidate(
+            &staging,
+            context,
+            env,
+            &candidate,
+            admission.as_ref(),
+            block.height,
+        );
         // One durable invocation observes one stable snapshot, so two different
         // revisions for one key can only be concurrent interference. Never
         // retain a decision derived from two disagreeing views of a row.
@@ -1662,7 +1893,10 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
         for write in release {
             writes.apply(write)?;
         }
-        new_applied_height = block.height;
+        // Exactly one economic block was fully processed; every other
+        // newly committed block has been verified empty. Mark its followers
+        // applied in this same archive/effects CAS, never after a stop.
+        new_applied_height = batch_applied_height;
     } else if let Some(block) = consensus_output
         .committed_blocks
         .iter()
@@ -1737,7 +1971,9 @@ fn transactions_for(
 
 /// Requires the closed profile's transaction shape: zero digests, or exactly
 /// one at an economic-bearing height.
-fn require_profile_shape(proposal: &ConsensusProposal) -> Result<(), OrderedEconomicsError> {
+pub(super) fn require_profile_shape(
+    proposal: &ConsensusProposal,
+) -> Result<(), OrderedEconomicsError> {
     let economic_height: bool = proposal.height % 3 == 1;
     match (proposal.transactions.len(), economic_height) {
         (0, _) | (1, true) => Ok(()),
@@ -1838,10 +2074,22 @@ where
         authenticate_candidate(env, candidate)?;
     }
     let loaded = load_state(store, context, env)?;
+    let proposal_height: u64 = loaded
+        .state
+        .high_qc
+        .height
+        .checked_add(1)
+        .ok_or(stop("ordered economics height overflow"))?;
     // 2. Header conflict, before any other metadata, and the candidate's own
     //    reservations.
     let admitted = match candidate {
-        Some(candidate) => Some(admit_candidate_for_signer(store, context, env, candidate)?),
+        Some(candidate) => Some(admit_candidate_for_signer(
+            store,
+            context,
+            env,
+            candidate,
+            proposal_height,
+        )?),
         None => None,
     };
     let transactions = transactions_for(&loaded.state, admitted.as_ref().map(|a| a.digest))?;
@@ -1888,6 +2136,9 @@ where
         StateMutation::Put(identity::encode_leader_proposal_record(&record)?),
     )?;
     if let Some(admitted) = &admitted {
+        for (key, revision) in &admitted.reads {
+            writes.read(key.clone(), *revision)?;
+        }
         for write in &admitted.writes {
             writes.apply(write.clone())?;
         }
@@ -1940,9 +2191,41 @@ where
         .map_err(consensus_to_node)?;
 
     // 2. Header conflict before any consensus metadata, then reservations.
+    let retained: LocalVoteReconciliation =
+        identity::reconcile_local_vote(store, context, env, proposal.proposal.view, digest)?;
+    if let RetainedIdentity::Exact(vote) = retained.retained {
+        if vote.validator != signer.validator_id() {
+            return Err(stop("retained ordered vote signer differs"));
+        }
+        env.policy
+            .engine()
+            .verify_vote(&vote, &Ed25519ConsensusVerifier)
+            .map_err(consensus_to_node)?;
+        if let Some(candidate) = &proposal.candidate {
+            let candidate_digest: Digest32 = env.policy.candidate_digest(candidate)?;
+            let expected: [Digest32; 1] = [candidate_digest];
+            if proposal.proposal.transactions.as_slice() != expected.as_slice() {
+                return Err(OrderedEconomicsError::Unauthenticated(
+                    "replayed candidate differs from retained proposal",
+                ));
+            }
+        } else if !proposal.proposal.transactions.is_empty() {
+            return Err(stop("replayed business proposal lacks candidate bytes"));
+        }
+        return Ok(OrderedEventOutput {
+            messages: vec![ConsensusMessage::Vote(vote)],
+            committed: Vec::new(),
+        });
+    }
     let admitted = match &proposal.candidate {
         Some(candidate) => {
-            let admitted = admit_candidate_for_signer(store, context, env, candidate)?;
+            let admitted = admit_candidate_for_signer(
+                store,
+                context,
+                env,
+                candidate,
+                proposal.proposal.height,
+            )?;
             if !proposal.proposal.transactions.contains(&admitted.digest) {
                 return Err(OrderedEconomicsError::Unauthenticated(
                     "ordered proposal candidate does not match its own transaction digest",
@@ -1961,6 +2244,82 @@ where
             None
         }
     };
+
+    // A verified justification may commit Freeze or DrainSet in this event.
+    // Process that observation without exposing a vote for its own fresh
+    // payload. The persisted prefix and inherited consensus locks remain intact.
+    if proposal.candidate.as_ref().is_some() {
+        let preview: ConsensusOutput = env
+            .policy
+            .engine()
+            .on_observer_event(
+                &loaded.state,
+                ConsensusEvent::Proposal(proposal.proposal.clone()),
+                &Ed25519ConsensusVerifier,
+            )
+            .map_err(consensus_to_node)?;
+        if preview
+            .committed_blocks
+            .iter()
+            .filter(|block| !block.transactions.is_empty())
+            .count()
+            > MAX_ORDERED_EVENT_COMMITTED
+        {
+            return Err(stop("Freeze preview exceeds committed candidate bound"));
+        }
+        let mut commits_freeze: bool = false;
+        let mut commits_drain_set: bool = false;
+        for block in &preview.committed_blocks {
+            if block.transactions.len() > 1 {
+                return Err(stop("Freeze preview violates the candidate profile"));
+            }
+            for committed_digest in &block.transactions {
+                let key: Vec<u8> = ordered_candidate_record_key(
+                    env.policy.context().chain_id(),
+                    *committed_digest,
+                )?;
+                let row: VersionedStateValue =
+                    store.get_versioned_durable(context, env.policy.domain(), &key)?;
+                let bytes: &[u8] = row
+                    .value()
+                    .ok_or_else(|| stop("Freeze preview lacks committed candidate"))?;
+                let committed: OrderedCandidate = decode_ordered_candidate(bytes)?;
+                if committed.context != *env.policy.context()
+                    || candidate_digest(env.resolver, committed.context.epoch(), bytes)?
+                        != *committed_digest
+                {
+                    return Err(stop("Freeze preview candidate context or digest differs"));
+                }
+                authenticate_candidate(env, &committed)
+                    .map_err(|_| stop("Freeze preview candidate authentication failed"))?;
+                commits_freeze |= committed.kind == OrderedOperationKind::Freeze;
+                commits_drain_set |= committed.kind == OrderedOperationKind::DrainSet;
+            }
+        }
+        if commits_freeze || commits_drain_set {
+            let observed: OrderedEventOutput = observe_proposal(store, context, env, proposal)?;
+            if commits_freeze
+                && freeze::read_admission_closure(
+                    store,
+                    context,
+                    env.policy.domain(),
+                    env.policy.context().chain_id(),
+                    env.policy.context().epoch(),
+                )?
+                .is_none()
+            {
+                return Err(stop("Freeze preview changed before observation; retry"));
+            }
+            if observed
+                .messages
+                .iter()
+                .any(|message| matches!(message, ConsensusMessage::Vote(_)))
+            {
+                return Err(stop("Freeze observation unexpectedly produced a vote"));
+            }
+            return Ok(observed);
+        }
+    }
 
     // 3. Vote readiness, then the immutable local vote identity.
     require_vote_readiness(store, context, env, &loaded.state, &proposal.proposal)?;
@@ -2073,6 +2432,7 @@ pub fn observe_proposal<S: StructuredDurableDomainStateStore>(
                 Admission::Fresh(admitted) => admitted,
                 Admission::Completed(_) => AdmittedCandidate {
                     digest: env.policy.candidate_digest(candidate)?,
+                    reads: BTreeMap::new(),
                     writes: Vec::new(),
                 },
             };
@@ -2191,6 +2551,11 @@ pub(crate) fn ordered_reservation_key_for_tests(chain: &ChainId, request_id: &[u
 #[cfg(test)]
 pub(crate) fn ordered_outcome_key_for_tests(chain: &ChainId, request_id: &[u8; 32]) -> Vec<u8> {
     ordered_outcome_key(chain, request_id).unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn admission_closure_key_for_tests(chain: &ChainId, epoch: Epoch) -> Vec<u8> {
+    freeze::admission_closure_key(chain, epoch).unwrap()
 }
 
 #[cfg(test)]

@@ -197,8 +197,9 @@ pub fn decode_slash_intent(bytes: &[u8]) -> Result<SlashIntent, BondLifecycleErr
 /// over an otherwise identical intent hashes differently and is treated as a
 /// conflicting replay, exactly like
 /// [`super::bond_lifecycle_receipt_digest`] achieves for the signed
-/// lifecycle envelope.
-fn slash_receipt_digest(
+/// lifecycle envelope. Ordered history links an accepted slash's original
+/// receipt through this same function.
+pub(crate) fn slash_receipt_digest(
     resolver: &HashSuiteResolver,
     context: &PublicationContext,
     intent_bytes: &[u8],

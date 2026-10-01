@@ -22,6 +22,9 @@
 //! caller's declared context against the local genesis pin. It never signs
 //! anything and never guesses the intent's kind/checkpoint/context.
 
+#[path = "history_export.rs"]
+mod history_export;
+
 use std::{
     error::Error,
     ffi::OsString,
@@ -684,6 +687,265 @@ fn run_candidate_wrap<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
     Ok(())
 }
 
+/// Builds only an advisory Freeze body. The actual consensus height and
+/// committed bond/key/power eligibility remain authoritative host checks.
+fn run_freeze_build<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
+    let specs: Vec<crate::args::FlagSpec> = network_flag_specs(&[
+        "--request-id",
+        "--created-checkpoint",
+        "--advisory-next-set",
+        "--out",
+    ]);
+    let parsed: ParsedArgs = parse_flags(args, &specs)?;
+    let inputs: LoadedPolicyInputs = load_policy_and_endpoints(&parsed)?;
+    if inputs.policy.minimum_freeze_block_height() == 0 {
+        return Err(invalid(
+            "ordered Freeze requires a locally pinned signed-v3 genesis",
+        ));
+    }
+    let request_id: [u8; 32] = decode_hex_32("--request-id", parsed.require("--request-id")?)?;
+    let created_checkpoint: u64 = parse_u64(
+        "--created-checkpoint",
+        parsed.require("--created-checkpoint")?,
+    )?;
+    let advisory_path: &str = parsed.require("--advisory-next-set")?;
+    let advisory_bytes: Vec<u8> = read_bounded(advisory_path, MAX_ORDERED_CANDIDATE_BYTES)?;
+    let advisory = sunrise_edge_client::decode_fastpath_validator_set_record(&advisory_bytes)
+        .map_err(failure)?;
+    let intent = sunrise_edge_client::ordered_economics_core::FreezeIntent {
+        context: inputs.policy.context().clone(),
+        request_id,
+        advisory_next_set: advisory,
+    };
+    let candidate = sunrise_edge_client::ordered_economics_core::OrderedCandidate {
+        context: inputs.policy.context().clone(),
+        request_id,
+        kind: sunrise_edge_client::ordered_economics_core::OrderedOperationKind::Freeze,
+        intent: sunrise_edge_client::ordered_economics_core::encode_freeze_intent(&intent)
+            .map_err(failure)?,
+        created_checkpoint,
+    };
+    authenticate_ordered_candidate(&inputs.policy, &candidate).map_err(failure)?;
+    let encoded: Vec<u8> =
+        sunrise_edge_client::ordered_economics_core::encode_ordered_candidate(&candidate)
+            .map_err(failure)?;
+    let out: &str = parsed.require("--out")?;
+    let mut reserved: Vec<ReservedArtifact> = reserve_artifacts(
+        &[(out, "ordered-freeze-candidate")],
+        &[advisory_path, parsed.require("--ordered-genesis-manifest")?],
+    )?;
+    let mut artifact: ReservedArtifact = reserved
+        .pop()
+        .ok_or_else(|| invalid("missing Freeze output reservation"))?;
+    artifact.persist(&encoded)?;
+    println!(
+        "candidate_bytes={} out={out} minimum_freeze_block_height={}",
+        encoded.len(),
+        inputs.policy.minimum_freeze_block_height()
+    );
+    Ok(())
+}
+
+/// Maximum accepted `--drain-union-identity` report file size. The real
+/// canonical `0xD03B/v1` frame this file must contain is internally bounded
+/// to 4KiB (`consensus::availability::union::MAX_DRAIN_UNION_IDENTITY_BYTES`,
+/// not exported); bounded here generously above that without adding a new
+/// crate dependency just to reference the private constant.
+const MAX_DRAIN_UNION_IDENTITY_REPORT_BYTES: usize = 8 * 1024;
+
+fn drain_set_build_flag_specs() -> Vec<crate::args::FlagSpec> {
+    vec![
+        scalar("--drain-selection-manifest"),
+        scalar("--drain-union-identity"),
+        scalar("--request-id"),
+        scalar("--created-checkpoint"),
+        scalar("--expected-chain-id"),
+        scalar("--expected-protocol-version"),
+        scalar("--expected-epoch"),
+        scalar("--domain"),
+        scalar("--ordered-genesis-manifest"),
+        scalar("--ordered-expected-genesis-digest"),
+        scalar("--out"),
+    ]
+}
+
+/// Offline construction of one `OrderedCandidate` of kind `DrainSet` from
+/// (a) a bounded manifest of exact canonical signed `FrozenFrontierVote`
+/// files, (b) a bounded, strictly canonical-decoded `DrainUnionIdentity`
+/// report -- normally the `--out-drain-union-identity` output of a successful
+/// `contract fastvote-drain-local-ready` run, but still caller-supplied data
+/// rather than proof of local readiness -- (c) an explicit nonzero `--request-id` and
+/// `--created-checkpoint`, and (d) an independently pinned ordered
+/// genesis/context/domain. Never signs a vote, never trusts network-reported
+/// context, and never submits anything: use `economics network-submit`
+/// against the resulting `--out` candidate file for that.
+///
+/// Fails closed on: a decodable-but-wrong-context report (chain/protocol/
+/// epoch/domain not equal to the independently pinned `--expected-*`/
+/// `--domain`), a malformed report or vote file, a selection whose signer
+/// count disagrees with the report's own `signer_count` (`encode_drain_set_intent`'s
+/// own structural check), duplicate/non-ascending/foreign/mixed-Freeze votes
+/// or insufficient quorum power or an invalid signature (all reused,
+/// unmodified, from `authenticate_ordered_candidate` -- this function
+/// performs no vote/quorum verification of its own), and an `--out` path
+/// that already exists.
+fn run_drain_set_build<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
+    let args: Vec<OsString> = args.into_iter().collect();
+    if args.as_slice() == [OsString::from("--help")] {
+        println!(
+            "economics drain-set-build
+  --drain-selection-manifest FILE --drain-union-identity FILE
+  --request-id REQUEST_ID_HEX --created-checkpoint CHECKPOINT
+  --expected-chain-id CHAIN --expected-protocol-version VERSION --expected-epoch EPOCH
+  --domain DOMAIN_HEX --ordered-genesis-manifest FILE
+  --ordered-expected-genesis-digest DIGEST_HEX --out FILE
+Offline canonical DrainSet candidate construction from already-signed immutable selected
+votes and a saved local union identity. Requires signed-v3 genesis and an eligible actual
+Freeze. Neither submits nor proves local readiness: ordered voters independently recheck
+their own durable union marker. Submit with economics network-submit --candidate FILE."
+        );
+        return Ok(());
+    }
+    let parsed: ParsedArgs = parse_flags(args, &drain_set_build_flag_specs())?;
+
+    let request_id: [u8; 32] = decode_hex_32("--request-id", parsed.require("--request-id")?)?;
+    if request_id == [0u8; 32] {
+        return Err(invalid("--request-id must not be zero"));
+    }
+    let created_checkpoint: u64 = parse_u64(
+        "--created-checkpoint",
+        parsed.require("--created-checkpoint")?,
+    )?;
+
+    let chain_id: ChainId =
+        ChainId::new(parsed.require("--expected-chain-id")?.to_string()).map_err(failure)?;
+    let protocol_version: ProtocolVersion =
+        parse_protocol(parsed.require("--expected-protocol-version")?)?;
+    let epoch: Epoch = Epoch::new(parse_u64(
+        "--expected-epoch",
+        parsed.require("--expected-epoch")?,
+    )?);
+    let context: sunrise_edge_client::PublicationContext =
+        sunrise_edge_client::PublicationContext::new(chain_id.clone(), protocol_version, epoch)
+            .map_err(failure)?;
+    let domain: AtomicityDomainId =
+        AtomicityDomainId::new(decode_hex_32("--domain", parsed.require("--domain")?)?)
+            .map_err(failure)?;
+    let expected_digest: [u8; 32] = decode_hex_32(
+        "--ordered-expected-genesis-digest",
+        parsed.require("--ordered-expected-genesis-digest")?,
+    )?;
+    let resolver: sunrise_edge_client::HashSuiteResolver =
+        genesis_hash_suite_resolver(chain_id, protocol_version)?;
+    // Local genesis validation only -- confirms the declared context is the
+    // one this operator actually trusts before any candidate bytes are
+    // produced; never contacts a network endpoint.
+    let policy: sunrise_edge_client::ordered_economics_core::OrderedEconomicsPolicy =
+        load_trusted_ordered_policy(
+            Path::new(parsed.require("--ordered-genesis-manifest")?),
+            &resolver,
+            expected_digest,
+            &context,
+            domain,
+        )
+        .map_err(failure)?;
+
+    // (a) the bounded, locally supplied selection of already-signed votes --
+    // the exact same manifest grammar/bounds `fastvote-drain-local-ready`
+    // itself accepts, and not re-implemented here.
+    let selected_votes: Vec<sunrise_edge_client::FrozenFrontierVote> =
+        super::fastvote_network::load_drain_selection(
+            parsed.require("--drain-selection-manifest")?,
+        )?;
+
+    // (b) the saved success report: a strict canonical decode of exactly the
+    // `0xD03B/v1` frame, never a key=value text parse. This is a caller-
+    // supplied candidate input, not authenticated proof of a successful
+    // local-ready run; every ordered voter rechecks its own durable marker.
+    // `decode_drain_union_identity` requires byte-exact canonical encoding,
+    // so truncated or padded reports are rejected before any further check.
+    let identity_bytes: Vec<u8> = read_bounded(
+        parsed.require("--drain-union-identity")?,
+        MAX_DRAIN_UNION_IDENTITY_REPORT_BYTES,
+    )?;
+    let drain_union_identity: sunrise_edge_client::DrainUnionIdentity =
+        sunrise_edge_client::decode_drain_union_identity(&identity_bytes).map_err(failure)?;
+    if policy.minimum_freeze_block_height() == 0
+        || drain_union_identity.closure_request_id == [0; 32]
+        || drain_union_identity.closure_height < policy.minimum_freeze_block_height()
+    {
+        return Err(invalid(
+            "DrainSet requires a locally pinned signed-v3 genesis and an eligible actual Freeze",
+        ));
+    }
+
+    // (d) cross-check the saved report against the independently pinned
+    // context/domain -- never the reverse. A report saved for a different
+    // chain/protocol/epoch/domain fails closed here as a report/context
+    // mismatch, before any vote is even considered.
+    if drain_union_identity.chain_id != *context.chain_id()
+        || drain_union_identity.protocol_version != protocol_version
+        || drain_union_identity.epoch != epoch
+        || drain_union_identity.domain != domain
+    {
+        return Err(invalid(
+            "--drain-union-identity report/context mismatch: saved report does not match the independently pinned expected chain/protocol/epoch/domain",
+        ));
+    }
+
+    // (c) the explicit nonzero request id and created checkpoint bind this
+    // ordered candidate's own replay identity; neither is inferred from the
+    // report or the selection.
+    let intent: sunrise_edge_client::ordered_economics_core::DrainSetIntent =
+        sunrise_edge_client::ordered_economics_core::DrainSetIntent {
+            context: context.clone(),
+            request_id,
+            selected_votes,
+            drain_union_identity,
+        };
+    let intent_bytes: Vec<u8> =
+        sunrise_edge_client::ordered_economics_core::encode_drain_set_intent(&intent)
+            .map_err(failure)?;
+
+    let candidate: sunrise_edge_client::ordered_economics_core::OrderedCandidate =
+        sunrise_edge_client::ordered_economics_core::OrderedCandidate {
+            context,
+            request_id,
+            kind: sunrise_edge_client::ordered_economics_core::OrderedOperationKind::DrainSet,
+            intent: intent_bytes,
+            created_checkpoint,
+        };
+    // Reuses the exact same pure authentication a validator applies before
+    // proposing/voting: canonical round-trip, structural intent checks, and
+    // full outgoing-quorum signature/power verification via
+    // `verify_frozen_frontier_quorum`. This is the only vote/quorum check
+    // this command performs, and it is not reimplemented here.
+    authenticate_ordered_candidate(&policy, &candidate).map_err(failure)?;
+    let encoded: Vec<u8> =
+        sunrise_edge_client::ordered_economics_core::encode_ordered_candidate(&candidate)
+            .map_err(failure)?;
+
+    let out_path: &str = parsed.require("--out")?;
+    let mut reserved: Vec<ReservedArtifact> = reserve_artifacts(
+        &[(out_path, "ordered-economics-drain-set-candidate")],
+        &[
+            parsed.require("--drain-selection-manifest")?,
+            parsed.require("--drain-union-identity")?,
+            parsed.require("--ordered-genesis-manifest")?,
+        ],
+    )?;
+    let mut reserved: ReservedArtifact = reserved.pop().expect("candidate artifact reserved");
+    reserved.persist(&encoded).map_err(failure)?;
+    println!("candidate_bytes={} out={out_path}", encoded.len());
+    println!("kind=drain_set");
+    println!("request_id={}", crate::hex::encode_hex(&request_id));
+    println!("created_checkpoint={created_checkpoint}");
+    println!("signer_count={}", intent.drain_union_identity.signer_count);
+    println!("member_count={}", intent.drain_union_identity.member_count);
+    println!("submit_hint=economics network-submit --candidate {out_path}");
+    Ok(())
+}
+
 /// Dispatches `economics <subcommand>`.
 pub(crate) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
     let mut iterator = args.into_iter();
@@ -694,9 +956,12 @@ pub(crate) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
         .ok_or_else(|| invalid("non-UTF-8 subcommand"))?
         .to_string();
     match subcommand.as_str() {
+        "history-export" => history_export::dispatch(iterator),
         "network-submit" => run_network_submit(iterator),
         "network-replay" => run_network_replay(iterator),
         "candidate-wrap" => run_candidate_wrap(iterator),
+        "ordered-freeze-build" => run_freeze_build(iterator),
+        "drain-set-build" => run_drain_set_build(iterator),
         other => Err(invalid(format!("unknown economics subcommand: {other}"))),
     }
 }
@@ -705,6 +970,427 @@ pub(crate) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
 mod tests {
     use super::*;
     use std::fs;
+    // -- `economics drain-set-build` -----------------------------------
+
+    use consensus::{ConsensusSigner, DrainUnionIdentity, FrozenFrontierCertifier};
+    use crypto::SignatureSigner;
+
+    struct DrainVoteSigner(sunrise_edge_client::LocalSigner);
+
+    impl ConsensusSigner for DrainVoteSigner {
+        fn validator_id(&self) -> sunrise_edge_client::ValidatorId {
+            sunrise_edge_client::ValidatorId::new(*self.0.address().as_bytes())
+        }
+        fn signature_scheme(&self) -> sunrise_edge_client::SignatureSchemeId {
+            sunrise_edge_client::SignatureSchemeId::Ed25519
+        }
+        fn sign_framed(&self, framed: &[u8]) -> Result<Vec<u8>, String> {
+            self.0
+                .sign_framed(framed)
+                .map_err(|error| error.to_string())
+        }
+    }
+
+    /// A real, one-validator signed genesis (the same devnet builder and
+    /// fixed `DEVNET_PAID_GENESIS_SEED` authority key every other FastVote/
+    /// ordered-economics CLI fixture uses) plus a matching
+    /// `FrozenFrontierCertifier` for casting real selection votes against
+    /// it. `--drain-selection-manifest`/`--drain-union-identity` inputs are
+    /// written fresh per test from real canonical-encoded, really-verified
+    /// bytes -- never hand-rolled frames.
+    struct DrainGenesisFixture {
+        directory: std::path::PathBuf,
+        chain_id: ChainId,
+        protocol_version: ProtocolVersion,
+        epoch: Epoch,
+        domain: AtomicityDomainId,
+        genesis_path: String,
+        genesis_digest_hex: String,
+        resolver: sunrise_edge_client::HashSuiteResolver,
+        certifier: FrozenFrontierCertifier,
+        validator_signer: DrainVoteSigner,
+    }
+
+    impl DrainGenesisFixture {
+        fn new(label: &str) -> Self {
+            Self::with_minimum(label, 1)
+        }
+        fn with_minimum(label: &str, minimum: u64) -> Self {
+            let directory = unique_test_directory(label);
+            fs::create_dir(&directory).unwrap();
+            let chain_id = ChainId::new("drain-set-build-tests").unwrap();
+            let protocol_version = ProtocolVersion::new(1);
+            let epoch = Epoch::new(0);
+            let domain = AtomicityDomainId::new([0x55; 32]).unwrap();
+            let resolver = genesis_hash_suite_resolver(chain_id.clone(), protocol_version).unwrap();
+            let context = sunrise_edge_client::PublicationContext::new(
+                chain_id.clone(),
+                protocol_version,
+                epoch,
+            )
+            .unwrap();
+            let owner_signer = sunrise_edge_client::LocalSigner::from_seed([0x61; 32]);
+            let owner = sunrise_edge_devnet::DevOwner::new(*owner_signer.address().as_bytes());
+            let (mut manifest, _metadata) = sunrise_edge_devnet::build_paid_genesis_manifest(
+                &resolver,
+                &context,
+                &[owner],
+                owner,
+            )
+            .unwrap();
+            manifest.commitment_profile =
+                sunrise_edge_client::CommitmentProfile::LogicalGenerationV2;
+            manifest.minimum_freeze_block_height = minimum;
+            let genesis_signer: sunrise_edge_client::LocalSigner =
+                sunrise_edge_client::LocalSigner::from_seed(
+                    sunrise_edge_devnet::DEVNET_PAID_GENESIS_SEED,
+                );
+            manifest.signature = genesis_signer
+                .sign_framed(
+                    &node_core::genesis::genesis_manifest_signing_frame(&manifest).unwrap(),
+                )
+                .unwrap()
+                .try_into()
+                .unwrap();
+            let genesis_bytes = node_core::genesis::encode_genesis_manifest(&manifest).unwrap();
+            let genesis_path = directory.join("genesis.bin");
+            fs::write(&genesis_path, &genesis_bytes).unwrap();
+            let digest =
+                node_core::genesis::genesis_manifest_commitment(&resolver, &manifest).unwrap();
+
+            // `build_paid_genesis_manifest`'s sole embedded validator is
+            // always the fixed `DEVNET_PAID_GENESIS_SEED` authority, exactly
+            // like every other FastVote CLI fixture in this crate.
+            let validator_signer = DrainVoteSigner(sunrise_edge_client::LocalSigner::from_seed(
+                sunrise_edge_devnet::DEVNET_PAID_GENESIS_SEED,
+            ));
+            let certifier = FrozenFrontierCertifier::new(
+                chain_id.clone(),
+                protocol_version,
+                epoch,
+                sunrise_edge_client::ValidatorSet::new(
+                    epoch,
+                    vec![sunrise_edge_client::ValidatorInfo {
+                        id: validator_signer.validator_id(),
+                        voting_power: 1,
+                        signature_scheme: sunrise_edge_client::SignatureSchemeId::Ed25519,
+                        public_key: validator_signer.0.address().as_bytes().to_vec(),
+                    }],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+            Self {
+                directory,
+                chain_id,
+                protocol_version,
+                epoch,
+                domain,
+                genesis_path: genesis_path.to_str().unwrap().to_owned(),
+                genesis_digest_hex: crate::hex::encode_hex(&digest.bytes()),
+                resolver,
+                certifier,
+                validator_signer,
+            }
+        }
+
+        fn path(&self, name: &str) -> String {
+            self.directory.join(name).to_str().unwrap().to_owned()
+        }
+
+        /// Casts one real, independently verifiable vote for
+        /// `closure_request_id`/`closure_height`, returning it alongside its
+        /// own signed frontier identity (needed separately to build a
+        /// matching, or deliberately mismatching, union-identity report).
+        fn cast_vote(
+            &self,
+            closure_request_id: [u8; 32],
+            closure_height: u64,
+        ) -> (
+            consensus::FrozenFrontierVote,
+            consensus::FrozenFrontierIdentity,
+        ) {
+            let identity = consensus::FrozenFrontierAccumulator::new(
+                &self.resolver,
+                self.chain_id.clone(),
+                self.protocol_version,
+                self.epoch,
+                self.domain,
+                closure_request_id,
+                closure_height,
+            )
+            .unwrap()
+            .into_identity();
+            let vote = self
+                .certifier
+                .cast_vote(identity.clone(), &self.validator_signer)
+                .unwrap();
+            (vote, identity)
+        }
+
+        /// Independently reconstructs a one-signer union identity for
+        /// `closure_request_id`/`closure_height` -- deliberately a separate
+        /// parameter from whatever `frontier_identity` itself carries, so
+        /// tests can build a genuine signer/report Freeze mismatch.
+        fn build_union_identity(
+            &self,
+            closure_request_id: [u8; 32],
+            closure_height: u64,
+            frontier_identity: consensus::FrozenFrontierIdentity,
+        ) -> DrainUnionIdentity {
+            consensus::DrainUnionAccumulator::new(
+                &self.resolver,
+                self.chain_id.clone(),
+                self.protocol_version,
+                self.epoch,
+                self.domain,
+                closure_request_id,
+                closure_height,
+                &[(self.validator_signer.validator_id(), frontier_identity)],
+            )
+            .unwrap()
+            .into_identity()
+        }
+
+        fn write_selection_manifest(&self, votes: &[consensus::FrozenFrontierVote]) -> String {
+            let mut manifest_text = String::new();
+            for (index, vote) in votes.iter().enumerate() {
+                let vote_path = self.path(&format!("vote-{index}.bin"));
+                fs::write(
+                    &vote_path,
+                    consensus::encode_frozen_frontier_vote(vote).unwrap(),
+                )
+                .unwrap();
+                manifest_text.push_str(&format!("vote-{index}.bin\n"));
+            }
+            let manifest_path = self.path("selection.manifest");
+            fs::write(&manifest_path, manifest_text).unwrap();
+            manifest_path
+        }
+
+        fn write_identity(&self, identity: &DrainUnionIdentity, name: &str) -> String {
+            let path = self.path(name);
+            fs::write(
+                &path,
+                consensus::encode_drain_union_identity(identity).unwrap(),
+            )
+            .unwrap();
+            path
+        }
+
+        /// Base flags every `drain-set-build` invocation needs, excluding
+        /// the per-test `--drain-selection-manifest`/`--drain-union-identity`/
+        /// `--request-id`/`--created-checkpoint`/`--out`.
+        fn base_pairs(&self) -> Vec<(&'static str, String)> {
+            vec![
+                ("--expected-chain-id", self.chain_id.as_str().to_owned()),
+                (
+                    "--expected-protocol-version",
+                    self.protocol_version.get().to_string(),
+                ),
+                ("--expected-epoch", self.epoch.get().to_string()),
+                ("--domain", crate::hex::encode_hex(self.domain.as_bytes())),
+                ("--ordered-genesis-manifest", self.genesis_path.clone()),
+                (
+                    "--ordered-expected-genesis-digest",
+                    self.genesis_digest_hex.clone(),
+                ),
+            ]
+        }
+    }
+
+    fn drain_build_args(pairs: &[(&'static str, String)]) -> Vec<OsString> {
+        pairs
+            .iter()
+            .flat_map(|(key, value)| [OsString::from(*key), OsString::from(value.clone())])
+            .collect()
+    }
+
+    #[test]
+    fn drain_set_build_requires_a_selection_manifest_flag() {
+        assert!(run_drain_set_build(Vec::<OsString>::new()).is_err());
+    }
+
+    #[test]
+    fn drain_set_build_rejects_unsigned_minimum_and_below_minimum_freeze() {
+        for minimum in [0u64, 6] {
+            let fixture: DrainGenesisFixture =
+                DrainGenesisFixture::with_minimum("drain-minimum", minimum);
+            let (vote, frontier) = fixture.cast_vote([0xAA; 32], 5);
+            let identity = fixture.build_union_identity([0xAA; 32], 5, frontier);
+            let mut pairs: Vec<(&'static str, String)> = fixture.base_pairs();
+            pairs.extend([
+                (
+                    "--drain-selection-manifest",
+                    fixture.write_selection_manifest(&[vote]),
+                ),
+                (
+                    "--drain-union-identity",
+                    fixture.write_identity(&identity, "identity.bin"),
+                ),
+                ("--request-id", "99".repeat(32)),
+                ("--created-checkpoint", "7".to_owned()),
+                ("--out", fixture.path("candidate")),
+            ]);
+            let error: String = run_drain_set_build(drain_build_args(&pairs))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("signed-v3") || error.contains("Freeze"),
+                "{error}"
+            );
+            assert!(!Path::new(&fixture.path("candidate")).exists());
+        }
+    }
+
+    #[test]
+    fn drain_set_build_rejects_zero_request_id_before_any_file_read() {
+        let error = run_drain_set_build(drain_build_args(&[("--request-id", "00".repeat(32))]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("--request-id"), "{error}");
+    }
+
+    #[test]
+    fn drain_set_build_happy_path_produces_an_authenticated_candidate() {
+        let fixture = DrainGenesisFixture::new("drain-set-build-happy");
+        let (vote, frontier_identity) = fixture.cast_vote([0xAA; 32], 5);
+        let identity = fixture.build_union_identity([0xAA; 32], 5, frontier_identity);
+        let manifest_path = fixture.write_selection_manifest(std::slice::from_ref(&vote));
+        let identity_path = fixture.write_identity(&identity, "identity.bin");
+        let out_path = fixture.path("candidate.bin");
+
+        let mut pairs = fixture.base_pairs();
+        pairs.push(("--drain-selection-manifest", manifest_path));
+        pairs.push(("--drain-union-identity", identity_path));
+        pairs.push(("--request-id", "99".repeat(32)));
+        pairs.push(("--created-checkpoint", "7".to_owned()));
+        pairs.push(("--out", out_path.clone()));
+
+        run_drain_set_build(drain_build_args(&pairs)).unwrap();
+
+        let encoded = fs::read(&out_path).unwrap();
+        let candidate =
+            sunrise_edge_client::ordered_economics_core::decode_ordered_candidate(&encoded)
+                .unwrap();
+        assert_eq!(candidate.request_id, [0x99; 32]);
+        assert_eq!(candidate.created_checkpoint, 7);
+        assert_eq!(
+            candidate.kind,
+            sunrise_edge_client::ordered_economics_core::OrderedOperationKind::DrainSet
+        );
+        let intent =
+            sunrise_edge_client::ordered_economics_core::decode_drain_set_intent(&candidate.intent)
+                .unwrap();
+        assert_eq!(intent.drain_union_identity, identity);
+        assert_eq!(intent.selected_votes, vec![vote]);
+
+        // Output collision: a second run at the exact same `--out` fails
+        // closed rather than overwriting the first candidate.
+        assert!(run_drain_set_build(drain_build_args(&pairs)).is_err());
+    }
+
+    #[test]
+    fn drain_set_build_rejects_a_report_context_mismatch() {
+        let fixture = DrainGenesisFixture::new("drain-set-build-context-mismatch");
+        let (vote, frontier_identity) = fixture.cast_vote([0xAA; 32], 5);
+        // Built for a different domain than the one this test pins below:
+        // the report itself is otherwise perfectly well-formed.
+        let wrong_domain = AtomicityDomainId::new([0x66; 32]).unwrap();
+        let mismatched_identity = consensus::DrainUnionAccumulator::new(
+            &fixture.resolver,
+            fixture.chain_id.clone(),
+            fixture.protocol_version,
+            fixture.epoch,
+            wrong_domain,
+            [0xAA; 32],
+            5,
+            &[(fixture.validator_signer.validator_id(), frontier_identity)],
+        )
+        .unwrap()
+        .into_identity();
+        let manifest_path = fixture.write_selection_manifest(&[vote]);
+        let identity_path = fixture.write_identity(&mismatched_identity, "identity.bin");
+
+        let mut pairs = fixture.base_pairs();
+        pairs.push(("--drain-selection-manifest", manifest_path));
+        pairs.push(("--drain-union-identity", identity_path));
+        pairs.push(("--request-id", "99".repeat(32)));
+        pairs.push(("--created-checkpoint", "7".to_owned()));
+        pairs.push(("--out", fixture.path("candidate.bin")));
+
+        let error = run_drain_set_build(drain_build_args(&pairs))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("context"), "{error}");
+    }
+
+    #[test]
+    fn drain_set_build_rejects_a_malformed_identity_report() {
+        let fixture = DrainGenesisFixture::new("drain-set-build-malformed-report");
+        let (vote, _frontier_identity) = fixture.cast_vote([0xAA; 32], 5);
+        let manifest_path = fixture.write_selection_manifest(&[vote]);
+        let identity_path = fixture.path("identity.bin");
+        fs::write(
+            &identity_path,
+            b"not a canonical drain union identity frame",
+        )
+        .unwrap();
+
+        let mut pairs = fixture.base_pairs();
+        pairs.push(("--drain-selection-manifest", manifest_path));
+        pairs.push(("--drain-union-identity", identity_path));
+        pairs.push(("--request-id", "99".repeat(32)));
+        pairs.push(("--created-checkpoint", "7".to_owned()));
+        pairs.push(("--out", fixture.path("candidate.bin")));
+
+        assert!(run_drain_set_build(drain_build_args(&pairs)).is_err());
+    }
+
+    #[test]
+    fn drain_set_build_rejects_a_selection_vote_for_the_wrong_freeze() {
+        let fixture = DrainGenesisFixture::new("drain-set-build-wrong-freeze");
+        // The vote is genuinely signed for Freeze closure `[0xAA; 32]`/5, but
+        // the saved report claims closure `[0xBB; 32]`/5. Both are otherwise
+        // well-formed and bound to the same pinned chain/protocol/epoch/domain.
+        let (vote, frontier_identity) = fixture.cast_vote([0xAA; 32], 5);
+        let identity = fixture.build_union_identity([0xBB; 32], 5, frontier_identity);
+        let manifest_path = fixture.write_selection_manifest(&[vote]);
+        let identity_path = fixture.write_identity(&identity, "identity.bin");
+
+        let mut pairs = fixture.base_pairs();
+        pairs.push(("--drain-selection-manifest", manifest_path));
+        pairs.push(("--drain-union-identity", identity_path));
+        pairs.push(("--request-id", "99".repeat(32)));
+        pairs.push(("--created-checkpoint", "7".to_owned()));
+        pairs.push(("--out", fixture.path("candidate.bin")));
+
+        assert!(run_drain_set_build(drain_build_args(&pairs)).is_err());
+    }
+
+    #[test]
+    fn drain_set_build_rejects_a_duplicated_selection_vote() {
+        let fixture = DrainGenesisFixture::new("drain-set-build-duplicate-vote");
+        let (vote, frontier_identity) = fixture.cast_vote([0xAA; 32], 5);
+        // The report itself names only one real signer; the manifest below
+        // duplicates that one signer's vote, so the failure this exercises
+        // is the strict ascending/duplicate-validator check inside
+        // `encode_drain_set_intent`, which runs before any signer-count
+        // comparison against the report.
+        let identity = fixture.build_union_identity([0xAA; 32], 5, frontier_identity);
+        let manifest_path = fixture.write_selection_manifest(&[vote.clone(), vote]);
+        let identity_path = fixture.write_identity(&identity, "identity.bin");
+
+        let mut pairs = fixture.base_pairs();
+        pairs.push(("--drain-selection-manifest", manifest_path));
+        pairs.push(("--drain-union-identity", identity_path));
+        pairs.push(("--request-id", "99".repeat(32)));
+        pairs.push(("--created-checkpoint", "7".to_owned()));
+        pairs.push(("--out", fixture.path("candidate.bin")));
+
+        assert!(run_drain_set_build(drain_build_args(&pairs)).is_err());
+    }
 
     #[test]
     fn unknown_subcommand_is_rejected() {

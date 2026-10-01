@@ -55,6 +55,30 @@ require_exact_test contract_lifecycle_pg_publish_instantiate_call_and_asset_verb
 cargo test --quiet -p sunrise-edge-operator --test contract_lifecycle_pg_e2e \
   -- --ignored --exact contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator_e2e
 
+require_exact_test contract_lifecycle_pg_logical_publish_instantiate_call_and_asset_verbs_multivalidator_e2e \
+  -p sunrise-edge-operator --test contract_lifecycle_pg_e2e
+cargo test --quiet -p sunrise-edge-operator --test contract_lifecycle_pg_e2e \
+  -- --ignored --exact contract_lifecycle_pg_logical_publish_instantiate_call_and_asset_verbs_multivalidator_e2e
+
+# Signed-v3 opt-in: the same ordinary contract history, actual ordered
+# Freeze, an unapplied retained full certificate, bounded durable frontier
+# restart, and compiled CLI page export/resume on four independent stores.
+require_exact_test contract_lifecycle_pg_ordered_freeze_and_frontier_binary_cli_e2e \
+  -p sunrise-edge-operator --test contract_lifecycle_pg_e2e
+cargo test --quiet -p sunrise-edge-operator --test contract_lifecycle_pg_e2e \
+  -- --ignored --exact contract_lifecycle_pg_ordered_freeze_and_frontier_binary_cli_e2e
+
+# Quorum-retained full proofs, real ordered DrainSet, interrupted recipient
+# import, original-holder failure, imported-proof relay and exact member drain.
+# The same real fixture then verifies DR-0169 positive/refused economics,
+# actual proof pruning, bounded history export, source restart/fixed-target
+# resume, corrupt-file refusal and genuine stale-writer fencing. Do not
+# duplicate its paid-contract setup in a second giant fixture.
+require_exact_test contract_lifecycle_pg_drainset_member_and_ordered_history_binary_cli_e2e \
+  -p sunrise-edge-operator --test contract_lifecycle_pg_e2e
+cargo test --quiet -p sunrise-edge-operator --test contract_lifecycle_pg_e2e \
+  -- --ignored --exact contract_lifecycle_pg_drainset_member_and_ordered_history_binary_cli_e2e
+
 require_exact_test certified_catch_up_pg_missed_prepare_binary_cli_e2e \
   -p sunrise-edge-operator --test certified_catch_up_pg_e2e
 cargo test --quiet -p sunrise-edge-operator --test certified_catch_up_pg_e2e \

@@ -39,12 +39,29 @@
 //! own free-form invariant string can fall into and become a committed
 //! rejection. Every existing handler failure this module does not itself
 //! positively classify defaults to a stop.
+//!
+//! ## Epoch-handoff integration status
+//!
+//! A signed-genesis minimum height and a committed-eligibility check now
+//! warrant `Freeze` before proposal/vote and at ordered execution; successful
+//! `Freeze` closes admission for ordinary and ordered business mutations and
+//! fresh publication-retention ACKs. This is still only one part of
+//! DR-0154. DR-0168 adds bounded complete-frontier proof retention and the
+//! ordinary shared-chain `DrainSet`, plus explicit certified member apply.
+//! `Seal`, verified next-set readiness and activation, and retirement of
+//! the older standalone epoch-transition route must still be
+//! integrated before this path can be enabled as a complete handoff.
 use super::*;
 
 mod candidate;
+mod drain_set;
+mod drain_union;
 pub(crate) mod engine;
 mod evidence_submission;
+mod freeze;
+mod frontier;
 mod identity;
+pub mod ordered_history;
 mod policy;
 mod preflight;
 mod reservation;
@@ -53,6 +70,19 @@ mod staging;
 pub use candidate::{
     MAX_ORDERED_CANDIDATE_INTENT_BYTES, OrderedCandidate, OrderedOperationKind,
     decode_ordered_candidate, encode_ordered_candidate,
+};
+pub(crate) use drain_set::drain_set_record_key;
+pub use drain_set::{
+    DrainSetIntent, DrainSetRecord, decode_drain_set_intent, decode_drain_set_record,
+    encode_drain_set_intent, encode_drain_set_record,
+};
+pub use drain_union::{
+    DrainSignerError, DrainSignerProgress, DrainUnionStep, MAX_DRAIN_SIGNER_PAGE_ENTRIES,
+    MAX_DRAIN_UNION_SIGNERS, advance_drain_union, confirm_drain_signer_entry,
+    drain_signer_entry_key, drain_signer_progress_key, drain_union_progress_key,
+    drain_union_ready_key, import_staged_drain_publication, ingest_drain_signer_page,
+    read_drain_signer_progress, staged_drain_signer_identity, verify_drain_ready,
+    verify_drain_ready_into,
 };
 pub use engine::{
     OrderedEventOutput, OrderedOutcome, OrderedProposal, OrderedStatus,
@@ -65,6 +95,26 @@ pub use engine::{
 pub use evidence_submission::{
     MAX_ORDERED_EVIDENCE_SUBMISSION_BYTES, OrderedEvidenceSubmission,
     decode_ordered_evidence_submission, encode_ordered_evidence_submission,
+};
+pub(crate) use freeze::admission_closure_key;
+pub(crate) use freeze::fence_admission_open;
+pub use freeze::{
+    AdmissionClosureRecord, FreezeIntent, decode_admission_closure_record, decode_freeze_intent,
+    encode_admission_closure_record, encode_freeze_intent,
+};
+pub use frontier::{
+    FrozenFrontierError, FrozenFrontierStep, advance_frozen_frontier, read_frozen_frontier_page,
+};
+pub use ordered_history::{
+    MAX_ORDERED_HISTORY_CHUNK_BYTES, MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES,
+    OrderedHistoryComponentKind, OrderedHistoryComponentRef, OrderedHistoryHeightDescriptor,
+    OrderedHistoryHeightMaterial, OrderedHistoryIdentity, OrderedHistorySummary,
+    OrderedHistoryVerifier, VerifiedOrderedHistory, decode_ordered_history_height_descriptor,
+    decode_ordered_history_identity, decode_ordered_history_summary,
+    encode_ordered_history_height_descriptor, encode_ordered_history_identity,
+    encode_ordered_history_summary, ordered_history_component_digest,
+    ordered_history_descriptor_digest, query_ordered_history_summary,
+    read_ordered_history_component_chunk, read_ordered_history_height_descriptor,
 };
 pub use policy::{
     ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE, OrderedEconomicsEnvironment, OrderedEconomicsPolicy,
@@ -108,6 +158,28 @@ pub enum OrderedRefusal {
     /// This request id already carries a committed receipt over different
     /// canonical bytes (it was spent through another path).
     RequestCommittedElsewhere,
+    /// DR-0154: a business candidate (every kind other than
+    /// [`OrderedOperationKind::Freeze`]) committed after admission was
+    /// already closed by an earlier committed `Freeze`. The deterministic,
+    /// authenticated no-effect closed-epoch refusal: no value or nonce
+    /// movement, and the original retained outcome (if any) is untouched.
+    ClosedEpoch,
+    /// DR-0154: a second `Freeze` candidate committed after admission was
+    /// already closed by an earlier one. There is no unfreeze in this
+    /// profile, so a later `Freeze` is refused rather than re-applied.
+    AlreadyFrozen,
+    /// The committed Freeze candidate appeared below the signed genesis
+    /// minimum ordered proposal height.
+    PrematureFreeze,
+    /// The advisory next set was structurally valid, but a healthy committed
+    /// bond or resource policy no longer makes one of its members eligible.
+    IneligibleNextSet,
+    /// DrainSet committed while the authorized epoch was still open.
+    NoFreeze,
+    /// This epoch already has an immutable committed DrainSet.
+    AlreadyDrained,
+    /// The declared selection differs from the committed Freeze or verified union.
+    ForeignDrainSet,
 }
 
 impl OrderedRefusal {
@@ -121,6 +193,13 @@ impl OrderedRefusal {
             Self::StaleSenderNonce => 5,
             Self::ShareUnavailable => 6,
             Self::RequestCommittedElsewhere => 7,
+            Self::ClosedEpoch => 8,
+            Self::AlreadyFrozen => 9,
+            Self::PrematureFreeze => 10,
+            Self::IneligibleNextSet => 11,
+            Self::NoFreeze => 12,
+            Self::AlreadyDrained => 13,
+            Self::ForeignDrainSet => 14,
         }
     }
 
@@ -133,6 +212,13 @@ impl OrderedRefusal {
             5 => Ok(Self::StaleSenderNonce),
             6 => Ok(Self::ShareUnavailable),
             7 => Ok(Self::RequestCommittedElsewhere),
+            8 => Ok(Self::ClosedEpoch),
+            9 => Ok(Self::AlreadyFrozen),
+            10 => Ok(Self::PrematureFreeze),
+            11 => Ok(Self::IneligibleNextSet),
+            12 => Ok(Self::NoFreeze),
+            13 => Ok(Self::AlreadyDrained),
+            14 => Ok(Self::ForeignDrainSet),
             _ => Err(NodeCoreError::PersistenceInvariant(
                 "unknown ordered refusal tag",
             )),
@@ -151,6 +237,17 @@ impl OrderedRefusal {
             Self::ShareUnavailable => "claimed fee share is unavailable on the committed row",
             Self::RequestCommittedElsewhere => {
                 "request id already carries a different committed receipt"
+            }
+            Self::ClosedEpoch => {
+                "ordered candidate committed after admission was closed by a freeze"
+            }
+            Self::AlreadyFrozen => "admission is already closed by an earlier committed freeze",
+            Self::PrematureFreeze => "freeze precedes the signed epoch-end minimum height",
+            Self::IneligibleNextSet => "freeze advisory next set is no longer eligible",
+            Self::NoFreeze => "drain set committed before any freeze was committed",
+            Self::AlreadyDrained => "drain set already committed for this epoch",
+            Self::ForeignDrainSet => {
+                "drain set union identity disagrees with the local ready union"
             }
         }
     }

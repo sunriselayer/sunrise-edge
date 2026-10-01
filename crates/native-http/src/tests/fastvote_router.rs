@@ -4,7 +4,7 @@
 //! `node_core::fast_path::tests` and `apps/operator/tests` for that); they
 //! prove the *route table itself*: every direct/legacy mutating path is
 //! completely unmounted (a genuine 404, not an internally-gated 200/4xx),
-//! every required bounded read route and both FastVote routes are mounted,
+//! every required bounded read route and the current FastVote routes are mounted,
 //! and construction rejects a FastVote composition whose policy context
 //! disagrees with the native ingress context.
 use super::*;
@@ -18,6 +18,41 @@ use execution::publication::{PublicationContext, UnverifiedDependencyRef};
 use fees::GasSchedule;
 use protocol_types::{SignatureSchemeId, ValidatorId};
 
+#[test]
+fn frozen_frontier_wire_and_consensus_page_bounds_match() {
+    assert_eq!(
+        node_wire::MAX_FRONTIER_PAGE_BYTES,
+        consensus::MAX_FROZEN_FRONTIER_PAGE_BYTES
+    );
+    assert_eq!(
+        usize::from(node_wire::MAX_FRONTIER_PAGE_LIMIT),
+        consensus::MAX_FROZEN_FRONTIER_PAGE_ENTRIES
+    );
+}
+
+#[test]
+fn frontier_errors_separate_prerequisites_cursors_and_durable_corruption() {
+    use node_core::ordered_economics::FrozenFrontierError;
+
+    assert_eq!(
+        crate::fastvote::frontier_error_response(&FrozenFrontierError::NotReady("freeze pending"))
+            .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        crate::fastvote::frontier_error_response(&FrozenFrontierError::InvalidCursor(
+            "unknown cursor"
+        ))
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        crate::fastvote::frontier_error_response(&FrozenFrontierError::Invalid("tombstoned"))
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+}
+
 fn context() -> PublicationContext {
     PublicationContext::new(
         config().chain_id().clone(),
@@ -27,7 +62,7 @@ fn context() -> PublicationContext {
     .unwrap()
 }
 
-fn fastvote_fee_policy() -> PaidFeePolicy {
+pub(super) fn fastvote_fee_policy() -> PaidFeePolicy {
     let publisher: [u8; 32] = [0x51; 32];
     let origin: abi::package_types::PackageOrigin = abi::package_types::PackageOrigin::unverified(
         config().chain_id().clone(),
@@ -197,7 +232,7 @@ async fn certified_router_still_serves_liveness_and_bounded_reads() {
 }
 
 #[tokio::test]
-async fn certified_router_mounts_both_fastvote_routes() {
+async fn certified_router_mounts_fastvote_and_publication_retention_routes() {
     let app = certified_router();
     // Malformed bodies still prove the route exists: a 4xx response from the
     // handler, never the router's own 404.
@@ -208,6 +243,83 @@ async fn certified_router_mounts_both_fastvote_routes() {
     assert_ne!(
         dispatch(&app, "POST", FASTVOTE_CERTIFICATES_PATH, vec![0xAA]).await,
         StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        dispatch(&app, "POST", FASTVOTE_PUBLICATION_RETAIN_PATH, vec![0xAA]).await,
+        StatusCode::BAD_REQUEST,
+        "malformed publication must be rejected by its mounted handler"
+    );
+    assert_eq!(
+        dispatch(&app, "GET", FASTVOTE_PUBLICATION_RETAIN_PATH, Vec::new()).await,
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+    for path in [
+        FASTVOTE_PUBLICATION_SOURCE_PATH,
+        FASTVOTE_PUBLISHED_APPLY_PATH,
+        FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
+        node_wire::FASTVOTE_RETAINED_PUBLICATION_SOURCE_PATH,
+        node_wire::FASTVOTE_DRAIN_SIGNER_PAGE_PATH,
+        node_wire::FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
+        node_wire::FASTVOTE_DRAIN_UNION_ADVANCE_PATH,
+        node_wire::FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH,
+        node_wire::FASTVOTE_DRAIN_APPLY_PATH,
+        "/v1/fastvote/drain/import/0101010101010101010101010101010101010101010101010101010101010101",
+    ] {
+        assert_eq!(
+            dispatch(&app, "POST", path, vec![0xAA]).await,
+            StatusCode::BAD_REQUEST,
+            "malformed request must reach the mounted {path} handler"
+        );
+        assert_eq!(
+            dispatch(&app, "GET", path, Vec::new()).await,
+            StatusCode::METHOD_NOT_ALLOWED
+        );
+    }
+    assert_ne!(
+        dispatch(
+            &app,
+            "POST",
+            FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
+            Vec::new()
+        )
+        .await,
+        StatusCode::NOT_FOUND,
+    );
+    assert_eq!(
+        dispatch(
+            &app,
+            "POST",
+            FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
+            vec![0xAA]
+        )
+        .await,
+        StatusCode::BAD_REQUEST,
+    );
+    let stale_request: node_wire::FrozenFrontierPageRequest =
+        node_wire::FrozenFrontierPageRequest {
+            epoch: Epoch::new(config().epoch().get() + 1),
+            after_request_id: None,
+            limit: 1,
+        };
+    assert_eq!(
+        dispatch(
+            &app,
+            "POST",
+            FASTVOTE_FROZEN_FRONTIER_PAGE_PATH,
+            stale_request.encode().unwrap()
+        )
+        .await,
+        StatusCode::CONFLICT,
+    );
+    assert_eq!(
+        dispatch(
+            &app,
+            "GET",
+            FASTVOTE_FROZEN_FRONTIER_ADVANCE_PATH,
+            Vec::new()
+        )
+        .await,
+        StatusCode::METHOD_NOT_ALLOWED,
     );
 }
 

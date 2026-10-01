@@ -1,8 +1,9 @@
 //! DR-0153 opt-in ordered network economics HTTP surface.
 //!
 //! [`certified_ordered_economics_router`] is a genuinely separate,
-//! self-contained router constructor: its body only ever mounts the seven
-//! paths in [`node_wire::ordered_economics`], never `NODE_EVENT_PATH` or any
+//! self-contained router constructor: its body only ever mounts the existing
+//! paths in [`node_wire::ordered_economics`] and the read-only
+//! [`node_wire::ordered_history`] family, never `NODE_EVENT_PATH` or any
 //! `mutation_routes` from `publication`/`local_execution`/`paid_execution`.
 //! It cannot expose a direct/legacy mutating economics route by
 //! construction, not merely by a run-time flag happening to be false.
@@ -60,6 +61,8 @@ use runtime::{
 use std::{sync::Arc, time::Duration};
 
 use crate::NativeBlockingExecutor;
+
+mod ordered_history;
 
 /// State this router's handlers share. Never contains a signer capable of
 /// authorizing a direct economics mutation outside the ordered routes.
@@ -737,6 +740,7 @@ where
             ORDERED_ECONOMICS_TICK_PATH,
             post(tick_handler::<S, C, I, Sig>),
         )
+        .merge(ordered_history::routes::<S, C, I, Sig>())
         .layer(DefaultBodyLimit::max(MAX_ORDERED_PROPOSAL_BYTES))
         .with_state(shared)
 }

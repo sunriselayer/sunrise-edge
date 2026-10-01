@@ -282,6 +282,104 @@ fn succeeds_with_the_correct_hostname_and_ca() {
 }
 
 #[test]
+fn tls_accepts_bodyless_204_without_content_length() {
+    let certificate: TestCertificate = issue_certificate("validator.test");
+    let (sender, _receiver) = mpsc::channel();
+    let addr: SocketAddr = serve_tls_once(
+        certificate.server_config,
+        b"HTTP/1.1 204 No Content\r\n\r\n".to_vec(),
+        sender,
+    );
+    let transport: RemoteTlsHttpTransport =
+        remote_transport(addr, "validator.test", &certificate.ca_der).unwrap();
+    let response: sunrise_edge_client::WireResponse = transport.send(&get_request()).unwrap();
+    assert_eq!(response.status, 204);
+    assert!(response.body.is_empty());
+    assert!(response.content_type.is_none());
+}
+
+#[test]
+fn tls_rejects_payload_after_a_bodyless_204() {
+    let certificate: TestCertificate = issue_certificate("validator.test");
+    let (sender, _receiver) = mpsc::channel();
+    let addr: SocketAddr = serve_tls_once(
+        certificate.server_config,
+        b"HTTP/1.1 204 No Content\r\n\r\nunexpected".to_vec(),
+        sender,
+    );
+    let transport: RemoteTlsHttpTransport =
+        remote_transport(addr, "validator.test", &certificate.ca_der).unwrap();
+    let error: TransportError = transport.send(&get_request()).unwrap_err();
+    assert!(matches!(error, TransportError::TrailingResponseBytes));
+}
+
+#[test]
+fn tls_rejects_any_content_length_for_204() {
+    let certificate: TestCertificate = issue_certificate("validator.test");
+    for bytes in [
+        b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n".as_slice(),
+        b"HTTP/1.1 204 No Content\r\nContent-Length: 1\r\n\r\n".as_slice(),
+    ] {
+        let (sender, _receiver) = mpsc::channel();
+        let addr: SocketAddr =
+            serve_tls_once(certificate.server_config.clone(), bytes.to_vec(), sender);
+        let transport: RemoteTlsHttpTransport =
+            remote_transport(addr, "validator.test", &certificate.ca_der).unwrap();
+        let error: TransportError = transport.send(&get_request()).unwrap_err();
+        assert!(matches!(error, TransportError::InvalidContentLength));
+    }
+}
+
+#[test]
+fn tls_still_rejects_missing_content_length_for_ordinary_200() {
+    let certificate: TestCertificate = issue_certificate("validator.test");
+    let (sender, _receiver) = mpsc::channel();
+    let addr: SocketAddr = serve_tls_once(
+        certificate.server_config,
+        b"HTTP/1.1 200 OK\r\n\r\nunframed".to_vec(),
+        sender,
+    );
+    let transport: RemoteTlsHttpTransport =
+        remote_transport(addr, "validator.test", &certificate.ca_der).unwrap();
+    let error: TransportError = transport.send(&get_request()).unwrap_err();
+    assert!(matches!(error, TransportError::MissingContentLength));
+}
+
+#[test]
+fn tls_bodyless_204_finishes_at_headers_without_waiting_for_connection_close() {
+    let certificate: TestCertificate = issue_certificate("validator.test");
+    let listener: TcpListener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (release_sender, release_receiver) = mpsc::channel::<()>();
+    let server: thread::JoinHandle<()> = thread::spawn(move || {
+        let (socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(TEST_SOCKET_READ_TIMEOUT))
+            .unwrap();
+        let connection: ServerConnection =
+            ServerConnection::new(certificate.server_config).unwrap();
+        let mut stream: StreamOwned<ServerConnection, std::net::TcpStream> =
+            StreamOwned::new(connection, socket);
+        let request: Vec<u8> = read_request_bounded(&mut stream);
+        assert!(request.windows(4).any(|bytes| bytes == b"\r\n\r\n"));
+        stream
+            .write_all(b"HTTP/1.1 204 No Content\r\n\r\n")
+            .unwrap();
+        stream.flush().unwrap();
+        let _ = release_receiver.recv_timeout(Duration::from_secs(3));
+    });
+    let transport: RemoteTlsHttpTransport =
+        remote_transport(addr, "validator.test", &certificate.ca_der).unwrap();
+    let mut request: WireRequest = get_request();
+    request.deadline = Some(Instant::now() + Duration::from_secs(1));
+    let response: sunrise_edge_client::WireResponse = transport.send(&request).unwrap();
+    release_sender.send(()).unwrap();
+    server.join().unwrap();
+    assert_eq!(response.status, 204);
+    assert!(response.body.is_empty());
+}
+
+#[test]
 fn rejects_a_wrong_hostname() {
     let cert = issue_certificate("sunrise-edge-test.invalid");
     // The server never gets far enough to read a request or reply, since the

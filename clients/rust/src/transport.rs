@@ -170,11 +170,12 @@ pub enum TransportError {
     InvalidStatusCode,
     /// A header line was not `"Name: value"`.
     MalformedHeaderLine,
-    /// The response had no `Content-Length` header.
+    /// A response other than bodyless HTTP 204 had no `Content-Length` header.
     MissingContentLength,
     /// The response had more than one `Content-Length` header.
     DuplicateContentLength,
-    /// The response's `Content-Length` value was not a valid integer.
+    /// The response's `Content-Length` was not a valid integer or was present
+    /// on bodyless HTTP 204.
     InvalidContentLength,
     /// The response declared `Transfer-Encoding`, which this transport
     /// never accepts.
@@ -256,7 +257,7 @@ impl fmt::Display for TransportError {
                 f.write_str("response had more than one Content-Length header")
             }
             Self::InvalidContentLength => {
-                f.write_str("response Content-Length was not a valid integer")
+                f.write_str("response Content-Length was invalid for its status")
             }
             Self::TransferEncodingUnsupported => {
                 f.write_str("response declared Transfer-Encoding, which is unsupported")
@@ -382,9 +383,10 @@ impl BoundedTransportIo for TcpStream {
 ///
 /// Opens exactly one bounded [`TcpStream`] per request, sends
 /// `Connection: close`, and enforces connect/read/write timeouts plus
-/// header/body byte bounds. It requires an exact `Content-Length` on the
-/// response and rejects `Transfer-Encoding`, a missing/duplicate/invalid
-/// `Content-Length`, a truncated or trailing body, and any non-loopback
+/// header/body byte bounds. It requires an exact `Content-Length` except for
+/// bodyless HTTP 204, which ends at the headers and forbids Content-Length.
+/// It rejects `Transfer-Encoding`, a missing/duplicate/invalid length, a
+/// truncated or trailing body, and any non-loopback
 /// target. It performs no TLS handshake, never follows a redirect, never
 /// uses a proxy, never reuses a connection across requests, and does no
 /// work after returning: there is no background thread, retry, or async
@@ -392,6 +394,8 @@ impl BoundedTransportIo for TcpStream {
 /// remote transport is [`RemoteTlsHttpTransport`] (see
 /// `docs/architecture/product-surfaces.md` §44 /
 /// `docs/architecture/decisions/0081-0087-cli-first-roadmap.md` DR-0083, DR-0085).
+/// A 204 rejects already-buffered trailing bytes, then drops the connection
+/// without reading later bytes or waiting for EOF.
 ///
 /// The hard complete-request budget is
 /// `connect_timeout + write_timeout + read_timeout`. A
@@ -891,7 +895,7 @@ impl BoundedTransportIo for TlsBoundedStream {
                 // A peer that closes the raw TCP connection without sending a
                 // TLS `close_notify` surfaces here as `UnexpectedEof`. This
                 // transport treats it exactly like a plain TCP EOF (`Ok(0)`):
-                // the strict `Content-Length` framing shared with
+                // the strict exact-length/bodyless framing shared with
                 // `LoopbackHttpTransport` already detects any truncation this
                 // would otherwise catch, so both transports must react to a
                 // closed connection identically.
@@ -1046,7 +1050,24 @@ fn read_response<S: BoundedTransportIo>(
         }
     }
 
-    let content_length = content_length.ok_or(TransportError::MissingContentLength)?;
+    if status == 204 {
+        // HTTP 204 ends at the header terminator and forbids Content-Length,
+        // even an explicit zero. Already-buffered trailing bytes are rejected;
+        // later bytes are not read as the one-shot connection is dropped
+        // without waiting for EOF.
+        if content_length.is_some() {
+            return Err(TransportError::InvalidContentLength);
+        }
+        if !already_read_body.is_empty() {
+            return Err(TransportError::TrailingResponseBytes);
+        }
+        return Ok(WireResponse {
+            status,
+            content_type,
+            body: Vec::new(),
+        });
+    }
+    let content_length: usize = content_length.ok_or(TransportError::MissingContentLength)?;
     if content_length > max_body_bytes {
         return Err(TransportError::ResponseBodyTooLarge {
             declared: content_length,
@@ -1073,7 +1094,7 @@ fn read_response<S: BoundedTransportIo>(
         }
     }
 
-    // Bounded trailing-byte probe: `Content-Length` declared the exact body
+    // Bounded trailing-byte probe: Content-Length declared the exact body
     // size, so any further byte before the peer closes is a protocol
     // violation. A timeout here (the peer simply has not closed yet) is not
     // itself evidence of trailing bytes.

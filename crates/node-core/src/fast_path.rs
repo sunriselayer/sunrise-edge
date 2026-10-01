@@ -83,7 +83,10 @@ use super::*;
 use abi::package_types::ScopedTypeArg;
 use bonds::BondResourceId;
 use canonical_encoding::{decode_digest32, encode_digest32};
-use consensus::{ConsensusError, ConsensusSigner, ConsensusVerifier, FastCertificate, FastVote};
+use consensus::{
+    AvailabilityCertificate, AvailabilityCertifier, ConsensusError, ConsensusSigner,
+    ConsensusVerifier, FastCertificate, FastVote, decode_availability_certificate,
+};
 use crypto::{Ed25519Verifier, SignatureVerifier};
 use execution::local_execution::{CreatedObjectAuthority, LocalExecutionPolicy};
 use execution::paid_execution::{PaidContractEngine, PaidFeePolicy};
@@ -105,6 +108,17 @@ use protocol_types::{SignatureSchemeId, ValidatorId};
 use validator_set::{ValidatorInfo, ValidatorSet, ValidatorSetError};
 
 pub(crate) mod commitment;
+/// Explicit application of a verified member of the committed DrainSet.
+pub mod drain_apply;
+/// Full-certificate retention and relay after the committed Freeze.
+pub mod drain_publication;
+/// DR-0154 handoff-capable prepare-side retention: the exact logical
+/// commitment witness and every required replay artifact, durably retained
+/// before a [`consensus::FastVote`] is ever exposed.
+pub(crate) mod prepared_material;
+/// DR-0154 execution-free publication: durable verified retention of one
+/// full-certificate publication bundle before an availability ACK.
+pub mod publication;
 pub mod records;
 
 #[cfg(test)]
@@ -114,7 +128,7 @@ mod commitment_witness_tests;
 #[cfg(test)]
 mod soak_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use records::{
     FastPathBondRecord, FastPathCertificateRecord, FastPathFeeShare, FastPathPreparedRecord,
@@ -230,6 +244,10 @@ pub enum FastPathError {
     Node(NodeCoreError),
     /// Fast-path-specific invariant failed.
     Invalid(&'static str),
+    /// A DR-0154 publication-retention failure, surfaced through this error
+    /// type by [`prepared_material`] (prepare-side witness/artifact
+    /// retention) and by the availability-certificate gate in [`apply_internal`].
+    Publication(publication::PublicationRetentionError),
 }
 impl fmt::Display for FastPathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -238,6 +256,7 @@ impl fmt::Display for FastPathError {
             Self::Consensus(error) => error.fmt(f),
             Self::Node(error) => error.fmt(f),
             Self::Invalid(message) => f.write_str(message),
+            Self::Publication(error) => error.fmt(f),
         }
     }
 }
@@ -285,6 +304,11 @@ impl From<CanonicalDecodingError> for FastPathError {
 impl From<HashingError> for FastPathError {
     fn from(error: HashingError) -> Self {
         Self::Node(error.into())
+    }
+}
+impl From<publication::PublicationRetentionError> for FastPathError {
+    fn from(error: publication::PublicationRetentionError) -> Self {
+        Self::Publication(error)
     }
 }
 impl From<ValidatorSetError> for FastPathError {
@@ -431,6 +455,70 @@ fn require_prepared_generation(
     ))
 }
 
+/// Explicit source of the durable availability guarantee DR-0154 requires
+/// before a handoff-capable (`0x6424/v2`) apply admits any operation: a
+/// quorum retained this request's full publication material -- the original
+/// signed intent, one verifying full certificate, and every required replay
+/// artifact -- before this apply. See
+/// [`docs/architecture/epoch-handoff.md`](../../../docs/architecture/epoch-handoff.md),
+/// "Execution-free publication".
+///
+/// Ordinary application constructs only [`Self::Certified`], from a
+/// verified [`AvailabilityCertificate`]. The distinct post-Freeze
+/// [`drain_apply::apply_drain_member`] reconstructs a committed DrainSet
+/// member and full retained proof without weakening this authority type.
+/// It deliberately carries no "skip", "local-only" or force variant, so
+/// ordinary v2 application cannot bypass the availability requirement.
+#[derive(Debug)]
+pub enum PublicationAuthority {
+    /// A verified quorum [`AvailabilityCertificate`] bound to this exact
+    /// `(chain, protocol_version, epoch, domain, request_id, signed_intent_digest,
+    /// execution_commitment)`.
+    Certified(AvailabilityCertificate),
+}
+
+/// Decodes and verifies `availability_certificate_bytes` as the
+/// [`PublicationAuthority`] a fresh handoff-capable apply or signerless
+/// recovery requires: a quorum certificate over the exact
+/// [`consensus::AvailabilityIdentity`] this request's chain, protocol
+/// version, epoch, atomicity domain, request id, signed-intent digest and
+/// independently re-derived execution commitment attest.
+///
+/// The certificate's own `(chain_id, protocol_version, epoch)` binding is
+/// enforced by [`AvailabilityCertifier::verify_certificate`] itself (the
+/// certifier is constructed bound to this exact context); this function adds
+/// the four identity fields that binding cannot check on its own. The
+/// identity's `semantic_artifacts_digest` is accepted as attested by the
+/// certificate's own verified quorum signatures without independent
+/// re-derivation here: this applying replica already independently
+/// re-executed and re-verified the whole operation against its own live
+/// state above, so the certificate's role is proving durable quorum
+/// retention for other replicas' eventual recovery, not re-authenticating an
+/// execution this replica already re-authenticated itself.
+fn require_publication_authority(
+    availability_certifier: &AvailabilityCertifier,
+    availability_certificate_bytes: Option<&[u8]>,
+    domain: AtomicityDomainId,
+    request_id: [u8; 32],
+    signed_intent_digest: Digest32,
+    execution_commitment: Digest32,
+) -> FastPathResult<PublicationAuthority> {
+    let bytes: &[u8] = availability_certificate_bytes.ok_or(FastPathError::Invalid(
+        "handoff-capable apply requires a verified availability certificate",
+    ))?;
+    let certificate: AvailabilityCertificate = decode_availability_certificate(bytes)?;
+    availability_certifier.verify_certificate(&certificate, &FastPathEd25519Verifier)?;
+    let identity = &certificate.identity;
+    if identity.domain != domain
+        || identity.request_id != request_id
+        || identity.signed_intent_digest != signed_intent_digest
+        || identity.execution_commitment != execution_commitment
+    {
+        return invalid("availability certificate does not attest this exact request");
+    }
+    Ok(PublicationAuthority::Certified(certificate))
+}
+
 fn compute_locked_objects_digest(
     resolver: &HashSuiteResolver,
     chain: &ChainId,
@@ -555,13 +643,14 @@ pub(crate) fn install_validator_set<S: StructuredDurableDomainStateStore>(
 /// [`consensus::FastVote`] for `(signed_intent_digest, commitment)`; exact
 /// replay of the same request id and signed bytes returns the identical
 /// stored vote without re-executing anything. A conflicting replay, an
-/// `Instantiate`/`Publish` application, or an input locked by a different
-/// request id all fail closed and write nothing.
+/// input locked by a different request id all fail closed and write nothing.
 ///
 /// `created_checkpoint` feeds the staged commitment this call votes on, and
 /// is durably bound into the prepared record so [`apply`] later re-admits
 /// against this exact same value rather than one supplied fresh by its own
-/// caller, however far checkpoint progress has moved since.
+/// caller, however far checkpoint progress has moved since. This physical
+/// operand is historical-profile behavior; Logical prepare signs its verified
+/// semantic execution generation instead, with revisions used only for CAS.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare<S, E, C>(
     store: &S,
@@ -583,7 +672,7 @@ where
     E: PaidContractEngine + ?Sized,
     C: ConsensusSigner,
 {
-    if history.len() > publication::MAX_PUBLICATION_HISTORY {
+    if history.len() > crate::publication::MAX_PUBLICATION_HISTORY {
         return invalid("resolver history bound");
     }
     let (authenticated, event_digest, request_id) =
@@ -678,6 +767,11 @@ where
                 validator_set,
             )?;
             certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+            if existing.prepared_generation.is_some() {
+                prepared_material::verify_prepared_material(
+                    store, context, domain, resolver, history, &existing,
+                )?;
+            }
             return Ok(vote);
         }
     }
@@ -736,7 +830,7 @@ where
                 "fast-path prepare always reserves a fresh nonce",
             ))?;
     let pending_nonce_bytes: Vec<u8> = pending_nonce_write.record.encode()?;
-    let commitment: Digest32 = commitment::compute(
+    let (witness_bytes, commitment): (Vec<u8>, Digest32) = commitment::compute_with_envelope(
         resolver,
         intent_context.epoch(),
         admission.event_digest,
@@ -755,6 +849,28 @@ where
         admission.logical.derived.as_ref(),
     )?;
 
+    // DR-0154: stage the exact witness and verified closure with destination
+    // CAS assertions. They join the prepared record and locks in one commit;
+    // another prepare cannot overwrite an exposed vote's backing material.
+    let logical_prepare: bool = admission.logical.derived.is_some();
+    let mut material_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    let mut material_mutations: Vec<StateMutationEntry> = Vec::new();
+    if logical_prepare {
+        prepared_material::stage_prepared_material(
+            store,
+            blob_store,
+            context,
+            domain,
+            resolver,
+            &chain,
+            &original_request_id,
+            intent_context.epoch(),
+            &witness_bytes,
+            &mut material_reads,
+            &mut material_mutations,
+        )?;
+    }
+
     let locked_objects_digest: Digest32 = compute_locked_objects_digest(
         resolver,
         &chain,
@@ -762,8 +878,6 @@ where
         intent_context.epoch(),
         &admission.locked_objects,
     )?;
-    let vote: FastVote =
-        certifier.cast_vote(event_digest, commitment, locked_objects_digest, signer)?;
     // Defense-in-depth against a misconfigured or rotated local signing key:
     // `cast_vote` only checks that `signer`'s (validator_id, scheme) pair is
     // registered in the committed set (`ensure_registered_scheme`); it never
@@ -775,14 +889,38 @@ where
     // exact-replay branch above already re-verifies its stored vote on every
     // call; this makes the fresh branch verify exactly once, before it, so
     // neither branch can ever durably commit an unverifiable vote.
-    certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+    let cast_verified_vote = || -> FastPathResult<FastVote> {
+        let vote: FastVote =
+            certifier.cast_vote(event_digest, commitment, locked_objects_digest, signer)?;
+        certifier.verify_vote(&vote, &FastPathEd25519Verifier)?;
+        Ok(vote)
+    };
+    // The installed committee permits only Ed25519. Its verified signatures
+    // occupy exactly 64 bytes, so a placeholder gives the complete Logical
+    // transaction's exact encoded size without calling the signer. Historical
+    // prepare keeps its existing signing order and canonical bytes.
+    let mut vote: FastVote = if logical_prepare {
+        FastVote {
+            chain_id: chain.clone(),
+            protocol_version: intent_context.protocol_version(),
+            epoch: intent_context.epoch(),
+            tx_hash: event_digest,
+            execution_effects_hash: commitment,
+            validator: signer.validator_id(),
+            signature_scheme: signer.signature_scheme(),
+            locked_objects_digest,
+            signature: vec![0; 64],
+        }
+    } else {
+        cast_verified_vote()?
+    };
     let vote_bytes: Vec<u8> = consensus::encode_fast_vote(&vote)?;
 
     let nonce: PendingSenderNonceWrite = admission.nonce_write.ok_or(FastPathError::Invalid(
         "fast-path prepare always reserves a fresh nonce",
     ))?;
 
-    let prepared_record: FastPathPreparedRecord = FastPathPreparedRecord {
+    let mut prepared_record: FastPathPreparedRecord = FastPathPreparedRecord {
         context: intent_context.clone(),
         request_id: original_request_id,
         signed_intent_digest: event_digest,
@@ -814,7 +952,15 @@ where
     reads.extend(fence_reads);
     reads.insert(nonce.key.clone(), nonce.read_revision);
     reads.insert(prepared_key.clone(), observed_prepared.revision());
-    let mut mutations: Vec<StateMutationEntry> = Vec::new();
+    for (key, revision) in material_reads {
+        if reads
+            .insert(key, revision)
+            .is_some_and(|existing: StateRevision| existing != revision)
+        {
+            return Err(NodeCoreError::StateConflict.into());
+        }
+    }
+    let mut mutations: Vec<StateMutationEntry> = material_mutations;
     let nonce_lock_key: Vec<u8> = fastpath_nonce_lock_key(&chain, &sender, intent_context.epoch())?;
     let nonce_lock: FastPathNonceLockRecord = FastPathNonceLockRecord {
         request_id: original_request_id,
@@ -838,8 +984,9 @@ where
             StateMutation::Put(encode_fastpath_lock_record(&lock)?),
         )?);
     }
+    let prepared_mutation_index: usize = mutations.len();
     mutations.push(StateMutationEntry::new(
-        prepared_key,
+        prepared_key.clone(),
         StateMutation::Put(prepared_bytes),
     )?);
 
@@ -847,8 +994,7 @@ where
         .into_iter()
         .map(|(key, revision)| StateReadAssertion::new(key, revision))
         .collect::<Result<_, RuntimeError>>()?;
-    let state: DurableStateTransaction =
-        DurableStateTransaction::new(domain, AtomicStateReadSet::new(assertions)?, mutations)?;
+    let read_set: AtomicStateReadSet = AtomicStateReadSet::new(assertions)?;
 
     let synthetic_id: [u8; 32] = fastpath_synthetic_prepare_request_id(
         resolver,
@@ -863,13 +1009,38 @@ where
         commitment,
         synthetic_receipt_payload.encode()?,
     )?;
-    let transaction: DurableInvocationTransaction = DurableInvocationTransaction::new(
-        domain,
-        Some(state),
-        DurableObjectChanges::new(admission.head_reads, Vec::new())?,
-        receipt,
-        None,
-    )?;
+    let objects: DurableObjectChanges =
+        DurableObjectChanges::new(admission.head_reads, Vec::new())?;
+    let build_transaction =
+        |mutations: Vec<StateMutationEntry>| -> FastPathResult<DurableInvocationTransaction> {
+            let state: DurableStateTransaction =
+                DurableStateTransaction::new(domain, read_set.clone(), mutations)?;
+            Ok(DurableInvocationTransaction::new(
+                domain,
+                Some(state),
+                objects.clone(),
+                receipt.clone(),
+                None,
+            )?)
+        };
+    if logical_prepare {
+        // Check every existing state/object/envelope capacity limit before a
+        // signature is computed. This placeholder transaction is never sent
+        // to storage; only the subsequently verified vote may be committed.
+        let preflight: DurableInvocationTransaction = build_transaction(mutations.clone())?;
+        drop(preflight);
+        vote = cast_verified_vote()?;
+        let vote_bytes: Vec<u8> = consensus::encode_fast_vote(&vote)?;
+        if vote_bytes.len() != prepared_record.vote.len() {
+            return invalid("fast-path prepare vote capacity mismatch");
+        }
+        prepared_record.vote = vote_bytes;
+        mutations[prepared_mutation_index] = StateMutationEntry::new(
+            prepared_key,
+            StateMutation::Put(records::encode_fastpath_prepared_record(&prepared_record)?),
+        )?;
+    }
+    let transaction: DurableInvocationTransaction = build_transaction(mutations)?;
     match store.commit_invocation(context, transaction) {
         DurableCommitOutcome::Committed => Ok(vote),
         DurableCommitOutcome::Rejected(
@@ -942,6 +1113,53 @@ where
         signed_bytes,
         certificate_bytes,
         None,
+        None,
+    )
+}
+
+/// Identical to [`apply`], but additionally requires and durably persists a
+/// verified [`AvailabilityCertificate`] before applying anything: DR-0154's
+/// publication-before-apply rule for a handoff-capable (`0x6424/v2`)
+/// admission. See [`PublicationAuthority`] and the module documentation.
+///
+/// For a historical (`0x6424/v1`) admission this is exactly [`apply`]:
+/// `availability_certificate_bytes` is accepted but never required or
+/// inspected, so v1 behavior and vectors are byte-identical to [`apply`].
+#[allow(clippy::too_many_arguments)]
+pub fn apply_after_publication<S, E>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    base_policy: &LocalExecutionPolicy,
+    fee_policy: &PaidFeePolicy,
+    engine: &E,
+    signed_bytes: &[u8],
+    certificate_bytes: &[u8],
+    availability_certificate_bytes: &[u8],
+) -> FastPathResult<NodeOutput>
+where
+    S: StructuredDurableDomainStateStore,
+    E: PaidContractEngine + ?Sized,
+{
+    apply_internal(
+        store,
+        blob_store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        base_policy,
+        fee_policy,
+        engine,
+        signed_bytes,
+        certificate_bytes,
+        None,
+        Some(availability_certificate_bytes),
     )
 }
 
@@ -985,6 +1203,52 @@ where
         signed_bytes,
         certificate_bytes,
         Some(recovery_created_checkpoint),
+        None,
+    )
+}
+
+/// Identical to [`apply_with_recovery`], but additionally requires and
+/// durably persists a verified [`AvailabilityCertificate`] before applying
+/// anything, exactly as [`apply_after_publication`] does for the non-recovery
+/// entry point. For a historical (`0x6424/v1`) admission this is exactly
+/// [`apply_with_recovery`]; see that function's own documentation for the
+/// recovery contract itself, unaffected by this gate.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_with_recovery_after_publication<S, E>(
+    store: &S,
+    blob_store: &dyn BlobStore,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    history: &[HashSuiteResolver],
+    expected: &PublicationContext,
+    base_policy: &LocalExecutionPolicy,
+    fee_policy: &PaidFeePolicy,
+    engine: &E,
+    signed_bytes: &[u8],
+    certificate_bytes: &[u8],
+    recovery_created_checkpoint: u64,
+    availability_certificate_bytes: &[u8],
+) -> FastPathResult<NodeOutput>
+where
+    S: StructuredDurableDomainStateStore,
+    E: PaidContractEngine + ?Sized,
+{
+    apply_internal(
+        store,
+        blob_store,
+        context,
+        domain,
+        resolver,
+        history,
+        expected,
+        base_policy,
+        fee_policy,
+        engine,
+        signed_bytes,
+        certificate_bytes,
+        Some(recovery_created_checkpoint),
+        Some(availability_certificate_bytes),
     )
 }
 
@@ -1018,12 +1282,13 @@ fn apply_internal<S, E>(
     signed_bytes: &[u8],
     certificate_bytes: &[u8],
     recovery_created_checkpoint: Option<u64>,
+    availability_certificate_bytes: Option<&[u8]>,
 ) -> FastPathResult<NodeOutput>
 where
     S: StructuredDurableDomainStateStore,
     E: PaidContractEngine + ?Sized,
 {
-    if history.len() > publication::MAX_PUBLICATION_HISTORY {
+    if history.len() > crate::publication::MAX_PUBLICATION_HISTORY {
         return invalid("resolver history bound");
     }
     let (authenticated, event_digest, request_id) =
@@ -1120,7 +1385,7 @@ where
         chain.clone(),
         intent_context.protocol_version(),
         intent_context.epoch(),
-        validator_set,
+        validator_set.clone(),
     )?;
     certifier.verify_certificate(&certificate, &FastPathEd25519Verifier)?;
     if certificate.chain_id != chain
@@ -1223,6 +1488,35 @@ where
             "fast-path re-derived locked-object digest no longer matches the certificate",
         );
     }
+
+    // DR-0154: a handoff-capable (v2) admission requires a verified
+    // AvailabilityCertificate -- durable quorum proof of execution-free
+    // publication -- bound to this exact chain/protocol/epoch (via
+    // `availability_certifier`'s own construction), atomicity domain, request
+    // id, signed-intent digest and independently re-derived execution
+    // commitment, checked here, after the completed-receipt reconciliation
+    // above and before any effect is applied. A v1 admission
+    // (`derived.is_none()`) requires nothing here: `apply`/`apply_with_recovery`
+    // remain byte-identical to their historical behavior.
+    let publication_authority: Option<PublicationAuthority> = if admission.logical.derived.is_some()
+    {
+        let availability_certifier: AvailabilityCertifier = AvailabilityCertifier::new(
+            chain.clone(),
+            intent_context.protocol_version(),
+            intent_context.epoch(),
+            validator_set,
+        )?;
+        Some(require_publication_authority(
+            &availability_certifier,
+            availability_certificate_bytes,
+            domain,
+            original_request_id,
+            event_digest,
+            fresh_commitment,
+        )?)
+    } else {
+        None
+    };
 
     // Defense in depth: recovery must not persist any staged lock mutation,
     // including a stale-lock delete, even if admission is extended later.
@@ -1352,6 +1646,36 @@ where
         commitment_witness_key,
         StateMutation::Put(commitment_witness_bytes),
     )?);
+
+    // DR-0154: persist the exact accepted `AvailabilityCertificate` bytes in
+    // this same atomic commit, alongside the original result/receipt above:
+    // a handoff-capable apply can never durably record its effects without
+    // also durably recording the publication proof that authorized them.
+    if publication_authority.is_some() {
+        let accepted_bytes: &[u8] =
+            availability_certificate_bytes.ok_or(FastPathError::Invalid(
+                "handoff-capable apply requires a verified availability certificate",
+            ))?;
+        let ac_key: Vec<u8> =
+            records::fastpath_availability_certificate_key(&chain, &original_request_id)?;
+        let observed_ac: VersionedStateValue =
+            store.get_versioned_durable(context, domain, &ac_key)?;
+        if observed_ac.value().is_some() {
+            return invalid("fast-path availability certificate record already exists");
+        }
+        reads.insert(ac_key.clone(), observed_ac.revision());
+        let ac_record: records::FastPathAvailabilityCertificateRecord =
+            records::FastPathAvailabilityCertificateRecord {
+                request_id: original_request_id,
+                certificate: accepted_bytes.to_vec(),
+            };
+        mutations.push(StateMutationEntry::new(
+            ac_key,
+            StateMutation::Put(records::encode_fastpath_availability_certificate_record(
+                &ac_record,
+            )?),
+        )?);
+    }
 
     let assertions: Vec<StateReadAssertion> = reads
         .into_iter()

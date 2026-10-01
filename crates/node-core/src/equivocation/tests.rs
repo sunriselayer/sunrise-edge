@@ -481,6 +481,109 @@ fn submit_fast_vote_object_conflict_evidence_succeeds_and_queries() {
 }
 
 #[test]
+fn fresh_evidence_is_fenced_by_serving_epoch_freeze_and_exact_replay_survives() {
+    let store: MemoryDurableStateStore = memory_store();
+    let (signers, entries): (Vec<TestSigner>, Vec<FastPathValidatorEntry>) = four_validators();
+    let epoch: Epoch = Epoch::new(0);
+    install_test_environment(&store, epoch, &entries);
+    let pinned: PublicationContext =
+        PublicationContext::new(chain(), protocol_version(), epoch).unwrap();
+    let (mut manifest, _, _, _, _) =
+        crate::genesis::tests::build_fixture_for_context(pinned.clone(), resolver());
+    manifest.commitment_profile = logical_generation::CommitmentProfile::LogicalGenerationV2;
+    manifest.minimum_freeze_block_height = 1;
+    manifest.validator_set = FastPathValidatorSetRecord {
+        context: pinned.clone(),
+        validators: entries.clone(),
+    };
+    crate::genesis::tests::resign_manifest(&mut manifest);
+    let profile: logical_generation::LogicalProfileRecord =
+        logical_generation::LogicalProfileRecord {
+            context: pinned.clone(),
+            profile: manifest.commitment_profile,
+            manifest_digest: crate::genesis::genesis_manifest_commitment(&resolver(), &manifest)
+                .unwrap(),
+            genesis_authority: manifest.genesis_authority,
+            genesis_floor: protocol_types::ExecutionGeneration::genesis_floor(),
+            minimum_freeze_block_height: 1,
+        };
+    let put = |key: Vec<u8>, bytes: Vec<u8>| {
+        let revision: StateRevision = store
+            .get_versioned_durable(&context(), domain(), &key)
+            .unwrap()
+            .revision();
+        let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
+            domain(),
+            AtomicStateReadSet::new(vec![
+                StateReadAssertion::new(key.clone(), revision).unwrap(),
+            ])
+            .unwrap(),
+            AtomicStateMutationSet::new(vec![
+                StateMutationEntry::new(key, StateMutation::Put(bytes)).unwrap(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.commit_durable(&context(), transaction),
+            DurableCommitOutcome::Committed
+        );
+    };
+    put(
+        crate::genesis::genesis_manifest_key(&pinned).unwrap(),
+        crate::genesis::encode_genesis_manifest(&manifest).unwrap(),
+    );
+    put(
+        logical_generation::logical_profile_key(&chain()).unwrap(),
+        logical_generation::encode_logical_profile_record(&profile).unwrap(),
+    );
+    let certifier: FastPathCertifier = fast_certifier(epoch, &entries);
+    let first_a: FastVote = certifier
+        .cast_vote(digest(0x11), digest(0x12), digest(0x13), &signers[0])
+        .unwrap();
+    let first_b: FastVote = certifier
+        .cast_vote(digest(0x11), digest(0x14), digest(0x13), &signers[0])
+        .unwrap();
+    let submit = |a: &FastVote, b: &FastVote| {
+        submit_fast_vote_equivocation_evidence(
+            &store,
+            &context(),
+            domain(),
+            &resolver(),
+            &chain(),
+            protocol_version(),
+            &encode_fast_vote(a).unwrap(),
+            &encode_fast_vote(b).unwrap(),
+            11,
+        )
+    };
+    assert!(matches!(
+        submit(&first_a, &first_b).unwrap(),
+        EquivocationEvidenceOutcome::Recorded(_)
+    ));
+    let closure = crate::ordered_economics::AdmissionClosureRecord {
+        closed_epoch: epoch,
+        request_id: [0x51; 32],
+        closed_at_block_height: 1,
+    };
+    put(
+        crate::ordered_economics::admission_closure_key(&chain(), epoch).unwrap(),
+        crate::ordered_economics::encode_admission_closure_record(&closure).unwrap(),
+    );
+    assert!(matches!(
+        submit(&first_a, &first_b).unwrap(),
+        EquivocationEvidenceOutcome::AlreadyRecorded(_)
+    ));
+    let second_a: FastVote = certifier
+        .cast_vote(digest(0x21), digest(0x22), digest(0x23), &signers[0])
+        .unwrap();
+    let second_b: FastVote = certifier
+        .cast_vote(digest(0x21), digest(0x24), digest(0x23), &signers[0])
+        .unwrap();
+    assert!(submit(&second_a, &second_b).is_err());
+}
+
+#[test]
 fn submit_epoch_transition_equivocation_evidence_succeeds_and_queries() {
     let store: MemoryDurableStateStore = memory_store();
     let (signers, entries) = four_validators();

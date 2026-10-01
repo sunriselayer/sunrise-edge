@@ -56,9 +56,14 @@ pub mod client;
 pub mod context;
 pub mod error;
 pub mod fastvote_client;
+pub mod fastvote_drain_client;
+pub mod fastvote_drain_driver;
+pub mod fastvote_frontier_client;
+pub mod fastvote_publication_client;
 pub mod key;
 pub mod local_execution_client;
 pub mod ordered_economics_client;
+pub mod ordered_history_client;
 pub mod paid_execution_client;
 pub mod publication_client;
 pub mod support;
@@ -88,8 +93,17 @@ pub use execution::{call, call_authorization, local_execution};
 pub use fastvote_client::{
     FastVoteApplyAttempt, FastVoteAttempt, FastVoteEndpoint, FastVoteEndpointConfigError,
     FastVoteGenesisTrustError, FastVoteNetworkError, FastVoteQuorumError, FastVoteQuorumFailure,
-    MAX_FASTVOTE_NETWORK_ENDPOINTS, MAX_FASTVOTE_PER_REQUEST_CAP, apply_fastvote_to_all,
-    collect_fastvote_certificate, load_trusted_fastvote_genesis, validate_fastvote_endpoints,
+    MAX_FASTVOTE_NETWORK_ENDPOINTS, MAX_FASTVOTE_PER_REQUEST_CAP, TrustedFastVoteGenesis,
+    apply_fastvote_to_all, collect_fastvote_certificate, load_trusted_fastvote_genesis,
+    load_trusted_fastvote_genesis_with_profile, validate_fastvote_endpoints,
+};
+pub use fastvote_drain_client::{ExpectedDrainFreeze, validate_drain_member_output};
+pub use fastvote_drain_driver::{
+    DrainDriveBounds, DrainDriveError, DrainDriveOutcome, drive_drain_to_local_ready,
+};
+pub use fastvote_publication_client::{
+    FastVoteAvailabilityAttempt, FastVotePublicationError, FastVotePublishedRound,
+    apply_published_fastvote_to_all, collect_fastvote_availability_certificate,
 };
 pub use hashing::HashSuiteResolver;
 pub use key::LocalSigner;
@@ -99,7 +113,31 @@ pub use node_core::publication::{
 };
 // Offline artifact consumers use the same certificate verifier as the network
 // client, without acquiring signing authority or depending on a transport.
+pub use consensus::bundle::MAX_ENCODED_BUNDLE_BYTES;
+pub use consensus::{
+    AvailabilityCertificate, decode_availability_certificate, encode_availability_certificate,
+};
+pub use consensus::{DrainUnionIdentity, decode_drain_union_identity, encode_drain_union_identity};
+pub use consensus::{
+    FrozenFrontierCertifier, FrozenFrontierPage, FrozenFrontierPageVerifier, FrozenFrontierVote,
+    decode_frozen_frontier_page, decode_frozen_frontier_vote, encode_frozen_frontier_page,
+    encode_frozen_frontier_vote,
+};
 pub use node_core::fast_path::FastPathEd25519Verifier;
+pub use node_core::fast_path::records::{
+    FastPathValidatorSetRecord, decode_fastpath_validator_set_record,
+};
+pub use node_core::logical_generation::CommitmentProfile;
+pub use node_wire::MAX_FASTVOTE_AVAILABILITY_CERTIFICATE_BYTES;
+pub use node_wire::{
+    DrainMemberApplyRequest, DrainMemberConfirmRequest, DrainSignerPageRequest,
+    DrainSignerProgressRequest, DrainSignerProgressResponse, DrainUnionAdvanceRequest,
+    FASTVOTE_DRAIN_APPLY_PATH, FASTVOTE_DRAIN_IMPORT_PATH, FASTVOTE_DRAIN_MEMBER_CONFIRM_PATH,
+    FASTVOTE_DRAIN_SIGNER_PAGE_PATH, FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH,
+    FASTVOTE_DRAIN_UNION_ADVANCE_PATH, FASTVOTE_RETAINED_PUBLICATION_SOURCE_PATH,
+    FrozenFrontierPageRequest, FrozenFrontierPageResponse, MAX_FRONTIER_PAGE_LIMIT,
+    MAX_FRONTIER_PAGE_RESPONSE_BYTES, MAX_FRONTIER_VOTE_BYTES, RetainedPublicationSourceRequest,
+};
 pub use paid_execution_client::{
     PAID_EXECUTION_PATH, PAID_FEE_POLICY_PATH, build_signed_paid_execution,
 };
@@ -143,8 +181,10 @@ pub use node_core::ordered_economics as ordered_economics_core;
 pub use node_core::publication::local_publication_profile_semantics;
 pub use node_core::{NodeCoreError, NodeResponse, NodeResponseStatus, RequestId};
 pub use node_wire::ordered_economics;
+pub use node_wire::ordered_history as ordered_history_wire;
 pub use node_wire::{
-    FASTVOTE_CERTIFICATES_PATH, FASTVOTE_PREPARE_PATH, FastVoteApplyRequest,
+    FASTVOTE_CERTIFICATES_PATH, FASTVOTE_PREPARE_PATH, FASTVOTE_PUBLICATION_RETAIN_PATH,
+    FASTVOTE_PUBLICATION_SOURCE_PATH, FASTVOTE_PUBLISHED_APPLY_PATH, FastVoteApplyRequest,
     FastVoteApplyRequestError, HttpContextQueryResult, HttpNextNonceQueryResult, HttpNodeResult,
     HttpObjectQueryResult, HttpReceiptQueryResult, MAX_FASTVOTE_CERTIFICATE_BYTES,
     NEXT_NONCE_QUERY_RESULT_TYPE_ID, NODE_RESULT_MEDIA_TYPE, ObjectQueryStatus, QUERY_CONTEXT_PATH,

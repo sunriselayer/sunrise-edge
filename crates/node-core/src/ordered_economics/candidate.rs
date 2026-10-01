@@ -30,6 +30,14 @@ pub enum OrderedOperationKind {
     /// One of the three DR-0133 equivocation-evidence families
     /// (`crate::equivocation`).
     Evidence,
+    /// DR-0154: the closed-admission control command (`super::freeze`).
+    /// Unlike every other kind, its `intent` carries no signature.
+    Freeze,
+    /// DR-0154/DR-0157: the quorum-retained drain selection command
+    /// (`super::drain_set`). Like `Freeze`, its `intent` carries no
+    /// signature: authorization is the pinned outgoing quorum's own signed
+    /// frontier votes, not an additional outer signature.
+    DrainSet,
 }
 
 impl OrderedOperationKind {
@@ -39,6 +47,8 @@ impl OrderedOperationKind {
             Self::BondLifecycle => 2,
             Self::BondSlash => 3,
             Self::Evidence => 4,
+            Self::Freeze => 5,
+            Self::DrainSet => 6,
         }
     }
 
@@ -48,6 +58,8 @@ impl OrderedOperationKind {
             2 => Ok(Self::BondLifecycle),
             3 => Ok(Self::BondSlash),
             4 => Ok(Self::Evidence),
+            5 => Ok(Self::Freeze),
+            6 => Ok(Self::DrainSet),
             other => Err(NodeCoreError::PersistenceInvariant(ordered_kind_message(
                 other,
             ))),
@@ -157,6 +169,8 @@ mod tests {
             OrderedOperationKind::BondLifecycle,
             OrderedOperationKind::BondSlash,
             OrderedOperationKind::Evidence,
+            OrderedOperationKind::Freeze,
+            OrderedOperationKind::DrainSet,
         ] {
             let candidate: OrderedCandidate = OrderedCandidate {
                 context: context(),
@@ -189,7 +203,7 @@ mod tests {
     #[test]
     fn ordered_operation_kind_from_wire_rejects_unknown_tag() {
         assert!(OrderedOperationKind::from_wire(0).is_err());
-        assert!(OrderedOperationKind::from_wire(5).is_err());
+        assert!(OrderedOperationKind::from_wire(7).is_err());
     }
 
     #[test]

@@ -25,6 +25,7 @@ impl Harness {
             manifest_digest: digest(0x11),
             genesis_authority: [7; 32],
             genesis_floor: ExecutionGeneration::new(floor),
+            minimum_freeze_block_height: 0,
         };
         Self {
             store: MemoryDurableStateStore::new(generation),
@@ -151,10 +152,19 @@ fn fastpath_business_history_is_not_misclassified_as_local_reservation() {
     let chain: ChainId = ChainId::new(CHAIN).unwrap();
     let validator: ValidatorId = ValidatorId::new([0x41; 32]);
     let request: [u8; 32] = [0x42; 32];
-    let local: [Vec<u8>; 3] = [
+    let local: [Vec<u8>; 5] = [
         local_instance_state::fastpath_prepared_record_key(&chain, &request).unwrap(),
         local_instance_state::fastpath_lock_key(&chain, ObjectId::new([0x43; 32])).unwrap(),
         local_instance_state::fastpath_nonce_lock_key(&chain, &[0x44; 32], Epoch::new(0)).unwrap(),
+        crate::fast_path::prepared_material::fastpath_prepared_witness_key(&chain, &request)
+            .unwrap(),
+        crate::fast_path::prepared_material::fastpath_prepared_artifact_key(
+            &chain,
+            &request,
+            consensus::bundle::ArtifactKind::StateValue,
+            &[0x49; 32],
+        )
+        .unwrap(),
     ];
     for key in local {
         assert_eq!(
@@ -163,7 +173,14 @@ fn fastpath_business_history_is_not_misclassified_as_local_reservation() {
         );
         assert!(is_excluded_subject(&key));
     }
-    let history: [Vec<u8>; 12] = [
+    let availability_ack: Vec<u8> =
+        crate::fast_path::publication::fastpath_availability_ack_key(&chain, &request).unwrap();
+    assert_eq!(
+        classify_fastpath_row(&availability_ack),
+        Some(FastpathRowClass::LocalSigningSafety)
+    );
+    assert!(is_excluded_subject(&availability_ack));
+    let history: [Vec<u8>; 15] = [
         local_instance_state::fastpath_certificate_key(&chain, &request).unwrap(),
         local_instance_state::fastpath_commitment_witness_key(&chain, &request).unwrap(),
         local_instance_state::fastpath_settlement_key(&chain, &request).unwrap(),
@@ -188,6 +205,17 @@ fn fastpath_business_history_is_not_misclassified_as_local_reservation() {
         )
         .unwrap(),
         local_instance_state::fastpath_economics_policy_key(&context()).unwrap(),
+        // DR-0154 (2026-09-28): the retained full-certificate publication
+        // record and its content-addressed replay artifacts.
+        crate::fast_path::publication::fastpath_publication_key(&chain, &request).unwrap(),
+        crate::fast_path::publication::fastpath_publication_artifact_key(
+            &chain,
+            &request,
+            consensus::bundle::ArtifactKind::StateValue,
+            &[0x49; 32],
+        )
+        .unwrap(),
+        crate::fast_path::records::fastpath_availability_certificate_key(&chain, &request).unwrap(),
     ];
     for key in history {
         assert_eq!(
@@ -216,13 +244,21 @@ fn ordered_outcome_history_is_not_misclassified_as_consensus_cache() {
         );
         assert!(is_excluded_subject(&key));
     }
-    for suffix in [b"header/".as_slice(), b"outcome/"] {
+    for suffix in [b"header/".as_slice(), b"outcome/", b"freeze/"] {
         let key: Vec<u8> = [prefix, suffix, b"example"].concat();
         assert_eq!(
             classify_ordered_row(&key),
             Some(OrderedRowClass::AuthenticatedOutcomeHistory)
         );
         assert!(is_excluded_subject(&key));
+    }
+    for suffix in [b"frontier-progress/".as_slice(), b"frontier/"] {
+        let local_progress: Vec<u8> = [prefix, suffix, b"example"].concat();
+        assert_eq!(
+            classify_ordered_row(&local_progress),
+            Some(OrderedRowClass::LocalProgress)
+        );
+        assert!(is_excluded_subject(&local_progress));
     }
     let unknown: Vec<u8> = [prefix, b"future-family/"].concat();
     assert_eq!(classify_ordered_row(&unknown), None);

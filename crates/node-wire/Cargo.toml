@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 canonical-encoding.workspace = true
+consensus.workspace = true
 execution.workspace = true
 node-core.workspace = true
 objects.workspace = true

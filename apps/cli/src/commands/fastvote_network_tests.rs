@@ -130,6 +130,7 @@ impl Fixture {
         specs.extend([
             scalar("--submission"),
             scalar("--certificate"),
+            scalar("--availability-certificate"),
             scalar("--result-out"),
             scalar("--dependency-ref-out"),
             scalar("--instance-ref-out"),
@@ -249,6 +250,223 @@ fn budget() -> OperationBudget {
         deadline: Instant::now().checked_add(Duration::from_secs(2)).unwrap(),
         per_request_cap: Duration::from_secs(1),
     }
+}
+
+#[test]
+fn logical_network_submit_persists_ac_before_published_apply_and_saved_replay_uses_exact_bytes() {
+    use consensus::bundle::{
+        ArtifactManifest, LOGICAL_COMMITMENT_PROFILE, PublicationBundle, encode_publication_bundle,
+        verify_publication_bundle,
+    };
+    use consensus::{AvailabilityCertifier, encode_availability_vote};
+
+    let fixture: Fixture = Fixture::new();
+    let signed_bytes: Vec<u8> = encode_signed_paid_intent(&fixture.signed).unwrap();
+    let transaction_hash: Digest32 =
+        execution::paid_execution::paid_invocation_digest(&fixture.resolver, &fixture.signed)
+            .unwrap();
+    let witness: Vec<u8> = vec![0x64, 0x24, 0x02];
+    let execution_hash: Digest32 = fixture
+        .resolver
+        .hash_for_purpose(
+            fixture.expected.epoch(),
+            protocol_types::HashPurpose::ExecutionEffects,
+            &witness,
+        )
+        .unwrap();
+    let validator: VoteSigner = VoteSigner(LocalSigner::from_seed(
+        sunrise_edge_devnet::DEVNET_PAID_GENESIS_SEED,
+    ));
+    let vote: FastVote = fixture
+        .certifier
+        .cast_vote(transaction_hash, execution_hash, digest(0x56), &validator)
+        .unwrap();
+    let certificate: FastCertificate = fixture
+        .certifier
+        .try_form_certificate(
+            transaction_hash,
+            execution_hash,
+            digest(0x56),
+            std::slice::from_ref(&vote),
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .unwrap();
+    let bundle: PublicationBundle = PublicationBundle {
+        domain: fixture.expected.domain(),
+        request_id: fixture.signed.intent.request_id,
+        commitment_profile: LOGICAL_COMMITMENT_PROFILE,
+        signed_intent: signed_bytes.clone(),
+        certificate: certificate.clone(),
+        witness,
+        manifest: ArtifactManifest {
+            entries: Vec::new(),
+        },
+        contents: Vec::new(),
+    };
+    let identity: consensus::AvailabilityIdentity = verify_publication_bundle(
+        &bundle,
+        &fixture.certifier,
+        &FastPathEd25519Verifier,
+        &fixture.resolver,
+        &[],
+    )
+    .unwrap()
+    .identity;
+    let availability_certifier: AvailabilityCertifier = AvailabilityCertifier::new(
+        fixture.expected.chain_id().clone(),
+        fixture.expected.protocol_version(),
+        fixture.expected.epoch(),
+        fixture.certifier.validator_set().clone(),
+    )
+    .unwrap();
+    let availability_vote: consensus::AvailabilityVote = availability_certifier
+        .cast_vote(identity, &validator)
+        .unwrap();
+    let expected_availability: AvailabilityCertificate = availability_certifier
+        .try_form_certificate(
+            &availability_vote.identity,
+            std::slice::from_ref(&availability_vote),
+            &FastPathEd25519Verifier,
+        )
+        .unwrap()
+        .unwrap();
+    let result: PaidExecutionResult = fixture.result(PaidExecutionStatus::Success);
+    let request_id: RequestId = RequestId::new(fixture.signed.intent.request_id).unwrap();
+    let ack: NodeResponse = NodeResponse::new(
+        request_id,
+        NodeResponseStatus::Accepted,
+        Some(encode_paid_execution_result(&result).unwrap()),
+    )
+    .unwrap();
+    let ack_body: Vec<u8> = HttpNodeResult::new(request_id, vec![ack])
+        .unwrap()
+        .encode()
+        .unwrap();
+    let response = |body: Vec<u8>| -> Result<WireResponse, TransportError> {
+        Ok(WireResponse {
+            status: 200,
+            content_type: Some(NODE_RESULT_MEDIA_TYPE.to_owned()),
+            body,
+        })
+    };
+    let signed_path: String = fixture.path("signed-v2.bin");
+    let certificate_path: String = fixture.path("certificate-v2.bin");
+    let availability_path: String = fixture.path("availability-v2.bin");
+    let result_path: String = fixture.path("result-v2.bin");
+    struct CheckPersistedAvailability {
+        inner: FakeTransport,
+        path: String,
+        expected: Vec<u8>,
+    }
+    impl Transport for CheckPersistedAvailability {
+        fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportError> {
+            if request.path == FASTVOTE_PUBLISHED_APPLY_PATH {
+                assert_eq!(std::fs::read(&self.path).unwrap(), self.expected);
+            }
+            self.inner.send(request)
+        }
+    }
+    let endpoint: FastVoteEndpoint<CheckPersistedAvailability> = FastVoteEndpoint {
+        validator_id: validator.validator_id(),
+        endpoint_label: "peer".to_owned(),
+        client: Client::new(CheckPersistedAvailability {
+            inner: FakeTransport::new(vec![
+                response(encode_fast_vote(&vote).unwrap()),
+                response(encode_publication_bundle(&bundle).unwrap()),
+                response(encode_availability_vote(&availability_vote).unwrap()),
+                response(ack_body.clone()),
+            ]),
+            path: availability_path.clone(),
+            expected: encode_availability_certificate(&expected_availability).unwrap(),
+        }),
+    };
+    let parsed: ParsedArgs = fixture.parsed(&[
+        ("--fastvote-signed-intent-out", &signed_path),
+        ("--fastvote-certificate-out", &certificate_path),
+        (
+            "--fastvote-availability-certificate-out",
+            &availability_path,
+        ),
+        ("--result-out", &result_path),
+    ]);
+    let endpoints: Vec<FastVoteEndpoint<CheckPersistedAvailability>> = vec![endpoint];
+    assert_eq!(
+        run_network_submit(
+            &parsed,
+            &endpoints,
+            &fixture.certifier,
+            CommitmentProfile::LogicalGenerationV2,
+            fixture.expected.domain(),
+            &fixture.resolver,
+            &fixture.signed,
+            None,
+            budget(),
+        )
+        .unwrap(),
+        result
+    );
+    let requests: Vec<WireRequest> = endpoints[0].client.transport().inner.requests();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.path.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            FASTVOTE_PREPARE_PATH,
+            FASTVOTE_PUBLICATION_SOURCE_PATH,
+            FASTVOTE_PUBLICATION_RETAIN_PATH,
+            FASTVOTE_PUBLISHED_APPLY_PATH,
+        ]
+    );
+    assert_eq!(std::fs::read(&signed_path).unwrap(), signed_bytes);
+    assert_eq!(
+        std::fs::read(&certificate_path).unwrap(),
+        encode_fast_certificate(&certificate).unwrap()
+    );
+    let availability: AvailabilityCertificate =
+        decode_availability_certificate(&std::fs::read(&availability_path).unwrap()).unwrap();
+    availability_certifier
+        .verify_certificate(&availability, &FastPathEd25519Verifier)
+        .unwrap();
+    assert_eq!(
+        std::fs::read(&result_path).unwrap(),
+        encode_paid_execution_result(&result).unwrap()
+    );
+
+    let replay_result_path: String = fixture.path("result-v2-replay.bin");
+    let replay: ParsedArgs = fixture.parsed(&[
+        ("--submission", &signed_path),
+        ("--certificate", &certificate_path),
+        ("--availability-certificate", &availability_path),
+        ("--result-out", &replay_result_path),
+    ]);
+    let replay_endpoint: FastVoteEndpoint<FakeTransport> = FastVoteEndpoint {
+        validator_id: validator.validator_id(),
+        endpoint_label: "peer".to_owned(),
+        client: Client::new(FakeTransport::new(vec![response(ack_body)])),
+    };
+    assert_eq!(
+        replay_loaded(
+            &replay,
+            &[replay_endpoint],
+            &fixture.certifier,
+            CommitmentProfile::LogicalGenerationV2,
+            fixture.expected.domain(),
+            &fixture.resolver,
+            &fixture.signed,
+            Some(&certificate),
+            Some(&availability),
+            None,
+            budget(),
+        )
+        .unwrap(),
+        result
+    );
+    assert_eq!(
+        std::fs::read(&replay_result_path).unwrap(),
+        encode_paid_execution_result(&result).unwrap()
+    );
 }
 struct VoteSigner(LocalSigner);
 use consensus::ConsensusSigner;
@@ -609,6 +827,8 @@ fn network_submission_persists_exact_success_and_charged_trap_results() {
                 &parsed,
                 &endpoints,
                 &fixture.certifier,
+                CommitmentProfile::PhysicalCheckpointV1,
+                fixture.expected.domain(),
                 &fixture.resolver,
                 &fixture.signed,
                 None,
@@ -689,6 +909,8 @@ fn network_apply_rejects_divergent_successful_acknowledgements_across_peers() {
         &parsed,
         &endpoints,
         &fixture.certifier,
+        CommitmentProfile::PhysicalCheckpointV1,
+        fixture.expected.domain(),
         &fixture.resolver,
         &fixture.signed,
         None,
@@ -792,6 +1014,8 @@ fn all_network_outputs_reserve_before_any_post_existing_unwritable_or_alias() {
                 &parsed,
                 &endpoints,
                 &fixture.certifier,
+                CommitmentProfile::PhysicalCheckpointV1,
+                fixture.expected.domain(),
                 &fixture.resolver,
                 &fixture.signed,
                 None,
@@ -858,9 +1082,12 @@ fn replay_reserves_result_before_prepare_or_apply_and_detects_input_aliases() {
                     &parsed,
                     &endpoints,
                     &fixture.certifier,
+                    CommitmentProfile::PhysicalCheckpointV1,
+                    fixture.expected.domain(),
                     &fixture.resolver,
                     &fixture.signed,
                     supplied.then_some(&cert),
+                    None,
                     None,
                     budget()
                 )
@@ -983,6 +1210,8 @@ fn reservation_failure_keeps_prior_reserved_files_and_never_posts() {
             &parsed,
             &endpoints,
             &fixture.certifier,
+            CommitmentProfile::PhysicalCheckpointV1,
+            fixture.expected.domain(),
             &fixture.resolver,
             &fixture.signed,
             None,
@@ -1134,6 +1363,8 @@ fn unwritable_and_symlink_aliased_outputs_refuse_before_prepare() {
                 &parsed,
                 &endpoints,
                 &fixture.certifier,
+                CommitmentProfile::PhysicalCheckpointV1,
+                fixture.expected.domain(),
                 &fixture.resolver,
                 &fixture.signed,
                 None,
@@ -1174,8 +1405,11 @@ fn replay_collect_and_saved_certificate_modes_persist_success_and_trap_bytes() {
                 &parsed,
                 &endpoints,
                 &fixture.certifier,
+                CommitmentProfile::PhysicalCheckpointV1,
+                fixture.expected.domain(),
                 &fixture.resolver,
                 &fixture.signed,
+                None,
                 None,
                 None,
                 budget()
@@ -1208,9 +1442,12 @@ fn replay_collect_and_saved_certificate_modes_persist_success_and_trap_bytes() {
                 &parsed,
                 &endpoints,
                 &fixture.certifier,
+                CommitmentProfile::PhysicalCheckpointV1,
+                fixture.expected.domain(),
                 &fixture.resolver,
                 &fixture.signed,
                 Some(&cert),
+                None,
                 None,
                 budget()
             )
@@ -1485,8 +1722,11 @@ fn replay_recovers_the_exact_dependency_reference_after_a_successful_publish_app
         &parsed,
         &endpoints,
         &fixture.certifier,
+        CommitmentProfile::PhysicalCheckpointV1,
+        fixture.expected.domain(),
         &fixture.resolver,
         &signed,
+        None,
         None,
         derived,
         budget(),
@@ -1552,9 +1792,12 @@ fn replay_recovers_the_exact_instance_reference_via_a_supplied_certificate() {
         &parsed,
         &endpoints,
         &fixture.certifier,
+        CommitmentProfile::PhysicalCheckpointV1,
+        fixture.expected.domain(),
         &fixture.resolver,
         &signed,
         Some(&cert),
+        None,
         derived,
         budget(),
     )
@@ -1650,8 +1893,11 @@ fn replay_instance_reference_output_aliasing_the_submission_makes_zero_posts() {
             &parsed,
             &endpoints,
             &fixture.certifier,
+            CommitmentProfile::PhysicalCheckpointV1,
+            fixture.expected.domain(),
             &fixture.resolver,
             &signed,
+            None,
             None,
             derived,
             budget(),
@@ -1711,8 +1957,11 @@ fn replay_charged_failure_persists_the_result_but_leaves_the_reference_empty() {
         &parsed,
         &endpoints,
         &fixture.certifier,
+        CommitmentProfile::PhysicalCheckpointV1,
+        fixture.expected.domain(),
         &fixture.resolver,
         &signed,
+        None,
         None,
         derived,
         budget(),

@@ -57,6 +57,23 @@ use protocol_types::{
 use std::collections::BTreeMap;
 use validator_set::ValidatorSet;
 
+/// The canonical v2 full-certificate publication bundle this identity family
+/// is derived from (DR-0154 / `epoch-handoff.md`). Deriving an identity from
+/// a verified bundle is the only supported way to obtain one for a real
+/// operation; this parent module keeps the identity/vote/certificate codec
+/// itself free of any bundle dependency.
+pub mod bundle;
+pub mod frontier;
+pub mod union;
+pub use frontier::{
+    FrontierError, FrozenFrontierAccumulator, FrozenFrontierCertifier, FrozenFrontierIdentity,
+    FrozenFrontierPage, FrozenFrontierPageVerifier, FrozenFrontierVote,
+    MAX_FROZEN_FRONTIER_PAGE_BYTES, MAX_FROZEN_FRONTIER_PAGE_ENTRIES,
+    decode_frozen_frontier_identity, decode_frozen_frontier_page, decode_frozen_frontier_vote,
+    encode_frozen_frontier_identity, encode_frozen_frontier_page, encode_frozen_frontier_vote,
+    verify_frozen_frontier, verify_frozen_frontier_quorum,
+};
+
 const AVAILABILITY_IDENTITY_TYPE_ID: u16 = 0xD030;
 const AVAILABILITY_VOTE_TYPE_ID: u16 = 0xD031;
 const AVAILABILITY_CERTIFICATE_TYPE_ID: u16 = 0xD032;

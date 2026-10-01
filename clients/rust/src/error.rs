@@ -182,6 +182,31 @@ pub enum ClientError {
     /// A DR-0148 FastVote apply-request transport frame failed to encode or
     /// decode.
     FastVoteApplyRequestWire(node_wire::FastVoteApplyRequestError),
+    /// Publication-gated apply request framing failed.
+    FastVotePublishedApplyRequestWire(node_wire::FastVotePublishedApplyRequestError),
+    /// A bounded frozen-frontier HTTP request or response failed decoding.
+    FrozenFrontierWire(node_wire::FrozenFrontierWireError),
+    /// A bounded post-Freeze drain request failed canonical framing.
+    DrainWire(node_wire::DrainWireError),
+    /// A bounded retained-publication source locator failed framing.
+    RetainedPublicationSourceRequestWire(node_wire::RetainedPublicationSourceRequestError),
+    /// A bounded ordered-history request/response failed canonical framing.
+    OrderedHistoryWire(node_wire::OrderedHistoryWireError),
+    /// An ordered-history response disagreed with the locally pinned request.
+    OrderedHistoryMismatch(&'static str),
+    /// A signed frozen-frontier vote or page failed independent verification.
+    FrozenFrontier(consensus::FrontierError),
+    /// A well-formed frontier response disagreed with the requested endpoint,
+    /// epoch, cursor, page bound or response shape.
+    FrozenFrontierMismatch(&'static str),
+    /// A response differs from the locally pinned drain operation.
+    DrainMismatch(&'static str),
+    /// A canonical publication bundle failed decoding or independent verification.
+    FastVotePublicationBundle(consensus::bundle::PublicationBundleError),
+    /// Complete drain publication intent/witness/artifact-closure verification failed.
+    DrainPublicationVerification(Box<node_core::fast_path::publication::PublicationRetentionError>),
+    /// A validly framed publication claim did not match this exact local request.
+    FastVotePublicationMismatch(&'static str),
     /// A returned `FastVote`, `FastCertificate`, or certificate-formation
     /// step failed `consensus` validation.
     FastVoteConsensus(consensus::ConsensusError),
@@ -302,6 +327,28 @@ impl fmt::Display for ClientError {
             Self::FastVoteApplyRequestWire(error) => {
                 write!(f, "FastVote apply-request codec error: {error}")
             }
+            Self::FastVotePublishedApplyRequestWire(error) => {
+                write!(f, "FastVote published-apply request codec error: {error}")
+            }
+            Self::FrozenFrontierWire(error) => write!(f, "frozen frontier wire error: {error}"),
+            Self::DrainWire(error) => write!(f, "drain wire error: {error}"),
+            Self::RetainedPublicationSourceRequestWire(error) => write!(f, "retained publication source wire error: {error}"),
+            Self::OrderedHistoryWire(error) => write!(f, "ordered history wire error: {error}"),
+            Self::OrderedHistoryMismatch(reason) => write!(f, "ordered history response mismatch: {reason}"),
+            Self::DrainMismatch(reason) => write!(f, "drain response mismatch: {reason}"),
+            Self::FrozenFrontier(error) => write!(f, "frozen frontier proof error: {error}"),
+            Self::FrozenFrontierMismatch(reason) => {
+                write!(f, "frozen frontier response mismatch: {reason}")
+            }
+            Self::FastVotePublicationBundle(error) => {
+                write!(f, "FastVote publication bundle error: {error}")
+            }
+            Self::DrainPublicationVerification(error) => {
+                write!(f, "drain publication verification error: {error}")
+            }
+            Self::FastVotePublicationMismatch(reason) => {
+                write!(f, "FastVote publication does not match the local request: {reason}")
+            }
             Self::FastVoteConsensus(error) => write!(f, "FastVote consensus error: {error}"),
             Self::FastVoteEndpointIdentityMismatch { expected, actual } => write!(
                 f,
@@ -357,6 +404,18 @@ impl Error for ClientError {
             | Self::ExternalSignerAddressMismatch { .. }
             | Self::ExternalSignatureInvalid { .. } => None,
             Self::FastVoteApplyRequestWire(error) => Some(error),
+            Self::FastVotePublishedApplyRequestWire(error) => Some(error),
+            Self::FrozenFrontierWire(error) => Some(error),
+            Self::DrainWire(error) => Some(error),
+            Self::RetainedPublicationSourceRequestWire(error) => Some(error),
+            Self::OrderedHistoryWire(error) => Some(error),
+            Self::OrderedHistoryMismatch(_) => None,
+            Self::DrainMismatch(_) => None,
+            Self::FrozenFrontier(error) => Some(error),
+            Self::FrozenFrontierMismatch(_) => None,
+            Self::FastVotePublicationBundle(error) => Some(error),
+            Self::DrainPublicationVerification(error) => Some(error.as_ref()),
+            Self::FastVotePublicationMismatch(_) => None,
             Self::FastVoteConsensus(error) => Some(error),
             Self::FastVoteEndpointIdentityMismatch { .. }
             | Self::FastVoteOverallDeadlineExceeded
@@ -446,6 +505,48 @@ impl From<signing_view::SigningViewError> for ClientError {
 impl From<node_wire::FastVoteApplyRequestError> for ClientError {
     fn from(value: node_wire::FastVoteApplyRequestError) -> Self {
         Self::FastVoteApplyRequestWire(value)
+    }
+}
+
+impl From<node_wire::FastVotePublishedApplyRequestError> for ClientError {
+    fn from(value: node_wire::FastVotePublishedApplyRequestError) -> Self {
+        Self::FastVotePublishedApplyRequestWire(value)
+    }
+}
+
+impl From<node_wire::FrozenFrontierWireError> for ClientError {
+    fn from(value: node_wire::FrozenFrontierWireError) -> Self {
+        Self::FrozenFrontierWire(value)
+    }
+}
+
+impl From<node_wire::DrainWireError> for ClientError {
+    fn from(value: node_wire::DrainWireError) -> Self {
+        Self::DrainWire(value)
+    }
+}
+
+impl From<node_wire::RetainedPublicationSourceRequestError> for ClientError {
+    fn from(value: node_wire::RetainedPublicationSourceRequestError) -> Self {
+        Self::RetainedPublicationSourceRequestWire(value)
+    }
+}
+
+impl From<consensus::FrontierError> for ClientError {
+    fn from(value: consensus::FrontierError) -> Self {
+        Self::FrozenFrontier(value)
+    }
+}
+
+impl From<consensus::bundle::PublicationBundleError> for ClientError {
+    fn from(value: consensus::bundle::PublicationBundleError) -> Self {
+        Self::FastVotePublicationBundle(value)
+    }
+}
+
+impl From<node_core::fast_path::publication::PublicationRetentionError> for ClientError {
+    fn from(value: node_core::fast_path::publication::PublicationRetentionError) -> Self {
+        Self::DrainPublicationVerification(Box::new(value))
     }
 }
 

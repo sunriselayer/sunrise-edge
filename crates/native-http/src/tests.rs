@@ -1,5 +1,6 @@
 mod fastvote_router;
 mod local_execution_http;
+mod ordered_history_http;
 mod query_codecs;
 mod query_http;
 use super::*;

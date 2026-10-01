@@ -1036,6 +1036,7 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "axum",
+ "bonds",
  "canonical-encoding",
  "consensus",
  "crypto",
@@ -1051,6 +1052,7 @@ dependencies = [
  "objects",
  "protocol-config",
  "protocol-types",
+ "public-standard-asset",
  "runtime",
  "runtime-sqlite",
  "standard-assets",
@@ -1107,6 +1109,7 @@ name = "node-wire"
 version = "0.1.0"
 dependencies = [
  "canonical-encoding",
+ "consensus",
  "execution",
  "node-core",
  "objects",

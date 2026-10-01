@@ -5,35 +5,50 @@
 //! `create-asset`/`transfer`/`split`/`merge`/`mint`/`burn` verbs, all driven
 //! through the separately compiled `sunrise-edge-cli` binary (never
 //! `sunrise_edge_cli::run` in-process) with `--fastvote-network`, against
-//! three real `fastvote_host_pg` processes. Validator four's namespace is
-//! bootstrapped like every other validator's but its host process is never
-//! started here: recovering its full lifecycle is
-//! `contract_lifecycle_catch_up_pg_e2e`'s job.
+//! three real `fastvote_host_pg` processes. In the Logical profile the fourth
+//! host subsequently retains each publication without execution and recovers
+//! the entire lifecycle using saved intent/certificate/availability proofs,
+//! never preparing or signing an execution vote. Historical multi-entry
+//! recovery remains `contract_lifecycle_catch_up_pg_e2e`'s separate job.
 mod support;
 
+#[path = "support/frozen_frontier_acceptance.rs"]
+mod frozen_frontier_acceptance;
+
 use abi::package_types::PackageOrigin;
+use consensus::bundle::encode_publication_bundle;
+use consensus::{
+    AvailabilityCertificate, AvailabilityCertifier, AvailabilityVote, FastCertificate,
+    decode_availability_certificate, decode_fast_certificate,
+};
 use execution::paid_execution::PaidExecutionStatus;
+use execution::paid_execution::{SignedPaidIntent, decode_signed_paid_intent};
 use objects::ObjectId;
 use postgres::Config;
 use public_standard_asset::StandardAssetPackage;
 use r2d2_postgres::{PostgresConnectionManager, r2d2::Pool};
+use runtime::{DurableOperationContext, DurableStateKeyScanner, StateKeyScan};
 use runtime_postgres::{
     PostgresBlobStore, PostgresDurableStore, PostgresNamespace, PostgresTransactionPolicy,
 };
 use std::{
     collections::BTreeSet,
+    ffi::OsString,
     fs,
     net::SocketAddr,
     num::{NonZeroU32, NonZeroUsize},
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use sunrise_edge_client::{Client, LoopbackHttpTransport, TrustedFastVoteGenesis};
 use support::cli::{
     CliContext, admin_pool, install_genesis, namespace_init, proxied_dsn, read_context,
     single_tcp_backend_addr, to_hex, write_signing_key_file,
 };
-use support::durable_state::{convergence_snapshot, protocol_convergence_snapshot};
+use support::durable_state::{
+    convergence_snapshot, execution_snapshot, protocol_convergence_snapshot,
+};
 use support::genesis_fixture::{self, FastVoteGenesisFixture};
 use support::host::{
     HostProcess, TempDir, spawn_host, temp_file, write_network_config, write_new,
@@ -46,6 +61,7 @@ use support::paid_calls::{
 
 type AdminPool = Pool<PostgresConnectionManager<postgres::NoTls>>;
 type Store = PostgresDurableStore<PostgresConnectionManager<postgres::NoTls>>;
+type HostSpawner = fn(&Path, &str, &str, &str, &str, &Path, &str, &Path, &str) -> HostProcess;
 
 const PUBLISH_ORIGIN_SEED: [u8; 32] = [0x61; 32];
 
@@ -57,9 +73,256 @@ fn store(pool: &AdminPool, namespace: &PostgresNamespace) -> Store {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+fn replay_flags(
+    chain_id: &str,
+    domain_hex: &str,
+    network_path: &Path,
+    manifest_path: &Path,
+    digest_hex: &str,
+    submission: &Path,
+    certificate: &Path,
+    availability: &Path,
+    result_out: &Path,
+) -> Vec<OsString> {
+    [
+        "contract",
+        "fastvote-replay",
+        "--expected-chain-id",
+        chain_id,
+        "--expected-protocol-version",
+        "3",
+        "--expected-epoch",
+        "0",
+        "--expected-hash-suite-id",
+        "1",
+        "--expected-domain",
+        domain_hex,
+        "--fastvote-network",
+        network_path.to_str().unwrap(),
+        "--fastvote-genesis-manifest",
+        manifest_path.to_str().unwrap(),
+        "--fastvote-expected-genesis-digest",
+        digest_hex,
+        "--submission",
+        submission.to_str().unwrap(),
+        "--certificate",
+        certificate.to_str().unwrap(),
+        "--availability-certificate",
+        availability.to_str().unwrap(),
+        "--result-out",
+        result_out.to_str().unwrap(),
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect()
+}
+
+fn publication_client(addr: SocketAddr) -> Client<LoopbackHttpTransport> {
+    let timeout: Duration = Duration::from_secs(10);
+    Client::new(
+        LoopbackHttpTransport::new(
+            addr,
+            timeout,
+            timeout,
+            timeout,
+            NonZeroUsize::new(64 * 1024).unwrap(),
+            NonZeroUsize::new(sunrise_edge_client::MAX_ENCODED_BUNDLE_BYTES).unwrap(),
+        )
+        .unwrap(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn recover_logical_lifecycle(
+    call: &NetworkCall<'_>,
+    fixture: &FastVoteGenesisFixture,
+    data_dir: &Path,
+    source_addr: SocketAddr,
+    follower: &HostProcess,
+    follower_store: &Store,
+    follower_context: &DurableOperationContext,
+    ids: &BTreeSet<ObjectId>,
+    requests: &[[u8; 32]],
+    publications: &[PackageOrigin],
+    expected: &str,
+) {
+    let trusted: TrustedFastVoteGenesis =
+        sunrise_edge_client::load_trusted_fastvote_genesis_with_profile(
+            call.manifest_path,
+            &fixture.resolver,
+            fixture.manifest_digest,
+            &fixture.context,
+        )
+        .unwrap();
+    assert!(trusted.commitment_profile.is_logical());
+    let availability_certifier: AvailabilityCertifier = AvailabilityCertifier::new(
+        fixture.chain_id.clone(),
+        fixture.protocol_version,
+        fixture.epoch,
+        trusted.certifier.validator_set().clone(),
+    )
+    .unwrap();
+    let source: Client<LoopbackHttpTransport> = publication_client(source_addr);
+    let target: Client<LoopbackHttpTransport> = publication_client(follower.addr);
+    let follower_config: PathBuf = temp_file(data_dir, "follower-network.conf");
+    write_new(
+        &follower_config,
+        format!(
+            "{} {} - -\n",
+            fixture.validators[3].validator_id, follower.addr
+        )
+        .as_bytes(),
+    );
+    for label in [
+        "publish",
+        "instantiate",
+        "mint-published",
+        "trap",
+        "create",
+        "mint-a",
+        "mint-b",
+        "merge",
+        "split",
+        "transfer",
+        "burn",
+    ] {
+        let submission: PathBuf = temp_file(data_dir, &format!("{label}.intent"));
+        let certificate: PathBuf = temp_file(data_dir, &format!("{label}.cert"));
+        let availability_path: PathBuf = temp_file(data_dir, &format!("{label}.avail"));
+        let signed: SignedPaidIntent =
+            decode_signed_paid_intent(&fs::read(&submission).unwrap()).unwrap();
+        let full: FastCertificate =
+            decode_fast_certificate(&fs::read(&certificate).unwrap()).unwrap();
+        let availability: AvailabilityCertificate =
+            decode_availability_certificate(&fs::read(&availability_path).unwrap()).unwrap();
+        availability_certifier
+            .verify_certificate(
+                &availability,
+                &node_core::fast_path::FastPathEd25519Verifier,
+            )
+            .unwrap();
+        let before_retention: String = execution_snapshot(
+            follower_store,
+            follower_context,
+            fixture,
+            ids,
+            requests,
+            publications,
+        );
+        let (bundle, identity) = source
+            .source_fastvote_publication(
+                &signed,
+                &full,
+                &trusted.certifier,
+                &fixture.resolver,
+                &[],
+                fixture.domain,
+                None,
+            )
+            .unwrap();
+        assert_eq!(identity, availability.identity);
+        let bundle_bytes: Vec<u8> = encode_publication_bundle(&bundle).unwrap();
+        let ack: AvailabilityVote = target
+            .retain_fastvote_publication(&bundle_bytes, None)
+            .unwrap();
+        availability_certifier
+            .verify_vote(&ack, &node_core::fast_path::FastPathEd25519Verifier)
+            .unwrap();
+        assert_eq!(ack.validator, fixture.validators[3].validator_id);
+        assert_eq!(ack.identity, availability.identity);
+        assert_eq!(
+            execution_snapshot(
+                follower_store,
+                follower_context,
+                fixture,
+                ids,
+                requests,
+                publications
+            ),
+            before_retention,
+            "retaining {label} must not execute, change objects, write a receipt or charge a fee"
+        );
+        let result_out: PathBuf = temp_file(data_dir, &format!("follower-{label}.result"));
+        let output: std::process::Output = support::cli::edge_cli_command(replay_flags(
+            call.chain_id,
+            call.domain_hex,
+            &follower_config,
+            call.manifest_path,
+            call.digest_hex,
+            &submission,
+            &certificate,
+            &availability_path,
+            &result_out,
+        ))
+        .output()
+        .unwrap();
+        assert_eq!(
+            output.status.success(),
+            label != "trap",
+            "{label} recovery must return its original success or charged-failure status: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            fs::read(result_out).unwrap(),
+            fs::read(temp_file(data_dir, &format!("{label}.result"))).unwrap(),
+            "missed-prepare {label} recovery must return the exact canonical result bytes"
+        );
+    }
+    for prefix in [
+        b"se/instances/v1/fastpath/prepared/".as_slice(),
+        b"se/instances/v1/fastpath/prepared-witness/".as_slice(),
+        b"se/instances/v1/fastpath/prepared-artifact/".as_slice(),
+    ] {
+        let scan: StateKeyScan =
+            StateKeyScan::new(prefix.to_vec(), None, NonZeroUsize::new(1).unwrap()).unwrap();
+        assert!(
+            follower_store
+                .scan_durable_keys(follower_context, fixture.domain, &scan)
+                .unwrap()
+                .keys()
+                .is_empty()
+        );
+    }
+    assert_eq!(
+        protocol_convergence_snapshot(
+            follower_store,
+            follower_context,
+            fixture,
+            ids,
+            requests,
+            publications
+        ),
+        expected,
+        "the missed-prepare fourth replica must converge on all application and authenticated history rows"
+    );
+}
+
 #[test]
 #[ignore = "run through scripts/check-fastvote-pg.sh"]
 fn contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator_e2e() {
+    contract_lifecycle_pg_e2e_case(false, false, false);
+}
+
+#[test]
+#[ignore = "run through scripts/check-fastvote-pg.sh"]
+fn contract_lifecycle_pg_logical_publish_instantiate_call_and_asset_verbs_multivalidator_e2e() {
+    contract_lifecycle_pg_e2e_case(true, false, false);
+}
+
+#[test]
+#[ignore = "run through scripts/check-fastvote-pg.sh"]
+fn contract_lifecycle_pg_ordered_freeze_and_frontier_binary_cli_e2e() {
+    contract_lifecycle_pg_e2e_case(true, true, false);
+}
+
+#[test]
+#[ignore = "run through scripts/check-fastvote-pg.sh"]
+fn contract_lifecycle_pg_drainset_member_and_ordered_history_binary_cli_e2e() {
+    contract_lifecycle_pg_e2e_case(true, true, true);
+}
+
+fn contract_lifecycle_pg_e2e_case(logical: bool, frozen_frontier: bool, member_drain: bool) {
     let database_url_option = support::live_postgres_url();
     if database_url_option.is_none() {
         return;
@@ -73,14 +336,29 @@ fn contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator
         support::tls_relay::TlsPassthroughProxy::spawn(backend_addr);
     let dsn: String = proxied_dsn(&original_config, proxy.local_addr().port());
     let unique: String = format!(
-        "lifecycle-{}-{}",
+        "lifecycle-{}-{}-{}",
+        if member_drain {
+            "drain"
+        } else if frozen_frontier {
+            "frozen"
+        } else if logical {
+            "logical"
+        } else {
+            "hist"
+        },
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     );
-    let fixture: FastVoteGenesisFixture = genesis_fixture::build_network_fixture(&unique);
+    let fixture: FastVoteGenesisFixture = if frozen_frontier {
+        genesis_fixture::build_frozen_frontier_network_fixture(&unique)
+    } else if logical {
+        genesis_fixture::build_logical_network_fixture(&unique)
+    } else {
+        genesis_fixture::build_network_fixture(&unique)
+    };
     let data_dir = std::env::temp_dir().join(format!("sunrise-contract-lifecycle-pg-e2e-{unique}"));
     fs::create_dir(&data_dir).unwrap();
     let _owned = TempDir(data_dir.clone());
@@ -120,7 +398,12 @@ fn contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator
         namespace_init(&cli_context, validator_id_hex, &domain_hex);
         install_genesis(&cli_context, validator_id_hex, &domain_hex, true);
     });
-    let host0 = spawn_host(
+    let spawn_profile: HostSpawner = if frozen_frontier {
+        support::host::spawn_ordered_host
+    } else {
+        spawn_host
+    };
+    let host0 = spawn_profile(
         &ca_path,
         &dsn,
         &chain_id,
@@ -131,7 +414,7 @@ fn contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator
         &key_path_0,
         "127.0.0.1:0",
     );
-    let host1 = spawn_host(
+    let host1 = spawn_profile(
         &ca_path,
         &dsn,
         &chain_id,
@@ -142,7 +425,7 @@ fn contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator
         &key_path_1,
         "127.0.0.1:0",
     );
-    let host2 = spawn_host(
+    let host2 = spawn_profile(
         &ca_path,
         &dsn,
         &chain_id,
@@ -201,7 +484,7 @@ fn contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator
     write_new(&abi_path, &package.encoded_abi);
     let publish_request_id: [u8; 32] = [0xB1; 32];
     let dependency_ref_out = temp_file(&data_dir, "publish.code-ref");
-    let (publish_result, _publish_signed, _publish_cert) = run_contract_paid(
+    let (publish_result, publish_signed, publish_cert) = run_contract_paid(
         &call,
         "paid-publish",
         &[
@@ -568,5 +851,223 @@ fn contract_lifecycle_pg_publish_instantiate_call_and_asset_verbs_multivalidator
              every settled request"
         );
     }
-    drop(hosts);
+    if logical {
+        let snapshot_online = || -> Vec<String> {
+            namespaces[..3]
+                .iter()
+                .map(|namespace: &PostgresNamespace| -> String {
+                    convergence_snapshot(
+                        &store(&pool, namespace),
+                        &read_context(&pool, namespace),
+                        &fixture,
+                        &ids,
+                        &requests,
+                        &publications,
+                    )
+                })
+                .collect()
+        };
+        let snapshot_before_replay: Vec<String> = snapshot_online();
+
+        let publish_avail = temp_file(&data_dir, "publish.avail");
+
+        // Missing/bad availability-proof refusal: corrupted availability certificate must fail and leave state unchanged.
+        let bad_avail = temp_file(&data_dir, "publish-bad.avail");
+        write_new(&bad_avail, b"corrupted-availability-certificate-bytes");
+        let bad_result_out = temp_file(&data_dir, "publish-replay-bad.result");
+        let bad_output = support::cli::edge_cli_command(replay_flags(
+            &chain_id,
+            &domain_hex,
+            &network_config_path,
+            &manifest_path,
+            &digest_hex,
+            &publish_signed,
+            &publish_cert,
+            &bad_avail,
+            &bad_result_out,
+        ))
+        .output()
+        .unwrap();
+        assert!(
+            !bad_output.status.success(),
+            "replay with corrupted availability proof must fail"
+        );
+        assert!(!bad_result_out.exists() || fs::read(&bad_result_out).unwrap().is_empty());
+        assert_eq!(
+            snapshot_online(),
+            snapshot_before_replay,
+            "failed replay must leave every online replica unchanged"
+        );
+
+        let wrong_result_out: PathBuf = temp_file(&data_dir, "publish-replay-wrong.result");
+        let wrong_output: std::process::Output = support::cli::edge_cli_command(replay_flags(
+            &chain_id,
+            &domain_hex,
+            &network_config_path,
+            &manifest_path,
+            &digest_hex,
+            &publish_signed,
+            &publish_cert,
+            &temp_file(&data_dir, "burn.avail"),
+            &wrong_result_out,
+        ))
+        .output()
+        .unwrap();
+        assert!(
+            !wrong_output.status.success(),
+            "a genuine proof for a different request must fail local preflight"
+        );
+        assert!(!wrong_result_out.exists() || fs::read(&wrong_result_out).unwrap().is_empty());
+        assert_eq!(snapshot_online(), snapshot_before_replay);
+
+        // Same-boot exact replay with saved intent, certificate and genuine availability certificate.
+        let replay_result_1 = temp_file(&data_dir, "publish-replay-1.result");
+        support::run_expect_success(
+            support::cli::edge_cli_command(replay_flags(
+                &chain_id,
+                &domain_hex,
+                &network_config_path,
+                &manifest_path,
+                &digest_hex,
+                &publish_signed,
+                &publish_cert,
+                &publish_avail,
+                &replay_result_1,
+            )),
+            "publish-replay-same-boot",
+        );
+        assert_eq!(
+            fs::read(&replay_result_1).unwrap(),
+            fs::read(temp_file(&data_dir, "publish.result")).unwrap(),
+            "same-boot replay must return byte-identical result"
+        );
+        assert_eq!(
+            snapshot_online(),
+            snapshot_before_replay,
+            "same-boot replay must leave every online replica unchanged"
+        );
+
+        // Kill actual host processes and restart them.
+        drop(hosts);
+        let host0 = spawn_profile(
+            &ca_path,
+            &dsn,
+            &chain_id,
+            &validator_hex[0],
+            &domain_hex,
+            &manifest_path,
+            &digest_hex,
+            &key_path_0,
+            "127.0.0.1:0",
+        );
+        let host1 = spawn_profile(
+            &ca_path,
+            &dsn,
+            &chain_id,
+            &validator_hex[1],
+            &domain_hex,
+            &manifest_path,
+            &digest_hex,
+            &key_path_1,
+            "127.0.0.1:0",
+        );
+        let host2 = spawn_profile(
+            &ca_path,
+            &dsn,
+            &chain_id,
+            &validator_hex[2],
+            &domain_hex,
+            &manifest_path,
+            &digest_hex,
+            &key_path_2,
+            "127.0.0.1:0",
+        );
+        let restarted_hosts: Vec<HostProcess> = vec![host0, host1, host2];
+        write_network_config(&network_config_path, &fixture, &restarted_hosts);
+
+        let replay_result_2 = temp_file(&data_dir, "publish-replay-2.result");
+        support::run_expect_success(
+            support::cli::edge_cli_command(replay_flags(
+                &chain_id,
+                &domain_hex,
+                &network_config_path,
+                &manifest_path,
+                &digest_hex,
+                &publish_signed,
+                &publish_cert,
+                &publish_avail,
+                &replay_result_2,
+            )),
+            "publish-replay-post-restart",
+        );
+        assert_eq!(
+            fs::read(&replay_result_2).unwrap(),
+            fs::read(temp_file(&data_dir, "publish.result")).unwrap(),
+            "post-restart replay must return byte-identical result"
+        );
+        assert_eq!(
+            snapshot_online(),
+            snapshot_before_replay,
+            "post-restart replay must leave every online replica unchanged"
+        );
+        let (follower_key, _follower_key_guard) =
+            write_signing_key_file(&fixture.validators[3].seed);
+        let follower: HostProcess = spawn_profile(
+            &ca_path,
+            &dsn,
+            &chain_id,
+            &validator_hex[3],
+            &domain_hex,
+            &manifest_path,
+            &digest_hex,
+            &follower_key,
+            "127.0.0.1:0",
+        );
+        let follower_store: Store = store(&pool, &namespaces[3]);
+        let follower_context: DurableOperationContext = read_context(&pool, &namespaces[3]);
+        recover_logical_lifecycle(
+            &call,
+            &fixture,
+            &data_dir,
+            restarted_hosts[0].addr,
+            &follower,
+            &follower_store,
+            &follower_context,
+            &ids,
+            &requests,
+            &publications,
+            &expected,
+        );
+        assert_eq!(
+            snapshot_online(),
+            snapshot_before_replay,
+            "sourcing old bundles after restart must remain read-only"
+        );
+        if frozen_frontier {
+            frozen_frontier_acceptance::run(
+                &fixture,
+                &pool,
+                &namespaces,
+                &data_dir,
+                &ca_path,
+                &dsn,
+                &manifest_path,
+                &digest_hex,
+                &network_config_path,
+                &validator_hex,
+                [&key_path_0, &key_path_1, &key_path_2, &follower_key],
+                restarted_hosts,
+                follower,
+                &ids,
+                &requests,
+                &publications,
+                member_drain,
+            );
+        } else {
+            drop(follower);
+            drop(restarted_hosts);
+        }
+    } else {
+        drop(hosts);
+    }
 }
