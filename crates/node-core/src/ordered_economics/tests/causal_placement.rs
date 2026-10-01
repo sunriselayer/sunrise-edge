@@ -22,6 +22,9 @@ use runtime::{
 #[path = "causal_placement/business_reconstruction.rs"]
 mod business_reconstruction;
 
+#[path = "causal_placement/control_reconstruction.rs"]
+mod control_reconstruction;
+
 struct CausalFixture {
     network: Network,
     manifest: GenesisManifest,
