@@ -106,6 +106,13 @@ signed checkpoints and hash-linked bond history are not normalized. Development
 namespaces whose initial bond used a different business checkpoint are not
 silently repaired or accepted under the fresh profile.
 
+Applied Owned targets currently need a complete normal completion tuple with
+an aggregate availability certificate. The legitimate frozen member-application
+path can finish without that certificate; such a source is not yet supported
+by this audit and refuses equality. Do not synthesize an availability proof
+or interpret that completed member as retained-but-unapplied. Supporting it is
+required before claiming a complete drained-state cut/import.
+
 This result proves equality at one fixed source snapshot. It is not proof that
 the source is the newest network state, nor a persistent cut, incoming-validator
 import, readiness authorization, Seal or activation. Those remain separate

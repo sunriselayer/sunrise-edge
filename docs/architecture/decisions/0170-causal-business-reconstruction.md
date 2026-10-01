@@ -165,6 +165,30 @@ union copied from the candidate. The owning handler must still independently
 refuse a wrong claimed union and reproduce its exact original companions.
 Honest pre-readiness refusals need no invented successful-control closure.
 
+An actual accepted Freeze is also the last normal-admission replay barrier.
+Preserve all preceding certified ordered events and their exact prerequisite
+closures first. Before closing private admission, independently query the
+owning completed-first admission and full Freeze preflight at the certified
+block height: live authority, open admission and the normal warrant must all
+hold. Only then resolve the still-applied Owned comparison targets through
+their authenticated witness dependencies and ordinary paid recovery. This is
+not an all-Owned-first ordering, request-ID sort or source-result scheduling
+oracle. Refused, foreign, ineligible and completed/recommitted Freeze candidates
+do not flush that remainder. A missing or contradictory prerequisite still
+stops; retained but unapplied publications remain unexecuted. The same
+ordinary handler subsequently closes admission and must reproduce the exact
+source companions. No live closure fence is weakened for audit replay.
+
+The initial audit supports applied Owned targets with a verified aggregate
+availability certificate and the complete normal completion tuple. Existing
+`apply_drain_member` can legitimately apply a committed member after Freeze
+without that aggregate certificate; this is not made impossible by the audit
+profile. Such a source is currently unsupported by this reconstruction and
+fails closed, rather than being interpreted as an unapplied publication or
+supplied with a fabricated certificate. Complete drained-state cut/import
+must separately close this source-family gap through the existing narrowly
+authenticated member authority.
+
 Compare the complete semantic projection of state, original receipts, object
 heads/versions/deletions and referenced blobs, including code/ABI/dependency/
 instance/authority closure, nonces, escrow/claims, bonds/transitions, evidence/

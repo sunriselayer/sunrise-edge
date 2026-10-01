@@ -73,6 +73,21 @@ only where their verified dependencies permit. Request-ID sorting and an
 all-owned-first replay are invalid. Recommits retain the first occurrence and
 exact original receipt/outcome; they do not repeat business effects.
 
+Before an independently accepted Freeze closes private normal admission,
+replay the remaining applied Owned targets through their authenticated
+dependency closure and ordinary recovery. First process the preceding ordered
+prefix and use the owning completed-first admission/full preflight at the
+certified height to establish this barrier. Refused, foreign, ineligible or
+completed/recommitted Freeze does not move later Owned work. Never weaken the
+live closure fence or execute retained-but-unapplied material to finish audit.
+
+Applied targets in this initial audit require the complete normal completion
+tuple, including a verified aggregate availability certificate. A legitimate
+frozen `apply_drain_member` completion without that certificate is currently
+unsupported and must refuse equality. This is a remaining drained-state
+cut/import requirement, not a claim that post-Freeze member application is
+invalid or permission to invent its missing availability proof.
+
 Compare independently produced complete result/effects and receipt bytes
 against source companions. A canonical, internally consistent source result
 can still fail business verification. A refusal cannot be synthesized from
