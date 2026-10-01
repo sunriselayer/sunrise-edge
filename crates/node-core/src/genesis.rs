@@ -1107,6 +1107,17 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
     let mut seen_ids: BTreeSet<objects::ObjectId> = BTreeSet::new();
     let mut seen_bond_keys: BTreeSet<Vec<u8>> = BTreeSet::new();
     let mut bond_records: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    // A v4 causal-admission genesis is replayed from signed content without
+    // inheriting a validator-local install coordinate into the hash-linked
+    // business bond row. Keep the caller's checkpoint for the install marker,
+    // epoch activation, and physical object versions; historical profiles
+    // retain their original interpretation.
+    let genesis_bond_checkpoint: u64 =
+        if manifest.commitment_profile == CommitmentProfile::CausalAdmission {
+            0
+        } else {
+            checkpoint
+        };
     for entry in &manifest.objects {
         if !seen_ids.insert(entry.object.id) {
             return Err(GenesisError::Invalid("duplicate genesis object id"));
@@ -1299,7 +1310,7 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
                 custody_object_epoch: manifest_context.epoch(),
                 authority: entry.authority.clone(),
                 amount,
-                committed_at_checkpoint: checkpoint,
+                committed_at_checkpoint: genesis_bond_checkpoint,
                 generation: 1,
                 lifecycle_epoch: manifest_context.epoch(),
                 // A genesis bond is part of the genesis validator set itself,

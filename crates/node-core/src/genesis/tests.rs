@@ -594,6 +594,156 @@ fn fresh_v4_install_reopen_and_no_implicit_upgrade_preserve_installed_bytes() {
     }
 }
 
+#[test]
+fn causal_genesis_business_bond_is_independent_of_local_install_checkpoint() {
+    let manifest: GenesisManifest = causal_bonded_manifest();
+    let bond_key: Vec<u8> =
+        fastpath_bond_record_key(&chain(), &ValidatorId::new(sender())).unwrap();
+    let marker_key: Vec<u8> = genesis_marker_key(manifest.context()).unwrap();
+    let epoch_key: Vec<u8> = local_instance_state::fastpath_epoch_record_key(&chain()).unwrap();
+    let object_id: ObjectId = manifest.objects[0].object.id;
+
+    let at_ten: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    assert!(matches!(
+        install_genesis(&at_ten, &context(1), domain(), &resolver(), &manifest, 10).unwrap(),
+        GenesisInstallOutcome::FreshInstall { .. }
+    ));
+    let bond_ten: Vec<u8> = at_ten
+        .get_versioned_durable(&context(1), domain(), &bond_key)
+        .unwrap()
+        .value()
+        .unwrap()
+        .to_vec();
+    assert_eq!(
+        decode_fastpath_bond_record(&bond_ten)
+            .unwrap()
+            .committed_at_checkpoint,
+        0
+    );
+    let marker_ten: GenesisInstallMarker = decode_genesis_install_marker(
+        at_ten
+            .get_versioned_durable(&context(1), domain(), &marker_key)
+            .unwrap()
+            .value()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(marker_ten.installed_at_checkpoint, 10);
+    let epoch_ten = local_instance_state::decode_fastpath_epoch_record(
+        at_ten
+            .get_versioned_durable(&context(1), domain(), &epoch_key)
+            .unwrap()
+            .value()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(epoch_ten.activated_at_checkpoint, 10);
+    assert_eq!(
+        at_ten
+            .get_object_version(
+                &context(1),
+                domain(),
+                object_id,
+                DurableObjectVersion::FIRST,
+            )
+            .unwrap()
+            .unwrap()
+            .created_checkpoint(),
+        10
+    );
+
+    let at_ninety_nine: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    assert!(matches!(
+        install_genesis(
+            &at_ninety_nine,
+            &context(1),
+            domain(),
+            &resolver(),
+            &manifest,
+            99,
+        )
+        .unwrap(),
+        GenesisInstallOutcome::FreshInstall { .. }
+    ));
+    let bond_ninety_nine: Vec<u8> = at_ninety_nine
+        .get_versioned_durable(&context(1), domain(), &bond_key)
+        .unwrap()
+        .value()
+        .unwrap()
+        .to_vec();
+    assert_eq!(bond_ninety_nine, bond_ten);
+    assert_eq!(
+        decode_fastpath_bond_record(&bond_ninety_nine)
+            .unwrap()
+            .committed_at_checkpoint,
+        0
+    );
+    let marker_ninety_nine: GenesisInstallMarker = decode_genesis_install_marker(
+        at_ninety_nine
+            .get_versioned_durable(&context(1), domain(), &marker_key)
+            .unwrap()
+            .value()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(marker_ninety_nine.installed_at_checkpoint, 99);
+    let epoch_ninety_nine = local_instance_state::decode_fastpath_epoch_record(
+        at_ninety_nine
+            .get_versioned_durable(&context(1), domain(), &epoch_key)
+            .unwrap()
+            .value()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(epoch_ninety_nine.activated_at_checkpoint, 99);
+    assert_eq!(
+        at_ninety_nine
+            .get_object_version(
+                &context(1),
+                domain(),
+                object_id,
+                DurableObjectVersion::FIRST,
+            )
+            .unwrap()
+            .unwrap()
+            .created_checkpoint(),
+        99
+    );
+
+    let reopened_ten: GenesisInstallOutcome =
+        install_genesis(&at_ten, &context(1), domain(), &resolver(), &manifest, 99).unwrap();
+    assert!(matches!(
+        reopened_ten,
+        GenesisInstallOutcome::VerifiedExisting { marker, .. }
+            if marker.installed_at_checkpoint == 10
+    ));
+    let reopened_ninety_nine: GenesisInstallOutcome = install_genesis(
+        &at_ninety_nine,
+        &context(1),
+        domain(),
+        &resolver(),
+        &manifest,
+        10,
+    )
+    .unwrap();
+    assert!(matches!(
+        reopened_ninety_nine,
+        GenesisInstallOutcome::VerifiedExisting { marker, .. }
+            if marker.installed_at_checkpoint == 99
+    ));
+    for store in [&at_ten, &at_ninety_nine] {
+        assert_eq!(
+            store
+                .get_versioned_durable(&context(1), domain(), &bond_key)
+                .unwrap()
+                .value(),
+            Some(bond_ten.as_slice())
+        );
+    }
+}
+
 /// Commits one raw state row, fenced at its exact observed revision.
 pub(crate) fn put_state(store: &MemoryDurableStateStore, key: &[u8], value: Vec<u8>) {
     let observed: VersionedStateValue = store
