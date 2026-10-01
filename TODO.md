@@ -94,6 +94,11 @@ reviewable commits; semantic changes stay with their owning feature.
   object/receipt/outbox traits and memory implementations, and node-core
   error/event/invocation/outbox plumbing, within the existing crates with
   public reexports. Keep memory stores available to production reconstruction.
+  Operation context and runtime composition are now separate private owners
+  with the same root API and unchanged implementation bodies. A typed wiring
+  test covers all six supplied components. This first extraction is under
+  required-gate and independent-review verification; transaction/object/
+  receipt/outbox/memory and node-core cleanup remain separate unfinished work.
 - [x] **Bounded artifact and configuration primitives:** SDK local-genesis
   verification and committee conversion now share `local_genesis`; CLI
   bounded reads, fresh reservations and held-handle synchronization share

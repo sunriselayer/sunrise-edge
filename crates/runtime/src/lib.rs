@@ -2,15 +2,22 @@
 
 //! Runtime abstraction and in-memory adapters for serverless-safe node execution.
 
+mod composition;
 #[cfg(any(test, feature = "durable-conformance"))]
 pub mod conformance;
 
 pub mod inactive_import;
+mod operation;
 pub mod outbox_guard;
 pub mod portable;
+pub use composition::{ComposedRuntime, MemoryRuntime};
 pub use inactive_import::{
     ImportBatch, ImportBinding, ImportContext, ImportObjectHead, ImportProgress, ImportRow,
     InactiveImportRepository, NamespaceLifecycle,
+};
+pub use operation::{
+    DurableOperationContext, InvocationCancellation, NeverCancelled, StorageCorrelationId,
+    StorageDeadline, WriterFenceGeneration,
 };
 
 use core::{fmt, mem::size_of};
@@ -239,108 +246,6 @@ pub const MAX_DURABLE_OBJECT_CHANGES_BYTES: usize = MAX_ATOMIC_STATE_TRANSACTION
 /// This is not the logical [`Object::type_hash`], which remains inside the
 /// canonical object payload.
 pub const DURABLE_OBJECT_CANONICAL_RECORD_TYPE_ID: u32 = OBJECT_CANONICAL_TYPE_ID as u32;
-
-/// Monotonic deployment-generation token for one domain's authoritative writer.
-///
-/// This token belongs to fenced deployment metadata, not canonical protocol
-/// state. Generation zero is reserved so an omitted fence cannot authorize a
-/// write accidentally.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct WriterFenceGeneration(NonZeroU64);
-
-impl WriterFenceGeneration {
-    /// Creates a non-zero writer generation.
-    #[must_use]
-    pub const fn new(value: u64) -> Option<Self> {
-        match NonZeroU64::new(value) {
-            Some(value) => Some(Self(value)),
-            None => None,
-        }
-    }
-
-    /// Returns the deployment-metadata representation.
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0.get()
-    }
-
-    /// Returns the next generation without permitting wraparound.
-    #[must_use]
-    pub const fn checked_next(self) -> Option<Self> {
-        match self.get().checked_add(1) {
-            Some(value) => Self::new(value),
-            None => None,
-        }
-    }
-}
-
-/// Absolute storage-operation deadline in Unix milliseconds.
-///
-/// Adapters must propagate this deadline through acquisition, statements, and
-/// commit. Expiry does not by itself prove that an already-dispatched commit
-/// aborted; such a result is [`DurableCommitOutcome::Indeterminate`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StorageDeadline(NonZeroU64);
-
-impl StorageDeadline {
-    /// Creates a non-zero absolute deadline.
-    #[must_use]
-    pub const fn new(unix_millis: u64) -> Option<Self> {
-        match NonZeroU64::new(unix_millis) {
-            Some(value) => Some(Self(value)),
-            None => None,
-        }
-    }
-
-    /// Returns the absolute Unix-millisecond deadline.
-    #[must_use]
-    pub const fn unix_millis(self) -> u64 {
-        self.0.get()
-    }
-
-    /// Returns whether the deadline has elapsed at the supplied trusted time.
-    #[must_use]
-    pub const fn is_expired_at(self, now_unix_millis: u64) -> bool {
-        now_unix_millis >= self.unix_millis()
-    }
-}
-
-/// Bounded operational identity used to correlate one durable invocation.
-///
-/// Correlation IDs are observability metadata. They are not accepted as
-/// request identity, deduplication identity, or a protocol authorization input.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StorageCorrelationId([u8; 16]);
-
-impl StorageCorrelationId {
-    /// Creates a non-zero correlation identity.
-    #[must_use]
-    pub fn new(bytes: [u8; 16]) -> Option<Self> {
-        if bytes == [0; 16] {
-            None
-        } else {
-            Some(Self(bytes))
-        }
-    }
-
-    /// Returns the exact operational identity bytes.
-    #[must_use]
-    pub const fn as_bytes(&self) -> &[u8; 16] {
-        &self.0
-    }
-}
-
-/// Authority and budget shared by every storage operation in one invocation.
-///
-/// The same context must be used for all reads and the corresponding commit.
-/// A store must revalidate the writer fence at commit even if earlier reads
-/// accepted it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DurableOperationContext {
-    writer_fence: WriterFenceGeneration,
-    deadline: StorageDeadline,
-    correlation_id: StorageCorrelationId,
-}
 
 /// Validation errors for the provider-neutral indexed outbox contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2096,61 +2001,6 @@ impl DurableInvocationTransaction {
     #[must_use]
     pub const fn represented_bytes(&self) -> usize {
         self.represented_bytes
-    }
-}
-
-impl DurableOperationContext {
-    /// Creates the bounded operational context for one durable invocation.
-    #[must_use]
-    pub const fn new(
-        writer_fence: WriterFenceGeneration,
-        deadline: StorageDeadline,
-        correlation_id: StorageCorrelationId,
-    ) -> Self {
-        Self {
-            writer_fence,
-            deadline,
-            correlation_id,
-        }
-    }
-
-    /// Returns the writer generation that the adapter must validate.
-    #[must_use]
-    pub const fn writer_fence(self) -> WriterFenceGeneration {
-        self.writer_fence
-    }
-
-    /// Returns the deadline covering acquisition through commit resolution.
-    #[must_use]
-    pub const fn deadline(self) -> StorageDeadline {
-        self.deadline
-    }
-
-    /// Returns the operational correlation identity.
-    #[must_use]
-    pub const fn correlation_id(self) -> StorageCorrelationId {
-        self.correlation_id
-    }
-}
-
-/// Trusted cooperative signal that can stop an invocation before storage dispatch.
-///
-/// Native compositions may consult this signal until the first durable storage
-/// operation is dispatched. Durable stores deliberately do not receive it:
-/// once that operation begins, cancellation cannot prove that a later commit
-/// aborted and must not terminate started synchronous work.
-pub trait InvocationCancellation: fmt::Debug + Send + Sync {
-    /// Returns whether the composition should reject a not-yet-dispatched invocation.
-    fn is_cancelled(&self) -> bool;
-}
-
-/// Explicit cancellation policy for compositions that never cancel dispatch.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct NeverCancelled;
-
-impl InvocationCancellation for NeverCancelled {
-    fn is_cancelled(&self) -> bool {
-        false
     }
 }
 
@@ -4812,148 +4662,6 @@ impl Scheduler for MemoryScheduler {
         let split_at = guard.partition_point(|item| item.at_unix_millis <= now_unix_millis);
         let ready = guard.drain(0..split_at).collect();
         Ok(ready)
-    }
-}
-
-/// Explicit runtime composition from independently owned components.
-///
-/// This keeps storage, transport, signing, time, and scheduling policy visible
-/// at the embedding boundary. Constructing this value does not certify that
-/// any supplied component is durable or production-ready.
-#[derive(Debug)]
-pub struct ComposedRuntime<S, B, N, T, C, Q> {
-    state_store: S,
-    blob_store: B,
-    signer: N,
-    transport: T,
-    clock: C,
-    scheduler: Q,
-}
-
-impl<S, B, N, T, C, Q> ComposedRuntime<S, B, N, T, C, Q> {
-    /// Creates a runtime without adding hidden defaults or global state.
-    #[must_use]
-    pub const fn new(
-        state_store: S,
-        blob_store: B,
-        signer: N,
-        transport: T,
-        clock: C,
-        scheduler: Q,
-    ) -> Self {
-        Self {
-            state_store,
-            blob_store,
-            signer,
-            transport,
-            clock,
-            scheduler,
-        }
-    }
-}
-
-impl<S, B, N, T, C, Q> Runtime for ComposedRuntime<S, B, N, T, C, Q>
-where
-    S: StateStore,
-    B: BlobStore,
-    N: Signer,
-    T: Transport,
-    C: Clock,
-    Q: Scheduler,
-{
-    type State = S;
-    type Blobs = B;
-    type NodeSigner = N;
-    type Network = T;
-    type Time = C;
-    type TaskScheduler = Q;
-
-    fn state_store(&self) -> &Self::State {
-        &self.state_store
-    }
-
-    fn blob_store(&self) -> &Self::Blobs {
-        &self.blob_store
-    }
-
-    fn signer(&self) -> &Self::NodeSigner {
-        &self.signer
-    }
-
-    fn transport(&self) -> &Self::Network {
-        &self.transport
-    }
-
-    fn clock(&self) -> &Self::Time {
-        &self.clock
-    }
-
-    fn scheduler(&self) -> &Self::TaskScheduler {
-        &self.scheduler
-    }
-}
-
-/// In-memory runtime composition.
-#[derive(Debug)]
-pub struct MemoryRuntime {
-    state_store: MemoryStateStore,
-    blob_store: MemoryBlobStore,
-    signer: MemorySigner,
-    transport: MemoryTransport,
-    clock: ManualClock,
-    scheduler: MemoryScheduler,
-}
-
-impl MemoryRuntime {
-    /// Creates an in-memory runtime.
-    #[must_use]
-    pub fn new(validator_id: ValidatorId) -> Self {
-        Self {
-            state_store: MemoryStateStore::default(),
-            blob_store: MemoryBlobStore::default(),
-            signer: MemorySigner::new(validator_id),
-            transport: MemoryTransport::default(),
-            clock: ManualClock::default(),
-            scheduler: MemoryScheduler::default(),
-        }
-    }
-
-    /// Sets current time for the internal manual clock.
-    pub fn set_time(&self, unix_millis: u64) {
-        self.clock.set(unix_millis);
-    }
-}
-
-impl Runtime for MemoryRuntime {
-    type State = MemoryStateStore;
-    type Blobs = MemoryBlobStore;
-    type NodeSigner = MemorySigner;
-    type Network = MemoryTransport;
-    type Time = ManualClock;
-    type TaskScheduler = MemoryScheduler;
-
-    fn state_store(&self) -> &Self::State {
-        &self.state_store
-    }
-
-    fn blob_store(&self) -> &Self::Blobs {
-        &self.blob_store
-    }
-
-    fn signer(&self) -> &Self::NodeSigner {
-        &self.signer
-    }
-
-    fn transport(&self) -> &Self::Network {
-        &self.transport
-    }
-
-    fn clock(&self) -> &Self::Time {
-        &self.clock
-    }
-
-    fn scheduler(&self) -> &Self::TaskScheduler {
-        &self.scheduler
     }
 }
 
