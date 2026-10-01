@@ -417,9 +417,15 @@ The detailed existing evidence and remaining criteria follow:
   execution, complete semantic projection and the read-only PostgreSQL CLI.
   Earlier core compile/strict Clippy and compiled operator/CLI builds passed.
   Genuine four-namespace PostgreSQL execution reached DrainSet, fixed-history
-  export and actual source restart, but complete private replay refused; new
-  focused Memory controls also exposed semantic-comparison and fixture issues.
-  These are under repair, not passed acceptance. Final whole-repository checks,
+  export and actual source restart, but complete private replay refused. Its
+  genuine genesis-coordinate and provenance failures were repaired: install/
+  reopen and five focused business reconstruction controls now pass, including
+  real signed Replace and equivalent valid certificate subsets. New genuine
+  DrainSet controls exposed a remaining scheduler failure: an applied Owned
+  target without an earlier ordered dependency was left until after Freeze,
+  where normal recovery correctly refuses closed admission. That chronology
+  is under repair; no complete four-namespace acceptance pass is claimed.
+  Two control-page codec cases pass. Final whole-repository checks,
   independent final-head review and required CI remain pending.
   `npm ci` passed on 2026-10-01 but
   reported six inherited high-severity development-tool dependency advisories;
@@ -446,6 +452,11 @@ The detailed existing evidence and remaining criteria follow:
   No persistent import, inactive incoming-validator guard, complete cut,
   readiness, Seal, activation, force unlock or general partial cancellation
   is claimed by this capability. Those remain separate Delivery 3 work.
+  The initial audit also requires an availability certificate for each applied
+  Owned target. Legitimate frozen `apply_drain_member` completion without an
+  aggregate availability certificate is not yet reconstructible by this audit
+  and must refuse equality, not be treated as an unapplied publication. Close
+  that source-family gap before claiming complete drained-state cut/import.
 
 - [x] **Portable storage implementation: bounded reads and backend-enforced snapshot continuity**
   ([DR-0166](docs/architecture/decisions/0166-portable-candidate-snapshot.md),
