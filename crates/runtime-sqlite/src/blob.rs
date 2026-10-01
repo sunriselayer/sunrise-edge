@@ -256,9 +256,12 @@ impl BlobStore for SqliteBlobStore {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(database_failure)?;
-        let existing: Option<Vec<u8>> = transaction
+        // An external descriptor observation can race another connection's
+        // insertion. Recheck length under this writer transaction before
+        // allocating any existing payload; the supplied bytes bound the read.
+        let existing_length: Option<i64> = transaction
             .query_row(
-                "SELECT content FROM blobs WHERE digest_algorithm = ?1 AND digest_bytes = ?2",
+                "SELECT length(content) FROM blobs WHERE digest_algorithm = ?1 AND digest_bytes = ?2",
                 params![
                     i64::from(digest.algorithm().as_u16()),
                     digest.bytes().as_slice(),
@@ -267,14 +270,30 @@ impl BlobStore for SqliteBlobStore {
             )
             .optional()
             .map_err(database_failure)?;
-        match existing {
-            Some(content) if content == bytes => {
+        match existing_length {
+            Some(length) => {
+                let length: usize =
+                    usize::try_from(length).map_err(|_| RuntimeError::InvalidPersistedState)?;
+                if length != bytes.len() {
+                    transaction.rollback().map_err(database_failure)?;
+                    return Err(RuntimeError::BlobDigestConflict { digest });
+                }
+                let content: Vec<u8> = transaction
+                    .query_row(
+                        "SELECT content FROM blobs WHERE digest_algorithm = ?1 AND digest_bytes = ?2",
+                        params![
+                            i64::from(digest.algorithm().as_u16()),
+                            digest.bytes().as_slice(),
+                        ],
+                        |row| row.get(0),
+                    )
+                    .map_err(database_failure)?;
                 transaction.rollback().map_err(database_failure)?;
-                Ok(())
-            }
-            Some(_) => {
-                transaction.rollback().map_err(database_failure)?;
-                Err(RuntimeError::BlobDigestConflict { digest })
+                if content == bytes {
+                    Ok(())
+                } else {
+                    Err(RuntimeError::BlobDigestConflict { digest })
+                }
             }
             None => {
                 transaction
@@ -693,6 +712,113 @@ mod tests {
             }
         );
         assert_eq!(store.get_blob(&content_digest).unwrap(), Some(vec![1, 1]));
+    }
+
+    #[test]
+    fn put_rechecks_raced_length_inside_transaction_with_two_writable_handles() {
+        let database: TestDatabase = TestDatabase::new();
+        let target: SqliteBlobStore = SqliteBlobStore::create_new(&database.path).unwrap();
+        let other: SqliteBlobStore =
+            SqliteBlobStore::open_existing_writable(&database.path).unwrap();
+        let oversized: Digest32 = digest(0x71);
+        assert_eq!(
+            target.read_portable_blob_descriptor(&oversized).unwrap(),
+            None
+        );
+        // Deterministic race: another handle inserts after descriptor absence
+        // was observed, before put starts its own writer transaction. SQLite
+        // creates the legal generic blob without allocating it in Rust.
+        let large_length: usize = 32 * 1024 * 1024 + 1;
+        other
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO blobs (digest_algorithm, digest_bytes, content)
+                 VALUES (?1, ?2, zeroblob(?3))",
+                params![
+                    i64::from(oversized.algorithm().as_u16()),
+                    oversized.bytes().as_slice(),
+                    i64::try_from(large_length).unwrap(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            target.put_blob(oversized, vec![1, 2, 3]),
+            Err(RuntimeError::BlobDigestConflict { digest: oversized })
+        );
+        let descriptor: PortableBlobDescriptor = other
+            .read_portable_blob_descriptor(&oversized)
+            .unwrap()
+            .unwrap();
+        assert_eq!(descriptor.length(), large_length);
+        let request: PortableBlobChunkRequest =
+            PortableBlobChunkRequest::new(descriptor, 0, std::num::NonZeroUsize::new(3).unwrap())
+                .unwrap();
+        let observed: PortableBlobChunkOutcome = other.read_portable_blob_chunk(&request).unwrap();
+        let PortableBlobChunkOutcome::Chunk(chunk) = observed else {
+            panic!("raced blob was modified or lost");
+        };
+        assert_eq!(chunk.bytes(), &[0, 0, 0]);
+
+        let same_length: Digest32 = digest(0x72);
+        assert_eq!(
+            target.read_portable_blob_descriptor(&same_length).unwrap(),
+            None
+        );
+        other.put_blob(same_length, vec![4, 5, 6]).unwrap();
+        assert_eq!(
+            target.put_blob(same_length, vec![7, 8, 9]),
+            Err(RuntimeError::BlobDigestConflict {
+                digest: same_length
+            })
+        );
+        target.put_blob(same_length, vec![4, 5, 6]).unwrap();
+        assert_eq!(other.get_blob(&same_length).unwrap(), Some(vec![4, 5, 6]));
+    }
+
+    #[test]
+    fn put_refuses_equal_length_corrupt_content_without_repair() {
+        let database: TestDatabase = TestDatabase::new();
+        let target: SqliteBlobStore = SqliteBlobStore::create_new(&database.path).unwrap();
+        let other: SqliteBlobStore =
+            SqliteBlobStore::open_existing_writable(&database.path).unwrap();
+        let content_digest: Digest32 = digest(0x73);
+        target.put_blob(content_digest, vec![1, 2, 3]).unwrap();
+        let before: PortableBlobDescriptor = target
+            .read_portable_blob_descriptor(&content_digest)
+            .unwrap()
+            .unwrap();
+        assert_eq!(before.length(), 3);
+        other
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE blobs SET content = 'abc'
+                 WHERE digest_algorithm = ?1 AND digest_bytes = ?2",
+                params![
+                    i64::from(content_digest.algorithm().as_u16()),
+                    content_digest.bytes().as_slice(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            target.put_blob(content_digest, vec![1, 2, 3]),
+            Err(RuntimeError::DurableStoreUnavailable)
+        );
+        let retained: (String, String) = other
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT typeof(content), content FROM blobs
+                 WHERE digest_algorithm = ?1 AND digest_bytes = ?2",
+                params![
+                    i64::from(content_digest.algorithm().as_u16()),
+                    content_digest.bytes().as_slice(),
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(retained, ("text".to_owned(), "abc".to_owned()));
     }
 
     #[test]
