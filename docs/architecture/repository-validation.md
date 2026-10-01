@@ -32,11 +32,13 @@ checks bind the workflow lanes to the complete local entrypoint and verify
 unique membership of required gates and ignored selectors.
 
 The storage lane also selects the existing `sunrise-edge-operator` and
-`sunrise-edge-cloudflare-validator` packages and the
+`sunrise-edge-cloudflare-validator` packages, `sunrise-claim`, and the
 `sunrise-edge-cli/usb-hid` feature. Their ordinary tests intentionally repeat:
 resolved native dependency graphs showed that a PG-only selection reduced
 Tokio, futures, libc, smallvec and zeroize features. These anchors preserve the
 workspace feature union without a new binary-execution framework or dependency.
+The claim anchor preserves the additional crypto feature union introduced by
+that workspace package; its ordinary tests also repeat deliberately.
 The ordinary-test lane excludes only `runtime-postgres`; all its other package
 targets and features remain covered. This deliberate bounded duplication does
 not duplicate the required ignored-selector dispatch.

@@ -88,6 +88,13 @@ Workspace membership and dependency changes require a fresh resolved-feature
 comparison and combined-head validation. A successful run before this merge
 does not establish the changed workspace's feature parity or acceptance.
 
+The new comparison found seven selected dependency feature sets reduced in
+the previous storage selection. Add `sunrise-claim` as an additional bounded
+storage anchor: the ordinary lane covers all 212 native packages, and the
+210 selected storage packages now have no differing feature unions against the
+complete workspace. Claim tests deliberately repeat; runtime assertions and
+mandatory ignored-selector membership are unchanged.
+
 ## Historical execution evidence
 
 Run `36849428430` at `039174e1dd2a3feef13caef0f7c8bb88fe2976a2` completed all

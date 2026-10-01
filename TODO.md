@@ -5363,6 +5363,11 @@ Phase 17 prerequisites:
   billed runner cost and cost savings are not established. See
   [design](docs/architecture/repository-validation.md) and
   [decision](docs/architecture/decisions/0171-partitioned-repository-validation.md).
+- [x] Combined native dependency-feature parity: 212 workspace/ordinary-lane
+  packages and 210 storage-lane packages, with no differing selected feature
+  unions. Add the claim package as a bounded storage anchor and regression-test
+  that no required anchor may disappear; prior selected crypto feature gaps
+  are fixed without dropping tests or changing assertion profiles.
 - reviewed weekly dependency/action update proposals (implemented As-Is)
 
 Phase 17 shared ingress As-Is scope:
