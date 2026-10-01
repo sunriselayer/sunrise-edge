@@ -417,7 +417,9 @@ pub(crate) fn read_drain_set_record_with_revision<S: StructuredDurableDomainStat
 /// business-decidable refusal. Every other storage/proof-layer failure is
 /// likewise a stop -- corrupted or inconsistent local progress is never a
 /// candidate's own decidable defect.
-fn classify_readiness_error(error: drain_union::DrainSignerError) -> OrderedEconomicsError {
+pub(crate) fn classify_readiness_error(
+    error: drain_union::DrainSignerError,
+) -> OrderedEconomicsError {
     match error {
         drain_union::DrainSignerError::NotReady(_) => {
             OrderedEconomicsError::Prerequisite("drain union is not locally ready")
@@ -442,6 +444,21 @@ fn classify_readiness_error(error: drain_union::DrainSignerError) -> OrderedEcon
 /// atomic install is protected against the local ready marker or any of its
 /// Freeze/epoch/set prerequisites moving afterward.
 pub(crate) fn verify_and_match_readiness<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    intent: &DrainSetIntent,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<(), OrderedEconomicsError> {
+    require_matching_freeze(store, context, env, intent, reads)?;
+    verify_and_match_local_readiness(store, context, env, intent, reads)
+}
+
+/// The shared owning prefix before any local readiness requirement. Private
+/// reconstruction uses this same check to distinguish an earlier deterministic
+/// refusal from missing proof material; it does not treat source outcomes as
+/// authority or apply a DrainSet through this scheduling query.
+fn require_matching_freeze<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -486,6 +503,16 @@ pub(crate) fn verify_and_match_readiness<S: StructuredDurableDomainStateStore>(
             OrderedRefusal::ForeignDrainSet,
         ));
     }
+    Ok(())
+}
+
+fn verify_and_match_local_readiness<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    intent: &DrainSetIntent,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<(), OrderedEconomicsError> {
     let identity: DrainUnionIdentity = drain_union::verify_drain_ready_into(
         store,
         context,
@@ -538,6 +565,22 @@ pub(crate) fn preflight_drain_set<S: StructuredDurableDomainStateStore>(
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
 ) -> Result<(), OrderedEconomicsError> {
+    let intent: DrainSetIntent = preflight_drain_set_prefix(store, context, env, candidate)?;
+    // Discarded: `store` here is the caller's staging adapter, which already
+    // records every read it forwards (see `StagingStore::observed_reads`).
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    verify_and_match_local_readiness(store, context, env, &intent, &mut reads)
+}
+
+/// The real committed-execution prefix, before local proof readiness. It is
+/// shared with the private reconstruction scheduler, never an application
+/// capability and never a replacement for the full owning preflight.
+pub(crate) fn preflight_drain_set_prefix<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+) -> Result<DrainSetIntent, OrderedEconomicsError> {
     let chain: &ChainId = env.policy.context().chain_id();
     let epoch: Epoch = env.policy.context().epoch();
     if read_drain_set_record(store, context, env.policy.domain(), chain, epoch)?.is_some() {
@@ -556,7 +599,8 @@ pub(crate) fn preflight_drain_set<S: StructuredDurableDomainStateStore>(
     // Discarded: `store` here is the caller's staging adapter, which already
     // records every read it forwards (see `StagingStore::observed_reads`).
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
-    verify_and_match_readiness(store, context, env, &intent, &mut reads)
+    require_matching_freeze(store, context, env, &intent, &mut reads)?;
+    Ok(intent)
 }
 
 /// Executes a committed `DrainSet` candidate against `staging`.

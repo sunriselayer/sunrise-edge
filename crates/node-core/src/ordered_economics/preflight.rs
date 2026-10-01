@@ -174,7 +174,7 @@ fn require_leg_nonces<S: StructuredDurableDomainStateStore>(
 /// This read goes through `store` (the caller's `staging` adapter during
 /// real execution), so it becomes a CAS assertion in the final commit exactly
 /// like every other row this module reads.
-fn require_admission_open<S: StructuredDurableDomainStateStore>(
+pub(crate) fn require_admission_open<S: StructuredDurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,

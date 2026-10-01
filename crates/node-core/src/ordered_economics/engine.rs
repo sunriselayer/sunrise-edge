@@ -1499,10 +1499,15 @@ pub(crate) fn reconstruct_ordered_history_height(
                             .map_err(|_| invalid("ordered reconstruction request id"))?,
                     )?
                     .ok_or(stop("ordered reconstruction original receipt missing"))?;
-                if encode_retained_outcome(&retained)?.as_slice() != source_outcome
-                    || receipt.canonical_bytes() != source_receipt
-                {
-                    return Err(stop("ordered reconstructed recommit companions differ"));
+                if encode_retained_outcome(&retained)?.as_slice() != source_outcome {
+                    return Err(stop(
+                        "ordered reconstructed recommit original outcome differs",
+                    ));
+                }
+                if receipt.canonical_bytes() != source_receipt {
+                    return Err(stop(
+                        "ordered reconstructed recommit original receipt differs",
+                    ));
                 }
                 completed = Some(*retained);
             }
@@ -1549,11 +1554,14 @@ pub(crate) fn reconstruct_ordered_history_height(
                 }
                 let (actual, captured): (OrderedOutcome, DurableInvocationTransaction) =
                     capture_completion(&staging, env.policy.domain(), &candidate, &block, outcome)?;
-                if encode_retained_outcome(&actual)?.as_slice() != source_outcome
-                    || captured.receipt().canonical_bytes() != source_receipt
-                {
+                if encode_retained_outcome(&actual)?.as_slice() != source_outcome {
                     return Err(stop(
-                        "ordered source companions differ from independent business execution",
+                        "ordered original outcome differs from independent business execution",
+                    ));
+                }
+                if captured.receipt().canonical_bytes() != source_receipt {
+                    return Err(stop(
+                        "ordered original receipt differs from independent business execution",
                     ));
                 }
                 let row: OutcomeRow = read_outcome_row(store, context, env, &candidate.request_id)?;
@@ -1786,6 +1794,61 @@ fn admit_candidate<S: StructuredDurableDomainStateStore>(
         head_reads,
         request_id: candidate.request_id,
     }))
+}
+
+/// Read-only scheduling query over the isolated reconstruction store. Exact
+/// completed reconciliation precedes every fresh prerequisite, just as in the
+/// owning execution path. The shared owning prefix preserves live authority,
+/// NoFreeze, AlreadyDrained and foreign-selection refusal precedence. Only a
+/// typed missing readiness dependency requests external proof material; an
+/// already independently derived ready union is reused even when a candidate
+/// claims a different union. The normal owner still decides and records the
+/// complete business/control response. This boolean grants no capability.
+pub(crate) fn reconstruction_drain_readiness_needed(
+    store: &runtime::MemoryDurableStateStore,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+    _block_height: u64,
+) -> Result<bool, OrderedEconomicsError> {
+    if candidate.kind != OrderedOperationKind::DrainSet {
+        return Ok(false);
+    }
+    if !env.policy.is_causal() {
+        return Err(stop(
+            "control reconstruction requires pinned causal genesis",
+        ));
+    }
+    env.policy.authenticate_candidate(candidate)?;
+    if let Admission::Completed(_) = admit_candidate(store, context, env, candidate, false)? {
+        return Ok(false);
+    }
+    preflight::require_live_authority(store, context, env)?;
+    match preflight::require_admission_open(store, context, env, candidate) {
+        Ok(()) => {}
+        Err(OrderedEconomicsError::Refused(_)) => return Ok(false),
+        Err(error) => return Err(error),
+    }
+    let intent: drain_set::DrainSetIntent =
+        match drain_set::preflight_drain_set_prefix(store, context, env, candidate) {
+            Ok(intent) => intent,
+            Err(OrderedEconomicsError::Refused(_)) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    match drain_union::verify_drain_ready_into(
+        store,
+        context,
+        env.policy.domain(),
+        env.resolver,
+        env.policy.context(),
+        &intent.selected_votes,
+        &mut reads,
+    ) {
+        Ok(_) => Ok(false),
+        Err(drain_union::DrainSignerError::NotReady(_)) => Ok(true),
+        Err(error) => Err(drain_set::classify_readiness_error(error)),
+    }
 }
 
 /// Reconciles one candidate for a **signing** caller: a completed request is
