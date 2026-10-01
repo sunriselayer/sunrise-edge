@@ -14,7 +14,10 @@ Reuse its independently configured `CUT_CHAIN_ID`, `CUT_PROTOCOL_VERSION`,
 `CUT_GENESIS_DIGEST`, `CUT_HISTORY_DIR` and `CUT_OUTPUT_DIR`.
 
 Choose two distinct absent destination database paths whose parent directories
-already exist and are operator-controlled. Set `IMPORT_STATE_DB`,
+already exist and are operator-controlled. Both files must be outside the
+saved-cut and ordered-history archive trees; the command checks regular
+ancestor paths and held directory identities before destination effects.
+Set `IMPORT_STATE_DB`,
 `IMPORT_BLOB_DB` and `IMPORT_VALIDATOR_ID` yourself. The validator ID selects
 the destination namespace; it does not certify eligibility in the next set.
 Do not supply a private key, endpoint or source writer generation.

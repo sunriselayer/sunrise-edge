@@ -16,7 +16,9 @@ use node_core::business_reconstruction::SourceBusinessSnapshot;
 use protocol_types::ValidatorId;
 use runtime_sqlite::{SqliteDurableStore, SqliteNamespace};
 use std::{
-    path::Path,
+    collections::BTreeMap,
+    ffi::OsString,
+    path::{Path, PathBuf},
     process::{Command, Output},
 };
 use sunrise_edge_operator::{
@@ -91,6 +93,28 @@ fn identity_fields(text: &str) -> Vec<&str> {
         .collect()
 }
 
+fn history_files(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+    let mut files: BTreeMap<PathBuf, Option<Vec<u8>>> = BTreeMap::new();
+    let mut pending: Vec<PathBuf> = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            let path: PathBuf = entry.unwrap().path();
+            let metadata: std::fs::Metadata = std::fs::symlink_metadata(&path).unwrap();
+            assert!(!metadata.file_type().is_symlink());
+            let relative: PathBuf = path.strip_prefix(root).unwrap().to_path_buf();
+            let contents: Option<Vec<u8>> = if metadata.is_dir() {
+                pending.push(path);
+                None
+            } else {
+                assert!(metadata.is_file());
+                Some(std::fs::read(&path).unwrap())
+            };
+            assert!(files.insert(relative, contents).is_none());
+        }
+    }
+    files
+}
+
 #[test]
 fn compiled_verified_import_creates_reopens_and_reverifies_without_ordinary_serving() {
     let fixture: Fixture = Fixture::new();
@@ -120,6 +144,7 @@ fn compiled_verified_import_creates_reopens_and_reverifies_without_ordinary_serv
         .complete
     );
     let original_files = files(&cut.0);
+    let original_history_files = history_files(&history_root);
     let destination: Directory = Directory::new("import-destination");
     let incoming: ValidatorId = ValidatorId::new([0xE7; 32]);
     assert!(
@@ -140,6 +165,45 @@ fn compiled_verified_import_creates_reopens_and_reverifies_without_ordinary_serv
     assert!(!invalid.status.success());
     assert!(!destination.0.join("state.sqlite").exists());
     assert!(!destination.0.join("blobs.sqlite").exists());
+    for input_root in [&cut.0, &history_root] {
+        for mode in ["create-sqlite", "resume-sqlite"] {
+            for (flag, filename) in [
+                ("--state-db", "state.sqlite"),
+                ("--blob-db", "blobs.sqlite"),
+            ] {
+                let original: Command = command(
+                    &fixture,
+                    &history_root,
+                    &cut.0,
+                    &destination.0,
+                    mode,
+                    incoming,
+                    "1",
+                );
+                let mut arguments: Vec<OsString> =
+                    original.get_args().map(OsString::from).collect();
+                let position: usize = arguments.iter().position(|value| value == flag).unwrap();
+                arguments[position + 1] = input_root.join(filename).into_os_string();
+                let misplaced: Output = Command::new(env!("CARGO_BIN_EXE_business_import"))
+                    .args(arguments)
+                    .output()
+                    .unwrap();
+                assert!(!misplaced.status.success());
+                assert!(
+                    String::from_utf8_lossy(&misplaced.stderr)
+                        .contains("destination database must be outside pinned input archive")
+                );
+                assert!(!input_root.join(filename).exists());
+                assert!(!destination.0.join("state.sqlite").exists());
+                assert!(!destination.0.join("blobs.sqlite").exists());
+                assert_eq!(files(&cut.0), original_files);
+                assert!(
+                    history_files(&history_root) == original_history_files,
+                    "refused placement preserves all original history files and directories"
+                );
+            }
+        }
+    }
     let corrupt_cut: Directory = Directory::new("import-corrupt-cut");
     copy_files(&cut.0, &corrupt_cut.0);
     let corrupt_identity: std::path::PathBuf = corrupt_cut.0.join("identity.bin");
@@ -226,6 +290,10 @@ fn compiled_verified_import_creates_reopens_and_reverifies_without_ordinary_serv
         files(&cut.0),
         original_files,
         "import never rewrites the saved cut"
+    );
+    assert!(
+        history_files(&history_root) == original_history_files,
+        "successful import and resume preserve all original history files and directories"
     );
     assert_eq!(
         fixture.snapshot(),

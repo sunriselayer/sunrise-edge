@@ -60,6 +60,41 @@ impl Drop for TestDirectory {
 }
 
 #[test]
+fn output_placement_refuses_input_descendants_without_creating_files() {
+    let directory: TestDirectory = TestDirectory::new();
+    let source: PathBuf = directory.0.join("input");
+    let nested: PathBuf = source.join("nested");
+    let sibling: PathBuf = directory.0.join("input-other");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::create_dir(&nested).unwrap();
+    std::fs::create_dir(&sibling).unwrap();
+    let archive: ImmutableArchive = ImmutableArchive::open_read_only(&source).unwrap();
+    for destination in [
+        source.join("state.sqlite"),
+        source.join("./blobs.sqlite"),
+        nested.join("state.sqlite"),
+        source.join("../input-other/state.sqlite"),
+    ] {
+        assert!(archive.require_output_outside(&destination).is_err());
+        assert!(!destination.exists());
+    }
+    let outside: PathBuf = sibling.join("state.sqlite");
+    archive.require_output_outside(&outside).unwrap();
+    assert!(!outside.exists(), "placement validation is read-only");
+    #[cfg(unix)]
+    {
+        let alias: PathBuf = directory.0.join("input-alias");
+        std::os::unix::fs::symlink(&source, &alias).unwrap();
+        assert!(
+            archive
+                .require_output_outside(&alias.join("state.sqlite"))
+                .is_err()
+        );
+        assert!(!source.join("state.sqlite").exists());
+    }
+}
+
+#[test]
 fn exact_publication_and_bounded_reads_preserve_original_bytes() {
     let directory: TestDirectory = TestDirectory::new();
     let archive: ImmutableArchive = ImmutableArchive::open(&directory.0).unwrap();
