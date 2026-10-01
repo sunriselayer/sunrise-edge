@@ -62,9 +62,10 @@ count/digest and privately run ordinary page ingestion, retention import,
 confirmation and bounded union derivation before the owning control handler.
 NoFreeze, AlreadyDrained and other pre-readiness refusals retain their normal
 precedence. Proof retention does not authorize an owned application.
-An unsigned source Accepted status is only a collection-target hint. Private
-state decides whether readiness is needed, and exact handler/companion
-verification still applies if that hint is dishonest.
+Collect complete optional proof streams independently of the unsigned source
+Accepted/Refused status. Private state decides whether missing closure stops.
+Derive the actual selected union and let the owning handler, not the proof
+assembler, reproduce a refusal of a wrong candidate-claimed union.
 
 Keep original ordered events in certified order and process owned producers
 only where their verified dependencies permit. Request-ID sorting and an
