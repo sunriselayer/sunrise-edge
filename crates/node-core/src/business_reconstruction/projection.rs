@@ -161,6 +161,7 @@ fn exact_tail<'a>(
 fn local_fastpath_rows(
     overlay: &BusinessReconstructionOverlay<'_>,
     records: &[SourceSnapshotRecord],
+    publications: &AuthenticatedPublicationProjection,
 ) -> Result<LocalFastpathRows, BusinessReconstructionError> {
     let plan = &overlay.plan;
     let chain = plan.genesis.context().chain_id();
@@ -308,6 +309,7 @@ fn local_fastpath_rows(
             if identity.request_id.as_slice() != tail
                 || vote.identity != identity
                 || identity.domain != plan.domain
+                || publications.identities.get(&identity.request_id) != Some(&identity)
             {
                 return Err(invalid("local availability key/identity differs"));
             }
@@ -509,7 +511,8 @@ fn project(
     is_source: bool,
 ) -> Result<SemanticProjection, BusinessReconstructionError> {
     snapshot.validate()?;
-    let (local_rows, mut internal_receipts) = local_fastpath_rows(overlay, &snapshot.records)?;
+    let (local_rows, mut internal_receipts) =
+        local_fastpath_rows(overlay, &snapshot.records, publications)?;
     let ordered = crate::ordered_economics::audit_projection::validate_local_rows(
         overlay.plan.ordered_policy,
         overlay.plan.ordered_history_identity,

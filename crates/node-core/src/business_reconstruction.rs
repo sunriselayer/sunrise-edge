@@ -1388,6 +1388,10 @@ impl<'a> BusinessReconstructionOverlay<'a> {
         Ok(AuthenticatedPublicationProjection {
             retention_keys,
             normalized_state: source_normalized,
+            identities: expected_catalog
+                .iter()
+                .map(|item| (item.request_id, item.identity.clone()))
+                .collect(),
         })
     }
 
@@ -1911,6 +1915,8 @@ pub(super) struct AuthenticatedPublicationProjection {
     /// Canonical comparison-only values for exactly verified application
     /// certificate and availability-certificate rows.
     pub normalized_state: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// Complete verified retention identity required by each local ACK.
+    pub identities: BTreeMap<[u8; 32], AvailabilityIdentity>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
