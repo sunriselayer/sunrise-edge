@@ -55,7 +55,7 @@ impl MerkleTree {
         let mut level: Vec<[u8; 32]> = self.leaves.iter().map(leaf_hash).collect();
         let mut cursor = index;
         while level.len() > 1 {
-            let sibling = if cursor % 2 == 0 {
+            let sibling = if cursor.is_multiple_of(2) {
                 if cursor + 1 < level.len() {
                     Some(level[cursor + 1])
                 } else {
