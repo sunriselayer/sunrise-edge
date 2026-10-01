@@ -66,6 +66,7 @@ check_vectors() {
   node scripts/fastvote-published-apply-vectors.mjs
   node scripts/ordered-history-vectors.mjs
   node scripts/business-cut-vectors.mjs
+  node scripts/business-import-vectors.mjs
 }
 
 check_deno_adapters() {

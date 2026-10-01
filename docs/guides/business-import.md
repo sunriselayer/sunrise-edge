@@ -59,8 +59,11 @@ local pins, saved cut, destination paths and namespace:
 ```
 
 Each invocation accepts one through 4,096 new atomic batches, each at most
-128 rows and 64 MiB represented bytes. This does not cap legal history or the
-CPU/memory cost of independently reconstructing it. Resume uses verified
+128 rows and 64 MiB total new represented rows plus distinct required bodies.
+The complete installed prefix is verified before any new material is written;
+resumed bodies are checked using exact-length descriptors and at most 1 MiB
+read ranges. This does not cap legal history or the CPU/memory cost of
+independently reconstructing it. Resume uses verified
 existing writable import/blob schemas without creating or repairing them.
 
 `business_import=complete-inactive` means the complete raw inventory and

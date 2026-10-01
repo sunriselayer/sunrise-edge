@@ -1,0 +1,235 @@
+//! Actual compiled import command over a genuinely frozen/drained SQLite source.
+//! This is inactive installation evidence, not provider or activation acceptance.
+
+#[path = "support/genesis_fixture.rs"]
+pub mod genesis_fixture;
+mod support {
+    pub use super::genesis_fixture;
+}
+#[path = "support/causal_genesis_fixture.rs"]
+mod causal_genesis_fixture;
+#[path = "business_cut/fixture.rs"]
+mod fixture;
+
+use fixture::{Directory, Fixture, copy_files, files};
+use node_core::business_reconstruction::SourceBusinessSnapshot;
+use protocol_types::ValidatorId;
+use runtime_sqlite::{SqliteDurableStore, SqliteNamespace};
+use std::{
+    path::Path,
+    process::{Command, Output},
+};
+use sunrise_edge_operator::{
+    business_cut::{CutArchiveLimits, export_source_business_cut},
+    business_snapshot::capture_source_business_snapshot,
+    immutable_archive::ImmutableArchive,
+};
+
+fn hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte: &u8| format!("{byte:02x}"))
+        .collect()
+}
+
+fn command(
+    fixture: &Fixture,
+    history: &Path,
+    cut: &Path,
+    destination: &Path,
+    mode: &str,
+    validator: ValidatorId,
+    maximum_batches: &str,
+) -> Command {
+    let mut command: Command = Command::new(env!("CARGO_BIN_EXE_business_import"));
+    command.arg(mode).args([
+        "--chain-id",
+        fixture.network.chain_id.as_str(),
+        "--protocol-version",
+        &fixture.network.protocol_version.get().to_string(),
+        "--epoch",
+        &fixture.network.epoch.get().to_string(),
+        "--domain",
+        &hex(fixture.network.domain.as_bytes()),
+        "--suite",
+        "0:1:1:1:1:1:1:1",
+        "--genesis-manifest",
+        fixture.directory.0.join("genesis.bin").to_str().unwrap(),
+        "--expected-genesis-digest",
+        &hex(&fixture.network.manifest_digest),
+        "--ordered-history-dir",
+        history.to_str().unwrap(),
+        "--cut-dir",
+        cut.to_str().unwrap(),
+        "--state-db",
+        destination.join("state.sqlite").to_str().unwrap(),
+        "--blob-db",
+        destination.join("blobs.sqlite").to_str().unwrap(),
+        "--validator-id",
+        &hex(validator.as_bytes()),
+        "--max-new-batches",
+        maximum_batches,
+    ]);
+    command
+}
+
+fn success(output: Output) -> String {
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+fn identity_fields(text: &str) -> Vec<&str> {
+    text.split_whitespace()
+        .filter(|word| {
+            word.starts_with("cut=") || word.starts_with("package=") || word.starts_with("plan=")
+        })
+        .collect()
+}
+
+#[test]
+fn compiled_verified_import_creates_reopens_and_reverifies_without_ordinary_serving() {
+    let fixture: Fixture = Fixture::new();
+    fixture.freeze_and_complete();
+    std::fs::write(
+        fixture.directory.0.join("genesis.bin"),
+        &fixture.network.manifest_bytes,
+    )
+    .unwrap();
+    let (identity, ordered) = fixture.history();
+    let before: SourceBusinessSnapshot = fixture.snapshot();
+    let history: Directory = Directory::new("import-history-parent");
+    let history_root = history.0.join("history");
+    fixture.write_history(&history_root, &identity, &ordered);
+    let cut: Directory = Directory::new("import-saved-cut");
+    let archive: ImmutableArchive = ImmutableArchive::open(&cut.0).unwrap();
+    assert!(
+        export_source_business_cut(
+            fixture.plan(&identity, fixture.operation),
+            &fixture.stores[0],
+            &fixture.blobs,
+            &ordered,
+            &archive,
+            CutArchiveLimits::new(128, 1048576, 4096).unwrap(),
+        )
+        .unwrap()
+        .complete
+    );
+    let original_files = files(&cut.0);
+    let destination: Directory = Directory::new("import-destination");
+    let incoming: ValidatorId = ValidatorId::new([0xE7; 32]);
+    assert!(
+        fixture.policy.registered_validator(incoming).is_none(),
+        "a namespace identifier is not eligibility proof"
+    );
+    let invalid: Output = command(
+        &fixture,
+        &history_root,
+        &cut.0,
+        &destination.0,
+        "create-sqlite",
+        incoming,
+        "0",
+    )
+    .output()
+    .unwrap();
+    assert!(!invalid.status.success());
+    assert!(!destination.0.join("state.sqlite").exists());
+    assert!(!destination.0.join("blobs.sqlite").exists());
+    let corrupt_cut: Directory = Directory::new("import-corrupt-cut");
+    copy_files(&cut.0, &corrupt_cut.0);
+    let corrupt_identity: std::path::PathBuf = corrupt_cut.0.join("identity.bin");
+    let mut identity_bytes: Vec<u8> = std::fs::read(&corrupt_identity).unwrap();
+    let last: usize = identity_bytes.len() - 1;
+    identity_bytes[last] ^= 1;
+    std::fs::write(&corrupt_identity, identity_bytes).unwrap();
+    let corrupt: Output = command(
+        &fixture,
+        &history_root,
+        &corrupt_cut.0,
+        &destination.0,
+        "create-sqlite",
+        incoming,
+        "1",
+    )
+    .output()
+    .unwrap();
+    assert!(
+        !corrupt.status.success(),
+        "an altered saved identity is not an import capability"
+    );
+    assert!(!destination.0.join("state.sqlite").exists());
+    assert!(!destination.0.join("blobs.sqlite").exists());
+    let first: String = success(
+        command(
+            &fixture,
+            &history_root,
+            &cut.0,
+            &destination.0,
+            "create-sqlite",
+            incoming,
+            "1",
+        )
+        .output()
+        .unwrap(),
+    );
+    eprintln!("compiled import first result: {first}");
+    assert!(
+        first.contains("business_import=partial")
+            || first.contains("business_import=complete-inactive")
+    );
+    assert!(!first.contains("business_import=active"));
+    let namespace: SqliteNamespace = SqliteNamespace::new(
+        fixture.network.chain_id.clone(),
+        incoming,
+        fixture.network.domain,
+    );
+    assert!(
+        SqliteDurableStore::open_existing(destination.0.join("state.sqlite"), namespace).is_err()
+    );
+    let complete: String = success(
+        command(
+            &fixture,
+            &history_root,
+            &cut.0,
+            &destination.0,
+            "resume-sqlite",
+            incoming,
+            "4096",
+        )
+        .output()
+        .unwrap(),
+    );
+    assert!(complete.contains("business_import=complete-inactive"));
+    assert_eq!(identity_fields(&first), identity_fields(&complete));
+    let replay: String = success(
+        command(
+            &fixture,
+            &history_root,
+            &cut.0,
+            &destination.0,
+            "resume-sqlite",
+            incoming,
+            "1",
+        )
+        .output()
+        .unwrap(),
+    );
+    assert!(replay.contains("business_import=complete-inactive"));
+    assert!(replay.contains("new_batches=0"));
+    assert_eq!(identity_fields(&complete), identity_fields(&replay));
+    assert_eq!(
+        files(&cut.0),
+        original_files,
+        "import never rewrites the saved cut"
+    );
+    assert_eq!(
+        fixture.snapshot(),
+        before,
+        "import never writes or fences its source"
+    );
+}

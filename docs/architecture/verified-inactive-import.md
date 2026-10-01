@@ -78,12 +78,20 @@ heads and original receipts after their material. `InactiveImportRepository`
 is a separate storage-only seam, not an ordinary transaction bypass or proof
 of cryptographic business validity.
 
-One transaction admits at most 128 rows and 64 MiB represented bytes, retaining
-the legal 32 MiB body bound. The invocation limit counts new batches, not total
-history or reverification cost. Binding, current fence/deadline and expected
+One transaction admits at most 128 rows and 64 MiB represented row bytes.
+Core also budgets the distinct bodies required by those rows together with
+the rows against 64 MiB of new work, retaining the legal 32 MiB body bound.
+It publishes only that batch's body closure, not all later plan bodies.
+Resumed bodies first match the private exact-length descriptor, then compare
+in bounded ranges of at most 1 MiB; a corrupt length never causes an unbounded
+body read. The invocation limit counts new batches, not total history or
+reverification cost. Binding, current fence/deadline and expected
 progress are checked together; absent rows are inserted and exact retries are
 compared without overwriting conflicts. The same transaction advances progress.
 
+Each invocation verifies the complete installed prefix before publishing new
+bodies or committing new rows, including the empty initial prefix. A corrupt
+prefix therefore cannot advance progress or introduce later material.
 An indeterminate acknowledgement requires fresh fenced reconciliation of exact
 batch identity and contents. A claimed cursor or successful blind retry cannot
 advance authority. Before completion, core fully enumerates destination rows

@@ -149,13 +149,20 @@ fn test_signer() -> TestSigner {
 }
 
 fn certified_router() -> Router {
-    let domain: AtomicityDomainId = AtomicityDomainId::new([0x8A; 32]).unwrap();
-    let store = Arc::new(MemoryDurableStateStore::new(
+    let store: Arc<MemoryDurableStateStore> = Arc::new(MemoryDurableStateStore::new(
         WriterFenceGeneration::new(3).unwrap(),
     ));
+    certified_router_with_store(store, Arc::new(test_signer()))
+}
+
+fn certified_router_with_store(
+    store: Arc<MemoryDurableStateStore>,
+    signer: Arc<dyn ConsensusSigner + Send + Sync>,
+) -> Router {
+    let domain: AtomicityDomainId = AtomicityDomainId::new([0x8A; 32]).unwrap();
     let base_policy: LocalExecutionPolicy = LocalExecutionPolicy::generic_object_results(context());
     let execution = PaidExecutionComposition::new(base_policy, fastvote_fee_policy());
-    let fastvote = FastVoteComposition::new(execution, Arc::new(test_signer()), 1);
+    let fastvote = FastVoteComposition::new(execution, signer, 1);
     certified_fastvote_router(
         StructuredDurableNativeComponents::new(
             store,
@@ -173,6 +180,129 @@ fn certified_router() -> Router {
         NativeBlockingPolicy::new(NonZeroUsize::new(4).unwrap()),
     )
     .unwrap()
+}
+
+struct ObservedSigner {
+    signer: TestSigner,
+    calls: Arc<AtomicUsize>,
+}
+
+impl ConsensusSigner for ObservedSigner {
+    fn validator_id(&self) -> ValidatorId {
+        self.signer.validator_id()
+    }
+    fn signature_scheme(&self) -> SignatureSchemeId {
+        self.signer.signature_scheme()
+    }
+    fn sign_framed(&self, framed: &[u8]) -> Result<Vec<u8>, String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.signer.sign_framed(framed)
+    }
+}
+
+#[tokio::test]
+async fn live_cached_protocol_responses_refuse_every_import_origin_without_signing() {
+    use protocol_types::ExecutionGeneration;
+    use runtime::{
+        DurableCommitOutcome, ImportBinding, ImportContext, InactiveImportRepository,
+        portable::DurablePortableSnapshotRepository,
+    };
+
+    let domain: AtomicityDomainId = AtomicityDomainId::new([0x8A; 32]).unwrap();
+    let digest: Digest32 = Digest32::new(HashAlgorithmId::Sha2_256, [0x71; 32]);
+    // These are storage-only claims, deliberately not a verified core plan.
+    // They must never become a live protocol-output capability in any phase.
+    let binding: ImportBinding = ImportBinding {
+        context: ImportContext {
+            chain_id: config().chain_id().clone(),
+            protocol_version: config().protocol_version(),
+            epoch: config().epoch(),
+        },
+        domain,
+        genesis_digest: digest,
+        validator_set_digest: digest,
+        cut_digest: digest,
+        package_digest: digest,
+        plan_digest: digest,
+        row_count: 0,
+        blob_count: 0,
+        generation_floor: ExecutionGeneration::new(19),
+    };
+    let fence: WriterFenceGeneration = WriterFenceGeneration::new(3).unwrap();
+    let operation: DurableOperationContext = DurableOperationContext::new(
+        fence,
+        StorageDeadline::new(10_000).unwrap(),
+        StorageCorrelationId::new([0x72; 16]).unwrap(),
+    );
+    for phase in 0..3 {
+        let store: Arc<MemoryDurableStateStore> =
+            Arc::new(MemoryDurableStateStore::new_import_target(binding.clone(), fence).unwrap());
+        if phase > 0 {
+            assert_eq!(
+                store.begin_import(&operation, domain, &binding, digest),
+                DurableCommitOutcome::Committed
+            );
+        }
+        if phase > 1 {
+            let progress = store
+                .read_import_progress(&operation, domain)
+                .unwrap()
+                .unwrap();
+            let token = store.begin_portable_snapshot(&operation, domain).unwrap();
+            assert_eq!(
+                store.finish_import(&operation, domain, &binding, &progress, &token),
+                DurableCommitOutcome::Committed
+            );
+        }
+        let calls: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+        let signer: Arc<dyn ConsensusSigner + Send + Sync> = Arc::new(ObservedSigner {
+            signer: test_signer(),
+            calls: calls.clone(),
+        });
+        let app: Router = certified_router_with_store(store, signer);
+        let frontier: Vec<u8> = node_wire::FrozenFrontierPageRequest {
+            epoch: config().epoch(),
+            after_request_id: None,
+            limit: 1,
+        }
+        .encode()
+        .unwrap();
+        let drain: Vec<u8> = node_wire::DrainSignerProgressRequest {
+            epoch: config().epoch(),
+            signer: test_signer().validator_id(),
+        }
+        .encode()
+        .unwrap();
+        for (path, bytes) in [
+            (FASTVOTE_FROZEN_FRONTIER_PAGE_PATH, frontier),
+            (node_wire::FASTVOTE_DRAIN_SIGNER_PROGRESS_PATH, drain),
+        ] {
+            let response: Response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header(header::CONTENT_TYPE, NODE_EVENT_MEDIA_TYPE)
+                        .body(Body::from(bytes))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::CONFLICT,
+                "phase={phase}, route={path}"
+            );
+            let body: Bytes = to_bytes(response.into_body(), 1024).await.unwrap();
+            assert!(
+                std::str::from_utf8(&body)
+                    .unwrap()
+                    .contains("inactive-import-namespace")
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "phase={phase}");
+    }
 }
 
 async fn dispatch(app: &Router, method: &str, path: &str, body: Vec<u8>) -> StatusCode {
