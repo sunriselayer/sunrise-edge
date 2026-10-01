@@ -9,7 +9,8 @@ use execution::{
 use hashing::HashSuiteResolver;
 use node_core::admission_profile::VerifiedAdmissionProfile;
 use node_core::business_reconstruction::{
-    BusinessReconstructionOverlay, BusinessReconstructionPlan, OwnedPublicationMaterial,
+    BusinessReconstructionOverlay, BusinessReconstructionPlan, DrainSetControlMaterial,
+    OwnedPublicationMaterial, drain_control_material_from_source_snapshot,
     owned_material_from_source_snapshot,
 };
 use node_core::ordered_economics::{OrderedEconomicsPolicy, encode_ordered_history_identity};
@@ -57,8 +58,9 @@ const FLAGS: &[&str] = &[
     "--page-size",
     "--timeout-seconds",
     "--max-new-publications",
+    "--max-new-control-pages",
 ];
-const HELP: &str = "Read-only business audit (fixed local snapshot; not freshness, cut/import, readiness or Seal).\nRequired: --tls-root-der --chain-id --protocol-version --epoch --validator-id --domain --suite epoch:id:tx:object:effects:code:config:certificate --genesis-manifest --expected-genesis-digest --ordered-history-dir --out-dir.\nOptional: --page-size 1..128, --timeout-seconds 1..3600, --max-new-publications 1..4096.\nConnection: SUNRISE_EDGE_OPERATOR_POSTGRES_DSN environment variable. No writer fence is advanced. A changed saved source token refuses continuation; use a new output directory for a new observation.";
+const HELP: &str = "Read-only business audit (fixed local snapshot; not freshness, cut/import, readiness or Seal).\nRequired: --tls-root-der --chain-id --protocol-version --epoch --validator-id --domain --suite epoch:id:tx:object:effects:code:config:certificate --genesis-manifest --expected-genesis-digest --ordered-history-dir --out-dir.\nOptional: --page-size 1..128, --timeout-seconds 1..3600, --max-new-publications 1..4096, --max-new-control-pages 1..4096.\nConnection: SUNRISE_EDGE_OPERATOR_POSTGRES_DSN environment variable. No writer fence is advanced. Every control stream is reverified from its seed on resume. A changed saved source token refuses continuation; use a new output directory for a new observation.";
 
 fn bounded(value: &str, min: u64, max: u64) -> Result<u64, Box<dyn Error>> {
     let parsed: u64 = value.parse()?;
@@ -102,6 +104,45 @@ fn persist_exact(root: &Path, name: &str, bytes: &[u8]) -> Result<bool, Box<dyn 
     })();
     let _ignored = std::fs::remove_file(&temporary);
     result?;
+    Ok(true)
+}
+
+/// Saves bounded individual control pages under the already persisted genesis,
+/// ordered target, and source token. This is an immutable cache, not a trusted
+/// verifier cursor: the source assembler reverified all streams from their
+/// seeds before reaching this function, on every invocation.
+fn cache_control_pages(
+    output: &Path,
+    controls: &[DrainSetControlMaterial],
+    maximum_new: u64,
+) -> Result<bool, Box<dyn Error>> {
+    let mut new_count: u64 = 0;
+    for control in controls {
+        let candidate: String = hex(&control.candidate_digest.bytes());
+        for (vote, frontier) in control.selected_votes.iter().zip(&control.signer_frontiers) {
+            let prefix: String = format!("control-{candidate}-{}", hex(vote.validator.as_bytes()));
+            let vote_bytes: Vec<u8> = consensus::encode_frozen_frontier_vote(vote)?;
+            persist_exact(output, &format!("{prefix}.vote"), &vote_bytes)?;
+            for (index, page) in frontier.pages.iter().enumerate() {
+                let number: u64 = u64::try_from(index)?;
+                let name: String = format!("{prefix}-page-{number:020}.bin");
+                let bytes: Vec<u8> = consensus::encode_frozen_frontier_page(page)?;
+                let new: bool = !output.join(&name).exists();
+                if new && new_count >= maximum_new {
+                    println!(
+                        "audit=partial cached_control_pages={new_count} note=no-semantic-equality-claim"
+                    );
+                    return Ok(false);
+                }
+                persist_exact(output, &name, &bytes)?;
+                if new {
+                    new_count = new_count
+                        .checked_add(1)
+                        .ok_or("control cache counter overflow")?;
+                }
+            }
+        }
+    }
     Ok(true)
 }
 
@@ -169,6 +210,13 @@ fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
     let maximum_new: u64 = bounded(
         &flags
             .optional_one("--max-new-publications")?
+            .unwrap_or_else(|| "4096".into()),
+        1,
+        4096,
+    )?;
+    let maximum_new_control_pages: u64 = bounded(
+        &flags
+            .optional_one("--max-new-control-pages")?
             .unwrap_or_else(|| "4096".into()),
         1,
         4096,
@@ -289,16 +337,22 @@ fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
             new_count = new_count.checked_add(1).ok_or("cache counter overflow")?;
         }
     }
+    let controls: Vec<DrainSetControlMaterial> =
+        drain_control_material_from_source_snapshot(&snapshot, &plan, &ordered)?;
+    if !cache_control_pages(&output, &controls, maximum_new_control_pages)? {
+        return Ok(());
+    }
     let mut overlay = BusinessReconstructionOverlay::new(plan)?;
-    let _execution = overlay.reconstruct(&owned, &ordered)?;
+    let _execution = overlay.reconstruct_with_control_material(&owned, &ordered, &controls)?;
     let _comparison = overlay.compare_source(&snapshot)?;
     source.check_portable_outbox_empty_at(&operation, domain, &snapshot.token)?;
     let report = format!(
-        "audit=semantic-equal\ngenesis={}\nordered_height={}\nordered_digest={}\nowned_publications={}\nsource_records={}\nsource_sequence={}\nsource_writer={}\nmeaning=fixed-source-snapshot-only-not-network-freshness-cut-import-readiness-seal-or-activation\n",
+        "audit=semantic-equal\ngenesis={}\nordered_height={}\nordered_digest={}\nowned_publications={}\ncontrol_selections={}\nsource_records={}\nsource_sequence={}\nsource_writer={}\nmeaning=fixed-source-snapshot-only-not-network-freshness-cut-import-readiness-seal-or-activation\n",
         hex(&pin),
         identity.through_height,
         hex(&identity.through_digest.bytes()),
         owned.len(),
+        controls.len(),
         snapshot.records.len(),
         snapshot.token.mutation_sequence(),
         snapshot.token.writer_fence().get()

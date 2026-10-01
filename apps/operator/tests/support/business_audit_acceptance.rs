@@ -159,6 +159,17 @@ impl Harness<'_> {
         maximum_new: usize,
         pin: [u8; 32],
     ) -> Output {
+        self.audit_with_control_limit(history, output_dir, maximum_new, 64, pin)
+    }
+
+    fn audit_with_control_limit(
+        &self,
+        history: &Path,
+        output_dir: &Path,
+        maximum_new: usize,
+        maximum_new_control_pages: usize,
+        pin: [u8; 32],
+    ) -> Output {
         let fixture: &FastVoteGenesisFixture = self.fixture;
         let mut command: Command = Command::new(env!("CARGO_BIN_EXE_business_audit_pg"));
         command.env(cli::DSN_ENV, self.dsn).args([
@@ -190,6 +201,8 @@ impl Harness<'_> {
             "300",
             "--max-new-publications",
             &maximum_new.to_string(),
+            "--max-new-control-pages",
+            &maximum_new_control_pages.to_string(),
         ]);
         let before: Vec<Snapshot> = self.snapshot();
         let output: Output = command.output().unwrap();
@@ -633,7 +646,14 @@ pub(super) fn recover_retained_fixture(harness: &Harness<'_>, through_pin: [u8; 
 /// the unchanged genuine QCs/candidates; private business replay must refuse the
 /// fabricated result rather than mistake companion consistency for authority.
 #[allow(clippy::too_many_lines)]
-fn forge_refusal_companions(harness: &Harness<'_>, archive: &Path, forged: &Path) {
+fn forge_refusal_companions(
+    harness: &Harness<'_>,
+    archive: &Path,
+    forged: &Path,
+    request: [u8; 32],
+    original_status: node_core::NodeResponseStatus,
+    refusal: node_core::ordered_economics::OrderedRefusal,
+) {
     clone_directory(archive, forged);
     let (_, materials) = verified_archive(harness, archive);
     let policy: OrderedEconomicsPolicy = harness.ordered_policy();
@@ -648,7 +668,7 @@ fn forge_refusal_companions(harness: &Harness<'_>, archive: &Path, forged: &Path
         };
         let candidate: OrderedCandidate =
             node_core::ordered_economics::decode_ordered_candidate(candidate_bytes).unwrap();
-        if candidate.request_id != [0xE2; 32] {
+        if candidate.request_id != request {
             continue;
         }
         let receipt_bytes: &[u8] = &material
@@ -659,24 +679,26 @@ fn forge_refusal_companions(harness: &Harness<'_>, archive: &Path, forged: &Path
             .1;
         let original: node_core::NodeDedupRecord =
             node_core::NodeDedupRecord::decode(receipt_bytes).unwrap();
-        assert_eq!(
-            original.responses()[0].status(),
-            node_core::NodeResponseStatus::Rejected
-        );
+        assert_eq!(original.responses()[0].status(), original_status);
         let response: node_core::NodeResponse = node_core::NodeResponse::new(
             original.request_id(),
             node_core::NodeResponseStatus::Rejected,
-            Some(
-                node_core::ordered_economics::encode_ordered_refusal_payload(
-                    node_core::ordered_economics::OrderedRefusal::IneligibleState,
-                )
-                .unwrap(),
-            ),
+            Some(node_core::ordered_economics::encode_ordered_refusal_payload(refusal).unwrap()),
         )
         .unwrap();
         let forged_receipt: Vec<u8> = node_core::NodeDedupRecord::new(
             original.request_id(),
-            original.event_digest(),
+            // A refusal's durable event digest is its authenticated candidate
+            // digest, not the accepted handler's signed-intent digest.
+            harness
+                .fixture
+                .resolver
+                .hash_for_purpose(
+                    candidate.context.epoch(),
+                    protocol_types::HashPurpose::NodeEvent,
+                    &node_core::ordered_economics::encode_ordered_candidate(&candidate).unwrap(),
+                )
+                .unwrap(),
             vec![response.clone()],
         )
         .unwrap()
@@ -746,7 +768,7 @@ fn forge_refusal_companions(harness: &Harness<'_>, archive: &Path, forged: &Path
     }
     assert!(
         changed > 0,
-        "must forge an actual authenticated stale candidate's companions"
+        "must forge actual authenticated candidate companions"
     );
     let original_identity: OrderedHistoryIdentity = verified_archive(harness, archive).0;
     let forged_identity: OrderedHistoryIdentity = verified_archive(harness, forged).0;
@@ -843,7 +865,7 @@ pub(super) fn run(harness: &Harness<'_>, hosts: &mut Vec<HostProcess>) {
     harness.refuse(&incomplete, "incomplete-history");
     let audit: PathBuf = harness.dir.join("audit-resume");
     let progress: String = require_success(
-        harness.audit(&archive, &audit, 1, harness.fixture.manifest_digest),
+        harness.audit_with_control_limit(&archive, &audit, 1, 1, harness.fixture.manifest_digest),
         "bounded publication-cache progress",
     );
     assert!(progress.contains("audit=partial"));
@@ -851,14 +873,51 @@ pub(super) fn run(harness: &Harness<'_>, hosts: &mut Vec<HostProcess>) {
     assert!(!progress.contains("audit=semantic-equal"));
     assert!(!audit.join("complete").exists());
     let saved_partial: BTreeMap<PathBuf, Vec<u8>> = files(&audit);
-    for _ in 0..OWNED_PUBLICATIONS {
-        let output: Output = harness.audit(&archive, &audit, 1, harness.fixture.manifest_digest);
-        require_success(output, "same-source bounded audit-cache continuation");
+    let mut saw_control_progress: bool = false;
+    // This fixture has six publications plus exactly three selected streams,
+    // each containing one bounded terminal page. This invocation bound is a
+    // fixture assertion, never a protocol-wide history ceiling.
+    for _ in 0..OWNED_PUBLICATIONS + 3 {
+        let before: BTreeMap<PathBuf, Vec<u8>> = files(&audit);
+        let output: Output = harness.audit_with_control_limit(
+            &archive,
+            &audit,
+            1,
+            1,
+            harness.fixture.manifest_digest,
+        );
+        let progress: String =
+            require_success(output, "same-source bounded audit-cache continuation");
+        saw_control_progress |= progress.contains("cached_control_pages=1");
+        let after: BTreeMap<PathBuf, Vec<u8>> = files(&audit);
+        let new_publications: usize = after
+            .keys()
+            .filter(|name| !before.contains_key(*name))
+            .filter(|name| name.extension().is_some_and(|value| value == "bundle"))
+            .count();
+        let new_control_pages: usize = after
+            .keys()
+            .filter(|name| !before.contains_key(*name))
+            .filter(|name| {
+                name.to_str()
+                    .is_some_and(|value| value.starts_with("control-") && value.contains("-page-"))
+            })
+            .count();
+        assert!(new_publications <= 1 && new_control_pages <= 1);
+        if !audit.join("complete").exists() {
+            assert!(progress.contains("audit=partial"));
+            assert!(progress.contains("no-semantic-equality-claim"));
+            assert!(!progress.contains("audit=semantic-equal"));
+        }
         if audit.join("complete").exists() {
             break;
         }
     }
     assert!(audit.join("complete").exists());
+    assert!(
+        saw_control_progress,
+        "must actually exercise one-page control-cache resume"
+    );
     for (name, bytes) in saved_partial {
         assert!(
             fs::read(audit.join(name)).unwrap() == bytes,
@@ -869,6 +928,7 @@ pub(super) fn run(harness: &Harness<'_>, hosts: &mut Vec<HostProcess>) {
     let audit_files: BTreeMap<PathBuf, Vec<u8>> = files(&audit);
     let report: Vec<u8> = fs::read(audit.join("complete")).unwrap();
     assert!(String::from_utf8_lossy(&report).contains("audit=semantic-equal"));
+    assert!(String::from_utf8_lossy(&report).contains("control_selections=1"));
     semantic_equal(harness.audit(&archive, &audit, 1, harness.fixture.manifest_digest));
     assert!(
         files(&audit) == audit_files,
@@ -942,9 +1002,59 @@ pub(super) fn run(harness: &Harness<'_>, hosts: &mut Vec<HostProcess>) {
         files(&corrupt_cache) == corrupt_before,
         "corrupt saved cache must be refused, never repaired/overwritten"
     );
+    let corrupt_control_cache: PathBuf = harness.dir.join("corrupt-control-cache");
+    clone_directory(&fresh_audit, &corrupt_control_cache);
+    let control_name: PathBuf = files(&corrupt_control_cache)
+        .keys()
+        .find(|name| {
+            name.to_str()
+                .is_some_and(|value| value.starts_with("control-") && value.contains("-page-"))
+        })
+        .expect("genuine accepted DrainSet must cache its authenticated selected pages")
+        .clone();
+    let mut corrupted_control: Vec<u8> =
+        fs::read(corrupt_control_cache.join(&control_name)).unwrap();
+    corrupted_control[0] ^= 1;
+    host::write_new(
+        &corrupt_control_cache.join(control_name),
+        &corrupted_control,
+    );
+    let corrupt_control_before: BTreeMap<PathBuf, Vec<u8>> = files(&corrupt_control_cache);
+    assert!(
+        !harness
+            .audit(
+                &archive,
+                &corrupt_control_cache,
+                64,
+                harness.fixture.manifest_digest,
+            )
+            .status
+            .success()
+    );
+    assert_eq!(files(&corrupt_control_cache), corrupt_control_before);
     let forged: PathBuf = harness.dir.join("forged-companions");
-    forge_refusal_companions(harness, &archive, &forged);
+    forge_refusal_companions(
+        harness,
+        &archive,
+        &forged,
+        [0xE2; 32],
+        node_core::NodeResponseStatus::Rejected,
+        node_core::ordered_economics::OrderedRefusal::IneligibleState,
+    );
     harness.refuse(&forged, "unsigned-consistent-companions");
+    let forged_drain: PathBuf = harness.dir.join("forged-drain-refusal-companions");
+    forge_refusal_companions(
+        harness,
+        &archive,
+        &forged_drain,
+        DRAIN_REQUEST,
+        node_core::NodeResponseStatus::Accepted,
+        node_core::ordered_economics::OrderedRefusal::ForeignDrainSet,
+    );
+    harness.refuse(
+        &forged_drain,
+        "forged-drain-refusal-must-not-hide-needed-control",
+    );
 
     // Canonically valid but fabricated nonce. A fresh out-dir intentionally
     // avoids conflating independent semantic refusal with token mismatch.
@@ -1037,6 +1147,35 @@ pub(super) fn run(harness: &Harness<'_>, hosts: &mut Vec<HostProcess>) {
             &body.content_digest.bytes(),
         )
         .unwrap();
+    let selected_entry_key: Vec<u8> = node_core::ordered_economics::drain_signer_entry_key(
+        &harness.fixture.chain_id,
+        harness.fixture.epoch,
+        harness.fixture.validators[0].validator_id,
+        &[0x41; 32],
+    )
+    .unwrap();
+    let selected_entry: runtime::VersionedStateValue = source
+        .get_versioned_durable(
+            &cli::read_context(harness.pool, &harness.namespaces[0]),
+            harness.fixture.domain,
+            &selected_entry_key,
+        )
+        .unwrap();
+    let mut wrong_selected_identity: consensus::AvailabilityIdentity =
+        consensus::decode_availability_identity(selected_entry.value().unwrap()).unwrap();
+    wrong_selected_identity.semantic_artifacts_digest = protocol_types::Digest32::new(
+        wrong_selected_identity
+            .semantic_artifacts_digest
+            .algorithm(),
+        [0xA9; 32],
+    );
+    replace_and_refuse(
+        harness,
+        &archive,
+        selected_entry_key.clone(),
+        consensus::encode_availability_identity(&wrong_selected_identity).unwrap(),
+        "canonical-selected-entry-not-original-signed-terminal",
+    );
     for (label, key) in [
         (
             "missing-publication",
@@ -1055,6 +1194,10 @@ pub(super) fn run(harness: &Harness<'_>, hosts: &mut Vec<HostProcess>) {
             .unwrap(),
         ),
         ("missing-authenticated-object-body-artifact", artifact_key),
+        (
+            "missing-original-selected-frontier-entry",
+            selected_entry_key,
+        ),
     ] {
         let prior: runtime::VersionedStateValue = support::durable_state::delete(
             &source,
@@ -1067,6 +1210,16 @@ pub(super) fn run(harness: &Harness<'_>, hosts: &mut Vec<HostProcess>) {
             "must remove genuine {label} material"
         );
         harness.refuse(&archive, label);
+        if label == "missing-original-selected-frontier-entry" {
+            // A consistently forged source Refused companion cannot conceal
+            // a proof stream the private owning execution independently needs.
+            // The authentic candidate/QCs are unchanged, and the source ready
+            // row deliberately remains present throughout this negative.
+            harness.refuse(
+                &forged_drain,
+                "forged-drain-refusal-with-withheld-needed-control",
+            );
+        }
         support::durable_state::replace(
             &source,
             &cli::read_context(harness.pool, &harness.namespaces[0]),
