@@ -37,7 +37,7 @@ use crate::logical_generation::{
 use crate::ordered_economics::{
     OrderedEconomicsEnvironment, OrderedEconomicsError, OrderedEconomicsPolicy,
     OrderedHistoryComponentKind, OrderedHistoryHeightMaterial, OrderedHistoryIdentity,
-    OrderedHistoryVerifier, decode_ordered_candidate,
+    OrderedHistoryVerifier, OrderedOperationKind, decode_ordered_candidate,
 };
 use crate::{MAX_AUTHENTICATED_OBJECT_BODY_BYTES, genesis};
 use canonical_encoding::{CanonicalStruct, decode_canonical_frame};
@@ -1112,7 +1112,9 @@ struct OwnedWork<'m> {
 impl<'a> BusinessReconstructionOverlay<'a> {
     /// Replays the exact supplied fixed history and only those owned producers
     /// needed at each causal boundary. Remaining independently applied owned
-    /// operations run after the ordered prefix, in dependency-ready batches.
+    /// operations run after the ordered prefix, in dependency-ready batches,
+    /// unless an owning-preflight-accepted Freeze requires them before admission
+    /// closes.
     /// Source outcomes and receipts are checked by the existing ordered and
     /// owned application paths; they never seed this store.
     pub fn reconstruct(
@@ -1288,6 +1290,52 @@ impl<'a> BusinessReconstructionOverlay<'a> {
                 )?;
                 let closure: BTreeSet<usize> = dependency_closure(&roots, &works)?;
                 apply_owned_closure(self, &works, &closure, &mut applied_owned)?;
+                if candidate.kind == OrderedOperationKind::Freeze {
+                    let barrier: bool = {
+                        let barrier_environment: OrderedEconomicsEnvironment<'_> =
+                            OrderedEconomicsEnvironment {
+                                policy: self.plan.ordered_policy,
+                                resolver: self.plan.resolver,
+                                history: self.plan.resolver_history,
+                                leg_policy: self.plan.ordered_leg_policy,
+                                engine: self.plan.ordered_engine,
+                                blobs: &self.blobs,
+                            };
+                        crate::ordered_economics::engine::reconstruction_freeze_barrier_needed(
+                            &self.store,
+                            &self.plan.operation_context,
+                            &barrier_environment,
+                            &candidate,
+                            material.descriptor.height,
+                        )
+                        .map_err(|source| {
+                            BusinessReconstructionError::OrderedHistory {
+                                height: material.descriptor.height,
+                                source: Box::new(source),
+                            }
+                        })?
+                    };
+                    if barrier {
+                        // A fresh, independently preflight-accepted Freeze is
+                        // the last ordinary-admission point. Only the existing
+                        // authenticated application-presence targets cross
+                        // this boundary; retained-but-unapplied publications
+                        // never enter this set. Their signed witness dependency
+                        // closure still determines execution order, after every
+                        // earlier certified ordered event has been replayed.
+                        let remaining_applied_targets: BTreeSet<usize> = owned
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(index, item)| {
+                                (item.source_application_present && !applied_owned.contains(&index))
+                                    .then_some(index)
+                            })
+                            .collect();
+                        let closure: BTreeSet<usize> =
+                            dependency_closure(&remaining_applied_targets, &works)?;
+                        apply_owned_closure(self, &works, &closure, &mut applied_owned)?;
+                    }
+                }
                 control::prepare_drain_control(
                     self,
                     &candidate,
