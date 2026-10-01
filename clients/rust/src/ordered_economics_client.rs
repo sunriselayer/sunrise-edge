@@ -43,13 +43,8 @@ use std::time::{Duration, Instant};
 use consensus::{ConsensusMessage, ConsensusVote, QuorumCertificate};
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
-use node_core::MAX_GENESIS_MANIFEST_BYTES;
 use node_core::fast_path::FastPathEd25519Verifier;
-use node_core::fast_path::records::FastPathValidatorSetRecord;
-use node_core::genesis::{
-    GenesisManifest, decode_genesis_manifest, genesis_manifest_commitment,
-    genesis_manifest_signing_frame,
-};
+use node_core::genesis::GenesisManifest;
 use node_core::ordered_economics::{
     OrderedCandidate, OrderedEconomicsError, OrderedEconomicsPolicy, OrderedEventOutput,
     OrderedOutcome, OrderedStatus, decode_ordered_event_output, decode_ordered_proposal,
@@ -61,12 +56,18 @@ use node_wire::ordered_economics::{
     ORDERED_ECONOMICS_PROPOSE_PATH, ORDERED_ECONOMICS_STATUS_PATH, ORDERED_ECONOMICS_TICK_PATH,
     ORDERED_PROPOSAL_MEDIA_TYPE, ORDERED_PROPOSE_REQUEST_MEDIA_TYPE, OrderedProposeRequest,
 };
-use protocol_types::{AtomicityDomainId, Digest32, SignatureSchemeId, ValidatorId};
+use protocol_types::{AtomicityDomainId, Digest32, ValidatorId};
 use validator_set::{ValidatorInfo, ValidatorSet};
+
+#[cfg(test)]
+use protocol_types::SignatureSchemeId;
 
 use crate::Client;
 use crate::client::expect_success;
 use crate::error::ClientError;
+use crate::local_genesis::{
+    LocalGenesisError, PinnedGenesis, load_pinned_genesis, validator_set_from_record,
+};
 use crate::transport::{Method, Transport, WireRequest};
 
 /// Bounded fan-out cap for one configured ordered-economics cohort, mirroring
@@ -130,7 +131,7 @@ pub struct OrderedEconomicsEndpoint<T> {
 /// Failures constructing a locally trusted ordered-economics policy pin.
 #[derive(Debug)]
 pub enum OrderedGenesisTrustError {
-    /// The manifest file could not be read or exceeded [`MAX_GENESIS_MANIFEST_BYTES`].
+    /// The manifest file could not be read or exceeded [`node_core::MAX_GENESIS_MANIFEST_BYTES`].
     Io(std::io::Error),
     /// The manifest bytes were not a valid canonical genesis manifest.
     Decode(node_core::genesis::GenesisError),
@@ -170,6 +171,18 @@ impl fmt::Display for OrderedGenesisTrustError {
 
 impl Error for OrderedGenesisTrustError {}
 
+impl From<LocalGenesisError> for OrderedGenesisTrustError {
+    fn from(error: LocalGenesisError) -> Self {
+        match error {
+            LocalGenesisError::Io(error) => Self::Io(error),
+            LocalGenesisError::Decode(error) => Self::Decode(error),
+            LocalGenesisError::CommitmentMismatch => Self::CommitmentMismatch,
+            LocalGenesisError::ContextMismatch => Self::ContextMismatch,
+            LocalGenesisError::InvalidSignature => Self::InvalidSignature,
+        }
+    }
+}
+
 /// Reads and strictly validates a genesis manifest file exactly like
 /// [`crate::fastvote_client::load_trusted_fastvote_genesis`], then builds the
 /// [`OrderedEconomicsPolicy`] this call's fixed-epoch profile uses for local
@@ -184,68 +197,25 @@ pub fn load_trusted_ordered_policy(
     expected_context: &PublicationContext,
     domain: AtomicityDomainId,
 ) -> Result<OrderedEconomicsPolicy, OrderedGenesisTrustError> {
-    let bytes = crate::fastvote_client::read_bounded(manifest_path, MAX_GENESIS_MANIFEST_BYTES)
-        .map_err(OrderedGenesisTrustError::Io)?;
-    let manifest: GenesisManifest =
-        decode_genesis_manifest(&bytes).map_err(OrderedGenesisTrustError::Decode)?;
-    let digest: Digest32 = genesis_manifest_commitment(resolver, &manifest)
-        .map_err(OrderedGenesisTrustError::Decode)?;
-    if digest.bytes() != expected_digest {
-        return Err(OrderedGenesisTrustError::CommitmentMismatch);
-    }
-    if manifest.context() != expected_context {
-        return Err(OrderedGenesisTrustError::ContextMismatch);
-    }
-    let verifier = crypto::Ed25519Verifier::from_verifying_key_bytes(&manifest.genesis_authority)
-        .map_err(|_| OrderedGenesisTrustError::InvalidSignature)?;
-    let frame =
-        genesis_manifest_signing_frame(&manifest).map_err(OrderedGenesisTrustError::Decode)?;
-    use crypto::SignatureVerifier;
-    let valid = verifier
-        .verify_framed(&frame, &manifest.signature)
-        .map_err(|_| OrderedGenesisTrustError::InvalidSignature)?;
-    if !valid {
-        return Err(OrderedGenesisTrustError::InvalidSignature);
-    }
-    let validator_set = validator_set_from_record(&manifest.validator_set, expected_context)?;
+    let pinned: PinnedGenesis =
+        load_pinned_genesis(manifest_path, resolver, expected_digest, expected_context)
+            .map_err(OrderedGenesisTrustError::from)?;
+    let manifest: &GenesisManifest = &pinned.manifest;
+    let validator_set: ValidatorSet = validator_set_from_record(
+        &manifest.validator_set,
+        expected_context,
+        "ordered economics fixed-epoch profile supports only Ed25519 validators",
+    )
+    .map_err(OrderedGenesisTrustError::InvalidValidatorSet)?;
     OrderedEconomicsPolicy::new(
         expected_context.clone(),
         domain,
-        digest,
-        Some(&manifest),
+        pinned.digest,
+        Some(manifest),
         validator_set,
         resolver.clone(),
     )
     .map_err(OrderedGenesisTrustError::Policy)
-}
-
-#[allow(clippy::result_large_err)]
-fn validator_set_from_record(
-    record: &FastPathValidatorSetRecord,
-    expected_context: &PublicationContext,
-) -> Result<ValidatorSet, OrderedGenesisTrustError> {
-    if &record.context != expected_context {
-        return Err(OrderedGenesisTrustError::InvalidValidatorSet(
-            "validator set record context mismatch".to_string(),
-        ));
-    }
-    let mut info: Vec<ValidatorInfo> = Vec::with_capacity(record.validators.len());
-    for validator in &record.validators {
-        if validator.signature_scheme != SignatureSchemeId::Ed25519 {
-            return Err(OrderedGenesisTrustError::InvalidValidatorSet(
-                "ordered economics fixed-epoch profile supports only Ed25519 validators"
-                    .to_string(),
-            ));
-        }
-        info.push(ValidatorInfo {
-            id: validator.id,
-            voting_power: validator.voting_power,
-            signature_scheme: validator.signature_scheme,
-            public_key: validator.public_key.clone(),
-        });
-    }
-    ValidatorSet::new(expected_context.epoch(), info)
-        .map_err(|error| OrderedGenesisTrustError::InvalidValidatorSet(error.to_string()))
 }
 
 /// Fail-closed configuration errors [`validate_ordered_economics_endpoints`]

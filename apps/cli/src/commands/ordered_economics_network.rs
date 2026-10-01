@@ -5,8 +5,8 @@
 //! Reuses `fastvote_network.rs`'s own network-config parser
 //! ([`super::fastvote_network::{PeerConfig, parse_network_config}`]),
 //! per-peer transport/bearer-token/cohort-purity builder
-//! ([`super::fastvote_network::configure_peer_transport`]), and artifact
-//! reservation helpers ([`super::fastvote_network::{reserve_artifacts,
+//! ([`super::fastvote_network::configure_peer_transport`]), and the shared artifact
+//! reservation helpers ([`super::network_artifacts::{reserve_artifacts,
 //! ReservedArtifact, read_bounded}`]) unchanged -- this module never
 //! reimplements a weaker duplicate of any of them. Every bound below is the
 //! real wire-layer cap from `sunrise_edge_client::ordered_economics`
@@ -53,10 +53,8 @@ use crate::{
 };
 use protocol_types::{AtomicityDomainId, ChainId, Epoch, ProtocolVersion};
 
-use super::fastvote_network::{
-    PeerConfig, ReservedArtifact, configure_peer_transport, parse_network_config, read_bounded,
-    reserve_artifacts,
-};
+use super::fastvote_network::{PeerConfig, configure_peer_transport, parse_network_config};
+use super::network_artifacts::{ReservedArtifact, read_bounded, reserve_artifacts};
 
 fn failure(error: impl Error + Send + Sync + 'static) -> CliError {
     CliError::LocalExecution(Box::new(error))

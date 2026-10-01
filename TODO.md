@@ -69,10 +69,14 @@ reviewable commits; semantic changes stay with their owning feature.
   object/receipt/outbox traits and memory implementations, and node-core
   error/event/invocation/outbox plumbing, within the existing crates with
   public reexports. Keep memory stores available to production reconstruction.
-- [ ] **Bounded artifact and configuration primitives:** SDK bounded file
-  reads/local signed-genesis pin verification and CLI reserved artifact I/O.
-  Preserve distinct offline/network workflow authority, exact saved bytes,
-  pre-reservation, held handles and file/parent synchronization.
+- [x] **Bounded artifact and configuration primitives:** SDK local-genesis
+  verification and committee conversion now share `local_genesis`; CLI
+  bounded reads, fresh reservations and held-handle synchronization share
+  `network_artifacts`. Public client errors, profile/policy checks and separate
+  offline/network authority stay with their owners. Existing workflow tests
+  and seven focused primitive tests preserve exact bytes, pre-reservation,
+  input-symlink behavior and file/parent synchronization. No new permission
+  or protocol byte change is introduced.
 - [ ] **Test ownership alongside affected modules:** reuse signed fixtures
   and backend conformance inputs, separate module unit tests from real HTTP,
   compiled CLI and provider acceptance, retain positive controls independent
