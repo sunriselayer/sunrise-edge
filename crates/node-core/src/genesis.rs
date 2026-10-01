@@ -1528,6 +1528,19 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             &profile_key,
             profile_bytes.as_deref(),
         )?;
+        // `checkpoint` is supplied by this local invocation and may differ
+        // on a restart. The existing marker is the persisted local install
+        // coordinate; use it to re-derive the corresponding epoch row rather
+        // than mistaking a new caller's coordinate for business authority.
+        let existing_epoch_record_bytes: Vec<u8> =
+            local_instance_state::encode_fastpath_epoch_record(
+                &local_instance_state::FastPathEpochRecord {
+                    current_epoch: manifest_context.epoch(),
+                    current_validator_set_digest: genesis_validator_set_digest,
+                    previous_epoch: None,
+                    activated_at_checkpoint: marker.installed_at_checkpoint,
+                },
+            )?;
         verify_fastpath_epoch_chain(
             store,
             context,
@@ -1536,7 +1549,7 @@ pub fn install_genesis_with_history<S: StructuredDurableDomainStateStore>(
             manifest_context,
             genesis_validator_set_digest,
             &epoch_record_key,
-            &epoch_record_bytes,
+            &existing_epoch_record_bytes,
         )?;
 
         // Re-derive every DR-0136 generation-1 bond row from the signed

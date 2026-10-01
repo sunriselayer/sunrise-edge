@@ -630,14 +630,15 @@ fn causal_genesis_business_bond_is_independent_of_local_install_checkpoint() {
     )
     .unwrap();
     assert_eq!(marker_ten.installed_at_checkpoint, 10);
-    let epoch_ten = local_instance_state::decode_fastpath_epoch_record(
-        at_ten
-            .get_versioned_durable(&context(1), domain(), &epoch_key)
-            .unwrap()
-            .value()
-            .unwrap(),
-    )
-    .unwrap();
+    let epoch_ten: local_instance_state::FastPathEpochRecord =
+        local_instance_state::decode_fastpath_epoch_record(
+            at_ten
+                .get_versioned_durable(&context(1), domain(), &epoch_key)
+                .unwrap()
+                .value()
+                .unwrap(),
+        )
+        .unwrap();
     assert_eq!(epoch_ten.activated_at_checkpoint, 10);
     assert_eq!(
         at_ten
@@ -689,14 +690,15 @@ fn causal_genesis_business_bond_is_independent_of_local_install_checkpoint() {
     )
     .unwrap();
     assert_eq!(marker_ninety_nine.installed_at_checkpoint, 99);
-    let epoch_ninety_nine = local_instance_state::decode_fastpath_epoch_record(
-        at_ninety_nine
-            .get_versioned_durable(&context(1), domain(), &epoch_key)
-            .unwrap()
-            .value()
-            .unwrap(),
-    )
-    .unwrap();
+    let epoch_ninety_nine: local_instance_state::FastPathEpochRecord =
+        local_instance_state::decode_fastpath_epoch_record(
+            at_ninety_nine
+                .get_versioned_durable(&context(1), domain(), &epoch_key)
+                .unwrap()
+                .value()
+                .unwrap(),
+        )
+        .unwrap();
     assert_eq!(epoch_ninety_nine.activated_at_checkpoint, 99);
     assert_eq!(
         at_ninety_nine
