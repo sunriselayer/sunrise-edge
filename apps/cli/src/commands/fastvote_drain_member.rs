@@ -314,17 +314,32 @@ mod tests {
                 encode_paid_execution_result(&fixture.result(status)).unwrap(),
             )
             .unwrap();
-        for field in [3u16, 7, 8, 10] {
-            witness.field_bytes(field, Vec::new()).unwrap();
-        }
         // Synthetic response-binding fixture, not an admission witness: its
         // replay closure is explicitly empty under the strict list schema.
         // Genuine required-artifact omissions are covered by SDK/core tests.
-        for field in [4u16, 5, 6, 12] {
+        for field in [3u16, 4, 5, 6, 7, 12] {
             witness
                 .field_bytes(field, 0u32.to_be_bytes().to_vec())
                 .unwrap();
         }
+        let nonce_key: Vec<u8> = runtime::PersistenceLayout::new(
+            fixture.expected.chain_id().clone(),
+            fixture.expected.protocol_version(),
+        )
+        .sender_nonce_key(fixture.signed.intent.sender, fixture.expected.epoch());
+        witness.field_bytes(8, nonce_key).unwrap();
+        // The strict decoder validates every operand, including the existing
+        // canonical sender/epoch/next-nonce record, even for this transport-only
+        // fixture. Empty nonce bytes are not an absent nonce observation.
+        let mut nonce: CanonicalStruct = CanonicalStruct::new(0xE006, 1);
+        nonce
+            .field_bytes(1, fixture.signed.intent.sender.to_vec())
+            .unwrap();
+        nonce.field_u64(2, fixture.expected.epoch().get()).unwrap();
+        nonce
+            .field_u64(3, fixture.signed.intent.nonce.checked_add(1).unwrap())
+            .unwrap();
+        witness.field_bytes(10, nonce.finish().unwrap()).unwrap();
         witness.field_u64(11, 1).unwrap();
         let bytes: Vec<u8> = witness.finish().unwrap();
         let effect_hash: Digest32 = fixture
@@ -368,6 +383,30 @@ mod tests {
             contents: Vec::new(),
         })
         .unwrap()
+    }
+
+    #[test]
+    fn retained_response_fixture_satisfies_the_strict_operand_schema() {
+        let fixture: Fixture = Fixture::new();
+        for status in [
+            PaidExecutionStatus::Success,
+            PaidExecutionStatus::ApplicationFailed,
+        ] {
+            let bundle: PublicationBundle =
+                consensus::bundle::decode_publication_bundle(&retained_bundle(&fixture, status))
+                    .unwrap();
+            let identity: consensus::AvailabilityIdentity =
+                node_core::fast_path::drain_publication::verify_drain_publication_bundle(
+                    &fixture.resolver,
+                    &[],
+                    &fixture.signed.intent.context,
+                    fixture.expected.domain(),
+                    &fixture.certifier,
+                    &bundle,
+                )
+                .unwrap();
+            assert_eq!(identity.request_id, fixture.signed.intent.request_id);
+        }
     }
 
     fn budget() -> OperationBudget {
