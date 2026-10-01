@@ -10,10 +10,11 @@
 //! [`super::OrderedEconomicsError::Unauthenticated`] be a deterministic
 //! retained rejection rather than a stop.
 use super::*;
-use bond_lifecycle::slash::decode_slash_intent;
+use bond_lifecycle::slash::{decode_slash_intent, slash_receipt_digest};
 use bond_lifecycle::{
     BondLifecycleOperation, SignedBondLifecycleIntent, bond_lifecycle_intent_digest,
-    bond_lifecycle_signing_frame, decode_signed_bond_lifecycle_intent,
+    bond_lifecycle_receipt_digest, bond_lifecycle_signing_frame,
+    decode_signed_bond_lifecycle_intent,
 };
 use canonical_encoding::encode_digest32;
 use consensus::{
@@ -29,7 +30,7 @@ use execution::local_execution::{
 };
 use execution::publication::{PublicationContext, encode_publication_context};
 use fee_claims::codec::{FeeClaimOperation, SignedFeeClaimIntent, decode_signed_fee_claim_intent};
-use fee_claims::{fee_claim_intent_digest, fee_claim_signing_frame};
+use fee_claims::{fee_claim_intent_digest, fee_claim_receipt_digest, fee_claim_signing_frame};
 use genesis::{GenesisManifest, genesis_manifest_commitment, genesis_manifest_signing_frame};
 use protocol_types::{SignatureSchemeId, ValidatorId};
 use validator_set::{ValidatorInfo, ValidatorSet};
@@ -126,6 +127,7 @@ pub fn ordered_economics_authority_anchor(
 /// and independently pinned genesis digest every ordered-economics operation
 /// must match. Historical cross-epoch workflows stay out of scope for this
 /// profile.
+#[derive(Clone)]
 pub struct OrderedEconomicsPolicy {
     context: PublicationContext,
     domain: AtomicityDomainId,
@@ -310,6 +312,57 @@ impl OrderedEconomicsPolicy {
         let bytes: Vec<u8> = encode_ordered_candidate(candidate)?;
         super::engine::candidate_digest(&self.resolver, candidate.context.epoch(), &bytes)
     }
+
+    pub(super) fn history_component_digest(
+        &self,
+        bytes: &[u8],
+    ) -> Result<Digest32, OrderedEconomicsError> {
+        Ok(self
+            .resolver
+            .hash_for_purpose(self.context.epoch(), HashPurpose::NodeEvent, bytes)?)
+    }
+
+    /// Exact event digest the original receipt of an *accepted* completion of
+    /// `candidate` carries, given that candidate's own verified digest.
+    ///
+    /// Each branch calls the committing handler's own receipt derivation, so
+    /// history verification cannot drift from the receipt the handler wrote.
+    /// Fee-claim, bond-lifecycle and slash handlers key it by the exact signed
+    /// envelope or slash-intent bytes they decoded; an embedded leg's
+    /// `local_execution_event_digest` only seeds that leg's execution and
+    /// custody capability, never this receipt. Evidence and the Freeze and
+    /// DrainSet controls commit plain durable rows, which the orchestrator
+    /// wraps in its own receipt over the candidate digest, exactly like every
+    /// retained refusal.
+    pub(super) fn accepted_receipt_digest(
+        &self,
+        candidate: &OrderedCandidate,
+        candidate_digest: Digest32,
+    ) -> Result<Digest32, OrderedEconomicsError> {
+        let bytes: &[u8] = &candidate.intent;
+        match candidate.kind {
+            OrderedOperationKind::FeeClaim => {
+                let signed: SignedFeeClaimIntent =
+                    decode_signed_fee_claim_intent(bytes).map_err(receipt_digest_error)?;
+                fee_claim_receipt_digest(&self.resolver, &signed.intent.context, bytes)
+                    .map_err(receipt_digest_error)
+            }
+            OrderedOperationKind::BondLifecycle => {
+                let signed: SignedBondLifecycleIntent =
+                    decode_signed_bond_lifecycle_intent(bytes).map_err(receipt_digest_error)?;
+                bond_lifecycle_receipt_digest(&self.resolver, &signed.intent.context, bytes)
+                    .map_err(receipt_digest_error)
+            }
+            OrderedOperationKind::BondSlash => {
+                let intent = decode_slash_intent(bytes).map_err(receipt_digest_error)?;
+                slash_receipt_digest(&self.resolver, &intent.context, bytes)
+                    .map_err(receipt_digest_error)
+            }
+            OrderedOperationKind::Evidence
+            | OrderedOperationKind::Freeze
+            | OrderedOperationKind::DrainSet => Ok(candidate_digest),
+        }
+    }
 }
 
 struct CandidateAuthentication<'a> {
@@ -320,6 +373,13 @@ struct CandidateAuthentication<'a> {
 
 fn policy_error(_error: ConsensusError) -> OrderedEconomicsError {
     OrderedEconomicsError::Policy("ordered economics policy does not match consensus authority")
+}
+
+/// A handler receipt digest that cannot be re-derived from already
+/// authenticated candidate bytes is inconsistent input: a stop, never a
+/// silently different expected digest.
+fn receipt_digest_error<E>(_error: E) -> OrderedEconomicsError {
+    OrderedEconomicsError::Prerequisite("ordered accepted receipt digest is underivable")
 }
 
 /// Every dependency one ordered-economics invocation needs, borrowed for its

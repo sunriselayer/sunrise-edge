@@ -318,7 +318,7 @@ fn contract_lifecycle_pg_ordered_freeze_and_frontier_binary_cli_e2e() {
 
 #[test]
 #[ignore = "run through scripts/check-fastvote-pg.sh"]
-fn contract_lifecycle_pg_drainset_member_drain_binary_cli_e2e() {
+fn contract_lifecycle_pg_drainset_member_and_ordered_history_binary_cli_e2e() {
     contract_lifecycle_pg_e2e_case(true, true, true);
 }
 

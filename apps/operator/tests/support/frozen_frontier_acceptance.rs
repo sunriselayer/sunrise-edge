@@ -3,6 +3,8 @@
 
 #[path = "drainset_acceptance.rs"]
 mod drainset_acceptance;
+#[path = "ordered_history_acceptance.rs"]
+mod ordered_history_acceptance;
 
 use super::{AdminPool, HostProcess, Store, publication_client, replay_flags, store};
 use crate::support::cli::{edge_cli_command, read_context, to_hex};
@@ -493,6 +495,18 @@ pub fn run(
     hosts.push(follower);
     write_network_config(network, fixture, &hosts);
     let mut all_requests: Vec<[u8; 32]> = requests.to_vec();
+    if member_drain {
+        all_requests.extend(ordered_history_acceptance::prepare_economic_history(
+            fixture,
+            pool,
+            namespaces,
+            data_dir,
+            manifest_path,
+            network,
+            &hosts,
+            requests[0],
+        ));
+    }
     all_requests.push(UNAPPLIED_REQUEST);
     let (unapplied, certificate, unapplied_identity, bundle_bytes) = retain_unapplied_publication(
         fixture,

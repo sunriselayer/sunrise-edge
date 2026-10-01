@@ -119,7 +119,7 @@ replay authority. Existing empty, partial, symlink or different final files
 remain untouched and are refused rather than repaired from peer data.
 
 For reproducible evidence, build the actual CLI/host and run the ignored
-`contract_lifecycle_pg_drainset_member_drain_binary_cli_e2e` through
+`contract_lifecycle_pg_drainset_member_and_ordered_history_binary_cli_e2e` through
 `scripts/check-fastvote-pg.sh` with a disposable PostgreSQL URL. It shares the
 ordinary Publish/Instantiate/Call/asset/trap fixture, orders real controls,
 restarts during recipient progress, stops the original sole proof holder,

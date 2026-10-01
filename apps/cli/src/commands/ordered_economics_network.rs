@@ -22,6 +22,9 @@
 //! caller's declared context against the local genesis pin. It never signs
 //! anything and never guesses the intent's kind/checkpoint/context.
 
+#[path = "history_export.rs"]
+mod history_export;
+
 use std::{
     error::Error,
     ffi::OsString,
@@ -953,6 +956,7 @@ pub(crate) fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliEr
         .ok_or_else(|| invalid("non-UTF-8 subcommand"))?
         .to_string();
     match subcommand.as_str() {
+        "history-export" => history_export::dispatch(iterator),
         "network-submit" => run_network_submit(iterator),
         "network-replay" => run_network_replay(iterator),
         "candidate-wrap" => run_candidate_wrap(iterator),

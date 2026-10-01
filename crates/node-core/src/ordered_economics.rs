@@ -61,6 +61,7 @@ mod evidence_submission;
 mod freeze;
 mod frontier;
 mod identity;
+pub mod ordered_history;
 mod policy;
 mod preflight;
 mod reservation;
@@ -103,6 +104,17 @@ pub use freeze::{
 };
 pub use frontier::{
     FrozenFrontierError, FrozenFrontierStep, advance_frozen_frontier, read_frozen_frontier_page,
+};
+pub use ordered_history::{
+    MAX_ORDERED_HISTORY_CHUNK_BYTES, MAX_ORDERED_HISTORY_DESCRIPTOR_BYTES,
+    OrderedHistoryComponentKind, OrderedHistoryComponentRef, OrderedHistoryHeightDescriptor,
+    OrderedHistoryHeightMaterial, OrderedHistoryIdentity, OrderedHistorySummary,
+    OrderedHistoryVerifier, VerifiedOrderedHistory, decode_ordered_history_height_descriptor,
+    decode_ordered_history_identity, decode_ordered_history_summary,
+    encode_ordered_history_height_descriptor, encode_ordered_history_identity,
+    encode_ordered_history_summary, ordered_history_component_digest,
+    ordered_history_descriptor_digest, query_ordered_history_summary,
+    read_ordered_history_component_chunk, read_ordered_history_height_descriptor,
 };
 pub use policy::{
     ORDERED_ECONOMICS_ANCHOR_FRAME_TYPE, OrderedEconomicsEnvironment, OrderedEconomicsPolicy,

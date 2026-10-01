@@ -70,10 +70,14 @@ cargo test --quiet -p sunrise-edge-operator --test contract_lifecycle_pg_e2e \
 
 # Quorum-retained full proofs, real ordered DrainSet, interrupted recipient
 # import, original-holder failure, imported-proof relay and exact member drain.
-require_exact_test contract_lifecycle_pg_drainset_member_drain_binary_cli_e2e \
+# The same real fixture then verifies DR-0169 positive/refused economics,
+# actual proof pruning, bounded history export, source restart/fixed-target
+# resume, corrupt-file refusal and genuine stale-writer fencing. Do not
+# duplicate its paid-contract setup in a second giant fixture.
+require_exact_test contract_lifecycle_pg_drainset_member_and_ordered_history_binary_cli_e2e \
   -p sunrise-edge-operator --test contract_lifecycle_pg_e2e
 cargo test --quiet -p sunrise-edge-operator --test contract_lifecycle_pg_e2e \
-  -- --ignored --exact contract_lifecycle_pg_drainset_member_drain_binary_cli_e2e
+  -- --ignored --exact contract_lifecycle_pg_drainset_member_and_ordered_history_binary_cli_e2e
 
 require_exact_test certified_catch_up_pg_missed_prepare_binary_cli_e2e \
   -p sunrise-edge-operator --test certified_catch_up_pg_e2e

@@ -18,7 +18,7 @@ use execution::local_execution::{
     LocalExecutionIntent, LocalExecutionMode, LocalExecutionPolicy, SignedLocalExecutionIntent,
     encode_signed_local_execution, local_execution_signing_frame,
 };
-use node_core::fee_claims::{self, FeeClaimKind, FeeClaimPreparationRequest};
+use node_core::fee_claims;
 use node_core::ordered_economics::{
     OrderedCandidate, OrderedOperationKind, encode_ordered_candidate,
 };
@@ -48,20 +48,7 @@ type Store = PostgresDurableStore<PostgresConnectionManager<NoTls>>;
 
 /// Equality compares every exact SQL row; Debug is deliberately compact so a
 /// failed invariant never dumps megabytes of canonical objects and receipts.
-#[derive(PartialEq, Eq)]
-struct Snapshot(Vec<Vec<String>>);
-impl std::fmt::Debug for Snapshot {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use std::hash::{Hash, Hasher};
-        f.debug_list()
-            .entries(self.0.iter().map(|rows| {
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                rows.hash(&mut hasher);
-                (rows.len(), hasher.finish())
-            }))
-            .finish()
-    }
-}
+type Snapshot = support::durable_state::PostgresRowsSnapshot;
 
 fn store(pool: &AdminPool, namespace: &PostgresNamespace) -> Store {
     PostgresDurableStore::new(
@@ -74,15 +61,7 @@ fn store(pool: &AdminPool, namespace: &PostgresNamespace) -> Store {
 /// Includes every scoped table, local revision and commit sequence. No replay
 /// comparison excludes vote records, fences, tombstones, receipts or logs.
 fn snapshot(pool: &AdminPool, namespace: &PostgresNamespace) -> Snapshot {
-    let mut connection = pool.get().unwrap();
-    Snapshot(["storage_metadata", "blobs", "state_records", "object_heads", "object_versions",
-        "request_receipts", "outbox_batches", "outbox_messages", "outbox_delivery",
-        "outbox_delivery_attempts", "checkpoints", "migration_jobs"]
-        .iter().map(|table: &&str| {
-            let sql: String = format!("SELECT row_to_json(t)::text FROM sunrise_edge.{table} t WHERE chain_id_bytes=$1 AND validator_id=$2 AND atomicity_domain_id=$3 ORDER BY row_to_json(t)::text");
-            connection.query(&sql, &[&namespace.chain_id_bytes(), &namespace.validator_id().as_bytes().as_slice(), &namespace.domain().as_bytes().as_slice()]).unwrap()
-                .iter().map(|row| row.get::<_, String>(0)).collect()
-        }).collect())
+    support::durable_state::postgres_rows_snapshot(pool, namespace)
 }
 
 fn inspect(
@@ -116,128 +95,18 @@ fn prepare_claim(
     request: [u8; 32],
     recipient: Address,
 ) -> OrderedCandidate {
-    let durable: Store = store(pool, namespace);
-    let blobs: PostgresBlobStore<PostgresConnectionManager<NoTls>> =
-        PostgresBlobStore::new(pool.clone(), namespace.clone()).unwrap();
-    let context: runtime::DurableOperationContext = cli::read_context(pool, namespace);
-    let key: SigningKey = SigningKey::from(
-        fixture
-            .validators
-            .iter()
-            .find(|entry| entry.validator_id == claimant)
-            .unwrap()
-            .seed,
-    );
-    let public: [u8; 32] = VerificationKey::from(&key).into();
-    let policy: LocalExecutionPolicy =
-        LocalExecutionPolicy::generic_object_results(fixture.context.clone());
-    let view: fee_claims::FeeClaimInspection = fee_claims::inspect_fee_claim(
-        &durable,
-        &blobs,
-        &context,
-        fixture.domain,
-        &fixture.resolver,
-        &[],
-        &fixture.context,
-        fixture.request_id,
-        claimant,
-        public,
-        &policy,
-    )
-    .unwrap();
-    let kind: FeeClaimKind = view.entitlement.kind.unwrap();
-    let signed_leg: Option<Vec<u8>> = match kind {
-        FeeClaimKind::ZeroShare => None,
-        FeeClaimKind::Split | FeeClaimKind::FinalTransfer => {
-            let execution: &fee_claims::FeeClaimExecutionView = view.execution.as_ref().unwrap();
-            let split: bool = kind == FeeClaimKind::Split;
-            let entrypoint: String = if split {
-                execution.resource.split_entrypoint.clone()
-            } else {
-                execution.resource.transfer_entrypoint.clone()
-            };
-            let argument: CallValue = CallValue::Tuple(if split {
-                vec![
-                    CallValue::U64(view.entitlement.amount),
-                    CallValue::Bytes(recipient.as_bytes().to_vec()),
-                ]
-            } else {
-                vec![CallValue::Bytes(recipient.as_bytes().to_vec())]
-            });
-            let arguments: Vec<u8> = encode_call_value(
-                execution.interface.argument_layout(&entrypoint).unwrap(),
-                &argument,
-            )
-            .unwrap();
-            let intent: LocalExecutionIntent = LocalExecutionIntent {
-                mode: LocalExecutionMode::Call,
-                policy_digest: execution.policy.digest(&fixture.resolver).unwrap(),
-                call: CallIntent {
-                    context: fixture.context.clone(),
-                    request_id: request,
-                    sender: public,
-                    nonce: execution.next_nonce,
-                    code: execution.resource.code.clone(),
-                    instance: execution.resource.instance.clone(),
-                    entrypoint,
-                    type_arguments: execution.resource.ty.args().to_vec(),
-                    access: AccessManifest {
-                        entries: vec![AccessEntry {
-                            object_ref: view.escrow.settlement.fee_output.clone().unwrap(),
-                            mode: AccessMode::Write,
-                        }],
-                    },
-                    arguments,
-                    gas_limit: 500_000,
-                },
-                authorizations: Vec::new(),
-            };
-            let frame: Vec<u8> = local_execution_signing_frame(&fixture.context, &intent).unwrap();
-            Some(
-                encode_signed_local_execution(&SignedLocalExecutionIntent {
-                    intent,
-                    signature: key.sign(&frame).into(),
-                })
-                .unwrap(),
-            )
-        }
-    };
-    let checkpoint: u64 = 2;
-    let prepared: fee_claims::PreparedFeeClaim = fee_claims::prepare_fee_claim(
-        &durable,
-        &blobs,
-        &context,
-        fixture.domain,
-        &fixture.resolver,
-        &[],
-        &fixture.context,
-        &policy,
-        &execution::LocalWasmExecutionEngine::new(),
-        FeeClaimPreparationRequest {
-            escrow_request_id: fixture.request_id,
-            request_id: request,
-            validator_id: claimant,
-            claimant_public_key: public,
+    support::fee_claim_candidate::prepare(
+        pool,
+        namespace,
+        fixture,
+        support::fee_claim_candidate::ClaimRequest {
+            escrow: fixture.request_id,
+            claimant,
+            request,
             recipient,
-            signed_leg: signed_leg.as_deref(),
+            checkpoint: Some(2),
         },
-        checkpoint,
     )
-    .unwrap();
-    let digest: protocol_types::Digest32 =
-        fee_claims::fee_claim_intent_digest(&fixture.resolver, &prepared.intent).unwrap();
-    let frame: Vec<u8> = fee_claims::fee_claim_signing_frame(&fixture.context, digest).unwrap();
-    let signed: fee_claims::codec::SignedFeeClaimIntent = fee_claims::codec::SignedFeeClaimIntent {
-        intent: prepared.intent,
-        signature: key.sign(&frame).into(),
-    };
-    OrderedCandidate {
-        context: fixture.context.clone(),
-        request_id: request,
-        kind: OrderedOperationKind::FeeClaim,
-        intent: fee_claims::codec::encode_signed_fee_claim_intent(&signed).unwrap(),
-        created_checkpoint: checkpoint,
-    }
 }
 
 fn command(

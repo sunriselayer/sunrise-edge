@@ -10,6 +10,7 @@
 
 pub mod cli;
 pub mod durable_state;
+pub mod fee_claim_candidate;
 pub mod genesis_fixture;
 pub mod host;
 pub mod http_relay;

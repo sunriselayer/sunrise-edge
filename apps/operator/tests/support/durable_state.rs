@@ -5,6 +5,73 @@ use runtime::*;
 use runtime_sqlite::SqliteDurableStore;
 use std::num::NonZeroUsize;
 
+/// Every scoped SQL row, including local revisions, receipts, blobs and the
+/// writer fence. Equality is byte-exact; failure output stays bounded.
+#[derive(PartialEq, Eq)]
+pub struct PostgresRowsSnapshot(Vec<Vec<String>>);
+
+impl std::fmt::Debug for PostgresRowsSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::hash::{Hash, Hasher};
+        formatter
+            .debug_list()
+            .entries(self.0.iter().map(|rows: &Vec<String>| {
+                let mut hasher: std::collections::hash_map::DefaultHasher =
+                    std::collections::hash_map::DefaultHasher::new();
+                rows.hash(&mut hasher);
+                (rows.len(), hasher.finish())
+            }))
+            .finish()
+    }
+}
+
+pub fn postgres_rows_snapshot(
+    pool: &r2d2_postgres::r2d2::Pool<r2d2_postgres::PostgresConnectionManager<postgres::NoTls>>,
+    namespace: &runtime_postgres::PostgresNamespace,
+) -> PostgresRowsSnapshot {
+    let mut connection: r2d2_postgres::r2d2::PooledConnection<
+        r2d2_postgres::PostgresConnectionManager<postgres::NoTls>,
+    > = pool.get().unwrap();
+    let tables: [&str; 12] = [
+        "storage_metadata",
+        "blobs",
+        "state_records",
+        "object_heads",
+        "object_versions",
+        "request_receipts",
+        "outbox_batches",
+        "outbox_messages",
+        "outbox_delivery",
+        "outbox_delivery_attempts",
+        "checkpoints",
+        "migration_jobs",
+    ];
+    let rows: Vec<Vec<String>> = tables
+        .iter()
+        .map(|table: &&str| -> Vec<String> {
+            let sql: String = format!(
+                "SELECT row_to_json(t)::text FROM sunrise_edge.{table} t \
+                 WHERE chain_id_bytes=$1 AND validator_id=$2 AND atomicity_domain_id=$3 \
+                 ORDER BY row_to_json(t)::text"
+            );
+            connection
+                .query(
+                    &sql,
+                    &[
+                        &namespace.chain_id_bytes(),
+                        &namespace.validator_id().as_bytes().as_slice(),
+                        &namespace.domain().as_bytes().as_slice(),
+                    ],
+                )
+                .unwrap()
+                .iter()
+                .map(|row: &postgres::Row| -> String { row.get::<_, String>(0) })
+                .collect()
+        })
+        .collect();
+    PostgresRowsSnapshot(rows)
+}
+
 pub fn replace<S: DurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,

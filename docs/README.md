@@ -20,6 +20,7 @@ detailed design, operator guides, and specialist references live here.
 - [Ordered network economics](architecture/ordered-economics.md)
 - [Ordered Freeze and immutable frontiers](architecture/frozen-frontier.md)
 - [Quorum-retained DrainSet and member drain](architecture/quorum-drain.md)
+- [Authenticated ordered-history export](architecture/ordered-history.md)
 - [Architecture decision records](architecture/decisions/README.md)
 
 ## Smart contracts
@@ -41,6 +42,7 @@ detailed design, operator guides, and specialist references live here.
 - [Ordered economics submission and signerless recovery](guides/ordered-economics.md)
 - [Ordered Freeze and resumable signed frontier export](guides/frozen-frontier.md)
 - [Quorum-retained drain and explicit member recovery](guides/quorum-drain.md)
+- [Export and verify ordered history](guides/ordered-history.md)
 - [Embedded Cloudflare validator](guides/cloudflare-validator.md)
 - [Recover missed certified calls](guides/fastvote-catch-up.md)
 - [Certified PostgreSQL load and recovery measurements](operations/postgres-certified-load.md)
