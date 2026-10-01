@@ -14,12 +14,14 @@ use consensus::{DrainUnionIdentity, FrozenFrontierPage, FrozenFrontierVote};
 use std::num::NonZeroUsize;
 
 const PAID_REQUEST: [u8; 32] = [0x6a; 32];
+const UNAPPLIED_REQUEST: [u8; 32] = [0x6b; 32];
 const FREEZE_REQUEST: [u8; 32] = [0xcb; 32];
 const DRAIN_REQUEST: [u8; 32] = [0xcc; 32];
 
 struct GenuineControlSource {
     fixture: CausalFixture,
     paid: CertifiedPaidMaterial,
+    unapplied: Option<CertifiedPaidMaterial>,
     selected: Vec<(FrozenFrontierVote, FrozenFrontierPage)>,
     candidate: OrderedCandidate,
 }
@@ -35,9 +37,10 @@ fn derive_ready(
     network: &Network,
     replica: usize,
     selected: &[(FrozenFrontierVote, FrozenFrontierPage)],
-    bundle: &[u8],
+    bundles: &[&[u8]],
 ) -> DrainUnionIdentity {
     let votes: Vec<FrozenFrontierVote> = selected.iter().map(|(vote, _)| vote.clone()).collect();
+    let member_count: usize = selected[0].1.entries.len();
     for (vote, page) in selected {
         ingest_drain_signer_page(
             &network.stores[replica],
@@ -51,6 +54,16 @@ fn derive_ready(
         )
         .unwrap();
         for entry in &page.entries {
+            let bundle: &[u8] = bundles
+                .iter()
+                .copied()
+                .find(|bytes| {
+                    consensus::bundle::decode_publication_bundle(bytes)
+                        .unwrap()
+                        .request_id
+                        == entry.request_id
+                })
+                .unwrap();
             assert_eq!(
                 import_staged_drain_publication(
                     &network.stores[replica],
@@ -81,7 +94,7 @@ fn derive_ready(
             );
         }
     }
-    for _ in 0..=1 {
+    for _ in 0..=member_count {
         if let DrainUnionStep::Ready(identity) = advance_drain_union(
             &network.stores[replica],
             &network.context,
@@ -93,14 +106,14 @@ fn derive_ready(
         )
         .unwrap()
         {
-            assert_eq!(identity.member_count, 1);
+            assert_eq!(identity.member_count, member_count as u64);
             return *identity;
         }
     }
-    panic!("one genuine full member must derive readiness in two bounded steps");
+    panic!("genuine full members must derive readiness in bounded member steps");
 }
 
-fn genuine_control_source() -> GenuineControlSource {
+fn genuine_control_source(retain_unapplied: bool) -> GenuineControlSource {
     let fixture: CausalFixture = fresh_fixture();
     let signed: Vec<u8> = paid_transfer(
         &fixture,
@@ -110,11 +123,29 @@ fn genuine_control_source() -> GenuineControlSource {
         0,
     );
     let paid: CertifiedPaidMaterial = certify_and_apply_paid(&fixture, &signed, 11);
+    // This first paid target is not a prerequisite of any earlier ordered
+    // business candidate: the first ordered operation below is actual Freeze.
+    // Its successful application must be replayed before ordinary admission
+    // closes, without using its source outcome as authority.
+    let unapplied: Option<CertifiedPaidMaterial> = retain_unapplied.then(|| {
+        let signed: Vec<u8> =
+            paid_transfer(&fixture, 1, &fixture.claimant_coin, UNAPPLIED_REQUEST, 0);
+        certify_paid_with_subsets(
+            &fixture,
+            &signed,
+            12,
+            &[0, 1, 2],
+            &[1, 2, 3],
+            &[0, 1, 2],
+            false,
+        )
+    });
+    let member_count: usize = 1 + usize::from(unapplied.is_some());
     let network: &Network = &fixture.network;
     commit_freeze(network, FREEZE_REQUEST);
     let mut selected: Vec<(FrozenFrontierVote, FrozenFrontierPage)> = Vec::new();
     for source in 0..3 {
-        for _ in 0..=1 {
+        for _ in 0..=member_count {
             if matches!(
                 advance_frozen_frontier(
                     &network.stores[source],
@@ -140,18 +171,25 @@ fn genuine_control_source() -> GenuineControlSource {
             &fixture::protocol(),
             network.signers[source].id,
             None,
-            NonZeroUsize::new(2).unwrap(),
+            NonZeroUsize::new(member_count + 1).unwrap(),
         )
         .unwrap();
         assert!(pair.1.terminal);
-        assert_eq!(pair.1.entries.len(), 1);
+        assert_eq!(pair.1.entries.len(), member_count);
         assert_eq!(pair.1.entries[0].request_id, PAID_REQUEST);
+        if unapplied.is_some() {
+            assert_eq!(pair.1.entries[1].request_id, UNAPPLIED_REQUEST);
+        }
         selected.push(pair);
     }
     selected.sort_by_key(|(vote, _)| vote.validator);
+    let mut bundles: Vec<&[u8]> = vec![paid.bundle.as_slice()];
+    if let Some(material) = &unapplied {
+        bundles.push(material.bundle.as_slice());
+    }
     let mut ready: Option<DrainUnionIdentity> = None;
     for replica in 0..REPLICAS {
-        let actual: DrainUnionIdentity = derive_ready(network, replica, &selected, &paid.bundle);
+        let actual: DrainUnionIdentity = derive_ready(network, replica, &selected, &bundles);
         if let Some(previous) = &ready {
             assert_eq!(&actual, previous);
         } else {
@@ -177,6 +215,7 @@ fn genuine_control_source() -> GenuineControlSource {
     GenuineControlSource {
         fixture,
         paid,
+        unapplied,
         selected,
         candidate,
     }
@@ -245,7 +284,7 @@ fn assert_ordinary_owned_recovery_stays_closed(source: &GenuineControlSource) {
 
 #[test]
 fn genuine_control_history_needs_complete_selected_proof_and_reconstructs_without_source_rows() {
-    let source: GenuineControlSource = genuine_control_source();
+    let source: GenuineControlSource = genuine_control_source(true);
     let network: &Network = &source.fixture.network;
     let (identity, history): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
         complete_history(network);
@@ -255,7 +294,16 @@ fn genuine_control_history_needs_complete_selected_proof_and_reconstructs_withou
         owned_material_from_source_snapshot(&before, &plan).unwrap();
     let controls: Vec<DrainSetControlMaterial> =
         drain_control_material_from_source_snapshot(&before, &plan, &history).unwrap();
-    assert_eq!(owned.len(), 1);
+    assert_eq!(owned.len(), 2);
+    assert!(source.unapplied.is_some());
+    assert_eq!(
+        owned
+            .iter()
+            .filter(|material| material.source_application_present)
+            .count(),
+        1
+    );
+    assert!(receipt(network, 0, UNAPPLIED_REQUEST).is_none());
     assert_eq!(controls.len(), 1);
     assert_eq!(controls[0].signer_frontiers.len(), 3);
 
@@ -294,6 +342,7 @@ fn genuine_control_history_needs_complete_selected_proof_and_reconstructs_withou
         .unwrap();
     assert_eq!(report.ordered_height, identity.through_height);
     assert_eq!(report.owned_originals_replayed, 1);
+    assert!(receipt(network, 0, UNAPPLIED_REQUEST).is_none());
     assert_eq!(report.semantic_snapshot_equal, None);
     overlay.compare_source(&before).unwrap();
     assert_eq!(
@@ -305,9 +354,21 @@ fn genuine_control_history_needs_complete_selected_proof_and_reconstructs_withou
 
 #[test]
 fn control_query_preserves_completed_and_earlier_refusals_and_actual_wrong_union() {
-    let source: GenuineControlSource = genuine_control_source();
+    let source: GenuineControlSource = genuine_control_source(false);
     assert_ordinary_owned_recovery_stays_closed(&source);
     let completed: &Network = &source.fixture.network;
+    let original_freeze: OrderedCandidate = freeze_candidate(FREEZE_REQUEST);
+    assert!(
+        !engine::reconstruction_freeze_barrier_needed(
+            &completed.stores[0],
+            &completed.context,
+            &completed.env(),
+            &original_freeze,
+            0,
+        )
+        .unwrap(),
+        "exact completed Freeze precedes a now-premature height"
+    );
     let mut fresh: OrderedCandidate = source.candidate.clone();
     let mut intent: DrainSetIntent = decode_drain_set_intent(&fresh.intent).unwrap();
     intent.request_id = [0xcd; 32];
@@ -363,6 +424,40 @@ fn control_query_preserves_completed_and_earlier_refusals_and_actual_wrong_union
     let network: &Network = &no_freeze.network;
     let before: SourceBusinessSnapshot = snapshot(network);
     assert!(
+        !engine::reconstruction_freeze_barrier_needed(
+            &network.stores[0],
+            &network.context,
+            &network.env(),
+            &original_freeze,
+            0,
+        )
+        .unwrap(),
+        "a genuine but premature Freeze does not flush Owned targets"
+    );
+    assert!(matches!(
+        preflight::preflight(
+            &network.stores[0],
+            &network.context,
+            &network.env(),
+            &original_freeze,
+            0,
+        ),
+        Err(OrderedEconomicsError::Refused(
+            OrderedRefusal::PrematureFreeze
+        ))
+    ));
+    assert!(
+        engine::reconstruction_freeze_barrier_needed(
+            &network.stores[0],
+            &network.context,
+            &network.env(),
+            &original_freeze,
+            1,
+        )
+        .unwrap(),
+        "the owning warrant at the actual eligible height requests the barrier"
+    );
+    assert!(
         !engine::reconstruction_drain_readiness_needed(
             &network.stores[0],
             &network.context,
@@ -388,6 +483,17 @@ fn control_query_preserves_completed_and_earlier_refusals_and_actual_wrong_union
     let network: &Network = &foreign.network;
     commit_freeze(network, [0xce; 32]);
     let before: SourceBusinessSnapshot = snapshot(network);
+    assert!(
+        !engine::reconstruction_freeze_barrier_needed(
+            &network.stores[0],
+            &network.context,
+            &network.env(),
+            &original_freeze,
+            4,
+        )
+        .unwrap(),
+        "a fresh AlreadyFrozen refusal does not move later Owned targets"
+    );
     assert!(
         !engine::reconstruction_drain_readiness_needed(
             &network.stores[0],
@@ -432,8 +538,12 @@ fn control_query_preserves_completed_and_earlier_refusals_and_actual_wrong_union
         .unwrap()
     );
     assert_eq!(snapshot(network), before);
-    let actual: DrainUnionIdentity =
-        derive_ready(network, 0, &source.selected, &source.paid.bundle);
+    let actual: DrainUnionIdentity = derive_ready(
+        network,
+        0,
+        &source.selected,
+        &[source.paid.bundle.as_slice()],
+    );
     assert_eq!(actual.member_count, 1);
     let before: SourceBusinessSnapshot = snapshot(network);
     assert!(
@@ -473,7 +583,7 @@ fn control_query_preserves_completed_and_earlier_refusals_and_actual_wrong_union
 
 #[test]
 fn forged_refused_control_companions_do_not_hide_independently_required_readiness() {
-    let source: GenuineControlSource = genuine_control_source();
+    let source: GenuineControlSource = genuine_control_source(false);
     let network: &Network = &source.fixture.network;
     let (identity, history): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
         complete_history(network);
