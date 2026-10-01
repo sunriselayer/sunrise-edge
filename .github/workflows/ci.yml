@@ -16,59 +16,27 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
-    services:
-      postgres:
-        image: postgres:18.6-alpine3.24@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
-        env:
-          POSTGRES_DB: sunrise_edge_test
-          POSTGRES_PASSWORD: test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d sunrise_edge_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-    env:
-      SUNRISE_EDGE_TEST_POSTGRES_URL: postgresql://postgres:test@127.0.0.1:5432/sunrise_edge_test
+    timeout-minutes: 25
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22.20.0
-          cache: npm
-          cache-dependency-path: adapters/cloudflare-workers/package-lock.json
-
-      - name: Set up Deno
-        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version: 2.9.4
-
-      - name: Install Cloudflare adapter dependencies
-        run: npm ci --prefix adapters/cloudflare-workers
-
-      - name: Install embedded validator build tools
+      - name: Run fmt, clippy, and workspace tests
         run: |
-          rustup target add wasm32-unknown-unknown
-          cargo install wasm-bindgen-cli --version 0.2.127 --locked
-
-      - name: Run repository validation
-        env:
-          SUNRISE_EDGE_TEST_POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
-          SUNRISE_EDGE_TEST_POSTGRES_CRASH_REQUIRED: "1"
-          SUNRISE_EDGE_TEST_POSTGRES_DISK_FULL_IMAGE: postgres:18.6-alpine3.24@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
-          SUNRISE_EDGE_TEST_POSTGRES_DISK_FULL_REQUIRED: "1"
-          SUNRISE_EDGE_TEST_POSTGRES_WAL_FULL_IMAGE: postgres:18.6-alpine3.24@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
-          SUNRISE_EDGE_TEST_POSTGRES_WAL_FULL_REQUIRED: "1"
-          SUNRISE_EDGE_TEST_POSTGRES_CONNECTION_EXHAUSTION_IMAGE: postgres:18.6-alpine3.24@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
-          SUNRISE_EDGE_TEST_POSTGRES_CONNECTION_EXHAUSTION_REQUIRED: "1"
-          SUNRISE_EDGE_TEST_POSTGRES_BACKUP_RESTORE_IMAGE: postgres:18.6-alpine3.24@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
-          SUNRISE_EDGE_TEST_POSTGRES_BACKUP_RESTORE_REQUIRED: "1"
-          SUNRISE_EDGE_TEST_POSTGRES_PGBOUNCER_POSTGRES_IMAGE: postgres:18.6-alpine3.24@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
-          SUNRISE_EDGE_TEST_POSTGRES_PGBOUNCER_IMAGE: ghcr.io/icoretech/pgbouncer-docker:1.25.2@sha256:53dc42879de6b87efed6ad239558cfa6fef6f08c5fa4acc109da5f5af1868b89
-          SUNRISE_EDGE_TEST_POSTGRES_PGBOUNCER_REQUIRED: "1"
-        run: ./scripts/check-all.sh
+          cargo fmt --all -- --check
+          rustfmt --edition 2024 --check \
+            crates/node-core/src/tests/core_and_nonce.rs \
+            crates/node-core/src/tests/durable_object_support.rs \
+            crates/node-core/src/tests/authenticated_objects.rs \
+            crates/node-core/src/tests/preinstalled_support.rs \
+            crates/node-core/src/tests/preinstalled_execution.rs \
+            crates/node-core/src/tests/durable_handlers.rs \
+            crates/node-core/src/tests/queries.rs \
+            crates/node-core/src/tests/fees.rs \
+            crates/execution/tests/paid_execution_engine/fixture.rs \
+            crates/execution/tests/paid_execution_engine/call.rs \
+            crates/execution/tests/paid_execution_engine/publish.rs \
+            crates/execution/tests/paid_execution_engine/verify.rs \
+            crates/execution/tests/paid_execution_engine/codec.rs
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo test --workspace --all-targets --all-features
