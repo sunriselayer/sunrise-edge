@@ -24,9 +24,9 @@ mod codec;
 mod derive;
 mod proof;
 mod source;
-mod transfer;
 #[cfg(test)]
 mod tests;
+mod transfer;
 pub use codec::{
     decode_business_cut_chunk, decode_business_cut_descriptor, decode_business_cut_identity,
     decode_business_cut_package, decode_business_cut_page, encode_business_cut_chunk,
