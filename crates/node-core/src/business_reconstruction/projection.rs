@@ -3,8 +3,8 @@
 //! excluded only after its owning schema validates the complete key and value.
 
 use super::{
-    BusinessReconstructionError, BusinessReconstructionOverlay, ReconstructionEd25519Verifier,
-    SourceBusinessSnapshot, SourceSnapshotRecord, invalid,
+    AuthenticatedPublicationProjection, BusinessReconstructionError, BusinessReconstructionOverlay,
+    ReconstructionEd25519Verifier, SourceBusinessSnapshot, SourceSnapshotRecord, invalid,
 };
 use crate::NodeDedupRecord;
 use crate::fast_path::{prepared_material, publication, records};
@@ -504,6 +504,7 @@ fn project(
     overlay: &BusinessReconstructionOverlay<'_>,
     snapshot: &SourceBusinessSnapshot,
     reconstructed_state: &StateRows<'_>,
+    publications: &AuthenticatedPublicationProjection,
     is_source: bool,
 ) -> Result<SemanticProjection, BusinessReconstructionError> {
     snapshot.validate()?;
@@ -530,7 +531,20 @@ fn project(
                 if local_rows.contains_key(key) || ordered.excluded.contains(key) {
                     continue;
                 }
-                SemanticRecord::State(normalized_state(overlay, key, row.value.as_deref())?)
+                if is_source && publications.retention_keys.contains(key) {
+                    // Every exact key and complete body was independently
+                    // authenticated against the replay catalog. Aliases are
+                    // carriers, not permission to ignore this namespace.
+                    continue;
+                }
+                if let Some(subject) = publications.normalized_state.get(key) {
+                    if row.value.is_none() {
+                        return Err(invalid("verified certificate carrier is tombstoned"));
+                    }
+                    SemanticRecord::State(Some(subject.clone()))
+                } else {
+                    SemanticRecord::State(normalized_state(overlay, key, row.value.as_deref())?)
+                }
             }
             (
                 DurableRecordKey::Receipt(request),
@@ -658,11 +672,19 @@ pub(super) fn compare_source(
     if source.token.domain() != overlay.plan.domain {
         return Err(invalid("source snapshot belongs to another domain"));
     }
+    let publications: AuthenticatedPublicationProjection =
+        overlay.authenticated_publication_projection(source)?;
     let reconstructed: SourceBusinessSnapshot = capture_overlay(overlay)?;
     let reconstructed_state: StateRows<'_> = state_rows(&reconstructed.records);
-    let actual: SemanticProjection = project(overlay, source, &reconstructed_state, true)?;
-    let expected: SemanticProjection =
-        project(overlay, &reconstructed, &reconstructed_state, false)?;
+    let actual: SemanticProjection =
+        project(overlay, source, &reconstructed_state, &publications, true)?;
+    let expected: SemanticProjection = project(
+        overlay,
+        &reconstructed,
+        &reconstructed_state,
+        &publications,
+        false,
+    )?;
     if actual != expected {
         return Err(invalid(
             "complete source semantic projection differs from independent reconstruction",
