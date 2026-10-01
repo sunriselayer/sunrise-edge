@@ -527,8 +527,8 @@ fn forged_refused_control_companions_do_not_hide_independently_required_readines
         supplied.reconstruct_with_control_material(&owned, &forged, &controls),
         Err(BusinessReconstructionError::OrderedHistory {
             height: 4,
-            source: OrderedEconomicsError::Prerequisite(_),
-        })
+            source,
+        }) if matches!(*source, OrderedEconomicsError::Prerequisite(_))
     ));
     assert_eq!(snapshot(network), before);
 }
