@@ -134,6 +134,10 @@ roadmap describes a later target state.
   private fresh staging verification, actual-key-bound votes, weighted public
   certificates and protected per-identity retention; no serving authority.
   Seal traversal and activation remain subsequent design work.
+- [Functional handoff closure](functional-handoff-closure.md)
+  ([DR-0186](decisions/0186-functional-handoff-closure.md), Proposed):
+  staged namespace/crash ordering, retained Seal companions, complete suffix
+  verification and snapshot-covered serving activation; not code authority.
 - [Initial validator bond registration](initial-validator-bond.md)
   ([DR-0179](decisions/0179-initial-validator-bond-registration.md)):
   self-authenticated first collateral through generic custody and ordered

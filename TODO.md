@@ -47,119 +47,82 @@ review concrete interfaces, then integrate useful owning implementations with
 actual callers. Stop launching new work at the deadline and preserve a safe
 verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
 
-- [ ] Global responsibility/authority and typed interface review, including
-  still-unimplemented Seal, serving and recurring reconstruction boundaries.
-- [ ] Runtime/core completion design: centralize identical transaction
-  consistency and assembly rules without merging storage and protocol authority.
-  The first implementation, merged in PR #257 at `f83b437`, provides domain-bound
-  observations and strict single-owner versus explicit exact-coalescing assembly,
-  and migrates
-  actual direct paid execution and fee-claim completions. Read-only prepared
-  material and registered-bond verification use a genuinely read-only port.
-  A contradictory internal nonce observation now fails closed instead of
-  replacing an earlier read. Full local acceptance, all four required CI lanes,
-  selected complete PostgreSQL acceptance and fresh exact-head Opus APPROVE
-  passed.
-  [DR-0181](docs/architecture/decisions/0181-writer-free-operation-preparation.md)
-  is implemented and merged in PR #258 at `3bcbb15`: all seven owning preparations, direct
-  real-store wrappers, consuming execution/signing observation scopes, and no
-  capture store or synthetic commit success. Full local acceptance, all four
-  required CI lanes, all five explicitly selected PostgreSQL lanes and fresh
-  exact-head Opus APPROVE passed. Genuine preparation/observation/completion,
-  reader negative capability, SQLite reopen/fencing/replay and independent
-  vectors remain checked. This does not complete every core/serving interface.
-- [ ] Core lifecycle and dependency composition: distinguish genesis trust,
-  current serving and historical verification; remove duplicated mechanisms
-  where a reviewed interface has actual consumers.
-  [DR-0182](docs/architecture/decisions/0182-immutable-verified-genesis-root.md)
-  is implemented in [PR #259](https://github.com/sunriselayer/sunrise-edge/pull/259),
-  merged normally as `0bf99fdf` after fresh exact-head Opus APPROVE, required
-  CI `36996436664` and all five explicitly selected PostgreSQL lanes
-  `36996527437` passed at `9a934115`. One immutable original trust root binds
-  its exact resolver, profile and committee across core, SDK/CLI and operator/
-  HTTP consumers; old public constructors/loaders and independently replaceable
-  resolvers are removed. Full local acceptance passed, including genuine root/
-  installer/history/full-schedule negatives, authenticated wrong-epoch SDK
-  refusal before I/O, compiled CLI, real SQLite reopen/fencing/replay and
-  independent vectors/native/WASM/portable adapters. The v1-v4 frozen baseline
-  matches an actual rerun of the original constructors at immutable `b34f771`,
-  not expectations recomputed from the new implementation. Original genesis
-  trust still grants no current-serving or successor capability.
-  [DR-0184](docs/architecture/decisions/0184-one-fastvote-committee-record-validator.md)
-  and [PR #261](https://github.com/sunriselayer/sunrise-edge/pull/261) establish
-  one typed committee-record structural owner across core, genesis/installed
-  history, Freeze/activation derivation and operator startup/CLI. Each caller
-  retains capacity, diagnostic ordering, digest/certificate, freshness and
-  activation obligations. Six pure tests, two installed-history restart
-  negatives, two actual SQLite startup tests plus eleven shared support tests,
-  twenty-one compiled operator CLI unit tests and the complete required local
-  gate passed. The final integrated head `cea8e5c` received fresh read-only
-  Codex fallback APPROVE and all four required CI lanes plus the aggregate
-  check passed in run `37006114264`.
-  The first selected full PostgreSQL run failed in restart connection readiness:
-  its disposable service used a dynamically assigned host port, which changed
-  on restart while the fixture retained the original database URL. A separate
-  owned-container reproduction confirmed the port change. The disposable wrapper
-  was changed to a fixed loopback port without changing the repository tests;
-  acceptance then reran
-  `npm ci --prefix adapters/cloudflare-workers` and the complete serial
-  `./scripts/check-all.sh --full` on that final head. All required and selected
-  PostgreSQL cases passed, including backup/restore, connection exhaustion,
-  SIGKILL recovery, data and WAL ENOSPC and PgBouncer. This is actual local
-  full-profile evidence, not a claim of five separately dispatched CI jobs.
-  PR #261 merged normally as `e5b00c1`; its merge tree equals the reviewed head
-  and main equals origin/main with a clean tree. No Seal/serving/Delivery 3 claim.
-  [DR-0185](docs/architecture/decisions/0185-one-reconstruction-policy-binding.md)
-  and [PR #262](https://github.com/sunriselayer/sunrise-edge/pull/262) establish
-  one private two-stage immutable root/policy/domain and signed anchor relation
-  for the actual overlay and control collector. Complete resolver schedules
-  remain checked; independent execution/history companions, genuine control,
-  saved-cut integrity and fresh destination completion keep their own authority
-  and error order. At `eefc87d`, all 42 causal-placement tests, the complete
-  local required gate, fresh read-only Codex fallback APPROVE and required CI
-  `37006116206` passed, including genuine completed Freeze/DrainSet positives,
-  public-control substitution and combined-defect diagnostic precedence.
-  Integration with PR #261 requires fresh final-head acceptance before merge.
-  This is not Seal, serving or Delivery 3 completion.
-- [ ] Test/CI architecture: owner-specific fixture composition and a coherent
-  gate registry/execution contract, preserving all required coverage.
-  Closed executable plans and separately owned action recipes merged in PR #257.
-  Fixed independent contract expectations retain four required
-  DB-free lanes, five selected PostgreSQL lanes and every ignored selector;
-  nested prerequisite failures propagate explicitly. Required/full local and
-  selected complete PostgreSQL acceptance passed on that exact reviewed head.
-  PR #258 additionally isolates recipe stdin from the remaining coordinator
-  plan, with an executable reproducing negative control. Typed one-shot real
-  SQLite handoff faults preserve each existing assertion and prove that the
-  intended fault was actually consumed. Both complete final-head required and
-  selected PostgreSQL acceptance passed.
-  [DR-0183](docs/architecture/decisions/0183-test-observation-ownership.md)
-  implements private reader/counter/capture ownership and complete same-engine
-  direct/prepared equality for fee, unbond, slash and registration. Genuine
-  distinct quorum voters remain separate from same-signer comparison mirrors;
-  actual before-state, prepared/direct completion and replay equality are
-  asserted without normalization. These raw storage-port body controls do not
-  claim blob-backed business execution. Seven writer-free tests, three actual
-  capture/counter controls, the complete required local gate, fresh exact-head
-  Codex fallback APPROVE and all required CI `37002824263` passed at `c5a684e`.
-  [PR #260](https://github.com/sunriselayer/sunrise-edge/pull/260) merged normally
-  as `fc41fd3` using the existing SSH identity; GitHub confirms merged state.
-  Its merge tree equals the reviewed head, local main equals origin/main and
-  the source branch is absent. No PostgreSQL requirement is added for private
-  test mechanics, and the PR-creation-only PAT was not reused for merge.
-- [ ] Independently reviewed, fully checked PR checkpoints; update this list
-  from actual evidence, not skeleton compilation or file counts.
-  PR #257 through PR #261 are verified normal-merge checkpoints; full
-  local acceptance does not replace independent review, exact-head CI or
-  production qualification.
+### Verified architecture checkpoints
 
-The remaining handoff interface partition now identifies namespace lifecycle,
-fresh serving resolution, epoch-scoped ordered safety, reconstruction
-predecessors, Seal target verification and actual activation completion.
-It does not manufacture their producers. Retained-member namespace selection,
-crash ordering, bounded Seal companions/suffix evidence and authenticated
-successor schemas remain coupled pre-code decisions; genesis-only trust is not
-a substitute. See the [handoff contracts](docs/architecture/architecture-contracts.md#handoff-contracts).
+The following ownership changes have actual implementations and migrated
+consumers, not merely shorter files or new interfaces with missing bodies:
+
+- [x] Domain-bound state observations and bounded completion assembly:
+  strict single-owner insertion is distinct from deliberate exact coalescing;
+  conflicting observations fail closed. Actual paid execution and fee-claim
+  completion use the same defining rules.
+- [x] [Writer-free preparation](docs/architecture/operation-preparation.md):
+  all seven owning preparations use required read-only ports and return real
+  prepared effects/observations. Direct, ordered and reconstruction callers
+  share evaluation; actual durable completion is separate. The synthetic
+  capture store and pretend successful commit are removed.
+- [x] [Immutable original trust](docs/architecture/genesis-trust.md):
+  one private verified genesis root binds its local complete resolver, original
+  profile and committee across core, SDK/CLI and hosts. Removed independently
+  replaceable configuration and duplicate constructors do not become current
+  serving or successor authority. Frozen v1-v4 values match an actual rerun of
+  the old constructors at `b34f771`, not recomputed expectations.
+- [x] [Test ownership](docs/architecture/test-observation-contracts.md):
+  genuine distinct quorum voters remain separate from same-signer comparison
+  mirrors. Complete before/prepared/direct/replay state and referenced-body
+  captures compare without normalization. Private raw storage-port controls
+  do not claim blob-backed business execution; typed real-SQLite faults prove
+  their intended failure was actually consumed.
+- [x] [Committee structure](docs/architecture/committee-record-validation.md):
+  one pure typed conversion is consumed by core, genesis/installed history,
+  Freeze/activation and operator startup/CLI. Capacity, certificate, freshness,
+  diagnostic order and activation authority stay with each actual owner.
+- [x] [Reconstruction binding](docs/architecture/reconstruction-policy-binding.md):
+  overlay and public control share exact root/policy/domain/full-schedule and
+  signed-Freeze anchor rules. Independent companions and error precedence stay
+  separate. Genuine completed controls, historical/full-schedule substitution,
+  combined-defect precedence and real saved-cut/import/restart remain tested.
+- [x] Closed CI execution plans and independently owned expectations preserve
+  four unconditional DB-free lanes, five explicitly selected PG lanes and all
+  nineteen retained ignored selectors. Nested failures propagate; action stdin
+  cannot consume the coordinator's remaining plan. No coverage waiver or
+  PostgreSQL requirement is introduced.
+
+Every row below is a normal merge with fresh exact-head explicit APPROVE, local
+`npm ci --prefix adapters/cloudflare-workers` / `./scripts/check-all.sh` and
+all four required CI lanes plus the aggregate passing before merge. Opus was
+quota-limited for the final three reviews; the authorized Codex substitute was
+used. GitHub confirms all six PRs merged. Merge trees equal the reviewed heads;
+source branches are absent and local main equals origin/main with a clean tree.
+
+| PR | Reviewed head | Merge | Independent review | Required CI | Selected PG acceptance |
+| --- | --- | --- | --- | --- | --- |
+| [#257](https://github.com/sunriselayer/sunrise-edge/pull/257) | `16bba564` | `f83b4378` | Opus APPROVE | `36977345889` | Complete workflow `36977387913` |
+| [#258](https://github.com/sunriselayer/sunrise-edge/pull/258) | `9d17dcdd` | `3bcbb154` | Opus APPROVE | `36986948208` | Complete workflow `36987284921` |
+| [#259](https://github.com/sunriselayer/sunrise-edge/pull/259) | `9a934115` | `0bf99fdf` | Opus APPROVE | `36996436664` | Complete workflow `36996527437` |
+| [#260](https://github.com/sunriselayer/sunrise-edge/pull/260) | `c5a684ee` | `fc41fd33` | Codex APPROVE | `37002824263` | Not selected: private test mechanics |
+| [#261](https://github.com/sunriselayer/sunrise-edge/pull/261) | `cea8e5c1` | `e5b00c1a` | Codex APPROVE | `37006114264` | Complete local `--full`, all original prerequisites/fault flags |
+| [#262](https://github.com/sunriselayer/sunrise-edge/pull/262) | `9e93b13e` | `dafa7061` | Codex APPROVE | `37008915410` | Not selected: private core binding, no provider change/claim |
+
+PR #261's first PG lab restart failed because a dynamically assigned Docker
+host port changed while the fixture retained its original URL. An independent
+owned-container reproduction confirmed that behavior. The disposable wrapper
+used a fixed loopback port; repository tests and assertions were unchanged.
+The complete final-head serial `--full` rerun passed, including backup/restore,
+connection exhaustion, SIGKILL recovery, data/WAL ENOSPC and PgBouncer. This is
+local complete-profile evidence, not five separately dispatched CI jobs.
+
+### Remaining functional ownership
+
+The [handoff contracts](docs/architecture/architecture-contracts.md#handoff-contracts)
+and [proposed DR-0186 closure](docs/architecture/functional-handoff-closure.md)
+identify concrete remaining consumers, not executable producers or wire
+approval. Do not start another generic framework or repository-wide cleanup
+phase before them. Resolve the coupled pre-code questions in that proposal:
+protected virgin transition history, competing Seal outcomes, bounded retained
+companions/full phase-aware suffix, snapshot checks inside actual completion,
+and exact successor schemas/key allocations. Proposed documentation alone does
+not complete Seal, serving, recurring reconstruction or Delivery 3.
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.
@@ -169,9 +132,9 @@ HTTP/SDK/CLI, tests and documentation; do not split merely by codec or file.
 
 | Order | Remaining outcome | Refactoring included where needed | Acceptance boundary |
 | --- | --- | --- | --- |
-| 1 | Implemented persistent verified import; merge evidence is tracked in PR #252 below | Explicit import state and core authority guard; narrow runtime repository/transaction seams and shared SQL engine owners | Own writer fence, verified provenance/generation floor, resumable chunks and durable completeness. Staging grants no active serving, fresh business admission or consensus signing; verified import/replay has its own private authority. No foreign fence copy or reset of active history |
-| 2 | Conditional readiness, ordered Seal and authenticated activation | Separate epoch-control authority, transition identity and epoch-scoped ordered commit assembly; separate immutable genesis pins from verified serving context | Correctable pre-Seal candidates, ready eligible next quorum, business-free inherited suffix, unique post-Seal target, atomic policy/provenance rollover and retained old history. No timeout unfreeze or force activation |
-| 3 | Usable add/replace/recover/epoch lifecycle | Share bounded artifact I/O and pin/config primitives in SDK/CLI; keep ingress/authentication, transport and core decisions separate | Real A/B/C/D → A/B/C/E flow: Deposit E, Unbond absent D, verified import/replacement, new-epoch paid contracts/claims, advance to genuine unlock epoch, Withdraw D; restart/replay, retired-key, early withdrawal and stale-writer negatives |
+| 1 | Callable ordered Seal | Existing ordered proposal/vote/observer and actual completion; one target verifier, bounded retained companions and full phase-aware high/locked/proposed-QC ancestry | Ready eligible next quorum and independently verified cut; complete business-free inherited suffix; exact snapshot continuity inside Seal commit. Only committed acceptance fixes the target and closes old business. No proposal-time singleton, timeout unfreeze or force selection |
+| 2 | Unique post-Seal transition and authenticated successor serving | Protected actual-key retention, backend closure, epoch-scoped safety and fresh invocation authority; reuse inactive staging for retained/new members | No fresh old-namespace business, exact receipt replay, positive virgin-history proof, retained non-signing retry, ambiguous-write reconciliation; one proof-backed target-local activation under its own fence with permanent import origin and outgoing history retained |
+| 3 | Recurring add/replace/recover/epoch lifecycle | Verified predecessor reconstruction plus actual HTTP/SDK/CLI composition; share only needed artifact/configuration primitives | Real A/B/C/D → A/B/C/E flow: Deposit E, Unbond absent D, verified replacement, new-epoch paid contracts/claims, advance to genuine unlock epoch, Withdraw D; restart/replay, retired-key, early withdrawal, stale writer and inventory-race negatives. An unbond-delay=1 fixture does not waive repeated epochs |
 | 4 | Delivery 4: independent audit and initial-network startup | Only deployment-facing composition/dispatch cleanup needed for the chosen profile; reuse capability tests rather than copy PG-only fixtures | Explicit reviewed initial-network activation profile, independently controlled stores, executable auth/TLS/startup/recovery instructions, separate economics and ingress audits and remediation before live exposure |
 
 - [x] **Frozen-member source reconstruction gap:**

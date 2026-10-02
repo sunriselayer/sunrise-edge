@@ -169,6 +169,10 @@ and recurring reconstruction need their owning detailed contracts. The
 architecture outline does not approve a wire format or fill those gaps with
 placeholder authority.
 
+[Functional handoff closure](functional-handoff-closure.md) and
+[DR-0186](decisions/0186-functional-handoff-closure.md) propose concrete closures
+for the decisions below; they remain pre-code design review, not serving authority.
+
 Settle these coupled design questions before implementing those producers:
 
 - Whether retained validators continue in the outgoing namespace or select
