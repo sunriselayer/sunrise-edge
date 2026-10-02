@@ -29,7 +29,10 @@ Select existing distinct `IMPORT_STATE_DB`/`IMPORT_BLOB_DB` files outside both
 input archive trees, with the exact `IMPORT_VALIDATOR_ID` namespace binding.
 The signer file is one private regular nonsymlink file containing exactly
 32 raw Ed25519 seed bytes (not hex). On Unix, group/other permission bits must
-be absent. Its actual derived public key must match this member's registered
+be absent. Symlink ancestors and parent traversal are also refused; the
+containing directory and bounded leaf identity are checked while loading and
+the held parent is rechecked before invoking the producer. Its actual derived
+public key must match this member's registered
 key before signing. This software-key composition is not a production keystore
 or hardware-key certification.
 

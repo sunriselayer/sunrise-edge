@@ -28,7 +28,6 @@ rusqlite.workspace = true
 runtime-postgres.workspace = true
 postgres.workspace = true
 r2d2_postgres.workspace = true
-ed25519-zebra.workspace = true
 wat.workspace = true
 public-standard-asset = { path = "../../contracts/standard-asset" }
 standard-assets.workspace = true

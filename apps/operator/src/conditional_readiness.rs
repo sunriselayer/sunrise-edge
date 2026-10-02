@@ -10,8 +10,8 @@ use crate::{
 };
 use consensus::readiness::{
     MAX_READINESS_MEMBERS, MAX_READINESS_SET_BYTES, MAX_READINESS_VOTE_BYTES, ReadinessCertifier,
-    ReadinessSubject, ReadinessVote, decode_readiness_vote, encode_readiness_certificate,
-    encode_readiness_vote,
+    ReadinessSubject, ReadinessVote, decode_readiness_set, decode_readiness_vote,
+    encode_readiness_certificate, encode_readiness_vote,
 };
 use node_core::{
     business_reconstruction::{
@@ -26,7 +26,7 @@ use node_core::{
 use protocol_types::ValidatorId;
 use runtime_sqlite::{SqliteBlobStore, SqliteImportTarget, SqliteNamespace};
 use std::{error::Error, ffi::OsString, path::PathBuf};
-use validator_set::{ValidatorSet, decode_validator_set};
+use validator_set::ValidatorSet;
 
 const FLAGS: &[&str] = &[
     "--chain-id",
@@ -117,7 +117,7 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
             cut.require_output_outside(path)?;
         }
     }
-    let next_set: ValidatorSet = decode_validator_set(&read_bounded_file(
+    let next_set: ValidatorSet = decode_readiness_set(&read_bounded_file(
         &next_path,
         MAX_READINESS_SET_BYTES,
         "next set",
@@ -149,8 +149,30 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
         let target: SqliteImportTarget =
             SqliteImportTarget::open_existing(&state, namespace, verified.binding())?;
         let bodies: SqliteBlobStore = SqliteBlobStore::open_existing(&blobs)?;
-        let signer: ReadinessSigningKey =
-            ReadinessSigningKey::new(validator, load_signing_key_file(&key_path)?);
+        let key_path: PathBuf = if key_path.is_absolute() {
+            key_path
+        } else {
+            std::env::current_dir()?.join(key_path)
+        };
+        let key_directory: ImmutableArchive = ImmutableArchive::open_read_only(
+            key_path
+                .parent()
+                .ok_or("signer key has no parent directory")?,
+        )?;
+        let key: ed25519_zebra::SigningKey = load_signing_key_file(&key_path)?;
+        let key_name: &str = key_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("signer key filename is not a normal UTF-8 component")?;
+        // Reuse held-parent/leaf artifact checks without widening historical
+        // key consumers. These bytes are never logged or written as artifacts.
+        let mut checked_key: Vec<u8> = key_directory.read(key_name, 32)?;
+        let matches: bool = checked_key.as_slice() == key.as_ref();
+        checked_key.fill(0);
+        if !matches {
+            return Err("signer key changed while loading".into());
+        }
+        let signer: ReadinessSigningKey = ReadinessSigningKey::new(validator, key);
         if output.contains(filename)? {
             let previous: ReadinessVote =
                 decode_readiness_vote(&output.read(filename, MAX_READINESS_VOTE_BYTES)?)?;
@@ -170,6 +192,7 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
             })
             .collect();
         let operation = operation(target.writer_fence()?, timeout, [0xBB; 16])?;
+        key_directory.ensure_attached()?;
         let vote: ReadinessVote = retain_conditional_readiness(
             pins.plan(private_operation()?),
             &saved,

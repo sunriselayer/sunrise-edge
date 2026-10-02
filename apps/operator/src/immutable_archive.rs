@@ -164,7 +164,7 @@ impl ImmutableArchive {
         Ok(checked)
     }
 
-    fn ensure_attached(&self) -> io::Result<()> {
+    pub(crate) fn ensure_attached(&self) -> io::Result<()> {
         Self::ensure_directory_attached(&self.root, &self.directory)?;
         if let Some(staging) = &self.staging {
             Self::ensure_directory_attached(&staging.path, &staging.directory)?;

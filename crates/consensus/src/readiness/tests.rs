@@ -62,6 +62,29 @@ fn vote(subject: &ReadinessSubject, keys: &[SigningKey], index: usize) -> Readin
 }
 
 #[test]
+fn readiness_set_count_is_refused_before_generic_member_allocation() {
+    for count in [257_u32, 10_000, u32::MAX] {
+        let mut set: CanonicalStruct = CanonicalStruct::new(0xC002, 1);
+        set.field_u64(1, 1).unwrap();
+        set.field_u64(2, 1).unwrap();
+        set.field_u64(3, 1).unwrap();
+        set.field_u32(4, count).unwrap();
+        // No member fields exist: rejection must be the owning count bound,
+        // not missing-field failure after a generic 10,000-member allocation.
+        assert!(matches!(
+            decode_readiness_set(&set.finish().unwrap()),
+            Err(ReadinessError::ValidatorSet(ValidatorSetError::TooManyValidators(actual)))
+                if actual == usize::try_from(count).unwrap()
+        ));
+    }
+    let valid: ValidatorSet = set(&keys());
+    assert_eq!(
+        decode_readiness_set(&encode_validator_set(&valid).unwrap()).unwrap(),
+        valid
+    );
+}
+
+#[test]
 fn readiness_real_keys_closed_roundtrip_and_distinct_weighted_quorum() {
     let resolver: HashSuiteResolver = resolver();
     let keys: Vec<SigningKey> = keys();

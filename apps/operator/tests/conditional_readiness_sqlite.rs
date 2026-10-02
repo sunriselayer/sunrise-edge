@@ -73,6 +73,7 @@ fn pins(command: &mut Command, fixture: &Fixture, history: &Path, cut: &Path) {
         cut.to_str().unwrap(),
     ]);
 }
+#[allow(clippy::too_many_arguments)]
 fn voting(
     fixture: &Fixture,
     history: &Path,
@@ -188,6 +189,28 @@ fn compiled_conditional_readiness_real_retention_restart_and_distinct_certificat
         }
         let output: Directory = Directory::new(&format!("ready-vote-{index}"));
         if index == 0 {
+            #[cfg(unix)]
+            {
+                let alias: PathBuf = fixture.directory.0.join("linked-key-directory");
+                std::os::unix::fs::symlink(&destination.0, &alias).unwrap();
+                assert!(
+                    !voting(
+                        &fixture,
+                        &history_root,
+                        &cut.0,
+                        &next,
+                        &destination.0,
+                        &output.0,
+                        validator.validator_id,
+                        &alias.join("private.key")
+                    )
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+                );
+                assert!(!output.0.join("vote.bin").exists());
+            }
             std::fs::write(output.0.join("vote.bin"), b"invalid retained artifact").unwrap();
             assert!(
                 !voting(

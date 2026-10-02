@@ -17,7 +17,9 @@ use protocol_types::{
 };
 use protocol_upgrades::{HashSuiteScheduleConfig, encode_hash_suite_schedule};
 use std::{collections::BTreeSet, error::Error, fmt};
-use validator_set::{ValidatorSet, ValidatorSetError, decode_validator_set, encode_validator_set};
+use validator_set::{
+    ValidatorSet, ValidatorSetError, decode_validator_set_with_limits, encode_validator_set,
+};
 
 pub const MAX_READINESS_MEMBERS: usize = 256;
 pub const MAX_READINESS_SET_BYTES: usize = 64 * 1024;
@@ -157,6 +159,15 @@ pub fn validate_readiness_set(set: &ValidatorSet) -> Result<(), ReadinessError> 
             .map_err(|_| ReadinessError::Invalid("readiness key must be canonical prime order"))?;
     }
     bounded(&encode_validator_set(set)?, MAX_READINESS_SET_BYTES)
+}
+
+/// The readiness count/key limits precede generic member-vector allocation.
+/// Both certificate input and operator next-set input use this same owner.
+pub fn decode_readiness_set(bytes: &[u8]) -> Result<ValidatorSet, ReadinessError> {
+    bounded(bytes, MAX_READINESS_SET_BYTES)?;
+    let set: ValidatorSet = decode_validator_set_with_limits(bytes, MAX_READINESS_MEMBERS, 32)?;
+    validate_readiness_set(&set)?;
+    Ok(set)
 }
 
 pub fn encode_readiness_subject(subject: &ReadinessSubject) -> Result<Vec<u8>, ReadinessError> {
@@ -358,9 +369,7 @@ pub fn decode_readiness_certificate(bytes: &[u8]) -> Result<ReadinessCertificate
         .collect::<Result<Vec<u16>, ReadinessError>>()?;
     frame.require_only_fields(&fields)?;
     let next_bytes: &[u8] = frame.required_field(2)?;
-    bounded(next_bytes, MAX_READINESS_SET_BYTES)?;
-    let next_set: ValidatorSet = decode_validator_set(next_bytes)?;
-    validate_readiness_set(&next_set)?;
+    let next_set: ValidatorSet = decode_readiness_set(next_bytes)?;
     let mut votes: Vec<ReadinessVote> = Vec::with_capacity(count);
     for index in 0..count {
         votes.push(decode_readiness_vote(

@@ -276,12 +276,22 @@ pub fn encode_validator_set(set: &ValidatorSet) -> Result<Vec<u8>, ValidatorSetE
 /// Redundant power/threshold summaries, sorted member order and all bounds are
 /// verified by exact owner re-encoding; neither summary is quorum authority.
 pub fn decode_validator_set(bytes: &[u8]) -> Result<ValidatorSet, ValidatorSetError> {
+    decode_validator_set_with_limits(bytes, MAX_VALIDATORS, MAX_PUBLIC_KEY_BYTES)
+}
+
+/// An owning protocol may impose narrower limits before any member allocation
+/// or key copy. Caller limits can never widen the existing set format's bounds.
+pub fn decode_validator_set_with_limits(
+    bytes: &[u8],
+    maximum_members: usize,
+    maximum_key_bytes: usize,
+) -> Result<ValidatorSet, ValidatorSetError> {
     let frame = decode_canonical_frame(bytes)?;
     frame.require_type(VALIDATOR_SET_TYPE_ID)?;
     frame.require_version(ENCODING_VERSION)?;
     let count: usize = usize::try_from(frame.required_u32(4)?)
         .map_err(|_| ValidatorSetError::InvalidEncoding("validator count capacity"))?;
-    if count > MAX_VALIDATORS {
+    if count > maximum_members.min(MAX_VALIDATORS) {
         return Err(ValidatorSetError::TooManyValidators(count));
     }
     let fields: Vec<u16> = (1..=count + 4)
@@ -298,7 +308,7 @@ pub fn decode_validator_set(bytes: &[u8]) -> Result<ValidatorSet, ValidatorSetEr
         member.require_version(ENCODING_VERSION)?;
         member.require_only_fields(&[1, 2, 3, 4])?;
         let key: &[u8] = member.required_field(4)?;
-        if key.len() > MAX_PUBLIC_KEY_BYTES {
+        if key.len() > maximum_key_bytes.min(MAX_PUBLIC_KEY_BYTES) {
             return Err(ValidatorSetError::InvalidEncoding("validator key bound"));
         }
         let id: [u8; 32] = member
