@@ -40,6 +40,14 @@
 //!   TLS itself: reaching it from anywhere other than loopback requires an
 //!   externally configured TLS-terminating proxy the operator controls, and
 //!   that proxy is not part of this protocol's trust boundary.
+//! * `--enable-ordered-economics` additionally requires the already-loaded,
+//!   already-live-pinned committed validator-set record to exactly equal
+//!   the trusted root's own signed genesis committee/context
+//!   (`require_committed_record_matches_root_committee`), before claiming
+//!   the writer-fence generation. `require_live_fastvote_pin` alone only
+//!   proves the record matches the live epoch digest, not that it still
+//!   agrees with the independently pinned signed genesis the ordered engine
+//!   derives its policy from.
 #![forbid(unsafe_code)]
 
 use sunrise_edge_operator::common::{
@@ -264,6 +272,31 @@ fn require_registered_signer<'a>(
         );
     }
     Ok(entry)
+}
+
+/// Required only when `--enable-ordered-economics` is set, before claiming
+/// the writer-fence generation or exposing any listener.
+///
+/// This is not a new serving/activation token, and the root is not
+/// installed-row evidence: `require_live_fastvote_pin` already requires the
+/// actually committed record to match the live epoch digest, but a
+/// coherently altered record paired with a matching altered live digest
+/// would still pass that check while disagreeing with the independently
+/// pinned signed genesis. Exact equality against `root.manifest()`'s own
+/// signed committee/context closes that gap for the one opt-in path
+/// (`OrderedEconomicsPolicy::from_genesis_root`) that no longer performs its
+/// own internal comparison against a caller-supplied validator set.
+fn require_committed_record_matches_root_committee(
+    record: &FastPathValidatorSetRecord,
+    root_committee: &FastPathValidatorSetRecord,
+) -> Result<(), String> {
+    if record != root_committee {
+        return Err(
+            "committed fast-path validator set does not match the trusted verified root's original signed committee/context; refusing to enable the opt-in ordered-economics path"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------
@@ -551,6 +584,9 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
     let verification_key: VerificationKey = VerificationKey::from(&signing_key);
     let derived_public_key: [u8; 32] = verification_key.into();
     require_registered_signer(&record, validator, &derived_public_key)?;
+    if ordered_economics_enabled {
+        require_committed_record_matches_root_committee(&record, &root.manifest().validator_set)?;
+    }
     let (serving_context, generation) =
         claim_fresh_writer_fence_once(&pool, &namespace, timeout_seconds, previous)?;
     require_live_fastvote_pin(
@@ -727,6 +763,83 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
     use native_http::IndexedOutboxIdentitySource;
+
+    fn signer_entry(seed: u8) -> FastPathValidatorEntry {
+        let signing_key: SigningKey = SigningKey::from([seed; 32]);
+        let verification_key: VerificationKey = VerificationKey::from(&signing_key);
+        let public_key: [u8; 32] = verification_key.into();
+        FastPathValidatorEntry {
+            id: ValidatorId::new(public_key),
+            voting_power: 1,
+            signature_scheme: SignatureSchemeId::Ed25519,
+            public_key: public_key.to_vec(),
+        }
+    }
+
+    fn dummy_context() -> PublicationContext {
+        PublicationContext::new(
+            ChainId::new("fastvote-host-pg-test").unwrap(),
+            ProtocolVersion::new(1),
+            Epoch::new(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn committed_record_matching_the_root_committee_is_accepted() {
+        let record: FastPathValidatorSetRecord = FastPathValidatorSetRecord {
+            context: dummy_context(),
+            validators: vec![signer_entry(1), signer_entry(2)],
+        };
+        let root_committee: FastPathValidatorSetRecord = record.clone();
+        assert!(require_committed_record_matches_root_committee(&record, &root_committee).is_ok());
+    }
+
+    #[test]
+    fn committed_record_with_a_foreign_committee_is_rejected() {
+        let root_committee: FastPathValidatorSetRecord = FastPathValidatorSetRecord {
+            context: dummy_context(),
+            validators: vec![signer_entry(1), signer_entry(2)],
+        };
+        // Internally coherent -- same context, same validator count -- but a
+        // genuinely different committee, not a tampered/truncated byte
+        // string, proving the check is a real committee comparison.
+        let foreign_record: FastPathValidatorSetRecord = FastPathValidatorSetRecord {
+            context: dummy_context(),
+            validators: vec![signer_entry(1), signer_entry(99)],
+        };
+        assert!(
+            require_committed_record_matches_root_committee(&foreign_record, &root_committee)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn committed_record_with_a_foreign_context_is_rejected_even_with_the_same_committee() {
+        let root_committee: FastPathValidatorSetRecord = FastPathValidatorSetRecord {
+            context: dummy_context(),
+            validators: vec![signer_entry(1)],
+        };
+        // Same signed validators, different chain/protocol/epoch: a record
+        // that a live-epoch-digest check against the wrong namespace could
+        // still consider internally coherent. This is not the same as a
+        // bare `assert_ne!` between two vectors -- it drives the actual
+        // production check end to end.
+        let other_context: PublicationContext = PublicationContext::new(
+            ChainId::new("fastvote-host-pg-test-other").unwrap(),
+            ProtocolVersion::new(1),
+            Epoch::new(0),
+        )
+        .unwrap();
+        let foreign_record: FastPathValidatorSetRecord = FastPathValidatorSetRecord {
+            context: other_context,
+            validators: root_committee.validators.clone(),
+        };
+        assert!(
+            require_committed_record_matches_root_committee(&foreign_record, &root_committee)
+                .is_err()
+        );
+    }
 
     #[test]
     fn sequential_identity_source_exhaustion_is_sticky_near_u64_max() {
