@@ -67,7 +67,7 @@ fn writer_free_lifecycle_prepares_genesis_rooted_transition_and_exact_replay() {
             .unwrap(),
         before
     );
-    let proposal: PreparedBusinessInvocation = match prepared {
+    let proposal: Box<PreparedBusinessInvocation> = match prepared {
         InvocationPreparation::Prepared(proposal) => proposal,
         InvocationPreparation::Retained(_) => panic!("fresh transition cannot be retained"),
     };
@@ -215,7 +215,7 @@ fn writer_free_slash_prepares_real_evidence_and_wasm_then_commits_exact_bytes() 
             .unwrap(),
         before
     );
-    let proposal: PreparedBusinessInvocation = match prepared {
+    let proposal: Box<PreparedBusinessInvocation> = match prepared {
         InvocationPreparation::Prepared(proposal) => proposal,
         InvocationPreparation::Retained(_) => panic!("fresh slash cannot be retained"),
     };

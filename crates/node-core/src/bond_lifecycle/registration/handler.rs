@@ -659,7 +659,7 @@ pub(crate) fn prepare_bond_registration_ordered<S: StructuredStateReader>(
         None,
     )?;
     Ok(InvocationPreparation::Prepared(
-        PreparedBusinessInvocation::new(transaction, output)?,
+        Box::new(PreparedBusinessInvocation::new(transaction, output)?),
     ))
 }
 

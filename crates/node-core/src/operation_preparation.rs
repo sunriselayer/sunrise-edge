@@ -14,7 +14,7 @@ use runtime::{
 /// Exact retained output is distinct from a newly evaluated original proposal.
 pub(crate) enum InvocationPreparation {
     Retained(NodeOutput),
-    Prepared(PreparedBusinessInvocation),
+    Prepared(Box<PreparedBusinessInvocation>),
 }
 
 /// An owning original transaction and output which have not been persisted.

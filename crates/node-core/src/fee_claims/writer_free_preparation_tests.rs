@@ -193,7 +193,7 @@ fn writer_free_fee_claim_prepares_real_certified_escrow_then_commits_exact_bytes
             .unwrap()
             .is_none()
     );
-    let proposal: PreparedBusinessInvocation = match prepared {
+    let proposal: Box<PreparedBusinessInvocation> = match prepared {
         InvocationPreparation::Prepared(proposal) => proposal,
         InvocationPreparation::Retained(_) => panic!("fresh claim cannot be retained"),
     };

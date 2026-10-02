@@ -1387,7 +1387,7 @@ fn prepare_claim_invocation<S: VersionedStateReader + ?Sized>(
         None,
     )?;
     Ok(InvocationPreparation::Prepared(
-        PreparedBusinessInvocation::new(transaction, output)?,
+        Box::new(PreparedBusinessInvocation::new(transaction, output)?),
     ))
 }
 

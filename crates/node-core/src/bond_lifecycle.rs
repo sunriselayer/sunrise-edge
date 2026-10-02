@@ -1317,7 +1317,7 @@ fn prepare_bond_transition<S: VersionedStateReader + ?Sized>(
         None,
     )?;
     Ok(InvocationPreparation::Prepared(
-        PreparedBusinessInvocation::new(transaction, output)?,
+        Box::new(PreparedBusinessInvocation::new(transaction, output)?),
     ))
 }
 

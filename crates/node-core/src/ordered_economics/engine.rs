@@ -46,7 +46,7 @@ use consensus::{
 };
 use runtime::{
     DurableCommitOutcome, DurableDomainStateStore, DurableObjectHeadRead, StateAssemblyError,
-    StateObservationSet, StateTransactionBuilder, StructuredStateReader,
+    StateObservationSet, StateTransactionBuilder, StructuredStateReader, VersionedStateReader,
 };
 
 /// Reserved under [`crate::local_instance_state::INSTANCE_STATE_PREFIX`], so
@@ -1079,7 +1079,7 @@ fn refusal_output(
 /// Disposition of one attempted candidate execution.
 pub(super) enum LegOutcome {
     /// The owner prepared its exact original invocation without committing it.
-    PreparedInvocation(PreparedBusinessInvocation),
+    PreparedInvocation(Box<PreparedBusinessInvocation>),
     /// A pure metadata proposal. The completion owner supplies its outer receipt.
     PreparedState(PreparedStateOperation),
     /// One narrowly enumerated legitimate outcome in which the existing handler
@@ -1344,7 +1344,7 @@ fn execute_evidence_candidate<S: StructuredStateReader>(
     match outcome {
         Ok(recorded) => {
             let (record, prepared): (
-                fast_path::records::FastPathEquivocationEvidenceRecord,
+                equivocation::FastPathEquivocationEvidenceRecord,
                 Option<AtomicStateTransaction>,
             ) = match recorded {
                 equivocation::EquivocationEvidencePreparation::New(prepared) => {
