@@ -25,6 +25,9 @@ mod business_reconstruction;
 #[path = "causal_placement/control_reconstruction.rs"]
 mod control_reconstruction;
 
+#[path = "causal_placement/registration.rs"]
+pub(crate) mod registration;
+
 struct CausalFixture {
     network: Network,
     manifest: GenesisManifest,
@@ -37,6 +40,13 @@ fn setup_causal_fixture() -> CausalFixture {
 }
 
 fn setup_fixture_profile(profile: crate::logical_generation::CommitmentProfile) -> CausalFixture {
+    setup_fixture_configure(profile, |_| {})
+}
+
+fn setup_fixture_configure(
+    profile: crate::logical_generation::CommitmentProfile,
+    configure: impl FnOnce(&mut GenesisManifest),
+) -> CausalFixture {
     let signers: Vec<TestSigner> = signers();
     let mut manifest: GenesisManifest = four_validator_manifest(&signers);
     manifest.commitment_profile = profile;
@@ -48,6 +58,7 @@ fn setup_fixture_profile(profile: crate::logical_generation::CommitmentProfile) 
     claimant_entry.object.owner = Owner::Address(Address::new(*signers[1].id.as_bytes()));
     claimant_entry.authority.object_id = claimant_entry.object.id;
     manifest.objects.push(claimant_entry.clone());
+    configure(&mut manifest);
     fixture::resign_manifest(&mut manifest);
     assert_eq!(
         decode_canonical_frame(&genesis::encode_genesis_manifest(&manifest).unwrap())
@@ -94,7 +105,15 @@ fn setup_fixture_profile(profile: crate::logical_generation::CommitmentProfile) 
         fixture::resolver(),
     )
     .unwrap();
-    let (_, _, instance, _, _) = fixture::build_fixture();
+    let init = &manifest.initialization.intent.call;
+    let instance: InstanceRecord = InstanceRecord {
+        context: init.context.clone(),
+        creator: init.instance.creator,
+        seed: init.instance.seed,
+        code: init.code.clone(),
+        revision: 1,
+        initializer: init.entrypoint.clone(),
+    };
     let network: Network = Network {
         stores,
         context,
@@ -142,6 +161,24 @@ fn paid_transfer(
     request_id: [u8; 32],
     nonce: u64,
 ) -> Vec<u8> {
+    paid_transfer_to(
+        fixture,
+        signer_index,
+        coin,
+        request_id,
+        nonce,
+        fixture.network.signers[signer_index].id.as_bytes(),
+    )
+}
+
+fn paid_transfer_to(
+    fixture: &CausalFixture,
+    signer_index: usize,
+    coin: &Object,
+    request_id: [u8; 32],
+    nonce: u64,
+    recipient: &[u8; 32],
+) -> Vec<u8> {
     let network: &Network = &fixture.network;
     let signer: &TestSigner = &network.signers[signer_index];
     let sender: [u8; 32] = *signer.id.as_bytes();
@@ -161,7 +198,7 @@ fn paid_transfer(
                 mode: AccessMode::Write,
             }],
         },
-        arguments: public_standard_asset::transfer_arguments(&sender).unwrap(),
+        arguments: public_standard_asset::transfer_arguments(recipient).unwrap(),
         gas_limit: 100_000,
     };
     let intent: PaidIntent = PaidIntent {

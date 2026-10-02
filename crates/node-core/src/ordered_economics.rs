@@ -502,3 +502,8 @@ pub(crate) fn equivocation_failure(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use tests::causal_placement::registration::{
+    RegisteredCutFixture, registered_cut_fixture,
+};

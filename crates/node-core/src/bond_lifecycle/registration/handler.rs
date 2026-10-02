@@ -213,6 +213,20 @@ pub(crate) fn preflight_registration<S: StructuredDurableDomainStateStore>(
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
 ) -> Result<(), BondRegistrationError> {
+    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
+    verify_registration_admission(store, context, env, candidate, &mut reads)
+}
+
+/// Owning pristine-slot observations join fresh signing's exact CAS. A
+/// healthy existing registered root remains a prefix-derived refusal, never
+/// a tombstone/noninitial absence silently reused as a fresh identity.
+pub(crate) fn verify_registration_admission<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+    reads: &mut BTreeMap<Vec<u8>, StateRevision>,
+) -> Result<(), BondRegistrationError> {
     let (profile, economics) = policy_inputs(env.policy)?;
     let (signed, _) = authenticate_registration(
         env.resolver,
@@ -222,7 +236,6 @@ pub(crate) fn preflight_registration<S: StructuredDurableDomainStateStore>(
         env.leg_policy,
         &candidate.intent,
     )?;
-    let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     require_pristine(
         store,
         context,
@@ -232,7 +245,7 @@ pub(crate) fn preflight_registration<S: StructuredDurableDomainStateStore>(
         env.policy,
         env.leg_policy,
         &signed.intent,
-        &mut reads,
+        reads,
     )
 }
 

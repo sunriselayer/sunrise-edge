@@ -28,6 +28,17 @@ mod inactive_business_import;
 #[path = "frozen_completion/inactive_business_import_faults.rs"]
 mod inactive_business_import_faults;
 
+pub(super) fn registration_generic_prefix(fixture: &CausalFixture) -> Vec<CertifiedPaidMaterial> {
+    preseal_cut_contracts::generic_import_prefix(fixture)
+}
+
+pub(super) fn registration_transfer_cut(
+    cut: &crate::business_reconstruction::cut::VerifiedBusinessCut,
+    resolver: &HashSuiteResolver,
+) -> crate::business_reconstruction::cut::SavedBusinessCut {
+    preseal_cut::transfer(cut, resolver)
+}
+
 struct ObservedPaidEngine<'a> {
     inner: &'a dyn PaidContractEngine,
     calls: Cell<usize>,

@@ -16,7 +16,9 @@ pub use codec::{
     encode_bond_registration_intent, encode_signed_bond_registration_intent,
 };
 pub use handler::verify_registered_bond_chain;
-pub(crate) use handler::{handle_bond_registration_ordered, preflight_registration};
+pub(crate) use handler::{
+    handle_bond_registration_ordered, preflight_registration, verify_registration_admission,
+};
 
 mod codec;
 mod handler;
