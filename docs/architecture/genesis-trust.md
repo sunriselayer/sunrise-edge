@@ -120,6 +120,7 @@ Every current non-test caller has an explicit disposition:
 | CLI `fastvote_network` and `fastvote_frontier` | Private bundle accessors/root-derived certifier; no mutable trusted field or independent resolver for owned methods |
 | Native HTTP `OrderedEconomicsState` and core `OrderedEconomicsEnvironment` | Policy owns the sole current resolver; delete separate resolver fields and migrate all environment constructions |
 | Devnet/CLI fixture signing and genesis installer | Raw manifest signing is legitimate producer work, not another authenticator. Shared installer checks preserve complete bootstrap semantics |
+| `logical_generation` installed manifest verification | Shared strict authority primitive against actual installed canonical row bytes; keep row/provenance fencing, no conversion of installed rows into root authority |
 
 Remaining test constructors migrate to the same verified boundary or explicitly
 named historical construction. The acceptance search enumerates every old
@@ -182,6 +183,11 @@ construction-boundary tests; retain forged-input and before-I/O negatives.
 Include wrong historical policy/archive pairing and installer error-order tests.
 The old public authenticators/optional constructor and separate current ordered
 resolver fields must have no remaining callers or compatibility wrappers.
+CLI acceptance explicitly includes `ordered_economics_network`, not just its
+shared SDK loader. A schedule-extension test rebuilds the root with a trusted
+later activation and verifies the unchanged original genesis pin; mismatched
+full schedules still fail reconstruction composition. Rebuilding a root is
+local trust verification, not protocol-upgrade or activation authority.
 
 Run the actual SDK, compiled CLI, operator and real SQLite reconstruction/cut/
 import paths, not just root unit tests. Keep all required DB-free lanes and

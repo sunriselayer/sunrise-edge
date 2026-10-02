@@ -87,6 +87,9 @@ use crate::{
 #[cfg(test)]
 pub mod tests;
 
+#[cfg(test)]
+mod root_baseline_tests;
+
 /// Canonical frame type of an encoded [`GenesisManifest`] (DR-0126).
 pub const GENESIS_MANIFEST_FRAME_TYPE: u16 = 0x6416;
 /// Canonical version of a historical [`GenesisManifest`] (DR-0126).

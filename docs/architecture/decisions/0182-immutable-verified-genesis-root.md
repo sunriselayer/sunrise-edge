@@ -2,8 +2,9 @@
 
 Date: 2026-10-02 (Asia/Singapore)
 
-Status: Proposed detailed design under DR-0180. Independent review is required
-before the owning implementation. It grants no new protocol or serving authority.
+Status: Accepted detailed design under DR-0180 after independent Opus review
+at `3e5c4b7` on 2026-10-02. This is design approval, not implementation or
+security-audit approval. It grants no new protocol or serving authority.
 
 ## Context
 
