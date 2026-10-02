@@ -11,6 +11,7 @@ pub mod inactive_import;
 mod operation;
 pub mod outbox_guard;
 pub mod portable;
+pub mod transaction;
 pub use composition::{ComposedRuntime, MemoryRuntime};
 pub use conditional_readiness::{
     ReadinessRecord, ReadinessRetentionRepository, ReadinessSlot, ReadinessSlotObservation,
@@ -23,6 +24,8 @@ pub use operation::{
     DurableOperationContext, InvocationCancellation, NeverCancelled, StorageCorrelationId,
     StorageDeadline, WriterFenceGeneration,
 };
+use transaction::represented_transaction_bytes;
+pub use transaction::{StateAssemblyError, StateObservationSet, StateTransactionBuilder};
 
 use core::{fmt, mem::size_of};
 pub use objects::ObjectId;
@@ -2445,32 +2448,6 @@ impl From<AtomicStateTransaction> for DurableStateTransaction {
             represented_bytes: transaction.represented_bytes,
         }
     }
-}
-
-fn represented_transaction_bytes(
-    domain: AtomicityDomainId,
-    reads: &AtomicStateReadSet,
-    mutations: &AtomicStateMutationSet,
-) -> usize {
-    let mut bytes = domain.as_bytes().len().saturating_add(2 * size_of::<u32>());
-    for read in reads.reads() {
-        bytes = bytes
-            .saturating_add(size_of::<u32>())
-            .saturating_add(read.key().len())
-            .saturating_add(size_of::<u64>());
-    }
-    for mutation in mutations.mutations() {
-        bytes = bytes
-            .saturating_add(size_of::<u32>())
-            .saturating_add(mutation.key().len())
-            .saturating_add(1);
-        if let StateMutation::Put(value) = mutation.mutation() {
-            bytes = bytes
-                .saturating_add(size_of::<u64>())
-                .saturating_add(value.len());
-        }
-    }
-    bytes
 }
 
 /// Result of one atomic state transaction.
