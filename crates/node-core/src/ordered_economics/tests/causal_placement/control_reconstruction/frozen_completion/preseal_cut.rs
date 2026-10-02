@@ -3,11 +3,15 @@
 //! fabricated; all source effects come from current owning handlers.
 use super::*;
 use crate::business_reconstruction::cut::{
-    BUSINESS_CUT_STREAMS, BusinessCutCollection, BusinessCutError, BusinessCutPage,
-    BusinessCutPageVerifier, SavedBusinessCut, SavedBusinessCutComponent, VerifiedBusinessCut,
-    business_cut_component_digest, business_cut_identity_digest, business_cut_package_digest,
-    decode_business_cut_chunk, decode_business_cut_page, derive_source_business_cut,
-    encode_business_cut_chunk, encode_business_cut_page, verify_saved_business_cut,
+    BUSINESS_CUT_STREAMS, BusinessCutCollection, BusinessCutError, BusinessCutIdentity,
+    BusinessCutPage, BusinessCutPageVerifier, SavedBusinessCut, SavedBusinessCutComponent,
+    VerifiedBusinessCut, business_cut_component_digest, business_cut_identity_digest,
+    business_cut_package_digest, decode_business_cut_chunk, decode_business_cut_page,
+    derive_source_business_cut, encode_business_cut_chunk, encode_business_cut_page,
+    verify_saved_business_cut,
+};
+use runtime::portable::{
+    DurableCollection, DurableRecordPage, DurableRecordScan, PortableSnapshotToken,
 };
 
 pub(super) fn completed_source() -> FrozenCompletionSource {
@@ -475,4 +479,168 @@ pub(super) fn alternate_retained_certificate(
         business_cut_component_digest(resolver, &saved.identity.context, &actual.bytes).unwrap();
     refresh_package(&mut saved, resolver);
     saved
+}
+
+#[test]
+fn preseal_cut_further_genuine_empty_rounds_reconstruct_unchanged_business_identity_and_stale_token_fails_closed()
+ {
+    let source: FrozenCompletionSource = completed_source_with_generic_prefix();
+    let network: &Network = &source.fixture.network;
+    let before: SourceBusinessSnapshot = snapshot(network);
+    let (identity1, history1): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
+        complete_history(network);
+    let cut1: VerifiedBusinessCut = derive_source_business_cut(
+        reconstruction_plan(&source.fixture, &identity1),
+        &network.stores[0],
+        &network.blobs,
+        &history1,
+    )
+    .unwrap();
+    assert_eq!(snapshot(network), before);
+    let stale_token: PortableSnapshotToken = cut1.source_token().unwrap().clone();
+    for view in 10..=12 {
+        network.round(view, None);
+    }
+    let advanced: SourceBusinessSnapshot = snapshot(network);
+    assert_ne!(advanced, before);
+    let scan: DurableRecordScan = DurableRecordScan::new(
+        DurableCollection::State,
+        None,
+        NonZeroUsize::new(1).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        network.stores[0].scan_portable_keys_at(
+            &network.context,
+            network.domain(),
+            &stale_token,
+            &scan
+        ),
+        Err(PortableSnapshotError::Changed)
+    );
+    let certificate_key: Vec<u8> =
+        fastpath_certificate_key(&fixture::chain(), &PAID_REQUEST).unwrap();
+    assert_eq!(
+        network.stores[0].read_portable_descriptor_at(
+            &network.context,
+            network.domain(),
+            &stale_token,
+            &DurableRecordKey::State(certificate_key),
+        ),
+        Err(PortableSnapshotError::Changed)
+    );
+    let (identity2, history2): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
+        complete_history(network);
+    assert_ne!(identity2, identity1);
+    assert!(identity2.through_height > identity1.through_height);
+    let cut2: VerifiedBusinessCut = derive_source_business_cut(
+        reconstruction_plan(&source.fixture, &identity2),
+        &network.stores[0],
+        &network.blobs,
+        &history2,
+    )
+    .unwrap();
+    assert_eq!(snapshot(network), advanced);
+    let cut_identity1: &BusinessCutIdentity = cut1.identity();
+    let cut_identity2: &BusinessCutIdentity = cut2.identity();
+    assert_eq!(cut_identity1.context, cut_identity2.context);
+    assert_eq!(cut_identity1.domain, cut_identity2.domain);
+    assert_eq!(cut_identity1.genesis_digest, cut_identity2.genesis_digest);
+    assert_eq!(
+        cut_identity1.validator_set_digest,
+        cut_identity2.validator_set_digest
+    );
+    assert_eq!(
+        cut_identity1.drain_request_id,
+        cut_identity2.drain_request_id
+    );
+    assert_eq!(
+        cut_identity1.drain_block_height,
+        cut_identity2.drain_block_height
+    );
+    assert_eq!(
+        cut_identity1.drain_candidate_digest,
+        cut_identity2.drain_candidate_digest
+    );
+    assert_eq!(cut_identity1.drain_union, cut_identity2.drain_union);
+    assert_eq!(
+        cut_identity1.generation_floor,
+        cut_identity2.generation_floor
+    );
+    assert_eq!(cut_identity1.business, cut_identity2.business);
+    assert_eq!(cut_identity1.artifacts, cut_identity2.artifacts);
+    assert_ne!(cut_identity1.ordered_history, cut_identity2.ordered_history);
+    assert_eq!(cut_identity1.ordered_history, identity1);
+    assert_eq!(cut_identity2.ordered_history, identity2);
+    assert_ne!(cut1.package_identity(), cut2.package_identity());
+    assert_ne!(cut1.cut_digest(), cut2.cut_digest());
+    assert_ne!(cut1.package_digest(), cut2.package_digest());
+    let saved2: SavedBusinessCut = transfer(&cut2, &network.resolver);
+    let verified2: VerifiedBusinessCut =
+        verify_saved_business_cut(reconstruction_plan(&source.fixture, &identity2), &saved2)
+            .unwrap();
+    assert_eq!(verified2.cut_digest(), cut2.cut_digest());
+    assert_eq!(verified2.package_digest(), cut2.package_digest());
+    assert_eq!(verified2.identity().business, cut_identity1.business);
+    assert_eq!(verified2.identity().artifacts, cut_identity1.artifacts);
+    assert_eq!(
+        verified2.identity().generation_floor,
+        cut_identity1.generation_floor
+    );
+    assert_eq!(verified2.identity().drain_union, cut_identity1.drain_union);
+    let fresh_token: PortableSnapshotToken = cut2.source_token().unwrap().clone();
+    assert_ne!(fresh_token, stale_token);
+    let page: DurableRecordPage = network.stores[0]
+        .scan_portable_keys_at(&network.context, network.domain(), &fresh_token, &scan)
+        .unwrap();
+    assert!(!page.keys().is_empty());
+    assert_eq!(snapshot(network), advanced);
+}
+
+#[test]
+fn preseal_cut_old_fixed_history_plan_against_advanced_current_source_fails_closed_without_mutation()
+ {
+    let source: FrozenCompletionSource = completed_source_with_generic_prefix();
+    let network: &Network = &source.fixture.network;
+    let (identity1, history1): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
+        complete_history(network);
+    let _cut1: VerifiedBusinessCut = derive_source_business_cut(
+        reconstruction_plan(&source.fixture, &identity1),
+        &network.stores[0],
+        &network.blobs,
+        &history1,
+    )
+    .unwrap();
+    for view in 10..=12 {
+        network.round(view, None);
+    }
+    let advanced: SourceBusinessSnapshot = snapshot(network);
+    let (identity2, history2): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
+        complete_history(network);
+    assert_ne!(identity2, identity1);
+    assert!(identity2.through_height > identity1.through_height);
+    let stale: Result<VerifiedBusinessCut, BusinessCutError> = derive_source_business_cut(
+        reconstruction_plan(&source.fixture, &identity1),
+        &network.stores[0],
+        &network.blobs,
+        &history1,
+    );
+    assert!(matches!(
+        stale,
+        Err(BusinessCutError::Reconstruction(inner))
+            if matches!(*inner, BusinessReconstructionError::Invalid(
+                "source local ordered key/schema/proof differs"
+            ))
+    ));
+    assert_eq!(snapshot(network), advanced);
+    let cut2: VerifiedBusinessCut = derive_source_business_cut(
+        reconstruction_plan(&source.fixture, &identity2),
+        &network.stores[0],
+        &network.blobs,
+        &history2,
+    )
+    .unwrap();
+    assert_ne!(cut2.identity().ordered_history, identity1);
+    assert_eq!(cut2.identity().ordered_history, identity2);
+    assert_eq!(snapshot(network), advanced);
 }
