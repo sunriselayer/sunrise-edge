@@ -6,7 +6,7 @@
 
 use execution::publication::{BindingError, BodyError, BoundObjectParameter};
 use hashing::HashSuiteResolver;
-use runtime::DurableObjectProvenance;
+use runtime::{DurableObjectProvenance, StructuredStateReader};
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -57,10 +57,10 @@ pub(super) fn load_object_snapshot<S>(
     total_body_bytes: &mut usize,
 ) -> Result<ObjectSnapshot, NodeCoreError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader + ?Sized,
 {
     let object_id: ObjectId = reference.id;
-    let head: DurableObjectHead = store.get_object_head(context, domain, object_id)?;
+    let head: DurableObjectHead = store.read_object_head(context, domain, object_id)?;
     let (object_version, digest): (DurableObjectVersion, Digest32) = match &head {
         DurableObjectHead::Absent | DurableObjectHead::Tombstoned { .. } => {
             return Err(NodeCoreError::ObjectNotFound { object_id });
@@ -88,7 +88,7 @@ where
     }
 
     let record: DurableObjectVersionRecord = store
-        .get_object_version(context, domain, object_id, object_version)?
+        .read_object_version(context, domain, object_id, object_version)?
         .ok_or(NodeCoreError::ObjectRecordMissing { object_id })?;
     if record.object_id() != object_id
         || record.object_version() != object_version
@@ -300,7 +300,7 @@ pub fn load_bound_object_snapshots<S>(
     manifest: &abi::AccessManifest,
 ) -> Result<BoundObjectSnapshots, BoundSnapshotError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader + ?Sized,
 {
     let parameters: &[BoundObjectParameter] = signature.objects();
     let entries: &[abi::AccessEntry] = &manifest.entries;

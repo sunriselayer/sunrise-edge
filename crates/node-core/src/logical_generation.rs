@@ -56,6 +56,7 @@ use execution::publication::{
     PublicationContext, decode_publication_context, encode_publication_context,
 };
 use protocol_types::{ExecutionGeneration, ExecutionGenerationOverflow};
+use runtime::VersionedStateReader;
 
 #[cfg(test)]
 mod tests;
@@ -875,7 +876,7 @@ fn decode_installed_profile(
 /// A present input without matching authenticated provenance fails closed, and
 /// overflow is a typed refusal before any signature or commit.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn derive<S: StructuredDurableDomainStateStore>(
+pub(crate) fn derive<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -943,7 +944,7 @@ impl LogicalDerivation {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn provenance_mutations<S: StructuredDurableDomainStateStore>(
+pub(crate) fn provenance_mutations<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -976,7 +977,7 @@ pub(crate) fn provenance_mutations<S: StructuredDurableDomainStateStore>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn provenance_mutation<S: StructuredDurableDomainStateStore>(
+fn provenance_mutation<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1280,7 +1281,7 @@ fn logical_subjects(
 /// derived from a nonce state this operation never actually observed. A row that
 /// exists without matching authenticated provenance fails closed; a pristine
 /// row carries no provenance and contributes no dependency.
-fn fold_nonce_read<S: StructuredDurableDomainStateStore>(
+fn fold_nonce_read<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1323,7 +1324,7 @@ fn fold_nonce_read<S: StructuredDurableDomainStateStore>(
     Ok(())
 }
 
-fn fold_object_reads<S: StructuredDurableDomainStateStore>(
+fn fold_object_reads<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1346,7 +1347,7 @@ fn fold_object_reads<S: StructuredDurableDomainStateStore>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn fold_state_reads<S: StructuredDurableDomainStateStore>(
+fn fold_state_reads<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1381,7 +1382,7 @@ struct Folded {
 ///
 /// Absence carries no row at all; a tombstone carries one and is never treated
 /// as never-created.
-fn observe_object_subject<S: StructuredDurableDomainStateStore>(
+fn observe_object_subject<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1433,7 +1434,7 @@ fn expected_head_observation(head: &DurableObjectHead) -> Option<LogicalObservat
 /// concurrent physical CAS conflict refuses instead of silently observing a
 /// newer value beneath an older fence.
 #[allow(clippy::too_many_arguments)]
-fn observe_state_subject<S: StructuredDurableDomainStateStore>(
+fn observe_state_subject<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1443,7 +1444,7 @@ fn observe_state_subject<S: StructuredDurableDomainStateStore>(
     fenced: StateRevision,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<ReadObservation, NodeCoreError> {
-    let seen: VersionedStateValue = store.get_versioned_durable(context, domain, key)?;
+    let seen: VersionedStateValue = store.read_versioned_state(context, domain, key)?;
     if seen.revision() != fenced {
         return Err(NodeCoreError::StateConflict);
     }
@@ -1474,7 +1475,7 @@ fn observe_state_subject<S: StructuredDurableDomainStateStore>(
     })
 }
 
-fn fence_provenance<S: StructuredDurableDomainStateStore>(
+fn fence_provenance<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1562,7 +1563,7 @@ pub(crate) fn require_application_admissible(
 /// exists, and a row that appears under a historical manifest is refused by that
 /// manifest's own reopen verification.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn admit_generic_transition<S: StructuredDurableDomainStateStore>(
+pub(crate) fn admit_generic_transition<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1696,7 +1697,7 @@ impl LogicalDerivation {
 /// exposes a signature: the derived provenance rows join `state_mutations`, so
 /// an earlier call would authenticate an incomplete write set.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn admit_application<S: StructuredDurableDomainStateStore>(
+pub(crate) fn admit_application<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1734,7 +1735,7 @@ pub(crate) fn admit_application<S: StructuredDurableDomainStateStore>(
 /// object effects, and re-reading it here would both duplicate that read and
 /// consume a second slot in the operation's bounded read set.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn admit_resolved<S: StructuredDurableDomainStateStore>(
+pub(crate) fn admit_resolved<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1818,7 +1819,7 @@ impl InstalledCommitmentProfile {
 /// slot of the caller's bounded read set for zero protective value -- the
 /// same reasoning [`admit_generic_transition`] already documents for its own
 /// historical case, now uniform for every caller of this function.
-pub(crate) fn fence_commitment_profile<S: StructuredDurableDomainStateStore>(
+pub(crate) fn fence_commitment_profile<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1826,7 +1827,7 @@ pub(crate) fn fence_commitment_profile<S: StructuredDurableDomainStateStore>(
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<InstalledCommitmentProfile, NodeCoreError> {
     let key: Vec<u8> = logical_profile_key(chain)?;
-    let seen: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let seen: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     if let Some(previous) = reads.get(&key)
         && *previous != seen.revision()
     {
@@ -1847,7 +1848,7 @@ pub(crate) fn fence_commitment_profile<S: StructuredDurableDomainStateStore>(
 /// Reconciles a real installed profile with its immutable signed genesis.
 /// Legacy in-process fixtures may carry a v1 profile without a manifest;
 /// a Freeze-authorized profile never permits that absence or a tombstone.
-fn verify_installed_genesis_binding<S: StructuredDurableDomainStateStore>(
+fn verify_installed_genesis_binding<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1856,7 +1857,7 @@ fn verify_installed_genesis_binding<S: StructuredDurableDomainStateStore>(
 ) -> Result<(), NodeCoreError> {
     let key: Vec<u8> = crate::genesis::genesis_manifest_key(&record.context)
         .map_err(|_| provenance_error("logical profile genesis key"))?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     let Some(bytes) = observed.value() else {
         if record.minimum_freeze_block_height == 0 && observed.revision() == StateRevision::INITIAL
         {
@@ -1912,7 +1913,7 @@ fn verify_installed_genesis_binding<S: StructuredDurableDomainStateStore>(
         let marker_key: Vec<u8> = crate::genesis::genesis_marker_key(&record.context)
             .map_err(|_| provenance_error("causal profile genesis marker key"))?;
         let marker_row: VersionedStateValue =
-            store.get_versioned_durable(context, domain, &marker_key)?;
+            store.read_versioned_state(context, domain, &marker_key)?;
         let marker: crate::genesis::GenesisInstallMarker =
             crate::genesis::decode_genesis_install_marker(
                 marker_row
@@ -1932,14 +1933,14 @@ fn verify_installed_genesis_binding<S: StructuredDurableDomainStateStore>(
     Ok(())
 }
 
-fn fence_read<S: StructuredDurableDomainStateStore>(
+fn fence_read<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     key: Vec<u8>,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<VersionedStateValue, NodeCoreError> {
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     if let Some(previous) = reads.insert(key, observed.revision())
         && previous != observed.revision()
     {

@@ -12,6 +12,7 @@ use local_instance_state::{
 use publication::{
     PublicationAdmissionError, VerifiedDurablePublication, load_verified_publication,
 };
+use runtime::{StructuredStateReader, VersionedStateReader};
 pub(crate) mod effects;
 pub(crate) mod scopes;
 #[cfg(test)]
@@ -117,14 +118,14 @@ pub(crate) fn validate_closure(
     }
     Ok(())
 }
-pub(crate) fn read_state<S: StructuredDurableDomainStateStore>(
+pub(crate) fn read_state<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     key: Vec<u8>,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> AdmissionResult<VersionedStateValue> {
-    let value: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let value: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     if let Some(old) = reads.insert(key, value.revision())
         && old != value.revision()
     {
@@ -159,7 +160,7 @@ pub(crate) fn validate_authority(
 
 /// Verifies immutable instance selectors, original context and complete code closure.
 #[allow(clippy::too_many_arguments)]
-pub fn query_local_instance<S: StructuredDurableDomainStateStore>(
+pub fn query_local_instance<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -175,7 +176,7 @@ pub fn query_local_instance<S: StructuredDurableDomainStateStore>(
         ));
     }
     let key: Vec<u8> = instance_record_key(chain, &creator, &seed)?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     let Some(bytes) = observed.value() else {
         return if observed.revision() == StateRevision::INITIAL {
             Ok(None)
@@ -424,7 +425,7 @@ struct LegPrerequisites {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn admit_leg_prerequisites<S: StructuredDurableDomainStateStore>(
+fn admit_leg_prerequisites<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -560,7 +561,7 @@ fn admit_leg_prerequisites<S: StructuredDurableDomainStateStore>(
 /// loaded or locked: its state and legitimate stale refusals derive from the
 /// committed ordered prefix. Exact typed head assertions join signing CAS.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn verify_ordered_leg_prerequisites<S: StructuredDurableDomainStateStore>(
+pub(crate) fn verify_ordered_leg_prerequisites<S: StructuredStateReader + ?Sized>(
     store: &S,
     blobs: &dyn BlobStore,
     context: &DurableOperationContext,
@@ -707,7 +708,7 @@ pub(crate) fn verify_ordered_leg_prerequisites<S: StructuredDurableDomainStateSt
 /// held lock.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn admit_and_execute_leg<
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader + ?Sized,
     E: LocalContractEngine + ?Sized,
 >(
     store: &S,
@@ -728,7 +729,7 @@ pub(crate) fn admit_and_execute_leg<
     state_mutations: &mut Vec<StateMutationEntry>,
     ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
 ) -> AdmissionResult<AdmittedLeg> {
-    mutation_fence::require_ordinary_namespace(store, context, domain)?;
+    mutation_fence::require_ordinary_reader_namespace(store, context, domain)?;
     if protocol_custody.is_none()
         && matches!(
             &custody_effect_mode,

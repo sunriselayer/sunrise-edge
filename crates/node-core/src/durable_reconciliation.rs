@@ -1,7 +1,8 @@
 //! Shared receipt, nonce and commit reconciliation for authenticated ingress.
 use super::*;
+use runtime::{StructuredStateReader, VersionedStateReader};
 
-pub(super) fn reconcile_receipt<S: StructuredDurableDomainStateStore>(
+pub(super) fn reconcile_receipt<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -10,7 +11,7 @@ pub(super) fn reconcile_receipt<S: StructuredDurableDomainStateStore>(
 ) -> Result<Option<NodeOutput>, NodeCoreError> {
     let durable_id: DurableRequestId = DurableRequestId::new(*request_id.as_bytes())
         .map_err(|_| NodeCoreError::PersistenceInvariant("invalid durable request identity"))?;
-    let Some(receipt) = store.get_request_receipt(context, domain, durable_id)? else {
+    let Some(receipt) = store.read_request_receipt(context, domain, durable_id)? else {
         return Ok(None);
     };
     if receipt.request_id() != durable_id {
@@ -37,7 +38,7 @@ pub(super) fn reconcile_receipt<S: StructuredDurableDomainStateStore>(
     )?))
 }
 
-pub(super) fn reserve_sender_nonce<S: StructuredDurableDomainStateStore>(
+pub(super) fn reserve_sender_nonce<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -53,7 +54,7 @@ pub(super) fn reserve_sender_nonce<S: StructuredDurableDomainStateStore>(
 /// (DR-0137 `bond_lifecycle` multi-leg operations) advances that single row
 /// once rather than writing it once per leg. `count == 1` is exactly
 /// [`reserve_sender_nonce`]'s existing behavior.
-pub(super) fn reserve_sender_nonce_range<S: StructuredDurableDomainStateStore>(
+pub(super) fn reserve_sender_nonce_range<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,

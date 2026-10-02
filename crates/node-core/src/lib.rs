@@ -5977,7 +5977,7 @@ fn load_and_authorize_objects<S>(
     treasury_object_id: Option<ObjectId>,
 ) -> Result<LoadedAuthenticatedObjects, NodeCoreError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: runtime::StructuredStateReader + ?Sized,
 {
     let mut loaded: LoadedAuthenticatedObjects =
         LoadedAuthenticatedObjects::with_capacity(dispatch.accesses.len());
