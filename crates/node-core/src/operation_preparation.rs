@@ -7,8 +7,8 @@
 
 use crate::{NodeCoreError, NodeDedupRecord, NodeOutput, durable_reconciliation};
 use runtime::{
-    DurableInvocationTransaction, DurableOperationContext, DurableRequestReceipt,
-    StructuredDurableDomainStateStore,
+    AtomicStateTransaction, DurableInvocationTransaction, DurableOperationContext,
+    DurableRequestReceipt, StructuredDurableDomainStateStore,
 };
 
 /// Exact retained output is distinct from a newly evaluated original proposal.
@@ -74,6 +74,47 @@ impl InvocationPreparation {
         match self {
             Self::Retained(output) => Ok(output),
             Self::Prepared(prepared) => prepared.commit(store, operation),
+        }
+    }
+}
+
+/// Pure control/evidence state and its output, not an original invocation.
+/// The ordered owner must add the explicit original receipt and protocol
+/// progress; this description cannot be used as an optional-receipt bypass.
+pub(crate) struct PreparedStateOperation {
+    transaction: AtomicStateTransaction,
+    output: NodeOutput,
+}
+
+impl PreparedStateOperation {
+    pub(crate) fn new(transaction: AtomicStateTransaction, output: NodeOutput) -> Self {
+        Self {
+            transaction,
+            output,
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (AtomicStateTransaction, NodeOutput) {
+        (self.transaction, self.output)
+    }
+
+    // The existing control-handler tests exercise their owning proposal with
+    // a real metadata commit. Advertised ordered paths instead consume parts
+    // and atomically include their original receipt and coordinator progress.
+    #[cfg(test)]
+    pub(crate) fn commit<S: runtime::DurableDomainStateStore>(
+        self,
+        store: &S,
+        operation: &DurableOperationContext,
+    ) -> Result<NodeOutput, NodeCoreError> {
+        match store.commit_durable(operation, self.transaction) {
+            runtime::DurableCommitOutcome::Committed => Ok(self.output),
+            runtime::DurableCommitOutcome::Rejected(reason) => {
+                Err(NodeCoreError::DurableCommitRejected(reason))
+            }
+            runtime::DurableCommitOutcome::Indeterminate(reason) => {
+                Err(NodeCoreError::DurableCommitIndeterminate(reason))
+            }
         }
     }
 }
