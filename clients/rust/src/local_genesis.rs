@@ -1,37 +1,16 @@
-//! Shared local genesis-file and committee verification, not transport policy.
+//! Shared local genesis-file bounded I/O, not transport policy or trust.
 //!
 //! Pins come from local composition. A verified genesis is not a peer-selected
 //! live serving context, and no TLS or endpoint identity is inferred here.
+//! Authentication itself is `node_core::genesis::VerifiedGenesisRoot`'s own
+//! production trust model; this module reads bytes once and hands them to it.
 
-use std::{fs::File, io::Read, path::Path};
+use std::{error::Error, fmt, fs::File, io::Read, path::Path};
 
-use crypto::SignatureVerifier;
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
 use node_core::MAX_GENESIS_MANIFEST_BYTES;
-use node_core::fast_path::records::FastPathValidatorSetRecord;
-use node_core::genesis::{
-    GenesisError, GenesisManifest, decode_genesis_manifest, genesis_manifest_commitment,
-    genesis_manifest_signing_frame,
-};
-use protocol_types::{Digest32, SignatureSchemeId};
-use validator_set::{ValidatorInfo, ValidatorSet};
-
-/// Internal failures mapped by each public client to its existing trust error.
-#[derive(Debug)]
-pub(crate) enum LocalGenesisError {
-    Io(std::io::Error),
-    Decode(GenesisError),
-    CommitmentMismatch,
-    ContextMismatch,
-    InvalidSignature,
-}
-
-/// The same file's authenticated manifest and locally checked commitment.
-pub(crate) struct PinnedGenesis {
-    pub(crate) manifest: GenesisManifest,
-    pub(crate) digest: Digest32,
-}
+use node_core::genesis::{GenesisRootError, VerifiedGenesisRoot};
 
 /// Preserve the original bounded read, including following file symlinks.
 /// Reading bytes does not itself establish a trusted genesis pin.
@@ -50,65 +29,52 @@ pub(crate) fn read_bounded(path: &Path, maximum: usize) -> std::io::Result<Vec<u
     Ok(buffer)
 }
 
-/// Read once, then check canonical bytes, digest, context and signature in the
-/// same order used by both public loaders. Profile-specific admission and
-/// policy construction remain the owning client's next steps.
+/// Failures constructing a locally trusted [`VerifiedGenesisRoot`] from a
+/// genesis manifest file: either the bounded read itself failed, or the read
+/// bytes were classified and rejected by the core verified-root constructor.
+#[derive(Debug)]
+pub enum GenesisTrustError {
+    /// The manifest file could not be read or exceeded
+    /// [`node_core::MAX_GENESIS_MANIFEST_BYTES`].
+    Io(std::io::Error),
+    /// [`VerifiedGenesisRoot::verify_bytes`] classified and rejected the read
+    /// bytes.
+    Verification(GenesisRootError),
+}
+
+impl fmt::Display for GenesisTrustError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "failed to read genesis manifest: {error}"),
+            Self::Verification(error) => write!(f, "genesis manifest rejected: {error}"),
+        }
+    }
+}
+
+impl Error for GenesisTrustError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Verification(error) => Some(error),
+        }
+    }
+}
+
+/// Reads a genesis manifest file once, bounded by
+/// [`node_core::MAX_GENESIS_MANIFEST_BYTES`], and hands the exact bytes to
+/// [`VerifiedGenesisRoot::verify_bytes`] -- the sole production authentication
+/// path. This function performs no separate authentication of its own.
 #[allow(clippy::result_large_err)]
-pub(crate) fn load_pinned_genesis(
+pub fn load_verified_genesis_root(
     manifest_path: &Path,
     resolver: &HashSuiteResolver,
     expected_digest: [u8; 32],
     expected_context: &PublicationContext,
-) -> Result<PinnedGenesis, LocalGenesisError> {
+) -> Result<VerifiedGenesisRoot, GenesisTrustError> {
     let bytes: Vec<u8> =
-        read_bounded(manifest_path, MAX_GENESIS_MANIFEST_BYTES).map_err(LocalGenesisError::Io)?;
-    let manifest: GenesisManifest =
-        decode_genesis_manifest(&bytes).map_err(LocalGenesisError::Decode)?;
-    let digest: Digest32 =
-        genesis_manifest_commitment(resolver, &manifest).map_err(LocalGenesisError::Decode)?;
-    if digest.bytes() != expected_digest {
-        return Err(LocalGenesisError::CommitmentMismatch);
-    }
-    if manifest.context() != expected_context {
-        return Err(LocalGenesisError::ContextMismatch);
-    }
-    let verifier: crypto::Ed25519Verifier =
-        crypto::Ed25519Verifier::from_verifying_key_bytes(&manifest.genesis_authority)
-            .map_err(|_| LocalGenesisError::InvalidSignature)?;
-    let frame: Vec<u8> =
-        genesis_manifest_signing_frame(&manifest).map_err(LocalGenesisError::Decode)?;
-    let valid: bool = verifier
-        .verify_framed(&frame, &manifest.signature)
-        .map_err(|_| LocalGenesisError::InvalidSignature)?;
-    if !valid {
-        return Err(LocalGenesisError::InvalidSignature);
-    }
-    Ok(PinnedGenesis { manifest, digest })
-}
-
-/// Convert the already-authenticated record without changing each caller's
-/// existing unsupported-scheme diagnostic or validation order.
-pub(crate) fn validator_set_from_record(
-    record: &FastPathValidatorSetRecord,
-    expected_context: &PublicationContext,
-    unsupported_scheme: &'static str,
-) -> Result<ValidatorSet, String> {
-    if &record.context != expected_context {
-        return Err("validator set record context mismatch".to_string());
-    }
-    let mut info: Vec<ValidatorInfo> = Vec::with_capacity(record.validators.len());
-    for validator in &record.validators {
-        if validator.signature_scheme != SignatureSchemeId::Ed25519 {
-            return Err(unsupported_scheme.to_string());
-        }
-        info.push(ValidatorInfo {
-            id: validator.id,
-            voting_power: validator.voting_power,
-            signature_scheme: validator.signature_scheme,
-            public_key: validator.public_key.clone(),
-        });
-    }
-    ValidatorSet::new(expected_context.epoch(), info).map_err(|error| error.to_string())
+        read_bounded(manifest_path, MAX_GENESIS_MANIFEST_BYTES).map_err(GenesisTrustError::Io)?;
+    VerifiedGenesisRoot::verify_bytes(resolver, &bytes, expected_digest, expected_context)
+        .map_err(GenesisTrustError::Verification)
 }
 
 #[cfg(test)]

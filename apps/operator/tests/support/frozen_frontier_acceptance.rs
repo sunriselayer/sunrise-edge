@@ -132,7 +132,7 @@ fn retain_unapplied_publication(
         })
         .collect();
     let certificate: FastCertificate = trusted
-        .certifier
+        .certifier()
         .try_form_certificate(
             votes[0].tx_hash,
             votes[0].execution_effects_hash,
@@ -147,7 +147,7 @@ fn retain_unapplied_publication(
         .source_fastvote_publication(
             &signed,
             &certificate,
-            &trusted.certifier,
+            trusted.certifier(),
             &fixture.resolver,
             &[],
             fixture.domain,
@@ -164,7 +164,7 @@ fn retain_unapplied_publication(
         fixture.chain_id.clone(),
         fixture.protocol_version,
         fixture.epoch,
-        trusted.certifier.validator_set().clone(),
+        trusted.certifier().validator_set().clone(),
     )
     .unwrap();
     availability

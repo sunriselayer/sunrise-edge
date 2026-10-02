@@ -399,7 +399,16 @@ impl Fixture {
         let manifest: node_core::genesis::GenesisManifest = self.signed_genesis(profile);
         let pin: Digest32 =
             node_core::genesis_manifest_commitment(&self.resolver, &manifest).unwrap();
-        VerifiedAdmissionProfile::from_pinned_genesis(&self.resolver, &manifest, pin).unwrap()
+        let bytes: Vec<u8> = node_core::encode_genesis_manifest(&manifest).unwrap();
+        let root: node_core::genesis::VerifiedGenesisRoot =
+            node_core::genesis::VerifiedGenesisRoot::verify_bytes(
+                &self.resolver,
+                &bytes,
+                pin.bytes(),
+                manifest.context(),
+            )
+            .unwrap();
+        root.admission_profile().clone()
     }
 
     pub(super) fn path(&self, name: &str) -> String {

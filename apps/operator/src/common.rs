@@ -1,14 +1,8 @@
 //! Narrow shared operator input, key, genesis, and PostgreSQL TLS boundaries.
 #![forbid(unsafe_code)]
-use crypto::{Ed25519Verifier, SignatureVerifier};
 use ed25519_zebra::SigningKey;
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
-use node_core::genesis::genesis_manifest_signing_frame;
-use node_core::{
-    GenesisManifest, MAX_GENESIS_MANIFEST_BYTES, decode_genesis_manifest,
-    genesis_manifest_commitment,
-};
 use postgres::{
     Config,
     config::{Host, SslMode},
@@ -395,43 +389,6 @@ pub fn load_signing_key_file(path: &Path) -> Result<SigningKey, SigningKeyFileEr
     let mut seed: [u8; 32] = [0; 32];
     seed.copy_from_slice(&buffer);
     Ok(SigningKey::from(seed))
-}
-
-pub fn load_trusted_genesis_manifest(
-    path: &Path,
-    resolver: &HashSuiteResolver,
-    expected_digest: [u8; 32],
-    expected_context: &PublicationContext,
-) -> Result<GenesisManifest, String> {
-    let bytes: Vec<u8> = read_bounded_file(path, MAX_GENESIS_MANIFEST_BYTES, "genesis manifest")?;
-    let manifest: GenesisManifest = decode_genesis_manifest(&bytes)
-        .map_err(|error| format!("invalid genesis manifest: {error}"))?;
-    let digest: Digest32 = genesis_manifest_commitment(resolver, &manifest)
-        .map_err(|error| format!("failed to compute genesis manifest commitment: {error}"))?;
-    if digest.bytes() != expected_digest {
-        return Err(
-            "genesis manifest commitment does not match the operator-trusted expected genesis digest"
-                .into(),
-        );
-    }
-    if manifest.context() != expected_context {
-        return Err(
-            "genesis manifest context does not match the operator-trusted expected chain/protocol/epoch"
-                .into(),
-        );
-    }
-    let verifier: Ed25519Verifier =
-        Ed25519Verifier::from_verifying_key_bytes(&manifest.genesis_authority)
-            .map_err(|error| format!("invalid genesis authority key: {error}"))?;
-    let signing_frame: Vec<u8> = genesis_manifest_signing_frame(&manifest)
-        .map_err(|error| format!("invalid genesis signing frame: {error}"))?;
-    if !verifier
-        .verify_framed(&signing_frame, &manifest.signature)
-        .map_err(|error| format!("invalid genesis signature: {error}"))?
-    {
-        return Err("invalid genesis authority signature".into());
-    }
-    Ok(manifest)
 }
 
 pub fn require_tls_tcp_host(config: &mut Config) -> Result<(), &'static str> {

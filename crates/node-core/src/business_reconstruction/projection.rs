@@ -142,7 +142,7 @@ fn local_fastpath_rows(
     publications: &AuthenticatedPublicationProjection,
 ) -> Result<LocalFastpathRows, BusinessReconstructionError> {
     let plan = &overlay.plan;
-    let chain = plan.genesis.context().chain_id();
+    let chain = plan.genesis_root.manifest().context().chain_id();
     let encoded_chain: Vec<u8> =
         encode_chain_id(chain).map_err(|_| invalid("projection chain key encoding"))?;
     let view: CapturedStateView<'_> = CapturedStateView {
@@ -152,15 +152,15 @@ fn local_fastpath_rows(
     let validators = plan.ordered_policy.engine().validator_set().clone();
     let fast: FastPathCertifier = FastPathCertifier::new(
         chain.clone(),
-        plan.genesis.context().protocol_version(),
-        plan.genesis.context().epoch(),
+        plan.genesis_root.manifest().context().protocol_version(),
+        plan.genesis_root.manifest().context().epoch(),
         validators.clone(),
     )
     .map_err(|_| invalid("projection FastVote authority"))?;
     let availability: AvailabilityCertifier = AvailabilityCertifier::new(
         chain.clone(),
-        plan.genesis.context().protocol_version(),
-        plan.genesis.context().epoch(),
+        plan.genesis_root.manifest().context().protocol_version(),
+        plan.genesis_root.manifest().context().epoch(),
         validators,
     )
     .map_err(|_| invalid("projection availability authority"))?;
@@ -176,7 +176,7 @@ fn local_fastpath_rows(
             let prepared = records::decode_fastpath_prepared_record(bytes)
                 .map_err(|_| invalid("local prepared schema"))?;
             if prepared.request_id != request
-                || prepared.context != *plan.genesis.context()
+                || prepared.context != *plan.genesis_root.manifest().context()
                 || prepared.prepared_generation.is_none()
                 || fastpath_prepared_record_key(chain, &request)
                     .map_err(|_| invalid("prepared key"))?
@@ -185,7 +185,7 @@ fn local_fastpath_rows(
                 return Err(invalid("local prepared key/context/generation differs"));
             }
             crate::admission_profile::require_external_request_lane(
-                plan.admission_profile,
+                plan.genesis_root.admission_profile(),
                 crate::admission_profile::ExternalRequestLane::Owned,
                 &request,
             )
@@ -203,7 +203,7 @@ fn local_fastpath_rows(
                 &view,
                 &plan.operation_context,
                 plan.domain,
-                plan.resolver,
+                plan.genesis_root.genesis_resolver(),
                 plan.resolver_history,
                 &prepared,
             )
@@ -231,7 +231,7 @@ fn local_fastpath_rows(
                 );
             }
             let internal: [u8; 32] = fastpath_synthetic_prepare_request_id(
-                plan.resolver,
+                plan.genesis_root.genesis_resolver(),
                 prepared.context.epoch(),
                 &request,
             )
@@ -250,7 +250,7 @@ fn local_fastpath_rows(
                 if fastpath_lock_key(chain, lock.object.id)
                     .map_err(|_| invalid("local object lock key"))?
                     != *key
-                    || lock.locked_epoch != plan.genesis.context().epoch()
+                    || lock.locked_epoch != plan.genesis_root.manifest().context().epoch()
                     || is_reserved_paid_request_id(&lock.request_id)
                     || lock.request_id == [0; 32]
                 {
@@ -265,7 +265,7 @@ fn local_fastpath_rows(
                 if fastpath_nonce_lock_key(chain, &lock.sender, lock.epoch)
                     .map_err(|_| invalid("local nonce lock key"))?
                     != *key
-                    || lock.epoch != plan.genesis.context().epoch()
+                    || lock.epoch != plan.genesis_root.manifest().context().epoch()
                     || is_reserved_paid_request_id(&lock.request_id)
                     || lock.request_id == [0; 32]
                 {
@@ -313,7 +313,7 @@ fn local_fastpath_rows(
             )
             .map_err(|_| invalid("drain resolution key"))?
                 != *key
-                || resolution.epoch != plan.genesis.context().epoch()
+                || resolution.epoch != plan.genesis_root.manifest().context().epoch()
             {
                 return Err(invalid("local drain resolution key differs"));
             }
@@ -432,13 +432,13 @@ fn normalized_state(
     let Some(bytes) = value else {
         return Ok(None);
     };
-    let expected = overlay.plan.genesis.context();
+    let expected = overlay.plan.genesis_root.manifest().context();
     if genesis_marker_key(expected).map_err(|_| invalid("genesis marker key"))? == key {
         let mut marker =
             decode_genesis_install_marker(bytes).map_err(|_| invalid("genesis marker schema"))?;
         if marker.context != *expected
             || marker.manifest_digest != overlay.genesis_digest
-            || marker.genesis_authority != overlay.plan.genesis.genesis_authority
+            || marker.genesis_authority != overlay.plan.genesis_root.manifest().genesis_authority
         {
             return Err(invalid("genesis marker differs from independent pin"));
         }
@@ -466,7 +466,7 @@ fn normalized_state(
             .ordered_policy
             .engine()
             .validator_set()
-            .digest(overlay.plan.resolver)
+            .digest(overlay.plan.genesis_root.genesis_resolver())
             .map_err(|_| invalid("genesis set digest"))?;
         if epoch.current_validator_set_digest != set_digest {
             return Err(invalid("genesis epoch committee differs"));
@@ -498,7 +498,7 @@ fn normalized_genesis_marker_provenance(
     }
     let mut record = decode_logical_provenance_record(bytes)
         .map_err(|_| invalid("logical provenance projection schema"))?;
-    let expected_context = overlay.plan.genesis.context();
+    let expected_context = overlay.plan.genesis_root.manifest().context();
     let marker_key = genesis_marker_key(expected_context)
         .map_err(|_| invalid("genesis marker provenance key"))?;
     let LogicalSubject::StateKey(subject_key) = &record.subject else {
@@ -518,15 +518,26 @@ fn normalized_genesis_marker_provenance(
     let profile = decode_logical_profile_record(profile_bytes)
         .map_err(|_| invalid("logical profile projection schema"))?;
     if profile.context != *expected_context
-        || profile.profile != overlay.plan.admission_profile.commitment_profile()
-        || profile.manifest_digest != overlay.plan.pinned_genesis_digest
-        || profile.genesis_authority != overlay.plan.genesis.genesis_authority
+        || profile.profile
+            != overlay
+                .plan
+                .genesis_root
+                .admission_profile()
+                .commitment_profile()
+        || profile.manifest_digest != overlay.plan.genesis_root.digest()
+        || profile.genesis_authority != overlay.plan.genesis_root.manifest().genesis_authority
         || profile.genesis_floor != protocol_types::ExecutionGeneration::genesis_floor()
-        || profile.minimum_freeze_block_height != overlay.plan.genesis.minimum_freeze_block_height
+        || profile.minimum_freeze_block_height
+            != overlay
+                .plan
+                .genesis_root
+                .manifest()
+                .minimum_freeze_block_height
     {
         return Err(invalid("logical profile differs from pinned genesis"));
     }
-    let keyspace: LogicalKeySpace<'_> = LogicalKeySpace::new(&profile, overlay.plan.resolver);
+    let keyspace: LogicalKeySpace<'_> =
+        LogicalKeySpace::new(&profile, overlay.plan.genesis_root.genesis_resolver());
     let canonical_provenance_key: Vec<u8> = keyspace
         .provenance_key(&record.subject)
         .map_err(|_| invalid("logical provenance canonical key"))?;
@@ -548,15 +559,15 @@ fn normalized_genesis_marker_provenance(
     let marker = decode_genesis_install_marker(marker_bytes)
         .map_err(|_| invalid("genesis marker provenance marker schema"))?;
     if marker.context != *expected_context
-        || marker.manifest_digest != overlay.plan.pinned_genesis_digest
-        || marker.genesis_authority != overlay.plan.genesis.genesis_authority
+        || marker.manifest_digest != overlay.plan.genesis_root.digest()
+        || marker.genesis_authority != overlay.plan.genesis_root.manifest().genesis_authority
     {
         return Err(invalid("genesis marker provenance marker pin differs"));
     }
     let normalized_marker_bytes = normalized_state(overlay, &marker_key, Some(marker_bytes))?
         .ok_or(invalid("normalized genesis marker is absent"))?;
     let source_marker_digest = crate::logical_generation::content_digest(
-        overlay.plan.resolver,
+        overlay.plan.genesis_root.genesis_resolver(),
         record.observed_epoch,
         marker_bytes,
     )
@@ -571,7 +582,7 @@ fn normalized_genesis_marker_provenance(
         ));
     }
     let projected_marker_digest = crate::logical_generation::content_digest(
-        overlay.plan.resolver,
+        overlay.plan.genesis_root.genesis_resolver(),
         record.observed_epoch,
         &normalized_marker_bytes,
     )
@@ -597,8 +608,9 @@ fn project(
     // normalization. Validate the complete owning natural key and signed
     // generation-one root before comparing their exact independently derived
     // bytes, including later old-format chain records.
-    let encoded_chain: Vec<u8> = encode_chain_id(overlay.plan.genesis.context().chain_id())
-        .map_err(|_| invalid("registration projection chain encoding"))?;
+    let encoded_chain: Vec<u8> =
+        encode_chain_id(overlay.plan.genesis_root.manifest().context().chain_id())
+            .map_err(|_| invalid("registration projection chain encoding"))?;
     let registered_view: CapturedStateView<'_> = CapturedStateView {
         domain: overlay.plan.domain,
         rows: state_rows(&snapshot.records),
@@ -615,10 +627,8 @@ fn project(
                 &registered_view,
                 &overlay.plan.operation_context,
                 overlay.plan.domain,
-                overlay.plan.resolver,
+                overlay.plan.genesis_root,
                 overlay.plan.resolver_history,
-                overlay.plan.genesis,
-                overlay.plan.pinned_genesis_digest,
                 protocol_types::ValidatorId::new(id),
             )
             .map_err(|_| invalid("registered root key, signature or bond chain differs"))?;
@@ -629,7 +639,7 @@ fn project(
     let ordered = crate::ordered_economics::audit_projection::validate_local_rows(
         overlay.plan.ordered_policy,
         overlay.plan.ordered_history_identity,
-        overlay.plan.resolver,
+        overlay.plan.genesis_root.genesis_resolver(),
         &snapshot.records,
         reconstructed_state.keys().cloned().collect(),
         is_source,
@@ -763,7 +773,8 @@ fn project(
                 if object.id != *object_id
                     || object.version != version.get()
                     || object.schema_version != *schema_version
-                    || provenance.chain_id() != overlay.plan.genesis.context().chain_id()
+                    || provenance.chain_id()
+                        != overlay.plan.genesis_root.manifest().context().chain_id()
                     || !hashing::verify_digest(
                         digest,
                         HashPurpose::Object,

@@ -12,6 +12,7 @@ use crate::logical_generation::{
     encode_logical_provenance_record,
 };
 use consensus::bundle::{ArtifactEntry, ArtifactKind};
+use protocol_types::{HashSuite, HashSuiteSchedule};
 use runtime::portable::{
     DurableCollection, DurablePortableSnapshotRepository, DurableRecordChunkOutcome,
     DurableRecordChunkRequest, DurableRecordDescriptor, DurableRecordKey, DurableRecordPage,
@@ -30,12 +31,9 @@ pub(super) fn reconstruction_plan<'a>(
 ) -> BusinessReconstructionPlan<'a> {
     let network: &Network = &fixture.network;
     BusinessReconstructionPlan {
-        admission_profile: network.policy.admission_profile().unwrap(),
-        genesis: &fixture.manifest,
-        pinned_genesis_digest: network.policy.genesis_digest(),
+        genesis_root: &network.root,
         operation_context: network.context,
         domain: network.domain(),
-        resolver: &network.resolver,
         resolver_history: &network.history,
         ordered_policy: &network.policy,
         ordered_history_identity: identity,
@@ -908,4 +906,123 @@ fn genesis_marker_provenance_projection_rejects_noninitial_or_unbound_rows() {
         .expect("genesis marker provenance row");
     row.value = None;
     assert!(overlay.compare_source(&tombstoned).is_err());
+}
+
+#[test]
+fn historical_policy_copying_the_causal_roots_digest_domain_and_committee_still_refuses() {
+    // An internally consistent historical (manifest-free) policy, rebuilt
+    // from exactly this causal root's own digest/domain/committee/resolver
+    // bytes, is still not a root-derived policy: it never carries the root's
+    // signed Freeze height, so it cannot stand in for the real genesis-root
+    // ordered authority this plan requires (DR-0182).
+    let fixture: CausalFixture = fresh_fixture();
+    let network: &Network = &fixture.network;
+    let (identity, _history) = complete_history(network);
+    let historical_policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::historical(
+        network.root.genesis_context().clone(),
+        network.domain(),
+        network.root.digest(),
+        network.root.genesis_committee().clone(),
+        network.root.genesis_resolver().clone(),
+    )
+    .unwrap();
+    assert_ne!(historical_policy.anchor(), network.policy.anchor());
+    let mut plan: BusinessReconstructionPlan<'_> = reconstruction_plan(&fixture, &identity);
+    plan.ordered_policy = &historical_policy;
+    assert!(matches!(
+        BusinessReconstructionOverlay::new(plan),
+        Err(BusinessReconstructionError::Invalid(_))
+    ));
+}
+
+#[test]
+fn historical_policy_with_a_forged_matching_history_identity_still_refuses() {
+    // A strictly harder forgery than the previous test: the archive identity
+    // is also rewritten to agree with the historical policy's own
+    // (Freeze-free) anchor, so every check that merely cross-references the
+    // policy against the identity, or either against the root's digest/
+    // domain/committee, passes. Only re-deriving the anchor independently
+    // from the root itself (including its signed positive Freeze height)
+    // catches this.
+    let fixture: CausalFixture = fresh_fixture();
+    let network: &Network = &fixture.network;
+    let (identity, _history) = complete_history(network);
+    let historical_policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::historical(
+        network.root.genesis_context().clone(),
+        network.domain(),
+        network.root.digest(),
+        network.root.genesis_committee().clone(),
+        network.root.genesis_resolver().clone(),
+    )
+    .unwrap();
+    let forged_identity: OrderedHistoryIdentity = OrderedHistoryIdentity {
+        context: network.root.genesis_context().clone(),
+        domain: network.domain(),
+        genesis_digest: network.root.digest(),
+        anchor: historical_policy.anchor(),
+        ..identity
+    };
+    assert_ne!(forged_identity.anchor, network.policy.anchor());
+    let mut plan: BusinessReconstructionPlan<'_> = reconstruction_plan(&fixture, &forged_identity);
+    plan.ordered_policy = &historical_policy;
+    assert!(matches!(
+        BusinessReconstructionOverlay::new(plan),
+        Err(BusinessReconstructionError::Invalid(_))
+    ));
+}
+
+#[test]
+fn ordered_policy_resolver_schedule_must_equal_the_roots_complete_schedule_even_when_anchors_match()
+{
+    // A resolver whose genesis-epoch suite is identical to the root's own
+    // (so the anchor it derives hashes the same) but whose complete trusted
+    // schedule carries an extra future rotation not in the root's locally
+    // trusted resolver. The genesis signature does not authenticate future
+    // schedule entries; the anchor alone cannot distinguish this mismatch
+    // from the real root-derived policy. The complete schedule must match.
+    let fixture: CausalFixture = fresh_fixture();
+    let network: &Network = &fixture.network;
+    let (identity, _history) = complete_history(network);
+    let manifest_bytes: Vec<u8> =
+        genesis::encode_genesis_manifest(network.root.manifest()).unwrap();
+    let extended_resolver: HashSuiteResolver = HashSuiteResolver::new(
+        fixture::chain(),
+        fixture::protocol().protocol_version(),
+        vec![
+            HashSuiteSchedule {
+                activation_epoch: Epoch::new(0),
+                suite: HashSuite::genesis(),
+            },
+            HashSuiteSchedule {
+                activation_epoch: Epoch::new(1_000_000),
+                suite: HashSuite::genesis(),
+            },
+        ],
+    )
+    .unwrap();
+    let extended_root: genesis::VerifiedGenesisRoot = genesis::VerifiedGenesisRoot::verify_bytes(
+        &extended_resolver,
+        &manifest_bytes,
+        network.root.digest().bytes(),
+        network.root.genesis_context(),
+    )
+    .unwrap();
+    let extended_policy: OrderedEconomicsPolicy =
+        OrderedEconomicsPolicy::from_genesis_root(&extended_root, network.domain()).unwrap();
+    assert_eq!(
+        extended_policy.anchor(),
+        network.policy.anchor(),
+        "the identical genesis-epoch suite must still hash to the identical anchor"
+    );
+    assert_ne!(
+        extended_policy.resolver().schedules(),
+        network.root.genesis_resolver().schedules(),
+        "the extended schedule must genuinely differ from the root's own"
+    );
+    let mut plan: BusinessReconstructionPlan<'_> = reconstruction_plan(&fixture, &identity);
+    plan.ordered_policy = &extended_policy;
+    assert!(matches!(
+        BusinessReconstructionOverlay::new(plan),
+        Err(BusinessReconstructionError::Invalid(_))
+    ));
 }

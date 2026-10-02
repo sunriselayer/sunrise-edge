@@ -30,6 +30,10 @@ roadmap describes a later target state.
   responsibility, dependency, typed authority and completion interfaces for
   the architecture-first redesign; interface skeletons do not grant runtime
   authority or functional completion.
+- [Immutable genesis trust](genesis-trust.md)
+  ([DR-0182](decisions/0182-immutable-verified-genesis-root.md)):
+  one privately constructed original trust root and root-derived core/SDK/
+  operator composition, separate from installation and current serving powers.
 - [Generic contract architecture](generic-contracts.md): common execution and
   authority, type/instance/object separation, upgrades, migration and durable
   verification obligations.

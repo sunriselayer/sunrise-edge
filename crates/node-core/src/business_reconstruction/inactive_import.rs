@@ -364,8 +364,8 @@ pub fn verify_saved_business_import(
     plan: BusinessReconstructionPlan<'_>,
     saved: &SavedBusinessCut,
 ) -> Result<VerifiedImportPlan, BusinessImportError> {
-    let resolver: &HashSuiteResolver = plan.resolver;
-    let context: PublicationContext = plan.genesis.context().clone();
+    let resolver: &HashSuiteResolver = plan.genesis_root.genesis_resolver();
+    let context: PublicationContext = plan.genesis_root.manifest().context().clone();
     let (cut, overlay, carriers) = cut::proof::verify_saved_with_overlay(plan, saved)?;
     let snapshot: SourceBusinessSnapshot = projection::private_import_snapshot(&overlay)?;
     let mut rows: Vec<ImportRow> = raw_rows(&snapshot, true)?;

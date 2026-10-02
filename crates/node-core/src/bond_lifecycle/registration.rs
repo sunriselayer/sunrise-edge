@@ -6,7 +6,7 @@ use super::*;
 use crate::admission_profile::{
     ExternalRequestLane, VerifiedAdmissionProfile, require_external_request_lane,
 };
-use crate::genesis::GenesisManifest;
+use crate::genesis::VerifiedGenesisRoot;
 use crypto::{Ed25519OwnerAddressPolicy, validate_ed25519_owner_address};
 
 pub use bonds::BondResourceId;
@@ -395,61 +395,40 @@ pub(crate) fn initial_resource<'a>(
         ))
 }
 
-fn pinned_inputs(
-    resolver: &HashSuiteResolver,
-    manifest: &GenesisManifest,
-    pinned: Digest32,
-) -> Result<(VerifiedAdmissionProfile, ValidatorSet, LocalExecutionPolicy), BondRegistrationError> {
-    let profile: VerifiedAdmissionProfile =
-        VerifiedAdmissionProfile::from_pinned_genesis(resolver, manifest, pinned)?;
-    let validators: Vec<validator_set::ValidatorInfo> = manifest
-        .validator_set
-        .validators
-        .iter()
-        .map(|entry| validator_set::ValidatorInfo {
-            id: entry.id,
-            voting_power: entry.voting_power,
-            signature_scheme: entry.signature_scheme,
-            public_key: entry.public_key.clone(),
-        })
-        .collect();
-    let registry: ValidatorSet = ValidatorSet::new(manifest.context().epoch(), validators)
-        .map_err(|_| BondRegistrationError::Invalid("registration genesis registry"))?;
-    let leg_policy: LocalExecutionPolicy =
-        LocalExecutionPolicy::generic_object_results(manifest.context().clone());
-    Ok((profile, registry, leg_policy))
-}
-
 /// Verify bounded canonical original material and both signatures against
-/// independent local pins. The returned claims grant no execution authority.
+/// one immutable [`VerifiedGenesisRoot`] (DR-0182). The returned claims grant
+/// no execution authority.
 pub fn verify_signed_bond_registration(
-    resolver: &HashSuiteResolver,
-    manifest: &GenesisManifest,
-    pinned_genesis_digest: Digest32,
+    root: &VerifiedGenesisRoot,
     bytes: &[u8],
 ) -> Result<SignedBondRegistrationIntent, BondRegistrationError> {
-    let (profile, registry, leg_policy) = pinned_inputs(resolver, manifest, pinned_genesis_digest)?;
+    let leg_policy: LocalExecutionPolicy =
+        LocalExecutionPolicy::generic_object_results(root.genesis_context().clone());
     Ok(authenticate_registration(
-        resolver,
-        &profile,
-        &registry,
-        &manifest.economics_policy,
+        root.genesis_resolver(),
+        root.admission_profile(),
+        root.genesis_committee(),
+        &root.manifest().economics_policy,
         &leg_policy,
         bytes,
     )?
     .0)
 }
 
-/// Validate a predicted row and signed leg under a locally pinned signed
-/// genesis and return exactly what the actual new key must sign. No VM, store
-/// read, state seeding, membership or readiness authority is created.
+/// Validate a predicted row and signed leg under one immutable
+/// [`VerifiedGenesisRoot`] (DR-0182) and return exactly what the actual new
+/// key must sign. No VM, store read, state seeding, membership or readiness
+/// authority is created.
 pub fn prepare_bond_registration(
-    resolver: &HashSuiteResolver,
-    manifest: &GenesisManifest,
-    pinned_genesis_digest: Digest32,
+    root: &VerifiedGenesisRoot,
     request: BondRegistrationPreparationRequest,
 ) -> Result<PreparedBondRegistration, BondRegistrationError> {
-    let (profile, registry, leg_policy) = pinned_inputs(resolver, manifest, pinned_genesis_digest)?;
+    let resolver: &HashSuiteResolver = root.genesis_resolver();
+    let profile: &VerifiedAdmissionProfile = root.admission_profile();
+    let registry: &ValidatorSet = root.genesis_committee();
+    let economics: &FastPathEconomicsPolicy = &root.manifest().economics_policy;
+    let leg_policy: LocalExecutionPolicy =
+        LocalExecutionPolicy::generic_object_results(root.genesis_context().clone());
     let row: &FastPathBondRecord = &request.predicted_initial_row;
     let row_bytes: Vec<u8> = encode_fastpath_bond_record(row)?;
     if row_bytes.len() > MAX_BOND_REGISTRATION_ROW_BYTES {
@@ -468,22 +447,11 @@ pub fn prepare_bond_registration(
         leg: request.leg,
         expected_initial_row_digest: bond_row_digest(resolver, row.lifecycle_epoch, &row_bytes)
             .map_err(|_| BondRegistrationError::Invalid("registration predicted row digest"))?,
-        pinned_genesis_digest,
+        pinned_genesis_digest: root.digest(),
     };
-    let leg: AuthenticatedLocalExecutionIntent = authenticate_intent(
-        resolver,
-        &profile,
-        &registry,
-        &manifest.economics_policy,
-        &leg_policy,
-        &intent,
-    )?;
-    validate_initial_row(
-        &intent,
-        row,
-        &leg,
-        initial_resource(&manifest.economics_policy, &intent)?,
-    )?;
+    let leg: AuthenticatedLocalExecutionIntent =
+        authenticate_intent(resolver, profile, registry, economics, &leg_policy, &intent)?;
+    validate_initial_row(&intent, row, &leg, initial_resource(economics, &intent)?)?;
     let signing_frame: Vec<u8> = bond_registration_signing_frame(
         &intent.context,
         bond_registration_intent_digest(resolver, &intent)?,

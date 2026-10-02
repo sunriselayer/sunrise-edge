@@ -138,10 +138,8 @@ pub(super) fn assert_registration_restart_replay_and_fence(
         &target,
         &operation,
         network.domain(),
-        &network.resolver,
+        &network.root,
         &network.history,
-        &source.source.manifest,
-        network.policy.genesis_digest(),
         e_id(),
     )
     .unwrap();
@@ -261,7 +259,6 @@ pub(super) fn assert_registration_restart_replay_and_fence(
     };
     let env: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
         policy: &network.policy,
-        resolver: &network.resolver,
         history: &network.history,
         leg_policy: &network.leg_policy,
         engine: &observed,

@@ -37,11 +37,15 @@ protocol custody do not acquire permanent first-candidate locks. Only the
 matching admitted leg can use or release its reservation; no safety timeout
 silently frees it.
 
-After the shared engine commits a block, a private staging store captures the
-ordinary economics handler's transaction. One fenced atomic invocation merges
-its effects, original intent receipt, nonce changes, consensus/order rows,
-retained outcome and exact lock cleanup. Generic WASM/ABI custody and value
-checks are reused; there is no native Coin decoder or Standard Asset exception.
+After the shared engine commits a block, the ordinary economics owner prepares
+its effects through a read-only state view. Preparation cannot commit or report
+a synthetic success. The shared completion kernel assembles one fenced atomic
+invocation containing those effects, the original intent receipt, nonce changes,
+consensus/order rows, retained outcome and exact lock cleanup; success requires
+the store's actual commit result. Physical revision assertions remain separate
+from logical business generations. See [operation preparation](operation-preparation.md).
+Generic WASM/ABI custody and value checks are reused; there is no native Coin
+decoder or Standard Asset exception.
 
 Healthy stale generation, row digest, nonce or eligibility produces a typed
 retained rejection without value movement or nonce advancement. The deciding

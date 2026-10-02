@@ -19,7 +19,7 @@ use crate::ordered_economics::{
     OrderedHistoryHeightMaterial, OrderedHistoryVerifier, OrderedOperationKind,
     advance_drain_union, confirm_drain_signer_entry, decode_drain_set_intent,
     decode_ordered_candidate, drain_signer_entry_key, import_staged_drain_publication,
-    ingest_drain_signer_page, staged_drain_signer_identity,
+    ingest_drain_signer_page, ordered_economics_authority_anchor, staged_drain_signer_identity,
 };
 use consensus::bundle::{PublicationBundleError, encode_publication_bundle};
 use consensus::{
@@ -151,23 +151,47 @@ fn candidate_digest(
 ) -> ControlResult<Digest32> {
     let bytes: Vec<u8> = crate::ordered_economics::encode_ordered_candidate(candidate)?;
     Ok(plan
-        .resolver
+        .genesis_root
+        .genesis_resolver()
         .hash_for_purpose(candidate.context.epoch(), HashPurpose::NodeEvent, &bytes)
         .map_err(NodeCoreError::from)?)
 }
 
 fn require_plan_binding(plan: &BusinessReconstructionPlan<'_>) -> ControlResult<()> {
-    if !plan.admission_profile.is_causal()
-        || plan.admission_profile.context() != plan.genesis.context()
-        || plan.admission_profile.genesis_digest() != plan.pinned_genesis_digest
-        || plan.ordered_policy.genesis_digest() != plan.pinned_genesis_digest
-        || plan.ordered_policy.context() != plan.genesis.context()
+    // `plan.genesis_root` is one immutable `VerifiedGenesisRoot` (DR-0182):
+    // disagreement among its own manifest/digest/profile/resolver is
+    // unrepresentable, so only the still-independent `ordered_policy`/
+    // `domain` inputs are cross-checked against it here.
+    if !plan.genesis_root.admission_profile().is_causal()
+        || plan.ordered_policy.genesis_digest() != plan.genesis_root.digest()
+        || plan.ordered_policy.context() != plan.genesis_root.manifest().context()
         || plan.ordered_policy.domain() != plan.domain
-        || crate::genesis_manifest_commitment(plan.resolver, plan.genesis)?
-            != plan.pinned_genesis_digest
+        || plan.ordered_policy.resolver().schedules()
+            != plan.genesis_root.genesis_resolver().schedules()
+        || plan.ordered_policy.engine().validator_set() != plan.genesis_root.genesis_committee()
     {
         return Err(DrainSetControlProofError::Invalid(
             "control plan differs from locally pinned causal genesis",
+        ));
+    }
+    // An internally consistent historical policy cannot substitute for a
+    // signed causal root merely by copying its digest/domain/committee: the
+    // policy's own anchor must equal the canonical anchor independently
+    // re-derived from exactly this root, including its signed Freeze height.
+    let expected_anchor: Digest32 = ordered_economics_authority_anchor(
+        plan.genesis_root.genesis_resolver(),
+        plan.genesis_root.manifest().context(),
+        plan.domain,
+        plan.genesis_root.digest(),
+        plan.genesis_root.manifest().minimum_freeze_block_height,
+        plan.genesis_root.genesis_committee(),
+    )
+    .map_err(|_| {
+        DrainSetControlProofError::Invalid("control plan genesis root anchor derivation failed")
+    })?;
+    if plan.ordered_policy.anchor() != expected_anchor {
+        return Err(DrainSetControlProofError::Invalid(
+            "control plan ordered policy anchor does not match the genesis root",
         ));
     }
     Ok(())
@@ -312,8 +336,8 @@ fn available_control_from_source_rows(
         Vec::with_capacity(intent.selected_votes.len());
     for vote in &intent.selected_votes {
         let mut prefix: Vec<u8> = drain_signer_entry_key(
-            plan.genesis.context().chain_id(),
-            plan.genesis.context().epoch(),
+            plan.genesis_root.manifest().context().chain_id(),
+            plan.genesis_root.manifest().context().epoch(),
             vote.validator,
             &[1; 32],
         )?;
@@ -339,8 +363,8 @@ fn available_control_from_source_rows(
                     ))?;
             let identity: AvailabilityIdentity = decode_availability_identity(bytes)?;
             if drain_signer_entry_key(
-                plan.genesis.context().chain_id(),
-                plan.genesis.context().epoch(),
+                plan.genesis_root.manifest().context().chain_id(),
+                plan.genesis_root.manifest().context().epoch(),
                 vote.validator,
                 &identity.request_id,
             )?
@@ -391,9 +415,9 @@ fn validate_bound_control(
         ));
     }
     let certifier: FrozenFrontierCertifier = FrozenFrontierCertifier::new(
-        plan.genesis.context().chain_id().clone(),
-        plan.genesis.context().protocol_version(),
-        plan.genesis.context().epoch(),
+        plan.genesis_root.manifest().context().chain_id().clone(),
+        plan.genesis_root.manifest().context().protocol_version(),
+        plan.genesis_root.manifest().context().epoch(),
         plan.ordered_policy.engine().validator_set().clone(),
     )?;
     let mut members: BTreeMap<[u8; 32], AvailabilityIdentity> = BTreeMap::new();
@@ -404,17 +428,17 @@ fn validate_bound_control(
             ));
         }
         let mut verifier: FrozenFrontierPageVerifier = FrozenFrontierPageVerifier::new(
-            plan.resolver,
+            plan.genesis_root.genesis_resolver(),
             &certifier,
             vote.clone(),
             &ReconstructionEd25519Verifier,
         )?;
         for page in &frontier.pages {
             encode_frozen_frontier_page(page)?;
-            verifier.push_page(plan.resolver, page)?;
+            verifier.push_page(plan.genesis_root.genesis_resolver(), page)?;
             for identity in &page.entries {
                 require_external_request_lane(
-                    plan.admission_profile,
+                    plan.genesis_root.admission_profile(),
                     ExternalRequestLane::Owned,
                     &identity.request_id,
                 )?;
@@ -486,7 +510,6 @@ pub(super) fn prepare_drain_control(
     let plan: &BusinessReconstructionPlan<'_> = &overlay.plan;
     let environment: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
         policy: plan.ordered_policy,
-        resolver: plan.resolver,
         history: plan.resolver_history,
         leg_policy: plan.ordered_leg_policy,
         engine: plan.ordered_engine,
@@ -537,8 +560,8 @@ pub(super) fn prepare_drain_control(
                 &overlay.store,
                 &plan.operation_context,
                 plan.domain,
-                plan.resolver,
-                plan.genesis.context(),
+                plan.genesis_root.genesis_resolver(),
+                plan.genesis_root.manifest().context(),
                 frontier.signer,
                 vote.clone(),
                 page.clone(),
@@ -548,7 +571,7 @@ pub(super) fn prepare_drain_control(
                     &overlay.store,
                     &plan.operation_context,
                     plan.domain,
-                    plan.genesis.context(),
+                    plan.genesis_root.manifest().context(),
                     frontier.signer,
                 )?;
                 if staged != *entry {
@@ -578,9 +601,9 @@ pub(super) fn prepare_drain_control(
                     &overlay.store,
                     &plan.operation_context,
                     plan.domain,
-                    plan.resolver,
+                    plan.genesis_root.genesis_resolver(),
                     plan.resolver_history,
-                    plan.genesis.context(),
+                    plan.genesis_root.manifest().context(),
                     frontier.signer,
                     &bundle,
                 )?;
@@ -593,9 +616,9 @@ pub(super) fn prepare_drain_control(
                     &overlay.store,
                     &plan.operation_context,
                     plan.domain,
-                    plan.resolver,
+                    plan.genesis_root.genesis_resolver(),
                     plan.resolver_history,
-                    plan.genesis.context(),
+                    plan.genesis_root.manifest().context(),
                     frontier.signer,
                     staged.request_id,
                 )?;
@@ -614,9 +637,9 @@ pub(super) fn prepare_drain_control(
             &overlay.store,
             &plan.operation_context,
             plan.domain,
-            plan.resolver,
+            plan.genesis_root.genesis_resolver(),
             plan.resolver_history,
-            plan.genesis.context(),
+            plan.genesis_root.manifest().context(),
             &control.selected_votes,
         )? {
             DrainUnionStep::Advanced { member_count } => {

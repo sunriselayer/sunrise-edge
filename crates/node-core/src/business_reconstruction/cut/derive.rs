@@ -53,7 +53,7 @@ fn complete_drain(
     controls: &[DrainSetControlMaterial],
 ) -> Result<(DrainSetRecord, Digest32, BTreeSet<Vec<u8>>), BusinessCutError> {
     let plan = &overlay.plan;
-    let context: &PublicationContext = plan.genesis.context();
+    let context: &PublicationContext = plan.genesis_root.manifest().context();
     let freeze_key: Vec<u8> = admission_closure_key(context.chain_id(), context.epoch())
         .map_err(|_| invalid("cut Freeze key"))?;
     let freeze = decode_admission_closure_record(&required_state(overlay, &freeze_key)?)
@@ -126,7 +126,7 @@ fn complete_drain(
             return Err(invalid("cut frontier signer order differs"));
         }
         let mut verifier: FrozenFrontierPageVerifier = FrozenFrontierPageVerifier::new(
-            plan.resolver,
+            plan.genesis_root.genesis_resolver(),
             &certifier,
             vote.clone(),
             &ReconstructionEd25519Verifier,
@@ -134,7 +134,7 @@ fn complete_drain(
         .map_err(|_| invalid("cut frontier signature differs"))?;
         for page in &frontier.pages {
             verifier
-                .push_page(plan.resolver, page)
+                .push_page(plan.genesis_root.genesis_resolver(), page)
                 .map_err(|_| invalid("cut selected frontier page differs"))?;
             for entry in &page.entries {
                 if let Some(previous) = members.insert(entry.request_id, entry.clone())
@@ -154,7 +154,7 @@ fn complete_drain(
         .map(|vote| (vote.validator, vote.identity.clone()))
         .collect();
     let mut union: DrainUnionAccumulator = DrainUnionAccumulator::new(
-        plan.resolver,
+        plan.genesis_root.genesis_resolver(),
         context.chain_id().clone(),
         context.protocol_version(),
         context.epoch(),
@@ -166,7 +166,7 @@ fn complete_drain(
     .map_err(|_| invalid("cut selected union seed"))?;
     for identity in members.values() {
         union
-            .push_member(plan.resolver, identity)
+            .push_member(plan.genesis_root.genesis_resolver(), identity)
             .map_err(|_| invalid("cut selected union accumulation"))?;
     }
     if union.identity() != &drain.drain_union_identity {
@@ -268,7 +268,7 @@ fn companion_keys(
     controls: &BTreeSet<Vec<u8>>,
     projection: &SemanticProjection,
 ) -> Result<BTreeSet<DurableRecordKey>, BusinessCutError> {
-    let context: &PublicationContext = overlay.plan.genesis.context();
+    let context: &PublicationContext = overlay.plan.genesis_root.manifest().context();
     let chain = context.chain_id();
     let mut keys: BTreeSet<DurableRecordKey> = controls
         .iter()
@@ -367,8 +367,9 @@ fn generation_floor(
     overlay: &BusinessReconstructionOverlay<'_>,
     projection: &SemanticProjection,
 ) -> Result<ExecutionGeneration, BusinessCutError> {
-    let key: Vec<u8> = logical_profile_key(overlay.plan.genesis.context().chain_id())
-        .map_err(|_| invalid("cut logical profile key"))?;
+    let key: Vec<u8> =
+        logical_profile_key(overlay.plan.genesis_root.manifest().context().chain_id())
+            .map_err(|_| invalid("cut logical profile key"))?;
     let profile = decode_logical_profile_record(&required_state(overlay, &key)?)
         .map_err(|_| invalid("cut logical profile schema"))?;
     let mut floor: ExecutionGeneration = profile.genesis_floor;
@@ -413,8 +414,8 @@ pub(super) fn insert(
         metadata,
         length: u64::try_from(bytes.len()).map_err(|_| invalid("cut component length overflow"))?,
         digest: business_cut_component_digest(
-            overlay.plan.resolver,
-            overlay.plan.genesis.context(),
+            overlay.plan.genesis_root.genesis_resolver(),
+            overlay.plan.genesis_root.manifest().context(),
             &bytes,
         )?,
     };
@@ -581,9 +582,9 @@ pub(super) fn from_overlay(
     }
     proof::verify_application_carriers(overlay, carriers)?;
     proof::add_material(overlay, &mut components, owned, ordered, controls, carriers)?;
-    let context: PublicationContext = overlay.plan.genesis.context().clone();
+    let context: PublicationContext = overlay.plan.genesis_root.manifest().context().clone();
     let streams: [BusinessCutCollectionRoot; 7] = transfer::roots(
-        overlay.plan.resolver,
+        overlay.plan.genesis_root.genesis_resolver(),
         &context,
         overlay.genesis_digest,
         overlay.plan.domain,
@@ -598,7 +599,7 @@ pub(super) fn from_overlay(
             .ordered_policy
             .engine()
             .validator_set()
-            .digest(overlay.plan.resolver)
+            .digest(overlay.plan.genesis_root.genesis_resolver())
             .map_err(|_| invalid("cut committee digest"))?,
         ordered_history: overlay.plan.ordered_history_identity.clone(),
         drain_request_id: drain.request_id,
@@ -614,9 +615,10 @@ pub(super) fn from_overlay(
         ],
         artifacts: streams[5].clone(),
     };
-    let cut_digest: Digest32 = business_cut_identity_digest(overlay.plan.resolver, &identity)?;
+    let cut_digest: Digest32 =
+        business_cut_identity_digest(overlay.plan.genesis_root.genesis_resolver(), &identity)?;
     let mut accumulator: Digest32 = transfer::seed(
-        overlay.plan.resolver,
+        overlay.plan.genesis_root.genesis_resolver(),
         &context,
         identity.genesis_digest,
         identity.domain,
@@ -626,7 +628,7 @@ pub(super) fn from_overlay(
     let mut component_count: u64 = 0;
     for item in components.values() {
         accumulator = transfer::fold(
-            overlay.plan.resolver,
+            overlay.plan.genesis_root.genesis_resolver(),
             &context,
             accumulator,
             &item.descriptor,
@@ -645,7 +647,7 @@ pub(super) fn from_overlay(
         BTreeMap::new();
     for stream in BUSINESS_CUT_STREAMS {
         let mut prefix: Digest32 = transfer::seed(
-            overlay.plan.resolver,
+            overlay.plan.genesis_root.genesis_resolver(),
             &context,
             identity.genesis_digest,
             identity.domain,
@@ -654,13 +656,21 @@ pub(super) fn from_overlay(
         )?;
         for (key, item) in &components {
             if key.0 == stream {
-                prefix = transfer::fold(overlay.plan.resolver, &context, prefix, &item.descriptor)?;
+                prefix = transfer::fold(
+                    overlay.plan.genesis_root.genesis_resolver(),
+                    &context,
+                    prefix,
+                    &item.descriptor,
+                )?;
                 prefix_accumulators.insert(key.clone(), prefix);
             }
         }
     }
-    let package_digest: Digest32 =
-        business_cut_package_digest(overlay.plan.resolver, &identity, &package)?;
+    let package_digest: Digest32 = business_cut_package_digest(
+        overlay.plan.genesis_root.genesis_resolver(),
+        &identity,
+        &package,
+    )?;
     Ok(VerifiedBusinessCut {
         identity,
         package,

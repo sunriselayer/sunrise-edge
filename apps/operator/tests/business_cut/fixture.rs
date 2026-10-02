@@ -13,10 +13,9 @@ use execution::{
     LocalWasmExecutionEngine, local_execution::LocalExecutionPolicy,
     publication::PublicationContext,
 };
-use node_core::admission_profile::VerifiedAdmissionProfile;
 use node_core::business_reconstruction::{BusinessReconstructionPlan, SourceBusinessSnapshot};
+use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::*;
-use node_core::{GenesisManifest, genesis_manifest_commitment};
 use protocol_types::{Digest32, Epoch, SignatureSchemeId, ValidatorId};
 use runtime::{
     Clock, DurableOperationContext, StorageCorrelationId, StorageDeadline, SystemClock,
@@ -29,7 +28,6 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
-use validator_set::{ValidatorInfo, ValidatorSet};
 
 const FREEZE: [u8; 32] = [0xCB; 32];
 const DRAIN: [u8; 32] = [0xCC; 32];
@@ -89,8 +87,7 @@ impl ConsensusVerifier for Verifier {
 
 pub struct Fixture {
     pub network: FastVoteGenesisFixture,
-    pub manifest: GenesisManifest,
-    pub profile: VerifiedAdmissionProfile,
+    pub root: VerifiedGenesisRoot,
     pub policy: OrderedEconomicsPolicy,
     pub local_policy: LocalExecutionPolicy,
     pub engine: LocalWasmExecutionEngine,
@@ -105,33 +102,15 @@ impl Fixture {
         let directory: Directory = Directory::new("genuine-source");
         let unique: String = format!("cut-{}", NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed));
         let network: FastVoteGenesisFixture = causal_genesis_fixture::build(&unique).network;
-        let manifest: GenesisManifest =
-            node_core::decode_genesis_manifest(&network.manifest_bytes).unwrap();
-        let digest: Digest32 = genesis_manifest_commitment(&network.resolver, &manifest).unwrap();
-        let profile: VerifiedAdmissionProfile =
-            VerifiedAdmissionProfile::from_pinned_genesis(&network.resolver, &manifest, digest)
-                .unwrap();
-        let members: Vec<ValidatorInfo> = manifest
-            .validator_set
-            .validators
-            .iter()
-            .map(|member| ValidatorInfo {
-                id: member.id,
-                voting_power: member.voting_power,
-                signature_scheme: member.signature_scheme,
-                public_key: member.public_key.clone(),
-            })
-            .collect();
-        let set: ValidatorSet = ValidatorSet::new(network.epoch, members).unwrap();
-        let policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::new(
-            network.context.clone(),
-            network.domain,
-            digest,
-            Some(&manifest),
-            set,
-            network.resolver.clone(),
+        let root: VerifiedGenesisRoot = VerifiedGenesisRoot::verify_bytes(
+            &network.resolver,
+            &network.manifest_bytes,
+            network.manifest_digest,
+            &network.context,
         )
         .unwrap();
+        let policy: OrderedEconomicsPolicy =
+            OrderedEconomicsPolicy::from_genesis_root(&root, network.domain).unwrap();
         let first: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
         let stores: Vec<SqliteDurableStore> = network
             .validators
@@ -166,8 +145,7 @@ impl Fixture {
             LocalExecutionPolicy::generic_object_results(network.context.clone());
         let fixture: Self = Self {
             network,
-            manifest,
-            profile,
+            root,
             policy,
             local_policy,
             engine: LocalWasmExecutionEngine::new(),
@@ -182,7 +160,7 @@ impl Fixture {
                 &fixture.operation,
                 fixture.network.domain,
                 &fixture.network.resolver,
-                &fixture.manifest,
+                fixture.root.manifest(),
                 10,
             )
             .unwrap();
@@ -195,7 +173,6 @@ impl Fixture {
     fn environment(&self) -> OrderedEconomicsEnvironment<'_> {
         OrderedEconomicsEnvironment {
             policy: &self.policy,
-            resolver: &self.network.resolver,
             history: &[],
             leg_policy: &self.local_policy,
             engine: &self.engine,
@@ -270,7 +247,7 @@ impl Fixture {
                     &[],
                     &self.network.context,
                     &self.local_policy,
-                    &self.manifest.fee_policy,
+                    &self.root.manifest().fee_policy,
                     &self.engine,
                     &Signer(validator),
                     signed,
@@ -323,7 +300,7 @@ impl Fixture {
             .unwrap();
         }
         // No AvailabilityCertifier or aggregate AV is constructed.
-        let mut advisory = self.manifest.validator_set.clone();
+        let mut advisory = self.root.manifest().validator_set.clone();
         advisory.validators.sort_by_key(|member| member.id);
         advisory.context = PublicationContext::new(
             self.network.chain_id.clone(),
@@ -482,7 +459,7 @@ impl Fixture {
                 &[],
                 &self.network.context,
                 &self.local_policy,
-                &self.manifest.fee_policy,
+                &self.root.manifest().fee_policy,
                 &self.engine,
                 self.network.request_id,
                 11,
@@ -547,12 +524,9 @@ impl Fixture {
         operation: DurableOperationContext,
     ) -> BusinessReconstructionPlan<'a> {
         BusinessReconstructionPlan {
-            admission_profile: &self.profile,
-            genesis: &self.manifest,
-            pinned_genesis_digest: self.policy.genesis_digest(),
+            genesis_root: &self.root,
             operation_context: operation,
             domain: self.network.domain,
-            resolver: &self.network.resolver,
             resolver_history: &[],
             ordered_policy: &self.policy,
             ordered_history_identity: identity,

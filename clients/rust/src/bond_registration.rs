@@ -11,13 +11,12 @@ use crypto::{CryptoError, SignatureSigner};
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
 use node_core::bond_lifecycle::registration::BondRegistrationPreparationRequest;
-use node_core::genesis::GenesisManifest;
+use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::OrderedEconomicsPolicy;
-use protocol_types::{AtomicityDomainId, Digest32, ValidatorId};
-use validator_set::ValidatorSet;
+use protocol_types::{AtomicityDomainId, ValidatorId};
 
 use crate::key::LocalSigner;
-use crate::local_genesis::{PinnedGenesis, load_pinned_genesis, validator_set_from_record};
+use crate::local_genesis::load_verified_genesis_root;
 use crate::ordered_economics_client::OrderedGenesisTrustError;
 
 pub use execution::local_execution::MAX_LOCAL_EXECUTION_INTENT_BYTES;
@@ -62,8 +61,7 @@ impl Error for LocalBondRegistrationError {}
 /// Locally pinned first-epoch inputs read from one authenticated manifest.
 /// The domain is a separate local ordered-engine pin, not a manifest field.
 pub struct BondRegistrationContext {
-    pinned: PinnedGenesis,
-    resolver: HashSuiteResolver,
+    root: VerifiedGenesisRoot,
     policy: OrderedEconomicsPolicy,
 }
 
@@ -78,32 +76,15 @@ impl BondRegistrationContext {
         expected_context: &PublicationContext,
         domain: AtomicityDomainId,
     ) -> Result<Self, LocalBondRegistrationError> {
-        let pinned: PinnedGenesis =
-            load_pinned_genesis(manifest_path, resolver, expected_digest, expected_context)
+        let root: VerifiedGenesisRoot =
+            load_verified_genesis_root(manifest_path, resolver, expected_digest, expected_context)
                 .map_err(OrderedGenesisTrustError::from)
                 .map_err(LocalBondRegistrationError::Genesis)?;
-        let validator_set: ValidatorSet = validator_set_from_record(
-            &pinned.manifest.validator_set,
-            expected_context,
-            "bond registration supports only Ed25519 genesis validators",
-        )
-        .map_err(OrderedGenesisTrustError::InvalidValidatorSet)
-        .map_err(LocalBondRegistrationError::Genesis)?;
-        let policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::new(
-            expected_context.clone(),
-            domain,
-            pinned.digest,
-            Some(&pinned.manifest),
-            validator_set,
-            resolver.clone(),
-        )
-        .map_err(OrderedGenesisTrustError::Policy)
-        .map_err(LocalBondRegistrationError::Genesis)?;
-        Ok(Self {
-            pinned,
-            resolver: resolver.clone(),
-            policy,
-        })
+        let policy: OrderedEconomicsPolicy =
+            OrderedEconomicsPolicy::from_genesis_root(&root, domain)
+                .map_err(OrderedGenesisTrustError::Policy)
+                .map_err(LocalBondRegistrationError::Genesis)?;
+        Ok(Self { root, policy })
     }
 
     /// Validates a supplied row prediction and authenticated custody leg. The
@@ -132,17 +113,10 @@ impl BondRegistrationContext {
             predicted_initial_row,
         };
         let prepared: node_core::bond_lifecycle::registration::PreparedBondRegistration =
-            node_core::bond_lifecycle::registration::prepare_bond_registration(
-                &self.resolver,
-                &self.pinned.manifest,
-                self.pinned.digest,
-                request,
-            )
-            .map_err(LocalBondRegistrationError::Registration)?;
+            node_core::bond_lifecycle::registration::prepare_bond_registration(&self.root, request)
+                .map_err(LocalBondRegistrationError::Registration)?;
         Ok(PreparedLocalBondRegistration {
-            manifest: self.pinned.manifest.clone(),
-            resolver: self.resolver.clone(),
-            genesis_digest: self.pinned.digest,
+            root: self.root.clone(),
             prepared,
         })
     }
@@ -151,9 +125,7 @@ impl BondRegistrationContext {
 /// Immutable, structurally validated registration claim. No public mutable
 /// intent or independent signing-key assertion can replace its prepared fields.
 pub struct PreparedLocalBondRegistration {
-    manifest: GenesisManifest,
-    resolver: HashSuiteResolver,
-    genesis_digest: Digest32,
+    root: VerifiedGenesisRoot,
     prepared: node_core::bond_lifecycle::registration::PreparedBondRegistration,
 }
 
@@ -188,13 +160,8 @@ impl PreparedLocalBondRegistration {
         };
         let bytes: Vec<u8> = encode_signed_bond_registration_intent(&signed)
             .map_err(LocalBondRegistrationError::Registration)?;
-        verify_signed_bond_registration(
-            &self.resolver,
-            &self.manifest,
-            self.genesis_digest,
-            &bytes,
-        )
-        .map_err(LocalBondRegistrationError::Registration)?;
+        verify_signed_bond_registration(&self.root, &bytes)
+            .map_err(LocalBondRegistrationError::Registration)?;
         Ok(bytes)
     }
 }

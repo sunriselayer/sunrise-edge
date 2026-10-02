@@ -34,7 +34,7 @@ use execution::local_execution::{
 use execution::publication::{PublicationContext, encode_publication_context};
 use fee_claims::codec::{FeeClaimOperation, SignedFeeClaimIntent, decode_signed_fee_claim_intent};
 use fee_claims::{fee_claim_intent_digest, fee_claim_receipt_digest, fee_claim_signing_frame};
-use genesis::{GenesisManifest, genesis_manifest_commitment, genesis_manifest_signing_frame};
+use genesis::{GenesisManifest, VerifiedGenesisRoot};
 use protocol_types::{SignatureSchemeId, ValidatorId};
 use validator_set::{ValidatorInfo, ValidatorSet};
 
@@ -64,8 +64,8 @@ const HANDOFF_ANCHOR_DOMAIN_LABEL: &[u8] = b"se/ordered-economics/anchor/v2";
 ///
 /// This is the one production constructor. SDK, operator and tests must all
 /// derive the anchor through it (or through
-/// [`OrderedEconomicsPolicy::new`], which calls it) so no caller can select
-/// alternative parameters locally.
+/// [`OrderedEconomicsPolicy::from_genesis_root`]/[`OrderedEconomicsPolicy::historical`],
+/// which call it) so no caller can select alternative parameters locally.
 pub fn ordered_economics_authority_anchor(
     resolver: &HashSuiteResolver,
     context: &PublicationContext,
@@ -144,91 +144,74 @@ pub struct OrderedEconomicsPolicy {
 }
 
 impl OrderedEconomicsPolicy {
-    /// Creates the canonical anchor for one fixed-epoch profile and the
-    /// existing [`ConsensusParameters::genesis`] engine around it. A supplied
-    /// signed genesis manifest must match the independently pinned digest,
-    /// context and initial validator set; only that path enables Freeze.
-    /// `None` preserves the historical fixed-epoch profile but cannot Freeze.
-    pub fn new(
+    /// Derives the fixed-epoch profile directly from one immutable
+    /// [`VerifiedGenesisRoot`] (DR-0182).
+    ///
+    /// The root's context, digest, admission profile, original committee and
+    /// resolver are already mutually consistent by construction, so this
+    /// constructor performs no independent cross-check among them: that is
+    /// not a missing validation gap, it is redundant, because the root makes
+    /// disagreement among those values unrepresentable. Only a
+    /// causal-admission root's positive Freeze height enables Freeze and
+    /// initial bond registration.
+    pub fn from_genesis_root(
+        root: &VerifiedGenesisRoot,
+        domain: AtomicityDomainId,
+    ) -> Result<Self, OrderedEconomicsError> {
+        let manifest: &GenesisManifest = root.manifest();
+        let registration_economics: Option<crate::economics::FastPathEconomicsPolicy> = (manifest
+            .commitment_profile
+            == crate::logical_generation::CommitmentProfile::CausalAdmission)
+            .then(|| manifest.economics_policy.clone());
+        Self::build(
+            root.genesis_context().clone(),
+            domain,
+            root.digest(),
+            Some(root.admission_profile().clone()),
+            registration_economics,
+            manifest.minimum_freeze_block_height,
+            root.genesis_committee().clone(),
+            root.genesis_resolver().clone(),
+        )
+    }
+
+    /// Creates the canonical anchor for one fixed-epoch profile with no
+    /// signed genesis manifest at all.
+    ///
+    /// This is for a genuinely manifest-free historical consumer only: the
+    /// resulting policy carries no admission profile, cannot Freeze and
+    /// cannot authenticate initial bond registration; it can still mutate an
+    /// already-installed historical profile.
+    pub fn historical(
         context: PublicationContext,
         domain: AtomicityDomainId,
         genesis_digest: Digest32,
-        genesis_manifest: Option<&GenesisManifest>,
         validator_set: ValidatorSet,
         resolver: HashSuiteResolver,
     ) -> Result<Self, OrderedEconomicsError> {
-        let admission_profile: Option<VerifiedAdmissionProfile> = genesis_manifest
-            .map(|manifest| {
-                VerifiedAdmissionProfile::from_pinned_genesis(&resolver, manifest, genesis_digest)
-                    .map_err(|_| {
-                        OrderedEconomicsError::Policy(
-                            "signed genesis admission profile verification failed",
-                        )
-                    })
-            })
-            .transpose()?;
-        let minimum_freeze_block_height: u64 = match genesis_manifest {
-            Some(manifest) => {
-                if manifest.context() != &context || manifest.validator_set.context != context {
-                    return Err(OrderedEconomicsError::Policy(
-                        "signed genesis manifest does not match ordered context",
-                    ));
-                }
-                let derived_digest: Digest32 = genesis_manifest_commitment(&resolver, manifest)
-                    .map_err(|_| {
-                        OrderedEconomicsError::Policy(
-                            "signed genesis manifest commitment is invalid",
-                        )
-                    })?;
-                if derived_digest != genesis_digest {
-                    return Err(OrderedEconomicsError::Policy(
-                        "signed genesis manifest does not match the pinned digest",
-                    ));
-                }
-                let frame: Vec<u8> = genesis_manifest_signing_frame(manifest).map_err(|_| {
-                    OrderedEconomicsError::Policy("signed genesis manifest frame is invalid")
-                })?;
-                let verifier: Ed25519Verifier =
-                    Ed25519Verifier::from_verifying_key_bytes(&manifest.genesis_authority)
-                        .map_err(|_| {
-                            OrderedEconomicsError::Policy(
-                                "signed genesis manifest authority is invalid",
-                            )
-                        })?;
-                if !verifier
-                    .verify_framed(&frame, &manifest.signature)
-                    .map_err(|_| {
-                        OrderedEconomicsError::Policy("signed genesis manifest verification failed")
-                    })?
-                {
-                    return Err(OrderedEconomicsError::Policy(
-                        "signed genesis manifest signature is invalid",
-                    ));
-                }
-                let signed_members: Vec<ValidatorInfo> = manifest
-                    .validator_set
-                    .validators
-                    .iter()
-                    .map(|entry| ValidatorInfo {
-                        id: entry.id,
-                        voting_power: entry.voting_power,
-                        signature_scheme: entry.signature_scheme,
-                        public_key: entry.public_key.clone(),
-                    })
-                    .collect();
-                let signed_set: ValidatorSet = ValidatorSet::new(context.epoch(), signed_members)
-                    .map_err(|_| {
-                    OrderedEconomicsError::Policy("signed genesis validator set is invalid")
-                })?;
-                if signed_set.validators() != validator_set.validators() {
-                    return Err(OrderedEconomicsError::Policy(
-                        "ordered validator set disagrees with signed genesis",
-                    ));
-                }
-                manifest.minimum_freeze_block_height
-            }
-            None => 0,
-        };
+        Self::build(
+            context,
+            domain,
+            genesis_digest,
+            None,
+            None,
+            0,
+            validator_set,
+            resolver,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        context: PublicationContext,
+        domain: AtomicityDomainId,
+        genesis_digest: Digest32,
+        admission_profile: Option<VerifiedAdmissionProfile>,
+        registration_economics: Option<crate::economics::FastPathEconomicsPolicy>,
+        minimum_freeze_block_height: u64,
+        validator_set: ValidatorSet,
+        resolver: HashSuiteResolver,
+    ) -> Result<Self, OrderedEconomicsError> {
         let anchor: Digest32 = ordered_economics_authority_anchor(
             &resolver,
             &context,
@@ -252,17 +235,21 @@ impl OrderedEconomicsPolicy {
             domain,
             genesis_digest,
             admission_profile,
-            registration_economics: genesis_manifest
-                .filter(|manifest| {
-                    manifest.commitment_profile
-                        == crate::logical_generation::CommitmentProfile::CausalAdmission
-                })
-                .map(|manifest| manifest.economics_policy.clone()),
+            registration_economics,
             minimum_freeze_block_height,
             anchor,
             engine,
             resolver,
         })
+    }
+
+    /// Returns the sole current active hash suite resolver this policy was
+    /// derived from. [`OrderedEconomicsEnvironment`] and native HTTP
+    /// `OrderedEconomicsState` obtain their resolver from this method rather
+    /// than a separately supplied field (DR-0182).
+    #[must_use]
+    pub const fn resolver(&self) -> &HashSuiteResolver {
+        &self.resolver
     }
 
     /// Returns the pinned existing consensus engine instance.
@@ -343,7 +330,6 @@ impl OrderedEconomicsPolicy {
             LocalExecutionPolicy::generic_object_results(self.context.clone());
         let authentication: CandidateAuthentication<'_> = CandidateAuthentication {
             policy: self,
-            resolver: &self.resolver,
             leg_policy: &leg_policy,
         };
         authenticate_with_policy(&authentication, candidate)
@@ -420,8 +406,15 @@ impl OrderedEconomicsPolicy {
 
 struct CandidateAuthentication<'a> {
     policy: &'a OrderedEconomicsPolicy,
-    resolver: &'a HashSuiteResolver,
     leg_policy: &'a LocalExecutionPolicy,
+}
+
+impl<'a> CandidateAuthentication<'a> {
+    /// Returns the sole current resolver, borrowed from `policy` rather than
+    /// carried as a separately caller-selected field (DR-0182).
+    fn resolver(&self) -> &'a HashSuiteResolver {
+        self.policy.resolver()
+    }
 }
 
 /// Immutable evidence about exact original bytes under this pinned policy.
@@ -449,7 +442,7 @@ pub(super) fn authenticate_ordered_operation<'a>(
     authenticate_candidate(env, candidate)?;
     let bytes: Vec<u8> = encode_ordered_candidate(candidate)?;
     let digest: Digest32 =
-        super::engine::candidate_digest(env.resolver, candidate.context.epoch(), &bytes)?;
+        super::engine::candidate_digest(env.resolver(), candidate.context.epoch(), &bytes)?;
     Ok(AuthenticatedOrderedOperation { candidate, digest })
 }
 
@@ -471,8 +464,6 @@ fn receipt_digest_error<E>(_error: E) -> OrderedEconomicsError {
 pub struct OrderedEconomicsEnvironment<'a> {
     /// Fixed-epoch policy anchor.
     pub policy: &'a OrderedEconomicsPolicy,
-    /// Active hash suite resolver.
-    pub resolver: &'a HashSuiteResolver,
     /// Historical resolvers for bounded backward-compatible verification.
     pub history: &'a [HashSuiteResolver],
     /// Local execution admission/authentication policy.
@@ -481,6 +472,17 @@ pub struct OrderedEconomicsEnvironment<'a> {
     pub engine: &'a dyn LocalContractEngine,
     /// Blob store backing large object bodies.
     pub blobs: &'a dyn BlobStore,
+}
+
+impl<'a> OrderedEconomicsEnvironment<'a> {
+    /// Returns the sole current active hash suite resolver, borrowed from
+    /// [`Self::policy`] rather than carried as a separately caller-selected
+    /// field (DR-0182): `policy` and this environment's resolver can
+    /// therefore never disagree.
+    #[must_use]
+    pub const fn resolver(&self) -> &'a HashSuiteResolver {
+        self.policy.resolver()
+    }
 }
 
 /// Adapts the existing [`crypto::Ed25519Verifier`]/[`SignatureVerifier`] to
@@ -585,7 +587,7 @@ fn authenticate_leg(
     leg: &[u8],
 ) -> Result<AuthenticatedLocalExecutionIntent, OrderedEconomicsError> {
     let authenticated: AuthenticatedLocalExecutionIntent =
-        authenticate_local_execution(env.resolver, env.leg_policy, leg).map_err(|_| {
+        authenticate_local_execution(env.resolver(), env.leg_policy, leg).map_err(|_| {
             OrderedEconomicsError::Unauthenticated("invalid ordered candidate leg signature")
         })?;
     let call = &authenticated.intent().call;
@@ -642,7 +644,6 @@ pub fn authenticate_candidate(
 ) -> Result<(), OrderedEconomicsError> {
     let authentication: CandidateAuthentication<'_> = CandidateAuthentication {
         policy: env.policy,
-        resolver: env.resolver,
         leg_policy: env.leg_policy,
     };
     authenticate_with_policy(&authentication, candidate)
@@ -805,7 +806,7 @@ fn authenticate_fee_claim(
         ));
     }
     let public_key: Vec<u8> = trusted_registered_key(env, signed.intent.validator_id)?.to_vec();
-    let intent_digest: Digest32 = fee_claim_intent_digest(env.resolver, &signed.intent)
+    let intent_digest: Digest32 = fee_claim_intent_digest(env.resolver(), &signed.intent)
         .map_err(|_| OrderedEconomicsError::Unauthenticated("fee claim intent digest"))?;
     let framed: Vec<u8> = fee_claim_signing_frame(&signed.intent.context, intent_digest)
         .map_err(|_| OrderedEconomicsError::Unauthenticated("fee claim signing frame"))?;
@@ -867,7 +868,7 @@ fn authenticate_bond_lifecycle(
         ));
     }
     let public_key: Vec<u8> = trusted_registered_key(env, signed.intent.validator_id)?.to_vec();
-    let intent_digest: Digest32 = bond_lifecycle_intent_digest(env.resolver, &signed.intent)
+    let intent_digest: Digest32 = bond_lifecycle_intent_digest(env.resolver(), &signed.intent)
         .map_err(|_| OrderedEconomicsError::Unauthenticated("bond lifecycle intent digest"))?;
     let framed: Vec<u8> = bond_lifecycle_signing_frame(&signed.intent.context, intent_digest)
         .map_err(|_| OrderedEconomicsError::Unauthenticated("bond lifecycle signing frame"))?;
@@ -938,7 +939,7 @@ fn authenticate_bond_registration(
                 "registration signed resource policy missing",
             ))?;
     let (signed, _) = bond_lifecycle::registration::authenticate_registration(
-        env.resolver,
+        env.resolver(),
         profile,
         env.policy.engine().validator_set(),
         economics,
