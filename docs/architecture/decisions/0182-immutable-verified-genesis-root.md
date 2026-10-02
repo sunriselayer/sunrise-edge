@@ -37,7 +37,15 @@ Keep installation, fresh installed-row fencing, historical verification and
 live serving authority separate. The root authenticates original genesis, not
 all bootstrap effects or any later epoch's right to sign. Preserve independent
 policy/history/domain consistency checks in reconstruction and real private
-genesis installation. No canonical bytes or protocol IDs change.
+genesis installation. Remove the public admission-profile authenticator and
+operator raw-manifest loader rather than preserve parallel verification paths.
+Ordered environment/HTTP state get the current resolver from their policy;
+registered bond verification gets it from the root. Reconstruction additionally
+matches the root-derived anchor/committee/full resolver schedule, rejecting an
+internally consistent historical policy/archive substituted for signed Freeze.
+The existing first-epoch host retains actual installed/live-pin, signer and
+writer checks; root-derived configuration is not later-epoch activation.
+No canonical bytes or protocol IDs change.
 
 ## Alternatives and consequences
 
