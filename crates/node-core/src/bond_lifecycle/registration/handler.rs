@@ -146,7 +146,7 @@ fn verify_chain<S: VersionedStateReader + ?Sized>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn require_pristine<S: StructuredDurableDomainStateStore>(
+fn require_pristine<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -163,10 +163,10 @@ fn require_pristine<S: StructuredDurableDomainStateStore>(
     let anchor_key: Vec<u8> = bond_registration_anchor_key(chain, &intent.validator_id)?;
     let transition_key: Vec<u8> =
         local_instance_state::fastpath_bond_transition_key(chain, &intent.validator_id, 1)?;
-    let bond: VersionedStateValue = store.get_versioned_durable(context, domain, &bond_key)?;
-    let anchor: VersionedStateValue = store.get_versioned_durable(context, domain, &anchor_key)?;
+    let bond: VersionedStateValue = store.read_versioned_state(context, domain, &bond_key)?;
+    let anchor: VersionedStateValue = store.read_versioned_state(context, domain, &anchor_key)?;
     let transition: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &transition_key)?;
+        store.read_versioned_state(context, domain, &transition_key)?;
     record_read(reads, bond_key, &bond)?;
     record_read(reads, anchor_key, &anchor)?;
     record_read(reads, transition_key, &transition)?;
@@ -206,9 +206,9 @@ fn require_pristine<S: StructuredDurableDomainStateStore>(
     }
 }
 
-/// Owning preflight; exact reads are also captured by the ordered staging
-/// adapter. Refusal never authorizes overwriting a registered root.
-pub(crate) fn preflight_registration<S: StructuredDurableDomainStateStore>(
+/// Owning preflight; exact reads are also captured by the ordered observation
+/// scope. Refusal never authorizes overwriting a registered root.
+pub(crate) fn preflight_registration<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -221,7 +221,7 @@ pub(crate) fn preflight_registration<S: StructuredDurableDomainStateStore>(
 /// Owning pristine-slot observations join fresh signing's exact CAS. A
 /// healthy existing registered root remains a prefix-derived refusal, never
 /// a tombstone/noninitial absence silently reused as a fresh identity.
-pub(crate) fn verify_registration_admission<S: StructuredDurableDomainStateStore>(
+pub(crate) fn verify_registration_admission<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -339,13 +339,13 @@ fn validate_effects(
 /// Only the committed ordered dispatcher obtains the precise reservation
 /// capability. There is deliberately no public standalone writer.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn handle_bond_registration_ordered<S: StructuredDurableDomainStateStore>(
+pub(crate) fn prepare_bond_registration_ordered<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
     ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
-) -> Result<NodeOutput, BondRegistrationError> {
+) -> Result<InvocationPreparation, BondRegistrationError> {
     let policy: &OrderedEconomicsPolicy = env.policy;
     let domain: AtomicityDomainId = policy.domain();
     let (profile, economics) = policy_inputs(policy)?;
@@ -369,7 +369,7 @@ pub(crate) fn handle_bond_registration_ordered<S: StructuredDurableDomainStateSt
     if let Some(output) =
         durable_reconciliation::reconcile_receipt(store, context, domain, request, event)?
     {
-        return Ok(output);
+        return Ok(InvocationPreparation::Retained(output));
     }
     let admission = ordered
         .filter(|admission| admission.request_id == intent.request_id)
@@ -427,7 +427,7 @@ pub(crate) fn handle_bond_registration_ordered<S: StructuredDurableDomainStateSt
     let policy_key: Vec<u8> =
         local_instance_state::fastpath_economics_policy_key(&intent.resource_context)?;
     let installed: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &policy_key)?;
+        store.read_versioned_state(context, domain, &policy_key)?;
     record_read(&mut reads, policy_key, &installed)?;
     let actual_economics: FastPathEconomicsPolicy =
         decode_fastpath_economics_policy(installed.value().ok_or(
@@ -658,8 +658,24 @@ pub(crate) fn handle_bond_registration_ordered<S: StructuredDurableDomainStateSt
         receipt,
         None,
     )?;
-    Ok(durable_reconciliation::committed_output(
-        store.commit_invocation(context, transaction),
-        output,
-    )?)
+    Ok(InvocationPreparation::Prepared(
+        PreparedBusinessInvocation::new(transaction, output)?,
+    ))
+}
+
+/// Test-only real-store wrapper for original receipt replay regressions.
+/// Production has no standalone registration writer: its dispatcher owns
+/// the actual ordered completion around the shared preparation above.
+#[cfg(test)]
+pub(crate) fn handle_bond_registration_ordered<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+    ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
+) -> Result<NodeOutput, BondRegistrationError> {
+    Ok(
+        prepare_bond_registration_ordered(store, context, env, candidate, ordered)?
+            .commit(store, context)?,
+    )
 }

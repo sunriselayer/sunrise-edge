@@ -149,14 +149,14 @@ struct HistoricalObjectVersion {
 
 /// An authority sidecar is written exactly once alongside a newly created
 /// object. A tombstone or rewritten revision is never an authentic absence.
-fn exact_authority_exists<S: StructuredDurableDomainStateStore>(
+fn exact_authority_exists<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     expected: &ObjectAuthority,
 ) -> Result<bool, FeeClaimError> {
     let key: Vec<u8> = local_instance_state::object_authority_key(expected.object_id);
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     let Some(bytes) = observed.value() else {
         if observed.revision() != StateRevision::INITIAL {
             return Err(FeeClaimError::Invalid(
@@ -177,7 +177,7 @@ fn exact_authority_exists<S: StructuredDurableDomainStateStore>(
 /// Checks the original escrow's immutable authority sidecar against the
 /// genesis-pinned fee resource. The same id is retained through all escrow
 /// versions; there is no mutable per-version authority row.
-pub(super) fn verify_escrow_authority<S: StructuredDurableDomainStateStore>(
+pub(super) fn verify_escrow_authority<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -202,7 +202,7 @@ pub(super) fn verify_escrow_authority<S: StructuredDurableDomainStateStore>(
 /// search only checks that this *signed id* could have arisen from the
 /// authenticated leg; it never selects a substitute payout from storage.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn verify_signed_payout<S: StructuredDurableDomainStateStore>(
+pub(super) fn verify_signed_payout<S: StructuredStateReader>(
     store: &S,
     blob_store: &dyn BlobStore,
     context: &DurableOperationContext,
@@ -259,7 +259,7 @@ pub(super) fn verify_signed_payout<S: StructuredDurableDomainStateStore>(
         };
         if exact_authority_exists(store, context, domain, &extra_authority)?
             || store
-                .get_object_version(context, domain, candidate, version_one)?
+                .read_object_version(context, domain, candidate, version_one)?
                 .is_some()
         {
             return Err(FeeClaimError::Invalid(
@@ -330,7 +330,7 @@ pub(super) fn verify_signed_payout<S: StructuredDurableDomainStateStore>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn load_historical_object_version<S: StructuredDurableDomainStateStore>(
+fn load_historical_object_version<S: StructuredStateReader>(
     store: &S,
     blob_store: &dyn BlobStore,
     context: &DurableOperationContext,
@@ -345,7 +345,7 @@ fn load_historical_object_version<S: StructuredDurableDomainStateStore>(
         FeeClaimError::Invalid("fee claim chain escrow object version"),
     )?;
     let record: DurableObjectVersionRecord = store
-        .get_object_version(context, domain, object_id, object_version)?
+        .read_object_version(context, domain, object_id, object_version)?
         .ok_or(NodeCoreError::ObjectRecordMissing { object_id })?;
     if record.object_id() != object_id || record.object_version() != object_version {
         return Err(NodeCoreError::ObjectRecordMismatch { object_id }.into());
@@ -554,7 +554,7 @@ fn fee_claim_chain_max_generation() -> Result<u64, FeeClaimError> {
 /// [`verify_fee_claim_chain_scanned`] each add that proof afterward, by two
 /// different means, and are the only callers this function should have.
 #[allow(clippy::too_many_arguments)]
-fn verify_fee_claim_chain_walk<S: StructuredDurableDomainStateStore>(
+fn verify_fee_claim_chain_walk<S: StructuredStateReader>(
     store: &S,
     blob_store: &dyn BlobStore,
     context: &DurableOperationContext,
@@ -619,7 +619,7 @@ fn verify_fee_claim_chain_walk<S: StructuredDurableDomainStateStore>(
     let settlement_key: Vec<u8> =
         local_instance_state::fastpath_settlement_key(&chain_id, &genesis_row.request_id)?;
     let installed_observed: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &settlement_key)?;
+        store.read_versioned_state(context, domain, &settlement_key)?;
     let installed_bytes: &[u8] = installed_observed.value().ok_or(FeeClaimError::Invalid(
         "fee claim chain installed settlement row missing",
     ))?;
@@ -720,7 +720,7 @@ fn verify_fee_claim_chain_walk<S: StructuredDurableDomainStateStore>(
             next_generation,
         )?;
         let claim_observed: VersionedStateValue =
-            store.get_versioned_durable(context, domain, &claim_key)?;
+            store.read_versioned_state(context, domain, &claim_key)?;
         let claim_bytes: &[u8] = claim_observed.value().ok_or(FeeClaimError::Invalid(
             "fee claim chain missing or orphaned envelope",
         ))?;
@@ -923,8 +923,8 @@ fn verify_fee_claim_chain_walk<S: StructuredDurableDomainStateStore>(
 /// to observe absence. This is the historical strategy, kept exactly as it
 /// behaved before this module gained a scanner-backed alternative; it is
 /// the only strategy available to a caller that has nothing but a plain
-/// [`StructuredDurableDomainStateStore`].
-fn verify_no_orphan_claims_by_point_read<S: StructuredDurableDomainStateStore>(
+/// [`StructuredStateReader`].
+fn verify_no_orphan_claims_by_point_read<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -946,7 +946,7 @@ fn verify_no_orphan_claims_by_point_read<S: StructuredDurableDomainStateStore>(
         let orphan_key: Vec<u8> =
             local_instance_state::fastpath_fee_claim_key(chain_id, &request_id, orphan_generation)?;
         let orphan: VersionedStateValue =
-            store.get_versioned_durable(context, domain, &orphan_key)?;
+            store.read_versioned_state(context, domain, &orphan_key)?;
         if orphan.revision() != StateRevision::INITIAL || orphan.value().is_some() {
             return Err(FeeClaimError::Invalid("fee claim chain orphan envelope"));
         }
@@ -1046,12 +1046,12 @@ pub(super) fn verify_claim_key_range_scanned<S: DurableStateKeyScanner>(
 /// no orphaned envelope exists beyond the installed generation using up to
 /// 257 absent point reads. This is the
 /// original, unchanged public entry point: it requires only a plain
-/// [`StructuredDurableDomainStateStore`] and remains available for any
+/// [`StructuredStateReader`] and remains available for any
 /// caller (such as a protocol transition) that must not depend on the
 /// optional scanner trait. See [`verify_fee_claim_chain_scanned`] for the
 /// bounded, single-scan alternative used by the inventory sweep.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn verify_fee_claim_chain<S: StructuredDurableDomainStateStore>(
+pub(super) fn verify_fee_claim_chain<S: StructuredStateReader>(
     store: &S,
     blob_store: &dyn BlobStore,
     context: &DurableOperationContext,

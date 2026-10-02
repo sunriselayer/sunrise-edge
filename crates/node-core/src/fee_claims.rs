@@ -61,6 +61,7 @@ use crate::fast_path::records::{
 use crate::local_execution::{
     AdmittedLeg, CustodyEffectMode, LocalExecutionAdmissionError, admit_and_execute_leg,
 };
+use crate::operation_preparation::{InvocationPreparation, PreparedBusinessInvocation};
 use bonds::BondResourceId;
 use crypto::{Ed25519Verifier, SignatureDomain, SignatureMessageType, SignatureVerifier};
 use execution::local_execution::{
@@ -74,7 +75,10 @@ use execution::protocol_custody::{
 use execution::publication::PublicationContext;
 use objects::{ProtocolCustodyPurpose, ProtocolCustodyScope};
 use protocol_types::SignatureSchemeId;
-use runtime::{StateAssemblyError, StateObservationSet, StateTransactionBuilder};
+use runtime::{
+    StateAssemblyError, StateObservationSet, StateTransactionBuilder, StructuredStateReader,
+    VersionedStateReader,
+};
 use validator_set::ValidatorSet;
 
 pub mod codec;
@@ -350,7 +354,7 @@ fn resource_policy(
 /// Reads the paid policy at the certificate epoch, then the signed
 /// `0x642C/v1` economics policy at the defining code's pinned context.
 /// Both reads are fenced into the claim commit.
-fn read_economics_policy<S: StructuredDurableDomainStateStore>(
+fn read_economics_policy<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -359,7 +363,7 @@ fn read_economics_policy<S: StructuredDurableDomainStateStore>(
 ) -> Result<(PaidFeePolicy, FastPathEconomicsPolicy), FeeClaimError> {
     let fee_key: Vec<u8> = local_instance_state::paid_fee_policy_key(certificate_context)?;
     let fee_observed: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &fee_key)?;
+        store.read_versioned_state(context, domain, &fee_key)?;
     if let Some(old) = reads.insert(fee_key, fee_observed.revision())
         && old != fee_observed.revision()
     {
@@ -376,7 +380,7 @@ fn read_economics_policy<S: StructuredDurableDomainStateStore>(
     }
     let resource_context: &PublicationContext = fee_policy.code.context();
     let key: Vec<u8> = local_instance_state::fastpath_economics_policy_key(resource_context)?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     if let Some(old) = reads.insert(key, observed.revision())
         && old != observed.revision()
     {
@@ -416,7 +420,7 @@ pub struct FeeClaimVerificationReport {
 /// instead. Every other check -- certificate/witness/economics/origin -- is
 /// the exact same shared code in both cases.
 #[allow(clippy::too_many_arguments)]
-pub fn verify_fee_claim_history<S: StructuredDurableDomainStateStore>(
+pub fn verify_fee_claim_history<S: StructuredStateReader>(
     store: &S,
     blob_store: &dyn BlobStore,
     context: &DurableOperationContext,
@@ -469,7 +473,7 @@ pub fn verify_fee_claim_history<S: StructuredDurableDomainStateStore>(
 /// [`verify::verify_no_orphan_claims_by_point_read`]'s strategy (an uncharged
 /// row is the `target_generation == 0` case) without depending on that
 /// function's private visibility.
-fn verify_uncharged_claim_absence_by_point_read<S: StructuredDurableDomainStateStore>(
+fn verify_uncharged_claim_absence_by_point_read<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -485,7 +489,7 @@ fn verify_uncharged_claim_absence_by_point_read<S: StructuredDurableDomainStateS
         let impossible_claim_key: Vec<u8> =
             local_instance_state::fastpath_fee_claim_key(chain, escrow_request_id, generation)?;
         let impossible_claim: VersionedStateValue =
-            store.get_versioned_durable(context, domain, &impossible_claim_key)?;
+            store.read_versioned_state(context, domain, &impossible_claim_key)?;
         if impossible_claim.revision() != StateRevision::INITIAL
             || impossible_claim.value().is_some()
         {
@@ -521,7 +525,7 @@ fn verify_fee_claim_history_shared<S, UnchargedCheck, ChainVerify>(
     verify_claim_chain: ChainVerify,
 ) -> Result<FeeClaimVerificationReport, FeeClaimError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader,
     UnchargedCheck: FnOnce() -> Result<(), FeeClaimError>,
     ChainVerify: FnOnce(
         &HashSuiteResolver,
@@ -538,7 +542,7 @@ where
     let settlement_key: Vec<u8> =
         local_instance_state::fastpath_settlement_key(chain, escrow_request_id)?;
     let installed: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &settlement_key)?;
+        store.read_versioned_state(context, domain, &settlement_key)?;
     let installed_bytes: &[u8] = installed
         .value()
         .ok_or(FeeClaimError::Invalid("fee claim settlement missing"))?;
@@ -560,7 +564,7 @@ where
     let certificate_key: Vec<u8> =
         local_instance_state::fastpath_certificate_key(chain, escrow_request_id)?;
     let certificate_observed: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &certificate_key)?;
+        store.read_versioned_state(context, domain, &certificate_key)?;
     let certificate_record: crate::fast_path::records::FastPathCertificateRecord =
         crate::fast_path::records::decode_fastpath_certificate_record(
             certificate_observed
@@ -608,7 +612,7 @@ where
     let witness_key: Vec<u8> =
         local_instance_state::fastpath_commitment_witness_key(chain, escrow_request_id)?;
     let witness_observed: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &witness_key)?;
+        store.read_versioned_state(context, domain, &witness_key)?;
     let witness_bytes: &[u8] = witness_observed.value().ok_or(FeeClaimError::Invalid(
         "fee claim commitment witness missing",
     ))?;
@@ -774,7 +778,7 @@ where
 /// retained escrow, while this pass proves the signed leg was one the live
 /// handler could have admitted at its recorded claim context.
 #[allow(clippy::too_many_arguments)]
-fn verify_retained_claim_legs<S: StructuredDurableDomainStateStore>(
+fn verify_retained_claim_legs<S: StructuredStateReader>(
     store: &S,
     blob_store: &dyn BlobStore,
     context: &DurableOperationContext,
@@ -795,7 +799,7 @@ fn verify_retained_claim_legs<S: StructuredDurableDomainStateStore>(
             escrow_request_id,
             generation,
         )?;
-        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
         let signed: SignedFeeClaimIntent = decode_signed_fee_claim_intent(
             observed
                 .value()
@@ -829,7 +833,7 @@ fn verify_retained_claim_legs<S: StructuredDurableDomainStateStore>(
             policy.profile(),
         )?;
         let policy_observed: VersionedStateValue =
-            store.get_versioned_durable(context, domain, &policy_key)?;
+            store.read_versioned_state(context, domain, &policy_key)?;
         if policy_observed.value() != Some(policy.encode()?.as_slice()) {
             return Err(FeeClaimError::Invalid(
                 "fee claim historical leg policy absent or different",
@@ -941,7 +945,8 @@ fn fee_claim_capability(
 /// derives the exact claim kind from its own bookkeeping, and loads and
 /// verifies against the chain-anchored historical validator set at the
 /// signed certificate epoch. Dispatches into a zero-I/O claim or a
-/// leg-executing positive claim, each committing through [`commit`].
+/// leg-executing positive claim. Preparation is writer-free; this direct
+/// entry point alone commits the resulting original invocation.
 #[allow(clippy::too_many_arguments)]
 pub fn handle_fee_claim<S, E>(
     store: &S,
@@ -960,7 +965,7 @@ where
     S: StructuredDurableDomainStateStore,
     E: LocalContractEngine + ?Sized,
 {
-    handle_fee_claim_ordered(
+    Ok(prepare_fee_claim_ordered(
         store,
         blob_store,
         context,
@@ -973,7 +978,8 @@ where
         signed_bytes,
         created_checkpoint,
         None,
-    )
+    )?
+    .commit(store, context)?)
 }
 
 /// [`handle_fee_claim`] plus DR-0153's private admitted-candidate capability,
@@ -982,7 +988,7 @@ where
 /// is the one implementation: the ordered path shares every existing
 /// entitlement, value-conservation and custody check unmodified.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn handle_fee_claim_ordered<S, E>(
+pub(crate) fn prepare_fee_claim_ordered<S, E>(
     store: &S,
     blob_store: &dyn BlobStore,
     context: &DurableOperationContext,
@@ -995,9 +1001,9 @@ pub(crate) fn handle_fee_claim_ordered<S, E>(
     signed_bytes: &[u8],
     created_checkpoint: u64,
     ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
-) -> Result<NodeOutput, FeeClaimError>
+) -> Result<InvocationPreparation, FeeClaimError>
 where
-    S: StructuredDurableDomainStateStore,
+    S: StructuredStateReader,
     E: LocalContractEngine + ?Sized,
 {
     if history.len() > publication::MAX_PUBLICATION_HISTORY {
@@ -1051,7 +1057,7 @@ where
         request_id,
         receipt_digest,
     )? {
-        return Ok(output);
+        return Ok(InvocationPreparation::Retained(output));
     }
     // Keep this v1 Split refusal *after* reconciliation: an exact replay of
     // a previously committed v1 claim must return its old receipt, while a
@@ -1093,7 +1099,7 @@ where
         &signed.intent.escrow_request_id,
     )?;
     let settlement_observed: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &settlement_key)?;
+        store.read_versioned_state(context, domain, &settlement_key)?;
     let settlement_row_revision: StateRevision = settlement_observed.revision();
     reads.insert(settlement_key.clone(), settlement_row_revision);
     let previous_settlement_bytes: Vec<u8> = settlement_observed
@@ -1194,7 +1200,7 @@ where
     if is_zero {
         let new_settlement: FastPathSettlementRecord =
             preparation::advance_claim_row(&settlement, share_index, None)?;
-        return commit(
+        return prepare_claim_invocation(
             store,
             context,
             domain,
@@ -1243,7 +1249,7 @@ where
     {
         return Err(FeeClaimError::Invalid("signed payout ref mismatch"));
     }
-    commit(
+    prepare_claim_invocation(
         store,
         context,
         domain,
@@ -1264,12 +1270,12 @@ where
     )
 }
 
-/// One atomic commit: every touched object head, the new settlement row
+/// Prepare one atomic invocation: every touched object head, the new settlement row
 /// (CAS-fenced against the exact previously read revision), every other
 /// fenced read (epoch, historical validator-set rows, economics policy, the
 /// sender-nonce range for a positive claim), and the one outer receipt.
 #[allow(clippy::too_many_arguments)]
-fn commit<S: StructuredDurableDomainStateStore>(
+fn prepare_claim_invocation<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1287,7 +1293,7 @@ fn commit<S: StructuredDurableDomainStateStore>(
     object_mutations: Vec<DurableObjectMutationEntry>,
     mut state_mutations: Vec<StateMutationEntry>,
     nonce: Option<&PendingSenderNonceWrite>,
-) -> Result<NodeOutput, FeeClaimError> {
+) -> Result<InvocationPreparation, FeeClaimError> {
     let new_settlement_bytes: Vec<u8> = encode_fastpath_settlement_record(&new_settlement)?;
     // Hashed at the row's own (fixed, certificate) context epoch, exactly
     // like the previous-row digest check above.
@@ -1305,7 +1311,7 @@ fn commit<S: StructuredDurableDomainStateStore>(
         new_settlement.generation,
     )?;
     let claim_observed: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &claim_key)?;
+        store.read_versioned_state(context, domain, &claim_key)?;
     if claim_observed.revision() != StateRevision::INITIAL || claim_observed.value().is_some() {
         return Err(FeeClaimError::Invalid(
             "fee claim generation already recorded",
@@ -1380,14 +1386,15 @@ fn commit<S: StructuredDurableDomainStateStore>(
         receipt,
         None,
     )?;
-    Ok(durable_reconciliation::committed_output(
-        store.commit_invocation(context, transaction),
-        output,
-    )?)
+    Ok(InvocationPreparation::Prepared(
+        PreparedBusinessInvocation::new(transaction, output)?,
+    ))
 }
 
 #[cfg(test)]
 mod observed_completion_tests;
+#[cfg(test)]
+pub(crate) mod writer_free_preparation_tests;
 /// Focused coverage for [`verify_uncharged_claim_absence_by_point_read`] in
 /// isolation -- the hook [`verify_fee_claim_history`] supplies to
 /// [`verify_fee_claim_history_shared`] for an uncharged (generation-0) row --
