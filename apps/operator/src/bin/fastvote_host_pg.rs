@@ -12,9 +12,10 @@
 //!
 //! Shares `fastvote_pg`'s own conventions and several small helpers
 //! (bounded flag parsing, the TOCTOU-safe local signing-key file loader, the
-//! TLS-only PostgreSQL connection builder, and the trusted genesis-manifest
-//! loader) rather than reimplementing them; this binary adds no new trust
-//! model beyond what that CLI's own doc comments already establish.
+//! TLS-only PostgreSQL connection builder, and the bounded SDK verified
+//! genesis root loader) rather than reimplementing them; this binary adds
+//! no new trust model beyond what that CLI's own doc comments already
+//! establish.
 //!
 //! Trust boundaries:
 //!
@@ -42,8 +43,7 @@
 #![forbid(unsafe_code)]
 
 use sunrise_edge_operator::common::{
-    FlagSet, connect_pool, load_signing_key_file, load_trusted_genesis_manifest, parse_hex_32,
-    require_live_fastvote_pin,
+    FlagSet, connect_pool, load_signing_key_file, parse_hex_32, require_live_fastvote_pin,
 };
 
 use consensus::ConsensusSigner;
@@ -60,10 +60,10 @@ use native_http::{
 };
 use node_core::fast_path::FastPathValidatorSetRecord;
 use node_core::fast_path::records::{FastPathValidatorEntry, decode_fastpath_validator_set_record};
+use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::OrderedEconomicsPolicy;
 use node_core::{
-    GenesisManifest, NodeConfig, decode_genesis_install_marker, genesis_manifest_commitment,
-    genesis_marker_key, local_instance_state,
+    NodeConfig, decode_genesis_install_marker, genesis_marker_key, local_instance_state,
 };
 use postgres_rustls::MakeTlsConnector;
 use protocol_config::{DomainPlacementManifest, ProtocolConfig, TransactionAuthProfile};
@@ -93,7 +93,7 @@ use std::{
     },
     time::Duration,
 };
-use validator_set::{ValidatorInfo, ValidatorSet};
+use sunrise_edge_client::load_verified_genesis_root;
 
 fn parse_chain(value: String) -> Result<ChainId, String> {
     ChainId::new(value).map_err(|_| "invalid --chain-id".to_string())
@@ -209,14 +209,13 @@ impl ConsensusSigner for FileEd25519Signer {
 // ---------------------------------------------------------------------
 
 /// Reads the already-committed genesis marker and fee policy and requires
-/// them to match the trusted manifest exactly. Never installs anything.
+/// them to match the trusted verified root exactly. Never installs anything.
 fn require_committed_genesis_fee_policy(
     store: &PostgresDurableStore<PostgresConnectionManager<MakeTlsConnector>>,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     expected_context: &PublicationContext,
-    expected_digest: [u8; 32],
-    manifest: &GenesisManifest,
+    root: &VerifiedGenesisRoot,
 ) -> Result<PaidFeePolicy, Box<dyn Error>> {
     let marker_key: Vec<u8> = genesis_marker_key(expected_context)?;
     let marker_value = store
@@ -227,10 +226,10 @@ fn require_committed_genesis_fee_policy(
         .ok_or("no committed genesis install marker for expected context; this namespace was never bootstrapped")?;
     let marker = decode_genesis_install_marker(marker_bytes)?;
     if marker.context != *expected_context
-        || marker.manifest_digest.bytes() != expected_digest
-        || marker.genesis_authority != manifest.genesis_authority
+        || marker.manifest_digest != root.digest()
+        || marker.genesis_authority != root.manifest().genesis_authority
     {
-        return Err("committed genesis marker differs from the trusted manifest".into());
+        return Err("committed genesis marker differs from the trusted verified root".into());
     }
     let policy_key: Vec<u8> = local_instance_state::paid_fee_policy_key(expected_context)?;
     let policy_value = store
@@ -240,8 +239,8 @@ fn require_committed_genesis_fee_policy(
         .value()
         .ok_or("no committed paid fee policy for expected context")?;
     let policy: PaidFeePolicy = decode_paid_fee_policy(policy_bytes)?;
-    if policy != manifest.fee_policy {
-        return Err("committed fee policy differs from the trusted genesis manifest".into());
+    if policy != root.manifest().fee_policy {
+        return Err("committed fee policy differs from the trusted verified root".into());
     }
     Ok(policy)
 }
@@ -265,26 +264,6 @@ fn require_registered_signer<'a>(
         );
     }
     Ok(entry)
-}
-
-/// Converts the already-loaded, already-pinned `FastPathValidatorSetRecord`
-/// into a `ValidatorSet` for [`OrderedEconomicsPolicy::new`] -- the DR-0153
-/// fixed-epoch profile reuses this host's existing genesis validator set
-/// unchanged, never a separately loaded one.
-fn ordered_validator_set_from_record(
-    record: &FastPathValidatorSetRecord,
-    epoch: Epoch,
-) -> Result<ValidatorSet, Box<dyn Error>> {
-    let mut info: Vec<ValidatorInfo> = Vec::with_capacity(record.validators.len());
-    for validator in &record.validators {
-        info.push(ValidatorInfo {
-            id: validator.id,
-            voting_power: validator.voting_power,
-            signature_scheme: validator.signature_scheme,
-            public_key: validator.public_key.clone(),
-        });
-    }
-    Ok(ValidatorSet::new(epoch, info)?)
 }
 
 // ---------------------------------------------------------------------
@@ -504,7 +483,7 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
         HashSuiteResolver::new(chain.clone(), protocol_version, schedule)?;
     let expected_context: PublicationContext =
         PublicationContext::new(chain.clone(), protocol_version, epoch)?;
-    let manifest: GenesisManifest = load_trusted_genesis_manifest(
+    let root: VerifiedGenesisRoot = load_verified_genesis_root(
         &manifest_path,
         &resolver,
         expected_digest,
@@ -546,14 +525,8 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
     let blob_store: PostgresBlobStore<PostgresConnectionManager<MakeTlsConnector>> =
         PostgresBlobStore::new(pool.clone(), namespace.clone())?;
 
-    let fee_policy: PaidFeePolicy = require_committed_genesis_fee_policy(
-        &store,
-        &context,
-        domain,
-        &expected_context,
-        expected_digest,
-        &manifest,
-    )?;
+    let fee_policy: PaidFeePolicy =
+        require_committed_genesis_fee_policy(&store, &context, domain, &expected_context, &root)?;
 
     let validator_set_key: Vec<u8> =
         local_instance_state::fastpath_validator_set_key(&expected_context)?;
@@ -656,23 +629,12 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
     // trust decision, no daemon-correctness guarantee beyond what
     // `certified_fastvote_router` itself already provides.
     let ordered_economics_router = if ordered_economics_enabled {
-        let ordered_validator_set =
-            ordered_validator_set_from_record(&record, expected_context.epoch())?;
-        let genesis_digest = genesis_manifest_commitment(&resolver, &manifest)
-            .map_err(|error| format!("failed to recompute genesis manifest digest: {error}"))?;
-        let ordered_policy = OrderedEconomicsPolicy::new(
-            expected_context.clone(),
-            domain,
-            genesis_digest,
-            Some(&manifest),
-            ordered_validator_set,
-            resolver.clone(),
-        )
-        .map_err(|error| format!("failed to compose ordered economics policy: {error}"))?;
+        let ordered_policy = OrderedEconomicsPolicy::from_genesis_root(&root, domain)
+            .map_err(|error| format!("failed to compose ordered economics policy: {error}"))?;
         let genesis_engine = execution::LocalWasmExecutionEngine::new();
         let ordered_env = node_core::ordered_economics::OrderedEconomicsEnvironment {
             policy: &ordered_policy,
-            resolver: &resolver,
+            resolver: ordered_policy.resolver(),
             history: &[],
             leg_policy: &ordered_leg_policy,
             engine: &genesis_engine,
@@ -696,7 +658,6 @@ fn run(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
             writer_fence: generation,
             operation_timeout: Duration::from_secs(timeout_seconds),
             policy: ordered_policy,
-            resolver: resolver.clone(),
             history: Vec::new(),
             leg_policy: ordered_leg_policy,
             engine: Arc::new(execution::LocalWasmExecutionEngine::new()),

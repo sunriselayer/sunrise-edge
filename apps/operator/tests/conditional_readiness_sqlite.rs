@@ -197,7 +197,8 @@ fn compiled_conditional_readiness_real_retention_restart_and_distinct_certificat
     let set: ValidatorSet = ValidatorSet::new(
         protocol_types::Epoch::new(fixture.network.epoch.get() + 1),
         fixture
-            .manifest
+            .root
+            .manifest()
             .validator_set
             .validators
             .iter()

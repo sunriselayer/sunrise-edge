@@ -127,9 +127,9 @@ pub fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Err
     let saved: SavedBusinessCut = read_business_cut_archive(&private, &cut)?;
     let verified: VerifiedImportPlan = verify_saved_business_import(private, &saved)?;
     let subject: ReadinessSubject =
-        readiness_subject_for_candidate(verified.binding(), &pins.resolver, &next_set)?;
+        readiness_subject_for_candidate(verified.binding(), pins.resolver(), &next_set)?;
     let owner: ReadinessCertifier<'_> =
-        ReadinessCertifier::new(&pins.resolver, &subject, &next_set)?;
+        ReadinessCertifier::new(pins.resolver(), &subject, &next_set)?;
     // Recheck held archive identities after reconstruction, before any writes.
     for source in [&history, &cut] {
         source.require_output_outside(&output_directory.join(filename))?;

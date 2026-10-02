@@ -12,6 +12,7 @@ use node_core::bond_lifecycle::{
     BondLifecycleIntent, BondLifecycleOperation, SignedBondLifecycleIntent,
     encode_signed_bond_lifecycle_intent,
 };
+use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::{self, OrderedCandidate, OrderedOperationKind};
 use node_wire::ordered_economics::*;
 use objects::Address;
@@ -28,7 +29,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use support::observed_io::{IoCounters, Observed};
-use validator_set::{ValidatorInfo, ValidatorSet};
 
 struct Signer {
     id: ValidatorId,
@@ -100,26 +100,16 @@ async fn ordered_router_authenticates_before_actual_io_and_has_no_direct_mutatio
         1,
     )
     .unwrap();
-    let validators: Vec<ValidatorInfo> = manifest
-        .validator_set
-        .validators
-        .iter()
-        .map(|entry| ValidatorInfo {
-            id: entry.id,
-            voting_power: entry.voting_power,
-            signature_scheme: entry.signature_scheme,
-            public_key: entry.public_key.clone(),
-        })
-        .collect();
-    let policy = ordered_economics::OrderedEconomicsPolicy::new(
-        fixture.context.clone(),
-        fixture.domain,
-        node_core::genesis_manifest_commitment(&fixture.resolver, &manifest).unwrap(),
-        Some(&manifest),
-        ValidatorSet::new(fixture.epoch, validators).unwrap(),
-        fixture.resolver.clone(),
+    let root: VerifiedGenesisRoot = VerifiedGenesisRoot::verify_bytes(
+        &fixture.resolver,
+        &fixture.manifest_bytes,
+        fixture.manifest_digest,
+        &fixture.context,
     )
     .unwrap();
+    let policy =
+        ordered_economics::OrderedEconomicsPolicy::from_genesis_root(&root, fixture.domain)
+            .unwrap();
     let leader: ValidatorId = policy.engine().validator_set().leader(1).unwrap();
     let entry = fixture
         .validators
@@ -134,7 +124,7 @@ async fn ordered_router_authenticates_before_actual_io_and_has_no_direct_mutatio
     let engine = execution::LocalWasmExecutionEngine::new();
     let env = ordered_economics::OrderedEconomicsEnvironment {
         policy: &policy,
-        resolver: &fixture.resolver,
+        resolver: policy.resolver(),
         history: &[],
         leg_policy: &leg_policy,
         engine: &engine,
@@ -193,7 +183,6 @@ async fn ordered_router_authenticates_before_actual_io_and_has_no_direct_mutatio
         writer_fence: fence,
         operation_timeout: Duration::from_secs(30),
         policy,
-        resolver: fixture.resolver,
         history: Vec::new(),
         leg_policy,
         engine: Arc::new(engine),

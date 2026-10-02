@@ -2,22 +2,18 @@
 //! Parsing performs no file I/O; callers reject unused flags before loading.
 #![forbid(unsafe_code)]
 
-use crate::common::{FlagSet, load_trusted_genesis_manifest, parse_hash_suite, parse_hex_32};
+use crate::common::{FlagSet, parse_hash_suite, parse_hex_32};
 use execution::{
     LocalWasmExecutionEngine, local_execution::LocalExecutionPolicy,
     publication::PublicationContext,
 };
 use hashing::HashSuiteResolver;
+use node_core::business_reconstruction::BusinessReconstructionPlan;
+use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::{
     OrderedEconomicsPolicy, OrderedHistoryHeightMaterial, OrderedHistoryIdentity,
 };
-use node_core::{
-    GenesisManifest, admission_profile::VerifiedAdmissionProfile,
-    business_reconstruction::BusinessReconstructionPlan, genesis_manifest_commitment,
-};
-use protocol_types::{
-    AtomicityDomainId, ChainId, Digest32, Epoch, HashSuiteSchedule, ProtocolVersion,
-};
+use protocol_types::{AtomicityDomainId, ChainId, Epoch, HashSuiteSchedule, ProtocolVersion};
 use runtime::{
     Clock, DurableOperationContext, StorageCorrelationId, StorageDeadline, SystemClock,
     WriterFenceGeneration,
@@ -26,8 +22,8 @@ use std::{
     error::Error,
     path::{Path, PathBuf},
 };
+use sunrise_edge_client::load_verified_genesis_root;
 use sunrise_edge_client::ordered_history_archive::read_verified_ordered_history_archive;
-use validator_set::{ValidatorInfo, ValidatorSet};
 
 pub(crate) fn bounded(value: &str, minimum: u64, maximum: u64) -> Result<u64, Box<dyn Error>> {
     let parsed: u64 = value.parse()?;
@@ -92,47 +88,23 @@ impl BusinessPinInputs {
     }
 
     pub(crate) fn load(self) -> Result<BusinessPins, Box<dyn Error>> {
-        let manifest: GenesisManifest = load_trusted_genesis_manifest(
+        let root: VerifiedGenesisRoot = load_verified_genesis_root(
             &self.genesis_file,
             &self.resolver,
             self.genesis_pin,
             &self.context,
         )?;
-        let digest: Digest32 = genesis_manifest_commitment(&self.resolver, &manifest)?;
-        let profile: VerifiedAdmissionProfile =
-            VerifiedAdmissionProfile::from_pinned_genesis(&self.resolver, &manifest, digest)?;
-        if !profile.is_causal() {
+        if !root.admission_profile().is_causal() {
             return Err("business reconstruction requires signed causal-admission genesis".into());
         }
-        let validators: Vec<ValidatorInfo> = manifest
-            .validator_set
-            .validators
-            .iter()
-            .map(|member| ValidatorInfo {
-                id: member.id,
-                voting_power: member.voting_power,
-                signature_scheme: member.signature_scheme,
-                public_key: member.public_key.clone(),
-            })
-            .collect();
-        let set: ValidatorSet = ValidatorSet::new(self.context.epoch(), validators)?;
-        let policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::new(
-            self.context.clone(),
-            self.domain,
-            digest,
-            Some(&manifest),
-            set,
-            self.resolver.clone(),
-        )?;
+        let policy: OrderedEconomicsPolicy =
+            OrderedEconomicsPolicy::from_genesis_root(&root, self.domain)?;
         let (identity, ordered): (OrderedHistoryIdentity, Vec<OrderedHistoryHeightMaterial>) =
             read_verified_ordered_history_archive(&policy, &self.history_root)?;
         Ok(BusinessPins {
             context: self.context.clone(),
             domain: self.domain,
-            resolver: self.resolver,
-            manifest,
-            digest,
-            profile,
+            root,
             policy,
             identity,
             ordered,
@@ -145,10 +117,7 @@ impl BusinessPinInputs {
 pub(crate) struct BusinessPins {
     pub(crate) context: PublicationContext,
     pub(crate) domain: AtomicityDomainId,
-    pub(crate) resolver: HashSuiteResolver,
-    manifest: GenesisManifest,
-    digest: Digest32,
-    profile: VerifiedAdmissionProfile,
+    root: VerifiedGenesisRoot,
     pub(crate) policy: OrderedEconomicsPolicy,
     identity: OrderedHistoryIdentity,
     pub(crate) ordered: Vec<OrderedHistoryHeightMaterial>,
@@ -157,17 +126,18 @@ pub(crate) struct BusinessPins {
 }
 
 impl BusinessPins {
+    pub(crate) fn resolver(&self) -> &HashSuiteResolver {
+        self.root.genesis_resolver()
+    }
+
     pub(crate) fn plan(
         &self,
         operation: DurableOperationContext,
     ) -> BusinessReconstructionPlan<'_> {
         BusinessReconstructionPlan {
-            admission_profile: &self.profile,
-            genesis: &self.manifest,
-            pinned_genesis_digest: self.digest,
+            genesis_root: &self.root,
             operation_context: operation,
             domain: self.domain,
-            resolver: &self.resolver,
             resolver_history: &[],
             ordered_policy: &self.policy,
             ordered_history_identity: &self.identity,

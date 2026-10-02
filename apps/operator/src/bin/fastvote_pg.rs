@@ -40,8 +40,7 @@
 #![forbid(unsafe_code)]
 
 use sunrise_edge_operator::common::{
-    FlagSet, connect_pool, load_signing_key_file, load_trusted_genesis_manifest, parse_hex_32,
-    read_bounded_file,
+    FlagSet, connect_pool, load_signing_key_file, parse_hex_32, read_bounded_file,
 };
 #[cfg(test)]
 use sunrise_edge_operator::common::{SigningKeyFileError, require_tls_tcp_host};
@@ -61,9 +60,10 @@ use node_core::fast_path::records::{
     FastPathValidatorEntry, MAX_FASTPATH_ACTIVE_VALIDATORS, decode_fastpath_validator_set_record,
 };
 use node_core::fast_path::{self, FastPathEd25519Verifier, FastPathValidatorSetRecord};
+use node_core::genesis::VerifiedGenesisRoot;
 use node_core::local_instance_state;
 use node_core::{
-    GenesisInstallOutcome, GenesisManifest, decode_genesis_install_marker, genesis_marker_key,
+    GenesisInstallOutcome, decode_genesis_install_marker, genesis_marker_key,
     install_genesis_with_history,
 };
 use postgres::Client;
@@ -93,6 +93,9 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
 };
+#[cfg(test)]
+use sunrise_edge_client::GenesisTrustError;
+use sunrise_edge_client::load_verified_genesis_root;
 use validator_set::{ValidatorInfo, ValidatorSet};
 
 /// Generous bound on one encoded `FastVote` file (canonical frame overhead
@@ -256,9 +259,9 @@ fn require_committed_genesis_fee_policy(
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     expected_context: &PublicationContext,
-    expected_digest: [u8; 32],
-    manifest: &GenesisManifest,
+    root: &VerifiedGenesisRoot,
 ) -> Result<PaidFeePolicy, Box<dyn Error>> {
+    let manifest = root.manifest();
     let marker_key: Vec<u8> = genesis_marker_key(expected_context)?;
     let marker_value = store
         .get_versioned_durable(context, domain, &marker_key)
@@ -268,10 +271,10 @@ fn require_committed_genesis_fee_policy(
         .ok_or("no committed genesis install marker for expected context")?;
     let marker = decode_genesis_install_marker(marker_bytes)?;
     if marker.context != *expected_context
-        || marker.manifest_digest.bytes() != expected_digest
+        || marker.manifest_digest != root.digest()
         || marker.genesis_authority != manifest.genesis_authority
     {
-        return Err("committed genesis marker differs from the trusted manifest".into());
+        return Err("committed genesis marker differs from the trusted verified root".into());
     }
     let policy_key: Vec<u8> = local_instance_state::paid_fee_policy_key(expected_context)?;
     let policy_value = store
@@ -535,7 +538,7 @@ fn run_install_genesis(tokens: impl IntoIterator<Item = OsString>) -> Result<(),
     let resolver: HashSuiteResolver = build_resolver(&chain, protocol_version, schedule)?;
     let expected_context: PublicationContext =
         build_expected_context(chain.clone(), protocol_version, epoch)?;
-    let manifest: GenesisManifest = load_trusted_genesis_manifest(
+    let root: VerifiedGenesisRoot = load_verified_genesis_root(
         &manifest_path,
         &resolver,
         expected_digest,
@@ -557,7 +560,7 @@ fn run_install_genesis(tokens: impl IntoIterator<Item = OsString>) -> Result<(),
         domain,
         &resolver,
         &[],
-        &manifest,
+        root.manifest(),
         checkpoint,
     )?;
     reconcile_writer_fence(&pool, &namespace, &context)?;
@@ -648,7 +651,7 @@ fn run_prepare_vote(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Bo
     let resolver: HashSuiteResolver = build_resolver(&chain, protocol_version, schedule)?;
     let expected_context: PublicationContext =
         build_expected_context(chain.clone(), protocol_version, epoch)?;
-    let manifest: GenesisManifest = load_trusted_genesis_manifest(
+    let root: VerifiedGenesisRoot = load_verified_genesis_root(
         &manifest_path,
         &resolver,
         expected_digest,
@@ -677,14 +680,8 @@ fn run_prepare_vote(tokens: impl IntoIterator<Item = OsString>) -> Result<(), Bo
         PostgresTransactionPolicy::new(NonZeroU32::new(3).ok_or("zero retry count")?)?;
     let store: PostgresDurableStore<PostgresConnectionManager<MakeTlsConnector>> =
         PostgresDurableStore::new(pool.clone(), namespace.clone(), policy);
-    let fee_policy: PaidFeePolicy = require_committed_genesis_fee_policy(
-        &store,
-        &context,
-        domain,
-        &expected_context,
-        expected_digest,
-        &manifest,
-    )?;
+    let fee_policy: PaidFeePolicy =
+        require_committed_genesis_fee_policy(&store, &context, domain, &expected_context, &root)?;
 
     // DR-0130's own committed validator set is the consensus authority
     // `FastPathCertifier` (inside `fast_path::prepare`) actually certifies
@@ -808,13 +805,13 @@ fn run_assemble_certificate(
                 "--expected-genesis-digest",
             )?;
             flags.finish()?;
-            let manifest: GenesisManifest = load_trusted_genesis_manifest(
+            let root: VerifiedGenesisRoot = load_verified_genesis_root(
                 &manifest_path,
                 &resolver,
                 expected_digest,
                 &expected_context,
             )?;
-            validator_set_from_record(&manifest.validator_set, &expected_context)?
+            root.genesis_committee().clone()
         }
         ValidatorSetSource::Committed => {
             let confirmed: bool = flags.bool("--confirm-offline-fence-advance");
@@ -975,7 +972,7 @@ fn run_apply_certificate(tokens: impl IntoIterator<Item = OsString>) -> Result<(
     let resolver: HashSuiteResolver = build_resolver(&chain, protocol_version, schedule)?;
     let expected_context: PublicationContext =
         build_expected_context(chain.clone(), protocol_version, epoch)?;
-    let manifest: GenesisManifest = load_trusted_genesis_manifest(
+    let root: VerifiedGenesisRoot = load_verified_genesis_root(
         &manifest_path,
         &resolver,
         expected_digest,
@@ -1005,14 +1002,8 @@ fn run_apply_certificate(tokens: impl IntoIterator<Item = OsString>) -> Result<(
         PostgresTransactionPolicy::new(NonZeroU32::new(3).ok_or("zero retry count")?)?;
     let store: PostgresDurableStore<PostgresConnectionManager<MakeTlsConnector>> =
         PostgresDurableStore::new(pool.clone(), namespace.clone(), policy);
-    let fee_policy: PaidFeePolicy = require_committed_genesis_fee_policy(
-        &store,
-        &context,
-        domain,
-        &expected_context,
-        expected_digest,
-        &manifest,
-    )?;
+    let fee_policy: PaidFeePolicy =
+        require_committed_genesis_fee_policy(&store, &context, domain, &expected_context, &root)?;
     let engine = execution::LocalWasmExecutionEngine::new();
 
     let output = if let Some(checkpoint) = recovery_created_checkpoint {
@@ -1419,7 +1410,7 @@ mod tests {
     }
 
     #[test]
-    fn load_trusted_genesis_manifest_rejects_a_bad_digest_before_decoding_succeeds() {
+    fn load_verified_genesis_root_rejects_a_bad_digest_before_decoding_succeeds() {
         // A truncated/garbage manifest file must fail closed at decode, not
         // at the digest comparison (there is nothing to compute a digest
         // over), proving decode happens first and no digest is silently
@@ -1442,10 +1433,10 @@ mod tests {
             }],
         )
         .unwrap();
-        let error: String =
-            load_trusted_genesis_manifest(&file.0, &resolver, [0u8; 32], &dummy_context())
+        let error: GenesisTrustError =
+            load_verified_genesis_root(&file.0, &resolver, [0u8; 32], &dummy_context())
                 .unwrap_err();
-        assert!(error.contains("invalid genesis manifest"));
+        assert!(format!("{error:?}").contains("Decode"));
     }
 
     #[test]

@@ -2,13 +2,13 @@
 //! All at-rest corruption is explicitly confined to the disposable namespace.
 use super::*;
 use canonical_encoding::{CanonicalStruct, decode_canonical_frame};
+use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::{
     OrderedEconomicsPolicy, OrderedHistoryComponentKind, OrderedHistoryHeightMaterial,
     OrderedHistoryIdentity, decode_ordered_history_identity,
 };
 use std::collections::BTreeMap;
 use std::process::Command;
-use validator_set::{ValidatorInfo, ValidatorSet};
 
 pub(super) struct Harness<'a> {
     pub fixture: &'a FastVoteGenesisFixture,
@@ -32,28 +32,14 @@ impl Harness<'_> {
     }
 
     fn ordered_policy(&self) -> OrderedEconomicsPolicy {
-        let manifest: node_core::GenesisManifest =
-            node_core::decode_genesis_manifest(&self.fixture.manifest_bytes).unwrap();
-        let members: Vec<ValidatorInfo> = manifest
-            .validator_set
-            .validators
-            .iter()
-            .map(|entry| ValidatorInfo {
-                id: entry.id,
-                voting_power: entry.voting_power,
-                signature_scheme: entry.signature_scheme,
-                public_key: entry.public_key.clone(),
-            })
-            .collect();
-        OrderedEconomicsPolicy::new(
-            self.fixture.context.clone(),
-            self.fixture.domain,
-            node_core::genesis_manifest_commitment(&self.fixture.resolver, &manifest).unwrap(),
-            Some(&manifest),
-            ValidatorSet::new(self.fixture.epoch, members).unwrap(),
-            self.fixture.resolver.clone(),
+        let root: VerifiedGenesisRoot = VerifiedGenesisRoot::verify_bytes(
+            &self.fixture.resolver,
+            &self.fixture.manifest_bytes,
+            self.fixture.manifest_digest,
+            &self.fixture.context,
         )
-        .unwrap()
+        .unwrap();
+        OrderedEconomicsPolicy::from_genesis_root(&root, self.fixture.domain).unwrap()
     }
 
     fn contract(&self, action: &str, extra: &[&str]) -> Output {
@@ -534,7 +520,7 @@ pub(super) fn recover_retained_fixture(harness: &Harness<'_>, through_pin: [u8; 
         cli::read_context(harness.pool, &harness.namespaces[0]);
     let environment: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
         policy: &policy,
-        resolver: &harness.fixture.resolver,
+        resolver: policy.resolver(),
         history: &[],
         leg_policy: &leg_policy,
         engine: &engine,

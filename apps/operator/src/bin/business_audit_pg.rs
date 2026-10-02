@@ -7,14 +7,13 @@ use execution::{
     publication::PublicationContext,
 };
 use hashing::HashSuiteResolver;
-use node_core::admission_profile::VerifiedAdmissionProfile;
 use node_core::business_reconstruction::{
     BusinessReconstructionOverlay, BusinessReconstructionPlan, DrainSetControlMaterial,
     OwnedPublicationMaterial, drain_control_material_from_source_snapshot,
     owned_material_from_source_snapshot,
 };
+use node_core::genesis::VerifiedGenesisRoot;
 use node_core::ordered_economics::{OrderedEconomicsPolicy, encode_ordered_history_identity};
-use node_core::{GenesisManifest, genesis_manifest_commitment};
 use protocol_types::{AtomicityDomainId, ChainId, Epoch, ProtocolVersion, ValidatorId};
 use runtime::portable::DurablePortableSnapshotRepository;
 use runtime::{Clock, DurableOperationContext, StorageCorrelationId, StorageDeadline, SystemClock};
@@ -32,16 +31,14 @@ use std::{
     process::ExitCode,
     sync::atomic::{AtomicU64, Ordering},
 };
+use sunrise_edge_client::load_verified_genesis_root;
 use sunrise_edge_client::ordered_history_archive::{
     read_regular_archive_file, read_verified_ordered_history_archive,
 };
 use sunrise_edge_operator::{
     business_snapshot::capture_source_business_snapshot,
-    common::{
-        FlagSet, connect_pool, load_trusted_genesis_manifest, parse_hash_suite, parse_hex_32,
-    },
+    common::{FlagSet, connect_pool, parse_hash_suite, parse_hex_32},
 };
-use validator_set::{ValidatorInfo, ValidatorSet};
 
 const FLAGS: &[&str] = &[
     "--tls-root-der",
@@ -182,12 +179,9 @@ fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
         &flags.one("--expected-genesis-digest")?,
         "--expected-genesis-digest",
     )?;
-    let manifest: GenesisManifest =
-        load_trusted_genesis_manifest(&manifest_file, &resolver, pin, &expected)?;
-    let genesis_digest = genesis_manifest_commitment(&resolver, &manifest)?;
-    let profile: VerifiedAdmissionProfile =
-        VerifiedAdmissionProfile::from_pinned_genesis(&resolver, &manifest, genesis_digest)?;
-    if !profile.is_causal() {
+    let root: VerifiedGenesisRoot =
+        load_verified_genesis_root(&manifest_file, &resolver, pin, &expected)?;
+    if !root.admission_profile().is_causal() {
         return Err("business reconstruction requires signed causal-admission genesis".into());
     }
     let history_root: PathBuf = flags.one("--ordered-history-dir")?.into();
@@ -222,29 +216,10 @@ fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
         4096,
     )?;
     flags.finish()?;
-    let members: Vec<ValidatorInfo> = manifest
-        .validator_set
-        .validators
-        .iter()
-        .map(|member| ValidatorInfo {
-            id: member.id,
-            voting_power: member.voting_power,
-            signature_scheme: member.signature_scheme,
-            public_key: member.public_key.clone(),
-        })
-        .collect();
-    let set: ValidatorSet = ValidatorSet::new(epoch, members)?;
-    if set.get(validator).is_none() {
+    if root.genesis_committee().get(validator).is_none() {
         return Err("namespace validator absent from pinned genesis".into());
     }
-    let policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::new(
-        expected.clone(),
-        domain,
-        genesis_digest,
-        Some(&manifest),
-        set,
-        resolver.clone(),
-    )?;
+    let policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::from_genesis_root(&root, domain)?;
     let (identity, ordered) = read_verified_ordered_history_archive(&policy, &history_root)?;
     let pool = connect_pool(&ca, NonZeroU32::new(4).ok_or("zero pool")?)?;
     let namespace: PostgresNamespace = PostgresNamespace::new(&chain, validator, domain)?;
@@ -288,12 +263,9 @@ fn run(values: impl IntoIterator<Item = OsString>) -> Result<(), Box<dyn Error>>
     let base_policy: LocalExecutionPolicy = LocalExecutionPolicy::generic_object_results(expected);
     let engine: LocalWasmExecutionEngine = LocalWasmExecutionEngine::new();
     let plan = BusinessReconstructionPlan {
-        admission_profile: &profile,
-        genesis: &manifest,
-        pinned_genesis_digest: genesis_digest,
+        genesis_root: &root,
         operation_context: operation,
         domain,
-        resolver: &resolver,
         resolver_history: &[],
         ordered_policy: &policy,
         ordered_history_identity: &identity,

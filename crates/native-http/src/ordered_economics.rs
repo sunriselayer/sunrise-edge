@@ -74,7 +74,6 @@ pub struct OrderedEconomicsState<S, C, I, Sig> {
     pub writer_fence: WriterFenceGeneration,
     pub operation_timeout: Duration,
     pub policy: OrderedEconomicsPolicy,
-    pub resolver: HashSuiteResolver,
     pub history: Vec<HashSuiteResolver>,
     pub leg_policy: LocalExecutionPolicy,
     pub engine: Arc<dyn LocalContractEngine + Send + Sync>,
@@ -262,7 +261,7 @@ where
         };
         let env = OrderedEconomicsEnvironment {
             policy: &state.policy,
-            resolver: &state.resolver,
+            resolver: state.policy.resolver(),
             history: &state.history,
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
@@ -347,7 +346,7 @@ where
         }
         let env = OrderedEconomicsEnvironment {
             policy: &state.policy,
-            resolver: &state.resolver,
+            resolver: state.policy.resolver(),
             history: &state.history,
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
@@ -418,7 +417,7 @@ where
         }
         let env = OrderedEconomicsEnvironment {
             policy: &state.policy,
-            resolver: &state.resolver,
+            resolver: state.policy.resolver(),
             history: &state.history,
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
@@ -481,7 +480,7 @@ where
         }
         let env = OrderedEconomicsEnvironment {
             policy: &state.policy,
-            resolver: &state.resolver,
+            resolver: state.policy.resolver(),
             history: &state.history,
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
@@ -519,7 +518,7 @@ where
     publication::admitted(cancelled, executor, move || {
         let env = OrderedEconomicsEnvironment {
             policy: &state.policy,
-            resolver: &state.resolver,
+            resolver: state.policy.resolver(),
             history: &state.history,
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
@@ -569,7 +568,7 @@ where
     publication::admitted(state.is_cancelled(), executor, move || {
         let env = OrderedEconomicsEnvironment {
             policy: &state.policy,
-            resolver: &state.resolver,
+            resolver: state.policy.resolver(),
             history: &state.history,
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),
@@ -673,7 +672,7 @@ where
         };
         let env = OrderedEconomicsEnvironment {
             policy: &state.policy,
-            resolver: &state.resolver,
+            resolver: state.policy.resolver(),
             history: &state.history,
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),

@@ -26,15 +26,15 @@ use node_core::fast_path::{
     FastPathEd25519Verifier, FastPathValidatorEntry, FastPathValidatorSetRecord,
 };
 use node_core::genesis::{
-    GenesisInstallOutcome, GenesisManifest, GenesisObjectEntry, genesis_manifest_commitment,
-    genesis_manifest_signing_frame, install_genesis,
+    GenesisInstallOutcome, GenesisManifest, GenesisObjectEntry, VerifiedGenesisRoot,
+    encode_genesis_manifest, genesis_manifest_commitment, genesis_manifest_signing_frame,
+    install_genesis,
 };
 use node_core::logical_generation::CommitmentProfile;
 use node_core::ordered_economics::*;
 use node_wire::ordered_history::*;
 use objects::{ProtocolCustodyPurpose, ProtocolCustodyScope};
 use std::collections::BTreeSet;
-use validator_set::{ValidatorInfo, ValidatorSet};
 
 struct CountedSigner {
     key: SigningKey,
@@ -425,25 +425,17 @@ impl Fixture {
             .key
             .sign(&genesis_manifest_signing_frame(&manifest).unwrap())
             .into();
-        let set: ValidatorSet = ValidatorSet::new(
-            context.epoch(),
-            vec![ValidatorInfo {
-                id: entry.id,
-                voting_power: entry.voting_power,
-                signature_scheme: entry.signature_scheme,
-                public_key: entry.public_key,
-            }],
+        let genesis_digest: Digest32 = genesis_manifest_commitment(&resolver(), &manifest).unwrap();
+        let genesis_bytes: Vec<u8> = encode_genesis_manifest(&manifest).unwrap();
+        let root: VerifiedGenesisRoot = VerifiedGenesisRoot::verify_bytes(
+            &resolver(),
+            &genesis_bytes,
+            genesis_digest.bytes(),
+            &context,
         )
         .unwrap();
-        let policy: OrderedEconomicsPolicy = OrderedEconomicsPolicy::new(
-            context,
-            domain,
-            genesis_manifest_commitment(&resolver(), &manifest).unwrap(),
-            Some(&manifest),
-            set,
-            resolver(),
-        )
-        .unwrap();
+        let policy: OrderedEconomicsPolicy =
+            OrderedEconomicsPolicy::from_genesis_root(&root, domain).unwrap();
         let store: Arc<TrackedStore> = Arc::new(TrackedStore::new(domain));
         let operation: DurableOperationContext =
             live_operation_context(WriterFenceGeneration::new(3).unwrap(), 0xe3);
@@ -499,7 +491,6 @@ impl Fixture {
             writer_fence: fence,
             operation_timeout: Duration::from_secs(30),
             policy: self.policy.clone(),
-            resolver: resolver(),
             history: Vec::new(),
             leg_policy: LocalExecutionPolicy::generic_object_results(self.policy.context().clone()),
             engine: Arc::new(execution::LocalWasmExecutionEngine::new()),
@@ -528,7 +519,7 @@ impl Fixture {
         let context: DurableOperationContext = live_operation_context(state.writer_fence, 0xe2);
         let env: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
             policy: &state.policy,
-            resolver: &state.resolver,
+            resolver: state.policy.resolver(),
             history: &state.history,
             leg_policy: &state.leg_policy,
             engine: state.engine.as_ref(),

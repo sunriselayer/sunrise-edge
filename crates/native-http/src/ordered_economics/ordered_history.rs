@@ -189,7 +189,7 @@ fn environment<S, C, I, Sig>(
 ) -> OrderedEconomicsEnvironment<'_> {
     OrderedEconomicsEnvironment {
         policy: &state.policy,
-        resolver: &state.resolver,
+        resolver: state.policy.resolver(),
         history: &state.history,
         leg_policy: &state.leg_policy,
         engine: state.engine.as_ref(),
