@@ -5,6 +5,7 @@ use crate::native_files;
 use protocol_types::Digest32;
 use runtime::{
     ImportBatch, ImportBinding, ImportProgress, InactiveImportRepository, NamespaceLifecycle,
+    ReadinessRecord, ReadinessRetentionRepository, ReadinessSlot, ReadinessSlotObservation,
 };
 
 /// Fresh or resumed installation destination, never an ordinary node store.
@@ -326,3 +327,44 @@ impl InactiveImportRepository for SqliteImportTarget {
 
 #[cfg(test)]
 mod tests;
+
+impl ReadinessRetentionRepository for SqliteImportTarget {
+    fn read_ready_slot_at(
+        &self,
+        operation: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        binding: &ImportBinding,
+        progress: &ImportProgress,
+        fresh_token: &PortableSnapshotToken,
+        slot: &ReadinessSlot,
+    ) -> Result<ReadinessSlotObservation, PortableSnapshotError> {
+        self.store.engine.read_ready_slot_at(
+            operation,
+            domain,
+            binding,
+            progress,
+            fresh_token,
+            slot,
+        )
+    }
+    fn retain_ready_slot(
+        &self,
+        operation: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        binding: &ImportBinding,
+        progress: &ImportProgress,
+        fresh_token: &PortableSnapshotToken,
+        expected_observation: &ReadinessSlotObservation,
+        record: &ReadinessRecord,
+    ) -> DurableCommitOutcome {
+        self.store.engine.retain_ready_slot(
+            operation,
+            domain,
+            binding,
+            progress,
+            fresh_token,
+            expected_observation,
+            record,
+        )
+    }
+}

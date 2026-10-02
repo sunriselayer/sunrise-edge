@@ -105,9 +105,10 @@ roadmap describes a later target state.
   private raw-plan derivation, permanent import origin, atomic bounded storage
   and core/live-response guards; no readiness, Seal or activation authority.
 - [Conditional readiness and ordered Seal](conditional-readiness-seal.md)
-  ([Proposed DR-0177](decisions/0177-conditional-readiness-and-ordered-seal.md)):
-  pre-code readiness-only contract, fresh staging and bounded per-identity
-  retention; Seal traversal and activation remain subsequent design work.
+  ([DR-0178](decisions/0178-conditional-readiness-wire-and-retention.md)):
+  private fresh staging verification, actual-key-bound votes, weighted public
+  certificates and protected per-identity retention; no serving authority.
+  Seal traversal and activation remain subsequent design work.
 - [Initial validator bond registration](initial-validator-bond.md)
   ([DR-0179](decisions/0179-initial-validator-bond-registration.md)):
   self-authenticated first collateral through generic custody and ordered

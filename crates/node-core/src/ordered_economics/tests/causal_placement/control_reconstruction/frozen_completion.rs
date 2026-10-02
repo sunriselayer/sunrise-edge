@@ -28,6 +28,9 @@ mod inactive_business_import;
 #[path = "frozen_completion/inactive_business_import_faults.rs"]
 mod inactive_business_import_faults;
 
+#[path = "frozen_completion/conditional_readiness.rs"]
+mod conditional_readiness;
+
 pub(super) fn registration_generic_prefix(fixture: &CausalFixture) -> Vec<CertifiedPaidMaterial> {
     preseal_cut_contracts::generic_import_prefix(fixture)
 }

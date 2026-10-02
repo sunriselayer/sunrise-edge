@@ -47,12 +47,12 @@ use std::{error::Error, fmt, path::Path};
 pub type SqliteNamespace = SqlDurableNamespace;
 
 /// Stable identity of the local-only structured SQLite schema, generation
-/// two, using the shared v3 SQL durable origin/progress layout.
+/// three, using the shared v4 SQL durable origin/progress/readiness layout.
 pub const SQLITE_STRUCTURED_SCHEMA_IDENTITY: &[u8] =
     runtime_sql_durable::SQL_DURABLE_SCHEMA_IDENTITY;
 
 const STRUCTURED_APPLICATION_ID: i64 = 0x5352_4453;
-const STRUCTURED_SCHEMA_VERSION: i64 = 2;
+const STRUCTURED_SCHEMA_VERSION: i64 = 3;
 const STRUCTURED_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Fail-closed errors opening, bootstrapping, or operating a structured

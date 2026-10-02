@@ -1,10 +1,12 @@
 # Conditional readiness and ordered Seal
 
-Proposed refinement of [DR-0154](decisions/0154-complete-epoch-handoff.md),
-recorded in [DR-0177](decisions/0177-conditional-readiness-and-ordered-seal.md).
-The first implementation candidate is **readiness only**. This document is not
-accepted code authority, a wire/key allocation, a migration or completion
-claim. Work and validation status belong only in [TODO.md](../../TODO.md).
+The readiness-only contract in
+[DR-0178](decisions/0178-conditional-readiness-wire-and-retention.md) refines
+[DR-0154](decisions/0154-complete-epoch-handoff.md) and the earlier
+[DR-0177 proposal](decisions/0177-conditional-readiness-and-ordered-seal.md).
+Readiness is a nonexclusive assertion, not Seal, membership activation or
+serving authority. The separate Seal design remains unresolved. Work and
+validation status belong only in [TODO.md](../../TODO.md).
 
 ## Finite source of readiness
 
@@ -14,6 +16,9 @@ A/B/C each need their own separate CompleteInactive staging namespace, fresh
 full verification and actual registered signing key. A namespace selector is
 not membership or key ownership. Duplicate state, immutable bodies and replay
 work for retained members are an explicit cost, not a new Ordinary-signer bypass.
+Incoming E's first liability must come from the genuine
+[initial registration](initial-validator-bond.md), not a seeded bond or
+fabricated Exited predecessor.
 
 FreshImport and Importing cannot sign readiness. CompleteInactive remains
 unable to admit fresh business, expose ordinary or cached live signatures,
@@ -39,15 +44,18 @@ Before either new signing or retained replay, one closed core operation must:
    Require checked adjacent epoch, 1..256 members, unique registered IDs and
    keys, the existing Ed25519-only activation scheme, positive weights and
    checked total power. Require canonical 32-byte public keys and 64-byte
-   signatures under the locally pinned verification profile. Reuse
+   signatures under the locally pinned verification profile. All successor
+   keys require canonical, nonidentity prime-order Ed25519 admission; historical
+   ZIP-215 signature verification is not changed. Reuse
    structural activation-set checks and the existing committed bond/resource
    predicate: Active bonds, valid lifecycle/slashability, matching registered
    key/scheme and enabled resource/minimum/exposure policy. Bond amount does
    not select power; Freeze's advisory set is not irrevocable membership.
 4. Match the actual signer identity, scheme and public key to that registered
    entry **before signing**. Current ConsensusSigner has no public-key accessor:
-   review a narrow owning key-bound adapter, not caller-asserted key metadata
-   or a blanket expansion of ordinary/live signer authority.
+   `ReadinessSigningKey` owns its real software key and derives that key's
+   public bytes. It does not implement ConsensusSigner or expand ordinary/live
+   signer authority. Its signature counter is diagnostics, not authorization.
 5. Verify the new or retained signature against the registered key and exact framed
    readiness message before protected retention. Expose it only after exact
    landed retention is observed through confirmed atomic retention or fresh
@@ -62,10 +70,20 @@ does not call the unsupported Logical activation writer or install policies.
 The semantic readiness subject binds pinned genesis, chain/protocol, outgoing
 epoch/set, logical domain, exact semantic cut and checked adjacent-epoch
 successor-set identity. Its canonical set digest binds the separately supplied
-bounded full set. Sign with a **distinct readiness purpose at the outgoing
+bounded full set at the incoming epoch. Bind every entry and hash purpose of
+the separately trusted local schedule, including future entries. The genesis
+manifest does not authenticate that schedule. Hash its existing canonical
+0xC003 frame in NodeEvent at the outgoing epoch and recompute the commitment
+against local configuration before accepting a vote or certificate. Sign with
+a **distinct readiness purpose at the outgoing
 epoch**, never an ordinary vote, availability ACK or transition-vote purpose.
 The closed signed payload also binds the registered signer ID and scheme;
 certificate assembly cannot relabel a signature as another member or purpose.
+The closed public frames are 0xD040 subject, 0xD041 payload, 0xD042 vote and
+0xD043 certificate. The 0x2001 signing frame carries the exact payload under
+`conditional-readiness-v1`, not a lifted ordinary vote or bare digest.
+These public values remain assertions. A correctly signed supplied set alone
+does not construct verified eligibility, completeness, Seal or activation.
 
 Exclude exact proof-package/raw-plan variants, local coordinates/revisions,
 snapshot tokens, writer generations and future Seal identity. Equivalent valid
@@ -86,7 +104,13 @@ Retain one bounded closed record keyed by the full semantic identity and signer.
 Mandatory namespace lifecycle, immutable binding, completed progress and exact
 store/schema validation remain authoritative. Missing or corrupt target metadata
 never becomes a fresh target, readiness capability or ordinary-host fallback.
-This proposal allocates no schema version, repair path or capability registry.
+Exact local records use 0x64D0 slot, 0x64D1 record and 0x64D2 creation observation.
+The owning `durable_conditional_readiness` table is outside business inventory;
+its schema and bounded exact lookup are still mandatory. The shared metadata
+identity is v4, the native SQLite durable schema is v3 and the aligned ordinary
+PostgreSQL identity is v5. Older initialized targets are unsupported, never
+automatically migrated, recreated or repaired. PG import/readiness is not
+introduced by an ordinary schema identity update.
 
 Present records must match the local import identity and exact semantic subject,
 registered signer and verified signature. Malformed/conflicting records and any
@@ -135,9 +159,9 @@ Fresh fenced reconciliation must observe the exact durable identity and retained
 record/signature before returning it. Absence or rejection alone never justifies
 exposing an unretained signature. Conflicts never overwrite or repair.
 
-## Proposed bounds and explicit costs
+## Closed bounds and explicit costs
 
-| Public component or new work | Proposed maximum |
+| Public component or new work | Maximum |
 | --- | --- |
 | Canonical successor set | 64 KiB, 1..256 members |
 | Semantic subject | 16 KiB |
@@ -147,8 +171,8 @@ exposing an unretained signature. Conflicts never overwrite or repair.
 | Retained slot read/CAS | One exact record, at most 16 KiB including framing |
 
 Validate byte/count bounds before allocation and framing. Votes/certificates
-bind the semantic subject/set identity; exact closed layouts and signature
-preimages remain pre-code review gates. Quorum uses distinct registered next-set
+bind the semantic subject/set identity; exact layouts and preimages are owned
+by DR-0178 and checked against independent Node/OpenSSL vectors. Quorum uses distinct registered next-set
 signers and the existing strictly greater-than-two-thirds checked power rule,
 not member count or the outgoing committee's threshold.
 
@@ -193,10 +217,10 @@ validity. Operator local pins, genuine key binding and held artifact outputs
 own a callable local workflow; a host/router cannot manufacture completeness.
 Do not add a duplicate generic readiness framework.
 
-Required future evidence includes:
+Required acceptance evidence includes:
 
 - Genuine complete history with more than 128 rows; real SQLite staging for
-  A/B/C/E, actual Deposit E facts and independently registered keys. Compare
+  A/B/C/E, actual initial E registration and independently registered keys. Compare
   every original receipt/body/provenance/floor, including close/reopen and
   partial-import refusal, without seeded eligibility or noncryptographic signers.
 - Equivalent proof variants yielding the same semantic subject; corrected sets
@@ -211,12 +235,12 @@ Required future evidence includes:
   directions and fresh reconciliation. Ordinary/live signer counters stay zero;
   only privately authorized readiness signs, and original business replay stays exact.
 
-Before code, review closed frames/preimages, exact retained-record/creation-
-observation schema, token/slot CAS semantics and key-bound signer
-adapter; perform the canonical namespace sweep and independent vectors then.
-Future Seal traversal/companion review remains separate and unresolved.
+The closed wire/storage frames, fresh-token CAS and actual-key owner have a
+separate accepted design boundary. Callable local composition is documented
+in the [readiness guide](../guides/conditional-readiness.md). Future Seal
+traversal/companion review remains separate and unresolved.
 
 PostgreSQL is optional; relevant changes/claims need selected actual acceptance.
 SQLite readiness implies no PG import, DO deployment or provider certification.
-This proposal completes no activation, Delivery 3, live startup, security audit,
+This capability completes no activation, Delivery 3, live startup, security audit,
 production/mainnet release or deferred product/production gate.

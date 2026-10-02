@@ -46,8 +46,9 @@ domain, fence and deadline validation. A captured read-only source view cannot
 invent live admission authority. Normal bootstrap/open and ordinary commits
 refuse an import origin; the commit recheck is atomic with the mutation.
 
-Native durable SQLite uses schema version 2 and shared SQL metadata identity
-v3. Older initialized durable files are explicitly unsupported, not silently
+Native durable SQLite uses schema version 3 and shared SQL metadata identity
+v4, including mandatory protected readiness storage outside business inventory.
+Older initialized durable files are explicitly unsupported, not silently
 migrated, repaired or reset. PostgreSQL implements verified Ordinary origin
 without import bootstrap. Shared SQL enforcement does not establish a deployed
 Durable Objects import host; D1 remains a separately designed adapter.

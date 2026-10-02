@@ -7,6 +7,9 @@ detailed design, operator guides, and specialist references live here.
 
 - [Code ownership map](development/code-map.md): where a feature enters,
   changes protocol state, and is tested.
+- [Validation and build profiles](development/validation.md): storage-neutral
+  required checks, selected PostgreSQL acceptance and assertion-preserving
+  signature-heavy test builds.
 
 ## Architecture
 
@@ -45,6 +48,8 @@ detailed design, operator guides, and specialist references live here.
 - [Ordered Freeze and resumable signed frontier export](guides/frozen-frontier.md)
 - [Quorum-retained drain and explicit member recovery](guides/quorum-drain.md)
 - [Export and verify ordered history](guides/ordered-history.md)
+- [Install a verified inactive business cut](guides/business-import.md)
+- [Retain and verify conditional readiness](guides/conditional-readiness.md)
 - [Embedded Cloudflare validator](guides/cloudflare-validator.md)
 - [Recover missed certified calls](guides/fastvote-catch-up.md)
 - [Certified PostgreSQL load and recovery measurements](operations/postgres-certified-load.md)

@@ -80,7 +80,7 @@ does not erase import origin. Exact original business replay remains receipt-
 first and non-executing under the current fence; new execution and cached
 protocol signatures/ACKs remain refused in every import phase.
 
-The native durable schema is version 2. Older initialized durable files are
+The native durable schema is version 3. Older initialized durable files are
 unsupported, not automatically migrated or reset. Preserve any needed old
 data separately and request an explicitly scoped preservation workflow.
 SQLite evidence does not certify PostgreSQL, D1, a deployed DO host, readiness

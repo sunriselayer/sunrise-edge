@@ -325,6 +325,9 @@ impl From<ValidatorSetError> for FastPathError {
             ValidatorSetError::DuplicatePublicKey(_) => "fast-path duplicate validator public key",
             ValidatorSetError::VotingPowerOverflow => "fast-path voting power overflow",
             ValidatorSetError::CanonicalEncoding(_) => "fast-path validator set encoding",
+            ValidatorSetError::CanonicalDecoding(_) | ValidatorSetError::InvalidEncoding(_) => {
+                "fast-path validator set decoding"
+            }
             ValidatorSetError::Hashing(_) => "fast-path validator set hashing",
         }))
     }

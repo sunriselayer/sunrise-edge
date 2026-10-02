@@ -17,7 +17,7 @@ Only this file owns current status, sequencing and deferred work.
 | Generic paid contracts and Standard Asset | DR-0121–0128 implement Publish/Instantiate/Call, ordinary contract-defined fees and asset create/transfer/split/merge/mint/burn; no Standard Asset privilege in node-core |
 | Delivery 1: certified network contract lifecycle | PR #228 merged on 2026-09-27 after the full gate, fresh exact-head Opus approval and CI; paid lifecycle, assets, replay and declared catch-up, not complete state handoff |
 | Delivery 2: fixed-epoch ordered economics | PR #232 merged on 2026-09-27; shared ordering for claims, bonds and evidence/slash/reactivation, with four-namespace CLI evidence. Genuine membership-dependent Deposit/Withdraw positives remain in Delivery 3 |
-| Delivery 3 prerequisites | PR #237/#238/#239/#242/#244/#245/#250 merged: portable reads, logical generations, publication-before-apply, Freeze/frontiers, quorum-retained DrainSet/member drain, ordered history and genuine frozen-member source reconstruction. Persistent inactive import is implemented below; readiness/Seal/activation remain open |
+| Delivery 3 prerequisites | PR #237/#238/#239/#242/#244/#245/#250/#252/#255 merged: portable reads, logical generations, publication-before-apply, Freeze/frontiers, quorum-retained DrainSet/member drain, ordered history, genuine frozen-member source reconstruction, persistent verified inactive import and first incoming-validator bonding. PR #256 adds conditional readiness with its exact-source evidence below. Seal/activation and recurring lifecycle acceptance remain open |
 | Authenticated pre-Seal business cut | PR #251 merged normally on 2026-10-02 after the full local gate, independent exact-head approval and required CI. Complete core derivation, immutable SQLite export/resumption and source-free independent saved verification; not import or activation evidence |
 | Shared artifact/configuration primitives | PR #249 merged: bounded local genesis and held-handle artifact I/O, with authority/error semantics retained by the callers |
 | Required validation | PR #247 implements DR-0172: four unconditional DB-free lanes. PostgreSQL integration/fault acceptance is retained and explicitly selected, not run on every PR |
@@ -26,6 +26,13 @@ FastVote remains incomplete: validator-set changes, slashing and reward/claim
 distribution are completion criteria, not optional production deferrals.
 Fixed-epoch economics implements much of that work; complete membership and
 epoch handoff plus independent security gates still remain.
+
+**Delivery 3 forecast, 2026-10-02:** approximately 24..40 focused engineering
+hours remain, with an initial target of 2026-10-04..06 including CI/review and
+corrections. This is a planning estimate, not a release commitment. Ordered
+Seal, authenticated serving activation and repeated epochs through the real
+withdrawal unlock are still functional work. Independent audit and actual
+network startup are Delivery 4, not included in this estimate.
 
 ## Functional critical path with embedded refactoring
 
@@ -74,17 +81,10 @@ receipts, real commit-reply-loss/fence cases, independent vectors, bounded body
 corruption and compiled operator checks pass. The complete local npm ci and
 check-all.sh gate passed at 491c3388; independent exact-source review approved
 that head. [PR #252](https://github.com/sunriselayer/sunrise-edge/pull/252)
-records the feature/gate evidence. Required CI `36933807173` and selected
-complete PostgreSQL acceptance `36933845654` passed before the normal merge
-`de6cf079`. Main's required CI `36942374347` also passed at `27f33a54`.
+merged normally as de6cf079 on 2026-10-02 after required CI 36933807173 and
+selected complete PG acceptance 36933845654 passed on that exact head. Main CI
+36942374347 also passed after PR #254 at 27f33a54.
 Import provides no readiness, Seal, activation or deployed-provider authority.
-
-**Delivery 3 outlook:** the remaining functional work is estimated at 24–40
-focused engineering hours, with a provisional 2026-10-04–06 completion window
-including review, CI and fixes. This is not a release commitment. Ordered Seal
-safety and genuine multi-epoch unlock/withdrawal remain mandatory and can
-extend that estimate. Independent audit and initial-network startup are
-Delivery 4, not completed by Delivery 3 implementation.
 
 - [x] **Initial-validator registration design:** accepted
   [DR-0179](docs/architecture/decisions/0179-initial-validator-bond-registration.md)
@@ -94,25 +94,35 @@ Delivery 4, not completed by Delivery 3 implementation.
   generic contract leg and the new validator's real key, not fixture insertion,
   forced Exited state or a Standard Asset-specific core privilege. The exact
   design received independent approval before implementation.
-- [ ] **Initial-validator registration implementation and acceptance:**
-  integrate the owning kind-7 ordered path, SDK/CLI, genuine four-validator
-  funding/registration/replay, full source-free cut reconstruction and real
-  SQLite partial import/reopen/receipt-only replay/fencing. Independent final
-  exact-head review and the complete required gate remain necessary before
-  marking this feature complete. Registration alone grants no membership or
-  serving authority.
+- [x] **Initial-validator registration implementation and acceptance:**
+  [PR #255](https://github.com/sunriselayer/sunrise-edge/pull/255) implements the
+  owning kind-7 ordered path, SDK/CLI, genuine four-validator funding/
+  registration/replay, full source-free cut reconstruction and real SQLite
+  partial import/reopen/receipt-only replay/fencing. The complete local gate,
+  fresh independent exact-head approval and all required CI `36959189963`
+  passed at `bcd318c4`; normal merge `68a8c2e4` preserves separately merged
+  PR #246. Registration alone grants no membership or serving authority.
 
-- [ ] **Pre-code next feature design:**
-  [Proposed DR-0177](docs/architecture/decisions/0177-conditional-readiness-and-ordered-seal.md)
-  and the [readiness contract](docs/architecture/conditional-readiness-seal.md)
-  refine a readiness-only first implementation: freshly reverified separate
-  CompleteInactive staging for retained A/B/C and incoming E, exact post-drain
-  eligibility and bounded protected per-identity retention after full fresh
-  verification. Nonexclusive readiness needs no whole signing ledger or global
-  no-resign rule; unique ordered/post-Seal protections remain unchanged. Closed
-  schemas/preimages, key binding and token/slot CAS semantics need independent
-  acceptance before code. Missing mandatory target metadata is never repaired.
-  This is Proposed work, not implementation or a passed gate.
+- [x] **Readiness design boundary:**
+  [DR-0178](docs/architecture/decisions/0178-conditional-readiness-wire-and-retention.md)
+  closes the earlier DR-0177 readiness-only proposal after independent review.
+  Exact public/protected schemas, separately trusted complete hash schedule,
+  actual-key binding, distinct next-set quorum and fresh-token/slot CAS are
+  accepted. Nonexclusive readiness needs no global signing ledger; unique
+  ordered/post-Seal protections are unchanged. Missing metadata is not repaired.
+- [x] **Conditional readiness capability:** private full fresh
+  reconstruction and exact completed-target comparison, real eligible A/B/C/E
+  staging and actual keys, atomic protected vote retention, real SQLite restart,
+  both acknowledgement-loss directions, corrected candidate identities and
+  distinct weighted public certificate assembly are implemented in
+  [PR #256](https://github.com/sunriselayer/sunrise-edge/pull/256). Genuine core
+  tests and the compiled operator workflow pass, along with all 18 independent
+  vectors and the complete local npm ci/check-all gate at `6480d170`.
+  Fresh independent exact-source review returned APPROVE; required CI
+  `36964203012` and selected complete PG `36964200199` both passed that head.
+  Final-head merge gates remain mandatory. This adds native SQLite/memory
+  readiness, not PG/DO/D1 readiness, Seal, activation, serving or Delivery 3
+  completion. A public certificate is no activation capability.
 - [ ] **After readiness:** separately reviewed ordered Seal and activation/
   serving rollover. Phase-aware high/locked traversal and Seal companion
   ownership remain pre-code gates; no singleton lock from an uncommitted Seal.
@@ -138,9 +148,9 @@ reviewable commits; semantic changes stay with their owning feature.
   the same root API and unchanged implementation bodies. A typed wiring test
   covers all six supplied components; all 74 runtime tests and independent
   exact-source review pass. [PR #253](https://github.com/sunriselayer/sunrise-edge/pull/253)
-  passed its complete local gate and required CI `36934774194`, and merged
-  normally as `a4f5c48`. Transaction/object/receipt/outbox/memory and node-core
-  cleanup remain separate unfinished work.
+  merged normally as a4f5c48 on 2026-10-02 after the full gate, independent
+  exact-head approval and required CI 36934774194 passed. Transaction/object/
+  receipt/outbox/memory and node-core cleanup remain separate unfinished work.
 - [x] **Bounded artifact and configuration primitives:** SDK local-genesis
   verification and committee conversion now share `local_genesis`; CLI
   bounded reads, fresh reservations and held-handle synchronization share
@@ -154,6 +164,13 @@ reviewable commits; semantic changes stay with their owning feature.
   compiled CLI and provider acceptance, retain positive controls independent
   of the negative under test. Do not replace actual restart/fencing/atomicity
   evidence with mocks or rename a source-local snapshot test as cut/import.
+  A same-selector local readiness probe at `00b3fb9` passed both genuine tests
+  in 756.39s without curve optimization and 47.47s with a named-package
+  `curve25519-dalek` opt-level 3 override; the latter build took 12.08s.
+  The corresponding dev/test override keeps debug assertions and overflow
+  checks enabled, without changing release settings, dependencies or tests.
+  Final same-head gates remain required; this is not whole-CI or provider
+  performance evidence. See [validation profiles](docs/development/validation.md).
 - [ ] **Audit/startup preparation:** map changed attack surfaces and assemble
   executable configuration/key/TLS/recovery instructions while Delivery 3
   proceeds. Tech-lead approval is not the independent security audit.
@@ -183,7 +200,7 @@ initial-network profile. Neither profile is completed by this plan.
 Use independently reviewable feature-sized PRs, normally based on
 `origin/main`; dependent PRs may stack on their explicit prerequisites.
 Preserve Draft PR #235 as extraction material, not an unfinished aggregate
-merge target; unrelated PR #246 is outside this queue. A prerequisite may
+merge target; separately merged PR #246 is outside this queue. A prerequisite may
 merge without the whole delivery being complete if it authorizes no unfinished
 transition. Recheck current main/PR state before each assignment.
 

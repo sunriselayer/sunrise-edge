@@ -97,3 +97,11 @@ wasmi_core = "=1.1.0"
 wasmparser = { version = "=0.239.0", default-features = false, features = ["std", "validate", "features"] }
 # WAT-to-WASM output is protocol-relevant. Bumps require regenerated artifact vectors.
 wat = "=1.257.1"
+
+# Genuine multi-replica replay is signature-heavy. Optimize only curve math;
+# workspace code, assertions, overflow checks and the release profile stay intact.
+# Cargo's test profile inherits dev, including this named-package override.
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+debug-assertions = true
+overflow-checks = true

@@ -1,5 +1,6 @@
 //! Closed storage-only installation, with every row/progress decision in one
 //! fenced SQL transaction. Hosts must opt in through a dedicated import facade.
+mod conditional_readiness;
 use super::*;
 use runtime::inactive_import::encode_import_progress;
 use runtime::portable::PortableSnapshotToken;
