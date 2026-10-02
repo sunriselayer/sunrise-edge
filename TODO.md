@@ -78,7 +78,10 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   substitution and current-resolver composition boundary. Before/after v1/v2/
   v3/v4 digest/anchor/profile/Freeze/economics baselines were actually recorded
   before removal of the old constructors. Core, SDK/CLI and operator/HTTP
-  source migration is underway; implementation acceptance remains pending.
+  sources are integrated and old public constructor/loader call sites are
+  removed. The first all-target/all-feature workspace check found migration
+  type/import defects; corrections and genuine construction-boundary negative
+  controls are underway. Implementation acceptance remains pending.
 - [ ] Test/CI architecture: owner-specific fixture composition and a coherent
   gate registry/execution contract, preserving all required coverage.
   Closed executable plans and separately owned action recipes merged in PR #257.
@@ -97,6 +100,14 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   PR #257 and PR #258 are verified normal-merge checkpoints. Main equals
   `origin/main` with a clean tree at `3bcbb15`; the genesis-root source branch
   is not yet a completed feature or reviewed release.
+
+The remaining handoff interface partition now identifies namespace lifecycle,
+fresh serving resolution, epoch-scoped ordered safety, reconstruction
+predecessors, Seal target verification and actual activation completion.
+It does not manufacture their producers. Retained-member namespace selection,
+crash ordering, bounded Seal companions/suffix evidence and authenticated
+successor schemas remain coupled pre-code decisions; genesis-only trust is not
+a substitute. See the [handoff contracts](docs/architecture/architecture-contracts.md#handoff-contracts).
 
 The order below supersedes the old chronological slice lists as the active
 queue. Detailed gate checklists and historical evidence remain below.
