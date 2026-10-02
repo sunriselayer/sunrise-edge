@@ -79,9 +79,11 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   v3/v4 digest/anchor/profile/Freeze/economics baselines were actually recorded
   before removal of the old constructors. Core, SDK/CLI and operator/HTTP
   sources are integrated and old public constructor/loader call sites are
-  removed. The first all-target/all-feature workspace check found migration
-  type/import defects; corrections and genuine construction-boundary negative
-  controls are underway. Implementation acceptance remains pending.
+  removed. Migration type/import defects found by the first all-target/all-feature
+  workspace check are corrected, and that complete check now passes. Construction
+  negatives now mutate the actual tested bytes; immutable-boundary doctests name
+  every field so missing fields cannot masquerade as privacy proof. Full required
+  acceptance, selected PostgreSQL lanes and exact-head review remain pending.
 - [ ] Test/CI architecture: owner-specific fixture composition and a coherent
   gate registry/execution contract, preserving all required coverage.
   Closed executable plans and separately owned action recipes merged in PR #257.
