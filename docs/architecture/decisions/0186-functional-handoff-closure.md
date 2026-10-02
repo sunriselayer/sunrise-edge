@@ -33,6 +33,11 @@ concrete proposed functional contract, with primary-source links. Its choices:
    target-local activation, preserving both namespaces and permanent import
    origin. Cross-namespace retirement need not be atomic only if fresh core
    completions/exposures and backend ordinary writers enforce committed closure.
+   Keep origin/install state separate from the outgoing barrier and proof-backed
+   serving authorization. Both actual business commit ports recheck closure;
+   imported serving uses a narrow real completion, not a pretend ordinary store.
+   Indexed delivery leases/cursors need their own explicit post-retirement
+   policy; their inventory inspector is not a mutation permission gate.
 2. Separate semantic target from bounded retained transport companions. Verify
    real cut/readiness/suffix material before voting; retain references with the
    actual event. Keep current Seal proof/receipt outside its own pre-Seal roots.
@@ -45,8 +50,8 @@ concrete proposed functional contract, with primary-source links. Its choices:
 5. Retain one unique outgoing signer/epoch-transition slot after committed Seal.
    Positively initialized virgin protected history, not absent cache alone,
    permits initial signing. Exact retry does not sign; conflicting/tombstoned
-   history refuses. Ambiguity
-   exposes no authority until fresh reconciliation observes exact landed bytes.
+   history refuses. Ambiguity exposes no authority until fresh reconciliation
+   observes exact landed bytes.
 6. Review distinct purpose/versioned schemas and successor epoch-key families;
    retain original signed preimages and verification. Bind verified predecessor,
    Seal/cut/set and the independently trusted complete schedule. Genesis does
@@ -60,7 +65,8 @@ concrete proposed functional contract, with primary-source links. Its choices:
 
 Exact competing Seal no-effect outcomes, phase/error tags, traversal rules and
 limits, companion retention/manifest shape, activation/provenance preimages,
-token-covered completion interfaces, protected virgin-slot initialization and
+token-covered completion interfaces, protected barrier/virgin-slot initialization,
+retained delivery policy and
 canonical/storage allocations require independent pre-code review.
 The closure/no-cross-namespace-atomicity argument
 must be checked against every actual fresh completion and exposure path.

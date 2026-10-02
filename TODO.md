@@ -92,7 +92,7 @@ Every row below is a normal merge with fresh exact-head explicit APPROVE, local
 `npm ci --prefix adapters/cloudflare-workers` / `./scripts/check-all.sh` and
 all four required CI lanes plus the aggregate passing before merge. Opus was
 quota-limited for the final three reviews; the authorized Codex substitute was
-used. GitHub confirms all six PRs merged. Merge trees equal the reviewed heads;
+used. GitHub confirms the seven listed PRs merged. Merge trees equal the reviewed heads;
 source branches are absent and local main equals origin/main with a clean tree.
 
 | PR | Reviewed head | Merge | Independent review | Required CI | Selected PG acceptance |
@@ -103,6 +103,7 @@ source branches are absent and local main equals origin/main with a clean tree.
 | [#260](https://github.com/sunriselayer/sunrise-edge/pull/260) | `c5a684ee` | `fc41fd33` | Codex APPROVE | `37002824263` | Not selected: private test mechanics |
 | [#261](https://github.com/sunriselayer/sunrise-edge/pull/261) | `cea8e5c1` | `e5b00c1a` | Codex APPROVE | `37006114264` | Complete local `--full`, all original prerequisites/fault flags |
 | [#262](https://github.com/sunriselayer/sunrise-edge/pull/262) | `9e93b13e` | `dafa7061` | Codex APPROVE | `37008915410` | Not selected: private core binding, no provider change/claim |
+| [#263](https://github.com/sunriselayer/sunrise-edge/pull/263) | `8f0d396f` | `3fa03b74` | Opus APPROVE to record Proposed design | `37010660824` | Not selected: documentation only |
 
 PR #261's first PG lab restart failed because a dynamically assigned Docker
 host port changed while the fixture retained its original URL. An independent
@@ -111,6 +112,10 @@ used a fixed loopback port; repository tests and assertions were unchanged.
 The complete final-head serial `--full` rerun passed, including backup/restore,
 connection exhaustion, SIGKILL recovery, data/WAL ENOSPC and PgBouncer. This is
 local complete-profile evidence, not five separately dispatched CI jobs.
+PR #262's local required gate was rerun on final integrated `9e93b13e`, not
+only the earlier `eefc87d`; both new combined-defect/control negatives executed
+and passed on that final head. PR #263's fresh Opus approval records a Proposed
+design, not permission to implement unresolved schemas or claim activation.
 
 ### Remaining functional ownership
 
@@ -119,7 +124,8 @@ and [proposed DR-0186 closure](docs/architecture/functional-handoff-closure.md)
 identify concrete remaining consumers, not executable producers or wire
 approval. Do not start another generic framework or repository-wide cleanup
 phase before them. Resolve the coupled pre-code questions in that proposal:
-protected virgin transition history, competing Seal outcomes, bounded retained
+protected barrier/virgin transition history, retained delivery policy,
+competing Seal outcomes, bounded retained
 companions/full phase-aware suffix, snapshot checks inside actual completion,
 and exact successor schemas/key allocations. Proposed documentation alone does
 not complete Seal, serving, recurring reconstruction or Delivery 3.

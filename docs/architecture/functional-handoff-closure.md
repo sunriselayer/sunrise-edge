@@ -36,12 +36,56 @@ approval. Work status remains only in [TODO.md](../../TODO.md).
 
 These are dependency gaps, not evidence of an exploit in supported profiles.
 
+## Actual completion and exposure owners
+
+This bounded source map identifies consumers of the proposed closure. It is
+not an exhaustive host/HTTP audit or a claim that the closure already exists.
+
+| Actual owner | Existing boundary | Future closure obligation |
+| --- | --- | --- |
+| `commit_durable` and `commit_invocation` in [memory](../../crates/runtime/src/lib.rs) and [shared SQL](../../crates/runtime-sql-durable/src/engine.rs) | Distinct state-only and structured receipt/object ports each recheck ordinary lifecycle under the lock/transaction, independently of prior core reads | Both ports must reject sealed outgoing business; successor effects need narrow proof-backed completion, not globally relaxed ordinary checks |
+| [Core mutation fences](../../crates/node-core/src/mutation_fence.rs) and [original reconciliation](../../crates/node-core/src/durable_reconciliation.rs) | Namespace origin, current epoch, precise object/nonce locks and original completed receipts are different deciding evidence | Preserve receipt-first exact replay; join fresh phase/serving observations to the real completion rather than replace them with a read-time Boolean |
+| [FastVote prepare](../../crates/node-core/src/fast_path.rs) and [availability ACK retention](../../crates/node-core/src/fast_path/publication.rs) | Prepare checks epoch/set even on retained-vote replay; ACK retention checks origin/epoch/set before retained replay, then Freeze only before a new ACK | Fresh serving/exposure checks must cover cached live signatures too; a prior signature is not current permission |
+| [Ordered engine](../../crates/node-core/src/ordered_economics/engine.rs) and [drain progression](../../crates/node-core/src/ordered_economics/drain_union.rs) | Real proposal/vote/Tick, certificate/observer and drain progress own persisted safety and typed completions | Classify legal empty/inherited proof progress separately from business; the pure consensus engine supplies no storage/phase authority |
+| [Genesis install](../../crates/node-core/src/genesis.rs) and [legacy epoch transition](../../crates/node-core/src/epoch_transition.rs) | Bootstrap verifies signed manifests, context and installed history; logical-profile transition currently refuses | Neither initialization nor legacy activation may reset a sealed namespace or substitute for authenticated successor installation |
+| [Inactive import](../../crates/runtime-sql-durable/src/engine/inactive_import.rs) and [protected readiness](../../crates/runtime-sql-durable/src/engine/inactive_import/conditional_readiness.rs) | Separate token/binding/progress-aware port families; readiness requires CompleteInactive | Activation needs its own actual completion and must disable inappropriate fresh readiness without erasing import history |
+| `IndexedOutboxRepository` in [runtime](../../crates/runtime/src/lib.rs) and [shared SQL](../../crates/runtime-sql-durable/src/engine.rs) | Claim-by-request, claim-due and acknowledge mutate delivery leases/cursors under physical authority, separately from ordinary business commits | Specify legal retained delivery after retirement; it cannot create business effects, new signed work or serving authority |
+| [Queries](../../crates/node-core/src/query.rs) and [retained bundle loading](../../crates/node-core/src/fast_path/drain_publication.rs) | Read-only historical inspection and proof reconstruction do not create an ACK; bundle loading is not the separate `retain_drain_publication` writer | Keep historical inspection legal; trace the actual host exposure wrapper before labeling a result live |
+
+`StructuredOutboxExclusionGuard` inspects inventory; it is not an outbox write
+authorization guard. The three indexed delivery methods do not apply the
+ordinary-business lifecycle predicate in either memory or shared SQL. Their
+separate post-Seal policy therefore must be specified, not inferred from the
+two business commit ports. This is a design dependency, not a demonstrated
+current exploit or permission to blanket-block historical reads.
+
 ## Proposed staged namespace and crash ordering
 
 Retain DR-0178 staging for all successor members. Do not convert import origin
 to Ordinary or overwrite outgoing consensus. A separately verified serving
 record would authorize the successor; immutable import binding/progress remains
 installation history, never fresh permission.
+
+Keep permanent origin/import-installation state separate from the outgoing
+Seal barrier and proof-backed successor authorization. Do not overload
+CompleteInactive to mean retired, or pretend an imported active target has
+ordinary origin. A new origin/phase encoding still needs its own closed schema
+review; this proposal does not allocate one.
+
+The proposed outgoing barrier is initialized by its protected metadata owner;
+an unsealed observation proves only absence of committed Seal, not membership
+or active serving. Missing mandatory barrier metadata must fail rather than
+become an unsealed default. Accepted Seal changes that barrier atomically with
+its actual ordered result; both ordinary business completion ports recheck it.
+The accepted target never reopens through bootstrap, repair or host selection.
+
+An imported successor uses a narrow, genuinely consumed serving completion.
+Core derives its invocation-scoped warrant from authenticated predecessor/
+activation proof and fresh installed observations. Storage rechecks those
+deciding local observations and its own fence inside completion; it does not
+choose protocol authority. Generic imported-origin commits remain forbidden.
+No virtual store reports ordinary origin, synthetic commit succeeds, public
+trusted flag constructs permission or metadata-prefix exemption replaces proof.
 
 Proposed order: confirm outgoing Seal; retain outgoing transition signature;
 form/verify transition quorum; confirm target-local activation; expose serving.
@@ -53,7 +97,10 @@ Seal completion atomically fixes the target and closes all old business work,
 and every fresh completion fences that phase. Freeze/DrainSet closure remains
 mandatory beforehand. Stale hosts cannot reopen it by selecting an old epoch.
 After Seal allow only narrowly specified empty/proof-completion and inherited
-control recovery; preserve old locks, QCs and unique signing history.
+control recovery; preserve old locks, QCs and unique signing history. Decide
+separately which exact retained outbox deliveries remain legal. Lease/cursor
+updates cannot reopen business, queue fresh protocol work or bypass the final
+snapshot-sequence check; they also mutate the covered local sequence.
 
 Original completed request replay stays receipt-first, exact and execution-free
 under the current local fence. Cached live votes/ACKs instead require fresh
@@ -193,7 +240,8 @@ The following are proposed functions with real consumers, not existing APIs:
 | Core `activate_verified_successor` and fresh `resolve_current_serving` | Dedicated target completion/reopen plus owned/ordered admission and cached live responses |
 | Predecessor-aware reconstruction constructor | Subsequent cut/import/readiness; consumes authenticated activation history, not supplied rows/flags |
 
-Before code, settle protected virgin-slot initialization, competing Seal
+Before code, settle protected barrier/virgin-slot initialization, exact retained
+delivery policy, competing Seal
 results/phase tags, exact suffix/continuation rules, companion ownership/retention
 limits, snapshot-covered completion shapes,
 activation/provenance preimages and reviewed namespace/schema allocations. Prove
