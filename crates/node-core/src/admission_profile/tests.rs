@@ -19,8 +19,8 @@ fn verified_profile(
     manifest: &GenesisManifest,
     pinned_digest: Digest32,
 ) -> Result<VerifiedAdmissionProfile, crate::genesis::GenesisRootError> {
-    let bytes: Vec<u8> =
-        encode_genesis_manifest(manifest).map_err(crate::genesis::GenesisRootError::Decode)?;
+    let bytes: Vec<u8> = encode_genesis_manifest(manifest)
+        .map_err(|error| crate::genesis::GenesisRootError::Decode(Box::new(error)))?;
     Ok(VerifiedGenesisRoot::verify_bytes(
         resolver,
         &bytes,

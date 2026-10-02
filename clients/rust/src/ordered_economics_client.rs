@@ -183,7 +183,7 @@ impl From<GenesisTrustError> for OrderedGenesisTrustError {
 impl From<GenesisRootError> for OrderedGenesisTrustError {
     fn from(error: GenesisRootError) -> Self {
         match error {
-            GenesisRootError::Decode(error) => Self::Decode(error),
+            GenesisRootError::Decode(error) => Self::Decode(*error),
             GenesisRootError::CommitmentMismatch => Self::CommitmentMismatch,
             GenesisRootError::ContextMismatch => Self::ContextMismatch,
             GenesisRootError::InvalidSignature => Self::InvalidSignature,

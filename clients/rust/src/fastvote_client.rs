@@ -173,7 +173,7 @@ impl From<GenesisTrustError> for FastVoteGenesisTrustError {
 impl From<GenesisRootError> for FastVoteGenesisTrustError {
     fn from(error: GenesisRootError) -> Self {
         match error {
-            GenesisRootError::Decode(error) => Self::Decode(error),
+            GenesisRootError::Decode(error) => Self::Decode(*error),
             GenesisRootError::CommitmentMismatch => Self::CommitmentMismatch,
             GenesisRootError::ContextMismatch => Self::ContextMismatch,
             GenesisRootError::InvalidSignature => Self::InvalidSignature,

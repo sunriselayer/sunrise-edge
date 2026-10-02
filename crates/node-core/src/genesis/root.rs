@@ -39,7 +39,7 @@ use super::{
 pub enum GenesisRootError {
     /// Bounded canonical manifest decoding (including round-trip equality)
     /// failed.
-    Decode(GenesisError),
+    Decode(Box<GenesisError>),
     /// The manifest's own commitment digest does not equal the local pin.
     CommitmentMismatch,
     /// The manifest's publication context, or the supplied resolver's own
@@ -150,12 +150,12 @@ impl VerifiedGenesisRoot {
     ) -> Result<Self, GenesisRootError> {
         // 1. Bounded canonical manifest decoding (this also enforces exact
         // canonical round-trip equality against `bytes`, satisfying step 5).
-        let manifest: GenesisManifest =
-            decode_genesis_manifest(bytes).map_err(GenesisRootError::Decode)?;
+        let manifest: GenesisManifest = decode_genesis_manifest(bytes)
+            .map_err(|error: GenesisError| GenesisRootError::Decode(Box::new(error)))?;
 
         // 2. Manifest commitment against the raw local digest pin.
-        let digest: Digest32 =
-            genesis_manifest_commitment(resolver, &manifest).map_err(GenesisRootError::Decode)?;
+        let digest: Digest32 = genesis_manifest_commitment(resolver, &manifest)
+            .map_err(|error: GenesisError| GenesisRootError::Decode(Box::new(error)))?;
         if digest.bytes() != expected_digest {
             return Err(GenesisRootError::CommitmentMismatch);
         }
