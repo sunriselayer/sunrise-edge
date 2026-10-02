@@ -1053,6 +1053,7 @@ fn postgres_schema_and_durable_store_conformance() {
             "outbox_delivery",
             "outbox_delivery_attempts",
             "outbox_messages",
+            "outgoing_barrier",
             "request_receipts",
             "schema_migrations",
             "state_records",
