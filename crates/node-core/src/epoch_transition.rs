@@ -25,6 +25,7 @@
 #![allow(clippy::result_large_err)]
 use super::*;
 use crate::economics::{FastPathEconomicsPolicy, decode_fastpath_economics_policy};
+use crate::fast_path::{FastVoteCommitteeError, validate_fastvote_validator_set_record};
 use bonds::BondResourceId;
 use canonical_encoding::{CanonicalDecodingError, decode_digest32, encode_digest32};
 use consensus::{
@@ -40,10 +41,13 @@ use fast_path::records::{
 };
 use fast_path::{FastPathEd25519Verifier, load_validator_set};
 use local_instance_state::FastPathEpochRecord;
+#[cfg(test)]
 use protocol_types::SignatureSchemeId;
 use publication::{LocalPublicationPolicy, PublicationAdmissionError};
 use runtime::VersionedStateReader;
-use validator_set::{ValidatorInfo, ValidatorSet, ValidatorSetError};
+#[cfg(test)]
+use validator_set::ValidatorInfo;
+use validator_set::{ValidatorSet, ValidatorSetError};
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -512,29 +516,27 @@ pub(crate) fn derive_activation_set<S: VersionedStateReader + ?Sized>(
     let mut canonical_validators: Vec<FastPathValidatorEntry> = next_validators.to_vec();
     canonical_validators.sort_by_key(|validator| validator.id);
 
-    let mut info: Vec<ValidatorInfo> = Vec::with_capacity(canonical_validators.len());
-    for validator in &canonical_validators {
-        if validator.signature_scheme != SignatureSchemeId::Ed25519 {
-            return invalid("fast-path next validator set supports only Ed25519");
-        }
-        info.push(ValidatorInfo {
-            id: validator.id,
-            voting_power: validator.voting_power,
-            signature_scheme: validator.signature_scheme,
-            public_key: validator.public_key.clone(),
-        });
-    }
-    // `ValidatorSet::new` validates on the now-canonical order (duplicate
-    // IDs/keys are rejected either way), and its own digest was already
-    // order-invariant; canonicalizing `info` too keeps this loop and
-    // `ValidatorSet::new` operating on identical, already-sorted input.
-    let next_validator_set_digest: Digest32 =
-        ValidatorSet::new(next_epoch, info)?.digest(resolver)?;
-
     let validator_set_record: FastPathValidatorSetRecord = FastPathValidatorSetRecord {
         context: next_context.clone(),
         validators: canonical_validators,
     };
+    // Validate the same canonical record that will be encoded and hashed.
+    // Capacity remains this owner's check above; the shared primitive owns
+    // only context, supported scheme and generic committee structure.
+    let next_validator_set: ValidatorSet = validate_fastvote_validator_set_record(
+        &validator_set_record,
+        &next_context,
+    )
+    .map_err(|error: FastVoteCommitteeError| match error {
+        FastVoteCommitteeError::ContextMismatch => {
+            EpochTransitionError::Invalid("fast-path next validator set context mismatch")
+        }
+        FastVoteCommitteeError::UnsupportedSignatureScheme { .. } => {
+            EpochTransitionError::Invalid("fast-path next validator set supports only Ed25519")
+        }
+        FastVoteCommitteeError::InvalidSet(error) => EpochTransitionError::ValidatorSet(error),
+    })?;
+    let next_validator_set_digest: Digest32 = next_validator_set.digest(resolver)?;
     let validator_set_bytes: Vec<u8> =
         fast_path::records::encode_fastpath_validator_set_record(&validator_set_record)?;
 

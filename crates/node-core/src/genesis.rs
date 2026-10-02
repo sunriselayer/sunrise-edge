@@ -57,7 +57,7 @@ use runtime::{
     RuntimeError, StateMutation, StateMutationEntry, StateReadAssertion, StateRevision,
     StructuredDurableDomainStateStore, VersionedStateReader, VersionedStateValue,
 };
-use validator_set::{ValidatorInfo, ValidatorSet, ValidatorSetError};
+use validator_set::{ValidatorSet, ValidatorSetError};
 
 use crate::bond_lifecycle;
 use crate::economics::{
@@ -571,24 +571,18 @@ pub(crate) fn convert_genesis_committee(
     {
         return Err(GenesisCommitteeError::CapacityExceeded);
     }
-    let validator_info: Vec<ValidatorInfo> = manifest
-        .validator_set
-        .validators
-        .iter()
-        .map(|validator| {
-            if validator.signature_scheme != SignatureSchemeId::Ed25519 {
-                return Err(GenesisCommitteeError::UnsupportedSignatureScheme);
+    fast_path::validate_fastvote_validator_set_record(&manifest.validator_set, manifest_context)
+        .map_err(|error: fast_path::FastVoteCommitteeError| match error {
+            fast_path::FastVoteCommitteeError::ContextMismatch => {
+                GenesisCommitteeError::ContextMismatch
             }
-            Ok(ValidatorInfo {
-                id: validator.id,
-                voting_power: validator.voting_power,
-                signature_scheme: validator.signature_scheme,
-                public_key: validator.public_key.clone(),
-            })
+            fast_path::FastVoteCommitteeError::UnsupportedSignatureScheme { .. } => {
+                GenesisCommitteeError::UnsupportedSignatureScheme
+            }
+            fast_path::FastVoteCommitteeError::InvalidSet(error) => {
+                GenesisCommitteeError::InvalidSet(error)
+            }
         })
-        .collect::<Result<Vec<ValidatorInfo>, GenesisCommitteeError>>()?;
-    ValidatorSet::new(manifest_context.epoch(), validator_info)
-        .map_err(GenesisCommitteeError::InvalidSet)
 }
 
 /// Encodes one [`GenesisObjectEntry`].
@@ -2733,23 +2727,12 @@ fn verify_fastpath_epoch_chain<S: StructuredDurableDomainStateStore>(
             decode_fastpath_validator_set_record(&historical_validator_set_bytes).map_err(
                 |_| GenesisError::TamperedInstalledRecord("historical fast-path validator set"),
             )?;
-        if historical_validator_set_record.context != historical_context {
-            return Err(GenesisError::TamperedInstalledRecord(
-                "historical fast-path validator set",
-            ));
-        }
-        let historical_info: Vec<ValidatorInfo> = historical_validator_set_record
-            .validators
-            .iter()
-            .map(|validator| ValidatorInfo {
-                id: validator.id,
-                voting_power: validator.voting_power,
-                signature_scheme: validator.signature_scheme,
-                public_key: validator.public_key.clone(),
-            })
-            .collect();
         let historical_validator_set: ValidatorSet =
-            ValidatorSet::new(outgoing_epoch, historical_info).map_err(|_| {
+            fast_path::validate_fastvote_validator_set_record(
+                &historical_validator_set_record,
+                &historical_context,
+            )
+            .map_err(|_| {
                 GenesisError::TamperedInstalledRecord("historical fast-path validator set")
             })?;
 
@@ -2905,23 +2888,11 @@ fn verify_fastpath_epoch_chain<S: StructuredDurableDomainStateStore>(
     let live_validator_set_record: FastPathValidatorSetRecord =
         decode_fastpath_validator_set_record(&live_validator_set_bytes)
             .map_err(|_| GenesisError::TamperedInstalledRecord("fast-path validator set"))?;
-    if live_validator_set_record.context != live_context {
-        return Err(GenesisError::TamperedInstalledRecord(
-            "fast-path validator set",
-        ));
-    }
-    let live_info: Vec<ValidatorInfo> = live_validator_set_record
-        .validators
-        .iter()
-        .map(|validator| ValidatorInfo {
-            id: validator.id,
-            voting_power: validator.voting_power,
-            signature_scheme: validator.signature_scheme,
-            public_key: validator.public_key.clone(),
-        })
-        .collect();
-    let live_validator_set: ValidatorSet = ValidatorSet::new(current_epoch, live_info)
-        .map_err(|_| GenesisError::TamperedInstalledRecord("fast-path validator set"))?;
+    let live_validator_set: ValidatorSet = fast_path::validate_fastvote_validator_set_record(
+        &live_validator_set_record,
+        &live_context,
+    )
+    .map_err(|_| GenesisError::TamperedInstalledRecord("fast-path validator set"))?;
     let live_digest: Digest32 = live_validator_set
         .digest(resolver)
         .map_err(|_| GenesisError::TamperedInstalledRecord("fast-path validator set"))?;

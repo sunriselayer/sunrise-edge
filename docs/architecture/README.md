@@ -34,6 +34,10 @@ roadmap describes a later target state.
   ([DR-0182](decisions/0182-immutable-verified-genesis-root.md)):
   one privately constructed original trust root and root-derived core/SDK/
   operator composition, separate from installation and current serving powers.
+- [Committee record validation](committee-record-validation.md)
+  ([DR-0184](decisions/0184-one-fastvote-committee-record-validator.md)):
+  one typed structural invariant across core and operator consumers, distinct
+  from genesis capacity, historical authentication and live serving authority.
 - [Immutable reconstruction configuration](reconstruction-policy-binding.md)
   ([DR-0185](decisions/0185-one-reconstruction-policy-binding.md)):
   one private root/policy/domain and signed-anchor relation used by overlay and

@@ -31,6 +31,10 @@ const SIGNING_KEY_FILE_BYTES: usize = 32;
 #[derive(Debug)]
 pub enum LiveFastVotePinError {
     ValidatorSetContextMismatch,
+    UnsupportedSignatureScheme {
+        validator_id: protocol_types::ValidatorId,
+        scheme: protocol_types::SignatureSchemeId,
+    },
     MissingLiveEpoch,
     EpochMismatch {
         configured: protocol_types::Epoch,
@@ -46,6 +50,7 @@ impl fmt::Display for LiveFastVotePinError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ValidatorSetContextMismatch => formatter.write_str("fastvote-epoch-repin-required: loaded validator set differs from configured context; perform an out-of-band re-pin"),
+            Self::UnsupportedSignatureScheme { validator_id, scheme } => write!(formatter, "invalid configured FastVote validator {validator_id}: unsupported signature scheme {scheme:?}; only Ed25519 is supported"),
             Self::MissingLiveEpoch => formatter.write_str("fastvote-epoch-repin-required: no installed live epoch; perform an out-of-band re-pin"),
             Self::EpochMismatch { configured, live } => write!(formatter, "fastvote-epoch-repin-required: configured epoch {} differs from installed live epoch {}; perform an out-of-band re-pin before restarting", configured.get(), live.get()),
             Self::ValidatorSetDigestMismatch => formatter.write_str("fastvote-epoch-repin-required: installed live validator-set digest differs from the configured set; perform an out-of-band re-pin before restarting"),
@@ -59,7 +64,7 @@ impl Error for LiveFastVotePinError {}
 
 /// Validates an installed live epoch against the fixed host composition.
 /// Call before claiming a new writer fence or opening a listener.
-pub fn require_live_fastvote_pin<S: runtime::DurableDomainStateStore>(
+pub fn require_live_fastvote_pin<S: runtime::VersionedStateReader + ?Sized>(
     store: &S,
     operation: &runtime::DurableOperationContext,
     domain: protocol_types::AtomicityDomainId,
@@ -70,29 +75,31 @@ pub fn require_live_fastvote_pin<S: runtime::DurableDomainStateStore>(
     use node_core::local_instance_state::{
         decode_fastpath_epoch_record, fastpath_epoch_record_key,
     };
-    use validator_set::{ValidatorInfo, ValidatorSet};
-    if record.context != *expected {
-        return Err(LiveFastVotePinError::ValidatorSetContextMismatch);
-    }
-    let validators: Vec<ValidatorInfo> = record
-        .validators
-        .iter()
-        .map(|entry| ValidatorInfo {
-            id: entry.id,
-            voting_power: entry.voting_power,
-            signature_scheme: entry.signature_scheme,
-            public_key: entry.public_key.clone(),
-        })
-        .collect();
-    let set: ValidatorSet = ValidatorSet::new(expected.epoch(), validators)
-        .map_err(LiveFastVotePinError::InvalidValidatorSet)?;
+    let set: validator_set::ValidatorSet =
+        node_core::fast_path::validate_fastvote_validator_set_record(record, expected).map_err(
+            |error: node_core::fast_path::FastVoteCommitteeError| match error {
+                node_core::fast_path::FastVoteCommitteeError::ContextMismatch => {
+                    LiveFastVotePinError::ValidatorSetContextMismatch
+                }
+                node_core::fast_path::FastVoteCommitteeError::UnsupportedSignatureScheme {
+                    validator_id,
+                    scheme,
+                } => LiveFastVotePinError::UnsupportedSignatureScheme {
+                    validator_id,
+                    scheme,
+                },
+                node_core::fast_path::FastVoteCommitteeError::InvalidSet(error) => {
+                    LiveFastVotePinError::InvalidValidatorSet(error)
+                }
+            },
+        )?;
     let digest: Digest32 = set
         .digest(resolver)
         .map_err(LiveFastVotePinError::InvalidValidatorSet)?;
     let key: Vec<u8> = fastpath_epoch_record_key(expected.chain_id())
         .map_err(|error| LiveFastVotePinError::InvalidEpochRecord(Box::new(error)))?;
     let observed: runtime::VersionedStateValue = store
-        .get_versioned_durable(operation, domain, &key)
+        .read_versioned_state(operation, domain, &key)
         .map_err(LiveFastVotePinError::Read)?;
     let bytes: &[u8] = observed
         .value()
