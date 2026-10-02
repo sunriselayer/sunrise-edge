@@ -658,9 +658,9 @@ pub(crate) fn prepare_bond_registration_ordered<S: StructuredStateReader>(
         receipt,
         None,
     )?;
-    Ok(InvocationPreparation::Prepared(
-        Box::new(PreparedBusinessInvocation::new(transaction, output)?),
-    ))
+    Ok(InvocationPreparation::Prepared(Box::new(
+        PreparedBusinessInvocation::new(transaction, output)?,
+    )))
 }
 
 /// Test-only real-store wrapper for original receipt replay regressions.

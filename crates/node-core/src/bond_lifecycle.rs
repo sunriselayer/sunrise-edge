@@ -1316,9 +1316,9 @@ fn prepare_bond_transition<S: VersionedStateReader + ?Sized>(
         receipt,
         None,
     )?;
-    Ok(InvocationPreparation::Prepared(
-        Box::new(PreparedBusinessInvocation::new(transaction, output)?),
-    ))
+    Ok(InvocationPreparation::Prepared(Box::new(
+        PreparedBusinessInvocation::new(transaction, output)?,
+    )))
 }
 
 /// [`deposit`] and [`reactivate`] share identical mechanics -- a fresh
