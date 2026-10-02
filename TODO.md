@@ -51,11 +51,23 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   still-unimplemented Seal, serving and recurring reconstruction boundaries.
 - [ ] Runtime/core completion design: centralize identical transaction
   consistency and assembly rules without merging storage and protocol authority.
+  The first unmerged implementation provides domain-bound observations and
+  strict single-owner versus explicit exact-coalescing assembly, and migrates
+  actual direct paid execution and fee-claim completions. Read-only prepared
+  material and registered-bond verification use a genuinely read-only port.
+  A contradictory internal nonce observation now fails closed instead of
+  replacing an earlier read. Combined-head acceptance and independent review
+  remain pending; this is not complete ordered-handler migration.
 - [ ] Core lifecycle and dependency composition: distinguish genesis trust,
   current serving and historical verification; remove duplicated mechanisms
   where a reviewed interface has actual consumers.
 - [ ] Test/CI architecture: owner-specific fixture composition and a coherent
   gate registry/execution contract, preserving all required coverage.
+  Closed executable plans and separately owned action recipes are implemented
+  but unmerged. Fixed independent contract expectations retain four required
+  DB-free lanes, five selected PostgreSQL lanes and every ignored selector;
+  nested prerequisite failures propagate explicitly. Complete acceptance on
+  the final PR head remains pending.
 - [ ] Independently reviewed, fully checked PR checkpoints; update this list
   from actual evidence, not skeleton compilation or file counts.
 
