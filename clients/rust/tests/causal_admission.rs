@@ -229,6 +229,12 @@ fn causal_signed_intent_with_wrong_context_is_rejected_before_any_io() {
     )
     .unwrap();
     let signer: LocalSigner = LocalSigner::from_seed(DEVNET_PAID_GENESIS_SEED);
+    let owner: DevOwner = DevOwner::new(*signer.address().as_bytes());
+    // Publish artifacts bind their own context too. Build a genuinely valid
+    // intent for the other epoch, rather than failing to encode/sign a mixed
+    // context fixture before reaching the client boundary under test.
+    let (wrong_manifest, _) =
+        build_paid_genesis_manifest(&resolver, &wrong_context, &[owner], owner).unwrap();
     let intent: PaidIntent = PaidIntent {
         context: wrong_context.clone(),
         request_id: [1; 32],
@@ -236,7 +242,7 @@ fn causal_signed_intent_with_wrong_context_is_rejected_before_any_io() {
         nonce: 0,
         fee_policy_digest: execution::paid_execution::paid_fee_policy_digest(
             &resolver,
-            &manifest.fee_policy,
+            &wrong_manifest.fee_policy,
         )
         .unwrap(),
         consent: FeeSourceConsent {
@@ -249,7 +255,9 @@ fn causal_signed_intent_with_wrong_context_is_rejected_before_any_io() {
             max_fee: fees::Amount::new(1),
             refund_recipient: manifest.genesis_authority,
         },
-        application: PaidApplication::Publish(manifest.publication.request().artifact().clone()),
+        application: PaidApplication::Publish(
+            wrong_manifest.publication.request().artifact().clone(),
+        ),
         gas_limit: 1,
         authorizations: Vec::new(),
     };
@@ -257,6 +265,10 @@ fn causal_signed_intent_with_wrong_context_is_rejected_before_any_io() {
     let signature_bytes: Vec<u8> = signer.sign_framed(&frame).unwrap();
     let signature: [u8; 64] = signature_bytes.as_slice().try_into().unwrap();
     let signed: SignedPaidIntent = SignedPaidIntent { intent, signature };
+    let signed_bytes: Vec<u8> =
+        execution::paid_execution::encode_signed_paid_intent(&signed).unwrap();
+    execution::paid_execution::authenticate_paid_intent(&resolver, &wrong_context, &signed_bytes)
+        .expect("the wrong-epoch intent must independently authenticate under its own context");
     let endpoints: Vec<FastVoteEndpoint<NoIo>> = vec![FastVoteEndpoint {
         validator_id: protocol_types::ValidatorId::new(manifest.genesis_authority),
         endpoint_label: "never-dial".to_owned(),
