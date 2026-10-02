@@ -131,7 +131,7 @@ fn commit_reads_and_mutations<S: StructuredDurableDomainStateStore>(
     }
 }
 
-pub(crate) fn fence_closed_epoch<S: StructuredDurableDomainStateStore>(
+pub(crate) fn fence_closed_epoch<S: runtime::VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -172,7 +172,7 @@ pub(crate) fn fence_closed_epoch<S: StructuredDurableDomainStateStore>(
     )?;
     let closure_key: Vec<u8> = crate::ordered_economics::admission_closure_key(&chain, epoch)?;
     let closure_row: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &closure_key)?;
+        store.read_versioned_state(context, domain, &closure_key)?;
     put_read(reads, closure_key, closure_row.revision())?;
     let closure_bytes: &[u8] =
         closure_row

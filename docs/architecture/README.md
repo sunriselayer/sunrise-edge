@@ -37,6 +37,10 @@ roadmap describes a later target state.
 - [Generic contract architecture](generic-contracts.md): common execution and
   authority, type/instance/object separation, upgrades, migration and durable
   verification obligations.
+- [Writer-free operation preparation](operation-preparation.md)
+  ([DR-0181](decisions/0181-writer-free-operation-preparation.md)):
+  business evaluation, physical observations and actual commit are separate
+  contracts; logical dependency selection remains owner-specific.
 - [Smart contracts](../smartcontract/README.md): publication/call lifecycle and
   Standard Asset/fee semantics.
 - [Durable local code publication](decisions/0121-durable-local-code-publication.md):

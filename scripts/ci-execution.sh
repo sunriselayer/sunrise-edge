@@ -124,6 +124,8 @@ ci_run_gate() {
   esac
   plan="$(ci_execution_plan "$@")" || return "$?"
   while IFS= read -r action; do
-    ci_run_action "$action" || return "$?"
+    # Recipe input is not the coordinator's remaining execution plan. A tool
+    # reading stdin must not consume later actions and silently skip a gate.
+    ci_run_action "$action" </dev/null || return "$?"
   done <<< "$plan"
 }

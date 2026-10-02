@@ -424,6 +424,35 @@ struct CandidateAuthentication<'a> {
     leg_policy: &'a LocalExecutionPolicy,
 }
 
+/// Immutable evidence about exact original bytes under this pinned policy.
+/// It is not fresh admission, a reservation or permission to expose a vote.
+/// Only the pure owning authenticator below can construct it.
+pub(super) struct AuthenticatedOrderedOperation<'a> {
+    candidate: &'a OrderedCandidate,
+    digest: Digest32,
+}
+
+impl<'a> AuthenticatedOrderedOperation<'a> {
+    pub(super) const fn candidate(&self) -> &'a OrderedCandidate {
+        self.candidate
+    }
+
+    pub(super) const fn digest(&self) -> Digest32 {
+        self.digest
+    }
+}
+
+pub(super) fn authenticate_ordered_operation<'a>(
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &'a OrderedCandidate,
+) -> Result<AuthenticatedOrderedOperation<'a>, OrderedEconomicsError> {
+    authenticate_candidate(env, candidate)?;
+    let bytes: Vec<u8> = encode_ordered_candidate(candidate)?;
+    let digest: Digest32 =
+        super::engine::candidate_digest(env.resolver, candidate.context.epoch(), &bytes)?;
+    Ok(AuthenticatedOrderedOperation { candidate, digest })
+}
+
 fn policy_error(_error: ConsensusError) -> OrderedEconomicsError {
     OrderedEconomicsError::Policy("ordered economics policy does not match consensus authority")
 }

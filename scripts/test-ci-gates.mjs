@@ -328,6 +328,13 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     "  ci_execution_profile) ci_execution_profile() { return 9; } ;;",
     "  ci_execution_plan) ci_execution_plan() { return 9; } ;;",
     '  "") ;;', "  *) exit 98 ;;", "esac",
+    'if [[ "${CI_MOCK_DRAIN_ACTION_STDIN-}" == "1" ]]; then',
+    '  ci_run_action() {',
+    '    printf "ACTION:%s\\n" "$1"',
+    '    while IFS= read -r consumed; do printf "UNEXPECTED_STDIN:%s\\n" "$consumed"; done',
+    '    return 0',
+    '  }',
+    'fi',
     // An if condition disables errexit throughout nested functions, just as
     // the gate runner's OR-list does. Helpers must propagate returned errors.
     'if "$@"; then exit 0; else exit "$?"; fi', "",
@@ -376,6 +383,29 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     assert.equal(result.log.length, 0);
   }
   const pgEnvironment = { SUNRISE_EDGE_TEST_POSTGRES_URL: "mock-only" };
+  // A recipe that drains its input must see EOF, never the coordinator's
+  // remaining plan. Compare every real plan with independent expectations.
+  for (const [selection, profile, actions] of expectedPlans) {
+    const checked = runFunction("ci_run_gate", [selection], {
+      ...(profile === "postgres" ? pgEnvironment : {}),
+      CI_MOCK_DRAIN_ACTION_STDIN: "1",
+    });
+    assert.equal(checked.status, 0, checked.stderr);
+    assert.deepEqual(checked.log, []);
+    assert.deepEqual(checked.stdout.trim().split("\n"), actions.split(" ").map((action) => `ACTION:${action}`));
+  }
+  const unsafeExecution = join(directory, "unsafe-stdin-execution.sh");
+  const safeExecutionText = readFileSync(execution, "utf8");
+  const unsafeExecutionText = safeExecutionText.replace('ci_run_action "$action" </dev/null', 'ci_run_action "$action"');
+  assert.notEqual(unsafeExecutionText, safeExecutionText);
+  writeFileSync(unsafeExecution, unsafeExecutionText, { flag: "wx", mode: 0o700 });
+  const drainedPlan = runBash([functionScript, registry, unsafeExecution, "ci_run_gate", "lint"], {
+    CI_MOCK_DRAIN_ACTION_STDIN: "1",
+  });
+  assert.equal(drainedPlan.status, 0, drainedPlan.stderr);
+  assert.deepEqual(drainedPlan.stdout.trim().split("\n"), [
+    "ACTION:gate-contract", "UNEXPECTED_STDIN:rust-style", "UNEXPECTED_STDIN:diff-hygiene",
+  ], "the negative control must reproduce skipped later actions, not certify itself");
   const required = passed(run("scripts/check-all.sh"));
   const full = passed(run("scripts/check-all.sh", ["--full"], pgEnvironment));
   const lanes = new Map(groups.map((group) => [group, passed(run("scripts/check-all.sh", ["--group", group], postgresGroups.includes(group) ? pgEnvironment : {}))]));

@@ -241,7 +241,7 @@ pub(crate) fn ordered_admission_request_id(
 /// Captures exact committed cross-lane admission prerequisites, never effects.
 /// Missing, future or incompatible observations stop before reservations or
 /// signatures. Prefix-derived custody/economics are deliberately not locked.
-pub(crate) fn verify_causal_prerequisites<S: StructuredDurableDomainStateStore>(
+pub(crate) fn verify_causal_prerequisites<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -335,7 +335,7 @@ pub(crate) fn verify_causal_prerequisites<S: StructuredDurableDomainStateStore>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn verify_causal_leg<S: StructuredDurableDomainStateStore>(
+fn verify_causal_leg<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -656,7 +656,7 @@ pub(crate) type PendingWrite = (Vec<u8>, StateRevision, StateMutation);
 /// Fails closed (as a stop, never a rejection) when a lock is currently held
 /// by any *other* request: that is a live FastVote prepare or another ordered
 /// admission, i.e. a fence, not a semantic outcome.
-pub(crate) fn acquire_reservations<S: StructuredDurableDomainStateStore>(
+pub(crate) fn acquire_reservations<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -669,7 +669,7 @@ pub(crate) fn acquire_reservations<S: StructuredDurableDomainStateStore>(
     let epoch: Epoch = env.policy.context().epoch();
     let record_key: Vec<u8> = ordered_reservation_key(chain, &candidate.request_id)?;
     let observed_record: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &record_key)?;
+        store.read_versioned_state(context, domain, &record_key)?;
     reads.insert(record_key.clone(), observed_record.revision());
     if let Some(bytes) = observed_record.value() {
         let retained: OrderedReservationPlan = decode_ordered_reservation(bytes)?;
@@ -689,7 +689,7 @@ pub(crate) fn acquire_reservations<S: StructuredDurableDomainStateStore>(
     let mut writes: Vec<PendingWrite> = Vec::new();
     for object_ref in &plan.objects {
         let key: Vec<u8> = fastpath_lock_key(chain, object_ref.id)?;
-        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
         if let Some(bytes) = observed.value() {
             let held: FastPathLockRecord = decode_fastpath_lock_record(bytes)?;
             if held.locked_epoch >= epoch {
@@ -717,7 +717,7 @@ pub(crate) fn acquire_reservations<S: StructuredDurableDomainStateStore>(
     }
     if let Some(nonce) = &plan.nonce {
         let key: Vec<u8> = fastpath_nonce_lock_key(chain, &nonce.sender, nonce.epoch)?;
-        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
         if observed.value().is_some() {
             return Err(OrderedEconomicsError::Prerequisite(
                 "ordered candidate sender nonce is locked by another request",
@@ -746,7 +746,7 @@ pub(crate) fn acquire_reservations<S: StructuredDurableDomainStateStore>(
 /// Proves every lock row named by a retained reservation is still held by
 /// exactly this request id, at exactly this epoch, over exactly this object
 /// ref/nonce. Anything else is a stop.
-fn verify_retained_reservations<S: StructuredDurableDomainStateStore>(
+fn verify_retained_reservations<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -759,7 +759,7 @@ fn verify_retained_reservations<S: StructuredDurableDomainStateStore>(
     let epoch: Epoch = env.policy.context().epoch();
     for object_ref in &plan.objects {
         let key: Vec<u8> = fastpath_lock_key(chain, object_ref.id)?;
-        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
         reads.insert(key, observed.revision());
         let bytes: &[u8] = observed.value().ok_or(OrderedEconomicsError::Prerequisite(
             "retained ordered object reservation is absent",
@@ -776,7 +776,7 @@ fn verify_retained_reservations<S: StructuredDurableDomainStateStore>(
     }
     if let Some(nonce) = &plan.nonce {
         let key: Vec<u8> = fastpath_nonce_lock_key(chain, &nonce.sender, nonce.epoch)?;
-        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
         reads.insert(key, observed.revision());
         let bytes: &[u8] = observed.value().ok_or(OrderedEconomicsError::Prerequisite(
             "retained ordered nonce reservation is absent",
@@ -799,7 +799,7 @@ fn verify_retained_reservations<S: StructuredDurableDomainStateStore>(
 /// Returns `None` when this replica never admitted the candidate (for example
 /// a signerless observer), in which case every existing handler keeps its
 /// ordinary [`crate::mutation_fence::LockMode::Fresh`] behaviour.
-pub(crate) fn load_reservation<S: StructuredDurableDomainStateStore>(
+pub(crate) fn load_reservation<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -807,7 +807,7 @@ pub(crate) fn load_reservation<S: StructuredDurableDomainStateStore>(
 ) -> Result<Option<(OrderedReservationPlan, Vec<u8>, StateRevision)>, OrderedEconomicsError> {
     let key: Vec<u8> = ordered_reservation_key(env.policy.context().chain_id(), request_id)?;
     let observed: VersionedStateValue =
-        store.get_versioned_durable(context, env.policy.domain(), &key)?;
+        store.read_versioned_state(context, env.policy.domain(), &key)?;
     match observed.value() {
         None => Ok(None),
         Some(bytes) => Ok(Some((
@@ -825,7 +825,7 @@ pub(crate) fn load_reservation<S: StructuredDurableDomainStateStore>(
 ///
 /// Used both on acceptance and on a typed refusal (a refused candidate must
 /// release its own reservations and nothing else). Never used on a stop.
-pub(crate) fn release_reservations<S: StructuredDurableDomainStateStore>(
+pub(crate) fn release_reservations<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -838,14 +838,14 @@ pub(crate) fn release_reservations<S: StructuredDurableDomainStateStore>(
     let mut writes: Vec<PendingWrite> = Vec::new();
     for object_ref in &plan.objects {
         let key: Vec<u8> = fastpath_lock_key(chain, object_ref.id)?;
-        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
         if observed.value().is_some() {
             writes.push((key, observed.revision(), StateMutation::Delete));
         }
     }
     if let Some(nonce) = &plan.nonce {
         let key: Vec<u8> = fastpath_nonce_lock_key(chain, &nonce.sender, nonce.epoch)?;
-        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
         if observed.value().is_some() {
             writes.push((key, observed.revision(), StateMutation::Delete));
         }

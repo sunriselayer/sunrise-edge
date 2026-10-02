@@ -25,7 +25,7 @@ pub use operation::{
     DurableOperationContext, InvocationCancellation, NeverCancelled, StorageCorrelationId,
     StorageDeadline, WriterFenceGeneration,
 };
-pub use state_read::VersionedStateReader;
+pub use state_read::{StructuredStateReader, VersionedStateReader};
 use transaction::represented_transaction_bytes;
 pub use transaction::{StateAssemblyError, StateObservationSet, StateTransactionBuilder};
 

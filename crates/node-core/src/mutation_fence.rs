@@ -46,7 +46,9 @@ use local_instance_state::{
 };
 #[cfg(test)]
 use local_instance_state::{encode_fastpath_epoch_record, encode_fastpath_lock_record};
-use runtime::DurableDomainStateStore;
+use runtime::{
+    DurableDomainStateStore, NamespaceLifecycle, StructuredStateReader, VersionedStateReader,
+};
 
 /// Entry-specific live admission guard. The backend validates the current
 /// writer fence, deadline and immutable origin on this read, and rechecks it
@@ -60,10 +62,21 @@ pub fn require_ordinary_namespace<S: DurableDomainStateStore>(
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
 ) -> Result<(), NodeCoreError> {
-    if !store
-        .get_namespace_lifecycle(context, domain)?
-        .is_ordinary()
-    {
+    require_ordinary_origin(&store.get_namespace_lifecycle(context, domain)?)
+}
+
+/// Reader-only counterpart for preparation. This retains the same backend
+/// lifecycle/fence/deadline validation without granting any commit authority.
+pub(crate) fn require_ordinary_reader_namespace<S: StructuredStateReader + ?Sized>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+) -> Result<(), NodeCoreError> {
+    require_ordinary_origin(&store.read_namespace_lifecycle(context, domain)?)
+}
+
+fn require_ordinary_origin(lifecycle: &NamespaceLifecycle) -> Result<(), NodeCoreError> {
+    if !lifecycle.is_ordinary() {
         return Err(NodeCoreError::InactiveImportNamespace);
     }
     Ok(())
@@ -73,14 +86,14 @@ pub fn require_ordinary_namespace<S: DurableDomainStateStore>(
 /// exactly like `local_execution::read_state`, but returning [`NodeCoreError`]
 /// directly so every one of this module's callers -- each with its own local
 /// admission error type -- can convert with a single `?`.
-fn read_and_fence<S: StructuredDurableDomainStateStore>(
+fn read_and_fence<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     key: Vec<u8>,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<VersionedStateValue, NodeCoreError> {
-    let value: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let value: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     if let Some(previous_revision) = reads.insert(key, value.revision())
         && previous_revision != value.revision()
     {
@@ -94,7 +107,7 @@ fn read_and_fence<S: StructuredDurableDomainStateStore>(
 /// can admit an embedded economics leg. This does not grant lock reuse: the
 /// separate object and nonce fences still check every precise reservation.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn fence_direct_or_ordered_writer<S: StructuredDurableDomainStateStore>(
+pub(crate) fn fence_direct_or_ordered_writer<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -103,7 +116,7 @@ pub(crate) fn fence_direct_or_ordered_writer<S: StructuredDurableDomainStateStor
     ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<(), NodeCoreError> {
-    require_ordinary_namespace(store, context, domain)?;
+    require_ordinary_reader_namespace(store, context, domain)?;
     match ordered {
         Some(admission) if &admission.request_id == request_id => {
             fence_installed_external_request_lane(
@@ -216,7 +229,7 @@ pub(crate) enum NonceLockState {
 /// lock stamped a strictly older epoch is reclaimable (DR-0132 §3.D); one
 /// stamped a future epoch is a storage invariant violation and fails closed.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn fence_object_lock<S: StructuredDurableDomainStateStore>(
+pub(crate) fn fence_object_lock<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -289,7 +302,7 @@ pub(crate) fn fence_object_lock<S: StructuredDurableDomainStateStore>(
 /// nonce. The ordinary sender-nonce row itself is a separate concern, read
 /// and reserved by `durable_reconciliation::reserve_sender_nonce`.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn fence_sender_nonce_lock<S: StructuredDurableDomainStateStore>(
+pub(crate) fn fence_sender_nonce_lock<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -352,7 +365,7 @@ pub(crate) fn fence_sender_nonce_lock<S: StructuredDurableDomainStateStore>(
 /// equal the currently committed epoch. Slice 1 introduced this check before
 /// any post-genesis writer existed; Slice 2 now advances the record through
 /// an outgoing-set-certified transition, making the rejection observable.
-pub(crate) fn fence_epoch_state<S: StructuredDurableDomainStateStore>(
+pub(crate) fn fence_epoch_state<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -360,7 +373,7 @@ pub(crate) fn fence_epoch_state<S: StructuredDurableDomainStateStore>(
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<FastPathEpochRecord, NodeCoreError> {
     let key: Vec<u8> = fastpath_epoch_record_key(chain)?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     let record: FastPathEpochRecord = decode_fastpath_epoch_record(observed.value().ok_or(
         NodeCoreError::PersistenceInvariant("fast-path epoch record not installed"),
     )?)?;
@@ -388,7 +401,7 @@ pub(crate) fn fence_epoch_state<S: StructuredDurableDomainStateStore>(
 /// rather than through this function (its `policy.context.epoch()` names a
 /// historical policy selector, not a transaction-epoch claim) and fences
 /// admission separately at its own call site for the same reason.
-pub(crate) fn fence_current_epoch<S: StructuredDurableDomainStateStore>(
+pub(crate) fn fence_current_epoch<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,

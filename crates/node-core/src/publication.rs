@@ -18,6 +18,7 @@ use execution::publication::{
     encode_dependency_ref, encode_publication_context, encode_publication_submission,
     verify_publication_interface,
 };
+use runtime::{StructuredStateReader, VersionedStateReader};
 
 mod loader;
 #[cfg(test)]
@@ -371,7 +372,7 @@ fn resolver_for<'a>(
         .ok_or(PublicationAdmissionError::HistoricalContextUnavailable)
 }
 
-fn read_policy<S: StructuredDurableDomainStateStore>(
+fn read_policy<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -380,7 +381,7 @@ fn read_policy<S: StructuredDurableDomainStateStore>(
     reads: &mut BTreeMap<Vec<u8>, StateRevision>,
 ) -> Result<LocalPublicationPolicy, PublicationAdmissionError> {
     let key: Vec<u8> = publication_policy_key_for_profile(expected_context, profile)?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     let bytes: &[u8] = observed
         .value()
         .ok_or(PublicationAdmissionError::PolicyMismatch)?;
@@ -408,7 +409,7 @@ fn insert_read(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn load_closure<S: StructuredDurableDomainStateStore>(
+fn load_closure<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -457,7 +458,7 @@ pub(crate) fn publication_output(
     )?)
 }
 
-fn verify_publication_receipt<S: StructuredDurableDomainStateStore>(
+fn verify_publication_receipt<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -496,7 +497,7 @@ fn verify_publication_receipt<S: StructuredDurableDomainStateStore>(
 /// kind or a mismatched origin is not publication. Historical fee arithmetic
 /// is deliberately not rerun here: the charge was already independently
 /// verified when that receipt was committed.
-fn verify_paid_publication_receipt<S: StructuredDurableDomainStateStore>(
+fn verify_paid_publication_receipt<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -846,7 +847,7 @@ pub fn decode_publication_query_result(
 /// receipt-checked by this call under the supplied trusted resolver/history;
 /// a caller with its own separately expected context must still repeat that
 /// authentication itself rather than trust this call's choice of resolver.
-pub fn query_publication<S: StructuredDurableDomainStateStore>(
+pub fn query_publication<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -857,7 +858,7 @@ pub fn query_publication<S: StructuredDurableDomainStateStore>(
 }
 /// Query with explicitly trusted original protocol resolvers, never reconstructed
 /// from publication fields. Missing historical configuration fails closed.
-pub fn query_publication_with_history<S: StructuredDurableDomainStateStore>(
+pub fn query_publication_with_history<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -917,7 +918,7 @@ pub struct VerifiedDurablePublication {
     pub reads: Vec<StateReadAssertion>,
 }
 /// Loads a bounded durable closure under explicitly trusted original resolvers.
-pub fn load_verified_publication<S: StructuredDurableDomainStateStore>(
+pub fn load_verified_publication<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,

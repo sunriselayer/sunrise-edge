@@ -42,6 +42,8 @@ type Fixture = (
     ObjectId,
 );
 
+mod writer_free_preparation_tests;
+
 fn engine() -> LocalWasmExecutionEngine {
     LocalWasmExecutionEngine::new()
 }

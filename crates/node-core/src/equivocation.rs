@@ -26,6 +26,7 @@ use super::*;
 use consensus::{ConsensusError, EpochTransitionVote, FastVote};
 use execution::publication::{PublicationContext, PublicationError};
 use protocol_types::ValidatorId;
+use runtime::{StructuredStateReader, VersionedStateReader};
 use validator_set::ValidatorSet;
 
 const FASTPATH_EQUIVOCATION_EVIDENCE_RECORD_TYPE: u16 = 0x6429;
@@ -120,6 +121,45 @@ pub enum EquivocationEvidenceOutcome<T> {
     Recorded(T),
     /// The identical normalized identity was already durably recorded.
     AlreadyRecorded(T),
+}
+
+/// Exact retained evidence is distinct from a verified, uncommitted proposal.
+/// Preparation cannot manufacture a durable outcome or an original receipt.
+pub(crate) enum EquivocationEvidencePreparation {
+    AlreadyRecorded(FastPathEquivocationEvidenceRecord),
+    New(PreparedEquivocationEvidence),
+}
+
+/// The owning normalized record and its bounded metadata CAS proposal.
+/// Private fields preserve the direct committer's exact same-key race policy.
+pub(crate) struct PreparedEquivocationEvidence {
+    transaction: AtomicStateTransaction,
+    record: FastPathEquivocationEvidenceRecord,
+    key: Vec<u8>,
+    conflict_digest: Digest32,
+}
+
+impl PreparedEquivocationEvidence {
+    pub(crate) fn into_parts(self) -> (AtomicStateTransaction, FastPathEquivocationEvidenceRecord) {
+        (self.transaction, self.record)
+    }
+}
+
+impl EquivocationEvidencePreparation {
+    fn commit<S: StructuredDurableDomainStateStore>(
+        self,
+        store: &S,
+        context: &DurableOperationContext,
+        domain: AtomicityDomainId,
+        resolver: &HashSuiteResolver,
+    ) -> EqResult<EquivocationEvidenceOutcome<FastPathEquivocationEvidenceRecord>> {
+        match self {
+            Self::AlreadyRecorded(record) => {
+                Ok(EquivocationEvidenceOutcome::AlreadyRecorded(record))
+            }
+            Self::New(prepared) => commit_new_evidence(store, context, domain, resolver, prepared),
+        }
+    }
 }
 
 /// Frame `0x6429/v1`: one durable, permanent, append-only equivocation
@@ -376,18 +416,14 @@ fn resolve_existing(
     }
 }
 
-/// The shared, idempotent, content-addressed `Put` commit every `submit_*`
-/// class ends with (DR-0133 §8): a benign same-content race resolves to
-/// `AlreadyRecorded` by re-reading, never a raw conflict; any other
-/// rejection or an indeterminate outcome is a real, safely retryable
-/// [`NodeCoreError`], mirroring `epoch_transition::activate`'s own real
-/// `DurableCommitOutcome`/`DurableCommitRejection` mapping.
+/// Prepares the shared content-addressed `Put`, without a writer capability.
+/// Direct completion owns same-key-race reconciliation; ordered completion
+/// instead joins this exact proposal with its original receipt and progress.
 #[allow(clippy::too_many_arguments)]
-fn commit_new_evidence<S: StructuredDurableDomainStateStore>(
+fn prepare_new_evidence<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
-    resolver: &HashSuiteResolver,
     chain: &ChainId,
     key: Vec<u8>,
     observed_revision: StateRevision,
@@ -396,7 +432,7 @@ fn commit_new_evidence<S: StructuredDurableDomainStateStore>(
     conflict_digest: Digest32,
     expected: &execution::publication::PublicationContext,
     ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
-) -> EqResult<EquivocationEvidenceOutcome<FastPathEquivocationEvidenceRecord>> {
+) -> EqResult<PreparedEquivocationEvidence> {
     // Evidence may concern an old validator epoch, but a *new* evidence row
     // belongs to the currently serving epoch's ordered history. Once that
     // epoch freezes, adding an old-key evidence row would change the pre-Seal
@@ -404,7 +440,7 @@ fn commit_new_evidence<S: StructuredDurableDomainStateStore>(
     // function and remains legal; fresh submission can resume after the next
     // epoch activates. Fence the current epoch and its admission closure in
     // the same commit as the evidence row, not the offense epoch's closure.
-    mutation_fence::require_ordinary_namespace(store, context, domain)?;
+    mutation_fence::require_ordinary_reader_namespace(store, context, domain)?;
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     reads.insert(key.clone(), observed_revision);
     match ordered {
@@ -455,6 +491,29 @@ fn commit_new_evidence<S: StructuredDurableDomainStateStore>(
             StateMutation::Put(record_bytes),
         )?])?,
     )?;
+    Ok(PreparedEquivocationEvidence {
+        transaction,
+        record,
+        key,
+        conflict_digest,
+    })
+}
+
+/// Commits only to a real store. Preserve the owning exact same-key conflict
+/// reread; other rejections and ambiguous outcomes remain actual failures.
+fn commit_new_evidence<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    prepared: PreparedEquivocationEvidence,
+) -> EqResult<EquivocationEvidenceOutcome<FastPathEquivocationEvidenceRecord>> {
+    let PreparedEquivocationEvidence {
+        transaction,
+        record,
+        key,
+        conflict_digest,
+    } = prepared;
     match store.commit_durable(context, transaction) {
         DurableCommitOutcome::Committed => Ok(EquivocationEvidenceOutcome::Recorded(record)),
         DurableCommitOutcome::Rejected(DurableCommitRejection::Conflict {
@@ -592,7 +651,7 @@ pub(crate) fn load_historical_validator_set<S: runtime::VersionedStateReader + ?
 /// revision that established its chain-anchored digest. A fee claim must
 /// include these assertions in the same CAS as its escrow payout.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn load_historical_validator_set_fenced<S: StructuredDurableDomainStateStore>(
+pub(crate) fn load_historical_validator_set_fenced<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -638,25 +697,25 @@ pub fn submit_fast_vote_equivocation_evidence<S: StructuredDurableDomainStateSto
     statement_b: &[u8],
     checkpoint: u64,
 ) -> EqResult<EquivocationEvidenceOutcome<FastPathEquivocationEvidenceRecord>> {
-    submit_fast_vote_equivocation_evidence_ordered(
-        store,
-        context,
-        domain,
-        resolver,
-        chain,
-        protocol_version,
-        statement_a,
-        statement_b,
-        checkpoint,
-        None,
-        None,
-    )
+    let prepared: EquivocationEvidencePreparation =
+        prepare_fast_vote_equivocation_evidence_ordered(
+            store,
+            context,
+            domain,
+            resolver,
+            chain,
+            protocol_version,
+            statement_a,
+            statement_b,
+            checkpoint,
+            None,
+            None,
+        )?;
+    prepared.commit(store, context, domain, resolver)
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn submit_fast_vote_equivocation_evidence_ordered<
-    S: StructuredDurableDomainStateStore,
->(
+pub(crate) fn prepare_fast_vote_equivocation_evidence_ordered<S: StructuredStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -668,7 +727,7 @@ pub(crate) fn submit_fast_vote_equivocation_evidence_ordered<
     checkpoint: u64,
     expected: Option<&execution::publication::PublicationContext>,
     ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
-) -> EqResult<EquivocationEvidenceOutcome<FastPathEquivocationEvidenceRecord>> {
+) -> EqResult<EquivocationEvidencePreparation> {
     require_resolver_context(resolver, chain, protocol_version)?;
     let a: FastVote = consensus::decode_fast_vote(statement_a)?;
     let b: FastVote = consensus::decode_fast_vote(statement_b)?;
@@ -687,11 +746,11 @@ pub(crate) fn submit_fast_vote_equivocation_evidence_ordered<
         *evidence.validator.as_bytes(),
         conflict_digest,
     )?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     if let Some(existing_bytes) = observed.value() {
         let existing: FastPathEquivocationEvidenceRecord =
             resolve_existing(resolver, existing_bytes, conflict_digest)?;
-        return Ok(EquivocationEvidenceOutcome::AlreadyRecorded(existing));
+        return Ok(EquivocationEvidencePreparation::AlreadyRecorded(existing));
     }
 
     let evidence_bytes: Vec<u8> = consensus::encode_fast_vote_equivocation_evidence(&evidence)?;
@@ -709,11 +768,10 @@ pub(crate) fn submit_fast_vote_equivocation_evidence_ordered<
         validator_set,
         &fast_path::FastPathEd25519Verifier,
     )?;
-    commit_new_evidence(
+    let prepared: PreparedEquivocationEvidence = prepare_new_evidence(
         store,
         context,
         domain,
-        resolver,
         chain,
         key,
         observed.revision(),
@@ -726,7 +784,8 @@ pub(crate) fn submit_fast_vote_equivocation_evidence_ordered<
             evidence.epoch,
         )?),
         ordered,
-    )
+    )?;
+    Ok(EquivocationEvidencePreparation::New(prepared))
 }
 
 /// Class (b): the same validator signed two [`FastVote`]s for *different*
@@ -752,26 +811,28 @@ pub fn submit_fast_vote_object_conflict_evidence<S: StructuredDurableDomainState
     preimage_b: &[u8],
     checkpoint: u64,
 ) -> EqResult<EquivocationEvidenceOutcome<FastPathEquivocationEvidenceRecord>> {
-    submit_fast_vote_object_conflict_evidence_ordered(
-        store,
-        context,
-        domain,
-        resolver,
-        chain,
-        protocol_version,
-        statement_a,
-        statement_b,
-        preimage_a,
-        preimage_b,
-        checkpoint,
-        None,
-        None,
-    )
+    let prepared: EquivocationEvidencePreparation =
+        prepare_fast_vote_object_conflict_evidence_ordered(
+            store,
+            context,
+            domain,
+            resolver,
+            chain,
+            protocol_version,
+            statement_a,
+            statement_b,
+            preimage_a,
+            preimage_b,
+            checkpoint,
+            None,
+            None,
+        )?;
+    prepared.commit(store, context, domain, resolver)
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn submit_fast_vote_object_conflict_evidence_ordered<
-    S: StructuredDurableDomainStateStore,
+pub(crate) fn prepare_fast_vote_object_conflict_evidence_ordered<
+    S: StructuredStateReader + ?Sized,
 >(
     store: &S,
     context: &DurableOperationContext,
@@ -786,7 +847,7 @@ pub(crate) fn submit_fast_vote_object_conflict_evidence_ordered<
     checkpoint: u64,
     expected: Option<&execution::publication::PublicationContext>,
     ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
-) -> EqResult<EquivocationEvidenceOutcome<FastPathEquivocationEvidenceRecord>> {
+) -> EqResult<EquivocationEvidencePreparation> {
     require_resolver_context(resolver, chain, protocol_version)?;
     let a: FastVote = consensus::decode_fast_vote(statement_a)?;
     let b: FastVote = consensus::decode_fast_vote(statement_b)?;
@@ -828,11 +889,11 @@ pub(crate) fn submit_fast_vote_object_conflict_evidence_ordered<
         *evidence.validator.as_bytes(),
         conflict_digest,
     )?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     if let Some(existing_bytes) = observed.value() {
         let existing: FastPathEquivocationEvidenceRecord =
             resolve_existing(resolver, existing_bytes, conflict_digest)?;
-        return Ok(EquivocationEvidenceOutcome::AlreadyRecorded(existing));
+        return Ok(EquivocationEvidencePreparation::AlreadyRecorded(existing));
     }
 
     let evidence_bytes: Vec<u8> = consensus::encode_fast_vote_object_conflict_evidence(&evidence)?;
@@ -850,11 +911,10 @@ pub(crate) fn submit_fast_vote_object_conflict_evidence_ordered<
         validator_set,
         &fast_path::FastPathEd25519Verifier,
     )?;
-    commit_new_evidence(
+    let prepared: PreparedEquivocationEvidence = prepare_new_evidence(
         store,
         context,
         domain,
-        resolver,
         chain,
         key,
         observed.revision(),
@@ -867,7 +927,8 @@ pub(crate) fn submit_fast_vote_object_conflict_evidence_ordered<
             evidence.epoch,
         )?),
         ordered,
-    )
+    )?;
+    Ok(EquivocationEvidencePreparation::New(prepared))
 }
 
 /// Class (c): the same outgoing-epoch validator signed two
@@ -886,24 +947,26 @@ pub fn submit_epoch_transition_equivocation_evidence<S: StructuredDurableDomainS
     statement_b: &[u8],
     checkpoint: u64,
 ) -> EqResult<EquivocationEvidenceOutcome<FastPathEquivocationEvidenceRecord>> {
-    submit_epoch_transition_equivocation_evidence_ordered(
-        store,
-        context,
-        domain,
-        resolver,
-        chain,
-        protocol_version,
-        statement_a,
-        statement_b,
-        checkpoint,
-        None,
-        None,
-    )
+    let prepared: EquivocationEvidencePreparation =
+        prepare_epoch_transition_equivocation_evidence_ordered(
+            store,
+            context,
+            domain,
+            resolver,
+            chain,
+            protocol_version,
+            statement_a,
+            statement_b,
+            checkpoint,
+            None,
+            None,
+        )?;
+    prepared.commit(store, context, domain, resolver)
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn submit_epoch_transition_equivocation_evidence_ordered<
-    S: StructuredDurableDomainStateStore,
+pub(crate) fn prepare_epoch_transition_equivocation_evidence_ordered<
+    S: StructuredStateReader + ?Sized,
 >(
     store: &S,
     context: &DurableOperationContext,
@@ -916,7 +979,7 @@ pub(crate) fn submit_epoch_transition_equivocation_evidence_ordered<
     checkpoint: u64,
     expected: Option<&execution::publication::PublicationContext>,
     ordered: Option<&ordered_economics::OrderedLegAdmission<'_>>,
-) -> EqResult<EquivocationEvidenceOutcome<FastPathEquivocationEvidenceRecord>> {
+) -> EqResult<EquivocationEvidencePreparation> {
     require_resolver_context(resolver, chain, protocol_version)?;
     let a: EpochTransitionVote = consensus::decode_epoch_transition_vote(statement_a)?;
     let b: EpochTransitionVote = consensus::decode_epoch_transition_vote(statement_b)?;
@@ -935,11 +998,11 @@ pub(crate) fn submit_epoch_transition_equivocation_evidence_ordered<
         *evidence.validator.as_bytes(),
         conflict_digest,
     )?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     if let Some(existing_bytes) = observed.value() {
         let existing: FastPathEquivocationEvidenceRecord =
             resolve_existing(resolver, existing_bytes, conflict_digest)?;
-        return Ok(EquivocationEvidenceOutcome::AlreadyRecorded(existing));
+        return Ok(EquivocationEvidencePreparation::AlreadyRecorded(existing));
     }
 
     let evidence_bytes: Vec<u8> =
@@ -958,11 +1021,10 @@ pub(crate) fn submit_epoch_transition_equivocation_evidence_ordered<
         validator_set,
         &fast_path::FastPathEd25519Verifier,
     )?;
-    commit_new_evidence(
+    let prepared: PreparedEquivocationEvidence = prepare_new_evidence(
         store,
         context,
         domain,
-        resolver,
         chain,
         key,
         observed.revision(),
@@ -975,7 +1037,8 @@ pub(crate) fn submit_epoch_transition_equivocation_evidence_ordered<
             evidence.epoch,
         )?),
         ordered,
-    )
+    )?;
+    Ok(EquivocationEvidencePreparation::New(prepared))
 }
 
 #[cfg(test)]

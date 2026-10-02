@@ -58,6 +58,7 @@ use consensus::{
 };
 use execution::publication::PublicationContext;
 use protocol_types::{Digest32, ValidatorId};
+use runtime::VersionedStateReader;
 use runtime::portable::{
     DurableCollection, DurablePortableRepository, DurableRecordKey, DurableRecordScan,
 };
@@ -418,7 +419,7 @@ struct DrainContext {
 /// Fences the installed logical profile, current epoch, outgoing set and
 /// committed Freeze exactly once for every function in this module, folding
 /// every read into the caller-owned `reads` set instead of a fresh one.
-fn fence_drain_context_into<S: StructuredDurableDomainStateStore>(
+fn fence_drain_context_into<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -432,7 +433,7 @@ fn fence_drain_context_into<S: StructuredDurableDomainStateStore>(
         fence_closed_epoch(store, context, domain, resolver, expected, reads)?;
     let closure_key: Vec<u8> = admission_closure_key(&chain, epoch)?;
     let closure_row: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &closure_key)?;
+        store.read_versioned_state(context, domain, &closure_key)?;
     put_read(reads, closure_key, closure_row.revision())?;
     let closure_bytes: &[u8] = closure_row.value().ok_or(DrainSignerError::NotReady(
         "ordered Freeze is not committed",
@@ -454,7 +455,7 @@ fn fence_drain_context_into<S: StructuredDurableDomainStateStore>(
 
 /// Fences the installed logical profile, current epoch, outgoing set and
 /// committed Freeze exactly once for every function in this module.
-fn fence_drain_context<S: StructuredDurableDomainStateStore>(
+fn fence_drain_context<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1164,7 +1165,7 @@ fn selection_seed(
 /// *complete* frozen frontier and reached this exact selected vote before it
 /// may count toward the union; a caller cannot substitute a different signed
 /// vote for the same validator than what was actually confirmed locally.
-fn require_selected_signers_complete<S: StructuredDurableDomainStateStore>(
+fn require_selected_signers_complete<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1183,7 +1184,7 @@ fn require_selected_signers_complete<S: StructuredDurableDomainStateStore>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn require_selected_signers_complete_into<S: StructuredDurableDomainStateStore>(
+fn require_selected_signers_complete_into<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1195,7 +1196,7 @@ fn require_selected_signers_complete_into<S: StructuredDurableDomainStateStore>(
     for vote in selected_votes {
         let progress_key: Vec<u8> = drain_signer_progress_key(chain, epoch, vote.validator)?;
         let progress_row: VersionedStateValue =
-            store.get_versioned_durable(context, domain, &progress_key)?;
+            store.read_versioned_state(context, domain, &progress_key)?;
         put_read(reads, progress_key, progress_row.revision())?;
         let bytes: &[u8] = progress_row.value().ok_or(DrainSignerError::NotReady(
             "selected signer has no local progress",
@@ -1486,7 +1487,7 @@ pub(crate) fn next_union_member_after<S: DurablePortableRepository>(
 /// vote's own commit -- the same CAS-fencing discipline every other read in
 /// this module already gets, rather than a plain read trusted at a distance.
 /// See [`verify_drain_ready`] for a caller with no CAS read set of its own.
-pub fn verify_drain_ready_into<S: StructuredDurableDomainStateStore>(
+pub fn verify_drain_ready_into<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -1516,8 +1517,7 @@ pub fn verify_drain_ready_into<S: StructuredDurableDomainStateStore>(
         selection_seed(resolver, &fence, expected, domain, selected_votes)?;
     let selection_digest: Digest32 = seed.identity().entries_digest;
     let ready_key: Vec<u8> = drain_union_ready_key(&fence.chain, fence.epoch, &selection_digest)?;
-    let ready_row: VersionedStateValue =
-        store.get_versioned_durable(context, domain, &ready_key)?;
+    let ready_row: VersionedStateValue = store.read_versioned_state(context, domain, &ready_key)?;
     put_read(reads, ready_key, ready_row.revision())?;
     let bytes: &[u8] = match ready_row.value() {
         Some(value) => value,
@@ -1545,7 +1545,7 @@ pub fn verify_drain_ready_into<S: StructuredDurableDomainStateStore>(
 
 /// Same check as [`verify_drain_ready_into`], for a caller with no CAS read
 /// set of its own; every read is folded into a fresh one and discarded.
-pub fn verify_drain_ready<S: StructuredDurableDomainStateStore>(
+pub fn verify_drain_ready<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,

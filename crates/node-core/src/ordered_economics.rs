@@ -6,9 +6,8 @@
 //! signature verification, not merely a structural decode), the typed
 //! semantic-refusal preflight, the same-key FastVote reservations one
 //! admitted candidate's own address-owned inputs need, the durable
-//! leader-proposal and local-vote identity records, the private staging-store
-//! adapter that captures an existing economics handler's transaction without
-//! publishing it, and the
+//! leader-proposal and local-vote identity records, writer-free owning business
+//! preparation and the bounded physical observation scope, and the
 //! `propose`/`process_proposal`/`process_certificate`/`observe_proposal`/
 //! `query_status`/`process_tick` orchestrator.
 //!
@@ -52,9 +51,11 @@
 //! the older standalone epoch-transition route must still be
 //! integrated before this path can be enabled as a complete handoff.
 use super::*;
+use runtime::StructuredStateReader;
 
 pub(crate) mod audit_projection;
 mod candidate;
+mod completion;
 mod drain_set;
 mod drain_union;
 pub(crate) mod engine;
@@ -62,11 +63,11 @@ mod evidence_submission;
 mod freeze;
 mod frontier;
 mod identity;
+mod observed_read;
 pub mod ordered_history;
 mod policy;
 mod preflight;
 mod reservation;
-mod staging;
 
 pub use candidate::{
     MAX_ORDERED_CANDIDATE_INTENT_BYTES, OrderedCandidate, OrderedOperationKind,
@@ -124,7 +125,6 @@ pub use policy::{
 pub(crate) use reservation::{
     OrderedCausalRequirements, OrderedLegAdmission, ordered_causal_requirements,
 };
-pub(crate) use staging::StagingStore;
 
 /// Maximum address-owned object inputs one admitted candidate may reserve.
 /// DR-0153's closed profile only ever reserves a bond deposit leg's single
