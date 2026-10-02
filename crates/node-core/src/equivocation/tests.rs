@@ -905,6 +905,14 @@ struct BarrierGatedEquivocationStore {
 }
 
 impl DurableDomainStateStore for BarrierGatedEquivocationStore {
+    fn get_outgoing_barrier(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, runtime::DurableReadError> {
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,

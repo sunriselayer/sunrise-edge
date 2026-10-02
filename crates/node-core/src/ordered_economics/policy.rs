@@ -9,6 +9,7 @@
 //! identity allocation. That is what lets
 //! [`super::OrderedEconomicsError::Unauthenticated`] be a deterministic
 //! retained rejection rather than a stop.
+use super::seal;
 use super::*;
 use crate::admission_profile::{
     ExternalRequestLane, VerifiedAdmissionProfile, require_external_request_lane,
@@ -31,11 +32,13 @@ use execution::local_execution::{
     AuthenticatedLocalExecutionIntent, LocalContractEngine, LocalExecutionPolicy,
     authenticate_local_execution,
 };
+use execution::paid_execution::PaidContractEngine;
 use execution::publication::{PublicationContext, encode_publication_context};
 use fee_claims::codec::{FeeClaimOperation, SignedFeeClaimIntent, decode_signed_fee_claim_intent};
 use fee_claims::{fee_claim_intent_digest, fee_claim_receipt_digest, fee_claim_signing_frame};
 use genesis::{GenesisManifest, VerifiedGenesisRoot};
 use protocol_types::{SignatureSchemeId, ValidatorId};
+use runtime::portable::PortableBlobRepository;
 use validator_set::{ValidatorInfo, ValidatorSet};
 
 /// Searched-for frame identifier of the canonical DR-0153 authority-anchor
@@ -400,6 +403,7 @@ impl OrderedEconomicsPolicy {
             OrderedOperationKind::Evidence
             | OrderedOperationKind::Freeze
             | OrderedOperationKind::DrainSet => Ok(candidate_digest),
+            OrderedOperationKind::Seal => Ok(candidate_digest),
         }
     }
 }
@@ -472,6 +476,30 @@ pub struct OrderedEconomicsEnvironment<'a> {
     pub engine: &'a dyn LocalContractEngine,
     /// Blob store backing large object bodies.
     pub blobs: &'a dyn BlobStore,
+    /// DR-0187 live Seal-acceptance composition. None means Seal is not
+    /// live-composed in this invocation: both ordinary historical
+    /// reconstruction and any store lacking the SAMESTORE Seal capability
+    /// must take this branch, and neither may fabricate an accepted Seal
+    /// output from it. Only a caller composing the actual live outgoing
+    /// host supplies Some.
+    pub seal: Option<OrderedSealComposition<'a>>,
+}
+
+/// Borrowed composition the DR-0187 private acceptance-only business closure
+/// needs beyond the ordinary candidate fields above: a separately pinned
+/// genesis root and the paid-side policy/engine/blob repository
+/// verify_live_seal_closure reuses to independently re-derive and compare
+/// the complete post-drain business state.
+pub struct OrderedSealComposition<'a> {
+    /// Independently pinned genesis root this Seal's sole supported
+    /// predecessor tag names.
+    pub genesis_root: &'a VerifiedGenesisRoot,
+    /// Existing deterministic paid execution policy for owned operations.
+    pub paid_base_policy: &'a LocalExecutionPolicy,
+    /// Existing deterministic paid execution engine.
+    pub paid_engine: &'a dyn PaidContractEngine,
+    /// Portable blob repository backing the independent source capture.
+    pub blobs: &'a dyn PortableBlobRepository,
 }
 
 impl<'a> OrderedEconomicsEnvironment<'a> {
@@ -687,6 +715,7 @@ fn authenticate_with_policy(
         OrderedOperationKind::Evidence => authenticate_evidence(env, candidate),
         OrderedOperationKind::Freeze => authenticate_freeze(env, candidate),
         OrderedOperationKind::DrainSet => authenticate_drain_set(env, candidate),
+        OrderedOperationKind::Seal => authenticate_seal(env, candidate),
     }
 }
 
@@ -778,6 +807,109 @@ fn authenticate_drain_set(
     super::drain_set::encode_drain_set_record(&record).map_err(|_| {
         OrderedEconomicsError::Unauthenticated("drain set record cannot be encoded")
     })?;
+    Ok(())
+}
+
+/// Purely validates the Seal candidate own bytes (DR-0187): the predecessor
+/// pin, the created_checkpoint/embedded cut-identity binding, the readiness
+/// subject own internal consistency against this pinned profile, and the
+/// target/request_id derivation, including the explicit high-bit
+/// convention. The referenced certificate own quorum and every successor
+/// current eligibility can only be proven through durable storage and the
+/// staged blob; see `super::seal::require_seal_warrant`.
+fn authenticate_seal(
+    env: &CandidateAuthentication<'_>,
+    candidate: &OrderedCandidate,
+) -> Result<(), OrderedEconomicsError> {
+    if env.policy.minimum_freeze_block_height() == 0 {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "seal is not enabled by the signed genesis profile",
+        ));
+    }
+    let intent = seal::decode_seal_intent(&candidate.intent)
+        .map_err(|_| OrderedEconomicsError::Unauthenticated("invalid seal candidate intent"))?;
+    if intent.predecessor_tag != seal::SEAL_PREDECESSOR_TAG_GENESIS {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "seal predecessor tag is unsupported",
+        ));
+    }
+    if intent.predecessor_digest != env.policy.genesis_digest() {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "seal predecessor digest is not the pinned genesis",
+        ));
+    }
+    let cut_identity = seal::decode_seal_cut_identity(&intent).map_err(|_| {
+        OrderedEconomicsError::Unauthenticated("invalid seal candidate cut identity")
+    })?;
+    if candidate.created_checkpoint != cut_identity.ordered_history.through_height {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "seal created checkpoint is not the cut history height",
+        ));
+    }
+    if cut_identity.context != candidate.context
+        || cut_identity.domain != env.policy.domain()
+        || cut_identity.genesis_digest != env.policy.genesis_digest()
+    {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "seal candidate cut identity does not match the pinned profile",
+        ));
+    }
+    let subject = &intent.readiness_subject;
+    if subject.epoch != candidate.context.epoch()
+        || subject.chain_id != *candidate.context.chain_id()
+        || subject.protocol_version != candidate.context.protocol_version()
+        || subject.genesis_digest != env.policy.genesis_digest()
+        || subject.domain != env.policy.domain()
+    {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "seal readiness subject does not match the pinned profile",
+        ));
+    }
+    let outgoing_set_digest = env
+        .policy
+        .engine()
+        .validator_set()
+        .digest(env.resolver())
+        .map_err(|_| {
+            OrderedEconomicsError::Unauthenticated("seal outgoing validator set digest")
+        })?;
+    if subject.outgoing_set_digest != outgoing_set_digest {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "seal readiness subject outgoing set digest differs",
+        ));
+    }
+    let cut_digest =
+        seal::seal_cut_identity_digest(env.resolver(), &cut_identity).map_err(|_| {
+            OrderedEconomicsError::Unauthenticated("seal candidate cut identity digest")
+        })?;
+    if subject.cut_digest != cut_digest {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "seal readiness subject cut digest differs from the candidate own cut identity",
+        ));
+    }
+    let subject_identity = subject.identity(env.resolver()).map_err(|_| {
+        OrderedEconomicsError::Unauthenticated("seal readiness subject configuration")
+    })?;
+    let target = seal::seal_target_digest(
+        env.resolver(),
+        &candidate.context,
+        subject_identity,
+        intent.predecessor_tag,
+        intent.predecessor_digest,
+    )
+    .map_err(|_| OrderedEconomicsError::Unauthenticated("seal target derivation"))?;
+    let request_id = seal::seal_request_id(
+        env.resolver(),
+        &candidate.context,
+        target,
+        intent.certificate_digest,
+    )
+    .map_err(|_| OrderedEconomicsError::Unauthenticated("seal request derivation"))?;
+    if candidate.request_id != request_id {
+        return Err(OrderedEconomicsError::Unauthenticated(
+            "seal candidate request id does not match its own derivation",
+        ));
+    }
     Ok(())
 }
 

@@ -10,7 +10,9 @@ use super::{
     BusinessReconstructionError, BusinessReconstructionOverlay, BusinessReconstructionPlan,
     DrainSetControlMaterial, OwnedPublicationMaterial,
 };
-use crate::ordered_economics::{OrderedHistoryHeightMaterial, OrderedHistoryIdentity};
+use crate::ordered_economics::{
+    OrderedCandidate, OrderedHistoryHeightMaterial, OrderedHistoryIdentity,
+};
 use canonical_encoding::{CanonicalStruct, decode_digest32, encode_digest32};
 use execution::publication::PublicationContext;
 use hashing::HashSuiteResolver;
@@ -236,8 +238,8 @@ impl VerifiedBusinessCut {
 /// Captures exactly once under the backend token, privately derives every
 /// prerequisite, compares the complete source, and rechecks that original token.
 pub fn derive_source_business_cut<
-    S: DurablePortableSnapshotRepository,
-    B: PortableBlobRepository,
+    S: DurablePortableSnapshotRepository + ?Sized,
+    B: PortableBlobRepository + ?Sized,
 >(
     plan: BusinessReconstructionPlan<'_>,
     source: &S,
@@ -257,7 +259,7 @@ pub fn derive_source_business_cut<
     overlay.compare_source(&snapshot)?;
     let carriers = proof::source_application_carriers(&overlay, &snapshot)?;
     let mut cut: VerifiedBusinessCut =
-        derive::from_overlay(&overlay, &owned, ordered, &controls, &carriers)?;
+        derive::from_overlay(&overlay, &owned, ordered, &controls, &carriers, None)?;
     source
         .check_portable_outbox_empty_at(&operation, domain, &snapshot.token)
         .map_err(|_| invalid("source snapshot changed before cut derivation finished"))?;
@@ -265,6 +267,64 @@ pub fn derive_source_business_cut<
     Ok(cut)
 }
 
+/// DR-0187 private acceptance-only business closure. Reuses the exact same
+/// token-covered source capture, independent execution, source comparison,
+/// drain/body closure, generation floor and business/artifact root
+/// derivations as `derive_source_business_cut`; it substitutes only the
+/// terminal rule: the authenticated prior tip at the fixed target of
+/// `ordered` must be committed empty, its direct child must be exactly
+/// `seal_candidate` as its sole transaction, and its grandchild must be
+/// empty. A lagging source must first apply the authenticated h+1
+/// certificate through existing ordinary recovery; this verifier cannot
+/// skip that prerequisite.
+///
+/// This is private read-only preparation, not a new public cut/import
+/// producer: ordinary source export, saved cut, import and readiness keep
+/// their original empty-three-chain check unchanged. Not yet wired to any
+/// live caller: the ordered-economics completion path that would supply a
+/// genuinely committed Seal block/candidate is a separate, runtime-owned
+/// deliverable.
+pub(crate) fn verify_live_seal_closure<
+    S: DurablePortableSnapshotRepository + ?Sized,
+    B: PortableBlobRepository + ?Sized,
+>(
+    plan: BusinessReconstructionPlan<'_>,
+    source: &S,
+    source_blobs: &B,
+    ordered: &[OrderedHistoryHeightMaterial],
+    seal_candidate: &OrderedCandidate,
+) -> Result<VerifiedBusinessCut, BusinessCutError> {
+    let seal_candidate_digest: Digest32 = plan
+        .ordered_policy
+        .candidate_digest(seal_candidate)
+        .map_err(|_| invalid("seal acceptance candidate digest"))?;
+    let snapshot = source::capture(source, source_blobs, &plan.operation_context, plan.domain)?;
+    let owned: Vec<OwnedPublicationMaterial> =
+        super::owned_material_from_source_snapshot(&snapshot, &plan)?;
+    let controls: Vec<DrainSetControlMaterial> =
+        super::drain_control_material_from_source_snapshot(&snapshot, &plan, ordered)
+            .map_err(|_| invalid("source control closure could not be authenticated"))?;
+    let operation = plan.operation_context;
+    let domain: AtomicityDomainId = plan.domain;
+    let mut overlay: BusinessReconstructionOverlay<'_> = BusinessReconstructionOverlay::new(plan)?;
+    overlay.reconstruct_with_control_material(&owned, ordered, &controls)?;
+    overlay.compare_source(&snapshot)?;
+    let carriers = proof::source_application_carriers(&overlay, &snapshot)?;
+    let mut cut: VerifiedBusinessCut = derive::from_overlay_for_seal_acceptance(
+        &overlay,
+        &owned,
+        ordered,
+        &controls,
+        &carriers,
+        seal_candidate,
+        seal_candidate_digest,
+    )?;
+    source
+        .check_portable_outbox_empty_at(&operation, domain, &snapshot.token)
+        .map_err(|_| invalid("source snapshot changed before cut derivation finished"))?;
+    cut.source_token = Some(snapshot.token);
+    Ok(cut)
+}
 /// Independent immutable saved verification. Only the supplied locally pinned
 /// plan chooses genesis/context/domain/history. Saved outcome/receipt companions
 /// are checked against actual private execution, never installed as effects.
@@ -278,8 +338,8 @@ pub fn verify_saved_business_cut(
 /// Private capture seam shared with inactive target verification. This is not
 /// a constructor from source claims and does not grant live authority.
 pub(super) fn capture_import_target<
-    S: DurablePortableSnapshotRepository,
-    B: PortableBlobRepository,
+    S: DurablePortableSnapshotRepository + ?Sized,
+    B: PortableBlobRepository + ?Sized,
 >(
     store: &S,
     blobs: &B,

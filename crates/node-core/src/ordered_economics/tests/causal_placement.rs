@@ -1780,6 +1780,14 @@ struct PaidHeadRaceStore<'a> {
 }
 
 impl DurableDomainStateStore for PaidHeadRaceStore<'_> {
+    fn get_outgoing_barrier(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, runtime::DurableReadError> {
+        self.fixture.network.stores[self.replica].get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,

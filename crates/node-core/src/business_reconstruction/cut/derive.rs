@@ -7,10 +7,11 @@ use crate::logical_generation::{
     LogicalSubject, decode_logical_profile_record, decode_logical_provenance_record,
     is_logical_profile_key, is_logical_provenance_key, logical_profile_key,
 };
+use crate::ordered_economics::OrderedEconomicsPolicy;
 use crate::ordered_economics::{
     DrainSetRecord, OrderedCandidate, OrderedHistoryComponentKind, OrderedOperationKind,
     admission_closure_key, decode_admission_closure_record, decode_drain_set_record,
-    decode_ordered_candidate, drain_set_record_key, engine,
+    decode_ordered_candidate, drain_set_record_key, engine, verified_committed_block,
 };
 use consensus::{
     AvailabilityIdentity, DrainUnionAccumulator, FrozenFrontierCertifier, FrozenFrontierIdentity,
@@ -257,6 +258,91 @@ fn terminal(
     {
         return Err(invalid(
             "cut fixed target three-chain still contains a candidate",
+        ));
+    }
+    Ok(())
+}
+
+/// The private acceptance-only candidate this Seal terminal substitution
+/// verifies, named explicitly rather than inferred from any source claim.
+pub(super) struct SealAcceptanceCandidate<'a> {
+    pub(super) candidate: &'a OrderedCandidate,
+    pub(super) candidate_digest: Digest32,
+}
+
+/// DR-0187 private acceptance-only terminal: substitutes exactly the
+/// ordinary terminal three-empty-proposal rule. The authenticated prior
+/// tip at identity.through_height must be committed with an empty proposal,
+/// its direct child must be exactly this accepted Seal candidate as its
+/// sole transaction, and its grandchild must be empty. Acceptance is the
+/// one place a forged header must not be trusted on shape alone, so the
+/// terminal three-chain is additionally cryptographically re-verified here,
+/// not merely structurally decoded.
+fn seal_terminal(
+    ordered: &[OrderedHistoryHeightMaterial],
+    identity: &OrderedHistoryIdentity,
+    policy: &OrderedEconomicsPolicy,
+    candidate: &OrderedCandidate,
+    candidate_digest: Digest32,
+) -> Result<(), BusinessCutError> {
+    if candidate.kind != OrderedOperationKind::Seal {
+        return Err(invalid("seal acceptance candidate is not a Seal operation"));
+    }
+    // Pure candidate authentication binds created_checkpoint to the exact
+    // intent cut. Acceptance uses the later, independently authenticated prior
+    // applied tip: empty-prefix progress may extend the intent's old anchor.
+    // Do not conflate those two heights or reject a valid extension here.
+    if candidate.created_checkpoint > identity.through_height {
+        return Err(invalid(
+            "seal claimed cut lies beyond the prior applied tip",
+        ));
+    }
+    let last: &OrderedHistoryHeightMaterial = ordered
+        .last()
+        .ok_or(invalid("cut authenticated ordered prefix is empty"))?;
+    if last.descriptor.height != identity.through_height || last.descriptor.identity != *identity {
+        return Err(invalid("cut terminal proof is not the fixed target"));
+    }
+    let proof: consensus::CommittedBlockProof = consensus::decode_committed_block_proof(component(
+        last,
+        OrderedHistoryComponentKind::CommitProof,
+    )?)
+    .map_err(|_| invalid("cut terminal proof schema"))?;
+    let block = verified_committed_block(policy, &proof)
+        .map_err(|_| invalid("cut seal acceptance terminal proof authentication"))?;
+    if block.height != last.descriptor.height
+        || block.digest != last.descriptor.block_digest
+        || block.view != last.descriptor.view
+    {
+        return Err(invalid(
+            "cut seal acceptance terminal proof disagrees with the prior tip",
+        ));
+    }
+    // Defense in depth beyond verify_committed_block_proof own justify-chain
+    // linkage: the committed/child/grandchild heights this exact genuinely
+    // authenticated proof names must be the consecutive h-1/h/h+1 sequence
+    // this terminal rule is defined over, not merely a structurally
+    // decodable three-chain at an unrelated height.
+    let seal_height: u64 = block
+        .height
+        .checked_add(1)
+        .ok_or(invalid("cut seal acceptance height overflow"))?;
+    let grandchild_height: u64 = seal_height
+        .checked_add(1)
+        .ok_or(invalid("cut seal acceptance height overflow"))?;
+    if proof.child.height != seal_height || proof.grandchild.height != grandchild_height {
+        return Err(invalid(
+            "cut seal acceptance three-chain heights are not the consecutive h-1/h/h+1 sequence",
+        ));
+    }
+    if !proof.committed.transactions.is_empty() || !proof.grandchild.transactions.is_empty() {
+        return Err(invalid(
+            "cut seal acceptance three-chain is not prior/empty/empty",
+        ));
+    }
+    if proof.child.transactions.as_slice() != [candidate_digest] {
+        return Err(invalid(
+            "cut seal acceptance child is not exactly the accepted seal candidate",
         ));
     }
     Ok(())
@@ -515,11 +601,21 @@ pub(super) fn from_overlay(
     ordered: &[OrderedHistoryHeightMaterial],
     controls: &[DrainSetControlMaterial],
     carriers: &BTreeMap<[u8; 32], Vec<u8>>,
+    seal: Option<SealAcceptanceCandidate<'_>>,
 ) -> Result<VerifiedBusinessCut, BusinessCutError> {
     if !overlay.reconstruction_complete {
         return Err(invalid("cut private execution is incomplete"));
     }
-    terminal(ordered, overlay.plan.ordered_history_identity)?;
+    match &seal {
+        None => terminal(ordered, overlay.plan.ordered_history_identity)?,
+        Some(seal) => seal_terminal(
+            ordered,
+            overlay.plan.ordered_history_identity,
+            overlay.plan.ordered_policy,
+            seal.candidate,
+            seal.candidate_digest,
+        )?,
+    }
     let (drain, drain_digest, control_keys) = complete_drain(overlay, ordered, controls)?;
     let projection: SemanticProjection =
         super::super::projection::independently_derived_projection(overlay)?;
@@ -680,4 +776,31 @@ pub(super) fn from_overlay(
         components,
         prefix_accumulators,
     })
+}
+
+/// DR-0187 private acceptance-only entry point: identical to `from_overlay`
+/// in every respect except the one substituted terminal rule (see
+/// `seal_terminal`). It reuses the exact same source capture, independent
+/// execution, source comparison, drain/body closure, generation floor and
+/// business/artifact root derivations as the ordinary pre-Seal producer.
+pub(super) fn from_overlay_for_seal_acceptance(
+    overlay: &BusinessReconstructionOverlay<'_>,
+    owned: &[OwnedPublicationMaterial],
+    ordered: &[OrderedHistoryHeightMaterial],
+    controls: &[DrainSetControlMaterial],
+    carriers: &BTreeMap<[u8; 32], Vec<u8>>,
+    seal_candidate: &OrderedCandidate,
+    seal_candidate_digest: Digest32,
+) -> Result<VerifiedBusinessCut, BusinessCutError> {
+    from_overlay(
+        overlay,
+        owned,
+        ordered,
+        controls,
+        carriers,
+        Some(SealAcceptanceCandidate {
+            candidate: seal_candidate,
+            candidate_digest: seal_candidate_digest,
+        }),
+    )
 }

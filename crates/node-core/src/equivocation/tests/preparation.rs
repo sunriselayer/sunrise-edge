@@ -23,6 +23,14 @@ impl VersionedStateReader for EvidenceReader<'_> {
 }
 
 impl StructuredStateReader for EvidenceReader<'_> {
+    fn read_outgoing_barrier(
+        &self,
+        operation: &DurableOperationContext,
+        domain: AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
+        self.store.get_outgoing_barrier(operation, domain)
+    }
+
     fn read_namespace_lifecycle(
         &self,
         operation: &DurableOperationContext,

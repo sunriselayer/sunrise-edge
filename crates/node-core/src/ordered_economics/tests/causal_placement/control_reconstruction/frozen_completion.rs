@@ -30,6 +30,8 @@ mod sqlite_handoff_faults;
 
 #[path = "frozen_completion/conditional_readiness.rs"]
 mod conditional_readiness;
+#[path = "frozen_completion/ordered_seal.rs"]
+mod ordered_seal;
 
 pub(super) fn registration_generic_prefix(fixture: &CausalFixture) -> Vec<CertifiedPaidMaterial> {
     preseal_cut_contracts::generic_import_prefix(fixture)
@@ -899,6 +901,7 @@ fn frozen_completion_sqlite_source_survives_reopen_fences_stale_writer_and_recon
     )
     .unwrap();
     let environment: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
+        seal: None,
         policy: &network.policy,
         history: &network.history,
         leg_policy: &network.leg_policy,

@@ -51,13 +51,25 @@ use runtime::{
 };
 
 /// Entry-specific live admission guard. The backend validates the current
-/// writer fence, deadline and immutable origin on this read, and rechecks it
+/// writer fence, deadline, immutable origin and outgoing barrier, and rechecks it
 /// atomically on every ordinary commit. Ordinary is a storage-origin check,
 /// NOT proof of membership, readiness or active serving authority. A host can
 /// use this before exposing a live cached protocol response; shared historical
 /// inspection remains legal. Exact original business receipt reconciliation
 /// runs before this check on business mutation routes.
 pub fn require_ordinary_namespace<S: DurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+) -> Result<(), NodeCoreError> {
+    require_origin_ordinary_namespace(store, context, domain)?;
+    require_unsealed(&store.get_outgoing_barrier(context, domain)?)
+}
+
+/// Permanent-origin check for signerless historical reconciliation. This is
+/// deliberately not a live-write or signing capability. The actual commit
+/// ports still enforce the protected outgoing barrier under their own lock.
+pub(crate) fn require_origin_ordinary_namespace<S: DurableDomainStateStore>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -72,7 +84,17 @@ pub(crate) fn require_ordinary_reader_namespace<S: StructuredStateReader + ?Size
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
 ) -> Result<(), NodeCoreError> {
-    require_ordinary_origin(&store.read_namespace_lifecycle(context, domain)?)
+    require_ordinary_origin(&store.read_namespace_lifecycle(context, domain)?)?;
+    require_unsealed(&store.read_outgoing_barrier(context, domain)?)
+}
+
+fn require_unsealed(barrier: &runtime::OutgoingBarrier) -> Result<(), NodeCoreError> {
+    match barrier {
+        runtime::OutgoingBarrier::Unsealed => Ok(()),
+        runtime::OutgoingBarrier::Sealed(_) => Err(NodeCoreError::PersistenceInvariant(
+            "outgoing epoch is sealed; live work is forbidden",
+        )),
+    }
 }
 
 fn require_ordinary_origin(lifecycle: &NamespaceLifecycle) -> Result<(), NodeCoreError> {

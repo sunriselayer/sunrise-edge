@@ -2,10 +2,11 @@
 //! signerless recovery and private reconstruction. Prepared business effects
 //! are never durable confirmation. Coordinator progress is supplied separately
 //! and joins the exact original receipt in one actual store invocation.
+use super::engine::SealRetention;
 use super::engine::{CommittedOrderedOperation, ExecutionWarrant, LegOutcome, MergedWrites};
 use super::observed_read::ObservedBusinessReadView;
 use super::*;
-use runtime::{DurableObjectHeadRead, StateObservationSet};
+use runtime::{DurableObjectHeadRead, OutgoingSealRepository, StateObservationSet};
 
 /// An independently evaluated original operation, including refusal-deciding
 /// observations. Fields and construction stay private to the owning evaluator;
@@ -14,6 +15,7 @@ pub(super) struct PreparedOriginalCompletion {
     outcome: OrderedOutcome,
     business: DurableInvocationTransaction,
     reads: StateObservationSet,
+    seal: Option<SealRetention>,
 }
 
 /// Actual store confirmation of an original completion. Neither an owning
@@ -27,6 +29,7 @@ pub(super) struct ConfirmedOriginalCompletion {
 pub(super) struct AssembledOriginalCompletion {
     outcome: OrderedOutcome,
     transaction: DurableInvocationTransaction,
+    seal: Option<SealRetention>,
 }
 
 impl AssembledOriginalCompletion {
@@ -35,9 +38,36 @@ impl AssembledOriginalCompletion {
         store: &S,
         context: &DurableOperationContext,
     ) -> Result<ConfirmedOriginalCompletion, OrderedEconomicsError> {
-        match store.commit_invocation(context, self.transaction) {
+        let AssembledOriginalCompletion {
+            outcome: original_outcome,
+            transaction,
+            seal,
+        } = self;
+        let commit_outcome: DurableCommitOutcome = match seal {
+            // DR-0187: the actual sealed-record commit is a different port
+            // than the ordinary original-invocation commit; it alone also
+            // retains the protected outgoing barrier. Re-fetched here
+            // (rather than carried inside `SealRetention`) because this is
+            // the one real atomic commit site, and the capability must be
+            // read from the exact same store this transaction commits to.
+            Some(retention) => match store.outgoing_seal_repository() {
+                Some(repository) => repository.commit_seal_completion(
+                    context,
+                    &retention.token,
+                    transaction,
+                    retention.barrier,
+                ),
+                None => {
+                    return Err(OrderedEconomicsError::Prerequisite(
+                        "ordered Seal completion requires the OutgoingSealRepository capability",
+                    ));
+                }
+            },
+            None => store.commit_invocation(context, transaction),
+        };
+        match commit_outcome {
             DurableCommitOutcome::Committed => Ok(ConfirmedOriginalCompletion {
-                outcome: self.outcome,
+                outcome: original_outcome,
             }),
             outcome => Err(super::engine::commit_outcome_error(outcome)),
         }
@@ -120,6 +150,7 @@ impl PreparedOriginalCompletion {
         Ok(AssembledOriginalCompletion {
             outcome: self.outcome,
             transaction,
+            seal: self.seal,
         })
     }
 }
@@ -146,6 +177,7 @@ pub(super) fn prepare_original_completion<S: StructuredStateReader>(
     env: &OrderedEconomicsEnvironment<'_>,
     operation: &CommittedOrderedOperation<'_>,
     warrant: &ExecutionWarrant<'_>,
+    seal_repository: Option<&dyn OutgoingSealRepository>,
 ) -> Result<PreparedOriginalCompletion, OrderedEconomicsError> {
     let candidate: &OrderedCandidate = operation.candidate();
     let admission: &OrderedLegAdmission<'_> = warrant.admission(candidate.request_id)?;
@@ -165,6 +197,8 @@ pub(super) fn prepare_original_completion<S: StructuredStateReader>(
                     &authenticated,
                     Some(admission),
                     operation.height(),
+                    operation.block_digest(),
+                    seal_repository,
                 )
             }
         }
@@ -177,10 +211,14 @@ pub(super) fn prepare_original_completion<S: StructuredStateReader>(
         finish_handler_attempt(observed, result)?;
     let digest: Digest32 = operation.digest();
     let domain: AtomicityDomainId = env.policy.domain();
-    let (output, business): (NodeOutput, DurableInvocationTransaction) = match result {
+    let (output, business, seal): (
+        NodeOutput,
+        DurableInvocationTransaction,
+        Option<SealRetention>,
+    ) = match result {
         LegOutcome::PreparedInvocation(prepared) => {
             let (business, output) = prepared.into_parts();
-            (output, business)
+            (output, business, None)
         }
         LegOutcome::PreparedState(prepared) => {
             let (state, output) = prepared.into_parts();
@@ -191,7 +229,7 @@ pub(super) fn prepare_original_completion<S: StructuredStateReader>(
                 super::engine::build_receipt(candidate.request_id, digest, &output)?,
                 None,
             )?;
-            (output, business)
+            (output, business, None)
         }
         LegOutcome::AcceptedRetainedEvidence(output) | LegOutcome::Refused(output) => {
             let business: DurableInvocationTransaction = DurableInvocationTransaction::new(
@@ -201,7 +239,17 @@ pub(super) fn prepare_original_completion<S: StructuredStateReader>(
                 super::engine::build_receipt(candidate.request_id, digest, &output)?,
                 None,
             )?;
-            (output, business)
+            (output, business, None)
+        }
+        LegOutcome::AcceptedSeal { output, retention } => {
+            let business: DurableInvocationTransaction = DurableInvocationTransaction::new(
+                domain,
+                None,
+                DurableObjectChanges::empty(),
+                super::engine::build_receipt(candidate.request_id, digest, &output)?,
+                None,
+            )?;
+            (output, business, Some(retention))
         }
         LegOutcome::Stop(error) => return Err(error),
     };
@@ -231,6 +279,7 @@ pub(super) fn prepare_original_completion<S: StructuredStateReader>(
         },
         business,
         reads,
+        seal,
     })
 }
 

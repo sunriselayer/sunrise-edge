@@ -40,6 +40,12 @@ pub enum OrderedOperationKind {
     DrainSet,
     /// DR-0179 self-authenticated non-genesis initial bond registration.
     BondRegistration,
+    /// DR-0187: the unsigned first-epoch outgoing closure control
+    /// (`super::seal`). Like `Freeze`/`DrainSet`, its `intent` carries no
+    /// signature: authorization is the signed-genesis Freeze/DrainSet
+    /// prerequisite plus a quorum-backed readiness certificate, never an
+    /// additional outer signature.
+    Seal,
 }
 
 impl OrderedOperationKind {
@@ -52,6 +58,7 @@ impl OrderedOperationKind {
             Self::Freeze => 5,
             Self::DrainSet => 6,
             Self::BondRegistration => 7,
+            Self::Seal => 8,
         }
     }
 
@@ -64,6 +71,7 @@ impl OrderedOperationKind {
             5 => Ok(Self::Freeze),
             6 => Ok(Self::DrainSet),
             7 => Ok(Self::BondRegistration),
+            8 => Ok(Self::Seal),
             other => Err(NodeCoreError::PersistenceInvariant(ordered_kind_message(
                 other,
             ))),
@@ -176,6 +184,7 @@ mod tests {
             OrderedOperationKind::Freeze,
             OrderedOperationKind::DrainSet,
             OrderedOperationKind::BondRegistration,
+            OrderedOperationKind::Seal,
         ] {
             let candidate: OrderedCandidate = OrderedCandidate {
                 context: context(),
@@ -208,7 +217,7 @@ mod tests {
     #[test]
     fn ordered_operation_kind_from_wire_rejects_unknown_tag() {
         assert!(OrderedOperationKind::from_wire(0).is_err());
-        assert!(OrderedOperationKind::from_wire(8).is_err());
+        assert!(OrderedOperationKind::from_wire(9).is_err());
     }
 
     #[test]

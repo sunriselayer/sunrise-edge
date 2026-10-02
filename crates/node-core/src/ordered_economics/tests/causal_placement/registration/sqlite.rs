@@ -258,6 +258,7 @@ pub(super) fn assert_registration_restart_replay_and_fence(
         calls: Cell::new(0),
     };
     let env: OrderedEconomicsEnvironment<'_> = OrderedEconomicsEnvironment {
+        seal: None,
         policy: &network.policy,
         history: &network.history,
         leg_policy: &network.leg_policy,

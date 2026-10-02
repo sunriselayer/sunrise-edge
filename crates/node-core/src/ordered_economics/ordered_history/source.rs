@@ -3,7 +3,7 @@
 //! snapshot token, whole-history CAS or caller locator is consensus authority.
 use super::*;
 
-fn read_required<S: StructuredDurableDomainStateStore>(
+pub(crate) fn read_required<S: StructuredDurableDomainStateStore + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -16,7 +16,7 @@ fn read_required<S: StructuredDurableDomainStateStore>(
     ))
 }
 
-fn read_proof<S: StructuredDurableDomainStateStore>(
+pub(crate) fn read_proof<S: StructuredDurableDomainStateStore + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -42,7 +42,7 @@ fn read_proof<S: StructuredDurableDomainStateStore>(
 
 /// Advertises the source's current applied tip. Consumers must verify the entire
 /// genesis-to-target stream, and must not infer network freshness.
-pub fn query_ordered_history_summary<S: StructuredDurableDomainStateStore>(
+pub fn query_ordered_history_summary<S: StructuredDurableDomainStateStore + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -74,7 +74,7 @@ pub fn query_ordered_history_summary<S: StructuredDurableDomainStateStore>(
     Ok(OrderedHistorySummary { identity })
 }
 
-fn read_material<S: StructuredDurableDomainStateStore>(
+pub(crate) fn read_material<S: StructuredDurableDomainStateStore + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -158,7 +158,7 @@ fn read_material<S: StructuredDurableDomainStateStore>(
 }
 
 /// Reads one independently reverified small descriptor. No scan or mutation.
-pub fn read_ordered_history_height_descriptor<S: StructuredDurableDomainStateStore>(
+pub fn read_ordered_history_height_descriptor<S: StructuredDurableDomainStateStore + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -172,7 +172,7 @@ pub fn read_ordered_history_height_descriptor<S: StructuredDurableDomainStateSto
 /// Immutable rows must still match the previously selected digest/length.
 /// Offset equal to length is not an implicit empty terminal chunk.
 #[allow(clippy::too_many_arguments)]
-pub fn read_ordered_history_component_chunk<S: StructuredDurableDomainStateStore>(
+pub fn read_ordered_history_component_chunk<S: StructuredDurableDomainStateStore + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -204,4 +204,71 @@ pub fn read_ordered_history_component_chunk<S: StructuredDurableDomainStateStore
         .ok_or(invalid("ordered history chunk end overflow"))?
         .min(bytes.len());
     Ok(bytes[start..end].to_vec())
+}
+
+/// Assembles and incrementally re-verifies the complete authenticated
+/// material for every height 1..=identity.through_height, by direct local
+/// reads through this exact owning store -- the single bounded-material
+/// seam every caller (ordinary paged export, private business
+/// reconstruction and the DR-0187 Seal acceptance closure) now shares, so
+/// no independent, weaker parallel reader exists. ?Sized because the
+/// Seal acceptance caller only ever holds a dyn OutgoingSealRepository
+/// trait object.
+pub(crate) fn assemble_verified_material<S: StructuredDurableDomainStateStore + ?Sized>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    identity: &OrderedHistoryIdentity,
+) -> Result<Vec<OrderedHistoryHeightMaterial>, OrderedEconomicsError> {
+    identity.validate(env.policy)?;
+    let mut verifier: OrderedHistoryVerifier =
+        OrderedHistoryVerifier::new(env.policy.clone(), identity.clone())
+            .map_err(|_| invalid("ordered history verifier pin refused"))?;
+    let mut materials: Vec<OrderedHistoryHeightMaterial> =
+        Vec::with_capacity(usize::try_from(identity.through_height).unwrap_or(0));
+    for height in 1..=identity.through_height {
+        let material: OrderedHistoryHeightMaterial =
+            read_material(store, context, env, identity, height)?;
+        verifier.verify_next_height(&material)?;
+        materials.push(material);
+    }
+    let verified: VerifiedOrderedHistory = verifier
+        .finish()
+        .map_err(|_| invalid("ordered history prefix is incomplete"))?;
+    if verified.identity() != identity {
+        return Err(invalid("ordered history identity changed"));
+    }
+    Ok(materials)
+}
+
+/// Reads the one committed proof at through_height (0 is the fixed
+/// genesis anchor) and derives the exact OrderedHistoryIdentity naming it,
+/// the same construction query_ordered_history_summary uses for the
+/// locally applied tip, generalized to an arbitrary already-committed
+/// height. The sole DR-0187 Seal acceptance caller uses this to name the
+/// actual current prior tip, never a stale candidate-declared checkpoint.
+pub(crate) fn identity_at_height<S: StructuredDurableDomainStateStore + ?Sized>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    through_height: u64,
+) -> Result<OrderedHistoryIdentity, OrderedEconomicsError> {
+    let (through_view, through_digest): (u64, Digest32) = if through_height == 0 {
+        (0, env.policy.anchor())
+    } else {
+        let (_, block): (Vec<u8>, CommittedBlock) =
+            read_proof(store, context, env, through_height)?;
+        (block.view, block.digest)
+    };
+    let identity: OrderedHistoryIdentity = OrderedHistoryIdentity {
+        context: env.policy.context().clone(),
+        domain: env.policy.domain(),
+        genesis_digest: env.policy.genesis_digest(),
+        anchor: env.policy.anchor(),
+        through_height,
+        through_view,
+        through_digest,
+    };
+    identity.validate(env.policy)?;
+    Ok(identity)
 }

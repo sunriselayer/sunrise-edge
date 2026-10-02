@@ -119,6 +119,14 @@ impl<'a> SqliteHandoffFaults<'a> {
 }
 
 impl DurableDomainStateStore for SqliteHandoffFaults<'_> {
+    fn get_outgoing_barrier(
+        &self,
+        c: &DurableOperationContext,
+        d: AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, DurableReadError> {
+        self.inner.get_outgoing_barrier(c, d)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         c: &DurableOperationContext,

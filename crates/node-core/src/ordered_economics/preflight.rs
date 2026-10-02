@@ -189,6 +189,13 @@ pub(crate) fn require_admission_open<S: StructuredStateReader>(
         (OrderedOperationKind::DrainSet, false) => {
             Err(OrderedEconomicsError::Refused(OrderedRefusal::NoFreeze))
         }
+        // DR-0187: Seal, like DrainSet, is admitted only after a committed
+        // Freeze -- it cannot warrant before a complete post-drain cut
+        // exists.
+        (OrderedOperationKind::Seal, true) => Ok(()),
+        (OrderedOperationKind::Seal, false) => {
+            Err(OrderedEconomicsError::Refused(OrderedRefusal::NoFreeze))
+        }
         (_, true) => Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch)),
         (_, false) => Ok(()),
     }
@@ -226,6 +233,9 @@ pub(crate) fn preflight<S: StructuredStateReader>(
         }
         OrderedOperationKind::DrainSet => {
             super::drain_set::preflight_drain_set(store, context, env, candidate)
+        }
+        OrderedOperationKind::Seal => {
+            super::seal::require_seal_warrant(store, context, env, candidate)
         }
     }
 }

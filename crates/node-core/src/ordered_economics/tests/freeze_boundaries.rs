@@ -45,6 +45,14 @@ struct ProposalRace<'a> {
     race: RaceStore<'a>,
 }
 impl DurableDomainStateStore for ProposalRace<'_> {
+    fn get_outgoing_barrier(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, runtime::DurableReadError> {
+        self.race.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,

@@ -505,6 +505,14 @@ struct ReceiptOnlyStore<'a> {
     inner: &'a MemoryDurableStateStore,
 }
 impl DurableDomainStateStore for ReceiptOnlyStore<'_> {
+    fn get_outgoing_barrier(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, runtime::DurableReadError> {
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,
@@ -819,6 +827,14 @@ struct InsertAtCommit<'a> {
     value: Vec<u8>,
 }
 impl DurableDomainStateStore for InsertAtCommit<'_> {
+    fn get_outgoing_barrier(
+        &self,
+        context: &runtime::DurableOperationContext,
+        domain: runtime::AtomicityDomainId,
+    ) -> Result<runtime::OutgoingBarrier, runtime::DurableReadError> {
+        self.inner.get_outgoing_barrier(context, domain)
+    }
+
     fn get_namespace_lifecycle(
         &self,
         context: &runtime::DurableOperationContext,
