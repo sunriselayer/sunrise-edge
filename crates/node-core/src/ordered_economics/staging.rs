@@ -9,6 +9,13 @@
 //! adapter's `commit_invocation`/`commit_durable` -- can never move value or
 //! advance a nonce: there is nothing staged to merge.
 //!
+//! This is a compatibility adapter for handlers which still commit through
+//! runtime traits. A `Committed` return from either intercepted method is
+//! only a capture acknowledgement to that handler, never evidence of durable
+//! completion. Only [`StagingStore::finish`] returns a prepared contribution;
+//! the real completion assembler must publish it to an actual store before
+//! exposing output. This adapter cannot issue a confirmed completion.
+//!
 //! This adapter grants no additional storage authority: every read is
 //! forwarded unchanged to the wrapped store under the same
 //! [`DurableOperationContext`] and [`AtomicityDomainId`] the caller already
@@ -37,34 +44,60 @@ use std::cell::RefCell;
 /// capture.
 pub(crate) struct StagingStore<'a, S: StructuredDurableDomainStateStore> {
     inner: &'a S,
-    captured_durable: RefCell<Option<AtomicStateTransaction>>,
-    captured_invocation: RefCell<Option<DurableInvocationTransaction>>,
+    captured: RefCell<Option<PreparedHandlerWrite>>,
+    repeated_capture: RefCell<bool>,
+    finished: RefCell<bool>,
     observed_reads: RefCell<BTreeMap<Vec<u8>, StateRevision>>,
     inconsistent_read: RefCell<bool>,
+}
+
+/// A handler's proposed write, not a durable outcome. Keeping the two commit
+/// paths in one slot makes their mutual exclusion explicit.
+pub(super) enum PreparedHandlerWrite {
+    State(AtomicStateTransaction),
+    Invocation(Box<DurableInvocationTransaction>),
+}
+
+/// Complete observations and at most one proposed handler write.
+pub(super) struct HandlerPreparation {
+    pub(super) reads: BTreeMap<Vec<u8>, StateRevision>,
+    pub(super) write: Option<PreparedHandlerWrite>,
 }
 
 impl<'a, S: StructuredDurableDomainStateStore> StagingStore<'a, S> {
     pub(crate) fn new(inner: &'a S) -> Self {
         Self {
             inner,
-            captured_durable: RefCell::new(None),
-            captured_invocation: RefCell::new(None),
+            captured: RefCell::new(None),
+            repeated_capture: RefCell::new(false),
+            finished: RefCell::new(false),
             observed_reads: RefCell::new(BTreeMap::new()),
             inconsistent_read: RefCell::new(false),
         }
     }
 
-    /// Takes the captured plain state transaction, if any handler committed
-    /// through [`DurableDomainStateStore::commit_durable`] rather than
-    /// [`StructuredDurableDomainStateStore::commit_invocation`].
-    pub(crate) fn take_durable(&self) -> Option<AtomicStateTransaction> {
-        self.captured_durable.borrow_mut().take()
-    }
-
-    /// Takes the captured structured invocation transaction, if any handler
-    /// committed.
-    pub(crate) fn take_invocation(&self) -> Option<DurableInvocationTransaction> {
-        self.captured_invocation.borrow_mut().take()
+    /// Ends preparation. Conflicting observations or a second commit attempt
+    /// are preparation invariants, not a fabricated storage deadline. Even a
+    /// handler which ignores the second attempt cannot publish the first.
+    pub(super) fn finish(&self) -> Result<HandlerPreparation, OrderedEconomicsError> {
+        if *self.finished.borrow() {
+            return Err(OrderedEconomicsError::Prerequisite(
+                "ordered handler preparation was already consumed",
+            ));
+        }
+        if *self.repeated_capture.borrow() {
+            return Err(OrderedEconomicsError::Prerequisite(
+                "ordered handler attempted more than one prepared completion",
+            ));
+        }
+        if self.had_inconsistent_read() {
+            return Err(NodeCoreError::StateConflict.into());
+        }
+        *self.finished.borrow_mut() = true;
+        Ok(HandlerPreparation {
+            reads: self.observed_reads(),
+            write: self.captured.borrow_mut().take(),
+        })
     }
 
     /// Every state row this staged attempt read, at the revision it observed.
@@ -118,13 +151,15 @@ impl<'a, S: StructuredDurableDomainStateStore> DurableDomainStateStore for Stagi
         _context: &DurableOperationContext,
         transaction: AtomicStateTransaction,
     ) -> DurableCommitOutcome {
-        let mut slot = self.captured_durable.borrow_mut();
-        if slot.is_some() || self.captured_invocation.borrow().is_some() {
-            return DurableCommitOutcome::Indeterminate(
-                IndeterminateCommitReason::DeadlineExceeded,
-            );
+        let mut slot = self.captured.borrow_mut();
+        if slot.is_some() || *self.finished.borrow() {
+            *self.repeated_capture.borrow_mut() = true;
+            // Definite private adapter rejection: no commit was dispatched.
+            // The evaluator must check `finish` even if the handler propagates
+            // this sentinel, so it escapes only as a preparation invariant.
+            return DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState);
         }
-        *slot = Some(transaction);
+        *slot = Some(PreparedHandlerWrite::State(transaction));
         DurableCommitOutcome::Committed
     }
 }
@@ -166,84 +201,16 @@ impl<'a, S: StructuredDurableDomainStateStore> StructuredDurableDomainStateStore
         _context: &DurableOperationContext,
         transaction: DurableInvocationTransaction,
     ) -> DurableCommitOutcome {
-        let mut slot = self.captured_invocation.borrow_mut();
-        if slot.is_some() || self.captured_durable.borrow().is_some() {
-            return DurableCommitOutcome::Indeterminate(
-                IndeterminateCommitReason::DeadlineExceeded,
-            );
+        let mut slot = self.captured.borrow_mut();
+        if slot.is_some() || *self.finished.borrow() {
+            *self.repeated_capture.borrow_mut() = true;
+            // Definite private adapter rejection, never backend ambiguity.
+            return DurableCommitOutcome::Rejected(DurableCommitRejection::InvalidPersistedState);
         }
-        *slot = Some(transaction);
+        *slot = Some(PreparedHandlerWrite::Invocation(Box::new(transaction)));
         DurableCommitOutcome::Committed
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use runtime::{
-        MemoryDurableStateStore, StorageCorrelationId, StorageDeadline, WriterFenceGeneration,
-    };
-
-    fn store_context() -> (
-        MemoryDurableStateStore,
-        DurableOperationContext,
-        AtomicityDomainId,
-    ) {
-        let generation: WriterFenceGeneration = WriterFenceGeneration::new(1).unwrap();
-        let store: MemoryDurableStateStore = MemoryDurableStateStore::new(generation);
-        let context: DurableOperationContext = DurableOperationContext::new(
-            generation,
-            StorageDeadline::new(u64::MAX).unwrap(),
-            StorageCorrelationId::new([1; 16]).unwrap(),
-        );
-        let domain: AtomicityDomainId = AtomicityDomainId::new([2; 32]).unwrap();
-        (store, context, domain)
-    }
-
-    #[test]
-    fn staging_store_forwards_reads_and_never_publishes_a_captured_commit() {
-        let (store, context, domain) = store_context();
-        let key: Vec<u8> = b"ordered-economics-staging-probe".to_vec();
-        let real_before: VersionedStateValue =
-            store.get_versioned_durable(&context, domain, &key).unwrap();
-        let staging: StagingStore<'_, MemoryDurableStateStore> = StagingStore::new(&store);
-        let observed: VersionedStateValue = staging
-            .get_versioned_durable(&context, domain, &key)
-            .unwrap();
-        assert_eq!(observed.revision(), real_before.revision());
-
-        let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
-            domain,
-            AtomicStateReadSet::new(vec![
-                StateReadAssertion::new(key.clone(), observed.revision()).unwrap(),
-            ])
-            .unwrap(),
-            AtomicStateMutationSet::new(vec![
-                StateMutationEntry::new(key.clone(), StateMutation::Put(vec![9, 9, 9])).unwrap(),
-            ])
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            staging.commit_durable(&context, transaction),
-            DurableCommitOutcome::Committed
-        );
-
-        // The real store never saw the write: the staged transaction was
-        // captured, not published.
-        let real_after: VersionedStateValue =
-            store.get_versioned_durable(&context, domain, &key).unwrap();
-        assert_eq!(real_after.revision(), real_before.revision());
-        assert_eq!(real_after.value(), None);
-
-        let captured: AtomicStateTransaction =
-            staging.take_durable().expect("captured transaction");
-        assert_eq!(
-            store.commit_durable(&context, captured),
-            DurableCommitOutcome::Committed
-        );
-        let real_committed: VersionedStateValue =
-            store.get_versioned_durable(&context, domain, &key).unwrap();
-        assert_eq!(real_committed.value(), Some(vec![9, 9, 9].as_slice()));
-    }
-}
+mod tests;

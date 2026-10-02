@@ -55,6 +55,7 @@ use super::*;
 
 pub(crate) mod audit_projection;
 mod candidate;
+mod completion;
 mod drain_set;
 mod drain_union;
 pub(crate) mod engine;

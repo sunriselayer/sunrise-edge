@@ -23,8 +23,11 @@
 //!
 //! A byte-identical replay of an already-applied event writes nothing at all:
 //! no row is rewritten, no revision incremented, no nonce re-reserved.
+use super::completion::{
+    AssembledOriginalCompletion, ConfirmedOriginalCompletion, PreparedOriginalCompletion,
+};
 use super::identity::{LocalVoteReconciliation, RetainedIdentity};
-use super::policy::Ed25519ConsensusVerifier;
+use super::policy::{AuthenticatedOrderedOperation, Ed25519ConsensusVerifier};
 use super::reservation::{OrderedReservationPlan, PendingWrite};
 use super::*;
 use crate::admission_profile::{
@@ -37,7 +40,10 @@ use consensus::{
     decode_proposal, decode_quorum_certificate, encode_consensus_state, encode_proposal,
     encode_quorum_certificate,
 };
-use runtime::{DurableCommitOutcome, DurableDomainStateStore, DurableObjectHeadRead};
+use runtime::{
+    DurableCommitOutcome, DurableDomainStateStore, DurableObjectHeadRead, StateAssemblyError,
+    StateTransactionBuilder,
+};
 
 /// Reserved under [`crate::local_instance_state::INSTANCE_STATE_PREFIX`], so
 /// every existing enforcement point that already calls
@@ -739,10 +745,8 @@ pub(super) fn candidate_digest(
 /// deduplicating by key so the merged transaction is valid
 /// ([`AtomicStateReadSet`] rejects duplicate keys) and so two contributors
 /// cannot silently disagree about the same row.
-#[derive(Default)]
-struct MergedWrites {
-    reads: BTreeMap<Vec<u8>, StateRevision>,
-    mutations: BTreeMap<Vec<u8>, StateMutation>,
+pub(super) struct MergedWrites {
+    state: StateTransactionBuilder,
 }
 
 /// A same-sized capacity probe, never a cryptographic signature and never
@@ -831,16 +835,23 @@ fn require_admission_receipt<S: StructuredDurableDomainStateStore>(
 }
 
 impl MergedWrites {
-    fn read(&mut self, key: Vec<u8>, revision: StateRevision) -> Result<(), OrderedEconomicsError> {
-        match self.reads.insert(key, revision) {
-            Some(previous) if previous != revision => {
-                Err(OrderedEconomicsError::Node(NodeCoreError::StateConflict))
-            }
-            _ => Ok(()),
+    pub(super) fn new(domain: AtomicityDomainId) -> Self {
+        Self {
+            state: StateTransactionBuilder::new(domain),
         }
     }
 
-    fn mutate(
+    pub(super) fn read(
+        &mut self,
+        key: Vec<u8>,
+        revision: StateRevision,
+    ) -> Result<(), OrderedEconomicsError> {
+        self.state
+            .observe(StateReadAssertion::new(key, revision)?)
+            .map_err(state_assembly_error)
+    }
+
+    pub(super) fn mutate(
         &mut self,
         key: Vec<u8>,
         revision: StateRevision,
@@ -855,12 +866,9 @@ impl MergedWrites {
         key: Vec<u8>,
         mutation: StateMutation,
     ) -> Result<(), OrderedEconomicsError> {
-        match self.mutations.insert(key, mutation.clone()) {
-            Some(previous) if previous != mutation => Err(stop(
-                "ordered economics invocation produced two different mutations for one row",
-            )),
-            _ => Ok(()),
-        }
+        self.state
+            .coalesce_mutation_exact(StateMutationEntry::new(key, mutation)?)
+            .map_err(state_assembly_error)
     }
 
     fn apply(&mut self, write: PendingWrite) -> Result<(), OrderedEconomicsError> {
@@ -868,67 +876,51 @@ impl MergedWrites {
         self.mutate(key, revision, mutation)
     }
 
-    fn merge_handler_state(
+    pub(super) fn merge_handler_state(
         &mut self,
         state: &DurableStateTransaction,
     ) -> Result<(), OrderedEconomicsError> {
-        for assertion in state.reads() {
-            self.read(assertion.key().to_vec(), assertion.expected_revision())?;
-        }
-        for entry in state.mutations() {
-            self.record_mutation(entry.key().to_vec(), entry.mutation().clone())?;
-        }
-        Ok(())
+        self.state
+            .merge_state_exact(state)
+            .map_err(state_assembly_error)
     }
 
     fn is_unchanged(&self) -> bool {
-        self.mutations.is_empty()
+        self.state.is_unchanged()
     }
 
-    fn into_state_transaction(
+    pub(super) fn into_state_transaction(
         self,
         domain: AtomicityDomainId,
     ) -> Result<DurableStateTransaction, OrderedEconomicsError> {
-        let assertions: Vec<StateReadAssertion> = self
-            .reads
-            .into_iter()
-            .map(|(key, revision)| StateReadAssertion::new(key, revision))
-            .collect::<Result<_, RuntimeError>>()?;
-        let mutations: Vec<StateMutationEntry> = self
-            .mutations
-            .into_iter()
-            .map(|(key, mutation)| StateMutationEntry::new(key, mutation))
-            .collect::<Result<_, RuntimeError>>()?;
-        Ok(DurableStateTransaction::new(
-            domain,
-            AtomicStateReadSet::new(assertions)?,
-            mutations,
-        )?)
+        if self.state.domain() != domain {
+            return Err(RuntimeError::AtomicityDomainMismatch.into());
+        }
+        Ok(self.state.finish_invocation_state()?)
     }
 
     fn into_atomic_transaction(
         self,
         domain: AtomicityDomainId,
     ) -> Result<AtomicStateTransaction, OrderedEconomicsError> {
-        let assertions: Vec<StateReadAssertion> = self
-            .reads
-            .into_iter()
-            .map(|(key, revision)| StateReadAssertion::new(key, revision))
-            .collect::<Result<_, RuntimeError>>()?;
-        let mutations: Vec<StateMutationEntry> = self
-            .mutations
-            .into_iter()
-            .map(|(key, mutation)| StateMutationEntry::new(key, mutation))
-            .collect::<Result<_, RuntimeError>>()?;
-        Ok(AtomicStateTransaction::new(
-            domain,
-            AtomicStateReadSet::new(assertions)?,
-            AtomicStateMutationSet::new(mutations)?,
-        )?)
+        if self.state.domain() != domain {
+            return Err(RuntimeError::AtomicityDomainMismatch.into());
+        }
+        Ok(self.state.finish_metadata()?)
     }
 }
 
-fn commit_outcome_error(outcome: DurableCommitOutcome) -> OrderedEconomicsError {
+fn state_assembly_error(error: StateAssemblyError) -> OrderedEconomicsError {
+    match error {
+        StateAssemblyError::ConflictingObservation { .. } => NodeCoreError::StateConflict.into(),
+        StateAssemblyError::ConflictingMutation { .. } => {
+            stop("ordered economics invocation produced two different mutations for one row")
+        }
+        StateAssemblyError::Runtime(error) => error.into(),
+    }
+}
+
+pub(super) fn commit_outcome_error(outcome: DurableCommitOutcome) -> OrderedEconomicsError {
     match outcome {
         DurableCommitOutcome::Committed => {
             stop("unreachable committed outcome treated as a failure")
@@ -1021,7 +1013,7 @@ pub fn install_ordered_genesis<S: StructuredDurableDomainStateStore>(
     let state = env.policy.engine().genesis_state(now_unix_millis);
     let bytes = encode_consensus_state(&state)
         .map_err(|_| stop("ordered genesis consensus state does not encode"))?;
-    let mut writes = MergedWrites::default();
+    let mut writes = MergedWrites::new(domain);
     let mut profile_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     fence_policy(store, context, env, &mut profile_reads)?;
     for (key, revision) in profile_reads {
@@ -1072,9 +1064,9 @@ fn refusal_output(
 }
 
 /// Disposition of one attempted candidate execution.
-enum LegOutcome {
-    /// The staged handler committed a business transaction, captured by
-    /// [`StagingStore`] and not yet published.
+pub(super) enum LegOutcome {
+    /// The owning handler prepared a business transaction, captured by
+    /// [`StagingStore`] and not yet durably confirmed or published.
     Accepted(NodeOutput),
     /// One narrowly enumerated legitimate outcome in which the existing handler
     /// accepts *without* staging any transaction: the normalized evidence
@@ -1105,7 +1097,7 @@ fn refused(request_id: [u8; 32], refusal: OrderedRefusal) -> LegOutcome {
 /// Converts one execution-path error into a disposition, honouring the module
 /// contract: only a pure authentication failure or a typed refusal is a
 /// retained rejection; everything else stops.
-fn disposition(request_id: [u8; 32], error: OrderedEconomicsError) -> LegOutcome {
+pub(super) fn disposition(request_id: [u8; 32], error: OrderedEconomicsError) -> LegOutcome {
     match error {
         OrderedEconomicsError::Refused(refusal) => refused(request_id, refusal),
         // A candidate that fails *pure* authentication at execution time was
@@ -1122,8 +1114,8 @@ fn disposition(request_id: [u8; 32], error: OrderedEconomicsError) -> LegOutcome
 /// Executes one committed candidate against `staging` (never the real store
 /// directly).
 ///
-/// Order: pure re-authentication, then the typed
-/// [`super::preflight`] against the healthy committed state, then the exact
+/// The caller supplies evidence of pure authentication. Then the typed
+/// [`super::preflight`] checks the healthy committed state before the exact
 /// existing handler its `kind` already uses -- unmodified, except for the
 /// private admitted-candidate capability that authorizes exactly this
 /// request's own retained reservations.
@@ -1133,17 +1125,15 @@ fn disposition(request_id: [u8; 32], error: OrderedEconomicsError) -> LegOutcome
 /// become CAS assertions in the one final commit. A refusal derived from a row
 /// that has since moved is then rejected atomically instead of being retained
 /// against state that no longer justifies it.
-fn execute_candidate<S: StructuredDurableDomainStateStore>(
+pub(super) fn execute_candidate<S: StructuredDurableDomainStateStore>(
     staging: &StagingStore<'_, S>,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
-    candidate: &OrderedCandidate,
+    operation: &AuthenticatedOrderedOperation<'_>,
     admission: Option<&OrderedLegAdmission<'_>>,
     block_height: u64,
 ) -> LegOutcome {
-    if let Err(error) = authenticate_candidate(env, candidate) {
-        return disposition(candidate.request_id, error);
-    }
+    let candidate: &OrderedCandidate = operation.candidate();
     if let Err(error) = preflight::preflight(staging, context, env, candidate, block_height) {
         return disposition(candidate.request_id, error);
     }
@@ -1359,76 +1349,84 @@ fn execute_evidence_candidate<S: StructuredDurableDomainStateStore>(
 
 // --- request-header/candidate-record reconciliation -----------------------
 
-/// Captures exactly one existing handler's intended completion, without
-/// committing it or deriving business semantics from source companions.
-fn capture_completion<S: StructuredDurableDomainStateStore>(
-    staging: &StagingStore<'_, S>,
-    domain: AtomicityDomainId,
-    candidate: &OrderedCandidate,
-    block: &CommittedBlock,
-    outcome: LegOutcome,
-) -> Result<(OrderedOutcome, DurableInvocationTransaction), OrderedEconomicsError> {
-    let digest: Digest32 = block.transactions[0];
-    let (output, business): (NodeOutput, DurableInvocationTransaction) = match outcome {
-        LegOutcome::Stop(error) => return Err(error),
-        LegOutcome::Accepted(output) => {
-            let captured: DurableInvocationTransaction =
-                match (staging.take_invocation(), staging.take_durable()) {
-                    (Some(invocation), None) => invocation,
-                    (None, Some(plain)) => DurableInvocationTransaction::new(
-                        domain,
-                        Some(DurableStateTransaction::from(plain)),
-                        DurableObjectChanges::empty(),
-                        build_receipt(candidate.request_id, digest, &output)?,
-                        None,
-                    )?,
-                    (None, None) => {
-                        return Err(stop(
-                            "ordered accepted candidate produced no staged transaction",
-                        ));
-                    }
-                    (Some(_), Some(_)) => {
-                        return Err(stop("ordered candidate staged through two commit paths"));
-                    }
-                };
-            (output, captured)
+/// Identity/order evidence issued only at the two owning verified-commit
+/// boundaries below. A certificate does not authenticate business execution.
+/// Neither callers nor decoded source companions can construct this type.
+pub(super) struct CommittedOrderedOperation<'a> {
+    candidate: &'a OrderedCandidate,
+    block: &'a CommittedBlock,
+    digest: Digest32,
+}
+
+impl<'a> CommittedOrderedOperation<'a> {
+    /// The caller has already verified the full committed proof and its
+    /// contiguous prefix. This binds the exact canonical original material to
+    /// that verified block, without claiming that its semantics are accepted.
+    fn bind_verified(
+        env: &OrderedEconomicsEnvironment<'_>,
+        candidate: &'a OrderedCandidate,
+        block: &'a CommittedBlock,
+    ) -> Result<Self, OrderedEconomicsError> {
+        let bytes: Vec<u8> = encode_ordered_candidate(candidate)?;
+        let digest: Digest32 = candidate_digest(env.resolver, candidate.context.epoch(), &bytes)?;
+        if block.transactions.as_slice() != [digest] {
+            return Err(stop(
+                "committed operation differs from exact original material",
+            ));
         }
-        LegOutcome::AcceptedRetainedEvidence(output) => {
-            if staging.take_invocation().is_some() || staging.take_durable().is_some() {
-                return Err(stop(
-                    "ordered already-recorded evidence unexpectedly staged a write",
-                ));
-            }
-            let captured: DurableInvocationTransaction = DurableInvocationTransaction::new(
-                domain,
-                None,
-                DurableObjectChanges::empty(),
-                build_receipt(candidate.request_id, digest, &output)?,
-                None,
-            )?;
-            (output, captured)
+        Ok(Self {
+            candidate,
+            block,
+            digest,
+        })
+    }
+
+    pub(super) const fn candidate(&self) -> &'a OrderedCandidate {
+        self.candidate
+    }
+
+    pub(super) const fn digest(&self) -> Digest32 {
+        self.digest
+    }
+
+    pub(super) const fn height(&self) -> u64 {
+        self.block.height
+    }
+
+    pub(super) const fn block_digest(&self) -> Digest32 {
+        self.block.digest
+    }
+}
+
+/// The execution mode is an explicit private warrant, not a boolean or a
+/// public permission flag. Live/recovery uses only this original's retained
+/// reservation; isolated replay is issued only after contiguous proof and
+/// causal prerequisite verification. Both preserve owning lock checks.
+pub(super) struct ExecutionWarrant<'a> {
+    kind: ExecutionWarrantKind<'a>,
+}
+
+enum ExecutionWarrantKind<'a> {
+    Reserved(OrderedLegAdmission<'a>),
+    CertifiedPrivateReplay(OrderedLegAdmission<'a>),
+}
+
+impl<'a> ExecutionWarrant<'a> {
+    pub(super) fn admission(
+        &self,
+        request_id: [u8; 32],
+    ) -> Result<&OrderedLegAdmission<'a>, OrderedEconomicsError> {
+        let admission: &OrderedLegAdmission<'a> = match &self.kind {
+            ExecutionWarrantKind::Reserved(admission)
+            | ExecutionWarrantKind::CertifiedPrivateReplay(admission) => admission,
+        };
+        if admission.request_id != request_id {
+            return Err(stop(
+                "ordered execution warrant names another original request",
+            ));
         }
-        LegOutcome::Refused(output) => {
-            let captured: DurableInvocationTransaction = DurableInvocationTransaction::new(
-                domain,
-                None,
-                DurableObjectChanges::empty(),
-                build_receipt(candidate.request_id, digest, &output)?,
-                None,
-            )?;
-            (output, captured)
-        }
-    };
-    Ok((
-        OrderedOutcome {
-            candidate_digest: digest,
-            request_id: candidate.request_id,
-            block_height: block.height,
-            block_digest: block.digest,
-            output,
-        },
-        business,
-    ))
+        Ok(admission)
+    }
 }
 
 /// Private isolated reconstruction only. The contiguous pinned proof stream
@@ -1460,7 +1458,7 @@ pub(crate) fn reconstruct_ordered_history_height(
             .map(|(_, bytes)| bytes.as_slice())
             .ok_or(stop("ordered reconstruction component missing"))
     };
-    let mut writes: MergedWrites = MergedWrites::default();
+    let mut writes: MergedWrites = MergedWrites::new(env.policy.domain());
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     fence_policy(store, context, env, &mut reads)?;
     let (applied, applied_key, applied_revision) = load_applied_height(store, context, env)?;
@@ -1490,14 +1488,20 @@ pub(crate) fn reconstruct_ordered_history_height(
         StateMutation::Put(encode_applied_height(block.height)?),
     )?;
     let mut completed: Option<OrderedOutcome> = None;
-    let mut business: Option<DurableInvocationTransaction> = None;
+    let mut prepared: Option<PreparedOriginalCompletion> = None;
     let mut admission_heads: Vec<DurableObjectHeadRead> = Vec::new();
     if !block.transactions.is_empty() {
         let candidate: OrderedCandidate =
             decode_ordered_candidate(component(OrderedHistoryComponentKind::Candidate)?)?;
         let source_outcome: &[u8] = component(OrderedHistoryComponentKind::RetainedOutcome)?;
         let source_receipt: &[u8] = component(OrderedHistoryComponentKind::OriginalReceipt)?;
-        match admit_candidate(store, context, env, &candidate, false)? {
+        match admit_candidate(
+            store,
+            context,
+            env,
+            &candidate,
+            AdmissionPurpose::ReconcileOnly,
+        )? {
             Admission::Completed(retained) => {
                 let receipt: DurableRequestReceipt = store
                     .get_request_receipt(
@@ -1539,35 +1543,24 @@ pub(crate) fn reconstruct_ordered_history_height(
                 // No live prepare is installed in this isolated overlay.
                 // The proof-backed capability authorizes dispatch, while all
                 // actual locks still use ordinary absence/Fresh semantics.
-                let admission: OrderedLegAdmission<'_> = OrderedLegAdmission {
-                    request_id: candidate.request_id,
-                    objects: &[],
-                    nonce: None,
+                let warrant: ExecutionWarrant<'_> = ExecutionWarrant {
+                    kind: ExecutionWarrantKind::CertifiedPrivateReplay(OrderedLegAdmission {
+                        request_id: candidate.request_id,
+                        objects: &[],
+                        nonce: None,
+                    }),
                 };
-                let staging: StagingStore<'_, runtime::MemoryDurableStateStore> =
-                    StagingStore::new(store);
-                let outcome: LegOutcome = execute_candidate(
-                    &staging,
-                    context,
-                    env,
-                    &candidate,
-                    Some(&admission),
-                    block.height,
-                );
-                if staging.had_inconsistent_read() {
-                    return Err(NodeCoreError::StateConflict.into());
-                }
-                for (key, revision) in staging.observed_reads() {
-                    writes.read(key, revision)?;
-                }
-                let (actual, captured): (OrderedOutcome, DurableInvocationTransaction) =
-                    capture_completion(&staging, env.policy.domain(), &candidate, &block, outcome)?;
-                if encode_retained_outcome(&actual)?.as_slice() != source_outcome {
+                let operation: CommittedOrderedOperation<'_> =
+                    CommittedOrderedOperation::bind_verified(env, &candidate, &block)?;
+                let actual: PreparedOriginalCompletion = completion::prepare_original_completion(
+                    store, context, env, &operation, &warrant,
+                )?;
+                if encode_retained_outcome(actual.outcome())?.as_slice() != source_outcome {
                     return Err(stop(
                         "ordered original outcome differs from independent business execution",
                     ));
                 }
-                if captured.receipt().canonical_bytes() != source_receipt {
+                if actual.receipt().canonical_bytes() != source_receipt {
                     return Err(stop(
                         "ordered original receipt differs from independent business execution",
                     ));
@@ -1576,58 +1569,35 @@ pub(crate) fn reconstruct_ordered_history_height(
                 writes.mutate(
                     row.key,
                     row.revision,
-                    StateMutation::Put(encode_retained_outcome(&actual)?),
+                    StateMutation::Put(encode_retained_outcome(actual.outcome())?),
                 )?;
-                completed = Some(actual);
-                business = Some(captured);
+                prepared = Some(actual);
             }
         }
     }
     for (key, revision) in reads {
         writes.read(key, revision)?;
     }
-    let outcome: DurableCommitOutcome = match business {
-        Some(business) => {
-            if let Some(state) = business.state() {
-                writes.merge_handler_state(state)?;
-            }
-            // The handler's own head assertions cover accepted inputs. A
-            // typed refusal may have none, but its admission prerequisites
-            // still must join this same atomic memory commit.
-            let mut heads: BTreeMap<ObjectId, DurableObjectHeadRead> = BTreeMap::new();
-            for head in business.objects().reads().iter().chain(&admission_heads) {
-                if heads
-                    .insert(head.object_id(), head.clone())
-                    .is_some_and(|prior| prior != *head)
-                {
-                    return Err(NodeCoreError::ObjectConflict {
-                        object_id: head.object_id(),
-                    }
-                    .into());
-                }
-            }
-            let objects: DurableObjectChanges = DurableObjectChanges::new(
-                heads.into_values().collect(),
-                business.objects().mutations().to_vec(),
-            )?;
-            store.commit_invocation(
+    match prepared {
+        Some(prepared) => {
+            let confirmed: ConfirmedOriginalCompletion = prepared.confirm(
+                store,
                 context,
-                DurableInvocationTransaction::new(
-                    env.policy.domain(),
-                    Some(writes.into_state_transaction(env.policy.domain())?),
-                    objects,
-                    business.receipt().clone(),
-                    business.outbox().cloned(),
-                )?,
-            )
+                env.policy.domain(),
+                writes,
+                &admission_heads,
+            )?;
+            completed = Some(confirmed.into_outcome());
         }
-        None => store.commit_durable(
-            context,
-            writes.into_atomic_transaction(env.policy.domain())?,
-        ),
-    };
-    if !matches!(outcome, DurableCommitOutcome::Committed) {
-        return Err(commit_outcome_error(outcome));
+        None => {
+            let outcome: DurableCommitOutcome = store.commit_durable(
+                context,
+                writes.into_atomic_transaction(env.policy.domain())?,
+            );
+            if !matches!(outcome, DurableCommitOutcome::Committed) {
+                return Err(commit_outcome_error(outcome));
+            }
+        }
     }
     *verifier = next;
     Ok(completed)
@@ -1680,14 +1650,20 @@ enum Admission {
     Completed(Box<OrderedOutcome>),
 }
 
+/// Closed coordinator purposes. Reconciliation records verified material but
+/// grants no signing/reservation permission; fresh signing additionally fences
+/// the exact causal inputs and acquires only this request's reservations.
+enum AdmissionPurpose {
+    ReconcileOnly,
+    FreshSigning,
+}
+
 /// Reconciles one candidate a caller wants to newly place into the shared
 /// order: reads (never writes) the permanent request-header row, failing
 /// closed on any header-reuse conflict **before** the caller applies any
 /// consensus event, then the candidate-bytes row, then -- only when
-/// `reserve` -- this candidate's own address-owned reservations.
-///
-/// `reserve` is `false` for the signerless observer path: declared recovery
-/// signs nothing and reserves nothing.
+/// fresh signing -- this candidate's own address-owned reservations.
+/// Signerless reconciliation signs nothing and reserves nothing.
 ///
 /// A request id that already carries a retained **completed** outcome short
 /// circuits here, before any reservation, preflight, module, object or nonce
@@ -1698,7 +1674,7 @@ fn admit_candidate<S: StructuredDurableDomainStateStore>(
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
-    reserve: bool,
+    purpose: AdmissionPurpose,
 ) -> Result<Admission, OrderedEconomicsError> {
     let chain = env.policy.context().chain_id();
     let domain = env.policy.domain();
@@ -1778,7 +1754,7 @@ fn admit_candidate<S: StructuredDurableDomainStateStore>(
     }
 
     // 4. Precisely this candidate's own address-owned reservations.
-    if reserve {
+    if matches!(purpose, AdmissionPurpose::FreshSigning) {
         let plan: OrderedReservationPlan = reservation::reservation_plan(env, candidate)?;
         if env.policy.is_causal() {
             reservation::verify_causal_prerequisites(
@@ -1825,7 +1801,13 @@ pub(crate) fn reconstruction_freeze_barrier_needed(
             "business reconstruction requires pinned causal genesis",
         ));
     }
-    if let Admission::Completed(_) = admit_candidate(store, context, env, candidate, false)? {
+    if let Admission::Completed(_) = admit_candidate(
+        store,
+        context,
+        env,
+        candidate,
+        AdmissionPurpose::ReconcileOnly,
+    )? {
         return Ok(false);
     }
     match preflight::preflight(store, context, env, candidate, block_height) {
@@ -1859,7 +1841,13 @@ pub(crate) fn reconstruction_drain_readiness_needed(
         ));
     }
     env.policy.authenticate_candidate(candidate)?;
-    if let Admission::Completed(_) = admit_candidate(store, context, env, candidate, false)? {
+    if let Admission::Completed(_) = admit_candidate(
+        store,
+        context,
+        env,
+        candidate,
+        AdmissionPurpose::ReconcileOnly,
+    )? {
         return Ok(false);
     }
     preflight::require_live_authority(store, context, env)?;
@@ -1964,14 +1952,20 @@ fn admit_candidate_for_signer<S: StructuredDurableDomainStateStore>(
     // itself is exempt -- a second one is still admissible here and resolves
     // to `AlreadyFrozen` at preflight. This check is deliberately confined to
     // this signer-only entry point (`propose`/`process_proposal`), never
-    // `observe_proposal`'s plain `admit_candidate(..., reserve: false)` call:
+    // `observe_proposal`'s reconciliation-only admission call:
     // declared, signerless recovery must still be able to record and replay
     // an authentic pre-freeze business proposal's bytes during catch-up, so
     // its own already-justified inherited suffix can reach the deterministic
     // closed-epoch refusal at commit time instead of never being recorded at
     // all. Closure and warrant observations join the same CAS batch as the
     // signing identity: a concurrent Freeze cannot expose a fresh vote.
-    match admit_candidate(store, context, env, candidate, true)? {
+    match admit_candidate(
+        store,
+        context,
+        env,
+        candidate,
+        AdmissionPurpose::FreshSigning,
+    )? {
         Admission::Fresh(mut admitted) => {
             admitted.reads.insert(drain_key, drain_revision);
             let staging: StagingStore<'_, S> = StagingStore::new(store);
@@ -2014,7 +2008,7 @@ fn admit_candidate_for_signer<S: StructuredDurableDomainStateStore>(
 /// retained refusal, and for an accepted outcome whose handler committed
 /// through plain `commit_durable` (evidence submission), which otherwise has
 /// no request-id receipt of its own.
-fn build_receipt(
+pub(super) fn build_receipt(
     request_id: [u8; 32],
     event_digest: Digest32,
     output: &NodeOutput,
@@ -2047,6 +2041,68 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
     admitted: Option<AdmittedCandidate>,
     vote: Option<(LocalVoteReconciliation, Option<consensus::ConsensusVote>)>,
 ) -> Result<OrderedEventOutput, OrderedEconomicsError> {
+    prepare_event(
+        store,
+        context,
+        env,
+        loaded,
+        consensus_output,
+        admitted,
+        vote,
+    )?
+    .confirm(store, context)
+}
+
+/// An unpublished result and its one explicit completion kind. A capacity
+/// probe only builds and drops this proposal; it never simulates confirmation
+/// through the handler capture adapter.
+struct PreparedEventCompletion {
+    result: OrderedEventOutput,
+    completion: PreparedEventWrite,
+}
+
+enum PreparedEventWrite {
+    Unchanged,
+    Metadata(AtomicStateTransaction),
+    Admission(DurableInvocationTransaction),
+    Original(AssembledOriginalCompletion),
+}
+
+impl PreparedEventCompletion {
+    fn confirm<S: StructuredDurableDomainStateStore>(
+        mut self,
+        store: &S,
+        context: &DurableOperationContext,
+    ) -> Result<OrderedEventOutput, OrderedEconomicsError> {
+        let outcome: DurableCommitOutcome = match self.completion {
+            PreparedEventWrite::Unchanged => return Ok(self.result),
+            PreparedEventWrite::Metadata(transaction) => store.commit_durable(context, transaction),
+            PreparedEventWrite::Admission(transaction) => {
+                store.commit_invocation(context, transaction)
+            }
+            PreparedEventWrite::Original(prepared) => {
+                let confirmed: ConfirmedOriginalCompletion = prepared.confirm(store, context)?;
+                self.result.committed = vec![confirmed.into_outcome()];
+                return Ok(self.result);
+            }
+        };
+        match outcome {
+            DurableCommitOutcome::Committed => Ok(self.result),
+            outcome => Err(commit_outcome_error(outcome)),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_event<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    loaded: &LoadedState,
+    consensus_output: ConsensusOutput,
+    admitted: Option<AdmittedCandidate>,
+    vote: Option<(LocalVoteReconciliation, Option<consensus::ConsensusVote>)>,
+) -> Result<PreparedEventCompletion, OrderedEconomicsError> {
     let domain = env.policy.domain();
     let chain = env.policy.context().chain_id().clone();
     let (applied_height, applied_height_key, applied_height_revision) =
@@ -2078,7 +2134,7 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
         ));
     }
 
-    let mut writes = MergedWrites::default();
+    let mut writes = MergedWrites::new(domain);
     let mut policy_reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     fence_policy(store, context, env, &mut policy_reads)?;
     for (key, revision) in policy_reads {
@@ -2216,8 +2272,7 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
         .committed_blocks
         .last()
         .map_or(applied_height, |block| block.height);
-    let mut committed_outcome: Option<OrderedOutcome> = None;
-    let mut business: Option<DurableInvocationTransaction> = None;
+    let mut prepared: Option<PreparedOriginalCompletion> = None;
     let mut execution_admission_heads: Vec<DurableObjectHeadRead> = Vec::new();
 
     if let Some(block) = economic_blocks.first().copied() {
@@ -2270,16 +2325,15 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
                 committed: vec![retained],
             };
             materialize_event_output(&output)?;
-            if !writes.is_unchanged() {
-                let transaction = writes.into_atomic_transaction(domain)?;
-                if let outcome @ (DurableCommitOutcome::Rejected(_)
-                | DurableCommitOutcome::Indeterminate(_)) =
-                    store.commit_durable(context, transaction)
-                {
-                    return Err(commit_outcome_error(outcome));
-                }
-            }
-            return Ok(output);
+            let completion: PreparedEventWrite = if writes.is_unchanged() {
+                PreparedEventWrite::Unchanged
+            } else {
+                PreparedEventWrite::Metadata(writes.into_atomic_transaction(domain)?)
+            };
+            return Ok(PreparedEventCompletion {
+                result: output,
+                completion,
+            });
         }
         if env.policy.is_causal() {
             let plan: OrderedReservationPlan = reservation::reservation_plan(env, &candidate)?;
@@ -2302,33 +2356,22 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
         let empty_plan: OrderedReservationPlan = OrderedReservationPlan::default();
         let plan: &OrderedReservationPlan =
             retained.as_ref().map_or(&empty_plan, |(plan, _, _)| plan);
-        let admission = OrderedLegAdmission {
-            request_id: candidate.request_id,
-            objects: plan.objects.as_slice(),
-            nonce: plan.nonce,
+        let warrant: ExecutionWarrant<'_> = ExecutionWarrant {
+            kind: ExecutionWarrantKind::Reserved(OrderedLegAdmission {
+                request_id: candidate.request_id,
+                objects: plan.objects.as_slice(),
+                nonce: plan.nonce,
+            }),
         };
-        let staging: StagingStore<'_, S> = StagingStore::new(store);
-        let outcome = execute_candidate(
-            &staging,
-            context,
-            env,
-            &candidate,
-            Some(&admission),
-            block.height,
-        );
-        // One durable invocation observes one stable snapshot, so two different
-        // revisions for one key can only be concurrent interference. Never
-        // retain a decision derived from two disagreeing views of a row.
-        if staging.had_inconsistent_read() {
-            return Err(stop(
-                "ordered candidate execution observed one row at two revisions",
-            ));
-        }
-        // Both acceptance and refusal release exactly this candidate's own
-        // reservations; a stop releases nothing.
-        let release: Vec<PendingWrite> = match (&outcome, &retained) {
-            (LegOutcome::Stop(_), _) | (_, None) => Vec::new(),
-            (_, Some((plan, record_key, record_revision))) => reservation::release_reservations(
+        let operation: CommittedOrderedOperation<'_> =
+            CommittedOrderedOperation::bind_verified(env, &candidate, block)?;
+        let actual: PreparedOriginalCompletion =
+            completion::prepare_original_completion(store, context, env, &operation, &warrant)?;
+        // Successful preparation includes acceptance or a typed no-effect
+        // refusal. A stop returns above and releases no reservation.
+        let release: Vec<PendingWrite> = match &retained {
+            None => Vec::new(),
+            Some((plan, record_key, record_revision)) => reservation::release_reservations(
                 store,
                 context,
                 env,
@@ -2337,30 +2380,16 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
                 *record_revision,
             )?,
         };
-        // Every row the preflight and the staged handler actually read becomes
-        // a CAS assertion in the one final commit -- including, on a refusal,
-        // the escrow/bond/nonce/authority rows whose healthy revisions decided
-        // it. Object heads, versions and provenance stay handler-owned.
-        if !matches!(outcome, LegOutcome::Stop(_)) {
-            for (key, revision) in staging.observed_reads() {
-                writes.read(key, revision)?;
-            }
-        }
-        let (completed, captured): (OrderedOutcome, DurableInvocationTransaction) =
-            capture_completion(&staging, domain, &candidate, block, outcome)?;
-        committed_outcome = Some(completed);
-        business = Some(captured);
         // Retain the exact completed outcome atomically with the original
         // receipt and order rows, so an exact proposal/certificate replay or an
         // interrupted client resume can be answered from it without re-placing
         // or re-executing anything.
-        if let Some(outcome) = &committed_outcome {
-            writes.mutate(
-                outcome_row.key,
-                outcome_row.revision,
-                StateMutation::Put(encode_retained_outcome(outcome)?),
-            )?;
-        }
+        writes.mutate(
+            outcome_row.key,
+            outcome_row.revision,
+            StateMutation::Put(encode_retained_outcome(actual.outcome())?),
+        )?;
+        prepared = Some(actual);
         for write in release {
             writes.apply(write)?;
         }
@@ -2385,50 +2414,23 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
         )?;
     }
 
-    let result = OrderedEventOutput {
+    let result: OrderedEventOutput = OrderedEventOutput {
         messages: consensus_output.outbound_messages,
-        committed: committed_outcome.into_iter().collect(),
+        committed: prepared
+            .as_ref()
+            .map(|item| item.outcome().clone())
+            .into_iter()
+            .collect(),
     };
     // Prove the answer is canonically representable while failing is still
     // free: never commit state whose own committed response cannot be encoded.
     materialize_event_output(&result)?;
-    if let Some(business) = business {
-        if let Some(handler_state) = business.state() {
-            writes.merge_handler_state(handler_state)?;
-        }
-        let mut heads: BTreeMap<ObjectId, DurableObjectHeadRead> = BTreeMap::new();
-        for head in business
-            .objects()
-            .reads()
-            .iter()
-            .chain(&execution_admission_heads)
-        {
-            if heads
-                .insert(head.object_id(), head.clone())
-                .is_some_and(|prior| prior != *head)
-            {
-                return Err(NodeCoreError::ObjectConflict {
-                    object_id: head.object_id(),
-                }
-                .into());
-            }
-        }
-        let objects: DurableObjectChanges = DurableObjectChanges::new(
-            heads.into_values().collect(),
-            business.objects().mutations().to_vec(),
-        )?;
-        let transaction = DurableInvocationTransaction::new(
+    let completion: PreparedEventWrite = if let Some(prepared) = prepared {
+        PreparedEventWrite::Original(prepared.assemble(
             domain,
-            Some(writes.into_state_transaction(domain)?),
-            objects,
-            business.receipt().clone(),
-            business.outbox().cloned(),
-        )?;
-        if let outcome @ (DurableCommitOutcome::Rejected(_)
-        | DurableCommitOutcome::Indeterminate(_)) = store.commit_invocation(context, transaction)
-        {
-            return Err(commit_outcome_error(outcome));
-        }
+            writes,
+            &execution_admission_heads,
+        )?)
     } else if admitted
         .as_ref()
         .is_some_and(|item| !item.head_reads.is_empty())
@@ -2446,21 +2448,13 @@ fn finalize_event<S: StructuredDurableDomainStateStore>(
             view,
             writes,
         )?;
-        if let outcome @ (DurableCommitOutcome::Rejected(_)
-        | DurableCommitOutcome::Indeterminate(_)) = store.commit_invocation(context, transaction)
-        {
-            return Err(commit_outcome_error(outcome));
-        }
+        PreparedEventWrite::Admission(transaction)
     } else if !writes.is_unchanged() {
-        let transaction = writes.into_atomic_transaction(domain)?;
-        if let outcome @ (DurableCommitOutcome::Rejected(_)
-        | DurableCommitOutcome::Indeterminate(_)) = store.commit_durable(context, transaction)
-        {
-            return Err(commit_outcome_error(outcome));
-        }
-    }
-
-    Ok(result)
+        PreparedEventWrite::Metadata(writes.into_atomic_transaction(domain)?)
+    } else {
+        PreparedEventWrite::Unchanged
+    };
+    Ok(PreparedEventCompletion { result, completion })
 }
 
 /// Height-`%3==1` windows may carry one candidate; every other height must
@@ -2649,7 +2643,7 @@ where
         proposal: encode_proposal(&proposal)
             .map_err(|_| stop("ordered proposal does not encode"))?,
     };
-    let mut writes = MergedWrites::default();
+    let mut writes = MergedWrites::new(env.policy.domain());
     for (key, revision) in profile_reads {
         writes.read(key, revision)?;
     }
@@ -2701,7 +2695,7 @@ fn causal_leader_writes<S: StructuredDurableDomainStateStore>(
         proposal: encode_proposal(proposal)
             .map_err(|_| stop("ordered proposal does not encode"))?,
     };
-    let mut writes: MergedWrites = MergedWrites::default();
+    let mut writes: MergedWrites = MergedWrites::new(env.policy.domain());
     writes.read(loaded.key.clone(), loaded.revision)?;
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     fence_policy(store, context, env, &mut reads)?;
@@ -2737,7 +2731,13 @@ where
 {
     let loaded: LoadedState = load_state(store, context, env)?;
     let preliminary: Option<AdmittedCandidate> = match candidate {
-        Some(candidate) => match admit_candidate(store, context, env, candidate, false)? {
+        Some(candidate) => match admit_candidate(
+            store,
+            context,
+            env,
+            candidate,
+            AdmissionPurpose::ReconcileOnly,
+        )? {
             Admission::Fresh(item) => Some(item),
             Admission::Completed(outcome) => {
                 return Err(OrderedEconomicsError::AlreadyCompleted(outcome));
@@ -2938,7 +2938,13 @@ where
                     "causal proposal candidate digest differs",
                 ));
             }
-            match admit_candidate(store, context, env, candidate, false)? {
+            match admit_candidate(
+                store,
+                context,
+                env,
+                candidate,
+                AdmissionPurpose::ReconcileOnly,
+            )? {
                 Admission::Fresh(_) => {}
                 Admission::Completed(outcome) => {
                     return Err(OrderedEconomicsError::AlreadyCompleted(outcome));
@@ -3139,11 +3145,10 @@ where
                     ConsensusMessage::Vote(vote) => Some(vote.clone()),
                     _ => None,
                 });
-        let staging: StagingStore<'_, S> = StagingStore::new(store);
         let probe_reconciliation: LocalVoteReconciliation =
-            identity::reconcile_local_vote(&staging, context, env, proposal.proposal.view, digest)?;
-        let _preview_result: OrderedEventOutput = finalize_event(
-            &staging,
+            identity::reconcile_local_vote(store, context, env, proposal.proposal.view, digest)?;
+        let prepared: PreparedEventCompletion = prepare_event(
+            store,
             context,
             env,
             &loaded,
@@ -3151,11 +3156,7 @@ where
             admitted.clone(),
             Some((probe_reconciliation, produced)),
         )?;
-        if staging.had_inconsistent_read() {
-            return Err(NodeCoreError::StateConflict.into());
-        }
-        drop(staging.take_invocation());
-        drop(staging.take_durable());
+        drop(prepared);
     }
 
     // 4. One engine event.
@@ -3264,7 +3265,13 @@ pub fn observe_proposal<S: StructuredDurableDomainStateStore>(
             // operation that already finished. Recovery signs nothing and
             // reserves nothing, so recording the proposal creates no duplicate
             // placement; the retained outcome still answers the execution.
-            let admitted = match admit_candidate(store, context, env, candidate, false)? {
+            let admitted = match admit_candidate(
+                store,
+                context,
+                env,
+                candidate,
+                AdmissionPurpose::ReconcileOnly,
+            )? {
                 Admission::Fresh(admitted) => admitted,
                 Admission::Completed(_) => AdmittedCandidate {
                     digest: env.policy.candidate_digest(candidate)?,
