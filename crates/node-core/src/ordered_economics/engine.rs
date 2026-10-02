@@ -17,7 +17,7 @@
 //! 4. **owned reservations** -- precisely the candidate's own address-owned
 //!    inputs and sender-nonce range, under the same FastVote lock keys;
 //! 5. **one engine event** through the real `ChainedHotStuff`;
-//! 6. **one atomic commit** merging the existing handler's own captured
+//! 6. **one atomic commit** merging the existing owner's prepared
 //!    transaction (with its original receipt), the consensus state, the
 //!    order/candidate/identity records and the precise lock release.
 //!
@@ -27,11 +27,15 @@ use super::completion::{
     AssembledOriginalCompletion, ConfirmedOriginalCompletion, PreparedOriginalCompletion,
 };
 use super::identity::{LocalVoteReconciliation, RetainedIdentity};
+use super::observed_read::ObservedBusinessReadView;
 use super::policy::{AuthenticatedOrderedOperation, Ed25519ConsensusVerifier};
 use super::reservation::{OrderedReservationPlan, PendingWrite};
 use super::*;
 use crate::admission_profile::{
     fence_verified_admission_profile, require_historical_direct_writer,
+};
+use crate::operation_preparation::{
+    InvocationPreparation, PreparedBusinessInvocation, PreparedStateOperation,
 };
 use canonical_encoding::{decode_digest32, encode_chain_id, encode_digest32};
 use consensus::{
@@ -42,7 +46,7 @@ use consensus::{
 };
 use runtime::{
     DurableCommitOutcome, DurableDomainStateStore, DurableObjectHeadRead, StateAssemblyError,
-    StateTransactionBuilder,
+    StateObservationSet, StateTransactionBuilder, StructuredStateReader,
 };
 
 /// Reserved under [`crate::local_instance_state::INSTANCE_STATE_PREFIX`], so
@@ -237,7 +241,7 @@ pub fn decode_ordered_refusal_payload(bytes: &[u8]) -> Result<OrderedRefusal, No
 }
 
 /// Every ordered-economics `NodeOutput` this delivery produces carries zero
-/// outbound messages (mirroring every existing handler this module stages):
+/// outbound messages (mirroring each existing owning preparation):
 /// only `responses` needs a durable wire form.
 fn encode_node_output(output: &NodeOutput) -> Result<Vec<u8>, NodeCoreError> {
     if !output.outbound_messages().is_empty() {
@@ -575,7 +579,7 @@ struct OutcomeRow {
 /// header's candidate digest, and the receipt's own two copies of its event
 /// digest -- the outer [`DurableRequestReceipt::event_digest`] and the one
 /// inside its [`NodeDedupRecord`] projection.
-fn require_consistent_completion<S: StructuredDurableDomainStateStore>(
+fn require_consistent_completion<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -592,7 +596,7 @@ fn require_consistent_completion<S: StructuredDurableDomainStateStore>(
     let header_key: Vec<u8> =
         ordered_request_header_key(env.policy.context().chain_id(), request_id)?;
     let observed_header: VersionedStateValue =
-        store.get_versioned_durable(context, env.policy.domain(), &header_key)?;
+        store.read_versioned_state(context, env.policy.domain(), &header_key)?;
     let header_bytes: &[u8] = observed_header.value().ok_or(stop(
         "retained ordered outcome has no immutable request header",
     ))?;
@@ -605,7 +609,7 @@ fn require_consistent_completion<S: StructuredDurableDomainStateStore>(
     let durable_id: DurableRequestId = DurableRequestId::new(*request_id)
         .map_err(|_| invalid("invalid durable request identity"))?;
     let receipt: DurableRequestReceipt = store
-        .get_request_receipt(context, env.policy.domain(), durable_id)?
+        .read_request_receipt(context, env.policy.domain(), durable_id)?
         .ok_or(stop(
             "retained ordered outcome has no committed request receipt",
         ))?;
@@ -634,7 +638,7 @@ fn require_consistent_completion<S: StructuredDurableDomainStateStore>(
 /// A deleted outcome row is not "not completed": it is corruption, and reporting
 /// virgin absence for it would let a finished request be placed and executed a
 /// second time.
-fn read_outcome_row<S: StructuredDurableDomainStateStore>(
+fn read_outcome_row<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -642,7 +646,7 @@ fn read_outcome_row<S: StructuredDurableDomainStateStore>(
 ) -> Result<OutcomeRow, OrderedEconomicsError> {
     let key: Vec<u8> = ordered_outcome_key(env.policy.context().chain_id(), request_id)?;
     let observed: VersionedStateValue =
-        store.get_versioned_durable(context, env.policy.domain(), &key)?;
+        store.read_versioned_state(context, env.policy.domain(), &key)?;
     require_virgin_absence(&observed, "ordered outcome row was deleted")?;
     let retained = match observed.value() {
         None => None,
@@ -673,7 +677,7 @@ fn read_outcome_row<S: StructuredDurableDomainStateStore>(
 /// outcome row is never reported as `None`; like any other inconsistency
 /// between the row, its header and its receipt it fails closed as
 /// [`OrderedEconomicsError::Prerequisite`].
-pub fn query_ordered_outcome<S: StructuredDurableDomainStateStore>(
+pub fn query_ordered_outcome<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -792,7 +796,7 @@ fn admission_transaction(
     )?)
 }
 
-fn require_admission_receipt<S: StructuredDurableDomainStateStore>(
+fn require_admission_receipt<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -817,7 +821,7 @@ fn require_admission_receipt<S: StructuredDurableDomainStateStore>(
         view,
     )?;
     let receipt: DurableRequestReceipt = store
-        .get_request_receipt(
+        .read_request_receipt(
             context,
             env.policy.domain(),
             DurableRequestId::new(synthetic)
@@ -885,6 +889,15 @@ impl MergedWrites {
             .map_err(state_assembly_error)
     }
 
+    pub(super) fn merge_observations(
+        &mut self,
+        observations: &StateObservationSet,
+    ) -> Result<(), OrderedEconomicsError> {
+        self.state
+            .merge_observations(observations)
+            .map_err(state_assembly_error)
+    }
+
     fn is_unchanged(&self) -> bool {
         self.state.is_unchanged()
     }
@@ -910,7 +923,7 @@ impl MergedWrites {
     }
 }
 
-fn state_assembly_error(error: StateAssemblyError) -> OrderedEconomicsError {
+pub(super) fn state_assembly_error(error: StateAssemblyError) -> OrderedEconomicsError {
     match error {
         StateAssemblyError::ConflictingObservation { .. } => NodeCoreError::StateConflict.into(),
         StateAssemblyError::ConflictingMutation { .. } => {
@@ -946,13 +959,13 @@ struct LoadedState {
 /// was never installed or fails
 /// [`consensus::ChainedHotStuff::validate_state`] -- the restart-safety guard
 /// every orchestrator entry point runs before applying a new event.
-fn load_state<S: StructuredDurableDomainStateStore>(
+fn load_state<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
 ) -> Result<LoadedState, OrderedEconomicsError> {
     let key = ordered_state_key(env.policy.context().chain_id())?;
-    let observed = store.get_versioned_durable(context, env.policy.domain(), &key)?;
+    let observed = store.read_versioned_state(context, env.policy.domain(), &key)?;
     let bytes = observed
         .value()
         .ok_or(stop("ordered economics consensus state is not installed"))?;
@@ -994,7 +1007,7 @@ pub fn install_ordered_genesis<S: StructuredDurableDomainStateStore>(
     crate::mutation_fence::require_ordinary_namespace(store, context, env.policy.domain())?;
     let key = ordered_state_key(env.policy.context().chain_id())?;
     let domain = env.policy.domain();
-    let observed = store.get_versioned_durable(context, domain, &key)?;
+    let observed = store.read_versioned_state(context, domain, &key)?;
     if let Some(bytes) = observed.value() {
         // Verified existing: re-verify and keep exactly what is stored.
         let state = decode_consensus_state(bytes)
@@ -1029,13 +1042,13 @@ pub fn install_ordered_genesis<S: StructuredDurableDomainStateStore>(
 /// Reads the highest committed height whose economic effects (if any) are
 /// already durably applied. Absent means genesis, matching
 /// [`ConsensusState::committed_height`]'s own zero start.
-pub(super) fn load_applied_height<S: StructuredDurableDomainStateStore>(
+pub(super) fn load_applied_height<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
 ) -> Result<(u64, Vec<u8>, StateRevision), OrderedEconomicsError> {
     let key = ordered_applied_height_key(env.policy.context().chain_id())?;
-    let observed = store.get_versioned_durable(context, env.policy.domain(), &key)?;
+    let observed = store.read_versioned_state(context, env.policy.domain(), &key)?;
     // Virgin absence is genuinely expected here and only here: before the first
     // committed height there is no marker, which is exactly height zero. A
     // deleted marker is not height zero -- silently reading it as zero would
@@ -1065,20 +1078,21 @@ fn refusal_output(
 
 /// Disposition of one attempted candidate execution.
 pub(super) enum LegOutcome {
-    /// The owning handler prepared a business transaction, captured by
-    /// [`StagingStore`] and not yet durably confirmed or published.
-    Accepted(NodeOutput),
+    /// The owner prepared its exact original invocation without committing it.
+    PreparedInvocation(PreparedBusinessInvocation),
+    /// A pure metadata proposal. The completion owner supplies its outer receipt.
+    PreparedState(PreparedStateOperation),
     /// One narrowly enumerated legitimate outcome in which the existing handler
-    /// accepts *without* staging any transaction: the normalized evidence
+    /// accepts *without* preparing any transaction: the normalized evidence
     /// identity this candidate carries is already durably recorded, so the
     /// permanent one-time row is correct as it stands and re-writing it would
     /// be wrong.
     ///
     /// This is not a blanket licence for any handler that returns `Ok` with
-    /// nothing staged. It is produced only by
+    /// no proposed mutation. It is produced only by
     /// [`execute_evidence_candidate`] on
-    /// [`equivocation::EquivocationEvidenceOutcome::AlreadyRecorded`], and the
-    /// caller still requires the staging adapter to have captured nothing.
+    /// [`equivocation::EquivocationEvidencePreparation::AlreadyRecorded`], and the
+    /// result contains no business mutation.
     AcceptedRetainedEvidence(NodeOutput),
     /// A deterministic, retained refusal: no value or nonce movement.
     Refused(NodeOutput),
@@ -1111,22 +1125,21 @@ pub(super) fn disposition(request_id: [u8; 32], error: OrderedEconomicsError) ->
     }
 }
 
-/// Executes one committed candidate against `staging` (never the real store
-/// directly).
+/// Evaluates one committed candidate through writer-free owning preparations.
 ///
 /// The caller supplies evidence of pure authentication. Then the typed
 /// [`super::preflight`] checks the healthy committed state before the exact
-/// existing handler its `kind` already uses -- unmodified, except for the
+/// owning preparation its `kind` already uses, with the
 /// private admitted-candidate capability that authorizes exactly this
 /// request's own retained reservations.
 ///
-/// Every storage read -- the preflight's included -- goes through `staging`, so
-/// the exact rows whose healthy revisions decided the answer are recorded and
+/// Every state read -- the preflight's included -- goes through the observed
+/// reader, so the exact rows whose healthy revisions decided the answer are recorded and
 /// become CAS assertions in the one final commit. A refusal derived from a row
 /// that has since moved is then rejected atomically instead of being retained
 /// against state that no longer justifies it.
-pub(super) fn execute_candidate<S: StructuredDurableDomainStateStore>(
-    staging: &StagingStore<'_, S>,
+pub(super) fn execute_candidate<S: StructuredStateReader>(
+    store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
     operation: &AuthenticatedOrderedOperation<'_>,
@@ -1134,14 +1147,14 @@ pub(super) fn execute_candidate<S: StructuredDurableDomainStateStore>(
     block_height: u64,
 ) -> LegOutcome {
     let candidate: &OrderedCandidate = operation.candidate();
-    if let Err(error) = preflight::preflight(staging, context, env, candidate, block_height) {
+    if let Err(error) = preflight::preflight(store, context, env, candidate, block_height) {
         return disposition(candidate.request_id, error);
     }
     let domain = env.policy.domain();
     match candidate.kind {
-        OrderedOperationKind::FeeClaim => dispatch(
-            fee_claims::handle_fee_claim_ordered(
-                staging,
+        OrderedOperationKind::FeeClaim => dispatch_invocation(
+            fee_claims::prepare_fee_claim_ordered(
+                store,
                 env.blobs,
                 context,
                 domain,
@@ -1157,9 +1170,9 @@ pub(super) fn execute_candidate<S: StructuredDurableDomainStateStore>(
             candidate.request_id,
             fee_claim_failure,
         ),
-        OrderedOperationKind::BondLifecycle => dispatch(
-            bond_lifecycle::handle_bond_lifecycle_ordered(
-                staging,
+        OrderedOperationKind::BondLifecycle => dispatch_invocation(
+            bond_lifecycle::prepare_bond_lifecycle_ordered(
+                store,
                 env.blobs,
                 context,
                 domain,
@@ -1175,16 +1188,16 @@ pub(super) fn execute_candidate<S: StructuredDurableDomainStateStore>(
             candidate.request_id,
             bond_lifecycle_failure,
         ),
-        OrderedOperationKind::BondRegistration => dispatch(
-            bond_lifecycle::registration::handle_bond_registration_ordered(
-                staging, context, env, candidate, admission,
+        OrderedOperationKind::BondRegistration => dispatch_invocation(
+            bond_lifecycle::registration::prepare_bond_registration_ordered(
+                store, context, env, candidate, admission,
             ),
             candidate.request_id,
             bond_registration_failure,
         ),
-        OrderedOperationKind::BondSlash => dispatch(
-            bond_lifecycle::slash::handle_bond_slash_ordered(
-                staging,
+        OrderedOperationKind::BondSlash => dispatch_invocation(
+            bond_lifecycle::slash::prepare_bond_slash_ordered(
+                store,
                 env.blobs,
                 context,
                 domain,
@@ -1201,11 +1214,11 @@ pub(super) fn execute_candidate<S: StructuredDurableDomainStateStore>(
             bond_lifecycle_failure,
         ),
         OrderedOperationKind::Evidence => {
-            execute_evidence_candidate(staging, context, domain, env, candidate, admission)
+            execute_evidence_candidate(store, context, domain, env, candidate, admission)
         }
-        OrderedOperationKind::Freeze => dispatch(
-            freeze::handle_freeze_ordered(
-                staging,
+        OrderedOperationKind::Freeze => dispatch_state(
+            freeze::prepare_freeze_ordered(
+                store,
                 context,
                 domain,
                 env.policy.context().chain_id(),
@@ -1215,9 +1228,9 @@ pub(super) fn execute_candidate<S: StructuredDurableDomainStateStore>(
             candidate.request_id,
             node_failure,
         ),
-        OrderedOperationKind::DrainSet => dispatch(
-            drain_set::handle_drain_set_ordered(
-                staging,
+        OrderedOperationKind::DrainSet => dispatch_state(
+            drain_set::prepare_drain_set_ordered(
+                store,
                 context,
                 domain,
                 env.policy.context().chain_id(),
@@ -1230,19 +1243,33 @@ pub(super) fn execute_candidate<S: StructuredDurableDomainStateStore>(
     }
 }
 
-fn dispatch<E>(
-    result: Result<NodeOutput, E>,
+fn dispatch_invocation<E>(
+    result: Result<InvocationPreparation, E>,
     request_id: [u8; 32],
     classify: fn(&E) -> OrderedEconomicsError,
 ) -> LegOutcome {
     match result {
-        Ok(output) => LegOutcome::Accepted(output),
+        Ok(InvocationPreparation::Prepared(prepared)) => LegOutcome::PreparedInvocation(prepared),
+        Ok(InvocationPreparation::Retained(_)) => LegOutcome::Stop(stop(
+            "fresh ordered preparation unexpectedly reconciled a retained original",
+        )),
         Err(error) => disposition(request_id, classify(&error)),
     }
 }
 
-fn execute_evidence_candidate<S: StructuredDurableDomainStateStore>(
-    staging: &StagingStore<'_, S>,
+fn dispatch_state(
+    result: Result<PreparedStateOperation, NodeCoreError>,
+    request_id: [u8; 32],
+    classify: fn(&NodeCoreError) -> OrderedEconomicsError,
+) -> LegOutcome {
+    match result {
+        Ok(prepared) => LegOutcome::PreparedState(prepared),
+        Err(error) => disposition(request_id, classify(&error)),
+    }
+}
+
+fn execute_evidence_candidate<S: StructuredStateReader>(
+    store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -1262,8 +1289,8 @@ fn execute_evidence_candidate<S: StructuredDurableDomainStateStore>(
             statement_a,
             statement_b,
             ..
-        } => equivocation::submit_fast_vote_equivocation_evidence_ordered(
-            staging,
+        } => equivocation::prepare_fast_vote_equivocation_evidence_ordered(
+            store,
             context,
             domain,
             env.resolver,
@@ -1281,8 +1308,8 @@ fn execute_evidence_candidate<S: StructuredDurableDomainStateStore>(
             preimage_a,
             preimage_b,
             ..
-        } => equivocation::submit_fast_vote_object_conflict_evidence_ordered(
-            staging,
+        } => equivocation::prepare_fast_vote_object_conflict_evidence_ordered(
+            store,
             context,
             domain,
             env.resolver,
@@ -1300,8 +1327,8 @@ fn execute_evidence_candidate<S: StructuredDurableDomainStateStore>(
             statement_a,
             statement_b,
             ..
-        } => equivocation::submit_epoch_transition_equivocation_evidence_ordered(
-            staging,
+        } => equivocation::prepare_epoch_transition_equivocation_evidence_ordered(
+            store,
             context,
             domain,
             env.resolver,
@@ -1316,10 +1343,16 @@ fn execute_evidence_candidate<S: StructuredDurableDomainStateStore>(
     };
     match outcome {
         Ok(recorded) => {
-            let (record, already_recorded) = match recorded {
-                equivocation::EquivocationEvidenceOutcome::Recorded(record) => (record, false),
-                equivocation::EquivocationEvidenceOutcome::AlreadyRecorded(record) => {
-                    (record, true)
+            let (record, prepared): (
+                fast_path::records::FastPathEquivocationEvidenceRecord,
+                Option<AtomicStateTransaction>,
+            ) = match recorded {
+                equivocation::EquivocationEvidencePreparation::New(prepared) => {
+                    let (transaction, record) = prepared.into_parts();
+                    (record, Some(transaction))
+                }
+                equivocation::EquivocationEvidencePreparation::AlreadyRecorded(record) => {
+                    (record, None)
                 }
             };
             let build = || -> Result<NodeOutput, NodeCoreError> {
@@ -1338,8 +1371,12 @@ fn execute_evidence_candidate<S: StructuredDurableDomainStateStore>(
                 // holds exactly the right bytes, so this invocation commits
                 // only its own new outer receipt and order rows, with the
                 // observed evidence row asserted by CAS.
-                Ok(output) if already_recorded => LegOutcome::AcceptedRetainedEvidence(output),
-                Ok(output) => LegOutcome::Accepted(output),
+                Ok(output) => match prepared {
+                    Some(transaction) => {
+                        LegOutcome::PreparedState(PreparedStateOperation::new(transaction, output))
+                    }
+                    None => LegOutcome::AcceptedRetainedEvidence(output),
+                },
                 Err(error) => LegOutcome::Stop(OrderedEconomicsError::Node(error)),
             }
         }
@@ -1471,7 +1508,7 @@ pub(crate) fn reconstruct_ordered_history_height(
         block.height,
     )?;
     let archive: VersionedStateValue =
-        store.get_versioned_durable(context, env.policy.domain(), &archive_key)?;
+        store.read_versioned_state(context, env.policy.domain(), &archive_key)?;
     if archive.value().is_some() || archive.revision() != StateRevision::INITIAL {
         return Err(stop(
             "ordered reconstruction height already archived or deleted",
@@ -1504,7 +1541,7 @@ pub(crate) fn reconstruct_ordered_history_height(
         )? {
             Admission::Completed(retained) => {
                 let receipt: DurableRequestReceipt = store
-                    .get_request_receipt(
+                    .read_request_receipt(
                         context,
                         env.policy.domain(),
                         DurableRequestId::new(candidate.request_id)
@@ -1615,7 +1652,7 @@ struct AdmittedCandidate {
 
 /// Pinned pure policy and installed durable authority must describe the same
 /// profile. Manifest-free legacy policies cannot mutate a causal store.
-fn fence_policy<S: StructuredDurableDomainStateStore>(
+fn fence_policy<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -1669,7 +1706,7 @@ enum AdmissionPurpose {
 /// circuits here, before any reservation, preflight, module, object or nonce
 /// I/O: the candidate is answered from its retained outcome rather than placed
 /// a second time. A retained header alone is not completion.
-fn admit_candidate<S: StructuredDurableDomainStateStore>(
+fn admit_candidate<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -1686,7 +1723,7 @@ fn admit_candidate<S: StructuredDurableDomainStateStore>(
 
     // 1. Header reuse is a conflict before all other metadata.
     let header_key = ordered_request_header_key(chain, &candidate.request_id)?;
-    let observed_header = store.get_versioned_durable(context, domain, &header_key)?;
+    let observed_header = store.read_versioned_state(context, domain, &header_key)?;
     reads.insert(header_key.clone(), observed_header.revision());
     // A deleted header must never be recreated: it is the immutable binding
     // every later replay and every completion cross-check depends on.
@@ -1735,7 +1772,7 @@ fn admit_candidate<S: StructuredDurableDomainStateStore>(
 
     // 3. Exact candidate bytes, content-addressed and immutable.
     let candidate_key = ordered_candidate_record_key(chain, digest)?;
-    let observed_candidate = store.get_versioned_durable(context, domain, &candidate_key)?;
+    let observed_candidate = store.read_versioned_state(context, domain, &candidate_key)?;
     reads.insert(candidate_key.clone(), observed_candidate.revision());
     // Likewise immutable: a deleted candidate record is corruption, not room to
     // write the same content-addressed bytes again.
@@ -1888,6 +1925,34 @@ fn admit_candidate_for_signer<S: StructuredDurableDomainStateStore>(
     candidate: &OrderedCandidate,
     proposal_height: u64,
 ) -> Result<AdmittedCandidate, OrderedEconomicsError> {
+    let observed: ObservedBusinessReadView<'_, S> =
+        ObservedBusinessReadView::new(store, env.policy.domain());
+    let result: Result<AdmittedCandidate, OrderedEconomicsError> =
+        admit_candidate_for_signer_observed(&observed, context, env, candidate, proposal_height);
+    let (observations, mut admitted): (StateObservationSet, AdmittedCandidate) =
+        observed.finish_with(result)?;
+    // Every successful fresh attempt read the one-per-epoch DrainSet row, so
+    // this successful scope is nonempty. The extra closure is physical CAS,
+    // never a business logical dependency map or a signing witness operand.
+    for read in observations.into_read_set()?.reads() {
+        if admitted
+            .reads
+            .insert(read.key().to_vec(), read.expected_revision())
+            .is_some_and(|previous| previous != read.expected_revision())
+        {
+            return Err(NodeCoreError::StateConflict.into());
+        }
+    }
+    Ok(admitted)
+}
+
+fn admit_candidate_for_signer_observed<S: StructuredStateReader>(
+    store: &S,
+    context: &DurableOperationContext,
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+    proposal_height: u64,
+) -> Result<AdmittedCandidate, OrderedEconomicsError> {
     // Post-DrainSet liveness gate, strictly stronger than (and checked before)
     // the Freeze-only gate below: once a healthy accepted `DrainSet` has
     // committed for this chain/epoch, an honest leader/replica never again
@@ -1922,7 +1987,7 @@ fn admit_candidate_for_signer<S: StructuredDurableDomainStateStore>(
         let header_key: Vec<u8> =
             ordered_request_header_key(env.policy.context().chain_id(), &candidate.request_id)?;
         let header_row: VersionedStateValue =
-            store.get_versioned_durable(context, env.policy.domain(), &header_key)?;
+            store.read_versioned_state(context, env.policy.domain(), &header_key)?;
         require_virgin_absence(&header_row, "ordered request header row was deleted")?;
         if let Some(existing_bytes) = header_row.value() {
             let existing: RequestHeader = decode_request_header(existing_bytes)?;
@@ -1968,34 +2033,24 @@ fn admit_candidate_for_signer<S: StructuredDurableDomainStateStore>(
     )? {
         Admission::Fresh(mut admitted) => {
             admitted.reads.insert(drain_key, drain_revision);
-            let staging: StagingStore<'_, S> = StagingStore::new(store);
             if !matches!(
                 candidate.kind,
                 OrderedOperationKind::Freeze | OrderedOperationKind::DrainSet
-            ) && freeze::read_authorized_closure(&staging, context, env)?.is_some()
+            ) && freeze::read_authorized_closure(store, context, env)?.is_some()
             {
                 return Err(OrderedEconomicsError::Refused(OrderedRefusal::ClosedEpoch));
             }
             if candidate.kind == OrderedOperationKind::Freeze {
-                freeze::require_freeze_warrant(&staging, context, env, candidate, proposal_height)?;
+                freeze::require_freeze_warrant(store, context, env, candidate, proposal_height)?;
             }
             if candidate.kind == OrderedOperationKind::DrainSet {
                 drain_set::require_drain_set_readiness(
-                    &staging,
+                    store,
                     context,
                     env,
                     candidate,
                     &mut admitted.reads,
                 )?;
-            }
-            for (key, revision) in staging.observed_reads() {
-                if admitted
-                    .reads
-                    .insert(key, revision)
-                    .is_some_and(|prior| prior != revision)
-                {
-                    return Err(NodeCoreError::StateConflict.into());
-                }
             }
             Ok(admitted)
         }
@@ -2005,9 +2060,8 @@ fn admit_candidate_for_signer<S: StructuredDurableDomainStateStore>(
 
 /// Builds one durable receipt (`NodeDedupRecord`-backed) keyed by
 /// `request_id`, replaying `output`'s responses idempotently. Used for a
-/// retained refusal, and for an accepted outcome whose handler committed
-/// through plain `commit_durable` (evidence submission), which otherwise has
-/// no request-id receipt of its own.
+/// retained refusal and an accepted control/evidence preparation, which
+/// otherwise has no request-id receipt of its own.
 pub(super) fn build_receipt(
     request_id: [u8; 32],
     event_digest: Digest32,
@@ -2195,7 +2249,7 @@ fn prepare_event<S: StructuredDurableDomainStateStore>(
         }
         let key: Vec<u8> =
             ordered_committed_proof_key(&chain, env.policy.context().epoch(), block.height)?;
-        let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+        let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
         if observed.value().is_some() || observed.revision() != StateRevision::INITIAL {
             return Err(stop(
                 "ordered committed proof height already exists or was deleted",
@@ -2283,7 +2337,7 @@ fn prepare_event<S: StructuredDurableDomainStateStore>(
         }
         let digest = block.transactions[0];
         let candidate_key = ordered_candidate_record_key(&chain, digest)?;
-        let observed_candidate = store.get_versioned_durable(context, domain, &candidate_key)?;
+        let observed_candidate = store.read_versioned_state(context, domain, &candidate_key)?;
         let Some(candidate_bytes) = observed_candidate.value().map(<[u8]>::to_vec) else {
             return Err(stop(
                 "ordered economics missing committed candidate bytes; declared catch-up required",
@@ -2538,7 +2592,7 @@ fn require_vote_readiness<S: StructuredDurableDomainStateStore>(
         for digest in &ancestor.transactions {
             let key = ordered_candidate_record_key(chain, *digest)?;
             if store
-                .get_versioned_durable(context, domain, &key)?
+                .read_versioned_state(context, domain, &key)?
                 .value()
                 .is_none()
             {
@@ -2982,7 +3036,7 @@ where
                         *candidate_digest,
                     )?;
                     let row: VersionedStateValue =
-                        store.get_versioned_durable(context, env.policy.domain(), &key)?;
+                        store.read_versioned_state(context, env.policy.domain(), &key)?;
                     let candidate: OrderedCandidate = decode_ordered_candidate(
                         row.value()
                             .ok_or(stop("causal prefix lacks committed candidate material"))?,
@@ -3069,7 +3123,7 @@ where
                     *committed_digest,
                 )?;
                 let row: VersionedStateValue =
-                    store.get_versioned_durable(context, env.policy.domain(), &key)?;
+                    store.read_versioned_state(context, env.policy.domain(), &key)?;
                 let bytes: &[u8] = row
                     .value()
                     .ok_or_else(|| stop("Freeze preview lacks committed candidate"))?;

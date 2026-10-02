@@ -3,7 +3,7 @@ use protocol_types::HashAlgorithmId;
 use runtime::{
     DurableCommitRejection, DurableDomainStateStore, DurableObjectHead, DurableOutboxBatch,
     DurableOutboxMessage, MemoryDurableStateStore, ObjectHeadRevision, StorageCorrelationId,
-    StorageDeadline, WriterFenceGeneration,
+    StorageDeadline, VersionedStateReader, WriterFenceGeneration,
 };
 
 fn domain() -> AtomicityDomainId {
@@ -79,7 +79,16 @@ fn structural_preparation() -> PreparedOriginalCompletion {
             Some(outbox),
         )
         .unwrap(),
-        reads: BTreeMap::from([(b"deciding-row".to_vec(), StateRevision::INITIAL)]),
+        reads: {
+            let mut reads: StateObservationSet = StateObservationSet::new(domain());
+            reads
+                .observe(
+                    StateReadAssertion::new(b"deciding-row".to_vec(), StateRevision::INITIAL)
+                        .unwrap(),
+                )
+                .unwrap();
+            reads
+        },
     }
 }
 
@@ -244,73 +253,13 @@ fn completion_kernel_wrong_domain_and_stale_writer_never_confirm_preparation() {
 }
 
 #[test]
-fn completion_kernel_propagated_second_interception_is_a_local_stop_not_backend_ambiguity() {
-    // Deliberately invalid handler composition, not an authenticated business
-    // fixture. Unlike an ignored second error, this handler propagates the
-    // adapter's rejection through the ordinary backend-error mapper.
-    fn repeated_completion_handler<S: StructuredDurableDomainStateStore>(
-        staging: &StagingStore<'_, S>,
-        original: DurableInvocationTransaction,
-        second: AtomicStateTransaction,
-    ) -> LegOutcome {
-        if let outcome @ (DurableCommitOutcome::Rejected(_)
-        | DurableCommitOutcome::Indeterminate(_)) =
-            staging.commit_invocation(&context(), original)
-        {
-            return LegOutcome::Stop(super::super::engine::commit_outcome_error(outcome));
-        }
-        let outcome: DurableCommitOutcome = staging.commit_durable(&context(), second);
-        LegOutcome::Stop(super::super::engine::commit_outcome_error(outcome))
-    }
-
-    let store: MemoryDurableStateStore = MemoryDurableStateStore::new(context().writer_fence());
-    let prepared: PreparedOriginalCompletion = structural_preparation();
-    let second: AtomicStateTransaction = AtomicStateTransaction::new(
-        domain(),
-        AtomicStateReadSet::new(vec![
-            StateReadAssertion::new(b"second".to_vec(), StateRevision::INITIAL).unwrap(),
-        ])
-        .unwrap(),
-        AtomicStateMutationSet::new(vec![
-            StateMutationEntry::new(b"second".to_vec(), StateMutation::Put(vec![1])).unwrap(),
-        ])
-        .unwrap(),
-    )
-    .unwrap();
-    let staging: StagingStore<'_, MemoryDurableStateStore> = StagingStore::new(&store);
-    let result: LegOutcome = repeated_completion_handler(&staging, prepared.business, second);
-    assert!(matches!(
-        finish_handler_attempt(&staging, result),
-        Err(OrderedEconomicsError::Prerequisite(
-            "ordered handler attempted more than one prepared completion"
-        ))
-    ));
-    assert!(
-        store
-            .get_request_receipt(
-                &context(),
-                domain(),
-                DurableRequestId::new([3; 32]).unwrap()
-            )
-            .unwrap()
-            .is_none()
-    );
-    for key in [b"business".as_slice(), b"second".as_slice()] {
-        let row: VersionedStateValue = store
-            .get_versioned_durable(&context(), domain(), key)
-            .unwrap();
-        assert_eq!(row.revision(), StateRevision::INITIAL);
-        assert!(row.value().is_none());
-    }
-}
-
-#[test]
 fn completion_kernel_conflicting_reads_precede_a_propagated_handler_stop() {
     let store: MemoryDurableStateStore = MemoryDurableStateStore::new(context().writer_fence());
-    let staging: StagingStore<'_, MemoryDurableStateStore> = StagingStore::new(&store);
+    let observed: ObservedBusinessReadView<'_, MemoryDurableStateStore> =
+        ObservedBusinessReadView::new(&store, domain());
     let key: Vec<u8> = b"deciding-row".to_vec();
-    let before: VersionedStateValue = staging
-        .get_versioned_durable(&context(), domain(), &key)
+    let before: VersionedStateValue = observed
+        .read_versioned_state(&context(), domain(), &key)
         .unwrap();
     let competing: AtomicStateTransaction = AtomicStateTransaction::new(
         domain(),
@@ -328,14 +277,15 @@ fn completion_kernel_conflicting_reads_precede_a_propagated_handler_stop() {
         store.commit_durable(&context(), competing),
         DurableCommitOutcome::Committed
     );
-    staging
-        .get_versioned_durable(&context(), domain(), &key)
-        .unwrap();
+    assert!(matches!(
+        observed.read_versioned_state(&context(), domain(), &key),
+        Err(runtime::DurableReadError::InvalidPersistedState)
+    ));
     let result: LegOutcome = LegOutcome::Stop(OrderedEconomicsError::Prerequisite(
         "handler independently stopped",
     ));
     assert!(matches!(
-        finish_handler_attempt(&staging, result),
+        finish_handler_attempt(observed, result),
         Err(OrderedEconomicsError::Node(NodeCoreError::StateConflict))
     ));
     assert!(

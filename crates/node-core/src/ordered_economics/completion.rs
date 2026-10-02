@@ -3,9 +3,9 @@
 //! are never durable confirmation. Coordinator progress is supplied separately
 //! and joins the exact original receipt in one actual store invocation.
 use super::engine::{CommittedOrderedOperation, ExecutionWarrant, LegOutcome, MergedWrites};
-use super::staging::{HandlerPreparation, PreparedHandlerWrite};
+use super::observed_read::ObservedBusinessReadView;
 use super::*;
-use runtime::DurableObjectHeadRead;
+use runtime::{DurableObjectHeadRead, StateObservationSet};
 
 /// An independently evaluated original operation, including refusal-deciding
 /// observations. Fields and construction stay private to the owning evaluator;
@@ -13,11 +13,11 @@ use runtime::DurableObjectHeadRead;
 pub(super) struct PreparedOriginalCompletion {
     outcome: OrderedOutcome,
     business: DurableInvocationTransaction,
-    reads: BTreeMap<Vec<u8>, StateRevision>,
+    reads: StateObservationSet,
 }
 
-/// Actual store confirmation of an original completion. Neither the capture
-/// adapter nor an unsigned source companion can construct this value.
+/// Actual store confirmation of an original completion. Neither an owning
+/// preparation nor an unsigned source companion can construct this value.
 pub(super) struct ConfirmedOriginalCompletion {
     outcome: OrderedOutcome,
 }
@@ -83,9 +83,7 @@ impl PreparedOriginalCompletion {
         if self.business.domain() != domain {
             return Err(RuntimeError::AtomicityDomainMismatch.into());
         }
-        for (key, revision) in self.reads {
-            coordinator.read(key, revision)?;
-        }
+        coordinator.merge_observations(&self.reads)?;
         if let Some(state) = self.business.state() {
             coordinator.merge_handler_state(state)?;
         }
@@ -126,24 +124,23 @@ impl PreparedOriginalCompletion {
     }
 }
 
-/// Poisoned preparation takes precedence over the handler's error. Adapter
-/// interception is not a dispatched backend operation, so even a propagated
-/// sentinel must be reported as the local invariant that actually failed.
-fn finish_handler_attempt<S: StructuredDurableDomainStateStore>(
-    staging: &StagingStore<'_, S>,
+/// Finish even if the owner stopped. A poisoned physical read attempt cannot
+/// retain a decision or leak a local observation rejection as backend ambiguity.
+fn finish_handler_attempt<S: StructuredStateReader>(
+    observed: ObservedBusinessReadView<'_, S>,
     result: LegOutcome,
-) -> Result<(HandlerPreparation, LegOutcome), OrderedEconomicsError> {
-    let prepared: HandlerPreparation = staging.finish()?;
-    match result {
+) -> Result<(StateObservationSet, LegOutcome), OrderedEconomicsError> {
+    let result: Result<LegOutcome, OrderedEconomicsError> = match result {
         LegOutcome::Stop(error) => Err(error),
-        result => Ok((prepared, result)),
-    }
+        result => Ok(result),
+    };
+    observed.finish_with(result)
 }
 
 /// Evaluates once, from proof-bound original bytes and the owning execution
 /// warrant. Original receipt reconciliation must already have run. A typed
 /// healthy refusal produces no business effects; unknown prerequisites stop.
-pub(super) fn prepare_original_completion<S: StructuredDurableDomainStateStore>(
+pub(super) fn prepare_original_completion<S: StructuredStateReader>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -152,57 +149,51 @@ pub(super) fn prepare_original_completion<S: StructuredDurableDomainStateStore>(
 ) -> Result<PreparedOriginalCompletion, OrderedEconomicsError> {
     let candidate: &OrderedCandidate = operation.candidate();
     let admission: &OrderedLegAdmission<'_> = warrant.admission(candidate.request_id)?;
-    let staging: StagingStore<'_, S> = StagingStore::new(store);
+    let observed: ObservedBusinessReadView<'_, S> =
+        ObservedBusinessReadView::new(store, env.policy.domain());
     let result: LegOutcome = match super::policy::authenticate_ordered_operation(env, candidate) {
         Ok(authenticated) => {
             if authenticated.digest() != operation.digest() {
-                return Err(OrderedEconomicsError::Prerequisite(
+                LegOutcome::Stop(OrderedEconomicsError::Prerequisite(
                     "authenticated original differs from committed operation",
-                ));
+                ))
+            } else {
+                super::engine::execute_candidate(
+                    &observed,
+                    context,
+                    env,
+                    &authenticated,
+                    Some(admission),
+                    operation.height(),
+                )
             }
-            super::engine::execute_candidate(
-                &staging,
-                context,
-                env,
-                &authenticated,
-                Some(admission),
-                operation.height(),
-            )
         }
         // Preserve the historical storage-independent refusal contract. This
         // failure does not issue authenticated evidence; causal admission has
         // already required successful authentication before reaching replay.
         Err(error) => super::engine::disposition(candidate.request_id, error),
     };
-    let (prepared, result): (HandlerPreparation, LegOutcome) =
-        finish_handler_attempt(&staging, result)?;
+    let (reads, result): (StateObservationSet, LegOutcome) =
+        finish_handler_attempt(observed, result)?;
     let digest: Digest32 = operation.digest();
     let domain: AtomicityDomainId = env.policy.domain();
     let (output, business): (NodeOutput, DurableInvocationTransaction) = match result {
-        LegOutcome::Accepted(output) => {
-            let business: DurableInvocationTransaction = match prepared.write {
-                Some(PreparedHandlerWrite::Invocation(invocation)) => *invocation,
-                Some(PreparedHandlerWrite::State(state)) => DurableInvocationTransaction::new(
-                    domain,
-                    Some(DurableStateTransaction::from(state)),
-                    DurableObjectChanges::empty(),
-                    super::engine::build_receipt(candidate.request_id, digest, &output)?,
-                    None,
-                )?,
-                None => {
-                    return Err(OrderedEconomicsError::Prerequisite(
-                        "ordered accepted candidate produced no prepared transaction",
-                    ));
-                }
-            };
+        LegOutcome::PreparedInvocation(prepared) => {
+            let (business, output) = prepared.into_parts();
+            (output, business)
+        }
+        LegOutcome::PreparedState(prepared) => {
+            let (state, output) = prepared.into_parts();
+            let business: DurableInvocationTransaction = DurableInvocationTransaction::new(
+                domain,
+                Some(DurableStateTransaction::from(state)),
+                DurableObjectChanges::empty(),
+                super::engine::build_receipt(candidate.request_id, digest, &output)?,
+                None,
+            )?;
             (output, business)
         }
         LegOutcome::AcceptedRetainedEvidence(output) | LegOutcome::Refused(output) => {
-            if prepared.write.is_some() {
-                return Err(OrderedEconomicsError::Prerequisite(
-                    "ordered no-effect completion unexpectedly prepared a business write",
-                ));
-            }
             let business: DurableInvocationTransaction = DurableInvocationTransaction::new(
                 domain,
                 None,
@@ -239,7 +230,7 @@ pub(super) fn prepare_original_completion<S: StructuredDurableDomainStateStore>(
             output,
         },
         business,
-        reads: prepared.reads,
+        reads,
     })
 }
 
