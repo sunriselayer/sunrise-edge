@@ -268,6 +268,7 @@ fn terminal(
 pub(super) struct SealAcceptanceCandidate<'a> {
     pub(super) candidate: &'a OrderedCandidate,
     pub(super) candidate_digest: Digest32,
+    pub(super) block_digest: Digest32,
 }
 
 /// DR-0187 private acceptance-only terminal: substitutes exactly the
@@ -284,6 +285,7 @@ fn seal_terminal(
     policy: &OrderedEconomicsPolicy,
     candidate: &OrderedCandidate,
     candidate_digest: Digest32,
+    seal_block_digest: Digest32,
 ) -> Result<(), BusinessCutError> {
     if candidate.kind != OrderedOperationKind::Seal {
         return Err(invalid("seal acceptance candidate is not a Seal operation"));
@@ -343,6 +345,15 @@ fn seal_terminal(
     if proof.child.transactions.as_slice() != [candidate_digest] {
         return Err(invalid(
             "cut seal acceptance child is not exactly the accepted seal candidate",
+        ));
+    }
+    let child_digest: Digest32 = policy
+        .engine()
+        .proposal_digest(&proof.child)
+        .map_err(|_| invalid("cut seal acceptance child digest"))?;
+    if child_digest != seal_block_digest {
+        return Err(invalid(
+            "cut seal acceptance child is not the exact accepted Seal block",
         ));
     }
     Ok(())
@@ -614,6 +625,7 @@ pub(super) fn from_overlay(
             overlay.plan.ordered_policy,
             seal.candidate,
             seal.candidate_digest,
+            seal.block_digest,
         )?,
     }
     let (drain, drain_digest, control_keys) = complete_drain(overlay, ordered, controls)?;
@@ -789,18 +801,7 @@ pub(super) fn from_overlay_for_seal_acceptance(
     ordered: &[OrderedHistoryHeightMaterial],
     controls: &[DrainSetControlMaterial],
     carriers: &BTreeMap<[u8; 32], Vec<u8>>,
-    seal_candidate: &OrderedCandidate,
-    seal_candidate_digest: Digest32,
+    seal: SealAcceptanceCandidate<'_>,
 ) -> Result<VerifiedBusinessCut, BusinessCutError> {
-    from_overlay(
-        overlay,
-        owned,
-        ordered,
-        controls,
-        carriers,
-        Some(SealAcceptanceCandidate {
-            candidate: seal_candidate,
-            candidate_digest: seal_candidate_digest,
-        }),
-    )
+    from_overlay(overlay, owned, ordered, controls, carriers, Some(seal))
 }

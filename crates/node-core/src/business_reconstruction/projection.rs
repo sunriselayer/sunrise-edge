@@ -871,6 +871,35 @@ pub(super) fn compare_source(
     Ok(())
 }
 
+/// Seal eligibility uses the same completed private replay as the semantic
+/// comparison. The captured reader grants no mutation or source-row import.
+pub(super) fn check_reconstructed_next_set_eligibility(
+    overlay: &BusinessReconstructionOverlay<'_>,
+    next_members: &[records::FastPathValidatorEntry],
+) -> Result<(), BusinessReconstructionError> {
+    if !overlay.reconstruction_complete {
+        return Err(invalid(
+            "Seal eligibility private reconstruction is incomplete",
+        ));
+    }
+    let reconstructed: SourceBusinessSnapshot = capture_overlay(overlay)?;
+    let view: CapturedStateView<'_> = CapturedStateView {
+        domain: overlay.plan.domain,
+        rows: state_rows(&reconstructed.records),
+    };
+    let context: &execution::publication::PublicationContext =
+        overlay.plan.genesis_root.manifest().context();
+    crate::epoch_transition::check_next_set_eligibility(
+        &view,
+        &overlay.plan.operation_context,
+        overlay.plan.domain,
+        context.chain_id(),
+        context.epoch(),
+        next_members,
+    )
+    .map_err(|_| invalid("Seal successor eligibility differs from independent reconstruction"))
+}
+
 /// Derives exactly the audit's expected facts from private replay. This does
 /// not accept source rows, change audit equality, or expose the private store.
 pub(super) fn independently_derived_projection(

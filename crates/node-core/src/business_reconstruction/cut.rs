@@ -10,6 +10,7 @@ use super::{
     BusinessReconstructionError, BusinessReconstructionOverlay, BusinessReconstructionPlan,
     DrainSetControlMaterial, OwnedPublicationMaterial,
 };
+use crate::fast_path::records::FastPathValidatorEntry;
 use crate::ordered_economics::{
     OrderedCandidate, OrderedHistoryHeightMaterial, OrderedHistoryIdentity,
 };
@@ -246,7 +247,46 @@ pub fn derive_source_business_cut<
     source_blobs: &B,
     ordered: &[OrderedHistoryHeightMaterial],
 ) -> Result<VerifiedBusinessCut, BusinessCutError> {
-    let snapshot = source::capture(source, source_blobs, &plan.operation_context, plan.domain)?;
+    derive_source_cut(plan, source, source_blobs, ordered, None, None)
+}
+
+/// Seal signing retains the ordinary empty-three-chain terminal while
+/// additionally deciding successor eligibility on that exact private replay.
+pub(crate) fn derive_source_business_cut_for_seal_signing<
+    S: DurablePortableSnapshotRepository + ?Sized,
+    B: PortableBlobRepository + ?Sized,
+>(
+    plan: BusinessReconstructionPlan<'_>,
+    source: &S,
+    source_blobs: &B,
+    ordered: &[OrderedHistoryHeightMaterial],
+    next_members: &[FastPathValidatorEntry],
+) -> Result<VerifiedBusinessCut, BusinessCutError> {
+    derive_source_cut(
+        plan,
+        source,
+        source_blobs,
+        ordered,
+        Some(next_members),
+        None,
+    )
+}
+
+/// One source capture and one independent reconstruction for every source
+/// cut consumer. Eligibility and the acceptance terminal remain private.
+fn derive_source_cut<
+    S: DurablePortableSnapshotRepository + ?Sized,
+    B: PortableBlobRepository + ?Sized,
+>(
+    plan: BusinessReconstructionPlan<'_>,
+    source: &S,
+    source_blobs: &B,
+    ordered: &[OrderedHistoryHeightMaterial],
+    next_members: Option<&[FastPathValidatorEntry]>,
+    seal: Option<derive::SealAcceptanceCandidate<'_>>,
+) -> Result<VerifiedBusinessCut, BusinessCutError> {
+    let snapshot: super::SourceBusinessSnapshot =
+        source::capture(source, source_blobs, &plan.operation_context, plan.domain)?;
     let owned: Vec<OwnedPublicationMaterial> =
         super::owned_material_from_source_snapshot(&snapshot, &plan)?;
     let controls: Vec<DrainSetControlMaterial> =
@@ -257,9 +297,16 @@ pub fn derive_source_business_cut<
     let mut overlay: BusinessReconstructionOverlay<'_> = BusinessReconstructionOverlay::new(plan)?;
     overlay.reconstruct_with_control_material(&owned, ordered, &controls)?;
     overlay.compare_source(&snapshot)?;
+    if let Some(next_members) = next_members {
+        super::projection::check_reconstructed_next_set_eligibility(&overlay, next_members)?;
+    }
     let carriers = proof::source_application_carriers(&overlay, &snapshot)?;
-    let mut cut: VerifiedBusinessCut =
-        derive::from_overlay(&overlay, &owned, ordered, &controls, &carriers, None)?;
+    let mut cut: VerifiedBusinessCut = match seal {
+        None => derive::from_overlay(&overlay, &owned, ordered, &controls, &carriers, None)?,
+        Some(seal) => derive::from_overlay_for_seal_acceptance(
+            &overlay, &owned, ordered, &controls, &carriers, seal,
+        )?,
+    };
     source
         .check_portable_outbox_empty_at(&operation, domain, &snapshot.token)
         .map_err(|_| invalid("source snapshot changed before cut derivation finished"))?;
@@ -280,10 +327,8 @@ pub fn derive_source_business_cut<
 ///
 /// This is private read-only preparation, not a new public cut/import
 /// producer: ordinary source export, saved cut, import and readiness keep
-/// their original empty-three-chain check unchanged. Not yet wired to any
-/// live caller: the ordered-economics completion path that would supply a
-/// genuinely committed Seal block/candidate is a separate, runtime-owned
-/// deliverable.
+/// their original empty-three-chain check unchanged. The owning original
+/// completion supplies the exact authenticated block being accepted.
 pub(crate) fn verify_live_seal_closure<
     S: DurablePortableSnapshotRepository + ?Sized,
     B: PortableBlobRepository + ?Sized,
@@ -293,37 +338,25 @@ pub(crate) fn verify_live_seal_closure<
     source_blobs: &B,
     ordered: &[OrderedHistoryHeightMaterial],
     seal_candidate: &OrderedCandidate,
+    seal_block_digest: Digest32,
+    next_members: &[FastPathValidatorEntry],
 ) -> Result<VerifiedBusinessCut, BusinessCutError> {
     let seal_candidate_digest: Digest32 = plan
         .ordered_policy
         .candidate_digest(seal_candidate)
         .map_err(|_| invalid("seal acceptance candidate digest"))?;
-    let snapshot = source::capture(source, source_blobs, &plan.operation_context, plan.domain)?;
-    let owned: Vec<OwnedPublicationMaterial> =
-        super::owned_material_from_source_snapshot(&snapshot, &plan)?;
-    let controls: Vec<DrainSetControlMaterial> =
-        super::drain_control_material_from_source_snapshot(&snapshot, &plan, ordered)
-            .map_err(|_| invalid("source control closure could not be authenticated"))?;
-    let operation = plan.operation_context;
-    let domain: AtomicityDomainId = plan.domain;
-    let mut overlay: BusinessReconstructionOverlay<'_> = BusinessReconstructionOverlay::new(plan)?;
-    overlay.reconstruct_with_control_material(&owned, ordered, &controls)?;
-    overlay.compare_source(&snapshot)?;
-    let carriers = proof::source_application_carriers(&overlay, &snapshot)?;
-    let mut cut: VerifiedBusinessCut = derive::from_overlay_for_seal_acceptance(
-        &overlay,
-        &owned,
+    derive_source_cut(
+        plan,
+        source,
+        source_blobs,
         ordered,
-        &controls,
-        &carriers,
-        seal_candidate,
-        seal_candidate_digest,
-    )?;
-    source
-        .check_portable_outbox_empty_at(&operation, domain, &snapshot.token)
-        .map_err(|_| invalid("source snapshot changed before cut derivation finished"))?;
-    cut.source_token = Some(snapshot.token);
-    Ok(cut)
+        Some(next_members),
+        Some(derive::SealAcceptanceCandidate {
+            candidate: seal_candidate,
+            candidate_digest: seal_candidate_digest,
+            block_digest: seal_block_digest,
+        }),
+    )
 }
 /// Independent immutable saved verification. Only the supplied locally pinned
 /// plan chooses genesis/context/domain/history. Saved outcome/receipt companions

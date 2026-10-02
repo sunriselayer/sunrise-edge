@@ -19,13 +19,9 @@
 //! its quorum is genuinely valid over the pinned successor set, and that
 //! every named successor is still a currently eligible, committed bond.
 //!
-//! This module implements only the verification half DR-0187 calls private
-//! acceptance-only business closure plus its warranted pre-vote check. The
-//! durable Seal completion (the mandatory outgoing barrier and sealed
-//! record, the OutgoingSealRepository contract) is a separate
-//! storage-owning deliverable and is not implemented here: see
-//! `super::engine`s `Seal` dispatch arm, which stops rather than inventing
-//! a completion.
+//! These raw eligibility reads are an admission fast-fail. The signing and
+//! acceptance owners additionally check the verified successor set against
+//! the same independently reconstructed overlay that derives the cut.
 use super::*;
 use crate::business_reconstruction::cut::business_cut_identity_digest;
 use crate::business_reconstruction::cut::{BusinessCutIdentity, decode_business_cut_identity};
@@ -374,14 +370,50 @@ pub(crate) fn require_seal_warrant<S: StructuredStateReader>(
     candidate: &OrderedCandidate,
 ) -> Result<(), OrderedEconomicsError> {
     super::preflight::require_live_authority(store, context, env)?;
-    let intent: SealIntent = decode_seal_intent(&candidate.intent)
-        .map_err(|_| OrderedEconomicsError::Unauthenticated("invalid seal candidate intent"))?;
     let chain: &ChainId = env.policy.context().chain_id();
     let epoch: Epoch = env.policy.context().epoch();
     if super::drain_set::read_drain_set_record(store, context, env.policy.domain(), chain, epoch)?
         .is_none()
     {
         return Err(OrderedEconomicsError::Refused(OrderedRefusal::NoFreeze));
+    }
+    let certificate: ReadinessCertificate = load_verified_seal_certificate(env, candidate)?;
+    let next_members: Vec<FastPathValidatorEntry> = seal_next_members(&certificate);
+    epoch_transition::check_next_set_eligibility(
+        store,
+        context,
+        env.policy.domain(),
+        chain,
+        epoch,
+        &next_members,
+    )
+    .map_err(|error: NextSetEligibilityError| match error {
+        NextSetEligibilityError::Ineligible => {
+            OrderedEconomicsError::Refused(OrderedRefusal::IneligibleNextSet)
+        }
+        NextSetEligibilityError::Prerequisite => OrderedEconomicsError::Prerequisite(
+            "seal successor set lacks a committed eligibility prerequisite",
+        ),
+        NextSetEligibilityError::Node(error) => OrderedEconomicsError::Node(error),
+    })
+}
+
+/// Re-reads the bounded immutable certificate and verifies every byte, its
+/// exact subject, the complete locally pinned suite schedule and successor
+/// quorum. No decoded certificate alone grants signing or cut authority.
+pub(crate) fn load_verified_seal_certificate(
+    env: &OrderedEconomicsEnvironment<'_>,
+    candidate: &OrderedCandidate,
+) -> Result<ReadinessCertificate, OrderedEconomicsError> {
+    let intent: SealIntent = decode_seal_intent(&candidate.intent)
+        .map_err(|_| OrderedEconomicsError::Unauthenticated("invalid seal candidate intent"))?;
+    let epoch: Epoch = env.policy.context().epoch();
+    let declared_length: usize = usize::try_from(intent.certificate_length)
+        .map_err(|_| OrderedEconomicsError::Prerequisite("seal certificate length overflow"))?;
+    if declared_length == 0 || declared_length > MAX_READINESS_CERTIFICATE_BYTES {
+        return Err(OrderedEconomicsError::Prerequisite(
+            "seal certificate length exceeds the owning bound",
+        ));
     }
     // DR-0187: bounded exact-range reads over the actual PortableBlobRepository
     // owner, never an unbounded whole-blob fetch. The descriptor length is
@@ -402,10 +434,8 @@ pub(crate) fn require_seal_warrant<S: StructuredStateReader>(
         .ok_or(OrderedEconomicsError::Prerequisite(
             "seal certificate blob is absent",
         ))?;
-    if descriptor.digest() != intent.certificate_digest
-        || descriptor.length() as u64 != u64::from(intent.certificate_length)
-    {
-        return Err(OrderedEconomicsError::Unauthenticated(
+    if descriptor.digest() != intent.certificate_digest || descriptor.length() != declared_length {
+        return Err(OrderedEconomicsError::Prerequisite(
             "seal certificate length disagrees with the staged blob",
         ));
     }
@@ -423,9 +453,20 @@ pub(crate) fn require_seal_warrant<S: StructuredStateReader>(
             })?;
         match composition.blobs.read_portable_blob_chunk(&request) {
             Ok(PortableBlobChunkOutcome::Chunk(chunk)) => {
-                offset = offset.checked_add(chunk.bytes().len()).ok_or(
-                    OrderedEconomicsError::Prerequisite("seal certificate chunk overflow"),
-                )?;
+                let count: usize = limit.get();
+                if chunk.request() != &request
+                    || chunk.bytes().len() != count
+                    || chunk.is_last() != (offset + count == descriptor.length())
+                {
+                    return Err(OrderedEconomicsError::Prerequisite(
+                        "seal certificate chunk differs from its exact bounded range",
+                    ));
+                }
+                offset = offset
+                    .checked_add(count)
+                    .ok_or(OrderedEconomicsError::Prerequisite(
+                        "seal certificate chunk overflow",
+                    ))?;
                 certificate_bytes.extend_from_slice(chunk.bytes());
             }
             Ok(PortableBlobChunkOutcome::Corrupt) | Err(_) => {
@@ -446,7 +487,7 @@ pub(crate) fn require_seal_warrant<S: StructuredStateReader>(
     let certificate: ReadinessCertificate = decode_readiness_certificate(&certificate_bytes)
         .map_err(|_| OrderedEconomicsError::Prerequisite("seal certificate schema"))?;
     if certificate.subject != intent.readiness_subject {
-        return Err(OrderedEconomicsError::Unauthenticated(
+        return Err(OrderedEconomicsError::Prerequisite(
             "seal certificate subject differs from the candidate intent",
         ));
     }
@@ -456,7 +497,13 @@ pub(crate) fn require_seal_warrant<S: StructuredStateReader>(
     certifier
         .verify_certificate(&certificate)
         .map_err(|_| OrderedEconomicsError::Prerequisite("seal readiness certificate quorum"))?;
-    let next_members: Vec<FastPathValidatorEntry> = certificate
+    Ok(certificate)
+}
+
+/// Converts the actual verified successor entries without inferring weight
+/// or key registration from current outgoing membership.
+pub(crate) fn seal_next_members(certificate: &ReadinessCertificate) -> Vec<FastPathValidatorEntry> {
+    certificate
         .next_set
         .validators()
         .iter()
@@ -466,24 +513,7 @@ pub(crate) fn require_seal_warrant<S: StructuredStateReader>(
             signature_scheme: member.signature_scheme,
             public_key: member.public_key.clone(),
         })
-        .collect();
-    epoch_transition::check_next_set_eligibility(
-        store,
-        context,
-        env.policy.domain(),
-        chain,
-        epoch,
-        &next_members,
-    )
-    .map_err(|error: NextSetEligibilityError| match error {
-        NextSetEligibilityError::Ineligible => {
-            OrderedEconomicsError::Refused(OrderedRefusal::IneligibleNextSet)
-        }
-        NextSetEligibilityError::Prerequisite => OrderedEconomicsError::Prerequisite(
-            "seal successor set lacks a committed eligibility prerequisite",
-        ),
-        NextSetEligibilityError::Node(error) => OrderedEconomicsError::Node(error),
-    })
+        .collect()
 }
 
 #[cfg(test)]
