@@ -6,7 +6,8 @@
 //! the existing shared three-chain `ChainedHotStuff` rules. There is no
 //! separate signature or parallel voting chain: a *proposed* `DrainSet`
 //! changes nothing, and only a *committed* one -- decided in
-//! [`super::preflight`] and applied here -- installs the durable, one-per-
+//! [`super::preflight`], prepared here and applied atomically by ordered
+//! completion -- installs the durable, one-per-
 //! epoch immutable [`DrainSetRecord`].
 //!
 //! Unlike every signed business kind, [`DrainSetIntent`] itself carries no
@@ -27,6 +28,7 @@
 //! drain, apply, cut, Seal or activate anything; see the module-level
 //! remaining-integration note in [`super`].
 use super::*;
+use crate::operation_preparation::PreparedStateOperation;
 use canonical_encoding::encode_chain_id;
 use consensus::{
     DrainUnionIdentity, FrozenFrontierVote, decode_drain_union_identity,
@@ -36,6 +38,7 @@ use execution::publication::{
     PublicationContext, decode_publication_context, encode_publication_context,
 };
 use fast_path::records::MAX_FASTPATH_ACTIVE_VALIDATORS;
+use runtime::VersionedStateReader;
 
 /// Canonical frame type of an encoded [`DrainSetIntent`] (an
 /// [`OrderedCandidate::intent`] body for [`OrderedOperationKind::DrainSet`]).
@@ -368,7 +371,7 @@ pub(crate) fn drain_set_record_key(
 /// Reads the durable one-per-epoch record for `chain`/`epoch`, if any,
 /// recording the read as a CAS precondition exactly like every other
 /// ordered-economics row this module's callers observe.
-pub(crate) fn read_drain_set_record<S: StructuredDurableDomainStateStore>(
+pub(crate) fn read_drain_set_record<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -381,7 +384,7 @@ pub(crate) fn read_drain_set_record<S: StructuredDurableDomainStateStore>(
 /// Returns the same validated record and the exact row revision observed by
 /// a signer. The revision must be asserted in the proposal/vote commit so a
 /// concurrent accepted DrainSet cannot race a fresh candidate signature.
-pub(crate) fn read_drain_set_record_with_revision<S: StructuredDurableDomainStateStore>(
+pub(crate) fn read_drain_set_record_with_revision<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
@@ -389,7 +392,7 @@ pub(crate) fn read_drain_set_record_with_revision<S: StructuredDurableDomainStat
     epoch: Epoch,
 ) -> Result<(Option<DrainSetRecord>, StateRevision), NodeCoreError> {
     let key: Vec<u8> = drain_set_record_key(chain, epoch)?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     match observed.value() {
         Some(bytes) => {
             let record: DrainSetRecord = decode_drain_set_record(bytes)?;
@@ -443,7 +446,7 @@ pub(crate) fn classify_readiness_error(
 /// transaction as a signed proposal/vote or the committed execution's own
 /// atomic install is protected against the local ready marker or any of its
 /// Freeze/epoch/set prerequisites moving afterward.
-pub(crate) fn verify_and_match_readiness<S: StructuredDurableDomainStateStore>(
+pub(crate) fn verify_and_match_readiness<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -458,7 +461,7 @@ pub(crate) fn verify_and_match_readiness<S: StructuredDurableDomainStateStore>(
 /// reconstruction uses this same check to distinguish an earlier deterministic
 /// refusal from missing proof material; it does not treat source outcomes as
 /// authority or apply a DrainSet through this scheduling query.
-fn require_matching_freeze<S: StructuredDurableDomainStateStore>(
+fn require_matching_freeze<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -473,7 +476,7 @@ fn require_matching_freeze<S: StructuredDurableDomainStateStore>(
     let epoch: Epoch = env.policy.context().epoch();
     let closure_key: Vec<u8> = super::freeze::admission_closure_key(chain, epoch)?;
     let closure_row: VersionedStateValue =
-        store.get_versioned_durable(context, env.policy.domain(), &closure_key)?;
+        store.read_versioned_state(context, env.policy.domain(), &closure_key)?;
     if let Some(previous) = reads.insert(closure_key, closure_row.revision())
         && previous != closure_row.revision()
     {
@@ -506,7 +509,7 @@ fn require_matching_freeze<S: StructuredDurableDomainStateStore>(
     Ok(())
 }
 
-fn verify_and_match_local_readiness<S: StructuredDurableDomainStateStore>(
+fn verify_and_match_local_readiness<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -535,7 +538,7 @@ fn verify_and_match_local_readiness<S: StructuredDurableDomainStateStore>(
 /// [`verify_and_match_readiness`]. Used both by the pre-vote/pre-proposal
 /// check ([`super::engine::admit_candidate_for_signer`]) and by
 /// [`preflight_drain_set`].
-pub(crate) fn require_drain_set_readiness<S: StructuredDurableDomainStateStore>(
+pub(crate) fn require_drain_set_readiness<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -556,18 +559,18 @@ pub(crate) fn require_drain_set_readiness<S: StructuredDurableDomainStateStore>(
 /// [`super::preflight::preflight`]'s `DrainSet` arm: refuses a duplicate
 /// selection against the healthy, present one-per-epoch
 /// [`DrainSetRecord`] with [`OrderedRefusal::AlreadyDrained`], then
-/// re-verifies readiness through `staging` -- every read this performs
+/// re-verifies readiness through the read-only observation scope -- every read
 /// becomes a CAS assertion in the final commit exactly like every other row
 /// [`super::preflight`] observes.
-pub(crate) fn preflight_drain_set<S: StructuredDurableDomainStateStore>(
+pub(crate) fn preflight_drain_set<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
     candidate: &OrderedCandidate,
 ) -> Result<(), OrderedEconomicsError> {
     let intent: DrainSetIntent = preflight_drain_set_prefix(store, context, env, candidate)?;
-    // Discarded: `store` here is the caller's staging adapter, which already
-    // records every read it forwards (see `StagingStore::observed_reads`).
+    // The caller's read-only observation scope already records every read
+    // it forwards for the final completion CAS.
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     verify_and_match_local_readiness(store, context, env, &intent, &mut reads)
 }
@@ -575,7 +578,7 @@ pub(crate) fn preflight_drain_set<S: StructuredDurableDomainStateStore>(
 /// The real committed-execution prefix, before local proof readiness. It is
 /// shared with the private reconstruction scheduler, never an application
 /// capability and never a replacement for the full owning preflight.
-pub(crate) fn preflight_drain_set_prefix<S: StructuredDurableDomainStateStore>(
+pub(crate) fn preflight_drain_set_prefix<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     env: &OrderedEconomicsEnvironment<'_>,
@@ -596,35 +599,36 @@ pub(crate) fn preflight_drain_set_prefix<S: StructuredDurableDomainStateStore>(
             "drain set candidate context or request id mismatch",
         ));
     }
-    // Discarded: `store` here is the caller's staging adapter, which already
-    // records every read it forwards (see `StagingStore::observed_reads`).
+    // The caller's read-only observation scope already records every read
+    // it forwards for the final completion CAS.
     let mut reads: BTreeMap<Vec<u8>, StateRevision> = BTreeMap::new();
     require_matching_freeze(store, context, env, &intent, &mut reads)?;
     Ok(intent)
 }
 
-/// Executes a committed `DrainSet` candidate against `staging`.
+/// Prepares the exact control proposal for a committed `DrainSet` candidate.
 ///
 /// [`preflight_drain_set`] already refused this candidate with
 /// [`OrderedRefusal::AlreadyDrained`] if [`DrainSetRecord`] was already
 /// present and re-verified readiness, so this handler only ever runs once
-/// that has genuinely passed: it installs the record and returns an accepted
-/// response. It never touches an object, a sender-nonce row, or any other
-/// business state, and it does not itself drain, apply, cut, Seal or
+/// that has genuinely passed: it proposes the record and accepted response
+/// for ordered completion's atomic receipt/progress commit. Preparation has
+/// no writer capability. It never touches an object, a sender-nonce row or
+/// any other business state, and it does not itself drain, apply, cut, Seal or
 /// activate anything -- exactly the same pure-control discipline
-/// [`super::freeze::handle_freeze_ordered`] documents for `Freeze`.
-pub(crate) fn handle_drain_set_ordered<S: StructuredDurableDomainStateStore>(
+/// [`super::freeze::prepare_freeze_ordered`] documents for `Freeze`.
+pub(crate) fn prepare_drain_set_ordered<S: VersionedStateReader + ?Sized>(
     store: &S,
     context: &DurableOperationContext,
     domain: AtomicityDomainId,
     chain: &ChainId,
     candidate: &OrderedCandidate,
     block_height: u64,
-) -> Result<NodeOutput, NodeCoreError> {
+) -> Result<PreparedStateOperation, NodeCoreError> {
     let intent: DrainSetIntent = decode_drain_set_intent(&candidate.intent)?;
     let epoch: Epoch = candidate.context.epoch();
     let key: Vec<u8> = drain_set_record_key(chain, epoch)?;
-    let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
+    let observed: VersionedStateValue = store.read_versioned_state(context, domain, &key)?;
     if observed.value().is_some() || observed.revision() != StateRevision::INITIAL {
         // Preflight already proves this is unreachable in the ordinary
         // sequence (it would have refused with `AlreadyDrained` first); fail
@@ -638,31 +642,41 @@ pub(crate) fn handle_drain_set_ordered<S: StructuredDurableDomainStateStore>(
         drain_union_identity: intent.drain_union_identity,
         selected_votes: intent.selected_votes,
     };
-    let mutation = StateMutationEntry::new(
+    let mutation: StateMutationEntry = StateMutationEntry::new(
         key.clone(),
         StateMutation::Put(encode_drain_set_record(&record)?),
     )?;
-    let transaction = AtomicStateTransaction::new(
+    let transaction: AtomicStateTransaction = AtomicStateTransaction::new(
         domain,
         AtomicStateReadSet::new(vec![StateReadAssertion::new(key, observed.revision())?])?,
         AtomicStateMutationSet::new(vec![mutation])?,
     )?;
-    match store.commit_durable(context, transaction) {
-        DurableCommitOutcome::Committed => {}
-        DurableCommitOutcome::Rejected(reason) => {
-            return Err(NodeCoreError::DurableCommitRejected(reason));
-        }
-        DurableCommitOutcome::Indeterminate(reason) => {
-            return Err(NodeCoreError::DurableCommitIndeterminate(reason));
-        }
-    }
-    let response = NodeResponse::new(
+    let response: NodeResponse = NodeResponse::new(
         RequestId::new(candidate.request_id)?,
         NodeResponseStatus::Accepted,
         None,
     )?;
-    NodeOutput::new(vec![response], Vec::new())
+    let output: NodeOutput = NodeOutput::new(vec![response], Vec::new())?;
+    Ok(PreparedStateOperation::new(transaction, output))
 }
+
+/// Test-only direct completion; production completion joins the proposal
+/// with its ordered receipt and never commits this metadata separately.
+#[cfg(test)]
+pub(crate) fn handle_drain_set_ordered<S: StructuredDurableDomainStateStore>(
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    chain: &ChainId,
+    candidate: &OrderedCandidate,
+    block_height: u64,
+) -> Result<NodeOutput, NodeCoreError> {
+    prepare_drain_set_ordered(store, context, domain, chain, candidate, block_height)?
+        .commit(store, context)
+}
+
+#[cfg(test)]
+mod preparation_tests;
 
 #[cfg(test)]
 mod tests {
