@@ -2,8 +2,10 @@
 
 Date: 2026-10-02 (Asia/Singapore)
 
-Status: Proposed detailed refactoring contract, pending independent design
-review. No new protocol bytes or admission/signing/serving authority.
+Status: Accepted bounded refactoring contract after independent Codex fallback
+design review at `1ba64ebd` on 2026-10-02. This is design approval, not
+implementation or acceptance approval. No new protocol bytes or
+admission/signing/serving authority.
 
 ## Context
 
