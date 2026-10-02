@@ -79,11 +79,15 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   v3/v4 digest/anchor/profile/Freeze/economics baselines were actually recorded
   before removal of the old constructors. Core, SDK/CLI and operator/HTTP
   sources are integrated and old public constructor/loader call sites are
-  removed. Migration type/import defects found by the first all-target/all-feature
-  workspace check are corrected, and that complete check now passes. Construction
-  negatives now mutate the actual tested bytes; immutable-boundary doctests name
-  every field so missing fields cannot masquerade as privacy proof. Full required
-  acceptance, selected PostgreSQL lanes and exact-head review remain pending.
+  removed. Migration type/import defects are corrected. Full required local
+  acceptance now passes, including the frozen baseline, genuine root/installer/
+  historical-policy/schedule negatives, SDK before-I/O checks, compiled CLI,
+  real SQLite restoration/reopen/fencing/replay, independent vectors, native/WASM
+  and portable adapters. Immutable-boundary doctests name every field so missing
+  fields cannot masquerade as privacy proof. The wrong-epoch SDK fixture separately
+  authenticates its real signature before checking rejection. Exact-head review,
+  required CI and selected PostgreSQL evidence are tracked in PR #259; original
+  genesis trust is not a completed current-serving or successor capability.
 - [ ] Test/CI architecture: owner-specific fixture composition and a coherent
   gate registry/execution contract, preserving all required coverage.
   Closed executable plans and separately owned action recipes merged in PR #257.
@@ -99,9 +103,9 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   assertions are nonblocking review follow-ups, not silently waived evidence.
 - [ ] Independently reviewed, fully checked PR checkpoints; update this list
   from actual evidence, not skeleton compilation or file counts.
-  PR #257 and PR #258 are verified normal-merge checkpoints. Main equals
-  `origin/main` with a clean tree at `3bcbb15`; the genesis-root source branch
-  is not yet a completed feature or reviewed release.
+  PR #257 and PR #258 are verified normal-merge checkpoints. The genesis-root
+  checkpoint is tracked separately in PR #259; full local acceptance does not
+  replace independent review, exact-head CI or production qualification.
 
 The remaining handoff interface partition now identifies namespace lifecycle,
 fresh serving resolution, epoch-scoped ordered safety, reconstruction
