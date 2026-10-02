@@ -30,6 +30,14 @@ and their exact descriptor/value bytes, plus the complete referenced blob
 closure. Retain existing outcome, original receipt, execution-count, nonce,
 CAS failure, exact replay and genesis/provenance assertions.
 
+Identical prior operations include the local signer and retained vote/receipt
+history, not just identical business effects. Distinct validators preparing a
+quorum legitimately retain different signatures. Build that quorum with its
+real distinct voters separately; a comparison mirror must execute the same
+real local preparation as the source validator. Assert complete equality before
+the operation under test too. Do not delete or normalize local votes to force
+an equality premise that the fixture never established.
+
 No semantic projector, allowlist or normalization computes the expected side.
 Both sides capture their actual persisted result. Preparation itself must leave
 the source's complete capture and publication count unchanged. Exact replay

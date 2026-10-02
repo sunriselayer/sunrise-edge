@@ -10,8 +10,13 @@ to handoff normalization, canonical bytes or production authority.
 
 PR #258 makes business preparation genuinely writer-free. Its review suggested
 stronger complete state and immutable publication evidence. Fee, unbond and
-slash tests already compose genuine equally initialized stores and compare the
-direct and prepared outcomes and one receipt, but not every persisted result.
+slash tests compose genuine stores and compare the direct and prepared outcomes
+and one receipt, but not every persisted result. Equal business effects alone
+do not establish equal local history: distinct voters retain different signed
+preparation rows. Complete equality requires a comparison mirror with the same
+real local signer and prior operations, while retaining the genuine distinct
+quorum separately. Assert that full equality premise before the tested operation;
+never erase or normalize local votes to manufacture it.
 Bond tests borrow their reader view from fee-claim tests. Registration has its
 own counted blob port and already exercises a complete production audit.
 
