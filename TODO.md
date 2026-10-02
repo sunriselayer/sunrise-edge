@@ -17,7 +17,7 @@ Only this file owns current status, sequencing and deferred work.
 | Generic paid contracts and Standard Asset | DR-0121–0128 implement Publish/Instantiate/Call, ordinary contract-defined fees and asset create/transfer/split/merge/mint/burn; no Standard Asset privilege in node-core |
 | Delivery 1: certified network contract lifecycle | PR #228 merged on 2026-09-27 after the full gate, fresh exact-head Opus approval and CI; paid lifecycle, assets, replay and declared catch-up, not complete state handoff |
 | Delivery 2: fixed-epoch ordered economics | PR #232 merged on 2026-09-27; shared ordering for claims, bonds and evidence/slash/reactivation, with four-namespace CLI evidence. Genuine membership-dependent Deposit/Withdraw positives remain in Delivery 3 |
-| Delivery 3 prerequisites | PR #237/#238/#239/#242/#244/#245/#250/#252/#255 merged: portable reads, logical generations, publication-before-apply, Freeze/frontiers, quorum-retained DrainSet/member drain, ordered history, genuine frozen-member source reconstruction, persistent verified inactive import and first incoming-validator bonding. Readiness/Seal/activation remain open |
+| Delivery 3 prerequisites | PR #237/#238/#239/#242/#244/#245/#250/#252/#255 merged: portable reads, logical generations, publication-before-apply, Freeze/frontiers, quorum-retained DrainSet/member drain, ordered history, genuine frozen-member source reconstruction, persistent verified inactive import and first incoming-validator bonding. PR #256 adds conditional readiness with its exact-source evidence below. Seal/activation and recurring lifecycle acceptance remain open |
 | Authenticated pre-Seal business cut | PR #251 merged normally on 2026-10-02 after the full local gate, independent exact-head approval and required CI. Complete core derivation, immutable SQLite export/resumption and source-free independent saved verification; not import or activation evidence |
 | Shared artifact/configuration primitives | PR #249 merged: bounded local genesis and held-handle artifact I/O, with authority/error semantics retained by the callers |
 | Required validation | PR #247 implements DR-0172: four unconditional DB-free lanes. PostgreSQL integration/fault acceptance is retained and explicitly selected, not run on every PR |
@@ -29,8 +29,8 @@ epoch handoff plus independent security gates still remain.
 
 **Delivery 3 forecast, 2026-10-02:** approximately 24..40 focused engineering
 hours remain, with an initial target of 2026-10-04..06 including CI/review and
-corrections. This is a planning estimate, not a release commitment. Conditional
-readiness acceptance, Seal safety and repeated epochs through the real
+corrections. This is a planning estimate, not a release commitment. Ordered
+Seal, authenticated serving activation and repeated epochs through the real
 withdrawal unlock are still functional work. Independent audit and actual
 network startup are Delivery 4, not included in this estimate.
 
@@ -110,12 +110,19 @@ Import provides no readiness, Seal, activation or deployed-provider authority.
   actual-key binding, distinct next-set quorum and fresh-token/slot CAS are
   accepted. Nonexclusive readiness needs no global signing ledger; unique
   ordered/post-Seal protections are unchanged. Missing metadata is not repaired.
-- [ ] **Conditional readiness implementation/acceptance:** private full fresh
+- [x] **Conditional readiness capability:** private full fresh
   reconstruction and exact completed-target comparison, real eligible A/B/C/E
-  staging and keys, atomic protected vote retention, real SQLite restart and
-  both acknowledgement-loss directions, corrected candidate identities,
-  weighted public certificate assembly, compiled operator workflow and exact-head
-  independent review/required CI. A public certificate is no activation capability.
+  staging and actual keys, atomic protected vote retention, real SQLite restart,
+  both acknowledgement-loss directions, corrected candidate identities and
+  distinct weighted public certificate assembly are implemented in
+  [PR #256](https://github.com/sunriselayer/sunrise-edge/pull/256). Genuine core
+  tests and the compiled operator workflow pass, along with all 18 independent
+  vectors and the complete local npm ci/check-all gate at `6480d170`.
+  Fresh independent exact-source review returned APPROVE; required CI
+  `36964203012` and selected complete PG `36964200199` both passed that head.
+  Final-head merge gates remain mandatory. This adds native SQLite/memory
+  readiness, not PG/DO/D1 readiness, Seal, activation, serving or Delivery 3
+  completion. A public certificate is no activation capability.
 - [ ] **After readiness:** separately reviewed ordered Seal and activation/
   serving rollover. Phase-aware high/locked traversal and Seal companion
   ownership remain pre-code gates; no singleton lock from an uncommitted Seal.
