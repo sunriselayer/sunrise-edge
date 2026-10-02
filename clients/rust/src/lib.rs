@@ -52,6 +52,7 @@
 //! verifies whatever signature comes back before producing output, preserving
 //! the local signing path and this crate's vendor independence.
 
+pub mod bond_registration;
 pub mod causal_admission;
 pub mod client;
 pub mod context;

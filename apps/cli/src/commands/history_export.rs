@@ -27,7 +27,7 @@ use sunrise_edge_client::{
 };
 
 use crate::{
-    args::{ParsedArgs, parse_flags, scalar},
+    args::{ParsedArgs, scalar},
     error::CliError,
     hex::{decode_hex_32, encode_hex},
     net::{BudgetedTransport, OperationBudget},
@@ -77,9 +77,10 @@ fn run<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
         println!("{HELP}");
         return Ok(());
     }
-    let parsed: ParsedArgs = parse_flags(args, &flag_specs())?;
+    let (parsed, schedules) =
+        super::super::hash_suite_pins::parse_pinned_flags(args, &flag_specs())?;
     let (deadline, per_request_cap) = parse_budget(&parsed)?;
-    let inputs: LoadedPolicyInputs = load_policy_and_endpoints(&parsed)?;
+    let inputs: LoadedPolicyInputs = load_policy_and_endpoints(&parsed, schedules)?;
     let target_validator: ValidatorId = ValidatorId::new(decode_hex_32(
         "--target-validator-id",
         parsed.require("--target-validator-id")?,
