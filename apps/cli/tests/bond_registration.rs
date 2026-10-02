@@ -623,6 +623,10 @@ fn read_request(stream: &mut TcpStream) -> Result<ObservedRequest, String> {
     })
 }
 
+// Receipt reconciliation, initial empty-alignment routing, round routing,
+// then the original candidate POST deliberately answered with 409.
+const INGRESS_PROBE_REQUESTS: usize = 4;
+
 fn ingress_probe(
     status: Vec<u8>,
 ) -> (SocketAddr, JoinHandle<Result<Vec<ObservedRequest>, String>>) {
@@ -632,7 +636,7 @@ fn ingress_probe(
     let worker = thread::spawn(move || {
         let deadline: Instant = Instant::now() + Duration::from_secs(10);
         let mut requests: Vec<ObservedRequest> = Vec::new();
-        while requests.len() < 3 && Instant::now() < deadline {
+        while requests.len() < INGRESS_PROBE_REQUESTS && Instant::now() < deadline {
             let (mut stream, _) = match listener.accept() {
                 Ok(pair) => pair,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -673,6 +677,12 @@ fn ingress_probe(
             }
             requests.push(request);
         }
+        if requests.len() != INGRESS_PROBE_REQUESTS {
+            return Err(format!(
+                "ingress probe expected {INGRESS_PROBE_REQUESTS} requests, received {}",
+                requests.len(),
+            ));
+        }
         Ok(requests)
     });
     (address, worker)
@@ -682,6 +692,7 @@ fn ingress_probe(
 fn compiled_preparation_wrap_and_nondefault_suite_submission_delivers_exact_ordered_propose_request()
  {
     let fixture: Fixture = Fixture::new();
+    let inputs: Vec<Vec<u8>> = fixture.input_inventory();
     for args in [
         fixture.prepare_args("signed"),
         fixture.wrap_args("signed", "candidate"),
@@ -693,6 +704,8 @@ fn compiled_preparation_wrap_and_nondefault_suite_submission_delivers_exact_orde
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    let signed_bytes: Vec<u8> = fs::read(fixture.path("signed")).unwrap();
+    let candidate_bytes: Vec<u8> = fs::read(fixture.path("candidate")).unwrap();
     let policy = load_trusted_ordered_policy(
         Path::new(&fixture.path("genesis")),
         &fixture.resolver,
@@ -701,6 +714,13 @@ fn compiled_preparation_wrap_and_nondefault_suite_submission_delivers_exact_orde
         fixture.domain,
     )
     .unwrap();
+    // This real genesis profile has one registered voting identity; its
+    // distinct configured endpoint supplies the pinned routing quorum.
+    assert_eq!(fixture.manifest.validator_set.validators.len(), 1);
+    assert!(
+        fixture.manifest.validator_set.validators[0].voting_power
+            >= policy.engine().validator_set().quorum_threshold()
+    );
     let status: Vec<u8> = encode_ordered_status(&OrderedStatus {
         current_view: 1,
         high_qc: policy.engine().genesis_state(0).high_qc,
@@ -734,24 +754,38 @@ fn compiled_preparation_wrap_and_nondefault_suite_submission_delivers_exact_orde
     refuse(&output);
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("request identity conflict or explicit recovery required")
+            .contains("request identity conflict or explicit recovery required"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr),
     );
     let requests: Vec<ObservedRequest> = worker.join().unwrap().unwrap();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), INGRESS_PROBE_REQUESTS);
+    assert_eq!(
+        requests[0].path,
+        format!("{ORDERED_ECONOMICS_OUTCOME_PATH_PREFIX}{}", hex(&REQUEST_ID)),
+    );
+    for request in &requests[..3] {
+        assert_eq!(request.method, "GET");
+        assert!(request.body.is_empty());
+    }
+    for request in &requests[1..3] {
+        assert_eq!(request.path, ORDERED_ECONOMICS_STATUS_PATH);
+    }
+    assert_eq!(requests[3].path, ORDERED_ECONOMICS_PROPOSE_PATH);
     let delivered = requests
         .iter()
         .find(|request| request.path == ORDERED_ECONOMICS_PROPOSE_PATH)
         .unwrap();
     assert_eq!(delivered.method, "POST");
     let proposed: OrderedProposeRequest = OrderedProposeRequest::decode(&delivered.body).unwrap();
-    assert_eq!(
-        proposed.candidate,
-        Some(fs::read(fixture.path("candidate")).unwrap())
-    );
+    assert_eq!(proposed.candidate, Some(candidate_bytes.clone()));
     assert_eq!(
         decode_ordered_candidate(&proposed.candidate.unwrap())
             .unwrap()
             .kind,
         OrderedOperationKind::BondRegistration
     );
+    assert_eq!(fixture.input_inventory(), inputs);
+    assert_eq!(fs::read(fixture.path("signed")).unwrap(), signed_bytes);
+    assert_eq!(fs::read(fixture.path("candidate")).unwrap(), candidate_bytes);
 }
