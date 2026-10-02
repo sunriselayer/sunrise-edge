@@ -85,9 +85,19 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   real SQLite restoration/reopen/fencing/replay, independent vectors, native/WASM
   and portable adapters. Immutable-boundary doctests name every field so missing
   fields cannot masquerade as privacy proof. The wrong-epoch SDK fixture separately
-  authenticates its real signature before checking rejection. Exact-head review,
-  required CI and selected PostgreSQL evidence are tracked in PR #259; original
-  genesis trust is not a completed current-serving or successor capability.
+  authenticates its real signature before checking rejection. PR #259 merged
+  normally as `0bf99fd` after exact-head Opus APPROVE, required CI `36996436664`
+  and selected complete PostgreSQL CI `36996527437`. Original genesis trust is
+  not a completed current-serving or successor capability.
+  [DR-0184](docs/architecture/decisions/0184-one-fastvote-committee-record-validator.md)
+  then establishes one typed committee-record structural owner across core,
+  genesis/installed history, Freeze/activation derivation and operator startup/
+  CLI. Each caller retains its actual capacity, diagnostic ordering, digest,
+  certificate, freshness and activation obligations. Actual pure validation
+  tests (6), installed-history restart negatives (2), SQLite startup pin tests
+  (13) and compiled operator CLI unit tests (21) passed on the implementation.
+  Complete required and selected PostgreSQL acceptance, fresh exact-head review
+  and CI remain pending; this is not Seal, serving or Delivery 3 completion.
 - [ ] Test/CI architecture: owner-specific fixture composition and a coherent
   gate registry/execution contract, preserving all required coverage.
   Closed executable plans and separately owned action recipes merged in PR #257.
@@ -99,8 +109,14 @@ verified checkpoint. This is not an eight-hour Delivery 3 completion promise.
   plan, with an executable reproducing negative control. Typed one-shot real
   SQLite handoff faults preserve each existing assertion and prove that the
   intended fault was actually consumed. Both complete final-head required and
-  selected PostgreSQL acceptance passed. Stronger all-owner blob/state equality
-  assertions are nonblocking review follow-ups, not silently waived evidence.
+  selected PostgreSQL acceptance passed. PR #260 implements the follow-up full
+  persisted-state/blob comparisons through genuine fee, unbond, slash and
+  registration owners, with three distinct real fee voters and same-signer
+  comparison histories. Its seven writer-free tests, three actual storage-port
+  controls, full required local gate, fresh exact-head Codex fallback APPROVE
+  and all required CI `37002824263` passed at `c5a684e`. It remains draft because
+  normal-account GitHub authentication is unavailable; no merge is claimed and
+  the PR-creation-only PAT is not reused for merge or workflow dispatch.
 - [ ] Independently reviewed, fully checked PR checkpoints; update this list
   from actual evidence, not skeleton compilation or file counts.
   PR #257 and PR #258 are verified normal-merge checkpoints. The genesis-root

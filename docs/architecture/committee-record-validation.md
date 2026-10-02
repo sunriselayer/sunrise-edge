@@ -26,6 +26,9 @@ They do not reimplement member conversion.
 | Original genesis conversion | Signed record structure and expected genesis context | Local pin/signature, genesis capacity/error order and full bootstrap semantics |
 | Live core reads | Decoded current record structure | Fresh epoch/record digest binding and physical deciding observations |
 | Historical evidence reads | Decoded historical record structure | Chain-anchored historical digest and history fence |
+| Installed transition-chain verification | Historical outgoing and final live record structure | Previous committed digest, transition certificates, exact activation policies and final live singleton binding |
+| Freeze advisory record | Next-epoch record structure | Request identity, successor context, advisory capacity and strict record ordering |
+| Activation record derivation | Canonically ordered next record structure | Actual outgoing state, incoming capacity, policy derivation and exact activation commitment |
 | Operator startup pin | Configured/loaded record structure | Actual installed live epoch/digest, signer membership and writer/listener order |
 | Operator CLI committee use | Explicitly expected record context | Its genuine loaded-row, protocol configuration and invocation checks |
 
@@ -43,8 +46,24 @@ failure ordering and all externally asserted error messages.
 
 Keep the existing core live/historical decoder owner and delete the operator's
 hand-built conversions. Genesis uses the same defining record validation while
-retaining its own capacity/authority checks. Do not add another universal live
+retaining its own capacity/authority checks. Its installed transition-chain
+verifier also uses that structural primitive for both historical outgoing rows
+and the final live row, with the existing exact tampered-record diagnostics.
+It retains the authenticated digest chain, certificate and activation checks;
+these installed-row consumers do not inherit the original genesis capacity rule.
+An earlier activation-set binding can reject changed historical/live bytes
+before their later structural conversion. Preserve that actual error order
+in restart negatives, rather than forge accepted evidence to force reachability.
+Do not add another universal live
 context or wrapper that preserves a second conversion implementation.
+
+Freeze and activation derivation also use that defining record conversion,
+after their existing request/context/capacity/order checks. Their owning
+diagnostics and canonicalization remain distinct. Conditional readiness takes
+raw successor candidates and has a separate consensus/key-bound validation
+contract; this change does not force those different error and authority rules
+into the record adapter. Independent test expectations may still construct a
+generic set directly.
 
 The operator startup path previously omitted the Ed25519-only check while core
 admission and the operator CLI enforced it. Add an actual configured-row

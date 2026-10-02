@@ -34,6 +34,10 @@ roadmap describes a later target state.
   ([DR-0182](decisions/0182-immutable-verified-genesis-root.md)):
   one privately constructed original trust root and root-derived core/SDK/
   operator composition, separate from installation and current serving powers.
+- [Committee record validation](committee-record-validation.md)
+  ([DR-0184](decisions/0184-one-fastvote-committee-record-validator.md)):
+  one typed structural invariant across core and operator consumers, distinct
+  from genesis capacity, historical authentication and live serving authority.
 - [Generic contract architecture](generic-contracts.md): common execution and
   authority, type/instance/object separation, upgrades, migration and durable
   verification obligations.

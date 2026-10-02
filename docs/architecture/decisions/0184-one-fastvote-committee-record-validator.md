@@ -14,6 +14,10 @@ startup and CLI duplicate conversion because that defining helper is private.
 Startup omits the Ed25519-only rule which core admission and the CLI enforce.
 Original genesis conversion shares these structural rules but has a distinct
 local authority and capacity/error-order contract.
+Its installed transition-chain verifier separately repeats member conversion
+for the historical outgoing rows and the final live row. Those consumers keep
+their digest-chain, certificate, activation and singleton authority checks;
+sharing structure must not replace any of that evidence.
 
 ## Decision
 
@@ -23,6 +27,17 @@ actual live/historical authority with their existing owners. Delete duplicate
 operator conversion, and reuse structural validation from genesis without
 moving its capacity checks or broadening historical limits. Map typed failures
 to owning diagnostics rather than inspect error strings.
+Migrate both installed-chain conversions too, preserving their existing exact
+tampered-record labels and bounded decode/error order. If a row reaches this
+conversion, non-Ed25519 members stop at the shared supported-structure boundary.
+An earlier signed activation/digest check may already reject a tampered row;
+tests must preserve that genuine first failure, not fabricate a certificate or
+reader race to reach a later branch. No new signature implementation is added.
+Freeze's advisory record and activation's canonically ordered next record use
+the same conversion after their owning capacity/context/order guards, retaining
+their exact diagnostics and commitments. Raw conditional-readiness successor
+validation remains with its different consensus/key-bound/error-order owner;
+this is not a universal committee authority abstraction.
 
 Do not equate record structure, a locally authenticated original genesis or
 current serving authority. No universal authority context, runtime trait,
