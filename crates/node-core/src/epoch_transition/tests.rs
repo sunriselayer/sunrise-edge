@@ -3278,6 +3278,104 @@ fn restart_verify_rejects_a_tampered_historical_validator_set_row() {
 }
 
 #[test]
+fn restart_verify_rejects_unsupported_historical_committee_without_mutation() {
+    let store: MemoryDurableStateStore = memory_store();
+    let (fixture, _first, _second) = build_two_step_transition_chain(&store);
+    assert!(matches!(
+        install_genesis_result(&store, &fixture.manifest).unwrap(),
+        GenesisInstallOutcome::VerifiedExisting { .. }
+    ));
+
+    let historical_context: PublicationContext = epoch_context(1);
+    let key: Vec<u8> =
+        local_instance_state::fastpath_validator_set_key(&historical_context).unwrap();
+    let original: VersionedStateValue = store
+        .get_versioned_durable(&context(1), domain(), &key)
+        .unwrap();
+    let original_bytes: Vec<u8> = original.value().unwrap().to_vec();
+    let mut record: FastPathValidatorSetRecord =
+        fast_path::records::decode_fastpath_validator_set_record(&original_bytes).unwrap();
+    record.validators[0].signature_scheme = SignatureSchemeId::Secp256k1;
+    overwrite_row(
+        &store,
+        &key,
+        fast_path::records::encode_fastpath_validator_set_record(&record).unwrap(),
+    );
+    let before: PortableSnapshotToken = store
+        .begin_portable_snapshot(&context(1), domain())
+        .unwrap();
+
+    // The first signed transition hashes this next-set row before the second
+    // step converts it as its outgoing committee. Preserve that real earlier
+    // refusal; do not manufacture an unsupported positive certificate.
+    assert!(matches!(
+        install_genesis_result(&store, &fixture.manifest),
+        Err(GenesisError::TamperedInstalledRecord(
+            "fast-path epoch activation set"
+        ))
+    ));
+    assert_eq!(
+        store
+            .begin_portable_snapshot(&context(1), domain())
+            .unwrap(),
+        before
+    );
+    overwrite_row(&store, &key, original_bytes);
+    assert!(matches!(
+        install_genesis_result(&store, &fixture.manifest).unwrap(),
+        GenesisInstallOutcome::VerifiedExisting { .. }
+    ));
+}
+
+#[test]
+fn restart_verify_rejects_unsupported_live_committee_without_mutation() {
+    let store: MemoryDurableStateStore = memory_store();
+    let (fixture, _transition) = install_and_activate_one_transition(&store);
+    assert!(matches!(
+        install_genesis_result(&store, &fixture.manifest).unwrap(),
+        GenesisInstallOutcome::VerifiedExisting { .. }
+    ));
+
+    let live_context: PublicationContext = epoch_context(1);
+    let key: Vec<u8> = local_instance_state::fastpath_validator_set_key(&live_context).unwrap();
+    let original: VersionedStateValue = store
+        .get_versioned_durable(&context(1), domain(), &key)
+        .unwrap();
+    let original_bytes: Vec<u8> = original.value().unwrap().to_vec();
+    let mut record: FastPathValidatorSetRecord =
+        fast_path::records::decode_fastpath_validator_set_record(&original_bytes).unwrap();
+    record.validators[0].signature_scheme = SignatureSchemeId::Secp256k1;
+    overwrite_row(
+        &store,
+        &key,
+        fast_path::records::encode_fastpath_validator_set_record(&record).unwrap(),
+    );
+    let before: PortableSnapshotToken = store
+        .begin_portable_snapshot(&context(1), domain())
+        .unwrap();
+
+    // The installed transition's signed activation digest is checked before
+    // the final live-set conversion, so this exact label stays unchanged.
+    assert!(matches!(
+        install_genesis_result(&store, &fixture.manifest),
+        Err(GenesisError::TamperedInstalledRecord(
+            "fast-path epoch activation set"
+        ))
+    ));
+    assert_eq!(
+        store
+            .begin_portable_snapshot(&context(1), domain())
+            .unwrap(),
+        before
+    );
+    overwrite_row(&store, &key, original_bytes);
+    assert!(matches!(
+        install_genesis_result(&store, &fixture.manifest).unwrap(),
+        GenesisInstallOutcome::VerifiedExisting { .. }
+    ));
+}
+
+#[test]
 fn restart_verify_rejects_a_tampered_activation_set_or_policy_row_after_activation() {
     let store: MemoryDurableStateStore = memory_store();
     let (fixture, _record) = install_and_activate_one_transition(&store);

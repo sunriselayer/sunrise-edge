@@ -106,9 +106,12 @@ use paid_execution::{
 };
 use protocol_types::{SignatureSchemeId, ValidatorId};
 use runtime::VersionedStateReader;
-use validator_set::{ValidatorInfo, ValidatorSet, ValidatorSetError};
+#[cfg(test)]
+use validator_set::ValidatorInfo;
+use validator_set::{ValidatorSet, ValidatorSetError};
 
 pub(crate) mod commitment;
+mod committee;
 /// Explicit application of a verified member of the committed DrainSet.
 pub mod drain_apply;
 /// Full-certificate retention and relay after the committed Freeze.
@@ -131,6 +134,7 @@ mod soak_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
+pub use committee::{FastVoteCommitteeError, validate_fastvote_validator_set_record};
 pub use records::{
     FastPathBondRecord, FastPathCertificateRecord, FastPathFeeShare, FastPathPreparedRecord,
     FastPathSettlementRecord, FastPathValidatorEntry, FastPathValidatorSetRecord,
@@ -334,6 +338,20 @@ impl From<ValidatorSetError> for FastPathError {
     }
 }
 
+impl From<FastVoteCommitteeError> for FastPathError {
+    fn from(error: FastVoteCommitteeError) -> Self {
+        match error {
+            FastVoteCommitteeError::ContextMismatch => {
+                Self::Invalid("fast-path validator set context mismatch")
+            }
+            FastVoteCommitteeError::UnsupportedSignatureScheme { .. } => {
+                Self::Invalid("fast-path validator set supports only Ed25519")
+            }
+            FastVoteCommitteeError::InvalidSet(error) => error.into(),
+        }
+    }
+}
+
 type FastPathResult<T> = Result<T, FastPathError>;
 
 fn invalid<T>(message: &'static str) -> FastPathResult<T> {
@@ -379,22 +397,10 @@ pub(crate) fn decode_validator_set_row(
     validator_context: &PublicationContext,
 ) -> FastPathResult<ValidatorSet> {
     let record: FastPathValidatorSetRecord = records::decode_fastpath_validator_set_record(bytes)?;
-    if record.context != *validator_context {
-        return invalid("fast-path validator set context mismatch");
-    }
-    let mut info: Vec<ValidatorInfo> = Vec::with_capacity(record.validators.len());
-    for validator in &record.validators {
-        if validator.signature_scheme != SignatureSchemeId::Ed25519 {
-            return invalid("fast-path validator set supports only Ed25519");
-        }
-        info.push(ValidatorInfo {
-            id: validator.id,
-            voting_power: validator.voting_power,
-            signature_scheme: validator.signature_scheme,
-            public_key: validator.public_key.clone(),
-        });
-    }
-    Ok(ValidatorSet::new(validator_context.epoch(), info)?)
+    Ok(validate_fastvote_validator_set_record(
+        &record,
+        validator_context,
+    )?)
 }
 
 /// Loads the active per-epoch [`ValidatorSet`] and, per DR-0131's two-tier
@@ -560,33 +566,18 @@ pub(crate) fn install_validator_set<S: StructuredDurableDomainStateStore>(
     validator_context: PublicationContext,
     validators: Vec<FastPathValidatorEntry>,
 ) -> FastPathResult<()> {
-    let info: Vec<ValidatorInfo> = validators
-        .iter()
-        .map(|validator| {
-            if validator.signature_scheme != SignatureSchemeId::Ed25519 {
-                return Err(FastPathError::Invalid(
-                    "fast-path validator set supports only Ed25519",
-                ));
-            }
-            Ok(ValidatorInfo {
-                id: validator.id,
-                voting_power: validator.voting_power,
-                signature_scheme: validator.signature_scheme,
-                public_key: validator.public_key.clone(),
-            })
-        })
-        .collect::<FastPathResult<Vec<ValidatorInfo>>>()?;
-    // Structural validation (bounds, no duplicates, no zero power/keys, no
-    // shared public keys); also used to compute the digest the epoch record
-    // binds, so these durable bytes are actually usable by
-    // `FastPathCertifier`.
-    let validator_set: ValidatorSet = ValidatorSet::new(validator_context.epoch(), info)?;
-    let digest: Digest32 = validator_set.digest(resolver)?;
-
     let record: FastPathValidatorSetRecord = FastPathValidatorSetRecord {
         context: validator_context.clone(),
         validators,
     };
+    // Structural validation (bounds, no duplicates, no zero power/keys, no
+    // shared public keys); also used to compute the digest the epoch record
+    // binds, so these durable bytes are actually usable by
+    // `FastPathCertifier`.
+    let validator_set: ValidatorSet =
+        validate_fastvote_validator_set_record(&record, &validator_context)?;
+    let digest: Digest32 = validator_set.digest(resolver)?;
+
     let bytes: Vec<u8> = records::encode_fastpath_validator_set_record(&record)?;
     let key: Vec<u8> = fastpath_validator_set_key(&validator_context)?;
     let observed: VersionedStateValue = store.get_versioned_durable(context, domain, &key)?;
