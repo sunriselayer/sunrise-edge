@@ -74,6 +74,7 @@ use execution::protocol_custody::{
 use execution::publication::PublicationContext;
 use objects::{ProtocolCustodyPurpose, ProtocolCustodyScope};
 use protocol_types::SignatureSchemeId;
+use runtime::{StateAssemblyError, StateObservationSet, StateTransactionBuilder};
 use validator_set::ValidatorSet;
 
 pub mod codec;
@@ -163,6 +164,19 @@ impl From<DurableReadError> for FeeClaimError {
 impl From<RuntimeError> for FeeClaimError {
     fn from(error: RuntimeError) -> Self {
         Self::Node(error.into())
+    }
+}
+impl From<StateAssemblyError> for FeeClaimError {
+    fn from(error: StateAssemblyError) -> Self {
+        match error {
+            StateAssemblyError::ConflictingObservation { .. } => {
+                NodeCoreError::StateConflict.into()
+            }
+            StateAssemblyError::ConflictingMutation { .. } => {
+                RuntimeError::DuplicateStateWriteKey.into()
+            }
+            StateAssemblyError::Runtime(error) => error.into(),
+        }
     }
 }
 impl From<DurableInvocationError> for FeeClaimError {
@@ -1325,16 +1339,24 @@ fn commit<S: StructuredDurableDomainStateStore>(
         &mut state_mutations,
         &mut reads,
     )?;
-    mutation_fence::merge_configuration_reads(&mut reads, admission_profile_reads)?;
-    let assertions: Vec<StateReadAssertion> = reads
-        .into_iter()
-        .map(|(k, r)| StateReadAssertion::new(k, r))
-        .collect::<Result<_, RuntimeError>>()?;
-    let state: DurableStateTransaction = DurableStateTransaction::new(
-        domain,
-        AtomicStateReadSet::new(assertions)?,
-        state_mutations,
-    )?;
+    // Logical provenance above still owns the complete business write set.
+    // Configuration joins only here as physical CAS observations, before the
+    // one strict single-owner state section and original receipt commit.
+    let mut observations: StateObservationSet = StateObservationSet::new(domain);
+    for (key, revision) in reads {
+        observations.observe(StateReadAssertion::new(key, revision)?)?;
+    }
+    let mut configuration: StateObservationSet = StateObservationSet::new(domain);
+    for (key, revision) in admission_profile_reads {
+        configuration.observe(StateReadAssertion::new(key, revision)?)?;
+    }
+    observations.merge_observations(&configuration)?;
+    let mut builder: StateTransactionBuilder =
+        StateTransactionBuilder::from_observations(observations);
+    for mutation in state_mutations {
+        builder.insert_mutation_once(mutation)?;
+    }
+    let state: DurableStateTransaction = builder.finish_invocation_state()?;
     let output: NodeOutput = NodeOutput::new(
         vec![NodeResponse::new(
             request_id,
@@ -1364,6 +1386,8 @@ fn commit<S: StructuredDurableDomainStateStore>(
     )?)
 }
 
+#[cfg(test)]
+mod observed_completion_tests;
 /// Focused coverage for [`verify_uncharged_claim_absence_by_point_read`] in
 /// isolation -- the hook [`verify_fee_claim_history`] supplies to
 /// [`verify_fee_claim_history_shared`] for an uncharged (generation-0) row --

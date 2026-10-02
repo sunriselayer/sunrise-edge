@@ -84,6 +84,7 @@ use local_instance_state::{
     instance_record_key, object_authority_key, paid_fee_policy_key,
 };
 use publication::{PublicationAdmissionError, PublicationLoadBudget};
+use runtime::{StateAssemblyError, StateObservationSet, StateTransactionBuilder};
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -133,6 +134,19 @@ conversion!(HashingError, Node);
 conversion!(LocalExecutionError, Execution);
 conversion!(PaidExecutionError, Paid);
 conversion!(PublicationAdmissionError, Publication);
+impl From<StateAssemblyError> for PaidExecutionAdmissionError {
+    fn from(error: StateAssemblyError) -> Self {
+        match error {
+            StateAssemblyError::ConflictingObservation { .. } => {
+                NodeCoreError::StateConflict.into()
+            }
+            StateAssemblyError::ConflictingMutation { .. } => {
+                RuntimeError::DuplicateStateWriteKey.into()
+            }
+            StateAssemblyError::Runtime(error) => error.into(),
+        }
+    }
+}
 impl From<LocalExecutionAdmissionError> for PaidExecutionAdmissionError {
     fn from(error: LocalExecutionAdmissionError) -> Self {
         match error {
@@ -1588,23 +1602,27 @@ fn commit_direct_paid_admission<S: StructuredDurableDomainStateStore>(
     let PaidAdmissionOutput {
         result_bytes,
         success,
-        mut reads,
+        reads,
         admission_profile_reads,
         head_reads,
-        mut state_mutations,
+        state_mutations,
         object_mutations,
         nonce_write,
         logical,
         ..
     } = admission;
-    for (key, revision) in admission_profile_reads {
-        if reads
-            .insert(key, revision)
-            .is_some_and(|existing: StateRevision| existing != revision)
-        {
-            return Err(NodeCoreError::StateConflict.into());
-        }
+    // Admission already derived its logical generation over business operands.
+    // Only now combine physical configuration CAS observations; the assembler
+    // never chooses which observations become signed logical dependencies.
+    let mut observations: StateObservationSet = StateObservationSet::new(domain);
+    for (key, revision) in reads {
+        observations.observe(StateReadAssertion::new(key, revision)?)?;
     }
+    let mut configuration: StateObservationSet = StateObservationSet::new(domain);
+    for (key, revision) in admission_profile_reads {
+        configuration.observe(StateReadAssertion::new(key, revision)?)?;
+    }
+    observations.merge_observations(&configuration)?;
     // DR-0154: a handoff-capable store applies this direct paid commit only
     // with the authenticated generation this very admission derived; a
     // historical store applies exactly as it always did. Neither can present
@@ -1613,20 +1631,23 @@ fn commit_direct_paid_admission<S: StructuredDurableDomainStateStore>(
     let nonce: PendingSenderNonceWrite = nonce_write.ok_or(
         PaidExecutionAdmissionError::Invalid("direct commit always reserves a fresh nonce"),
     )?;
-    reads.insert(nonce.key.clone(), nonce.read_revision);
-    state_mutations.push(StateMutationEntry::new(
+    // Admission owns every other observation and excludes this row. Refuse a
+    // contradictory internal nonce contribution instead of silently replacing
+    // its revision as the former map insertion did. Healthy inputs are unchanged.
+    observations.observe(StateReadAssertion::new(
+        nonce.key.clone(),
+        nonce.read_revision,
+    )?)?;
+    let mut builder: StateTransactionBuilder =
+        StateTransactionBuilder::from_observations(observations);
+    for mutation in state_mutations {
+        builder.insert_mutation_once(mutation)?;
+    }
+    builder.insert_mutation_once(StateMutationEntry::new(
         nonce.key,
         StateMutation::Put(nonce.record.encode()?),
-    )?);
-    let assertions: Vec<StateReadAssertion> = reads
-        .into_iter()
-        .map(|(key, revision)| StateReadAssertion::new(key, revision))
-        .collect::<Result<_, RuntimeError>>()?;
-    let state: DurableStateTransaction = DurableStateTransaction::new(
-        domain,
-        AtomicStateReadSet::new(assertions)?,
-        state_mutations,
-    )?;
+    )?)?;
+    let state: DurableStateTransaction = builder.finish_invocation_state()?;
     let output: NodeOutput = NodeOutput::new(
         vec![NodeResponse::new(
             request_id,
@@ -1659,3 +1680,6 @@ fn commit_direct_paid_admission<S: StructuredDurableDomainStateStore>(
         output,
     )?)
 }
+
+#[cfg(test)]
+mod observed_completion_tests;
