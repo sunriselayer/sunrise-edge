@@ -275,18 +275,15 @@ fn writer_free_registration_commit_matches_direct_with_identical_real_admission(
     .unwrap();
     assert_eq!(direct_engine.calls.get(), 1);
     assert_eq!(committed, direct);
-    for (owning_fixture, owning_network) in [(&fixture, network), (&direct_fixture, direct_network)]
-    {
+    for owning_network in [network, direct_network] {
         assert_eq!(receipt(owning_network, 0, REGISTER).unwrap(), original);
         assert_eq!(
             verify_registered_bond_chain(
                 &owning_network.stores[0],
                 &owning_network.context,
                 owning_network.domain(),
-                &owning_network.resolver,
+                &owning_network.root,
                 &owning_network.history,
-                &owning_fixture.manifest,
-                owning_network.policy.genesis_digest(),
                 e_id(),
             )
             .unwrap(),

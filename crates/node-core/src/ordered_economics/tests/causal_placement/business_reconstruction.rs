@@ -14,7 +14,6 @@ use crate::logical_generation::{
 use consensus::bundle::{ArtifactEntry, ArtifactKind};
 use protocol_types::{HashSuite, HashSuiteSchedule};
 use runtime::portable::{DurableCollection, DurableRecordKey};
-use std::collections::BTreeMap;
 
 /// Capture mechanics moved to the private test observation module; existing
 /// consumers of this path keep working against the same implementation.
