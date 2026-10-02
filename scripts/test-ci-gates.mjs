@@ -9,6 +9,7 @@ import { requiredGateGroups, postgresGateGroups, requireSuccessfulGateResults } 
 // This is a DB/compiler-free contract test, not a replacement for any real gate.
 const root = fileURLToPath(new URL("../", import.meta.url));
 const registry = join(root, "scripts/ci-gates.sh");
+const execution = join(root, "scripts/ci-execution.sh");
 const requiredGroups = ["lint", "rust-tests", "portable-tools", "cloudflare"];
 const postgresGroups = ["pg-storage", "pg-lifecycle", "pg-drain-history", "pg-business-audit", "pg-recovery-economics"];
 const groups = [
@@ -22,9 +23,47 @@ function registryRows(array) {
     "-c", `source "$1"; printf '%s\\n' "\${${array}[@]}"`, "ci-gate-registry", registry,
   ], { encoding: "utf8" }).trim().split("\n").map((row) => row.split("|"));
 }
-assert.deepEqual(registryRows("CI_REQUIRED_GROUPS").flat(), requiredGroups);
-assert.deepEqual(registryRows("CI_POSTGRES_GROUPS").flat(), postgresGroups);
-assert.deepEqual(registryRows("CI_GATE_GROUPS").flat(), groups);
+// Fixed independent plan expectations accompany, not replace, the command
+// coverage baselines below. The implementation registry cannot certify itself.
+const expectedPlans = [
+  ["required", "required", "gate-contract rust-style rust-tests-required sqlite-inventory soak-cli vectors cloudflare-build cloudflare-check deno-adapters diff-hygiene"],
+  ["full", "postgres", "gate-contract rust-style rust-tests-full sqlite-inventory pg-inventory pg-protocol-all soak-cli pg-soak vectors cloudflare-build cloudflare-check deno-adapters diff-hygiene"],
+  ["lint", "required", "gate-contract rust-style diff-hygiene"],
+  ["rust-tests", "required", "rust-tests-required sqlite-inventory"],
+  ["pg-storage", "postgres", "pg-storage-tests"],
+  ["pg-lifecycle", "postgres", "pg-protocol-lifecycle"],
+  ["pg-drain-history", "postgres", "pg-protocol-drain-history"],
+  ["pg-business-audit", "postgres", "pg-protocol-business-audit"],
+  ["pg-recovery-economics", "postgres", "pg-inventory pg-protocol-recovery-economics pg-soak"],
+  ["portable-tools", "required", "soak-cli vectors deno-adapters"],
+  ["cloudflare", "required", "cloudflare-build cloudflare-check"],
+];
+function checkPlans(rows) { assert.deepEqual(rows, expectedPlans); }
+const plans = registryRows("CI_EXECUTION_PLANS");
+checkPlans(plans);
+assert.deepEqual(plans.slice(2).map(([group]) => group), groups);
+for (const mutation of [
+  plans.filter(([group]) => group !== "cloudflare"),
+  [...plans, plans[2]],
+  plans.map(([group, profile, actions]) => [group, profile, actions.replace("vectors", "unknown-action")]),
+  plans.map(([group, profile, actions]) => [group, profile, actions.split(" ").filter((action) => action !== "vectors").join(" ")]),
+  plans.map(([group, profile, actions]) => [group, group === "full" ? "required" : profile, actions]),
+  plans.map(([group, profile, actions]) => [group, profile, group === "full" ? [...actions.split(" ")].reverse().join(" ") : actions]),
+]) assert.throws(() => checkPlans(mutation));
+for (const [selection, profile, actions] of expectedPlans) {
+  for (const [fn, expected] of [["ci_execution_profile", [profile]], ["ci_execution_plan", actions.split(" ")]]) {
+    const actual = execFileSync("/bin/bash", ["-c", 'source "$1"; "$2" "$3"', "ci-gate-registry", registry, fn, selection], { encoding: "utf8" });
+    assert.deepEqual(actual.trim().split("\n"), expected);
+  }
+}
+for (const fn of ["ci_execution_profile", "ci_execution_plan"]) {
+  for (const args of [[], ["unknown"], [""], ["postgres"], ["required", "extra"], ["vectors; true"]]) {
+    const result = spawnSync("/bin/bash", ["-c", 'source "$1"; shift; "$@"', "ci-gate-registry", registry, fn, ...args], { encoding: "utf8" });
+    assert.ifError(result.error);
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+  }
+}
 assert.deepEqual([...requiredGroups, ...postgresGroups].sort(), [...groups].sort());
 for (const args of [["unknown"], [""], ["full"], ["required", "extra"]]) {
   const result = spawnSync("/bin/bash", ["-c", 'source "$1"; shift; ci_gate_groups "$@"', "ci-gate-registry", registry, ...args], { encoding: "utf8" });
@@ -237,6 +276,7 @@ const {spawnSync}=require('node:child_process');
 const tool=${JSON.stringify(tool)},args=process.argv.slice(2);
 appendFileSync(process.env.CI_MOCK_LOG,JSON.stringify({tool,args,cwd:process.cwd()})+'\\n');
 if(process.env.CI_MOCK_FAIL_TOOL===tool)process.exit(17);
+if(process.env.CI_MOCK_FAIL_ARG&&args.includes(process.env.CI_MOCK_FAIL_ARG))process.exit(19);
 const script=args[0]?.split('/').at(-1);
 if(tool==='bash'&&(['check-fastvote-pg.sh','check-fee-escrow-inventory-pg.sh'].includes(script)
  ||(script==='check-postgres-soak.sh'&&!(args.length===2&&args[1]==='--self-test-cli'))
@@ -261,9 +301,9 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
 `;
     writeFileSync(join(directory, tool), body, { flag: "wx", mode: 0o755 });
   }
-  function run(script, args = [], overrides = {}) {
+  function runBash(args, overrides = {}) {
     writeFileSync(logPath, "");
-    const result = spawnSync(realBash, [join(root, script), ...args], {
+    const result = spawnSync(realBash, args, {
       cwd: root, encoding: "utf8", timeout: 30_000,
       env: {
         PATH: `${directory}:/usr/bin:/bin`, CI_MOCK_LOG: logPath,
@@ -275,7 +315,36 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     const text = readFileSync(logPath, "utf8").trim();
     return { ...result, log: text ? text.split("\n").map((row) => JSON.parse(row)) : [] };
   }
+  function run(script, args = [], overrides = {}) {
+    return runBash([join(root, script), ...args], overrides);
+  }
+  const functionScript = join(directory, "gate-function.sh");
+  writeFileSync(functionScript, 'set -euo pipefail\nsource "$1"\nsource "$2"\nshift 2\n"$@"\n', { flag: "wx", mode: 0o700 });
+  function runFunction(fn, args = [], overrides = {}) {
+    return runBash([functionScript, registry, execution, fn, ...args], overrides);
+  }
   function passed(run) { assert.equal(run.status, 0, run.stderr); return run.log; }
+  assert.deepEqual(passed(runFunction(":")), [], "sourcing the registry/recipes must not execute a gate");
+  for (const [fn, args] of [
+    ["ci_run_gate", []], ["ci_run_gate", ["unknown"]], ["ci_run_gate", ["required", "extra"]],
+    ["ci_run_action", []], ["ci_run_action", ["unknown"]], ["ci_run_action", ["vectors; true"]],
+    ["ci_run_action", ["gate-contract", "extra"]],
+    ["ci_run_exact_ignored_test", []], ["ci_run_exact_ignored_test", ["name", "invalid", "--lib"]],
+  ]) {
+    const refused = runFunction(fn, args);
+    assert.notEqual(refused.status, 0);
+    assert.equal(refused.log.length, 0);
+  }
+  for (const group of groups) {
+    const result = runFunction("ci_fastvote_pg_group_is_known", [group]);
+    assert.equal(result.status, ["pg-lifecycle", "pg-drain-history", "pg-business-audit", "pg-recovery-economics"].includes(group) ? 0 : 1);
+    assert.equal(result.log.length, 0);
+  }
+  for (const args of [[], ["all"], ["unknown"], ["pg-lifecycle", "extra"]]) {
+    const result = runFunction("ci_fastvote_pg_group_is_known", args);
+    assert.notEqual(result.status, 0);
+    assert.equal(result.log.length, 0);
+  }
   const pgEnvironment = { SUNRISE_EDGE_TEST_POSTGRES_URL: "mock-only" };
   const required = passed(run("scripts/check-all.sh"));
   const full = passed(run("scripts/check-all.sh", ["--full"], pgEnvironment));
@@ -449,6 +518,16 @@ if(tool==='cargo'&&args[0]==='test'&&!args.includes('--list')){
     ["portable-tools", "node"], ["portable-tools", "deno"],
     ["cloudflare", "bash"], ["cloudflare", "npm"],
   ]) assert.notEqual(run("scripts/check-all.sh", ["--group", group], { ...(postgresGroups.includes(group) ? pgEnvironment : {}), CI_MOCK_FAIL_TOOL: tool }).status, 0);
+  // Failures inside a multi-command recipe must not be hidden by its later
+  // commands, even when the gate runner handles the recipe's return status.
+  for (const [group, argument, forbidden] of [
+    ["lint", "fmt", "rustfmt"], ["lint", "--edition", "clippy"], ["lint", "clippy", "git"],
+    ["portable-tools", "scripts/drainset-vectors.mjs", "scripts/fast-path-vectors.mjs"],
+  ]) {
+    const failed = run("scripts/check-all.sh", ["--group", group], { CI_MOCK_FAIL_ARG: argument });
+    assert.notEqual(failed.status, 0);
+    assert(!failed.log.some(({ tool, args }) => tool === forbidden || args.includes(forbidden)));
+  }
   const missingSqlite = run("scripts/check-all.sh", ["--group", "rust-tests"], { CI_MOCK_MISSING_TEST: auxiliary[0][2] });
   assert.notEqual(missingSqlite.status, 0);
   assert(!missingSqlite.log.some(({ tool }) => tool === "bash"));

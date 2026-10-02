@@ -12,6 +12,8 @@ project_root="$(cd "$script_directory/.." && pwd)"
 cd "$project_root"
 # shellcheck source=scripts/ci-gates.sh
 source "$project_root/scripts/ci-gates.sh"
+# shellcheck source=scripts/ci-execution.sh
+source "$project_root/scripts/ci-execution.sh"
 
 # ---- --self-test-cli: fast, DB-free regression check of this script's own
 # argument/bounds validation. Never touches PostgreSQL or cargo. Kept first
@@ -190,34 +192,21 @@ cleanup() {
 trap cleanup EXIT
 export SUNRISE_EDGE_SOAK_DIR="$soak_dir"
 
-require_exact_test() {
-  local test_name="$1"
-  shift
-  if ! cargo test --quiet "$@" "$test_name" -- --ignored --list | grep -Fqx "$test_name: test"; then
-    echo "missing expected PostgreSQL soak test: $test_name" >&2
-    exit 1
-  fi
-}
-export -f require_exact_test
+export -f ci_require_exact_ignored_test ci_run_exact_ignored_test
 
 run_phases() {
   set -euo pipefail
-  require_exact_test \
-    fast_path::soak_tests::live_postgres_certified_load_exports_recovery_handoff \
+  ci_run_exact_ignored_test \
+    fast_path::soak_tests::live_postgres_certified_load_exports_recovery_handoff yes \
     -p node-core --lib
-  cargo test --quiet -p node-core --lib \
-    fast_path::soak_tests::live_postgres_certified_load_exports_recovery_handoff \
-    -- --ignored --exact --nocapture
 
   if [[ ! -f "$SUNRISE_EDGE_SOAK_DIR/handoff.kv" ]]; then
     echo "certified load workload did not publish handoff.kv" >&2
     exit 1
   fi
 
-  require_exact_test fee_escrow_soak_recovery_pg_operator_e2e \
+  ci_run_exact_ignored_test fee_escrow_soak_recovery_pg_operator_e2e yes \
     -p sunrise-edge-operator --test fee_escrow_soak_recovery_pg_e2e
-  cargo test --quiet -p sunrise-edge-operator --test fee_escrow_soak_recovery_pg_e2e \
-    -- --ignored --exact --nocapture fee_escrow_soak_recovery_pg_operator_e2e
 }
 export -f run_phases
 
