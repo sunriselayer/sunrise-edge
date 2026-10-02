@@ -231,9 +231,17 @@ Import provides no readiness, Seal, activation or deployed-provider authority.
   `2d5c8d91` on 2026-10-02. This adds native SQLite/memory
   readiness, not PG/DO/D1 readiness, Seal, activation, serving or Delivery 3
   completion. A public certificate is no activation capability.
-- [ ] **After readiness:** separately reviewed ordered Seal and activation/
-  serving rollover. Phase-aware high/locked traversal and Seal companion
-  ownership remain pre-code gates; no singleton lock from an uncommitted Seal.
+- [x] **First-epoch Seal design boundary:**
+  [DR-0187](docs/architecture/decisions/0187-first-epoch-ordered-seal.md) closes
+  the selected-branch/committed-boundary checks, bounded certificate retention,
+  private exact acceptance terminal and mandatory atomic outgoing barrier.
+  Hard-stop outgoing signatures after acceptance removes the proposed second
+  uncommitted archive and post-Seal progress engine. This is design approval
+  only; no proposal-time singleton or readiness-as-serving permission.
+- [ ] **After readiness:** implement and independently verify callable ordered
+  Seal against DR-0187 through actual completion, cached-signature guards,
+  original replay, CLI and SQLite restart/fault acceptance. Post-Seal transition
+  and authenticated successor serving retain their separate pre-code gates.
 - [ ] **Then:** integrated membership/recovery acceptance through real compiled
   CLI and authenticated hosts; keep Delivery 3 unchecked until it passes.
 - [ ] **Before live exposure:** close the independently scoped economics and
