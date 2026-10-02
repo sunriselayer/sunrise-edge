@@ -2,6 +2,7 @@
 use super::*;
 use runtime::conditional_readiness::{encode_readiness_record, encode_readiness_slot};
 use runtime_sql_durable::{SqlRows, SqlValue};
+use rusqlite::params;
 use std::sync::Arc;
 
 fn complete(
@@ -41,7 +42,6 @@ fn complete(
         &initial(),
         vec![
             state(b"business", Some(b"original")),
-            ImportRow::Receipt(receipt),
             ImportRow::ObjectVersion(version),
             ImportRow::ObjectHead {
                 object_id: id,
@@ -49,6 +49,7 @@ fn complete(
                     last_object_version: DurableObjectVersion::new(17).unwrap(),
                 },
             },
+            ImportRow::Receipt(receipt),
         ],
     );
     assert_eq!(
